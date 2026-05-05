@@ -342,7 +342,11 @@ var runTrafficCleanupPass = func(ctx context.Context, cfg config.Config) error {
 		_ = store.Close()
 	}()
 
-	_, err = service.NewTrafficService(service.TrafficServiceConfig{Enabled: cfg.TrafficStatsEnabled}, store).CleanupAll(ctx)
+	trafficCfg, err := service.NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
+	if err != nil {
+		return err
+	}
+	_, err = service.NewTrafficService(trafficCfg, store).CleanupAll(ctx)
 	return err
 }
 
@@ -398,7 +402,12 @@ var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error
 		return nil, err
 	}
 	if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
-		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(service.TrafficServiceConfig{Enabled: cfg.TrafficStatsEnabled}, store))
+		trafficCfg, err := service.NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(trafficCfg, store))
 	}
 	return runtime.Start, nil
 }
@@ -445,7 +454,12 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		return nil, err
 	}
 	if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
-		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(service.TrafficServiceConfig{Enabled: cfg.TrafficStatsEnabled}, serviceStore))
+		trafficCfg, err := service.NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
+		if err != nil {
+			_ = closeStores()
+			return nil, err
+		}
+		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(trafficCfg, serviceStore))
 	}
 
 	agentSvc.SetLocalApplyTrigger(runtime.SyncNow)

@@ -33,6 +33,7 @@ type Config struct {
 	DatabaseDriver                    string
 	DatabaseDSN                       string
 	TrafficStatsEnabled               bool
+	Timezone                          string
 	EnableLocalAgent                  bool
 	LocalAgentID                      string
 	LocalAgentName                    string
@@ -88,6 +89,7 @@ func Default() Config {
 		PublicAgentAssetsDir: defaultPublicAssetsDir,
 		DatabaseDriver:       defaultDatabaseDriver,
 		TrafficStatsEnabled:  true,
+		Timezone:             "UTC",
 		EnableLocalAgent:     defaultEnableLocalAgent,
 		LocalAgentID:         defaultLocalAgentID,
 		LocalAgentName:       defaultLocalAgentName,
@@ -214,6 +216,12 @@ func LoadFromEnv() (Config, error) {
 		cfg.TrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsExplicit = true
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_TIMEZONE")); val != "" {
+		if _, err := time.LoadLocation(val); err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_TIMEZONE: %w", err)
+		}
+		cfg.Timezone = val
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_TRAFFIC_CLEANUP_INTERVAL")); val != "" {
 		dur, err := parseOptionalDurationEnv("NRE_TRAFFIC_CLEANUP_INTERVAL", val)

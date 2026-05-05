@@ -129,6 +129,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `NRE_LOCAL_AGENT_NAME` | `local` | Local agent 显示名称 |
 | `NRE_DATABASE_DRIVER` | `sqlite` | 控制面数据库驱动；Docker Compose 默认设为 `postgres`，可选 `sqlite`、`postgres`、`mysql` |
 | `NRE_DATABASE_DSN` | - | 控制面数据库 DSN；SQLite 为空时使用 `NRE_DATA_DIR/panel.db` |
+| `NRE_TIMEZONE` | `UTC` | 控制面板统一时区（IANA 名称，如 `Asia/Shanghai`），用于流量日/月汇总、周期边界和清理口径 |
 | `NRE_HEARTBEAT_INTERVAL` | `30s` | 心跳同步间隔（Go duration 格式） |
 | `NRE_TRAFFIC_STATS_ENABLED` | `true` | 是否启用流量统计模块；关闭后控制面不迁移 traffic history 表、不持久化 stats、不执行额度阻断 |
 | `NRE_TRAFFIC_INTERFACES` | - | Agent 主机网卡采集白名单，逗号分隔（如 `eth0,ens3`）；为空时自动排除 loopback/docker/veth/bridge/tun/tap 等虚拟接口 |
@@ -137,7 +138,8 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `ACME_DNS_PROVIDER` | - | DNS 验证提供商（如 `cf`） |
 | `CF_Token` / `CF_TOKEN` | - | Cloudflare API Token |
 
-> 所有 `NRE_` 前缀的环境变量同时作用于 Master 内嵌 local agent 和独立部署的 `go-agent`。
+> `NRE_TIMEZONE` 是控制面板全局配置，不是 Agent 级配置；独立 `go-agent` 不需要配置它。
+> 除控制面板专用变量外，部分 `NRE_` 前缀的 Agent 运行参数同时作用于 Master 内嵌 local agent 和独立部署的 `go-agent`。
 > 时间类变量使用 Go `time.ParseDuration` 格式（如 `500ms`、`5s`、`2m`）。
 
 流量统计以 Agent 所在主机/网络命名空间的网卡累计计数作为周期总量和额度阻断口径；HTTP 规则、L4 规则和 Relay 监听器的代理侧统计保留为分项分析。Linux Agent 优先通过 netlink 读取内核 `rtnl_link_stats64` 网卡计数，失败时回退到 `/proc/net/dev`。如果运行在 Docker bridge 网络中，采到的是容器网络命名空间流量；需要 VPS 主机网卡总量时请使用 host network 或显式挂载/部署到主机环境，并可用 `NRE_TRAFFIC_INTERFACES` 限定计入的网卡。

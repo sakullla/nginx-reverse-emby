@@ -310,6 +310,31 @@ func TestLoadFromEnvTrafficStatsEnabledForLocalAgent(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvParsesTimezone(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_TIMEZONE", "Asia/Shanghai")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.Timezone != "Asia/Shanghai" {
+		t.Fatalf("Timezone = %q, want Asia/Shanghai", cfg.Timezone)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidTimezone(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_TIMEZONE", "Not/AZone")
+
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "NRE_TIMEZONE") {
+		t.Fatalf("LoadFromEnv() error = %v, want NRE_TIMEZONE error", err)
+	}
+}
+
 func TestLoadFromEnvRejectsInvalidTrafficStatsEnabledForLocalAgent(t *testing.T) {
 	t.Setenv("NRE_PANEL_TOKEN", "secret")
 	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")

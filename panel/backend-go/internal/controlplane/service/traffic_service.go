@@ -13,8 +13,9 @@ import (
 )
 
 type TrafficServiceConfig struct {
-	Enabled bool
-	Now     func() time.Time
+	Enabled  bool
+	Now      func() time.Time
+	Timezone *time.Location
 }
 
 type trafficStore interface {
@@ -63,6 +64,7 @@ type trafficService struct {
 	enabled bool
 	store   trafficStore
 	now     func() time.Time
+	tz      *time.Location
 }
 
 func NewTrafficService(cfg TrafficServiceConfig, store trafficStore) *trafficService {
@@ -70,11 +72,31 @@ func NewTrafficService(cfg TrafficServiceConfig, store trafficStore) *trafficSer
 	if now == nil {
 		now = time.Now
 	}
+	tz := cfg.Timezone
+	if tz == nil {
+		tz = time.UTC
+	}
 	return &trafficService{
 		enabled: cfg.Enabled,
 		store:   store,
 		now:     now,
+		tz:      tz,
 	}
+}
+
+func NewTrafficServiceConfig(enabled bool, timezoneName string) (TrafficServiceConfig, error) {
+	cfg := TrafficServiceConfig{Enabled: enabled}
+	name := strings.TrimSpace(timezoneName)
+	if name == "" {
+		cfg.Timezone = time.UTC
+		return cfg, nil
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return TrafficServiceConfig{}, fmt.Errorf("%w: invalid traffic timezone", ErrInvalidArgument)
+	}
+	cfg.Timezone = loc
+	return cfg, nil
 }
 
 func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, stats AgentStats) error {
@@ -85,7 +107,8 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 	if len(samples) == 0 {
 		return nil
 	}
-	observedAt := s.now().UTC()
+	bucketAt := s.now().In(s.tz)
+	observedAt := bucketAt.UTC()
 	for _, sample := range samples {
 		cursor := storage.AgentTrafficRawCursorRow{
 			AgentID:    agentID,
@@ -97,7 +120,7 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 			ObservedAt: observedAt.Format(time.RFC3339),
 		}
 		if ingestStore, ok := s.store.(trafficCursorDeltaEventStore); ok {
-			if _, err := ingestStore.IngestTrafficCursorDeltaWithEvent(ctx, cursor, observedAt, &storage.AgentTrafficEventRow{
+			if _, err := ingestStore.IngestTrafficCursorDeltaWithEvent(ctx, cursor, bucketAt, &storage.AgentTrafficEventRow{
 				AgentID:   agentID,
 				EventType: "counter_reset",
 				Message:   "traffic counter reset",
@@ -108,7 +131,7 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 			continue
 		}
 		if ingestStore, ok := s.store.(trafficCursorDeltaStore); ok {
-			result, err := ingestStore.IngestTrafficCursorDelta(ctx, cursor, observedAt)
+			result, err := ingestStore.IngestTrafficCursorDelta(ctx, cursor, bucketAt)
 			if err != nil {
 				return err
 			}
@@ -153,7 +176,7 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 				AgentID:     agentID,
 				ScopeType:   sample.scopeType,
 				ScopeID:     sample.scopeID,
-				BucketStart: observedAt,
+				BucketStart: bucketAt,
 				RXBytes:     deltaRX,
 				TXBytes:     deltaTX,
 			}); err != nil {
@@ -219,7 +242,7 @@ func (s *trafficService) BlockState(ctx context.Context, agentID string) (bool, 
 
 func (s *trafficService) summaryWithPolicy(ctx context.Context, agentID string, policyRow storage.AgentTrafficPolicyRow) (TrafficSummary, error) {
 	policy := trafficPolicyFromRow(policyRow)
-	start, end := monthlyCycleWindow(s.now(), policy.CycleStartDay)
+	start, end := monthlyCycleWindow(s.now().In(s.tz), policy.CycleStartDay)
 	stats, err := s.cycleStats(ctx, agentID, policy, start, end)
 	if err != nil {
 		return TrafficSummary{}, err
@@ -283,11 +306,14 @@ func (s *trafficService) Trend(ctx context.Context, query TrafficTrendQuery) ([]
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid to", ErrInvalidArgument)
 	}
+	granularity := defaultString(query.Granularity, "hour")
+	from = s.trendFilterTimeInPanelTimezone(granularity, from, false)
+	to = s.trendFilterTimeInPanelTimezone(granularity, to, true)
 	rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     query.AgentID,
-		ScopeType:   defaultString(query.ScopeType, s.defaultTotalScopeType(ctx, query.AgentID, defaultString(query.Granularity, "hour"), from, to)),
+		ScopeType:   defaultString(query.ScopeType, s.defaultTotalScopeType(ctx, query.AgentID, granularity, from, to)),
 		ScopeID:     strings.TrimSpace(query.ScopeID),
-		Granularity: defaultString(query.Granularity, "hour"),
+		Granularity: granularity,
 		From:        from,
 		To:          to,
 	})
@@ -307,6 +333,47 @@ func (s *trafficService) Trend(ctx context.Context, query TrafficTrendQuery) ([]
 		})
 	}
 	return points, nil
+}
+
+func (s *trafficService) trendFilterTimeInPanelTimezone(granularity string, value time.Time, exclusiveEnd bool) time.Time {
+	if value.IsZero() || s.tz == nil {
+		return value
+	}
+	year, month, day := value.Date()
+	switch normalizeTrafficGranularity(granularity) {
+	case "day":
+		start := time.Date(year, month, day, 0, 0, 0, 0, s.tz)
+		if exclusiveEnd && !isTrafficDateBoundary(value) {
+			return start.AddDate(0, 0, 1)
+		}
+		return start
+	case "month":
+		start := time.Date(year, month, 1, 0, 0, 0, 0, s.tz)
+		if exclusiveEnd && !isTrafficDateBoundary(value) {
+			return start.AddDate(0, 1, 0)
+		}
+		return start
+	default:
+		return value
+	}
+}
+
+func isTrafficDateBoundary(value time.Time) bool {
+	hour, min, sec := value.Clock()
+	return hour == 0 && min == 0 && sec == 0 && value.Nanosecond() == 0
+}
+
+func normalizeTrafficGranularity(granularity string) string {
+	switch strings.ToLower(strings.TrimSpace(granularity)) {
+	case "", "hour", "hourly":
+		return "hour"
+	case "day", "daily":
+		return "day"
+	case "month", "monthly":
+		return "month"
+	default:
+		return strings.ToLower(strings.TrimSpace(granularity))
+	}
 }
 
 func (s *trafficService) GetPolicy(ctx context.Context, agentID string) (TrafficPolicy, error) {
@@ -352,7 +419,7 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 		BlockWhenExceeded:      input.BlockWhenExceeded,
 		HourlyRetentionDays:    defaultInt(input.HourlyRetentionDays, 30),
 		DailyRetentionMonths:   defaultInt(input.DailyRetentionMonths, 3),
-		MonthlyRetentionMonths: defaultIntPtr(input.MonthlyRetentionMonths, 36),
+		MonthlyRetentionMonths: input.MonthlyRetentionMonths,
 	}
 	if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
 		return TrafficPolicy{}, err
@@ -404,7 +471,7 @@ func (s *trafficService) Calibrate(ctx context.Context, agentID string, request 
 		return TrafficSummary{}, err
 	}
 	policy := trafficPolicyFromRow(policyRow)
-	start, end := monthlyCycleWindow(s.now(), policy.CycleStartDay)
+	start, end := monthlyCycleWindow(s.now().In(s.tz), policy.CycleStartDay)
 	stats, err := s.cycleStats(ctx, agentID, policy, start, end)
 	if err != nil {
 		return TrafficSummary{}, err
@@ -445,21 +512,20 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 		return TrafficCleanupResult{}, err
 	}
 	policy := trafficPolicyFromRow(policyRow)
-	now := s.now().UTC()
+	now := s.now().In(s.tz)
 	cutoff := storage.TrafficCleanupCutoff{}
 	if policy.HourlyRetentionDays > 0 {
-		cutoff.HourlyBefore = now.AddDate(0, 0, -policy.HourlyRetentionDays).Truncate(time.Hour)
-		cycleStart, _ := monthlyCycleWindow(s.now(), policy.CycleStartDay)
-		cycleStart = cycleStart.UTC()
+		cutoff.HourlyBefore = storage.LocalHourStart(now.AddDate(0, 0, -policy.HourlyRetentionDays)).UTC()
+		cycleStart, _ := monthlyCycleWindow(s.now().In(s.tz), policy.CycleStartDay)
 		if cutoff.HourlyBefore.After(cycleStart) {
 			cutoff.HourlyBefore = cycleStart
 		}
 	}
 	if policy.DailyRetentionMonths > 0 {
-		cutoff.DailyBefore = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, -policy.DailyRetentionMonths, 0)
+		cutoff.DailyBefore = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -policy.DailyRetentionMonths, 0).UTC()
 	}
 	if policy.MonthlyRetentionMonths != nil && *policy.MonthlyRetentionMonths > 0 {
-		cutoff.MonthlyBefore = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -*policy.MonthlyRetentionMonths, 0)
+		cutoff.MonthlyBefore = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, s.tz).AddDate(0, -*policy.MonthlyRetentionMonths, 0).UTC()
 	}
 	deleted, err := s.store.DeleteTrafficBefore(ctx, agentID, cutoff)
 	if err != nil {
@@ -1072,13 +1138,6 @@ func parseOptionalTrafficTime(value string) (time.Time, error) {
 func defaultInt(value, fallback int) int {
 	if value == 0 {
 		return fallback
-	}
-	return value
-}
-
-func defaultIntPtr(value *int, fallback int) *int {
-	if value == nil || *value == 0 {
-		return &fallback
 	}
 	return value
 }
