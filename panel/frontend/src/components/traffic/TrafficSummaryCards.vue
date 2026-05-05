@@ -81,7 +81,7 @@ const dailyBudgetText = computed(() => {
 }
 .traffic-summary-card--blocked {
   background: var(--color-danger-50);
-  border-color: var(--color-danger-100);
+  border-color: var(--color-danger);
 }
 .traffic-summary-card__label {
   display: block;
