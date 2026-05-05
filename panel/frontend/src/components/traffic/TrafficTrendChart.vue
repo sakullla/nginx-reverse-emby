@@ -2,7 +2,7 @@
   <div class="traffic-trend-chart">
     <apexchart
       v-if="hasData"
-      :key="`${granularity}-${points.length}-${hostPoints?.length || 0}`"
+      :key="chartKey"
       type="area"
       :options="chartOptions"
       :series="series"
@@ -22,15 +22,18 @@ import { formatBytes } from '../../utils/trafficStats.js'
 const props = defineProps({
   points: { type: Array, default: () => [] },
   prevPoints: { type: Array, default: null },
-  hostPoints: { type: Array, default: null },
   granularity: { type: String, default: 'day' },
   quotaBytes: { type: Number, default: null },
   budgetBytes: { type: Number, default: null }
 })
 
 const hasData = computed(() => {
-  return (Array.isArray(props.points) && props.points.length > 0) ||
-    (Array.isArray(props.hostPoints) && props.hostPoints.length > 0)
+  return Array.isArray(props.points) && props.points.length > 0
+})
+
+const chartKey = computed(() => {
+  const sum = props.points.reduce((s, p) => s + (p.accounted_bytes || 0), 0)
+  return `${props.granularity}-${props.points.length}-${sum}`
 })
 
 function formatLabel(bucketStart) {
@@ -50,14 +53,12 @@ function bucketKey(point) {
   return String(point?.bucket_start || '')
 }
 
-function uniqueBucketStarts(currentPoints, hostPoints) {
+function uniqueBucketStarts(currentPoints) {
   const buckets = []
-  for (const points of [currentPoints, hostPoints]) {
-    if (!Array.isArray(points)) continue
-    for (const point of points) {
-      const key = bucketKey(point)
-      if (key) buckets.push(key)
-    }
+  if (!Array.isArray(currentPoints)) return buckets
+  for (const point of currentPoints) {
+    const key = bucketKey(point)
+    if (key) buckets.push(key)
   }
   return [...new Set(buckets)].sort()
 }
@@ -94,12 +95,12 @@ function alignPrevSeries(bucketStarts, currentPoints, prevPoints) {
 }
 
 const labels = computed(() => {
-  const bucketStarts = uniqueBucketStarts(props.points, props.hostPoints)
+  const bucketStarts = uniqueBucketStarts(props.points)
   return bucketStarts.map(formatLabel)
 })
 
 const series = computed(() => {
-  const bucketStarts = uniqueBucketStarts(props.points, props.hostPoints)
+  const bucketStarts = uniqueBucketStarts(props.points)
   const datasets = []
 
   datasets.push({
@@ -118,13 +119,6 @@ const series = computed(() => {
     return point ? (Number(point.tx_bytes) || 0) : null
   })
   datasets.push({ name: 'TX', data: txData })
-
-  if (Array.isArray(props.hostPoints) && props.hostPoints.length > 0) {
-    datasets.push({
-      name: '主机流量',
-      data: alignToBuckets(bucketStarts, props.hostPoints)
-    })
-  }
 
   if (Array.isArray(props.prevPoints) && props.prevPoints.length > 0) {
     datasets.push({

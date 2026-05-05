@@ -20,11 +20,6 @@
       <span class="traffic-summary-card__value">{{ remainingLabel }}</span>
       <span v-if="dailyBudgetText" class="traffic-summary-card__sub">{{ dailyBudgetText }}</span>
     </div>
-    <div class="traffic-summary-card">
-      <span class="traffic-summary-card__label">主机流量（当前周期）</span>
-      <span class="traffic-summary-card__value">{{ hostBandwidthLabel }}</span>
-      <span v-if="hostInterfaceText" class="traffic-summary-card__sub">{{ hostInterfaceText }}</span>
-    </div>
     <div class="traffic-summary-card" :class="{ 'traffic-summary-card--blocked': summary.blocked }">
       <span class="traffic-summary-card__label">状态</span>
       <span class="traffic-summary-card__value">{{ summary.blocked ? '已阻断' : '正常' }}</span>
@@ -39,8 +34,7 @@ import { formatBytes, formatQuota, usagePercent, dailyBudget, quotaColorThreshol
 
 const props = defineProps({
   summary: { type: Object, default: () => ({}) },
-  direction: { type: String, default: 'both' },
-  hostTotal: { type: Object, default: null }
+  direction: { type: String, default: 'both' }
 })
 
 const directionLabel = computed(() => {
@@ -68,16 +62,6 @@ const dailyBudgetText = computed(() => {
   const budget = dailyBudget(props.summary.monthly_quota_bytes, days)
   if (budget == null) return ''
   return `日均 ${formatBytes(budget)}`
-})
-
-const hostBandwidthLabel = computed(() => {
-  if (!props.hostTotal) return '—'
-  return formatBytes(props.hostTotal.accounted_bytes)
-})
-
-const hostInterfaceText = computed(() => {
-  if (!props.hostTotal || !props.hostTotal.rx_bytes) return ''
-  return 'host_total 口径'
 })
 </script>
 

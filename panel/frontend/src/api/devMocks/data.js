@@ -845,12 +845,19 @@ function createSeededRandom(seed) {
   }
 }
 
+const ALL_MOCK_AGENTS = [
+  { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+  { agent_id: 'mock-2', name: '节点-B', used_bytes: 536870912, quota_bytes: 1073741824, remaining_bytes: 536870912, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+  { agent_id: 'mock-3', name: '节点-C', used_bytes: 3221225472, quota_bytes: 3221225472, remaining_bytes: 0, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: true }
+]
+
 export async function fetchTrafficOverview(agentId, granularity) {
   if (isDev) {
     await sleep()
+    const seed = agentId ? agentId.split('').reduce((s, c) => s + c.charCodeAt(0), 0) : 42
     let trend
     if (granularity === 'month') {
-      const rng = createSeededRandom(42)
+      const rng = createSeededRandom(seed)
       trend = Array.from({ length: 12 }, (_, i) => {
         const month = String(i + 1).padStart(2, '0')
         return {
@@ -861,7 +868,7 @@ export async function fetchTrafficOverview(agentId, granularity) {
         }
       })
     } else if (granularity === 'day') {
-      const rng = createSeededRandom(42)
+      const rng = createSeededRandom(seed)
       trend = Array.from({ length: 30 }, (_, i) => {
         const day = String(i + 1).padStart(2, '0')
         return {
@@ -872,7 +879,7 @@ export async function fetchTrafficOverview(agentId, granularity) {
         }
       })
     } else {
-      const rng = createSeededRandom(42)
+      const rng = createSeededRandom(seed)
       trend = Array.from({ length: 24 }, (_, i) => {
         const hour = String(i).padStart(2, '0')
         return {
@@ -883,15 +890,13 @@ export async function fetchTrafficOverview(agentId, granularity) {
         }
       })
     }
+    const agents = agentId
+      ? ALL_MOCK_AGENTS.filter(a => a.agent_id === agentId)
+      : ALL_MOCK_AGENTS
     return {
       ok: true,
-      agents: [
-        { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
-        { agent_id: 'mock-2', name: '节点-B', used_bytes: 536870912, quota_bytes: 1073741824, remaining_bytes: 536870912, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
-        { agent_id: 'mock-3', name: '节点-C', used_bytes: 3221225472, quota_bytes: 3221225472, remaining_bytes: 0, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: true }
-      ],
-      trend,
-      host_trend: trend.map(p => ({ ...p, accounted_bytes: Math.round(p.accounted_bytes * 1.2) }))
+      agents,
+      trend
     }
   }
   const params = new URLSearchParams()

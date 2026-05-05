@@ -6,7 +6,6 @@ import DashboardTrafficModule from './DashboardTrafficModule.vue'
 import { fetchSystemInfo, fetchTrafficOverview, fetchTrafficSummary } from '../../api'
 
 let trafficStatsEnabled = true
-let hostTrend = []
 let overviewAgents = []
 let overviewAgentsByRequest = null
 let trafficSummaries = {}
@@ -18,7 +17,6 @@ vi.mock('../../api', () => ({
     const agents = overviewAgentsByRequest?.[agentId || 'all'] ?? overviewAgents
     return {
       trend: [],
-      host_trend: hostTrend,
       agents
     }
   }),
@@ -63,7 +61,6 @@ async function mountModule() {
 describe('DashboardTrafficModule', () => {
   beforeEach(() => {
     trafficStatsEnabled = true
-    hostTrend = []
     overviewAgents = [
       {
         agent_id: 'edge-1',
@@ -107,18 +104,6 @@ describe('DashboardTrafficModule', () => {
     expect(fetchSystemInfo).toHaveBeenCalled()
     expect(fetchTrafficOverview).not.toHaveBeenCalled()
     expect(wrapper.find('.dashboard-traffic').exists()).toBe(false)
-  })
-
-  it('labels host traffic as daily overview data instead of 24h usage', async () => {
-    hostTrend = [
-      { bucket_start: '2026-05-03T11:00:00.000Z', accounted_bytes: 1024 },
-      { bucket_start: '2026-05-04T00:00:00.000Z', accounted_bytes: 2048 }
-    ]
-
-    const wrapper = await mountModule()
-
-    expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
-    expect(wrapper.text()).not.toContain('24h')
   })
 
   it('keeps top rules from different agents separate when rule ids overlap', async () => {

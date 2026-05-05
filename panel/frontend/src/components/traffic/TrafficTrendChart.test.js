@@ -47,23 +47,6 @@ describe('TrafficTrendChart', () => {
     expect(series[2].name).toBe('TX')
   })
 
-  it('includes host traffic series when hostPoints provided', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ],
-        hostPoints: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1500, rx_bytes: 900, tx_bytes: 600 }
-        ]
-      },
-      ...mountOptions
-    })
-    const hostSeries = wrapper.vm.series.find(s => s.name === '主机流量')
-    expect(hostSeries).toBeDefined()
-    expect(hostSeries.data).toEqual([1500])
-  })
-
   it('formats x-axis labels for day granularity', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {
