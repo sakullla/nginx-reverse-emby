@@ -321,7 +321,7 @@ function confirmDelete() {
 
 <style scoped>
 .agents-page {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   animation: fadeInUp var(--duration-normal) var(--ease-default) both;
 }
@@ -342,6 +342,7 @@ function confirmDelete() {
   align-items: center;
   gap: 0.75rem;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .agents-page__title {
@@ -431,5 +432,24 @@ function confirmDelete() {
 .input-base:focus {
   border-color: var(--color-primary);
   box-shadow: var(--shadow-focus);
+}
+
+@media (max-width: 640px) {
+  .agents-page__header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .agents-page__header-right {
+    width: 100%;
+  }
+  .agents-page__title {
+    font-size: 1.25rem;
+  }
+  .agents-page__subtitle {
+    font-size: 0.75rem;
+  }
+  .agent-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
