@@ -1,9 +1,9 @@
 import { defineComponent, provide, inject, ref } from 'vue'
 
 export const themes = [
-  { id: 'sakura',   emoji: '🌸', label: '二次元' },
-  { id: 'business', emoji: '☀️', label: '晴空'    },
-  { id: 'midnight', emoji: '🌙', label: '暗夜'   }
+  { id: 'sakura-day',   emoji: '🌸', label: '昼樱' },
+  { id: 'sakura-night', emoji: '🌙', label: '夜樱' },
+  { id: 'business',     emoji: '☀️', label: '晴空' },
 ]
 
 const VALID_THEME_IDS = themes.map(t => t.id)
@@ -13,10 +13,15 @@ export const ThemeProvider = defineComponent({
   name: 'ThemeProvider',
   setup(props, { slots }) {
     const savedTheme = localStorage.getItem('theme')
-    const initialTheme = (savedTheme && VALID_THEME_IDS.includes(savedTheme))
-      ? savedTheme
-      : (savedTheme === 'cyberpunk' ? 'sakura' : null) ||
-        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'midnight' : 'sakura')
+    // Migrate old theme IDs
+    const migrated = savedTheme === 'sakura' ? 'sakura-day'
+      : savedTheme === 'midnight' ? 'sakura-night'
+      : savedTheme === 'cyberpunk' ? 'sakura-day'
+      : savedTheme
+
+    const initialTheme = (migrated && VALID_THEME_IDS.includes(migrated))
+      ? migrated
+      : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'sakura-night' : 'sakura-day')
 
     const currentThemeId = ref(initialTheme)
 
