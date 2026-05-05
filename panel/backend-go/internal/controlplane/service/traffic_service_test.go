@@ -932,7 +932,7 @@ func TestTrafficServiceOverviewAggregatesHostTrend(t *testing.T) {
 	}
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, fakeStore)
 
-	overview, err := svc.Overview(context.Background(), "", nil)
+	overview, err := svc.Overview(context.Background(), "", "day", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -966,7 +966,7 @@ func TestTrafficServiceOverviewIncludesCycleWindow(t *testing.T) {
 	})
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
 
-	overview, err := svc.Overview(context.Background(), "edge-1", nil)
+	overview, err := svc.Overview(context.Background(), "edge-1", "day", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

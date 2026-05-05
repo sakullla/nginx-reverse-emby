@@ -1,13 +1,16 @@
 <template>
   <div class="traffic-trend-chart">
     <apexchart
-      :key="props.granularity"
+      v-if="hasData"
       type="area"
       :options="chartOptions"
       :series="series"
       height="100%"
       width="100%"
     />
+    <div v-else class="traffic-trend-chart__empty">
+      <span class="traffic-trend-chart__empty-text">暂无数据</span>
+    </div>
   </div>
 </template>
 
@@ -22,6 +25,11 @@ const props = defineProps({
   granularity: { type: String, default: 'day' },
   quotaBytes: { type: Number, default: null },
   budgetBytes: { type: Number, default: null }
+})
+
+const hasData = computed(() => {
+  return (Array.isArray(props.points) && props.points.length > 0) ||
+    (Array.isArray(props.hostPoints) && props.hostPoints.length > 0)
 })
 
 function formatLabel(bucketStart) {
@@ -202,5 +210,16 @@ const chartOptions = computed(() => ({
   width: 100%;
   height: 100%;
   min-height: 260px;
+}
+.traffic-trend-chart__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 260px;
+}
+.traffic-trend-chart__empty-text {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
 }
 </style>

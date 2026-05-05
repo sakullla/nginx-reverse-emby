@@ -14,7 +14,7 @@ let lastQueryClient = null
 
 vi.mock('../../api', () => ({
   fetchSystemInfo: vi.fn(async () => ({ traffic_stats_enabled: trafficStatsEnabled })),
-  fetchTrafficOverview: vi.fn(async (agentId) => {
+  fetchTrafficOverview: vi.fn(async (agentId, granularity) => {
     const agents = overviewAgentsByRequest?.[agentId || 'all'] ?? overviewAgents
     return {
       trend: [],
@@ -180,8 +180,8 @@ describe('DashboardTrafficModule', () => {
         direction: 'both'
       }
     ]
-    await wrapper.vm.$.appContext.config.globalProperties.$queryClient?.invalidateQueries?.({ queryKey: ['traffic-overview', 'all'] })
-    await lastQueryClient.invalidateQueries({ queryKey: ['traffic-overview', 'all'] })
+    await wrapper.vm.$.appContext.config.globalProperties.$queryClient?.invalidateQueries?.({ queryKey: ['traffic-overview', 'all', 'hour'] })
+    await lastQueryClient.invalidateQueries({ queryKey: ['traffic-overview', 'all', 'hour'] })
     await wrapper.vm.$nextTick()
     await vi.dynamicImportSettled()
 
@@ -217,7 +217,7 @@ describe('DashboardTrafficModule', () => {
     const select = wrapper.find('.dashboard-traffic__select')
 
     await select.setValue('edge-1')
-    await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1'))
+    await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1', 'hour'))
     await nextTick()
 
     const labels = wrapper.findAll('.dashboard-traffic__select option').map(option => option.text())

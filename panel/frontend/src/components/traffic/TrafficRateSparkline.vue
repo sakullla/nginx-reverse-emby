@@ -21,27 +21,20 @@ const props = defineProps({
   points: { type: Array, default: () => [] }
 })
 
-const rates = computed(() => {
+const sparkData = computed(() => {
   const pts = props.points || []
-  if (pts.length < 2) return []
-  const result = []
-  for (let i = 1; i < pts.length; i++) {
-    const prev = Number(pts[i - 1]?.accounted_bytes) || 0
-    const curr = Number(pts[i]?.accounted_bytes) || 0
-    result.push(Math.max(0, curr - prev))
-  }
-  return result
+  return pts.map(p => Number(p?.accounted_bytes) || 0)
 })
 
 const currentRate = computed(() => {
-  const r = rates.value
-  if (!r.length) return '—'
-  return formatBytes(r[r.length - 1]) + '/周期'
+  const data = sparkData.value
+  if (!data.length) return '—'
+  return formatBytes(data[data.length - 1])
 })
 
 const series = computed(() => [{
-  name: '速率',
-  data: rates.value
+  name: '用量',
+  data: sparkData.value
 }])
 
 const chartOptions = computed(() => ({

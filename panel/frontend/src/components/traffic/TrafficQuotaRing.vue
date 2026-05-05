@@ -63,7 +63,10 @@ const chartOptions = computed(() => ({
             formatter: () => `${percent.value ?? 0}%`
           },
           total: {
-            show: false
+            show: true,
+            showAlways: true,
+            label: '额度',
+            formatter: () => (props.quotaBytes == null ? '—' : `${percent.value ?? 0}%`)
           }
         }
       }

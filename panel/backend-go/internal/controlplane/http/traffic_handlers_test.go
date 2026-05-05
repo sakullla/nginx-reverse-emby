@@ -98,7 +98,7 @@ func (f fakeTrafficService) Cleanup(_ context.Context, agentID string) (service.
 	return f.cleanup, nil
 }
 
-func (f fakeTrafficService) Overview(_ context.Context, _ string, _ map[string]string) (service.TrafficOverviewResult, error) {
+func (f fakeTrafficService) Overview(_ context.Context, _ string, _ string, _ map[string]string) (service.TrafficOverviewResult, error) {
 	if f.err != nil {
 		return service.TrafficOverviewResult{}, f.err
 	}

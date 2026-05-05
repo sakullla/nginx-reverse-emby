@@ -164,6 +164,10 @@ func (d Dependencies) handleTrafficOverview(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	agentFilter := r.URL.Query().Get("agent_id")
+	granularity := r.URL.Query().Get("granularity")
+	if granularity == "" {
+		granularity = "day"
+	}
 	agents, err := d.AgentService.List(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to list agents"))
@@ -173,7 +177,7 @@ func (d Dependencies) handleTrafficOverview(w http.ResponseWriter, r *http.Reque
 	for _, a := range agents {
 		agentNames[a.ID] = a.Name
 	}
-	result, err := d.TrafficService.Overview(r.Context(), agentFilter, agentNames)
+	result, err := d.TrafficService.Overview(r.Context(), agentFilter, granularity, agentNames)
 	if err != nil {
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)

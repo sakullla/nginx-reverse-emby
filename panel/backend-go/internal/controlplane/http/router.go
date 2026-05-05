@@ -34,7 +34,7 @@ type TrafficService interface {
 	Trend(context.Context, service.TrafficTrendQuery) ([]service.TrafficTrendPoint, error)
 	Calibrate(context.Context, string, service.TrafficCalibrationRequest) (service.TrafficSummary, error)
 	Cleanup(context.Context, string) (service.TrafficCleanupResult, error)
-	Overview(ctx context.Context, agentFilter string, agentNames map[string]string) (service.TrafficOverviewResult, error)
+	Overview(ctx context.Context, agentFilter string, granularity string, agentNames map[string]string) (service.TrafficOverviewResult, error)
 }
 
 type RuleService interface {
@@ -163,7 +163,7 @@ func (unavailableTrafficService) Cleanup(context.Context, string) (service.Traff
 	return service.TrafficCleanupResult{}, trafficStatsDisabledError()
 }
 
-func (unavailableTrafficService) Overview(context.Context, string, map[string]string) (service.TrafficOverviewResult, error) {
+func (unavailableTrafficService) Overview(context.Context, string, string, map[string]string) (service.TrafficOverviewResult, error) {
 	return service.TrafficOverviewResult{}, trafficStatsDisabledError()
 }
 

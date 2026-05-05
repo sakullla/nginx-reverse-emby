@@ -837,17 +837,32 @@ export async function cleanupTraffic(agentId) {
   return data.result
 }
 
-export async function fetchTrafficOverview(agentId) {
+export async function fetchTrafficOverview(agentId, granularity) {
   if (isDev) {
     await sleep()
+    const trend = Array.from({ length: 24 }, (_, i) => {
+      const hour = String(i).padStart(2, '0')
+      return {
+        bucket_start: `2026-05-05T${hour}:00:00Z`,
+        rx_bytes: Math.round(Math.random() * 80000000 + 20000000),
+        tx_bytes: Math.round(Math.random() * 60000000 + 10000000),
+        accounted_bytes: Math.round(Math.random() * 100000000 + 50000000)
+      }
+    })
     return {
       ok: true,
-      agents: [],
-      trend: []
+      agents: [
+        { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+        { agent_id: 'mock-2', name: '节点-B', used_bytes: 536870912, quota_bytes: 1073741824, remaining_bytes: 536870912, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+        { agent_id: 'mock-3', name: '节点-C', used_bytes: 3221225472, quota_bytes: 3221225472, remaining_bytes: 0, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: true }
+      ],
+      trend,
+      host_trend: trend.map(p => ({ ...p, accounted_bytes: Math.round(p.accounted_bytes * 1.2) }))
     }
   }
   const params = new URLSearchParams()
   if (agentId) params.set('agent_id', agentId)
+  if (granularity) params.set('granularity', granularity)
   const suffix = params.toString() ? `?${params.toString()}` : ''
   const { data } = await api.get(`/traffic-overview${suffix}`)
   return data

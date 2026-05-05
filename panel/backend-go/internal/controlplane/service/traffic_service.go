@@ -620,7 +620,7 @@ func (s *trafficService) CleanupAll(ctx context.Context) (TrafficCleanupAllResul
 	return out, nil
 }
 
-func (s *trafficService) Overview(ctx context.Context, agentFilter string, agentNames map[string]string) (TrafficOverviewResult, error) {
+func (s *trafficService) Overview(ctx context.Context, agentFilter string, granularity string, agentNames map[string]string) (TrafficOverviewResult, error) {
 	if err := s.requireEnabled(); err != nil {
 		return TrafficOverviewResult{}, err
 	}
@@ -631,6 +631,9 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, agent
 	agentIDs, err := agentIDStore.ListTrafficAgentIDs(ctx)
 	if err != nil {
 		return TrafficOverviewResult{}, err
+	}
+	if granularity == "" {
+		granularity = "day"
 	}
 	overviewAgents := make([]TrafficOverviewAgent, 0, len(agentIDs))
 	for _, id := range agentIDs {
@@ -661,21 +664,21 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, agent
 	if agentFilter != "" {
 		trend, _ = s.Trend(ctx, TrafficTrendQuery{
 			AgentID:     agentFilter,
-			ScopeType:   s.defaultTotalScopeType(ctx, agentFilter, "day", time.Time{}, time.Time{}),
-			Granularity: "day",
+			ScopeType:   s.defaultTotalScopeType(ctx, agentFilter, granularity, time.Time{}, time.Time{}),
+			Granularity: granularity,
 		})
 	} else {
-		trend = s.aggregateOverviewTrend(ctx, agentIDs, "")
+		trend = s.aggregateOverviewTrend(ctx, agentIDs, "", granularity)
 	}
 	var hostTrend []TrafficTrendPoint
 	if agentFilter != "" {
 		hostTrend, _ = s.Trend(ctx, TrafficTrendQuery{
 			AgentID:     agentFilter,
 			ScopeType:   "host_total",
-			Granularity: "day",
+			Granularity: granularity,
 		})
 	} else {
-		hostTrend = s.aggregateOverviewTrend(ctx, agentIDs, "host_total")
+		hostTrend = s.aggregateOverviewTrend(ctx, agentIDs, "host_total", granularity)
 	}
 	return TrafficOverviewResult{
 		Agents:    overviewAgents,
@@ -684,18 +687,21 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, agent
 	}, nil
 }
 
-func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []string, scopeType string) []TrafficTrendPoint {
+func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []string, scopeType string, granularity string) []TrafficTrendPoint {
+	if granularity == "" {
+		granularity = "day"
+	}
 	type bucketKey struct{ bucketStart string }
 	merged := make(map[bucketKey]*TrafficTrendPoint)
 	for _, id := range agentIDs {
 		totalScopeType := scopeType
 		if totalScopeType == "" {
-			totalScopeType = s.defaultTotalScopeType(ctx, id, "day", time.Time{}, time.Time{})
+			totalScopeType = s.defaultTotalScopeType(ctx, id, granularity, time.Time{}, time.Time{})
 		}
 		points, err := s.Trend(ctx, TrafficTrendQuery{
 			AgentID:     id,
 			ScopeType:   totalScopeType,
-			Granularity: "day",
+			Granularity: granularity,
 		})
 		if err != nil {
 			continue

@@ -22,7 +22,7 @@
           <TrafficTrendChart
             :points="trendPoints"
             :host-points="hostTrendPoints"
-            granularity="day"
+            granularity="hour"
             :quota-bytes="selectedSummary?.quota_bytes ?? null"
           />
         </div>
@@ -109,8 +109,8 @@ const visible = trafficStatsEnabled
 
 const selectedAgentId = ref('')
 
-const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled)
-const allAgentsQuery = useTrafficOverview('', trafficStatsEnabled)
+const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled, 'hour')
+const allAgentsQuery = useTrafficOverview('', trafficStatsEnabled, 'hour')
 
 const MOCK_AGENTS = [
   { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
