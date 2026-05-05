@@ -330,19 +330,74 @@ async function confirmDelete() {
 </script>
 
 <style scoped>
-.rules-page { max-width: 1200px; margin: 0 auto; }
-.rules-page__header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; gap: 1rem; flex-wrap: wrap; }
+.rules-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  animation: fadeInUp var(--duration-normal) var(--ease-default) both;
+}
+
+.rules-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
 .rules-page__header-left { flex: 1; min-width: 0; }
-.rules-page__header-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
-.rules-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
-.rules-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
-.rules-page__prompt, .rules-page__empty, .rules-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
-.rules-page__prompt-hint { font-size: 0.875rem; color: var(--color-text-tertiary); }
+
+.rules-page__header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.rules-page__title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0 0 0.25rem;
+  color: var(--color-text-primary);
+  letter-spacing: -0.02em;
+}
+
+.rules-page__subtitle {
+  font-size: 0.875rem;
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+
+.rules-page__prompt,
+.rules-page__empty,
+.rules-page__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 4rem 2rem;
+  color: var(--color-text-muted);
+  text-align: center;
+  animation: fadeIn 0.3s var(--ease-default) both;
+}
+
+.rules-page__prompt-hint {
+  font-size: 0.875rem;
+  color: var(--color-text-tertiary);
+}
 
 @media (max-width: 640px) {
   .rules-page__header { gap: 0.5rem; }
 }
 
-/* Card grid */
-.rule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+.rule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1rem;
+}
+
+@media (min-width: 1280px) {
+  .rule-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+}
 </style>
