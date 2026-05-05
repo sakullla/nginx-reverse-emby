@@ -1,0 +1,156 @@
+/* =============================================
+   Animation system — keyframes + utilities
+   ============================================= */
+
+/* ----- Page transitions ----- */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInDown {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* ----- Component animations ----- */
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes popIn {
+  0% { opacity: 0; transform: scale(0.9); }
+  70% { transform: scale(1.02); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes buttonPress {
+  0% { transform: scale(1); }
+  50% { transform: scale(0.97); }
+  100% { transform: scale(1); }
+}
+
+/* ----- Status indicators ----- */
+@keyframes breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.15); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes shimmerBar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* ----- Skeleton ----- */
+@keyframes skeletonPulse {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* ----- Success/Error ----- */
+@keyframes checkDraw {
+  0% { stroke-dashoffset: 24; }
+  100% { stroke-dashoffset: 0; }
+}
+
+@keyframes errorShake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(3px); }
+}
+
+@keyframes successFlash {
+  0% { background-color: transparent; }
+  30% { background-color: rgba(22, 163, 74, 0.08); }
+  100% { background-color: transparent; }
+}
+
+/* ----- Utility classes ----- */
+.animate-fade-in { animation: fadeIn var(--duration-normal) var(--ease-default) both; }
+.animate-fade-in-up { animation: fadeInUp var(--duration-normal) var(--ease-default) both; }
+.animate-fade-in-down { animation: fadeInDown var(--duration-normal) var(--ease-default) both; }
+.animate-slide-in-right { animation: slideInRight var(--duration-normal) var(--ease-default) both; }
+.animate-scale-in { animation: scaleIn var(--duration-normal) var(--ease-bounce) both; }
+.animate-pop-in { animation: popIn 0.35s var(--ease-bounce) both; }
+.animate-breathe { animation: breathe 2s ease-in-out infinite; }
+.animate-pulse { animation: pulse 2s ease-in-out infinite; }
+
+/* Stagger delays for card entrance */
+.stagger-1 { animation-delay: 0ms; }
+.stagger-2 { animation-delay: 50ms; }
+.stagger-3 { animation-delay: 100ms; }
+.stagger-4 { animation-delay: 150ms; }
+.stagger-5 { animation-delay: 200ms; }
+.stagger-6 { animation-delay: 250ms; }
+.stagger-7 { animation-delay: 300ms; }
+.stagger-8 { animation-delay: 350ms; }
+
+/* Skeleton */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-bg-subtle) 25%,
+    var(--color-bg-hover) 37%,
+    var(--color-bg-subtle) 63%
+  );
+  background-size: 200% 100%;
+  animation: skeletonPulse 1.5s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+/* Button press on active */
+.btn:active {
+  animation: buttonPress 0.15s var(--ease-default);
+}
+
+/* Focus glow for inputs */
+.focus-glow:focus {
+  box-shadow: var(--shadow-focus);
+  transition: box-shadow var(--duration-fast) var(--ease-default);
+}
+
+/* Shimmer loading overlay */
+.shimmer-overlay {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  animation: shimmerBar 1.5s infinite;
+}
+
+/* Card entrance animation */
+.card-enter {
+  animation: fadeInUp var(--duration-normal) var(--ease-default) both;
+}

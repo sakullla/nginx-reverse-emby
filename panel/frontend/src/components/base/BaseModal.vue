@@ -100,6 +100,8 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* Modal structural styles now provided by utilities.css */
+
 .modal-enter-active,
 .modal-leave-active {
   transition: opacity var(--duration-normal) var(--ease-default);
@@ -122,70 +124,6 @@ onUnmounted(() => {
   opacity: 0;
 }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(37, 23, 54, 0.4);
-  backdrop-filter: blur(8px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: var(--z-modal-backdrop);
-  padding: var(--space-4);
-}
-
-.modal {
-  background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-3xl);
-  box-shadow: var(--shadow-2xl);
-  width: 100%;
-  max-width: min(520px, 92vw);
-  max-height: calc(100vh - var(--space-8));
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  backdrop-filter: blur(20px);
-}
-
-.modal--lg {
-  max-width: min(640px, 90vw);
-}
-
-.modal--xl {
-  max-width: min(800px, 92vw);
-}
-
-/* 2K / 1440p */
-@media (min-width: 2560px) {
-  .modal--lg {
-    max-width: min(720px, 80vw);
-  }
-  .modal--xl {
-    max-width: min(960px, 80vw);
-  }
-}
-
-/* 4K */
-@media (min-width: 3840px) {
-  .modal--lg {
-    max-width: min(800px, 70vw);
-  }
-  .modal--xl {
-    max-width: min(1200px, 70vw);
-  }
-}
-
-.modal__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-4) var(--space-6);
-  border-bottom: 1px solid var(--color-border-subtle);
-  flex-shrink: 0;
-}
-
 .modal__title {
   font-size: var(--text-lg);
   font-weight: var(--font-semibold);
@@ -199,42 +137,10 @@ onUnmounted(() => {
   margin: var(--space-1) 0 0;
 }
 
-.modal__close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-full);
-  color: var(--color-text-tertiary);
-  transition: all var(--duration-normal) var(--ease-bounce);
-  flex-shrink: 0;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-}
-
 .modal__close:hover {
   background: var(--color-danger-50);
   color: var(--color-danger);
   transform: rotate(90deg);
-}
-
-.modal__body {
-  padding: var(--space-6);
-  overflow-y: auto;
-  flex: 1;
-}
-
-.modal__footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-3);
-  padding: var(--space-4) var(--space-6);
-  border-top: 1px solid var(--color-border-subtle);
-  background: var(--gradient-soft);
-  flex-shrink: 0;
 }
 
 .btn {
@@ -284,7 +190,6 @@ onUnmounted(() => {
   }
 }
 
-/* iPhone SE 等小屏幕全屏 */
 @media (max-width: 375px) and (max-height: 812px) {
   .modal-backdrop {
     padding: 0;
