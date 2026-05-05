@@ -276,14 +276,20 @@ const topRules = computed(() => topRulesQuery.data.value ?? [])
 
 function navigateToAgent(agent) {
   if (agent?.agent_id) {
-    router.push(`/agents/${agent.agent_id}`)
+    router.push({
+      name: 'agent-detail',
+      params: { id: agent.agent_id }
+    })
   }
 }
 
 function navigateToAgentByRule(rule) {
   const agentId = rule?.agent_id
   if (agentId) {
-    router.push(`/agents/${agentId}`)
+    router.push({
+      name: 'agent-detail',
+      params: { id: agentId }
+    })
   }
 }
 
