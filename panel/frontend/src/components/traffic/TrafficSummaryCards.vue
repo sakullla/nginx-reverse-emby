@@ -68,7 +68,7 @@ const dailyBudgetText = computed(() => {
 <style scoped>
 .traffic-summary-cards {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 0.75rem;
   margin-bottom: 1rem;
 }

@@ -165,6 +165,13 @@ func (d Dependencies) handleTrafficOverview(w http.ResponseWriter, r *http.Reque
 	}
 	agentFilter := r.URL.Query().Get("agent_id")
 	granularity := r.URL.Query().Get("granularity")
+	switch granularity {
+	case "", "hour", "day", "month":
+	default:
+		status, payload := mapServiceError(fmt.Errorf("%w: unsupported traffic granularity %q", service.ErrInvalidArgument, granularity))
+		writeJSON(w, status, payload)
+		return
+	}
 	if granularity == "" {
 		granularity = "day"
 	}
