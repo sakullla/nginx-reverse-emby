@@ -151,7 +151,7 @@ onUnmounted(() => {
 
 .theme-option:hover {
   background: var(--color-bg-hover);
-  border-color: rgba(192, 132, 252, 0.15);
+  border-color: var(--color-primary-50);
   transform: translateX(4px);
 }
 

@@ -96,7 +96,9 @@ async function submit() {
 .input-base { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; }
 .input-base:focus { border-color: var(--color-primary); }
 .rule-detail__actions { display: flex; justify-content: flex-end; gap: 0.75rem; padding-top: 0.5rem; }
-.btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
-.btn-primary { background: var(--gradient-primary); color: white; }
-.btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
+.btn { padding: 10px 24px; border-radius: var(--radius-full); font-size: var(--text-sm); font-weight: var(--font-semibold); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); border: 1.5px solid transparent; font-family: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; }
+.btn-primary { background: var(--color-primary); color: white; }
+.btn-primary:hover { background: var(--color-primary-hover); }
+.btn-secondary { background: transparent; color: var(--color-text-secondary); border: 1.5px solid var(--color-border-default); }
+.btn-secondary:hover { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-subtle); }
 </style>

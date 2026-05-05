@@ -29,53 +29,53 @@ defineProps({
 <style scoped>
 .empty-state-container {
   text-align: center;
-  padding: var(--spacing-5xl) var(--spacing-xl);
+  padding: var(--space-16) var(--space-6);
   animation: fadeIn 0.5s ease-out;
 }
 
 .empty-state-icon {
-  font-size: var(--font-size-4xl);
-  margin-bottom: var(--spacing-xl);
+  font-size: 2.25rem;
+  margin-bottom: var(--space-6);
   opacity: 0.5;
   animation: pulse 2s ease-in-out infinite;
 }
 
 .empty-state-title {
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-heading);
-  margin-bottom: var(--spacing-sm);
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  margin-bottom: var(--space-2);
 }
 
 .empty-state-description {
-  font-size: var(--font-size-base);
+  font-size: var(--text-base);
   color: var(--color-text-muted);
-  margin-bottom: var(--spacing-xl);
+  margin-bottom: var(--space-6);
   max-width: 400px;
   margin-left: auto;
   margin-right: auto;
-  line-height: var(--line-height-relaxed);
+  line-height: 1.625;
 }
 
 .empty-state-action {
-  margin-top: var(--spacing-xl);
+  margin-top: var(--space-6);
 }
 
 @media (max-width: 768px) {
   .empty-state-container {
-    padding: var(--spacing-3xl) var(--spacing-md);
+    padding: var(--space-12) var(--space-4);
   }
 
   .empty-state-icon {
-    font-size: var(--font-size-3xl);
+    font-size: var(--text-2xl);
   }
 
   .empty-state-title {
-    font-size: var(--font-size-lg);
+    font-size: var(--text-lg);
   }
 
   .empty-state-description {
-    font-size: var(--font-size-sm);
+    font-size: var(--text-sm);
   }
 }
 </style>

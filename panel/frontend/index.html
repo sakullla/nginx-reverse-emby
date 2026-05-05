@@ -14,10 +14,13 @@
   <script>
   // Prevent theme flash: read theme before first paint
   (function() {
-    var t = localStorage.getItem('theme');
-    if (!t) {
-      t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'midnight' : 'sakura';
-    }
+    var themeMap = { 'sakura': 'sakura-day', 'midnight': 'sakura-night', 'cyberpunk': 'sakura-day' };
+    var saved = localStorage.getItem('theme');
+    var resolved = themeMap[saved] || saved;
+    var valid = ['sakura-day', 'sakura-night', 'business'];
+    var t = valid.includes(resolved)
+      ? resolved
+      : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'sakura-night' : 'sakura-day');
     document.documentElement.setAttribute('data-theme', t);
   })();
   </script>

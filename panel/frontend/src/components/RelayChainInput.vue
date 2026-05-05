@@ -487,7 +487,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   color: white;
   font-size: 9px;
   font-weight: 700;
@@ -553,7 +553,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   color: white;
   font-size: 10px;
   font-weight: 700;
@@ -995,8 +995,8 @@ onUnmounted(() => {
     font-size: 0.875rem;
   }
   .relay-editor__dropdown-menu {
-    left: auto;
-    right: 0;
+    left: 0;
+    right: auto;
     min-width: unset;
     width: min(320px, calc(100vw - 2rem));
     max-height: 240px;

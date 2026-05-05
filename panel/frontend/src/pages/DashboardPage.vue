@@ -133,7 +133,7 @@ function navigateToAgent(agent) {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 1rem;
   margin-bottom: 2rem;
 }
@@ -208,7 +208,7 @@ function navigateToAgent(agent) {
 
 @media (max-width: 640px) {
   .stats-grid {
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 0.75rem;
   }
   .dashboard__title {

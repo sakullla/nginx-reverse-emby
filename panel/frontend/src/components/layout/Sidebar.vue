@@ -124,7 +124,7 @@ function toggleCollapse() {
 
 <style scoped>
 .sidebar {
-  width: 260px;
+  width: var(--sidebar-width);
   display: flex;
   flex-direction: column;
   background: var(--color-bg-surface);
@@ -220,7 +220,7 @@ function toggleCollapse() {
 
 .sidebar__nav-item--active,
 .sidebar__nav-item.active {
-  background: var(--gradient-primary-soft);
+  background: var(--color-primary-subtle);
   color: var(--color-primary);
   font-weight: 600;
 }
@@ -263,7 +263,7 @@ function toggleCollapse() {
 }
 
 .sidebar__nav-icon--active {
-  background: var(--gradient-primary-soft);
+  background: var(--color-primary-subtle);
   color: var(--color-primary);
 }
 </style>

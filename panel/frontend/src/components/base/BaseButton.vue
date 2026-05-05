@@ -41,13 +41,73 @@ const handleClick = (event) => {
 
 <style scoped>
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 10px 24px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  border: 1.5px solid transparent;
+  font-family: inherit;
+  text-decoration: none;
+  white-space: nowrap;
   position: relative;
   overflow: hidden;
+  line-height: 1.25;
+  background: var(--color-primary);
+  color: white;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border: 1.5px solid var(--color-border-default);
+}
+
+button.secondary:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+button.danger {
+  background: var(--color-danger);
+}
+
+button.danger:hover:not(:disabled) {
+  background: #dc2626;
+}
+
+button.success {
+  background: var(--color-success);
+}
+
+button.success:hover:not(:disabled) {
+  background: #059669;
+}
+
+button:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  transform: translateY(-1px);
+}
+
+button:hover:not(:disabled):active {
+  transform: translateY(0);
 }
 
 button.is-loading {
   color: transparent !important;
   pointer-events: none;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .spinner-mini {
@@ -65,7 +125,7 @@ button.is-loading {
 
 button.secondary .spinner-mini {
   border-top-color: var(--color-primary);
-  border-color: rgba(var(--color-primary-rgb, 37, 99, 235), 0.1);
+  border-color: rgba(0, 0, 0, 0.08);
 }
 
 @keyframes button-spin {

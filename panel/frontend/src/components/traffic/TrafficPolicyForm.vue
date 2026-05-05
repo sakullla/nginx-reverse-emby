@@ -165,7 +165,7 @@ function updateField(field, value) {
 .traffic-policy-form__unit { font-family: var(--font-mono); }
 .traffic-policy-form__footer { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
-.btn-primary { background: var(--gradient-primary); color: white; }
+.btn-primary { background: var(--color-primary); color: white; }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 @media (max-width: 720px) { .traffic-policy-form__cards { grid-template-columns: 1fr; } }
 </style>

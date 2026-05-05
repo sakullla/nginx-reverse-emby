@@ -173,12 +173,13 @@ async function handleLogin() {
 }
 
 .btn--primary {
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   color: white;
+  border-radius: var(--radius-full);
 }
 
 .btn--primary:hover:not(:disabled) {
-  opacity: 0.9;
+  background: var(--color-primary-hover);
   transform: translateY(-1px);
 }
 

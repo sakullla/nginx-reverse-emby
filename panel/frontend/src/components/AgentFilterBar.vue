@@ -236,12 +236,32 @@ function toggleSortOrder() {
   border-color: var(--color-danger);
 }
 @media (max-width: 640px) {
+  .agent-filter-bar {
+    gap: 0.5rem;
+  }
   .agent-filter-bar__left {
     width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+  }
+  .view-toggle,
+  .sort-control {
+    grid-column: span 1;
   }
   .filter-select {
-    flex: 1;
     min-width: 0;
+    width: 100%;
+    font-size: 0.75rem;
+  }
+  .sort-order-btn {
+    width: 100%;
+    height: auto;
+    padding: 0.375rem;
+  }
+  .clear-filters-btn {
+    font-size: 0.75rem;
+    padding: 0.375rem 0.5rem;
   }
 }
 </style>
