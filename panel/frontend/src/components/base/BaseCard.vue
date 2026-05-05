@@ -36,12 +36,13 @@ defineProps({
 
 <style scoped>
 .card {
-  background: var(--gradient-surface, var(--color-bg-surface));
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  padding: var(--space-6);
-  box-shadow: var(--shadow-sm);
-  transition: all var(--duration-normal) var(--ease-default);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-xs);
+  transition: box-shadow var(--duration-normal) var(--ease-default),
+              transform var(--duration-normal) var(--ease-default);
   position: relative;
 }
 
@@ -52,10 +53,8 @@ defineProps({
 }
 
 .card-glass {
-  background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
-  border-color: var(--glass-border);
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-default);
 }
 
 .card-header {
@@ -68,8 +67,8 @@ defineProps({
 }
 
 .card-title {
-  font-size: var(--text-lg);
-  font-weight: 600;
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
   color: var(--color-text-primary);
   margin: 0;
   letter-spacing: -0.01em;
