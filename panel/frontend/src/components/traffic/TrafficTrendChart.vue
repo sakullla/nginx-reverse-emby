@@ -182,7 +182,12 @@ const chartOptions = computed(() => ({
   xaxis: {
     categories: labels.value,
     tooltip: { enabled: false },
-    labels: { style: { fontSize: '11px' } },
+    labels: {
+      style: { fontSize: '11px' },
+      rotate: labels.value.length > 12 ? -45 : 0,
+      rotateAlways: labels.value.length > 12,
+      hideOverlappingLabels: true
+    },
     axisBorder: { show: false },
     axisTicks: { show: false }
   },

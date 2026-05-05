@@ -1,7 +1,7 @@
 <template>
   <div class="traffic-rate-sparkline">
     <div class="traffic-rate-sparkline__header">
-      <span class="traffic-rate-sparkline__label">实时速率</span>
+      <span class="traffic-rate-sparkline__label">{{ labelText }}</span>
       <span class="traffic-rate-sparkline__value">{{ currentRate }}</span>
     </div>
     <apexchart
@@ -18,7 +18,17 @@ import { computed } from 'vue'
 import { formatBytes } from '../../utils/trafficStats.js'
 
 const props = defineProps({
-  points: { type: Array, default: () => [] }
+  points: { type: Array, default: () => [] },
+  granularity: { type: String, default: 'day' }
+})
+
+const labelText = computed(() => {
+  switch (props.granularity) {
+    case 'hour': return '当前小时'
+    case 'day': return '今日用量'
+    case 'month': return '当月用量'
+    default: return '当前用量'
+  }
 })
 
 const sparkData = computed(() => {

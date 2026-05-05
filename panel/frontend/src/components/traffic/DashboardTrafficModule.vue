@@ -38,7 +38,7 @@
 
         <!-- 实时速率 -->
         <div class="bento-card bento-card--rate">
-          <TrafficRateSparkline :points="trendPoints" />
+          <TrafficRateSparkline :points="trendPoints" granularity="hour" />
         </div>
 
         <!-- 阻断节点 -->
