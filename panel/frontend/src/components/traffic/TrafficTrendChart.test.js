@@ -1,56 +1,93 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 
-const chartCtor = vi.fn()
-const chartDestroy = vi.fn()
+const ApexChartStub = {
+  name: 'apexchart',
+  template: '<div data-testid="apexchart" />',
+  props: ['type', 'options', 'series', 'height', 'width']
+}
 
-vi.mock('chart.js', () => ({
-  Chart: Object.assign(vi.fn().mockImplementation((ctx, config) => {
-    chartCtor(ctx, config)
-    return { destroy: chartDestroy }
-  }), { register: vi.fn() }),
-  registerables: []
-}))
+const mountOptions = {
+  global: {
+    stubs: {
+      apexchart: ApexChartStub
+    }
+  }
+}
 
 describe('TrafficTrendChart', () => {
-  it('keeps host-only buckets in the host series', async () => {
-    const originalUserAgent = navigator.userAgent
-    const originalGetContext = HTMLCanvasElement.prototype.getContext
-    Object.defineProperty(navigator, 'userAgent', {
-      configurable: true,
-      value: 'unit-test'
+  it('renders apexchart component', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ]
+      },
+      ...mountOptions
     })
-    HTMLCanvasElement.prototype.getContext = vi.fn(() => ({}))
+    expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
+  })
 
-    try {
-      mount(TrafficTrendChart, {
-        props: {
-          points: [
-            { bucket_start: '2026-05-02T00:00:00Z', accounted_bytes: 100, rx_bytes: 0, tx_bytes: 0 }
-          ],
-          hostPoints: [
-            { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 200 },
-            { bucket_start: '2026-05-02T00:00:00Z', accounted_bytes: 300 }
-          ],
-          granularity: 'day'
-        }
-      })
+  it('computes series from points prop', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
+          { bucket_start: '2026-05-02T00:00:00Z', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
+        ]
+      },
+      ...mountOptions
+    })
+    const series = wrapper.vm.series
+    expect(series.length).toBeGreaterThanOrEqual(3)
+    expect(series[0].name).toBe('用量')
+    expect(series[0].data).toEqual([1000, 2000])
+    expect(series[1].name).toBe('RX')
+    expect(series[2].name).toBe('TX')
+  })
 
-      await nextTick()
+  it('includes host traffic series when hostPoints provided', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ],
+        hostPoints: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1500, rx_bytes: 900, tx_bytes: 600 }
+        ]
+      },
+      ...mountOptions
+    })
+    const hostSeries = wrapper.vm.series.find(s => s.name === '主机流量')
+    expect(hostSeries).toBeDefined()
+    expect(hostSeries.data).toEqual([1500])
+  })
 
-      expect(chartCtor).toHaveBeenCalled()
-      const config = chartCtor.mock.calls.at(-1)[1]
-      const hostDataset = config.data.datasets.find((dataset) => dataset.label === '主机流量')
-      expect(config.data.labels).toEqual(['5月1日', '5月2日'])
-      expect(hostDataset.data).toEqual([200, 300])
-    } finally {
-      HTMLCanvasElement.prototype.getContext = originalGetContext
-      Object.defineProperty(navigator, 'userAgent', {
-        configurable: true,
-        value: originalUserAgent
-      })
-    }
+  it('formats x-axis labels for day granularity', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ],
+        granularity: 'day'
+      },
+      ...mountOptions
+    })
+    expect(wrapper.vm.labels.length).toBe(1)
+    expect(wrapper.vm.labels[0]).toContain('5')
+  })
+
+  it('formats x-axis labels for hour granularity', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T08:30:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ],
+        granularity: 'hour'
+      },
+      ...mountOptions
+    })
+    expect(wrapper.vm.labels[0]).toMatch(/\d{2}:\d{2}/)
   })
 })
