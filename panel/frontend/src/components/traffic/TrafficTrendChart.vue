@@ -1,6 +1,7 @@
 <template>
   <div class="traffic-trend-chart">
     <apexchart
+      :key="props.granularity"
       type="area"
       :options="chartOptions"
       :series="series"
