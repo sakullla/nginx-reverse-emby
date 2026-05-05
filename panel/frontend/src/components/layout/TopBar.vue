@@ -202,15 +202,13 @@ function handleLogout() {
 
 <style scoped>
 .topbar {
-  height: 64px;
+  height: var(--header-height);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 1.25rem;
-  background: var(--glass-bg, var(--color-bg-surface));
+  padding: 0 var(--space-5);
+  background: var(--color-bg-surface);
   border-bottom: 1px solid var(--color-border-subtle);
-  backdrop-filter: blur(var(--glass-blur, 16px));
-  -webkit-backdrop-filter: blur(var(--glass-blur, 16px));
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
@@ -225,7 +223,7 @@ function handleLogout() {
 .topbar__logo {
   width: 36px;
   height: 36px;
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
@@ -253,7 +251,7 @@ function handleLogout() {
   font-size: 0.6875rem;
   font-weight: 600;
   padding: 2px 8px;
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   color: white;
   border-radius: var(--radius-full);
 }
@@ -394,7 +392,7 @@ function handleLogout() {
 
 .agent-switcher__item:hover { background: var(--color-bg-hover); }
 .agent-switcher__item.active {
-  background: var(--gradient-primary-soft);
+  background: var(--color-primary-subtle);
   color: var(--color-primary);
 }
 
@@ -461,7 +459,7 @@ function handleLogout() {
 }
 
 .agent-switcher__sort-btn.active {
-  background: var(--gradient-primary-soft);
+  background: var(--color-primary-subtle);
   color: var(--color-primary);
   font-weight: 600;
 }
