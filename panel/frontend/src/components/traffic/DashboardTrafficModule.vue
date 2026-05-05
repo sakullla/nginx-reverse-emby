@@ -36,6 +36,7 @@
         <div class="bento-card bento-card--trend">
           <TrafficTrendChart
             :points="trendPoints"
+            :host-points="hostTrendPoints"
             :granularity="granularity"
             :quota-bytes="selectedSummary?.quota_bytes ?? null"
           />
@@ -166,6 +167,7 @@ const trendPoints = computed(() => {
   if (import.meta.env.DEV) return normalizePoints(MOCK_TREND)
   return []
 })
+const hostTrendPoints = computed(() => normalizePoints(overviewQuery.data.value?.host_trend))
 
 const selectedSummary = computed(() => {
   const agents = overviewAgents.value
@@ -256,7 +258,7 @@ const topRulesQuery = useQuery({
             existing.tx_bytes += row.tx_bytes || 0
           } else {
             const label = `${agentName} / ${scopeLabel(row.scope_type, row.scope_id)}`
-            ruleMap.set(key, { key, label, accounted_bytes: row.accounted_bytes || 0, rx_bytes: row.rx_bytes || 0, tx_bytes: row.tx_bytes || 0 })
+            ruleMap.set(key, { key, agent_id: agentId, label, accounted_bytes: row.accounted_bytes || 0, rx_bytes: row.rx_bytes || 0, tx_bytes: row.tx_bytes || 0 })
           }
         }
       }
@@ -281,7 +283,7 @@ function navigateToAgent(agent) {
 }
 
 function navigateToAgentByRule(rule) {
-  const agentId = rule?.key?.split('-')[0]
+  const agentId = rule?.agent_id
   if (agentId) {
     router.push(`/agents/${agentId}`)
   }

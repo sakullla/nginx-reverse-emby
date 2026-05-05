@@ -5,8 +5,16 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import DashboardTrafficModule from './DashboardTrafficModule.vue'
 import { fetchSystemInfo, fetchTrafficOverview, fetchTrafficSummary } from '../../api'
 
+const routerPush = vi.fn()
+
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: routerPush })
+}))
+
 let trafficStatsEnabled = true
 let overviewAgents = []
+let overviewTrend = []
+let overviewHostTrend = []
 let overviewAgentsByRequest = null
 let trafficSummaries = {}
 let lastQueryClient = null
@@ -16,7 +24,8 @@ vi.mock('../../api', () => ({
   fetchTrafficOverview: vi.fn(async (agentId, granularity) => {
     const agents = overviewAgentsByRequest?.[agentId || 'all'] ?? overviewAgents
     return {
-      trend: [],
+      trend: overviewTrend,
+      host_trend: overviewHostTrend,
       agents
     }
   }),
@@ -80,8 +89,11 @@ describe('DashboardTrafficModule', () => {
       }
     ]
     overviewAgentsByRequest = null
+    overviewTrend = []
+    overviewHostTrend = []
     trafficSummaries = {}
     vi.clearAllMocks()
+    routerPush.mockClear()
     vi.useRealTimers()
   })
 
@@ -130,6 +142,44 @@ describe('DashboardTrafficModule', () => {
     expect(topRulesPanel.text()).toContain('1.00 KiB')
     expect(topRulesPanel.text()).toContain('2.00 KiB')
     expect(topRulesPanel.findAll('.top-row')).toHaveLength(2)
+  })
+
+  it('navigates top rules using the complete hyphenated agent id', async () => {
+    trafficSummaries = {
+      'edge-1': {
+        http_rules: [{ scope_type: 'http_rule', scope_id: '1', accounted_bytes: 1024 }],
+        l4_rules: [],
+        relay_listeners: []
+      },
+      'edge-2': {
+        http_rules: [],
+        l4_rules: [],
+        relay_listeners: []
+      }
+    }
+
+    const wrapper = await mountModule()
+    await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge-1'))
+
+    await wrapper.find('.bento-card--top-rules .top-row').trigger('click')
+
+    expect(routerPush).toHaveBeenCalledWith('/agents/edge-1')
+  })
+
+  it('passes host trend buckets to the dashboard trend chart', async () => {
+    overviewTrend = [
+      { bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 10, tx_bytes: 20, accounted_bytes: 30 }
+    ]
+    overviewHostTrend = [
+      { bucket_start: '2026-05-02T00:00:00Z', rx_bytes: 100, tx_bytes: 200, accounted_bytes: 300 }
+    ]
+
+    const wrapper = await mountModule()
+    const chart = wrapper.findComponent({ name: 'TrafficTrendChart' })
+
+    expect(chart.props('hostPoints')).toEqual([
+      { bucket_start: '2026-05-02T00:00:00Z', rx_bytes: 100, tx_bytes: 200, accounted_bytes: 300 }
+    ])
   })
 
   it('shows zero quotas as real quota progress', async () => {
