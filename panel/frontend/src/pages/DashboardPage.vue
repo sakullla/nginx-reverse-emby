@@ -112,7 +112,7 @@ function navigateToAgent(agent) {
   margin: 0 auto;
 }
 .dashboard__header {
-  margin-bottom: 2.5rem;
+  margin-bottom: 2rem;
 }
 .dashboard__title {
   font-size: 1.5rem;
@@ -129,7 +129,7 @@ function navigateToAgent(agent) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 1rem;
-  margin-bottom: 2.5rem;
+  margin-bottom: 2rem;
 }
 .dashboard__loading {
   display: flex;

@@ -39,6 +39,13 @@ defineProps({
   border-radius: var(--radius-xl);
   text-decoration: none;
   color: inherit;
+  transition: transform 200ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
+    box-shadow 200ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
 }
 
 .stat-card--linked {
@@ -94,6 +101,7 @@ defineProps({
   font-weight: 700;
   color: var(--color-text-primary);
   line-height: 1;
+  letter-spacing: -0.02em;
 }
 
 .stat-card__label {
