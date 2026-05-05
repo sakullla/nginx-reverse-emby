@@ -77,13 +77,14 @@ type TrafficTrendQuery struct {
 }
 
 type TrafficTrendPoint struct {
-	AgentID        string `json:"agent_id"`
-	ScopeType      string `json:"scope_type"`
-	ScopeID        string `json:"scope_id"`
-	BucketStart    string `json:"bucket_start"`
-	RXBytes        uint64 `json:"rx_bytes"`
-	TXBytes        uint64 `json:"tx_bytes"`
-	AccountedBytes uint64 `json:"accounted_bytes"`
+	AgentID          string `json:"agent_id"`
+	ScopeType        string `json:"scope_type"`
+	ScopeID          string `json:"scope_id"`
+	BucketStart      string `json:"bucket_start"`
+	BucketLocalStart string `json:"bucket_local_start"`
+	RXBytes          uint64 `json:"rx_bytes"`
+	TXBytes          uint64 `json:"tx_bytes"`
+	AccountedBytes   uint64 `json:"accounted_bytes"`
 }
 
 type TrafficCalibrationRequest struct {

@@ -256,7 +256,8 @@ func TestTrafficServiceIngestHeartbeatDailySummaryUsesConfiguredTimezone(t *test
 		t.Fatal(err)
 	}
 	wantBucketStart := time.Date(2026, 5, 5, 0, 0, 0, 0, shanghai).UTC().Format(time.RFC3339)
-	if len(points) != 1 || points[0].BucketStart != wantBucketStart || points[0].RXBytes != 100 || points[0].TXBytes != 50 {
+	wantBucketLocalStart := time.Date(2026, 5, 5, 0, 0, 0, 0, shanghai).Format(time.RFC3339)
+	if len(points) != 1 || points[0].BucketStart != wantBucketStart || points[0].BucketLocalStart != wantBucketLocalStart || points[0].RXBytes != 100 || points[0].TXBytes != 50 {
 		t.Fatalf("points = %+v, want one configured-timezone bucket at %s", points, wantBucketStart)
 	}
 }
