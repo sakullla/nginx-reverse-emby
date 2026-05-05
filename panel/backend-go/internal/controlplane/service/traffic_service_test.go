@@ -33,6 +33,27 @@ func TestAccountedBytesByDirection(t *testing.T) {
 	}
 }
 
+func TestAccountedDeltaBytesByDirection(t *testing.T) {
+	tests := []struct {
+		direction              string
+		currentRX, currentTX   uint64
+		baselineRX, baselineTX uint64
+		want                   uint64
+	}{
+		{"rx", 120, 500, 100, 200, 20},
+		{"tx", 120, 500, 100, 200, 300},
+		{"both", 120, 500, 100, 200, 320},
+		{"max", 120, 500, 100, 200, 300},
+		{"max", 6000, 5000, 1000, 5000, 1000},
+		{"both", 50, 500, 100, 200, 300},
+	}
+	for _, tc := range tests {
+		if got := accountedDeltaBytes(tc.direction, tc.currentRX, tc.currentTX, tc.baselineRX, tc.baselineTX); got != tc.want {
+			t.Fatalf("%s got %d want %d", tc.direction, got, tc.want)
+		}
+	}
+}
+
 func TestMonthlyCycleWindow(t *testing.T) {
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.Local)
 	start, end := monthlyCycleWindow(now, 15)
@@ -1084,6 +1105,74 @@ func TestTrafficServiceCalibrateUsesConfiguredTimezoneCycle(t *testing.T) {
 	}
 	if _, ok := fakeStore.baselines["edge-1|2026-05-04T16:00:00Z"]; !ok {
 		t.Fatalf("baselines = %+v, want baseline saved under Asia/Shanghai cycle start", fakeStore.baselines)
+	}
+}
+
+func TestTrafficServiceSummaryCountsPostCalibrationDirectionDeltas(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-1",
+		Direction:     "max",
+		CycleStartDay: 1,
+	}
+	fakeStore.baselines["edge-1|2026-05-01T00:00:00Z"] = storage.AgentTrafficBaselineRow{
+		AgentID:           "edge-1",
+		CycleStart:        "2026-05-01T00:00:00Z",
+		RawRXBytes:        1000,
+		RawTXBytes:        5000,
+		RawAccountedBytes: 5000,
+		AdjustUsedBytes:   123,
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     5200,
+		TXBytes:     5000,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.UsedBytes != 323 {
+		t.Fatalf("UsedBytes = %d, want calibrated used 123 + max accounted delta 200", summary.UsedBytes)
+	}
+}
+
+func TestTrafficServiceSummaryPreservesMaxBaselineWhenDominantSideSwitches(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-1",
+		Direction:     "max",
+		CycleStartDay: 1,
+	}
+	fakeStore.baselines["edge-1|2026-05-01T00:00:00Z"] = storage.AgentTrafficBaselineRow{
+		AgentID:           "edge-1",
+		CycleStart:        "2026-05-01T00:00:00Z",
+		RawRXBytes:        1000,
+		RawTXBytes:        5000,
+		RawAccountedBytes: 5000,
+		AdjustUsedBytes:   123,
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     5000,
+		TXBytes:     5000,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.UsedBytes != 123 {
+		t.Fatalf("UsedBytes = %d, want calibrated used without extra max-direction delta", summary.UsedBytes)
 	}
 }
 
