@@ -91,7 +91,7 @@ describe('DashboardTrafficModule', () => {
   it('shows aggregate business traffic without quota bars when no quota is set', async () => {
     const wrapper = await mountModule()
 
-    expect(wrapper.text()).toContain('已用 / 额度')
+    expect(wrapper.text()).toContain('节点分布')
     expect(wrapper.text()).toContain('3.00 KiB')
     expect(wrapper.text()).not.toContain('%')
     expect(wrapper.text()).toContain('Top 节点')

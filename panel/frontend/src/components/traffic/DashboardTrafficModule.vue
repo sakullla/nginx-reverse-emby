@@ -3,6 +3,18 @@
     <div class="dashboard-traffic__header">
       <h2 class="dashboard-traffic__title">流量统计</h2>
       <div class="dashboard-traffic__toolbar">
+        <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
+          <button
+            v-for="option in granularityOptions"
+            :key="option.value"
+            type="button"
+            class="dashboard-traffic__granularity-btn"
+            :class="{ 'dashboard-traffic__granularity-btn--active': granularity === option.value }"
+            @click="granularity = option.value"
+          >
+            {{ option.label }}
+          </button>
+        </div>
         <select v-model="selectedAgentId" class="dashboard-traffic__select">
           <option value="">全部节点</option>
           <option v-for="agent in selectableAgents" :key="agent.agent_id" :value="agent.agent_id">{{ agent.name }}</option>
@@ -22,7 +34,7 @@
           <TrafficTrendChart
             :points="trendPoints"
             :host-points="hostTrendPoints"
-            granularity="hour"
+            :granularity="granularity"
             :quota-bytes="selectedSummary?.quota_bytes ?? null"
           />
         </div>
@@ -33,12 +45,13 @@
             :used-bytes="selectedSummary?.used_bytes ?? 0"
             :quota-bytes="selectedSummary?.quota_bytes ?? null"
             :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
+            :agents="overviewAgents"
           />
         </div>
 
         <!-- 实时速率 -->
         <div class="bento-card bento-card--rate">
-          <TrafficRateSparkline :points="trendPoints" granularity="hour" />
+          <TrafficRateSparkline :points="trendPoints" :granularity="granularity" />
         </div>
 
         <!-- 阻断节点 -->
@@ -108,9 +121,15 @@ const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.valu
 const visible = trafficStatsEnabled
 
 const selectedAgentId = ref('')
+const granularity = ref('hour')
+const granularityOptions = [
+  { value: 'hour', label: '小时' },
+  { value: 'day', label: '日' },
+  { value: 'month', label: '月' }
+]
 
-const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled, 'hour')
-const allAgentsQuery = useTrafficOverview('', trafficStatsEnabled, 'hour')
+const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled, granularity)
+const allAgentsQuery = useTrafficOverview('', trafficStatsEnabled, granularity)
 
 const MOCK_AGENTS = [
   { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
@@ -310,6 +329,36 @@ function scopeLabel(scopeType, scopeId) {
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0;
+}
+.dashboard-traffic__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.dashboard-traffic__granularity {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+}
+.dashboard-traffic__granularity-btn {
+  min-width: 2.75rem;
+  padding: 0.3rem 0.55rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.dashboard-traffic__granularity-btn--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
 }
 .dashboard-traffic__select {
   padding: 0.35rem 0.75rem;

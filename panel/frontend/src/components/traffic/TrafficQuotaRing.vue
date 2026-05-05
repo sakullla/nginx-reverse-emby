@@ -7,8 +7,8 @@
       height="200"
     />
     <div class="traffic-quota-ring__info">
-      <span class="traffic-quota-ring__label">已用 / 额度</span>
-      <span class="traffic-quota-ring__value">{{ usedText }} / {{ quotaText }}</span>
+      <span class="traffic-quota-ring__label">{{ infoLabel }}</span>
+      <span class="traffic-quota-ring__value">{{ infoValue }}</span>
     </div>
   </div>
 </template>
@@ -20,10 +20,24 @@ import { formatBytes, formatQuota, usagePercent } from '../../utils/trafficStats
 const props = defineProps({
   usedBytes: { type: Number, default: 0 },
   quotaBytes: { type: Number, default: null },
-  remainingBytes: { type: Number, default: null }
+  remainingBytes: { type: Number, default: null },
+  agents: { type: Array, default: null }
 })
 
-const percent = computed(() => usagePercent(props.usedBytes, props.quotaBytes))
+const DISTRIBUTION_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#6366f1', '#ec4899']
+
+const isDistribution = computed(() => Array.isArray(props.agents) && props.agents.length > 1)
+
+const singleAgent = computed(() => {
+  if (Array.isArray(props.agents) && props.agents.length === 1) return props.agents[0]
+  return null
+})
+
+const effectiveUsed = computed(() => singleAgent.value?.used_bytes ?? props.usedBytes ?? 0)
+const effectiveQuota = computed(() => singleAgent.value?.quota_bytes ?? props.quotaBytes ?? null)
+const effectiveRemaining = computed(() => singleAgent.value?.remaining_bytes ?? props.remainingBytes ?? null)
+
+const percent = computed(() => usagePercent(effectiveUsed.value, effectiveQuota.value))
 
 const color = computed(() => {
   const p = percent.value ?? 0
@@ -33,12 +47,32 @@ const color = computed(() => {
 })
 
 const series = computed(() => {
-  if (props.quotaBytes == null || props.quotaBytes <= 0) {
-    return [props.usedBytes || 0]
+  if (isDistribution.value) {
+    return props.agents.map(a => a.used_bytes || 0)
   }
-  const used = props.usedBytes || 0
-  const remaining = Math.max(0, (props.remainingBytes != null ? props.remainingBytes : props.quotaBytes - used))
+  if (effectiveQuota.value == null || effectiveQuota.value <= 0) {
+    return [effectiveUsed.value || 0]
+  }
+  const used = effectiveUsed.value || 0
+  const remaining = Math.max(0, (effectiveRemaining.value != null ? effectiveRemaining.value : effectiveQuota.value - used))
   return [used, remaining]
+})
+
+const chartLabels = computed(() => {
+  if (isDistribution.value) {
+    return props.agents.map(a => a.name || a.agent_id)
+  }
+  if (effectiveQuota.value == null || effectiveQuota.value <= 0) {
+    return ['已用']
+  }
+  return ['已用', '剩余']
+})
+
+const chartColors = computed(() => {
+  if (isDistribution.value) {
+    return DISTRIBUTION_COLORS
+  }
+  return [color.value, '#e5e7eb']
 })
 
 const chartOptions = computed(() => ({
@@ -47,7 +81,8 @@ const chartOptions = computed(() => ({
     toolbar: { show: false },
     animations: { enabled: true }
   },
-  colors: [color.value, '#e5e7eb'],
+  labels: chartLabels.value,
+  colors: chartColors.value,
   plotOptions: {
     pie: {
       donut: {
@@ -60,13 +95,26 @@ const chartOptions = computed(() => ({
             fontSize: '22px',
             fontWeight: 700,
             color: '#374151',
-            formatter: () => `${percent.value ?? 0}%`
+            formatter: () => {
+              if (isDistribution.value) {
+                const total = props.agents.reduce((s, a) => s + (a.used_bytes || 0), 0)
+                return formatBytes(total)
+              }
+              if (effectiveQuota.value == null) return '—'
+              return `${percent.value ?? 0}%`
+            }
           },
           total: {
             show: true,
             showAlways: true,
-            label: '额度',
-            formatter: () => (props.quotaBytes == null ? '—' : `${percent.value ?? 0}%`)
+            label: isDistribution.value ? '总用量' : '额度',
+            formatter: () => {
+              if (isDistribution.value) {
+                const total = props.agents.reduce((s, a) => s + (a.used_bytes || 0), 0)
+                return formatBytes(total)
+              }
+              return effectiveQuota.value == null ? '—' : `${percent.value ?? 0}%`
+            }
           }
         }
       }
@@ -82,8 +130,18 @@ const chartOptions = computed(() => ({
   }
 }))
 
-const usedText = computed(() => formatBytes(props.usedBytes))
-const quotaText = computed(() => formatQuota(props.quotaBytes))
+const infoLabel = computed(() => {
+  if (isDistribution.value) return '节点分布'
+  return '已用 / 额度'
+})
+
+const infoValue = computed(() => {
+  if (isDistribution.value) {
+    const total = props.agents.reduce((s, a) => s + (a.used_bytes || 0), 0)
+    return formatBytes(total)
+  }
+  return `${formatBytes(effectiveUsed.value)} / ${formatQuota(effectiveQuota.value)}`
+})
 </script>
 
 <style scoped>
