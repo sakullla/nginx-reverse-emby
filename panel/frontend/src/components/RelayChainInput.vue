@@ -995,8 +995,8 @@ onUnmounted(() => {
     font-size: 0.875rem;
   }
   .relay-editor__dropdown-menu {
-    left: auto;
-    right: 0;
+    left: 0;
+    right: auto;
     min-width: unset;
     width: min(320px, calc(100vw - 2rem));
     max-height: 240px;
