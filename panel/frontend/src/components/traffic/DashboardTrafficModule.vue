@@ -367,6 +367,21 @@ function scopeLabel(scopeType, scopeId) {
 .dashboard-traffic__agent-picker {
   flex-shrink: 0;
 }
+.dashboard-traffic__agent-picker :deep(.agent-picker__trigger) {
+  min-width: 120px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8125rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  gap: 0.35rem;
+}
+.dashboard-traffic__agent-picker :deep(.agent-picker__trigger-text) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
 .dashboard-traffic__loading {
   display: flex;
   justify-content: center;

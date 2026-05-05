@@ -1,83 +1,90 @@
 <template>
   <div class="agent-picker" ref="pickerRef">
-    <button class="agent-picker__trigger" @click="open = !open">
+    <button ref="triggerRef" class="agent-picker__trigger" @click="open = !open">
       <span class="agent-picker__trigger-text">{{ selectedLabel }}</span>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"/>
       </svg>
     </button>
 
-    <div v-if="open" class="agent-picker__dropdown">
-      <!-- Search -->
-      <div class="agent-picker__search">
-        <input
-          v-model="searchQuery"
-          name="agent-picker-search"
-          class="agent-picker__search-input"
-          placeholder="搜索节点..."
-          @click.stop
-        />
-      </div>
+    <Teleport to="body">
+      <div
+        v-if="open"
+        ref="dropdownRef"
+        class="agent-picker__dropdown"
+        :style="dropdownStyle"
+      >
+        <!-- Search -->
+        <div class="agent-picker__search">
+          <input
+            v-model="searchQuery"
+            name="agent-picker-search"
+            class="agent-picker__search-input"
+            placeholder="搜索节点..."
+            @click.stop
+          />
+        </div>
 
-      <!-- Status Filters -->
-      <div class="agent-picker__filters">
-        <button
-          v-for="opt in statusOptions"
-          :key="opt.value"
-          class="agent-picker__filter-btn"
-          :class="{ active: statusFilter === opt.value }"
-          @click="statusFilter = opt.value"
-        >
-          {{ opt.label }}
-        </button>
-      </div>
+        <!-- Status Filters -->
+        <div class="agent-picker__filters">
+          <button
+            v-for="opt in statusOptions"
+            :key="opt.value"
+            class="agent-picker__filter-btn"
+            :class="{ active: statusFilter === opt.value }"
+            @click="statusFilter = opt.value"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
 
-      <!-- Agent List -->
-      <div class="agent-picker__list">
-        <button
-          v-if="showAllOption"
-          class="agent-picker__item agent-picker__item--all"
-          @click="selectAll()"
-        >
-          <span class="agent-picker__item-name">{{ allLabel }}</span>
-        </button>
-        <button
-          v-for="agent in displayedAgents"
-          :key="agent.id || agent.agent_id"
-          class="agent-picker__item"
-          @click="selectAgent(agent)"
-        >
-          <span v-if="agent.status != null || agent.desired_revision != null" class="agent-picker__dot" :class="`agent-picker__dot--${getAgentStatus(agent)}`"></span>
-          <span class="agent-picker__item-name">{{ agent.name }}</span>
-          <span v-if="agent.last_seen_at" class="agent-picker__item-time">{{ timeAgo(agent.last_seen_at) }}</span>
-        </button>
-        <div v-if="!displayedAgents.length" class="agent-picker__empty">没有匹配的节点</div>
-      </div>
+        <!-- Agent List -->
+        <div class="agent-picker__list">
+          <button
+            v-if="showAllOption"
+            class="agent-picker__item agent-picker__item--all"
+            @click="selectAll()"
+          >
+            <span class="agent-picker__item-name">{{ allLabel }}</span>
+          </button>
+          <button
+            v-for="agent in displayedAgents"
+            :key="agent.id || agent.agent_id"
+            class="agent-picker__item"
+            @click="selectAgent(agent)"
+          >
+            <span v-if="agent.status != null || agent.desired_revision != null" class="agent-picker__dot" :class="`agent-picker__dot--${getAgentStatus(agent)}`"></span>
+            <span class="agent-picker__item-name">{{ agent.name }}</span>
+            <span v-if="agent.last_seen_at" class="agent-picker__item-time">{{ timeAgo(agent.last_seen_at) }}</span>
+          </button>
+          <div v-if="!displayedAgents.length" class="agent-picker__empty">没有匹配的节点</div>
+        </div>
 
-      <!-- Sort -->
-      <div class="agent-picker__sort">
-        <span>排序:</span>
-        <button
-          class="agent-picker__sort-btn"
-          :class="{ active: sortBy === 'last_seen' }"
-          @click="sortBy = 'last_seen'"
-        >
-          最近活跃
-        </button>
-        <button
-          class="agent-picker__sort-btn"
-          :class="{ active: sortBy === 'name' }"
-          @click="sortBy = 'name'"
-        >
-          名称
-        </button>
+        <!-- Sort -->
+        <div class="agent-picker__sort">
+          <span>排序:</span>
+          <button
+            class="agent-picker__sort-btn"
+            :class="{ active: sortBy === 'last_seen' }"
+            @click="sortBy = 'last_seen'"
+          >
+            最近活跃
+          </button>
+          <button
+            class="agent-picker__sort-btn"
+            :class="{ active: sortBy === 'name' }"
+            @click="sortBy = 'name'"
+          >
+            名称
+          </button>
+        </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { getAgentStatus, timeAgo } from '../utils/agentHelpers.js'
 
 const props = defineProps({
@@ -96,6 +103,9 @@ const searchQuery = ref('')
 const statusFilter = ref('')
 const sortBy = ref('last_seen')
 const pickerRef = ref(null)
+const triggerRef = ref(null)
+const dropdownRef = ref(null)
+const dropdownStyle = ref({})
 
 const statusOptions = [
   { value: '', label: '全部' },
@@ -145,6 +155,48 @@ const displayedAgents = computed(() => {
   return result
 })
 
+function updateDropdownPosition() {
+  if (!open.value || !triggerRef.value) return
+  const rect = triggerRef.value.getBoundingClientRect()
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const dropdownWidth = Math.max(rect.width, 220)
+
+  let left = rect.left
+  let top = rect.bottom + 6
+
+  // Prevent overflow on the right
+  if (left + dropdownWidth > viewportWidth - 8) {
+    left = viewportWidth - dropdownWidth - 8
+  }
+
+  // Prevent overflow on the bottom
+  const estimatedHeight = Math.min(320, viewportHeight * 0.6)
+  if (top + estimatedHeight > viewportHeight - 8) {
+    top = rect.top - estimatedHeight - 6
+  }
+
+  dropdownStyle.value = {
+    position: 'fixed',
+    top: `${top}px`,
+    left: `${left}px`,
+    width: `${dropdownWidth}px`,
+    zIndex: 9999
+  }
+}
+
+watch(open, (val) => {
+  if (val) {
+    nextTick(() => updateDropdownPosition())
+  }
+})
+
+function handleResize() {
+  if (open.value) {
+    updateDropdownPosition()
+  }
+}
+
 function selectAgent(agent) {
   emit('update:modelValue', agent)
   if (props.modelId != null) {
@@ -167,13 +219,22 @@ function selectAll() {
 }
 
 function handleClickOutside(e) {
-  if (pickerRef.value && !pickerRef.value.contains(e.target)) {
+  if (
+    pickerRef.value && !pickerRef.value.contains(e.target) &&
+    dropdownRef.value && !dropdownRef.value.contains(e.target)
+  ) {
     open.value = false
   }
 }
 
-onMounted(() => document.addEventListener('mousedown', handleClickOutside))
-onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
+onMounted(() => {
+  document.addEventListener('mousedown', handleClickOutside)
+  window.addEventListener('resize', handleResize)
+})
+onUnmounted(() => {
+  document.removeEventListener('mousedown', handleClickOutside)
+  window.removeEventListener('resize', handleResize)
+})
 </script>
 
 <style scoped>
@@ -199,16 +260,10 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   border-color: var(--color-primary);
 }
 .agent-picker__dropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  width: 100%;
-  min-width: 280px;
   background: var(--color-bg-surface-raised);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
-  z-index: var(--z-dropdown);
   overflow: hidden;
 }
 .agent-picker__search {
@@ -348,12 +403,12 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
     font-size: 0.8125rem;
   }
   .agent-picker__dropdown {
-    position: fixed;
-    top: auto;
-    left: 0.75rem;
-    right: 0.75rem;
-    width: auto;
-    min-width: auto;
+    position: fixed !important;
+    top: auto !important;
+    left: 0.75rem !important;
+    right: 0.75rem !important;
+    width: auto !important;
+    min-width: auto !important;
     max-height: 70vh;
     display: flex;
     flex-direction: column;
