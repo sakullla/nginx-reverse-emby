@@ -150,4 +150,26 @@ function handleRowClick(agent) {
   background: var(--color-danger-50);
   color: var(--color-danger);
 }
+
+@media (max-width: 640px) {
+  .agent-table th,
+  .agent-table td {
+    padding: 0.5rem 0.5rem;
+    font-size: 0.8125rem;
+  }
+  .agent-table th:nth-child(3),
+  .agent-table td:nth-child(3),
+  .agent-table th:nth-child(4),
+  .agent-table td:nth-child(4),
+  .agent-table th:nth-child(5),
+  .agent-table td:nth-child(5) {
+    display: none;
+  }
+  .agent-cell__url {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
 </style>

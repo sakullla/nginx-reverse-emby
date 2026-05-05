@@ -837,38 +837,49 @@ export async function cleanupTraffic(agentId) {
   return data.result
 }
 
+function createSeededRandom(seed) {
+  let s = seed
+  return () => {
+    s = (s * 16807 + 0) % 2147483647
+    return (s - 1) / 2147483646
+  }
+}
+
 export async function fetchTrafficOverview(agentId, granularity) {
   if (isDev) {
     await sleep()
     let trend
     if (granularity === 'month') {
+      const rng = createSeededRandom(42)
       trend = Array.from({ length: 12 }, (_, i) => {
         const month = String(i + 1).padStart(2, '0')
         return {
           bucket_start: `2026-${month}-01T00:00:00Z`,
-          rx_bytes: Math.round(Math.random() * 800000000 + 200000000),
-          tx_bytes: Math.round(Math.random() * 600000000 + 100000000),
-          accounted_bytes: Math.round(Math.random() * 1000000000 + 500000000)
+          rx_bytes: Math.round(rng() * 800000000 + 200000000),
+          tx_bytes: Math.round(rng() * 600000000 + 100000000),
+          accounted_bytes: Math.round(rng() * 1000000000 + 500000000)
         }
       })
     } else if (granularity === 'day') {
+      const rng = createSeededRandom(42)
       trend = Array.from({ length: 30 }, (_, i) => {
         const day = String(i + 1).padStart(2, '0')
         return {
           bucket_start: `2026-05-${day}T00:00:00Z`,
-          rx_bytes: Math.round(Math.random() * 80000000 + 20000000),
-          tx_bytes: Math.round(Math.random() * 60000000 + 10000000),
-          accounted_bytes: Math.round(Math.random() * 100000000 + 50000000)
+          rx_bytes: Math.round(rng() * 80000000 + 20000000),
+          tx_bytes: Math.round(rng() * 60000000 + 10000000),
+          accounted_bytes: Math.round(rng() * 100000000 + 50000000)
         }
       })
     } else {
+      const rng = createSeededRandom(42)
       trend = Array.from({ length: 24 }, (_, i) => {
         const hour = String(i).padStart(2, '0')
         return {
           bucket_start: `2026-05-05T${hour}:00:00Z`,
-          rx_bytes: Math.round(Math.random() * 80000000 + 20000000),
-          tx_bytes: Math.round(Math.random() * 60000000 + 10000000),
-          accounted_bytes: Math.round(Math.random() * 100000000 + 50000000)
+          rx_bytes: Math.round(rng() * 80000000 + 20000000),
+          tx_bytes: Math.round(rng() * 60000000 + 10000000),
+          accounted_bytes: Math.round(rng() * 100000000 + 50000000)
         }
       })
     }

@@ -15,10 +15,13 @@
             {{ option.label }}
           </button>
         </div>
-        <select v-model="selectedAgentId" class="dashboard-traffic__select">
-          <option value="">全部节点</option>
-          <option v-for="agent in selectableAgents" :key="agent.agent_id" :value="agent.agent_id">{{ agent.name }}</option>
-        </select>
+        <AgentPicker
+          :agents="selectableAgents"
+          v-model:model-id="selectedAgentId"
+          :show-all-option="true"
+          all-label="全部节点"
+          class="dashboard-traffic__agent-picker"
+        />
       </div>
     </div>
 
@@ -108,6 +111,7 @@ import { fetchSystemInfo, fetchTrafficSummary } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 import TrafficQuotaRing from './TrafficQuotaRing.vue'
 import TrafficRateSparkline from './TrafficRateSparkline.vue'
+import AgentPicker from '../../components/AgentPicker.vue'
 import { formatBytes, usagePercent } from '../../utils/trafficStats.js'
 
 const router = useRouter()
@@ -360,15 +364,8 @@ function scopeLabel(scopeType, scopeId) {
   color: var(--color-primary);
   box-shadow: var(--shadow-sm);
 }
-.dashboard-traffic__select {
-  padding: 0.35rem 0.75rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  font-size: 0.8125rem;
-  font-family: inherit;
-  cursor: pointer;
+.dashboard-traffic__agent-picker {
+  flex-shrink: 0;
 }
 .dashboard-traffic__loading {
   display: flex;
@@ -503,6 +500,19 @@ function scopeLabel(scopeType, scopeId) {
 }
 
 @media (max-width: 767px) {
+  .dashboard-traffic__header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  .dashboard-traffic__toolbar {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .dashboard-traffic__agent-picker {
+    flex: 1;
+    min-width: 0;
+  }
   .dashboard-traffic__bento {
     grid-template-columns: 1fr;
     grid-template-rows: auto;

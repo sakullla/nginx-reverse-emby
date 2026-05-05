@@ -214,14 +214,28 @@ describe('DashboardTrafficModule', () => {
       'edge-1': [overviewAgents[0]]
     }
     const wrapper = await mountModule()
-    const select = wrapper.find('.dashboard-traffic__select')
+    const trigger = wrapper.find('.agent-picker__trigger')
+    expect(trigger.exists()).toBe(true)
 
-    await select.setValue('edge-1')
+    await trigger.trigger('click')
+    await nextTick()
+
+    const items = wrapper.findAll('.agent-picker__item')
+    const edge1Item = items.find(item => item.text().includes('edge-1'))
+    expect(edge1Item).toBeTruthy()
+    await edge1Item.trigger('click')
+    await nextTick()
+
     await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1', 'hour'))
     await nextTick()
 
-    const labels = wrapper.findAll('.dashboard-traffic__select option').map(option => option.text())
-    expect(labels).toEqual(['全部节点', 'edge-1', 'edge-2'])
+    await trigger.trigger('click')
+    await nextTick()
+
+    const labels = wrapper.findAll('.agent-picker__item').map(item => item.text())
+    expect(labels).toContain('全部节点')
+    expect(labels).toContain('edge-1')
+    expect(labels).toContain('edge-2')
   })
 
   it('shows mixed cycle label when aggregate agents have different cycle windows', async () => {
