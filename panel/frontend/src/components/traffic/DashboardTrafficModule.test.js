@@ -150,9 +150,9 @@ describe('DashboardTrafficModule', () => {
     expect(topRulesPanel.findAll('.top-row')).toHaveLength(2)
   })
 
-  it('navigates top rules using the complete hyphenated agent id', async () => {
+  it('navigates top rules using the agent-detail route params for reserved agent ids', async () => {
     trafficSummaries = {
-      'edge-1': {
+      'edge/1': {
         http_rules: [{ scope_type: 'http_rule', scope_id: '1', accounted_bytes: 1024 }],
         l4_rules: [],
         relay_listeners: []
@@ -164,12 +164,64 @@ describe('DashboardTrafficModule', () => {
       }
     }
 
+    overviewAgents = [
+      {
+        agent_id: 'edge/1',
+        name: 'edge/1',
+        used_bytes: 2048,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both'
+      },
+      {
+        agent_id: 'edge-2',
+        name: 'edge-2',
+        used_bytes: 1024,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both'
+      }
+    ]
+
     const wrapper = await mountModule()
-    await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge-1'))
+    await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge/1'))
 
     await wrapper.find('.bento-card--top-rules .top-row').trigger('click')
 
-    expect(routerPush).toHaveBeenCalledWith('/agents/edge-1')
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'agent-detail',
+      params: { id: 'edge/1' }
+    })
+  })
+
+  it('navigates top nodes using the agent-detail route params for reserved agent ids', async () => {
+    overviewAgents = [
+      {
+        agent_id: 'edge/1',
+        name: 'edge/1',
+        used_bytes: 2048,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both'
+      },
+      {
+        agent_id: 'edge-2',
+        name: 'edge-2',
+        used_bytes: 1024,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both'
+      }
+    ]
+
+    const wrapper = await mountModule()
+
+    await wrapper.find('.bento-card--top-nodes .top-row').trigger('click')
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'agent-detail',
+      params: { id: 'edge/1' }
+    })
   })
 
   it('does not pass host trend as a separate dashboard chart series', async () => {

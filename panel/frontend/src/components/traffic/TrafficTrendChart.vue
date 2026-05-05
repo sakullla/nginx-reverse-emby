@@ -40,13 +40,29 @@ function formatLabel(bucketStart) {
   if (!bucketStart) return ''
   const date = new Date(bucketStart)
   if (Number.isNaN(date.getTime())) return ''
+  const year = date.getUTCFullYear()
+  const month = date.getUTCMonth() + 1
+  const day = date.getUTCDate()
+  const hour = String(date.getUTCHours()).padStart(2, '0')
+  const minute = String(date.getUTCMinutes()).padStart(2, '0')
   if (props.granularity === 'hour') {
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    return `${hour}:${minute}`
   }
   if (props.granularity === 'month') {
-    return date.toLocaleDateString('zh-CN', { year: '2-digit', month: 'short' })
+    return `${String(year).slice(-2)}年${month}月`
   }
-  return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+  return `${month}月${day}日`
+}
+
+function formatChartBytes(value) {
+  if (value == null || value === '') return ''
+  try {
+    const number = Number(value)
+    if (!Number.isFinite(number)) return ''
+    return formatBytes(number)
+  } catch {
+    return ''
+  }
 }
 
 function bucketKey(point) {
@@ -63,81 +79,79 @@ function uniqueBucketStarts(currentPoints) {
   return [...new Set(buckets)].sort()
 }
 
-function buildValueMap(points) {
+function buildBucketMap(points) {
   const map = new Map()
   if (!Array.isArray(points)) return map
-  for (const p of points) {
-    const key = bucketKey(p)
-    if (key) map.set(key, Number(p.accounted_bytes) || 0)
+  for (const point of points) {
+    const key = bucketKey(point)
+    if (!key) continue
+    let entry = map.get(key)
+    if (!entry) {
+      entry = {
+        bucket_start: key,
+        rx_bytes: 0,
+        tx_bytes: 0,
+        accounted_bytes: 0
+      }
+      map.set(key, entry)
+    }
+    entry.rx_bytes += Number(point?.rx_bytes) || 0
+    entry.tx_bytes += Number(point?.tx_bytes) || 0
+    entry.accounted_bytes += Number(point?.accounted_bytes) || 0
   }
   return map
 }
 
 function alignToBuckets(bucketStarts, points) {
-  const map = buildValueMap(points)
-  return bucketStarts.map((bucket) => (map.has(bucket) ? map.get(bucket) : null))
+  const map = buildBucketMap(points)
+  return bucketStarts.map((bucket) => map.get(bucket) || null)
 }
 
 function alignPrevSeries(bucketStarts, currentPoints, prevPoints) {
   if (!Array.isArray(currentPoints) || currentPoints.length === 0) {
-    return bucketStarts.map(() => null)
+    return []
   }
-  const currentIndexByBucket = new Map(bucketStarts.map((bucket, index) => [bucket, index]))
-  const series = bucketStarts.map(() => null)
   const values = Array.isArray(prevPoints) ? prevPoints.map((point) => Number(point?.accounted_bytes) || 0) : []
-  currentPoints.forEach((point, index) => {
-    const bucket = bucketKey(point)
-    const targetIndex = currentIndexByBucket.get(bucket)
-    if (targetIndex == null || index >= values.length) return
-    series[targetIndex] = values[index]
-  })
-  return series
+  return bucketStarts.map((_, index) => (index < values.length ? values[index] : null))
 }
 
+const bucketStarts = computed(() => uniqueBucketStarts(props.points))
+const alignedPoints = computed(() => alignToBuckets(bucketStarts.value, props.points))
+
 const labels = computed(() => {
-  const bucketStarts = uniqueBucketStarts(props.points)
-  return bucketStarts.map(formatLabel)
+  return bucketStarts.value.map(formatLabel)
 })
 
 const series = computed(() => {
-  const bucketStarts = uniqueBucketStarts(props.points)
+  const points = alignedPoints.value
   const datasets = []
 
   datasets.push({
     name: '用量',
-    data: alignToBuckets(bucketStarts, props.points)
+    data: points.map((point) => point?.accounted_bytes ?? null)
   })
 
-  const rxData = bucketStarts.map((bucket) => {
-    const point = Array.isArray(props.points) ? props.points.find((item) => bucketKey(item) === bucket) : null
-    return point ? (Number(point.rx_bytes) || 0) : null
-  })
-  datasets.push({ name: 'RX', data: rxData })
-
-  const txData = bucketStarts.map((bucket) => {
-    const point = Array.isArray(props.points) ? props.points.find((item) => bucketKey(item) === bucket) : null
-    return point ? (Number(point.tx_bytes) || 0) : null
-  })
-  datasets.push({ name: 'TX', data: txData })
+  datasets.push({ name: 'RX', data: points.map((point) => point?.rx_bytes ?? null) })
+  datasets.push({ name: 'TX', data: points.map((point) => point?.tx_bytes ?? null) })
 
   if (Array.isArray(props.prevPoints) && props.prevPoints.length > 0) {
     datasets.push({
       name: '上期',
-      data: alignPrevSeries(bucketStarts, props.points, props.prevPoints)
+      data: alignPrevSeries(bucketStarts.value, props.points, props.prevPoints)
     })
   }
 
   if (props.budgetBytes != null && props.budgetBytes > 0 && props.granularity !== 'month') {
     datasets.push({
       name: '日均预算',
-      data: bucketStarts.map(() => props.budgetBytes)
+      data: bucketStarts.value.map(() => props.budgetBytes)
     })
   }
 
   if (props.quotaBytes != null && props.quotaBytes > 0 && props.granularity === 'month') {
     datasets.push({
       name: '月额度',
-      data: bucketStarts.map(() => props.quotaBytes)
+      data: bucketStarts.value.map(() => props.quotaBytes)
     })
   }
 
@@ -186,7 +200,7 @@ const chartOptions = computed(() => ({
     shared: true,
     intersect: false,
     y: {
-      formatter: (value) => formatBytes(value)
+      formatter: formatChartBytes
     }
   },
   xaxis: {
@@ -204,7 +218,7 @@ const chartOptions = computed(() => ({
   yaxis: {
     labels: {
       style: { fontSize: '11px' },
-      formatter: (value) => formatBytes(value)
+      formatter: formatChartBytes
     }
   },
   grid: {
