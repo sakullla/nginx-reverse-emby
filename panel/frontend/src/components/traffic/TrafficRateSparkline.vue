@@ -1,0 +1,90 @@
+<template>
+  <div class="traffic-rate-sparkline">
+    <div class="traffic-rate-sparkline__header">
+      <span class="traffic-rate-sparkline__label">实时速率</span>
+      <span class="traffic-rate-sparkline__value">{{ currentRate }}</span>
+    </div>
+    <apexchart
+      type="area"
+      :options="chartOptions"
+      :series="series"
+      height="60"
+    />
+  </div>
+</template>
+
+<script setup>
+import { computed } from 'vue'
+import { formatBytes } from '../../utils/trafficStats.js'
+
+const props = defineProps({
+  points: { type: Array, default: () => [] }
+})
+
+const rates = computed(() => {
+  const pts = props.points || []
+  if (pts.length < 2) return []
+  const result = []
+  for (let i = 1; i < pts.length; i++) {
+    const prev = Number(pts[i - 1]?.accounted_bytes) || 0
+    const curr = Number(pts[i]?.accounted_bytes) || 0
+    result.push(Math.max(0, curr - prev))
+  }
+  return result
+})
+
+const currentRate = computed(() => {
+  const r = rates.value
+  if (!r.length) return '—'
+  return formatBytes(r[r.length - 1]) + '/周期'
+})
+
+const series = computed(() => [{
+  name: '速率',
+  data: rates.value
+}])
+
+const chartOptions = computed(() => ({
+  chart: {
+    type: 'area',
+    sparkline: { enabled: true },
+    toolbar: { show: false },
+    animations: { enabled: false }
+  },
+  colors: ['#3b82f6'],
+  stroke: { curve: 'smooth', width: 2 },
+  fill: { opacity: 0.2 },
+  tooltip: {
+    enabled: true,
+    x: { show: false },
+    y: {
+      formatter: (value) => formatBytes(value)
+    },
+    marker: { show: false }
+  }
+}))
+</script>
+
+<style scoped>
+.traffic-rate-sparkline {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.traffic-rate-sparkline__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+}
+.traffic-rate-sparkline__label {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+.traffic-rate-sparkline__value {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+</style>
