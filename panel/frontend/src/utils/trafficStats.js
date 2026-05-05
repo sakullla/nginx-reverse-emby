@@ -100,6 +100,7 @@ export function normalizeTrafficTrendPoint(point = {}, direction = 'both') {
   const bucket = normalizeTrafficBucket(point)
   return {
     bucket_start: String(point.bucket_start || ''),
+    bucket_local_start: String(point.bucket_local_start || ''),
     rx_bytes: bucket.rx_bytes,
     tx_bytes: bucket.tx_bytes,
     accounted_bytes: Number.isFinite(Number(point.accounted_bytes))

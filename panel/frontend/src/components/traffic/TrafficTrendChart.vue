@@ -36,22 +36,28 @@ const chartKey = computed(() => {
   return `${props.granularity}-${props.points.length}-${sum}`
 })
 
-function formatLabel(bucketStart) {
-  if (!bucketStart) return ''
-  const date = new Date(bucketStart)
-  if (Number.isNaN(date.getTime())) return ''
-  const year = date.getUTCFullYear()
-  const month = date.getUTCMonth() + 1
-  const day = date.getUTCDate()
-  const hour = String(date.getUTCHours()).padStart(2, '0')
-  const minute = String(date.getUTCMinutes()).padStart(2, '0')
+function localDateParts(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
+  if (!match) return null
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: match[4],
+    minute: match[5]
+  }
+}
+
+function formatLabel(point) {
+  const parts = localDateParts(point?.bucket_local_start || point?.bucket_start)
+  if (!parts) return ''
   if (props.granularity === 'hour') {
-    return `${hour}:${minute}`
+    return `${parts.hour}:${parts.minute}`
   }
   if (props.granularity === 'month') {
-    return `${String(year).slice(-2)}年${month}月`
+    return `${String(parts.year).slice(-2)}年${parts.month}月`
   }
-  return `${month}月${day}日`
+  return `${parts.month}月${parts.day}日`
 }
 
 function formatChartBytes(value) {
@@ -89,6 +95,7 @@ function buildBucketMap(points) {
     if (!entry) {
       entry = {
         bucket_start: key,
+        bucket_local_start: String(point?.bucket_local_start || ''),
         rx_bytes: 0,
         tx_bytes: 0,
         accounted_bytes: 0
@@ -119,7 +126,7 @@ const bucketStarts = computed(() => uniqueBucketStarts(props.points))
 const alignedPoints = computed(() => alignToBuckets(bucketStarts.value, props.points))
 
 const labels = computed(() => {
-  return bucketStarts.value.map(formatLabel)
+  return alignedPoints.value.map(formatLabel)
 })
 
 const series = computed(() => {

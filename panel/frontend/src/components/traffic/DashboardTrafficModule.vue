@@ -296,6 +296,7 @@ function navigateToAgentByRule(rule) {
 function normalizePoints(raw) {
   return (raw || []).map(p => ({
     bucket_start: p.bucket_start,
+    bucket_local_start: p.bucket_local_start,
     rx_bytes: Number(p.rx_bytes) || 0,
     tx_bytes: Number(p.tx_bytes) || 0,
     accounted_bytes: Number(p.accounted_bytes) || 0

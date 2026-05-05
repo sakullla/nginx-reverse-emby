@@ -323,13 +323,14 @@ func (s *trafficService) Trend(ctx context.Context, query TrafficTrendQuery) ([]
 	points := make([]TrafficTrendPoint, 0, len(rows))
 	for _, row := range rows {
 		points = append(points, TrafficTrendPoint{
-			AgentID:        row.AgentID,
-			ScopeType:      row.ScopeType,
-			ScopeID:        row.ScopeID,
-			BucketStart:    row.BucketStart.UTC().Format(time.RFC3339),
-			RXBytes:        row.RXBytes,
-			TXBytes:        row.TXBytes,
-			AccountedBytes: accountedBytes(policy.Direction, row.RXBytes, row.TXBytes),
+			AgentID:          row.AgentID,
+			ScopeType:        row.ScopeType,
+			ScopeID:          row.ScopeID,
+			BucketStart:      row.BucketStart.UTC().Format(time.RFC3339),
+			BucketLocalStart: row.BucketStart.In(s.tz).Format(time.RFC3339),
+			RXBytes:          row.RXBytes,
+			TXBytes:          row.TXBytes,
+			AccountedBytes:   accountedBytes(policy.Direction, row.RXBytes, row.TXBytes),
 		})
 	}
 	return points, nil
@@ -714,10 +715,11 @@ func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []
 				existing.AccountedBytes += p.AccountedBytes
 			} else {
 				merged[key] = &TrafficTrendPoint{
-					BucketStart:    p.BucketStart,
-					RXBytes:        p.RXBytes,
-					TXBytes:        p.TXBytes,
-					AccountedBytes: p.AccountedBytes,
+					BucketStart:      p.BucketStart,
+					BucketLocalStart: p.BucketLocalStart,
+					RXBytes:          p.RXBytes,
+					TXBytes:          p.TXBytes,
+					AccountedBytes:   p.AccountedBytes,
 				}
 			}
 		}

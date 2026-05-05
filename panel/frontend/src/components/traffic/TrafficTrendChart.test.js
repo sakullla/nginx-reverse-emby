@@ -85,37 +85,37 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.vm.labels[0]).toContain('5')
   })
 
-  it('does not merge separate backend day buckets that share a browser-local day', () => {
+  it('uses panel-local day labels without merging separate backend buckets', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {
         points: [
-          { bucket_start: '2026-05-04T16:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
-          { bucket_start: '2026-05-05T15:00:00Z', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
+          { bucket_start: '2026-05-04T16:00:00Z', bucket_local_start: '2026-05-05T00:00:00+08:00', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
+          { bucket_start: '2026-05-05T16:00:00Z', bucket_local_start: '2026-05-06T00:00:00+08:00', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
         ],
         granularity: 'day'
       },
       ...mountOptions
     })
 
-    expect(wrapper.vm.labels).toEqual(['5月4日', '5月5日'])
+    expect(wrapper.vm.labels).toEqual(['5月5日', '5月6日'])
     expect(wrapper.vm.series[0].data).toEqual([1000, 2000])
     expect(wrapper.vm.series[1].data).toEqual([600, 1200])
     expect(wrapper.vm.series[2].data).toEqual([400, 800])
   })
 
-  it('does not merge separate backend month buckets that share a browser-local month', () => {
+  it('uses panel-local month labels without merging separate backend buckets', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {
         points: [
-          { bucket_start: '2026-04-30T16:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
-          { bucket_start: '2026-05-31T15:00:00Z', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
+          { bucket_start: '2026-04-30T16:00:00Z', bucket_local_start: '2026-05-01T00:00:00+08:00', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
+          { bucket_start: '2026-05-31T16:00:00Z', bucket_local_start: '2026-06-01T00:00:00+08:00', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
         ],
         granularity: 'month'
       },
       ...mountOptions
     })
 
-    expect(wrapper.vm.labels).toEqual(['26年4月', '26年5月'])
+    expect(wrapper.vm.labels).toEqual(['26年5月', '26年6月'])
     expect(wrapper.vm.series[0].data).toEqual([1000, 2000])
     expect(wrapper.vm.series[1].data).toEqual([600, 1200])
     expect(wrapper.vm.series[2].data).toEqual([400, 800])

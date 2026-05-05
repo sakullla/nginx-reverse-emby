@@ -1,20 +1,78 @@
 @import './themes.css';
+@import './animations.css';
 @import './utilities.css';
 
 /* Body base — theme is set via data-theme on <html> */
 body {
   margin: 0;
   font-family: var(--font-sans);
-  background: var(--color-bg-canvas);
+  background: var(--gradient-bg);
   color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
 }
 
-/* Card grid 4K: larger cards */
+/* Page content wrapper transition */
+.content {
+  transition: opacity var(--duration-normal) var(--ease-default);
+}
+
+/* Scrollbar — Enhanced */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-default);
+  border-radius: var(--radius-full);
+  transition: background var(--duration-fast) var(--ease-default);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
+
+/* Selection */
+::selection {
+  background: var(--color-primary-200);
+  color: var(--color-text-primary);
+}
+
+/* Focus visible for keyboard nav */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Page max-width container */
+.page-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+/* Section card wrapper */
+.section-card {
+  background: var(--color-bg-surface);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-2xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 1.5rem;
+}
+
+/* 4K adjustments */
 @media (min-width: 2560px) {
   .rule-grid { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 1.25rem; }
   .cert-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.25rem; }
   .base-list-card { padding: 1.5rem; }
+  .page-title { font-size: 1.75rem; }
+  .page-container { max-width: 1600px; }
 }
 
 /* TopBar 4K: larger text and padding */
@@ -24,7 +82,15 @@ body {
   .topbar__badge { font-size: 0.875rem; }
 }
 
-/* Tablet: cert grid tighter columns */
+/* Tablet */
 @media (max-width: 1024px) {
   .cert-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .rule-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .agent-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+}
+
+/* Mobile */
+@media (max-width: 640px) {
+  .page-container { padding: 0 1rem; }
+  .page-title { font-size: 1.25rem; }
 }
