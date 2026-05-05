@@ -48,7 +48,7 @@
             :used-bytes="selectedSummary?.used_bytes ?? 0"
             :quota-bytes="selectedSummary?.quota_bytes ?? null"
             :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
-            :agents="overviewAgents"
+            :agents="selectedAgentId && selectedSummary ? [selectedSummary] : overviewAgents"
           />
         </div>
 

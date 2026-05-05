@@ -2,6 +2,7 @@
   <div class="traffic-trend-chart">
     <apexchart
       v-if="hasData"
+      :key="`${granularity}-${points.length}-${hostPoints?.length || 0}`"
       type="area"
       :options="chartOptions"
       :series="series"
