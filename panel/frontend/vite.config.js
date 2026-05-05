@@ -21,9 +21,21 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     emptyOutDir: true,
+    chunkSizeWarningLimit: 550,
     rollupOptions: {
       output: {
-        manualChunks: undefined
+        manualChunks(id) {
+          const normalizedId = id.replace(/\\/g, '/')
+          if (!normalizedId.includes('node_modules')) return undefined
+          if (normalizedId.includes('node_modules/apexcharts/')) return 'apexcharts'
+          if (normalizedId.includes('node_modules/vue3-apexcharts/')) return 'vue3-apexcharts'
+          if (normalizedId.includes('node_modules/@tanstack/')) return 'query'
+          if (normalizedId.includes('node_modules/axios/')) return 'http'
+          if (normalizedId.includes('node_modules/vue-router/') || normalizedId.includes('node_modules/pinia/')) {
+            return 'routing-state'
+          }
+          return 'vendor'
+        }
       }
     }
   },

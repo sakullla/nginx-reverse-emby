@@ -21,6 +21,10 @@ let lastQueryClient = null
 
 vi.mock('../../api', () => ({
   fetchSystemInfo: vi.fn(async () => ({ traffic_stats_enabled: trafficStatsEnabled })),
+  fetchAgents: vi.fn(async () => overviewAgents.map((agent) => ({
+    id: agent.agent_id,
+    name: agent.name
+  }))),
   fetchTrafficOverview: vi.fn(async (agentId, granularity) => {
     const agents = overviewAgentsByRequest?.[agentId || 'all'] ?? overviewAgents
     return {
