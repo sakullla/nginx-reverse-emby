@@ -47,6 +47,30 @@ describe('TrafficTrendChart', () => {
     expect(series[2].name).toBe('TX')
   })
 
+  it('styles quota threshold series independently of optional series order', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ],
+        quotaBytes: 2000,
+        granularity: 'month'
+      },
+      ...mountOptions
+    })
+
+    const seriesNames = wrapper.vm.series.map((item) => item.name)
+    const quotaIndex = seriesNames.indexOf('月额度')
+
+    expect(seriesNames).toEqual(['用量', 'RX', 'TX', '月额度'])
+    expect(wrapper.vm.chartOptions.stroke.width).toHaveLength(seriesNames.length)
+    expect(wrapper.vm.chartOptions.colors[quotaIndex]).toBe('#ef4444')
+    expect(wrapper.vm.chartOptions.stroke.width[quotaIndex]).toBe(1)
+    expect(wrapper.vm.chartOptions.stroke.dashArray[quotaIndex]).toBe(6)
+    expect(wrapper.vm.chartOptions.fill.type[quotaIndex]).toBe('none')
+    expect(wrapper.vm.chartOptions.fill.opacity[quotaIndex]).toBe(0)
+  })
+
   it('formats x-axis labels for day granularity', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {

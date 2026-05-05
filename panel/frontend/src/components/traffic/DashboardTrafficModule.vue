@@ -124,7 +124,7 @@ const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.valu
 const visible = trafficStatsEnabled
 
 const selectedAgentId = ref('')
-const granularity = ref('hour')
+const granularity = ref('day')
 const granularityOptions = [
   { value: 'hour', label: '小时' },
   { value: 'day', label: '日' },

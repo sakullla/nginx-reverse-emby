@@ -118,6 +118,12 @@ describe('DashboardTrafficModule', () => {
     expect(wrapper.find('.dashboard-traffic').exists()).toBe(false)
   })
 
+  it('loads the dashboard overview at day granularity by default', async () => {
+    await mountModule()
+
+    expect(fetchTrafficOverview).toHaveBeenCalledWith(null, 'day')
+  })
+
   it('keeps top rules from different agents separate when rule ids overlap', async () => {
     trafficSummaries = {
       'edge-1': {
@@ -216,8 +222,8 @@ describe('DashboardTrafficModule', () => {
         direction: 'both'
       }
     ]
-    await wrapper.vm.$.appContext.config.globalProperties.$queryClient?.invalidateQueries?.({ queryKey: ['traffic-overview', 'all', 'hour'] })
-    await lastQueryClient.invalidateQueries({ queryKey: ['traffic-overview', 'all', 'hour'] })
+    await wrapper.vm.$.appContext.config.globalProperties.$queryClient?.invalidateQueries?.({ queryKey: ['traffic-overview', 'all', 'day'] })
+    await lastQueryClient.invalidateQueries({ queryKey: ['traffic-overview', 'all', 'day'] })
     await wrapper.vm.$nextTick()
     await vi.dynamicImportSettled()
 
@@ -262,7 +268,7 @@ describe('DashboardTrafficModule', () => {
     await edge1Item.trigger('click')
     await nextTick()
 
-    await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1', 'hour'))
+    await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1', 'day'))
     await nextTick()
 
     await trigger.trigger('click')

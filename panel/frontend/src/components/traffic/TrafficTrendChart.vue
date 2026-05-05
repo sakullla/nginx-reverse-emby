@@ -144,6 +144,21 @@ const series = computed(() => {
   return datasets
 })
 
+const seriesStyles = {
+  '用量': { color: '#3b82f6', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.12 },
+  RX: { color: '#6366f1', width: 1.5, dashArray: 0, fillType: 'none', fillOpacity: 0 },
+  TX: { color: '#10b981', width: 1.5, dashArray: 0, fillType: 'none', fillOpacity: 0 },
+  '上期': { color: '#8b5cf6', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.08 },
+  '日均预算': { color: '#f59e0b', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 },
+  '月额度': { color: '#ef4444', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 }
+}
+
+const fallbackSeriesStyle = { color: '#9ca3af', width: 1.5, dashArray: 4, fillType: 'none', fillOpacity: 0 }
+
+const chartSeriesStyles = computed(() => {
+  return series.value.map((item) => seriesStyles[item.name] || fallbackSeriesStyle)
+})
+
 const chartOptions = computed(() => ({
   chart: {
     type: 'area',
@@ -151,15 +166,15 @@ const chartOptions = computed(() => ({
     animations: { enabled: false },
     fontFamily: 'inherit'
   },
-  colors: ['#3b82f6', '#6366f1', '#10b981', '#8b5cf6', '#9ca3af', '#f59e0b', '#ef4444'],
+  colors: chartSeriesStyles.value.map((style) => style.color),
   stroke: {
     curve: 'smooth',
-    width: [2, 1.5, 1.5, 2, 1.5, 1, 1],
-    dashArray: [0, 0, 0, 0, 4, 6, 6]
+    width: chartSeriesStyles.value.map((style) => style.width),
+    dashArray: chartSeriesStyles.value.map((style) => style.dashArray)
   },
   fill: {
-    type: ['solid', 'none', 'none', 'solid', 'none', 'none', 'none'],
-    opacity: [0.12, 0, 0, 0.08, 0, 0, 0]
+    type: chartSeriesStyles.value.map((style) => style.fillType),
+    opacity: chartSeriesStyles.value.map((style) => style.fillOpacity)
   },
   dataLabels: { enabled: false },
   legend: {
