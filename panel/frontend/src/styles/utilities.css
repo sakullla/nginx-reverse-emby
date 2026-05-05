@@ -317,7 +317,8 @@
 }
 
 /* ----- Modal overlay (shared) ----- */
-.modal-overlay {
+.modal-overlay,
+.modal-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
@@ -336,8 +337,13 @@
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-2xl);
   width: min(500px, 92vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   animation: scaleIn 0.2s var(--ease-bounce) both;
+  z-index: var(--z-modal);
+  position: relative;
 }
 
 .modal--lg { width: min(640px, 94vw); }
@@ -352,6 +358,7 @@
   justify-content: space-between;
   align-items: center;
   color: var(--color-text-primary);
+  flex-shrink: 0;
 }
 
 .modal__close {
@@ -379,6 +386,9 @@
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .modal__footer {
@@ -387,6 +397,7 @@
   justify-content: flex-end;
   gap: 0.75rem;
   border-top: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
 }
 
 /* ----- Form elements (shared) ----- */

@@ -333,7 +333,7 @@ async function confirmDelete() {
 .rules-page {
   max-width: 1200px;
   margin: 0 auto;
-  animation: fadeInUp var(--duration-normal) var(--ease-default) both;
+  animation: fadeIn var(--duration-normal) var(--ease-default) both;
 }
 
 .rules-page__header {
