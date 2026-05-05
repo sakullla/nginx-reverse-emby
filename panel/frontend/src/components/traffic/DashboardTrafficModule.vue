@@ -5,7 +5,7 @@
       <div class="dashboard-traffic__toolbar">
         <select v-model="selectedAgentId" class="dashboard-traffic__select">
           <option value="">全部节点</option>
-          <option v-for="agent in overviewAgents" :key="agent.agent_id" :value="agent.agent_id">{{ agent.name }}</option>
+          <option v-for="agent in selectableAgents" :key="agent.agent_id" :value="agent.agent_id">{{ agent.name }}</option>
         </select>
       </div>
     </div>
@@ -84,8 +84,10 @@ const visible = trafficStatsEnabled
 const selectedAgentId = ref('')
 
 const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled)
+const allAgentsQuery = useTrafficOverview('', trafficStatsEnabled)
 
 const overviewAgents = computed(() => overviewQuery.data.value?.agents ?? [])
+const selectableAgents = computed(() => allAgentsQuery.data.value?.agents ?? overviewAgents.value)
 const trendPoints = computed(() => normalizePoints(overviewQuery.data.value?.trend ?? []))
 const hostTrendPoints = computed(() => normalizePoints(overviewQuery.data.value?.host_trend ?? []))
 

@@ -333,7 +333,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.BackupService = service.NewBackupService(d.Config, store)
 	}
 	if d.TrafficService == nil {
-		d.TrafficService = service.NewTrafficService(service.TrafficServiceConfig{Enabled: d.Config.TrafficStatsEnabled}, store)
+		trafficCfg, err := service.NewTrafficServiceConfig(d.Config.TrafficStatsEnabled, d.Config.Timezone)
+		if err != nil {
+			return Dependencies{}, err
+		}
+		d.TrafficService = service.NewTrafficService(trafficCfg, store)
 	}
 
 	return d, nil

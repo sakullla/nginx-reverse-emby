@@ -52,7 +52,7 @@ ENV PANEL_BACKEND_HOST=0.0.0.0 \
 WORKDIR /opt/nginx-reverse-emby
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates; \
+    apt-get install -y --no-install-recommends ca-certificates tzdata; \
     rm -rf /var/lib/apt/lists/*
 COPY scripts/ ./scripts/
 COPY --from=frontend-builder /build/dist ./panel/frontend/dist/

@@ -500,6 +500,185 @@ func TestIncrementTrafficBucketsAccumulates(t *testing.T) {
 	}
 }
 
+func TestIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := time.Date(2026, 5, 5, 1, 30, 0, 0, shanghai)
+	second := time.Date(2026, 5, 5, 23, 30, 0, 0, shanghai)
+	for _, bucket := range []time.Time{first, second} {
+		if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+			AgentID:     "edge-1",
+			ScopeType:   "agent_total",
+			BucketStart: bucket,
+			RXBytes:     100,
+			TXBytes:     50,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dailyRows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+		From:        time.Date(2026, 5, 5, 0, 0, 0, 0, shanghai),
+		To:          time.Date(2026, 5, 6, 0, 0, 0, 0, shanghai),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDayStart := time.Date(2026, 5, 5, 0, 0, 0, 0, shanghai)
+	if len(dailyRows) != 1 || !dailyRows[0].BucketStart.Equal(wantDayStart) || dailyRows[0].RXBytes != 200 || dailyRows[0].TXBytes != 100 {
+		t.Fatalf("dailyRows = %+v, want one comparable UTC instant for Asia/Shanghai local-day bucket at %s", dailyRows, wantDayStart)
+	}
+
+	monthlyRows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        time.Date(2026, 5, 1, 0, 0, 0, 0, shanghai),
+		To:          time.Date(2026, 6, 1, 0, 0, 0, 0, shanghai),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMonthStart := time.Date(2026, 5, 1, 0, 0, 0, 0, shanghai)
+	if len(monthlyRows) != 1 || !monthlyRows[0].BucketStart.Equal(wantMonthStart) || monthlyRows[0].RXBytes != 200 || monthlyRows[0].TXBytes != 100 {
+		t.Fatalf("monthlyRows = %+v, want one comparable UTC instant for Asia/Shanghai local-month bucket at %s", monthlyRows, wantMonthStart)
+	}
+}
+
+func TestIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	kathmandu, err := time.LoadLocation("Asia/Kathmandu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket := time.Date(2026, 5, 5, 1, 30, 0, 0, kathmandu)
+
+	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: bucket,
+		RXBytes:     100,
+		TXBytes:     50,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantLocalHour := time.Date(2026, 5, 5, 1, 0, 0, 0, kathmandu)
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        wantLocalHour,
+		To:          wantLocalHour.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !rows[0].BucketStart.Equal(wantLocalHour) || rows[0].RXBytes != 100 || rows[0].TXBytes != 50 {
+		t.Fatalf("rows = %+v, want local hourly bucket at %s", rows, wantLocalHour)
+	}
+}
+
+func TestIncrementTrafficBucketsPreservesDistinctDSTFallbackHours(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first0130 := time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC).In(newYork)
+	second0130 := time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC).In(newYork)
+	if first0130.Hour() != 1 || second0130.Hour() != 1 || first0130.Equal(second0130) {
+		t.Fatalf("unexpected DST fixture: first=%s second=%s", first0130, second0130)
+	}
+
+	for i, bucket := range []time.Time{first0130, second0130} {
+		if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+			AgentID:     "edge-1",
+			ScopeType:   "agent_total",
+			BucketStart: bucket,
+			RXBytes:     uint64(100 + i),
+			TXBytes:     50,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        time.Date(2026, 11, 1, 5, 0, 0, 0, time.UTC),
+		To:          time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want distinct buckets for repeated local DST hour", rows)
+	}
+	if rows[0].BucketStart.Equal(rows[1].BucketStart) || rows[0].RXBytes != 100 || rows[1].RXBytes != 101 {
+		t.Fatalf("rows = %+v, want separate EDT and EST hourly buckets", rows)
+	}
+}
+
+func TestDailyAndMonthlyPeriodRangesCompareByInstant(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dayStart := time.Date(2026, 5, 5, 0, 0, 0, 0, newYork)
+	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: dayStart.Add(2 * time.Hour),
+		RXBytes:     100,
+		TXBytes:     50,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dailyRows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+		From:        dayStart,
+		To:          dayStart.AddDate(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dailyRows) != 1 || !dailyRows[0].BucketStart.Equal(dayStart) {
+		t.Fatalf("dailyRows = %+v, want cutoff-equal America/New_York local-day bucket", dailyRows)
+	}
+
+	monthlyRows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        time.Date(2026, 5, 1, 0, 0, 0, 0, newYork),
+		To:          time.Date(2026, 6, 1, 0, 0, 0, 0, newYork),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(monthlyRows) != 1 || monthlyRows[0].BucketStart.Month() != time.May {
+		t.Fatalf("monthlyRows = %+v, want cutoff-included America/New_York local-month bucket", monthlyRows)
+	}
+}
+
 func TestIncrementTrafficBucketsValidation(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 
@@ -595,6 +774,93 @@ func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
 	}
 	if len(rows) != 1 || !rows[0].BucketStart.Equal(newBucket) {
 		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func TestDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cutoffDay := time.Date(2026, 5, 5, 0, 0, 0, 0, newYork)
+
+	for _, bucket := range []time.Time{
+		cutoffDay.AddDate(0, 0, -1).Add(2 * time.Hour),
+		cutoffDay.Add(2 * time.Hour),
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+			AgentID:     "edge-1",
+			ScopeType:   "agent_total",
+			BucketStart: bucket,
+			RXBytes:     100,
+			TXBytes:     50,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, err := store.DeleteTrafficBefore(ctx, "edge-1", TrafficCleanupCutoff{
+		DailyBefore: cutoffDay,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want only rows before cutoff instant deleted", deleted)
+	}
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+		From:        cutoffDay,
+		To:          cutoffDay.AddDate(0, 0, 1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !rows[0].BucketStart.Equal(cutoffDay) {
+		t.Fatalf("rows = %+v, want cutoff-equal local day preserved", rows)
+	}
+
+	monthStore := newTrafficTestStore(t, true)
+	cutoffMonth := time.Date(2026, 5, 1, 0, 0, 0, 0, newYork)
+	for _, bucket := range []time.Time{
+		cutoffMonth.AddDate(0, -1, 0).Add(2 * time.Hour),
+		cutoffMonth.Add(2 * time.Hour),
+	} {
+		if err := monthStore.IncrementTrafficBuckets(ctx, TrafficDelta{
+			AgentID:     "edge-1",
+			ScopeType:   "agent_total",
+			BucketStart: bucket,
+			RXBytes:     100,
+			TXBytes:     50,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err = monthStore.DeleteTrafficBefore(ctx, "edge-1", TrafficCleanupCutoff{
+		MonthlyBefore: cutoffMonth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("monthly deleted = %d, want only rows before cutoff instant deleted", deleted)
+	}
+	rows, err = monthStore.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        cutoffMonth,
+		To:          cutoffMonth.AddDate(0, 1, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].BucketStart.Month() != time.May {
+		t.Fatalf("monthly rows = %+v, want cutoff-equal local month preserved", rows)
 	}
 }
 

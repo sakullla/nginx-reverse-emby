@@ -406,14 +406,14 @@ func (s *GormStore) IncrementTrafficBuckets(ctx context.Context, delta TrafficDe
 }
 
 func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta) error {
-	bucketStart := delta.BucketStart.UTC()
+	bucketStart := delta.BucketStart
 	now := nowTrafficTimestamp()
 
 	if err := incrementTrafficHourlyBucket(tx, AgentTrafficHourlyBucketRow{
 		AgentID:     delta.AgentID,
 		ScopeType:   delta.ScopeType,
 		ScopeID:     delta.ScopeID,
-		BucketStart: formatTrafficTime(bucketStart.Truncate(time.Hour)),
+		BucketStart: formatTrafficTime(localHourStart(bucketStart)),
 		RXBytes:     delta.RXBytes,
 		TXBytes:     delta.TXBytes,
 		UpdatedAt:   now,
@@ -422,7 +422,7 @@ func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta) error {
 		return err
 	}
 
-	dayStart := time.Date(bucketStart.Year(), bucketStart.Month(), bucketStart.Day(), 0, 0, 0, 0, time.UTC)
+	dayStart := time.Date(bucketStart.Year(), bucketStart.Month(), bucketStart.Day(), 0, 0, 0, 0, bucketStart.Location())
 	if err := incrementTrafficDailySummary(tx, AgentTrafficDailySummaryRow{
 		AgentID:     delta.AgentID,
 		ScopeType:   delta.ScopeType,
@@ -436,7 +436,7 @@ func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta) error {
 		return err
 	}
 
-	monthStart := time.Date(bucketStart.Year(), bucketStart.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthStart := time.Date(bucketStart.Year(), bucketStart.Month(), 1, 0, 0, 0, 0, bucketStart.Location())
 	return incrementTrafficMonthlySummary(tx, AgentTrafficMonthlySummaryRow{
 		AgentID:     delta.AgentID,
 		ScopeType:   delta.ScopeType,
@@ -787,6 +787,16 @@ func monthlyTrafficBucketRows(rows []AgentTrafficMonthlySummaryRow) ([]TrafficBu
 
 func formatTrafficTime(value time.Time) string {
 	return value.UTC().Format(trafficTimeFormat)
+}
+
+func localHourStart(value time.Time) time.Time {
+	return LocalHourStart(value)
+}
+
+func LocalHourStart(value time.Time) time.Time {
+	return value.Add(-time.Duration(value.Minute())*time.Minute -
+		time.Duration(value.Second())*time.Second -
+		time.Duration(value.Nanosecond())*time.Nanosecond)
 }
 
 func parseTrafficTime(value string) (time.Time, error) {

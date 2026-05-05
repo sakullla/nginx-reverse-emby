@@ -8,16 +8,20 @@ import { fetchSystemInfo, fetchTrafficOverview, fetchTrafficSummary } from '../.
 let trafficStatsEnabled = true
 let hostTrend = []
 let overviewAgents = []
+let overviewAgentsByRequest = null
 let trafficSummaries = {}
 let lastQueryClient = null
 
 vi.mock('../../api', () => ({
   fetchSystemInfo: vi.fn(async () => ({ traffic_stats_enabled: trafficStatsEnabled })),
-  fetchTrafficOverview: vi.fn(async () => ({
-    trend: [],
-    host_trend: hostTrend,
-    agents: overviewAgents
-  })),
+  fetchTrafficOverview: vi.fn(async (agentId) => {
+    const agents = overviewAgentsByRequest?.[agentId || 'all'] ?? overviewAgents
+    return {
+      trend: [],
+      host_trend: hostTrend,
+      agents
+    }
+  }),
   fetchTrafficSummary: vi.fn(async (agentId) => trafficSummaries[agentId] ?? {
     http_rules: [{ scope_type: 'http_rule', scope_id: agentId, accounted_bytes: agentId === 'edge-3' ? 4096 : 1024 }],
     l4_rules: [],
@@ -69,6 +73,7 @@ describe('DashboardTrafficModule', () => {
         direction: 'both'
       }
     ]
+    overviewAgentsByRequest = null
     trafficSummaries = {}
     vi.clearAllMocks()
     vi.useRealTimers()
@@ -202,6 +207,22 @@ describe('DashboardTrafficModule', () => {
     expect(cycleCard?.exists()).toBe(true)
     expect(cycleCard.text()).toContain('2026-05-01')
     expect(cycleCard.text()).toContain('入站')
+  })
+
+  it('keeps all agents available after filtering to one agent', async () => {
+    overviewAgentsByRequest = {
+      all: overviewAgents,
+      'edge-1': [overviewAgents[0]]
+    }
+    const wrapper = await mountModule()
+    const select = wrapper.find('.dashboard-traffic__select')
+
+    await select.setValue('edge-1')
+    await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1'))
+    await nextTick()
+
+    const labels = wrapper.findAll('.dashboard-traffic__select option').map(option => option.text())
+    expect(labels).toEqual(['全部节点', 'edge-1', 'edge-2'])
   })
 
   it('shows mixed cycle label when aggregate agents have different cycle windows', async () => {

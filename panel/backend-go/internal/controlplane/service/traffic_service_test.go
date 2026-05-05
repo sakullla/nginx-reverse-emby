@@ -181,6 +181,136 @@ func TestTrafficServiceIngestHeartbeatParsesHostTrafficStats(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceIngestHeartbeatDailySummaryDefaultsToUTC(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	now := time.Date(2026, 5, 5, 1, 30, 0, 0, loc)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	stats := AgentStats{"traffic": map[string]any{"total": map[string]any{"rx_bytes": uint64(100), "tx_bytes": uint64(50)}}}
+	if err := svc.IngestHeartbeat(ctx, "edge-1", stats); err != nil {
+		t.Fatal(err)
+	}
+
+	points, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBucketStart := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	if len(points) != 1 || points[0].BucketStart != wantBucketStart || points[0].RXBytes != 100 || points[0].TXBytes != 50 {
+		t.Fatalf("points = %+v, want one UTC-day bucket at %s", points, wantBucketStart)
+	}
+}
+
+func TestTrafficServiceIngestHeartbeatDailySummaryUsesConfiguredTimezone(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 5, 4, 17, 30, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{
+		Enabled:  true,
+		Now:      func() time.Time { return now },
+		Timezone: shanghai,
+	}, store)
+
+	stats := AgentStats{"traffic": map[string]any{"total": map[string]any{"rx_bytes": uint64(100), "tx_bytes": uint64(50)}}}
+	if err := svc.IngestHeartbeat(ctx, "edge-1", stats); err != nil {
+		t.Fatal(err)
+	}
+
+	points, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBucketStart := time.Date(2026, 5, 5, 0, 0, 0, 0, shanghai).UTC().Format(time.RFC3339)
+	if len(points) != 1 || points[0].BucketStart != wantBucketStart || points[0].RXBytes != 100 || points[0].TXBytes != 50 {
+		t.Fatalf("points = %+v, want one configured-timezone bucket at %s", points, wantBucketStart)
+	}
+}
+
+func TestTrafficServiceTrendDateFiltersUseConfiguredTimezone(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{
+		Enabled:  true,
+		Timezone: shanghai,
+	}, store)
+
+	stats := AgentStats{"traffic": map[string]any{"total": map[string]any{"rx_bytes": uint64(100), "tx_bytes": uint64(50)}}}
+	svc.now = func() time.Time { return time.Date(2026, 5, 4, 17, 30, 0, 0, time.UTC) }
+	if err := svc.IngestHeartbeat(ctx, "edge-1", stats); err != nil {
+		t.Fatal(err)
+	}
+	svc.now = func() time.Time { return time.Date(2026, 5, 5, 17, 30, 0, 0, time.UTC) }
+	if err := svc.IngestHeartbeat(ctx, "edge-1", AgentStats{"traffic": map[string]any{"total": map[string]any{"rx_bytes": uint64(120), "tx_bytes": uint64(60)}}}); err != nil {
+		t.Fatal(err)
+	}
+	svc.now = func() time.Time { return time.Date(2026, 6, 1, 17, 30, 0, 0, time.UTC) }
+	if err := svc.IngestHeartbeat(ctx, "edge-1", AgentStats{"traffic": map[string]any{"total": map[string]any{"rx_bytes": uint64(130), "tx_bytes": uint64(70)}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	dailyPoints, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+		From:        "2026-05-05T00:00:00Z",
+		To:          "2026-05-06T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDailyBucketStart := time.Date(2026, 5, 5, 0, 0, 0, 0, shanghai).UTC().Format(time.RFC3339)
+	if len(dailyPoints) != 1 || dailyPoints[0].BucketStart != wantDailyBucketStart {
+		t.Fatalf("daily points = %+v, want local May 5 bucket at %s", dailyPoints, wantDailyBucketStart)
+	}
+
+	dailyEndOfDayPoints, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+		From:        "2026-05-05T00:00:00Z",
+		To:          "2026-05-05T23:59:59.999Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dailyEndOfDayPoints) != 1 || dailyEndOfDayPoints[0].BucketStart != wantDailyBucketStart {
+		t.Fatalf("daily end-of-day points = %+v, want local May 5 bucket at %s", dailyEndOfDayPoints, wantDailyBucketStart)
+	}
+
+	monthlyPoints, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        "2026-05-01T00:00:00Z",
+		To:          "2026-06-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMonthlyBucketStart := time.Date(2026, 5, 1, 0, 0, 0, 0, shanghai).UTC().Format(time.RFC3339)
+	if len(monthlyPoints) != 1 || monthlyPoints[0].BucketStart != wantMonthlyBucketStart {
+		t.Fatalf("monthly points = %+v, want local May bucket at %s", monthlyPoints, wantMonthlyBucketStart)
+	}
+}
+
 func TestTrafficServiceIngestHeartbeatParsesHostBootID(t *testing.T) {
 	samples := parseHeartbeatTrafficStats(AgentStats{"traffic": map[string]any{
 		"host": map[string]any{
@@ -915,6 +1045,109 @@ func TestTrafficServiceCalibrateAndCleanup(t *testing.T) {
 	}
 	if len(fakeStore.events) != 2 || fakeStore.events[1].EventType != "cleanup" {
 		t.Fatalf("events after cleanup = %+v, want cleanup event", fakeStore.events)
+	}
+}
+
+func TestTrafficServiceCalibrateUsesConfiguredTimezoneCycle(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 5, 4, 17, 30, 0, 0, time.UTC)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        5,
+		HourlyRetentionDays:  30,
+		DailyRetentionMonths: 3,
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: now,
+		RXBytes:     100,
+		TXBytes:     50,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{
+		Enabled:  true,
+		Now:      func() time.Time { return now },
+		Timezone: shanghai,
+	}, fakeStore)
+
+	summary, err := svc.Calibrate(context.Background(), "edge-1", TrafficCalibrationRequest{UsedBytes: 1234})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.CycleStart != "2026-05-04T16:00:00Z" || summary.UsedBytes != 1234 {
+		t.Fatalf("summary = %+v, want calibrated current Asia/Shanghai cycle", summary)
+	}
+	if _, ok := fakeStore.baselines["edge-1|2026-05-04T16:00:00Z"]; !ok {
+		t.Fatalf("baselines = %+v, want baseline saved under Asia/Shanghai cycle start", fakeStore.baselines)
+	}
+}
+
+func TestTrafficServiceCleanupUsesConfiguredTimezoneCutoffs(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	monthlyRetention := 36
+	now := time.Date(2026, 5, 4, 17, 30, 0, 0, time.UTC)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:                "edge-1",
+		Direction:              "both",
+		CycleStartDay:          1,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   3,
+		MonthlyRetentionMonths: &monthlyRetention,
+	}
+	svc := NewTrafficService(TrafficServiceConfig{
+		Enabled:  true,
+		Now:      func() time.Time { return now },
+		Timezone: shanghai,
+	}, fakeStore)
+
+	result, err := svc.Cleanup(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DailyBefore != "2026-02-04T16:00:00Z" {
+		t.Fatalf("DailyBefore = %q, want Asia/Shanghai midnight cutoff", result.DailyBefore)
+	}
+	if result.MonthlyBefore != "2023-04-30T16:00:00Z" {
+		t.Fatalf("MonthlyBefore = %q, want Asia/Shanghai month cutoff", result.MonthlyBefore)
+	}
+}
+
+func TestTrafficServiceCleanupTruncatesHourlyCutoffInConfiguredTimezone(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	kathmandu, err := time.LoadLocation("Asia/Kathmandu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 5, 5, 1, 30, 0, 0, kathmandu)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        5,
+		HourlyRetentionDays:  1,
+		DailyRetentionMonths: 3,
+	}
+	svc := NewTrafficService(TrafficServiceConfig{
+		Enabled:  true,
+		Now:      func() time.Time { return now },
+		Timezone: kathmandu,
+	}, fakeStore)
+
+	result, err := svc.Cleanup(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 5, 4, 1, 0, 0, 0, kathmandu).UTC().Format(time.RFC3339)
+	if result.HourlyBefore != want {
+		t.Fatalf("HourlyBefore = %q, want local-hour cutoff %q", result.HourlyBefore, want)
 	}
 }
 

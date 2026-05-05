@@ -230,7 +230,10 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 		bundledCache: make(map[string]bundledPackageCacheEntry),
 	}
 	if trafficStore, ok := store.(trafficStore); ok {
-		svc.trafficService = NewTrafficService(TrafficServiceConfig{Enabled: cfg.TrafficStatsEnabled}, trafficStore)
+		trafficCfg, err := NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
+		if err == nil {
+			svc.trafficService = NewTrafficService(trafficCfg, trafficStore)
+		}
 	}
 	return svc
 }

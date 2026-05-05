@@ -38,6 +38,8 @@ services:
       NRE_LOCAL_AGENT_NAME: local
       NRE_DATABASE_DRIVER: postgres
       NRE_DATABASE_DSN: postgres://nre:nre@127.0.0.1:5432/nre?sslmode=disable
+      # 控制面板统一时区；用于日/月汇总、周期边界和流量清理口径
+      NRE_TIMEZONE: Asia/Shanghai
 
       # DNS 验证示例（按需启用，如 Cloudflare）
       # ACME_DNS_PROVIDER: cf
