@@ -26,14 +26,17 @@ type fakeTrafficService struct {
 }
 
 type fakeTrafficServiceState struct {
-	policyAgentID    string
-	updateAgentID    string
-	updateInput      service.TrafficPolicy
-	summaryAgentID   string
-	trendQuery       service.TrafficTrendQuery
-	calibrateAgentID string
-	calibrationInput service.TrafficCalibrationRequest
-	cleanupAgentID   string
+	policyAgentID       string
+	updateAgentID       string
+	updateInput         service.TrafficPolicy
+	summaryAgentID      string
+	trendQuery          service.TrafficTrendQuery
+	overviewCalled      bool
+	overviewAgentFilter string
+	overviewGranularity string
+	calibrateAgentID    string
+	calibrationInput    service.TrafficCalibrationRequest
+	cleanupAgentID      string
 }
 
 func (f fakeTrafficService) GetPolicy(_ context.Context, agentID string) (service.TrafficPolicy, error) {
@@ -98,7 +101,10 @@ func (f fakeTrafficService) Cleanup(_ context.Context, agentID string) (service.
 	return f.cleanup, nil
 }
 
-func (f fakeTrafficService) Overview(_ context.Context, _ string, _ map[string]string) (service.TrafficOverviewResult, error) {
+func (f fakeTrafficService) Overview(_ context.Context, _ string, _ string, _ map[string]string) (service.TrafficOverviewResult, error) {
+	if f.state != nil {
+		f.state.overviewCalled = true
+	}
 	if f.err != nil {
 		return service.TrafficOverviewResult{}, f.err
 	}
@@ -422,7 +428,9 @@ func TestTrafficHandlersForwardPolicySummaryCalibrationAndCleanup(t *testing.T) 
 }
 
 func TestTrafficOverviewReturnsHostTrend(t *testing.T) {
+	state := &fakeTrafficServiceState{}
 	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{
+		state: state,
 		overview: service.TrafficOverviewResult{
 			Agents: []service.TrafficOverviewAgent{
 				{
@@ -455,9 +463,9 @@ func TestTrafficOverviewReturnsHostTrend(t *testing.T) {
 		t.Fatalf("GET traffic-overview = %d body=%s", resp.Code, resp.Body.String())
 	}
 	var payload struct {
-		OK        bool                        `json:"ok"`
+		OK        bool                           `json:"ok"`
 		Agents    []service.TrafficOverviewAgent `json:"agents"`
-		HostTrend []service.TrafficTrendPoint `json:"host_trend"`
+		HostTrend []service.TrafficTrendPoint    `json:"host_trend"`
 	}
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
@@ -467,6 +475,28 @@ func TestTrafficOverviewReturnsHostTrend(t *testing.T) {
 	}
 	if len(payload.Agents) != 1 || payload.Agents[0].CycleStart != "2026-05-01T00:00:00Z" || payload.Agents[0].CycleEnd != "2026-06-01T00:00:00Z" {
 		t.Fatalf("overview agents = %+v", payload.Agents)
+	}
+}
+
+func TestTrafficOverviewRejectsInvalidGranularity(t *testing.T) {
+	state := &fakeTrafficServiceState{}
+	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{
+		state: state,
+	}))
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/traffic-overview?granularity=week", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("GET traffic-overview invalid granularity = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if state.overviewCalled {
+		t.Fatal("Overview() was called for invalid granularity")
 	}
 }
 

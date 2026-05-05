@@ -5,20 +5,27 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import DashboardTrafficModule from './DashboardTrafficModule.vue'
 import { fetchSystemInfo, fetchTrafficOverview, fetchTrafficSummary } from '../../api'
 
+const routerPush = vi.fn()
+
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: routerPush })
+}))
+
 let trafficStatsEnabled = true
-let hostTrend = []
 let overviewAgents = []
+let overviewTrend = []
+let overviewHostTrend = []
 let overviewAgentsByRequest = null
 let trafficSummaries = {}
 let lastQueryClient = null
 
 vi.mock('../../api', () => ({
   fetchSystemInfo: vi.fn(async () => ({ traffic_stats_enabled: trafficStatsEnabled })),
-  fetchTrafficOverview: vi.fn(async (agentId) => {
+  fetchTrafficOverview: vi.fn(async (agentId, granularity) => {
     const agents = overviewAgentsByRequest?.[agentId || 'all'] ?? overviewAgents
     return {
-      trend: [],
-      host_trend: hostTrend,
+      trend: overviewTrend,
+      host_trend: overviewHostTrend,
       agents
     }
   }),
@@ -28,6 +35,12 @@ vi.mock('../../api', () => ({
     relay_listeners: []
   })
 }))
+
+const ApexChartStub = {
+  name: 'apexchart',
+  template: '<div data-testid="apexchart" />',
+  props: ['type', 'options', 'series', 'height', 'width']
+}
 
 function createQueryClient() {
   lastQueryClient = new QueryClient({
@@ -42,7 +55,10 @@ function createQueryClient() {
 async function mountModule() {
   const wrapper = mount(DashboardTrafficModule, {
     global: {
-      plugins: [[VueQueryPlugin, { queryClient: createQueryClient() }]]
+      plugins: [[VueQueryPlugin, { queryClient: createQueryClient() }]],
+      stubs: {
+        apexchart: ApexChartStub
+      }
     }
   })
   await nextTick()
@@ -54,7 +70,6 @@ async function mountModule() {
 describe('DashboardTrafficModule', () => {
   beforeEach(() => {
     trafficStatsEnabled = true
-    hostTrend = []
     overviewAgents = [
       {
         agent_id: 'edge-1',
@@ -74,19 +89,20 @@ describe('DashboardTrafficModule', () => {
       }
     ]
     overviewAgentsByRequest = null
+    overviewTrend = []
+    overviewHostTrend = []
     trafficSummaries = {}
     vi.clearAllMocks()
+    routerPush.mockClear()
     vi.useRealTimers()
   })
 
   it('shows aggregate business traffic without quota bars when no quota is set', async () => {
     const wrapper = await mountModule()
 
-    const businessCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('业务流量'))
-    expect(wrapper.text()).toContain('业务流量')
+    expect(wrapper.text()).toContain('节点分布')
     expect(wrapper.text()).toContain('3.00 KiB')
-    expect(businessCard?.text()).not.toContain('%')
+    expect(wrapper.text()).not.toContain('%')
     expect(wrapper.text()).toContain('Top 节点')
     expect(wrapper.text()).toContain('edge-1')
     expect(wrapper.text()).toContain('edge-2')
@@ -102,19 +118,10 @@ describe('DashboardTrafficModule', () => {
     expect(wrapper.find('.dashboard-traffic').exists()).toBe(false)
   })
 
-  it('labels host traffic as daily overview data instead of 24h usage', async () => {
-    hostTrend = [
-      { bucket_start: '2026-05-03T11:00:00.000Z', accounted_bytes: 1024 },
-      { bucket_start: '2026-05-04T00:00:00.000Z', accounted_bytes: 2048 }
-    ]
+  it('loads the dashboard overview at day granularity by default', async () => {
+    await mountModule()
 
-    const wrapper = await mountModule()
-
-    const hostCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('主机流量（日汇总）'))
-    expect(hostCard?.exists()).toBe(true)
-    expect(hostCard.text()).toContain('3.00 KiB')
-    expect(hostCard.text()).not.toContain('24h')
+    expect(fetchTrafficOverview).toHaveBeenCalledWith(null, 'day')
   })
 
   it('keeps top rules from different agents separate when rule ids overlap', async () => {
@@ -134,14 +141,52 @@ describe('DashboardTrafficModule', () => {
     const wrapper = await mountModule()
     await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge-2'))
 
-    const topRulesPanel = wrapper.findAll('.dashboard-traffic__list-panel')
-      .find(panel => panel.text().includes('Top 规则'))
+    const topRulesPanel = wrapper.find('.bento-card--top-rules')
     expect(topRulesPanel?.exists()).toBe(true)
     expect(topRulesPanel.text()).toContain('edge-1 / HTTP #1')
     expect(topRulesPanel.text()).toContain('edge-2 / HTTP #1')
     expect(topRulesPanel.text()).toContain('1.00 KiB')
     expect(topRulesPanel.text()).toContain('2.00 KiB')
-    expect(topRulesPanel.findAll('.dashboard-traffic__list-row')).toHaveLength(2)
+    expect(topRulesPanel.findAll('.top-row')).toHaveLength(2)
+  })
+
+  it('navigates top rules using the complete hyphenated agent id', async () => {
+    trafficSummaries = {
+      'edge-1': {
+        http_rules: [{ scope_type: 'http_rule', scope_id: '1', accounted_bytes: 1024 }],
+        l4_rules: [],
+        relay_listeners: []
+      },
+      'edge-2': {
+        http_rules: [],
+        l4_rules: [],
+        relay_listeners: []
+      }
+    }
+
+    const wrapper = await mountModule()
+    await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge-1'))
+
+    await wrapper.find('.bento-card--top-rules .top-row').trigger('click')
+
+    expect(routerPush).toHaveBeenCalledWith('/agents/edge-1')
+  })
+
+  it('does not pass host trend as a separate dashboard chart series', async () => {
+    overviewTrend = [
+      { bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 10, tx_bytes: 20, accounted_bytes: 30 }
+    ]
+    overviewHostTrend = [
+      { bucket_start: '2026-05-02T00:00:00Z', rx_bytes: 100, tx_bytes: 200, accounted_bytes: 300 }
+    ]
+
+    const wrapper = await mountModule()
+    const chart = wrapper.findComponent({ name: 'TrafficTrendChart' })
+
+    expect(chart.props('points')).toEqual([
+      { bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 10, tx_bytes: 20, accounted_bytes: 30 }
+    ])
+    expect(chart.props()).not.toHaveProperty('hostPoints')
   })
 
   it('shows zero quotas as real quota progress', async () => {
@@ -156,12 +201,9 @@ describe('DashboardTrafficModule', () => {
 
     const wrapper = await mountModule()
 
-    const businessCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('业务流量'))
-    expect(businessCard?.exists()).toBe(true)
-    expect(businessCard.text()).toContain('100%')
+    const quotaCard = wrapper.find('.bento-card--quota')
+    expect(quotaCard?.exists()).toBe(true)
     expect(wrapper.text()).toContain('edge-1')
-    expect(wrapper.text()).toContain('100%')
   })
 
   it('refetches top rules when the all-node agent set changes', async () => {
@@ -180,8 +222,8 @@ describe('DashboardTrafficModule', () => {
         direction: 'both'
       }
     ]
-    await wrapper.vm.$.appContext.config.globalProperties.$queryClient?.invalidateQueries?.({ queryKey: ['traffic-overview', 'all'] })
-    await lastQueryClient.invalidateQueries({ queryKey: ['traffic-overview', 'all'] })
+    await wrapper.vm.$.appContext.config.globalProperties.$queryClient?.invalidateQueries?.({ queryKey: ['traffic-overview', 'all', 'day'] })
+    await lastQueryClient.invalidateQueries({ queryKey: ['traffic-overview', 'all', 'day'] })
     await wrapper.vm.$nextTick()
     await vi.dynamicImportSettled()
 
@@ -202,8 +244,7 @@ describe('DashboardTrafficModule', () => {
 
     const wrapper = await mountModule()
 
-    const cycleCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('计费周期'))
+    const cycleCard = wrapper.find('.bento-card--cycle')
     expect(cycleCard?.exists()).toBe(true)
     expect(cycleCard.text()).toContain('2026-05-01')
     expect(cycleCard.text()).toContain('入站')
@@ -215,14 +256,28 @@ describe('DashboardTrafficModule', () => {
       'edge-1': [overviewAgents[0]]
     }
     const wrapper = await mountModule()
-    const select = wrapper.find('.dashboard-traffic__select')
+    const trigger = wrapper.find('.agent-picker__trigger')
+    expect(trigger.exists()).toBe(true)
 
-    await select.setValue('edge-1')
-    await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1'))
+    await trigger.trigger('click')
     await nextTick()
 
-    const labels = wrapper.findAll('.dashboard-traffic__select option').map(option => option.text())
-    expect(labels).toEqual(['全部节点', 'edge-1', 'edge-2'])
+    const items = wrapper.findAll('.agent-picker__item')
+    const edge1Item = items.find(item => item.text().includes('edge-1'))
+    expect(edge1Item).toBeTruthy()
+    await edge1Item.trigger('click')
+    await nextTick()
+
+    await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1', 'day'))
+    await nextTick()
+
+    await trigger.trigger('click')
+    await nextTick()
+
+    const labels = wrapper.findAll('.agent-picker__item').map(item => item.text())
+    expect(labels).toContain('全部节点')
+    expect(labels).toContain('edge-1')
+    expect(labels).toContain('edge-2')
   })
 
   it('shows mixed cycle label when aggregate agents have different cycle windows', async () => {
@@ -251,8 +306,7 @@ describe('DashboardTrafficModule', () => {
 
     const wrapper = await mountModule()
 
-    const cycleCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('计费周期'))
+    const cycleCard = wrapper.find('.bento-card--cycle')
     expect(cycleCard?.exists()).toBe(true)
     expect(cycleCard.text()).toContain('多节点混合')
     expect(cycleCard.text()).not.toContain('2026-05-01')

@@ -1,27 +1,40 @@
 <template>
   <div class="traffic-trend-chart">
-    <canvas ref="canvasRef"></canvas>
+    <apexchart
+      v-if="hasData"
+      :key="chartKey"
+      type="area"
+      :options="chartOptions"
+      :series="series"
+      height="100%"
+      width="100%"
+    />
+    <div v-else class="traffic-trend-chart__empty">
+      <span class="traffic-trend-chart__empty-text">暂无数据</span>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { Chart, registerables } from 'chart.js'
+import { computed } from 'vue'
 import { formatBytes } from '../../utils/trafficStats.js'
-
-Chart.register(...registerables)
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
   prevPoints: { type: Array, default: null },
-  hostPoints: { type: Array, default: null },
   granularity: { type: String, default: 'day' },
   quotaBytes: { type: Number, default: null },
   budgetBytes: { type: Number, default: null }
 })
 
-const canvasRef = ref(null)
-let chartInstance = null
+const hasData = computed(() => {
+  return Array.isArray(props.points) && props.points.length > 0
+})
+
+const chartKey = computed(() => {
+  const sum = props.points.reduce((s, p) => s + (p.accounted_bytes || 0), 0)
+  return `${props.granularity}-${props.points.length}-${sum}`
+})
 
 function formatLabel(bucketStart) {
   if (!bucketStart) return ''
@@ -40,14 +53,12 @@ function bucketKey(point) {
   return String(point?.bucket_start || '')
 }
 
-function uniqueBucketStarts(currentPoints, hostPoints) {
+function uniqueBucketStarts(currentPoints) {
   const buckets = []
-  for (const points of [currentPoints, hostPoints]) {
-    if (!Array.isArray(points)) continue
-    for (const point of points) {
-      const key = bucketKey(point)
-      if (key) buckets.push(key)
-    }
+  if (!Array.isArray(currentPoints)) return buckets
+  for (const point of currentPoints) {
+    const key = bucketKey(point)
+    if (key) buckets.push(key)
   }
   return [...new Set(buckets)].sort()
 }
@@ -83,180 +94,147 @@ function alignPrevSeries(bucketStarts, currentPoints, prevPoints) {
   return series
 }
 
-function buildConfig() {
-  const bucketStarts = uniqueBucketStarts(props.points, props.hostPoints)
-  const labels = bucketStarts.map(formatLabel)
-  const accountedData = alignToBuckets(bucketStarts, props.points)
+const labels = computed(() => {
+  const bucketStarts = uniqueBucketStarts(props.points)
+  return bucketStarts.map(formatLabel)
+})
+
+const series = computed(() => {
+  const bucketStarts = uniqueBucketStarts(props.points)
+  const datasets = []
+
+  datasets.push({
+    name: '用量',
+    data: alignToBuckets(bucketStarts, props.points)
+  })
+
   const rxData = bucketStarts.map((bucket) => {
     const point = Array.isArray(props.points) ? props.points.find((item) => bucketKey(item) === bucket) : null
     return point ? (Number(point.rx_bytes) || 0) : null
   })
+  datasets.push({ name: 'RX', data: rxData })
+
   const txData = bucketStarts.map((bucket) => {
     const point = Array.isArray(props.points) ? props.points.find((item) => bucketKey(item) === bucket) : null
     return point ? (Number(point.tx_bytes) || 0) : null
   })
-  const datasets = [
-    {
-      label: '用量',
-      data: accountedData,
-      borderColor: 'rgba(59, 130, 246, 0.9)',
-      backgroundColor: 'rgba(59, 130, 246, 0.12)',
-      fill: true,
-      tension: 0.3,
-      pointRadius: 2,
-      pointHoverRadius: 5,
-      order: 1
-    },
-    {
-      label: 'RX',
-      data: rxData,
-      borderColor: 'rgba(99, 102, 241, 0.6)',
-      backgroundColor: 'rgba(99, 102, 241, 0.05)',
-      fill: false,
-      tension: 0.3,
-      pointRadius: 1,
-      pointHoverRadius: 3,
-      borderWidth: 1.5,
-      order: 2
-    },
-    {
-      label: 'TX',
-      data: txData,
-      borderColor: 'rgba(16, 185, 129, 0.6)',
-      backgroundColor: 'rgba(16, 185, 129, 0.05)',
-      fill: false,
-      tension: 0.3,
-      pointRadius: 1,
-      pointHoverRadius: 3,
-      borderWidth: 1.5,
-      order: 3
-    }
-  ]
-  if (Array.isArray(props.hostPoints) && props.hostPoints.length > 0) {
-    const hostData = alignToBuckets(bucketStarts, props.hostPoints)
-    datasets.push({
-      label: '主机流量',
-      data: hostData,
-      borderColor: 'rgba(139, 92, 246, 0.8)',
-      backgroundColor: 'rgba(139, 92, 246, 0.08)',
-      fill: true,
-      tension: 0.3,
-      pointRadius: 1,
-      pointHoverRadius: 4,
-      borderWidth: 2,
-      order: 4
-    })
-  }
+  datasets.push({ name: 'TX', data: txData })
+
   if (Array.isArray(props.prevPoints) && props.prevPoints.length > 0) {
-    const prevData = alignPrevSeries(bucketStarts, props.points, props.prevPoints)
     datasets.push({
-      label: '上期',
-      data: prevData,
-      borderColor: 'rgba(156, 163, 175, 0.7)',
-      backgroundColor: 'transparent',
-      borderDash: [4, 4],
-      fill: false,
-      tension: 0.3,
-      pointRadius: 0,
-      pointHoverRadius: 3,
-      borderWidth: 1.5,
-      order: 4,
-      spanGaps: true
+      name: '上期',
+      data: alignPrevSeries(bucketStarts, props.points, props.prevPoints)
     })
   }
+
   if (props.budgetBytes != null && props.budgetBytes > 0 && props.granularity !== 'month') {
     datasets.push({
-      label: '日均预算',
-      data: labels.map(() => props.budgetBytes),
-      borderColor: 'rgba(245, 158, 11, 0.6)',
-      borderDash: [6, 3],
-      borderWidth: 1,
-      pointRadius: 0,
-      fill: false,
-      order: 5
+      name: '日均预算',
+      data: bucketStarts.map(() => props.budgetBytes)
     })
   }
+
   if (props.quotaBytes != null && props.quotaBytes > 0 && props.granularity === 'month') {
     datasets.push({
-      label: '月额度',
-      data: labels.map(() => props.quotaBytes),
-      borderColor: 'rgba(239, 68, 68, 0.5)',
-      borderDash: [6, 4],
-      borderWidth: 1,
-      pointRadius: 0,
-      fill: false,
-      order: 6
+      name: '月额度',
+      data: bucketStarts.map(() => props.quotaBytes)
     })
   }
-  return {
-    type: 'line',
-    data: { labels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { display: true, position: 'top', labels: { boxWidth: 12, padding: 12, font: { size: 12 } } },
-        tooltip: {
-          callbacks: {
-            label: (ctx) => {
-              const value = ctx.parsed.y
-              return ` ${ctx.dataset.label}: ${formatBytes(value)}`
-            }
-          }
-        }
-      },
-      scales: {
-        x: {
-          grid: { display: false },
-          ticks: { maxRotation: 45, font: { size: 11 } }
-        },
-        y: {
-          beginAtZero: true,
-          grid: { color: 'rgba(0, 0, 0, 0.05)' },
-          ticks: {
-            font: { size: 11 },
-            callback: (value) => formatBytes(value)
-          }
-        }
-      }
-    }
-  }
-}
 
-function renderChart() {
-  if (!canvasRef.value) return
-  if (typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent || '')) return
-  if (chartInstance) {
-    chartInstance.destroy()
-    chartInstance = null
-  }
-  let ctx = null
-  try {
-    ctx = typeof canvasRef.value.getContext === 'function' ? canvasRef.value.getContext('2d') : null
-  } catch {
-    ctx = null
-  }
-  if (!ctx) return
-  chartInstance = new Chart(ctx, buildConfig())
-}
-
-onMounted(renderChart)
-
-watch(() => [props.points, props.prevPoints, props.hostPoints, props.granularity, props.quotaBytes, props.budgetBytes], renderChart, { deep: true })
-
-onUnmounted(() => {
-  if (chartInstance) {
-    chartInstance.destroy()
-    chartInstance = null
-  }
+  return datasets
 })
+
+const seriesStyles = {
+  '用量': { color: '#3b82f6', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.12 },
+  RX: { color: '#6366f1', width: 1.5, dashArray: 0, fillType: 'none', fillOpacity: 0 },
+  TX: { color: '#10b981', width: 1.5, dashArray: 0, fillType: 'none', fillOpacity: 0 },
+  '上期': { color: '#8b5cf6', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.08 },
+  '日均预算': { color: '#f59e0b', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 },
+  '月额度': { color: '#ef4444', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 }
+}
+
+const fallbackSeriesStyle = { color: '#9ca3af', width: 1.5, dashArray: 4, fillType: 'none', fillOpacity: 0 }
+
+const chartSeriesStyles = computed(() => {
+  return series.value.map((item) => seriesStyles[item.name] || fallbackSeriesStyle)
+})
+
+const chartOptions = computed(() => ({
+  chart: {
+    type: 'area',
+    toolbar: { show: false },
+    animations: { enabled: false },
+    fontFamily: 'inherit'
+  },
+  colors: chartSeriesStyles.value.map((style) => style.color),
+  stroke: {
+    curve: 'smooth',
+    width: chartSeriesStyles.value.map((style) => style.width),
+    dashArray: chartSeriesStyles.value.map((style) => style.dashArray)
+  },
+  fill: {
+    type: chartSeriesStyles.value.map((style) => style.fillType),
+    opacity: chartSeriesStyles.value.map((style) => style.fillOpacity)
+  },
+  dataLabels: { enabled: false },
+  legend: {
+    position: 'top',
+    fontSize: '12px',
+    markers: { width: 12, height: 12, radius: 2 }
+  },
+  tooltip: {
+    shared: true,
+    intersect: false,
+    y: {
+      formatter: (value) => formatBytes(value)
+    }
+  },
+  xaxis: {
+    categories: labels.value,
+    tooltip: { enabled: false },
+    labels: {
+      style: { fontSize: '11px' },
+      rotate: labels.value.length > 12 ? -45 : 0,
+      rotateAlways: labels.value.length > 12,
+      hideOverlappingLabels: true
+    },
+    axisBorder: { show: false },
+    axisTicks: { show: false }
+  },
+  yaxis: {
+    labels: {
+      style: { fontSize: '11px' },
+      formatter: (value) => formatBytes(value)
+    }
+  },
+  grid: {
+    borderColor: 'rgba(0,0,0,0.05)',
+    strokeDashArray: 0,
+    xaxis: { lines: { show: false } }
+  },
+  markers: {
+    size: 0,
+    hover: { size: 0 }
+  }
+}))
 </script>
 
 <style scoped>
 .traffic-trend-chart {
   position: relative;
   width: 100%;
-  height: 280px;
+  height: 100%;
+  min-height: 260px;
+}
+.traffic-trend-chart__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 260px;
+}
+.traffic-trend-chart__empty-text {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
 }
 </style>

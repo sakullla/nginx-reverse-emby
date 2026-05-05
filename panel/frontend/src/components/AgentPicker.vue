@@ -1,13 +1,18 @@
 <template>
   <div class="agent-picker" ref="pickerRef">
-    <button class="agent-picker__trigger" @click="open = !open">
+    <button ref="triggerRef" class="agent-picker__trigger" @click="open = !open">
       <span class="agent-picker__trigger-text">{{ selectedLabel }}</span>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"/>
       </svg>
     </button>
 
-    <div v-if="open" class="agent-picker__dropdown">
+    <div
+      v-if="open"
+      ref="dropdownRef"
+      class="agent-picker__dropdown"
+      :style="dropdownStyle"
+    >
       <!-- Search -->
       <div class="agent-picker__search">
         <input
@@ -35,14 +40,21 @@
       <!-- Agent List -->
       <div class="agent-picker__list">
         <button
+          v-if="showAllOption"
+          class="agent-picker__item agent-picker__item--all"
+          @click="selectAll()"
+        >
+          <span class="agent-picker__item-name">{{ allLabel }}</span>
+        </button>
+        <button
           v-for="agent in displayedAgents"
-          :key="agent.id"
+          :key="agent.id || agent.agent_id"
           class="agent-picker__item"
           @click="selectAgent(agent)"
         >
-          <span class="agent-picker__dot" :class="`agent-picker__dot--${getAgentStatus(agent)}`"></span>
+          <span v-if="agent.status != null || agent.desired_revision != null" class="agent-picker__dot" :class="`agent-picker__dot--${getAgentStatus(agent)}`"></span>
           <span class="agent-picker__item-name">{{ agent.name }}</span>
-          <span class="agent-picker__item-time">{{ timeAgo(agent.last_seen_at) }}</span>
+          <span v-if="agent.last_seen_at" class="agent-picker__item-time">{{ timeAgo(agent.last_seen_at) }}</span>
         </button>
         <div v-if="!displayedAgents.length" class="agent-picker__empty">没有匹配的节点</div>
       </div>
@@ -70,21 +82,28 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { getAgentStatus, timeAgo } from '../utils/agentHelpers.js'
 
 const props = defineProps({
   agents: { type: Array, default: () => [] },
-  modelValue: { type: Object, default: null }
+  modelValue: { type: Object, default: null },
+  modelId: { type: String, default: null },
+  showAllOption: { type: Boolean, default: false },
+  allLabel: { type: String, default: '全部节点' },
+  allValue: { type: String, default: '' }
 })
 
-const emit = defineEmits(['select', 'update:modelValue'])
+const emit = defineEmits(['select', 'update:modelValue', 'update:modelId'])
 
 const open = ref(false)
 const searchQuery = ref('')
 const statusFilter = ref('')
 const sortBy = ref('last_seen')
 const pickerRef = ref(null)
+const triggerRef = ref(null)
+const dropdownRef = ref(null)
+const dropdownStyle = ref({})
 
 const statusOptions = [
   { value: '', label: '全部' },
@@ -92,9 +111,17 @@ const statusOptions = [
   { value: 'offline', label: '离线' }
 ]
 
-const selectedLabel = computed(() =>
-  props.modelValue ? props.modelValue.name : '选择节点...'
-)
+const selectedLabel = computed(() => {
+  if (props.showAllOption && (props.modelId === props.allValue || props.modelId == null)) {
+    return props.allLabel
+  }
+  if (props.modelId != null) {
+    const found = props.agents.find(a => a.agent_id === props.modelId || a.id === props.modelId)
+    if (found) return found.name
+    return props.modelId
+  }
+  return props.modelValue ? props.modelValue.name : '选择节点...'
+})
 
 const displayedAgents = computed(() => {
   let result = [...(props.agents || [])]
@@ -126,22 +153,88 @@ const displayedAgents = computed(() => {
   return result
 })
 
+function updateDropdownPosition() {
+  if (!open.value || !triggerRef.value) return
+  if (window.innerWidth <= 640) {
+    dropdownStyle.value = { position: 'fixed', zIndex: 9999 }
+    return
+  }
+  const rect = triggerRef.value.getBoundingClientRect()
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const dropdownWidth = Math.max(rect.width, 220)
+
+  let left = rect.left
+  let top = rect.bottom + 6
+
+  if (left + dropdownWidth > viewportWidth - 8) {
+    left = viewportWidth - dropdownWidth - 8
+  }
+
+  const estimatedHeight = Math.min(320, viewportHeight * 0.6)
+  if (top + estimatedHeight > viewportHeight - 8) {
+    top = rect.top - estimatedHeight - 6
+  }
+
+  dropdownStyle.value = {
+    position: 'fixed',
+    top: `${top}px`,
+    left: `${left}px`,
+    width: `${dropdownWidth}px`,
+    zIndex: 9999
+  }
+}
+
+watch(open, (val) => {
+  if (val) {
+    nextTick(() => updateDropdownPosition())
+  }
+})
+
+function handleResize() {
+  if (open.value) {
+    updateDropdownPosition()
+  }
+}
+
 function selectAgent(agent) {
   emit('update:modelValue', agent)
+  if (props.modelId != null) {
+    emit('update:modelId', agent.agent_id || agent.id)
+  }
   emit('select', agent)
   open.value = false
   searchQuery.value = ''
   statusFilter.value = ''
 }
 
+function selectAll() {
+  if (props.modelId != null) {
+    emit('update:modelId', props.allValue)
+  }
+  emit('select', null)
+  open.value = false
+  searchQuery.value = ''
+  statusFilter.value = ''
+}
+
 function handleClickOutside(e) {
-  if (pickerRef.value && !pickerRef.value.contains(e.target)) {
+  if (
+    pickerRef.value && !pickerRef.value.contains(e.target) &&
+    dropdownRef.value && !dropdownRef.value.contains(e.target)
+  ) {
     open.value = false
   }
 }
 
-onMounted(() => document.addEventListener('mousedown', handleClickOutside))
-onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
+onMounted(() => {
+  document.addEventListener('mousedown', handleClickOutside)
+  window.addEventListener('resize', handleResize)
+})
+onUnmounted(() => {
+  document.removeEventListener('mousedown', handleClickOutside)
+  window.removeEventListener('resize', handleResize)
+})
 </script>
 
 <style scoped>
@@ -167,16 +260,10 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   border-color: var(--color-primary);
 }
 .agent-picker__dropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  width: 100%;
-  min-width: 280px;
   background: var(--color-bg-surface-raised);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
-  z-index: var(--z-dropdown);
   overflow: hidden;
 }
 .agent-picker__search {
@@ -244,6 +331,18 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 .agent-picker__item:hover {
   background: var(--color-bg-hover);
 }
+.agent-picker__item--all {
+  font-weight: 500;
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  margin: 0 0.25rem;
+  padding-left: 0.375rem;
+  width: calc(100% - 0.5rem);
+}
+.agent-picker__item--all:hover {
+  border-radius: var(--radius-md);
+  margin: 0 0.25rem;
+}
 .agent-picker__dot {
   width: 7px;
   height: 7px;
@@ -295,5 +394,28 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   background: var(--color-primary-subtle);
   color: var(--color-primary);
   font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  .agent-picker__trigger {
+    min-width: 140px;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.8125rem;
+  }
+  .agent-picker__dropdown {
+    position: fixed;
+    top: auto;
+    left: 0.75rem;
+    right: 0.75rem;
+    width: auto;
+    min-width: auto;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .agent-picker__list {
+    flex: 1;
+    max-height: none;
+  }
 }
 </style>

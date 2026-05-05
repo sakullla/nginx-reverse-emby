@@ -549,9 +549,10 @@ export async function cleanupTraffic(agentId) {
   return data.result
 }
 
-export async function fetchTrafficOverview(agentId) {
+export async function fetchTrafficOverview(agentId, granularity) {
   const params = new URLSearchParams()
   if (agentId) params.set('agent_id', agentId)
+  if (granularity) params.set('granularity', granularity)
   const suffix = params.toString() ? `?${params.toString()}` : ''
   const { data } = await api.get(`/traffic-overview${suffix}`)
   return data

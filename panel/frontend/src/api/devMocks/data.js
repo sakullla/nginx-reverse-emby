@@ -837,17 +837,71 @@ export async function cleanupTraffic(agentId) {
   return data.result
 }
 
-export async function fetchTrafficOverview(agentId) {
+function createSeededRandom(seed) {
+  let s = seed
+  return () => {
+    s = (s * 16807 + 0) % 2147483647
+    return (s - 1) / 2147483646
+  }
+}
+
+const ALL_MOCK_AGENTS = [
+  { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+  { agent_id: 'mock-2', name: '节点-B', used_bytes: 536870912, quota_bytes: 1073741824, remaining_bytes: 536870912, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+  { agent_id: 'mock-3', name: '节点-C', used_bytes: 3221225472, quota_bytes: 3221225472, remaining_bytes: 0, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: true }
+]
+
+export async function fetchTrafficOverview(agentId, granularity) {
   if (isDev) {
     await sleep()
+    const seed = agentId ? agentId.split('').reduce((s, c) => s + c.charCodeAt(0), 0) : 42
+    let trend
+    if (granularity === 'month') {
+      const rng = createSeededRandom(seed)
+      trend = Array.from({ length: 12 }, (_, i) => {
+        const month = String(i + 1).padStart(2, '0')
+        return {
+          bucket_start: `2026-${month}-01T00:00:00Z`,
+          rx_bytes: Math.round(rng() * 800000000 + 200000000),
+          tx_bytes: Math.round(rng() * 600000000 + 100000000),
+          accounted_bytes: Math.round(rng() * 1000000000 + 500000000)
+        }
+      })
+    } else if (granularity === 'day') {
+      const rng = createSeededRandom(seed)
+      trend = Array.from({ length: 30 }, (_, i) => {
+        const day = String(i + 1).padStart(2, '0')
+        return {
+          bucket_start: `2026-05-${day}T00:00:00Z`,
+          rx_bytes: Math.round(rng() * 80000000 + 20000000),
+          tx_bytes: Math.round(rng() * 60000000 + 10000000),
+          accounted_bytes: Math.round(rng() * 100000000 + 50000000)
+        }
+      })
+    } else {
+      const rng = createSeededRandom(seed)
+      trend = Array.from({ length: 24 }, (_, i) => {
+        const hour = String(i).padStart(2, '0')
+        return {
+          bucket_start: `2026-05-05T${hour}:00:00Z`,
+          rx_bytes: Math.round(rng() * 80000000 + 20000000),
+          tx_bytes: Math.round(rng() * 60000000 + 10000000),
+          accounted_bytes: Math.round(rng() * 100000000 + 50000000)
+        }
+      })
+    }
+    const agents = agentId
+      ? ALL_MOCK_AGENTS.filter(a => a.agent_id === agentId)
+      : ALL_MOCK_AGENTS
     return {
       ok: true,
-      agents: [],
-      trend: []
+      agents,
+      trend
     }
   }
   const params = new URLSearchParams()
   if (agentId) params.set('agent_id', agentId)
+  if (granularity) params.set('granularity', granularity)
   const suffix = params.toString() ? `?${params.toString()}` : ''
   const { data } = await api.get(`/traffic-overview${suffix}`)
   return data

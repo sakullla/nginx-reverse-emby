@@ -3,62 +3,98 @@
     <div class="dashboard-traffic__header">
       <h2 class="dashboard-traffic__title">流量统计</h2>
       <div class="dashboard-traffic__toolbar">
-        <select v-model="selectedAgentId" class="dashboard-traffic__select">
-          <option value="">全部节点</option>
-          <option v-for="agent in selectableAgents" :key="agent.agent_id" :value="agent.agent_id">{{ agent.name }}</option>
-        </select>
+        <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
+          <button
+            v-for="option in granularityOptions"
+            :key="option.value"
+            type="button"
+            class="dashboard-traffic__granularity-btn"
+            :class="{ 'dashboard-traffic__granularity-btn--active': granularity === option.value }"
+            @click="granularity = option.value"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+        <AgentPicker
+          :agents="selectableAgents"
+          v-model:model-id="selectedAgentId"
+          :show-all-option="true"
+          all-label="全部节点"
+          class="dashboard-traffic__agent-picker"
+        />
       </div>
     </div>
+
     <div v-if="overviewQuery.isLoading.value" class="dashboard-traffic__loading">
       <div class="spinner"></div>
     </div>
+
     <template v-else>
-      <div class="dashboard-traffic__cards">
-        <div class="dashboard-traffic__card">
-          <span class="dashboard-traffic__card-label">业务流量</span>
-          <span class="dashboard-traffic__card-value">{{ formatBytes(selectedSummary?.used_bytes ?? 0) }}</span>
-          <span v-if="selectedPercent != null" class="dashboard-traffic__card-percent" :class="`dashboard-traffic__card-percent--${selectedColor}`">{{ selectedPercent }}%</span>
-          <div v-if="selectedPercent != null" class="dashboard-traffic__card-track">
-            <div class="dashboard-traffic__card-fill" :class="`dashboard-traffic__card-fill--${selectedColor}`" :style="{ width: `${Math.min(100, selectedPercent)}%` }" />
+      <!-- Bento Grid -->
+      <div class="dashboard-traffic__bento">
+        <!-- 趋势图 -->
+        <div class="bento-card bento-card--trend">
+          <TrafficTrendChart
+            :points="trendPoints"
+            :granularity="granularity"
+            :quota-bytes="selectedSummary?.quota_bytes ?? null"
+          />
+        </div>
+
+        <!-- 配额环形图 -->
+        <div class="bento-card bento-card--quota">
+          <TrafficQuotaRing
+            :used-bytes="selectedSummary?.used_bytes ?? 0"
+            :quota-bytes="selectedSummary?.quota_bytes ?? null"
+            :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
+            :agents="selectedAgentId && selectedSummary ? [selectedSummary] : overviewAgents"
+          />
+        </div>
+
+        <!-- 实时速率 -->
+        <div class="bento-card bento-card--rate">
+          <TrafficRateSparkline :points="trendPoints" :granularity="granularity" />
+        </div>
+
+        <!-- 阻断节点 -->
+        <div class="bento-card bento-card--blocked" :class="{ 'bento-card--alert': blockedCount > 0 }">
+          <span class="bento-card__label">阻断节点</span>
+          <span class="bento-card__value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
+          <span v-if="blockedCount > 0" class="bento-card__sub bento-card__sub--alert">{{ blockedCount }} 个节点已超额阻断</span>
+          <span v-else class="bento-card__sub">所有节点正常</span>
+        </div>
+
+        <!-- 计费周期 -->
+        <div class="bento-card bento-card--cycle">
+          <span class="bento-card__label">计费周期</span>
+          <span class="bento-card__value">{{ cycleLabel }}</span>
+          <span class="bento-card__sub">方向: {{ directionLabel }}</span>
+        </div>
+
+        <!-- Top 节点 -->
+        <div class="bento-card bento-card--top-nodes">
+          <h3 class="bento-card__title">Top 节点</h3>
+          <div v-for="agent in topNodes" :key="agent.agent_id" class="top-row top-row--clickable" @click="navigateToAgent(agent)">
+            <span class="top-row__name">{{ agent.name || agent.agent_id }}</span>
+            <div class="top-row__bar-track">
+              <div class="top-row__bar-fill" :style="{ width: topNodePercent(agent) + '%' }" />
+            </div>
+            <span class="top-row__value">{{ formatBytes(agent.used_bytes) }}</span>
           </div>
+          <p v-if="!topNodes.length" class="bento-card__empty">暂无节点数据</p>
         </div>
-        <div class="dashboard-traffic__card">
-          <span class="dashboard-traffic__card-label">主机流量（日汇总）</span>
-          <span class="dashboard-traffic__card-value">{{ formatBytes(hostTotalAccounted) }}</span>
-          <span class="dashboard-traffic__card-sub">overview 日粒度 host_total</span>
-        </div>
-        <div class="dashboard-traffic__card" :class="{ 'dashboard-traffic__card--alert': blockedCount > 0 }">
-          <span class="dashboard-traffic__card-label">阻断节点</span>
-          <span class="dashboard-traffic__card-value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
-          <span v-if="blockedCount > 0" class="dashboard-traffic__card-sub">{{ blockedCount }} 个节点已超额阻断</span>
-        </div>
-        <div class="dashboard-traffic__card">
-          <span class="dashboard-traffic__card-label">计费周期</span>
-          <span class="dashboard-traffic__card-value">{{ cycleLabel }}</span>
-          <span class="dashboard-traffic__card-sub">方向: {{ directionLabel }}</span>
-        </div>
-      </div>
-      <div class="dashboard-traffic__chart">
-        <TrafficTrendChart :points="trendPoints" :host-points="hostTrendPoints" granularity="day" :quota-bytes="selectedSummary?.quota_bytes ?? null" />
-      </div>
-      <div class="dashboard-traffic__lists">
-        <div class="dashboard-traffic__list-panel">
-          <h3 class="dashboard-traffic__list-title">Top 节点</h3>
-          <div v-for="agent in topNodes" :key="agent.agent_id" class="dashboard-traffic__list-row">
-            <span class="dashboard-traffic__list-name">{{ agent.name || agent.agent_id }}</span>
-            <span class="dashboard-traffic__list-value">{{ formatBytes(agent.used_bytes) }}</span>
-            <span v-if="agent.quota_bytes != null" class="dashboard-traffic__list-percent">{{ usagePercent(agent.used_bytes, agent.quota_bytes) }}%</span>
+
+        <!-- Top 规则 -->
+        <div class="bento-card bento-card--top-rules">
+          <h3 class="bento-card__title">Top 规则</h3>
+          <div v-for="rule in topRules" :key="rule.key" class="top-row top-row--clickable" @click="navigateToAgentByRule(rule)">
+            <span class="top-row__name" :title="rule.label">{{ rule.label }}</span>
+            <div class="top-row__bar-track">
+              <div class="top-row__bar-fill" :style="{ width: rule.percent + '%' }" />
+            </div>
+            <span class="top-row__value">{{ formatBytes(rule.accounted_bytes) }}</span>
           </div>
-          <p v-if="!topNodes.length" class="dashboard-traffic__list-empty">暂无节点数据</p>
-        </div>
-        <div class="dashboard-traffic__list-panel">
-          <h3 class="dashboard-traffic__list-title">Top 规则</h3>
-          <div v-for="rule in topRules" :key="rule.key" class="dashboard-traffic__list-row">
-            <span class="dashboard-traffic__list-name" :title="rule.label">{{ rule.label }}</span>
-            <span class="dashboard-traffic__list-value">{{ formatBytes(rule.accounted_bytes) }}</span>
-            <span class="dashboard-traffic__list-percent">{{ rule.percent }}%</span>
-          </div>
-          <p v-if="!topRules.length" class="dashboard-traffic__list-empty">暂无规则数据</p>
+          <p v-if="!topRules.length" class="bento-card__empty">暂无规则数据</p>
         </div>
       </div>
     </template>
@@ -67,11 +103,17 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useTrafficOverview } from '../../hooks/useTrafficOverview.js'
 import { fetchSystemInfo, fetchTrafficSummary } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
-import { formatBytes, usagePercent, quotaColorThreshold } from '../../utils/trafficStats.js'
+import TrafficQuotaRing from './TrafficQuotaRing.vue'
+import TrafficRateSparkline from './TrafficRateSparkline.vue'
+import AgentPicker from '../../components/AgentPicker.vue'
+import { formatBytes, usagePercent } from '../../utils/trafficStats.js'
+
+const router = useRouter()
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],
@@ -82,14 +124,48 @@ const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.valu
 const visible = trafficStatsEnabled
 
 const selectedAgentId = ref('')
+const granularity = ref('day')
+const granularityOptions = [
+  { value: 'hour', label: '小时' },
+  { value: 'day', label: '日' },
+  { value: 'month', label: '月' }
+]
 
-const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled)
-const allAgentsQuery = useTrafficOverview('', trafficStatsEnabled)
+const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled, granularity)
+const allAgentsQuery = useTrafficOverview('', trafficStatsEnabled, granularity)
 
-const overviewAgents = computed(() => overviewQuery.data.value?.agents ?? [])
-const selectableAgents = computed(() => allAgentsQuery.data.value?.agents ?? overviewAgents.value)
-const trendPoints = computed(() => normalizePoints(overviewQuery.data.value?.trend ?? []))
-const hostTrendPoints = computed(() => normalizePoints(overviewQuery.data.value?.host_trend ?? []))
+const MOCK_AGENTS = [
+  { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+  { agent_id: 'mock-2', name: '节点-B', used_bytes: 536870912, quota_bytes: 1073741824, remaining_bytes: 536870912, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+  { agent_id: 'mock-3', name: '节点-C', used_bytes: 3221225472, quota_bytes: 3221225472, remaining_bytes: 0, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: true }
+]
+
+const MOCK_TREND = Array.from({ length: 30 }, (_, i) => {
+  const day = String(i + 1).padStart(2, '0')
+  return {
+    bucket_start: `2026-05-${day}T00:00:00Z`,
+    rx_bytes: Math.round(Math.random() * 80000000 + 20000000),
+    tx_bytes: Math.round(Math.random() * 60000000 + 10000000),
+    accounted_bytes: Math.round(Math.random() * 100000000 + 50000000)
+  }
+})
+
+const overviewAgents = computed(() => {
+  const agents = overviewQuery.data.value?.agents ?? []
+  if (agents.length) return agents
+  if (!import.meta.env.DEV) return []
+  return MOCK_AGENTS
+})
+const selectableAgents = computed(() => {
+  const agents = allAgentsQuery.data.value?.agents
+  return agents?.length ? agents : overviewAgents.value
+})
+const trendPoints = computed(() => {
+  const pts = overviewQuery.data.value?.trend
+  if (pts?.length) return normalizePoints(pts)
+  if (import.meta.env.DEV) return normalizePoints(MOCK_TREND)
+  return []
+})
 
 const selectedSummary = computed(() => {
   const agents = overviewAgents.value
@@ -102,13 +178,6 @@ const selectedSummary = computed(() => {
     quota_bytes: agents.every(a => a.quota_bytes == null) ? null : agents.reduce((s, a) => s + (a.quota_bytes || 0), 0),
     remaining_bytes: agents.every(a => a.remaining_bytes == null) ? null : agents.reduce((s, a) => s + (a.remaining_bytes || 0), 0)
   }
-})
-
-const selectedPercent = computed(() => usagePercent(selectedSummary.value?.used_bytes, selectedSummary.value?.quota_bytes))
-const selectedColor = computed(() => quotaColorThreshold(selectedPercent.value))
-
-const hostTotalAccounted = computed(() => {
-  return hostTrendPoints.value.reduce((sum, point) => sum + (point.accounted_bytes || 0), 0)
 })
 
 const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).length)
@@ -147,8 +216,16 @@ const topNodes = computed(() => {
     const pb = b.quota_bytes ? b.used_bytes / b.quota_bytes : b.used_bytes
     return pb - pa
   })
-  return agents.slice(0, 8)
+  return agents.slice(0, 5)
 })
+
+function topNodePercent(agent) {
+  if (!agent.quota_bytes || agent.quota_bytes <= 0) {
+    const max = Math.max(...topNodes.value.map(a => a.used_bytes), 1)
+    return Math.round((agent.used_bytes / max) * 100)
+  }
+  return Math.min(100, usagePercent(agent.used_bytes, agent.quota_bytes))
+}
 
 const agentIdsForTopRules = computed(() => {
   if (selectedAgentId.value) return [selectedAgentId.value]
@@ -179,7 +256,7 @@ const topRulesQuery = useQuery({
             existing.tx_bytes += row.tx_bytes || 0
           } else {
             const label = `${agentName} / ${scopeLabel(row.scope_type, row.scope_id)}`
-            ruleMap.set(key, { key, label, accounted_bytes: row.accounted_bytes || 0, rx_bytes: row.rx_bytes || 0, tx_bytes: row.tx_bytes || 0 })
+            ruleMap.set(key, { key, agent_id: agentId, label, accounted_bytes: row.accounted_bytes || 0, rx_bytes: row.rx_bytes || 0, tx_bytes: row.tx_bytes || 0 })
           }
         }
       }
@@ -190,12 +267,25 @@ const topRulesQuery = useQuery({
       r.percent = total ? Math.round((r.accounted_bytes / total) * 100) : 0
     }
     rules.sort((a, b) => b.accounted_bytes - a.accounted_bytes)
-    return rules.slice(0, 10)
+    return rules.slice(0, 5)
   },
   enabled: computed(() => overviewAgents.value.length > 0 && visible.value)
 })
 
 const topRules = computed(() => topRulesQuery.data.value ?? [])
+
+function navigateToAgent(agent) {
+  if (agent?.agent_id) {
+    router.push(`/agents/${agent.agent_id}`)
+  }
+}
+
+function navigateToAgentByRule(rule) {
+  const agentId = rule?.agent_id
+  if (agentId) {
+    router.push(`/agents/${agentId}`)
+  }
+}
 
 function normalizePoints(raw) {
   return (raw || []).map(p => ({
@@ -237,135 +327,163 @@ function scopeLabel(scopeType, scopeId) {
   color: var(--color-text-primary);
   margin: 0;
 }
-.dashboard-traffic__select {
-  padding: 0.35rem 0.75rem;
+.dashboard-traffic__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.dashboard-traffic__granularity {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  font-size: 0.8125rem;
-  font-family: inherit;
+}
+.dashboard-traffic__granularity-btn {
+  min-width: 2.75rem;
+  padding: 0.3rem 0.55rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  font-weight: 600;
   cursor: pointer;
+  font-family: inherit;
+}
+.dashboard-traffic__granularity-btn--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+}
+.dashboard-traffic__agent-picker {
+  flex-shrink: 0;
+}
+.dashboard-traffic__agent-picker :deep(.agent-picker__trigger) {
+  min-width: 120px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8125rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  gap: 0.35rem;
+}
+.dashboard-traffic__agent-picker :deep(.agent-picker__trigger-text) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
 }
 .dashboard-traffic__loading {
   display: flex;
   justify-content: center;
   padding: 2rem;
 }
-.dashboard-traffic__cards {
+
+.dashboard-traffic__bento {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-}
-.dashboard-traffic__card {
-  min-width: 0;
-  padding: 0.75rem;
-  background: var(--color-bg-subtle);
-  border-radius: var(--radius-lg);
-}
-.dashboard-traffic__card--alert {
-  background: var(--color-danger-50);
-}
-.dashboard-traffic__card-label {
-  display: block;
-  color: var(--color-text-tertiary);
-  font-size: 0.75rem;
-  margin-bottom: 0.25rem;
-}
-.dashboard-traffic__card-value {
-  display: block;
-  color: var(--color-text-primary);
-  font-size: 1.125rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-.dashboard-traffic__card-percent {
-  display: block;
-  font-size: 0.875rem;
-  font-weight: 600;
-  margin-top: 0.25rem;
-}
-.dashboard-traffic__card-percent--success { color: var(--color-success); }
-.dashboard-traffic__card-percent--warning { color: var(--color-warning); }
-.dashboard-traffic__card-percent--danger { color: var(--color-danger); }
-.dashboard-traffic__card-track {
-  height: 4px;
-  background: var(--color-border-default);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  margin-top: 0.375rem;
-}
-.dashboard-traffic__card-fill {
-  height: 100%;
-  border-radius: var(--radius-full);
-  transition: width 0.3s;
-}
-.dashboard-traffic__card-fill--success { background: var(--color-success); }
-.dashboard-traffic__card-fill--warning { background: var(--color-warning); }
-.dashboard-traffic__card-fill--danger { background: var(--color-danger); }
-.dashboard-traffic__card-sub {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-  margin-top: 0.25rem;
-}
-.dashboard-traffic__chart {
-  padding: 0 1.25rem;
-}
-.dashboard-traffic__lists {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: 280px 120px auto;
+  grid-template-areas:
+    "trend trend quota"
+    "rate blocked cycle"
+    "top-nodes top-nodes top-rules";
   gap: 1rem;
   padding: 1rem 1.25rem 1.25rem;
 }
-.dashboard-traffic__list-panel {
+
+.bento-card {
   background: var(--color-bg-subtle);
   border-radius: var(--radius-lg);
   padding: 0.75rem;
+  min-width: 0;
 }
-.dashboard-traffic__list-title {
+.bento-card--trend { grid-area: trend; padding: 0.5rem; }
+.bento-card--quota { grid-area: quota; }
+.bento-card--rate { grid-area: rate; }
+.bento-card--blocked { grid-area: blocked; }
+.bento-card--cycle { grid-area: cycle; }
+.bento-card--top-nodes { grid-area: top-nodes; }
+.bento-card--top-rules { grid-area: top-rules; }
+
+.bento-card--alert {
+  background: var(--color-danger-50);
+  border: 1px solid var(--color-danger-100);
+}
+
+.bento-card__label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin-bottom: 0.25rem;
+}
+.bento-card__value {
+  display: block;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.bento-card__sub {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin-top: 0.25rem;
+}
+.bento-card__sub--alert { color: var(--color-danger); }
+.bento-card__title {
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0 0 0.5rem;
 }
-.dashboard-traffic__list-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 0.5rem;
-  align-items: center;
-  padding: 0.4rem 0;
-  font-size: 0.8125rem;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-.dashboard-traffic__list-row:last-child { border-bottom: none; }
-.dashboard-traffic__list-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-primary);
-}
-.dashboard-traffic__list-value {
-  color: var(--color-text-primary);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.dashboard-traffic__list-percent {
-  color: var(--color-text-muted);
-  font-size: 0.75rem;
-  min-width: 2.5rem;
-  text-align: right;
-}
-.dashboard-traffic__list-empty {
+.bento-card__empty {
   text-align: center;
   color: var(--color-text-muted);
   padding: 1rem;
   font-size: 0.8125rem;
   margin: 0;
 }
+
+.top-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.35rem 0;
+  font-size: 0.8125rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.top-row:last-child { border-bottom: none; }
+.top-row--clickable {
+  cursor: pointer;
+  transition: background 150ms;
+}
+.top-row--clickable:hover {
+  background: var(--color-bg-hover, rgba(0,0,0,0.03));
+  border-radius: var(--radius-sm);
+  margin: 0 -0.25rem;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+}
+.top-row__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+.top-row__bar-track {
+  display: none;
+}
+.top-row__value {
+  color: var(--color-text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .spinner {
   width: 24px;
   height: 24px;
@@ -375,11 +493,45 @@ function scopeLabel(scopeType, scopeId) {
   animation: spin 1s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (max-width: 900px) {
-  .dashboard-traffic__cards { grid-template-columns: repeat(2, 1fr); }
-  .dashboard-traffic__lists { grid-template-columns: 1fr; }
+
+@media (max-width: 1023px) {
+  .dashboard-traffic__bento {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: 260px 260px auto auto;
+    grid-template-areas:
+      "trend trend"
+      "quota rate"
+      "blocked cycle"
+      "top-nodes top-rules";
+  }
 }
-@media (max-width: 640px) {
-  .dashboard-traffic__cards { grid-template-columns: 1fr; }
+
+@media (max-width: 767px) {
+  .dashboard-traffic__header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  .dashboard-traffic__toolbar {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .dashboard-traffic__agent-picker {
+    flex: 1;
+    min-width: 0;
+  }
+  .dashboard-traffic__bento {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    grid-template-areas:
+      "trend"
+      "quota"
+      "rate"
+      "blocked"
+      "cycle"
+      "top-nodes"
+      "top-rules";
+  }
+  .bento-card--trend { min-height: 220px; }
 }
 </style>
