@@ -38,10 +38,6 @@ defineProps({
   transition: all var(--duration-normal) var(--ease-default);
   position: relative;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  min-height: 128px;
 }
 
 .stat-card:hover {
@@ -57,11 +53,7 @@ defineProps({
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-lg);
-}
-
-.stat-card__data {
-  text-align: right;
-  align-self: flex-end;
+  margin-bottom: var(--space-3);
 }
 
 .stat-card--primary .stat-card__icon {
