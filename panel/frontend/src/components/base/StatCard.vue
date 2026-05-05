@@ -38,6 +38,11 @@ defineProps({
   transition: all var(--duration-normal) var(--ease-default);
   position: relative;
   overflow: hidden;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
 }
 
 .stat-card:hover {
@@ -47,13 +52,18 @@ defineProps({
 }
 
 .stat-card__icon {
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-lg);
-  margin-bottom: var(--space-3);
+  flex-shrink: 0;
+}
+
+.stat-card__data {
+  text-align: right;
+  min-width: 0;
 }
 
 .stat-card--primary .stat-card__icon {
