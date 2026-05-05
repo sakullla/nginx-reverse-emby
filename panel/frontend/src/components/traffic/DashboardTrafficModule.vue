@@ -255,7 +255,8 @@ const topRulesQuery = useQuery({
             existing.rx_bytes += row.rx_bytes || 0
             existing.tx_bytes += row.tx_bytes || 0
           } else {
-            const label = `${agentName} / ${scopeLabel(row.scope_type, row.scope_id)}`
+            const displayName = agentName.length > 12 && !agentName.includes(' ') ? agentName.slice(0, 8) + '…' : agentName
+            const label = `${displayName} / ${scopeLabel(row.scope_type, row.scope_id)}`
             ruleMap.set(key, { key, agent_id: agentId, label, accounted_bytes: row.accounted_bytes || 0, rx_bytes: row.rx_bytes || 0, tx_bytes: row.tx_bytes || 0 })
           }
         }
@@ -416,7 +417,7 @@ function scopeLabel(scopeType, scopeId) {
 
 .bento-card--alert {
   background: var(--color-danger-50);
-  border: 1px solid var(--color-danger-100);
+  border: 1px solid var(--color-danger);
 }
 
 .bento-card__label {
