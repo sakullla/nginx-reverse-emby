@@ -487,7 +487,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   color: white;
   font-size: 9px;
   font-weight: 700;
@@ -553,7 +553,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   color: white;
   font-size: 10px;
   font-weight: 700;

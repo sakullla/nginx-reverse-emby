@@ -702,7 +702,7 @@ async function handleSubmit() {
 }
 
 .toggle__input:checked + .toggle__slider {
-  background: var(--gradient-primary);
+  background: var(--color-primary);
 }
 
 .toggle__input:checked + .toggle__slider::after {
@@ -761,7 +761,7 @@ async function handleSubmit() {
 }
 
 .btn--primary {
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   color: white;
 }
 

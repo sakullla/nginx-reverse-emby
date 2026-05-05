@@ -135,6 +135,6 @@ function normalizeUnit(u) {
 .traffic-calibrate-modal__field-hint { display: block; font-size: 0.75rem; color: var(--color-text-muted); margin-top: 0.25rem; }
 .traffic-calibrate-modal__actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; }
-.btn-primary { background: var(--gradient-primary); color: white; }
+.btn-primary { background: var(--color-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
 </style>
