@@ -85,6 +85,36 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.vm.labels[0]).toContain('5')
   })
 
+  it('formats y-axis labels with byte units', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 9481461104, rx_bytes: 9481461104, tx_bytes: 8375186227 }
+        ]
+      },
+      ...mountOptions
+    })
+
+    const formatter = wrapper.vm.chartOptions.yaxis.labels.formatter
+
+    expect(formatter(10000000000)).toMatch(/GiB$/)
+    expect(formatter('10000000000')).toMatch(/GiB$/)
+    expect(formatter(null)).toBe('')
+  })
+
+  it('formats tooltip values with the same byte unit formatter', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 9481461104, rx_bytes: 9481461104, tx_bytes: 8375186227 }
+        ]
+      },
+      ...mountOptions
+    })
+
+    expect(wrapper.vm.chartOptions.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
+  })
+
   it('formats x-axis labels for hour granularity', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {

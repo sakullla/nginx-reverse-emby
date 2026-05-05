@@ -49,6 +49,17 @@ function formatLabel(bucketStart) {
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
+function formatChartBytes(value) {
+  if (value == null || value === '') return ''
+  try {
+    const number = Number(value)
+    if (!Number.isFinite(number)) return ''
+    return formatBytes(number)
+  } catch {
+    return ''
+  }
+}
+
 function bucketKey(point) {
   return String(point?.bucket_start || '')
 }
@@ -186,7 +197,7 @@ const chartOptions = computed(() => ({
     shared: true,
     intersect: false,
     y: {
-      formatter: (value) => formatBytes(value)
+      formatter: formatChartBytes
     }
   },
   xaxis: {
@@ -204,7 +215,7 @@ const chartOptions = computed(() => ({
   yaxis: {
     labels: {
       style: { fontSize: '11px' },
-      formatter: (value) => formatBytes(value)
+      formatter: formatChartBytes
     }
   },
   grid: {
