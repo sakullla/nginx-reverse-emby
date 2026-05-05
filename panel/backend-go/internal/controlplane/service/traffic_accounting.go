@@ -33,6 +33,22 @@ func accountedBytes(direction string, rx, tx uint64) uint64 {
 	}
 }
 
+func accountedDeltaBytes(direction string, currentRX, currentTX, baselineRX, baselineTX uint64) uint64 {
+	switch normalized, _ := normalizeTrafficDirection(direction); normalized {
+	case "rx":
+		return deltaUint64(currentRX, baselineRX)
+	case "tx":
+		return deltaUint64(currentTX, baselineTX)
+	case "max":
+		return deltaUint64(
+			maxUint64(currentRX, currentTX),
+			maxUint64(baselineRX, baselineTX),
+		)
+	default:
+		return deltaUint64(currentRX, baselineRX) + deltaUint64(currentTX, baselineTX)
+	}
+}
+
 func normalizeCycleStartDay(day int) (int, error) {
 	if day == 0 {
 		return 1, nil
@@ -103,4 +119,21 @@ func minUint64ToInt64(value uint64) int64 {
 		return int64(^uint64(0) >> 1)
 	}
 	return int64(value)
+}
+
+func deltaUint64(current, baseline uint64) uint64 {
+	if current <= baseline {
+		return 0
+	}
+	return current - baseline
+}
+
+func maxUint64(values ...uint64) uint64 {
+	maxValue := uint64(0)
+	for _, value := range values {
+		if value > maxValue {
+			maxValue = value
+		}
+	}
+	return maxValue
 }

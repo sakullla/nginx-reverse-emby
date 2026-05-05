@@ -253,8 +253,8 @@ func (s *trafficService) summaryWithPolicy(ctx context.Context, agentID string, 
 	}
 	usedSigned := int64(minUint64ToInt64(stats.accounted))
 	if found {
-		baselineAccounted := accountedBytes(policy.Direction, baseline.RawRXBytes, baseline.RawTXBytes)
-		usedSigned = int64(minUint64ToInt64(stats.accounted)) - int64(minUint64ToInt64(baselineAccounted)) + baseline.AdjustUsedBytes
+		deltaAccounted := accountedDeltaBytes(policy.Direction, stats.rx, stats.tx, baseline.RawRXBytes, baseline.RawTXBytes)
+		usedSigned = int64(minUint64ToInt64(deltaAccounted)) + baseline.AdjustUsedBytes
 	}
 	if usedSigned < 0 {
 		usedSigned = 0
