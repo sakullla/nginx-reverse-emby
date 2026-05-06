@@ -77,14 +77,56 @@ const props = defineProps({
 const emit = defineEmits(['update:agentId'])
 
 const MAX_VISIBLE = 5
+const RECENT_AGENTS_KEY = 'nre_recent_agent_ids'
 
 const moreOpen = ref(false)
 const moreSearch = ref('')
 const moreRef = ref(null)
 
+function getRecentList() {
+  try {
+    const raw = localStorage.getItem(RECENT_AGENTS_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
 const sortedAgents = computed(() => {
-  // All agents sorted by name (fixed order, never changes)
-  return [...props.agents].sort((a, b) => a.name.localeCompare(b.name))
+  const recent = getRecentList()
+  const list = [...props.agents].sort((a, b) => a.name.localeCompare(b.name))
+
+  // Build priority set: selected first, then recent (deduplicated)
+  const priorityIds = []
+  const seen = new Set()
+
+  if (props.agentId) {
+    priorityIds.push(props.agentId)
+    seen.add(props.agentId)
+  }
+  for (const id of recent) {
+    if (!seen.has(id)) {
+      priorityIds.push(id)
+      seen.add(id)
+    }
+  }
+
+  // Partition: priority agents that exist, then the rest
+  const priorityAgents = []
+  const remainingAgents = []
+  for (const agent of list) {
+    if (seen.has(agent.id)) {
+      priorityAgents.push(agent)
+    } else {
+      remainingAgents.push(agent)
+    }
+  }
+
+  // Sort priority agents by priorityIds order
+  const priorityMap = new Map(priorityIds.map((id, idx) => [id, idx]))
+  priorityAgents.sort((a, b) => priorityMap.get(a.id) - priorityMap.get(b.id))
+
+  return [...priorityAgents, ...remainingAgents]
 })
 
 const visibleAgents = computed(() => sortedAgents.value.slice(0, MAX_VISIBLE))
@@ -139,8 +181,8 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   gap: 0.375rem;
   padding: 0.375rem 0.875rem;
   border-radius: var(--radius-full);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-surface);
   color: var(--color-text-primary);
   font-size: 0.8125rem;
   cursor: pointer;
@@ -169,7 +211,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 .quick-agent-select__chip--more {
   background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
-  border-color: var(--color-border);
+  border-color: var(--color-border-default);
   padding-right: 0.625rem;
 }
 
