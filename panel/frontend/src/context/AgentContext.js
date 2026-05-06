@@ -75,7 +75,24 @@ export const AgentProvider = defineComponent({
       localStorage.setItem('selected_agent_id', id)
     }
 
-    provide(AgentContextKey, { selectedAgentId, selectAgent, systemInfo })
+    const RECENT_AGENTS_KEY = 'nre_recent_agent_ids'
+    const MAX_RECENT_AGENTS = 20
+
+    function recordAgentUsage(id) {
+      if (!id) return
+      try {
+        const raw = localStorage.getItem(RECENT_AGENTS_KEY)
+        const list = raw ? JSON.parse(raw) : []
+        const filtered = list.filter(item => item !== id)
+        filtered.unshift(id)
+        const trimmed = filtered.slice(0, MAX_RECENT_AGENTS)
+        localStorage.setItem(RECENT_AGENTS_KEY, JSON.stringify(trimmed))
+      } catch {
+        localStorage.setItem(RECENT_AGENTS_KEY, JSON.stringify([id]))
+      }
+    }
+
+    provide(AgentContextKey, { selectedAgentId, selectAgent, recordAgentUsage, systemInfo })
 
     return () => slots.default?.()
   }
