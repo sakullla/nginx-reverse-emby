@@ -483,14 +483,15 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		return relayPreparation{}, err
 	}
 	previousUsesAutoCert := relayListenerUsesAutoCertificate(certRows, fallback)
-	shouldIssueCert := shouldAutoIssueRelayListenerCertificate(certificateSource, draft, previousUsesAutoCert)
+	shouldRotateAutoCert := shouldRotateAutoRelayListenerCertificate(certificateSource, input, fallback, draft, previousUsesAutoCert)
+	shouldIssueCert := shouldAutoIssueRelayListenerCertificate(certificateSource, draft, previousUsesAutoCert, shouldRotateAutoCert)
 	shouldDeriveTrust := shouldAutoDeriveRelayTrust(trustModeSource, certificateSource, input, draft, fallback, previousUsesAutoCert)
 
 	workingInput := input
 	persistCertificates := false
 	materialBundles := make([]storage.ManagedCertificateBundle, 0)
 	if shouldIssueCert {
-		if previousUsesAutoCert && fallback.CertificateID != nil {
+		if previousUsesAutoCert && fallback.CertificateID != nil && !shouldRotateAutoCert {
 			workingInput.CertificateID = fallback.CertificateID
 		}
 		if workingInput.CertificateID == nil || *workingInput.CertificateID <= 0 {
@@ -556,14 +557,27 @@ func relayListenerUsesAutoCertificate(rows []storage.ManagedCertificateRow, list
 	return isAutoRelayListenerCertificate(cert, listener.ID)
 }
 
-func shouldAutoIssueRelayListenerCertificate(certificateSource string, draft RelayListener, previousUsesAutoCert bool) bool {
+func shouldAutoIssueRelayListenerCertificate(certificateSource string, draft RelayListener, previousUsesAutoCert bool, shouldRotateAutoCert bool) bool {
 	if !draft.Enabled {
 		return false
+	}
+	if shouldRotateAutoCert {
+		return true
 	}
 	if certificateSource != "" {
 		return certificateSource == "auto_relay_ca" && draft.CertificateID == nil
 	}
 	return previousUsesAutoCert && draft.CertificateID == nil
+}
+
+func shouldRotateAutoRelayListenerCertificate(certificateSource string, input RelayListenerInput, fallback RelayListener, draft RelayListener, previousUsesAutoCert bool) bool {
+	if !previousUsesAutoCert || input.hasCertificateIDField() {
+		return false
+	}
+	if certificateSource == "existing_certificate" {
+		return false
+	}
+	return strings.TrimSpace(fallback.PublicHost) != strings.TrimSpace(draft.PublicHost)
 }
 
 func shouldAutoDeriveRelayTrust(

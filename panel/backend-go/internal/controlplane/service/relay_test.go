@@ -1547,6 +1547,117 @@ func TestRelayServiceUpdateExistingAutoCertWithoutTrustFieldsAutoDerivesTrust(t 
 	}
 }
 
+func TestRelayServiceUpdateExistingAutoCertRotatesWhenPublicHostChanges(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
+	oldAutoMaterial := mustCreateLeafSignedByCA(t, "198.51.100.10", relayCA)
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:                      1,
+				AgentID:                 "local",
+				Name:                    "relay-a",
+				BindHostsJSON:           `["0.0.0.0"]`,
+				ListenHost:              "0.0.0.0",
+				ListenPort:              7443,
+				PublicHost:              "198.51.100.10",
+				PublicPort:              7443,
+				Enabled:                 true,
+				CertificateID:           intPtrStorage(11),
+				TLSMode:                 "pin_and_ca",
+				PinSetJSON:              `[{"type":"spki_sha256","value":"old-pin"}]`,
+				TrustedCACertificateIDs: `[10]`,
+				AllowSelfSigned:         false,
+				Revision:                2,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal":       relayCA,
+			"listener-1.relay.internal": oldAutoMaterial,
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:              10,
+				Domain:          "__relay-ca.internal",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				MaterialHash:    hashRelayMaterial(relayCA.CertPEM, relayCA.KeyPEM),
+				Usage:           "relay_ca",
+				CertificateType: "internal_ca",
+				SelfSigned:      true,
+				TagsJSON:        `["system:relay-ca","system"]`,
+				Revision:        1,
+			},
+			{
+				ID:              11,
+				Domain:          "listener-1.relay.internal",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				MaterialHash:    hashRelayMaterial(oldAutoMaterial.CertPEM, oldAutoMaterial.KeyPEM),
+				Usage:           "relay_tunnel",
+				CertificateType: "internal_ca",
+				SelfSigned:      false,
+				TagsJSON:        `["auto","auto:relay-listener","listener:1","agent:local"]`,
+				Revision:        2,
+			},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	listener, err := svc.Update(context.Background(), "local", 1, RelayListenerInput{
+		PublicHost: stringPtr("203.0.113.20"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if listener.CertificateID == nil || *listener.CertificateID == 11 {
+		t.Fatalf("listener.CertificateID = %v, want rotated auto certificate", listener.CertificateID)
+	}
+	if listener.TLSMode != "pin_and_ca" {
+		t.Fatalf("listener.TLSMode = %q", listener.TLSMode)
+	}
+	if len(listener.TrustedCACertificateIDs) != 1 || listener.TrustedCACertificateIDs[0] != 10 {
+		t.Fatalf("listener.TrustedCACertificateIDs = %+v", listener.TrustedCACertificateIDs)
+	}
+	var autoCert ManagedCertificate
+	for _, row := range store.managedCerts {
+		if row.ID == *listener.CertificateID {
+			autoCert = managedCertificateFromRow(row)
+			break
+		}
+	}
+	if autoCert.ID == 0 {
+		t.Fatalf("rotated auto cert %d not found", *listener.CertificateID)
+	}
+	material, ok := store.materialsByHost[autoCert.Domain]
+	if !ok {
+		t.Fatalf("rotated auto cert material missing for %q", autoCert.Domain)
+	}
+	leaf := mustParseCertificate(t, material.CertPEM)
+	if !containsIP(leaf.IPAddresses, "203.0.113.20") {
+		t.Fatalf("rotated cert ip SANs = %+v, want 203.0.113.20", leaf.IPAddresses)
+	}
+	if containsIP(leaf.IPAddresses, "198.51.100.10") {
+		t.Fatalf("rotated cert ip SANs = %+v, still contains old public host", leaf.IPAddresses)
+	}
+	for _, row := range store.managedCerts {
+		if row.ID == 11 {
+			t.Fatalf("old auto cert still present after rotation: %+v", row)
+		}
+	}
+}
+
 func TestRelayServiceUpdateExistingAutoCertWithExplicitNullTrustFieldSuppressesAutoDerive(t *testing.T) {
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	autoMaterial := mustCreateLeafSignedByCA(t, "listener-1.relay.internal", relayCA)
@@ -2426,6 +2537,19 @@ func mustSPKIPinFromPEM(t *testing.T, certPEM string) string {
 	}
 	sum := sha256.Sum256(spki)
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func containsIP(values []net.IP, target string) bool {
+	parsed := net.ParseIP(target)
+	if parsed == nil {
+		return false
+	}
+	for _, value := range values {
+		if value.Equal(parsed) {
+			return true
+		}
+	}
+	return false
 }
 
 func hashRelayMaterial(certPEM string, keyPEM string) string {
