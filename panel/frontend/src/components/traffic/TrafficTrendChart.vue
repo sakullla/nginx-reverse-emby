@@ -16,7 +16,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { formatBytes } from '../../utils/trafficStats.js'
 
 const props = defineProps({
@@ -31,6 +31,17 @@ const props = defineProps({
 const hasData = computed(() => {
   return Array.isArray(props.points) && props.points.length > 0
 })
+
+const hourDataVersion = ref(0)
+
+watch(
+  () => props.points,
+  (points, previousPoints) => {
+    if (props.granularity === 'hour' && previousPoints && points !== previousPoints) {
+      hourDataVersion.value += 1
+    }
+  }
+)
 
 const chartKey = computed(() => {
   const pointSignature = props.points.map((point) => [
@@ -47,7 +58,9 @@ const chartKey = computed(() => {
       Number(point?.accounted_bytes) || 0
     ].join(':')).join('|')
     : ''
-  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${props.refreshKey}-${pointSignature}-${prevSignature}`
+  const refreshKey = props.granularity === 'hour' ? props.refreshKey : ''
+  const dataVersion = props.granularity === 'hour' ? hourDataVersion.value : ''
+  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${refreshKey}-${dataVersion}-${pointSignature}-${prevSignature}`
 })
 
 function localDateParts(value) {

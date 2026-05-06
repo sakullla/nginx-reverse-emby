@@ -29,13 +29,18 @@
       </div>
     </div>
 
+    <QuickAgentSelect
+      :agentId="agentId"
+      :agents="allAgents"
+      @update:agentId="handleAgentSelect"
+    />
+
     <!-- No agent selected -->
     <div v-if="!agentId" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
       </svg>
-      <p>请选择一个节点来管理 L4 规则</p>
-      <AgentPicker :agents="allAgents" @select="handleAgentSelect" />
+      <p>请从上方选择一个节点来管理 L4 规则</p>
       <p class="rules-page__prompt-hint">或前往节点管理页面添加新节点</p>
       <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
@@ -150,7 +155,7 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
-import AgentPicker from '../components/AgentPicker.vue'
+import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import { messageStore } from '../stores/messages'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
 
@@ -190,8 +195,8 @@ function trafficForRule(rule) {
     : null
 }
 
-function handleAgentSelect(agent) {
-  router.replace({ query: { ...route.query, agentId: agent.id } })
+function handleAgentSelect(id) {
+  router.replace({ query: { ...route.query, agentId: id } })
 }
 const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
 const createL4Rule = useCreateL4Rule(agentId)

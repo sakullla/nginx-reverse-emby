@@ -186,27 +186,32 @@
 
 /* =============================================
    Theme: 晴空 (business) — Professional SaaS
+   Primary: Indigo 600 — calm, trustworthy, modern
    ============================================= */
 [data-theme="business"] {
-  --color-primary: #0ea5e9;
-  --color-primary-hover: #0284c7;
-  --color-primary-active: #0369a1;
-  --color-primary-subtle: rgba(14, 165, 233, 0.08);
-  --color-primary-50: rgba(14, 165, 233, 0.04);
-  --color-primary-100: rgba(14, 165, 233, 0.08);
-  --color-primary-200: rgba(14, 165, 233, 0.16);
-  --color-primary-300: rgba(14, 165, 233, 0.24);
+  /* Primary: Indigo — the gold standard for SaaS (Stripe, Linear, Vercel) */
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-primary-active: #3730a3;
+  --color-primary-subtle: rgba(79, 70, 229, 0.10);
+  --color-primary-50: rgba(79, 70, 229, 0.04);
+  --color-primary-100: rgba(79, 70, 229, 0.08);
+  --color-primary-200: rgba(79, 70, 229, 0.16);
+  --color-primary-300: rgba(79, 70, 229, 0.28);
 
+  /* Accent: Cyan — complements indigo without competing */
   --color-accent: #06b6d4;
   --color-accent-hover: #0891b2;
   --color-accent-subtle: rgba(6, 182, 212, 0.08);
 
+  /* Text: Slate scale — neutral, highly legible, professional */
   --color-text-primary: #0f172a;
   --color-text-secondary: #475569;
   --color-text-tertiary: #64748b;
   --color-text-muted: #94a3b8;
   --color-text-inverse: #ffffff;
 
+  /* Background: Cool gray — clean, unobtrusive canvas */
   --color-bg-canvas: #f8fafc;
   --color-bg-surface: #ffffff;
   --color-bg-surface-raised: #ffffff;
@@ -215,11 +220,13 @@
   --color-bg-hover: #e2e8f0;
   --color-bg-active: #cbd5e1;
 
+  /* Borders: Slate-tinted for cohesive feel */
   --color-border-subtle: rgba(15, 23, 42, 0.06);
-  --color-border-default: rgba(15, 23, 42, 0.08);
-  --color-border-strong: rgba(15, 23, 42, 0.14);
-  --color-border-focus: rgba(14, 165, 233, 0.35);
+  --color-border-default: rgba(15, 23, 42, 0.09);
+  --color-border-strong: rgba(15, 23, 42, 0.15);
+  --color-border-focus: rgba(79, 70, 229, 0.40);
 
+  /* Semantic: slightly adjusted for indigo harmony */
   --color-success: #10b981;
   --color-success-50: rgba(16, 185, 129, 0.08);
   --color-success-glow: rgba(16, 185, 129, 0.20);
@@ -230,12 +237,13 @@
   --color-warning-50: rgba(245, 158, 11, 0.08);
   --color-warning-glow: rgba(245, 158, 11, 0.20);
 
+  /* Shadows: slate-tinted for depth cohesion */
   --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
   --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 4px 6px rgba(15, 23, 42, 0.07), 0 2px 4px rgba(15, 23, 42, 0.05);
-  --shadow-lg: 0 10px 15px rgba(15, 23, 42, 0.08), 0 4px 6px rgba(15, 23, 42, 0.04);
-  --shadow-xl: 0 20px 25px rgba(15, 23, 42, 0.10), 0 8px 10px rgba(15, 23, 42, 0.04);
-  --shadow-2xl: 0 24px 48px rgba(15, 23, 42, 0.12);
+  --shadow-md: 0 4px 6px rgba(15, 23, 42, 0.06), 0 2px 4px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 10px 15px rgba(15, 23, 42, 0.07), 0 4px 6px rgba(15, 23, 42, 0.04);
+  --shadow-xl: 0 20px 25px rgba(15, 23, 42, 0.08), 0 8px 10px rgba(15, 23, 42, 0.04);
+  --shadow-2xl: 0 24px 48px rgba(15, 23, 42, 0.10);
   --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
   --shadow-inner: inset 0 1px 2px rgba(15, 23, 42, 0.04);
 }

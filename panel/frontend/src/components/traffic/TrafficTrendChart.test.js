@@ -171,13 +171,14 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
   })
 
-  it('remounts apexchart when an external refresh key changes without point changes', async () => {
+  it('remounts the hour chart when an external refresh key changes without point changes', async () => {
     const points = [
       { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
     ]
     const wrapper = mount(TrafficTrendChart, {
       props: {
         points,
+        granularity: 'hour',
         refreshKey: 1
       },
       ...mountOptions
@@ -192,6 +193,28 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
   })
 
+  it('does not remount day charts only because an external refresh key changes', async () => {
+    const points = [
+      { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+    ]
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points,
+        granularity: 'day',
+        refreshKey: 1
+      },
+      ...mountOptions
+    })
+    const initialKey = wrapper.findComponent(ApexChartStub).vm.$.vnode.key
+
+    await wrapper.setProps({
+      points,
+      refreshKey: 2
+    })
+
+    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).toBe(initialKey)
+  })
+
   it('formats x-axis labels for hour granularity', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {
@@ -203,5 +226,26 @@ describe('TrafficTrendChart', () => {
       ...mountOptions
     })
     expect(wrapper.vm.labels[0]).toMatch(/\d{2}:\d{2}/)
+  })
+
+  it('remounts the hour chart when trend data is refetched with the same bucket values', async () => {
+    const points = [
+      { bucket_start: '2026-05-01T00:00:00Z', bucket_local_start: '2026-05-01T08:00:00+08:00', accounted_bytes: 1024, rx_bytes: 512, tx_bytes: 512 },
+      { bucket_start: '2026-05-01T01:00:00Z', bucket_local_start: '2026-05-01T09:00:00+08:00', accounted_bytes: 2048, rx_bytes: 1024, tx_bytes: 1024 }
+    ]
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        granularity: 'hour',
+        points
+      },
+      ...mountOptions
+    })
+    const initialKey = wrapper.findComponent(ApexChartStub).vm.$.vnode.key
+
+    await wrapper.setProps({
+      points: points.map((point) => ({ ...point }))
+    })
+
+    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
   })
 })

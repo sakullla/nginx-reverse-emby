@@ -10,6 +10,12 @@
       <h1 class="rule-detail__title">{{ isNew ? '添加规则' : '编辑规则' }}</h1>
     </div>
 
+    <QuickAgentSelect
+      :agentId="selectedAgentId"
+      :agents="allAgents"
+      @update:agentId="selectAgent"
+    />
+
     <div class="rule-detail__form">
       <div class="form-group">
         <label>前端地址</label>
@@ -40,11 +46,16 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
+import { useAgents } from '../hooks/useAgents'
 import { useRules, useCreateRule, useUpdateRule } from '../hooks/useRules'
+import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 
 const route = useRoute()
 const router = useRouter()
-const { selectedAgentId } = useAgent()
+const { selectedAgentId, selectAgent } = useAgent()
+const { data: agentsData } = useAgents()
+const allAgents = computed(() => agentsData.value ?? [])
+
 const { data: _rulesData } = useRules(selectedAgentId)
 const rules = computed(() => _rulesData.value ?? [])
 
