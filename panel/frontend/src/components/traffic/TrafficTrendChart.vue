@@ -32,8 +32,21 @@ const hasData = computed(() => {
 })
 
 const chartKey = computed(() => {
-  const sum = props.points.reduce((s, p) => s + (p.accounted_bytes || 0), 0)
-  return `${props.granularity}-${props.points.length}-${sum}`
+  const pointSignature = props.points.map((point) => [
+    point?.bucket_start || '',
+    point?.bucket_local_start || '',
+    Number(point?.accounted_bytes) || 0,
+    Number(point?.rx_bytes) || 0,
+    Number(point?.tx_bytes) || 0
+  ].join(':')).join('|')
+  const prevSignature = Array.isArray(props.prevPoints)
+    ? props.prevPoints.map((point) => [
+      point?.bucket_start || '',
+      point?.bucket_local_start || '',
+      Number(point?.accounted_bytes) || 0
+    ].join(':')).join('|')
+    : ''
+  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${pointSignature}-${prevSignature}`
 })
 
 function localDateParts(value) {
