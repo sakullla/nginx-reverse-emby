@@ -206,64 +206,67 @@ const chartSeriesStyles = computed(() => {
   return series.value.map((item) => seriesStyles[item.name] || fallbackSeriesStyle)
 })
 
-const chartOptions = computed(() => ({
-  chart: {
-    type: 'area',
-    toolbar: { show: false },
-    animations: { enabled: false },
-    fontFamily: 'inherit'
-  },
-  colors: chartSeriesStyles.value.map((style) => style.color),
-  stroke: {
-    curve: 'smooth',
-    width: chartSeriesStyles.value.map((style) => style.width),
-    dashArray: chartSeriesStyles.value.map((style) => style.dashArray)
-  },
-  fill: {
-    type: chartSeriesStyles.value.map((style) => style.fillType),
-    opacity: chartSeriesStyles.value.map((style) => style.fillOpacity)
-  },
-  dataLabels: { enabled: false },
-  legend: {
-    position: 'top',
-    fontSize: '12px',
-    markers: { width: 12, height: 12, radius: 2 }
-  },
-  tooltip: {
-    shared: true,
-    intersect: false,
-    y: {
-      formatter: formatChartBytes
-    }
-  },
-  xaxis: {
-    categories: labels.value,
-    tooltip: { enabled: false },
-    labels: {
-      style: { fontSize: '11px' },
-      rotate: labels.value.length > 12 ? -45 : 0,
-      rotateAlways: labels.value.length > 12,
-      hideOverlappingLabels: true
+const chartOptions = computed(() => {
+  void chartKey.value
+  return {
+    chart: {
+      type: 'area',
+      toolbar: { show: false },
+      animations: { enabled: false },
+      fontFamily: 'inherit'
     },
-    axisBorder: { show: false },
-    axisTicks: { show: false }
-  },
-  yaxis: {
-    labels: {
-      style: { fontSize: '11px' },
-      formatter: formatChartBytes
+    colors: chartSeriesStyles.value.map((style) => style.color),
+    stroke: {
+      curve: 'smooth',
+      width: chartSeriesStyles.value.map((style) => style.width),
+      dashArray: chartSeriesStyles.value.map((style) => style.dashArray)
+    },
+    fill: {
+      type: chartSeriesStyles.value.map((style) => style.fillType),
+      opacity: chartSeriesStyles.value.map((style) => style.fillOpacity)
+    },
+    dataLabels: { enabled: false },
+    legend: {
+      position: 'top',
+      fontSize: '12px',
+      markers: { width: 12, height: 12, radius: 2 }
+    },
+    tooltip: {
+      shared: true,
+      intersect: false,
+      y: {
+        formatter: formatChartBytes
+      }
+    },
+    xaxis: {
+      categories: labels.value,
+      tooltip: { enabled: false },
+      labels: {
+        style: { fontSize: '11px' },
+        rotate: labels.value.length > 12 ? -45 : 0,
+        rotateAlways: labels.value.length > 12,
+        hideOverlappingLabels: true
+      },
+      axisBorder: { show: false },
+      axisTicks: { show: false }
+    },
+    yaxis: {
+      labels: {
+        style: { fontSize: '11px' },
+        formatter: formatChartBytes
+      }
+    },
+    grid: {
+      borderColor: 'rgba(0,0,0,0.05)',
+      strokeDashArray: 0,
+      xaxis: { lines: { show: false } }
+    },
+    markers: {
+      size: 0,
+      hover: { size: 0 }
     }
-  },
-  grid: {
-    borderColor: 'rgba(0,0,0,0.05)',
-    strokeDashArray: 0,
-    xaxis: { lines: { show: false } }
-  },
-  markers: {
-    size: 0,
-    hover: { size: 0 }
   }
-}))
+})
 </script>
 
 <style scoped>
