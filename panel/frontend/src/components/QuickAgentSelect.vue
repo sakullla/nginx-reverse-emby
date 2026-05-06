@@ -83,8 +83,22 @@ const moreSearch = ref('')
 const moreRef = ref(null)
 
 const sortedAgents = computed(() => {
-  // All agents sorted by name (fixed order, never changes on click)
-  return [...props.agents].sort((a, b) => a.name.localeCompare(b.name))
+  // Base sort: name order (fixed)
+  const list = [...props.agents].sort((a, b) => a.name.localeCompare(b.name))
+
+  // If selected agent is in hidden region, swap it into the last visible slot
+  if (props.agentId) {
+    const selectedIdx = list.findIndex(a => a.id === props.agentId)
+    if (selectedIdx >= MAX_VISIBLE) {
+      const selected = list[selectedIdx]
+      // Remove from current position
+      list.splice(selectedIdx, 1)
+      // Insert at last visible position (index MAX_VISIBLE - 1)
+      list.splice(MAX_VISIBLE - 1, 0, selected)
+    }
+  }
+
+  return list
 })
 
 const visibleAgents = computed(() => sortedAgents.value.slice(0, MAX_VISIBLE))
