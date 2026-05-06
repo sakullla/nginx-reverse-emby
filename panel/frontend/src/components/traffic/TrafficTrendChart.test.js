@@ -171,6 +171,27 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
   })
 
+  it('remounts apexchart when an external refresh key changes without point changes', async () => {
+    const points = [
+      { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+    ]
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points,
+        refreshKey: 1
+      },
+      ...mountOptions
+    })
+    const initialKey = wrapper.findComponent(ApexChartStub).vm.$.vnode.key
+
+    await wrapper.setProps({
+      points,
+      refreshKey: 2
+    })
+
+    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
+  })
+
   it('formats x-axis labels for hour granularity', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {

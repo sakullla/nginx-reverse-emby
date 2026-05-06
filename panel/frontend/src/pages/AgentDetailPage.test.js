@@ -7,6 +7,7 @@ import AgentDetailPage from './AgentDetailPage.vue'
 let routeParams
 let systemInfo
 let agentRecord
+let currentAgentStats
 const apiCalls = {
   fetchTrafficPolicy: vi.fn(),
   fetchTrafficSummary: vi.fn(),
@@ -45,12 +46,7 @@ vi.mock('../components/DeleteConfirmDialog.vue', () => ({
 }))
 
 vi.mock('../api', () => ({
-  fetchAgentStats: vi.fn(async () => ({
-    status: '正常',
-    traffic: {
-      total: { rx_bytes: 100, tx_bytes: 200 }
-    }
-  })),
+  fetchAgentStats: vi.fn(async () => currentAgentStats),
   fetchSystemInfo: vi.fn(async () => systemInfo),
   fetchTrafficPolicy: (...args) => apiCalls.fetchTrafficPolicy(...args),
   updateTrafficPolicy: (...args) => apiCalls.updateTrafficPolicy(...args),
@@ -138,6 +134,12 @@ beforeEach(() => {
     current_revision: 1,
     last_apply_status: 'success',
     is_local: false
+  }
+  currentAgentStats = {
+    status: '正常',
+    traffic: {
+      total: { rx_bytes: 100, tx_bytes: 200 }
+    }
   }
   vi.restoreAllMocks()
   vi.clearAllMocks()
@@ -246,6 +248,15 @@ describe('AgentDetailPage', () => {
     await nextTick()
 
     expect(wrapper.find('.traffic-trend-chart').exists()).toBe(true)
+  })
+
+  it('passes agent stats refresh timestamp to the traffic trend chart', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    const chart = wrapper.findComponent({ name: 'TrafficTrendChart' })
+    expect(Number(chart.props('refreshKey'))).toBeGreaterThan(0)
   })
 
   it('switches traffic trend granularity', async () => {

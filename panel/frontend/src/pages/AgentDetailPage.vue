@@ -68,7 +68,12 @@
                 </button>
               </div>
             </div>
-            <TrafficTrendChart :points="trafficTrendPoints" :granularity="trafficTrendGranularity" :quota-bytes="trafficSummary.monthly_quota_bytes ?? null" />
+            <TrafficTrendChart
+              :points="trafficTrendPoints"
+              :granularity="trafficTrendGranularity"
+              :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
+              :refresh-key="agentStatsRefreshKey"
+            />
           </div>
           <div class="traffic-tab__breakdown">
             <span class="traffic-tab__breakdown-title">分项流量（点击查看趋势）</span>
@@ -222,7 +227,7 @@ const { data: l4RulesData } = useL4Rules(agentId)
 const l4Rules = computed(() => l4RulesData.value ?? [])
 const l4RulesCount = computed(() => l4Rules.value.length)
 
-const { data: agentStatsData } = useQuery({
+const { data: agentStatsData, dataUpdatedAt: agentStatsUpdatedAt } = useQuery({
   queryKey: ['agent-stats', agentId],
   queryFn: () => fetchAgentStats(agentId.value),
   enabled: () => !!agentId.value,
@@ -233,6 +238,7 @@ const { data: systemInfoData, isSuccess: isSystemInfoLoaded } = useQuery({
   queryFn: fetchSystemInfo
 })
 const agentStats = computed(() => agentStatsData.value ?? {})
+const agentStatsRefreshKey = computed(() => agentStatsUpdatedAt.value || 0)
 const systemInfo = computed(() => systemInfoData.value ?? {})
 const trafficStatsEnabled = computed(() => isSystemInfoLoaded.value && systemInfo.value?.traffic_stats_enabled !== false)
 const trafficPolicyQuery = useTrafficPolicy(computed(() => trafficStatsEnabled.value ? agentId.value : null))
