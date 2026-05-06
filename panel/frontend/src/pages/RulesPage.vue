@@ -29,14 +29,19 @@
       </div>
     </div>
 
+    <QuickAgentSelect
+      :agentId="agentId"
+      :agents="allAgents"
+      @update:agentId="handleAgentSelect"
+    />
+
     <!-- No agent selected -->
     <div v-if="!agentId" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
       </svg>
-      <p>请选择一个节点来管理规则</p>
-      <AgentPicker :agents="allAgents" @select="handleAgentSelect" />
+      <p>请从上方选择一个节点来管理规则</p>
       <p class="rules-page__prompt-hint">或前往节点管理页面添加新节点</p>
       <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
@@ -152,7 +157,7 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
-import AgentPicker from '../components/AgentPicker.vue'
+import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import { messageStore } from '../stores/messages'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
 
@@ -200,8 +205,9 @@ function trafficForRule(rule) {
     : null
 }
 
-function handleAgentSelect(agent) {
-  router.replace({ query: { ...route.query, agentId: agent.id } })
+function handleAgentSelect(id) {
+  agentContext.recordAgentUsage?.(id)
+  router.replace({ query: { ...route.query, agentId: id } })
 }
 
 // Search
