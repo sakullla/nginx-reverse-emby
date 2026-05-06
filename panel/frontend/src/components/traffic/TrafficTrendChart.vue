@@ -24,7 +24,8 @@ const props = defineProps({
   prevPoints: { type: Array, default: null },
   granularity: { type: String, default: 'day' },
   quotaBytes: { type: Number, default: null },
-  budgetBytes: { type: Number, default: null }
+  budgetBytes: { type: Number, default: null },
+  refreshKey: { type: [Number, String], default: '' }
 })
 
 const hasData = computed(() => {
@@ -46,7 +47,7 @@ const chartKey = computed(() => {
       Number(point?.accounted_bytes) || 0
     ].join(':')).join('|')
     : ''
-  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${pointSignature}-${prevSignature}`
+  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${props.refreshKey}-${pointSignature}-${prevSignature}`
 })
 
 function localDateParts(value) {
