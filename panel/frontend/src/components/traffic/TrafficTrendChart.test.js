@@ -193,7 +193,7 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
   })
 
-  it('does not remount day charts only because an external refresh key changes', async () => {
+  it('remounts day charts when an external refresh key changes without point changes', async () => {
     const points = [
       { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
     ]
@@ -212,7 +212,7 @@ describe('TrafficTrendChart', () => {
       refreshKey: 2
     })
 
-    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).toBe(initialKey)
+    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
   })
 
   it('formats x-axis labels for hour granularity', () => {
