@@ -77,20 +77,10 @@ const props = defineProps({
 const emit = defineEmits(['update:agentId'])
 
 const MAX_VISIBLE = 5
-const RECENT_AGENTS_KEY = 'nre_recent_agent_ids'
 
 const moreOpen = ref(false)
 const moreSearch = ref('')
 const moreRef = ref(null)
-
-function getRecentList() {
-  try {
-    const raw = localStorage.getItem(RECENT_AGENTS_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
-}
 
 const agentMap = computed(() => {
   const map = new Map()
@@ -101,26 +91,18 @@ const agentMap = computed(() => {
 })
 
 const sortedAgents = computed(() => {
-  const recent = getRecentList()
   const existingIds = new Set(props.agents.map(a => a.id))
 
   const result = []
   const seen = new Set()
 
+  // Current selected agent pinned to first position
   if (props.agentId && existingIds.has(props.agentId)) {
     result.push(agentMap.value.get(props.agentId))
     seen.add(props.agentId)
   }
 
-  for (const id of recent) {
-    if (seen.has(id)) continue
-    const agent = agentMap.value.get(id)
-    if (agent) {
-      result.push(agent)
-      seen.add(id)
-    }
-  }
-
+  // All remaining agents sorted by name (stable order)
   const remaining = props.agents
     .filter(a => !seen.has(a.id))
     .sort((a, b) => a.name.localeCompare(b.name))
