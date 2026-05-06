@@ -151,6 +151,26 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.vm.chartOptions.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
   })
 
+  it('remounts apexchart when same-size point data changes so formatter functions are not stripped by updates', async () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ]
+      },
+      ...mountOptions
+    })
+    const initialKey = wrapper.findComponent(ApexChartStub).vm.$.vnode.key
+
+    await wrapper.setProps({
+      points: [
+        { bucket_start: '2026-05-02T00:00:00Z', accounted_bytes: 1000, rx_bytes: 700, tx_bytes: 300 }
+      ]
+    })
+
+    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
+  })
+
   it('formats x-axis labels for hour granularity', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {
