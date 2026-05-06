@@ -27,6 +27,12 @@
       </div>
     </div>
 
+    <QuickAgentSelect
+      :agentId="selectedAgentId"
+      :agents="allAgents"
+      @update:agentId="handleAgentSelect"
+    />
+
     <!-- Filter Bar -->
     <AgentFilterBar
       v-model:view="view"
@@ -157,15 +163,24 @@ import AgentTable from '../components/AgentTable.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
 import { useAgent } from '../context/AgentContext'
+import { useAgents as useAgentsHook } from '../hooks/useAgents'
+import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import { messageStore } from '../stores/messages'
 
 const router = useRouter()
-const { selectedAgentId } = useAgent()
+const agentContext = useAgent()
+const { selectedAgentId, selectAgent } = agentContext
 
 const { data, isLoading } = useAgents()
+const { data: agentsData } = useAgentsHook()
+const allAgents = computed(() => agentsData.value ?? [])
 const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
 const agents = computed(() => data.value ?? [])
+
+function handleAgentSelect(id) {
+  selectAgent(id)
+}
 
 // Filter/sort state
 const {
