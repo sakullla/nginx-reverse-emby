@@ -82,33 +82,9 @@ const moreOpen = ref(false)
 const moreSearch = ref('')
 const moreRef = ref(null)
 
-const agentMap = computed(() => {
-  const map = new Map()
-  for (const agent of props.agents) {
-    map.set(agent.id, agent)
-  }
-  return map
-})
-
 const sortedAgents = computed(() => {
-  const existingIds = new Set(props.agents.map(a => a.id))
-
-  const result = []
-  const seen = new Set()
-
-  // Current selected agent pinned to first position
-  if (props.agentId && existingIds.has(props.agentId)) {
-    result.push(agentMap.value.get(props.agentId))
-    seen.add(props.agentId)
-  }
-
-  // All remaining agents sorted by name (stable order)
-  const remaining = props.agents
-    .filter(a => !seen.has(a.id))
-    .sort((a, b) => a.name.localeCompare(b.name))
-  result.push(...remaining)
-
-  return result
+  // All agents sorted by name (fixed order, never changes on click)
+  return [...props.agents].sort((a, b) => a.name.localeCompare(b.name))
 })
 
 const visibleAgents = computed(() => sortedAgents.value.slice(0, MAX_VISIBLE))
