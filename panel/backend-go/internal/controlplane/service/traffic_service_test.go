@@ -333,6 +333,159 @@ func TestTrafficServiceTrendDateFiltersUseConfiguredTimezone(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceTrendAppliesDefaultLookbackWindow(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 34, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		granularity string
+		rows        []storage.TrafficDelta
+		wantStarts  []string
+	}{
+		{
+			name:        "hour uses recent 24 hours",
+			granularity: "hour",
+			rows: []storage.TrafficDelta{
+				{BucketStart: time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC), RXBytes: 1},
+				{BucketStart: time.Date(2026, 5, 19, 13, 0, 0, 0, time.UTC), RXBytes: 2},
+				{BucketStart: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC), RXBytes: 3},
+				{BucketStart: time.Date(2026, 5, 20, 13, 0, 0, 0, time.UTC), RXBytes: 4},
+			},
+			wantStarts: []string{"2026-05-19T13:00:00Z", "2026-05-20T12:00:00Z"},
+		},
+		{
+			name:        "day uses recent 7 days",
+			granularity: "day",
+			rows: []storage.TrafficDelta{
+				{BucketStart: time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC), RXBytes: 1},
+				{BucketStart: time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC), RXBytes: 2},
+				{BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 3},
+				{BucketStart: time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC), RXBytes: 4},
+			},
+			wantStarts: []string{"2026-05-14T00:00:00Z", "2026-05-20T00:00:00Z"},
+		},
+		{
+			name:        "month uses recent 6 months",
+			granularity: "month",
+			rows: []storage.TrafficDelta{
+				{BucketStart: time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC), RXBytes: 1},
+				{BucketStart: time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC), RXBytes: 2},
+				{BucketStart: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), RXBytes: 3},
+				{BucketStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), RXBytes: 4},
+			},
+			wantStarts: []string{"2025-12-01T00:00:00Z", "2026-05-01T00:00:00Z"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTrafficServiceRealStore(t)
+			ctx := context.Background()
+			if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+				AgentID:       "edge-1",
+				Direction:     "rx",
+				CycleStartDay: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range tc.rows {
+				row.AgentID = "edge-1"
+				row.ScopeType = "agent_total"
+				if err := store.IncrementTrafficBuckets(ctx, row); err != nil {
+					t.Fatal(err)
+				}
+			}
+			svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+			points, err := svc.Trend(ctx, TrafficTrendQuery{
+				AgentID:     "edge-1",
+				ScopeType:   "agent_total",
+				Granularity: tc.granularity,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(points) != len(tc.wantStarts) {
+				t.Fatalf("points = %+v, want starts %v", points, tc.wantStarts)
+			}
+			for i, want := range tc.wantStarts {
+				if points[i].BucketStart != want {
+					t.Fatalf("points[%d].BucketStart = %q, want %q; points = %+v", i, points[i].BucketStart, want, points)
+				}
+			}
+		})
+	}
+}
+
+func TestTrafficServiceOverviewTrendUsesDefaultLookbackWindow(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 34, 0, 0, time.UTC)
+	for _, agentID := range []string{"edge-1", "edge-2"} {
+		if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+			AgentID:       agentID,
+			Direction:     "rx",
+			CycleStartDay: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, row := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC), RXBytes: 100},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-2", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC), RXBytes: 20},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	overview, err := svc.Overview(ctx, "", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.Trend) != 1 {
+		t.Fatalf("overview trend = %+v, want one in-window aggregate", overview.Trend)
+	}
+	if overview.Trend[0].BucketStart != "2026-05-14T00:00:00Z" || overview.Trend[0].RXBytes != 30 {
+		t.Fatalf("overview trend[0] = %+v, want May 14 rx aggregate 30", overview.Trend[0])
+	}
+}
+
+func TestTrafficServiceOverviewTrendFallsBackWhenHostTotalOnlyOutsideDefaultWindow(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 34, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-1",
+		Direction:     "rx",
+		CycleStartDay: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC), RXBytes: 100},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 25},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	overview, err := svc.Overview(ctx, "", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.Trend) != 1 {
+		t.Fatalf("overview trend = %+v, want recent agent_total fallback bucket", overview.Trend)
+	}
+	if overview.Trend[0].BucketStart != "2026-05-20T00:00:00Z" ||
+		overview.Trend[0].RXBytes != 25 {
+		t.Fatalf("overview trend[0] = %+v, want recent agent_total fallback bucket", overview.Trend[0])
+	}
+}
+
 func TestTrafficServiceIngestHeartbeatParsesHostBootID(t *testing.T) {
 	samples := parseHeartbeatTrafficStats(AgentStats{"traffic": map[string]any{
 		"host": map[string]any{
@@ -920,6 +1073,7 @@ func TestTrafficServiceSummaryIncludesObjectBreakdownsWithRealStore(t *testing.T
 
 func TestTrafficServiceOverviewAggregatesHostTrend(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policies = []storage.AgentTrafficPolicyRow{
 		{AgentID: "edge-1", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
 		{AgentID: "edge-2", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
@@ -931,7 +1085,7 @@ func TestTrafficServiceOverviewAggregatesHostTrend(t *testing.T) {
 	} {
 		fakeStore.addBucket(row)
 	}
-	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, fakeStore)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
 
 	overview, err := svc.Overview(context.Background(), "", "day", nil)
 	if err != nil {
@@ -1019,7 +1173,8 @@ func TestTrafficServiceTrendReturnsAccountedPoints(t *testing.T) {
 	fakeStore.policy.Direction = "max"
 	bucketStart := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	fakeStore.addBucket(storage.TrafficBucketRow{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: bucketStart, RXBytes: 10, TXBytes: 20})
-	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, fakeStore)
+	now := time.Date(2026, 5, 3, 13, 0, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
 
 	points, err := svc.Trend(context.Background(), TrafficTrendQuery{
 		AgentID:     "edge-1",

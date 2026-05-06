@@ -309,6 +309,7 @@ func (s *trafficService) Trend(ctx context.Context, query TrafficTrendQuery) ([]
 	granularity := defaultString(query.Granularity, "hour")
 	from = s.trendFilterTimeInPanelTimezone(granularity, from, false)
 	to = s.trendFilterTimeInPanelTimezone(granularity, to, true)
+	from, to = s.defaultTrafficTrendWindow(granularity, from, to)
 	rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     query.AgentID,
 		ScopeType:   defaultString(query.ScopeType, s.defaultTotalScopeType(ctx, query.AgentID, granularity, from, to)),
@@ -334,6 +335,41 @@ func (s *trafficService) Trend(ctx context.Context, query TrafficTrendQuery) ([]
 		})
 	}
 	return points, nil
+}
+
+func (s *trafficService) defaultTrafficTrendWindow(granularity string, from, to time.Time) (time.Time, time.Time) {
+	if !from.IsZero() && !to.IsZero() {
+		return from, to
+	}
+	if to.IsZero() {
+		to = s.defaultTrafficTrendEnd(granularity)
+	}
+	if from.IsZero() {
+		switch normalizeTrafficGranularity(granularity) {
+		case "day":
+			from = to.In(s.tz).AddDate(0, 0, -7)
+		case "month":
+			from = to.In(s.tz).AddDate(0, -6, 0)
+		default:
+			from = to.Add(-24 * time.Hour)
+		}
+	}
+	return from, to
+}
+
+func (s *trafficService) defaultTrafficTrendEnd(granularity string) time.Time {
+	now := s.now()
+	if s.tz != nil {
+		now = now.In(s.tz)
+	}
+	switch normalizeTrafficGranularity(granularity) {
+	case "day":
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, 1)
+	case "month":
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).AddDate(0, 1, 0)
+	default:
+		return now
+	}
 }
 
 func (s *trafficService) trendFilterTimeInPanelTimezone(granularity string, value time.Time, exclusiveEnd bool) time.Time {
@@ -665,7 +701,6 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, granu
 	if agentFilter != "" {
 		trend, _ = s.Trend(ctx, TrafficTrendQuery{
 			AgentID:     agentFilter,
-			ScopeType:   s.defaultTotalScopeType(ctx, agentFilter, granularity, time.Time{}, time.Time{}),
 			Granularity: granularity,
 		})
 	} else {
@@ -696,9 +731,6 @@ func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []
 	merged := make(map[bucketKey]*TrafficTrendPoint)
 	for _, id := range agentIDs {
 		totalScopeType := scopeType
-		if totalScopeType == "" {
-			totalScopeType = s.defaultTotalScopeType(ctx, id, granularity, time.Time{}, time.Time{})
-		}
 		points, err := s.Trend(ctx, TrafficTrendQuery{
 			AgentID:     id,
 			ScopeType:   totalScopeType,
