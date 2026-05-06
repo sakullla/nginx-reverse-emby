@@ -167,7 +167,6 @@ function openTrendModal(listener) {
 }
 
 function handleAgentSelect(id) {
-  agentContext.recordAgentUsage?.(id)
   router.replace({ query: { ...route.query, agentId: id } })
 }
 

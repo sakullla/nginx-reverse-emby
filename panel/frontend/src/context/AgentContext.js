@@ -73,6 +73,7 @@ export const AgentProvider = defineComponent({
     function selectAgent(id) {
       selectedAgentId.value = id
       localStorage.setItem('selected_agent_id', id)
+      recordAgentUsage(id)
     }
 
     const RECENT_AGENTS_KEY = 'nre_recent_agent_ids'

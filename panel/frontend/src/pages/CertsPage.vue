@@ -134,7 +134,6 @@ const agentId = computed(() => route.query.agentId || selectedAgentId.value)
 const { data: certsData, isLoading } = useCertificates(agentId)
 
 function handleAgentSelect(id) {
-  agentContext.recordAgentUsage?.(id)
   router.replace({ query: { ...route.query, agentId: id } })
 }
 const deleteCertificate = useDeleteCertificate(agentId)

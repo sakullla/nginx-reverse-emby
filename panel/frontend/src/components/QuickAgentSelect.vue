@@ -86,7 +86,8 @@ const moreRef = ref(null)
 function getRecentList() {
   try {
     const raw = localStorage.getItem(RECENT_AGENTS_KEY)
-    return raw ? JSON.parse(raw) : []
+    const list = raw ? JSON.parse(raw) : []
+    return Array.isArray(list) ? list : []
   } catch {
     return []
   }

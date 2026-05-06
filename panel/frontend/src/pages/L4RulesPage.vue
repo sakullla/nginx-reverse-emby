@@ -196,7 +196,6 @@ function trafficForRule(rule) {
 }
 
 function handleAgentSelect(id) {
-  agentContext.recordAgentUsage?.(id)
   router.replace({ query: { ...route.query, agentId: id } })
 }
 const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
