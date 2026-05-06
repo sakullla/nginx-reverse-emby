@@ -155,13 +155,32 @@ const displayedAgents = computed(() => {
 
 function updateDropdownPosition() {
   if (!open.value || !triggerRef.value) return
-  if (window.innerWidth <= 640) {
-    dropdownStyle.value = { position: 'fixed', zIndex: 9999 }
-    return
-  }
   const rect = triggerRef.value.getBoundingClientRect()
   const viewportWidth = window.innerWidth
   const viewportHeight = window.innerHeight
+
+  if (viewportWidth <= 640) {
+    const margin = 12
+    const bottomNavHeight = 64
+    const safeBottom = viewportHeight - bottomNavHeight - 8
+    const estimatedHeight = Math.min(viewportHeight * 0.6, 360)
+
+    let top = rect.bottom + 6
+    if (top + estimatedHeight > safeBottom) {
+      const above = rect.top - estimatedHeight - 6
+      top = above >= 8 ? above : Math.max(8, safeBottom - estimatedHeight)
+    }
+
+    dropdownStyle.value = {
+      position: 'fixed',
+      top: `${top}px`,
+      left: `${margin}px`,
+      right: `${margin}px`,
+      zIndex: 9999
+    }
+    return
+  }
+
   const dropdownWidth = Math.max(rect.width, 220)
 
   let left = rect.left
@@ -403,10 +422,6 @@ onUnmounted(() => {
     font-size: 0.8125rem;
   }
   .agent-picker__dropdown {
-    position: fixed;
-    top: auto;
-    left: 0.75rem;
-    right: 0.75rem;
     width: auto;
     min-width: auto;
     max-height: 70vh;
