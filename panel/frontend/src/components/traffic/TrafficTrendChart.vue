@@ -58,9 +58,8 @@ const chartKey = computed(() => {
       Number(point?.accounted_bytes) || 0
     ].join(':')).join('|')
     : ''
-  const refreshKey = props.granularity === 'hour' ? props.refreshKey : ''
   const dataVersion = props.granularity === 'hour' ? hourDataVersion.value : ''
-  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${refreshKey}-${dataVersion}-${pointSignature}-${prevSignature}`
+  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${props.refreshKey}-${dataVersion}-${pointSignature}-${prevSignature}`
 })
 
 function localDateParts(value) {

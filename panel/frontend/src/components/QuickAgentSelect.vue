@@ -68,6 +68,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { getAgentStatus } from '../utils/agentHelpers.js'
+import { useAgent } from '../context/AgentContext.js'
 
 const props = defineProps({
   agentId: { type: String, default: null },
@@ -75,6 +76,8 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:agentId'])
+
+const { recordAgentUsage } = useAgent()
 
 const MAX_VISIBLE = 5
 const RECENT_AGENTS_KEY = 'nre_recent_agent_ids'
@@ -142,6 +145,7 @@ const filteredHiddenAgents = computed(() => {
 })
 
 function select(agent) {
+  recordAgentUsage?.(agent.id)
   emit('update:agentId', agent.id)
   moreOpen.value = false
   moreSearch.value = ''

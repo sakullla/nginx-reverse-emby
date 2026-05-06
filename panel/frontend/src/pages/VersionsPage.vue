@@ -8,6 +8,12 @@
       <button class='btn btn-primary' @click='openCreate'>新增策略</button>
     </div>
 
+    <QuickAgentSelect
+      :agentId="selectedAgentId"
+      :agents="allAgents"
+      @update:agentId="selectAgent"
+    />
+
     <div v-if='isLoading' class='versions-page__empty'>加载中...</div>
     <div v-else-if='!policies.length' class='versions-page__empty'>暂无版本策略</div>
 
@@ -113,12 +119,19 @@ import {
   useUpdateVersionPolicy,
   useDeleteVersionPolicy
 } from '../hooks/useVersionPolicies'
+import { useAgents } from '../hooks/useAgents'
+import { useAgent } from '../context/AgentContext'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 
 const { data: policiesData, isLoading } = useVersionPolicies()
 const createPolicy = useCreateVersionPolicy()
 const updatePolicy = useUpdateVersionPolicy()
 const deletePolicy = useDeleteVersionPolicy()
+
+const { data: agentsData } = useAgents()
+const allAgents = computed(() => agentsData.value ?? [])
+const { selectedAgentId, selectAgent } = useAgent()
 
 const policies = computed(() => policiesData.value ?? [])
 const isMutating = computed(() => createPolicy.isPending.value || updatePolicy.isPending.value)
