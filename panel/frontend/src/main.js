@@ -10,7 +10,14 @@ const app = createApp(App)
 
 app.use(createPinia())
 app.use(router)
-app.component('apexchart', defineAsyncComponent(() => import('vue3-apexcharts/core')))
+app.component('apexchart', defineAsyncComponent(async () => {
+  await Promise.all([
+    import('apexcharts/area'),
+    import('apexcharts/donut'),
+    import('apexcharts/features/legend')
+  ])
+  return import('vue3-apexcharts/core')
+}))
 app.use(VueQueryPlugin, {
   queryClientConfig: {
     defaultOptions: {
