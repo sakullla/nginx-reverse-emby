@@ -17,7 +17,6 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { formatBytes } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
@@ -31,6 +30,14 @@ const props = defineProps({
 const hasData = computed(() => {
   return Array.isArray(props.points) && props.points.length > 0
 })
+
+const chartByteUnits = [
+  { label: 'B', factor: 1 },
+  { label: 'KiB', factor: 1024 },
+  { label: 'MiB', factor: 1024 ** 2 },
+  { label: 'GiB', factor: 1024 ** 3 },
+  { label: 'TiB', factor: 1024 ** 4 }
+]
 
 const hourDataVersion = ref(0)
 
@@ -84,17 +91,6 @@ function formatLabel(point) {
     return `${String(parts.year).slice(-2)}年${parts.month}月`
   }
   return `${parts.month}月${parts.day}日`
-}
-
-function formatChartBytes(value) {
-  if (value == null || value === '') return ''
-  try {
-    const number = Number(value)
-    if (!Number.isFinite(number)) return ''
-    return formatBytes(number)
-  } catch {
-    return ''
-  }
 }
 
 function bucketKey(point) {
@@ -155,36 +151,79 @@ const labels = computed(() => {
   return alignedPoints.value.map(formatLabel)
 })
 
+function finiteByteValue(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+function scaledChartValue(value) {
+  if (value == null) return null
+  const number = finiteByteValue(value)
+  const scaled = number / chartUnit.value.factor
+  if (chartUnit.value.factor === 1) return Math.round(scaled)
+  return Math.round(scaled * 100) / 100
+}
+
+const chartUnit = computed(() => {
+  const values = []
+  for (const point of alignedPoints.value) {
+    values.push(
+      finiteByteValue(point?.accounted_bytes),
+      finiteByteValue(point?.rx_bytes),
+      finiteByteValue(point?.tx_bytes)
+    )
+  }
+  if (Array.isArray(props.prevPoints)) {
+    for (const point of props.prevPoints) {
+      values.push(finiteByteValue(point?.accounted_bytes))
+    }
+  }
+  if (props.budgetBytes != null && props.budgetBytes > 0 && props.granularity !== 'month') {
+    values.push(finiteByteValue(props.budgetBytes))
+  }
+  if (props.quotaBytes != null && props.quotaBytes > 0 && props.granularity === 'month') {
+    values.push(finiteByteValue(props.quotaBytes))
+  }
+  const maxValue = Math.max(0, ...values.map((value) => Math.abs(value)))
+  let unit = chartByteUnits[0]
+  for (const candidate of chartByteUnits) {
+    if (maxValue >= candidate.factor) {
+      unit = candidate
+    }
+  }
+  return unit
+})
+
 const series = computed(() => {
   const points = alignedPoints.value
   const datasets = []
 
   datasets.push({
     name: '用量',
-    data: points.map((point) => point?.accounted_bytes ?? null)
+    data: points.map((point) => scaledChartValue(point?.accounted_bytes ?? null))
   })
 
-  datasets.push({ name: 'RX', data: points.map((point) => point?.rx_bytes ?? null) })
-  datasets.push({ name: 'TX', data: points.map((point) => point?.tx_bytes ?? null) })
+  datasets.push({ name: 'RX', data: points.map((point) => scaledChartValue(point?.rx_bytes ?? null)) })
+  datasets.push({ name: 'TX', data: points.map((point) => scaledChartValue(point?.tx_bytes ?? null)) })
 
   if (Array.isArray(props.prevPoints) && props.prevPoints.length > 0) {
     datasets.push({
       name: '上期',
-      data: alignPrevSeries(bucketStarts.value, props.points, props.prevPoints)
+      data: alignPrevSeries(bucketStarts.value, props.points, props.prevPoints).map(scaledChartValue)
     })
   }
 
   if (props.budgetBytes != null && props.budgetBytes > 0 && props.granularity !== 'month') {
     datasets.push({
       name: '日均预算',
-      data: bucketStarts.value.map(() => props.budgetBytes)
+      data: bucketStarts.value.map(() => scaledChartValue(props.budgetBytes))
     })
   }
 
   if (props.quotaBytes != null && props.quotaBytes > 0 && props.granularity === 'month') {
     datasets.push({
       name: '月额度',
-      data: bucketStarts.value.map(() => props.quotaBytes)
+      data: bucketStarts.value.map(() => scaledChartValue(props.quotaBytes))
     })
   }
 
@@ -233,10 +272,7 @@ const chartOptions = computed(() => {
     },
     tooltip: {
       shared: true,
-      intersect: false,
-      y: {
-        formatter: formatChartBytes
-      }
+      intersect: false
     },
     xaxis: {
       categories: labels.value,
@@ -251,9 +287,13 @@ const chartOptions = computed(() => {
       axisTicks: { show: false }
     },
     yaxis: {
+      title: {
+        text: chartUnit.value.label,
+        style: { fontSize: '11px', fontWeight: 600, color: 'var(--color-text-tertiary)' }
+      },
+      decimalsInFloat: chartUnit.value.factor === 1 ? 0 : 2,
       labels: {
-        style: { fontSize: '11px' },
-        formatter: formatChartBytes
+        style: { fontSize: '11px' }
       }
     },
     grid: {
