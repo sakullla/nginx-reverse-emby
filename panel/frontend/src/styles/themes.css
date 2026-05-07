@@ -185,6 +185,62 @@
 }
 
 /* =============================================
+   Theme: Neko (neko-dark) — Deep blue dark
+   ============================================= */
+[data-theme="neko-dark"] {
+  --color-primary: #60a5fa;
+  --color-primary-hover: #93c5fd;
+  --color-primary-active: #3b82f6;
+  --color-primary-subtle: rgba(96, 165, 250, 0.12);
+  --color-primary-50: rgba(96, 165, 250, 0.06);
+  --color-primary-100: rgba(96, 165, 250, 0.14);
+  --color-primary-200: rgba(96, 165, 250, 0.22);
+  --color-primary-300: rgba(96, 165, 250, 0.32);
+
+  --color-accent: #a78bfa;
+  --color-accent-hover: #c4b5fd;
+  --color-accent-subtle: rgba(167, 139, 250, 0.10);
+
+  --color-text-primary: #f1f5f9;
+  --color-text-secondary: #94a3b8;
+  --color-text-tertiary: #8899aa;
+  --color-text-muted: #475569;
+  --color-text-inverse: #0f172a;
+
+  --color-bg-canvas: #0f172a;
+  --color-bg-surface: #1e293b;
+  --color-bg-surface-raised: #334155;
+  --color-bg-sunken: #0b1221;
+  --color-bg-subtle: rgba(96, 165, 250, 0.05);
+  --color-bg-hover: rgba(96, 165, 250, 0.08);
+  --color-bg-active: rgba(96, 165, 250, 0.12);
+
+  --color-border-subtle: rgba(255, 255, 255, 0.04);
+  --color-border-default: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.14);
+  --color-border-focus: rgba(96, 165, 250, 0.40);
+
+  --color-success: #34d399;
+  --color-success-50: rgba(52, 211, 153, 0.10);
+  --color-success-glow: rgba(52, 211, 153, 0.25);
+  --color-danger: #f87171;
+  --color-danger-50: rgba(248, 113, 113, 0.10);
+  --color-danger-glow: rgba(248, 113, 113, 0.25);
+  --color-warning: #fbbf24;
+  --color-warning-50: rgba(251, 191, 36, 0.10);
+  --color-warning-glow: rgba(251, 191, 36, 0.25);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.30), 0 1px 2px rgba(0, 0, 0, 0.20);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.40), 0 4px 6px rgba(0, 0, 0, 0.30);
+  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.45), 0 8px 10px rgba(0, 0, 0, 0.30);
+  --shadow-2xl: 0 24px 48px rgba(0, 0, 0, 0.55);
+  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
+  --shadow-inner: inset 0 1px 2px rgba(0, 0, 0, 0.20);
+}
+
+/* =============================================
    Theme: 晴空 (business) — Professional SaaS
    Primary: Indigo 600 — calm, trustworthy, modern
    ============================================= */

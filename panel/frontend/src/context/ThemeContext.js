@@ -4,6 +4,7 @@ export const themes = [
   { id: 'sakura-day',   emoji: '🌸', label: '昼樱' },
   { id: 'sakura-night', emoji: '🌙', label: '夜樱' },
   { id: 'business',     emoji: '☀️', label: '晴空' },
+  { id: 'neko-dark',    emoji: '🐱', label: 'Neko' },
 ]
 
 const VALID_THEME_IDS = themes.map(t => t.id)
