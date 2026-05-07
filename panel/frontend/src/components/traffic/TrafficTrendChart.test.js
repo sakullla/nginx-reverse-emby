@@ -42,7 +42,7 @@ describe('TrafficTrendChart', () => {
     const series = wrapper.vm.series
     expect(series.length).toBeGreaterThanOrEqual(3)
     expect(series[0].name).toBe('用量')
-    expect(series[0].data).toEqual([0.98, 1.95])
+    expect(series[0].data).toEqual([1000, 2000])
     expect(series[1].name).toBe('RX')
     expect(series[2].name).toBe('TX')
   })
@@ -98,9 +98,9 @@ describe('TrafficTrendChart', () => {
     })
 
     expect(wrapper.vm.labels).toEqual(['5月5日', '5月6日'])
-    expect(wrapper.vm.series[0].data).toEqual([0.98, 1.95])
-    expect(wrapper.vm.series[1].data).toEqual([0.59, 1.17])
-    expect(wrapper.vm.series[2].data).toEqual([0.39, 0.78])
+    expect(wrapper.vm.series[0].data).toEqual([1000, 2000])
+    expect(wrapper.vm.series[1].data).toEqual([600, 1200])
+    expect(wrapper.vm.series[2].data).toEqual([400, 800])
   })
 
   it('uses panel-local month labels without merging separate backend buckets', () => {
@@ -116,12 +116,12 @@ describe('TrafficTrendChart', () => {
     })
 
     expect(wrapper.vm.labels).toEqual(['26年5月', '26年6月'])
-    expect(wrapper.vm.series[0].data).toEqual([0.98, 1.95])
-    expect(wrapper.vm.series[1].data).toEqual([0.59, 1.17])
-    expect(wrapper.vm.series[2].data).toEqual([0.39, 0.78])
+    expect(wrapper.vm.series[0].data).toEqual([1000, 2000])
+    expect(wrapper.vm.series[1].data).toEqual([600, 1200])
+    expect(wrapper.vm.series[2].data).toEqual([400, 800])
   })
 
-  it('scales chart values and uses JSON-safe y-axis unit metadata', () => {
+  it('formats y-axis labels with byte units', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {
         points: [
@@ -131,15 +131,24 @@ describe('TrafficTrendChart', () => {
       ...mountOptions
     })
 
-    const clonedOptions = JSON.parse(JSON.stringify(wrapper.vm.chartOptions))
-    const clonedSeries = JSON.parse(JSON.stringify(wrapper.vm.series))
+    const formatter = wrapper.vm.chartOptions.yaxis.labels.formatter
 
-    expect(clonedSeries[0].data).toEqual([8.83])
-    expect(clonedSeries[1].data).toEqual([8.83])
-    expect(clonedSeries[2].data).toEqual([7.8])
-    expect(clonedOptions.yaxis.title.text).toBe('GiB')
-    expect(clonedOptions.yaxis.labels.formatter).toBeUndefined()
-    expect(clonedOptions.tooltip.y?.formatter).toBeUndefined()
+    expect(formatter(10000000000)).toMatch(/GiB$/)
+    expect(formatter('10000000000')).toMatch(/GiB$/)
+    expect(formatter(null)).toBe('')
+  })
+
+  it('formats tooltip values with the same byte unit formatter', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 9481461104, rx_bytes: 9481461104, tx_bytes: 8375186227 }
+        ]
+      },
+      ...mountOptions
+    })
+
+    expect(wrapper.vm.chartOptions.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
   })
 
   it('remounts apexchart when same-size point data changes so formatter functions are not stripped by updates', async () => {
@@ -206,7 +215,7 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
   })
 
-  it.each(['hour', 'day', 'month'])('keeps unit metadata through JSON-cloned %s chart options', async (granularity) => {
+  it.each(['hour', 'day', 'month'])('rebuilds formatter options when %s charts remount from refresh key changes', async (granularity) => {
     const points = [
       { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 9481461104, rx_bytes: 9481461104, tx_bytes: 8375186227 }
     ]
@@ -218,7 +227,10 @@ describe('TrafficTrendChart', () => {
       },
       ...mountOptions
     })
-    const initialOptions = JSON.parse(JSON.stringify(wrapper.findComponent(ApexChartStub).props('options')))
+    const initialChart = wrapper.findComponent(ApexChartStub)
+    const initialOptions = initialChart.props('options')
+    initialOptions.yaxis.labels.formatter = undefined
+    initialOptions.tooltip.y.formatter = undefined
 
     await wrapper.setProps({
       points,
@@ -226,10 +238,9 @@ describe('TrafficTrendChart', () => {
     })
 
     const nextChart = wrapper.findComponent(ApexChartStub)
-    const nextOptions = JSON.parse(JSON.stringify(nextChart.props('options')))
-    expect(initialOptions.yaxis.title.text).toBe('GiB')
-    expect(nextOptions.yaxis.title.text).toBe('GiB')
-    expect(nextOptions.yaxis.labels.formatter).toBeUndefined()
+    const nextOptions = nextChart.props('options')
+    expect(nextOptions.yaxis.labels.formatter(10000000000)).toMatch(/GiB$/)
+    expect(nextOptions.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
   })
 
   it('formats x-axis labels for hour granularity', () => {
