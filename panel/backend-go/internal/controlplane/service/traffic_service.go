@@ -808,7 +808,7 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 		}
 		for _, list := range [][]TrafficSummaryBreakdown{summary.HTTPRules, summary.L4Rules, summary.RelayListeners} {
 			for _, row := range list {
-				key := fmt.Sprintf("%s-%s-%s", id, row.ScopeType, row.ScopeID)
+				key := fmt.Sprintf("%s:%s:%s", id, row.ScopeType, row.ScopeID)
 				if existing, ok := ruleMap[key]; ok {
 					existing.AccountedBytes += row.AccountedBytes
 					existing.RXBytes += row.RXBytes
@@ -819,6 +819,8 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 						label = fmt.Sprintf("%s / %s", agentName, label)
 					}
 					ruleMap[key] = &TrafficAggregateRule{
+						Key:            key,
+						AgentID:        id,
 						ScopeType:      row.ScopeType,
 						ScopeID:        row.ScopeID,
 						Label:          label,

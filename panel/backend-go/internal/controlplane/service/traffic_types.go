@@ -106,14 +106,14 @@ type TrafficCleanupAllResult struct {
 
 type TrafficOverviewAgent struct {
 	AgentID        string `json:"agent_id"`
-	Name           string  `json:"name"`
-	UsedBytes      uint64  `json:"used_bytes"`
-	QuotaBytes     *int64  `json:"quota_bytes"`
-	RemainingBytes *int64  `json:"remaining_bytes"`
-	Blocked        bool    `json:"blocked"`
-	Direction      string  `json:"direction"`
-	CycleStart     string  `json:"cycle_start"`
-	CycleEnd       string  `json:"cycle_end"`
+	Name           string `json:"name"`
+	UsedBytes      uint64 `json:"used_bytes"`
+	QuotaBytes     *int64 `json:"quota_bytes"`
+	RemainingBytes *int64 `json:"remaining_bytes"`
+	Blocked        bool   `json:"blocked"`
+	Direction      string `json:"direction"`
+	CycleStart     string `json:"cycle_start"`
+	CycleEnd       string `json:"cycle_end"`
 }
 
 type TrafficOverviewResult struct {
@@ -123,6 +123,8 @@ type TrafficOverviewResult struct {
 }
 
 type TrafficAggregateRule struct {
+	Key            string `json:"key"`
+	AgentID        string `json:"agent_id"`
 	ScopeType      string `json:"scope_type"`
 	ScopeID        string `json:"scope_id"`
 	Label          string `json:"label"`

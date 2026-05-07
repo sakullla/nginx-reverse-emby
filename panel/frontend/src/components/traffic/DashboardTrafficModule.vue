@@ -69,7 +69,7 @@
         <div class="dashboard-traffic__col">
           <div class="dt-card">
             <h3 class="dt-card__title">Top 规则</h3>
-            <div v-for="(rule, i) in topRules" :key="`${rule.scope_type}-${rule.scope_id}`" class="dt-top-rule">
+            <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule">
               <div class="dt-top-rule__info">
                 <span class="dt-top-rule__name">{{ rule.label }}</span>
                 <span class="dt-top-rule__value">{{ formatBytes(rule.accounted_bytes) }}</span>
@@ -159,6 +159,7 @@ const granularityOptions = [
   { value: 'month', label: '月' }
 ]
 
+const allAgentsQuery = useTrafficAggregate('', trafficStatsEnabled, granularity)
 const aggregateQuery = useTrafficAggregate(selectedAgentId, trafficStatsEnabled, granularity)
 
 const MOCK_AGENTS = [
@@ -184,7 +185,7 @@ const overviewAgents = computed(() => {
   return MOCK_AGENTS
 })
 const selectableAgents = computed(() => {
-  const agents = aggregateQuery.data.value?.agents
+  const agents = allAgentsQuery.data.value?.agents
   return agents?.length ? agents : overviewAgents.value
 })
 const trendPoints = computed(() => {
@@ -271,6 +272,10 @@ function topRulePercent(rule) {
   if (!rules.length) return 0
   const max = rules[0].accounted_bytes || 1
   return Math.round((rule.accounted_bytes / max) * 100)
+}
+
+function topRuleKey(rule) {
+  return rule.key || [rule.agent_id, rule.scope_type, rule.scope_id].filter(Boolean).join(':')
 }
 
 const remainingLabel = computed(() => {
