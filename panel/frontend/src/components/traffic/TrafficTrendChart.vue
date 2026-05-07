@@ -32,13 +32,13 @@ const hasData = computed(() => {
   return Array.isArray(props.points) && props.points.length > 0
 })
 
-const hourDataVersion = ref(0)
+const dataVersion = ref(0)
 
 watch(
   () => props.points,
   (points, previousPoints) => {
-    if (props.granularity === 'hour' && previousPoints && points !== previousPoints) {
-      hourDataVersion.value += 1
+    if (previousPoints && points !== previousPoints) {
+      dataVersion.value += 1
     }
   }
 )
@@ -58,8 +58,7 @@ const chartKey = computed(() => {
       Number(point?.accounted_bytes) || 0
     ].join(':')).join('|')
     : ''
-  const dataVersion = props.granularity === 'hour' ? hourDataVersion.value : ''
-  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${props.refreshKey}-${dataVersion}-${pointSignature}-${prevSignature}`
+  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${props.refreshKey}-${dataVersion.value}-${pointSignature}-${prevSignature}`
 })
 
 function localDateParts(value) {
