@@ -215,7 +215,7 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
   })
 
-  it.each(['hour', 'day', 'month'])('rebuilds formatter options when %s charts remount from refresh key changes', async (granularity) => {
+  it.each(['hour', 'day', 'month'])('does not update formatter options when %s charts remount from refresh key changes', async (granularity) => {
     const points = [
       { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 9481461104, rx_bytes: 9481461104, tx_bytes: 8375186227 }
     ]
@@ -229,8 +229,6 @@ describe('TrafficTrendChart', () => {
     })
     const initialChart = wrapper.findComponent(ApexChartStub)
     const initialOptions = initialChart.props('options')
-    initialOptions.yaxis.labels.formatter = undefined
-    initialOptions.tooltip.y.formatter = undefined
 
     await wrapper.setProps({
       points,
@@ -239,6 +237,7 @@ describe('TrafficTrendChart', () => {
 
     const nextChart = wrapper.findComponent(ApexChartStub)
     const nextOptions = nextChart.props('options')
+    expect(nextOptions).toBe(initialOptions)
     expect(nextOptions.yaxis.labels.formatter(10000000000)).toMatch(/GiB$/)
     expect(nextOptions.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
   })

@@ -207,7 +207,6 @@ const chartSeriesStyles = computed(() => {
 })
 
 const chartOptions = computed(() => {
-  void chartKey.value
   return {
     chart: {
       type: 'area',
