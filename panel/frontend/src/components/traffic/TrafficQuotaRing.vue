@@ -48,9 +48,9 @@ const percent = computed(() => usagePercent(effectiveUsed.value, effectiveQuota.
 
 const color = computed(() => {
   const p = percent.value ?? 0
-  if (p >= 90) return '#f87171'
-  if (p >= 70) return '#fbbf24'
-  return '#34d399'
+  if (p >= 90) return 'var(--color-danger)'
+  if (p >= 70) return 'var(--color-warning)'
+  return 'var(--color-success)'
 })
 
 const series = computed(() => {
@@ -79,16 +79,16 @@ const chartColors = computed(() => {
   if (isDistribution.value) {
     return DISTRIBUTION_COLORS
   }
-  return [color.value, '#e5e7eb']
+  return [color.value, 'var(--color-border-default)']
 })
 
 const chartOptions = computed(() => ({
   chart: {
     type: 'donut',
     toolbar: { show: false },
-    animations: { enabled: true }
+    animations: { enabled: true },
+    foreColor: 'var(--color-text-secondary)'
   },
-  theme: { mode: 'dark' },
   labels: chartLabels.value,
   colors: chartColors.value,
   plotOptions: {
@@ -102,7 +102,7 @@ const chartOptions = computed(() => ({
             show: true,
             fontSize: '20px',
             fontWeight: 700,
-            color: '#f1f5f9',
+            color: 'var(--color-text-primary)',
             formatter: () => {
               if (isDistribution.value) {
                 const total = props.agents.reduce((s, a) => s + (a.used_bytes || 0), 0)
@@ -116,7 +116,7 @@ const chartOptions = computed(() => ({
             show: true,
             showAlways: true,
             label: isDistribution.value ? '总用量' : '额度',
-            color: '#94a3b8',
+            color: 'var(--color-text-tertiary)',
             fontSize: '11px',
             formatter: () => {
               if (isDistribution.value) {
@@ -132,9 +132,8 @@ const chartOptions = computed(() => ({
   },
   dataLabels: { enabled: false },
   legend: { show: false },
-  stroke: { show: true, colors: ['#1e293b'], width: 2 },
+  stroke: { show: true, colors: ['var(--color-bg-surface-raised, var(--color-bg-surface))'], width: 2 },
   tooltip: {
-    theme: 'dark',
     y: {
       formatter: (value) => formatBytes(value)
     }
