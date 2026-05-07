@@ -25,76 +25,91 @@
       </div>
     </div>
 
-    <div v-if="overviewQuery.isLoading.value" class="dashboard-traffic__loading">
+    <div v-if="aggregateQuery.isLoading.value" class="dashboard-traffic__loading">
       <div class="spinner"></div>
     </div>
 
     <template v-else>
-      <!-- Bento Grid -->
-      <div class="dashboard-traffic__bento">
-        <!-- 趋势图 -->
-        <div class="bento-card bento-card--trend">
-          <TrafficTrendChart
-            :points="trendPoints"
-            :granularity="granularity"
-            :quota-bytes="selectedSummary?.quota_bytes ?? null"
-          />
-        </div>
-
-        <!-- 配额环形图 -->
-        <div class="bento-card bento-card--quota">
-          <TrafficQuotaRing
-            :used-bytes="selectedSummary?.used_bytes ?? 0"
-            :quota-bytes="selectedSummary?.quota_bytes ?? null"
-            :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
-            :agents="selectedAgentId && selectedSummary ? [selectedSummary] : overviewAgents"
-          />
-        </div>
-
-        <!-- 实时速率 -->
-        <div class="bento-card bento-card--rate">
-          <TrafficRateSparkline :points="trendPoints" :granularity="granularity" />
-        </div>
-
-        <!-- 阻断节点 -->
-        <div class="bento-card bento-card--blocked" :class="{ 'bento-card--alert': blockedCount > 0 }">
-          <span class="bento-card__label">阻断节点</span>
-          <span class="bento-card__value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
-          <span v-if="blockedCount > 0" class="bento-card__sub bento-card__sub--alert">{{ blockedCount }} 个节点已超额阻断</span>
-          <span v-else class="bento-card__sub">所有节点正常</span>
-        </div>
-
-        <!-- 计费周期 -->
-        <div class="bento-card bento-card--cycle">
-          <span class="bento-card__label">计费周期</span>
-          <span class="bento-card__value">{{ cycleLabel }}</span>
-          <span class="bento-card__sub">方向: {{ directionLabel }}</span>
-        </div>
-
-        <!-- Top 节点 -->
-        <div class="bento-card bento-card--top-nodes">
-          <h3 class="bento-card__title">Top 节点</h3>
-          <div v-for="agent in topNodes" :key="agent.agent_id" class="top-row top-row--clickable" @click="navigateToAgent(agent)">
-            <span class="top-row__name">{{ agent.name || agent.agent_id }}</span>
-            <div class="top-row__bar-track">
-              <div class="top-row__bar-fill" :style="{ width: topNodePercent(agent) + '%' }" />
-            </div>
-            <span class="top-row__value">{{ formatBytes(agent.used_bytes) }}</span>
+      <div class="dashboard-traffic__grid">
+        <!-- Left Column -->
+        <div class="dashboard-traffic__col">
+          <div class="dt-card">
+            <h3 class="dt-card__title">流量分布</h3>
+            <TrafficQuotaRing
+              :used-bytes="selectedSummary?.used_bytes ?? 0"
+              :quota-bytes="selectedSummary?.quota_bytes ?? null"
+              :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
+              :agents="selectedAgentId && selectedSummary ? [selectedSummary] : overviewAgents"
+            />
           </div>
-          <p v-if="!topNodes.length" class="bento-card__empty">暂无节点数据</p>
+          <div class="dt-card">
+            <h3 class="dt-card__title">Top 节点</h3>
+            <div v-for="(node, i) in topNodes" :key="node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
+              <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
+              <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
+              <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
+            </div>
+            <p v-if="!topNodes.length" class="dt-card__empty">暂无节点数据</p>
+          </div>
         </div>
 
-        <!-- Top 规则 -->
-        <div class="bento-card bento-card--top-rules">
-          <h3 class="bento-card__title">Top 规则</h3>
-          <div v-for="rule in topRules" :key="rule.key" class="top-row top-row--clickable" @click="navigateToAgentByRule(rule)">
-            <span class="top-row__name" :title="rule.label">{{ rule.label }}</span>
-            <div class="top-row__bar-track">
-              <div class="top-row__bar-fill" :style="{ width: rule.percent + '%' }" />
-            </div>
-            <span class="top-row__value">{{ formatBytes(rule.accounted_bytes) }}</span>
+        <!-- Center Column -->
+        <div class="dashboard-traffic__col dashboard-traffic__col--center">
+          <div class="dt-card dt-card--tall">
+            <h3 class="dt-card__title">流量趋势</h3>
+            <TrafficTrendChart
+              :points="trendPoints"
+              :granularity="granularity"
+              :quota-bytes="selectedSummary?.quota_bytes ?? null"
+            />
           </div>
-          <p v-if="!topRules.length" class="bento-card__empty">暂无规则数据</p>
+        </div>
+
+        <!-- Right Column -->
+        <div class="dashboard-traffic__col">
+          <div class="dt-card">
+            <h3 class="dt-card__title">Top 规则</h3>
+            <div v-for="(rule, i) in topRules" :key="`${rule.scope_type}-${rule.scope_id}`" class="dt-top-rule">
+              <div class="dt-top-rule__info">
+                <span class="dt-top-rule__name">{{ rule.label }}</span>
+                <span class="dt-top-rule__value">{{ formatBytes(rule.accounted_bytes) }}</span>
+              </div>
+              <div class="dt-top-rule__bar">
+                <div class="dt-top-rule__fill" :style="{ width: topRulePercent(rule) + '%', background: DISTRIBUTION_COLORS[i % DISTRIBUTION_COLORS.length] }" />
+              </div>
+            </div>
+            <p v-if="!topRules.length" class="dt-card__empty">暂无规则数据</p>
+          </div>
+          <div class="dt-card">
+            <TrafficRateSparkline :points="trendPoints" :granularity="granularity" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom stats row -->
+      <div class="dashboard-traffic__stats">
+        <div class="dt-stat" :class="{ 'dt-stat--alert': blockedCount > 0 }">
+          <span class="dt-stat__label">阻断节点</span>
+          <span class="dt-stat__value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
+          <span v-if="blockedCount > 0" class="dt-stat__sub dt-stat__sub--alert">{{ blockedCount }} 个节点已超额阻断</span>
+          <span v-else class="dt-stat__sub">所有节点正常</span>
+        </div>
+        <div class="dt-stat">
+          <span class="dt-stat__label">计费周期</span>
+          <span class="dt-stat__value">{{ cycleLabel }}</span>
+          <span class="dt-stat__sub">方向: {{ directionLabel }}</span>
+        </div>
+        <div class="dt-stat">
+          <span class="dt-stat__label">已用 / 额度</span>
+          <span class="dt-stat__value">{{ formatBytes(selectedSummary?.used_bytes || 0) }} / {{ selectedSummary?.quota_bytes != null ? formatBytes(selectedSummary.quota_bytes) : '—' }}</span>
+          <div class="dt-stat__track">
+            <div class="dt-stat__fill" :style="{ width: Math.min(100, usagePercent(selectedSummary?.used_bytes || 0, selectedSummary?.quota_bytes)) + '%' }" />
+          </div>
+        </div>
+        <div class="dt-stat">
+          <span class="dt-stat__label">剩余</span>
+          <span class="dt-stat__value" :class="{ 'dt-stat__value--success': (selectedSummary?.remaining_bytes || 0) > 0 }">{{ remainingLabel }}</span>
+          <span v-if="dailyBudgetText" class="dt-stat__sub">{{ dailyBudgetText }}</span>
         </div>
       </div>
     </template>
@@ -105,9 +120,9 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
-import { useTrafficOverview } from '../../hooks/useTrafficOverview.js'
+import { useTrafficAggregate } from '../../hooks/useTrafficAggregate.js'
 import { useAgents } from '../../hooks/useAgents.js'
-import { fetchSystemInfo, fetchTrafficSummary } from '../../api'
+import { fetchSystemInfo } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 import TrafficQuotaRing from './TrafficQuotaRing.vue'
 import TrafficRateSparkline from './TrafficRateSparkline.vue'
@@ -144,8 +159,7 @@ const granularityOptions = [
   { value: 'month', label: '月' }
 ]
 
-const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled, granularity)
-const allAgentsQuery = useTrafficOverview('', trafficStatsEnabled, granularity)
+const aggregateQuery = useTrafficAggregate(selectedAgentId, trafficStatsEnabled, granularity)
 
 const MOCK_AGENTS = [
   { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
@@ -164,17 +178,17 @@ const MOCK_TREND = Array.from({ length: 30 }, (_, i) => {
 })
 
 const overviewAgents = computed(() => {
-  const agents = overviewQuery.data.value?.agents ?? []
+  const agents = aggregateQuery.data.value?.agents ?? []
   if (agents.length) return agents
   if (!import.meta.env.DEV) return []
   return MOCK_AGENTS
 })
 const selectableAgents = computed(() => {
-  const agents = allAgentsQuery.data.value?.agents
+  const agents = aggregateQuery.data.value?.agents
   return agents?.length ? agents : overviewAgents.value
 })
 const trendPoints = computed(() => {
-  const pts = overviewQuery.data.value?.trend
+  const pts = aggregateQuery.data.value?.trend
   if (pts?.length) return normalizePoints(pts)
   if (import.meta.env.DEV) return normalizePoints(MOCK_TREND)
   return []
@@ -223,6 +237,9 @@ const directionLabel = computed(() => {
 })
 
 const topNodes = computed(() => {
+  const nodes = aggregateQuery.data.value?.top_nodes ?? []
+  if (nodes.length) return nodes
+  if (!import.meta.env.DEV) return []
   const agents = [...overviewAgents.value]
   agents.sort((a, b) => {
     const pa = a.quota_bytes ? a.used_bytes / a.quota_bytes : a.used_bytes
@@ -232,69 +249,7 @@ const topNodes = computed(() => {
   return agents.slice(0, 5)
 })
 
-function topNodePercent(agent) {
-  if (!agent.quota_bytes || agent.quota_bytes <= 0) {
-    const max = Math.max(...topNodes.value.map(a => a.used_bytes), 1)
-    return Math.round((agent.used_bytes / max) * 100)
-  }
-  return Math.min(100, usagePercent(agent.used_bytes, agent.quota_bytes))
-}
-
-function getAgentName(agentId) {
-  const overviewAgent = overviewAgents.value.find(a => a.agent_id === agentId)
-  if (overviewAgent?.name?.trim()) return overviewAgent.name.trim()
-  const globalName = globalAgentNameMap.value[agentId]
-  if (globalName) return globalName
-  return null
-}
-
-const agentIdsForTopRules = computed(() => {
-  if (selectedAgentId.value) return [selectedAgentId.value]
-  return overviewAgents.value.map(a => a.agent_id).filter(Boolean).sort()
-})
-
-const topRulesQuery = useQuery({
-  queryKey: computed(() => ['traffic-top-rules', selectedAgentId.value || 'all', agentIdsForTopRules.value.join(',')]),
-  queryFn: async () => {
-    const ids = agentIdsForTopRules.value
-    if (!ids.length) return []
-    const summaries = await Promise.all(
-      ids.map(id => fetchTrafficSummary(id).catch(() => null))
-    )
-    const ruleMap = new Map()
-    for (const [index, summary] of summaries.entries()) {
-      if (!summary) continue
-      const agentId = ids[index]
-      const agentName = getAgentName(agentId)
-      for (const list of [summary.http_rules, summary.l4_rules, summary.relay_listeners]) {
-        if (!Array.isArray(list)) continue
-        for (const row of list) {
-          const key = `${agentId}-${row.scope_type}-${row.scope_id}`
-          const existing = ruleMap.get(key)
-          if (existing) {
-            existing.accounted_bytes += row.accounted_bytes || 0
-            existing.rx_bytes += row.rx_bytes || 0
-            existing.tx_bytes += row.tx_bytes || 0
-          } else {
-            const scope = scopeLabel(row.scope_type, row.scope_id)
-            const label = agentName ? `${agentName} / ${scope}` : scope
-            ruleMap.set(key, { key, agent_id: agentId, label, accounted_bytes: row.accounted_bytes || 0, rx_bytes: row.rx_bytes || 0, tx_bytes: row.tx_bytes || 0 })
-          }
-        }
-      }
-    }
-    const rules = Array.from(ruleMap.values())
-    const total = rules.reduce((s, r) => s + r.accounted_bytes, 0)
-    for (const r of rules) {
-      r.percent = total ? Math.round((r.accounted_bytes / total) * 100) : 0
-    }
-    rules.sort((a, b) => b.accounted_bytes - a.accounted_bytes)
-    return rules.slice(0, 5)
-  },
-  enabled: computed(() => overviewAgents.value.length > 0 && visible.value)
-})
-
-const topRules = computed(() => topRulesQuery.data.value ?? [])
+const topRules = computed(() => aggregateQuery.data.value?.top_rules ?? [])
 
 function navigateToAgent(agent) {
   if (agent?.agent_id) {
@@ -305,15 +260,37 @@ function navigateToAgent(agent) {
   }
 }
 
-function navigateToAgentByRule(rule) {
-  const agentId = rule?.agent_id
-  if (agentId) {
-    router.push({
-      name: 'agent-detail',
-      params: { id: agentId }
-    })
-  }
+const DISTRIBUTION_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#22d3ee', '#f472b6']
+
+function rankStyle(index) {
+  return { background: DISTRIBUTION_COLORS[index % DISTRIBUTION_COLORS.length] }
 }
+
+function topRulePercent(rule) {
+  const rules = topRules.value
+  if (!rules.length) return 0
+  const max = rules[0].accounted_bytes || 1
+  return Math.round((rule.accounted_bytes / max) * 100)
+}
+
+const remainingLabel = computed(() => {
+  if (selectedSummary.value?.remaining_bytes == null) return '无限制'
+  return formatBytes(selectedSummary.value.remaining_bytes)
+})
+
+const dailyBudgetText = computed(() => {
+  const agents = overviewAgents.value
+  if (!agents.length) return ''
+  const first = agents[0]
+  if (!first.cycle_start || !first.cycle_end) return ''
+  const cycleStart = new Date(first.cycle_start)
+  const cycleEnd = new Date(first.cycle_end)
+  const days = Math.max(1, Math.ceil((cycleEnd - cycleStart) / 86400000))
+  const totalQuota = agents.reduce((s, a) => s + (a.quota_bytes || 0), 0)
+  if (!totalQuota) return ''
+  const daily = Math.round(totalQuota / days)
+  return `日均 ${formatBytes(daily)}`
+})
 
 function normalizePoints(raw) {
   return (raw || []).map(p => ({
@@ -323,15 +300,6 @@ function normalizePoints(raw) {
     tx_bytes: Number(p.tx_bytes) || 0,
     accounted_bytes: Number(p.accounted_bytes) || 0
   }))
-}
-
-function scopeLabel(scopeType, scopeId) {
-  switch (scopeType) {
-    case 'http_rule': return `HTTP #${scopeId}`
-    case 'l4_rule': return `L4 #${scopeId}`
-    case 'relay_listener': return `Relay #${scopeId}`
-    default: return `${scopeType} #${scopeId}`
-  }
 }
 </script>
 
@@ -410,64 +378,41 @@ function scopeLabel(scopeType, scopeId) {
   padding: 2rem;
 }
 
-.dashboard-traffic__bento {
+.dashboard-traffic__grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: 280px 120px auto;
-  grid-template-areas:
-    "trend trend quota"
-    "rate blocked cycle"
-    "top-nodes top-nodes top-rules";
+  grid-template-columns: 260px 1fr 280px;
   gap: 1rem;
-  padding: 1rem 1.25rem 1.25rem;
+  padding: 1rem 1.25rem;
 }
-
-.bento-card {
-  background: var(--color-bg-subtle);
-  border-radius: var(--radius-lg);
-  padding: 0.75rem;
+.dashboard-traffic__col {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.dashboard-traffic__col--center {
   min-width: 0;
 }
-.bento-card--trend { grid-area: trend; padding: 0.5rem; }
-.bento-card--quota { grid-area: quota; }
-.bento-card--rate { grid-area: rate; }
-.bento-card--blocked { grid-area: blocked; }
-.bento-card--cycle { grid-area: cycle; }
-.bento-card--top-nodes { grid-area: top-nodes; }
-.bento-card--top-rules { grid-area: top-rules; }
 
-.bento-card--alert {
-  background: var(--color-danger-50);
-  border: 1px solid var(--color-danger);
+.dt-card {
+  background: var(--color-bg-surface-raised, var(--color-bg-subtle));
+  border-radius: var(--radius-lg);
+  padding: 0.875rem;
+  min-width: 0;
 }
-
-.bento-card__label {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-  margin-bottom: 0.25rem;
+.dt-card--tall {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
-.bento-card__value {
-  display: block;
-  font-size: 1.125rem;
-  font-weight: 700;
-  color: var(--color-text-primary);
-  font-variant-numeric: tabular-nums;
-}
-.bento-card__sub {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-  margin-top: 0.25rem;
-}
-.bento-card__sub--alert { color: var(--color-danger); }
-.bento-card__title {
-  font-size: 0.8125rem;
+.dt-card__title {
+  font-size: 0.7rem;
   font-weight: 600;
-  color: var(--color-text-primary);
-  margin: 0 0 0.5rem;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 0.625rem;
 }
-.bento-card__empty {
+.dt-card__empty {
   text-align: center;
   color: var(--color-text-muted);
   padding: 1rem;
@@ -475,42 +420,136 @@ function scopeLabel(scopeType, scopeId) {
   margin: 0;
 }
 
-.top-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 0.5rem;
+.dt-top-item {
+  display: flex;
   align-items: center;
+  gap: 0.5rem;
   padding: 0.35rem 0;
   font-size: 0.8125rem;
   border-bottom: 1px solid var(--color-border-subtle);
-}
-.top-row:last-child { border-bottom: none; }
-.top-row--clickable {
   cursor: pointer;
   transition: background 150ms;
 }
-.top-row--clickable:hover {
-  background: var(--color-bg-hover, rgba(0,0,0,0.03));
+.dt-top-item:hover {
+  background: var(--color-bg-hover);
   border-radius: var(--radius-sm);
   margin: 0 -0.25rem;
   padding-left: 0.25rem;
   padding-right: 0.25rem;
 }
-.top-row__name {
+.dt-top-item:last-child { border-bottom: none; }
+.dt-top-item__rank {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--color-text-inverse);
+  flex-shrink: 0;
+}
+.dt-top-item__name {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-text-primary);
 }
-.top-row__bar-track {
-  display: none;
-}
-.top-row__value {
-  color: var(--color-text-primary);
+.dt-top-item__value {
+  color: var(--color-text-secondary);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.dt-top-rule {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.dt-top-rule:last-child { border-bottom: none; }
+.dt-top-rule__info {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8125rem;
+  margin-bottom: 0.25rem;
+}
+.dt-top-rule__name {
+  color: var(--color-text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-top-rule__value {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dt-top-rule__bar {
+  height: 5px;
+  background: var(--color-border-default);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.dt-top-rule__fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.3s;
+}
+
+.dashboard-traffic__stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+  padding: 0 1.25rem 1.25rem;
+}
+.dt-stat {
+  background: var(--color-bg-surface-raised, var(--color-bg-subtle));
+  border-radius: var(--radius-lg);
+  padding: 0.75rem;
+}
+.dt-stat--alert {
+  background: var(--color-danger-50);
+  border: 1px solid var(--color-danger);
+}
+.dt-stat__label {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 0.25rem;
+}
+.dt-stat__value {
+  display: block;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.dt-stat__value--success { color: var(--color-success); }
+.dt-stat__sub {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin-top: 0.25rem;
+}
+.dt-stat__sub--alert { color: var(--color-danger); }
+.dt-stat__track {
+  height: 3px;
+  background: var(--color-border-default);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  margin-top: 0.375rem;
+}
+.dt-stat__fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.3s;
 }
 
 .spinner {
@@ -524,18 +563,25 @@ function scopeLabel(scopeType, scopeId) {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1023px) {
-  .dashboard-traffic__bento {
+  .dashboard-traffic__grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .dashboard-traffic__col--center {
+    grid-column: 1 / -1;
+    order: -1;
+  }
+  .dashboard-traffic__stats {
     grid-template-columns: repeat(2, 1fr);
-    grid-template-rows: 260px 260px auto auto;
-    grid-template-areas:
-      "trend trend"
-      "quota rate"
-      "blocked cycle"
-      "top-nodes top-rules";
   }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 640px) {
+  .dashboard-traffic__grid {
+    grid-template-columns: 1fr;
+  }
+  .dashboard-traffic__col--center {
+    order: 0;
+  }
   .dashboard-traffic__header {
     flex-direction: column;
     align-items: flex-start;
@@ -549,18 +595,8 @@ function scopeLabel(scopeType, scopeId) {
     flex: 1;
     min-width: 0;
   }
-  .dashboard-traffic__bento {
+  .dashboard-traffic__stats {
     grid-template-columns: 1fr;
-    grid-template-rows: auto;
-    grid-template-areas:
-      "trend"
-      "quota"
-      "rate"
-      "blocked"
-      "cycle"
-      "top-nodes"
-      "top-rules";
   }
-  .bento-card--trend { min-height: 220px; }
 }
 </style>

@@ -557,3 +557,12 @@ export async function fetchTrafficOverview(agentId, granularity) {
   const { data } = await api.get(`/traffic-overview${suffix}`)
   return data
 }
+
+export async function fetchTrafficAggregate(agentId, granularity) {
+  const params = new URLSearchParams()
+  if (agentId) params.set('agent_id', agentId)
+  if (granularity) params.set('granularity', granularity)
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  const { data } = await api.get(`/traffic-aggregate${suffix}`)
+  return data
+}

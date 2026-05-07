@@ -54,11 +54,13 @@ const chartOptions = computed(() => ({
     toolbar: { show: false },
     animations: { enabled: false }
   },
-  colors: ['#3b82f6'],
+  theme: { mode: 'dark' },
+  colors: ['#60a5fa'],
   stroke: { curve: 'smooth', width: 2 },
-  fill: { opacity: 0.2 },
+  fill: { opacity: 0.15 },
   tooltip: {
     enabled: true,
+    theme: 'dark',
     x: { show: false },
     y: {
       formatter: (value) => formatBytes(value)

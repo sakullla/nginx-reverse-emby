@@ -4,9 +4,16 @@
       type="donut"
       :options="chartOptions"
       :series="series"
-      height="200"
+      height="180"
     />
-    <div class="traffic-quota-ring__info">
+    <div v-if="isDistribution && props.agents.length > 1" class="traffic-quota-ring__legend">
+      <div v-for="(agent, i) in props.agents" :key="agent.agent_id" class="tqr-legend-item">
+        <span class="tqr-legend-item__dot" :style="{ background: DISTRIBUTION_COLORS[i % DISTRIBUTION_COLORS.length] }" />
+        <span class="tqr-legend-item__name">{{ agent.name || agent.agent_id }}</span>
+        <span class="tqr-legend-item__value">{{ formatBytes(agent.used_bytes || 0) }}</span>
+      </div>
+    </div>
+    <div v-else class="traffic-quota-ring__info">
       <span class="traffic-quota-ring__label">{{ infoLabel }}</span>
       <span class="traffic-quota-ring__value">{{ infoValue }}</span>
     </div>
@@ -24,7 +31,7 @@ const props = defineProps({
   agents: { type: Array, default: null }
 })
 
-const DISTRIBUTION_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#6366f1', '#ec4899']
+const DISTRIBUTION_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#22d3ee', '#f472b6']
 
 const isDistribution = computed(() => Array.isArray(props.agents) && props.agents.length > 1)
 
@@ -41,9 +48,9 @@ const percent = computed(() => usagePercent(effectiveUsed.value, effectiveQuota.
 
 const color = computed(() => {
   const p = percent.value ?? 0
-  if (p >= 90) return '#ef4444'
-  if (p >= 70) return '#f59e0b'
-  return '#10b981'
+  if (p >= 90) return '#f87171'
+  if (p >= 70) return '#fbbf24'
+  return '#34d399'
 })
 
 const series = computed(() => {
@@ -81,20 +88,21 @@ const chartOptions = computed(() => ({
     toolbar: { show: false },
     animations: { enabled: true }
   },
+  theme: { mode: 'dark' },
   labels: chartLabels.value,
   colors: chartColors.value,
   plotOptions: {
     pie: {
       donut: {
-        size: '75%',
+        size: '70%',
         labels: {
           show: true,
           name: { show: false },
           value: {
             show: true,
-            fontSize: '22px',
+            fontSize: '20px',
             fontWeight: 700,
-            color: '#374151',
+            color: '#f1f5f9',
             formatter: () => {
               if (isDistribution.value) {
                 const total = props.agents.reduce((s, a) => s + (a.used_bytes || 0), 0)
@@ -108,6 +116,8 @@ const chartOptions = computed(() => ({
             show: true,
             showAlways: true,
             label: isDistribution.value ? '总用量' : '额度',
+            color: '#94a3b8',
+            fontSize: '11px',
             formatter: () => {
               if (isDistribution.value) {
                 const total = props.agents.reduce((s, a) => s + (a.used_bytes || 0), 0)
@@ -122,8 +132,9 @@ const chartOptions = computed(() => ({
   },
   dataLabels: { enabled: false },
   legend: { show: false },
-  stroke: { show: false },
+  stroke: { show: true, colors: ['#1e293b'], width: 2 },
   tooltip: {
+    theme: 'dark',
     y: {
       formatter: (value) => formatBytes(value)
     }
@@ -153,6 +164,40 @@ const infoValue = computed(() => {
   height: 100%;
   gap: 0.5rem;
 }
+.traffic-quota-ring__legend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  width: 100%;
+  margin-top: 0.5rem;
+}
+.tqr-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+.tqr-legend-item__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.tqr-legend-item__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+.tqr-legend-item__value {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .traffic-quota-ring__info {
   text-align: center;
 }
