@@ -14,6 +14,8 @@ const runtimeCalibrateTraffic = vi.fn(async () => ({ used_bytes: 100 }))
 const devRuntimeCalibrateTraffic = vi.fn(async () => ({ used_bytes: 100 }))
 const runtimeCleanupTraffic = vi.fn(async () => ({ deleted_rows: 1 }))
 const devRuntimeCleanupTraffic = vi.fn(async () => ({ deleted_rows: 1 }))
+const runtimeFetchTrafficAggregate = vi.fn(async () => ({ agents: [] }))
+const devRuntimeFetchTrafficAggregate = vi.fn(async () => ({ agents: [] }))
 
 vi.mock('./runtime.js', () => ({
   verifyToken: runtimeVerifyToken,
@@ -22,7 +24,8 @@ vi.mock('./runtime.js', () => ({
   fetchTrafficSummary: runtimeFetchTrafficSummary,
   fetchTrafficTrend: runtimeFetchTrafficTrend,
   calibrateTraffic: runtimeCalibrateTraffic,
-  cleanupTraffic: runtimeCleanupTraffic
+  cleanupTraffic: runtimeCleanupTraffic,
+  fetchTrafficAggregate: runtimeFetchTrafficAggregate
 }))
 
 vi.mock('./devRuntime.js', () => ({
@@ -32,7 +35,8 @@ vi.mock('./devRuntime.js', () => ({
   fetchTrafficSummary: devRuntimeFetchTrafficSummary,
   fetchTrafficTrend: devRuntimeFetchTrafficTrend,
   calibrateTraffic: devRuntimeCalibrateTraffic,
-  cleanupTraffic: devRuntimeCleanupTraffic
+  cleanupTraffic: devRuntimeCleanupTraffic,
+  fetchTrafficAggregate: devRuntimeFetchTrafficAggregate
 }))
 
 describe('api facade', () => {
@@ -70,6 +74,7 @@ describe('api facade', () => {
     await api.fetchTrafficTrend('edge/1', { granularity: 'day' })
     await api.calibrateTraffic('edge/1', { used_bytes: 123 })
     await api.cleanupTraffic('edge/1')
+    await api.fetchTrafficAggregate('edge/1', 'day')
 
     const selected = import.meta.env.DEV
       ? {
@@ -78,7 +83,8 @@ describe('api facade', () => {
           fetchTrafficSummary: devRuntimeFetchTrafficSummary,
           fetchTrafficTrend: devRuntimeFetchTrafficTrend,
           calibrateTraffic: devRuntimeCalibrateTraffic,
-          cleanupTraffic: devRuntimeCleanupTraffic
+          cleanupTraffic: devRuntimeCleanupTraffic,
+          fetchTrafficAggregate: devRuntimeFetchTrafficAggregate
         }
       : {
           fetchTrafficPolicy: runtimeFetchTrafficPolicy,
@@ -86,7 +92,8 @@ describe('api facade', () => {
           fetchTrafficSummary: runtimeFetchTrafficSummary,
           fetchTrafficTrend: runtimeFetchTrafficTrend,
           calibrateTraffic: runtimeCalibrateTraffic,
-          cleanupTraffic: runtimeCleanupTraffic
+          cleanupTraffic: runtimeCleanupTraffic,
+          fetchTrafficAggregate: runtimeFetchTrafficAggregate
         }
 
     expect(selected.fetchTrafficPolicy).toHaveBeenCalledWith('edge/1')
@@ -95,6 +102,13 @@ describe('api facade', () => {
     expect(selected.fetchTrafficTrend).toHaveBeenCalledWith('edge/1', { granularity: 'day' })
     expect(selected.calibrateTraffic).toHaveBeenCalledWith('edge/1', { used_bytes: 123 })
     expect(selected.cleanupTraffic).toHaveBeenCalledWith('edge/1')
+    expect(selected.fetchTrafficAggregate).toHaveBeenCalledWith('edge/1', 'day')
+  })
+
+  it('exports traffic aggregate from the actual development runtime', async () => {
+    const devRuntime = await vi.importActual('./devRuntime.js')
+
+    expect(devRuntime.fetchTrafficAggregate).toEqual(expect.any(Function))
   })
 })
 
