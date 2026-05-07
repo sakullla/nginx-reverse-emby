@@ -111,6 +111,18 @@ func (f fakeTrafficService) Overview(_ context.Context, _ string, _ string, _ ma
 	return f.overview, nil
 }
 
+func (f fakeTrafficService) Aggregate(_ context.Context, _ string, _ string, _ map[string]string) (service.TrafficAggregateResult, error) {
+	if f.err != nil {
+		return service.TrafficAggregateResult{}, f.err
+	}
+	return service.TrafficAggregateResult{
+		Agents:   f.overview.Agents,
+		Trend:    f.overview.Trend,
+		TopRules: nil,
+		TopNodes: nil,
+	}, nil
+}
+
 func TestTrafficPolicyRoutesRequirePanelToken(t *testing.T) {
 	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{}))
 	if err != nil {
