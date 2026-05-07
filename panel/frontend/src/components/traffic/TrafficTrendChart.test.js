@@ -255,14 +255,14 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.vm.labels[0]).toMatch(/\d{2}:\d{2}/)
   })
 
-  it('remounts the hour chart when trend data is refetched with the same bucket values', async () => {
+  it.each(['hour', 'day', 'month'])('remounts the %s chart when trend data is refetched with the same bucket values', async (granularity) => {
     const points = [
       { bucket_start: '2026-05-01T00:00:00Z', bucket_local_start: '2026-05-01T08:00:00+08:00', accounted_bytes: 1024, rx_bytes: 512, tx_bytes: 512 },
       { bucket_start: '2026-05-01T01:00:00Z', bucket_local_start: '2026-05-01T09:00:00+08:00', accounted_bytes: 2048, rx_bytes: 1024, tx_bytes: 1024 }
     ]
     const wrapper = mount(TrafficTrendChart, {
       props: {
-        granularity: 'hour',
+        granularity,
         points
       },
       ...mountOptions
