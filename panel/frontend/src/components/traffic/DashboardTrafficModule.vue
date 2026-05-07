@@ -69,7 +69,7 @@
         <div class="dashboard-traffic__col">
           <div class="dt-card">
             <h3 class="dt-card__title">Top 规则</h3>
-            <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule">
+            <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule" @click="navigateToAgent(rule)">
               <div class="dt-top-rule__info">
                 <span class="dt-top-rule__name">{{ rule.label }}</span>
                 <span class="dt-top-rule__value">{{ formatBytes(rule.accounted_bytes) }}</span>
@@ -473,6 +473,15 @@ function normalizePoints(raw) {
 .dt-top-rule {
   padding: 0.35rem 0;
   border-bottom: 1px solid var(--color-border-subtle);
+  cursor: pointer;
+  transition: background 150ms;
+}
+.dt-top-rule:hover {
+  background: var(--color-bg-hover);
+  border-radius: var(--radius-sm);
+  margin: 0 -0.25rem;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
 }
 .dt-top-rule:last-child { border-bottom: none; }
 .dt-top-rule__info {

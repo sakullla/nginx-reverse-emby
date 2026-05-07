@@ -1187,6 +1187,9 @@ func TestTrafficServiceAggregateTopRulesExposeAgentIdentity(t *testing.T) {
 	if !seenAgents["edge-1"] || !seenAgents["edge-2"] {
 		t.Fatalf("TopRules agents = %+v, want edge-1 and edge-2", aggregate.TopRules)
 	}
+	if fakeStore.breakdownReadCount != 8 {
+		t.Fatalf("ListTrafficBreakdown calls = %d, want one summary pass for two agents", fakeStore.breakdownReadCount)
+	}
 }
 
 func TestTrafficServiceCounterResetPersistsEventWithRealStore(t *testing.T) {
@@ -1628,6 +1631,7 @@ type fakeTrafficStore struct {
 	writeCount              int
 	baselineReadCount       int
 	trendReadCount          int
+	breakdownReadCount      int
 }
 
 func newFakeTrafficStore() *fakeTrafficStore {
@@ -1788,6 +1792,7 @@ func trafficTrendQueryMatches(want, got storage.TrafficTrendQuery) bool {
 }
 
 func (s *fakeTrafficStore) ListTrafficBreakdown(_ context.Context, query storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error) {
+	s.breakdownReadCount++
 	rows := []storage.TrafficBucketRow{}
 	for _, row := range s.buckets {
 		if row.AgentID != query.AgentID {

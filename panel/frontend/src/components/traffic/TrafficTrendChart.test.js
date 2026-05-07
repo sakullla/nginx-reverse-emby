@@ -151,6 +151,21 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.vm.chartOptions.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
   })
 
+  it('uses theme-aware Apex chrome instead of forcing dark mode', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ]
+      },
+      ...mountOptions
+    })
+
+    expect(wrapper.vm.chartOptions.theme).toBeUndefined()
+    expect(wrapper.vm.chartOptions.chart.foreColor).toBe('var(--color-text-secondary)')
+    expect(wrapper.vm.chartOptions.grid.borderColor).toBe('var(--color-border-subtle)')
+  })
+
   it('remounts apexchart when same-size point data changes so formatter functions are not stripped by updates', async () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {

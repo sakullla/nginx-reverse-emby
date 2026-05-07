@@ -673,6 +673,7 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, granu
 		granularity = "day"
 	}
 	overviewAgents := make([]TrafficOverviewAgent, 0, len(agentIDs))
+	summaries := make(map[string]TrafficSummary, len(agentIDs))
 	for _, id := range agentIDs {
 		if agentFilter != "" && id != agentFilter {
 			continue
@@ -681,6 +682,7 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, granu
 		if err != nil {
 			continue
 		}
+		summaries[id] = summary
 		name := id
 		if n, ok := agentNames[id]; ok {
 			name = n
@@ -720,6 +722,7 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, granu
 		Agents:    overviewAgents,
 		Trend:     trend,
 		HostTrend: hostTrend,
+		Summaries: summaries,
 	}, nil
 }
 
@@ -776,14 +779,6 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 	if err := s.requireEnabled(); err != nil {
 		return TrafficAggregateResult{}, err
 	}
-	agentIDStore, ok := s.store.(trafficAgentIDStore)
-	if !ok {
-		return TrafficAggregateResult{}, nil
-	}
-	agentIDs, err := agentIDStore.ListTrafficAgentIDs(ctx)
-	if err != nil {
-		return TrafficAggregateResult{}, err
-	}
 	if granularity == "" {
 		granularity = "day"
 	}
@@ -793,17 +788,15 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 		return TrafficAggregateResult{}, err
 	}
 
+	agentNameByID := make(map[string]string, len(overviewResult.Agents))
+	for _, agent := range overviewResult.Agents {
+		agentNameByID[agent.AgentID] = agent.Name
+	}
+
 	ruleMap := make(map[string]*TrafficAggregateRule)
-	for _, id := range agentIDs {
-		if agentFilter != "" && id != agentFilter {
-			continue
-		}
-		summary, err := s.Summary(ctx, id)
-		if err != nil {
-			continue
-		}
+	for id, summary := range overviewResult.Summaries {
 		agentName := id
-		if n, ok := agentNames[id]; ok {
+		if n, ok := agentNameByID[id]; ok && n != "" {
 			agentName = n
 		}
 		for _, list := range [][]TrafficSummaryBreakdown{summary.HTTPRules, summary.L4Rules, summary.RelayListeners} {

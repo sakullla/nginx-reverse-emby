@@ -52,15 +52,14 @@ const chartOptions = computed(() => ({
     type: 'area',
     sparkline: { enabled: true },
     toolbar: { show: false },
-    animations: { enabled: false }
+    animations: { enabled: false },
+    foreColor: 'var(--color-text-secondary)'
   },
-  theme: { mode: 'dark' },
-  colors: ['#60a5fa'],
+  colors: ['var(--color-primary)'],
   stroke: { curve: 'smooth', width: 2 },
   fill: { opacity: 0.15 },
   tooltip: {
     enabled: true,
-    theme: 'dark',
     x: { show: false },
     y: {
       formatter: (value) => formatBytes(value)

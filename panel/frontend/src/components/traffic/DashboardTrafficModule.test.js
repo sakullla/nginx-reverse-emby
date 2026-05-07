@@ -192,6 +192,25 @@ describe('DashboardTrafficModule', () => {
     })
   })
 
+  it('navigates top rules to their owning agent', async () => {
+    aggregateByRequest.all = {
+      ...buildAggregate(),
+      top_rules: [
+        { agent_id: 'edge/2', key: 'edge/2:http_rule:1', scope_type: 'http_rule', scope_id: '1', label: 'edge-2 / HTTP #1', accounted_bytes: 2048 }
+      ]
+    }
+
+    const wrapper = await mountModule()
+    await vi.waitFor(() => expect(wrapper.find('.dt-top-rule').exists()).toBe(true))
+
+    await wrapper.find('.dt-top-rule').trigger('click')
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'agent-detail',
+      params: { id: 'edge/2' }
+    })
+  })
+
   it('keeps all agents available after filtering to one agent', async () => {
     aggregateByRequest = {
       all: buildAggregate(),

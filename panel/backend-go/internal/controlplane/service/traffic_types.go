@@ -117,9 +117,10 @@ type TrafficOverviewAgent struct {
 }
 
 type TrafficOverviewResult struct {
-	Agents    []TrafficOverviewAgent `json:"agents"`
-	Trend     []TrafficTrendPoint    `json:"trend"`
-	HostTrend []TrafficTrendPoint    `json:"host_trend"`
+	Agents    []TrafficOverviewAgent    `json:"agents"`
+	Trend     []TrafficTrendPoint       `json:"trend"`
+	HostTrend []TrafficTrendPoint       `json:"host_trend"`
+	Summaries map[string]TrafficSummary `json:"-"`
 }
 
 type TrafficAggregateRule struct {
