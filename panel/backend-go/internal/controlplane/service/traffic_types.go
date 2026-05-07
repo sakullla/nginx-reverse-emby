@@ -121,3 +121,26 @@ type TrafficOverviewResult struct {
 	Trend     []TrafficTrendPoint    `json:"trend"`
 	HostTrend []TrafficTrendPoint    `json:"host_trend"`
 }
+
+type TrafficAggregateRule struct {
+	ScopeType      string `json:"scope_type"`
+	ScopeID        string `json:"scope_id"`
+	Label          string `json:"label"`
+	AccountedBytes uint64 `json:"accounted_bytes"`
+	RXBytes        uint64 `json:"rx_bytes"`
+	TXBytes        uint64 `json:"tx_bytes"`
+}
+
+type TrafficAggregateNode struct {
+	AgentID    string `json:"agent_id"`
+	Name       string `json:"name"`
+	UsedBytes  uint64 `json:"used_bytes"`
+	QuotaBytes *int64 `json:"quota_bytes"`
+}
+
+type TrafficAggregateResult struct {
+	Agents   []TrafficOverviewAgent `json:"agents"`
+	Trend    []TrafficTrendPoint    `json:"trend"`
+	TopRules []TrafficAggregateRule `json:"top_rules"`
+	TopNodes []TrafficAggregateNode `json:"top_nodes"`
+}

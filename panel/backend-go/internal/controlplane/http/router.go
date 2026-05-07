@@ -35,6 +35,7 @@ type TrafficService interface {
 	Calibrate(context.Context, string, service.TrafficCalibrationRequest) (service.TrafficSummary, error)
 	Cleanup(context.Context, string) (service.TrafficCleanupResult, error)
 	Overview(ctx context.Context, agentFilter string, granularity string, agentNames map[string]string) (service.TrafficOverviewResult, error)
+	Aggregate(ctx context.Context, agentFilter string, granularity string, agentNames map[string]string) (service.TrafficAggregateResult, error)
 }
 
 type RuleService interface {
@@ -167,6 +168,10 @@ func (unavailableTrafficService) Overview(context.Context, string, string, map[s
 	return service.TrafficOverviewResult{}, trafficStatsDisabledError()
 }
 
+func (unavailableTrafficService) Aggregate(context.Context, string, string, map[string]string) (service.TrafficAggregateResult, error) {
+	return service.TrafficAggregateResult{}, trafficStatsDisabledError()
+}
+
 func trafficStatsDisabledError() error {
 	return service.TrafficServiceError{Code: service.ErrCodeTrafficStatsDisabled, Err: service.ErrTrafficStatsDisabled}
 }
@@ -233,6 +238,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/traffic-calibration", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficCalibration)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-cleanup", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficCleanup)))
 		mux.Handle(prefix+"/traffic-overview", resolved.requirePanelToken(http.HandlerFunc(resolved.handleTrafficOverview)))
+		mux.Handle(prefix+"/traffic-aggregate", resolved.requirePanelToken(http.HandlerFunc(resolved.handleTrafficAggregate)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRule)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}/diagnose", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRuleDiagnose)))
