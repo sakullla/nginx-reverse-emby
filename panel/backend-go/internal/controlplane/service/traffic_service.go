@@ -12,6 +12,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const trafficAggregateTopRulesLimit = 10
+
 type TrafficServiceConfig struct {
 	Enabled  bool
 	Now      func() time.Time
@@ -797,7 +799,7 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 	if err != nil {
 		return TrafficAggregateResult{}, err
 	}
-	topNodes, err := s.aggregateTopNodes(ctx, overviewResult.Agents, granularity)
+	topNodes, err := s.aggregateTopNodes(ctx, overviewResult, granularity)
 	if err != nil {
 		return TrafficAggregateResult{}, err
 	}
@@ -886,33 +888,31 @@ func (s *trafficService) aggregateTopRules(ctx context.Context, overviewResult T
 		}
 		return strings.Compare(a.Key, b.Key)
 	})
-	if len(topRules) > 5 {
-		topRules = topRules[:5]
+	if len(topRules) > trafficAggregateTopRulesLimit {
+		topRules = topRules[:trafficAggregateTopRulesLimit]
 	}
 	return topRules, nil
 }
 
-func (s *trafficService) aggregateTopNodes(ctx context.Context, agents []TrafficOverviewAgent, granularity string) ([]TrafficAggregateNode, error) {
-	topNodes := make([]TrafficAggregateNode, 0, len(agents))
-	for _, agent := range agents {
-		points, err := s.Trend(ctx, TrafficTrendQuery{
-			AgentID:     agent.AgentID,
-			Granularity: granularity,
-		})
+func (s *trafficService) aggregateTopNodes(ctx context.Context, overviewResult TrafficOverviewResult, granularity string) ([]TrafficAggregateNode, error) {
+	from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
+	topNodes := make([]TrafficAggregateNode, 0, len(overviewResult.Agents))
+	for _, agent := range overviewResult.Agents {
+		summary, ok := overviewResult.Summaries[agent.AgentID]
+		if !ok {
+			continue
+		}
+		stats, err := s.totalStatsForWindow(ctx, agent.AgentID, summary.Policy, granularity, from, to)
 		if err != nil {
 			return nil, err
 		}
-		var usedBytes uint64
-		for _, point := range points {
-			usedBytes += point.AccountedBytes
-		}
-		if usedBytes == 0 {
+		if stats.accounted == 0 {
 			continue
 		}
 		topNodes = append(topNodes, TrafficAggregateNode{
 			AgentID:    agent.AgentID,
 			Name:       agent.Name,
-			UsedBytes:  usedBytes,
+			UsedBytes:  stats.accounted,
 			QuotaBytes: agent.QuotaBytes,
 		})
 	}
@@ -929,6 +929,61 @@ func (s *trafficService) aggregateTopNodes(ctx context.Context, agents []Traffic
 		topNodes = topNodes[:5]
 	}
 	return topNodes, nil
+}
+
+func (s *trafficService) totalStatsForWindow(ctx context.Context, agentID string, policy TrafficPolicy, granularity string, from, to time.Time) (cycleTrafficStats, error) {
+	hostRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "host_total",
+		Granularity: granularity,
+		From:        from,
+		To:          to,
+	})
+	if err != nil {
+		return cycleTrafficStats{}, err
+	}
+	stats := cycleTrafficStats{}
+	totalRows := hostRows
+	if len(hostRows) == 0 {
+		totalRows, err = s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   "agent_total",
+			Granularity: granularity,
+			From:        from,
+			To:          to,
+		})
+		if err != nil {
+			return cycleTrafficStats{}, err
+		}
+	}
+	for _, row := range totalRows {
+		stats.rx += row.RXBytes
+		stats.tx += row.TXBytes
+	}
+	if len(hostRows) > 0 {
+		firstHostBucket := hostRows[0].BucketStart
+		for _, row := range hostRows[1:] {
+			if row.BucketStart.Before(firstHostBucket) {
+				firstHostBucket = row.BucketStart
+			}
+		}
+		agentRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   "agent_total",
+			Granularity: granularity,
+			From:        from,
+			To:          firstHostBucket,
+		})
+		if err != nil {
+			return cycleTrafficStats{}, err
+		}
+		for _, row := range agentRows {
+			stats.rx += row.RXBytes
+			stats.tx += row.TXBytes
+		}
+	}
+	stats.accounted = accountedBytes(policy.Direction, stats.rx, stats.tx)
+	return stats, nil
 }
 
 func scopeTypeLabel(scopeType string) string {
