@@ -67,7 +67,7 @@
 
         <!-- Right Column -->
         <div class="dashboard-traffic__col">
-          <div class="dt-card">
+          <div class="dt-card dt-card--grow">
             <h3 class="dt-card__title">Top 规则</h3>
             <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule" @click="navigateToAgent(rule)">
               <div class="dt-top-rule__info">
@@ -79,9 +79,6 @@
               </div>
             </div>
             <p v-if="!topRules.length" class="dt-card__empty">暂无规则数据</p>
-          </div>
-          <div class="dt-card dt-card--grow">
-            <TrafficRateSparkline :points="trendPoints" :granularity="granularity" />
           </div>
         </div>
       </div>
@@ -125,7 +122,6 @@ import { useAgents } from '../../hooks/useAgents.js'
 import { fetchSystemInfo } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 import TrafficQuotaRing from './TrafficQuotaRing.vue'
-import TrafficRateSparkline from './TrafficRateSparkline.vue'
 import AgentPicker from '../../components/AgentPicker.vue'
 import { formatBytes, usagePercent } from '../../utils/trafficStats.js'
 

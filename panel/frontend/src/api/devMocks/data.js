@@ -940,7 +940,7 @@ export async function fetchTrafficAggregate(agentId, granularity) {
           label: agentId ? label : `${agent.name || agent.agent_id} / ${label}`
         }
       })
-    }).sort((a, b) => (b.accounted_bytes || 0) - (a.accounted_bytes || 0)).slice(0, 5)
+    }).sort((a, b) => (b.accounted_bytes || 0) - (a.accounted_bytes || 0)).slice(0, 10)
     const topNodes = [...selectedAgents]
       .sort((a, b) => (b.used_bytes || 0) - (a.used_bytes || 0))
       .slice(0, 5)

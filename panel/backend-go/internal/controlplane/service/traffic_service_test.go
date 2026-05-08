@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1187,8 +1188,188 @@ func TestTrafficServiceAggregateTopRulesExposeAgentIdentity(t *testing.T) {
 	if !seenAgents["edge-1"] || !seenAgents["edge-2"] {
 		t.Fatalf("TopRules agents = %+v, want edge-1 and edge-2", aggregate.TopRules)
 	}
-	if fakeStore.breakdownReadCount != 8 {
-		t.Fatalf("ListTrafficBreakdown calls = %d, want one summary pass for two agents", fakeStore.breakdownReadCount)
+	if fakeStore.breakdownReadCount != 14 {
+		t.Fatalf("ListTrafficBreakdown calls = %d, want summary and aggregate top-rule passes for two agents", fakeStore.breakdownReadCount)
+	}
+}
+
+func TestTrafficServiceAggregateTopRulesReturnsTopTen(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "rx",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	}
+	for i := 1; i <= 12; i++ {
+		fakeStore.addBucket(storage.TrafficBucketRow{
+			AgentID:     "edge-1",
+			ScopeType:   "http_rule",
+			ScopeID:     strconv.Itoa(i),
+			BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC),
+			RXBytes:     uint64(130 - i),
+		})
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	aggregate, err := svc.Aggregate(context.Background(), "edge-1", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.TopRules) != 10 {
+		t.Fatalf("TopRules length = %d, want 10; rows = %+v", len(aggregate.TopRules), aggregate.TopRules)
+	}
+	if aggregate.TopRules[0].ScopeID != "1" || aggregate.TopRules[9].ScopeID != "10" {
+		t.Fatalf("TopRules = %+v, want top ten rules sorted by accounted bytes", aggregate.TopRules)
+	}
+}
+
+func TestTrafficServiceAggregateTopListsFollowGranularityWindow(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policies = []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-old", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-recent", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	}
+	for _, row := range []storage.TrafficBucketRow{
+		{AgentID: "edge-old", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC), RXBytes: 5000, TXBytes: 0},
+		{AgentID: "edge-old", ScopeType: "http_rule", ScopeID: "old", BucketStart: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC), RXBytes: 5000, TXBytes: 0},
+		{AgentID: "edge-recent", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 0},
+		{AgentID: "edge-recent", ScopeType: "http_rule", ScopeID: "recent", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 0},
+	} {
+		fakeStore.addBucket(row)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	daily, err := svc.Aggregate(context.Background(), "", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(daily.TopNodes) != 1 || daily.TopNodes[0].AgentID != "edge-recent" || daily.TopNodes[0].UsedBytes != 100 {
+		t.Fatalf("daily TopNodes = %+v, want only recent window node", daily.TopNodes)
+	}
+	if len(daily.TopRules) != 1 || daily.TopRules[0].ScopeID != "recent" || daily.TopRules[0].AccountedBytes != 100 {
+		t.Fatalf("daily TopRules = %+v, want only recent window rule", daily.TopRules)
+	}
+
+	monthly, err := svc.Aggregate(context.Background(), "", "month", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(monthly.TopNodes) < 2 || monthly.TopNodes[0].AgentID != "edge-old" || monthly.TopNodes[0].UsedBytes != 5000 {
+		t.Fatalf("monthly TopNodes = %+v, want old high-usage node first", monthly.TopNodes)
+	}
+	if len(monthly.TopRules) < 2 || monthly.TopRules[0].ScopeID != "old" || monthly.TopRules[0].AccountedBytes != 5000 {
+		t.Fatalf("monthly TopRules = %+v, want old high-usage rule first", monthly.TopRules)
+	}
+}
+
+func TestTrafficServiceAggregateTopNodesPreserveLegacyAgentTotalDuringHostRollout(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policies = []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-rollout", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-current", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	}
+	for _, row := range []storage.TrafficBucketRow{
+		{AgentID: "edge-rollout", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 0},
+		{AgentID: "edge-rollout", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 20, TXBytes: 0},
+		{AgentID: "edge-current", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 80, TXBytes: 0},
+	} {
+		fakeStore.addBucket(row)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	aggregate, err := svc.Aggregate(context.Background(), "", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.TopNodes) < 2 {
+		t.Fatalf("TopNodes = %+v, want rollout and current agents", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[0].AgentID != "edge-rollout" || aggregate.TopNodes[0].UsedBytes != 120 {
+		t.Fatalf("TopNodes = %+v, want rollout agent first with legacy+host bytes", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[1].AgentID != "edge-current" || aggregate.TopNodes[1].UsedBytes != 80 {
+		t.Fatalf("TopNodes = %+v, want current host-only agent second", aggregate.TopNodes)
+	}
+}
+
+func TestTrafficServiceAggregateTopNodesPreserveSameDayLegacyAgentTotalDuringHostRollout(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	for _, policy := range []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-rollout", Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-current", Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	} {
+		if err := store.SaveTrafficPolicy(ctx, policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, row := range []storage.TrafficDelta{
+		{AgentID: "edge-rollout", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 0},
+		{AgentID: "edge-rollout", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC), RXBytes: 20, TXBytes: 0},
+		{AgentID: "edge-current", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC), RXBytes: 80, TXBytes: 0},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	aggregate, err := svc.Aggregate(ctx, "", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.TopNodes) < 2 {
+		t.Fatalf("TopNodes = %+v, want rollout and current agents", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[0].AgentID != "edge-rollout" || aggregate.TopNodes[0].UsedBytes != 120 {
+		t.Fatalf("TopNodes = %+v, want rollout agent first with same-day legacy+host bytes", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[1].AgentID != "edge-current" || aggregate.TopNodes[1].UsedBytes != 80 {
+		t.Fatalf("TopNodes = %+v, want current host-only agent second", aggregate.TopNodes)
+	}
+}
+
+func TestTrafficServiceAggregateTopNodesPreserveSameMonthLegacyAgentTotalDuringHostRollout(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	for _, policy := range []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-rollout", Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-current", Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	} {
+		if err := store.SaveTrafficPolicy(ctx, policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, row := range []storage.TrafficDelta{
+		{AgentID: "edge-rollout", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 0},
+		{AgentID: "edge-rollout", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC), RXBytes: 20, TXBytes: 0},
+		{AgentID: "edge-current", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC), RXBytes: 80, TXBytes: 0},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	aggregate, err := svc.Aggregate(ctx, "", "month", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.TopNodes) < 2 {
+		t.Fatalf("TopNodes = %+v, want rollout and current agents", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[0].AgentID != "edge-rollout" || aggregate.TopNodes[0].UsedBytes != 120 {
+		t.Fatalf("TopNodes = %+v, want rollout agent first with same-month legacy+host bytes", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[1].AgentID != "edge-current" || aggregate.TopNodes[1].UsedBytes != 80 {
+		t.Fatalf("TopNodes = %+v, want current host-only agent second", aggregate.TopNodes)
 	}
 }
 

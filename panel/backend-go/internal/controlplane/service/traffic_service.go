@@ -12,6 +12,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const trafficAggregateTopRulesLimit = 10
+
 type TrafficServiceConfig struct {
 	Enabled  bool
 	Now      func() time.Time
@@ -793,34 +795,81 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 		agentNameByID[agent.AgentID] = agent.Name
 	}
 
+	topRules, err := s.aggregateTopRules(ctx, overviewResult, agentFilter, granularity, agentNameByID)
+	if err != nil {
+		return TrafficAggregateResult{}, err
+	}
+	topNodes, err := s.aggregateTopNodes(ctx, overviewResult, granularity)
+	if err != nil {
+		return TrafficAggregateResult{}, err
+	}
+
+	return TrafficAggregateResult{
+		Agents:   overviewResult.Agents,
+		Trend:    overviewResult.Trend,
+		TopRules: topRules,
+		TopNodes: topNodes,
+	}, nil
+}
+
+func (s *trafficService) aggregateTopRules(ctx context.Context, overviewResult TrafficOverviewResult, agentFilter string, granularity string, agentNameByID map[string]string) ([]TrafficAggregateRule, error) {
 	ruleMap := make(map[string]*TrafficAggregateRule)
-	for id, summary := range overviewResult.Summaries {
-		agentName := id
-		if n, ok := agentNameByID[id]; ok && n != "" {
+	addRule := func(agentID string, row TrafficSummaryBreakdown) {
+		if row.AccountedBytes == 0 {
+			return
+		}
+		agentName := agentID
+		if n, ok := agentNameByID[agentID]; ok && n != "" {
 			agentName = n
 		}
-		for _, list := range [][]TrafficSummaryBreakdown{summary.HTTPRules, summary.L4Rules, summary.RelayListeners} {
-			for _, row := range list {
-				key := fmt.Sprintf("%s:%s:%s", id, row.ScopeType, row.ScopeID)
-				if existing, ok := ruleMap[key]; ok {
-					existing.AccountedBytes += row.AccountedBytes
-					existing.RXBytes += row.RXBytes
-					existing.TXBytes += row.TXBytes
-				} else {
-					label := fmt.Sprintf("%s #%s", scopeTypeLabel(row.ScopeType), row.ScopeID)
-					if agentFilter == "" {
-						label = fmt.Sprintf("%s / %s", agentName, label)
-					}
-					ruleMap[key] = &TrafficAggregateRule{
-						Key:            key,
-						AgentID:        id,
-						ScopeType:      row.ScopeType,
-						ScopeID:        row.ScopeID,
-						Label:          label,
-						AccountedBytes: row.AccountedBytes,
-						RXBytes:        row.RXBytes,
-						TXBytes:        row.TXBytes,
-					}
+		key := fmt.Sprintf("%s:%s:%s", agentID, row.ScopeType, row.ScopeID)
+		if existing, ok := ruleMap[key]; ok {
+			existing.AccountedBytes += row.AccountedBytes
+			existing.RXBytes += row.RXBytes
+			existing.TXBytes += row.TXBytes
+			return
+		}
+		label := fmt.Sprintf("%s #%s", scopeTypeLabel(row.ScopeType), row.ScopeID)
+		if agentFilter == "" {
+			label = fmt.Sprintf("%s / %s", agentName, label)
+		}
+		ruleMap[key] = &TrafficAggregateRule{
+			Key:            key,
+			AgentID:        agentID,
+			ScopeType:      row.ScopeType,
+			ScopeID:        row.ScopeID,
+			Label:          label,
+			AccountedBytes: row.AccountedBytes,
+			RXBytes:        row.RXBytes,
+			TXBytes:        row.TXBytes,
+		}
+	}
+
+	breakdownStore, ok := s.store.(trafficBreakdownStore)
+	if ok {
+		from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
+		for agentID, summary := range overviewResult.Summaries {
+			for _, scopeType := range []string{"http_rule", "l4_rule", "relay_listener"} {
+				rows, err := breakdownStore.ListTrafficBreakdown(ctx, storage.TrafficTrendQuery{
+					AgentID:     agentID,
+					ScopeType:   scopeType,
+					Granularity: granularity,
+					From:        from,
+					To:          to,
+				})
+				if err != nil {
+					return nil, err
+				}
+				for _, row := range summarizeTrafficBreakdownRows(summary.Policy.Direction, rows) {
+					addRule(agentID, row)
+				}
+			}
+		}
+	} else {
+		for agentID, summary := range overviewResult.Summaries {
+			for _, list := range [][]TrafficSummaryBreakdown{summary.HTTPRules, summary.L4Rules, summary.RelayListeners} {
+				for _, row := range list {
+					addRule(agentID, row)
 				}
 			}
 		}
@@ -837,19 +886,34 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 		if a.AccountedBytes < b.AccountedBytes {
 			return 1
 		}
-		return 0
+		return strings.Compare(a.Key, b.Key)
 	})
-	if len(topRules) > 5 {
-		topRules = topRules[:5]
+	if len(topRules) > trafficAggregateTopRulesLimit {
+		topRules = topRules[:trafficAggregateTopRulesLimit]
 	}
+	return topRules, nil
+}
 
+func (s *trafficService) aggregateTopNodes(ctx context.Context, overviewResult TrafficOverviewResult, granularity string) ([]TrafficAggregateNode, error) {
+	from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
 	topNodes := make([]TrafficAggregateNode, 0, len(overviewResult.Agents))
-	for _, a := range overviewResult.Agents {
+	for _, agent := range overviewResult.Agents {
+		summary, ok := overviewResult.Summaries[agent.AgentID]
+		if !ok {
+			continue
+		}
+		stats, err := s.totalStatsForWindow(ctx, agent.AgentID, summary.Policy, granularity, from, to)
+		if err != nil {
+			return nil, err
+		}
+		if stats.accounted == 0 {
+			continue
+		}
 		topNodes = append(topNodes, TrafficAggregateNode{
-			AgentID:    a.AgentID,
-			Name:       a.Name,
-			UsedBytes:  a.UsedBytes,
-			QuotaBytes: a.QuotaBytes,
+			AgentID:    agent.AgentID,
+			Name:       agent.Name,
+			UsedBytes:  stats.accounted,
+			QuotaBytes: agent.QuotaBytes,
 		})
 	}
 	slices.SortFunc(topNodes, func(a, b TrafficAggregateNode) int {
@@ -859,18 +923,171 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 		if a.UsedBytes < b.UsedBytes {
 			return 1
 		}
-		return 0
+		return strings.Compare(a.AgentID, b.AgentID)
 	})
 	if len(topNodes) > 5 {
 		topNodes = topNodes[:5]
 	}
+	return topNodes, nil
+}
 
-	return TrafficAggregateResult{
-		Agents:   overviewResult.Agents,
-		Trend:    overviewResult.Trend,
-		TopRules: topRules,
-		TopNodes: topNodes,
-	}, nil
+func (s *trafficService) totalStatsForWindow(ctx context.Context, agentID string, policy TrafficPolicy, granularity string, from, to time.Time) (cycleTrafficStats, error) {
+	hostRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "host_total",
+		Granularity: granularity,
+		From:        from,
+		To:          to,
+	})
+	if err != nil {
+		return cycleTrafficStats{}, err
+	}
+	stats := cycleTrafficStats{}
+	if len(hostRows) == 0 {
+		agentRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   "agent_total",
+			Granularity: granularity,
+			From:        from,
+			To:          to,
+		})
+		if err != nil {
+			return cycleTrafficStats{}, err
+		}
+		addTrafficRowsToStats(&stats, agentRows)
+		stats.accounted = accountedBytes(policy.Direction, stats.rx, stats.tx)
+		return stats, nil
+	}
+	addTrafficRowsToStats(&stats, hostRows)
+
+	firstHostBucket := firstTrafficBucketStart(hostRows)
+	if err := s.addLegacyAgentTotalBeforeHost(ctx, &stats, agentID, granularity, from, to, firstHostBucket); err != nil {
+		return cycleTrafficStats{}, err
+	}
+	stats.accounted = accountedBytes(policy.Direction, stats.rx, stats.tx)
+	return stats, nil
+}
+
+func (s *trafficService) addLegacyAgentTotalBeforeHost(ctx context.Context, stats *cycleTrafficStats, agentID string, granularity string, from, to, firstHostBucket time.Time) error {
+	normalized := normalizeTrafficGranularity(granularity)
+	agentRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "agent_total",
+		Granularity: granularity,
+		From:        from,
+		To:          firstHostBucket,
+	})
+	if err != nil {
+		return err
+	}
+	addTrafficRowsToStats(stats, agentRows)
+
+	switch normalized {
+	case "month":
+		monthEnd := minTrafficTime(periodEnd(firstHostBucket, "month", s.tz), to)
+		hostDayRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   "host_total",
+			Granularity: "day",
+			From:        firstHostBucket,
+			To:          monthEnd,
+		})
+		if err != nil {
+			return err
+		}
+		if len(hostDayRows) == 0 {
+			return nil
+		}
+		firstHostDay := firstTrafficBucketStart(hostDayRows)
+		agentDayRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   "agent_total",
+			Granularity: "day",
+			From:        firstHostBucket,
+			To:          firstHostDay,
+		})
+		if err != nil {
+			return err
+		}
+		addTrafficRowsToStats(stats, agentDayRows)
+		return s.addLegacyAgentTotalBeforeHostHour(ctx, stats, agentID, firstHostDay, minTrafficTime(periodEnd(firstHostDay, "day", s.tz), monthEnd))
+	case "day":
+		dayEnd := minTrafficTime(periodEnd(firstHostBucket, "day", s.tz), to)
+		return s.addLegacyAgentTotalBeforeHostHour(ctx, stats, agentID, firstHostBucket, dayEnd)
+	default:
+		return nil
+	}
+}
+
+func (s *trafficService) addLegacyAgentTotalBeforeHostHour(ctx context.Context, stats *cycleTrafficStats, agentID string, from, to time.Time) error {
+	hostHourRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "host_total",
+		Granularity: "hour",
+		From:        from,
+		To:          to,
+	})
+	if err != nil {
+		return err
+	}
+	if len(hostHourRows) == 0 {
+		return nil
+	}
+	firstHostHour := firstTrafficBucketStart(hostHourRows)
+	agentHourRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        from,
+		To:          firstHostHour,
+	})
+	if err != nil {
+		return err
+	}
+	addTrafficRowsToStats(stats, agentHourRows)
+	return nil
+}
+
+func addTrafficRowsToStats(stats *cycleTrafficStats, rows []storage.TrafficBucketRow) {
+	for _, row := range rows {
+		stats.rx += row.RXBytes
+		stats.tx += row.TXBytes
+	}
+}
+
+func firstTrafficBucketStart(rows []storage.TrafficBucketRow) time.Time {
+	first := rows[0].BucketStart
+	for _, row := range rows[1:] {
+		if row.BucketStart.Before(first) {
+			first = row.BucketStart
+		}
+	}
+	return first
+}
+
+func periodEnd(start time.Time, granularity string, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := start.In(loc)
+	switch normalizeTrafficGranularity(granularity) {
+	case "month":
+		return local.AddDate(0, 1, 0)
+	case "day":
+		return local.AddDate(0, 0, 1)
+	default:
+		return start.Add(time.Hour)
+	}
+}
+
+func minTrafficTime(a, b time.Time) time.Time {
+	if a.IsZero() {
+		return b
+	}
+	if b.IsZero() || a.Before(b) {
+		return a
+	}
+	return b
 }
 
 func scopeTypeLabel(scopeType string) string {
