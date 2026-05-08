@@ -1297,6 +1297,82 @@ func TestTrafficServiceAggregateTopNodesPreserveLegacyAgentTotalDuringHostRollou
 	}
 }
 
+func TestTrafficServiceAggregateTopNodesPreserveSameDayLegacyAgentTotalDuringHostRollout(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	for _, policy := range []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-rollout", Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-current", Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	} {
+		if err := store.SaveTrafficPolicy(ctx, policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, row := range []storage.TrafficDelta{
+		{AgentID: "edge-rollout", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 0},
+		{AgentID: "edge-rollout", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC), RXBytes: 20, TXBytes: 0},
+		{AgentID: "edge-current", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC), RXBytes: 80, TXBytes: 0},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	aggregate, err := svc.Aggregate(ctx, "", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.TopNodes) < 2 {
+		t.Fatalf("TopNodes = %+v, want rollout and current agents", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[0].AgentID != "edge-rollout" || aggregate.TopNodes[0].UsedBytes != 120 {
+		t.Fatalf("TopNodes = %+v, want rollout agent first with same-day legacy+host bytes", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[1].AgentID != "edge-current" || aggregate.TopNodes[1].UsedBytes != 80 {
+		t.Fatalf("TopNodes = %+v, want current host-only agent second", aggregate.TopNodes)
+	}
+}
+
+func TestTrafficServiceAggregateTopNodesPreserveSameMonthLegacyAgentTotalDuringHostRollout(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	for _, policy := range []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-rollout", Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-current", Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	} {
+		if err := store.SaveTrafficPolicy(ctx, policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, row := range []storage.TrafficDelta{
+		{AgentID: "edge-rollout", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 0},
+		{AgentID: "edge-rollout", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC), RXBytes: 20, TXBytes: 0},
+		{AgentID: "edge-current", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC), RXBytes: 80, TXBytes: 0},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	aggregate, err := svc.Aggregate(ctx, "", "month", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.TopNodes) < 2 {
+		t.Fatalf("TopNodes = %+v, want rollout and current agents", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[0].AgentID != "edge-rollout" || aggregate.TopNodes[0].UsedBytes != 120 {
+		t.Fatalf("TopNodes = %+v, want rollout agent first with same-month legacy+host bytes", aggregate.TopNodes)
+	}
+	if aggregate.TopNodes[1].AgentID != "edge-current" || aggregate.TopNodes[1].UsedBytes != 80 {
+		t.Fatalf("TopNodes = %+v, want current host-only agent second", aggregate.TopNodes)
+	}
+}
+
 func TestTrafficServiceCounterResetPersistsEventWithRealStore(t *testing.T) {
 	dataRoot := filepath.Join(t.TempDir(), "data")
 	store := newTrafficServiceRealStore(t, dataRoot)

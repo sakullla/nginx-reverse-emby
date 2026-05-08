@@ -943,9 +943,8 @@ func (s *trafficService) totalStatsForWindow(ctx context.Context, agentID string
 		return cycleTrafficStats{}, err
 	}
 	stats := cycleTrafficStats{}
-	totalRows := hostRows
 	if len(hostRows) == 0 {
-		totalRows, err = s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		agentRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 			AgentID:     agentID,
 			ScopeType:   "agent_total",
 			Granularity: granularity,
@@ -955,35 +954,140 @@ func (s *trafficService) totalStatsForWindow(ctx context.Context, agentID string
 		if err != nil {
 			return cycleTrafficStats{}, err
 		}
+		addTrafficRowsToStats(&stats, agentRows)
+		stats.accounted = accountedBytes(policy.Direction, stats.rx, stats.tx)
+		return stats, nil
 	}
-	for _, row := range totalRows {
-		stats.rx += row.RXBytes
-		stats.tx += row.TXBytes
-	}
-	if len(hostRows) > 0 {
-		firstHostBucket := hostRows[0].BucketStart
-		for _, row := range hostRows[1:] {
-			if row.BucketStart.Before(firstHostBucket) {
-				firstHostBucket = row.BucketStart
-			}
-		}
-		agentRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
-			AgentID:     agentID,
-			ScopeType:   "agent_total",
-			Granularity: granularity,
-			From:        from,
-			To:          firstHostBucket,
-		})
-		if err != nil {
-			return cycleTrafficStats{}, err
-		}
-		for _, row := range agentRows {
-			stats.rx += row.RXBytes
-			stats.tx += row.TXBytes
-		}
+	addTrafficRowsToStats(&stats, hostRows)
+
+	firstHostBucket := firstTrafficBucketStart(hostRows)
+	if err := s.addLegacyAgentTotalBeforeHost(ctx, &stats, agentID, granularity, from, to, firstHostBucket); err != nil {
+		return cycleTrafficStats{}, err
 	}
 	stats.accounted = accountedBytes(policy.Direction, stats.rx, stats.tx)
 	return stats, nil
+}
+
+func (s *trafficService) addLegacyAgentTotalBeforeHost(ctx context.Context, stats *cycleTrafficStats, agentID string, granularity string, from, to, firstHostBucket time.Time) error {
+	normalized := normalizeTrafficGranularity(granularity)
+	agentRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "agent_total",
+		Granularity: granularity,
+		From:        from,
+		To:          firstHostBucket,
+	})
+	if err != nil {
+		return err
+	}
+	addTrafficRowsToStats(stats, agentRows)
+
+	switch normalized {
+	case "month":
+		monthEnd := minTrafficTime(periodEnd(firstHostBucket, "month", s.tz), to)
+		hostDayRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   "host_total",
+			Granularity: "day",
+			From:        firstHostBucket,
+			To:          monthEnd,
+		})
+		if err != nil {
+			return err
+		}
+		if len(hostDayRows) == 0 {
+			return nil
+		}
+		firstHostDay := firstTrafficBucketStart(hostDayRows)
+		agentDayRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   "agent_total",
+			Granularity: "day",
+			From:        firstHostBucket,
+			To:          firstHostDay,
+		})
+		if err != nil {
+			return err
+		}
+		addTrafficRowsToStats(stats, agentDayRows)
+		return s.addLegacyAgentTotalBeforeHostHour(ctx, stats, agentID, firstHostDay, minTrafficTime(periodEnd(firstHostDay, "day", s.tz), monthEnd))
+	case "day":
+		dayEnd := minTrafficTime(periodEnd(firstHostBucket, "day", s.tz), to)
+		return s.addLegacyAgentTotalBeforeHostHour(ctx, stats, agentID, firstHostBucket, dayEnd)
+	default:
+		return nil
+	}
+}
+
+func (s *trafficService) addLegacyAgentTotalBeforeHostHour(ctx context.Context, stats *cycleTrafficStats, agentID string, from, to time.Time) error {
+	hostHourRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "host_total",
+		Granularity: "hour",
+		From:        from,
+		To:          to,
+	})
+	if err != nil {
+		return err
+	}
+	if len(hostHourRows) == 0 {
+		return nil
+	}
+	firstHostHour := firstTrafficBucketStart(hostHourRows)
+	agentHourRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        from,
+		To:          firstHostHour,
+	})
+	if err != nil {
+		return err
+	}
+	addTrafficRowsToStats(stats, agentHourRows)
+	return nil
+}
+
+func addTrafficRowsToStats(stats *cycleTrafficStats, rows []storage.TrafficBucketRow) {
+	for _, row := range rows {
+		stats.rx += row.RXBytes
+		stats.tx += row.TXBytes
+	}
+}
+
+func firstTrafficBucketStart(rows []storage.TrafficBucketRow) time.Time {
+	first := rows[0].BucketStart
+	for _, row := range rows[1:] {
+		if row.BucketStart.Before(first) {
+			first = row.BucketStart
+		}
+	}
+	return first
+}
+
+func periodEnd(start time.Time, granularity string, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := start.In(loc)
+	switch normalizeTrafficGranularity(granularity) {
+	case "month":
+		return local.AddDate(0, 1, 0)
+	case "day":
+		return local.AddDate(0, 0, 1)
+	default:
+		return start.Add(time.Hour)
+	}
+}
+
+func minTrafficTime(a, b time.Time) time.Time {
+	if a.IsZero() {
+		return b
+	}
+	if b.IsZero() || a.Before(b) {
+		return a
+	}
+	return b
 }
 
 func scopeTypeLabel(scopeType string) string {
