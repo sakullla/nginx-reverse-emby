@@ -6,12 +6,13 @@
       :series="series"
       height="180"
     />
-    <div v-if="isDistribution && props.agents.length > 1" class="traffic-quota-ring__legend">
-      <div v-for="(agent, i) in props.agents" :key="agent.agent_id" class="tqr-legend-item">
+    <div v-if="isDistribution" class="traffic-quota-ring__legend">
+      <div v-for="(agent, i) in topLegendAgents" :key="agent.agent_id" class="tqr-legend-item">
         <span class="tqr-legend-item__dot" :style="{ background: DISTRIBUTION_COLORS[i % DISTRIBUTION_COLORS.length] }" />
         <span class="tqr-legend-item__name">{{ agent.name || agent.agent_id }}</span>
         <span class="tqr-legend-item__value">{{ formatBytes(agent.used_bytes || 0) }}</span>
       </div>
+      <p v-if="extraAgentCount > 0" class="tqr-legend-more">+{{ extraAgentCount }} 个其他节点</p>
     </div>
     <div v-else class="traffic-quota-ring__info">
       <span class="traffic-quota-ring__label">{{ infoLabel }}</span>
@@ -33,7 +34,15 @@ const props = defineProps({
 
 const DISTRIBUTION_COLORS = ['#60a5fa', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#22d3ee', '#f472b6']
 
-const isDistribution = computed(() => Array.isArray(props.agents) && props.agents.length > 1)
+const sortedAgents = computed(() => {
+  if (!Array.isArray(props.agents)) return []
+  return [...props.agents].sort((a, b) => (b.used_bytes || 0) - (a.used_bytes || 0))
+})
+
+const isDistribution = computed(() => sortedAgents.value.length > 1)
+
+const topLegendAgents = computed(() => sortedAgents.value.slice(0, 5))
+const extraAgentCount = computed(() => Math.max(0, sortedAgents.value.length - 5))
 
 const singleAgent = computed(() => {
   if (Array.isArray(props.agents) && props.agents.length === 1) return props.agents[0]
@@ -55,7 +64,7 @@ const color = computed(() => {
 
 const series = computed(() => {
   if (isDistribution.value) {
-    return props.agents.map(a => a.used_bytes || 0)
+    return sortedAgents.value.map(a => a.used_bytes || 0)
   }
   if (effectiveQuota.value == null || effectiveQuota.value <= 0) {
     return [effectiveUsed.value || 0]
@@ -67,7 +76,7 @@ const series = computed(() => {
 
 const chartLabels = computed(() => {
   if (isDistribution.value) {
-    return props.agents.map(a => a.name || a.agent_id)
+    return sortedAgents.value.map(a => a.name || a.agent_id)
   }
   if (effectiveQuota.value == null || effectiveQuota.value <= 0) {
     return ['已用']
@@ -77,7 +86,7 @@ const chartLabels = computed(() => {
 
 const chartColors = computed(() => {
   if (isDistribution.value) {
-    return DISTRIBUTION_COLORS
+    return sortedAgents.value.map((_, i) => DISTRIBUTION_COLORS[i % DISTRIBUTION_COLORS.length])
   }
   return [color.value, 'var(--color-border-default)']
 })
@@ -195,6 +204,12 @@ const infoValue = computed(() => {
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+.tqr-legend-more {
+  margin: 0.25rem 0 0;
+  padding-left: 1rem;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
 }
 
 .traffic-quota-ring__info {
