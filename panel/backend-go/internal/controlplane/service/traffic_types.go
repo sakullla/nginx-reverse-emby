@@ -106,18 +106,44 @@ type TrafficCleanupAllResult struct {
 
 type TrafficOverviewAgent struct {
 	AgentID        string `json:"agent_id"`
-	Name           string  `json:"name"`
-	UsedBytes      uint64  `json:"used_bytes"`
-	QuotaBytes     *int64  `json:"quota_bytes"`
-	RemainingBytes *int64  `json:"remaining_bytes"`
-	Blocked        bool    `json:"blocked"`
-	Direction      string  `json:"direction"`
-	CycleStart     string  `json:"cycle_start"`
-	CycleEnd       string  `json:"cycle_end"`
+	Name           string `json:"name"`
+	UsedBytes      uint64 `json:"used_bytes"`
+	QuotaBytes     *int64 `json:"quota_bytes"`
+	RemainingBytes *int64 `json:"remaining_bytes"`
+	Blocked        bool   `json:"blocked"`
+	Direction      string `json:"direction"`
+	CycleStart     string `json:"cycle_start"`
+	CycleEnd       string `json:"cycle_end"`
 }
 
 type TrafficOverviewResult struct {
-	Agents    []TrafficOverviewAgent `json:"agents"`
-	Trend     []TrafficTrendPoint    `json:"trend"`
-	HostTrend []TrafficTrendPoint    `json:"host_trend"`
+	Agents    []TrafficOverviewAgent    `json:"agents"`
+	Trend     []TrafficTrendPoint       `json:"trend"`
+	HostTrend []TrafficTrendPoint       `json:"host_trend"`
+	Summaries map[string]TrafficSummary `json:"-"`
+}
+
+type TrafficAggregateRule struct {
+	Key            string `json:"key"`
+	AgentID        string `json:"agent_id"`
+	ScopeType      string `json:"scope_type"`
+	ScopeID        string `json:"scope_id"`
+	Label          string `json:"label"`
+	AccountedBytes uint64 `json:"accounted_bytes"`
+	RXBytes        uint64 `json:"rx_bytes"`
+	TXBytes        uint64 `json:"tx_bytes"`
+}
+
+type TrafficAggregateNode struct {
+	AgentID    string `json:"agent_id"`
+	Name       string `json:"name"`
+	UsedBytes  uint64 `json:"used_bytes"`
+	QuotaBytes *int64 `json:"quota_bytes"`
+}
+
+type TrafficAggregateResult struct {
+	Agents   []TrafficOverviewAgent `json:"agents"`
+	Trend    []TrafficTrendPoint    `json:"trend"`
+	TopRules []TrafficAggregateRule `json:"top_rules"`
+	TopNodes []TrafficAggregateNode `json:"top_nodes"`
 }

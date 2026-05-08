@@ -1133,6 +1133,65 @@ func TestTrafficServiceOverviewIncludesCycleWindow(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceAggregateTopRulesExposeAgentIdentity(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policies = []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-1", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-2", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	}
+	for _, row := range []storage.TrafficBucketRow{
+		{
+			AgentID:     "edge-1",
+			ScopeType:   "http_rule",
+			ScopeID:     "1",
+			BucketStart: time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC),
+			RXBytes:     100,
+			TXBytes:     200,
+		},
+		{
+			AgentID:     "edge-2",
+			ScopeType:   "http_rule",
+			ScopeID:     "1",
+			BucketStart: time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC),
+			RXBytes:     300,
+			TXBytes:     400,
+		},
+	} {
+		fakeStore.addBucket(row)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	aggregate, err := svc.Aggregate(context.Background(), "", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.TopRules) != 2 {
+		t.Fatalf("TopRules = %+v, want two overlapping rule rows", aggregate.TopRules)
+	}
+	seenKeys := map[string]bool{}
+	seenAgents := map[string]bool{}
+	for _, rule := range aggregate.TopRules {
+		if rule.AgentID == "" {
+			t.Fatalf("TopRules missing agent_id: %+v", aggregate.TopRules)
+		}
+		if rule.Key == "" {
+			t.Fatalf("TopRules missing key: %+v", aggregate.TopRules)
+		}
+		if seenKeys[rule.Key] {
+			t.Fatalf("duplicate aggregate rule key %q in %+v", rule.Key, aggregate.TopRules)
+		}
+		seenKeys[rule.Key] = true
+		seenAgents[rule.AgentID] = true
+	}
+	if !seenAgents["edge-1"] || !seenAgents["edge-2"] {
+		t.Fatalf("TopRules agents = %+v, want edge-1 and edge-2", aggregate.TopRules)
+	}
+	if fakeStore.breakdownReadCount != 8 {
+		t.Fatalf("ListTrafficBreakdown calls = %d, want one summary pass for two agents", fakeStore.breakdownReadCount)
+	}
+}
+
 func TestTrafficServiceCounterResetPersistsEventWithRealStore(t *testing.T) {
 	dataRoot := filepath.Join(t.TempDir(), "data")
 	store := newTrafficServiceRealStore(t, dataRoot)
@@ -1572,6 +1631,7 @@ type fakeTrafficStore struct {
 	writeCount              int
 	baselineReadCount       int
 	trendReadCount          int
+	breakdownReadCount      int
 }
 
 func newFakeTrafficStore() *fakeTrafficStore {
@@ -1732,6 +1792,7 @@ func trafficTrendQueryMatches(want, got storage.TrafficTrendQuery) bool {
 }
 
 func (s *fakeTrafficStore) ListTrafficBreakdown(_ context.Context, query storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error) {
+	s.breakdownReadCount++
 	rows := []storage.TrafficBucketRow{}
 	for _, row := range s.buckets {
 		if row.AgentID != query.AgentID {

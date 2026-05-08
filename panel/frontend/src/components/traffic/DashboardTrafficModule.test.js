@@ -3,7 +3,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import DashboardTrafficModule from './DashboardTrafficModule.vue'
-import { fetchSystemInfo, fetchTrafficOverview, fetchTrafficSummary } from '../../api'
+import { fetchSystemInfo, fetchTrafficAggregate } from '../../api'
 
 const routerPush = vi.fn()
 
@@ -12,31 +12,28 @@ vi.mock('vue-router', () => ({
 }))
 
 let trafficStatsEnabled = true
-let overviewAgents = []
-let overviewTrend = []
-let overviewHostTrend = []
-let overviewAgentsByRequest = null
-let trafficSummaries = {}
+let aggregateByRequest = {}
+let agents = []
 let lastQueryClient = null
 
 vi.mock('../../api', () => ({
   fetchSystemInfo: vi.fn(async () => ({ traffic_stats_enabled: trafficStatsEnabled })),
-  fetchAgents: vi.fn(async () => overviewAgents.map((agent) => ({
+  fetchAgents: vi.fn(async () => agents.map((agent) => ({
     id: agent.agent_id,
-    name: agent.name
+    name: agent.name,
+    status: agent.status || 'online',
+    last_seen_at: agent.last_seen_at || '2026-05-20T00:00:00Z'
   }))),
-  fetchTrafficOverview: vi.fn(async (agentId, granularity) => {
-    const agents = overviewAgentsByRequest?.[agentId || 'all'] ?? overviewAgents
+  fetchTrafficAggregate: vi.fn(async (agentId, granularity) => {
+    const key = agentId || 'all'
+    const aggregate = aggregateByRequest[key] ?? buildAggregate(agentId, granularity)
     return {
-      trend: overviewTrend,
-      host_trend: overviewHostTrend,
-      agents
+      ...aggregate,
+      agents: [...(aggregate.agents || [])],
+      trend: [...(aggregate.trend || [])],
+      top_rules: [...(aggregate.top_rules || [])],
+      top_nodes: [...(aggregate.top_nodes || [])]
     }
-  }),
-  fetchTrafficSummary: vi.fn(async (agentId) => trafficSummaries[agentId] ?? {
-    http_rules: [{ scope_type: 'http_rule', scope_id: agentId, accounted_bytes: agentId === 'edge-3' ? 4096 : 1024 }],
-    l4_rules: [],
-    relay_listeners: []
   })
 }))
 
@@ -71,273 +68,33 @@ async function mountModule() {
   return wrapper
 }
 
+function buildAggregate(agentId = null, granularity = 'day') {
+  const selectedAgents = agentId
+    ? agents.filter((agent) => agent.agent_id === agentId)
+    : agents
+  return {
+    ok: true,
+    agents: selectedAgents,
+    trend: [{
+      bucket_start: '2026-05-01T00:00:00Z',
+      rx_bytes: granularity === 'hour' ? 10 : 100,
+      tx_bytes: 20,
+      accounted_bytes: granularity === 'hour' ? 30 : 120
+    }],
+    top_nodes: selectedAgents.map((agent) => ({
+      agent_id: agent.agent_id,
+      name: agent.name,
+      used_bytes: agent.used_bytes,
+      quota_bytes: agent.quota_bytes
+    })),
+    top_rules: []
+  }
+}
+
 describe('DashboardTrafficModule', () => {
   beforeEach(() => {
     trafficStatsEnabled = true
-    overviewAgents = [
-      {
-        agent_id: 'edge-1',
-        name: 'edge-1',
-        used_bytes: 1024,
-        quota_bytes: null,
-        remaining_bytes: null,
-        direction: 'both'
-      },
-      {
-        agent_id: 'edge-2',
-        name: 'edge-2',
-        used_bytes: 2048,
-        quota_bytes: null,
-        remaining_bytes: null,
-        direction: 'both'
-      }
-    ]
-    overviewAgentsByRequest = null
-    overviewTrend = []
-    overviewHostTrend = []
-    trafficSummaries = {}
-    vi.clearAllMocks()
-    routerPush.mockClear()
-    vi.useRealTimers()
-  })
-
-  it('shows aggregate business traffic without quota bars when no quota is set', async () => {
-    const wrapper = await mountModule()
-
-    expect(wrapper.text()).toContain('节点分布')
-    expect(wrapper.text()).toContain('3.00 KiB')
-    expect(wrapper.text()).not.toContain('%')
-    expect(wrapper.text()).toContain('Top 节点')
-    expect(wrapper.text()).toContain('edge-1')
-    expect(wrapper.text()).toContain('edge-2')
-  })
-
-  it('does not fetch traffic overview when traffic stats are disabled', async () => {
-    trafficStatsEnabled = false
-
-    const wrapper = await mountModule()
-
-    expect(fetchSystemInfo).toHaveBeenCalled()
-    expect(fetchTrafficOverview).not.toHaveBeenCalled()
-    expect(wrapper.find('.dashboard-traffic').exists()).toBe(false)
-  })
-
-  it('loads the dashboard overview at day granularity by default', async () => {
-    await mountModule()
-
-    expect(fetchTrafficOverview).toHaveBeenCalledWith(null, 'day')
-  })
-
-  it('keeps top rules from different agents separate when rule ids overlap', async () => {
-    trafficSummaries = {
-      'edge-1': {
-        http_rules: [{ scope_type: 'http_rule', scope_id: '1', accounted_bytes: 1024 }],
-        l4_rules: [],
-        relay_listeners: []
-      },
-      'edge-2': {
-        http_rules: [{ scope_type: 'http_rule', scope_id: '1', accounted_bytes: 2048 }],
-        l4_rules: [],
-        relay_listeners: []
-      }
-    }
-
-    const wrapper = await mountModule()
-    await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge-2'))
-
-    const topRulesPanel = wrapper.find('.bento-card--top-rules')
-    expect(topRulesPanel?.exists()).toBe(true)
-    expect(topRulesPanel.text()).toContain('edge-1 / HTTP #1')
-    expect(topRulesPanel.text()).toContain('edge-2 / HTTP #1')
-    expect(topRulesPanel.text()).toContain('1.00 KiB')
-    expect(topRulesPanel.text()).toContain('2.00 KiB')
-    expect(topRulesPanel.findAll('.top-row')).toHaveLength(2)
-  })
-
-  it('navigates top rules using the agent-detail route params for reserved agent ids', async () => {
-    trafficSummaries = {
-      'edge/1': {
-        http_rules: [{ scope_type: 'http_rule', scope_id: '1', accounted_bytes: 1024 }],
-        l4_rules: [],
-        relay_listeners: []
-      },
-      'edge-2': {
-        http_rules: [],
-        l4_rules: [],
-        relay_listeners: []
-      }
-    }
-
-    overviewAgents = [
-      {
-        agent_id: 'edge/1',
-        name: 'edge/1',
-        used_bytes: 2048,
-        quota_bytes: null,
-        remaining_bytes: null,
-        direction: 'both'
-      },
-      {
-        agent_id: 'edge-2',
-        name: 'edge-2',
-        used_bytes: 1024,
-        quota_bytes: null,
-        remaining_bytes: null,
-        direction: 'both'
-      }
-    ]
-
-    const wrapper = await mountModule()
-    await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge/1'))
-
-    await wrapper.find('.bento-card--top-rules .top-row').trigger('click')
-
-    expect(routerPush).toHaveBeenCalledWith({
-      name: 'agent-detail',
-      params: { id: 'edge/1' }
-    })
-  })
-
-  it('navigates top nodes using the agent-detail route params for reserved agent ids', async () => {
-    overviewAgents = [
-      {
-        agent_id: 'edge/1',
-        name: 'edge/1',
-        used_bytes: 2048,
-        quota_bytes: null,
-        remaining_bytes: null,
-        direction: 'both'
-      },
-      {
-        agent_id: 'edge-2',
-        name: 'edge-2',
-        used_bytes: 1024,
-        quota_bytes: null,
-        remaining_bytes: null,
-        direction: 'both'
-      }
-    ]
-
-    const wrapper = await mountModule()
-
-    await wrapper.find('.bento-card--top-nodes .top-row').trigger('click')
-
-    expect(routerPush).toHaveBeenCalledWith({
-      name: 'agent-detail',
-      params: { id: 'edge/1' }
-    })
-  })
-
-  it('does not pass host trend as a separate dashboard chart series', async () => {
-    overviewTrend = [
-      { bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 10, tx_bytes: 20, accounted_bytes: 30 }
-    ]
-    overviewHostTrend = [
-      { bucket_start: '2026-05-02T00:00:00Z', rx_bytes: 100, tx_bytes: 200, accounted_bytes: 300 }
-    ]
-
-    const wrapper = await mountModule()
-    const chart = wrapper.findComponent({ name: 'TrafficTrendChart' })
-
-    expect(chart.props('points')).toEqual([
-      { bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 10, tx_bytes: 20, accounted_bytes: 30 }
-    ])
-    expect(chart.props()).not.toHaveProperty('hostPoints')
-  })
-
-  it('shows zero quotas as real quota progress', async () => {
-    overviewAgents = [{
-      agent_id: 'edge-1',
-      name: 'edge-1',
-      used_bytes: 1024,
-      quota_bytes: 0,
-      remaining_bytes: -1024,
-      direction: 'both'
-    }]
-
-    const wrapper = await mountModule()
-
-    const quotaCard = wrapper.find('.bento-card--quota')
-    expect(quotaCard?.exists()).toBe(true)
-    expect(wrapper.text()).toContain('edge-1')
-  })
-
-  it('refetches top rules when the all-node agent set changes', async () => {
-    const wrapper = await mountModule()
-    await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge-1'))
-    fetchTrafficSummary.mockClear()
-
-    overviewAgents = [
-      ...overviewAgents,
-      {
-        agent_id: 'edge-3',
-        name: 'edge-3',
-        used_bytes: 4096,
-        quota_bytes: null,
-        remaining_bytes: null,
-        direction: 'both'
-      }
-    ]
-    await wrapper.vm.$.appContext.config.globalProperties.$queryClient?.invalidateQueries?.({ queryKey: ['traffic-overview', 'all', 'day'] })
-    await lastQueryClient.invalidateQueries({ queryKey: ['traffic-overview', 'all', 'day'] })
-    await wrapper.vm.$nextTick()
-    await vi.dynamicImportSettled()
-
-    await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge-3'))
-  })
-
-  it('renders cycle label from overview agent cycle fields', async () => {
-    overviewAgents = [{
-      agent_id: 'edge-1',
-      name: 'edge-1',
-      used_bytes: 1024,
-      quota_bytes: null,
-      remaining_bytes: null,
-      direction: 'rx',
-      cycle_start: '2026-05-01T00:00:00Z',
-      cycle_end: '2026-06-01T00:00:00Z'
-    }]
-
-    const wrapper = await mountModule()
-
-    const cycleCard = wrapper.find('.bento-card--cycle')
-    expect(cycleCard?.exists()).toBe(true)
-    expect(cycleCard.text()).toContain('2026-05-01')
-    expect(cycleCard.text()).toContain('入站')
-  })
-
-  it('keeps all agents available after filtering to one agent', async () => {
-    overviewAgentsByRequest = {
-      all: overviewAgents,
-      'edge-1': [overviewAgents[0]]
-    }
-    const wrapper = await mountModule()
-    const trigger = wrapper.find('.agent-picker__trigger')
-    expect(trigger.exists()).toBe(true)
-
-    await trigger.trigger('click')
-    await nextTick()
-
-    const items = wrapper.findAll('.agent-picker__item')
-    const edge1Item = items.find(item => item.text().includes('edge-1'))
-    expect(edge1Item).toBeTruthy()
-    await edge1Item.trigger('click')
-    await nextTick()
-
-    await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1', 'day'))
-    await nextTick()
-
-    await trigger.trigger('click')
-    await nextTick()
-
-    const labels = wrapper.findAll('.agent-picker__item').map(item => item.text())
-    expect(labels).toContain('全部节点')
-    expect(labels).toContain('edge-1')
-    expect(labels).toContain('edge-2')
-  })
-
-  it('shows mixed cycle label when aggregate agents have different cycle windows', async () => {
-    overviewAgents = [
+    agents = [
       {
         agent_id: 'edge-1',
         name: 'edge-1',
@@ -355,16 +112,155 @@ describe('DashboardTrafficModule', () => {
         quota_bytes: null,
         remaining_bytes: null,
         direction: 'both',
-        cycle_start: '2026-05-15T00:00:00Z',
-        cycle_end: '2026-06-15T00:00:00Z'
+        cycle_start: '2026-05-01T00:00:00Z',
+        cycle_end: '2026-06-01T00:00:00Z'
+      }
+    ]
+    aggregateByRequest = {}
+    vi.clearAllMocks()
+    routerPush.mockClear()
+    vi.useRealTimers()
+  })
+
+  it('does not fetch aggregate data when traffic stats are disabled', async () => {
+    trafficStatsEnabled = false
+
+    const wrapper = await mountModule()
+
+    expect(fetchSystemInfo).toHaveBeenCalled()
+    expect(fetchTrafficAggregate).not.toHaveBeenCalled()
+    expect(wrapper.find('.dashboard-traffic').exists()).toBe(false)
+  })
+
+  it('loads the aggregate dashboard at day granularity by default', async () => {
+    await mountModule()
+
+    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day'))
+  })
+
+  it('renders overlapping top rules from different agents without duplicate Vue keys', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    aggregateByRequest.all = {
+      ...buildAggregate(),
+      top_rules: [
+        { agent_id: 'edge-1', key: 'edge-1:http_rule:1', scope_type: 'http_rule', scope_id: '1', label: 'edge-1 / HTTP #1', accounted_bytes: 1024 },
+        { agent_id: 'edge-2', key: 'edge-2:http_rule:1', scope_type: 'http_rule', scope_id: '1', label: 'edge-2 / HTTP #1', accounted_bytes: 2048 }
+      ]
+    }
+
+    const wrapper = await mountModule()
+    await vi.waitFor(() => expect(wrapper.findAll('.dt-top-rule')).toHaveLength(2))
+
+    const duplicateKeyWarning = warnSpy.mock.calls.some((args) =>
+      args.some((arg) => String(arg).includes('Duplicate keys'))
+    )
+    expect(duplicateKeyWarning).toBe(false)
+    expect(wrapper.text()).toContain('edge-1 / HTTP #1')
+    expect(wrapper.text()).toContain('edge-2 / HTTP #1')
+
+    warnSpy.mockRestore()
+  })
+
+  it('navigates top nodes using route params for reserved agent ids', async () => {
+    agents = [
+      {
+        agent_id: 'edge/1',
+        name: 'edge/1',
+        used_bytes: 2048,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both'
+      },
+      {
+        agent_id: 'edge-2',
+        name: 'edge-2',
+        used_bytes: 1024,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both'
       }
     ]
 
     const wrapper = await mountModule()
+    await vi.waitFor(() => expect(wrapper.findAll('.dt-top-item')).toHaveLength(2))
 
-    const cycleCard = wrapper.find('.bento-card--cycle')
-    expect(cycleCard?.exists()).toBe(true)
-    expect(cycleCard.text()).toContain('多节点混合')
-    expect(cycleCard.text()).not.toContain('2026-05-01')
+    await wrapper.find('.dt-top-item').trigger('click')
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'agent-detail',
+      params: { id: 'edge/1' }
+    })
+  })
+
+  it('navigates top rules to their owning agent', async () => {
+    aggregateByRequest.all = {
+      ...buildAggregate(),
+      top_rules: [
+        { agent_id: 'edge/2', key: 'edge/2:http_rule:1', scope_type: 'http_rule', scope_id: '1', label: 'edge-2 / HTTP #1', accounted_bytes: 2048 }
+      ]
+    }
+
+    const wrapper = await mountModule()
+    await vi.waitFor(() => expect(wrapper.find('.dt-top-rule').exists()).toBe(true))
+
+    await wrapper.find('.dt-top-rule').trigger('click')
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'agent-detail',
+      params: { id: 'edge/2' }
+    })
+  })
+
+  it('keeps all agents available after filtering to one agent', async () => {
+    aggregateByRequest = {
+      all: buildAggregate(),
+      'edge-1': {
+        ...buildAggregate('edge-1'),
+        agents: [agents[0]],
+        top_nodes: [{
+          agent_id: 'edge-1',
+          name: 'edge-1',
+          used_bytes: 1024,
+          quota_bytes: null
+        }]
+      }
+    }
+    const wrapper = await mountModule()
+    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day'))
+
+    const trigger = wrapper.find('.agent-picker__trigger')
+    await trigger.trigger('click')
+    await nextTick()
+
+    const edge1Item = wrapper.findAll('.agent-picker__item').find((item) => item.text().includes('edge-1'))
+    expect(edge1Item).toBeTruthy()
+    await edge1Item.trigger('click')
+    await nextTick()
+
+    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith('edge-1', 'day'))
+    await lastQueryClient.invalidateQueries({ queryKey: ['traffic-aggregate', 'edge-1', 'day'] })
+    await vi.dynamicImportSettled()
+    await nextTick()
+
+    await trigger.trigger('click')
+    await nextTick()
+
+    const labels = wrapper.findAll('.agent-picker__item').map((item) => item.text())
+    expect(labels).toContain('全部节点')
+    expect(labels).toContain('edge-1')
+    expect(labels).toContain('edge-2')
+  })
+
+  it('shows mixed cycle label when aggregate agents have different cycle windows', async () => {
+    agents[1] = {
+      ...agents[1],
+      cycle_start: '2026-05-15T00:00:00Z',
+      cycle_end: '2026-06-15T00:00:00Z'
+    }
+
+    const wrapper = await mountModule()
+
+    await vi.waitFor(() => expect(wrapper.text()).toContain('多节点混合'))
+    expect(wrapper.text()).not.toContain('计费周期2026-05-01')
   })
 })

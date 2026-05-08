@@ -48,5 +48,6 @@ export {
   fetchTrafficTrend,
   calibrateTraffic,
   cleanupTraffic,
-  fetchTrafficOverview
+  fetchTrafficOverview,
+  fetchTrafficAggregate
 } from './devMocks/index.js'

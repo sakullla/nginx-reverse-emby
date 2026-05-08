@@ -493,6 +493,19 @@ function trafficAccountedBytes(bucket, direction = 'both') {
   }
 }
 
+function scopeTypeLabel(scopeType) {
+  switch (scopeType) {
+    case 'http_rule':
+      return 'HTTP'
+    case 'l4_rule':
+      return 'L4'
+    case 'relay_listener':
+      return 'Relay'
+    default:
+      return scopeType
+  }
+}
+
 function ensureMockTrafficPolicy(agentId) {
   const id = String(agentId || 'local')
   if (!mockTrafficPolicies[id]) {
@@ -904,6 +917,50 @@ export async function fetchTrafficOverview(agentId, granularity) {
   if (granularity) params.set('granularity', granularity)
   const suffix = params.toString() ? `?${params.toString()}` : ''
   const { data } = await api.get(`/traffic-overview${suffix}`)
+  return data
+}
+
+export async function fetchTrafficAggregate(agentId, granularity) {
+  if (isDev) {
+    await sleep()
+    const overview = await fetchTrafficOverview(agentId, granularity)
+    const selectedAgents = overview.agents || []
+    const topRules = selectedAgents.flatMap((agent) => {
+      const summary = buildMockTrafficSummary(agent.agent_id)
+      return [
+        ...(summary.http_rules || []),
+        ...(summary.l4_rules || []),
+        ...(summary.relay_listeners || [])
+      ].map((rule) => {
+        const label = `${scopeTypeLabel(rule.scope_type)} #${rule.scope_id}`
+        return {
+          ...rule,
+          key: `${agent.agent_id}:${rule.scope_type}:${rule.scope_id}`,
+          agent_id: agent.agent_id,
+          label: agentId ? label : `${agent.name || agent.agent_id} / ${label}`
+        }
+      })
+    }).sort((a, b) => (b.accounted_bytes || 0) - (a.accounted_bytes || 0)).slice(0, 5)
+    const topNodes = [...selectedAgents]
+      .sort((a, b) => (b.used_bytes || 0) - (a.used_bytes || 0))
+      .slice(0, 5)
+      .map((agent) => ({
+        agent_id: agent.agent_id,
+        name: agent.name,
+        used_bytes: agent.used_bytes,
+        quota_bytes: agent.quota_bytes
+      }))
+    return {
+      ...overview,
+      top_rules: topRules,
+      top_nodes: topNodes
+    }
+  }
+  const params = new URLSearchParams()
+  if (agentId) params.set('agent_id', agentId)
+  if (granularity) params.set('granularity', granularity)
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  const { data } = await api.get(`/traffic-aggregate${suffix}`)
   return data
 }
 

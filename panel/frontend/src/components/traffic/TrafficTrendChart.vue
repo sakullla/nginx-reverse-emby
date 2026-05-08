@@ -211,7 +211,8 @@ const chartOptions = computed(() => {
       type: 'area',
       toolbar: { show: false },
       animations: { enabled: false },
-      fontFamily: 'inherit'
+      fontFamily: 'inherit',
+      foreColor: 'var(--color-text-secondary)'
     },
     colors: chartSeriesStyles.value.map((style) => style.color),
     stroke: {
@@ -255,7 +256,7 @@ const chartOptions = computed(() => {
       }
     },
     grid: {
-      borderColor: 'rgba(0,0,0,0.05)',
+      borderColor: 'var(--color-border-subtle)',
       strokeDashArray: 0,
       xaxis: { lines: { show: false } }
     },

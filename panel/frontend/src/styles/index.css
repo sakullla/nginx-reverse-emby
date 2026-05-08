@@ -12,6 +12,28 @@ body {
   min-height: 100dvh;
 }
 
+/* ApexCharts tooltip */
+html[data-theme] .apexcharts-tooltip,
+html[data-theme] .apexcharts-tooltip.apexcharts-theme-light,
+html[data-theme] .apexcharts-tooltip.apexcharts-theme-dark {
+  background: var(--color-bg-surface-raised);
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+html[data-theme] .apexcharts-tooltip .apexcharts-tooltip-title,
+html[data-theme] .apexcharts-tooltip.apexcharts-theme-light .apexcharts-tooltip-title,
+html[data-theme] .apexcharts-tooltip.apexcharts-theme-dark .apexcharts-tooltip-title {
+  background: var(--color-bg-surface);
+  border-bottom: 1px solid var(--color-border-default);
+  color: var(--color-text-primary);
+}
+
+html[data-theme] .apexcharts-tooltip .apexcharts-tooltip-text {
+  color: var(--color-text-primary);
+}
+
 /* Page content wrapper transition */
 .content {
   transition: opacity var(--duration-normal) var(--ease-default);
