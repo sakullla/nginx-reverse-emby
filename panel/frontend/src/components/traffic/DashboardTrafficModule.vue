@@ -80,7 +80,7 @@
             </div>
             <p v-if="!topRules.length" class="dt-card__empty">暂无规则数据</p>
           </div>
-          <div class="dt-card">
+          <div class="dt-card dt-card--grow">
             <TrafficRateSparkline :points="trendPoints" :granularity="granularity" />
           </div>
         </div>
@@ -408,6 +408,12 @@ function normalizePoints(raw) {
   flex: 1;
   display: flex;
   flex-direction: column;
+}
+.dt-card--grow {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .dt-card__title {
   font-size: 0.7rem;

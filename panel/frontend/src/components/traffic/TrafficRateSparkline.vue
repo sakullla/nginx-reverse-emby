@@ -4,12 +4,14 @@
       <span class="traffic-rate-sparkline__label">{{ labelText }}</span>
       <span class="traffic-rate-sparkline__value">{{ currentRate }}</span>
     </div>
-    <apexchart
-      type="area"
-      :options="chartOptions"
-      :series="series"
-      height="60"
-    />
+    <div class="traffic-rate-sparkline__chart">
+      <apexchart
+        type="area"
+        :options="chartOptions"
+        :series="series"
+        height="100%"
+      />
+    </div>
   </div>
 </template>
 
@@ -74,12 +76,18 @@ const chartOptions = computed(() => ({
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 .traffic-rate-sparkline__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 0.25rem;
+  flex-shrink: 0;
+}
+.traffic-rate-sparkline__chart {
+  flex: 1;
+  min-height: 60px;
 }
 .traffic-rate-sparkline__label {
   font-size: 0.75rem;
