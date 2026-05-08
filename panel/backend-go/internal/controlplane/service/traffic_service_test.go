@@ -1187,8 +1187,48 @@ func TestTrafficServiceAggregateTopRulesExposeAgentIdentity(t *testing.T) {
 	if !seenAgents["edge-1"] || !seenAgents["edge-2"] {
 		t.Fatalf("TopRules agents = %+v, want edge-1 and edge-2", aggregate.TopRules)
 	}
-	if fakeStore.breakdownReadCount != 8 {
-		t.Fatalf("ListTrafficBreakdown calls = %d, want one summary pass for two agents", fakeStore.breakdownReadCount)
+	if fakeStore.breakdownReadCount != 14 {
+		t.Fatalf("ListTrafficBreakdown calls = %d, want summary and aggregate top-rule passes for two agents", fakeStore.breakdownReadCount)
+	}
+}
+
+func TestTrafficServiceAggregateTopListsFollowGranularityWindow(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policies = []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-old", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-recent", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	}
+	for _, row := range []storage.TrafficBucketRow{
+		{AgentID: "edge-old", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC), RXBytes: 5000, TXBytes: 0},
+		{AgentID: "edge-old", ScopeType: "http_rule", ScopeID: "old", BucketStart: time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC), RXBytes: 5000, TXBytes: 0},
+		{AgentID: "edge-recent", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 0},
+		{AgentID: "edge-recent", ScopeType: "http_rule", ScopeID: "recent", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 0},
+	} {
+		fakeStore.addBucket(row)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	daily, err := svc.Aggregate(context.Background(), "", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(daily.TopNodes) != 1 || daily.TopNodes[0].AgentID != "edge-recent" || daily.TopNodes[0].UsedBytes != 100 {
+		t.Fatalf("daily TopNodes = %+v, want only recent window node", daily.TopNodes)
+	}
+	if len(daily.TopRules) != 1 || daily.TopRules[0].ScopeID != "recent" || daily.TopRules[0].AccountedBytes != 100 {
+		t.Fatalf("daily TopRules = %+v, want only recent window rule", daily.TopRules)
+	}
+
+	monthly, err := svc.Aggregate(context.Background(), "", "month", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(monthly.TopNodes) < 2 || monthly.TopNodes[0].AgentID != "edge-old" || monthly.TopNodes[0].UsedBytes != 5000 {
+		t.Fatalf("monthly TopNodes = %+v, want old high-usage node first", monthly.TopNodes)
+	}
+	if len(monthly.TopRules) < 2 || monthly.TopRules[0].ScopeID != "old" || monthly.TopRules[0].AccountedBytes != 5000 {
+		t.Fatalf("monthly TopRules = %+v, want old high-usage rule first", monthly.TopRules)
 	}
 }
 

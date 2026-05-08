@@ -793,34 +793,81 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 		agentNameByID[agent.AgentID] = agent.Name
 	}
 
+	topRules, err := s.aggregateTopRules(ctx, overviewResult, agentFilter, granularity, agentNameByID)
+	if err != nil {
+		return TrafficAggregateResult{}, err
+	}
+	topNodes, err := s.aggregateTopNodes(ctx, overviewResult.Agents, granularity)
+	if err != nil {
+		return TrafficAggregateResult{}, err
+	}
+
+	return TrafficAggregateResult{
+		Agents:   overviewResult.Agents,
+		Trend:    overviewResult.Trend,
+		TopRules: topRules,
+		TopNodes: topNodes,
+	}, nil
+}
+
+func (s *trafficService) aggregateTopRules(ctx context.Context, overviewResult TrafficOverviewResult, agentFilter string, granularity string, agentNameByID map[string]string) ([]TrafficAggregateRule, error) {
 	ruleMap := make(map[string]*TrafficAggregateRule)
-	for id, summary := range overviewResult.Summaries {
-		agentName := id
-		if n, ok := agentNameByID[id]; ok && n != "" {
+	addRule := func(agentID string, row TrafficSummaryBreakdown) {
+		if row.AccountedBytes == 0 {
+			return
+		}
+		agentName := agentID
+		if n, ok := agentNameByID[agentID]; ok && n != "" {
 			agentName = n
 		}
-		for _, list := range [][]TrafficSummaryBreakdown{summary.HTTPRules, summary.L4Rules, summary.RelayListeners} {
-			for _, row := range list {
-				key := fmt.Sprintf("%s:%s:%s", id, row.ScopeType, row.ScopeID)
-				if existing, ok := ruleMap[key]; ok {
-					existing.AccountedBytes += row.AccountedBytes
-					existing.RXBytes += row.RXBytes
-					existing.TXBytes += row.TXBytes
-				} else {
-					label := fmt.Sprintf("%s #%s", scopeTypeLabel(row.ScopeType), row.ScopeID)
-					if agentFilter == "" {
-						label = fmt.Sprintf("%s / %s", agentName, label)
-					}
-					ruleMap[key] = &TrafficAggregateRule{
-						Key:            key,
-						AgentID:        id,
-						ScopeType:      row.ScopeType,
-						ScopeID:        row.ScopeID,
-						Label:          label,
-						AccountedBytes: row.AccountedBytes,
-						RXBytes:        row.RXBytes,
-						TXBytes:        row.TXBytes,
-					}
+		key := fmt.Sprintf("%s:%s:%s", agentID, row.ScopeType, row.ScopeID)
+		if existing, ok := ruleMap[key]; ok {
+			existing.AccountedBytes += row.AccountedBytes
+			existing.RXBytes += row.RXBytes
+			existing.TXBytes += row.TXBytes
+			return
+		}
+		label := fmt.Sprintf("%s #%s", scopeTypeLabel(row.ScopeType), row.ScopeID)
+		if agentFilter == "" {
+			label = fmt.Sprintf("%s / %s", agentName, label)
+		}
+		ruleMap[key] = &TrafficAggregateRule{
+			Key:            key,
+			AgentID:        agentID,
+			ScopeType:      row.ScopeType,
+			ScopeID:        row.ScopeID,
+			Label:          label,
+			AccountedBytes: row.AccountedBytes,
+			RXBytes:        row.RXBytes,
+			TXBytes:        row.TXBytes,
+		}
+	}
+
+	breakdownStore, ok := s.store.(trafficBreakdownStore)
+	if ok {
+		from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
+		for agentID, summary := range overviewResult.Summaries {
+			for _, scopeType := range []string{"http_rule", "l4_rule", "relay_listener"} {
+				rows, err := breakdownStore.ListTrafficBreakdown(ctx, storage.TrafficTrendQuery{
+					AgentID:     agentID,
+					ScopeType:   scopeType,
+					Granularity: granularity,
+					From:        from,
+					To:          to,
+				})
+				if err != nil {
+					return nil, err
+				}
+				for _, row := range summarizeTrafficBreakdownRows(summary.Policy.Direction, rows) {
+					addRule(agentID, row)
+				}
+			}
+		}
+	} else {
+		for agentID, summary := range overviewResult.Summaries {
+			for _, list := range [][]TrafficSummaryBreakdown{summary.HTTPRules, summary.L4Rules, summary.RelayListeners} {
+				for _, row := range list {
+					addRule(agentID, row)
 				}
 			}
 		}
@@ -837,19 +884,36 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 		if a.AccountedBytes < b.AccountedBytes {
 			return 1
 		}
-		return 0
+		return strings.Compare(a.Key, b.Key)
 	})
 	if len(topRules) > 5 {
 		topRules = topRules[:5]
 	}
+	return topRules, nil
+}
 
-	topNodes := make([]TrafficAggregateNode, 0, len(overviewResult.Agents))
-	for _, a := range overviewResult.Agents {
+func (s *trafficService) aggregateTopNodes(ctx context.Context, agents []TrafficOverviewAgent, granularity string) ([]TrafficAggregateNode, error) {
+	topNodes := make([]TrafficAggregateNode, 0, len(agents))
+	for _, agent := range agents {
+		points, err := s.Trend(ctx, TrafficTrendQuery{
+			AgentID:     agent.AgentID,
+			Granularity: granularity,
+		})
+		if err != nil {
+			return nil, err
+		}
+		var usedBytes uint64
+		for _, point := range points {
+			usedBytes += point.AccountedBytes
+		}
+		if usedBytes == 0 {
+			continue
+		}
 		topNodes = append(topNodes, TrafficAggregateNode{
-			AgentID:    a.AgentID,
-			Name:       a.Name,
-			UsedBytes:  a.UsedBytes,
-			QuotaBytes: a.QuotaBytes,
+			AgentID:    agent.AgentID,
+			Name:       agent.Name,
+			UsedBytes:  usedBytes,
+			QuotaBytes: agent.QuotaBytes,
 		})
 	}
 	slices.SortFunc(topNodes, func(a, b TrafficAggregateNode) int {
@@ -859,18 +923,12 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 		if a.UsedBytes < b.UsedBytes {
 			return 1
 		}
-		return 0
+		return strings.Compare(a.AgentID, b.AgentID)
 	})
 	if len(topNodes) > 5 {
 		topNodes = topNodes[:5]
 	}
-
-	return TrafficAggregateResult{
-		Agents:   overviewResult.Agents,
-		Trend:    overviewResult.Trend,
-		TopRules: topRules,
-		TopNodes: topNodes,
-	}, nil
+	return topNodes, nil
 }
 
 func scopeTypeLabel(scopeType string) string {
