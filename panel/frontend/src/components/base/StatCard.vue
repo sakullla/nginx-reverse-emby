@@ -3,7 +3,7 @@
     :is="to ? 'RouterLink' : 'div'"
     :to="to || undefined"
     class="stat-card"
-    :class="[`stat-card--${tone}`, { 'stat-card--linked': !!to }]"
+    :class="[`stat-card--${tone}`, `stat-card--${size}`, { 'stat-card--linked': !!to }]"
   >
     <div class="stat-card__icon">
       <slot name="icon" />
@@ -28,6 +28,11 @@ defineProps({
     default: 'primary',
     validator: (v) => ['primary', 'success', 'warning', 'danger'].includes(v),
   },
+  size: {
+    type: String,
+    default: 'md',
+    validator: (v) => ['md', 'lg'].includes(v),
+  },
   value: { type: [String, Number], required: true },
   label: { type: String, required: true },
   subLabel: { type: String, default: '' },
@@ -43,15 +48,19 @@ defineProps({
   border-radius: var(--radius-xl);
   padding: var(--space-5);
   box-shadow: var(--shadow-sm);
-  transition: all var(--duration-normal) var(--ease-default);
+  transition: box-shadow var(--duration-normal) var(--ease-default),
+    border-color var(--duration-normal) var(--ease-default);
   position: relative;
   overflow: hidden;
 }
 
 .stat-card:hover {
   box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
   border-color: var(--color-border-strong);
+}
+
+.stat-card--linked:hover {
+  transform: translateY(-1px);
 }
 
 .stat-card__icon {
@@ -62,6 +71,11 @@ defineProps({
   justify-content: center;
   border-radius: var(--radius-lg);
   margin-bottom: var(--space-3);
+  transition: transform var(--duration-normal) var(--ease-default);
+}
+
+.stat-card:hover .stat-card__icon {
+  transform: scale(1.05);
 }
 
 .stat-card--primary .stat-card__icon {
@@ -91,6 +105,13 @@ defineProps({
   margin: 0 0 var(--space-1);
   letter-spacing: -0.02em;
   line-height: 1.2;
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+  transition: transform var(--duration-normal) var(--ease-default);
+}
+
+.stat-card:hover .stat-card__value {
+  transform: scale(1.03);
 }
 
 .stat-card__sub-label {
@@ -98,6 +119,7 @@ defineProps({
   color: var(--color-text-secondary);
   margin: 0 0 0.125rem;
   font-weight: 500;
+  opacity: 0.85;
 }
 
 .stat-card__label {
@@ -108,7 +130,7 @@ defineProps({
 }
 
 .stat-card__progress {
-  margin-top: var(--space-2);
+  margin-top: var(--space-3);
 }
 .stat-card__progress-track {
   height: 4px;
@@ -120,37 +142,35 @@ defineProps({
   height: 100%;
   border-radius: var(--radius-full);
   background: var(--color-primary);
-  transition: width 0.3s;
+  transition: width 0.5s var(--ease-default);
 }
 .stat-card--success .stat-card__progress-fill { background: var(--color-success); }
 .stat-card--warning .stat-card__progress-fill { background: var(--color-warning); }
 .stat-card--danger .stat-card__progress-fill { background: var(--color-danger); }
 
-.stat-card::before {
+.stat-card::after {
   content: '';
   position: absolute;
-  top: 0;
+  bottom: 0;
   left: 0;
   right: 0;
-  height: 3px;
+  height: 0;
   background: var(--color-primary);
-  opacity: 0;
-  transition: opacity var(--duration-normal) var(--ease-default);
+  transition: height var(--duration-normal) var(--ease-default);
 }
 
-.stat-card--success::before { background: var(--color-success); }
-.stat-card--warning::before { background: var(--color-warning); }
-.stat-card--danger::before { background: var(--color-danger); }
+.stat-card--success::after { background: var(--color-success); }
+.stat-card--warning::after { background: var(--color-warning); }
+.stat-card--danger::after { background: var(--color-danger); }
 
-.stat-card:hover::before {
-  opacity: 1;
+.stat-card:hover::after {
+  height: 3px;
 }
 
 .stat-card--linked {
   text-decoration: none;
-  padding-right: calc(var(--space-5) + 1.25rem);
 }
-.stat-card--linked::after {
+.stat-card--linked::before {
   content: '';
   position: absolute;
   right: var(--space-4);
@@ -164,8 +184,38 @@ defineProps({
   opacity: 0;
   transition: opacity var(--duration-normal) var(--ease-default), transform var(--duration-normal) var(--ease-default);
 }
-.stat-card--linked:hover::after {
+.stat-card--linked:hover::before {
   opacity: 1;
   transform: translateY(-50%) translateX(3px);
+}
+
+.stat-card--lg {
+  padding: var(--space-6);
+}
+
+.stat-card--lg .stat-card__icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: var(--space-4);
+}
+
+.stat-card--lg .stat-card__value {
+  font-size: var(--text-3xl);
+  font-weight: 600;
+}
+
+@media (max-width: 639px) {
+  .stat-card--lg {
+    padding: var(--space-5);
+  }
+
+  .stat-card--lg .stat-card__icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .stat-card--lg .stat-card__value {
+    font-size: var(--text-2xl);
+  }
 }
 </style>
