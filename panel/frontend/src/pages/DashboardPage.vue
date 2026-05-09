@@ -1,18 +1,21 @@
 <template>
   <div class="dashboard">
-    <div class="dashboard__header">
+    <div class="dashboard__header animate-fade-in-up">
       <h1 class="dashboard__title">集群概览</h1>
       <p class="dashboard__subtitle">实时监控所有节点状态</p>
     </div>
 
     <div class="stats-grid">
+      <!-- Node Health Card -->
       <StatCard
-        tone="primary"
+        size="lg"
+        :tone="healthTone"
         :value="`${onlineCount} / ${agents?.length || 0}`"
-        :sub-label="onlinePercentLabel"
+        :sub-label="healthSubLabel"
         :progress="onlinePercent"
-        label="在线节点"
+        label="节点健康度"
         to="/agents"
+        class="card-enter stagger-1"
       >
         <template #icon>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -23,25 +26,15 @@
         </template>
       </StatCard>
 
+      <!-- Rules Overview Card -->
       <StatCard
-        :tone="offlineCount > 0 ? 'danger' : 'success'"
-        :value="offlineCount"
-        label="离线节点"
-        to="/agents"
-      >
-        <template #icon>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M15 9l-6 6M9 9l6 6"/>
-          </svg>
-        </template>
-      </StatCard>
-
-      <StatCard
+        size="lg"
         tone="primary"
-        :value="rulesCount"
-        label="HTTP 规则"
+        :value="totalRules"
+        :sub-label="rulesSubLabel"
+        label="规则概览"
         to="/rules"
+        class="card-enter stagger-2"
       >
         <template #icon>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -50,25 +43,11 @@
           </svg>
         </template>
       </StatCard>
-
-      <StatCard
-        tone="warning"
-        :value="l4Count"
-        label="L4 规则"
-        to="/l4"
-      >
-        <template #icon>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-          </svg>
-        </template>
-      </StatCard>
     </div>
 
-    <DashboardTrafficModule />
+    <DashboardTrafficModule class="card-enter stagger-3" />
 
-    <div v-if="agents?.length" class="dashboard-section">
+    <div v-if="agents?.length" class="dashboard-section card-enter stagger-4">
       <div class="dashboard-section__header">
         <h2 class="dashboard-section__title">节点状态</h2>
         <RouterLink to="/agents" class="dashboard-section__link">查看全部 →</RouterLink>
@@ -82,13 +61,13 @@
     </div>
 
     <!-- Loading state -->
-    <div v-if="isLoading" class="dashboard__loading">
+    <div v-if="isLoading" class="dashboard__loading card-enter">
       <div class="spinner"></div>
       <span>加载中...</span>
     </div>
 
     <!-- Empty state -->
-    <div v-else-if="!agents?.length" class="dashboard__empty">
+    <div v-else-if="!agents?.length" class="dashboard__empty card-enter">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <ellipse cx="12" cy="5" rx="9" ry="3"/>
         <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
@@ -107,6 +86,7 @@ import { useAgents } from '../hooks/useAgents'
 import AgentTable from '../components/AgentTable.vue'
 import StatCard from '../components/base/StatCard.vue'
 import DashboardTrafficModule from '../components/traffic/DashboardTrafficModule.vue'
+
 const router = useRouter()
 const { data: agents, isLoading } = useAgents()
 
@@ -116,17 +96,30 @@ const onlinePercent = computed(() => {
   const total = agents.value?.length || 0
   return total > 0 ? Math.round((onlineCount.value / total) * 100) : 0
 })
-const onlinePercentLabel = computed(() => {
+
+// Node health card data
+const healthTone = computed(() => {
+  if (offlineCount.value > 0) return 'warning'
+  return 'success'
+})
+const healthSubLabel = computed(() => {
   const total = agents.value?.length || 0
-  return total > 0 ? `${onlinePercent.value}%` : ''
+  if (total === 0) return ''
+  if (offlineCount.value > 0) return `${offlineCount.value} 个节点离线`
+  return '全部在线'
 })
 
+// Rules overview card data
 const rulesCount = computed(() => {
   return agents.value?.reduce((sum, a) => sum + (a.http_rules_count || 0), 0) || 0
 })
-
 const l4Count = computed(() => {
   return agents.value?.reduce((sum, a) => sum + (a.l4_rules_count || 0), 0) || 0
+})
+const totalRules = computed(() => rulesCount.value + l4Count.value)
+const rulesSubLabel = computed(() => {
+  if (totalRules.value === 0) return ''
+  return `HTTP ${rulesCount.value} / L4 ${l4Count.value}`
 })
 
 const displayedAgents = computed(() => (agents.value || []).slice(0, 8))
@@ -140,40 +133,39 @@ function navigateToAgent(agent) {
 .dashboard {
   max-width: 1200px;
   margin: 0 auto;
-  animation: fadeIn var(--duration-normal) var(--ease-default) both;
 }
 
 .dashboard__header {
-  margin-bottom: 2rem;
+  margin-bottom: var(--space-8);
 }
 
 .dashboard__title {
-  font-size: 1.5rem;
+  font-size: var(--text-2xl);
   font-weight: 700;
   color: var(--color-text-primary);
-  margin: 0 0 0.25rem;
+  margin: 0 0 var(--space-1);
   letter-spacing: -0.02em;
 }
 
 .dashboard__subtitle {
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   margin: 0;
 }
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 1rem;
-  margin-bottom: 2rem;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-4);
+  margin-bottom: var(--space-8);
 }
 
 .dashboard__loading {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.75rem;
-  padding: 3rem;
+  gap: var(--space-3);
+  padding: var(--space-12);
   color: var(--color-text-secondary);
 }
 
@@ -182,20 +174,19 @@ function navigateToAgent(agent) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.75rem;
-  padding: 4rem 2rem;
+  gap: var(--space-3);
+  padding: var(--space-16) var(--space-6);
   color: var(--color-text-muted);
   text-align: center;
-  animation: fadeIn 0.3s var(--ease-default) both;
 }
 
 .dashboard__empty p {
   margin: 0;
-  font-size: 1rem;
+  font-size: var(--text-base);
 }
 
 .dashboard__empty-hint {
-  font-size: 0.875rem !important;
+  font-size: var(--text-sm) !important;
   color: var(--color-text-tertiary) !important;
 }
 
@@ -204,7 +195,7 @@ function navigateToAgent(agent) {
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-2xl);
   overflow: hidden;
-  margin-bottom: 2rem;
+  margin-bottom: var(--space-8);
   box-shadow: var(--shadow-sm);
 }
 
@@ -212,12 +203,12 @@ function navigateToAgent(agent) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1rem 1.25rem;
+  padding: var(--space-4) var(--space-5);
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .dashboard-section__title {
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0;
@@ -238,11 +229,10 @@ function navigateToAgent(agent) {
 
 @media (max-width: 640px) {
   .stats-grid {
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 0.75rem;
+    grid-template-columns: 1fr;
   }
   .dashboard__title {
-    font-size: 1.25rem;
+    font-size: var(--text-xl);
   }
 }
 </style>
