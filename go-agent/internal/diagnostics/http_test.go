@@ -282,6 +282,34 @@ func TestNewHTTPProberDefaultsAttemptsToFive(t *testing.T) {
 	}
 }
 
+func TestCloneDiagnosticRelayPathsCreatesIndependentCopies(t *testing.T) {
+	paths := []relayplan.Path{
+		{
+			IDs:  []int{1, 2},
+			Hops: []relay.Hop{{Address: "relay-a.example.invalid:12202", ServerName: "relay-a.example.invalid"}},
+			Key:  relayplan.PathKey("relay_path", []int{1, 2}, "emby.example.com:443"),
+		},
+	}
+
+	cloned := cloneDiagnosticRelayPaths(paths)
+	if len(cloned) != 1 {
+		t.Fatalf("cloned = %+v", cloned)
+	}
+	cloned[0].IDs[0] = 9
+	cloned[0].Hops[0].Address = "relay-b.example.invalid:12202"
+	cloned[0].Hops[0].ServerName = "relay-b.example.invalid"
+
+	if got := paths[0].IDs[0]; got != 1 {
+		t.Fatalf("original IDs mutated = %+v", paths[0].IDs)
+	}
+	if got := paths[0].Hops[0].Address; got != "relay-a.example.invalid:12202" {
+		t.Fatalf("original hop mutated = %+v", paths[0].Hops[0])
+	}
+	if got := paths[0].Hops[0].ServerName; got != "relay-a.example.invalid" {
+		t.Fatalf("original hop server name mutated = %+v", paths[0].Hops[0])
+	}
+}
+
 func TestHTTPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 	var (
 		mu          sync.Mutex

@@ -15,6 +15,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
 )
 
 type HTTPProberConfig struct {
@@ -823,33 +824,5 @@ func (d diagnosticRelayPathDialer) DialPath(ctx context.Context, req relayplan.R
 }
 
 func cloneDiagnosticRelayPaths(paths []relayplan.Path) []relayplan.Path {
-	cloned := make([]relayplan.Path, len(paths))
-	for i, path := range paths {
-		cloned[i] = relayplan.Path{
-			IDs:  append([]int(nil), path.IDs...),
-			Hops: append([]relay.Hop(nil), path.Hops...),
-			Key:  path.Key,
-		}
-	}
-	return cloned
-}
-
-func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
-	host := strings.TrimSpace(listener.PublicHost)
-	if host == "" {
-		for _, bindHost := range listener.BindHosts {
-			if trimmed := strings.TrimSpace(bindHost); trimmed != "" {
-				host = trimmed
-				break
-			}
-		}
-	}
-	if host == "" {
-		host = strings.TrimSpace(listener.ListenHost)
-	}
-	port := listener.PublicPort
-	if port <= 0 {
-		port = listener.ListenPort
-	}
-	return host, port
+	return relayroute.ClonePaths(paths)
 }
