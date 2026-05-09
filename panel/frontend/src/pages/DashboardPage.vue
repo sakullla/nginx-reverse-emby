@@ -180,6 +180,7 @@ function navigateToAgent(agent) {
   text-align: center;
 }
 
+.dashboard__empty p {
   margin: 0;
   font-size: var(--text-base);
 }
@@ -187,6 +188,7 @@ function navigateToAgent(agent) {
 .dashboard__empty .dashboard__empty-hint {
   font-size: var(--text-sm);
   color: var(--color-text-tertiary);
+}
 
 .dashboard-section {
   background: var(--color-bg-surface);
