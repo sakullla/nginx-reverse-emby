@@ -19,8 +19,11 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/stream"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
@@ -839,10 +842,7 @@ func newRelayTransports(
 	racer := newRelayPathRacer(provider, cache)
 	dial := func(ctx context.Context, network, addr string, class upstream.TrafficClass) (net.Conn, error) {
 		target := dialAddressFromContext(ctx, addr)
-		requestPaths := cloneRelayPlanPaths(paths)
-		for i := range requestPaths {
-			requestPaths[i].Key = relayplan.PathKey("relay_path", requestPaths[i].IDs, target)
-		}
+		requestPaths := relayroute.ClonePathsWithTarget(paths, target)
 		result, err := racer.Race(ctx, relayplan.Request{
 			Network: network,
 			Target:  target,
@@ -877,75 +877,15 @@ func resolveRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener)
 }
 
 func ruleUsesRelay(rule model.HTTPRule) bool {
-	return len(rule.RelayChain) > 0 || len(rule.RelayLayers) > 0
+	return relayroute.UsesRelay(rule.RelayChain, rule.RelayLayers)
 }
 
 func resolveRelayPaths(rule model.HTTPRule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
-	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
-	for _, listener := range relayListeners {
-		relayListenersByID[listener.ID] = listener
-	}
-
-	layers := relayplan.NormalizeLayers(rule.RelayChain, rule.RelayLayers)
-	ids, err := relayplan.ExpandPaths(layers, 32)
-	if err != nil {
-		return nil, fmt.Errorf("http rule %q: %w", rule.FrontendURL, err)
-	}
-	paths := make([]relayplan.Path, 0, len(ids))
-	for _, pathIDs := range ids {
-		hops := make([]relay.Hop, 0, len(pathIDs))
-		for _, listenerID := range pathIDs {
-			listener, ok := relayListenersByID[listenerID]
-			if !ok {
-				return nil, fmt.Errorf("http rule %q: relay listener %d not found", rule.FrontendURL, listenerID)
-			}
-			if !listener.Enabled {
-				return nil, fmt.Errorf("http rule %q: relay listener %d is disabled", rule.FrontendURL, listenerID)
-			}
-			if err := relay.ValidateListener(listener); err != nil {
-				return nil, fmt.Errorf("http rule %q: relay listener %d: %w", rule.FrontendURL, listenerID, err)
-			}
-			host, port := relayHopDialEndpoint(listener)
-			hops = append(hops, relay.Hop{
-				Address:    net.JoinHostPort(host, strconv.Itoa(port)),
-				ServerName: host,
-				Listener:   listener,
-			})
-		}
-		paths = append(paths, relayplan.Path{IDs: append([]int(nil), pathIDs...), Hops: hops, Key: relayplan.PathKey("relay_path", pathIDs, target)})
-	}
-	return paths, nil
+	return relayroute.ResolvePaths(fmt.Sprintf("http rule %q", rule.FrontendURL), rule.RelayChain, rule.RelayLayers, relayListeners, target)
 }
 
 func cloneRelayPlanPaths(paths []relayplan.Path) []relayplan.Path {
-	cloned := make([]relayplan.Path, len(paths))
-	for i, path := range paths {
-		cloned[i] = path
-		cloned[i].IDs = append([]int(nil), path.IDs...)
-		cloned[i].Hops = append([]relay.Hop(nil), path.Hops...)
-	}
-	return cloned
-}
-
-func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
-	host := strings.TrimSpace(listener.PublicHost)
-	if host == "" {
-		for _, bindHost := range listener.BindHosts {
-			if trimmed := strings.TrimSpace(bindHost); trimmed != "" {
-				host = trimmed
-				break
-			}
-		}
-	}
-	if host == "" {
-		host = strings.TrimSpace(listener.ListenHost)
-	}
-
-	port := listener.PublicPort
-	if port <= 0 {
-		port = listener.ListenPort
-	}
-	return host, port
+	return relayroute.ClonePaths(paths)
 }
 
 func cloneDefaultTransport() *http.Transport {
@@ -1320,12 +1260,12 @@ func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
 }
 
 func copySwitchProtocolTraffic(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic.Recorder) (int64, error) {
-	wrapped := switchProtocolTrafficWriter{
-		dst:         dst,
-		rxDirection: rxDirection,
-		recorder:    httpRecorderOrAggregate(recorder),
+	direction := stream.DirectionTX
+	if rxDirection {
+		direction = stream.DirectionRX
 	}
-	return io.Copy(wrapped, src)
+	writer := stream.NewTrafficWriter(dst, direction, httpRecorderOrAggregate(recorder), 0)
+	return stream.CopyGeneric(writer, src)
 }
 
 const httpResponseTrafficFlushThreshold uint64 = 64 * 1024
@@ -1419,25 +1359,6 @@ func (f *httpResponseTrafficFlusher) Flush() {
 	f.recorder.Add(0, int64(f.pending))
 	f.recorder.Flush()
 	f.pending = 0
-}
-
-type switchProtocolTrafficWriter struct {
-	dst         io.Writer
-	rxDirection bool
-	recorder    *traffic.Recorder
-}
-
-func (w switchProtocolTrafficWriter) Write(p []byte) (int, error) {
-	n, err := w.dst.Write(p)
-	if n > 0 {
-		if w.rxDirection {
-			w.recorder.Add(int64(n), 0)
-		} else {
-			w.recorder.Add(0, int64(n))
-		}
-		w.recorder.Flush()
-	}
-	return n, err
 }
 
 func copyHeaders(dst, src http.Header) {
@@ -1662,31 +1583,15 @@ func upgradeType(h http.Header) string {
 }
 
 func portWithDefault(target *url.URL) int {
-	if target == nil {
-		return 0
-	}
-	if target.Port() != "" {
-		port, _ := strconv.Atoi(target.Port())
-		return port
-	}
-	return defaultPort(target.Scheme)
+	return netutil.PortWithDefault(target)
 }
 
 func addressWithDefaultPort(target *url.URL) string {
-	if target == nil {
-		return ""
-	}
-	if target.Port() != "" {
-		return target.Host
-	}
-	return net.JoinHostPort(target.Hostname(), strconv.Itoa(defaultPort(target.Scheme)))
+	return netutil.AddressWithDefaultPort(target)
 }
 
 func httpBackendDialAddress(target *url.URL) string {
-	if target.Port() != "" {
-		return target.Host
-	}
-	return net.JoinHostPort(target.Hostname(), strconv.Itoa(portWithDefault(target)))
+	return netutil.AddressWithDefaultPort(target)
 }
 
 func mapValues(values map[int]model.RelayListener) []model.RelayListener {
@@ -1698,18 +1603,9 @@ func mapValues(values map[int]model.RelayListener) []model.RelayListener {
 }
 
 func defaultPort(scheme string) int {
-	switch scheme {
-	case "https":
-		return 443
-	default:
-		return 80
-	}
+	return netutil.DefaultPort(scheme)
 }
 
 func defaultPortString(scheme string) string {
-	port := defaultPort(scheme)
-	if port <= 0 {
-		return ""
-	}
-	return strconv.Itoa(port)
+	return netutil.DefaultPortString(scheme)
 }
