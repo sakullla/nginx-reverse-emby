@@ -1,0 +1,129 @@
+package stream
+
+import (
+	"io"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+)
+
+type Direction int
+
+const (
+	DirectionRX Direction = iota
+	DirectionTX
+)
+
+type FlushPolicy int
+
+const (
+	FlushAtOrAboveThreshold FlushPolicy = iota
+	FlushAtOrBelowThreshold
+)
+
+func CopyPreferReaderFrom(dst io.Writer, src io.Reader) (int64, error) {
+	if rf, ok := dst.(io.ReaderFrom); ok {
+		return rf.ReadFrom(readerWithoutWriterTo{Reader: src})
+	}
+	return io.Copy(dst, src)
+}
+
+func CopyGeneric(dst io.Writer, src io.Reader) (int64, error) {
+	return io.Copy(writerWithoutReaderFrom{Writer: dst}, readerWithoutWriterTo{Reader: src})
+}
+
+type readerWithoutWriterTo struct {
+	io.Reader
+}
+
+type writerWithoutReaderFrom struct {
+	io.Writer
+}
+
+type TrafficWriter struct {
+	dst       io.Writer
+	direction Direction
+	recorder  *traffic.Recorder
+	threshold uint64
+	policy    FlushPolicy
+	pending   uint64
+}
+
+func NewTrafficWriter(dst io.Writer, direction Direction, recorder *traffic.Recorder, threshold uint64) *TrafficWriter {
+	return &TrafficWriter{dst: dst, direction: direction, recorder: recorder, threshold: threshold, policy: FlushAtOrAboveThreshold}
+}
+
+func NewTrafficWriterFlushBelow(dst io.Writer, direction Direction, recorder *traffic.Recorder, threshold uint64) *TrafficWriter {
+	return &TrafficWriter{dst: dst, direction: direction, recorder: recorder, threshold: threshold, policy: FlushAtOrBelowThreshold}
+}
+
+func (w *TrafficWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if n > 0 && w.recorder != nil {
+		w.add(uint64(n))
+	}
+	return n, err
+}
+
+func (w *TrafficWriter) FlushTraffic() {
+	if w == nil || w.recorder == nil || w.pending == 0 {
+		return
+	}
+	if w.direction == DirectionRX {
+		w.recorder.Add(int64(w.pending), 0)
+	} else {
+		w.recorder.Add(0, int64(w.pending))
+	}
+	w.recorder.Flush()
+	w.pending = 0
+}
+
+func (w *TrafficWriter) add(bytes uint64) {
+	w.pending += bytes
+	if w.shouldFlush() {
+		w.FlushTraffic()
+	}
+}
+
+func (w *TrafficWriter) shouldFlush() bool {
+	if w.threshold == 0 {
+		return true
+	}
+	switch w.policy {
+	case FlushAtOrBelowThreshold:
+		return w.pending <= w.threshold
+	default:
+		return w.pending >= w.threshold
+	}
+}
+
+type TrafficReadCloser struct {
+	io.ReadCloser
+	direction Direction
+	recorder  *traffic.Recorder
+}
+
+func NewTrafficReadCloser(delegate io.ReadCloser, direction Direction, recorder *traffic.Recorder) *TrafficReadCloser {
+	return &TrafficReadCloser{ReadCloser: delegate, direction: direction, recorder: recorder}
+}
+
+func (c *TrafficReadCloser) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	if n > 0 && c.recorder != nil {
+		if c.direction == DirectionRX {
+			c.recorder.Add(int64(n), 0)
+		} else {
+			c.recorder.Add(0, int64(n))
+		}
+	}
+	if err != nil && c.recorder != nil {
+		c.recorder.Flush()
+	}
+	return n, err
+}
+
+func (c *TrafficReadCloser) Close() error {
+	if c.recorder != nil {
+		c.recorder.Flush()
+	}
+	return c.ReadCloser.Close()
+}
