@@ -311,7 +311,7 @@ function normalizePoints(raw) {
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-2xl);
   overflow: hidden;
-  margin-bottom: 2.5rem;
+  margin-bottom: var(--space-8);
 }
 .dashboard-traffic__header {
   display: flex;
