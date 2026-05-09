@@ -154,9 +154,11 @@ defineProps({
   bottom: 0;
   left: 0;
   right: 0;
-  height: 0;
+  height: 3px;
   background: var(--color-primary);
-  transition: height var(--duration-normal) var(--ease-default);
+  transform: scaleY(0);
+  transform-origin: bottom;
+  transition: transform var(--duration-normal) var(--ease-default);
 }
 
 .stat-card--success::after { background: var(--color-success); }
@@ -164,7 +166,7 @@ defineProps({
 .stat-card--danger::after { background: var(--color-danger); }
 
 .stat-card:hover::after {
-  height: 3px;
+  transform: scaleY(1);
 }
 
 .stat-card--linked {
@@ -204,7 +206,7 @@ defineProps({
   font-weight: 600;
 }
 
-@media (max-width: 639px) {
+@media (max-width: 640px) {
   .stat-card--lg {
     padding: var(--space-5);
   }
