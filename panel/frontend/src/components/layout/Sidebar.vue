@@ -20,7 +20,7 @@
 
         <!-- Group item -->
         <div v-else class="nav-group">
-          <button class="nav-group__header" @click="toggleGroup(item.label)">
+          <button class="nav-group__header" :class="{ 'nav-group__header--active': isGroupActive(item) }" @click="toggleGroup(item.label)">
             <component :is="item.icon" />
             <span>{{ item.label }}</span>
             <svg class="nav-group__chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ 'nav-group__chevron--open': isGroupOpen(item.label) }">
@@ -75,7 +75,7 @@
 </template>
 
 <script setup>
-import { ref, computed, h } from 'vue'
+import { ref, computed, h, onMounted, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 // --- Icon components ---
@@ -148,6 +148,17 @@ function toggleCollapse() {
   collapsed.value = !collapsed.value
   localStorage.setItem('sidebar_collapsed', String(collapsed.value))
 }
+
+function openActiveGroups() {
+  for (const item of navItems) {
+    if (item.type === 'group' && isGroupActive(item) && !isGroupOpen(item.label)) {
+      openGroups.value.add(item.label)
+    }
+  }
+}
+
+onMounted(openActiveGroups)
+watch(() => route.path, openActiveGroups)
 </script>
 
 <style scoped>
@@ -323,6 +334,11 @@ function toggleCollapse() {
 .nav-group__header:hover {
   background: var(--color-bg-hover);
   color: var(--color-text-primary);
+}
+
+.nav-group__header--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
 }
 
 .nav-group__chevron {
