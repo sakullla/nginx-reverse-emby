@@ -102,6 +102,7 @@ function handleRowClick(agent) {
 }
 .agent-table__row--clickable {
   cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-default);
 }
 .agent-table__row--clickable:hover {
   background: var(--color-bg-hover);

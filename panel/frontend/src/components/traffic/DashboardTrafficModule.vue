@@ -1,7 +1,23 @@
 <template>
   <div v-if="visible" class="dashboard-traffic">
     <div class="dashboard-traffic__header">
-      <h2 class="dashboard-traffic__title">流量统计</h2>
+      <div class="dashboard-traffic__header-left">
+        <h2 class="dashboard-traffic__title">流量统计</h2>
+        <div class="dashboard-traffic__stats-inline" v-if="statsVisible">
+          <span class="dt-stat-inline" :class="{ 'dt-stat-inline--alert': blockedCount > 0 }">
+            <span class="dt-stat-inline__label">阻断</span>
+            <span class="dt-stat-inline__value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
+          </span>
+          <span class="dt-stat-inline">
+            <span class="dt-stat-inline__label">已用/额度</span>
+            <span class="dt-stat-inline__value">{{ formatBytes(selectedSummary?.used_bytes || 0) }} / {{ selectedSummary?.quota_bytes != null ? formatBytes(selectedSummary.quota_bytes) : '—' }}</span>
+          </span>
+          <span class="dt-stat-inline">
+            <span class="dt-stat-inline__label">剩余</span>
+            <span class="dt-stat-inline__value" :class="{ 'dt-stat-inline__value--success': (selectedSummary?.remaining_bytes || 0) > 0 }">{{ remainingLabel }}</span>
+          </span>
+        </div>
+      </div>
       <div class="dashboard-traffic__toolbar">
         <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
           <button
@@ -43,13 +59,14 @@
             />
           </div>
           <div class="dt-card">
-            <h3 class="dt-card__title">Top 节点</h3>
-            <div v-for="(node, i) in topNodes" :key="node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
-              <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
-              <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
-              <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
+            <h3 class="dt-card__title">计费周期</h3>
+            <div class="dt-cycle">
+              <span class="dt-cycle__value">{{ cycleLabel }}</span>
             </div>
-            <p v-if="!topNodes.length" class="dt-card__empty">暂无节点数据</p>
+            <div class="dt-cycle__meta">
+              <span>方向: {{ directionLabel }}</span>
+              <span v-if="dailyBudgetText">{{ dailyBudgetText }}</span>
+            </div>
           </div>
         </div>
 
@@ -66,8 +83,8 @@
         </div>
 
         <!-- Right Column -->
-        <div class="dashboard-traffic__col">
-          <div class="dt-card dt-card--grow">
+        <div class="dashboard-traffic__col dashboard-traffic__col--right">
+          <div class="dt-card dt-card--equal">
             <h3 class="dt-card__title">Top 规则</h3>
             <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule" @click="navigateToAgent(rule)">
               <div class="dt-top-rule__info">
@@ -80,35 +97,18 @@
             </div>
             <p v-if="!topRules.length" class="dt-card__empty">暂无规则数据</p>
           </div>
+          <div class="dt-card dt-card--equal">
+            <h3 class="dt-card__title">Top 节点</h3>
+            <div v-for="(node, i) in topNodes" :key="'right-' + node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
+              <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
+              <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
+              <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
+            </div>
+            <p v-if="!topNodes.length" class="dt-card__empty">暂无节点数据</p>
+          </div>
         </div>
       </div>
 
-      <!-- Bottom stats row -->
-      <div class="dashboard-traffic__stats">
-        <div class="dt-stat" :class="{ 'dt-stat--alert': blockedCount > 0 }">
-          <span class="dt-stat__label">阻断节点</span>
-          <span class="dt-stat__value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
-          <span v-if="blockedCount > 0" class="dt-stat__sub dt-stat__sub--alert">{{ blockedCount }} 个节点已超额阻断</span>
-          <span v-else class="dt-stat__sub">所有节点正常</span>
-        </div>
-        <div class="dt-stat">
-          <span class="dt-stat__label">计费周期</span>
-          <span class="dt-stat__value">{{ cycleLabel }}</span>
-          <span class="dt-stat__sub">方向: {{ directionLabel }}</span>
-        </div>
-        <div class="dt-stat">
-          <span class="dt-stat__label">已用 / 额度</span>
-          <span class="dt-stat__value">{{ formatBytes(selectedSummary?.used_bytes || 0) }} / {{ selectedSummary?.quota_bytes != null ? formatBytes(selectedSummary.quota_bytes) : '—' }}</span>
-          <div class="dt-stat__track">
-            <div class="dt-stat__fill" :style="{ width: Math.min(100, usagePercent(selectedSummary?.used_bytes || 0, selectedSummary?.quota_bytes)) + '%' }" />
-          </div>
-        </div>
-        <div class="dt-stat">
-          <span class="dt-stat__label">剩余</span>
-          <span class="dt-stat__value" :class="{ 'dt-stat__value--success': (selectedSummary?.remaining_bytes || 0) > 0 }">{{ remainingLabel }}</span>
-          <span v-if="dailyBudgetText" class="dt-stat__sub">{{ dailyBudgetText }}</span>
-        </div>
-      </div>
     </template>
   </div>
 </template>
@@ -205,6 +205,7 @@ const selectedSummary = computed(() => {
 })
 
 const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).length)
+const statsVisible = computed(() => overviewAgents.value.length > 0)
 
 const cycleLabel = computed(() => {
   const agents = overviewAgents.value
@@ -235,7 +236,7 @@ const directionLabel = computed(() => {
 
 const topNodes = computed(() => {
   const nodes = aggregateQuery.data.value?.top_nodes ?? []
-  if (nodes.length) return nodes
+  if (nodes.length) return nodes.slice(0, 5)
   if (!import.meta.env.DEV) return []
   const agents = [...overviewAgents.value]
   agents.sort((a, b) => {
@@ -246,7 +247,7 @@ const topNodes = computed(() => {
   return agents.slice(0, 5)
 })
 
-const topRules = computed(() => aggregateQuery.data.value?.top_rules ?? [])
+const topRules = computed(() => (aggregateQuery.data.value?.top_rules ?? []).slice(0, 5))
 
 function navigateToAgent(agent) {
   if (agent?.agent_id) {
@@ -310,7 +311,7 @@ function normalizePoints(raw) {
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-2xl);
   overflow: hidden;
-  margin-bottom: 2.5rem;
+  margin-bottom: var(--space-8);
 }
 .dashboard-traffic__header {
   display: flex;
@@ -393,6 +394,17 @@ function normalizePoints(raw) {
 .dashboard-traffic__col--center {
   min-width: 0;
 }
+.dashboard-traffic__col--right {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.dashboard-traffic__col--right .dt-card--equal {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 
 .dt-card {
   background: var(--color-bg-surface-raised, var(--color-bg-subtle));
@@ -425,6 +437,21 @@ function normalizePoints(raw) {
   padding: 1rem;
   font-size: 0.8125rem;
   margin: 0;
+}
+
+.dt-cycle__value {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 0.25rem;
+}
+.dt-cycle__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
 }
 
 .dt-top-item {
@@ -517,55 +544,40 @@ function normalizePoints(raw) {
   transition: width 0.3s;
 }
 
-.dashboard-traffic__stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.75rem;
-  padding: 0 1.25rem 1.25rem;
+.dashboard-traffic__header-left {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  min-width: 0;
 }
-.dt-stat {
-  background: var(--color-bg-surface-raised, var(--color-bg-subtle));
-  border-radius: var(--radius-lg);
-  padding: 0.75rem;
+.dashboard-traffic__stats-inline {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
 }
-.dt-stat--alert {
-  background: var(--color-danger-50);
-  border: 1px solid var(--color-danger);
+.dt-stat-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
 }
-.dt-stat__label {
-  display: block;
-  font-size: 0.7rem;
+.dt-stat-inline--alert {
+  color: var(--color-danger, #ef4444);
+}
+.dt-stat-inline__label {
   color: var(--color-text-tertiary);
+  font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 0.25rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.3px;
 }
-.dt-stat__value {
-  display: block;
-  font-size: 1.125rem;
+.dt-stat-inline__value {
   font-weight: 700;
   color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
 }
-.dt-stat__value--success { color: var(--color-success); }
-.dt-stat__sub {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-  margin-top: 0.25rem;
-}
-.dt-stat__sub--alert { color: var(--color-danger); }
-.dt-stat__track {
-  height: 3px;
-  background: var(--color-border-default);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  margin-top: 0.375rem;
-}
-.dt-stat__fill {
-  height: 100%;
-  border-radius: var(--radius-full);
-  transition: width 0.3s;
+.dt-stat-inline__value--success {
+  color: var(--color-success, #34d399);
 }
 
 .spinner {
@@ -586,14 +598,24 @@ function normalizePoints(raw) {
     grid-column: 1 / -1;
     order: -1;
   }
-  .dashboard-traffic__stats {
-    grid-template-columns: repeat(2, 1fr);
+  .dashboard-traffic__header-left {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .dashboard-traffic__stats-inline {
+    gap: 0.75rem;
   }
 }
 
 @media (max-width: 640px) {
+  .dashboard-traffic {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
   .dashboard-traffic__grid {
     grid-template-columns: 1fr;
+    min-width: 340px;
   }
   .dashboard-traffic__col--center {
     order: 0;
@@ -611,8 +633,8 @@ function normalizePoints(raw) {
     flex: 1;
     min-width: 0;
   }
-  .dashboard-traffic__stats {
-    grid-template-columns: 1fr;
+  .dashboard-traffic__stats-inline {
+    display: none;
   }
 }
 </style>
