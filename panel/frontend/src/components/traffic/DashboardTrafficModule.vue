@@ -68,15 +68,6 @@
               <span v-if="dailyBudgetText">{{ dailyBudgetText }}</span>
             </div>
           </div>
-          <div class="dt-card">
-            <h3 class="dt-card__title">Top 节点</h3>
-            <div v-for="(node, i) in topNodes" :key="node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
-              <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
-              <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
-              <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
-            </div>
-            <p v-if="!topNodes.length" class="dt-card__empty">暂无节点数据</p>
-          </div>
         </div>
 
         <!-- Center Column -->
