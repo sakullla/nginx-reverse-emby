@@ -1,0 +1,78 @@
+package relayroute
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+)
+
+func testListener(id int) model.RelayListener {
+	return model.RelayListener{
+		ID:         id,
+		ListenHost: "127.0.0.1",
+		ListenPort: 8000 + id,
+		PublicHost: "relay.example.com",
+		PublicPort: 9000 + id,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: "abc",
+		}},
+	}
+}
+
+func TestUsesRelayDetectsChainOrLayers(t *testing.T) {
+	if UsesRelay(nil, nil) {
+		t.Fatal("UsesRelay(nil, nil) = true, want false")
+	}
+	if !UsesRelay([]int{1}, nil) {
+		t.Fatal("UsesRelay(chain, nil) = false, want true")
+	}
+	if !UsesRelay(nil, [][]int{{1, 2}}) {
+		t.Fatal("UsesRelay(nil, layers) = false, want true")
+	}
+}
+
+func TestResolvePathsBuildsHopsAndKeys(t *testing.T) {
+	paths, err := ResolvePaths("http rule \"https://app.example\"", []int{1}, nil, []model.RelayListener{testListener(1)}, "backend.example:443")
+	if err != nil {
+		t.Fatalf("ResolvePaths() error = %v", err)
+	}
+	if len(paths) != 1 || len(paths[0].Hops) != 1 {
+		t.Fatalf("paths = %+v, want one path with one hop", paths)
+	}
+	hop := paths[0].Hops[0]
+	if hop.Address != "relay.example.com:9001" || hop.ServerName != "relay.example.com" {
+		t.Fatalf("hop = %+v, want public endpoint", hop)
+	}
+	wantKey := relayplan.PathKey("relay_path", []int{1}, "backend.example:443")
+	if paths[0].Key != wantKey {
+		t.Fatalf("path key = %q, want %q", paths[0].Key, wantKey)
+	}
+}
+
+func TestResolvePathsWrapsMissingListenerWithLabel(t *testing.T) {
+	_, err := ResolvePaths("l4 rule 127.0.0.1:8443", []int{2}, nil, []model.RelayListener{testListener(1)}, "")
+	if err == nil || !strings.Contains(err.Error(), "l4 rule 127.0.0.1:8443: relay listener 2 not found") {
+		t.Fatalf("ResolvePaths() error = %v", err)
+	}
+}
+
+func TestClonePathsWithTargetDoesNotAliasSlices(t *testing.T) {
+	paths, err := ResolvePaths("rule", []int{1}, nil, []model.RelayListener{testListener(1)}, "")
+	if err != nil {
+		t.Fatalf("ResolvePaths() error = %v", err)
+	}
+	cloned := ClonePathsWithTarget(paths, "backend.example:443")
+	cloned[0].IDs[0] = 99
+	cloned[0].Hops[0].Address = "changed"
+	if paths[0].IDs[0] != 1 || paths[0].Hops[0].Address == "changed" {
+		t.Fatalf("ClonePathsWithTarget aliases original path: original=%+v cloned=%+v", paths, cloned)
+	}
+	if cloned[0].Key != relayplan.PathKey("relay_path", []int{1}, "backend.example:443") {
+		t.Fatalf("cloned key = %q", cloned[0].Key)
+	}
+}
