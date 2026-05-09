@@ -165,6 +165,7 @@ function toggleCollapse() {
 
 .sidebar--collapsed {
   width: 64px;
+  overflow: visible;
 }
 
 .sidebar__header {
