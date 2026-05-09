@@ -10,8 +10,8 @@
     </div>
     <div class="stat-card__data">
       <div class="stat-card__value">{{ value }}</div>
-      <div v-if="subLabel" class="stat-card__sub-label">{{ subLabel }}</div>
       <div class="stat-card__label">{{ label }}</div>
+      <div v-if="subLabel" class="stat-card__sub-label">{{ subLabel }}</div>
       <div v-if="progress != null" class="stat-card__progress">
         <div class="stat-card__progress-track">
           <div class="stat-card__progress-fill" :style="{ width: progress + '%' }" />
@@ -116,17 +116,16 @@ defineProps({
 }
 
 .stat-card__sub-label {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--color-text-secondary);
-  margin: 0 0 0.125rem;
+  margin: var(--space-1) 0 0;
   font-weight: 500;
-  opacity: 0.85;
 }
 
 .stat-card__label {
   font-size: 0.8125rem;
   color: var(--color-text-tertiary);
-  margin: 0;
+  margin: var(--space-1) 0 0;
   font-weight: 500;
 }
 

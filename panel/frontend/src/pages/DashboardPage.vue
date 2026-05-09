@@ -9,7 +9,6 @@
       <StatCard
         tone="primary"
         :value="`${onlineCount} / ${agents?.length || 0}`"
-        :sub-label="onlinePercentLabel"
         :progress="onlinePercent"
         label="在线节点"
         to="/agents"
