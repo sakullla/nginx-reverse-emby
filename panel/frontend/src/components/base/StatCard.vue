@@ -145,4 +145,27 @@ defineProps({
 .stat-card:hover::before {
   opacity: 1;
 }
+
+.stat-card--linked {
+  text-decoration: none;
+  padding-right: calc(var(--space-5) + 1.25rem);
+}
+.stat-card--linked::after {
+  content: '';
+  position: absolute;
+  right: var(--space-4);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-top: 1.5px solid var(--color-text-tertiary);
+  border-right: 1.5px solid var(--color-text-tertiary);
+  rotate: 45deg;
+  opacity: 0;
+  transition: opacity var(--duration-normal) var(--ease-default), transform var(--duration-normal) var(--ease-default);
+}
+.stat-card--linked:hover::after {
+  opacity: 1;
+  transform: translateY(-50%) translateX(3px);
+}
 </style>
