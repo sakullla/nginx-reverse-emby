@@ -608,8 +608,14 @@ function normalizePoints(raw) {
 }
 
 @media (max-width: 640px) {
+  .dashboard-traffic {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
   .dashboard-traffic__grid {
     grid-template-columns: 1fr;
+    min-width: 340px;
   }
   .dashboard-traffic__col--center {
     order: 0;
