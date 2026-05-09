@@ -1,7 +1,23 @@
 <template>
   <div v-if="visible" class="dashboard-traffic">
     <div class="dashboard-traffic__header">
-      <h2 class="dashboard-traffic__title">流量统计</h2>
+      <div class="dashboard-traffic__header-left">
+        <h2 class="dashboard-traffic__title">流量统计</h2>
+        <div class="dashboard-traffic__stats-inline" v-if="statsVisible">
+          <span class="dt-stat-inline" :class="{ 'dt-stat-inline--alert': blockedCount > 0 }">
+            <span class="dt-stat-inline__label">阻断</span>
+            <span class="dt-stat-inline__value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
+          </span>
+          <span class="dt-stat-inline">
+            <span class="dt-stat-inline__label">已用/额度</span>
+            <span class="dt-stat-inline__value">{{ formatBytes(selectedSummary?.used_bytes || 0) }} / {{ selectedSummary?.quota_bytes != null ? formatBytes(selectedSummary.quota_bytes) : '—' }}</span>
+          </span>
+          <span class="dt-stat-inline">
+            <span class="dt-stat-inline__label">剩余</span>
+            <span class="dt-stat-inline__value" :class="{ 'dt-stat-inline__value--success': (selectedSummary?.remaining_bytes || 0) > 0 }">{{ remainingLabel }}</span>
+          </span>
+        </div>
+      </div>
       <div class="dashboard-traffic__toolbar">
         <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
           <button
@@ -205,6 +221,7 @@ const selectedSummary = computed(() => {
 })
 
 const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).length)
+const statsVisible = computed(() => overviewAgents.value.length > 0)
 
 const cycleLabel = computed(() => {
   const agents = overviewAgents.value
@@ -566,6 +583,42 @@ function normalizePoints(raw) {
   height: 100%;
   border-radius: var(--radius-full);
   transition: width 0.3s;
+}
+
+.dashboard-traffic__header-left {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  min-width: 0;
+}
+.dashboard-traffic__stats-inline {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.dt-stat-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+}
+.dt-stat-inline--alert {
+  color: var(--color-danger, #ef4444);
+}
+.dt-stat-inline__label {
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.3px;
+}
+.dt-stat-inline__value {
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.dt-stat-inline__value--success {
+  color: var(--color-success, #34d399);
 }
 
 .spinner {
