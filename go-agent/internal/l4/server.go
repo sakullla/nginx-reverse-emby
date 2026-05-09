@@ -19,6 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
@@ -1156,56 +1157,12 @@ func (s *Server) resolveRelayHops(rule model.L4Rule) ([]relay.Hop, error) {
 }
 
 func (s *Server) resolveRelayPaths(rule model.L4Rule) ([]relayplan.Path, error) {
-	layers := relayplan.NormalizeLayers(rule.RelayChain, rule.RelayLayers)
-	pathIDs, err := relayplan.ExpandPaths(layers, 32)
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]relayplan.Path, 0, len(pathIDs))
-	for _, ids := range pathIDs {
-		hops := make([]relay.Hop, 0, len(ids))
-		for _, listenerID := range ids {
-			listener, ok := s.relayListenersByID[listenerID]
-			if !ok {
-				return nil, fmt.Errorf("relay listener %d not found", listenerID)
-			}
-			if !listener.Enabled {
-				return nil, fmt.Errorf("relay listener %d is disabled", listenerID)
-			}
-			if err := relay.ValidateListener(listener); err != nil {
-				return nil, fmt.Errorf("relay listener %d: %w", listenerID, err)
-			}
-			host, port := relayHopDialEndpoint(listener)
-			hops = append(hops, relay.Hop{Address: net.JoinHostPort(host, strconv.Itoa(port)), ServerName: host, Listener: listener})
-		}
-		paths = append(paths, relayplan.Path{IDs: append([]int(nil), ids...), Hops: hops})
-	}
-	return paths, nil
+	label := fmt.Sprintf("l4 rule %s:%d", rule.ListenHost, rule.ListenPort)
+	return relayroute.ResolvePathsFromMapWithLabel(label, rule.RelayChain, rule.RelayLayers, s.relayListenersByID, "")
 }
 
 func ruleUsesRelay(rule model.L4Rule) bool {
-	return len(rule.RelayChain) > 0 || len(rule.RelayLayers) > 0
-}
-
-func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
-	host := strings.TrimSpace(listener.PublicHost)
-	if host == "" {
-		for _, bindHost := range listener.BindHosts {
-			if trimmed := strings.TrimSpace(bindHost); trimmed != "" {
-				host = trimmed
-				break
-			}
-		}
-	}
-	if host == "" {
-		host = strings.TrimSpace(listener.ListenHost)
-	}
-
-	port := listener.PublicPort
-	if port <= 0 {
-		port = listener.ListenPort
-	}
-	return host, port
+	return relayroute.UsesRelay(rule.RelayChain, rule.RelayLayers)
 }
 
 func RelayInputsChanged(rules []model.L4Rule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {

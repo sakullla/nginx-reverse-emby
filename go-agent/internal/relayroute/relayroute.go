@@ -37,6 +37,17 @@ func ResolvePaths(label string, chain []int, layers [][]int, listeners []model.R
 	return paths, nil
 }
 
+func ResolvePathsFromMapWithLabel(label string, chain []int, layers [][]int, listenersByID map[int]model.RelayListener, target string) ([]relayplan.Path, error) {
+	paths, err := ResolvePathsFromMap(chain, layers, listenersByID, target)
+	if err != nil {
+		if strings.TrimSpace(label) != "" {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
+		return nil, err
+	}
+	return paths, nil
+}
+
 func ResolvePathsFromMap(chain []int, layers [][]int, listenersByID map[int]model.RelayListener, target string) ([]relayplan.Path, error) {
 	normalizedLayers := relayplan.NormalizeLayers(chain, layers)
 	pathIDs, err := relayplan.ExpandPaths(normalizedLayers, DefaultMaxPaths)

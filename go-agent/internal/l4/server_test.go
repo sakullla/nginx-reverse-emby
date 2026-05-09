@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2431,6 +2432,26 @@ func assertL4RelayPathSet(t *testing.T, paths []relayplan.Path, want [][]int) {
 		if !seen[fmt.Sprint(ids)] {
 			t.Fatalf("relay paths = %+v, missing %v", paths, ids)
 		}
+	}
+}
+
+func TestResolveRelayPathsLabelsMissingListenerError(t *testing.T) {
+	srv := &Server{
+		relayListenersByID: map[int]model.RelayListener{},
+	}
+	rule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: 8443,
+		RelayChain: []int{2},
+	}
+
+	_, err := srv.resolveRelayPaths(rule)
+	if err == nil {
+		t.Fatal("resolveRelayPaths() error = nil, want missing listener error")
+	}
+	if !strings.Contains(err.Error(), "l4 rule 127.0.0.1:8443: relay listener 2 not found") {
+		t.Fatalf("resolveRelayPaths() error = %q", err)
 	}
 }
 
