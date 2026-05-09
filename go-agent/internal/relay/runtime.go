@@ -878,7 +878,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	}
 	if state := s.currentTrafficBlockState(); state.Blocked {
 		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: state.errorMessage()})
+			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: trafficBlockErrorMessage(state)})
 		})
 		cancelStream = false
 		return

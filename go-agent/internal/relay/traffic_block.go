@@ -2,48 +2,21 @@ package relay
 
 import (
 	"fmt"
-	"strings"
-	"sync/atomic"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
-type TrafficBlockState struct {
-	Blocked bool
-	Reason  string
-}
+type TrafficBlockState = traffic.BlockState
+type trafficBlockStateValue = traffic.BlockStateValue
 
-func (s TrafficBlockState) normalized() TrafficBlockState {
-	s.Reason = strings.TrimSpace(s.Reason)
-	return s
-}
-
-func (s TrafficBlockState) errorMessage() string {
-	s = s.normalized()
-	if s.Reason != "" {
-		return s.Reason
+func trafficBlockErrorMessage(state TrafficBlockState) string {
+	state = state.Normalized()
+	if state.Reason != "" {
+		return state.Reason
 	}
 	return "traffic blocked"
 }
 
-func (s TrafficBlockState) err() error {
-	return fmt.Errorf("%s", s.errorMessage())
-}
-
-type trafficBlockStateValue struct {
-	value atomic.Value
-}
-
-func (v *trafficBlockStateValue) Store(state TrafficBlockState) {
-	v.value.Store(state.normalized())
-}
-
-func (v *trafficBlockStateValue) Load() TrafficBlockState {
-	if v == nil {
-		return TrafficBlockState{}
-	}
-	if raw := v.value.Load(); raw != nil {
-		if state, ok := raw.(TrafficBlockState); ok {
-			return state.normalized()
-		}
-	}
-	return TrafficBlockState{}
+func trafficBlockErr(state TrafficBlockState) error {
+	return fmt.Errorf("%s", trafficBlockErrorMessage(state))
 }

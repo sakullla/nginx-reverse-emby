@@ -1204,7 +1204,7 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 				continue
 			}
 			if state := s.server.currentTrafficBlockState(); state.Blocked && (strings.EqualFold(request.Kind, "tcp") || strings.EqualFold(request.Kind, "udp")) {
-				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: state.errorMessage()})
+				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: trafficBlockErrorMessage(state)})
 				continue
 			}
 
