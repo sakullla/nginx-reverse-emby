@@ -10,7 +10,13 @@
     </div>
     <div class="stat-card__data">
       <div class="stat-card__value">{{ value }}</div>
+      <div v-if="subLabel" class="stat-card__sub-label">{{ subLabel }}</div>
       <div class="stat-card__label">{{ label }}</div>
+      <div v-if="progress != null" class="stat-card__progress">
+        <div class="stat-card__progress-track">
+          <div class="stat-card__progress-fill" :style="{ width: progress + '%' }" />
+        </div>
+      </div>
     </div>
   </component>
 </template>
@@ -24,6 +30,8 @@ defineProps({
   },
   value: { type: [String, Number], required: true },
   label: { type: String, required: true },
+  subLabel: { type: String, default: '' },
+  progress: { type: Number, default: null },
   to: { type: [String, Object], default: null },
 })
 </script>
@@ -85,12 +93,38 @@ defineProps({
   line-height: 1.2;
 }
 
+.stat-card__sub-label {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  margin: 0 0 0.125rem;
+  font-weight: 500;
+}
+
 .stat-card__label {
   font-size: 0.8125rem;
   color: var(--color-text-tertiary);
   margin: 0;
   font-weight: 500;
 }
+
+.stat-card__progress {
+  margin-top: var(--space-2);
+}
+.stat-card__progress-track {
+  height: 4px;
+  background: var(--color-border-default);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.stat-card__progress-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  transition: width 0.3s;
+}
+.stat-card--success .stat-card__progress-fill { background: var(--color-success); }
+.stat-card--warning .stat-card__progress-fill { background: var(--color-warning); }
+.stat-card--danger .stat-card__progress-fill { background: var(--color-danger); }
 
 .stat-card::before {
   content: '';

@@ -6,7 +6,14 @@
     </div>
 
     <div class="stats-grid">
-      <StatCard tone="primary" :value="agents?.length || 0" label="总节点数">
+      <StatCard
+        tone="primary"
+        :value="`${onlineCount} / ${agents?.length || 0}`"
+        :sub-label="onlinePercentLabel"
+        :progress="onlinePercent"
+        label="在线节点"
+        to="/agents"
+      >
         <template #icon>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <ellipse cx="12" cy="5" rx="9" ry="3"/>
@@ -16,16 +23,26 @@
         </template>
       </StatCard>
 
-      <StatCard tone="success" :value="onlineCount" label="在线节点">
+      <StatCard
+        :tone="offlineCount > 0 ? 'danger' : 'success'"
+        :value="offlineCount"
+        label="离线节点"
+        to="/agents"
+      >
         <template #icon>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-            <polyline points="22 4 12 14.01 9 11.01"/>
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M15 9l-6 6M9 9l6 6"/>
           </svg>
         </template>
       </StatCard>
 
-      <StatCard tone="primary" :value="rulesCount" label="HTTP 规则">
+      <StatCard
+        tone="primary"
+        :value="rulesCount"
+        label="HTTP 规则"
+        to="/rules"
+      >
         <template #icon>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
@@ -34,7 +51,12 @@
         </template>
       </StatCard>
 
-      <StatCard tone="warning" :value="l4Count" label="L4 规则">
+      <StatCard
+        tone="warning"
+        :value="l4Count"
+        label="L4 规则"
+        to="/l4"
+      >
         <template #icon>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
@@ -89,6 +111,15 @@ const router = useRouter()
 const { data: agents, isLoading } = useAgents()
 
 const onlineCount = computed(() => agents.value?.filter(a => a.status === 'online').length || 0)
+const offlineCount = computed(() => (agents.value?.length || 0) - onlineCount.value)
+const onlinePercent = computed(() => {
+  const total = agents.value?.length || 0
+  return total > 0 ? Math.round((onlineCount.value / total) * 100) : 0
+})
+const onlinePercentLabel = computed(() => {
+  const total = agents.value?.length || 0
+  return total > 0 ? `${onlinePercent.value}%` : ''
+})
 
 const rulesCount = computed(() => {
   return agents.value?.reduce((sum, a) => sum + (a.http_rules_count || 0), 0) || 0
