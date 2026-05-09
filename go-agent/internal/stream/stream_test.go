@@ -67,6 +67,7 @@ func TestCopyGenericSuppressesWriterTo(t *testing.T) {
 
 func TestTrafficWriterCountsTXAndFlushesAtThreshold(t *testing.T) {
 	traffic.Reset()
+	t.Cleanup(traffic.Reset)
 	recorder := traffic.NewHTTPRecorder()
 	var dst bytes.Buffer
 	writer := NewTrafficWriter(&dst, DirectionTX, recorder, 4)
@@ -82,6 +83,7 @@ func TestTrafficWriterCountsTXAndFlushesAtThreshold(t *testing.T) {
 
 func TestTrafficWriterFlushesSmallWritesWithBelowThresholdPolicy(t *testing.T) {
 	traffic.Reset()
+	t.Cleanup(traffic.Reset)
 	recorder := traffic.NewRelayRecorder()
 	var dst bytes.Buffer
 	writer := NewTrafficWriterFlushBelow(&dst, DirectionRX, recorder, 32*1024)
@@ -95,8 +97,27 @@ func TestTrafficWriterFlushesSmallWritesWithBelowThresholdPolicy(t *testing.T) {
 	}
 }
 
+func TestTrafficWriterFlushBelowKeepsLargeWritesVisibleToSnapshotNonZero(t *testing.T) {
+	traffic.Reset()
+	t.Cleanup(traffic.Reset)
+	recorder := traffic.NewRelayRecorder()
+	var dst bytes.Buffer
+	writer := NewTrafficWriterFlushBelow(&dst, DirectionRX, recorder, 4)
+	if _, err := writer.Write([]byte("payload")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	stats := traffic.SnapshotNonZero()
+	if stats == nil {
+		t.Fatal("SnapshotNonZero() = nil, want pending relay traffic")
+	}
+	total := stats["traffic"].(map[string]any)["relay"].(map[string]uint64)
+	if total["rx_bytes"] != uint64(len("payload")) || total["tx_bytes"] != 0 {
+		t.Fatalf("relay counters = %+v, want rx=%d tx=0", total, len("payload"))
+	}
+}
 func TestTrafficReadCloserFlushesOnEOF(t *testing.T) {
 	traffic.Reset()
+	t.Cleanup(traffic.Reset)
 	recorder := traffic.NewHTTPRecorder()
 	reader := NewTrafficReadCloser(io.NopCloser(bytes.NewBufferString("abc")), DirectionRX, recorder)
 	if _, err := io.ReadAll(reader); err != nil {

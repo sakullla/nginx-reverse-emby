@@ -59,20 +59,28 @@ func NewTrafficWriterFlushBelow(dst io.Writer, direction Direction, recorder *tr
 func (w *TrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 && w.recorder != nil {
-		w.add(uint64(n))
+		if w.policy == FlushAtOrBelowThreshold {
+			w.record(uint64(n))
+			w.recorder.FlushIfPendingBelow(w.threshold)
+		} else {
+			w.add(uint64(n))
+		}
 	}
 	return n, err
 }
 
 func (w *TrafficWriter) FlushTraffic() {
-	if w == nil || w.recorder == nil || w.pending == 0 {
+	if w == nil || w.recorder == nil {
 		return
 	}
-	if w.direction == DirectionRX {
-		w.recorder.Add(int64(w.pending), 0)
-	} else {
-		w.recorder.Add(0, int64(w.pending))
+	if w.policy == FlushAtOrBelowThreshold {
+		w.recorder.Flush()
+		return
 	}
+	if w.pending == 0 {
+		return
+	}
+	w.record(w.pending)
 	w.recorder.Flush()
 	w.pending = 0
 }
@@ -81,6 +89,14 @@ func (w *TrafficWriter) add(bytes uint64) {
 	w.pending += bytes
 	if w.shouldFlush() {
 		w.FlushTraffic()
+	}
+}
+
+func (w *TrafficWriter) record(bytes uint64) {
+	if w.direction == DirectionRX {
+		w.recorder.Add(int64(bytes), 0)
+	} else {
+		w.recorder.Add(0, int64(bytes))
 	}
 }
 
