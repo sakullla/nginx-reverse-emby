@@ -182,9 +182,10 @@ describe('DashboardTrafficModule', () => {
     ]
 
     const wrapper = await mountModule()
-    await vi.waitFor(() => expect(wrapper.findAll('.dt-top-item')).toHaveLength(2))
+    const leftCol = wrapper.find('.dashboard-traffic__col')
+    await vi.waitFor(() => expect(leftCol.findAll('.dt-top-item')).toHaveLength(2))
 
-    await wrapper.find('.dt-top-item').trigger('click')
+    await leftCol.find('.dt-top-item').trigger('click')
 
     expect(routerPush).toHaveBeenCalledWith({
       name: 'agent-detail',
