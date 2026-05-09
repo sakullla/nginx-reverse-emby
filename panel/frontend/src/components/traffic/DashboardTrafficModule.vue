@@ -83,8 +83,8 @@
         </div>
 
         <!-- Right Column -->
-        <div class="dashboard-traffic__col">
-          <div class="dt-card dt-card--grow">
+        <div class="dashboard-traffic__col dashboard-traffic__col--right">
+          <div class="dt-card dt-card--equal">
             <h3 class="dt-card__title">Top 规则</h3>
             <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule" @click="navigateToAgent(rule)">
               <div class="dt-top-rule__info">
@@ -97,7 +97,7 @@
             </div>
             <p v-if="!topRules.length" class="dt-card__empty">暂无规则数据</p>
           </div>
-          <div class="dt-card">
+          <div class="dt-card dt-card--equal">
             <h3 class="dt-card__title">Top 节点</h3>
             <div v-for="(node, i) in topNodes" :key="'right-' + node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
               <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
@@ -393,6 +393,17 @@ function normalizePoints(raw) {
 }
 .dashboard-traffic__col--center {
   min-width: 0;
+}
+.dashboard-traffic__col--right {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.dashboard-traffic__col--right .dt-card--equal {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .dt-card {
