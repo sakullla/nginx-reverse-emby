@@ -6,14 +6,12 @@
     </div>
 
     <div class="stats-grid">
-      <!-- Node Health Card -->
       <StatCard
-        size="lg"
-        :tone="healthTone"
+        tone="primary"
         :value="`${onlineCount} / ${agents?.length || 0}`"
-        :sub-label="healthSubLabel"
+        :sub-label="onlinePercentLabel"
         :progress="onlinePercent"
-        label="节点健康度"
+        label="在线节点"
         to="/agents"
         class="card-enter stagger-1"
       >
@@ -26,15 +24,27 @@
         </template>
       </StatCard>
 
-      <!-- Rules Overview Card -->
       <StatCard
-        size="lg"
-        tone="primary"
-        :value="totalRules"
-        :sub-label="rulesSubLabel"
-        label="规则概览"
-        to="/rules"
+        :tone="offlineCount > 0 ? 'danger' : 'success'"
+        :value="offlineCount"
+        label="离线节点"
+        to="/agents"
         class="card-enter stagger-2"
+      >
+        <template #icon>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M15 9l-6 6M9 9l6 6"/>
+          </svg>
+        </template>
+      </StatCard>
+
+      <StatCard
+        tone="primary"
+        :value="rulesCount"
+        label="HTTP 规则"
+        to="/rules"
+        class="card-enter stagger-3"
       >
         <template #icon>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -43,11 +53,26 @@
           </svg>
         </template>
       </StatCard>
+
+      <StatCard
+        tone="warning"
+        :value="l4Count"
+        label="L4 规则"
+        to="/l4"
+        class="card-enter stagger-4"
+      >
+        <template #icon>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+          </svg>
+        </template>
+      </StatCard>
     </div>
 
-    <DashboardTrafficModule class="card-enter stagger-3" />
+    <DashboardTrafficModule class="card-enter stagger-5" />
 
-    <div v-if="agents?.length" class="dashboard-section card-enter stagger-4">
+    <div v-if="agents?.length" class="dashboard-section card-enter stagger-6">
       <div class="dashboard-section__header">
         <h2 class="dashboard-section__title">节点状态</h2>
         <RouterLink to="/agents" class="dashboard-section__link">查看全部 →</RouterLink>
@@ -97,29 +122,16 @@ const onlinePercent = computed(() => {
   return total > 0 ? Math.round((onlineCount.value / total) * 100) : 0
 })
 
-// Node health card data
-const healthTone = computed(() => {
-  if (offlineCount.value > 0) return 'warning'
-  return 'success'
-})
-const healthSubLabel = computed(() => {
+const onlinePercentLabel = computed(() => {
   const total = agents.value?.length || 0
-  if (total === 0) return ''
-  if (offlineCount.value > 0) return `${offlineCount.value} 个节点离线`
-  return '全部在线'
+  return total > 0 ? `${onlinePercent.value}%` : ''
 })
 
-// Rules overview card data
 const rulesCount = computed(() => {
   return agents.value?.reduce((sum, a) => sum + (a.http_rules_count || 0), 0) || 0
 })
 const l4Count = computed(() => {
   return agents.value?.reduce((sum, a) => sum + (a.l4_rules_count || 0), 0) || 0
-})
-const totalRules = computed(() => rulesCount.value + l4Count.value)
-const rulesSubLabel = computed(() => {
-  if (totalRules.value === 0) return ''
-  return `HTTP ${rulesCount.value} / L4 ${l4Count.value}`
 })
 
 const displayedAgents = computed(() => (agents.value || []).slice(0, 8))
@@ -155,7 +167,7 @@ function navigateToAgent(agent) {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: var(--space-4);
   margin-bottom: var(--space-8);
 }

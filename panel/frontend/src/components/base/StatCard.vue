@@ -49,7 +49,8 @@ defineProps({
   padding: var(--space-5);
   box-shadow: var(--shadow-sm);
   transition: box-shadow var(--duration-normal) var(--ease-default),
-    border-color var(--duration-normal) var(--ease-default);
+    border-color var(--duration-normal) var(--ease-default),
+    transform var(--duration-normal) var(--ease-default);
   position: relative;
   overflow: hidden;
 }
