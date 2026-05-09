@@ -59,6 +59,16 @@
             />
           </div>
           <div class="dt-card">
+            <h3 class="dt-card__title">计费周期</h3>
+            <div class="dt-cycle">
+              <span class="dt-cycle__value">{{ cycleLabel }}</span>
+            </div>
+            <div class="dt-cycle__meta">
+              <span>方向: {{ directionLabel }}</span>
+              <span v-if="dailyBudgetText">{{ dailyBudgetText }}</span>
+            </div>
+          </div>
+          <div class="dt-card">
             <h3 class="dt-card__title">Top 节点</h3>
             <div v-for="(node, i) in topNodes" :key="node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
               <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
@@ -95,6 +105,15 @@
               </div>
             </div>
             <p v-if="!topRules.length" class="dt-card__empty">暂无规则数据</p>
+          </div>
+          <div class="dt-card">
+            <h3 class="dt-card__title">Top 节点</h3>
+            <div v-for="(node, i) in topNodes" :key="'right-' + node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
+              <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
+              <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
+              <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
+            </div>
+            <p v-if="!topNodes.length" class="dt-card__empty">暂无节点数据</p>
           </div>
         </div>
       </div>
@@ -252,7 +271,7 @@ const directionLabel = computed(() => {
 
 const topNodes = computed(() => {
   const nodes = aggregateQuery.data.value?.top_nodes ?? []
-  if (nodes.length) return nodes
+  if (nodes.length) return nodes.slice(0, 5)
   if (!import.meta.env.DEV) return []
   const agents = [...overviewAgents.value]
   agents.sort((a, b) => {
@@ -263,7 +282,7 @@ const topNodes = computed(() => {
   return agents.slice(0, 5)
 })
 
-const topRules = computed(() => aggregateQuery.data.value?.top_rules ?? [])
+const topRules = computed(() => (aggregateQuery.data.value?.top_rules ?? []).slice(0, 5))
 
 function navigateToAgent(agent) {
   if (agent?.agent_id) {
@@ -442,6 +461,21 @@ function normalizePoints(raw) {
   padding: 1rem;
   font-size: 0.8125rem;
   margin: 0;
+}
+
+.dt-cycle__value {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 0.25rem;
+}
+.dt-cycle__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
 }
 
 .dt-top-item {
