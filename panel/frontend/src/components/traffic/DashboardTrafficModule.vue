@@ -118,32 +118,6 @@
         </div>
       </div>
 
-      <!-- Bottom stats row -->
-      <div class="dashboard-traffic__stats">
-        <div class="dt-stat" :class="{ 'dt-stat--alert': blockedCount > 0 }">
-          <span class="dt-stat__label">阻断节点</span>
-          <span class="dt-stat__value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
-          <span v-if="blockedCount > 0" class="dt-stat__sub dt-stat__sub--alert">{{ blockedCount }} 个节点已超额阻断</span>
-          <span v-else class="dt-stat__sub">所有节点正常</span>
-        </div>
-        <div class="dt-stat">
-          <span class="dt-stat__label">计费周期</span>
-          <span class="dt-stat__value">{{ cycleLabel }}</span>
-          <span class="dt-stat__sub">方向: {{ directionLabel }}</span>
-        </div>
-        <div class="dt-stat">
-          <span class="dt-stat__label">已用 / 额度</span>
-          <span class="dt-stat__value">{{ formatBytes(selectedSummary?.used_bytes || 0) }} / {{ selectedSummary?.quota_bytes != null ? formatBytes(selectedSummary.quota_bytes) : '—' }}</span>
-          <div class="dt-stat__track">
-            <div class="dt-stat__fill" :style="{ width: Math.min(100, usagePercent(selectedSummary?.used_bytes || 0, selectedSummary?.quota_bytes)) + '%' }" />
-          </div>
-        </div>
-        <div class="dt-stat">
-          <span class="dt-stat__label">剩余</span>
-          <span class="dt-stat__value" :class="{ 'dt-stat__value--success': (selectedSummary?.remaining_bytes || 0) > 0 }">{{ remainingLabel }}</span>
-          <span v-if="dailyBudgetText" class="dt-stat__sub">{{ dailyBudgetText }}</span>
-        </div>
-      </div>
     </template>
   </div>
 </template>
@@ -568,57 +542,6 @@ function normalizePoints(raw) {
   transition: width 0.3s;
 }
 
-.dashboard-traffic__stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.75rem;
-  padding: 0 1.25rem 1.25rem;
-}
-.dt-stat {
-  background: var(--color-bg-surface-raised, var(--color-bg-subtle));
-  border-radius: var(--radius-lg);
-  padding: 0.75rem;
-}
-.dt-stat--alert {
-  background: var(--color-danger-50);
-  border: 1px solid var(--color-danger);
-}
-.dt-stat__label {
-  display: block;
-  font-size: 0.7rem;
-  color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 0.25rem;
-}
-.dt-stat__value {
-  display: block;
-  font-size: 1.125rem;
-  font-weight: 700;
-  color: var(--color-text-primary);
-  font-variant-numeric: tabular-nums;
-}
-.dt-stat__value--success { color: var(--color-success); }
-.dt-stat__sub {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-  margin-top: 0.25rem;
-}
-.dt-stat__sub--alert { color: var(--color-danger); }
-.dt-stat__track {
-  height: 3px;
-  background: var(--color-border-default);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  margin-top: 0.375rem;
-}
-.dt-stat__fill {
-  height: 100%;
-  border-radius: var(--radius-full);
-  transition: width 0.3s;
-}
-
 .dashboard-traffic__header-left {
   display: flex;
   align-items: center;
@@ -673,8 +596,12 @@ function normalizePoints(raw) {
     grid-column: 1 / -1;
     order: -1;
   }
-  .dashboard-traffic__stats {
-    grid-template-columns: repeat(2, 1fr);
+  .dashboard-traffic__header-left {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .dashboard-traffic__stats-inline {
+    gap: 0.75rem;
   }
 }
 
@@ -698,8 +625,8 @@ function normalizePoints(raw) {
     flex: 1;
     min-width: 0;
   }
-  .dashboard-traffic__stats {
-    grid-template-columns: 1fr;
+  .dashboard-traffic__stats-inline {
+    display: none;
   }
 }
 </style>
