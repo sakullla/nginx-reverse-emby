@@ -741,12 +741,13 @@ func TestRelayServiceRejectsDisablingReferencedListener(t *testing.T) {
 		},
 		httpRulesByID: map[string][]storage.HTTPRuleRow{
 			"edge-2": {{
-				ID:             12,
-				AgentID:        "edge-2",
-				FrontendURL:    "https://app.example.com",
-				BackendURL:     "http://upstream:8096",
-				BackendsJSON:   `[{"url":"http://upstream:8096"}]`,
-				RelayChainJSON: `[1]`,
+				ID:              12,
+				AgentID:         "edge-2",
+				FrontendURL:     "https://app.example.com",
+				BackendURL:      "http://upstream:8096",
+				BackendsJSON:    `[{"url":"http://upstream:8096"}]`,
+				RelayChainJSON:  `[2]`,
+				RelayLayersJSON: `[[1]]`,
 			}},
 		},
 		l4RulesByID: map[string][]storage.L4RuleRow{},
@@ -767,6 +768,57 @@ func TestRelayServiceRejectsDisablingReferencedListener(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "disable is not allowed") {
 		t.Fatalf("Update() error = %v", err)
+	}
+}
+
+func TestRelayServiceAllowsDisablingListenerReferencedOnlyByLegacyRelayChain(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:            1,
+				AgentID:       "edge-1",
+				Name:          "relay-a",
+				BindHostsJSON: `["0.0.0.0"]`,
+				ListenHost:    "0.0.0.0",
+				ListenPort:    7443,
+				PublicHost:    "relay-a.example.com",
+				PublicPort:    7443,
+				Enabled:       true,
+				CertificateID: intPtrStorage(7),
+				TLSMode:       "pin_only",
+				PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+				Revision:      1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-2": {{
+				ID:              12,
+				AgentID:         "edge-2",
+				FrontendURL:     "https://app.example.com",
+				BackendURL:      "http://upstream:8096",
+				BackendsJSON:    `[{"url":"http://upstream:8096"}]`,
+				RelayChainJSON:  `[1]`,
+				RelayLayersJSON: `[[2]]`,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+			{ID: "edge-2"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	listener, err := svc.Update(context.Background(), "edge-1", 1, RelayListenerInput{
+		Enabled: boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if listener.Enabled {
+		t.Fatalf("listener.Enabled = true")
 	}
 }
 
@@ -1113,15 +1165,16 @@ func TestRelayServiceDeleteRejectsReferencedListener(t *testing.T) {
 		httpRulesByID: map[string][]storage.HTTPRuleRow{},
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"edge-2": {{
-				ID:             21,
-				AgentID:        "edge-2",
-				Protocol:       "tcp",
-				ListenHost:     "0.0.0.0",
-				ListenPort:     9443,
-				UpstreamHost:   "upstream",
-				UpstreamPort:   9443,
-				BackendsJSON:   `[{"host":"upstream","port":9443}]`,
-				RelayChainJSON: `[1]`,
+				ID:              21,
+				AgentID:         "edge-2",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9443,
+				UpstreamHost:    "upstream",
+				UpstreamPort:    9443,
+				BackendsJSON:    `[{"host":"upstream","port":9443}]`,
+				RelayChainJSON:  `[2]`,
+				RelayLayersJSON: `[[1]]`,
 			}},
 		},
 		agents: []storage.AgentRow{
@@ -1139,6 +1192,57 @@ func TestRelayServiceDeleteRejectsReferencedListener(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "referenced") {
 		t.Fatalf("Delete() error = %v", err)
+	}
+}
+
+func TestRelayServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:         1,
+				AgentID:    "edge-1",
+				Name:       "relay-a",
+				ListenHost: "0.0.0.0",
+				ListenPort: 7443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSetJSON: `[{"type":"spki_sha256","value":"pin"}]`,
+				Revision:   1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-2": {{
+				ID:              21,
+				AgentID:         "edge-2",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9443,
+				UpstreamHost:    "upstream",
+				UpstreamPort:    9443,
+				BackendsJSON:    `[{"host":"upstream","port":9443}]`,
+				RelayChainJSON:  `[1]`,
+				RelayLayersJSON: `[[2]]`,
+			}},
+		},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+			{ID: "edge-2"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-1", 1)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != 1 {
+		t.Fatalf("deleted.ID = %d", deleted.ID)
+	}
+	if len(store.relayByAgentID["edge-1"]) != 0 {
+		t.Fatalf("listeners still stored: %+v", store.relayByAgentID["edge-1"])
 	}
 }
 

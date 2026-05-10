@@ -2011,10 +2011,11 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 		rulesByID: map[string][]storage.HTTPRuleRow{
 			"edge-a": {{ID: 1, AgentID: "edge-a"}},
 			"edge-b": {{
-				ID:             9,
-				AgentID:        "edge-b",
-				FrontendURL:    "https://relay.example.com",
-				RelayChainJSON: `[7]`,
+				ID:              9,
+				AgentID:         "edge-b",
+				FrontendURL:     "https://relay.example.com",
+				RelayChainJSON:  `[8]`,
+				RelayLayersJSON: `[[7]]`,
 			}},
 		},
 		l4RulesByID: map[string][]storage.L4RuleRow{
@@ -2042,6 +2043,48 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 	}
 	if len(store.rulesByID["edge-a"]) != 0 || len(store.l4RulesByID["edge-a"]) != 0 || len(store.relayByID["edge-a"]) != 0 {
 		t.Fatalf("agent resources not cleaned up: rules=%+v l4=%+v relay=%+v", store.rulesByID["edge-a"], store.l4RulesByID["edge-a"], store.relayByID["edge-a"])
+	}
+}
+
+func TestAgentServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}
+	store := &fakeStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-a", Name: "edge-a", AgentToken: "token-a"},
+			{ID: "edge-b", Name: "edge-b", AgentToken: "token-b"},
+		},
+		relayByID: map[string][]storage.RelayListenerRow{
+			"edge-a": {{
+				ID:      7,
+				AgentID: "edge-a",
+				Name:    "relay-a",
+			}},
+		},
+		rulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-b": {{
+				ID:              9,
+				AgentID:         "edge-b",
+				FrontendURL:     "https://relay.example.com",
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[8]]`,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+	}
+	svc := NewAgentService(cfg, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != "edge-a" {
+		t.Fatalf("deleted agent = %+v", deleted)
+	}
+	if store.deletedAgentID != "edge-a" {
+		t.Fatalf("DeleteAgent() called with %q", store.deletedAgentID)
 	}
 }
 
