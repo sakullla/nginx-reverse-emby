@@ -1,23 +1,8 @@
 services:
-  postgres:
-    image: postgres:17-alpine
-    container_name: nginx-reverse-emby-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: nre
-      POSTGRES_USER: nre
-      POSTGRES_PASSWORD: nre
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
-
   nginx-reverse-emby:
     image: ghcr.io/sakullla/nginx-reverse-emby:latest
     container_name: nginx-reverse-emby
     restart: unless-stopped
-    depends_on:
-      - postgres
     network_mode: host
 
     environment:
@@ -36,8 +21,6 @@ services:
       NRE_ENABLE_LOCAL_AGENT: "1"
       NRE_LOCAL_AGENT_ID: local
       NRE_LOCAL_AGENT_NAME: local
-      NRE_DATABASE_DRIVER: postgres
-      NRE_DATABASE_DSN: postgres://nre:nre@127.0.0.1:5432/nre?sslmode=disable
       # 控制面板统一时区；用于日/月汇总、周期边界和流量清理口径
       NRE_TIMEZONE: Asia/Shanghai
 
@@ -46,4 +29,4 @@ services:
       # CF_TOKEN: your-cloudflare-api-token
 
     volumes:
-      - ./data/panel:/opt/nginx-reverse-emby/panel/data
+      - ./data:/opt/nginx-reverse-emby/panel/data
