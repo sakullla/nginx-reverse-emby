@@ -401,6 +401,7 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return RelayListener{}, err
 	}
+	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "relay_listener", deleted.ID)
 	return deleted, nil
 }
 

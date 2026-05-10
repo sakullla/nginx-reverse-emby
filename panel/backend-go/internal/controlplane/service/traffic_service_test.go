@@ -131,6 +131,9 @@ func TestTrafficServiceIngestHeartbeatComputesDeltas(t *testing.T) {
 
 func TestTrafficServiceIngestHeartbeatParsesCurrentStatsShape(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
+	fakeStore.httpRulesByAgent["edge-1"] = []storage.HTTPRuleRow{{ID: 11, AgentID: "edge-1"}}
+	fakeStore.l4RulesByAgent["edge-1"] = []storage.L4RuleRow{{ID: 22, AgentID: "edge-1"}}
+	fakeStore.relayListenersByAgent["edge-1"] = []storage.RelayListenerRow{{ID: 33, AgentID: "edge-1"}}
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return fixedNow }}, fakeStore)
 	stats := AgentStats{"traffic": map[string]any{
@@ -163,6 +166,68 @@ func TestTrafficServiceIngestHeartbeatParsesCurrentStatsShape(t *testing.T) {
 	assertBucket("http_rule", "11", 90, 100)
 	assertBucket("l4_rule", "22", 110, 120)
 	assertBucket("relay_listener", "33", 130, 140)
+}
+
+func TestTrafficServiceIngestHeartbeatIgnoresDeletedScopedTraffic(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return fixedNow }}, fakeStore)
+	stats := AgentStats{"traffic": map[string]any{
+		"http_rules":      map[string]any{"11": map[string]any{"rx_bytes": uint64(90), "tx_bytes": uint64(100)}},
+		"l4_rules":        map[string]any{"22": map[string]any{"rx_bytes": uint64(110), "tx_bytes": uint64(120)}},
+		"relay_listeners": map[string]any{"33": map[string]any{"rx_bytes": uint64(130), "tx_bytes": uint64(140)}},
+	}}
+
+	if err := svc.IngestHeartbeat(context.Background(), "edge-1", stats); err != nil {
+		t.Fatal(err)
+	}
+	if fakeStore.writeCount != 0 {
+		t.Fatalf("writeCount = %d, want deleted scopes ignored", fakeStore.writeCount)
+	}
+	if len(fakeStore.cursors) != 0 || len(fakeStore.buckets) != 0 {
+		t.Fatalf("traffic rows recreated for deleted scopes: cursors=%+v buckets=%+v", fakeStore.cursors, fakeStore.buckets)
+	}
+}
+
+func TestTrafficServiceIngestHeartbeatUsesPreservedCursorForReusedRuleID(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	if err := store.SaveHTTPRules(ctx, "edge-1", []storage.HTTPRuleRow{{ID: 1, AgentID: "edge-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	stats := AgentStats{"traffic": map[string]any{
+		"http_rules": map[string]any{"1": map[string]any{"rx_bytes": uint64(100), "tx_bytes": uint64(200)}},
+	}}
+	if err := svc.IngestHeartbeat(ctx, "edge-1", stats); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteTrafficByScope(ctx, "edge-1", "http_rule", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveHTTPRules(ctx, "edge-1", []storage.HTTPRuleRow{{ID: 1, AgentID: "edge-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.IngestHeartbeat(ctx, "edge-1", stats); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "http_rule",
+		ScopeID:     "1",
+		Granularity: "hour",
+		From:        now.Add(-time.Hour),
+		To:          now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("rows = %+v, want no old cumulative traffic attributed to reused rule ID", rows)
+	}
 }
 
 func TestTrafficServiceIngestHeartbeatParsesHostTrafficStats(t *testing.T) {
@@ -1802,6 +1867,9 @@ type fakeTrafficStore struct {
 	policy                  storage.AgentTrafficPolicyRow
 	policies                []storage.AgentTrafficPolicyRow
 	agents                  []storage.AgentRow
+	httpRulesByAgent        map[string][]storage.HTTPRuleRow
+	l4RulesByAgent          map[string][]storage.L4RuleRow
+	relayListenersByAgent   map[string][]storage.RelayListenerRow
 	cursors                 map[string]storage.AgentTrafficRawCursorRow
 	buckets                 map[string]storage.TrafficBucketRow
 	baselines               map[string]storage.AgentTrafficBaselineRow
@@ -1827,6 +1895,9 @@ func newFakeTrafficStore() *fakeTrafficStore {
 		cursors:                 map[string]storage.AgentTrafficRawCursorRow{},
 		buckets:                 map[string]storage.TrafficBucketRow{},
 		baselines:               map[string]storage.AgentTrafficBaselineRow{},
+		httpRulesByAgent:        map[string][]storage.HTTPRuleRow{},
+		l4RulesByAgent:          map[string][]storage.L4RuleRow{},
+		relayListenersByAgent:   map[string][]storage.RelayListenerRow{},
 		agentTrafficBlocked:     map[string]bool{},
 		agentTrafficBlockReason: map[string]string{},
 	}
@@ -1865,6 +1936,18 @@ func (s *fakeTrafficStore) ListTrafficPolicies(context.Context) ([]storage.Agent
 
 func (s *fakeTrafficStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
 	return append([]storage.AgentRow(nil), s.agents...), nil
+}
+
+func (s *fakeTrafficStore) ListHTTPRules(_ context.Context, agentID string) ([]storage.HTTPRuleRow, error) {
+	return append([]storage.HTTPRuleRow(nil), s.httpRulesByAgent[agentID]...), nil
+}
+
+func (s *fakeTrafficStore) ListL4Rules(_ context.Context, agentID string) ([]storage.L4RuleRow, error) {
+	return append([]storage.L4RuleRow(nil), s.l4RulesByAgent[agentID]...), nil
+}
+
+func (s *fakeTrafficStore) ListRelayListeners(_ context.Context, agentID string) ([]storage.RelayListenerRow, error) {
+	return append([]storage.RelayListenerRow(nil), s.relayListenersByAgent[agentID]...), nil
 }
 
 func (s *fakeTrafficStore) ListTrafficAgentIDs(context.Context) ([]string, error) {

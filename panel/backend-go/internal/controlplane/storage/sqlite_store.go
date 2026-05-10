@@ -438,7 +438,13 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 }
 
 func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
-	return s.db.WithContext(ctx).Where("id = ?", agentID).Delete(&AgentRow{}).Error
+	agentID = strings.TrimSpace(agentID)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if _, err := s.deleteTrafficByAgentTx(tx, agentID); err != nil {
+			return err
+		}
+		return tx.Where("id = ?", agentID).Delete(&AgentRow{}).Error
+	})
 }
 
 func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []HTTPRuleRow) error {
