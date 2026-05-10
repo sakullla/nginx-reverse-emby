@@ -194,50 +194,6 @@ func (s *Server) startListener(listener Listener) error {
 	return nil
 }
 
-func (s *Server) acceptLoop(ln net.Listener, listener Listener) {
-	defer s.wg.Done()
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if s.ctx.Err() != nil {
-				return
-			}
-			continue
-		}
-
-		s.trackConn(conn)
-		s.wg.Add(1)
-		go func(rawConn net.Conn) {
-			defer s.wg.Done()
-			s.handleConn(rawConn, listener)
-		}(conn)
-	}
-}
-
-func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
-	defer s.untrackConn(rawConn)
-	defer rawConn.Close()
-
-	tuneBulkRelayConn(rawConn)
-
-	tlsConfig, err := serverTLSConfig(s.ctx, s.provider, listener)
-	if err != nil {
-		return
-	}
-
-	clientConn := tls.Server(rawConn, tlsConfig)
-	if err := handshakeTLS(s.ctx, clientConn); err != nil {
-		return
-	}
-
-	relayClientConn := net.Conn(clientConn)
-	if listenerUsesEarlyWindowMask(listener) {
-		relayClientConn = wrapConnWithEarlyWindowMask(clientConn, defaultEarlyWindowMaskConfig())
-	}
-	s.handleMuxTLSTCPConn(relayClientConn, listener)
-}
-
 func (s *Server) openUpstream(network, target string, chain []Hop, options DialOptions) (net.Conn, error) {
 	conn, _, err := s.openUpstreamWithResult(network, target, chain, options)
 	return conn, err
@@ -742,47 +698,6 @@ func (s *Server) Close() error {
 	s.closeQUICConns()
 	s.wg.Wait()
 	return nil
-}
-
-func (s *Server) trackConn(conn net.Conn) {
-	if conn == nil {
-		return
-	}
-
-	s.mu.Lock()
-	if s.conns == nil {
-		s.conns = make(map[net.Conn]struct{})
-	}
-	closing := s.closing
-	if !closing {
-		s.conns[conn] = struct{}{}
-	}
-	s.mu.Unlock()
-
-	if closing {
-		_ = conn.Close()
-	}
-}
-
-func (s *Server) untrackConn(conn net.Conn) {
-	if conn == nil {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.conns, conn)
-}
-
-func (s *Server) closeConns() {
-	s.mu.Lock()
-	conns := s.conns
-	s.conns = nil
-	s.mu.Unlock()
-
-	for conn := range conns {
-		_ = conn.Close()
-	}
 }
 
 func (s *Server) acceptQUICLoop(ln *quic.Listener, listener Listener) {
