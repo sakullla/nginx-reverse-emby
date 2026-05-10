@@ -1024,6 +1024,77 @@ func parseL4LoadBalancingStrategy(t *testing.T, raw string) LoadBalancing {
 	return LoadBalancing{Strategy: strings.ToLower(strings.TrimSpace(lb.Strategy))}
 }
 
+func TestSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
+	rules := SnapshotHTTPRules([]HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://app.example.com",
+		BackendURL:        "http://legacy.example.com",
+		BackendsJSON:      `[{"url":"http://canonical.example.com"}]`,
+		LoadBalancingJSON: `{}`,
+		Enabled:           true,
+		RelayChainJSON:    `[101]`,
+		RelayLayersJSON:   `[[201,202]]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          3,
+	}})
+
+	if len(rules) != 1 {
+		t.Fatalf("expected one http rule, got %d", len(rules))
+	}
+	if rules[0].BackendURL != "" {
+		t.Fatalf("BackendURL = %q, want empty legacy compatibility field", rules[0].BackendURL)
+	}
+	if len(rules[0].RelayChain) != 0 {
+		t.Fatalf("RelayChain = %+v, want empty legacy compatibility field", rules[0].RelayChain)
+	}
+	if len(rules[0].Backends) != 1 || rules[0].Backends[0].URL != "http://canonical.example.com" {
+		t.Fatalf("Backends = %+v", rules[0].Backends)
+	}
+	if len(rules[0].RelayLayers) != 1 || len(rules[0].RelayLayers[0]) != 2 || rules[0].RelayLayers[0][0] != 201 || rules[0].RelayLayers[0][1] != 202 {
+		t.Fatalf("RelayLayers = %+v", rules[0].RelayLayers)
+	}
+}
+
+func TestSnapshotL4RulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
+	rules := SnapshotL4Rules([]L4RuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		Name:              "canonical-l4",
+		Protocol:          "tcp",
+		ListenHost:        "127.0.0.1",
+		ListenPort:        9443,
+		UpstreamHost:      "legacy.example.com",
+		UpstreamPort:      9444,
+		BackendsJSON:      `[{"host":"canonical.example.com","port":9445}]`,
+		LoadBalancingJSON: `{}`,
+		TuningJSON:        `{}`,
+		RelayChainJSON:    `[101]`,
+		RelayLayersJSON:   `[[201,202]]`,
+		Enabled:           true,
+		Revision:          3,
+	}})
+
+	if len(rules) != 1 {
+		t.Fatalf("expected one l4 rule, got %d", len(rules))
+	}
+	if rules[0].UpstreamHost != "" {
+		t.Fatalf("UpstreamHost = %q, want empty legacy compatibility field", rules[0].UpstreamHost)
+	}
+	if rules[0].UpstreamPort != 0 {
+		t.Fatalf("UpstreamPort = %d, want zero legacy compatibility field", rules[0].UpstreamPort)
+	}
+	if len(rules[0].RelayChain) != 0 {
+		t.Fatalf("RelayChain = %+v, want empty legacy compatibility field", rules[0].RelayChain)
+	}
+	if len(rules[0].Backends) != 1 || rules[0].Backends[0].Host != "canonical.example.com" || rules[0].Backends[0].Port != 9445 {
+		t.Fatalf("Backends = %+v", rules[0].Backends)
+	}
+	if len(rules[0].RelayLayers) != 1 || len(rules[0].RelayLayers[0]) != 2 || rules[0].RelayLayers[0][0] != 201 || rules[0].RelayLayers[0][1] != 202 {
+		t.Fatalf("RelayLayers = %+v", rules[0].RelayLayers)
+	}
+}
+
 func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T) {
 	rules := SnapshotL4Rules([]L4RuleRow{{
 		ID:                 1,
