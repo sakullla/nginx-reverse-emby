@@ -3,7 +3,6 @@ package relay
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"reflect"
 	"strconv"
@@ -151,153 +150,6 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) acceptQUICLoop(ln *quic.Listener, listener Listener) {
-	defer s.wg.Done()
-
-	for {
-		conn, err := ln.Accept(s.ctx)
-		if err != nil {
-			if s.ctx.Err() != nil {
-				return
-			}
-			continue
-		}
-
-		s.trackQUICConn(conn)
-		s.wg.Add(1)
-		go func(session *quic.Conn) {
-			defer s.wg.Done()
-			s.handleQUICConn(session, listener)
-		}(conn)
-	}
-}
-
-func (s *Server) handleQUICConn(conn *quic.Conn, listener Listener) {
-	defer s.untrackQUICConn(conn)
-
-	for {
-		stream, err := conn.AcceptStream(s.ctx)
-		if err != nil {
-			return
-		}
-
-		s.wg.Add(1)
-		go func(stream *quic.Stream) {
-			defer s.wg.Done()
-			s.handleQUICStream(conn, stream, listener)
-		}(stream)
-	}
-}
-
-func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener Listener) {
-	clientConn := &quicStreamConn{conn: conn, stream: stream}
-	cancelStream := true
-	defer func() {
-		_ = clientConn.closeWithCancel(cancelStream)
-	}()
-
-	var request relayOpenFrame
-	err := withFrameDeadline(clientConn, func() error {
-		var readErr error
-		request, readErr = readRelayOpenFrame(clientConn)
-		return readErr
-	})
-	if err != nil {
-		return
-	}
-	if !strings.EqualFold(request.Kind, "tcp") && !strings.EqualFold(request.Kind, "udp") && !strings.EqualFold(request.Kind, "resolve") && !strings.EqualFold(request.Kind, relayOpenKindProbe) {
-		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Kind)})
-		})
-		cancelStream = false
-		return
-	}
-	if strings.EqualFold(request.Kind, relayOpenKindProbe) {
-		timings, err := s.probeRelayPath(s.ctx, relayProbeNetworkFromMetadata(request.Metadata), request.Target, request.Chain)
-		if err != nil {
-			_ = withFrameDeadline(clientConn, func() error {
-				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
-			})
-			cancelStream = false
-			return
-		}
-		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{OK: true, ProbeTimings: timings})
-		})
-		cancelStream = false
-		return
-	}
-	if strings.EqualFold(request.Kind, "resolve") {
-		resolvedCandidates, err := s.resolveTargetCandidates(request.Target, request.Chain)
-		if err != nil {
-			_ = withFrameDeadline(clientConn, func() error {
-				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
-			})
-			cancelStream = false
-			return
-		}
-		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{OK: true, ResolvedCandidates: resolvedCandidates})
-		})
-		cancelStream = false
-		return
-	}
-	if state := s.currentTrafficBlockState(); state.Blocked {
-		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: trafficBlockErrorMessage(state)})
-		})
-		cancelStream = false
-		return
-	}
-	if strings.EqualFold(request.Kind, "udp") {
-		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain, relayDialOptionsFromMetadata(request.Kind, request.Metadata))
-		return
-	}
-	upstream, upstreamResult, err := s.openUpstreamWithResult(
-		request.Kind,
-		request.Target,
-		request.Chain,
-		relayDialOptionsFromMetadata(request.Kind, request.Metadata),
-	)
-	if err != nil {
-		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error(), SelectedAddress: upstreamResult.SelectedAddress})
-		})
-		cancelStream = false
-		return
-	}
-	s.trackConn(upstream)
-	defer s.untrackConn(upstream)
-	defer upstream.Close()
-
-	if len(request.InitialData) > 0 {
-		n, err := upstream.Write(request.InitialData)
-		if err != nil {
-			_ = withFrameDeadline(clientConn, func() error {
-				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
-			})
-			cancelStream = false
-			return
-		}
-		if n != len(request.InitialData) {
-			_ = withFrameDeadline(clientConn, func() error {
-				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: io.ErrShortWrite.Error()})
-			})
-			cancelStream = false
-			return
-		}
-	}
-	if err := withFrameDeadline(clientConn, func() error {
-		return writeRelayResponse(clientConn, relayResponse{OK: true, SelectedAddress: upstreamResult.SelectedAddress})
-	}); err != nil {
-		return
-	}
-	cancelStream = false
-
-	recorder := traffic.NewRelayListenerRecorder(listener.ID)
-	pipeBothWaysWithInitialRelayRX(wrapIdleConn(clientConn), wrapIdleConn(upstream), int64(len(request.InitialData)), recorder)
-}
-
 func (s *Server) currentTrafficBlockState() TrafficBlockState {
 	if s == nil {
 		return TrafficBlockState{}
@@ -383,47 +235,6 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traff
 	<-done
 	<-done
 	recorder.Flush()
-}
-
-func (s *Server) trackQUICConn(conn *quic.Conn) {
-	if conn == nil {
-		return
-	}
-
-	s.mu.Lock()
-	if s.quicConns == nil {
-		s.quicConns = make(map[*quic.Conn]struct{})
-	}
-	closing := s.closing
-	if !closing {
-		s.quicConns[conn] = struct{}{}
-	}
-	s.mu.Unlock()
-
-	if closing {
-		_ = conn.CloseWithError(0, "relay shutting down")
-	}
-}
-
-func (s *Server) untrackQUICConn(conn *quic.Conn) {
-	if conn == nil {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.quicConns, conn)
-}
-
-func (s *Server) closeQUICConns() {
-	s.mu.Lock()
-	conns := s.quicConns
-	s.quicConns = nil
-	s.mu.Unlock()
-
-	for conn := range conns {
-		_ = conn.CloseWithError(0, "relay shutting down")
-	}
 }
 
 func pipeBothWays(left, right net.Conn, recorder *traffic.Recorder) {
