@@ -173,10 +173,10 @@ type AgentTrafficRawCursorRow struct {
 }
 
 type AgentTrafficHourlyBucketRow struct {
-	AgentID     string `gorm:"column:agent_id;primaryKey;index:idx_agent_traffic_hourly_agent_bucket"`
-	ScopeType   string `gorm:"column:scope_type;primaryKey"`
+	AgentID     string `gorm:"column:agent_id;primaryKey;index:idx_agent_traffic_hourly_agent_bucket;index:idx_agent_traffic_hourly_aggregate,priority:1"`
+	ScopeType   string `gorm:"column:scope_type;primaryKey;index:idx_agent_traffic_hourly_aggregate,priority:2"`
 	ScopeID     string `gorm:"column:scope_id;primaryKey"`
-	BucketStart string `gorm:"column:bucket_start;primaryKey;index:idx_agent_traffic_hourly_agent_bucket"`
+	BucketStart string `gorm:"column:bucket_start;primaryKey;index:idx_agent_traffic_hourly_agent_bucket;index:idx_agent_traffic_hourly_aggregate,priority:3"`
 	RXBytes     uint64 `gorm:"column:rx_bytes"`
 	TXBytes     uint64 `gorm:"column:tx_bytes"`
 	UpdatedAt   string `gorm:"column:updated_at"`
@@ -184,10 +184,10 @@ type AgentTrafficHourlyBucketRow struct {
 }
 
 type AgentTrafficDailySummaryRow struct {
-	AgentID     string `gorm:"column:agent_id;primaryKey;index:idx_agent_traffic_daily_agent_period"`
-	ScopeType   string `gorm:"column:scope_type;primaryKey"`
+	AgentID     string `gorm:"column:agent_id;primaryKey;index:idx_agent_traffic_daily_agent_period;index:idx_agent_traffic_daily_aggregate,priority:1"`
+	ScopeType   string `gorm:"column:scope_type;primaryKey;index:idx_agent_traffic_daily_aggregate,priority:2"`
 	ScopeID     string `gorm:"column:scope_id;primaryKey"`
-	PeriodStart string `gorm:"column:period_start;primaryKey;index:idx_agent_traffic_daily_agent_period"`
+	PeriodStart string `gorm:"column:period_start;primaryKey;index:idx_agent_traffic_daily_agent_period;index:idx_agent_traffic_daily_aggregate,priority:3"`
 	RXBytes     uint64 `gorm:"column:rx_bytes"`
 	TXBytes     uint64 `gorm:"column:tx_bytes"`
 	UpdatedAt   string `gorm:"column:updated_at"`
@@ -195,10 +195,10 @@ type AgentTrafficDailySummaryRow struct {
 }
 
 type AgentTrafficMonthlySummaryRow struct {
-	AgentID     string `gorm:"column:agent_id;primaryKey;index:idx_agent_traffic_monthly_agent_period"`
-	ScopeType   string `gorm:"column:scope_type;primaryKey"`
+	AgentID     string `gorm:"column:agent_id;primaryKey;index:idx_agent_traffic_monthly_agent_period;index:idx_agent_traffic_monthly_aggregate,priority:1"`
+	ScopeType   string `gorm:"column:scope_type;primaryKey;index:idx_agent_traffic_monthly_aggregate,priority:2"`
 	ScopeID     string `gorm:"column:scope_id;primaryKey"`
-	PeriodStart string `gorm:"column:period_start;primaryKey;index:idx_agent_traffic_monthly_agent_period"`
+	PeriodStart string `gorm:"column:period_start;primaryKey;index:idx_agent_traffic_monthly_agent_period;index:idx_agent_traffic_monthly_aggregate,priority:3"`
 	RXBytes     uint64 `gorm:"column:rx_bytes"`
 	TXBytes     uint64 `gorm:"column:tx_bytes"`
 	UpdatedAt   string `gorm:"column:updated_at"`

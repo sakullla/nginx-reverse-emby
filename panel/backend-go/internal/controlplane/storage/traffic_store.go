@@ -35,6 +35,14 @@ type TrafficTrendQuery struct {
 	To          time.Time
 }
 
+type TrafficBreakdownQuery struct {
+	AgentIDs    []string
+	ScopeTypes  []string
+	Granularity string
+	From        time.Time
+	To          time.Time
+}
+
 type TrafficBucketRow struct {
 	AgentID     string
 	ScopeType   string
@@ -436,7 +444,10 @@ func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta) error {
 		return err
 	}
 
-	monthStart := time.Date(bucketStart.Year(), bucketStart.Month(), 1, 0, 0, 0, 0, bucketStart.Location())
+	monthStart, err := trafficCycleMonthStart(tx, delta.AgentID, bucketStart)
+	if err != nil {
+		return err
+	}
 	return incrementTrafficMonthlySummary(tx, AgentTrafficMonthlySummaryRow{
 		AgentID:     delta.AgentID,
 		ScopeType:   delta.ScopeType,
@@ -447,6 +458,26 @@ func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta) error {
 		UpdatedAt:   now,
 		CreatedAt:   now,
 	})
+}
+
+func trafficCycleMonthStart(tx *gorm.DB, agentID string, bucketStart time.Time) (time.Time, error) {
+	policy, err := trafficPolicyForTx(tx, agentID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return cycleMonthStart(bucketStart, policy.CycleStartDay), nil
+}
+
+func trafficPolicyForTx(tx *gorm.DB, agentID string) (AgentTrafficPolicyRow, error) {
+	var row AgentTrafficPolicyRow
+	if err := tx.Where("agent_id = ?", agentID).Limit(1).Find(&row).Error; err != nil {
+		return AgentTrafficPolicyRow{}, err
+	}
+	if row.AgentID == "" {
+		return defaultTrafficPolicy(agentID), nil
+	}
+	normalizeTrafficPolicyRow(&row)
+	return row, nil
 }
 
 func (s *GormStore) ListTrafficTrend(ctx context.Context, query TrafficTrendQuery) ([]TrafficBucketRow, error) {
@@ -534,6 +565,95 @@ func (s *GormStore) ListTrafficBreakdown(ctx context.Context, query TrafficTrend
 	}
 }
 
+func (s *GormStore) ListTrafficBreakdownByScopeTypes(ctx context.Context, query TrafficBreakdownQuery) ([]TrafficBucketRow, error) {
+	agentIDs := normalizeTrafficAgentIDs(s, query.AgentIDs)
+	scopeTypes, err := normalizeTrafficScopeTypes(query.ScopeTypes)
+	if err != nil {
+		return nil, err
+	}
+	if len(agentIDs) == 0 || len(scopeTypes) == 0 {
+		return []TrafficBucketRow{}, nil
+	}
+
+	switch normalizeTrafficGranularity(query.Granularity) {
+	case "hour":
+		var rows []trafficBreakdownRow
+		err := applyTrafficAggregateBreakdownQuery(s.db.WithContext(ctx).Model(&AgentTrafficHourlyBucketRow{}), agentIDs, scopeTypes, query.From, query.To, "bucket_start").
+			Group("agent_id, scope_type, scope_id").
+			Order("agent_id, scope_type, scope_id").
+			Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return trafficBreakdownRows(rows)
+	case "day":
+		var rows []trafficBreakdownRow
+		err := applyTrafficAggregateBreakdownQuery(s.db.WithContext(ctx).Model(&AgentTrafficDailySummaryRow{}), agentIDs, scopeTypes, query.From, query.To, "period_start").
+			Group("agent_id, scope_type, scope_id").
+			Order("agent_id, scope_type, scope_id").
+			Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return trafficBreakdownRows(rows)
+	case "month":
+		var rows []trafficBreakdownRow
+		err := applyTrafficAggregateBreakdownQuery(s.db.WithContext(ctx).Model(&AgentTrafficMonthlySummaryRow{}), agentIDs, scopeTypes, query.From, query.To, "period_start").
+			Group("agent_id, scope_type, scope_id").
+			Order("agent_id, scope_type, scope_id").
+			Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return trafficBreakdownRows(rows)
+	default:
+		return nil, fmt.Errorf("unsupported traffic granularity %q", query.Granularity)
+	}
+}
+
+func (s *GormStore) ListTrafficTrendByScopeTypes(ctx context.Context, query TrafficBreakdownQuery) ([]TrafficBucketRow, error) {
+	agentIDs := normalizeTrafficAgentIDs(s, query.AgentIDs)
+	scopeTypes, err := normalizeTrafficScopeTypes(query.ScopeTypes)
+	if err != nil {
+		return nil, err
+	}
+	if len(agentIDs) == 0 || len(scopeTypes) == 0 {
+		return []TrafficBucketRow{}, nil
+	}
+
+	switch normalizeTrafficGranularity(query.Granularity) {
+	case "hour":
+		var rows []AgentTrafficHourlyBucketRow
+		err := applyTrafficTrendByScopeTypesQuery(s.db.WithContext(ctx).Model(&AgentTrafficHourlyBucketRow{}), agentIDs, scopeTypes, query.From, query.To, "bucket_start").
+			Order("agent_id, scope_type, scope_id, bucket_start").
+			Find(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return hourlyTrafficBucketRows(rows)
+	case "day":
+		var rows []AgentTrafficDailySummaryRow
+		err := applyTrafficTrendByScopeTypesQuery(s.db.WithContext(ctx).Model(&AgentTrafficDailySummaryRow{}), agentIDs, scopeTypes, query.From, query.To, "period_start").
+			Order("agent_id, scope_type, scope_id, period_start").
+			Find(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return dailyTrafficBucketRows(rows)
+	case "month":
+		var rows []AgentTrafficMonthlySummaryRow
+		err := applyTrafficTrendByScopeTypesQuery(s.db.WithContext(ctx).Model(&AgentTrafficMonthlySummaryRow{}), agentIDs, scopeTypes, query.From, query.To, "period_start").
+			Order("agent_id, scope_type, scope_id, period_start").
+			Find(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return monthlyTrafficBucketRows(rows)
+	default:
+		return nil, fmt.Errorf("unsupported traffic granularity %q", query.Granularity)
+	}
+}
+
 func (s *GormStore) SaveTrafficEvent(ctx context.Context, row AgentTrafficEventRow) error {
 	row.AgentID = s.resolveAgentID(row.AgentID)
 	if strings.TrimSpace(row.EventType) == "" {
@@ -612,6 +732,34 @@ func (s *GormStore) DeleteTrafficByAgent(ctx context.Context, agentID string) (i
 	return deleted, err
 }
 
+func (s *GormStore) DeleteTrafficBucketsByAgent(ctx context.Context, agentID string) (int64, error) {
+	agentID = s.resolveAgentID(agentID)
+	var deleted int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		count, err := deleteTrafficRows(tx, trafficScopedDataModels(), "agent_id = ?", agentID)
+		if err != nil {
+			return err
+		}
+		deleted = count
+		return nil
+	})
+	return deleted, err
+}
+
+func (s *GormStore) DeleteTrafficBucketsByAgentInWindow(ctx context.Context, agentID string, from, to time.Time) (int64, error) {
+	agentID = s.resolveAgentID(agentID)
+	var deleted int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		count, err := deleteTrafficBucketRowsInWindow(tx, agentID, from, to)
+		if err != nil {
+			return err
+		}
+		deleted = count
+		return nil
+	})
+	return deleted, err
+}
+
 func (s *GormStore) deleteTrafficByAgentTx(tx *gorm.DB, agentID string) (int64, error) {
 	return deleteTrafficRows(tx, trafficAgentDataModels(), "agent_id = ?", agentID)
 }
@@ -649,6 +797,130 @@ func deleteTrafficRows(tx *gorm.DB, models []any, query string, args ...any) (in
 		deleted += result.RowsAffected
 	}
 	return deleted, nil
+}
+
+func deleteTrafficBucketRowsInWindow(tx *gorm.DB, agentID string, from, to time.Time) (int64, error) {
+	var deleted int64
+	policy, err := trafficPolicyForTx(tx, agentID)
+	if err != nil {
+		return 0, err
+	}
+	monthlyFrom := cycleMonthStart(from, policy.CycleStartDay)
+	monthlyTo := cycleMonthEnd(to, policy.CycleStartDay)
+	for _, target := range []struct {
+		model      any
+		timeColumn string
+		from       time.Time
+		to         time.Time
+	}{
+		{model: &AgentTrafficHourlyBucketRow{}, timeColumn: "bucket_start", from: from, to: to},
+		{model: &AgentTrafficDailySummaryRow{}, timeColumn: "period_start", from: from, to: to},
+		{model: &AgentTrafficMonthlySummaryRow{}, timeColumn: "period_start", from: monthlyFrom, to: monthlyTo},
+	} {
+		if !tx.Migrator().HasTable(target.model) {
+			continue
+		}
+		result := tx.Where(
+			"agent_id = ? AND "+target.timeColumn+" >= ? AND "+target.timeColumn+" < ?",
+			agentID,
+			formatTrafficTime(target.from),
+			formatTrafficTime(target.to),
+		).Delete(target.model)
+		if result.Error != nil {
+			return 0, result.Error
+		}
+		deleted += result.RowsAffected
+	}
+	if err := rebuildMonthlyTrafficBuckets(tx, agentID, monthlyFrom, monthlyTo); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+func cycleMonthStart(value time.Time, cycleStartDay int) time.Time {
+	day := normalizeCycleStartDay(cycleStartDay)
+	local := value
+	candidate := time.Date(local.Year(), local.Month(), day, 0, 0, 0, 0, local.Location())
+	if local.Before(candidate) {
+		return candidate.AddDate(0, -1, 0)
+	}
+	return candidate
+}
+
+func cycleMonthEnd(value time.Time, cycleStartDay int) time.Time {
+	start := cycleMonthStart(value, cycleStartDay)
+	if value.Equal(start) {
+		return start
+	}
+	return start.AddDate(0, 1, 0)
+}
+
+func normalizeCycleStartDay(day int) int {
+	if day < 1 || day > 28 {
+		return 1
+	}
+	return day
+}
+
+func rebuildMonthlyTrafficBuckets(tx *gorm.DB, agentID string, from, to time.Time) error {
+	if !tx.Migrator().HasTable(&AgentTrafficDailySummaryRow{}) || !tx.Migrator().HasTable(&AgentTrafficMonthlySummaryRow{}) {
+		return nil
+	}
+	policy, err := trafficPolicyForTx(tx, agentID)
+	if err != nil {
+		return err
+	}
+	var dailyRows []AgentTrafficDailySummaryRow
+	if err := tx.Model(&AgentTrafficDailySummaryRow{}).
+		Where("agent_id = ? AND period_start >= ? AND period_start < ?", agentID, formatTrafficTime(from), formatTrafficTime(to)).
+		Order("agent_id, scope_type, scope_id, period_start").
+		Find(&dailyRows).Error; err != nil {
+		return err
+	}
+	type key struct {
+		agentID     string
+		scopeType   string
+		scopeID     string
+		periodStart string
+	}
+	monthlyRows := map[key]AgentTrafficMonthlySummaryRow{}
+	now := nowTrafficTimestamp()
+	for _, daily := range dailyRows {
+		periodStart, err := parseTrafficTime(daily.PeriodStart)
+		if err != nil {
+			return err
+		}
+		monthStart := cycleMonthStart(periodStart.In(from.Location()), policy.CycleStartDay)
+		k := key{
+			agentID:     daily.AgentID,
+			scopeType:   daily.ScopeType,
+			scopeID:     daily.ScopeID,
+			periodStart: formatTrafficTime(monthStart),
+		}
+		row := monthlyRows[k]
+		row.AgentID = daily.AgentID
+		row.ScopeType = daily.ScopeType
+		row.ScopeID = daily.ScopeID
+		row.PeriodStart = k.periodStart
+		row.RXBytes += daily.RXBytes
+		row.TXBytes += daily.TXBytes
+		monthlyRows[k] = row
+	}
+	for _, row := range monthlyRows {
+		if err := incrementTrafficMonthlySummary(tx, AgentTrafficMonthlySummaryRow{
+			AgentID:     row.AgentID,
+			ScopeType:   row.ScopeType,
+			ScopeID:     row.ScopeID,
+			PeriodStart: row.PeriodStart,
+			RXBytes:     row.RXBytes,
+			TXBytes:     row.TXBytes,
+			UpdatedAt:   now,
+			CreatedAt:   now,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func incrementTrafficHourlyBucket(tx *gorm.DB, row AgentTrafficHourlyBucketRow) error {
@@ -725,6 +997,63 @@ func applyTrafficBreakdownQuery(tx *gorm.DB, query TrafficTrendQuery, timeColumn
 		tx = tx.Where(timeColumn+" < ?", formatTrafficTime(query.To.UTC()))
 	}
 	return tx
+}
+
+func applyTrafficAggregateBreakdownQuery(tx *gorm.DB, agentIDs, scopeTypes []string, from, to time.Time, timeColumn string) *gorm.DB {
+	tx = tx.
+		Select("agent_id, scope_type, scope_id, SUM(rx_bytes) AS rx_bytes, SUM(tx_bytes) AS tx_bytes").
+		Where("agent_id IN ? AND scope_type IN ?", agentIDs, scopeTypes)
+	if !from.IsZero() {
+		tx = tx.Where(timeColumn+" >= ?", formatTrafficTime(from.UTC()))
+	}
+	if !to.IsZero() {
+		tx = tx.Where(timeColumn+" < ?", formatTrafficTime(to.UTC()))
+	}
+	return tx
+}
+
+func applyTrafficTrendByScopeTypesQuery(tx *gorm.DB, agentIDs, scopeTypes []string, from, to time.Time, timeColumn string) *gorm.DB {
+	tx = tx.Where("agent_id IN ? AND scope_type IN ?", agentIDs, scopeTypes)
+	if !from.IsZero() {
+		tx = tx.Where(timeColumn+" >= ?", formatTrafficTime(from.UTC()))
+	}
+	if !to.IsZero() {
+		tx = tx.Where(timeColumn+" < ?", formatTrafficTime(to.UTC()))
+	}
+	return tx
+}
+
+func normalizeTrafficAgentIDs(s *GormStore, values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		agentID := s.resolveAgentID(value)
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func normalizeTrafficScopeTypes(values []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		scopeType, err := normalizeTrafficScopeType(value)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[scopeType]; ok {
+			continue
+		}
+		seen[scopeType] = struct{}{}
+		out = append(out, scopeType)
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 type trafficBreakdownRow struct {
