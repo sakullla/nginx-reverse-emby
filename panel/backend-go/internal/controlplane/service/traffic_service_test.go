@@ -1253,8 +1253,42 @@ func TestTrafficServiceAggregateTopRulesExposeAgentIdentity(t *testing.T) {
 	if !seenAgents["edge-1"] || !seenAgents["edge-2"] {
 		t.Fatalf("TopRules agents = %+v, want edge-1 and edge-2", aggregate.TopRules)
 	}
-	if fakeStore.breakdownReadCount != 14 {
-		t.Fatalf("ListTrafficBreakdown calls = %d, want summary and aggregate top-rule passes for two agents", fakeStore.breakdownReadCount)
+	if fakeStore.breakdownReadCount > 1 {
+		t.Fatalf("ListTrafficBreakdown calls = %d, want one aggregate top-rule query", fakeStore.breakdownReadCount)
+	}
+	if fakeStore.trendReadCount > 12 {
+		t.Fatalf("ListTrafficTrend calls = %d, want aggregate endpoint to skip unused host trend", fakeStore.trendReadCount)
+	}
+}
+
+func TestTrafficServiceAggregateUsesBatchedGlobalTrend(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policies = []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-host", Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-agent", Direction: "tx", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	}
+	for _, row := range []storage.TrafficBucketRow{
+		{AgentID: "edge-host", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 200},
+		{AgentID: "edge-host", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 999, TXBytes: 999},
+		{AgentID: "edge-agent", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), RXBytes: 30, TXBytes: 40},
+	} {
+		fakeStore.addBucket(row)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	aggregate, err := svc.Aggregate(context.Background(), "", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.Trend) != 1 {
+		t.Fatalf("Trend = %+v, want one merged bucket", aggregate.Trend)
+	}
+	if aggregate.Trend[0].RXBytes != 130 || aggregate.Trend[0].TXBytes != 240 || aggregate.Trend[0].AccountedBytes != 140 {
+		t.Fatalf("Trend[0] = %+v, want host-total rx plus agent-total tx accounted by policy", aggregate.Trend[0])
+	}
+	if fakeStore.aggregateTrendReadCount != 1 {
+		t.Fatalf("ListTrafficTrendByScopeTypes calls = %d, want one batched aggregate trend query", fakeStore.aggregateTrendReadCount)
 	}
 }
 
@@ -1953,6 +1987,7 @@ type fakeTrafficStore struct {
 	writeCount              int
 	baselineReadCount       int
 	trendReadCount          int
+	aggregateTrendReadCount int
 	breakdownReadCount      int
 }
 
@@ -1977,6 +2012,24 @@ func newFakeTrafficStore() *fakeTrafficStore {
 }
 
 func (s *fakeTrafficStore) GetTrafficPolicy(_ context.Context, agentID string) (storage.AgentTrafficPolicyRow, error) {
+	for _, row := range s.policies {
+		if row.AgentID == agentID {
+			policy := row
+			if policy.Direction == "" {
+				policy.Direction = "both"
+			}
+			if policy.CycleStartDay == 0 {
+				policy.CycleStartDay = 1
+			}
+			if policy.HourlyRetentionDays == 0 {
+				policy.HourlyRetentionDays = 180
+			}
+			if policy.DailyRetentionMonths == 0 {
+				policy.DailyRetentionMonths = 24
+			}
+			return policy, nil
+		}
+	}
 	policy := s.policy
 	policy.AgentID = agentID
 	if policy.Direction == "" {
@@ -2137,6 +2190,88 @@ func (s *fakeTrafficStore) ListTrafficBreakdown(_ context.Context, query storage
 		}
 		if query.ScopeType != "" && row.ScopeType != query.ScopeType {
 			continue
+		}
+		if !query.From.IsZero() && row.BucketStart.Before(query.From) {
+			continue
+		}
+		if !query.To.IsZero() && !row.BucketStart.Before(query.To) {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func (s *fakeTrafficStore) ListTrafficBreakdownByScopeTypes(_ context.Context, query storage.TrafficBreakdownQuery) ([]storage.TrafficBucketRow, error) {
+	s.breakdownReadCount++
+	agentIDs := map[string]struct{}{}
+	for _, agentID := range query.AgentIDs {
+		agentIDs[agentID] = struct{}{}
+	}
+	scopeTypes := map[string]struct{}{}
+	for _, scopeType := range query.ScopeTypes {
+		scopeTypes[scopeType] = struct{}{}
+	}
+	byScope := map[string]storage.TrafficBucketRow{}
+	order := []string{}
+	for _, row := range s.buckets {
+		if len(agentIDs) > 0 {
+			if _, ok := agentIDs[row.AgentID]; !ok {
+				continue
+			}
+		}
+		if len(scopeTypes) > 0 {
+			if _, ok := scopeTypes[row.ScopeType]; !ok {
+				continue
+			}
+		}
+		if !query.From.IsZero() && row.BucketStart.Before(query.From) {
+			continue
+		}
+		if !query.To.IsZero() && !row.BucketStart.Before(query.To) {
+			continue
+		}
+		key := cursorKey(row.AgentID, row.ScopeType, row.ScopeID)
+		current, ok := byScope[key]
+		if !ok {
+			current.AgentID = row.AgentID
+			current.ScopeType = row.ScopeType
+			current.ScopeID = row.ScopeID
+			order = append(order, key)
+		}
+		current.RXBytes += row.RXBytes
+		current.TXBytes += row.TXBytes
+		byScope[key] = current
+	}
+	rows := make([]storage.TrafficBucketRow, 0, len(order))
+	for _, key := range order {
+		rows = append(rows, byScope[key])
+	}
+	return rows, nil
+}
+
+func (s *fakeTrafficStore) ListTrafficTrendByScopeTypes(_ context.Context, query storage.TrafficBreakdownQuery) ([]storage.TrafficBucketRow, error) {
+	s.trendReadCount++
+	s.aggregateTrendReadCount++
+	agentIDs := map[string]struct{}{}
+	for _, agentID := range query.AgentIDs {
+		agentIDs[agentID] = struct{}{}
+	}
+	scopeTypes := map[string]struct{}{}
+	for _, scopeType := range query.ScopeTypes {
+		scopeTypes[scopeType] = struct{}{}
+	}
+	rows := []storage.TrafficBucketRow{}
+	for _, row := range s.buckets {
+		if len(agentIDs) > 0 {
+			if _, ok := agentIDs[row.AgentID]; !ok {
+				continue
+			}
+		}
+		if len(scopeTypes) > 0 {
+			if _, ok := scopeTypes[row.ScopeType]; !ok {
+				continue
+			}
 		}
 		if !query.From.IsZero() && row.BucketStart.Before(query.From) {
 			continue

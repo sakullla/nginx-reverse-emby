@@ -35,6 +35,14 @@ type TrafficTrendQuery struct {
 	To          time.Time
 }
 
+type TrafficBreakdownQuery struct {
+	AgentIDs    []string
+	ScopeTypes  []string
+	Granularity string
+	From        time.Time
+	To          time.Time
+}
+
 type TrafficBucketRow struct {
 	AgentID     string
 	ScopeType   string
@@ -534,6 +542,95 @@ func (s *GormStore) ListTrafficBreakdown(ctx context.Context, query TrafficTrend
 	}
 }
 
+func (s *GormStore) ListTrafficBreakdownByScopeTypes(ctx context.Context, query TrafficBreakdownQuery) ([]TrafficBucketRow, error) {
+	agentIDs := normalizeTrafficAgentIDs(s, query.AgentIDs)
+	scopeTypes, err := normalizeTrafficScopeTypes(query.ScopeTypes)
+	if err != nil {
+		return nil, err
+	}
+	if len(agentIDs) == 0 || len(scopeTypes) == 0 {
+		return []TrafficBucketRow{}, nil
+	}
+
+	switch normalizeTrafficGranularity(query.Granularity) {
+	case "hour":
+		var rows []trafficBreakdownRow
+		err := applyTrafficAggregateBreakdownQuery(s.db.WithContext(ctx).Model(&AgentTrafficHourlyBucketRow{}), agentIDs, scopeTypes, query.From, query.To, "bucket_start").
+			Group("agent_id, scope_type, scope_id").
+			Order("agent_id, scope_type, scope_id").
+			Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return trafficBreakdownRows(rows)
+	case "day":
+		var rows []trafficBreakdownRow
+		err := applyTrafficAggregateBreakdownQuery(s.db.WithContext(ctx).Model(&AgentTrafficDailySummaryRow{}), agentIDs, scopeTypes, query.From, query.To, "period_start").
+			Group("agent_id, scope_type, scope_id").
+			Order("agent_id, scope_type, scope_id").
+			Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return trafficBreakdownRows(rows)
+	case "month":
+		var rows []trafficBreakdownRow
+		err := applyTrafficAggregateBreakdownQuery(s.db.WithContext(ctx).Model(&AgentTrafficMonthlySummaryRow{}), agentIDs, scopeTypes, query.From, query.To, "period_start").
+			Group("agent_id, scope_type, scope_id").
+			Order("agent_id, scope_type, scope_id").
+			Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return trafficBreakdownRows(rows)
+	default:
+		return nil, fmt.Errorf("unsupported traffic granularity %q", query.Granularity)
+	}
+}
+
+func (s *GormStore) ListTrafficTrendByScopeTypes(ctx context.Context, query TrafficBreakdownQuery) ([]TrafficBucketRow, error) {
+	agentIDs := normalizeTrafficAgentIDs(s, query.AgentIDs)
+	scopeTypes, err := normalizeTrafficScopeTypes(query.ScopeTypes)
+	if err != nil {
+		return nil, err
+	}
+	if len(agentIDs) == 0 || len(scopeTypes) == 0 {
+		return []TrafficBucketRow{}, nil
+	}
+
+	switch normalizeTrafficGranularity(query.Granularity) {
+	case "hour":
+		var rows []AgentTrafficHourlyBucketRow
+		err := applyTrafficTrendByScopeTypesQuery(s.db.WithContext(ctx).Model(&AgentTrafficHourlyBucketRow{}), agentIDs, scopeTypes, query.From, query.To, "bucket_start").
+			Order("agent_id, scope_type, scope_id, bucket_start").
+			Find(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return hourlyTrafficBucketRows(rows)
+	case "day":
+		var rows []AgentTrafficDailySummaryRow
+		err := applyTrafficTrendByScopeTypesQuery(s.db.WithContext(ctx).Model(&AgentTrafficDailySummaryRow{}), agentIDs, scopeTypes, query.From, query.To, "period_start").
+			Order("agent_id, scope_type, scope_id, period_start").
+			Find(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return dailyTrafficBucketRows(rows)
+	case "month":
+		var rows []AgentTrafficMonthlySummaryRow
+		err := applyTrafficTrendByScopeTypesQuery(s.db.WithContext(ctx).Model(&AgentTrafficMonthlySummaryRow{}), agentIDs, scopeTypes, query.From, query.To, "period_start").
+			Order("agent_id, scope_type, scope_id, period_start").
+			Find(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return monthlyTrafficBucketRows(rows)
+	default:
+		return nil, fmt.Errorf("unsupported traffic granularity %q", query.Granularity)
+	}
+}
+
 func (s *GormStore) SaveTrafficEvent(ctx context.Context, row AgentTrafficEventRow) error {
 	row.AgentID = s.resolveAgentID(row.AgentID)
 	if strings.TrimSpace(row.EventType) == "" {
@@ -739,6 +836,63 @@ func applyTrafficBreakdownQuery(tx *gorm.DB, query TrafficTrendQuery, timeColumn
 		tx = tx.Where(timeColumn+" < ?", formatTrafficTime(query.To.UTC()))
 	}
 	return tx
+}
+
+func applyTrafficAggregateBreakdownQuery(tx *gorm.DB, agentIDs, scopeTypes []string, from, to time.Time, timeColumn string) *gorm.DB {
+	tx = tx.
+		Select("agent_id, scope_type, scope_id, SUM(rx_bytes) AS rx_bytes, SUM(tx_bytes) AS tx_bytes").
+		Where("agent_id IN ? AND scope_type IN ?", agentIDs, scopeTypes)
+	if !from.IsZero() {
+		tx = tx.Where(timeColumn+" >= ?", formatTrafficTime(from.UTC()))
+	}
+	if !to.IsZero() {
+		tx = tx.Where(timeColumn+" < ?", formatTrafficTime(to.UTC()))
+	}
+	return tx
+}
+
+func applyTrafficTrendByScopeTypesQuery(tx *gorm.DB, agentIDs, scopeTypes []string, from, to time.Time, timeColumn string) *gorm.DB {
+	tx = tx.Where("agent_id IN ? AND scope_type IN ?", agentIDs, scopeTypes)
+	if !from.IsZero() {
+		tx = tx.Where(timeColumn+" >= ?", formatTrafficTime(from.UTC()))
+	}
+	if !to.IsZero() {
+		tx = tx.Where(timeColumn+" < ?", formatTrafficTime(to.UTC()))
+	}
+	return tx
+}
+
+func normalizeTrafficAgentIDs(s *GormStore, values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		agentID := s.resolveAgentID(value)
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func normalizeTrafficScopeTypes(values []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		scopeType, err := normalizeTrafficScopeType(value)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[scopeType]; ok {
+			continue
+		}
+		seen[scopeType] = struct{}{}
+		out = append(out, scopeType)
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 type trafficBreakdownRow struct {
