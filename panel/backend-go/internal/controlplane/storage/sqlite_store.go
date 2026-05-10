@@ -932,20 +932,12 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 		if !row.Enabled {
 			continue
 		}
-		backends := parseHTTPBackends(row.BackendsJSON)
-		backendURL := strings.TrimSpace(row.BackendURL)
-		if len(backends) == 0 && backendURL != "" {
-			backends = []HTTPBackend{{URL: backendURL}}
-		}
-		if backendURL == "" && len(backends) > 0 {
-			backendURL = backends[0].URL
-		}
 		rules = append(rules, HTTPRule{
 			ID:               row.ID,
 			AgentID:          row.AgentID,
 			FrontendURL:      row.FrontendURL,
-			BackendURL:       backendURL,
-			Backends:         backends,
+			BackendURL:       strings.TrimSpace(row.BackendURL),
+			Backends:         parseHTTPBackends(row.BackendsJSON),
 			LoadBalancing:    parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			ProxyRedirect:    row.ProxyRedirect,
 			PassProxyHeaders: row.PassProxyHeaders,
@@ -966,16 +958,6 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 		if !row.Enabled {
 			continue
 		}
-		backends := parseL4Backends(row.BackendsJSON)
-		upstreamHost := strings.TrimSpace(row.UpstreamHost)
-		upstreamPort := row.UpstreamPort
-		if len(backends) == 0 && upstreamHost != "" && upstreamPort > 0 {
-			backends = []L4Backend{{Host: upstreamHost, Port: upstreamPort}}
-		}
-		if len(backends) > 0 {
-			upstreamHost = backends[0].Host
-			upstreamPort = backends[0].Port
-		}
 		rules = append(rules, L4Rule{
 			ID:              row.ID,
 			AgentID:         row.AgentID,
@@ -983,9 +965,9 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			Protocol:        defaultString(row.Protocol, "tcp"),
 			ListenHost:      defaultString(row.ListenHost, "0.0.0.0"),
 			ListenPort:      row.ListenPort,
-			UpstreamHost:    upstreamHost,
-			UpstreamPort:    upstreamPort,
-			Backends:        backends,
+			UpstreamHost:    strings.TrimSpace(row.UpstreamHost),
+			UpstreamPort:    row.UpstreamPort,
+			Backends:        parseL4Backends(row.BackendsJSON),
 			LoadBalancing:   parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			Tuning:          parseL4Tuning(row.TuningJSON),
 			RelayChain:      parseIntSlice(row.RelayChainJSON),

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"gorm.io/gorm"
@@ -229,6 +230,10 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 
+	if err := migrateLegacyRuleCanonicalFields(ctx, db); err != nil {
+		return err
+	}
+
 	if err := tx.Where("id <> ?", 1).Delete(&LocalAgentStateRow{}).Error; err != nil {
 		return err
 	}
@@ -238,4 +243,127 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 
 func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 	return BootstrapSchema(ctx, db, SchemaOptionsForDriver("sqlite", true))
+}
+
+type legacyHTTPRuleMigrationRow struct {
+	ID              int    `gorm:"column:id"`
+	AgentID         string `gorm:"column:agent_id"`
+	BackendURL      string `gorm:"column:backend_url"`
+	BackendsJSON    string `gorm:"column:backends"`
+	RelayChainJSON  string `gorm:"column:relay_chain"`
+	RelayLayersJSON string `gorm:"column:relay_layers"`
+}
+
+type legacyL4RuleMigrationRow struct {
+	ID              int    `gorm:"column:id"`
+	AgentID         string `gorm:"column:agent_id"`
+	UpstreamHost    string `gorm:"column:upstream_host"`
+	UpstreamPort    int    `gorm:"column:upstream_port"`
+	BackendsJSON    string `gorm:"column:backends"`
+	RelayChainJSON  string `gorm:"column:relay_chain"`
+	RelayLayersJSON string `gorm:"column:relay_layers"`
+}
+
+func migrateLegacyRuleCanonicalFields(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if err := migrateLegacyHTTPRuleCanonicalFields(tx); err != nil {
+		return err
+	}
+	if err := migrateLegacyL4RuleCanonicalFields(tx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateLegacyHTTPRuleCanonicalFields(tx *gorm.DB) error {
+	var rows []legacyHTTPRuleMigrationRow
+	if err := tx.Model(&HTTPRuleRow{}).
+		Select("id", "agent_id", "backend_url", "backends", "relay_chain", "relay_layers").
+		Find(&rows).Error; err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		updates := map[string]any{}
+		if len(parseHTTPBackends(row.BackendsJSON)) == 0 {
+			if backendURL := strings.TrimSpace(row.BackendURL); backendURL != "" {
+				backendsJSON, err := json.Marshal([]HTTPBackend{{URL: backendURL}})
+				if err != nil {
+					return err
+				}
+				updates["backends"] = string(backendsJSON)
+			}
+		}
+		if len(parseIntLayers(row.RelayLayersJSON)) == 0 {
+			relayChain := parseIntSlice(row.RelayChainJSON)
+			if len(relayChain) > 0 {
+				relayLayers := make([][]int, 0, len(relayChain))
+				for _, id := range relayChain {
+					relayLayers = append(relayLayers, []int{id})
+				}
+				relayLayersJSON, err := json.Marshal(relayLayers)
+				if err != nil {
+					return err
+				}
+				updates["relay_layers"] = string(relayLayersJSON)
+			}
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		if err := tx.Model(&HTTPRuleRow{}).
+			Where("id = ? AND agent_id = ?", row.ID, row.AgentID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
+	var rows []legacyL4RuleMigrationRow
+	if err := tx.Model(&L4RuleRow{}).
+		Select("id", "agent_id", "upstream_host", "upstream_port", "backends", "relay_chain", "relay_layers").
+		Find(&rows).Error; err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		updates := map[string]any{}
+		if len(parseL4Backends(row.BackendsJSON)) == 0 {
+			host := strings.TrimSpace(row.UpstreamHost)
+			if host != "" && row.UpstreamPort >= 1 && row.UpstreamPort <= 65535 {
+				backendsJSON, err := json.Marshal([]L4Backend{{Host: host, Port: row.UpstreamPort}})
+				if err != nil {
+					return err
+				}
+				updates["backends"] = string(backendsJSON)
+			}
+		}
+		if len(parseIntLayers(row.RelayLayersJSON)) == 0 {
+			relayChain := parseIntSlice(row.RelayChainJSON)
+			if len(relayChain) > 0 {
+				relayLayers := make([][]int, 0, len(relayChain))
+				for _, id := range relayChain {
+					relayLayers = append(relayLayers, []int{id})
+				}
+				relayLayersJSON, err := json.Marshal(relayLayers)
+				if err != nil {
+					return err
+				}
+				updates["relay_layers"] = string(relayLayersJSON)
+			}
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		if err := tx.Model(&L4RuleRow{}).
+			Where("id = ? AND agent_id = ?", row.ID, row.AgentID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

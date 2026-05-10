@@ -253,6 +253,106 @@ func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *test
 	}
 }
 
+func TestBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('legacy-http-agent', 'legacy-http-agent')`).Error; err != nil {
+		t.Fatalf("seed legacy agent error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO rules (
+		id, agent_id, frontend_url, backend_url, backends, load_balancing, enabled, tags, proxy_redirect,
+		pass_proxy_headers, user_agent, custom_headers, relay_chain, relay_layers, relay_obfs, revision
+	) VALUES (71, 'legacy-http-agent', 'https://legacy-http.example.com', 'http://127.0.0.1:8096', '[]', NULL, 1, '[]', 0,
+		1, '', '[]', '[11,22,33]', '[]', 0, 1)`).Error; err != nil {
+		t.Fatalf("seed legacy http rule error = %v", err)
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(dataRoot, "legacy-http-agent")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	rules, err := store.ListHTTPRules(t.Context(), "legacy-http-agent")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule, got %+v", rules)
+	}
+	if rules[0].BackendsJSON != `[{"url":"http://127.0.0.1:8096"}]` {
+		t.Fatalf("unexpected migrated HTTP backends: %+v", rules[0])
+	}
+	if rules[0].RelayLayersJSON != `[[11],[22],[33]]` {
+		t.Fatalf("unexpected migrated HTTP relay layers: %+v", rules[0])
+	}
+}
+
+func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('legacy-l4-agent', 'legacy-l4-agent')`).Error; err != nil {
+		t.Fatalf("seed legacy agent error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO l4_rules (
+		id, agent_id, name, protocol, listen_host, listen_port, upstream_host, upstream_port, backends,
+		load_balancing, tuning, relay_chain, relay_layers, relay_obfs, enabled, tags, revision
+	) VALUES (72, 'legacy-l4-agent', 'legacy-l4', 'tcp', '0.0.0.0', 25565, '127.0.0.1', 25566, '[]',
+		NULL, NULL, '[44,55,66]', '[]', 0, 1, '[]', 1)`).Error; err != nil {
+		t.Fatalf("seed legacy l4 rule error = %v", err)
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(dataRoot, "legacy-l4-agent")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	rules, err := store.ListL4Rules(t.Context(), "legacy-l4-agent")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule, got %+v", rules)
+	}
+	if rules[0].BackendsJSON != `[{"host":"127.0.0.1","port":25566}]` {
+		t.Fatalf("unexpected migrated L4 backends: %+v", rules[0])
+	}
+	if rules[0].RelayLayersJSON != `[[44],[55],[66]]` {
+		t.Fatalf("unexpected migrated L4 relay layers: %+v", rules[0])
+	}
+}
+
 func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
