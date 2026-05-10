@@ -433,9 +433,15 @@ func (s *trafficService) Trend(ctx context.Context, query TrafficTrendQuery) ([]
 		return nil, fmt.Errorf("%w: invalid to", ErrInvalidArgument)
 	}
 	granularity := defaultString(query.Granularity, "hour")
-	from = s.trendFilterTimeInPanelTimezone(granularity, from, false)
-	to = s.trendFilterTimeInPanelTimezone(granularity, to, true)
-	from, to = s.defaultTrafficTrendWindow(granularity, from, to)
+	if normalizeTrafficGranularity(granularity) == "month" {
+		from = s.cycleMonthFilterTimeInPanelTimezone(from, policy.CycleStartDay, false)
+		to = s.cycleMonthFilterTimeInPanelTimezone(to, policy.CycleStartDay, true)
+		from, to = s.defaultTrafficTrendWindowForPolicy(granularity, policy, from, to)
+	} else {
+		from = s.trendFilterTimeInPanelTimezone(granularity, from, false)
+		to = s.trendFilterTimeInPanelTimezone(granularity, to, true)
+		from, to = s.defaultTrafficTrendWindow(granularity, from, to)
+	}
 	rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     query.AgentID,
 		ScopeType:   defaultString(query.ScopeType, s.defaultTotalScopeType(ctx, query.AgentID, granularity, from, to)),
@@ -483,6 +489,25 @@ func (s *trafficService) defaultTrafficTrendWindow(granularity string, from, to 
 	return from, to
 }
 
+func (s *trafficService) defaultTrafficTrendWindowForPolicy(granularity string, policy TrafficPolicy, from, to time.Time) (time.Time, time.Time) {
+	if normalizeTrafficGranularity(granularity) != "month" {
+		return s.defaultTrafficTrendWindow(granularity, from, to)
+	}
+	if to.IsZero() {
+		now := s.now()
+		if s.tz != nil {
+			now = now.In(s.tz)
+		}
+		_, to = monthlyCycleWindow(now, policy.CycleStartDay)
+	}
+	to = cycleMonthBoundary(to, policy.CycleStartDay, s.tz, true)
+	if from.IsZero() {
+		from = to.In(to.Location()).AddDate(0, -6, 0)
+	}
+	from = cycleMonthBoundary(from, policy.CycleStartDay, s.tz, false)
+	return from, to
+}
+
 func (s *trafficService) defaultTrafficTrendEnd(granularity string) time.Time {
 	now := s.now()
 	if s.tz != nil {
@@ -519,6 +544,34 @@ func (s *trafficService) trendFilterTimeInPanelTimezone(granularity string, valu
 	default:
 		return value
 	}
+}
+
+func (s *trafficService) cycleMonthFilterTimeInPanelTimezone(value time.Time, cycleStartDay int, exclusiveEnd bool) time.Time {
+	if value.IsZero() || s.tz == nil {
+		return value
+	}
+	year, month, day := value.Date()
+	local := time.Date(year, month, day, 0, 0, 0, 0, s.tz)
+	start, end := monthlyCycleWindow(local, cycleStartDay)
+	if exclusiveEnd && (!isTrafficDateBoundary(value) || !local.Equal(start)) {
+		return end
+	}
+	return start
+}
+
+func cycleMonthBoundary(value time.Time, cycleStartDay int, loc *time.Location, exclusiveEnd bool) time.Time {
+	if value.IsZero() {
+		return value
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := value.In(loc)
+	start, end := monthlyCycleWindow(local, cycleStartDay)
+	if exclusiveEnd && !local.Equal(start) {
+		return end
+	}
+	return start
 }
 
 func isTrafficDateBoundary(value time.Time) bool {
@@ -642,7 +695,7 @@ func (s *trafficService) Calibrate(ctx context.Context, agentID string, request 
 	adjust := int64(minUint64ToInt64(request.UsedBytes))
 	var deletedBuckets int64
 	if request.UsedBytes == 0 {
-		deletedBuckets, err = s.store.DeleteTrafficBucketsByAgentInWindow(ctx, agentID, start.UTC(), end.UTC())
+		deletedBuckets, err = s.store.DeleteTrafficBucketsByAgentInWindow(ctx, agentID, start, end)
 		if err != nil {
 			return TrafficSummary{}, err
 		}
@@ -936,6 +989,9 @@ func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []
 }
 
 func (s *trafficService) aggregateTotalTrend(ctx context.Context, trendStore trafficAggregateTrendStore, agentIDs []string, granularity string) ([]TrafficTrendPoint, error) {
+	if normalizeTrafficGranularity(granularity) == "month" {
+		return s.aggregateTotalTrendByAgent(ctx, agentIDs, granularity)
+	}
 	from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
 	rows, err := trendStore.ListTrafficTrendByScopeTypes(ctx, storage.TrafficBreakdownQuery{
 		AgentIDs:    agentIDs,
@@ -984,6 +1040,50 @@ func (s *trafficService) aggregateTotalTrend(ctx context.Context, trendStore tra
 				RXBytes:          row.RXBytes,
 				TXBytes:          row.TXBytes,
 				AccountedBytes:   accountedBytes(policy.Direction, row.RXBytes, row.TXBytes),
+			}
+		}
+	}
+	result := make([]TrafficTrendPoint, 0, len(merged))
+	for _, p := range merged {
+		result = append(result, *p)
+	}
+	slices.SortFunc(result, func(a, b TrafficTrendPoint) int {
+		if a.BucketStart < b.BucketStart {
+			return -1
+		}
+		if a.BucketStart > b.BucketStart {
+			return 1
+		}
+		return 0
+	})
+	return result, nil
+}
+
+func (s *trafficService) aggregateTotalTrendByAgent(ctx context.Context, agentIDs []string, granularity string) ([]TrafficTrendPoint, error) {
+	type bucketKey struct{ bucketStart string }
+	merged := make(map[bucketKey]*TrafficTrendPoint)
+	for _, agentID := range agentIDs {
+		points, err := s.Trend(ctx, TrafficTrendQuery{
+			AgentID:     agentID,
+			Granularity: granularity,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range points {
+			key := bucketKey{p.BucketStart}
+			if existing, ok := merged[key]; ok {
+				existing.RXBytes += p.RXBytes
+				existing.TXBytes += p.TXBytes
+				existing.AccountedBytes += p.AccountedBytes
+				continue
+			}
+			merged[key] = &TrafficTrendPoint{
+				BucketStart:      p.BucketStart,
+				BucketLocalStart: p.BucketLocalStart,
+				RXBytes:          p.RXBytes,
+				TXBytes:          p.TXBytes,
+				AccountedBytes:   p.AccountedBytes,
 			}
 		}
 	}
@@ -1072,52 +1172,54 @@ func (s *trafficService) aggregateTopRules(ctx context.Context, overviewResult T
 	}
 
 	if aggregateStore, ok := s.store.(trafficAggregateBreakdownStore); ok {
-		from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
 		agentIDs := make([]string, 0, len(overviewResult.Summaries))
 		for agentID := range overviewResult.Summaries {
 			agentIDs = append(agentIDs, agentID)
 		}
-		rows, err := aggregateStore.ListTrafficBreakdownByScopeTypes(ctx, storage.TrafficBreakdownQuery{
-			AgentIDs:    agentIDs,
-			ScopeTypes:  []string{"http_rule", "l4_rule", "relay_listener"},
-			Granularity: granularity,
-			From:        from,
-			To:          to,
-		})
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range rows {
-			summary, ok := overviewResult.Summaries[row.AgentID]
+		if normalizeTrafficGranularity(granularity) == "month" {
+			breakdownStore, ok := s.store.(trafficBreakdownStore)
 			if !ok {
-				continue
-			}
-			addRule(row.AgentID, TrafficSummaryBreakdown{
-				ScopeType:      row.ScopeType,
-				ScopeID:        row.ScopeID,
-				RXBytes:        row.RXBytes,
-				TXBytes:        row.TXBytes,
-				AccountedBytes: accountedBytes(summary.Policy.Direction, row.RXBytes, row.TXBytes),
-			})
-		}
-	} else if breakdownStore, ok := s.store.(trafficBreakdownStore); ok {
-		from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
-		for agentID, summary := range overviewResult.Summaries {
-			for _, scopeType := range []string{"http_rule", "l4_rule", "relay_listener"} {
-				rows, err := breakdownStore.ListTrafficBreakdown(ctx, storage.TrafficTrendQuery{
-					AgentID:     agentID,
-					ScopeType:   scopeType,
-					Granularity: granularity,
-					From:        from,
-					To:          to,
-				})
-				if err != nil {
+				for agentID, summary := range overviewResult.Summaries {
+					for _, list := range [][]TrafficSummaryBreakdown{summary.HTTPRules, summary.L4Rules, summary.RelayListeners} {
+						for _, row := range list {
+							addRule(agentID, row)
+						}
+					}
+				}
+			} else {
+				if err := s.addAggregateTopRulesFromBreakdown(ctx, breakdownStore, overviewResult, granularity, addRule); err != nil {
 					return nil, err
 				}
-				for _, row := range summarizeTrafficBreakdownRows(summary.Policy.Direction, rows) {
-					addRule(agentID, row)
-				}
 			}
+		} else {
+			from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
+			rows, err := aggregateStore.ListTrafficBreakdownByScopeTypes(ctx, storage.TrafficBreakdownQuery{
+				AgentIDs:    agentIDs,
+				ScopeTypes:  []string{"http_rule", "l4_rule", "relay_listener"},
+				Granularity: granularity,
+				From:        from,
+				To:          to,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				summary, ok := overviewResult.Summaries[row.AgentID]
+				if !ok {
+					continue
+				}
+				addRule(row.AgentID, TrafficSummaryBreakdown{
+					ScopeType:      row.ScopeType,
+					ScopeID:        row.ScopeID,
+					RXBytes:        row.RXBytes,
+					TXBytes:        row.TXBytes,
+					AccountedBytes: accountedBytes(summary.Policy.Direction, row.RXBytes, row.TXBytes),
+				})
+			}
+		}
+	} else if breakdownStore, ok := s.store.(trafficBreakdownStore); ok {
+		if err := s.addAggregateTopRulesFromBreakdown(ctx, breakdownStore, overviewResult, granularity, addRule); err != nil {
+			return nil, err
 		}
 	} else {
 		for agentID, summary := range overviewResult.Summaries {
@@ -1148,14 +1250,36 @@ func (s *trafficService) aggregateTopRules(ctx context.Context, overviewResult T
 	return topRules, nil
 }
 
+func (s *trafficService) addAggregateTopRulesFromBreakdown(ctx context.Context, breakdownStore trafficBreakdownStore, overviewResult TrafficOverviewResult, granularity string, addRule func(string, TrafficSummaryBreakdown)) error {
+	for agentID, summary := range overviewResult.Summaries {
+		from, to := s.defaultTrafficTrendWindowForPolicy(granularity, summary.Policy, time.Time{}, time.Time{})
+		for _, scopeType := range []string{"http_rule", "l4_rule", "relay_listener"} {
+			rows, err := breakdownStore.ListTrafficBreakdown(ctx, storage.TrafficTrendQuery{
+				AgentID:     agentID,
+				ScopeType:   scopeType,
+				Granularity: granularity,
+				From:        from,
+				To:          to,
+			})
+			if err != nil {
+				return err
+			}
+			for _, row := range summarizeTrafficBreakdownRows(summary.Policy.Direction, rows) {
+				addRule(agentID, row)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *trafficService) aggregateTopNodes(ctx context.Context, overviewResult TrafficOverviewResult, granularity string) ([]TrafficAggregateNode, error) {
-	from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
 	topNodes := make([]TrafficAggregateNode, 0, len(overviewResult.Agents))
 	for _, agent := range overviewResult.Agents {
 		summary, ok := overviewResult.Summaries[agent.AgentID]
 		if !ok {
 			continue
 		}
+		from, to := s.defaultTrafficTrendWindowForPolicy(granularity, summary.Policy, time.Time{}, time.Time{})
 		stats, err := s.totalStatsForWindow(ctx, agent.AgentID, summary.Policy, granularity, from, to)
 		if err != nil {
 			return nil, err
