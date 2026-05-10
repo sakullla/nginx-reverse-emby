@@ -578,6 +578,80 @@ func (s *GormStore) DeleteTrafficBefore(ctx context.Context, agentID string, cut
 	return deleted, err
 }
 
+func (s *GormStore) DeleteTrafficByScope(ctx context.Context, agentID, scopeType, scopeID string) (int64, error) {
+	agentID = s.resolveAgentID(agentID)
+	scopeType, err := normalizeTrafficScopeType(scopeType)
+	if err != nil {
+		return 0, err
+	}
+	scopeID = strings.TrimSpace(scopeID)
+
+	var deleted int64
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		count, err := deleteTrafficRows(tx, trafficScopedDataModels(), "agent_id = ? AND scope_type = ? AND scope_id = ?", agentID, scopeType, scopeID)
+		if err != nil {
+			return err
+		}
+		deleted = count
+		return nil
+	})
+	return deleted, err
+}
+
+func (s *GormStore) DeleteTrafficByAgent(ctx context.Context, agentID string) (int64, error) {
+	agentID = s.resolveAgentID(agentID)
+	var deleted int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		count, err := s.deleteTrafficByAgentTx(tx, agentID)
+		if err != nil {
+			return err
+		}
+		deleted = count
+		return nil
+	})
+	return deleted, err
+}
+
+func (s *GormStore) deleteTrafficByAgentTx(tx *gorm.DB, agentID string) (int64, error) {
+	return deleteTrafficRows(tx, trafficAgentDataModels(), "agent_id = ?", agentID)
+}
+
+func trafficScopedDataModels() []any {
+	return []any{
+		&AgentTrafficRawCursorRow{},
+		&AgentTrafficHourlyBucketRow{},
+		&AgentTrafficDailySummaryRow{},
+		&AgentTrafficMonthlySummaryRow{},
+	}
+}
+
+func trafficAgentDataModels() []any {
+	return []any{
+		&AgentTrafficPolicyRow{},
+		&AgentTrafficBaselineRow{},
+		&AgentTrafficRawCursorRow{},
+		&AgentTrafficHourlyBucketRow{},
+		&AgentTrafficDailySummaryRow{},
+		&AgentTrafficMonthlySummaryRow{},
+		&AgentTrafficEventRow{},
+	}
+}
+
+func deleteTrafficRows(tx *gorm.DB, models []any, query string, args ...any) (int64, error) {
+	var deleted int64
+	for _, model := range models {
+		if !tx.Migrator().HasTable(model) {
+			continue
+		}
+		result := tx.Where(query, args...).Delete(model)
+		if result.Error != nil {
+			return 0, result.Error
+		}
+		deleted += result.RowsAffected
+	}
+	return deleted, nil
+}
+
 func incrementTrafficHourlyBucket(tx *gorm.DB, row AgentTrafficHourlyBucketRow) error {
 	return tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{

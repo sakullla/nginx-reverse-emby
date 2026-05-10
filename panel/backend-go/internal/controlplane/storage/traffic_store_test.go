@@ -885,6 +885,188 @@ func TestDeleteTrafficBeforeEmptyAgentIDUsesLocalAgent(t *testing.T) {
 	}
 }
 
+func TestDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	samples := []struct {
+		agentID   string
+		scopeType string
+		scopeID   string
+	}{
+		{agentID: "edge-1", scopeType: "http_rule", scopeID: "11"},
+		{agentID: "edge-1", scopeType: "http_rule", scopeID: "12"},
+		{agentID: "edge-2", scopeType: "http_rule", scopeID: "11"},
+	}
+	for _, sample := range samples {
+		if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{
+			AgentID:    sample.agentID,
+			ScopeType:  sample.scopeType,
+			ScopeID:    sample.scopeID,
+			RXBytes:    100,
+			TXBytes:    200,
+			ObservedAt: bucket.Format(time.RFC3339),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+			AgentID:     sample.agentID,
+			ScopeType:   sample.scopeType,
+			ScopeID:     sample.scopeID,
+			BucketStart: bucket,
+			RXBytes:     100,
+			TXBytes:     200,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, err := store.DeleteTrafficByScope(ctx, "edge-1", "http_rule", "11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 4 {
+		t.Fatalf("deleted = %d, want cursor plus hourly/daily/monthly rows", deleted)
+	}
+
+	assertTrafficScopeRows(t, store, "edge-1", "http_rule", "11", 0)
+	assertTrafficScopeRows(t, store, "edge-1", "http_rule", "12", 4)
+	assertTrafficScopeRows(t, store, "edge-2", "http_rule", "11", 4)
+}
+
+func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	for _, agentID := range []string{"edge-1", "edge-2"} {
+		if err := store.SaveAgent(ctx, AgentRow{ID: agentID}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
+			AgentID:              agentID,
+			Direction:            "both",
+			CycleStartDay:        1,
+			HourlyRetentionDays:  180,
+			DailyRetentionMonths: 24,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
+			AgentID:    agentID,
+			CycleStart: bucket.Format(time.RFC3339),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{
+			AgentID:    agentID,
+			ScopeType:  "http_rule",
+			ScopeID:    "11",
+			RXBytes:    100,
+			TXBytes:    200,
+			ObservedAt: bucket.Format(time.RFC3339),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+			AgentID:     agentID,
+			ScopeType:   "http_rule",
+			ScopeID:     "11",
+			BucketStart: bucket,
+			RXBytes:     100,
+			TXBytes:     200,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveTrafficEvent(ctx, AgentTrafficEventRow{
+			AgentID:   agentID,
+			EventType: "cleanup",
+			Message:   "traffic cleanup",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.DeleteAgent(ctx, "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetTrafficCursor(ctx, "edge-1", "http_rule", "11"); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("expected deleted traffic cursor to be removed")
+	}
+
+	assertTrafficAgentRows(t, store, "edge-1", 0)
+	assertTrafficAgentRows(t, store, "edge-2", 1)
+}
+
+func TestDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
+	store := newTrafficTestStore(t, false)
+	ctx := context.Background()
+
+	deleted, err := store.DeleteTrafficByScope(ctx, "edge-1", "http_rule", "11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("scope deleted = %d, want 0", deleted)
+	}
+
+	deleted, err = store.DeleteTrafficByAgent(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("agent deleted = %d, want 0", deleted)
+	}
+}
+
+func assertTrafficScopeRows(t *testing.T, store *GormStore, agentID, scopeType, scopeID string, want int64) {
+	t.Helper()
+
+	models := []any{
+		&AgentTrafficRawCursorRow{},
+		&AgentTrafficHourlyBucketRow{},
+		&AgentTrafficDailySummaryRow{},
+		&AgentTrafficMonthlySummaryRow{},
+	}
+	for _, model := range models {
+		var got int64
+		if err := store.db.Model(model).
+			Where("agent_id = ? AND scope_type = ? AND scope_id = ?", agentID, scopeType, scopeID).
+			Count(&got).Error; err != nil {
+			t.Fatal(err)
+		}
+		if got != want/4 {
+			t.Fatalf("%T rows for %s/%s/%s = %d, want %d", model, agentID, scopeType, scopeID, got, want/4)
+		}
+	}
+}
+
+func assertTrafficAgentRows(t *testing.T, store *GormStore, agentID string, wantEach int64) {
+	t.Helper()
+
+	models := []any{
+		&AgentTrafficPolicyRow{},
+		&AgentTrafficBaselineRow{},
+		&AgentTrafficRawCursorRow{},
+		&AgentTrafficHourlyBucketRow{},
+		&AgentTrafficDailySummaryRow{},
+		&AgentTrafficMonthlySummaryRow{},
+		&AgentTrafficEventRow{},
+	}
+	for _, model := range models {
+		var got int64
+		if err := store.db.Model(model).Where("agent_id = ?", agentID).Count(&got).Error; err != nil {
+			t.Fatal(err)
+		}
+		if got != wantEach {
+			t.Fatalf("%T rows for %s = %d, want %d", model, agentID, got, wantEach)
+		}
+	}
+}
+
 func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()

@@ -24,6 +24,13 @@ type fakeRuleStore struct {
 	materialByDomain  map[string]bool
 	cleanupCallCount  int
 	getHTTPRuleCalls  int
+	trafficDeletes    []trafficScopeDeleteCall
+}
+
+type trafficScopeDeleteCall struct {
+	agentID   string
+	scopeType string
+	scopeID   string
 }
 
 func (f *fakeRuleStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -117,6 +124,15 @@ func (f *fakeRuleStore) CleanupManagedCertificateMaterial(_ context.Context, pre
 		delete(f.materialByDomain, domain)
 	}
 	return nil
+}
+
+func (f *fakeRuleStore) DeleteTrafficByScope(_ context.Context, agentID, scopeType, scopeID string) (int64, error) {
+	f.trafficDeletes = append(f.trafficDeletes, trafficScopeDeleteCall{
+		agentID:   agentID,
+		scopeType: scopeType,
+		scopeID:   scopeID,
+	})
+	return 0, nil
 }
 
 func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
@@ -465,6 +481,32 @@ func TestRuleServiceDeletePersistsRemoval(t *testing.T) {
 	}
 	if store.rulesByAgent["local"][0].ID != 2 {
 		t.Fatalf("remaining rule = %+v", store.rulesByAgent["local"][0])
+	}
+}
+
+func TestRuleServiceDeleteCascadesHTTPRuleTraffic(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:          11,
+				AgentID:     "local",
+				FrontendURL: "https://one.example.com",
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	if _, err := svc.Delete(context.Background(), "local", 11); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(store.trafficDeletes) != 1 {
+		t.Fatalf("traffic deletes = %+v, want one scope delete", store.trafficDeletes)
+	}
+	if got := store.trafficDeletes[0]; got != (trafficScopeDeleteCall{agentID: "local", scopeType: "http_rule", scopeID: "11"}) {
+		t.Fatalf("traffic delete = %+v", got)
 	}
 }
 
