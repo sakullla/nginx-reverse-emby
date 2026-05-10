@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
@@ -256,7 +257,7 @@ func validateRelayChain(rule model.HTTPRule, relayListeners []model.RelayListene
 		return nil
 	}
 	if provider == nil {
-		return fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
+		return fmt.Errorf("http rule %q: relay_layers requires relay tls material provider", rule.FrontendURL)
 	}
 	_, err := resolveRelayHops(rule, relayListeners)
 	return err
@@ -280,14 +281,28 @@ func runtimeRuleSpec(rule model.HTTPRule) (runtimeRuleBinding, error) {
 	if normalizeHost(frontend.Host) == "" {
 		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: frontend_url must include a host", rule.FrontendURL)
 	}
-	backend, err := url.Parse(rule.BackendURL)
-	if err != nil || backend.Scheme == "" || backend.Host == "" {
-		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: backend_url must be a valid http URL", rule.FrontendURL)
+	if len(rule.Backends) == 0 {
+		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: backends[].url is required", rule.FrontendURL)
 	}
-	switch backend.Scheme {
-	case "http", "https":
-	default:
-		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: backend_url must use http or https", rule.FrontendURL)
+	validBackends := 0
+	for _, entry := range rule.Backends {
+		rawURL := strings.TrimSpace(entry.URL)
+		if rawURL == "" {
+			continue
+		}
+		backend, err := url.Parse(rawURL)
+		if err != nil || backend.Scheme == "" || backend.Host == "" {
+			return runtimeRuleBinding{}, fmt.Errorf("http rule %q: backends[].url must be a valid http URL", rule.FrontendURL)
+		}
+		switch backend.Scheme {
+		case "http", "https":
+		default:
+			return runtimeRuleBinding{}, fmt.Errorf("http rule %q: backends[].url must use http or https", rule.FrontendURL)
+		}
+		validBackends++
+	}
+	if validBackends == 0 {
+		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: backends[].url is required", rule.FrontendURL)
 	}
 
 	switch frontend.Scheme {

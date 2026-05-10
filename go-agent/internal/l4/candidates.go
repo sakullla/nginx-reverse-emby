@@ -27,12 +27,6 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 	}
 
 	rawBackends := rule.Backends
-	if len(rawBackends) == 0 && rule.UpstreamHost != "" && rule.UpstreamPort > 0 {
-		rawBackends = []model.L4Backend{{
-			Host: rule.UpstreamHost,
-			Port: rule.UpstreamPort,
-		}}
-	}
 	if len(rawBackends) == 0 {
 		return nil, fmt.Errorf("at least one backend is required for %s:%d", rule.ListenHost, rule.ListenPort)
 	}
@@ -62,7 +56,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 		if ruleUsesRelay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
-			bk := backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, dialAddress)
+			bk := backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, dialAddress)
 			if cache.IsInBackoff(bk) {
 				continue
 			}

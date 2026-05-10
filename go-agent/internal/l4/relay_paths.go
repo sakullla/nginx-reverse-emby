@@ -118,20 +118,15 @@ func (s *Server) resolveRelayHops(rule model.L4Rule) ([]relay.Hop, error) {
 
 func (s *Server) resolveRelayPaths(rule model.L4Rule) ([]relayplan.Path, error) {
 	label := fmt.Sprintf("l4 rule %s:%d", rule.ListenHost, rule.ListenPort)
-	return relayroute.ResolvePathsFromMapWithLabel(label, rule.RelayChain, rule.RelayLayers, s.relayListenersByID, "")
+	return relayroute.ResolvePathsFromMapWithLabel(label, nil, rule.RelayLayers, s.relayListenersByID, "")
 }
 
 func ruleUsesRelay(rule model.L4Rule) bool {
-	return relayroute.UsesRelay(rule.RelayChain, rule.RelayLayers)
+	return relayroute.UsesRelay(nil, rule.RelayLayers)
 }
 
 func RelayInputsChanged(rules []model.L4Rule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {
 	for _, rule := range rules {
-		for _, listenerID := range rule.RelayChain {
-			if relayListenerChangedByID(listenerID, previousRelayListeners, nextRelayListeners) {
-				return true
-			}
-		}
 		for _, layer := range rule.RelayLayers {
 			for _, listenerID := range layer {
 				if relayListenerChangedByID(listenerID, previousRelayListeners, nextRelayListeners) {

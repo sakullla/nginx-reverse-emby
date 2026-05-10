@@ -213,7 +213,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
 			backoffAddr := actualDialAddress
 			if ruleUsesRelay(e.rule) {
-				backoffAddr = backends.RelayBackoffKeyForLayers(e.rule.RelayChain, e.rule.RelayLayers, actualDialAddress)
+				backoffAddr = backends.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, actualDialAddress)
 			}
 			if e.backendCache.IsInBackoff(backoffAddr) {
 				break

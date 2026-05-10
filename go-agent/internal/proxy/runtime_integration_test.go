@@ -142,7 +142,6 @@ func startHTTPRuntimeWithRetry(t *testing.T, backendOneURL, backendTwoURL string
 		frontendPort := pickFreePort(t)
 		runtime, err := Start(context.Background(), []model.HTTPRule{{
 			FrontendURL: fmt.Sprintf("http://Panel.Example.Test:%d", frontendPort),
-			BackendURL:  backendOneURL,
 			Backends: []model.HTTPBackend{
 				{URL: backendOneURL},
 				{URL: backendTwoURL},

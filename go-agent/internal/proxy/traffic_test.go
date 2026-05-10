@@ -19,7 +19,7 @@ func TestHTTPReturns429WhenTrafficBlocked(t *testing.T) {
 	server := NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
 		ID:          77,
 		FrontendURL: "http://frontend.example",
-		BackendURL:  "http://backend.example",
+		Backends:    []model.HTTPBackend{{URL: "http://backend.example"}},
 		Enabled:     true,
 	}}})
 	server.SetTrafficBlockState(TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"})
@@ -142,7 +142,7 @@ func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
 	server := NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
 		ID:          77,
 		FrontendURL: "http://frontend.example",
-		BackendURL:  backend.URL,
+		Backends:    []model.HTTPBackend{{URL: backend.URL}},
 		Enabled:     true,
 	}}})
 	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/upload", bytes.NewBufferString("request-body"))

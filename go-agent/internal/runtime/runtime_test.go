@@ -155,7 +155,6 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 		Revision:       1,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
-			BackendURL:  "http://127.0.0.1:8096",
 			Backends: []model.HTTPBackend{
 				{URL: "http://10.0.0.11:8096"},
 				{URL: "http://10.0.0.12:8096"},
@@ -170,11 +169,9 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 			Revision: 1,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
 			Backends: []model.L4Backend{
 				{Host: "10.0.0.21", Port: 9001},
 				{Host: "10.0.0.22", Port: 9002},
@@ -188,8 +185,8 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 					Send:   true,
 				},
 			},
-			RelayChain: []int{1, 2},
-			Revision:   1,
+			RelayLayers: [][]int{{1}, {2}},
+			Revision:    1,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         10,
@@ -237,7 +234,6 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 		Revision:       1,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
-			BackendURL:  "http://127.0.0.1:8096",
 			Backends: []model.HTTPBackend{
 				{URL: "http://10.0.0.11:8096"},
 				{URL: "http://10.0.0.12:8096"},
@@ -250,14 +246,12 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 				Value: "one",
 			}},
 			RelayLayers: [][]int{{1, 2}, {3}},
-			Revision: 1,
+			Revision:    1,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
 			Backends: []model.L4Backend{
 				{Host: "10.0.0.21", Port: 9001},
 				{Host: "10.0.0.22", Port: 9002},
@@ -271,7 +265,6 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 					Send:   true,
 				},
 			},
-			RelayChain:  []int{1, 2},
 			RelayLayers: [][]int{{4}, {5, 6}},
 			Revision:    1,
 		}},
@@ -319,7 +312,7 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	snap.Rules[0].CustomHeaders[0].Value = "mutated"
 	snap.Rules[0].Backends[0].URL = "http://mutated.example.internal:8096"
 	snap.Rules[0].RelayLayers[0][0] = 99
-	snap.L4Rules[0].RelayChain[0] = 99
+	snap.L4Rules[0].RelayLayers[0][0] = 99
 	snap.L4Rules[0].RelayLayers[1][0] = 88
 	snap.L4Rules[0].Backends[0].Host = "mutated-host"
 	snap.RelayListeners[0].BindHosts[0] = "127.0.0.99"
@@ -339,8 +332,8 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	if current.Rules[0].RelayLayers[0][0] != 1 {
 		t.Fatalf("http relay_layers leaked mutation: %+v", current.Rules)
 	}
-	if current.L4Rules[0].RelayChain[0] != 1 {
-		t.Fatalf("l4 relay_chain leaked mutation: %+v", current.L4Rules)
+	if current.L4Rules[0].RelayLayers[0][0] != 4 {
+		t.Fatalf("l4 relay_layers leaked mutation: %+v", current.L4Rules)
 	}
 	if current.L4Rules[0].RelayLayers[1][0] != 5 {
 		t.Fatalf("l4 relay_layers leaked mutation: %+v", current.L4Rules)

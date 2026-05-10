@@ -14,8 +14,9 @@ type LoadBalancing struct {
 }
 
 type HTTPRule struct {
-	ID               int           `json:"id,omitempty"`
-	FrontendURL      string        `json:"frontend_url"`
+	ID          int    `json:"id,omitempty"`
+	FrontendURL string `json:"frontend_url"`
+	// BackendURL is retained only to ignore legacy payloads; runtime uses Backends.
 	BackendURL       string        `json:"backend_url"`
 	Backends         []HTTPBackend `json:"backends,omitempty"`
 	LoadBalancing    LoadBalancing `json:"load_balancing,omitempty"`
@@ -23,12 +24,13 @@ type HTTPRule struct {
 	PassProxyHeaders bool          `json:"pass_proxy_headers,omitempty"`
 	UserAgent        string        `json:"user_agent,omitempty"`
 	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
-	RelayChain       []int         `json:"relay_chain,omitempty"`
-	RelayLayers      [][]int       `json:"relay_layers,omitempty"`
-	RelayObfs        bool          `json:"relay_obfs,omitempty"`
-	Enabled          bool          `json:"enabled,omitempty"`
-	Tags             []string      `json:"tags,omitempty"`
-	Revision         int64         `json:"revision,omitempty"`
+	// RelayChain is retained only to ignore legacy payloads; runtime uses RelayLayers.
+	RelayChain  []int    `json:"relay_chain,omitempty"`
+	RelayLayers [][]int  `json:"relay_layers,omitempty"`
+	RelayObfs   bool     `json:"relay_obfs,omitempty"`
+	Enabled     bool     `json:"enabled,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Revision    int64    `json:"revision,omitempty"`
 }
 
 type HTTPListener struct {

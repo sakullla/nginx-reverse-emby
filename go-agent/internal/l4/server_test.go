@@ -89,11 +89,10 @@ func TestServerCloseStopsTCPHandlers(t *testing.T) {
 
 	listenPort := pickFreeTCPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamLn.Addr().(*net.TCPAddr).Port,
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamLn.Addr().(*net.TCPAddr).Port}},
 	}
 
 	upstreamAccepted := make(chan struct{})
@@ -178,11 +177,10 @@ func TestTCPDirectProxy(t *testing.T) {
 
 	listenPort := pickFreeTCPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamPort,
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamPort}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
@@ -232,7 +230,7 @@ func TestL4ProxyEntrySOCKS5RelayEgress(t *testing.T) {
 		ListenPort:      listenPort,
 		ListenMode:      "proxy",
 		ProxyEgressMode: "relay",
-		RelayChain:      []int{2},
+		RelayLayers:     [][]int{{2}},
 	}
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
 		ID:         2,
@@ -338,7 +336,7 @@ func TestL4ProxyEntryClosesUpstreamWhenClientSuccessReplyFails(t *testing.T) {
 		Protocol:        "tcp",
 		ListenMode:      "proxy",
 		ProxyEgressMode: "relay",
-		RelayChain:      []int{2},
+		RelayLayers:     [][]int{{2}},
 	}, nil)
 
 	if !upstream.closed {
@@ -573,11 +571,10 @@ func TestTCPProxySupportsIPv6ListenerToIPv4Backend(t *testing.T) {
 
 	listenPort := pickFreeTCPPortIPv6(t)
 	rule := model.L4Rule{
-		Protocol:     "tcp",
-		ListenHost:   "::1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamPort,
+		Protocol:   "tcp",
+		ListenHost: "::1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamPort}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
@@ -1405,10 +1402,10 @@ func TestL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	})
 
 	rule := model.L4Rule{
-		Protocol:   "tcp",
-		ListenHost: "0.0.0.0",
-		ListenPort: 9448,
-		RelayChain: []int{201},
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9448,
+		RelayLayers: [][]int{{201}},
 		Backends: []model.L4Backend{{
 			Host: "relay-upstream.example",
 			Port: 9001,
@@ -1445,7 +1442,7 @@ func TestL4CandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
 			Port: 9001,
 		}},
 	}
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-upstream.example:9001"))
+	cache.MarkFailure(backends.RelayBackoffKey([]int{201, 301}, "relay-upstream.example:9001"))
 
 	candidates, err := l4Candidates(context.Background(), cache, rule)
 	if err != nil {
@@ -1548,7 +1545,7 @@ func TestDialTCPUpstreamRelayLayersFailureDoesNotMarkAggregateBackoff(t *testing
 	if err == nil {
 		t.Fatal("dialTCPUpstream() error = nil")
 	}
-	aggregateKey := backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, "backend.example:9001")
+	aggregateKey := backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "backend.example:9001")
 	if cache.IsInBackoff(aggregateKey) {
 		t.Fatalf("aggregate relay layer key %q was marked in backoff after path-level failures", aggregateKey)
 	}
@@ -1707,12 +1704,11 @@ func TestTCPRelayProxy(t *testing.T) {
 
 	listenPort := pickFreeTCPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamPort,
-		RelayChain:   []int{51},
+		Protocol:    "tcp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  listenPort,
+		Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: upstreamPort}},
+		RelayLayers: [][]int{{51}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
@@ -1815,12 +1811,11 @@ func TestTCPRelayProxyDefersHostnameResolutionToRealRelayRuntime(t *testing.T) {
 	})
 	listenPort := pickFreeTCPPort(t)
 	srv, err := NewServerWithResources(context.Background(), []model.L4Rule{{
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "localhost",
-		UpstreamPort: upstream.Port(),
-		RelayChain:   []int{relayListener.ID},
+		Protocol:    "tcp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  listenPort,
+		Backends:    []model.L4Backend{{Host: "localhost", Port: upstream.Port()}},
+		RelayLayers: [][]int{{relayListener.ID}},
 	}}, []model.RelayListener{relayListener}, provider, cache)
 	if err != nil {
 		t.Fatalf("failed to start relay-backed l4 server: %v", err)
@@ -2023,13 +2018,12 @@ func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 
 	listenPort := pickFreeTCPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: pickFreeTCPPort(t),
-		RelayChain:   []int{51},
-		RelayObfs:    true,
+		Protocol:    "tcp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  listenPort,
+		Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+		RelayLayers: [][]int{{51}},
+		RelayObfs:   true,
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
@@ -2062,7 +2056,7 @@ func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 
 	select {
 	case relayReq := <-relayRequests:
-		if relayReq.Target != fmt.Sprintf("%s:%d", rule.UpstreamHost, rule.UpstreamPort) {
+		if relayReq.Target != fmt.Sprintf("%s:%d", rule.Backends[0].Host, rule.Backends[0].Port) {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
 	case <-time.After(2 * time.Second):
@@ -2108,13 +2102,12 @@ func TestTCPRelayProxyWithRelayObfsRoundTripsPayload(t *testing.T) {
 
 	listenPort := pickFreeTCPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstream.Port(),
-		RelayChain:   []int{51},
-		RelayObfs:    true,
+		Protocol:    "tcp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  listenPort,
+		Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: upstream.Port()}},
+		RelayLayers: [][]int{{51}},
+		RelayObfs:   true,
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
@@ -2245,12 +2238,11 @@ func TestTCPRelayProxySupportsIPv6EntryThroughIPv4AndIPv6RelayChainToIPv6Backend
 
 	listenPort := pickFreeTCPPortIPv6(t)
 	rule := model.L4Rule{
-		Protocol:     "tcp",
-		ListenHost:   "::1",
-		ListenPort:   listenPort,
-		UpstreamHost: "::1",
-		UpstreamPort: backendLn.Addr().(*net.TCPAddr).Port,
-		RelayChain:   []int{relayAID, relayBID},
+		Protocol:    "tcp",
+		ListenHost:  "::1",
+		ListenPort:  listenPort,
+		Backends:    []model.L4Backend{{Host: "::1", Port: backendLn.Addr().(*net.TCPAddr).Port}},
+		RelayLayers: [][]int{{relayAID}, {relayBID}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{
@@ -2379,12 +2371,11 @@ func TestTCPRelayProxySupportsLayeredRelayFanoutFullChain(t *testing.T) {
 
 	listenPort := pickFreeTCPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: backendLn.Addr().(*net.TCPAddr).Port,
-		RelayLayers:  [][]int{{1, 2}, {3, 4}},
+		Protocol:    "tcp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  listenPort,
+		Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: backendLn.Addr().(*net.TCPAddr).Port}},
+		RelayLayers: [][]int{{1, 2}, {3, 4}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, modelListeners, provider)
@@ -2440,10 +2431,10 @@ func TestResolveRelayPathsLabelsMissingListenerError(t *testing.T) {
 		relayListenersByID: map[int]model.RelayListener{},
 	}
 	rule := model.L4Rule{
-		Protocol:   "tcp",
-		ListenHost: "127.0.0.1",
-		ListenPort: 8443,
-		RelayChain: []int{2},
+		Protocol:    "tcp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  8443,
+		RelayLayers: [][]int{{2}},
 	}
 
 	_, err := srv.resolveRelayPaths(rule)
@@ -2463,7 +2454,7 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 		Backends: []model.L4Backend{
 			{Host: "127.0.0.1", Port: pickFreeTCPPort(t)},
 		},
-		RelayChain: []int{1, 2, 3},
+		RelayLayers: [][]int{{1}, {2}, {3}},
 	}
 
 	srv := &Server{
@@ -2540,7 +2531,7 @@ func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
 		Backends: []model.L4Backend{
 			{Host: "127.0.0.1", Port: pickFreeTCPPort(t)},
 		},
-		RelayChain: []int{1},
+		RelayLayers: [][]int{{1}},
 	}
 
 	srv := &Server{
@@ -2601,11 +2592,10 @@ func TestUDPDirectProxy(t *testing.T) {
 
 	listenPort := pickFreeUDPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "udp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
@@ -2665,11 +2655,10 @@ func TestUDPDirectProxyHostnameBind(t *testing.T) {
 
 	listenPort := pickFreeUDPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "udp",
-		ListenHost:   "localhost",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+		Protocol:   "udp",
+		ListenHost: "localhost",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
@@ -2722,12 +2711,11 @@ func TestUDPRelayOverTLSTCPUOT(t *testing.T) {
 
 	listenPort := pickFreeUDPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "udp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "203.0.113.10",
-		UpstreamPort: 5300,
-		RelayChain:   []int{51},
+		Protocol:    "udp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  listenPort,
+		Backends:    []model.L4Backend{{Host: "203.0.113.10", Port: 5300}},
+		RelayLayers: [][]int{{51}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
@@ -2831,12 +2819,11 @@ func TestUDPRelayOverTLSTCPWithRelayRuntime(t *testing.T) {
 
 	listenPort := pickFreeUDPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "udp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
-		RelayChain:   []int{relayListener.ID},
+		Protocol:    "udp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  listenPort,
+		Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
+		RelayLayers: [][]int{{relayListener.ID}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
@@ -2940,12 +2927,11 @@ func TestUDPRelayOverQUIC(t *testing.T) {
 
 	listenPort := pickFreeUDPPort(t)
 	rule := model.L4Rule{
-		Protocol:     "udp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
-		RelayChain:   []int{61},
+		Protocol:    "udp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  listenPort,
+		Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
+		RelayLayers: [][]int{{61}},
 	}
 
 	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{

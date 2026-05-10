@@ -154,7 +154,7 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		if ruleUsesRelay(e.rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpBackendDialAddress(backend.target)
-			if e.backendCache.IsInBackoff(backends.RelayBackoffKeyForLayers(e.rule.RelayChain, e.rule.RelayLayers, dialAddress)) {
+			if e.backendCache.IsInBackoff(backends.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, dialAddress)) {
 				continue
 			}
 			out = append(out, httpCandidate{
@@ -162,7 +162,6 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 				dialAddress:           dialAddress,
 				backendHost:           backend.backendHost,
 				backendObservationKey: backendObservationKey,
-				relayChain:            append([]int(nil), e.rule.RelayChain...),
 			})
 			continue
 		}
@@ -232,9 +231,6 @@ func NewSharedTransport() *http.Transport {
 
 func parseHTTPBackends(rule model.HTTPRule) ([]httpBackend, error) {
 	rawBackends := rule.Backends
-	if len(rawBackends) == 0 && rule.BackendURL != "" {
-		rawBackends = []model.HTTPBackend{{URL: rule.BackendURL}}
-	}
 	backendsOut := make([]httpBackend, 0, len(rawBackends))
 	for _, entry := range rawBackends {
 		rawURL := strings.TrimSpace(entry.URL)

@@ -152,7 +152,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		}
 		selection := selectedAddress()
 		actualAddress := resolveProbeAddress(candidate.dialAddress, selection.address)
-		relayChain := diagnosticRelayChainForObservation(rule.RelayChain, candidate.relayChain, selection.path)
+		relayChain := diagnosticRelayChainForObservation(nil, candidate.relayChain, selection.path)
 		markDiagnosticAddressFailureAll(relayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
 		return resolveSample(err), selection.path
 	}
@@ -165,7 +165,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		}
 		selection := selectedAddress()
 		actualAddress := resolveProbeAddress(candidate.dialAddress, selection.address)
-		relayChain := diagnosticRelayChainForObservation(rule.RelayChain, candidate.relayChain, selection.path)
+		relayChain := diagnosticRelayChainForObservation(nil, candidate.relayChain, selection.path)
 		markDiagnosticAddressFailureAll(relayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
 		return resolveSample(err), selection.path
 	}
@@ -179,7 +179,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 	}
 	selection := selectedAddress()
 	actualAddress := resolveProbeAddress(candidate.dialAddress, selection.address)
-	relayChain := diagnosticRelayChainForObservation(rule.RelayChain, candidate.relayChain, selection.path)
+	relayChain := diagnosticRelayChainForObservation(nil, candidate.relayChain, selection.path)
 	observeDiagnosticAddressSuccessAll(relayChain, actualAddress, headerLatency, transferDuration, written, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
 
 	sample := TransferSample(attempt, httpProbeLabelForAddress(candidate, actualAddress), totalDuration, resp.StatusCode, written, transferDuration)
@@ -203,11 +203,8 @@ func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, ru
 
 func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPRule) ([]httpProbeCandidate, error) {
 	rawBackends := rule.Backends
-	if len(rawBackends) == 0 && strings.TrimSpace(rule.BackendURL) != "" {
-		rawBackends = []model.HTTPBackend{{URL: rule.BackendURL}}
-	}
 	if len(rawBackends) == 0 {
-		return nil, fmt.Errorf("backend_url is required")
+		return nil, fmt.Errorf("backends[].url is required")
 	}
 
 	placeholders := make([]backends.Candidate, 0, len(rawBackends))
@@ -240,7 +237,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 		if ruleUsesHTTPRelay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpProbeTargetAddress(target)
-			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, dialAddress)) {
+			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, dialAddress)) {
 				continue
 			}
 			clone := *target
@@ -256,7 +253,6 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 				configuredURL:         clone.String(),
 				resolvedCandidates:    resolvedChildren,
 				relayProbeTarget:      dialAddress,
-				relayChain:            append([]int(nil), rule.RelayChain...),
 			})
 			continue
 		}
@@ -290,7 +286,6 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(clone.String())),
 				configuredURL:         clone.String(),
 				resolvedCandidates:    append([]httpResolvedCandidate(nil), resolvedChildren...),
-				relayChain:            append([]int(nil), rule.RelayChain...),
 			})
 		}
 	}
@@ -800,7 +795,7 @@ func httpPortWithDefault(target *url.URL) int {
 }
 
 func ruleUsesHTTPRelay(rule model.HTTPRule) bool {
-	return len(rule.RelayChain) > 0 || len(rule.RelayLayers) > 0
+	return len(rule.RelayLayers) > 0
 }
 
 func resolveHTTPRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
@@ -812,7 +807,7 @@ func resolveHTTPRelayHops(rule model.HTTPRule, relayListeners []model.RelayListe
 }
 
 func resolveDiagnosticHTTPRelayPaths(rule model.HTTPRule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
-	return resolveDiagnosticRelayPaths(fmt.Sprintf("http rule %q", rule.FrontendURL), rule.RelayChain, rule.RelayLayers, relayListeners, target)
+	return resolveDiagnosticRelayPaths(fmt.Sprintf("http rule %q", rule.FrontendURL), nil, rule.RelayLayers, relayListeners, target)
 }
 
 type diagnosticRelayPathDialer struct {

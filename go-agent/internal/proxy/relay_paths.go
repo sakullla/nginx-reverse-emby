@@ -38,7 +38,7 @@ func newRelayTransports(
 	cache *backends.Cache,
 ) (*http.Transport, *http.Transport, *http.Transport, error) {
 	if provider == nil {
-		return nil, nil, nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
+		return nil, nil, nil, fmt.Errorf("http rule %q: relay_layers requires relay tls material provider", rule.FrontendURL)
 	}
 	paths, err := resolveRelayPaths(rule, mapValues(relayListenersByID), "")
 	if err != nil {
@@ -82,11 +82,11 @@ func resolveRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener)
 }
 
 func ruleUsesRelay(rule model.HTTPRule) bool {
-	return relayroute.UsesRelay(rule.RelayChain, rule.RelayLayers)
+	return relayroute.UsesRelay(nil, rule.RelayLayers)
 }
 
 func resolveRelayPaths(rule model.HTTPRule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
-	return relayroute.ResolvePaths(fmt.Sprintf("http rule %q", rule.FrontendURL), rule.RelayChain, rule.RelayLayers, relayListeners, target)
+	return relayroute.ResolvePaths(fmt.Sprintf("http rule %q", rule.FrontendURL), nil, rule.RelayLayers, relayListeners, target)
 }
 
 func cloneRelayPlanPaths(paths []relayplan.Path) []relayplan.Path {

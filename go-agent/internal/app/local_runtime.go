@@ -97,11 +97,12 @@ func validateL4Rules(rules []model.L4Rule, relayListeners []model.RelayListener,
 		default:
 			return fmt.Errorf("unsupported protocol %q", rule.Protocol)
 		}
-		if len(rule.RelayChain) > 0 {
+		relayLayerIDs := flattenRelayLayers(rule.RelayLayers)
+		if len(relayLayerIDs) > 0 {
 			if provider == nil {
 				return fmt.Errorf("l4 rule %s:%d requires relay tls material provider", rule.ListenHost, rule.ListenPort)
 			}
-			for _, listenerID := range rule.RelayChain {
+			for _, listenerID := range relayLayerIDs {
 				listener, ok := relayListenersByID[listenerID]
 				if !ok {
 					return fmt.Errorf("relay listener %d not found", listenerID)
@@ -116,6 +117,14 @@ func validateL4Rules(rules []model.L4Rule, relayListeners []model.RelayListener,
 		}
 	}
 	return nil
+}
+
+func flattenRelayLayers(layers [][]int) []int {
+	ids := make([]int, 0)
+	for _, layer := range layers {
+		ids = append(ids, layer...)
+	}
+	return ids
 }
 
 func validateRelayListeners(ctx context.Context, listeners []model.RelayListener, provider relay.TLSMaterialProvider) error {

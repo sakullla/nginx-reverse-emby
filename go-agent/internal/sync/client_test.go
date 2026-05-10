@@ -64,17 +64,20 @@ func TestHeartbeatSync(t *testing.T) {
 			},
 			Rules: []model.HTTPRule{{
 				FrontendURL: "https://frontend.example.com",
-				BackendURL:  "http://127.0.0.1:8096",
-				RelayChain:  []int{31},
+				Backends: []model.HTTPBackend{
+					{URL: "http://127.0.0.1:8096"},
+				},
+				RelayLayers: [][]int{{31}},
 				Revision:    2,
 			}},
 			L4Rules: []model.L4Rule{{
-				Protocol:     "tcp",
-				ListenHost:   "127.0.0.1",
-				ListenPort:   9000,
-				UpstreamHost: "127.0.0.1",
-				UpstreamPort: 9001,
-				Revision:     4,
+				Protocol:   "tcp",
+				ListenHost: "127.0.0.1",
+				ListenPort: 9000,
+				Backends: []model.L4Backend{
+					{Host: "127.0.0.1", Port: 9001},
+				},
+				Revision: 4,
 			}},
 			RelayListeners: []model.RelayListener{{
 				ID:         31,
@@ -171,19 +174,22 @@ func TestHeartbeatSync(t *testing.T) {
 	}
 	if !reflect.DeepEqual(snap.Rules, []model.HTTPRule{{
 		FrontendURL: "https://frontend.example.com",
-		BackendURL:  "http://127.0.0.1:8096",
-		RelayChain:  []int{31},
+		Backends: []model.HTTPBackend{
+			{URL: "http://127.0.0.1:8096"},
+		},
+		RelayLayers: [][]int{{31}},
 		Revision:    2,
 	}}) {
 		t.Fatalf("unexpected rules payload: %+v", snap.Rules)
 	}
 	if !reflect.DeepEqual(snap.L4Rules, []model.L4Rule{{
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   9000,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: 9001,
-		Revision:     4,
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9000,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: 9001},
+		},
+		Revision: 4,
 	}}) {
 		t.Fatalf("unexpected l4_rules payload: %+v", snap.L4Rules)
 	}
@@ -609,7 +615,7 @@ func TestHeartbeatSyncDecodesTypedHTTPAndL4BackendFields(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(
 			w,
-			`{"sync":{"desired_version":"2.0.0","desired_revision":99,"rules":[{"frontend_url":"https://frontend.example.com","backend_url":"http://legacy.example.internal:8096","backends":[{"url":"http://10.0.0.11:8096"},{"url":"http://10.0.0.12:8096"}],"load_balancing":{"strategy":"random"}}],"l4_rules":[{"protocol":"tcp","listen_host":"0.0.0.0","listen_port":9000,"upstream_host":"legacy-upstream.internal","upstream_port":9001,"backends":[{"host":"10.0.0.21","port":9001},{"host":"10.0.0.22","port":9002}],"load_balancing":{"strategy":"round_robin"},"tuning":{"proxy_protocol":{"decode":true,"send":false}}}]}}`,
+			`{"sync":{"desired_version":"2.0.0","desired_revision":99,"rules":[{"frontend_url":"https://frontend.example.com","backends":[{"url":"http://10.0.0.11:8096"},{"url":"http://10.0.0.12:8096"}],"relay_layers":[[31]],"load_balancing":{"strategy":"random"}}],"l4_rules":[{"protocol":"tcp","listen_host":"0.0.0.0","listen_port":9000,"backends":[{"host":"10.0.0.21","port":9001},{"host":"10.0.0.22","port":9002}],"relay_layers":[[32]],"load_balancing":{"strategy":"round_robin"},"tuning":{"proxy_protocol":{"decode":true,"send":false}}}]}}`,
 		)
 	}))
 	defer server.Close()
@@ -642,6 +648,9 @@ func TestHeartbeatSyncDecodesTypedHTTPAndL4BackendFields(t *testing.T) {
 	if snap.Rules[0].LoadBalancing.Strategy != "random" {
 		t.Fatalf("unexpected http load balancing strategy: %q", snap.Rules[0].LoadBalancing.Strategy)
 	}
+	if !reflect.DeepEqual(snap.Rules[0].RelayLayers, [][]int{{31}}) {
+		t.Fatalf("unexpected http relay_layers: %+v", snap.Rules[0].RelayLayers)
+	}
 
 	if len(snap.L4Rules) != 1 {
 		t.Fatalf("expected one l4 rule, got %d", len(snap.L4Rules))
@@ -654,6 +663,9 @@ func TestHeartbeatSyncDecodesTypedHTTPAndL4BackendFields(t *testing.T) {
 	}
 	if snap.L4Rules[0].LoadBalancing.Strategy != "round_robin" {
 		t.Fatalf("unexpected l4 load balancing strategy: %q", snap.L4Rules[0].LoadBalancing.Strategy)
+	}
+	if !reflect.DeepEqual(snap.L4Rules[0].RelayLayers, [][]int{{32}}) {
+		t.Fatalf("unexpected l4 relay_layers: %+v", snap.L4Rules[0].RelayLayers)
 	}
 	if !snap.L4Rules[0].Tuning.ProxyProtocol.Decode {
 		t.Fatalf("expected proxy_protocol.decode=true")

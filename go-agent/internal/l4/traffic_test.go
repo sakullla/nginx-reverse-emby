@@ -25,12 +25,11 @@ func TestL4RejectsNewConnectionWhenTrafficBlocked(t *testing.T) {
 	}
 
 	srv, err := NewServerWithResources(context.Background(), []Rule{{
-		ID:           42,
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: 1,
+		ID:         42,
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 1}},
 	}}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewServerWithResources() error = %v", err)
@@ -98,12 +97,11 @@ func TestL4DropsNewUDPPacketWhenTrafficBlocked(t *testing.T) {
 	}
 
 	srv, err := NewServerWithResources(context.Background(), []Rule{{
-		ID:           43,
-		Protocol:     "udp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+		ID:         43,
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
 	}}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewServerWithResources() error = %v", err)
@@ -199,12 +197,11 @@ func TestL4DropsExistingUDPSessionPacketWhenTrafficBlocked(t *testing.T) {
 	}
 
 	srv, err := NewServerWithResources(context.Background(), []Rule{{
-		ID:           44,
-		Protocol:     "udp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+		ID:         44,
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
 	}}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewServerWithResources() error = %v", err)
@@ -297,12 +294,11 @@ func TestL4UDPTrafficBecomesVisibleBeforeSessionCloses(t *testing.T) {
 	}
 
 	srv, err := NewServerWithResources(context.Background(), []Rule{{
-		ID:           45,
-		Protocol:     "udp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+		ID:         45,
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
 	}}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewServerWithResources() error = %v", err)
@@ -506,13 +502,12 @@ func TestRelayTCPInitialPayloadCountsOnlyAsL4RX(t *testing.T) {
 		tcpConns:        make(map[net.Conn]struct{}),
 	}
 	rule := model.L4Rule{
-		ID:           42,
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   9443,
-		UpstreamHost: "backend.example",
-		UpstreamPort: 9001,
-		RelayChain:   []int{2},
+		ID:          42,
+		Protocol:    "tcp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  9443,
+		Backends:    []model.L4Backend{{Host: "backend.example", Port: 9001}},
+		RelayLayers: [][]int{{2}},
 		Tuning: model.L4Tuning{
 			ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true},
 		},

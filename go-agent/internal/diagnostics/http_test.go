@@ -33,7 +33,7 @@ func TestHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          7,
 		FrontendURL: "https://edge.example.test/emby",
-		BackendURL:  server.URL + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: server.URL + "/healthz"}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -73,7 +73,7 @@ func TestHTTPProberDiagnoseReportsCurrentProbeThroughput(t *testing.T) {
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          77,
 		FrontendURL: "https://edge.example.test/bulk",
-		BackendURL:  server.URL + "/bulk",
+		Backends:    []model.HTTPBackend{{URL: server.URL + "/bulk"}},
 		LoadBalancing: model.LoadBalancing{
 			Strategy: "adaptive",
 		},
@@ -137,7 +137,7 @@ func TestHTTPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 	rule := model.HTTPRule{
 		ID:          80,
 		FrontendURL: "https://edge.example.test",
-		BackendURL:  "http://127.0.0.1:1",
+		Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:1"}},
 	}
 
 	report, err := prober.Diagnose(context.Background(), rule, nil)
@@ -148,7 +148,7 @@ func TestHTTPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 		t.Fatalf("Summary = %+v", report.Summary)
 	}
 
-	backendKey := backends.BackendObservationKey(rule.FrontendURL, backends.StableBackendID(rule.BackendURL))
+	backendKey := backends.BackendObservationKey(rule.FrontendURL, backends.StableBackendID(rule.Backends[0].URL))
 	if cache.IsInBackoff("127.0.0.1:1") {
 		t.Fatalf("expected diagnostic probes to leave shared backoff state untouched")
 	}
@@ -176,8 +176,8 @@ func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          11,
 		FrontendURL: "https://edge.example.test",
-		BackendURL:  backend.URL + "/healthz",
-		RelayChain:  []int{41},
+		Backends:    []model.HTTPBackend{{URL: backend.URL + "/healthz"}},
+		RelayLayers: [][]int{{41}},
 	}, []model.RelayListener{relayListener})
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -206,8 +206,8 @@ func TestHTTPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 	rule := model.HTTPRule{
 		ID:          81,
 		FrontendURL: "https://edge.example.test",
-		BackendURL:  "http://127.0.0.1:1",
-		RelayChain:  []int{42},
+		Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:1"}},
+		RelayLayers: [][]int{{42}},
 	}
 
 	report, err := prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
@@ -218,9 +218,12 @@ func TestHTTPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 		t.Fatalf("first Summary = %+v", report.Summary)
 	}
 
-	_, err = prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
-	if err == nil || err.Error() != "no healthy backend candidates for https://edge.example.test" {
+	report, err = prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
+	if err != nil {
 		t.Fatalf("second Diagnose() error = %v", err)
+	}
+	if report.Summary.Failed != 1 {
+		t.Fatalf("second Summary = %+v", report.Summary)
 	}
 }
 
@@ -249,7 +252,7 @@ func TestHTTPProberDiagnoseUsesGetRequestsByDefault(t *testing.T) {
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          12,
 		FrontendURL: "https://edge.example.test/emby",
-		BackendURL:  server.URL + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: server.URL + "/healthz"}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -409,7 +412,7 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          31,
 		FrontendURL: "https://edge.example.test",
-		BackendURL:  fmt.Sprintf("http://echo.example.test:%d/healthz", port),
+		Backends:    []model.HTTPBackend{{URL: fmt.Sprintf("http://echo.example.test:%d/healthz", port)}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -472,7 +475,7 @@ func TestHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate(t *testing
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          32,
 		FrontendURL: "https://edge.example.test",
-		BackendURL:  fmt.Sprintf("http://echo.example.test:%d/healthz", port),
+		Backends:    []model.HTTPBackend{{URL: fmt.Sprintf("http://echo.example.test:%d/healthz", port)}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -604,7 +607,7 @@ func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T)
 	_, err := httpCandidates(context.Background(), cache, model.HTTPRule{
 		ID:          34,
 		FrontendURL: "https://edge.example.test",
-		BackendURL:  "http://echo.example.test:8096/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://echo.example.test:8096/healthz"}},
 	})
 	if err == nil {
 		t.Fatal("httpCandidates() error = nil")
@@ -630,7 +633,7 @@ func TestHTTPCandidatesPreserveAllResolvedChildrenPerCandidate(t *testing.T) {
 	candidates, err := httpCandidates(context.Background(), cache, model.HTTPRule{
 		ID:          35,
 		FrontendURL: "https://edge.example.test",
-		BackendURL:  "http://echo.example.test:8096/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://echo.example.test:8096/healthz"}},
 	})
 	if err != nil {
 		t.Fatalf("httpCandidates() error = %v", err)
@@ -658,7 +661,7 @@ func TestHTTPCandidatesUseResolvedAddressLabelWhenProbeLabelDropsIP(t *testing.T
 	candidates, err := httpCandidates(context.Background(), cache, model.HTTPRule{
 		ID:          37,
 		FrontendURL: "https://edge.example.test",
-		BackendURL:  "http://echo.example.test:8096/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://echo.example.test:8096/healthz"}},
 	})
 	if err != nil {
 		t.Fatalf("httpCandidates() error = %v", err)
@@ -725,8 +728,8 @@ func TestHTTPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	rule := model.HTTPRule{
 		ID:          1,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "https://relay-target.example:9443",
-		RelayChain:  []int{301},
+		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
+		RelayLayers: [][]int{{301}},
 	}
 
 	candidates, err := httpCandidates(context.Background(), cache, rule)
@@ -808,8 +811,8 @@ func TestHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddr
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          101,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "http://relay-target.example:" + backendPort + "/healthz",
-		RelayChain:  []int{301},
+		Backends:    []model.HTTPBackend{{URL: "http://relay-target.example:" + backendPort + "/healthz"}},
+		RelayLayers: [][]int{{301}},
 	}, []model.RelayListener{relayListener})
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -900,7 +903,7 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          111,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "http://relay-target.example:" + backendURL.Port() + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://relay-target.example:" + backendURL.Port() + "/healthz"}},
 		RelayLayers: [][]int{{401, 402}},
 	}, []model.RelayListener{listenerA, listenerB})
 	if err != nil {
@@ -984,7 +987,7 @@ func TestHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops(t *test
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          112,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "http://relay-target.example:" + backendURL.Port() + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://relay-target.example:" + backendURL.Port() + "/healthz"}},
 		RelayLayers: [][]int{{431}},
 	}, []model.RelayListener{listener})
 	if err != nil {
@@ -1042,7 +1045,7 @@ func TestHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) 
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          112,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "http://relay-target.example:" + backendURL.Port() + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://relay-target.example:" + backendURL.Port() + "/healthz"}},
 		RelayLayers: [][]int{{411, 412}},
 	}, []model.RelayListener{listenerA, listenerB})
 	if err != nil {
@@ -1098,7 +1101,7 @@ func TestHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T
 	_, err = prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          114,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "http://" + target + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://" + target + "/healthz"}},
 		RelayLayers: [][]int{{441, 442}},
 	}, []model.RelayListener{listenerA, listenerB})
 	if err != nil {
@@ -1159,7 +1162,7 @@ func TestHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *tes
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          113,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "http://" + target + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://" + target + "/healthz"}},
 		RelayLayers: [][]int{{421, 422}},
 	}, []model.RelayListener{listenerA, listenerB})
 	if err != nil {
@@ -1215,7 +1218,7 @@ func TestHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testi
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          116,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "http://" + target + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://" + target + "/healthz"}},
 		RelayLayers: [][]int{{461, 462}},
 	}, []model.RelayListener{listenerA, listenerB})
 	if err != nil {
@@ -1249,7 +1252,7 @@ func TestHTTPProberDiagnoseDoesNotSelectFailedRelayLayerPath(t *testing.T) {
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          114,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "http://relay-target.example:8096/healthz",
+		Backends:    []model.HTTPBackend{{URL: "http://relay-target.example:8096/healthz"}},
 		RelayLayers: [][]int{{431, 432}},
 	}, []model.RelayListener{listenerA, listenerB})
 	if err != nil {
@@ -1274,11 +1277,11 @@ func TestHTTPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 	rule := model.HTTPRule{
 		ID:          1,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "https://relay-target.example:9443",
-		RelayChain:  []int{301},
+		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
+		RelayLayers: [][]int{{301}},
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9443"))
+	cache.MarkFailure(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "relay-target.example:9443"))
 
 	candidates, err := httpCandidates(context.Background(), cache, rule)
 	if err != nil {
@@ -1295,11 +1298,11 @@ func TestHTTPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 	rule := model.HTTPRule{
 		ID:          1,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "https://relay-target.example:9443",
+		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
 		RelayLayers: [][]int{{301, 302}, {401}},
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9443"))
+	cache.MarkFailure(backends.RelayBackoffKey([]int{301, 401}, "relay-target.example:9443"))
 	candidates, err := httpCandidates(context.Background(), cache, rule)
 	if err != nil {
 		t.Fatalf("httpCandidates() error = %v", err)
@@ -1308,7 +1311,7 @@ func TestHTTPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 		t.Fatalf("legacy relay backoff key filtered layered candidates: %+v", candidates)
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, "relay-target.example:9443"))
+	cache.MarkFailure(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "relay-target.example:9443"))
 	candidates, err = httpCandidates(context.Background(), cache, rule)
 	if err != nil {
 		t.Fatalf("httpCandidates() error = %v", err)
@@ -1325,8 +1328,8 @@ func TestHTTPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 	rule := model.HTTPRule{
 		ID:          1,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "https://relay-target.example:9443",
-		RelayChain:  []int{341},
+		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
+		RelayLayers: [][]int{{341}},
 	}
 	candidates, err := httpCandidates(context.Background(), cache, rule)
 	if err != nil {
@@ -1335,7 +1338,7 @@ func TestHTTPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 
 	backedOffAddress := "127.0.0.10:9443"
 	healthyAddress := "127.0.0.11:9443"
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, backedOffAddress))
+	cache.MarkFailure(backends.RelayBackoffKey([]int{341}, backedOffAddress))
 
 	previousResolveCandidates := diagnosticRelayResolveCandidates
 	t.Cleanup(func() {
@@ -1366,7 +1369,7 @@ func TestHTTPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 		t.Fatalf("resolved candidate address = %q, want %q", hydrated[0].resolvedCandidates[0].dialAddress, healthyAddress)
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, healthyAddress))
+	cache.MarkFailure(backends.RelayBackoffKey([]int{341}, healthyAddress))
 	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
 	if err != nil {
 		t.Fatalf("hydrateRelayCandidates(all backed off) error = %v", err)
@@ -1384,7 +1387,7 @@ func TestHTTPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T)
 	rule := model.HTTPRule{
 		ID:          1,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "https://relay-target.example:9443",
+		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
 		RelayLayers: [][]int{{351, 352}},
 	}
 	candidates, err := httpCandidates(context.Background(), cache, rule)
@@ -1495,7 +1498,7 @@ func TestHTTPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          102,
 		FrontendURL: "https://edge.example.test",
-		BackendURL:  server.URL + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: server.URL + "/healthz"}},
 		LoadBalancing: model.LoadBalancing{
 			Strategy: "adaptive",
 		},
@@ -1534,7 +1537,7 @@ func TestHTTPProberDiagnoseUsesFullFrontendURLScopeForAdaptiveHistory(t *testing
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          103,
 		FrontendURL: "https://edge.example.test/emby",
-		BackendURL:  server.URL + "/healthz",
+		Backends:    []model.HTTPBackend{{URL: server.URL + "/healthz"}},
 		LoadBalancing: model.LoadBalancing{
 			Strategy: "adaptive",
 		},
@@ -1594,8 +1597,8 @@ func TestHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbe
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          203,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "http://" + target + "/healthz",
-		RelayChain:  []int{541},
+		Backends:    []model.HTTPBackend{{URL: "http://" + target + "/healthz"}},
+		RelayLayers: [][]int{{541}},
 	}, []model.RelayListener{listener})
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -2006,7 +2009,7 @@ func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
 	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          33,
 		FrontendURL: frontendURL,
-		BackendURL:  backendURL,
+		Backends:    []model.HTTPBackend{{URL: backendURL}},
 		LoadBalancing: model.LoadBalancing{
 			Strategy: "adaptive",
 		},
