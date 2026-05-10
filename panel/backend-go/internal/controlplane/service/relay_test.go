@@ -50,6 +50,8 @@ type relayCertStore struct {
 	cleanupCall                     int
 	cleanupErrs                     []error
 	trafficDeletes                  []trafficScopeDeleteCall
+	trafficDeleteErr                error
+	trafficDeleteHook               func()
 }
 
 func (s *relayCertStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -195,6 +197,12 @@ func (s *relayCertStore) DeleteTrafficByScope(_ context.Context, agentID, scopeT
 		scopeType: scopeType,
 		scopeID:   scopeID,
 	})
+	if s.trafficDeleteHook != nil {
+		s.trafficDeleteHook()
+	}
+	if s.trafficDeleteErr != nil {
+		return 0, s.trafficDeleteErr
+	}
 	return 0, nil
 }
 
@@ -1203,6 +1211,44 @@ func TestRelayServiceDeleteCascadesRelayListenerTraffic(t *testing.T) {
 	}
 	if got := store.trafficDeletes[0]; got != (trafficScopeDeleteCall{agentID: "edge-1", scopeType: "relay_listener", scopeID: "13"}) {
 		t.Fatalf("traffic delete = %+v", got)
+	}
+}
+
+func TestRelayServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
+	order := []string{}
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:         14,
+				AgentID:    "local",
+				Name:       "relay-d",
+				ListenHost: "0.0.0.0",
+				ListenPort: 7446,
+				Enabled:    true,
+				TLSMode:    "passthrough",
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{{
+			ID: "local",
+		}},
+		trafficDeleteErr: errors.New("cleanup failed"),
+		trafficDeleteHook: func() {
+			order = append(order, "cleanup")
+		},
+	}
+	svc := NewRelayListenerService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		order = append(order, "apply")
+		return nil
+	})
+
+	if _, err := svc.Delete(context.Background(), "local", 14); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(order) != 2 || order[0] != "apply" || order[1] != "cleanup" {
+		t.Fatalf("order = %+v, want apply then cleanup", order)
 	}
 }
 

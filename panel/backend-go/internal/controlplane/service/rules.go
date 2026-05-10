@@ -319,9 +319,6 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		}
 		return HTTPRule{}, err
 	}
-	if err := deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "http_rule", deleted.ID); err != nil {
-		return HTTPRule{}, err
-	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
 		return HTTPRule{}, err
@@ -336,6 +333,7 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return HTTPRule{}, err
 	}
+	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "http_rule", deleted.ID)
 	return deleted, nil
 }
 

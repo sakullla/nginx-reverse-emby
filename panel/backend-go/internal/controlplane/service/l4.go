@@ -299,9 +299,6 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {
 		return L4Rule{}, err
 	}
-	if err := deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "l4_rule", deleted.ID); err != nil {
-		return L4Rule{}, err
-	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
 		return L4Rule{}, err
@@ -313,6 +310,7 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return L4Rule{}, err
 	}
+	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "l4_rule", deleted.ID)
 	return deleted, nil
 }
 

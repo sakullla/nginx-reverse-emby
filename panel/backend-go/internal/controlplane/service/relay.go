@@ -385,9 +385,6 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, next); err != nil {
 		return RelayListener{}, err
 	}
-	if err := deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "relay_listener", deleted.ID); err != nil {
-		return RelayListener{}, err
-	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
 		return RelayListener{}, err
@@ -404,6 +401,7 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return RelayListener{}, err
 	}
+	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "relay_listener", deleted.ID)
 	return deleted, nil
 }
 

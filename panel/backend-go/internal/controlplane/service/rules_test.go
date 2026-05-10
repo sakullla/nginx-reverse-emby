@@ -25,6 +25,8 @@ type fakeRuleStore struct {
 	cleanupCallCount  int
 	getHTTPRuleCalls  int
 	trafficDeletes    []trafficScopeDeleteCall
+	trafficDeleteErr  error
+	trafficDeleteHook func()
 }
 
 type trafficScopeDeleteCall struct {
@@ -132,6 +134,12 @@ func (f *fakeRuleStore) DeleteTrafficByScope(_ context.Context, agentID, scopeTy
 		scopeType: scopeType,
 		scopeID:   scopeID,
 	})
+	if f.trafficDeleteHook != nil {
+		f.trafficDeleteHook()
+	}
+	if f.trafficDeleteErr != nil {
+		return 0, f.trafficDeleteErr
+	}
 	return 0, nil
 }
 
@@ -507,6 +515,38 @@ func TestRuleServiceDeleteCascadesHTTPRuleTraffic(t *testing.T) {
 	}
 	if got := store.trafficDeletes[0]; got != (trafficScopeDeleteCall{agentID: "local", scopeType: "http_rule", scopeID: "11"}) {
 		t.Fatalf("traffic delete = %+v", got)
+	}
+}
+
+func TestRuleServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
+	order := []string{}
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:          12,
+				AgentID:     "local",
+				FrontendURL: "https://one.example.com",
+			}},
+		},
+		trafficDeleteErr: errors.New("cleanup failed"),
+		trafficDeleteHook: func() {
+			order = append(order, "cleanup")
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		order = append(order, "apply")
+		return nil
+	})
+
+	if _, err := svc.Delete(context.Background(), "local", 12); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(order) != 2 || order[0] != "apply" || order[1] != "cleanup" {
+		t.Fatalf("order = %+v, want apply then cleanup", order)
 	}
 }
 

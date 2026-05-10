@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -20,6 +21,8 @@ type fakeL4Store struct {
 	listL4RulesErr    error
 	getL4RuleCalls    int
 	trafficDeletes    []trafficScopeDeleteCall
+	trafficDeleteErr  error
+	trafficDeleteHook func()
 }
 
 func (f *fakeL4Store) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -126,6 +129,12 @@ func (f *fakeL4Store) DeleteTrafficByScope(_ context.Context, agentID, scopeType
 		scopeType: scopeType,
 		scopeID:   scopeID,
 	})
+	if f.trafficDeleteHook != nil {
+		f.trafficDeleteHook()
+	}
+	if f.trafficDeleteErr != nil {
+		return 0, f.trafficDeleteErr
+	}
 	return 0, nil
 }
 
@@ -1220,6 +1229,49 @@ func TestL4RuleServiceDeleteCascadesL4RuleTraffic(t *testing.T) {
 	}
 	if got := store.trafficDeletes[0]; got != (trafficScopeDeleteCall{agentID: "edge-1", scopeType: "l4_rule", scopeID: "12"}) {
 		t.Fatalf("traffic delete = %+v", got)
+	}
+}
+
+func TestL4RuleServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
+	order := []string{}
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "local",
+			CapabilitiesJSON: `["l4"]`,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:           13,
+				AgentID:      "local",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 26966,
+				Enabled:      true,
+			}},
+		},
+		relayByAgent:     map[string][]storage.RelayListenerRow{},
+		trafficDeleteErr: errors.New("cleanup failed"),
+		trafficDeleteHook: func() {
+			order = append(order, "cleanup")
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		order = append(order, "apply")
+		return nil
+	})
+
+	if _, err := svc.Delete(context.Background(), "local", 13); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(order) != 2 || order[0] != "apply" || order[1] != "cleanup" {
+		t.Fatalf("order = %+v, want apply then cleanup", order)
 	}
 }
 

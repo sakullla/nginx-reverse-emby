@@ -54,6 +54,12 @@ type trafficBreakdownStore interface {
 	ListTrafficBreakdown(context.Context, storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error)
 }
 
+type trafficScopeLookupStore interface {
+	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
+	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
+}
+
 type trafficCursorDeltaStore interface {
 	IngestTrafficCursorDelta(context.Context, storage.AgentTrafficRawCursorRow, time.Time) (storage.TrafficCursorDeltaResult, error)
 }
@@ -111,7 +117,15 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 	}
 	bucketAt := s.now().In(s.tz)
 	observedAt := bucketAt.UTC()
+	var scopeCache *trafficScopeLookupCache
 	for _, sample := range samples {
+		allow, err := s.allowTrafficSample(ctx, agentID, sample, &scopeCache)
+		if err != nil {
+			return err
+		}
+		if !allow {
+			continue
+		}
 		cursor := storage.AgentTrafficRawCursorRow{
 			AgentID:    agentID,
 			ScopeType:  sample.scopeType,
@@ -203,6 +217,90 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 		}
 	}
 	return nil
+}
+
+type trafficScopeLookupCache struct {
+	httpRules      map[string]struct{}
+	l4Rules        map[string]struct{}
+	relayListeners map[string]struct{}
+}
+
+func (s *trafficService) allowTrafficSample(ctx context.Context, agentID string, sample trafficSample, cache **trafficScopeLookupCache) (bool, error) {
+	lookupStore, ok := s.store.(trafficScopeLookupStore)
+	if !ok {
+		return true, nil
+	}
+	if *cache == nil {
+		*cache = &trafficScopeLookupCache{}
+	}
+
+	switch sample.scopeType {
+	case "http_rule":
+		if (*cache).httpRules == nil {
+			ids, err := scopeIDsFromHTTPRules(lookupStore.ListHTTPRules(ctx, agentID))
+			if err != nil {
+				return false, err
+			}
+			(*cache).httpRules = ids
+		}
+		_, ok := (*cache).httpRules[sample.scopeID]
+		return ok, nil
+	case "l4_rule":
+		if (*cache).l4Rules == nil {
+			ids, err := scopeIDsFromL4Rules(lookupStore.ListL4Rules(ctx, agentID))
+			if err != nil {
+				return false, err
+			}
+			(*cache).l4Rules = ids
+		}
+		_, ok := (*cache).l4Rules[sample.scopeID]
+		return ok, nil
+	case "relay_listener":
+		if (*cache).relayListeners == nil {
+			ids, err := scopeIDsFromRelayListeners(lookupStore.ListRelayListeners(ctx, agentID))
+			if err != nil {
+				return false, err
+			}
+			(*cache).relayListeners = ids
+		}
+		_, ok := (*cache).relayListeners[sample.scopeID]
+		return ok, nil
+	default:
+		return true, nil
+	}
+}
+
+func scopeIDsFromHTTPRules(rows []storage.HTTPRuleRow, err error) (map[string]struct{}, error) {
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		ids[strings.TrimSpace(strconv.Itoa(row.ID))] = struct{}{}
+	}
+	return ids, nil
+}
+
+func scopeIDsFromL4Rules(rows []storage.L4RuleRow, err error) (map[string]struct{}, error) {
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		ids[strings.TrimSpace(strconv.Itoa(row.ID))] = struct{}{}
+	}
+	return ids, nil
+}
+
+func scopeIDsFromRelayListeners(rows []storage.RelayListenerRow, err error) (map[string]struct{}, error) {
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		ids[strings.TrimSpace(strconv.Itoa(row.ID))] = struct{}{}
+	}
+	return ids, nil
 }
 
 func isHostTrafficScope(scopeType string) bool {
