@@ -353,6 +353,167 @@ func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
 	}
 }
 
+func TestBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('canonical-agent', 'canonical-agent')`).Error; err != nil {
+		t.Fatalf("seed canonical agent error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO rules (
+		id, agent_id, frontend_url, backend_url, backends, load_balancing, enabled, tags, proxy_redirect,
+		pass_proxy_headers, user_agent, custom_headers, relay_chain, relay_layers, relay_obfs, revision
+	) VALUES (81, 'canonical-agent', 'https://canonical-http.example.com', 'http://legacy-http.example.com', '[{"url":"http://canonical-http.example.com"}]', NULL, 1, '[]', 0,
+		1, '', '[]', '[91]', '[[92]]', 0, 1)`).Error; err != nil {
+		t.Fatalf("seed canonical http rule error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO l4_rules (
+		id, agent_id, name, protocol, listen_host, listen_port, upstream_host, upstream_port, backends,
+		load_balancing, tuning, relay_chain, relay_layers, relay_obfs, enabled, tags, revision
+	) VALUES (82, 'canonical-agent', 'canonical-l4', 'tcp', '0.0.0.0', 25565, 'legacy-l4.example.com', 25566, '[{"host":"canonical-l4.example.com","port":25567}]',
+		NULL, NULL, '[93]', '[[94]]', 0, 1, '[]', 1)`).Error; err != nil {
+		t.Fatalf("seed canonical l4 rule error = %v", err)
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
+	}
+
+	var httpRows []legacyHTTPRuleMigrationRow
+	if err := db.WithContext(t.Context()).
+		Model(&HTTPRuleRow{}).
+		Select("id", "agent_id", "backend_url", "backends", "relay_chain", "relay_layers").
+		Where("id = ?", 81).
+		Find(&httpRows).Error; err != nil {
+		t.Fatalf("query canonical HTTP row error = %v", err)
+	}
+	if len(httpRows) != 1 {
+		t.Fatalf("canonical HTTP rows = %+v", httpRows)
+	}
+	if httpRows[0].BackendsJSON != `[{"url":"http://canonical-http.example.com"}]` || httpRows[0].RelayLayersJSON != `[[92]]` {
+		t.Fatalf("canonical HTTP values changed after bootstrap: %+v", httpRows[0])
+	}
+
+	var l4Rows []legacyL4RuleMigrationRow
+	if err := db.WithContext(t.Context()).
+		Model(&L4RuleRow{}).
+		Select("id", "agent_id", "upstream_host", "upstream_port", "backends", "relay_chain", "relay_layers").
+		Where("id = ?", 82).
+		Find(&l4Rows).Error; err != nil {
+		t.Fatalf("query canonical L4 row error = %v", err)
+	}
+	if len(l4Rows) != 1 {
+		t.Fatalf("canonical L4 rows = %+v", l4Rows)
+	}
+	if l4Rows[0].BackendsJSON != `[{"host":"canonical-l4.example.com","port":25567}]` || l4Rows[0].RelayLayersJSON != `[[94]]` {
+		t.Fatalf("canonical L4 values changed after bootstrap: %+v", l4Rows[0])
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("second BootstrapSQLiteSchema() migration error = %v", err)
+	}
+
+	httpRows = nil
+	if err := db.WithContext(t.Context()).
+		Model(&HTTPRuleRow{}).
+		Select("id", "agent_id", "backend_url", "backends", "relay_chain", "relay_layers").
+		Where("id = ?", 81).
+		Find(&httpRows).Error; err != nil {
+		t.Fatalf("requery canonical HTTP row error = %v", err)
+	}
+	l4Rows = nil
+	if err := db.WithContext(t.Context()).
+		Model(&L4RuleRow{}).
+		Select("id", "agent_id", "upstream_host", "upstream_port", "backends", "relay_chain", "relay_layers").
+		Where("id = ?", 82).
+		Find(&l4Rows).Error; err != nil {
+		t.Fatalf("requery canonical L4 row error = %v", err)
+	}
+	if httpRows[0].BackendsJSON != `[{"url":"http://canonical-http.example.com"}]` || httpRows[0].RelayLayersJSON != `[[92]]` {
+		t.Fatalf("canonical HTTP values changed on second bootstrap: %+v", httpRows[0])
+	}
+	if l4Rows[0].BackendsJSON != `[{"host":"canonical-l4.example.com","port":25567}]` || l4Rows[0].RelayLayersJSON != `[[94]]` {
+		t.Fatalf("canonical L4 values changed on second bootstrap: %+v", l4Rows[0])
+	}
+}
+
+func TestBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('malformed-canonical-agent', 'malformed-canonical-agent')`).Error; err != nil {
+		t.Fatalf("seed malformed canonical agent error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO rules (
+		id, agent_id, frontend_url, backend_url, backends, load_balancing, enabled, tags, proxy_redirect,
+		pass_proxy_headers, user_agent, custom_headers, relay_chain, relay_layers, relay_obfs, revision
+	) VALUES (83, 'malformed-canonical-agent', 'https://malformed-http.example.com', 'http://legacy-http.example.com', 'not-json', NULL, 1, '[]', 0,
+		1, '', '[]', '[95]', '[[]]', 0, 1)`).Error; err != nil {
+		t.Fatalf("seed malformed HTTP rule error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO l4_rules (
+		id, agent_id, name, protocol, listen_host, listen_port, upstream_host, upstream_port, backends,
+		load_balancing, tuning, relay_chain, relay_layers, relay_obfs, enabled, tags, revision
+	) VALUES (84, 'malformed-canonical-agent', 'malformed-l4', 'tcp', '0.0.0.0', 25568, 'legacy-l4.example.com', 25569, '[{}]',
+		NULL, NULL, '[96]', 'not-json', 0, 1, '[]', 1)`).Error; err != nil {
+		t.Fatalf("seed malformed L4 rule error = %v", err)
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
+	}
+
+	var httpRows []legacyHTTPRuleMigrationRow
+	if err := db.WithContext(t.Context()).
+		Model(&HTTPRuleRow{}).
+		Select("id", "agent_id", "backend_url", "backends", "relay_chain", "relay_layers").
+		Where("id = ?", 83).
+		Find(&httpRows).Error; err != nil {
+		t.Fatalf("query malformed HTTP row error = %v", err)
+	}
+	if len(httpRows) != 1 {
+		t.Fatalf("malformed HTTP rows = %+v", httpRows)
+	}
+	if httpRows[0].BackendsJSON != "not-json" || httpRows[0].RelayLayersJSON != `[[]]` {
+		t.Fatalf("malformed HTTP canonical values were overwritten: %+v", httpRows[0])
+	}
+
+	var l4Rows []legacyL4RuleMigrationRow
+	if err := db.WithContext(t.Context()).
+		Model(&L4RuleRow{}).
+		Select("id", "agent_id", "upstream_host", "upstream_port", "backends", "relay_chain", "relay_layers").
+		Where("id = ?", 84).
+		Find(&l4Rows).Error; err != nil {
+		t.Fatalf("query malformed L4 row error = %v", err)
+	}
+	if len(l4Rows) != 1 {
+		t.Fatalf("malformed L4 rows = %+v", l4Rows)
+	}
+	if l4Rows[0].BackendsJSON != `[{}]` || l4Rows[0].RelayLayersJSON != "not-json" {
+		t.Fatalf("malformed L4 canonical values were overwritten: %+v", l4Rows[0])
+	}
+}
+
 func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
@@ -1122,6 +1283,7 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 		LoadBalancingJSON: `{"strategy":"round_robin"}`,
 		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
 		RelayChainJSON:    `[3]`,
+		RelayLayersJSON:   `[[3]]`,
 		Enabled:           true,
 		TagsJSON:          `["edge"]`,
 		Revision:          10,
@@ -1267,6 +1429,7 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *t
 		LoadBalancingJSON: `{"strategy":"round_robin"}`,
 		Enabled:           true,
 		RelayChainJSON:    `[11,22]`,
+		RelayLayersJSON:   `[[11,22]]`,
 		PassProxyHeaders:  true,
 		Revision:          6,
 	}}); err != nil {
@@ -1534,6 +1697,95 @@ func TestStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
 	}
 }
 
+func TestStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "legacy-chain-agent",
+		Name:            "legacy-chain-agent",
+		AgentToken:      "token-legacy-chain-agent",
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "legacy-chain-peer",
+		Name:            "legacy-chain-peer",
+		AgentToken:      "token-legacy-chain-peer",
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent(peer) error = %v", err)
+	}
+
+	if err := store.SaveHTTPRules(t.Context(), "legacy-chain-agent", []HTTPRuleRow{{
+		ID:                91,
+		AgentID:           "legacy-chain-agent",
+		FrontendURL:       "https://legacy-chain-http.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[401]`,
+		RelayLayersJSON:   `[]`,
+		Revision:          5,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "legacy-chain-agent", []L4RuleRow{{
+		ID:                92,
+		AgentID:           "legacy-chain-agent",
+		Name:              "legacy-chain-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        19090,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":19091}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{}`,
+		Enabled:           true,
+		RelayChainJSON:    `[401]`,
+		RelayLayersJSON:   `[]`,
+		Revision:          6,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "legacy-chain-peer", []RelayListenerRow{{
+		ID:         401,
+		AgentID:    "legacy-chain-peer",
+		Name:       "legacy-chain-listener",
+		ListenHost: "127.0.0.1",
+		ListenPort: 7444,
+		PublicHost: "legacy-chain-peer.example.com",
+		PublicPort: 7444,
+		Enabled:    true,
+		Revision:   7,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "legacy-chain-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.RelayListeners) != 0 {
+		t.Fatalf("RelayListeners = %+v", snapshot.RelayListeners)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWithoutTargetAssignment(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -1657,6 +1909,7 @@ func TestStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing
 		LoadBalancingJSON: `{"strategy":"round_robin"}`,
 		Enabled:           true,
 		RelayChainJSON:    `[77]`,
+		RelayLayersJSON:   `[[77]]`,
 		PassProxyHeaders:  true,
 		Revision:          9,
 	}}); err != nil {
@@ -2026,6 +2279,59 @@ func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing
 	}
 }
 
+func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "upstream-only-agent",
+		Name:            "upstream-only-agent",
+		AgentToken:      "token-upstream-only-agent",
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.SaveL4Rules(t.Context(), "upstream-only-agent", []L4RuleRow{{
+		ID:                93,
+		AgentID:           "upstream-only-agent",
+		Name:              "upstream-only",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        19999,
+		UpstreamHost:      "127.0.0.1",
+		UpstreamPort:      20001,
+		BackendsJSON:      `[]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		Revision:          3,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "upstream-only-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.L4Rules) != 0 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2049,6 +2355,7 @@ func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 		LoadBalancingJSON: `{"strategy":"round_robin"}`,
 		Enabled:           true,
 		RelayChainJSON:    `[77]`,
+		RelayLayersJSON:   `[[77]]`,
 		RelayObfs:         true,
 		PassProxyHeaders:  true,
 		Revision:          31,
@@ -2069,6 +2376,7 @@ func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 		LoadBalancingJSON: `{"strategy":"round_robin"}`,
 		TuningJSON:        `{}`,
 		RelayChainJSON:    `[77]`,
+		RelayLayersJSON:   `[[77]]`,
 		RelayObfs:         true,
 		Enabled:           true,
 		Revision:          32,

@@ -285,7 +285,7 @@ func migrateLegacyHTTPRuleCanonicalFields(tx *gorm.DB) error {
 
 	for _, row := range rows {
 		updates := map[string]any{}
-		if len(parseHTTPBackends(row.BackendsJSON)) == 0 {
+		if canonicalJSONIsEmptyArray(row.BackendsJSON) {
 			if backendURL := strings.TrimSpace(row.BackendURL); backendURL != "" {
 				backendsJSON, err := json.Marshal([]HTTPBackend{{URL: backendURL}})
 				if err != nil {
@@ -294,7 +294,7 @@ func migrateLegacyHTTPRuleCanonicalFields(tx *gorm.DB) error {
 				updates["backends"] = string(backendsJSON)
 			}
 		}
-		if len(parseIntLayers(row.RelayLayersJSON)) == 0 {
+		if canonicalJSONIsEmptyArray(row.RelayLayersJSON) {
 			relayChain := parseIntSlice(row.RelayChainJSON)
 			if len(relayChain) > 0 {
 				relayLayers := make([][]int, 0, len(relayChain))
@@ -331,7 +331,7 @@ func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
 
 	for _, row := range rows {
 		updates := map[string]any{}
-		if len(parseL4Backends(row.BackendsJSON)) == 0 {
+		if canonicalJSONIsEmptyArray(row.BackendsJSON) {
 			host := strings.TrimSpace(row.UpstreamHost)
 			if host != "" && row.UpstreamPort >= 1 && row.UpstreamPort <= 65535 {
 				backendsJSON, err := json.Marshal([]L4Backend{{Host: host, Port: row.UpstreamPort}})
@@ -341,7 +341,7 @@ func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
 				updates["backends"] = string(backendsJSON)
 			}
 		}
-		if len(parseIntLayers(row.RelayLayersJSON)) == 0 {
+		if canonicalJSONIsEmptyArray(row.RelayLayersJSON) {
 			relayChain := parseIntSlice(row.RelayChainJSON)
 			if len(relayChain) > 0 {
 				relayLayers := make([][]int, 0, len(relayChain))
@@ -366,4 +366,13 @@ func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func canonicalJSONIsEmptyArray(raw string) bool {
+	switch strings.TrimSpace(raw) {
+	case "", "[]":
+		return true
+	default:
+		return false
+	}
 }

@@ -857,9 +857,6 @@ func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []in
 			referenced = append(referenced, listenerID)
 		}
 	}
-	addRelayChain := func(chainJSON string) {
-		addListenerIDs(parseIntSlice(chainJSON))
-	}
 	addRelayLayers := func(layersJSON string) {
 		addListenerIDs(flattenIntLayers(parseIntLayers(layersJSON)))
 	}
@@ -868,14 +865,12 @@ func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []in
 		if !row.Enabled {
 			continue
 		}
-		addRelayChain(row.RelayChainJSON)
 		addRelayLayers(row.RelayLayersJSON)
 	}
 	for _, row := range l4Rows {
 		if !row.Enabled {
 			continue
 		}
-		addRelayChain(row.RelayChainJSON)
 		addRelayLayers(row.RelayLayersJSON)
 	}
 	return referenced
@@ -916,14 +911,7 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 		return protocol == "tcp"
 	}
 
-	if len(parseL4Backends(row.BackendsJSON)) > 0 {
-		return true
-	}
-
-	if strings.TrimSpace(row.UpstreamHost) == "" {
-		return false
-	}
-	return row.UpstreamPort >= 1 && row.UpstreamPort <= 65535
+	return len(parseL4Backends(row.BackendsJSON)) > 0
 }
 
 func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
