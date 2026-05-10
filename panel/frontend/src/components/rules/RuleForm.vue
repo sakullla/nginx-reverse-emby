@@ -6,7 +6,7 @@
     </div>
     <div class="form-group">
       <label>后端地址</label>
-      <input v-model="localForm.backend_url" class="input-base" placeholder="http://192.168.1.100:8096">
+      <input v-model="localForm.backendUrl" class="input-base" placeholder="http://192.168.1.100:8096">
     </div>
     <div class="form-group">
       <label>标签（逗号分隔）</label>
@@ -31,27 +31,36 @@ const emit = defineEmits(['submit'])
 
 const localForm = ref({
   frontend_url: '',
-  backend_url: '',
+  backendUrl: '',
   tags: '',
   enabled: true
 })
+
+function firstBackendUrl(rule) {
+  if (!Array.isArray(rule?.backends)) return ''
+  return String(rule.backends[0]?.url || '').trim()
+}
 
 watch(() => props.rule, (r) => {
   if (r) {
     localForm.value = {
       frontend_url: r.frontend_url || '',
-      backend_url: r.backend_url || '',
+      backendUrl: firstBackendUrl(r),
       tags: (r.tags || []).join(', '),
       enabled: r.enabled !== false
     }
   } else {
-    localForm.value = { frontend_url: '', backend_url: '', tags: '', enabled: true }
+    localForm.value = { frontend_url: '', backendUrl: '', tags: '', enabled: true }
   }
 }, { immediate: true })
 
 function submit() {
+  const backendUrl = localForm.value.backendUrl.trim()
   emit('submit', {
-    ...localForm.value,
+    frontend_url: localForm.value.frontend_url,
+    backends: backendUrl ? [{ url: backendUrl }] : [],
+    relay_layers: [],
+    enabled: localForm.value.enabled,
     tags: localForm.value.tags.split(',').map(t => t.trim()).filter(Boolean)
   })
 }

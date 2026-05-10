@@ -220,7 +220,7 @@ function httpBackends(rule) {
       .map((backend) => String(backend?.url || '').trim())
       .filter(Boolean)
   }
-  return rule?.backend_url ? [String(rule.backend_url).trim()] : []
+  return []
 }
 
 function formatHttpBackend(rule) {
@@ -243,7 +243,6 @@ const filteredRules = computed(() => {
   const q = raw.toLowerCase()
   return rules.value.filter(rule =>
     String(rule.frontend_url || '').toLowerCase().includes(q) ||
-    String(rule.backend_url || '').toLowerCase().includes(q) ||
     httpBackends(rule).some((backend) => backend.toLowerCase().includes(q)) ||
     String(rule.name || '').toLowerCase().includes(q) ||
     (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))

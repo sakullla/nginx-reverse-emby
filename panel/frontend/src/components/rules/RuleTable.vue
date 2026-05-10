@@ -55,7 +55,7 @@ function httpBackends(rule) {
       .map((backend) => String(backend?.url || '').trim())
       .filter(Boolean)
   }
-  return rule?.backend_url ? [String(rule.backend_url).trim()] : []
+  return []
 }
 
 function formatBackend(rule) {

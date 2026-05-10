@@ -234,7 +234,6 @@ function generateMockRules(count) {
     rules.push({
       id: i,
       frontend_url: `https://${subdomain}.${domain}`,
-      backend_url: `http://${ip}:${svc.port}`,
       backends: [{ url: `http://${ip}:${svc.port}` }],
       load_balancing: { strategy: 'adaptive' },
       enabled: i % 7 !== 0,
@@ -243,7 +242,7 @@ function generateMockRules(count) {
       pass_proxy_headers: true,
       user_agent: '',
       custom_headers: [],
-      relay_chain: [],
+      relay_layers: [],
       relay_obfs: false
     })
   }
@@ -256,9 +255,7 @@ function normalizeHttpBackends(rule = {}) {
       .map((backend) => ({ url: String(backend?.url || '').trim() }))
       .filter((backend) => backend.url)
   }
-
-  const backendUrl = String(rule.backend_url || '').trim()
-  return backendUrl ? [{ url: backendUrl }] : []
+  return []
 }
 
 function normalizeLoadBalancingStrategy(value) {
@@ -276,11 +273,9 @@ function normalizeRelayLayers(value) {
 }
 
 function normalizeHttpRule(rule = {}) {
-  const backends = normalizeHttpBackends(rule)
   return {
     ...rule,
-    backend_url: backends[0]?.url || String(rule.backend_url || '').trim(),
-    backends,
+    backends: normalizeHttpBackends(rule),
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
     },
@@ -297,20 +292,14 @@ function normalizeL4Backends(rule = {}) {
       }))
       .filter((backend) => backend.host && Number.isInteger(backend.port) && backend.port > 0)
   }
-
-  const host = String(rule.upstream_host || '').trim()
-  const port = Number(rule.upstream_port)
-  return host && Number.isInteger(port) && port > 0 ? [{ host, port }] : []
+  return []
 }
 
 function normalizeL4Rule(rule = {}) {
-  const backends = normalizeL4Backends(rule)
   const listenMode = rule.listen_mode === 'proxy' ? 'proxy' : 'tcp'
   return {
     ...rule,
-    upstream_host: backends[0]?.host || String(rule.upstream_host || '').trim(),
-    upstream_port: backends[0]?.port || Number(rule.upstream_port) || 0,
-    backends,
+    backends: normalizeL4Backends(rule),
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
     },
@@ -328,12 +317,11 @@ function normalizeL4Rule(rule = {}) {
 
 function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
-  const backends = normalizeHttpBackends(payload)
+  const { backend_url, relay_chain, ...rest } = payload
   const normalizedPayload = {
-    ...payload,
+    ...rest,
     frontend_url: String(payload.frontend_url || '').trim(),
-    backend_url: backends[0]?.url || '',
-    backends,
+    backends: normalizeHttpBackends(payload),
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
     },
@@ -343,11 +331,6 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     pass_proxy_headers: payload.pass_proxy_headers === true,
     user_agent: String(payload.user_agent || ''),
     custom_headers: Array.isArray(payload.custom_headers) ? payload.custom_headers : []
-  }
-  if (Array.isArray(payload.relay_chain)) {
-    normalizedPayload.relay_chain = payload.relay_chain
-  } else if (includeRelayDefaults) {
-    normalizedPayload.relay_chain = []
   }
   if (Array.isArray(payload.relay_layers)) {
     normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)
@@ -362,45 +345,15 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   return normalizedPayload
 }
 
-function normalizeLegacyHttpRulePayload(payloadOrFrontend, legacyArgs = [], options = {}) {
-  const [
-    backend_url,
-    tags,
-    enabled,
-    proxy_redirect,
-    pass_proxy_headers,
-    user_agent,
-    custom_headers,
-    relay_chain,
-    relay_obfs
-  ] = legacyArgs
-
-  return normalizeHttpRulePayloadObject({
-    frontend_url: payloadOrFrontend,
-    backend_url,
-    tags,
-    enabled,
-    proxy_redirect,
-    pass_proxy_headers,
-    user_agent,
-    custom_headers,
-    relay_chain,
-    relay_obfs
-  }, options)
-}
-
 function normalizeL4RulePayload(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
+  const { upstream_host, upstream_port, relay_chain, ...rest } = payload
   const normalizedPayload = {
-    ...payload,
+    ...rest,
+    backends: normalizeL4Backends(payload),
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
     }
-  }
-  if (Array.isArray(payload.relay_chain)) {
-    normalizedPayload.relay_chain = payload.relay_chain
-  } else if (includeRelayDefaults) {
-    normalizedPayload.relay_chain = []
   }
   if (Array.isArray(payload.relay_layers)) {
     normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)
@@ -973,10 +926,10 @@ export async function fetchRules(agentId) {
   return (data.rules || []).map((rule) => normalizeHttpRule(rule))
 }
 
-export async function createRule(agentId, payloadOrFrontend, ...legacyArgs) {
-  const payload = payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
-    ? normalizeHttpRulePayloadObject(payloadOrFrontend, { includeRelayDefaults: true })
-    : normalizeLegacyHttpRulePayload(payloadOrFrontend, legacyArgs, { includeRelayDefaults: true })
+export async function createRule(agentId, payloadOrFrontend) {
+  const payload = normalizeHttpRulePayloadObject(payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
+    ? payloadOrFrontend
+    : {}, { includeRelayDefaults: true })
   if (isDev) {
     await sleep()
     const nextRule = normalizeHttpRule({
@@ -995,10 +948,10 @@ export async function createRule(agentId, payloadOrFrontend, ...legacyArgs) {
   return normalizeHttpRule(data.rule)
 }
 
-export async function updateRule(agentId, id, payloadOrFrontend, ...legacyArgs) {
-  const payload = payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
-    ? normalizeHttpRulePayloadObject(payloadOrFrontend, { includeRelayDefaults: false })
-    : normalizeLegacyHttpRulePayload(payloadOrFrontend, legacyArgs, { includeRelayDefaults: false })
+export async function updateRule(agentId, id, payloadOrFrontend) {
+  const payload = normalizeHttpRulePayloadObject(payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
+    ? payloadOrFrontend
+    : {}, { includeRelayDefaults: false })
   if (isDev) {
     await sleep()
     const list = mockRulesByAgent[agentId] || []
@@ -1316,14 +1269,12 @@ const mockL4RulesByAgent = {
       protocol: 'tcp',
       listen_host: '0.0.0.0',
       listen_port: 25565,
-      upstream_host: '192.168.1.20',
-      upstream_port: 25565,
       backends: [
         { host: '192.168.1.20', port: 25565 },
         { host: 'game-backup.ddns.example', port: 25565 }
       ],
       load_balancing: { strategy: 'round_robin' },
-      relay_chain: [],
+      relay_layers: [],
       relay_obfs: false,
       enabled: true,
       tags: ['TCP', ':25565', 'game']
@@ -1335,14 +1286,12 @@ const mockL4RulesByAgent = {
       protocol: 'udp',
       listen_host: '0.0.0.0',
       listen_port: 51820,
-      upstream_host: '10.0.0.20',
-      upstream_port: 51820,
       backends: [
         { host: '10.0.0.20', port: 51820 },
         { host: 'wireguard-edge.ddns.example', port: 51820 }
       ],
       load_balancing: { strategy: 'random' },
-      relay_chain: [],
+      relay_layers: [],
       relay_obfs: false,
       enabled: true,
       tags: ['UDP', ':51820', 'vpn']

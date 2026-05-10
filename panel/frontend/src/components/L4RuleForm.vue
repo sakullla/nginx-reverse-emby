@@ -372,12 +372,6 @@ function normalizeInitialBackends(initialData) {
   if (initialData?.backends?.length > 0) {
     return initialData.backends.map(b => createBackend(b))
   }
-  if (initialData?.upstream_host) {
-    return [createBackend({
-      address: `${initialData.upstream_host}:${initialData.upstream_port || ''}`,
-      resolve: false,
-    })]
-  }
   return [createBackend()]
 }
 
@@ -403,7 +397,6 @@ function createFormState(initialData) {
     proxy_egress_mode: initialData?.proxy_egress_mode || 'relay',
     proxy_egress_url: initialData?.proxy_egress_url || '',
     relay_layers: getRelayLayers(initialData),
-    relay_chain: [],
     relay_obfs: initialData?.relay_obfs === true,
   }
 }
@@ -483,22 +476,7 @@ function getRelayLayers(value) {
   if (Array.isArray(value?.relay_layers) && value.relay_layers.length > 0) {
     return value.relay_layers
   }
-  if (Array.isArray(value?.relay_chain) && value.relay_chain.length > 0) {
-    return value.relay_chain.map((id) => [id])
-  }
   return []
-}
-
-function flattenRelayLayers(layers) {
-  if (!Array.isArray(layers)) return []
-  const result = []
-  for (const layer of layers) {
-    if (Array.isArray(layer) && layer.length > 0) {
-      const id = Number(layer[0])
-      if (Number.isFinite(id)) result.push(id)
-    }
-  }
-  return result
 }
 
 const hasRelayConfig = computed(() => {
@@ -661,8 +639,6 @@ function buildPayload() {
     protocol: form.value.protocol,
     listen_host: form.value.listen_host.trim(),
     listen_port: listenPort,
-    upstream_host: validBackends[0]?.host || '',
-    upstream_port: validBackends[0]?.port || 0,
     backends: validBackends,
     load_balancing: {
       strategy: normalizeL4Strategy(form.value.load_balancing.strategy),
@@ -672,7 +648,6 @@ function buildPayload() {
     listen_mode: form.value.protocol === 'tcp' ? form.value.listen_mode : 'tcp',
     proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : '',
     relay_layers: Array.isArray(form.value.relay_layers) ? form.value.relay_layers.map((l) => [...l]) : [],
-    relay_chain: flattenRelayLayers(form.value.relay_layers),
     relay_obfs: form.value.protocol === 'tcp'
       && firstRelayListener.value?.transport_mode === 'tls_tcp'
       && Array.isArray(form.value.relay_layers)

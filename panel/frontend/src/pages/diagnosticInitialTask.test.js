@@ -27,7 +27,7 @@ vi.mock('../hooks/useAgents', () => ({
 vi.mock('../hooks/useRules', () => ({
   useRules: (agentId) => {
     useRulesAgentIds.push(agentId)
-    return { data: { value: agentId.value ? [{ id: 7, frontend_url: 'https://app.example.test', backend_url: 'http://origin.example.test', enabled: true }] : [] }, isLoading: { value: false } }
+    return { data: { value: agentId.value ? [{ id: 7, frontend_url: 'https://app.example.test', backends: [{ url: 'http://origin.example.test' }], enabled: true }] : [] }, isLoading: { value: false } }
   },
   useCreateRule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useUpdateRule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
@@ -37,7 +37,7 @@ vi.mock('../hooks/useRules', () => ({
 vi.mock('../hooks/useL4Rules', () => ({
   useL4Rules: (agentId) => {
     useL4RulesAgentIds.push(agentId)
-    return { data: { value: agentId.value ? [{ id: 9, name: 'tcp-app', listen_host: '0.0.0.0', listen_port: 443, protocol: 'tcp', backends: [{ address: '10.0.0.1:443' }], enabled: true }] : [] }, isLoading: { value: false } }
+    return { data: { value: agentId.value ? [{ id: 9, name: 'tcp-app', listen_host: '0.0.0.0', listen_port: 443, protocol: 'tcp', backends: [{ host: '10.0.0.1', port: 443 }], enabled: true }] : [] }, isLoading: { value: false } }
   },
   useCreateL4Rule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useUpdateL4Rule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
