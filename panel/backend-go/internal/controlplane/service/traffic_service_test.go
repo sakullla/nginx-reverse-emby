@@ -189,6 +189,47 @@ func TestTrafficServiceIngestHeartbeatIgnoresDeletedScopedTraffic(t *testing.T) 
 	}
 }
 
+func TestTrafficServiceIngestHeartbeatUsesPreservedCursorForReusedRuleID(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	if err := store.SaveHTTPRules(ctx, "edge-1", []storage.HTTPRuleRow{{ID: 1, AgentID: "edge-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	stats := AgentStats{"traffic": map[string]any{
+		"http_rules": map[string]any{"1": map[string]any{"rx_bytes": uint64(100), "tx_bytes": uint64(200)}},
+	}}
+	if err := svc.IngestHeartbeat(ctx, "edge-1", stats); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteTrafficByScope(ctx, "edge-1", "http_rule", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveHTTPRules(ctx, "edge-1", []storage.HTTPRuleRow{{ID: 1, AgentID: "edge-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.IngestHeartbeat(ctx, "edge-1", stats); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "http_rule",
+		ScopeID:     "1",
+		Granularity: "hour",
+		From:        now.Add(-time.Hour),
+		To:          now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("rows = %+v, want no old cumulative traffic attributed to reused rule ID", rows)
+	}
+}
+
 func TestTrafficServiceIngestHeartbeatParsesHostTrafficStats(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)

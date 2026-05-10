@@ -926,13 +926,60 @@ func TestDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 4 {
-		t.Fatalf("deleted = %d, want cursor plus hourly/daily/monthly rows", deleted)
+	if deleted != 3 {
+		t.Fatalf("deleted = %d, want hourly/daily/monthly rows", deleted)
 	}
 
-	assertTrafficScopeRows(t, store, "edge-1", "http_rule", "11", 0)
+	assertTrafficScopeRows(t, store, "edge-1", "http_rule", "11", 1)
 	assertTrafficScopeRows(t, store, "edge-1", "http_rule", "12", 4)
 	assertTrafficScopeRows(t, store, "edge-2", "http_rule", "11", 4)
+}
+
+func TestDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "http_rule",
+		ScopeID:    "11",
+		RXBytes:    100,
+		TXBytes:    200,
+		ObservedAt: bucket.Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+		AgentID:     "edge-1",
+		ScopeType:   "http_rule",
+		ScopeID:     "11",
+		BucketStart: bucket,
+		RXBytes:     100,
+		TXBytes:     200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := store.DeleteTrafficByScope(ctx, "edge-1", "http_rule", "11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 3 {
+		t.Fatalf("deleted = %d, want hourly/daily/monthly rows only", deleted)
+	}
+
+	cursor, ok, err := store.GetTrafficCursor(ctx, "edge-1", "http_rule", "11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected cursor baseline to remain")
+	}
+	if cursor.RXBytes != 100 || cursor.TXBytes != 200 {
+		t.Fatalf("cursor = %+v, want old cumulative baseline preserved", cursor)
+	}
+	assertTrafficScopeRows(t, store, "edge-1", "http_rule", "11", 1)
 }
 
 func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
@@ -1025,6 +1072,7 @@ func TestDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
 func assertTrafficScopeRows(t *testing.T, store *GormStore, agentID, scopeType, scopeID string, want int64) {
 	t.Helper()
 
+	var total int64
 	models := []any{
 		&AgentTrafficRawCursorRow{},
 		&AgentTrafficHourlyBucketRow{},
@@ -1038,9 +1086,10 @@ func assertTrafficScopeRows(t *testing.T, store *GormStore, agentID, scopeType, 
 			Count(&got).Error; err != nil {
 			t.Fatal(err)
 		}
-		if got != want/4 {
-			t.Fatalf("%T rows for %s/%s/%s = %d, want %d", model, agentID, scopeType, scopeID, got, want/4)
-		}
+		total += got
+	}
+	if total != want {
+		t.Fatalf("traffic scope rows for %s/%s/%s = %d, want %d", agentID, scopeType, scopeID, total, want)
 	}
 }
 

@@ -618,7 +618,6 @@ func (s *GormStore) deleteTrafficByAgentTx(tx *gorm.DB, agentID string) (int64, 
 
 func trafficScopedDataModels() []any {
 	return []any{
-		&AgentTrafficRawCursorRow{},
 		&AgentTrafficHourlyBucketRow{},
 		&AgentTrafficDailySummaryRow{},
 		&AgentTrafficMonthlySummaryRow{},
