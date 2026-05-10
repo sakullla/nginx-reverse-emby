@@ -1183,7 +1183,7 @@ func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *tes
 	ctx := context.Background()
 	currentBucket := time.Date(2026, 5, 20, 8, 0, 0, 0, time.UTC)
 	previousBucket := time.Date(2026, 4, 20, 8, 0, 0, 0, time.UTC)
-	nextBucket := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	nextBucket := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
 	for _, delta := range []TrafficDelta{
 		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: currentBucket, RXBytes: 100, TXBytes: 200},
 		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: currentBucket, RXBytes: 10, TXBytes: 20},
@@ -1196,12 +1196,12 @@ func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *tes
 		}
 	}
 
-	deleted, err := store.DeleteTrafficBucketsByAgentInWindow(ctx, "edge-1", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	deleted, err := store.DeleteTrafficBucketsByAgentInWindow(ctx, "edge-1", time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 6 {
-		t.Fatalf("deleted = %d, want hourly/daily/monthly rows for two current-cycle scopes", deleted)
+	if deleted != 7 {
+		t.Fatalf("deleted = %d, want hourly/daily rows and overlapping monthly rows for two current-cycle scopes", deleted)
 	}
 
 	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
@@ -1231,6 +1231,35 @@ func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *tes
 	}
 	if len(otherRows) != 1 {
 		t.Fatalf("edge-2 rows = %+v, want other agent current-cycle row preserved", otherRows)
+	}
+
+	monthlyRows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+		To:          time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(monthlyRows) != 1 {
+		t.Fatalf("monthly rows = %+v, want pre-cycle month preserved", monthlyRows)
+	}
+	assertTrafficBucketAt(t, monthlyRows, "edge-1", "agent_total", "", time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), 300, 400)
+
+	juneRows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		To:          time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(juneRows) != 1 || juneRows[0].RXBytes != 500 || juneRows[0].TXBytes != 600 {
+		t.Fatalf("june monthly rows = %+v, want post-cycle June usage rebuilt", juneRows)
 	}
 }
 

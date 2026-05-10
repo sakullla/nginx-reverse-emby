@@ -778,13 +778,17 @@ func deleteTrafficRows(tx *gorm.DB, models []any, query string, args ...any) (in
 
 func deleteTrafficBucketRowsInWindow(tx *gorm.DB, agentID string, from, to time.Time) (int64, error) {
 	var deleted int64
+	monthlyFrom := monthBucketStart(from)
+	monthlyTo := monthBucketEnd(to)
 	for _, target := range []struct {
 		model      any
 		timeColumn string
+		from       time.Time
+		to         time.Time
 	}{
-		{model: &AgentTrafficHourlyBucketRow{}, timeColumn: "bucket_start"},
-		{model: &AgentTrafficDailySummaryRow{}, timeColumn: "period_start"},
-		{model: &AgentTrafficMonthlySummaryRow{}, timeColumn: "period_start"},
+		{model: &AgentTrafficHourlyBucketRow{}, timeColumn: "bucket_start", from: from, to: to},
+		{model: &AgentTrafficDailySummaryRow{}, timeColumn: "period_start", from: from, to: to},
+		{model: &AgentTrafficMonthlySummaryRow{}, timeColumn: "period_start", from: monthlyFrom, to: monthlyTo},
 	} {
 		if !tx.Migrator().HasTable(target.model) {
 			continue
@@ -792,15 +796,70 @@ func deleteTrafficBucketRowsInWindow(tx *gorm.DB, agentID string, from, to time.
 		result := tx.Where(
 			"agent_id = ? AND "+target.timeColumn+" >= ? AND "+target.timeColumn+" < ?",
 			agentID,
-			formatTrafficTime(from),
-			formatTrafficTime(to),
+			formatTrafficTime(target.from),
+			formatTrafficTime(target.to),
 		).Delete(target.model)
 		if result.Error != nil {
 			return 0, result.Error
 		}
 		deleted += result.RowsAffected
 	}
+	if err := rebuildMonthlyTrafficBuckets(tx, agentID, monthlyFrom, monthlyTo); err != nil {
+		return 0, err
+	}
 	return deleted, nil
+}
+
+func monthBucketStart(value time.Time) time.Time {
+	value = value.UTC()
+	return time.Date(value.Year(), value.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+func monthBucketEnd(value time.Time) time.Time {
+	start := monthBucketStart(value)
+	if value.Equal(start) {
+		return start
+	}
+	return start.AddDate(0, 1, 0)
+}
+
+func rebuildMonthlyTrafficBuckets(tx *gorm.DB, agentID string, from, to time.Time) error {
+	if !tx.Migrator().HasTable(&AgentTrafficDailySummaryRow{}) || !tx.Migrator().HasTable(&AgentTrafficMonthlySummaryRow{}) {
+		return nil
+	}
+	var rows []trafficBreakdownRowWithPeriod
+	if err := tx.Model(&AgentTrafficDailySummaryRow{}).
+		Select("agent_id, scope_type, scope_id, substr(period_start, 1, 7) || '-01T00:00:00Z' AS period_start, SUM(rx_bytes) AS rx_bytes, SUM(tx_bytes) AS tx_bytes").
+		Where("agent_id = ? AND period_start >= ? AND period_start < ?", agentID, formatTrafficTime(from), formatTrafficTime(to)).
+		Group("agent_id, scope_type, scope_id, substr(period_start, 1, 7)").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	now := nowTrafficTimestamp()
+	for _, row := range rows {
+		if err := incrementTrafficMonthlySummary(tx, AgentTrafficMonthlySummaryRow{
+			AgentID:     row.AgentID,
+			ScopeType:   row.ScopeType,
+			ScopeID:     row.ScopeID,
+			PeriodStart: row.PeriodStart,
+			RXBytes:     row.RXBytes,
+			TXBytes:     row.TXBytes,
+			UpdatedAt:   now,
+			CreatedAt:   now,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type trafficBreakdownRowWithPeriod struct {
+	AgentID     string
+	ScopeType   string
+	ScopeID     string
+	PeriodStart string
+	RXBytes     uint64
+	TXBytes     uint64
 }
 
 func incrementTrafficHourlyBucket(tx *gorm.DB, row AgentTrafficHourlyBucketRow) error {
