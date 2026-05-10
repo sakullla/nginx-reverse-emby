@@ -310,6 +310,7 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return L4Rule{}, err
 	}
+	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "l4_rule", deleted.ID)
 	return deleted, nil
 }
 

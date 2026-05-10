@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -19,6 +20,9 @@ type fakeL4Store struct {
 	loadSnapshotCalls int
 	listL4RulesErr    error
 	getL4RuleCalls    int
+	trafficDeletes    []trafficScopeDeleteCall
+	trafficDeleteErr  error
+	trafficDeleteHook func()
 }
 
 func (f *fakeL4Store) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -117,6 +121,21 @@ func (f *fakeL4Store) SaveManagedCertificateMaterial(context.Context, string, st
 
 func (f *fakeL4Store) CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error {
 	return nil
+}
+
+func (f *fakeL4Store) DeleteTrafficByScope(_ context.Context, agentID, scopeType, scopeID string) (int64, error) {
+	f.trafficDeletes = append(f.trafficDeletes, trafficScopeDeleteCall{
+		agentID:   agentID,
+		scopeType: scopeType,
+		scopeID:   scopeID,
+	})
+	if f.trafficDeleteHook != nil {
+		f.trafficDeleteHook()
+	}
+	if f.trafficDeleteErr != nil {
+		return 0, f.trafficDeleteErr
+	}
+	return 0, nil
 }
 
 func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
@@ -1176,6 +1195,83 @@ func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	}
 	if store.loadSnapshotCalls != 0 {
 		t.Fatalf("LoadAgentSnapshot() calls = %d", store.loadSnapshotCalls)
+	}
+}
+
+func TestL4RuleServiceDeleteCascadesL4RuleTraffic(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			CapabilitiesJSON: `["l4"]`,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:           12,
+				AgentID:      "edge-1",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 26966,
+				Enabled:      true,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+	}
+	svc := NewL4RuleService(config.Config{LocalAgentID: "local"}, store)
+
+	if _, err := svc.Delete(context.Background(), "edge-1", 12); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(store.trafficDeletes) != 1 {
+		t.Fatalf("traffic deletes = %+v, want one scope delete", store.trafficDeletes)
+	}
+	if got := store.trafficDeletes[0]; got != (trafficScopeDeleteCall{agentID: "edge-1", scopeType: "l4_rule", scopeID: "12"}) {
+		t.Fatalf("traffic delete = %+v", got)
+	}
+}
+
+func TestL4RuleServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
+	order := []string{}
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "local",
+			CapabilitiesJSON: `["l4"]`,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:           13,
+				AgentID:      "local",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 26966,
+				Enabled:      true,
+			}},
+		},
+		relayByAgent:     map[string][]storage.RelayListenerRow{},
+		trafficDeleteErr: errors.New("cleanup failed"),
+		trafficDeleteHook: func() {
+			order = append(order, "cleanup")
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		order = append(order, "apply")
+		return nil
+	})
+
+	if _, err := svc.Delete(context.Background(), "local", 13); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(order) != 2 || order[0] != "apply" || order[1] != "cleanup" {
+		t.Fatalf("order = %+v, want apply then cleanup", order)
 	}
 }
 
