@@ -272,11 +272,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			continue
 		}
 		input := httpRuleInputFromBackup(item, listenerIDMap)
-		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
-			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
-			continue
-		}
-		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
 			continue
 		}
@@ -303,11 +299,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			continue
 		}
 		input := l4RuleInputFromBackup(item, listenerIDMap)
-		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
-			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
-			continue
-		}
-		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
 			continue
 		}
@@ -1114,11 +1106,7 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 		}
 
 		input := httpRuleInputFromBackup(item, listenerIDMap)
-		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
-			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
-			continue
-		}
-		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
 			continue
 		}
@@ -1192,11 +1180,7 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		}
 
 		input := l4RuleInputFromBackup(item, listenerIDMap)
-		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
-			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
-			continue
-		}
-		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
 			continue
 		}
@@ -1604,17 +1588,15 @@ func certificateRequiresMaterial(cert ManagedCertificate) bool {
 }
 
 func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int) HTTPRuleInput {
-	relayChain := remapIntSlice(rule.RelayChain, listenerIDMap)
-	relayLayers := remapIntLayers(rule.RelayLayers, listenerIDMap)
+	backends := backupHTTPBackends(rule.Backends, rule.BackendURL)
+	relayLayers := backupRelayLayers(rule.RelayChain, rule.RelayLayers, listenerIDMap)
 	return HTTPRuleInput{
 		FrontendURL:      backupStringPtr(rule.FrontendURL),
-		BackendURL:       backupStringPtr(rule.BackendURL),
-		Backends:         &rule.Backends,
+		Backends:         &backends,
 		LoadBalancing:    &rule.LoadBalancing,
 		Enabled:          backupBoolPtr(rule.Enabled),
 		Tags:             &rule.Tags,
 		ProxyRedirect:    backupBoolPtr(rule.ProxyRedirect),
-		RelayChain:       relayChain,
 		RelayLayers:      relayLayers,
 		RelayObfs:        backupBoolPtr(rule.RelayObfs),
 		PassProxyHeaders: backupBoolPtr(rule.PassProxyHeaders),
@@ -1624,19 +1606,16 @@ func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int) HTT
 }
 
 func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int) L4RuleInput {
-	relayChain := remapIntSlice(rule.RelayChain, listenerIDMap)
-	relayLayers := remapIntLayers(rule.RelayLayers, listenerIDMap)
+	backends := backupL4Backends(rule.Backends, rule.UpstreamHost, rule.UpstreamPort)
+	relayLayers := backupRelayLayers(rule.RelayChain, rule.RelayLayers, listenerIDMap)
 	return L4RuleInput{
 		Name:          backupStringPtr(rule.Name),
 		Protocol:      backupStringPtr(rule.Protocol),
 		ListenHost:    backupStringPtr(rule.ListenHost),
 		ListenPort:    backupIntPtr(rule.ListenPort),
-		UpstreamHost:  backupStringPtr(rule.UpstreamHost),
-		UpstreamPort:  backupIntPtr(rule.UpstreamPort),
-		Backends:      &rule.Backends,
+		Backends:      &backends,
 		LoadBalancing: &rule.LoadBalancing,
 		Tuning:        &rule.Tuning,
-		RelayChain:    relayChain,
 		RelayLayers:   relayLayers,
 		RelayObfs:     backupBoolPtr(rule.RelayObfs),
 		ListenMode:    backupStringPtr(rule.ListenMode),
@@ -1650,6 +1629,45 @@ func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int) L4RuleI
 		Enabled:         backupBoolPtr(rule.Enabled),
 		Tags:            &rule.Tags,
 	}
+}
+
+func backupHTTPBackends(backends []HTTPRuleBackend, backendURL string) []HTTPRuleBackend {
+	canonical := append([]HTTPRuleBackend(nil), backends...)
+	if len(canonical) == 0 && strings.TrimSpace(backendURL) != "" {
+		canonical = []HTTPRuleBackend{{URL: backendURL}}
+	}
+	return canonical
+}
+
+func backupL4Backends(backends []L4Backend, upstreamHost string, upstreamPort int) []L4Backend {
+	canonical := append([]L4Backend(nil), backends...)
+	if len(canonical) == 0 && strings.TrimSpace(upstreamHost) != "" && upstreamPort > 0 {
+		canonical = []L4Backend{{Host: upstreamHost, Port: upstreamPort}}
+	}
+	return canonical
+}
+
+func backupRelayLayers(relayChain []int, relayLayers [][]int, listenerIDMap map[int]int) *[][]int {
+	if len(relayLayers) == 0 && len(relayChain) > 0 {
+		return remapRelayChainAsLayers(relayChain, listenerIDMap)
+	}
+	return remapIntLayers(relayLayers, listenerIDMap)
+}
+
+func remapRelayChainAsLayers(values []int, mapping map[int]int) *[][]int {
+	if values == nil {
+		return nil
+	}
+	mapped := make([][]int, 0, len(values))
+	for _, value := range values {
+		next, ok := mapping[value]
+		if !ok || next <= 0 {
+			empty := [][]int{}
+			return &empty
+		}
+		mapped = append(mapped, []int{next})
+	}
+	return &mapped
 }
 
 func relayListenerInputFromBackup(listener BackupRelayListener, certIDMap map[int]int) RelayListenerInput {
@@ -1733,6 +1751,21 @@ func remappedIntLayersComplete(original [][]int, mapped *[][]int) bool {
 		}
 	}
 	return true
+}
+
+func remappedBackupRelayLayersComplete(relayChain []int, relayLayers [][]int, mapped *[][]int) bool {
+	if len(relayLayers) == 0 && len(relayChain) > 0 {
+		if mapped == nil || len(*mapped) != len(relayChain) {
+			return false
+		}
+		for _, layer := range *mapped {
+			if len(layer) != 1 {
+				return false
+			}
+		}
+		return true
+	}
+	return remappedIntLayersComplete(relayLayers, mapped)
 }
 
 func pointerIntSlice(values *[]int) []int {

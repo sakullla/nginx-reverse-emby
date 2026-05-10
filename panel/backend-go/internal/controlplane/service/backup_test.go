@@ -574,6 +574,181 @@ func TestBackupServiceImportsLegacyArchiveWithoutTrafficFiles(t *testing.T) {
 	}
 }
 
+func TestBackupServiceCanonicalizesLegacyRuleFieldsOnPreviewAndImport(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureMain,
+			ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+			Counts: BackupCounts{
+				Agents:         1,
+				HTTPRules:      2,
+				L4Rules:        2,
+				RelayListeners: 1,
+				Certificates:   1,
+			},
+		},
+		Agents: []BackupAgent{{
+			ID:           "edge-legacy",
+			Name:         "edge-legacy",
+			AgentToken:   "token-edge-legacy",
+			Capabilities: []string{"http_rules", "l4", "cert_install"},
+		}},
+		Certificates: []BackupCertificate{{
+			ID:              21,
+			Domain:          "relay.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  []string{"edge-legacy"},
+			Status:          "pending",
+			AgentReports:    map[string]ManagedCertificateAgentReport{},
+			ACMEInfo:        ManagedCertificateACMEInfo{},
+			Usage:           "relay_tunnel",
+			CertificateType: "acme",
+		}},
+		RelayListeners: []BackupRelayListener{{
+			ID:                      31,
+			AgentID:                 "edge-legacy",
+			Name:                    "relay-legacy",
+			ListenHost:              "127.0.0.1",
+			BindHosts:               []string{"127.0.0.1"},
+			ListenPort:              7443,
+			PublicHost:              "relay.example.com",
+			PublicPort:              7443,
+			Enabled:                 true,
+			CertificateID:           backupIntPtr(21),
+			TLSMode:                 "pin_only",
+			TransportMode:           "tls_tcp",
+			ObfsMode:                "off",
+			PinSet:                  []RelayPin{{Type: "spki_sha256", Value: "fixture-pin"}},
+			TrustedCACertificateIDs: []int{},
+		}},
+		HTTPRules: []BackupHTTPRule{{
+			ID:               41,
+			AgentID:          "edge-legacy",
+			FrontendURL:      "https://legacy-backend.example.com",
+			BackendURL:       "http://127.0.0.1:8096",
+			Enabled:          true,
+			ProxyRedirect:    true,
+			PassProxyHeaders: defaultPassProxyHeaders(),
+		}, {
+			ID:               42,
+			AgentID:          "edge-legacy",
+			FrontendURL:      "https://legacy-relay.example.com",
+			Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8097"}},
+			Enabled:          true,
+			ProxyRedirect:    true,
+			RelayChain:       []int{31},
+			PassProxyHeaders: defaultPassProxyHeaders(),
+		}},
+		L4Rules: []BackupL4Rule{{
+			ID:           51,
+			AgentID:      "edge-legacy",
+			Name:         "legacy upstream",
+			Protocol:     "tcp",
+			ListenHost:   "0.0.0.0",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			Enabled:      true,
+		}, {
+			ID:         52,
+			AgentID:    "edge-legacy",
+			Name:       "legacy relay",
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 9002,
+			Backends:   []L4Backend{{Host: "127.0.0.1", Port: 9003}},
+			RelayChain: []int{31},
+			Enabled:    true,
+		}},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	previewStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(preview) error = %v", err)
+	}
+	defer previewStore.Close()
+	preview, err := NewBackupService(cfg, previewStore).Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	if preview.Summary.Imported.HTTPRules != 2 || preview.Summary.Imported.L4Rules != 2 || preview.Summary.Imported.RelayListeners != 1 {
+		t.Fatalf("preview imported summary = %+v", preview.Summary.Imported)
+	}
+	if preview.Summary.SkippedInvalid.HTTPRules != 0 || preview.Summary.SkippedInvalid.L4Rules != 0 {
+		t.Fatalf("preview invalid summary = %+v", preview.Summary.SkippedInvalid)
+	}
+
+	importStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "import"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(import) error = %v", err)
+	}
+	defer importStore.Close()
+	result, err := NewBackupService(cfg, importStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.HTTPRules != 2 || result.Summary.Imported.L4Rules != 2 || result.Summary.SkippedInvalid.HTTPRules != 0 || result.Summary.SkippedInvalid.L4Rules != 0 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+
+	httpRows, err := importStore.ListHTTPRules(ctx, "edge-legacy")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(httpRows) != 2 {
+		t.Fatalf("http rules len = %d, want 2: %+v", len(httpRows), httpRows)
+	}
+	httpByFrontend := map[string]storage.HTTPRuleRow{}
+	for _, row := range httpRows {
+		httpByFrontend[row.FrontendURL] = row
+	}
+	if got := httpByFrontend["https://legacy-backend.example.com"].BackendsJSON; got != `[{"url":"http://127.0.0.1:8096"}]` {
+		t.Fatalf("legacy http backends = %s", got)
+	}
+	if got := httpByFrontend["https://legacy-backend.example.com"].RelayChainJSON; got != `[]` {
+		t.Fatalf("legacy http relay_chain = %s", got)
+	}
+	if got := httpByFrontend["https://legacy-relay.example.com"].RelayLayersJSON; got != `[[31]]` {
+		t.Fatalf("legacy http relay_layers = %s", got)
+	}
+	if got := httpByFrontend["https://legacy-relay.example.com"].RelayChainJSON; got != `[]` {
+		t.Fatalf("legacy relay http relay_chain = %s", got)
+	}
+
+	l4Rows, err := importStore.ListL4Rules(ctx, "edge-legacy")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(l4Rows) != 2 {
+		t.Fatalf("l4 rules len = %d, want 2: %+v", len(l4Rows), l4Rows)
+	}
+	l4ByPort := map[int]storage.L4RuleRow{}
+	for _, row := range l4Rows {
+		l4ByPort[row.ListenPort] = row
+	}
+	if got := l4ByPort[9000].BackendsJSON; got != `[{"host":"127.0.0.1","port":9001}]` {
+		t.Fatalf("legacy l4 backends = %s", got)
+	}
+	if got := l4ByPort[9000].RelayChainJSON; got != `[]` {
+		t.Fatalf("legacy l4 relay_chain = %s", got)
+	}
+	if got := l4ByPort[9002].RelayLayersJSON; got != `[[31]]` {
+		t.Fatalf("legacy relay l4 relay_layers = %s", got)
+	}
+	if got := l4ByPort[9002].RelayChainJSON; got != `[]` {
+		t.Fatalf("legacy relay l4 relay_chain = %s", got)
+	}
+}
+
 func TestBackupServiceExportSkipsTrafficTablesWhenDisabled(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.NewStore(storage.StoreConfig{
