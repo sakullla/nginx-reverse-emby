@@ -20,6 +20,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/stream"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
@@ -387,31 +388,12 @@ func l4RecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
 }
 
 func copyL4TCP(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic.Recorder) (int64, error) {
-	wrapped := l4TrafficWriter{
-		dst:         dst,
-		rxDirection: rxDirection,
-		recorder:    l4RecorderOrAggregate(recorder),
+	direction := stream.DirectionTX
+	if rxDirection {
+		direction = stream.DirectionRX
 	}
+	wrapped := stream.NewTrafficWriterFlushBelow(dst, direction, l4RecorderOrAggregate(recorder), 32*1024)
 	return copyPreferReaderFrom(wrapped, src)
-}
-
-type l4TrafficWriter struct {
-	dst         io.Writer
-	rxDirection bool
-	recorder    *traffic.Recorder
-}
-
-func (w l4TrafficWriter) Write(p []byte) (int, error) {
-	n, err := w.dst.Write(p)
-	if n > 0 {
-		if w.rxDirection {
-			w.recorder.Add(int64(n), 0)
-		} else {
-			w.recorder.Add(0, int64(n))
-		}
-		w.recorder.FlushIfPendingBelow(32 * 1024)
-	}
-	return n, err
 }
 
 func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]byte, io.Reader, error) {
