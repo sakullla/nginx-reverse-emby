@@ -90,6 +90,48 @@ func TestCopyResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
 	}
 }
 
+func TestCopyResponseFlushesStreamingChunks(t *testing.T) {
+	body := newBlockingReadCloser([]byte("x"))
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       body,
+	}
+	recorder := newObservedResponseWriter()
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := copyResponse(recorder, resp, nil)
+		done <- err
+	}()
+
+	recorder.waitForWrite(t)
+	recorder.waitForFlush(t)
+	body.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("copyResponse() error = %v", err)
+	}
+}
+
+func TestHTTPStreamingResponseWriterThrottlesSmallFlushes(t *testing.T) {
+	recorder := newObservedResponseWriter()
+	trafficWriter := newHTTPStreamingResponseWriter(recorder, nil)
+
+	if _, err := trafficWriter.Write([]byte("a")); err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	if got := recorder.flushCount(); got != 1 {
+		t.Fatalf("flushes after first write = %d, want 1", got)
+	}
+
+	if _, err := trafficWriter.Write([]byte("b")); err != nil {
+		t.Fatalf("Write(second) error = %v", err)
+	}
+	if got := recorder.flushCount(); got != 1 {
+		t.Fatalf("flushes after second small write = %d, want still 1", got)
+	}
+}
+
 func TestHTTPResponseTrafficWriterBuffersSmallWritesUntilFlush(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
@@ -328,15 +370,20 @@ func (r *blockingReadCloser) Close() error {
 }
 
 type observedResponseWriter struct {
-	recorder *httptest.ResponseRecorder
-	wrote    chan struct{}
-	once     sync.Once
+	recorder  *httptest.ResponseRecorder
+	wrote     chan struct{}
+	flushed   chan struct{}
+	once      sync.Once
+	flushOnce sync.Once
+	mu        sync.Mutex
+	flushes   int
 }
 
 func newObservedResponseWriter() *observedResponseWriter {
 	return &observedResponseWriter{
 		recorder: httptest.NewRecorder(),
 		wrote:    make(chan struct{}),
+		flushed:  make(chan struct{}),
 	}
 }
 
@@ -358,12 +405,37 @@ func (w *observedResponseWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+func (w *observedResponseWriter) Flush() {
+	w.recorder.Flush()
+	w.mu.Lock()
+	w.flushes++
+	w.mu.Unlock()
+	w.flushOnce.Do(func() {
+		close(w.flushed)
+	})
+}
+
+func (w *observedResponseWriter) flushCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.flushes
+}
+
 func (w *observedResponseWriter) waitForWrite(t *testing.T) {
 	t.Helper()
 	select {
 	case <-w.wrote:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for response write")
+	}
+}
+
+func (w *observedResponseWriter) waitForFlush(t *testing.T) {
+	t.Helper()
+	select {
+	case <-w.flushed:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for response flush")
 	}
 }
 

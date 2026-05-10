@@ -23,7 +23,7 @@ func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.
 	w.WriteHeader(resp.StatusCode)
 	var written int64
 	if resp.Body != nil {
-		trafficWriter := newHTTPResponseTrafficWriter(w, recorder)
+		trafficWriter := newHTTPStreamingResponseWriter(w, recorder)
 		n, err := io.Copy(trafficWriter, resp.Body)
 		written = n
 		trafficWriter.FlushTraffic()
@@ -161,6 +161,53 @@ func (w *httpResponseTrafficWriter) Write(p []byte) (int, error) {
 
 func (w *httpResponseTrafficWriter) FlushTraffic() {
 	w.flusher.Flush()
+}
+
+func newHTTPStreamingResponseWriter(dst http.ResponseWriter, recorder *traffic.Recorder) *httpStreamingResponseWriter {
+	return &httpStreamingResponseWriter{
+		ResponseWriter: dst,
+		flusher:        newHTTPResponseTrafficFlusher(recorder),
+		threshold:      httpResponseTrafficFlushThreshold,
+	}
+}
+
+type httpStreamingResponseWriter struct {
+	http.ResponseWriter
+	flusher   *httpResponseTrafficFlusher
+	threshold uint64
+	pending   uint64
+	flushed   bool
+}
+
+func (w *httpStreamingResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if n > 0 {
+		w.pending += uint64(n)
+		w.flusher.Add(uint64(n), w.threshold)
+		w.flushIfNeeded()
+	}
+	return n, err
+}
+
+func (w *httpStreamingResponseWriter) FlushTraffic() {
+	w.flusher.Flush()
+	w.flushDownstream()
+}
+
+func (w *httpStreamingResponseWriter) flushIfNeeded() {
+	if !w.flushed || w.pending >= w.threshold {
+		w.flushDownstream()
+	}
+}
+
+func (w *httpStreamingResponseWriter) flushDownstream() {
+	flusher, ok := w.ResponseWriter.(http.Flusher)
+	if !ok {
+		return
+	}
+	flusher.Flush()
+	w.pending = 0
+	w.flushed = true
 }
 
 func newHTTPResponseTrafficResponseWriter(dst http.ResponseWriter, recorder *traffic.Recorder) *httpResponseTrafficResponseWriter {
