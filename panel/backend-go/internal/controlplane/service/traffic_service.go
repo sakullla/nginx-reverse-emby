@@ -31,6 +31,7 @@ type trafficStore interface {
 	IncrementTrafficBuckets(context.Context, storage.TrafficDelta) error
 	ListTrafficTrend(context.Context, storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error)
 	DeleteTrafficBefore(context.Context, string, storage.TrafficCleanupCutoff) (int64, error)
+	DeleteTrafficBucketsByAgent(context.Context, string) (int64, error)
 }
 
 type trafficAgentStore interface {
@@ -614,6 +615,14 @@ func (s *trafficService) Calibrate(ctx context.Context, agentID string, request 
 		return TrafficSummary{}, err
 	}
 	adjust := int64(minUint64ToInt64(request.UsedBytes))
+	var deletedBuckets int64
+	if request.UsedBytes == 0 {
+		deletedBuckets, err = s.store.DeleteTrafficBucketsByAgent(ctx, agentID)
+		if err != nil {
+			return TrafficSummary{}, err
+		}
+		stats = cycleTrafficStats{}
+	}
 	if err := s.store.SaveTrafficBaseline(ctx, storage.AgentTrafficBaselineRow{
 		AgentID:           agentID,
 		CycleStart:        start.UTC().Format(time.RFC3339),
@@ -631,6 +640,7 @@ func (s *trafficService) Calibrate(ctx context.Context, agentID string, request 
 		"raw_tx_bytes":        stats.tx,
 		"raw_accounted_bytes": stats.accounted,
 		"adjust_used_bytes":   adjust,
+		"deleted_buckets":     deletedBuckets,
 	}); err != nil {
 		return TrafficSummary{}, err
 	}

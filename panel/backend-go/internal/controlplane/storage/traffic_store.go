@@ -612,6 +612,20 @@ func (s *GormStore) DeleteTrafficByAgent(ctx context.Context, agentID string) (i
 	return deleted, err
 }
 
+func (s *GormStore) DeleteTrafficBucketsByAgent(ctx context.Context, agentID string) (int64, error) {
+	agentID = s.resolveAgentID(agentID)
+	var deleted int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		count, err := deleteTrafficRows(tx, trafficScopedDataModels(), "agent_id = ?", agentID)
+		if err != nil {
+			return err
+		}
+		deleted = count
+		return nil
+	})
+	return deleted, err
+}
+
 func (s *GormStore) deleteTrafficByAgentTx(tx *gorm.DB, agentID string) (int64, error) {
 	return deleteTrafficRows(tx, trafficAgentDataModels(), "agent_id = ?", agentID)
 }

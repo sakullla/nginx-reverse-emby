@@ -982,6 +982,80 @@ func TestDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
 	assertTrafficScopeRows(t, store, "edge-1", "http_rule", "11", 1)
 }
 
+func TestDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	for _, agentID := range []string{"edge-1", "edge-2"} {
+		if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
+			AgentID:              agentID,
+			Direction:            "both",
+			CycleStartDay:        1,
+			HourlyRetentionDays:  180,
+			DailyRetentionMonths: 24,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
+			AgentID:           agentID,
+			CycleStart:        "2026-05-01T00:00:00Z",
+			RawAccountedBytes: 300,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{
+			AgentID:    agentID,
+			ScopeType:  "agent_total",
+			RXBytes:    100,
+			TXBytes:    200,
+			ObservedAt: bucket.Format(time.RFC3339),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+			AgentID:     agentID,
+			ScopeType:   "agent_total",
+			BucketStart: bucket,
+			RXBytes:     100,
+			TXBytes:     200,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveTrafficEvent(ctx, AgentTrafficEventRow{
+			AgentID:   agentID,
+			EventType: "calibration",
+			Message:   "traffic usage calibrated",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, err := store.DeleteTrafficBucketsByAgent(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 3 {
+		t.Fatalf("deleted = %d, want hourly/daily/monthly bucket rows only", deleted)
+	}
+
+	assertTrafficScopeRows(t, store, "edge-1", "agent_total", "", 1)
+	assertTrafficScopeRows(t, store, "edge-2", "agent_total", "", 4)
+	if _, ok, err := store.GetTrafficCursor(ctx, "edge-1", "agent_total", ""); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("cursor was deleted")
+	}
+	if _, ok, err := store.GetTrafficBaseline(ctx, "edge-1", "2026-05-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("baseline was deleted")
+	}
+	if _, err := store.GetTrafficPolicy(ctx, "edge-1"); err != nil {
+		t.Fatalf("policy was deleted: %v", err)
+	}
+}
+
 func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()

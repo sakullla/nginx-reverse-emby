@@ -327,11 +327,16 @@ func TestDockerComposeMountsControlPlaneDataDir(t *testing.T) {
 		t.Fatalf("ReadFile(docker-compose.yaml) error = %v", err)
 	}
 	compose := string(composeBytes)
-	if !strings.Contains(compose, "./data/panel:/opt/nginx-reverse-emby/panel/data") {
+	if !strings.Contains(compose, "./data:/opt/nginx-reverse-emby/panel/data") {
 		t.Fatalf("docker-compose.yaml missing control-plane panel data dir mount: %s", compose)
 	}
-	if !strings.Contains(compose, "./data/postgres:/var/lib/postgresql/data") {
-		t.Fatalf("docker-compose.yaml missing postgres data dir mount: %s", compose)
+	if !strings.Contains(compose, "NRE_TIMEZONE: Asia/Shanghai") {
+		t.Fatalf("docker-compose.yaml missing panel timezone setting: %s", compose)
+	}
+	if strings.Contains(compose, "NRE_DATABASE_DRIVER: postgres") ||
+		strings.Contains(compose, "NRE_DATABASE_DSN: postgres://") ||
+		strings.Contains(compose, "./data/postgres:/var/lib/postgresql/data") {
+		t.Fatalf("docker-compose.yaml should use default sqlite configuration: %s", compose)
 	}
 }
 

@@ -1530,6 +1530,79 @@ func TestTrafficServiceCalibrateAndCleanup(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceCalibrateToZeroClearsTrafficBucketsAndKeepsCursor(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.cursors[cursorKey("edge-1", "agent_total", "")] = storage.AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "agent_total",
+		RXBytes:    100,
+		TXBytes:    200,
+		ObservedAt: now.Format(time.RFC3339),
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     100,
+		TXBytes:     200,
+	})
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "http_rule",
+		ScopeID:     "11",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     20,
+		TXBytes:     30,
+	})
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-2",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     7,
+		TXBytes:     9,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Calibrate(context.Background(), "edge-1", TrafficCalibrationRequest{UsedBytes: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.UsedBytes != 0 || summary.RXBytes != 0 || summary.TXBytes != 0 || summary.AccountedBytes != 0 {
+		t.Fatalf("summary = %+v, want zeroed usage and raw stats", summary)
+	}
+	if _, ok := fakeStore.buckets[cursorKey("edge-1", "agent_total", "")]; ok {
+		t.Fatal("agent_total bucket remains after zero calibration")
+	}
+	if _, ok := fakeStore.buckets[cursorKey("edge-1", "http_rule", "11")]; ok {
+		t.Fatal("scoped bucket remains after zero calibration")
+	}
+	if _, ok := fakeStore.buckets[cursorKey("edge-2", "agent_total", "")]; !ok {
+		t.Fatal("other agent bucket was deleted")
+	}
+	if _, ok := fakeStore.cursors[cursorKey("edge-1", "agent_total", "")]; !ok {
+		t.Fatal("cursor was deleted; next heartbeat would replay cumulative counters")
+	}
+	if len(fakeStore.events) != 1 || fakeStore.events[0].EventType != "calibration" {
+		t.Fatalf("events = %+v, want calibration event", fakeStore.events)
+	}
+
+	if err := svc.IngestHeartbeat(context.Background(), "edge-1", AgentStats{
+		"traffic": map[string]any{
+			"total": map[string]any{"rx_bytes": uint64(125), "tx_bytes": uint64(225)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err = svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.UsedBytes != 50 || summary.RXBytes != 25 || summary.TXBytes != 25 {
+		t.Fatalf("summary after heartbeat = %+v, want post-zero delta only", summary)
+	}
+}
+
 func TestTrafficServiceCalibrateUsesConfiguredTimezoneCycle(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
@@ -2079,6 +2152,19 @@ func (s *fakeTrafficStore) ListTrafficBreakdown(_ context.Context, query storage
 func (s *fakeTrafficStore) DeleteTrafficBefore(_ context.Context, _ string, _ storage.TrafficCleanupCutoff) (int64, error) {
 	s.writeCount++
 	return 3, nil
+}
+
+func (s *fakeTrafficStore) DeleteTrafficBucketsByAgent(_ context.Context, agentID string) (int64, error) {
+	s.writeCount++
+	var deleted int64
+	for key, row := range s.buckets {
+		if row.AgentID != agentID {
+			continue
+		}
+		delete(s.buckets, key)
+		deleted++
+	}
+	return deleted, nil
 }
 
 func (s *fakeTrafficStore) SaveTrafficEvent(_ context.Context, row storage.AgentTrafficEventRow) error {
