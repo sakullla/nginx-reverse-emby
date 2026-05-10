@@ -1178,6 +1178,62 @@ func TestDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testin
 	}
 }
 
+func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	currentBucket := time.Date(2026, 5, 20, 8, 0, 0, 0, time.UTC)
+	previousBucket := time.Date(2026, 4, 20, 8, 0, 0, 0, time.UTC)
+	nextBucket := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	for _, delta := range []TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: currentBucket, RXBytes: 100, TXBytes: 200},
+		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: currentBucket, RXBytes: 10, TXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: previousBucket, RXBytes: 300, TXBytes: 400},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: nextBucket, RXBytes: 500, TXBytes: 600},
+		{AgentID: "edge-2", ScopeType: "agent_total", BucketStart: currentBucket, RXBytes: 700, TXBytes: 800},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, err := store.DeleteTrafficBucketsByAgentInWindow(ctx, "edge-1", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 6 {
+		t.Fatalf("deleted = %d, want hourly/daily/monthly rows for two current-cycle scopes", deleted)
+	}
+
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+		From:        time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+		To:          time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("edge-1 rows = %+v, want previous and next cycle rows preserved", rows)
+	}
+	assertTrafficBucketAt(t, rows, "edge-1", "agent_total", "", time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC), 300, 400)
+	assertTrafficBucketAt(t, rows, "edge-1", "agent_total", "", nextBucket, 500, 600)
+	otherRows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-2",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+		From:        time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+		To:          time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherRows) != 1 {
+		t.Fatalf("edge-2 rows = %+v, want other agent current-cycle row preserved", otherRows)
+	}
+}
+
 func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1610,6 +1666,19 @@ func assertTrafficAgentBucket(t *testing.T, rows []TrafficBucketRow, agentID, sc
 		}
 	}
 	t.Fatalf("missing %s/%s/%s in %+v", agentID, scopeType, scopeID, rows)
+}
+
+func assertTrafficBucketAt(t *testing.T, rows []TrafficBucketRow, agentID, scopeType, scopeID string, bucketStart time.Time, rx, tx uint64) {
+	t.Helper()
+	for _, row := range rows {
+		if row.AgentID == agentID && row.ScopeType == scopeType && row.ScopeID == scopeID && row.BucketStart.Equal(bucketStart) {
+			if row.RXBytes != rx || row.TXBytes != tx {
+				t.Fatalf("%s/%s/%s at %s = %+v, want rx=%d tx=%d", agentID, scopeType, scopeID, bucketStart, row, rx, tx)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing %s/%s/%s at %s in %+v", agentID, scopeType, scopeID, bucketStart, rows)
 }
 
 func openTrafficTestGormDB(t *testing.T) *gorm.DB {

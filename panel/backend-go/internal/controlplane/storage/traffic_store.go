@@ -723,6 +723,20 @@ func (s *GormStore) DeleteTrafficBucketsByAgent(ctx context.Context, agentID str
 	return deleted, err
 }
 
+func (s *GormStore) DeleteTrafficBucketsByAgentInWindow(ctx context.Context, agentID string, from, to time.Time) (int64, error) {
+	agentID = s.resolveAgentID(agentID)
+	var deleted int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		count, err := deleteTrafficBucketRowsInWindow(tx, agentID, from.UTC(), to.UTC())
+		if err != nil {
+			return err
+		}
+		deleted = count
+		return nil
+	})
+	return deleted, err
+}
+
 func (s *GormStore) deleteTrafficByAgentTx(tx *gorm.DB, agentID string) (int64, error) {
 	return deleteTrafficRows(tx, trafficAgentDataModels(), "agent_id = ?", agentID)
 }
@@ -754,6 +768,33 @@ func deleteTrafficRows(tx *gorm.DB, models []any, query string, args ...any) (in
 			continue
 		}
 		result := tx.Where(query, args...).Delete(model)
+		if result.Error != nil {
+			return 0, result.Error
+		}
+		deleted += result.RowsAffected
+	}
+	return deleted, nil
+}
+
+func deleteTrafficBucketRowsInWindow(tx *gorm.DB, agentID string, from, to time.Time) (int64, error) {
+	var deleted int64
+	for _, target := range []struct {
+		model      any
+		timeColumn string
+	}{
+		{model: &AgentTrafficHourlyBucketRow{}, timeColumn: "bucket_start"},
+		{model: &AgentTrafficDailySummaryRow{}, timeColumn: "period_start"},
+		{model: &AgentTrafficMonthlySummaryRow{}, timeColumn: "period_start"},
+	} {
+		if !tx.Migrator().HasTable(target.model) {
+			continue
+		}
+		result := tx.Where(
+			"agent_id = ? AND "+target.timeColumn+" >= ? AND "+target.timeColumn+" < ?",
+			agentID,
+			formatTrafficTime(from),
+			formatTrafficTime(to),
+		).Delete(target.model)
 		if result.Error != nil {
 			return 0, result.Error
 		}

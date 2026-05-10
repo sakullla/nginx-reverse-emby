@@ -1185,6 +1185,14 @@ func TestTrafficServiceOverviewIncludesCycleWindow(t *testing.T) {
 		RXBytes:     100,
 		TXBytes:     200,
 	})
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "l4_rule",
+		ScopeID:     "old",
+		BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     500,
+		TXBytes:     600,
+	})
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
 
 	overview, err := svc.Overview(context.Background(), "edge-1", "day", nil)
@@ -1590,6 +1598,14 @@ func TestTrafficServiceCalibrateToZeroClearsTrafficBucketsAndKeepsCursor(t *test
 		TXBytes:     30,
 	})
 	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "l4_rule",
+		ScopeID:     "old",
+		BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     500,
+		TXBytes:     600,
+	})
+	fakeStore.addBucket(storage.TrafficBucketRow{
 		AgentID:     "edge-2",
 		ScopeType:   "agent_total",
 		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
@@ -1607,6 +1623,9 @@ func TestTrafficServiceCalibrateToZeroClearsTrafficBucketsAndKeepsCursor(t *test
 	}
 	if _, ok := fakeStore.buckets[cursorKey("edge-1", "agent_total", "")]; ok {
 		t.Fatal("agent_total bucket remains after zero calibration")
+	}
+	if _, ok := fakeStore.buckets[cursorKey("edge-1", "l4_rule", "old")]; !ok {
+		t.Fatal("previous-cycle scoped bucket was deleted")
 	}
 	if _, ok := fakeStore.buckets[cursorKey("edge-1", "http_rule", "11")]; ok {
 		t.Fatal("scoped bucket remains after zero calibration")
@@ -2289,11 +2308,14 @@ func (s *fakeTrafficStore) DeleteTrafficBefore(_ context.Context, _ string, _ st
 	return 3, nil
 }
 
-func (s *fakeTrafficStore) DeleteTrafficBucketsByAgent(_ context.Context, agentID string) (int64, error) {
+func (s *fakeTrafficStore) DeleteTrafficBucketsByAgentInWindow(_ context.Context, agentID string, from, to time.Time) (int64, error) {
 	s.writeCount++
 	var deleted int64
 	for key, row := range s.buckets {
 		if row.AgentID != agentID {
+			continue
+		}
+		if row.BucketStart.Before(from) || !row.BucketStart.Before(to) {
 			continue
 		}
 		delete(s.buckets, key)
