@@ -601,6 +601,46 @@ func TestIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.
 	}
 }
 
+func TestIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
+		AgentID:       "edge-1",
+		Direction:     "rx",
+		CycleStartDay: 15,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, shanghai), RXBytes: 100, TXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, shanghai), RXBytes: 200, TXBytes: 20},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        time.Date(2026, 4, 15, 0, 0, 0, 0, shanghai),
+		To:          time.Date(2026, 6, 15, 0, 0, 0, 0, shanghai),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want two cycle-month summary rows", rows)
+	}
+	assertTrafficBucketAt(t, rows, "edge-1", "agent_total", "", time.Date(2026, 4, 15, 0, 0, 0, 0, shanghai), 100, 10)
+	assertTrafficBucketAt(t, rows, "edge-1", "agent_total", "", time.Date(2026, 5, 15, 0, 0, 0, 0, shanghai), 200, 20)
+}
+
 func TestIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
