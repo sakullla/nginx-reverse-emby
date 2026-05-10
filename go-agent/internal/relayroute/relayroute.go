@@ -15,7 +15,7 @@ import (
 const DefaultMaxPaths = 32
 
 func UsesRelay(chain []int, layers [][]int) bool {
-	return len(chain) > 0 || len(layers) > 0
+	return len(relayplan.NormalizeLayers(chain, layers)) > 0
 }
 
 func ListenerMap(listeners []model.RelayListener) map[int]model.RelayListener {

@@ -54,7 +54,7 @@ func TestRelayPathHopReportsMarksOnlyMatchedFailedRelayHop(t *testing.T) {
 }
 
 func TestResolveDiagnosticRelayPathsUsesSharedListenerEndpointResolution(t *testing.T) {
-	paths, err := resolveDiagnosticRelayPaths("rule", []int{91}, nil, []model.RelayListener{
+	paths, err := resolveDiagnosticRelayPaths("rule", nil, [][]int{{91}}, []model.RelayListener{
 		{
 			ID:                      91,
 			Name:                    "Relay A",

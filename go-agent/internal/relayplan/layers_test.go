@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestNormalizeLayersPrefersRelayLayers(t *testing.T) {
+func TestNormalizeLayersUsesRelayLayersOnly(t *testing.T) {
 	got := NormalizeLayers([]int{9}, [][]int{{1, 2}, {3}})
 	want := [][]int{{1, 2}, {3}}
 	if !reflect.DeepEqual(got, want) {
@@ -13,9 +13,16 @@ func TestNormalizeLayersPrefersRelayLayers(t *testing.T) {
 	}
 }
 
-func TestNormalizeLayersConvertsRelayChain(t *testing.T) {
+func TestNormalizeLayersIgnoresRelayChainOnly(t *testing.T) {
 	got := NormalizeLayers([]int{1, 2, 3}, nil)
-	want := [][]int{{1}, {2}, {3}}
+	if got != nil {
+		t.Fatalf("NormalizeLayers() = %#v, want nil", got)
+	}
+}
+
+func TestNormalizeLayersFiltersEmptyLayers(t *testing.T) {
+	got := NormalizeLayers(nil, [][]int{{1, 2}, {}, {3}})
+	want := [][]int{{1, 2}, {3}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("NormalizeLayers() = %#v, want %#v", got, want)
 	}

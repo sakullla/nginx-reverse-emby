@@ -6,18 +6,8 @@ import (
 	"strings"
 )
 
-func NormalizeLayers(chain []int, layers [][]int) [][]int {
-	if len(layers) > 0 {
-		return cloneLayers(layers)
-	}
-	if len(chain) == 0 {
-		return nil
-	}
-	out := make([][]int, 0, len(chain))
-	for _, id := range chain {
-		out = append(out, []int{id})
-	}
-	return out
+func NormalizeLayers(_ []int, layers [][]int) [][]int {
+	return cloneLayers(layers)
 }
 
 func ExpandPaths(layers [][]int, maxPaths int) ([][]int, error) {
@@ -59,9 +49,15 @@ func PathKey(prefix string, path []int, target string) string {
 }
 
 func cloneLayers(layers [][]int) [][]int {
-	out := make([][]int, len(layers))
-	for i, layer := range layers {
-		out[i] = append([]int(nil), layer...)
+	out := make([][]int, 0, len(layers))
+	for _, layer := range layers {
+		if len(layer) == 0 {
+			continue
+		}
+		out = append(out, append([]int(nil), layer...))
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

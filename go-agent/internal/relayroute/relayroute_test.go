@@ -24,12 +24,15 @@ func testListener(id int) model.RelayListener {
 	}
 }
 
-func TestUsesRelayDetectsChainOrLayers(t *testing.T) {
+func TestUsesRelayDetectsCanonicalLayersOnly(t *testing.T) {
 	if UsesRelay(nil, nil) {
 		t.Fatal("UsesRelay(nil, nil) = true, want false")
 	}
-	if !UsesRelay([]int{1}, nil) {
-		t.Fatal("UsesRelay(chain, nil) = false, want true")
+	if UsesRelay([]int{1}, nil) {
+		t.Fatal("UsesRelay(chain, nil) = true, want false")
+	}
+	if UsesRelay(nil, [][]int{{}}) {
+		t.Fatal("UsesRelay(nil, empty layer) = true, want false")
 	}
 	if !UsesRelay(nil, [][]int{{1, 2}}) {
 		t.Fatal("UsesRelay(nil, layers) = false, want true")
@@ -37,7 +40,7 @@ func TestUsesRelayDetectsChainOrLayers(t *testing.T) {
 }
 
 func TestResolvePathsBuildsHopsAndKeys(t *testing.T) {
-	paths, err := ResolvePaths("http rule \"https://app.example\"", []int{1}, nil, []model.RelayListener{testListener(1)}, "backend.example:443")
+	paths, err := ResolvePaths("http rule \"https://app.example\"", nil, [][]int{{1}}, []model.RelayListener{testListener(1)}, "backend.example:443")
 	if err != nil {
 		t.Fatalf("ResolvePaths() error = %v", err)
 	}
@@ -55,14 +58,24 @@ func TestResolvePathsBuildsHopsAndKeys(t *testing.T) {
 }
 
 func TestResolvePathsWrapsMissingListenerWithLabel(t *testing.T) {
-	_, err := ResolvePaths("l4 rule 127.0.0.1:8443", []int{2}, nil, []model.RelayListener{testListener(1)}, "")
+	_, err := ResolvePaths("l4 rule 127.0.0.1:8443", nil, [][]int{{2}}, []model.RelayListener{testListener(1)}, "")
 	if err == nil || !strings.Contains(err.Error(), "l4 rule 127.0.0.1:8443: relay listener 2 not found") {
 		t.Fatalf("ResolvePaths() error = %v", err)
 	}
 }
 
+func TestResolvePathsIgnoresRelayChainOnly(t *testing.T) {
+	paths, err := ResolvePaths("http rule \"https://app.example\"", []int{1}, nil, []model.RelayListener{testListener(1)}, "backend.example:443")
+	if err != nil {
+		t.Fatalf("ResolvePaths() error = %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("ResolvePaths() = %+v, want no paths", paths)
+	}
+}
+
 func TestClonePathsWithTargetDoesNotAliasSlices(t *testing.T) {
-	paths, err := ResolvePaths("rule", []int{1}, nil, []model.RelayListener{testListener(1)}, "")
+	paths, err := ResolvePaths("rule", nil, [][]int{{1}}, []model.RelayListener{testListener(1)}, "")
 	if err != nil {
 		t.Fatalf("ResolvePaths() error = %v", err)
 	}
