@@ -34,7 +34,7 @@ func normalizeRelayLayersInput(layers [][]int, protocol string) ([][]int, error)
 	normalized := make([][]int, 0, len(layers))
 	seenAcrossLayers := make(map[int]struct{})
 	for _, layer := range layers {
-		normalizedLayer, err := normalizeRelayChainInput(layer, protocol)
+		normalizedLayer, err := normalizeRelayLayerInput(layer, protocol)
 		if err != nil {
 			return nil, err
 		}
@@ -50,6 +50,22 @@ func normalizeRelayLayersInput(layers [][]int, protocol string) ([][]int, error)
 	}
 	if relayLayerPathCountExceeds(normalized, maxRelayLayerPaths) {
 		return nil, fmt.Errorf("%w: relay_layers expand to more than %d relay paths", ErrInvalidArgument, maxRelayLayerPaths)
+	}
+	return normalized, nil
+}
+
+func normalizeRelayLayerInput(values []int, protocol string) ([]int, error) {
+	normalized := make([]int, 0, len(values))
+	seen := make(map[int]struct{}, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			return nil, fmt.Errorf("%w: relay_layers entries must be positive integer listener IDs", ErrInvalidArgument)
+		}
+		if _, ok := seen[value]; ok {
+			return nil, fmt.Errorf("%w: relay_layers entries must not contain duplicates", ErrInvalidArgument)
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
 	}
 	return normalized, nil
 }

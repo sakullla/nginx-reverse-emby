@@ -358,7 +358,7 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 		Rules: []storage.HTTPRule{{
 			ID:          7,
 			FrontendURL: "https://media.example.test",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			RelayLayers: [][]int{{1, 2}, {3}},
 		}},
 		L4Rules: []storage.L4Rule{{
@@ -375,7 +375,6 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 				Host: "relay-echo-test",
 				Port: 18081,
 			}},
-			RelayChain:  []int{1},
 			RelayLayers: [][]int{{1}, {2, 3}},
 			RelayObfs:   true,
 			Revision:    3,
@@ -420,6 +419,9 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	if len(embedded.Rules[0].RelayLayers) != 2 || embedded.Rules[0].RelayLayers[1][0] != 3 {
 		t.Fatalf("embedded HTTP RelayLayers = %+v", embedded.Rules[0].RelayLayers)
 	}
+	if embedded.Rules[0].BackendURL != "" || len(embedded.Rules[0].RelayChain) != 0 {
+		t.Fatalf("embedded HTTP legacy fields = backend_url=%q relay_chain=%+v", embedded.Rules[0].BackendURL, embedded.Rules[0].RelayChain)
+	}
 
 	if len(embedded.L4Rules) != 1 {
 		t.Fatalf("embedded L4Rules len = %d, want 1", len(embedded.L4Rules))
@@ -441,6 +443,9 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	}
 	if len(embedded.L4Rules[0].RelayLayers) != 2 || embedded.L4Rules[0].RelayLayers[1][1] != 3 {
 		t.Fatalf("embedded L4Rules[0].RelayLayers = %+v", embedded.L4Rules[0].RelayLayers)
+	}
+	if embedded.L4Rules[0].UpstreamHost != "" || embedded.L4Rules[0].UpstreamPort != 0 || len(embedded.L4Rules[0].RelayChain) != 0 {
+		t.Fatalf("embedded L4 legacy fields = upstream=%q:%d relay_chain=%+v", embedded.L4Rules[0].UpstreamHost, embedded.L4Rules[0].UpstreamPort, embedded.L4Rules[0].RelayChain)
 	}
 	if len(embedded.RelayListeners) != 1 {
 		t.Fatalf("embedded RelayListeners len = %d, want 1", len(embedded.RelayListeners))

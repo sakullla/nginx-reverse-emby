@@ -411,33 +411,7 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 
 	rules := make([]HTTPRule, 0, len(rows))
 	for _, row := range rows {
-		backends := parseBackends(row.BackendsJSON)
-		if len(backends) == 0 && strings.TrimSpace(row.BackendURL) != "" {
-			backends = []HTTPRuleBackend{{URL: strings.TrimSpace(row.BackendURL)}}
-		}
-		backendURL := strings.TrimSpace(row.BackendURL)
-		if backendURL == "" && len(backends) > 0 {
-			backendURL = backends[0].URL
-		}
-
-		rules = append(rules, HTTPRule{
-			ID:               row.ID,
-			AgentID:          row.AgentID,
-			FrontendURL:      row.FrontendURL,
-			BackendURL:       backendURL,
-			Backends:         backends,
-			LoadBalancing:    parseLoadBalancing(row.LoadBalancingJSON),
-			Enabled:          row.Enabled,
-			Tags:             parseStringArray(row.TagsJSON),
-			ProxyRedirect:    row.ProxyRedirect,
-			RelayChain:       parseIntArray(row.RelayChainJSON),
-			RelayLayers:      parseIntLayers(row.RelayLayersJSON),
-			RelayObfs:        row.RelayObfs,
-			PassProxyHeaders: row.PassProxyHeaders,
-			UserAgent:        row.UserAgent,
-			CustomHeaders:    parseCustomHeaders(row.CustomHeadersJSON),
-			Revision:         row.Revision,
-		})
+		rules = append(rules, httpRuleFromRow(row))
 	}
 
 	return rules, nil

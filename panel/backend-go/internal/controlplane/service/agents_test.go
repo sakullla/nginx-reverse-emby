@@ -881,8 +881,8 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 				ID:                1,
 				AgentID:           "local",
 				FrontendURL:       "https://emby.example.com",
-				BackendURL:        "http://emby:8096",
-				BackendsJSON:      `[]`,
+				BackendURL:        "http://legacy:8096",
+				BackendsJSON:      `[{"url":"http://emby:8096"}]`,
 				LoadBalancingJSON: `{}`,
 				Enabled:           true,
 				TagsJSON:          `["media"]`,
@@ -908,6 +908,9 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	rule := rules[0]
 	if len(rule.Backends) != 1 || rule.Backends[0].URL != "http://emby:8096" {
 		t.Fatalf("Backends = %+v", rule.Backends)
+	}
+	if rule.BackendURL != "" || len(rule.RelayChain) != 0 {
+		t.Fatalf("legacy fields = backend_url=%q relay_chain=%+v", rule.BackendURL, rule.RelayChain)
 	}
 	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("LoadBalancing = %+v", rule.LoadBalancing)
@@ -945,18 +948,17 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 			Rules: []storage.HTTPRule{{
 				ID:          9,
 				FrontendURL: "https://edge.example.com",
-				BackendURL:  "http://127.0.0.1:8096",
-				RelayChain:  []int{11, 22},
+				Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+				RelayLayers: [][]int{{11, 22}},
 				Revision:    6,
 			}},
 			L4Rules: []storage.L4Rule{{
-				ID:           2,
-				Protocol:     "tcp",
-				ListenHost:   "0.0.0.0",
-				ListenPort:   9000,
-				UpstreamHost: "127.0.0.1",
-				UpstreamPort: 9001,
-				Revision:     6,
+				ID:         2,
+				Protocol:   "tcp",
+				ListenHost: "0.0.0.0",
+				ListenPort: 9000,
+				Backends:   []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+				Revision:   6,
 			}},
 			RelayListeners: []storage.RelayListener{{
 				ID:         11,
@@ -1064,8 +1066,8 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 				URL:      "https://example.com/agent-linux.tar.gz",
 				SHA256:   "sha-linux",
 			},
-			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://a.example.com", BackendURL: "http://127.0.0.1:8096"}},
-			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, UpstreamHost: "127.0.0.1", UpstreamPort: 9001}},
+			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://a.example.com", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
+			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}}}},
 			RelayListeners: []storage.RelayListener{{ID: 11, AgentID: "remote-b", Name: "relay-b", ListenHost: "0.0.0.0", ListenPort: 7443}},
 			Certificates:   []storage.ManagedCertificateBundle{{ID: 31, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
 			CertificatePolicies: []storage.ManagedCertificatePolicy{{
@@ -1125,8 +1127,8 @@ func TestAgentServiceHeartbeatForcesFullSyncWhenLastApplyFailedAtCurrentRevision
 		snapshot: storage.Snapshot{
 			DesiredVersion: "3.1.0",
 			Revision:       7,
-			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://edge.example.com", BackendURL: "http://127.0.0.1:8096"}},
-			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 50381, UpstreamHost: "127.0.0.1", UpstreamPort: 9001}},
+			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://edge.example.com", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
+			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 50381, Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}}}},
 			RelayListeners: []storage.RelayListener{{ID: 4, AgentID: "remote-c", Name: "relay-local", ListenHost: "0.0.0.0", ListenPort: 443}},
 			Certificates:   []storage.ManagedCertificateBundle{{ID: 8, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
 			CertificatePolicies: []storage.ManagedCertificatePolicy{{

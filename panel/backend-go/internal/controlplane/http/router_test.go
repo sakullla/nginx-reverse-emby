@@ -656,13 +656,11 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 					ID:               1,
 					AgentID:          "local",
 					FrontendURL:      "https://emby.example.com",
-					BackendURL:       "http://emby:8096",
 					Backends:         []service.HTTPRuleBackend{{URL: "http://emby:8096"}},
 					LoadBalancing:    service.HTTPLoadBalancing{Strategy: "round_robin"},
 					Enabled:          true,
 					Tags:             []string{},
 					ProxyRedirect:    true,
-					RelayChain:       []int{},
 					PassProxyHeaders: true,
 					UserAgent:        "",
 					CustomHeaders:    []service.HTTPCustomHeader{},
@@ -742,7 +740,7 @@ func TestHandleAgentRuleDiagnoseDispatchesTask(t *testing.T) {
 					ID:          7,
 					AgentID:     "edge-a",
 					FrontendURL: "https://edge.example.test",
-					BackendURL:  "http://127.0.0.1:8080",
+					Backends:    []service.HTTPRuleBackend{{URL: "http://127.0.0.1:8080"}},
 				}},
 			},
 		},
@@ -851,7 +849,7 @@ func TestHandleAgentRuleDiagnoseBudgetsResolvedHTTPCandidates(t *testing.T) {
 					ID:          7,
 					AgentID:     "edge-a",
 					FrontendURL: "https://edge.example.test",
-					BackendURL:  "http://origin.example.test:8080",
+					Backends:    []service.HTTPRuleBackend{{URL: "http://origin.example.test:8080"}},
 				}},
 			},
 		},
@@ -902,14 +900,13 @@ func TestHandleAgentL4RuleDiagnoseDispatchesTask(t *testing.T) {
 		L4RuleService: fakeL4RuleService{
 			rules: map[string][]service.L4Rule{
 				"edge-a": {{
-					ID:           9,
-					AgentID:      "edge-a",
-					Name:         "tcp-9000",
-					Protocol:     "tcp",
-					ListenHost:   "0.0.0.0",
-					ListenPort:   9000,
-					UpstreamHost: "127.0.0.1",
-					UpstreamPort: 9001,
+					ID:         9,
+					AgentID:    "edge-a",
+					Name:       "tcp-9000",
+					Protocol:   "tcp",
+					ListenHost: "0.0.0.0",
+					ListenPort: 9000,
+					Backends:   []service.L4Backend{{Host: "127.0.0.1", Port: 9001}},
 				}},
 			},
 		},
@@ -1453,30 +1450,27 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 		L4RuleService: fakeL4RuleService{
 			rules: map[string][]service.L4Rule{
 				"local": {{
-					ID:           1,
-					AgentID:      "local",
-					Name:         "TCP 8443",
-					Protocol:     "tcp",
-					ListenHost:   "0.0.0.0",
-					ListenPort:   8443,
-					UpstreamHost: "emby",
-					UpstreamPort: 8096,
-					Backends:     []service.L4Backend{{Host: "emby", Port: 8096}},
+					ID:         1,
+					AgentID:    "local",
+					Name:       "TCP 8443",
+					Protocol:   "tcp",
+					ListenHost: "0.0.0.0",
+					ListenPort: 8443,
+					Backends:   []service.L4Backend{{Host: "emby", Port: 8096}},
 					LoadBalancing: service.L4LoadBalancing{
 						Strategy: "round_robin",
 					},
 					Tuning: service.L4Tuning{
 						ProxyProtocol: service.L4ProxyProtocolTuning{},
 					},
-					RelayChain: []int{},
-					Enabled:    true,
-					Tags:       []string{},
-					Revision:   4,
+					Enabled:  true,
+					Tags:     []string{},
+					Revision: 4,
 				}},
 			},
-			createdRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9443, UpstreamHost: "emby", UpstreamPort: 8096, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{}, Revision: 5},
-			updatedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, UpstreamHost: "emby", UpstreamPort: 8096, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
-			deletedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, UpstreamHost: "emby", UpstreamPort: 8096, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
+			createdRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{}, Revision: 5},
+			updatedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
+			deletedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
 		},
 		VersionPolicyService: fakeVersionPolicyService{
 			policies: []service.VersionPolicy{{
@@ -1509,7 +1503,7 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 		t.Fatalf("GET /panel-api/agents/local/l4-rules = %d", getL4Resp.Code)
 	}
 
-	createL4Req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/l4-rules", bytes.NewBufferString(`{"listen_port":9443,"upstream_host":"emby","upstream_port":8096}`))
+	createL4Req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/l4-rules", bytes.NewBufferString(`{"listen_port":9443,"backends":[{"host":"emby","port":8096}]}`))
 	createL4Req.Header.Set("X-Panel-Token", "secret")
 	createL4Req.Header.Set("Content-Type", "application/json")
 	createL4Resp := httptest.NewRecorder()
@@ -2390,22 +2384,20 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 					ID:               1,
 					AgentID:          "local",
 					FrontendURL:      "https://emby.example.com",
-					BackendURL:       "http://emby:8096",
 					Backends:         []service.HTTPRuleBackend{{URL: "http://emby:8096"}},
 					LoadBalancing:    service.HTTPLoadBalancing{Strategy: "round_robin"},
 					Enabled:          true,
 					Tags:             []string{"media"},
 					ProxyRedirect:    true,
-					RelayChain:       []int{},
 					PassProxyHeaders: true,
 					UserAgent:        "",
 					CustomHeaders:    []service.HTTPCustomHeader{},
 					Revision:         3,
 				}},
 			},
-			createdRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096", RelayLayers: [][]int{{1, 2}, {3}}},
-			updatedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096", RelayLayers: [][]int{{4}, {5, 6}}},
-			deletedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+			createdRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://new.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}, RelayLayers: [][]int{{1, 2}, {3}}},
+			updatedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}, RelayLayers: [][]int{{4}, {5, 6}}},
+			deletedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}},
 			state:       ruleState,
 		},
 		L4RuleService:        fakeL4RuleService{},
@@ -2443,7 +2435,7 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 		t.Fatalf("GET /api/agents/local/rules = %d", getAliasResp.Code)
 	}
 
-	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096","relay_layers":[[1,2],[3]]}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backends":[{"url":"http://emby:8096"}],"relay_layers":[[1,2],[3]]}`))
 	createReq.Header.Set("X-Panel-Token", "secret")
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
@@ -2552,12 +2544,12 @@ func TestRouterLegacyLocalAPIRoutesMapToLocalAgent(t *testing.T) {
 						ID:          7,
 						AgentID:     "local-node",
 						FrontendURL: "https://media.example.com",
-						BackendURL:  "http://emby:8096",
+						Backends:    []service.HTTPRuleBackend{{URL: "http://emby:8096"}},
 					}},
 				},
-				createdRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096"},
-				updatedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
-				deletedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+				createdRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://new.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}},
+				updatedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}},
+				deletedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}},
 				state:       ruleState,
 			},
 			L4RuleService:        fakeL4RuleService{},
@@ -2591,7 +2583,7 @@ func TestRouterLegacyLocalAPIRoutesMapToLocalAgent(t *testing.T) {
 			t.Fatalf("GET %s/rules payload missing rules: %+v", prefix, getRulesPayload)
 		}
 
-		createRuleReq := httptest.NewRequest(http.MethodPost, prefix+"/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096"}`))
+		createRuleReq := httptest.NewRequest(http.MethodPost, prefix+"/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backends":[{"url":"http://emby:8096"}]}`))
 		createRuleReq.Header.Set("X-Panel-Token", "secret")
 		createRuleReq.Header.Set("Content-Type", "application/json")
 		createRuleResp := httptest.NewRecorder()

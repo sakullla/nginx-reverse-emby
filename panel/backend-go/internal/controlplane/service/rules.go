@@ -833,7 +833,7 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	if err != nil {
 		return HTTPRule{}, err
 	}
-	backendURL := backends[0].URL
+	backendURL := ""
 
 	loadBalancing := fallback.LoadBalancing
 	if strings.TrimSpace(loadBalancing.Strategy) == "" {
@@ -865,28 +865,15 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		proxyRedirect = *input.ProxyRedirect
 	}
 
-	relayChain := append([]int(nil), fallback.RelayChain...)
-	if input.RelayChain != nil {
-		relayChain, err = normalizeRelayChainInput(*input.RelayChain, "tcp")
-		if err != nil {
-			return HTTPRule{}, err
-		}
-	}
+	relayChain := []int{}
 	relayLayers := cloneIntLayers(fallback.RelayLayers)
 	if input.RelayLayers != nil {
 		relayLayers, err = normalizeRelayLayersInput(*input.RelayLayers, "tcp")
 		if err != nil {
 			return HTTPRule{}, err
 		}
-	}
-	if fallback.ID > 0 && input.RelayLayers != nil && input.RelayChain == nil {
-		relayChain = []int{}
-	}
-	if input.RelayLayers == nil && input.RelayChain != nil {
-		relayLayers = [][]int{}
-	}
-	if err := s.validateRelayChain(ctx, relayChain); err != nil {
-		return HTTPRule{}, err
+	} else if input.RelayChain != nil {
+		return HTTPRule{}, fmt.Errorf("%w: relay_chain is legacy; use relay_layers", ErrInvalidArgument)
 	}
 	if err := s.validateRelayChain(ctx, flattenRelayLayers(relayLayers)); err != nil {
 		return HTTPRule{}, err
@@ -955,36 +942,18 @@ func normalizeHTTPBackendsInput(input HTTPRuleInput, fallback HTTPRule) ([]HTTPR
 		if len(backends) > 0 {
 			return backends, nil
 		}
-		if input.BackendURL != nil {
-			backends = normalizeHTTPBackends([]HTTPRuleBackend{{URL: strings.TrimSpace(*input.BackendURL)}})
-			if len(backends) > 0 {
-				return backends, nil
-			}
-		}
-		backends = normalizeHTTPBackends(fallback.Backends)
-		if len(backends) > 0 {
-			return backends, nil
-		}
+		return nil, fmt.Errorf("%w: backends must contain at least one valid http/https URL", ErrInvalidArgument)
 	}
 
 	if input.BackendURL != nil {
-		backends := normalizeHTTPBackends([]HTTPRuleBackend{{URL: strings.TrimSpace(*input.BackendURL)}})
-		if len(backends) > 0 {
-			return backends, nil
-		}
+		return nil, fmt.Errorf("%w: backend_url is legacy; use backends[].url", ErrInvalidArgument)
 	}
 
 	backends := normalizeHTTPBackends(fallback.Backends)
 	if len(backends) > 0 {
 		return backends, nil
 	}
-	if strings.TrimSpace(fallback.BackendURL) != "" {
-		backends = normalizeHTTPBackends([]HTTPRuleBackend{{URL: strings.TrimSpace(fallback.BackendURL)}})
-		if len(backends) > 0 {
-			return backends, nil
-		}
-	}
-	return nil, fmt.Errorf("%w: frontend_url and backend_url/backends[].url must be valid http/https URLs", ErrInvalidArgument)
+	return nil, fmt.Errorf("%w: backends must contain at least one valid http/https URL", ErrInvalidArgument)
 }
 
 func normalizeHTTPBackends(backends []HTTPRuleBackend) []HTTPRuleBackend {
@@ -1058,25 +1027,18 @@ func isValidHTTPURL(raw string) bool {
 
 func httpRuleFromRow(row storage.HTTPRuleRow) HTTPRule {
 	backends := parseBackends(row.BackendsJSON)
-	if len(backends) == 0 && strings.TrimSpace(row.BackendURL) != "" {
-		backends = []HTTPRuleBackend{{URL: strings.TrimSpace(row.BackendURL)}}
-	}
-	backendURL := strings.TrimSpace(row.BackendURL)
-	if backendURL == "" && len(backends) > 0 {
-		backendURL = backends[0].URL
-	}
 
 	return HTTPRule{
 		ID:               row.ID,
 		AgentID:          row.AgentID,
 		FrontendURL:      row.FrontendURL,
-		BackendURL:       backendURL,
+		BackendURL:       "",
 		Backends:         backends,
 		LoadBalancing:    parseLoadBalancing(row.LoadBalancingJSON),
 		Enabled:          row.Enabled,
 		Tags:             parseStringArray(row.TagsJSON),
 		ProxyRedirect:    row.ProxyRedirect,
-		RelayChain:       parseIntArray(row.RelayChainJSON),
+		RelayChain:       []int{},
 		RelayLayers:      parseIntLayers(row.RelayLayersJSON),
 		RelayObfs:        row.RelayObfs,
 		PassProxyHeaders: row.PassProxyHeaders,
@@ -1091,13 +1053,13 @@ func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 		ID:                rule.ID,
 		AgentID:           rule.AgentID,
 		FrontendURL:       rule.FrontendURL,
-		BackendURL:        rule.BackendURL,
+		BackendURL:        "",
 		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
 		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
 		Enabled:           rule.Enabled,
 		TagsJSON:          marshalJSON(rule.Tags, "[]"),
 		ProxyRedirect:     rule.ProxyRedirect,
-		RelayChainJSON:    marshalJSON(rule.RelayChain, "[]"),
+		RelayChainJSON:    "[]",
 		RelayLayersJSON:   marshalJSON(rule.RelayLayers, "[]"),
 		RelayObfs:         rule.RelayObfs,
 		PassProxyHeaders:  rule.PassProxyHeaders,
