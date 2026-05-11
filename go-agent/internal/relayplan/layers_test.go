@@ -52,3 +52,12 @@ func TestExpandPathsHonorsMaximum(t *testing.T) {
 		t.Fatal("ExpandPaths() error = nil, want maximum path error")
 	}
 }
+
+func TestPathKeyAllocations(t *testing.T) {
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = PathKey("relay_path", []int{1, 23, 456}, " backend.example:443 ")
+	})
+	if allocs > 2 {
+		t.Fatalf("PathKey() allocations = %.2f, want <= 2", allocs)
+	}
+}

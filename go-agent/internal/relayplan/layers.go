@@ -41,11 +41,41 @@ func ExpandPaths(layers [][]int, maxPaths int) ([][]int, error) {
 }
 
 func PathKey(prefix string, path []int, target string) string {
-	parts := make([]string, 0, len(path))
-	for _, id := range path {
-		parts = append(parts, strconv.Itoa(id))
+	target = strings.TrimSpace(target)
+	var builder strings.Builder
+	builder.Grow(len(prefix) + len(target) + pathStringLen(path) + len("||"))
+	builder.WriteString(prefix)
+	builder.WriteByte('|')
+	writePathIDs(&builder, path)
+	builder.WriteByte('|')
+	builder.WriteString(target)
+	return builder.String()
+}
+
+func pathStringLen(path []int) int {
+	if len(path) == 0 {
+		return 0
 	}
-	return prefix + "|" + strings.Join(parts, "-") + "|" + strings.TrimSpace(target)
+	size := len(path) - 1
+	for _, id := range path {
+		size += intStringLen(id)
+	}
+	return size
+}
+
+func writePathIDs(builder *strings.Builder, path []int) {
+	var scratch [20]byte
+	for i, id := range path {
+		if i > 0 {
+			builder.WriteByte('-')
+		}
+		builder.Write(strconv.AppendInt(scratch[:0], int64(id), 10))
+	}
+}
+
+func intStringLen(value int) int {
+	var scratch [20]byte
+	return len(strconv.AppendInt(scratch[:0], int64(value), 10))
 }
 
 func cloneLayers(layers [][]int) [][]int {
