@@ -2,7 +2,10 @@ package relay
 
 import (
 	"bytes"
+	"io"
 	"testing"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 func BenchmarkTLSTCPLogicalStreamReadFrom1MiB(b *testing.B) {
@@ -87,6 +90,26 @@ func BenchmarkWriteMuxFrame64KiB(b *testing.B) {
 			Payload:  payload,
 		}); err != nil {
 			b.Fatalf("writeMuxFrame() error = %v", err)
+		}
+	}
+}
+
+func BenchmarkCopyRelayTraffic1MiB(b *testing.B) {
+	payload := bytes.Repeat([]byte("r"), 1<<20)
+	previousTrafficEnabled := traffic.Enabled()
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	b.Cleanup(func() {
+		traffic.SetEnabled(previousTrafficEnabled)
+		traffic.Reset()
+	})
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := copyRelayTraffic(io.Discard, bytes.NewReader(payload), false, traffic.NewRelayRecorder()); err != nil {
+			b.Fatalf("copyRelayTraffic() error = %v", err)
 		}
 	}
 }
