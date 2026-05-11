@@ -1159,6 +1159,116 @@ func TestHandleAgentTaskStreamDispatchesNDJSONTask(t *testing.T) {
 	}
 }
 
+func TestHandleAgentTaskStreamAppliesUpdateFromAuthenticatedAgent(t *testing.T) {
+	state := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agentsByToken: map[string]service.AgentSummary{
+				"agent-token": {ID: "edge-a", Name: "Edge A"},
+			},
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			state: state,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	body := bytes.NewBufferString(strings.Join([]string{
+		`{"type":"hello","hello":{"agent_id":"spoofed","session_id":"body-session"}}`,
+		`{"type":"update","update":{"task_id":"task-1","state":"completed","result":{"ok":true}}}`,
+	}, "\n"))
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/task-stream?agent_id=spoofed&session_id=query-session", body)
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := &fullDuplexRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if len(state.updates) != 1 {
+		t.Fatalf("updates = %+v", state.updates)
+	}
+	update := state.updates[0]
+	if update.AgentID != "edge-a" {
+		t.Fatalf("AgentID = %q, want edge-a", update.AgentID)
+	}
+	if update.TaskID != "task-1" {
+		t.Fatalf("TaskID = %q, want task-1", update.TaskID)
+	}
+	if update.State != "completed" {
+		t.Fatalf("State = %q, want completed", update.State)
+	}
+	if ok, _ := update.Result["ok"].(bool); !ok {
+		t.Fatalf("Result[ok] = %#v, want true", update.Result["ok"])
+	}
+}
+
+func TestHandleAgentTaskStreamAppliesUpdateWithLargeResult(t *testing.T) {
+	state := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agentsByToken: map[string]service.AgentSummary{
+				"agent-token": {ID: "edge-a", Name: "Edge A"},
+			},
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			state: state,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	blob := strings.Repeat("x", 70*1024)
+	body := bytes.NewBufferString(`{"type":"update","update":{"task_id":"task-1","state":"completed","result":{"blob":"` + blob + `"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/task-stream?session_id=session-1", body)
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := &fullDuplexRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if len(state.updates) != 1 {
+		t.Fatalf("updates = %+v", state.updates)
+	}
+	if got, _ := state.updates[0].Result["blob"].(string); got != blob {
+		t.Fatalf("Result[blob] length = %d, want %d", len(got), len(blob))
+	}
+}
+
 func TestHandleAgentTaskUpdateAcceptsAgentResult(t *testing.T) {
 	taskState := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{

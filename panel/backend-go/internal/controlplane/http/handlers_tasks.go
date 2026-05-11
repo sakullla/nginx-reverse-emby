@@ -1,9 +1,9 @@
 package http
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +12,8 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
+
+const maxTaskStreamLineBytes = 4 * 1024 * 1024
 
 func (d Dependencies) handleAgentRuleDiagnose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -293,7 +295,47 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 	}
 	defer session.Close()
 
-	_, _ = io.Copy(io.Discard, r.Body)
+	_ = d.readTaskStreamUpdates(r, agent.ID)
+}
+
+func (d Dependencies) readTaskStreamUpdates(r *http.Request, agentID string) error {
+	scanner := bufio.NewScanner(r.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxTaskStreamLineBytes)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var message taskStreamMessage
+		if err := json.Unmarshal([]byte(line), &message); err != nil {
+			return err
+		}
+		if message.Type != "update" || message.Update == nil {
+			continue
+		}
+		if err := d.TaskService.ApplyUpdate(r.Context(), service.TaskUpdateInput{
+			AgentID: agentID,
+			TaskID:  strings.TrimSpace(message.Update.TaskID),
+			State:   strings.TrimSpace(message.Update.State),
+			Result:  message.Update.Result,
+			Error:   strings.TrimSpace(message.Update.Error),
+		}); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
+}
+
+type taskStreamMessage struct {
+	Type   string            `json:"type"`
+	Update *taskStreamUpdate `json:"update"`
+}
+
+type taskStreamUpdate struct {
+	TaskID string         `json:"task_id"`
+	State  string         `json:"state"`
+	Result map[string]any `json:"result"`
+	Error  string         `json:"error"`
 }
 
 func (d Dependencies) authenticateAgentRequest(w http.ResponseWriter, r *http.Request) (service.AgentSummary, bool) {
