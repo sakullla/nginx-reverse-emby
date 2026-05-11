@@ -62,11 +62,49 @@ type BackupAgent struct {
 	Mode                   string   `json:"mode,omitempty"`
 }
 
-// Backup payload types intentionally mirror the current service JSON shape so
-// legacy and pure-Go exports stay aligned. Keep compatibility in mind before
-// changing the underlying service structs or their JSON tags.
-type BackupHTTPRule = HTTPRule
-type BackupL4Rule = L4Rule
+type BackupHTTPRule struct {
+	ID               int                `json:"id"`
+	AgentID          string             `json:"agent_id"`
+	FrontendURL      string             `json:"frontend_url"`
+	BackendURL       string             `json:"backend_url,omitempty"`
+	Backends         []HTTPRuleBackend  `json:"backends,omitempty"`
+	LoadBalancing    HTTPLoadBalancing  `json:"load_balancing,omitempty"`
+	Enabled          bool               `json:"enabled"`
+	Tags             []string           `json:"tags,omitempty"`
+	ProxyRedirect    bool               `json:"proxy_redirect"`
+	RelayChain       []int              `json:"relay_chain,omitempty"`
+	RelayLayers      [][]int            `json:"relay_layers,omitempty"`
+	RelayObfs        bool               `json:"relay_obfs,omitempty"`
+	PassProxyHeaders bool               `json:"pass_proxy_headers"`
+	UserAgent        string             `json:"user_agent,omitempty"`
+	CustomHeaders    []HTTPCustomHeader `json:"custom_headers,omitempty"`
+	Revision         int                `json:"revision,omitempty"`
+}
+
+type BackupL4Rule struct {
+	ID              int              `json:"id"`
+	AgentID         string           `json:"agent_id"`
+	Name            string           `json:"name"`
+	Protocol        string           `json:"protocol"`
+	ListenHost      string           `json:"listen_host"`
+	ListenPort      int              `json:"listen_port"`
+	UpstreamHost    string           `json:"upstream_host,omitempty"`
+	UpstreamPort    int              `json:"upstream_port,omitempty"`
+	Backends        []L4Backend      `json:"backends,omitempty"`
+	LoadBalancing   L4LoadBalancing  `json:"load_balancing,omitempty"`
+	Tuning          L4Tuning         `json:"tuning,omitempty"`
+	RelayChain      []int            `json:"relay_chain,omitempty"`
+	RelayLayers     [][]int          `json:"relay_layers,omitempty"`
+	RelayObfs       bool             `json:"relay_obfs,omitempty"`
+	ListenMode      string           `json:"listen_mode,omitempty"`
+	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	ProxyEgressMode string           `json:"proxy_egress_mode,omitempty"`
+	ProxyEgressURL  string           `json:"proxy_egress_url,omitempty"`
+	Enabled         bool             `json:"enabled"`
+	Tags            []string         `json:"tags,omitempty"`
+	Revision        int              `json:"revision,omitempty"`
+}
+
 type BackupRelayListener = RelayListener
 type BackupCertificate = ManagedCertificate
 type BackupVersionPolicy = VersionPolicy

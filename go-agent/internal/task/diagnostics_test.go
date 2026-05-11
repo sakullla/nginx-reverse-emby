@@ -24,7 +24,7 @@ func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T)
 		Rules: []model.HTTPRule{{
 			ID:          7,
 			FrontendURL: "https://edge.example.test/emby",
-			BackendURL:  server.URL + "/healthz",
+			Backends:    []model.HTTPBackend{{URL: server.URL + "/healthz"}},
 		}},
 	}); err != nil {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
@@ -163,7 +163,7 @@ func TestDiagnosticHandlerUsesFiveHTTPSamplesByDefault(t *testing.T) {
 		Rules: []model.HTTPRule{{
 			ID:          27,
 			FrontendURL: "https://edge.example.test/emby",
-			BackendURL:  server.URL + "/healthz",
+			Backends:    []model.HTTPBackend{{URL: server.URL + "/healthz"}},
 		}},
 	}); err != nil {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
@@ -216,12 +216,11 @@ func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
 	addr := ln.Addr().(*net.TCPAddr)
 	if err := mem.SaveDesiredSnapshot(model.Snapshot{
 		L4Rules: []model.L4Rule{{
-			ID:           9,
-			Protocol:     "tcp",
-			ListenHost:   "0.0.0.0",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: addr.Port,
+			ID:         9,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: addr.Port}},
 		}},
 	}); err != nil {
 		t.Fatalf("SaveDesiredSnapshot() error = %v", err)

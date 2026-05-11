@@ -41,12 +41,6 @@ func ValidateRule(rule Rule) error {
 	}
 
 	backends := rule.Backends
-	if len(backends) == 0 && strings.TrimSpace(rule.UpstreamHost) != "" && rule.UpstreamPort > 0 {
-		backends = []model.L4Backend{{
-			Host: rule.UpstreamHost,
-			Port: rule.UpstreamPort,
-		}}
-	}
 	if len(backends) == 0 {
 		return fmt.Errorf("at least one backend is required")
 	}
@@ -66,7 +60,7 @@ func validateProxyEntryRule(rule Rule) error {
 	switch mode {
 	case "relay":
 		if !ruleUsesRelay(rule) {
-			return fmt.Errorf("proxy relay egress requires relay_chain or relay_layers")
+			return fmt.Errorf("proxy relay egress requires relay_layers")
 		}
 	case "proxy":
 		if strings.TrimSpace(rule.ProxyEgressURL) == "" {

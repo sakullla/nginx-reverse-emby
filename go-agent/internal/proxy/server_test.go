@@ -57,7 +57,7 @@ func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL:   "https://route.example",
-				BackendURL:    backend.URL,
+				Backends:      []model.HTTPBackend{{URL: backend.URL}},
 				ProxyRedirect: true,
 			},
 		},
@@ -113,11 +113,11 @@ func TestServerRoutesByLongestMatchingPathWithinSameHost(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL: "http://route.example/emby",
-				BackendURL:  embyBackend.URL,
+				Backends:    []model.HTTPBackend{{URL: embyBackend.URL}},
 			},
 			{
 				FrontendURL: "http://route.example/jellyfin",
-				BackendURL:  jellyfinBackend.URL,
+				Backends:    []model.HTTPBackend{{URL: jellyfinBackend.URL}},
 			},
 		},
 	}
@@ -185,11 +185,11 @@ func TestServerRoutesPathRuleBeforeRootRuleOnSameHost(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL: "http://route.example",
-				BackendURL:  rootBackend.URL,
+				Backends:    []model.HTTPBackend{{URL: rootBackend.URL}},
 			},
 			{
 				FrontendURL: "http://route.example/emby",
-				BackendURL:  embyBackend.URL,
+				Backends:    []model.HTTPBackend{{URL: embyBackend.URL}},
 			},
 		},
 	}
@@ -248,7 +248,7 @@ func TestServerReturns404ForUnknownHost(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL: "https://route.example",
-				BackendURL:  backend.URL,
+				Backends:    []model.HTTPBackend{{URL: backend.URL}},
 			},
 		},
 	}
@@ -287,7 +287,7 @@ func TestServerAppliesHeaderOverrides(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL: "https://header.example",
-				BackendURL:  backend.URL,
+				Backends:    []model.HTTPBackend{{URL: backend.URL}},
 				CustomHeaders: []model.HTTPHeader{
 					{Name: "X-Test-Header", Value: "override-value"},
 				},
@@ -333,7 +333,7 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL:      "https://route.example",
-				BackendURL:       backend.URL,
+				Backends:         []model.HTTPBackend{{URL: backend.URL}},
 				PassProxyHeaders: true,
 			},
 		},
@@ -419,7 +419,7 @@ func TestServerUsesBackendAuthorityForHTTPSUpstreamsResolvedToIP(t *testing.T) {
 		model.HTTPListener{
 			Rules: []model.HTTPRule{{
 				FrontendURL: "https://route.example",
-				BackendURL:  fmt.Sprintf("https://%s:%d", backendHost, backendPort),
+				Backends:    []model.HTTPBackend{{URL: fmt.Sprintf("https://%s:%d", backendHost, backendPort)}},
 			}},
 		},
 		nil,
@@ -479,7 +479,6 @@ func TestStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
 	port := pickFreePort(t)
 	runtime, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
-		BackendURL:  bad.URL,
 		Backends: []model.HTTPBackend{
 			{URL: bad.URL},
 			{URL: good.URL},
@@ -704,7 +703,7 @@ func TestNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
 	server, err := newServerWithResilience(
 		model.HTTPListener{Rules: []model.HTTPRule{{
 			FrontendURL: "http://edge.example",
-			BackendURL:  "http://backend.example:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://backend.example:8096"}},
 		}}},
 		nil,
 		Providers{},
@@ -749,11 +748,11 @@ func TestNewServerSharesDirectClassedTransportsAcrossDirectRoutes(t *testing.T) 
 		model.HTTPListener{Rules: []model.HTTPRule{
 			{
 				FrontendURL: "http://edge-a.example",
-				BackendURL:  "http://backend-a.example:8096",
+				Backends:    []model.HTTPBackend{{URL: "http://backend-a.example:8096"}},
 			},
 			{
 				FrontendURL: "http://edge-b.example",
-				BackendURL:  "http://backend-b.example:8096",
+				Backends:    []model.HTTPBackend{{URL: "http://backend-b.example:8096"}},
 			},
 		}},
 		nil,
@@ -793,8 +792,8 @@ func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T
 	server, err := newServerWithResilience(
 		model.HTTPListener{Rules: []model.HTTPRule{{
 			FrontendURL: "http://edge.example",
-			BackendURL:  "http://backend.example:8096",
-			RelayChain:  []int{101},
+			Backends:    []model.HTTPBackend{{URL: "http://backend.example:8096"}},
+			RelayLayers: [][]int{{101}},
 		}}},
 		[]model.RelayListener{{
 			ID:         101,
@@ -1012,7 +1011,7 @@ func TestRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T)
 	entry := &routeEntry{
 		rule: model.HTTPRule{
 			FrontendURL: "https://frontend.example",
-			RelayChain:  []int{101},
+			RelayLayers: [][]int{{101}},
 		},
 		backends: []httpBackend{{
 			target:      target,
@@ -1050,7 +1049,7 @@ func TestRouteEntryCandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
 			{201},
 		},
 	}
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9443"))
+	cache.MarkFailure(backends.RelayBackoffKey([]int{101, 201}, "relay-target.example:9443"))
 
 	entry := &routeEntry{
 		rule: rule,
@@ -1112,7 +1111,7 @@ func TestRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
 	if err == nil {
 		t.Fatal("serveHTTP() error = nil, want truncated response error")
 	}
-	aggregateKey := backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, selectedAddress)
+	aggregateKey := backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, selectedAddress)
 	if cache.IsInBackoff(aggregateKey) {
 		t.Fatalf("aggregate relay layer key %q was marked in backoff", aggregateKey)
 	}
@@ -1139,7 +1138,7 @@ func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *t
 	entry := &routeEntry{
 		rule: model.HTTPRule{
 			FrontendURL: "https://frontend.example",
-			RelayChain:  []int{101},
+			RelayLayers: [][]int{{101}},
 		},
 		backends: []httpBackend{{
 			target:      target,
@@ -1178,7 +1177,6 @@ func TestNewServerUsesFullFrontendURLAsAdaptiveObservationScope(t *testing.T) {
 	server, err := newServer(model.HTTPListener{
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://edge.example.test/emby",
-			BackendURL:  "http://backend.example:8096",
 			Backends:    []model.HTTPBackend{{URL: "http://backend.example:8096"}},
 		}},
 	}, nil, Providers{}, cache, transport)
@@ -1865,7 +1863,7 @@ func TestServerDoesNotAppendBadGatewayAfterResumableResponseStarts(t *testing.T)
 		model.HTTPListener{
 			Rules: []model.HTTPRule{{
 				FrontendURL: "http://route.example/emby",
-				BackendURL:  backend.URL,
+				Backends:    []model.HTTPBackend{{URL: backend.URL}},
 			}},
 		},
 		nil,
@@ -1946,7 +1944,7 @@ func TestServerPreservesSwitchingProtocolsUpgradeTunnel(t *testing.T) {
 	listener := model.HTTPListener{
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://route.example",
-			BackendURL:  backend.URL,
+			Backends:    []model.HTTPBackend{{URL: backend.URL}},
 		}},
 	}
 	proxy := httptest.NewServer(NewServer(listener))
@@ -2031,7 +2029,7 @@ func TestServerRecordsHTTPRuleUpgradeTrafficBeforeTunnelCloses(t *testing.T) {
 		Rules: []model.HTTPRule{{
 			ID:          88,
 			FrontendURL: "http://route.example",
-			BackendURL:  backend.URL,
+			Backends:    []model.HTTPBackend{{URL: backend.URL}},
 		}},
 	}
 	proxy := httptest.NewServer(NewServer(listener))
@@ -2087,7 +2085,6 @@ func TestNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL: "http://edge.example.test:18080",
-				BackendURL:  "http://127.0.0.1:8081",
 				Backends: []model.HTTPBackend{
 					{URL: "http://127.0.0.1:8081"},
 					{URL: "http://127.0.0.1:8082"},
@@ -2096,7 +2093,6 @@ func TestNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {
 			},
 			{
 				FrontendURL: "http://edge-two.example.test:18080",
-				BackendURL:  "http://127.0.0.1:8083",
 				Backends: []model.HTTPBackend{
 					{URL: "http://127.0.0.1:8083"},
 				},
@@ -2136,7 +2132,7 @@ func TestPassProxyHeadersDropsSpoofedForwardedFor(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL:      "http://route.example",
-				BackendURL:       backend.URL,
+				Backends:         []model.HTTPBackend{{URL: backend.URL}},
 				PassProxyHeaders: true,
 			},
 		},
@@ -2176,7 +2172,7 @@ func TestServerRewritesExternalLocationToInternalProxyPath(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL:   "https://route.example",
-				BackendURL:    backend.URL,
+				Backends:      []model.HTTPBackend{{URL: backend.URL}},
 				ProxyRedirect: true,
 			},
 		},
@@ -2223,7 +2219,7 @@ func TestServerRewritesExternalLocationToInternalRedirectPath(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL:   "https://route.example/emby",
-				BackendURL:    backend.URL,
+				Backends:      []model.HTTPBackend{{URL: backend.URL}},
 				ProxyRedirect: true,
 			},
 		},
@@ -2274,7 +2270,7 @@ func TestServerPreservesRelativeRedirectFromConfiguredBackend(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL:   "https://route.example/emby",
-				BackendURL:    backend.URL,
+				Backends:      []model.HTTPBackend{{URL: backend.URL}},
 				ProxyRedirect: true,
 			},
 		},
@@ -2331,7 +2327,7 @@ func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL:   "https://route.example/emby",
-				BackendURL:    backend.URL,
+				Backends:      []model.HTTPBackend{{URL: backend.URL}},
 				ProxyRedirect: true,
 			},
 		},
@@ -2389,7 +2385,7 @@ func TestServerRewritesRelativeRedirectFromInternalRedirectTarget(t *testing.T) 
 		Rules: []model.HTTPRule{
 			{
 				FrontendURL:   "https://route.example/emby",
-				BackendURL:    backend.URL,
+				Backends:      []model.HTTPBackend{{URL: backend.URL}},
 				ProxyRedirect: true,
 			},
 		},
@@ -2439,7 +2435,7 @@ func TestStartServesHTTPRulesOnLocalListener(t *testing.T) {
 	port := pickFreePort(t)
 	runtime, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL:   fmt.Sprintf("http://edge.example.test:%d", port),
-		BackendURL:    backend.URL,
+		Backends:      []model.HTTPBackend{{URL: backend.URL}},
 		ProxyRedirect: true,
 	}}, nil, Providers{})
 	if err != nil {
@@ -2493,7 +2489,7 @@ func TestStartServesIPv4FrontendToIPv6Backend(t *testing.T) {
 	port := pickFreePort(t)
 	runtime, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
-		BackendURL:  fmt.Sprintf("http://[::1]:%d", backendPort),
+		Backends:    []model.HTTPBackend{{URL: fmt.Sprintf("http://[::1]:%d", backendPort)}},
 	}}, nil, Providers{})
 	if err != nil {
 		t.Fatalf("failed to start runtime: %v", err)
@@ -2520,7 +2516,9 @@ func TestStartServesIPv4FrontendToIPv6Backend(t *testing.T) {
 func TestRuntimeRuleSpecKeepsIPv4WildcardBindingForIPv6FrontendHost(t *testing.T) {
 	spec, err := runtimeRuleSpec(model.HTTPRule{
 		FrontendURL: "http://[::1]:18080",
-		BackendURL:  "http://127.0.0.1:8096",
+		Backends: []model.HTTPBackend{
+			{URL: "http://127.0.0.1:8096"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("runtimeRuleSpec() error = %v", err)
@@ -2533,10 +2531,22 @@ func TestRuntimeRuleSpecKeepsIPv4WildcardBindingForIPv6FrontendHost(t *testing.T
 	}
 }
 
+func TestStartRejectsMissingBackendsEvenWithLegacyBackendURL(t *testing.T) {
+	_, err := Start(context.Background(), []model.HTTPRule{{
+		FrontendURL: "http://edge.example.test:18080",
+		BackendURL:  "http://127.0.0.1:8096",
+	}}, nil, Providers{})
+	if err == nil || err.Error() != `http rule "http://edge.example.test:18080": backends[].url is required` {
+		t.Fatalf("expected missing backends error, got %v", err)
+	}
+}
+
 func TestStartRejectsHTTPSFrontendWithoutCertificateBinding(t *testing.T) {
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "https://edge.example.test:9443",
-		BackendURL:  "http://127.0.0.1:8096",
+		Backends: []model.HTTPBackend{
+			{URL: "http://127.0.0.1:8096"},
+		},
 	}}, nil, Providers{})
 	if err == nil || err.Error() != `http rule "https://edge.example.test:9443": https frontend is not supported without certificate bindings` {
 		t.Fatalf("expected https binding error, got %v", err)
@@ -2558,7 +2568,7 @@ func TestStartServesHTTPSRulesWithHostMatchedCertificate(t *testing.T) {
 
 	runtime, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", port),
-		BackendURL:  backend.URL,
+		Backends:    []model.HTTPBackend{{URL: backend.URL}},
 	}}, nil, Providers{TLS: provider})
 	if err != nil {
 		t.Fatalf("failed to start https runtime: %v", err)
@@ -2614,7 +2624,7 @@ func TestStartWithResourcesGracefullyDegradesWhenHTTP3StartupFails(t *testing.T)
 
 	runtime, err := StartWithResources(context.Background(), []model.HTTPRule{{
 		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", port),
-		BackendURL:  backend.URL,
+		Backends:    []model.HTTPBackend{{URL: backend.URL}},
 	}}, nil, Providers{TLS: provider}, nil, nil, true)
 	if err != nil {
 		t.Fatalf("failed to start https runtime with http3 enabled: %v", err)
@@ -2659,7 +2669,7 @@ func TestStartRejectsHTTPSFrontendWithoutMatchingCertificate(t *testing.T) {
 
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "https://edge.example.test:9443",
-		BackendURL:  "http://127.0.0.1:8096",
+		Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 	}}, nil, Providers{TLS: provider})
 	if err == nil || err.Error() != `http rule "https://edge.example.test:9443": no server certificate available for host "edge.example.test"` {
 		t.Fatalf("expected missing https certificate error, got %v", err)
@@ -2669,9 +2679,11 @@ func TestStartRejectsHTTPSFrontendWithoutMatchingCertificate(t *testing.T) {
 func TestStartRejectsUnsupportedBackendScheme(t *testing.T) {
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "http://edge.example.test:18080",
-		BackendURL:  "ftp://127.0.0.1/resource",
+		Backends: []model.HTTPBackend{
+			{URL: "ftp://127.0.0.1/resource"},
+		},
 	}}, nil, Providers{})
-	if err == nil || err.Error() != `http rule "http://edge.example.test:18080": backend_url must use http or https` {
+	if err == nil || err.Error() != `http rule "http://edge.example.test:18080": backends[].url must use http or https` {
 		t.Fatalf("expected backend scheme error, got %v", err)
 	}
 }
@@ -2679,10 +2691,21 @@ func TestStartRejectsUnsupportedBackendScheme(t *testing.T) {
 func TestStartRejectsFrontendWithoutHostRoute(t *testing.T) {
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "http://:18080",
-		BackendURL:  "http://127.0.0.1:8096",
+		Backends: []model.HTTPBackend{
+			{URL: "http://127.0.0.1:8096"},
+		},
 	}}, nil, Providers{})
 	if err == nil || err.Error() != `http rule "http://:18080": frontend_url must include a host` {
 		t.Fatalf("expected frontend host error, got %v", err)
+	}
+}
+
+func TestRuleUsesRelayIgnoresLegacyRelayChain(t *testing.T) {
+	if ruleUsesRelay(model.HTTPRule{RelayChain: []int{41}}) {
+		t.Fatal("legacy relay_chain must not enable relay routing")
+	}
+	if !ruleUsesRelay(model.HTTPRule{RelayLayers: [][]int{{41}}}) {
+		t.Fatal("relay_layers must enable relay routing")
 	}
 }
 
@@ -2702,8 +2725,8 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 		context.Background(),
 		[]model.HTTPRule{{
 			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			BackendURL:  "http://" + backendAddress,
-			RelayChain:  []int{41},
+			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
+			RelayLayers: [][]int{{41}},
 		}},
 		[]model.RelayListener{{
 			ID:         41,
@@ -2770,8 +2793,8 @@ func TestStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) 
 		context.Background(),
 		[]model.HTTPRule{{
 			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			BackendURL:  "http://" + backendAddress,
-			RelayChain:  []int{41},
+			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
+			RelayLayers: [][]int{{41}},
 		}},
 		[]model.RelayListener{{
 			ID:         41,
@@ -2872,8 +2895,8 @@ func TestStartRelayHTTPSmallPostPropagatesInteractiveTrafficClassMetadata(t *tes
 		context.Background(),
 		[]model.HTTPRule{{
 			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			BackendURL:  "http://" + backendAddress,
-			RelayChain:  []int{41},
+			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
+			RelayLayers: [][]int{{41}},
 		}},
 		[]model.RelayListener{{
 			ID:         41,
@@ -2974,8 +2997,8 @@ func TestStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
 		context.Background(),
 		[]model.HTTPRule{{
 			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			BackendURL:  fmt.Sprintf("http://localhost:%s", backendURL.Port()),
-			RelayChain:  []int{relayListener.ID},
+			Backends:    []model.HTTPBackend{{URL: fmt.Sprintf("http://localhost:%s", backendURL.Port())}},
+			RelayLayers: [][]int{{relayListener.ID}},
 		}},
 		[]model.RelayListener{relayListener},
 		Providers{Relay: provider},
@@ -3059,7 +3082,7 @@ func TestStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *testing.T) 
 		context.Background(),
 		[]model.HTTPRule{{
 			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			BackendURL:  fmt.Sprintf("http://localhost:%s", backendURL.Port()),
+			Backends:    []model.HTTPBackend{{URL: fmt.Sprintf("http://localhost:%s", backendURL.Port())}},
 			RelayLayers: [][]int{{relayListener.ID}},
 		}},
 		[]model.RelayListener{relayListener},
@@ -3111,8 +3134,8 @@ func TestStartServesHTTPRulesThroughRelayChainWithObfsMode(t *testing.T) {
 		context.Background(),
 		[]model.HTTPRule{{
 			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			BackendURL:  "http://" + backendAddress,
-			RelayChain:  []int{41},
+			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
+			RelayLayers: [][]int{{41}},
 			RelayObfs:   true,
 		}},
 		[]model.RelayListener{{
@@ -3191,8 +3214,8 @@ func TestStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t *testing.T
 		context.Background(),
 		[]model.HTTPRule{{
 			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			BackendURL:  backend.URL,
-			RelayChain:  []int{41},
+			Backends:    []model.HTTPBackend{{URL: backend.URL}},
+			RelayLayers: [][]int{{41}},
 			RelayObfs:   true,
 		}},
 		[]model.RelayListener{{
@@ -3252,8 +3275,8 @@ func TestStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t *testing.T
 func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	rule := model.HTTPRule{
 		FrontendURL: "http://edge.example.test",
-		BackendURL:  "http://127.0.0.1:8096",
-		RelayChain:  []int{1, 2, 3},
+		Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers: [][]int{{1}, {2}, {3}},
 	}
 	listeners := []model.RelayListener{
 		{
@@ -3322,8 +3345,8 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
 	rule := model.HTTPRule{
 		FrontendURL: "http://edge.example.test",
-		BackendURL:  "http://127.0.0.1:8096",
-		RelayChain:  []int{1},
+		Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers: [][]int{{1}},
 	}
 	listeners := []model.RelayListener{
 		{
@@ -3645,7 +3668,7 @@ func TestRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
 	if got := dials.Load(); got != 1 {
 		t.Fatalf("relay transport dials = %d, want second request to reuse first relay connection", got)
 	}
-	aggregateKey := backends.RelayBackoffKeyForLayers(entry.rule.RelayChain, entry.rule.RelayLayers, selectedAddress)
+	aggregateKey := backends.RelayBackoffKeyForLayers(nil, entry.rule.RelayLayers, selectedAddress)
 	if cache.IsInBackoff(aggregateKey) {
 		t.Fatalf("aggregate relay layer key %q was marked in backoff", aggregateKey)
 	}

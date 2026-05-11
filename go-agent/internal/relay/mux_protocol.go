@@ -42,7 +42,7 @@ type muxFrame struct {
 	StreamID uint32
 	Payload  []byte
 
-	payloadRelease func()
+	pooledPayload []byte
 }
 
 func writeMuxFrame(w io.Writer, frame muxFrame) error {
@@ -93,50 +93,48 @@ func readMuxFrame(r io.Reader) (muxFrame, error) {
 		return muxFrame{}, fmt.Errorf("invalid mux payload size %d", size)
 	}
 
-	payload, release := allocMuxPayload(size)
+	payload, pooledPayload := allocMuxPayload(size)
 	if _, err := io.ReadFull(r, payload); err != nil {
-		if release != nil {
-			release()
+		if pooledPayload != nil {
+			tlsTCPBulkBufferPool.Put(pooledPayload)
 		}
 		return muxFrame{}, err
 	}
 
 	return muxFrame{
-		Version:        header[0],
-		Type:           muxFrameType(header[1]),
-		Flags:          muxFrameFlags(header[2]),
-		StreamID:       binary.BigEndian.Uint32(header[3:7]),
-		Payload:        payload,
-		payloadRelease: release,
+		Version:       header[0],
+		Type:          muxFrameType(header[1]),
+		Flags:         muxFrameFlags(header[2]),
+		StreamID:      binary.BigEndian.Uint32(header[3:7]),
+		Payload:       payload,
+		pooledPayload: pooledPayload,
 	}, nil
 }
 
-func allocMuxPayload(size uint32) ([]byte, func()) {
+func allocMuxPayload(size uint32) ([]byte, []byte) {
 	if size == 0 {
 		return nil, nil
 	}
 	if size <= tlsTCPBulkFrameSize {
 		buf := tlsTCPBulkBufferPool.Get().([]byte)
-		return buf[:size], func() {
-			tlsTCPBulkBufferPool.Put(buf)
-		}
+		return buf[:size], buf
 	}
 	return make([]byte, size), nil
 }
 
 func (f *muxFrame) releasePayload() {
-	if f.payloadRelease != nil {
-		f.payloadRelease()
-		f.payloadRelease = nil
+	if f.pooledPayload != nil {
+		tlsTCPBulkBufferPool.Put(f.pooledPayload)
+		f.pooledPayload = nil
 	}
 }
 
 func (f *muxFrame) takeReadChunk() tlsTCPReadChunk {
 	chunk := tlsTCPReadChunk{
-		payload: f.Payload,
-		release: f.payloadRelease,
+		payload:       f.Payload,
+		pooledPayload: f.pooledPayload,
 	}
 	f.Payload = nil
-	f.payloadRelease = nil
+	f.pooledPayload = nil
 	return chunk
 }

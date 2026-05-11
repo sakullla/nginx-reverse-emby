@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
 )
 
 const (
@@ -22,48 +22,7 @@ const (
 )
 
 func resolveDiagnosticRelayPaths(ruleLabel string, chain []int, layers [][]int, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
-	normalizedLayers := relayplan.NormalizeLayers(chain, layers)
-	pathIDs, err := relayplan.ExpandPaths(normalizedLayers, 32)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ruleLabel, err)
-	}
-	if len(pathIDs) == 0 {
-		return nil, nil
-	}
-
-	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
-	for _, listener := range relayListeners {
-		relayListenersByID[listener.ID] = listener
-	}
-
-	paths := make([]relayplan.Path, 0, len(pathIDs))
-	for _, ids := range pathIDs {
-		hops := make([]relay.Hop, 0, len(ids))
-		for _, listenerID := range ids {
-			listener, ok := relayListenersByID[listenerID]
-			if !ok {
-				return nil, fmt.Errorf("%s: relay listener %d not found", ruleLabel, listenerID)
-			}
-			if !listener.Enabled {
-				return nil, fmt.Errorf("%s: relay listener %d is disabled", ruleLabel, listenerID)
-			}
-			if err := relay.ValidateListener(listener); err != nil {
-				return nil, fmt.Errorf("%s: relay listener %d: %w", ruleLabel, listenerID, err)
-			}
-			host, port := relayHopDialEndpoint(listener)
-			hops = append(hops, relay.Hop{
-				Address:    net.JoinHostPort(host, strconv.Itoa(port)),
-				ServerName: host,
-				Listener:   listener,
-			})
-		}
-		paths = append(paths, relayplan.Path{
-			IDs:  append([]int(nil), ids...),
-			Hops: hops,
-			Key:  relayplan.PathKey("relay_path", ids, target),
-		})
-	}
-	return paths, nil
+	return relayroute.ResolvePaths(ruleLabel, chain, layers, relayListeners, target)
 }
 
 func probeDiagnosticRelayPaths(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache, preferenceCache *backends.Cache) ([]RelayPathReport, []int, error) {

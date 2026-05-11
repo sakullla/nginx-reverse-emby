@@ -19,6 +19,11 @@ import (
 
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
 var errTLSTCPInteractiveAdmissionRejected = errors.New("tls_tcp relay interactive admission rejected: all tunnels are congested")
+var tlsTCPWriteRequestPool = sync.Pool{
+	New: func() any {
+		return &tlsTCPWriteRequest{done: make(chan error, 1)}
+	},
+}
 
 const tlsTCPBulkFrameSize = 64 * 1024
 const tlsTCPMuxSessionsPerKey = 4
@@ -87,8 +92,9 @@ type tlsTCPLogicalStream struct {
 }
 
 type tlsTCPReadChunk struct {
-	payload []byte
-	release func()
+	payload       []byte
+	pooledPayload []byte
+	release       func()
 }
 
 type tlsTCPWriteRequest struct {
@@ -96,11 +102,34 @@ type tlsTCPWriteRequest struct {
 	done  chan error
 }
 
+func newTLSTCPWriteRequest(frame muxFrame) *tlsTCPWriteRequest {
+	req := tlsTCPWriteRequestPool.Get().(*tlsTCPWriteRequest)
+	select {
+	case <-req.done:
+	default:
+	}
+	req.frame = frame
+	return req
+}
+
+func releaseTLSTCPWriteRequest(req *tlsTCPWriteRequest) {
+	req.frame = muxFrame{}
+	select {
+	case <-req.done:
+	default:
+	}
+	tlsTCPWriteRequestPool.Put(req)
+}
+
 func (c *tlsTCPReadChunk) consume(n int) {
 	c.payload = c.payload[n:]
 }
 
 func (c *tlsTCPReadChunk) releaseNow() {
+	if c.pooledPayload != nil {
+		tlsTCPBulkBufferPool.Put(c.pooledPayload)
+		c.pooledPayload = nil
+	}
 	if c.release != nil {
 		c.release()
 		c.release = nil
@@ -606,22 +635,21 @@ func (t *tlsTCPTunnel) enqueueWriteFrame(ctx context.Context, frame muxFrame) (*
 	t.startWritePump()
 
 	payloadSize := int64(len(frame.Payload))
-	req := &tlsTCPWriteRequest{
-		frame: frame,
-		done:  make(chan error, 1),
-	}
+	req := newTLSTCPWriteRequest(frame)
 	t.queuedWrites.Add(1)
 	t.bufferedBytes.Add(payloadSize)
 	select {
 	case <-t.closed:
 		t.queuedWrites.Add(-1)
 		t.bufferedBytes.Add(-payloadSize)
-		frame.releasePayload()
+		req.frame.releasePayload()
+		releaseTLSTCPWriteRequest(req)
 		return nil, io.EOF
 	case <-ctx.Done():
 		t.queuedWrites.Add(-1)
 		t.bufferedBytes.Add(-payloadSize)
-		frame.releasePayload()
+		req.frame.releasePayload()
+		releaseTLSTCPWriteRequest(req)
 		return nil, ctx.Err()
 	case t.writeReqCh <- req:
 		return req, nil
@@ -631,10 +659,23 @@ func (t *tlsTCPTunnel) enqueueWriteFrame(ctx context.Context, frame muxFrame) (*
 func waitTLSTCPWriteRequest(ctx context.Context, req *tlsTCPWriteRequest, tunnel *tlsTCPTunnel) error {
 	select {
 	case err := <-req.done:
+		releaseTLSTCPWriteRequest(req)
 		return err
 	case <-tunnel.closed:
+		select {
+		case err := <-req.done:
+			releaseTLSTCPWriteRequest(req)
+			return err
+		default:
+		}
 		return io.EOF
 	case <-ctx.Done():
+		select {
+		case err := <-req.done:
+			releaseTLSTCPWriteRequest(req)
+			return err
+		default:
+		}
 		return ctx.Err()
 	}
 }
@@ -910,12 +951,10 @@ func newQueuedTLSTCPDataFrame(streamID uint32, payload []byte) muxFrame {
 	buf := tlsTCPBulkBufferPool.Get().([]byte)
 	copy(buf, payload)
 	return muxFrame{
-		Type:     muxFrameTypeData,
-		StreamID: streamID,
-		Payload:  buf[:len(payload)],
-		payloadRelease: func() {
-			tlsTCPBulkBufferPool.Put(buf)
-		},
+		Type:          muxFrameTypeData,
+		StreamID:      streamID,
+		Payload:       buf[:len(payload)],
+		pooledPayload: buf,
 	}
 }
 
@@ -1204,7 +1243,7 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 				continue
 			}
 			if state := s.server.currentTrafficBlockState(); state.Blocked && (strings.EqualFold(request.Kind, "tcp") || strings.EqualFold(request.Kind, "udp")) {
-				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: state.errorMessage()})
+				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: trafficBlockErrorMessage(state)})
 				continue
 			}
 

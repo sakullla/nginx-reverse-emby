@@ -160,14 +160,12 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 		embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
 			ID:               rule.ID,
 			FrontendURL:      rule.FrontendURL,
-			BackendURL:       rule.BackendURL,
 			Backends:         toEmbeddedHTTPBackends(rule.Backends),
 			LoadBalancing:    goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
 			ProxyRedirect:    rule.ProxyRedirect,
 			PassProxyHeaders: rule.PassProxyHeaders,
 			UserAgent:        rule.UserAgent,
 			CustomHeaders:    toEmbeddedHTTPHeaders(rule.CustomHeaders),
-			RelayChain:       append([]int(nil), rule.RelayChain...),
 			RelayLayers:      cloneRelayLayers(rule.RelayLayers),
 			Revision:         rule.Revision,
 		})
@@ -180,8 +178,6 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			Protocol:      rule.Protocol,
 			ListenHost:    rule.ListenHost,
 			ListenPort:    rule.ListenPort,
-			UpstreamHost:  rule.UpstreamHost,
-			UpstreamPort:  rule.UpstreamPort,
 			Backends:      toEmbeddedL4Backends(rule.Backends),
 			LoadBalancing: goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
 			Tuning: goagentembedded.L4Tuning{
@@ -190,7 +186,6 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 					Send:   rule.Tuning.ProxyProtocol.Send,
 				},
 			},
-			RelayChain:  append([]int(nil), rule.RelayChain...),
 			RelayLayers: cloneRelayLayers(rule.RelayLayers),
 			RelayObfs:   rule.RelayObfs,
 			ListenMode:  rule.ListenMode,

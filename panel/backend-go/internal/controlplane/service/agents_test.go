@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -881,8 +882,8 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 				ID:                1,
 				AgentID:           "local",
 				FrontendURL:       "https://emby.example.com",
-				BackendURL:        "http://emby:8096",
-				BackendsJSON:      `[]`,
+				BackendURL:        "http://legacy:8096",
+				BackendsJSON:      `[{"url":"http://emby:8096"}]`,
 				LoadBalancingJSON: `{}`,
 				Enabled:           true,
 				TagsJSON:          `["media"]`,
@@ -909,6 +910,9 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	if len(rule.Backends) != 1 || rule.Backends[0].URL != "http://emby:8096" {
 		t.Fatalf("Backends = %+v", rule.Backends)
 	}
+	if rule.BackendURL != "" || len(rule.RelayChain) != 0 {
+		t.Fatalf("legacy fields = backend_url=%q relay_chain=%+v", rule.BackendURL, rule.RelayChain)
+	}
 	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("LoadBalancing = %+v", rule.LoadBalancing)
 	}
@@ -917,6 +921,38 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	}
 	if len(rule.CustomHeaders) != 1 || rule.CustomHeaders[0].Name != "X-Test" {
 		t.Fatalf("CustomHeaders = %+v", rule.CustomHeaders)
+	}
+}
+
+func TestHTTPRuleJSONOmitsLegacyFields(t *testing.T) {
+	raw, err := json.Marshal(HTTPRule{
+		ID:          1,
+		AgentID:     "local",
+		FrontendURL: "https://emby.example.com",
+		BackendURL:  "http://legacy:8096",
+		Backends:    []HTTPRuleBackend{{URL: "http://emby:8096"}},
+		RelayChain:  []int{7},
+		RelayLayers: [][]int{{7}},
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(HTTPRule) error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(HTTPRule) error = %v", err)
+	}
+	for _, key := range []string{"backend_url", "relay_chain"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("HTTPRule JSON exposed legacy field %q: %s", key, raw)
+		}
+	}
+	if _, ok := payload["backends"]; !ok {
+		t.Fatalf("HTTPRule JSON missing canonical backends: %s", raw)
+	}
+	if _, ok := payload["relay_layers"]; !ok {
+		t.Fatalf("HTTPRule JSON missing canonical relay_layers: %s", raw)
 	}
 }
 
@@ -945,18 +981,17 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 			Rules: []storage.HTTPRule{{
 				ID:          9,
 				FrontendURL: "https://edge.example.com",
-				BackendURL:  "http://127.0.0.1:8096",
-				RelayChain:  []int{11, 22},
+				Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+				RelayLayers: [][]int{{11, 22}},
 				Revision:    6,
 			}},
 			L4Rules: []storage.L4Rule{{
-				ID:           2,
-				Protocol:     "tcp",
-				ListenHost:   "0.0.0.0",
-				ListenPort:   9000,
-				UpstreamHost: "127.0.0.1",
-				UpstreamPort: 9001,
-				Revision:     6,
+				ID:         2,
+				Protocol:   "tcp",
+				ListenHost: "0.0.0.0",
+				ListenPort: 9000,
+				Backends:   []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+				Revision:   6,
 			}},
 			RelayListeners: []storage.RelayListener{{
 				ID:         11,
@@ -1064,8 +1099,8 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 				URL:      "https://example.com/agent-linux.tar.gz",
 				SHA256:   "sha-linux",
 			},
-			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://a.example.com", BackendURL: "http://127.0.0.1:8096"}},
-			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, UpstreamHost: "127.0.0.1", UpstreamPort: 9001}},
+			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://a.example.com", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
+			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}}}},
 			RelayListeners: []storage.RelayListener{{ID: 11, AgentID: "remote-b", Name: "relay-b", ListenHost: "0.0.0.0", ListenPort: 7443}},
 			Certificates:   []storage.ManagedCertificateBundle{{ID: 31, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
 			CertificatePolicies: []storage.ManagedCertificatePolicy{{
@@ -1125,8 +1160,8 @@ func TestAgentServiceHeartbeatForcesFullSyncWhenLastApplyFailedAtCurrentRevision
 		snapshot: storage.Snapshot{
 			DesiredVersion: "3.1.0",
 			Revision:       7,
-			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://edge.example.com", BackendURL: "http://127.0.0.1:8096"}},
-			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 50381, UpstreamHost: "127.0.0.1", UpstreamPort: 9001}},
+			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://edge.example.com", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
+			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 50381, Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}}}},
 			RelayListeners: []storage.RelayListener{{ID: 4, AgentID: "remote-c", Name: "relay-local", ListenHost: "0.0.0.0", ListenPort: 443}},
 			Certificates:   []storage.ManagedCertificateBundle{{ID: 8, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
 			CertificatePolicies: []storage.ManagedCertificatePolicy{{
@@ -2009,10 +2044,11 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 		rulesByID: map[string][]storage.HTTPRuleRow{
 			"edge-a": {{ID: 1, AgentID: "edge-a"}},
 			"edge-b": {{
-				ID:             9,
-				AgentID:        "edge-b",
-				FrontendURL:    "https://relay.example.com",
-				RelayChainJSON: `[7]`,
+				ID:              9,
+				AgentID:         "edge-b",
+				FrontendURL:     "https://relay.example.com",
+				RelayChainJSON:  `[8]`,
+				RelayLayersJSON: `[[7]]`,
 			}},
 		},
 		l4RulesByID: map[string][]storage.L4RuleRow{
@@ -2040,6 +2076,48 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 	}
 	if len(store.rulesByID["edge-a"]) != 0 || len(store.l4RulesByID["edge-a"]) != 0 || len(store.relayByID["edge-a"]) != 0 {
 		t.Fatalf("agent resources not cleaned up: rules=%+v l4=%+v relay=%+v", store.rulesByID["edge-a"], store.l4RulesByID["edge-a"], store.relayByID["edge-a"])
+	}
+}
+
+func TestAgentServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}
+	store := &fakeStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-a", Name: "edge-a", AgentToken: "token-a"},
+			{ID: "edge-b", Name: "edge-b", AgentToken: "token-b"},
+		},
+		relayByID: map[string][]storage.RelayListenerRow{
+			"edge-a": {{
+				ID:      7,
+				AgentID: "edge-a",
+				Name:    "relay-a",
+			}},
+		},
+		rulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-b": {{
+				ID:              9,
+				AgentID:         "edge-b",
+				FrontendURL:     "https://relay.example.com",
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[8]]`,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+	}
+	svc := NewAgentService(cfg, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != "edge-a" {
+		t.Fatalf("deleted agent = %+v", deleted)
+	}
+	if store.deletedAgentID != "edge-a" {
+		t.Fatalf("DeleteAgent() called with %q", store.deletedAgentID)
 	}
 }
 

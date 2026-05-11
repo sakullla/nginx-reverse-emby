@@ -133,7 +133,6 @@ const canDiagnose = computed(() => String(props.rule?.protocol || '').toLowerCas
 
 const backends = computed(() => {
   if (Array.isArray(props.rule.backends) && props.rule.backends.length > 0) return props.rule.backends
-  if (props.rule.upstream_host && props.rule.upstream_port) return [{ host: props.rule.upstream_host, port: props.rule.upstream_port }]
   return []
 })
 const backendCount = computed(() => backends.value.length)

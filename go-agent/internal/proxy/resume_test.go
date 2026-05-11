@@ -766,7 +766,7 @@ func TestCopyResumableResponseUsesBulkTransportForRelayRangeRetry(t *testing.T) 
 	entry := &routeEntry{
 		rule: model.HTTPRule{
 			FrontendURL: "http://edge.example.test",
-			RelayChain:  []int{1},
+			RelayLayers: [][]int{{1}},
 		},
 		transport: transportWithProtocolHandler("resume-test", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			return nil, fmt.Errorf("fallback transport used for %q", req.Header.Get("Range"))

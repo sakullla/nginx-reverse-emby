@@ -312,11 +312,10 @@ func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T
 	listenPort := pickFreeTCPPort(t)
 
 	err := manager.Apply(ctx, []model.L4Rule{{
-		Protocol:     "tcp",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: pickFreeTCPPort(t),
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
 	}})
 	if err != nil {
 		t.Fatalf("failed to apply initial l4 runtime: %v", err)
@@ -326,11 +325,10 @@ func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T
 	original := manager.server
 
 	err = manager.Apply(ctx, []model.L4Rule{{
-		Protocol:     "bogus",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   listenPort,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: pickFreeTCPPort(t),
+		Protocol:   "bogus",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
 	}})
 	if err == nil || err.Error() != `unsupported protocol "bogus"` {
 		t.Fatalf("expected invalid reconfigure error, got %v", err)
@@ -433,7 +431,7 @@ func TestHTTPRuntimeManagerServesHTTPSRulesWithTLSProvider(t *testing.T) {
 
 	rule := model.HTTPRule{
 		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", listenPort),
-		BackendURL:  backend.URL,
+		Backends:    []model.HTTPBackend{{URL: backend.URL}},
 		Revision:    1,
 	}
 	if err := manager.Apply(ctx, []model.HTTPRule{rule}); err != nil {
@@ -488,7 +486,7 @@ func TestHTTPRuntimeManagerServesHTTP3WhenEnabled(t *testing.T) {
 
 	rule := model.HTTPRule{
 		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", listenPort),
-		BackendURL:  backend.URL,
+		Backends:    []model.HTTPBackend{{URL: backend.URL}},
 		Revision:    1,
 	}
 	if err := manager.Apply(ctx, []model.HTTPRule{rule}); err != nil {
@@ -922,7 +920,7 @@ func TestNewEmbeddedRoundTripsL4ThroughManagedRelayListener(t *testing.T) {
 					Port: backendPort,
 				}},
 				LoadBalancing: model.LoadBalancing{Strategy: "adaptive"},
-				RelayChain:    []int{1},
+				RelayLayers:   [][]int{{1}},
 				Revision:      1,
 			}},
 			RelayListeners: []model.RelayListener{{
@@ -1055,7 +1053,7 @@ func TestNewEmbeddedRoundTripsL4ThroughManagedRelayListener(t *testing.T) {
 func runtimeTestHTTPRule(port int, backendURL string) model.HTTPRule {
 	return model.HTTPRule{
 		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
-		BackendURL:  backendURL,
+		Backends:    []model.HTTPBackend{{URL: backendURL}},
 		Revision:    1,
 	}
 }

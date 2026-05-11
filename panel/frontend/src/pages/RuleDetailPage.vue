@@ -23,7 +23,7 @@
       </div>
       <div class="form-group">
         <label>后端地址</label>
-        <input v-model="form.backend_url" class="input-base" placeholder="http://192.168.1.100:8096">
+        <input v-model="form.backendUrl" class="input-base" placeholder="http://192.168.1.100:8096">
       </div>
       <div class="form-group">
         <label>标签（逗号分隔）</label>
@@ -66,13 +66,25 @@ const rule = computed(() => rules.value.find(r => r.id === ruleId.value))
 const { mutateAsync: createRule } = useCreateRule(selectedAgentId)
 const { mutateAsync: updateRule } = useUpdateRule(selectedAgentId)
 
-const form = ref({ frontend_url: '', backend_url: '', tags: '', enabled: true })
+const form = ref({ frontend_url: '', backendUrl: '', tags: '', enabled: true })
+
+function firstBackendUrl(rule) {
+  if (!Array.isArray(rule?.backends)) return ''
+  return String(rule.backends[0]?.url || '').trim()
+}
+
+function existingRelayLayers(rule) {
+  if (!Array.isArray(rule?.relay_layers)) return []
+  return rule.relay_layers
+    .filter(layer => Array.isArray(layer))
+    .map(layer => layer.map(id => Number(id)).filter(Number.isFinite))
+}
 
 onMounted(() => {
   if (rule.value) {
     form.value = {
       frontend_url: rule.value.frontend_url,
-      backend_url: rule.value.backend_url,
+      backendUrl: firstBackendUrl(rule.value),
       tags: (rule.value.tags || []).join(', '),
       enabled: rule.value.enabled
     }
@@ -80,9 +92,11 @@ onMounted(() => {
 })
 
 async function submit() {
+  const relayLayers = isNew.value ? [] : existingRelayLayers(rule.value)
   const payload = {
     frontend_url: form.value.frontend_url,
-    backend_url: form.value.backend_url,
+    backends: form.value.backendUrl.trim() ? [{ url: form.value.backendUrl.trim() }] : [],
+    relay_layers: relayLayers,
     tags: form.value.tags.split(',').map(t => t.trim()).filter(Boolean),
     enabled: form.value.enabled
   }

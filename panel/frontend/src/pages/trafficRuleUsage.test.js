@@ -112,8 +112,8 @@ beforeEach(() => {
   selectedAgentId = 'edge-1'
   systemInfo = { traffic_stats_enabled: true }
   agentsData = [{ id: 'edge-1', name: 'edge-1', desired_revision: 1, current_revision: 1, last_apply_status: 'success' }]
-  rulesData = [{ id: 7, frontend_url: 'https://app.example.test', backend_url: 'http://origin.example.test', enabled: true }]
-  l4RulesData = [{ id: 9, name: 'tcp-app', protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 443, upstream_host: '10.0.0.1', upstream_port: 443, enabled: true }]
+  rulesData = [{ id: 7, frontend_url: 'https://app.example.test', backends: [{ url: 'http://origin.example.test' }], enabled: true }]
+  l4RulesData = [{ id: 9, name: 'tcp-app', protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 443, backends: [{ host: '10.0.0.1', port: 443 }], enabled: true }]
   relayListenersData = [{ id: 11, name: 'relay-main', enabled: true, public_host: 'relay.example.test', public_port: 8443, listen_host: '0.0.0.0', listen_port: 8443 }]
   vi.clearAllMocks()
   apiCalls.fetchTrafficSummary.mockResolvedValue({

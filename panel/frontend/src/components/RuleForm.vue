@@ -127,7 +127,7 @@
                   v-model="backend.url"
                   type="text"
                   class="input"
-                  :class="{ 'input--error': errors.backend_url }"
+                  :class="{ 'input--error': errors.backend }"
                   placeholder="例如：http://192.168.1.100:8096"
                   @input="handleBackendUrlInput"
                 >
@@ -142,13 +142,13 @@
               </button>
             </div>
           </div>
-          <p v-if="errors.backend_url" class="form-error">
+          <p v-if="errors.backend" class="form-error">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/>
               <line x1="12" y1="8" x2="12" y2="12"/>
               <line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
-            {{ errors.backend_url }}
+            {{ errors.backend }}
           </p>
         </div>
 
@@ -548,7 +548,7 @@ const headerErrors = ref([])
 const shouldValidateCustomHeaders = ref(false)
 const errors = ref({
   frontend_url: '',
-  backend_url: '',
+  backend: '',
   submit: ''
 })
 const dragState = ref({ from: -1, to: -1 })
@@ -593,22 +593,7 @@ function getRelayLayers(value) {
   if (Array.isArray(value?.relay_layers) && value.relay_layers.length > 0) {
     return value.relay_layers
   }
-  if (Array.isArray(value?.relay_chain) && value.relay_chain.length > 0) {
-    return value.relay_chain.map((id) => [id])
-  }
   return []
-}
-
-function flattenRelayLayers(layers) {
-  if (!Array.isArray(layers)) return []
-  const result = []
-  for (const layer of layers) {
-    if (Array.isArray(layer) && layer.length > 0) {
-      const id = Number(layer[0])
-      if (Number.isFinite(id)) result.push(id)
-    }
-  }
-  return result
 }
 
 const hasRelayConfig = computed(() => {
@@ -667,7 +652,7 @@ watch(
     headerErrors.value = form.value.custom_headers.map(() => ({ name: '', value: '' }))
     shouldValidateCustomHeaders.value = false
     errors.value.frontend_url = ''
-    errors.value.backend_url = ''
+    errors.value.backend = ''
     errors.value.submit = ''
     activeTab.value = 'basic'
   },
@@ -696,7 +681,6 @@ function createDefaultForm() {
     user_agent: '',
     custom_headers: [],
     relay_layers: [],
-    relay_chain: [],
     relay_obfs: false
   }
 }
@@ -721,10 +705,6 @@ function normalizeHttpBackends(initialData) {
     if (backends.length > 0) return backends
   }
 
-  if (initialData?.backend_url) {
-    return [createBackend({ url: initialData.backend_url })]
-  }
-
   return [createBackend()]
 }
 
@@ -746,7 +726,6 @@ function createFormState(initialData) {
     user_agent: String(initialData.user_agent || ''),
     custom_headers: normalizeCustomHeaders(initialData.custom_headers),
     relay_layers: getRelayLayers(initialData),
-    relay_chain: [],
     relay_obfs: initialData.relay_obfs === true
   }
 }
@@ -767,7 +746,7 @@ function handleFrontendUrlInput() {
 }
 
 function handleBackendUrlInput() {
-  errors.value.backend_url = ''
+  errors.value.backend = ''
   errors.value.submit = ''
 }
 
@@ -849,7 +828,7 @@ function computeHttpAutoTags(urlStr) {
 
 function validateBasicFields() {
   errors.value.frontend_url = ''
-  errors.value.backend_url = ''
+  errors.value.backend = ''
 
   if (!form.value.frontend_url.trim()) {
     errors.value.frontend_url = '请输入前端访问地址'
@@ -859,10 +838,10 @@ function validateBasicFields() {
     .map((backend) => ({ url: String(backend?.url || '').trim() }))
     .filter((backend) => backend.url)
   if (validBackends.length === 0) {
-    errors.value.backend_url = '至少需要一个后端服务器'
+    errors.value.backend = '至少需要一个后端服务器'
   }
 
-  return !errors.value.frontend_url && !errors.value.backend_url
+  return !errors.value.frontend_url && !errors.value.backend
 }
 
 function validateCustomHeaderRows() {
@@ -935,7 +914,6 @@ async function handleSubmit() {
       .filter((backend) => backend.url)
     const payload = {
       frontend_url: form.value.frontend_url.trim(),
-      backend_url: validBackends[0]?.url || '',
       backends: validBackends,
       load_balancing: {
         strategy: normalizeHttpStrategy(form.value.load_balancing.strategy)
@@ -950,7 +928,6 @@ async function handleSubmit() {
         value: item.value ?? ''
       })),
       relay_layers: Array.isArray(form.value.relay_layers) ? form.value.relay_layers.map((l) => [...l]) : [],
-      relay_chain: flattenRelayLayers(form.value.relay_layers),
       relay_obfs: firstRelayListener.value?.transport_mode === 'tls_tcp'
         && Array.isArray(form.value.relay_layers)
         && form.value.relay_layers.length > 0

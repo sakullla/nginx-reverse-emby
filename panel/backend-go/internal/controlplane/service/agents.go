@@ -96,13 +96,13 @@ type HTTPRule struct {
 	ID               int                `json:"id"`
 	AgentID          string             `json:"agent_id"`
 	FrontendURL      string             `json:"frontend_url"`
-	BackendURL       string             `json:"backend_url"`
+	BackendURL       string             `json:"-"`
 	Backends         []HTTPRuleBackend  `json:"backends"`
 	LoadBalancing    HTTPLoadBalancing  `json:"load_balancing"`
 	Enabled          bool               `json:"enabled"`
 	Tags             []string           `json:"tags"`
 	ProxyRedirect    bool               `json:"proxy_redirect"`
-	RelayChain       []int              `json:"relay_chain"`
+	RelayChain       []int              `json:"-"`
 	RelayLayers      [][]int            `json:"relay_layers"`
 	RelayObfs        bool               `json:"relay_obfs"`
 	PassProxyHeaders bool               `json:"pass_proxy_headers"`
@@ -411,33 +411,7 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 
 	rules := make([]HTTPRule, 0, len(rows))
 	for _, row := range rows {
-		backends := parseBackends(row.BackendsJSON)
-		if len(backends) == 0 && strings.TrimSpace(row.BackendURL) != "" {
-			backends = []HTTPRuleBackend{{URL: strings.TrimSpace(row.BackendURL)}}
-		}
-		backendURL := strings.TrimSpace(row.BackendURL)
-		if backendURL == "" && len(backends) > 0 {
-			backendURL = backends[0].URL
-		}
-
-		rules = append(rules, HTTPRule{
-			ID:               row.ID,
-			AgentID:          row.AgentID,
-			FrontendURL:      row.FrontendURL,
-			BackendURL:       backendURL,
-			Backends:         backends,
-			LoadBalancing:    parseLoadBalancing(row.LoadBalancingJSON),
-			Enabled:          row.Enabled,
-			Tags:             parseStringArray(row.TagsJSON),
-			ProxyRedirect:    row.ProxyRedirect,
-			RelayChain:       parseIntArray(row.RelayChainJSON),
-			RelayLayers:      parseIntLayers(row.RelayLayersJSON),
-			RelayObfs:        row.RelayObfs,
-			PassProxyHeaders: row.PassProxyHeaders,
-			UserAgent:        row.UserAgent,
-			CustomHeaders:    parseCustomHeaders(row.CustomHeadersJSON),
-			Revision:         row.Revision,
-		})
+		rules = append(rules, httpRuleFromRow(row))
 	}
 
 	return rules, nil
@@ -1177,7 +1151,7 @@ func (s *agentService) findRelayListenerReference(ctx context.Context, excludedA
 			return nil, err
 		}
 		for _, row := range httpRules {
-			if relayConfigReferencesListener(row.RelayChainJSON, row.RelayLayersJSON, listenerID) {
+			if relayLayersReferenceListener(row.RelayLayersJSON, listenerID) {
 				return &agentRelayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "HTTP"}, nil
 			}
 		}
@@ -1186,7 +1160,7 @@ func (s *agentService) findRelayListenerReference(ctx context.Context, excludedA
 			return nil, err
 		}
 		for _, row := range l4Rules {
-			if relayConfigReferencesListener(row.RelayChainJSON, row.RelayLayersJSON, listenerID) {
+			if relayLayersReferenceListener(row.RelayLayersJSON, listenerID) {
 				return &agentRelayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "L4"}, nil
 			}
 		}

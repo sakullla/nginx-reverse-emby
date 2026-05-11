@@ -51,12 +51,12 @@ type L4Rule struct {
 	Protocol        string           `json:"protocol"`
 	ListenHost      string           `json:"listen_host"`
 	ListenPort      int              `json:"listen_port"`
-	UpstreamHost    string           `json:"upstream_host"`
-	UpstreamPort    int              `json:"upstream_port"`
+	UpstreamHost    string           `json:"-"`
+	UpstreamPort    int              `json:"-"`
 	Backends        []L4Backend      `json:"backends"`
 	LoadBalancing   L4LoadBalancing  `json:"load_balancing"`
 	Tuning          L4Tuning         `json:"tuning"`
-	RelayChain      []int            `json:"relay_chain"`
+	RelayChain      []int            `json:"-"`
 	RelayLayers     [][]int          `json:"relay_layers"`
 	RelayObfs       bool             `json:"relay_obfs"`
 	ListenMode      string           `json:"listen_mode"`
@@ -424,25 +424,15 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	loadBalancing := normalizeL4LoadBalancingInput(input.LoadBalancing, fallback.LoadBalancing)
 	tuning := normalizeL4TuningInput(protocol, input.Tuning, fallback.Tuning)
 
-	relayChain := append([]int(nil), fallback.RelayChain...)
-	if input.RelayChain != nil {
-		relayChain, err = normalizeRelayChainInput(*input.RelayChain, protocol)
-		if err != nil {
-			return L4Rule{}, err
-		}
-	}
+	relayChain := []int{}
 	relayLayers := cloneIntLayers(fallback.RelayLayers)
 	if input.RelayLayers != nil {
 		relayLayers, err = normalizeRelayLayersInput(*input.RelayLayers, protocol)
 		if err != nil {
 			return L4Rule{}, err
 		}
-	}
-	if fallback.ID > 0 && input.RelayLayers != nil && input.RelayChain == nil {
-		relayChain = []int{}
-	}
-	if input.RelayLayers == nil && input.RelayChain != nil {
-		relayLayers = [][]int{}
+	} else if input.RelayChain != nil {
+		return L4Rule{}, fmt.Errorf("%w: relay_chain is legacy; use relay_layers", ErrInvalidArgument)
 	}
 
 	rawProxyEgressMode := fallback.ProxyEgressMode
@@ -573,17 +563,11 @@ func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule) ([]L4Backend, 
 		if len(backends) == 0 {
 			return nil, "", 0, fmt.Errorf("%w: at least one valid backend is required", ErrInvalidArgument)
 		}
-		return backends, backends[0].Host, backends[0].Port, nil
+		return backends, "", 0, nil
 	}
 
-	upstreamHost := defaultString(pointerString(input.UpstreamHost), fallback.UpstreamHost)
-	upstreamPort := fallback.UpstreamPort
-	if input.UpstreamPort != nil {
-		upstreamPort = *input.UpstreamPort
-	}
-	if upstreamHost != "" && upstreamPort >= 1 && upstreamPort <= 65535 {
-		backends := []L4Backend{{Host: upstreamHost, Port: upstreamPort}}
-		return backends, upstreamHost, upstreamPort, nil
+	if input.UpstreamHost != nil || input.UpstreamPort != nil {
+		return nil, "", 0, fmt.Errorf("%w: upstream_host/upstream_port are legacy; use backends", ErrInvalidArgument)
 	}
 
 	if len(fallback.Backends) > 0 {
@@ -591,7 +575,7 @@ func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule) ([]L4Backend, 
 		if len(backends) == 0 {
 			return nil, "", 0, fmt.Errorf("%w: at least one valid backend is required", ErrInvalidArgument)
 		}
-		return backends, backends[0].Host, backends[0].Port, nil
+		return backends, "", 0, nil
 	}
 
 	return nil, "", 0, fmt.Errorf("%w: at least one valid backend is required", ErrInvalidArgument)
@@ -776,8 +760,8 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		Protocol:        defaultString(row.Protocol, "tcp"),
 		ListenHost:      defaultString(row.ListenHost, "0.0.0.0"),
 		ListenPort:      row.ListenPort,
-		UpstreamHost:    row.UpstreamHost,
-		UpstreamPort:    row.UpstreamPort,
+		UpstreamHost:    "",
+		UpstreamPort:    0,
 		LoadBalancing:   L4LoadBalancing{Strategy: "adaptive"},
 		Tuning:          L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
 		RelayChain:      []int{},
@@ -794,10 +778,6 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 
 	if backends := parseL4Backends(row.BackendsJSON); len(backends) > 0 {
 		rule.Backends = backends
-		rule.UpstreamHost = backends[0].Host
-		rule.UpstreamPort = backends[0].Port
-	} else if rule.UpstreamHost != "" && rule.UpstreamPort > 0 {
-		rule.Backends = []L4Backend{{Host: rule.UpstreamHost, Port: rule.UpstreamPort}}
 	}
 
 	if lb := parseL4LoadBalancing(row.LoadBalancingJSON); lb.Strategy != "" {
@@ -806,7 +786,7 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 	if tuning := parseL4Tuning(row.TuningJSON); tuning != (L4Tuning{}) {
 		rule.Tuning = tuning
 	}
-	rule.RelayChain = parseIntArray(row.RelayChainJSON)
+	rule.RelayChain = []int{}
 	rule.RelayLayers = parseIntLayers(row.RelayLayersJSON)
 	return rule
 }
@@ -819,12 +799,12 @@ func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 		Protocol:           rule.Protocol,
 		ListenHost:         rule.ListenHost,
 		ListenPort:         rule.ListenPort,
-		UpstreamHost:       rule.UpstreamHost,
-		UpstreamPort:       rule.UpstreamPort,
+		UpstreamHost:       "",
+		UpstreamPort:       0,
 		BackendsJSON:       marshalJSON(rule.Backends, "[]"),
 		LoadBalancingJSON:  marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
 		TuningJSON:         marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
-		RelayChainJSON:     marshalJSON(rule.RelayChain, "[]"),
+		RelayChainJSON:     "[]",
 		RelayLayersJSON:    marshalJSON(rule.RelayLayers, "[]"),
 		RelayObfs:          rule.RelayObfs,
 		ListenMode:         defaultString(rule.ListenMode, "tcp"),

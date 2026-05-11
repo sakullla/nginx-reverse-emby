@@ -102,7 +102,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 			}
 			actualAddress := resolveProbeAddress(candidate.address, selectedAddress)
 			backendLabel := tcpProbeLabelForAddress(candidate, actualAddress)
-			relayChain := diagnosticRelayChainForObservation(rule.RelayChain, candidate.relayChain, selectedRelayPath)
+			relayChain := diagnosticRelayChainForObservation(nil, candidate.relayChain, selectedRelayPath)
 			if err != nil {
 				if candidate.backendObservationKey != "" {
 					cache.ObserveBackendFailure(candidate.backendObservationKey)
@@ -177,9 +177,6 @@ func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayL
 
 func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]tcpProbeCandidate, error) {
 	rawBackends := rule.Backends
-	if len(rawBackends) == 0 && rule.UpstreamHost != "" && rule.UpstreamPort > 0 {
-		rawBackends = []model.L4Backend{{Host: rule.UpstreamHost, Port: rule.UpstreamPort}}
-	}
 	if len(rawBackends) == 0 {
 		return nil, fmt.Errorf("at least one backend is required for %s:%d", rule.ListenHost, rule.ListenPort)
 	}
@@ -211,7 +208,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		if ruleUsesL4Relay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			address := configuredAddress
-			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, address)) {
+			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, address)) {
 				continue
 			}
 			resolvedCandidates := []tcpResolvedCandidate{{
@@ -226,7 +223,6 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 				groupKey:              groupKey,
 				resolvedCandidates:    resolvedCandidates,
 				relayProbeTarget:      address,
-				relayChain:            append([]int(nil), rule.RelayChain...),
 			})
 			continue
 		}
@@ -256,7 +252,6 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 				configuredLabel:       configuredLabel,
 				groupKey:              groupKey,
 				resolvedCandidates:    append([]tcpResolvedCandidate(nil), resolvedCandidates...),
-				relayChain:            append([]int(nil), rule.RelayChain...),
 			})
 		}
 	}
@@ -357,7 +352,7 @@ func tcpRelayProbeTarget(candidate tcpProbeCandidate) string {
 }
 
 func ruleUsesL4Relay(rule model.L4Rule) bool {
-	return len(rule.RelayChain) > 0 || len(rule.RelayLayers) > 0
+	return len(rule.RelayLayers) > 0
 }
 
 func tcpProbeLabelForAddress(candidate tcpProbeCandidate, address string) string {
@@ -555,5 +550,5 @@ func resolveL4RelayHops(rule model.L4Rule, relayListeners []model.RelayListener)
 }
 
 func resolveDiagnosticL4RelayPaths(rule model.L4Rule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
-	return resolveDiagnosticRelayPaths(fmt.Sprintf("l4 rule %s:%d", rule.ListenHost, rule.ListenPort), rule.RelayChain, rule.RelayLayers, relayListeners, target)
+	return resolveDiagnosticRelayPaths(fmt.Sprintf("l4 rule %s:%d", rule.ListenHost, rule.ListenPort), nil, rule.RelayLayers, relayListeners, target)
 }

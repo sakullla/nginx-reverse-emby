@@ -21,16 +21,19 @@ type L4Tuning struct {
 }
 
 type L4Rule struct {
-	ID              int              `json:"id,omitempty"`
-	Name            string           `json:"name,omitempty"`
-	Protocol        string           `json:"protocol"`
-	ListenHost      string           `json:"listen_host"`
-	ListenPort      int              `json:"listen_port"`
-	UpstreamHost    string           `json:"upstream_host"`
-	UpstreamPort    int              `json:"upstream_port"`
-	Backends        []L4Backend      `json:"backends,omitempty"`
-	LoadBalancing   LoadBalancing    `json:"load_balancing,omitempty"`
-	Tuning          L4Tuning         `json:"tuning,omitempty"`
+	ID         int    `json:"id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Protocol   string `json:"protocol"`
+	ListenHost string `json:"listen_host"`
+	ListenPort int    `json:"listen_port"`
+	// UpstreamHost is retained only to ignore legacy payloads; runtime uses Backends.
+	UpstreamHost string `json:"upstream_host"`
+	// UpstreamPort is retained only to ignore legacy payloads; runtime uses Backends.
+	UpstreamPort  int           `json:"upstream_port"`
+	Backends      []L4Backend   `json:"backends,omitempty"`
+	LoadBalancing LoadBalancing `json:"load_balancing,omitempty"`
+	Tuning        L4Tuning      `json:"tuning,omitempty"`
+	// RelayChain is retained only to ignore legacy payloads; runtime uses RelayLayers.
 	RelayChain      []int            `json:"relay_chain,omitempty"`
 	RelayLayers     [][]int          `json:"relay_layers,omitempty"`
 	RelayObfs       bool             `json:"relay_obfs,omitempty"`

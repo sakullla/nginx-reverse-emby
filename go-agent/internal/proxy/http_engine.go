@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 )
 
 const internalRedirectPathSegment = "/__nre_redirect"
@@ -257,32 +258,11 @@ func parseInternalRedirectTarget(rawPath, frontendBasePath string) (*url.URL, bo
 }
 
 func normalizeHost(value string) string {
-	host := strings.TrimSpace(value)
-	if host == "" {
-		return ""
-	}
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	return strings.ToLower(host)
+	return netutil.NormalizeHost(value)
 }
 
 func normalizeURLAuthority(target *url.URL) string {
-	if target == nil {
-		return ""
-	}
-	host := normalizeHost(target.Hostname())
-	if host == "" {
-		return ""
-	}
-	port := target.Port()
-	if port == "" {
-		port = defaultPortString(target.Scheme)
-	}
-	if port == "" {
-		return host
-	}
-	return net.JoinHostPort(host, port)
+	return netutil.URLAuthority(target)
 }
 
 func passProxyHeaders(req *http.Request, incomingHost, incomingScheme string) map[string]string {
@@ -334,13 +314,7 @@ func forwardedPort(host string, req *http.Request, incomingScheme string) string
 }
 
 func clientIP(remoteAddr string) string {
-	if remoteAddr == "" {
-		return ""
-	}
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		return host
-	}
-	return remoteAddr
+	return netutil.ClientIP(remoteAddr)
 }
 
 func requestScheme(req *http.Request) string {

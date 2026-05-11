@@ -55,6 +55,8 @@ type Cache struct {
 	failures   map[string]failureEntry
 	roundRobin map[string]int
 	observed   map[string]candidateObservation
+
+	backendObserved map[backendObservationIndexKey]candidateObservation
 }
 
 type PruneStats struct {
@@ -144,6 +146,16 @@ type candidateSnapshot struct {
 	outlierThroughput          bool
 }
 
+type candidateOrder struct {
+	candidate  Candidate
+	preference candidatePreference
+}
+
+type backendObservationIndexKey struct {
+	scope     string
+	backendID string
+}
+
 func NewCache(cfg Config) *Cache {
 	resolver := cfg.Resolver
 	if resolver == nil {
@@ -188,6 +200,8 @@ func NewCache(cfg Config) *Cache {
 		failures:     make(map[string]failureEntry),
 		roundRobin:   make(map[string]int),
 		observed:     make(map[string]candidateObservation),
+
+		backendObserved: make(map[backendObservationIndexKey]candidateObservation),
 	}
 }
 
@@ -209,6 +223,8 @@ func (c *Cache) Clone() *Cache {
 		failures:     make(map[string]failureEntry, len(c.failures)),
 		roundRobin:   make(map[string]int, len(c.roundRobin)),
 		observed:     make(map[string]candidateObservation, len(c.observed)),
+
+		backendObserved: make(map[backendObservationIndexKey]candidateObservation, len(c.backendObserved)),
 	}
 	for key, entry := range c.dnsCache {
 		clone.dnsCache[key] = dnsCacheEntry{
@@ -224,6 +240,9 @@ func (c *Cache) Clone() *Cache {
 	}
 	for key, entry := range c.observed {
 		clone.observed[key] = entry
+	}
+	for key, entry := range c.backendObserved {
+		clone.backendObserved[key] = entry
 	}
 	return clone
 }
@@ -276,6 +295,7 @@ func (c *Cache) pruneLocked(now time.Time, force bool) PruneStats {
 	for key, observation := range c.observed {
 		if observation.inactive(now) {
 			delete(c.observed, key)
+			c.deleteBackendObservationIndex(key)
 			stats.ObservationEntries++
 		}
 	}
@@ -352,13 +372,11 @@ func (c *Cache) order(scope, strategy string, candidates []Candidate, allowThrou
 	case StrategyAdaptive:
 		now := c.now()
 		snapshots, sharedMix := c.backendSnapshots(scope, ordered, now, allowThroughput)
-		preferenceState, hasCold, hasRecovering := preferencesFromSnapshots(snapshots, now, allowThroughput, sharedMix)
+		orderedState, hasCold, hasRecovering := candidateOrderFromSnapshots(ordered, snapshots, now, allowThroughput, sharedMix)
 
-		sort.SliceStable(ordered, func(i, j int) bool {
-			leftKey := strings.TrimSpace(ordered[i].Address)
-			rightKey := strings.TrimSpace(ordered[j].Address)
-			left := preferenceState[leftKey]
-			right := preferenceState[rightKey]
+		sort.SliceStable(orderedState, func(i, j int) bool {
+			left := orderedState[i].preference
+			right := orderedState[j].preference
 			if left.inBackoff != right.inBackoff {
 				return !left.inBackoff
 			}
@@ -370,7 +388,8 @@ func (c *Cache) order(scope, strategy string, candidates []Candidate, allowThrou
 			}
 			return false
 		})
-		ordered = c.maybePromoteExplorationCandidate(ordered, preferenceState, hasCold, hasRecovering)
+		writeCandidatesFromOrder(ordered, orderedState)
+		ordered = c.maybePromoteExplorationCandidateFromOrder(ordered, orderedState, hasCold, hasRecovering)
 		return ordered
 	default:
 		offset := c.roundRobinOffset(scope, len(ordered))
@@ -403,6 +422,7 @@ func (c *Cache) ObserveBackendSuccess(scope string, latency time.Duration, total
 	entry := c.observed[key]
 	entry.recordSuccess(now, latency, totalDuration, bytesTransferred, c.slowStartWindowForKey(key))
 	c.observed[key] = entry
+	c.storeBackendObservationIndex(key, entry)
 	delete(c.failures, key)
 }
 
@@ -436,6 +456,7 @@ func (c *Cache) ObserveTransferSuccess(address string, latency time.Duration, to
 	entry := c.observed[key]
 	entry.recordSuccess(now, latency, totalDuration, bytesTransferred, c.slowStartWindowForKey(key))
 	c.observed[key] = entry
+	c.storeBackendObservationIndex(key, entry)
 	delete(c.failures, key)
 }
 
@@ -684,9 +705,10 @@ func (c *Cache) backendSnapshots(scope string, candidates []Candidate, now time.
 
 	snapshots := make([]candidateSnapshot, 0, len(candidates))
 	sharedMix := trafficMix{}
+	normalizedScope := strings.TrimSpace(scope)
 	for _, candidate := range candidates {
 		key := strings.TrimSpace(candidate.Address)
-		observation := c.observed[BackendObservationKey(scope, key)]
+		observation := c.backendObservation(normalizedScope, key)
 		snapshot, mix := snapshotFromObservation(key, observation, now)
 		snapshots = append(snapshots, snapshot)
 		if allowThroughput {
@@ -731,6 +753,32 @@ func preferencesFromSnapshots(snapshots []candidateSnapshot, now time.Time, allo
 		}
 	}
 	return preferenceState, hasCold, hasRecovering
+}
+
+func candidateOrderFromSnapshots(candidates []Candidate, snapshots []candidateSnapshot, now time.Time, allowThroughput bool, sharedMix trafficMix) ([]candidateOrder, bool, bool) {
+	ordered := make([]candidateOrder, 0, len(candidates))
+	hasCold := false
+	hasRecovering := false
+	for i, candidate := range candidates {
+		preference := snapshots[i].preference(now, allowThroughput, sharedMix)
+		ordered = append(ordered, candidateOrder{
+			candidate:  candidate,
+			preference: preference,
+		})
+		switch preference.state {
+		case ObservationStateCold:
+			hasCold = true
+		case ObservationStateRecovering:
+			hasRecovering = true
+		}
+	}
+	return ordered, hasCold, hasRecovering
+}
+
+func writeCandidatesFromOrder(candidates []Candidate, ordered []candidateOrder) {
+	for i, entry := range ordered {
+		candidates[i] = entry.candidate
+	}
 }
 
 func snapshotFromObservation(key string, observation candidateObservation, now time.Time) (candidateSnapshot, trafficMix) {
@@ -1255,18 +1303,45 @@ func (c *Cache) maybePromoteExplorationCandidate(ordered []Candidate, preference
 	}
 	for i, candidate := range ordered {
 		pref := preferences[strings.TrimSpace(candidate.Address)]
-		if pref.inBackoff || pref.state != target {
-			continue
+		if rotated, ok := rotateExplorationCandidate(ordered, i, pref, target); ok {
+			return rotated
 		}
-		if i == 0 {
-			return ordered
-		}
-		rotated := make([]Candidate, 0, len(ordered))
-		rotated = append(rotated, ordered[i:]...)
-		rotated = append(rotated, ordered[:i]...)
-		return rotated
 	}
 	return ordered
+}
+
+func (c *Cache) maybePromoteExplorationCandidateFromOrder(ordered []Candidate, orderedState []candidateOrder, hasCold bool, hasRecovering bool) []Candidate {
+	budget := c.chooseExplorationBudget(hasRecovering, hasCold)
+	if budget == 0 {
+		return ordered
+	}
+	if c.randomIntn(100) >= budget {
+		return ordered
+	}
+
+	target := ObservationStateRecovering
+	if !hasRecovering {
+		target = ObservationStateCold
+	}
+	for i, entry := range orderedState {
+		if rotated, ok := rotateExplorationCandidate(ordered, i, entry.preference, target); ok {
+			return rotated
+		}
+	}
+	return ordered
+}
+
+func rotateExplorationCandidate(ordered []Candidate, index int, preference candidatePreference, target string) ([]Candidate, bool) {
+	if preference.inBackoff || preference.state != target {
+		return nil, false
+	}
+	if index == 0 {
+		return ordered, true
+	}
+	rotated := make([]Candidate, 0, len(ordered))
+	rotated = append(rotated, ordered[index:]...)
+	rotated = append(rotated, ordered[:index]...)
+	return rotated, true
 }
 
 func (c *Cache) hasState(preferences map[string]candidatePreference, state string) bool {
@@ -1329,8 +1404,54 @@ func (c *Cache) applyFailureLocked(key string, now time.Time) time.Duration {
 	observed.slowStartStartedAt = observed.recoveryUntil.Add(-recoveryWindow)
 	observed.slowStartUntil = observed.recoveryUntil
 	c.observed[key] = observed
+	c.storeBackendObservationIndex(key, observed)
 
 	return backoff
+}
+
+func (c *Cache) backendObservation(scope string, backendID string) candidateObservation {
+	if scope == "" || backendID == "" {
+		return candidateObservation{}
+	}
+	indexKey := backendObservationIndexKey{scope: scope, backendID: backendID}
+	if observation, ok := c.backendObserved[indexKey]; ok {
+		return observation
+	}
+	return c.observed[BackendObservationKey(scope, backendID)]
+}
+
+func (c *Cache) storeBackendObservationIndex(key string, observation candidateObservation) {
+	indexKey, ok := parseBackendObservationIndexKey(key)
+	if !ok {
+		return
+	}
+	c.backendObserved[indexKey] = observation
+}
+
+func (c *Cache) deleteBackendObservationIndex(key string) {
+	indexKey, ok := parseBackendObservationIndexKey(key)
+	if !ok {
+		return
+	}
+	delete(c.backendObserved, indexKey)
+}
+
+func parseBackendObservationIndexKey(key string) (backendObservationIndexKey, bool) {
+	normalized := strings.TrimSpace(key)
+	if !strings.HasPrefix(normalized, backendObservationPrefix) {
+		return backendObservationIndexKey{}, false
+	}
+	rest := normalized[len(backendObservationPrefix):]
+	sep := strings.IndexByte(rest, '|')
+	if sep < 0 {
+		return backendObservationIndexKey{}, false
+	}
+	scope := strings.TrimSpace(rest[:sep])
+	backendID := strings.TrimSpace(rest[sep+1:])
+	if scope == "" || backendID == "" {
+		return backendObservationIndexKey{}, false
+	}
+	return backendObservationIndexKey{scope: scope, backendID: backendID}, true
 }
 
 func (o candidateObservation) inBackoff(now time.Time) bool {

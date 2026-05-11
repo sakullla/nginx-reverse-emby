@@ -53,6 +53,40 @@ func TestRelayPathHopReportsMarksOnlyMatchedFailedRelayHop(t *testing.T) {
 	}
 }
 
+func TestResolveDiagnosticRelayPathsUsesSharedListenerEndpointResolution(t *testing.T) {
+	paths, err := resolveDiagnosticRelayPaths("rule", nil, [][]int{{91}}, []model.RelayListener{
+		{
+			ID:                      91,
+			Name:                    "Relay A",
+			ListenHost:              "listen.example.invalid",
+			BindHosts:               []string{"bind.example.invalid"},
+			ListenPort:              12202,
+			PublicPort:              12345,
+			Enabled:                 true,
+			TLSMode:                 "ca_only",
+			TrustedCACertificateIDs: []int{1},
+		},
+	}, "emby.example.com:443")
+	if err != nil {
+		t.Fatalf("resolveDiagnosticRelayPaths() error = %v", err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("paths = %+v", paths)
+	}
+	if got := paths[0].Key; got != relayplan.PathKey("relay_path", []int{91}, "emby.example.com:443") {
+		t.Fatalf("path key = %q", got)
+	}
+	if len(paths[0].Hops) != 1 {
+		t.Fatalf("hops = %+v", paths[0].Hops)
+	}
+	if got := paths[0].Hops[0].Address; got != "bind.example.invalid:12345" {
+		t.Fatalf("hop address = %q", got)
+	}
+	if got := paths[0].Hops[0].ServerName; got != "bind.example.invalid" {
+		t.Fatalf("hop server name = %q", got)
+	}
+}
+
 func TestProbeDiagnosticRelayPathsFallsBackWhenFirstPathTimesOut(t *testing.T) {
 	provider := newDiagnosticTLSMaterialProvider()
 	paths := []relayplan.Path{

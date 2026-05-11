@@ -198,10 +198,6 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 				cloned.Rules[i].CustomHeaders = make([]model.HTTPHeader, len(rule.CustomHeaders))
 				copy(cloned.Rules[i].CustomHeaders, rule.CustomHeaders)
 			}
-			if rule.RelayChain != nil {
-				cloned.Rules[i].RelayChain = make([]int, len(rule.RelayChain))
-				copy(cloned.Rules[i].RelayChain, rule.RelayChain)
-			}
 			cloned.Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
 		}
 	}
@@ -212,10 +208,6 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			if rule.Backends != nil {
 				cloned.L4Rules[i].Backends = make([]model.L4Backend, len(rule.Backends))
 				copy(cloned.L4Rules[i].Backends, rule.Backends)
-			}
-			if rule.RelayChain != nil {
-				cloned.L4Rules[i].RelayChain = make([]int, len(rule.RelayChain))
-				copy(cloned.L4Rules[i].RelayChain, rule.RelayChain)
 			}
 			cloned.L4Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
 		}
@@ -301,11 +293,6 @@ func l4RulesChanged(previous, next model.Snapshot) bool {
 
 func httpRelayInputsChanged(previous, next model.Snapshot) bool {
 	for _, rule := range next.Rules {
-		for _, listenerID := range rule.RelayChain {
-			if relayListenerChangedByID(listenerID, previous.RelayListeners, next.RelayListeners) {
-				return true
-			}
-		}
 		for _, layer := range rule.RelayLayers {
 			for _, listenerID := range layer {
 				if relayListenerChangedByID(listenerID, previous.RelayListeners, next.RelayListeners) {

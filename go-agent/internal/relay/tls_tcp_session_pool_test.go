@@ -694,6 +694,35 @@ func TestTLSTCPTunnelKeepsCongestionCountersUntilBlockedWriteFinishes(t *testing
 	}
 }
 
+func TestTLSTCPLogicalStreamReadFromReusesWriteRequests(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 1<<20)
+
+	allocs := testing.AllocsPerRun(20, func() {
+		var wire bytes.Buffer
+		tunnel := &tlsTCPTunnel{
+			rawConn:    noopDeadlineConn{},
+			writer:     &wire,
+			closeOuter: func() error { return nil },
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+		defer tunnel.close()
+		stream := &tlsTCPLogicalStream{
+			tunnel:       tunnel,
+			streamID:     1,
+			readCh:       make(chan struct{}, 1),
+			openResultCh: make(chan muxOpenResult, 1),
+		}
+		if _, err := stream.ReadFrom(bytes.NewReader(payload)); err != nil {
+			t.Fatalf("ReadFrom() error = %v", err)
+		}
+	})
+
+	if allocs > 100 {
+		t.Fatalf("ReadFrom() allocations = %.0f, want <= 100", allocs)
+	}
+}
+
 func TestWrapIdleConnPreservesTLSTCPBulkInterfaces(t *testing.T) {
 	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
 	wrapped := wrapIdleConn(stream)

@@ -93,7 +93,7 @@ func resolveDialector(driver string, cfg StoreConfig) (gorm.Dialector, error) {
 			if strings.TrimSpace(cfg.DataRoot) == "" {
 				return nil, fmt.Errorf("data root is required for default sqlite DSN")
 			}
-			dsn = filepath.Join(cfg.DataRoot, "panel.db") + "?_journal_mode=WAL&_busy_timeout=5000"
+			dsn = filepath.Join(cfg.DataRoot, "panel.db") + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 		}
 		return sqlite.Open(dsn), nil
 	default:

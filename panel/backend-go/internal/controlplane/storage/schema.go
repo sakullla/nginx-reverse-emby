@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"gorm.io/gorm"
@@ -61,6 +62,10 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		if err := bootstrapSQLiteLegacySchema(ctx, db); err != nil {
 			return err
 		}
+	}
+
+	if err := migrateLegacyRuleCanonicalFields(ctx, db); err != nil {
+		return err
 	}
 
 	return tx.
@@ -238,4 +243,144 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 
 func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 	return BootstrapSchema(ctx, db, SchemaOptionsForDriver("sqlite", true))
+}
+
+type legacyHTTPRuleMigrationRow struct {
+	ID              int    `gorm:"column:id"`
+	AgentID         string `gorm:"column:agent_id"`
+	BackendURL      string `gorm:"column:backend_url"`
+	BackendsJSON    string `gorm:"column:backends"`
+	RelayChainJSON  string `gorm:"column:relay_chain"`
+	RelayLayersJSON string `gorm:"column:relay_layers"`
+}
+
+type legacyL4RuleMigrationRow struct {
+	ID              int    `gorm:"column:id"`
+	AgentID         string `gorm:"column:agent_id"`
+	UpstreamHost    string `gorm:"column:upstream_host"`
+	UpstreamPort    int    `gorm:"column:upstream_port"`
+	BackendsJSON    string `gorm:"column:backends"`
+	RelayChainJSON  string `gorm:"column:relay_chain"`
+	RelayLayersJSON string `gorm:"column:relay_layers"`
+}
+
+func migrateLegacyRuleCanonicalFields(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if err := migrateLegacyHTTPRuleCanonicalFields(tx); err != nil {
+		return err
+	}
+	if err := migrateLegacyL4RuleCanonicalFields(tx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateLegacyHTTPRuleCanonicalFields(tx *gorm.DB) error {
+	if !tx.Migrator().HasColumn(&HTTPRuleRow{}, "backend_url") || !tx.Migrator().HasColumn(&HTTPRuleRow{}, "relay_chain") {
+		return nil
+	}
+
+	var rows []legacyHTTPRuleMigrationRow
+	if err := tx.Model(&HTTPRuleRow{}).
+		Select("id", "agent_id", "backend_url", "backends", "relay_chain", "relay_layers").
+		Find(&rows).Error; err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		updates := map[string]any{}
+		if canonicalJSONIsEmptyArray(row.BackendsJSON) {
+			if backendURL := strings.TrimSpace(row.BackendURL); backendURL != "" {
+				backendsJSON, err := json.Marshal([]HTTPBackend{{URL: backendURL}})
+				if err != nil {
+					return err
+				}
+				updates["backends"] = string(backendsJSON)
+			}
+		}
+		if canonicalJSONIsEmptyArray(row.RelayLayersJSON) {
+			relayChain := parseIntSlice(row.RelayChainJSON)
+			if len(relayChain) > 0 {
+				relayLayers := make([][]int, 0, len(relayChain))
+				for _, id := range relayChain {
+					relayLayers = append(relayLayers, []int{id})
+				}
+				relayLayersJSON, err := json.Marshal(relayLayers)
+				if err != nil {
+					return err
+				}
+				updates["relay_layers"] = string(relayLayersJSON)
+			}
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		if err := tx.Model(&HTTPRuleRow{}).
+			Where("id = ? AND agent_id = ?", row.ID, row.AgentID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
+	if !tx.Migrator().HasColumn(&L4RuleRow{}, "upstream_host") || !tx.Migrator().HasColumn(&L4RuleRow{}, "upstream_port") || !tx.Migrator().HasColumn(&L4RuleRow{}, "relay_chain") {
+		return nil
+	}
+
+	var rows []legacyL4RuleMigrationRow
+	if err := tx.Model(&L4RuleRow{}).
+		Select("id", "agent_id", "upstream_host", "upstream_port", "backends", "relay_chain", "relay_layers").
+		Find(&rows).Error; err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		updates := map[string]any{}
+		if canonicalJSONIsEmptyArray(row.BackendsJSON) {
+			host := strings.TrimSpace(row.UpstreamHost)
+			if host != "" && row.UpstreamPort >= 1 && row.UpstreamPort <= 65535 {
+				backendsJSON, err := json.Marshal([]L4Backend{{Host: host, Port: row.UpstreamPort}})
+				if err != nil {
+					return err
+				}
+				updates["backends"] = string(backendsJSON)
+			}
+		}
+		if canonicalJSONIsEmptyArray(row.RelayLayersJSON) {
+			relayChain := parseIntSlice(row.RelayChainJSON)
+			if len(relayChain) > 0 {
+				relayLayers := make([][]int, 0, len(relayChain))
+				for _, id := range relayChain {
+					relayLayers = append(relayLayers, []int{id})
+				}
+				relayLayersJSON, err := json.Marshal(relayLayers)
+				if err != nil {
+					return err
+				}
+				updates["relay_layers"] = string(relayLayersJSON)
+			}
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		if err := tx.Model(&L4RuleRow{}).
+			Where("id = ? AND agent_id = ?", row.ID, row.AgentID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func canonicalJSONIsEmptyArray(raw string) bool {
+	switch strings.TrimSpace(raw) {
+	case "", "[]":
+		return true
+	default:
+		return false
+	}
 }

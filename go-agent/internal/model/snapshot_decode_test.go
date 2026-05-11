@@ -13,7 +13,6 @@ func TestSnapshotDecodePreservesHTTPAndL4BackendFields(t *testing.T) {
 		"rules":[
 			{
 				"frontend_url":"https://edge.example.com",
-				"backend_url":"http://legacy.example.internal:8096",
 				"backends":[
 					{"url":"http://10.0.0.11:8096"},
 					{"url":"http://10.0.0.12:8096"}
@@ -26,8 +25,6 @@ func TestSnapshotDecodePreservesHTTPAndL4BackendFields(t *testing.T) {
 				"protocol":"tcp",
 				"listen_host":"0.0.0.0",
 				"listen_port":9443,
-				"upstream_host":"legacy-upstream.internal",
-				"upstream_port":9001,
 				"backends":[
 					{"host":"10.0.0.21","port":9001},
 					{"host":"10.0.0.22","port":9002}
@@ -128,7 +125,7 @@ func TestSnapshotDecodePreservesAgentConfigAndL4ProxyEntryFields(t *testing.T) {
 			"listen_mode":"proxy",
 			"proxy_entry_auth":{"enabled":true,"username":"u","password":"p"},
 			"proxy_egress_mode":"relay",
-			"relay_chain":[101]
+			"relay_layers":[[101]]
 		}]
 	}`)
 
@@ -153,8 +150,8 @@ func TestSnapshotDecodePreservesAgentConfigAndL4ProxyEntryFields(t *testing.T) {
 	if rule.ProxyEgressMode != "relay" {
 		t.Fatalf("ProxyEgressMode = %q", rule.ProxyEgressMode)
 	}
-	if !reflect.DeepEqual(rule.RelayChain, []int{101}) {
-		t.Fatalf("RelayChain = %+v", rule.RelayChain)
+	if !reflect.DeepEqual(rule.RelayLayers, [][]int{{101}}) {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
 	}
 }
 

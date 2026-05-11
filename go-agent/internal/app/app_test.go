@@ -386,16 +386,15 @@ func TestRunPersistsDesiredSnapshot(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         31,
@@ -464,7 +463,7 @@ func TestRunPersistsAppliedSnapshotAfterSuccessfulSync(t *testing.T) {
 		Revision:       4,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://old.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -477,7 +476,7 @@ func TestRunPersistsAppliedSnapshotAfterSuccessfulSync(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL:   "http://edge.example.test:18080",
-			BackendURL:    "http://127.0.0.1:8096",
+			Backends:      []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			ProxyRedirect: true,
 			Revision:      4,
 		}},
@@ -527,16 +526,15 @@ func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
 		Revision:       4,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://applied.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     1,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   1,
 		}},
 	}
 	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
@@ -547,7 +545,7 @@ func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
 		Revision:       4,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://desired.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 		L4Rules: previousApplied.L4Rules,
@@ -560,12 +558,11 @@ func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
 		DesiredVersion: "next",
 		Revision:       5,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9100,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9101,
-			Revision:     2,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9100,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9101}},
+			Revision:   2,
 		}},
 	}
 	client := newTestSyncClient(nil, syncResponse{snapshot: synced})
@@ -666,7 +663,7 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 		Revision:       7,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -688,7 +685,7 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://broken.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 	}})
@@ -768,7 +765,7 @@ func TestAppRollsBackRuntimeAndPersistsLastSyncError(t *testing.T) {
 		Revision:       7,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -790,7 +787,7 @@ func TestAppRollsBackRuntimeAndPersistsLastSyncError(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://next.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 	}
@@ -988,7 +985,7 @@ func TestRunDoesNotAdvancePersistedRuntimeStateWhenSaveAppliedSnapshotFails(t *t
 		Revision:       7,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -1010,7 +1007,7 @@ func TestRunDoesNotAdvancePersistedRuntimeStateWhenSaveAppliedSnapshotFails(t *t
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://next.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 	}})
@@ -1069,7 +1066,7 @@ func TestRunDoesNotAdvancePersistedStateOrHeartbeatRevisionWhenRollbackFailsAfte
 		Revision:       7,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -1093,7 +1090,7 @@ func TestRunDoesNotAdvancePersistedStateOrHeartbeatRevisionWhenRollbackFailsAfte
 				Revision:       9,
 				Rules: []model.HTTPRule{{
 					FrontendURL: "http://next.example.test:18080",
-					BackendURL:  "http://127.0.0.1:8096",
+					Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 					Revision:    2,
 				}},
 			},
@@ -1451,7 +1448,7 @@ func TestPerformSyncRelayListenerChangeReappliesHTTPRelayAndL4FromUnifiedSnapsho
 			Backends: []model.HTTPBackend{
 				{URL: "http://10.0.0.10:8096"},
 			},
-			RelayChain: []int{51},
+			RelayLayers: [][]int{{51}},
 		}},
 		L4Rules: []model.L4Rule{{
 			Protocol:   "tcp",
@@ -1460,7 +1457,7 @@ func TestPerformSyncRelayListenerChangeReappliesHTTPRelayAndL4FromUnifiedSnapsho
 			Backends: []model.L4Backend{
 				{Host: "10.0.0.20", Port: 9000},
 			},
-			RelayChain: []int{51},
+			RelayLayers: [][]int{{51}},
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         51,
@@ -2273,17 +2270,16 @@ func TestPerformSyncUpdatesRuntimeTrafficBlockStateFromAgentConfigOnlyChange(t *
 		Rules: []model.HTTPRule{{
 			ID:          1,
 			FrontendURL: "http://frontend.example",
-			BackendURL:  "http://backend.example",
+			Backends:    []model.HTTPBackend{{URL: "http://backend.example"}},
 			Enabled:     true,
 		}},
 		L4Rules: []model.L4Rule{{
-			ID:           2,
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   19000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 19001,
-			Enabled:      true,
+			ID:         2,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 19000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 19001}},
+			Enabled:    true,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         3,
@@ -2661,7 +2657,7 @@ func TestPerformSyncKeepsTrafficStatsIntervalWhenLaterActivationFails(t *testing
 		},
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -2686,7 +2682,7 @@ func TestPerformSyncKeepsTrafficStatsIntervalWhenLaterActivationFails(t *testing
 		},
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://next.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 	}
@@ -2832,16 +2828,15 @@ func TestRunHydratesManagedCertificatesFromStoredAppliedSnapshot(t *testing.T) {
 		Revision:       5,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         31,
@@ -3123,7 +3118,7 @@ func TestRunAppliesHTTPRulesFromSyncedSnapshot(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL:   "http://edge.example.test:18080",
-			BackendURL:    "http://127.0.0.1:8096",
+			Backends:      []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			ProxyRedirect: true,
 			Revision:      4,
 		}},
@@ -3162,7 +3157,7 @@ func TestRunHydratesHTTPRulesFromStoredAppliedSnapshot(t *testing.T) {
 		Revision:       5,
 		Rules: []model.HTTPRule{{
 			FrontendURL:      "http://edge.example.test:18080",
-			BackendURL:       "http://127.0.0.1:8096",
+			Backends:         []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			PassProxyHeaders: true,
 			Revision:         4,
 		}},
@@ -3175,7 +3170,7 @@ func TestRunHydratesHTTPRulesFromStoredAppliedSnapshot(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://desired.example.test:28080",
-			BackendURL:  "http://127.0.0.1:8097",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8097"}},
 			Revision:    9,
 		}},
 	}); err != nil {
@@ -3216,7 +3211,7 @@ func TestRunDoesNotApplyHTTPWhenHeartbeatOmitsPayload(t *testing.T) {
 		Revision:       5,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://edge.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    4,
 		}},
 	}
@@ -3266,7 +3261,7 @@ func TestRunAppliesExplicitEmptyHTTPRules(t *testing.T) {
 		Revision:       5,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://edge.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    4,
 		}},
 	}
@@ -3378,12 +3373,11 @@ func TestRunAppliesL4RulesFromSyncedSnapshot(t *testing.T) {
 		DesiredVersion: "2.0",
 		Revision:       9,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 	}
 	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
@@ -3419,12 +3413,11 @@ func TestRunHydratesL4RulesFromStoredAppliedSnapshot(t *testing.T) {
 		DesiredVersion: "stored",
 		Revision:       5,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 	}
 	if err := mem.SaveAppliedSnapshot(stored); err != nil {
@@ -3434,12 +3427,11 @@ func TestRunHydratesL4RulesFromStoredAppliedSnapshot(t *testing.T) {
 		DesiredVersion: "desired",
 		Revision:       9,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.2",
-			ListenPort:   9900,
-			UpstreamHost: "127.0.0.2",
-			UpstreamPort: 9901,
-			Revision:     9,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.2",
+			ListenPort: 9900,
+			Backends:   []model.L4Backend{{Host: "127.0.0.2", Port: 9901}},
+			Revision:   9,
 		}},
 	}); err != nil {
 		t.Fatalf("failed to seed desired snapshot: %v", err)
@@ -3606,8 +3598,8 @@ func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChange
 				Host: "remote-backend.example.test",
 				Port: 26966,
 			}},
-			RelayChain: []int{5},
-			Revision:   5,
+			RelayLayers: [][]int{{5}},
+			Revision:    5,
 		}},
 		RelayListeners: []model.RelayListener{
 			{
@@ -3717,13 +3709,12 @@ func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
 			Revision: 1,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "udp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   5300,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 5301,
-			RelayChain:   []int{51},
-			Revision:     1,
+			Protocol:    "udp",
+			ListenHost:  "127.0.0.1",
+			ListenPort:  5300,
+			Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: 5301}},
+			RelayLayers: [][]int{{51}},
+			Revision:    1,
 		}},
 	}
 
@@ -3801,12 +3792,11 @@ func TestRunAppliesExplicitEmptyL4Rules(t *testing.T) {
 		DesiredVersion: "stored",
 		Revision:       5,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 	}
 	if err := mem.SaveAppliedSnapshot(stored); err != nil {
@@ -3916,8 +3906,8 @@ func TestRunClearsStoredL4RulesWhenRelayListenersAreExplicitlyCleared(t *testing
 				Host: "remote-backend.example.test",
 				Port: 26966,
 			}},
-			RelayChain: []int{5},
-			Revision:   5,
+			RelayLayers: [][]int{{5}},
+			Revision:    5,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         5,

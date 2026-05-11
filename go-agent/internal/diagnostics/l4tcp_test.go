@@ -32,12 +32,11 @@ func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
 		Timeout:  time.Second,
 	})
 	report, err := prober.Diagnose(context.Background(), model.L4Rule{
-		ID:           9,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9000,
-		UpstreamHost: host,
-		UpstreamPort: port,
+		ID:         9,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9000,
+		Backends:   []model.L4Backend{{Host: host, Port: port}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -57,12 +56,11 @@ func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
 		Timeout:  100 * time.Millisecond,
 	})
 	report, err := prober.Diagnose(context.Background(), model.L4Rule{
-		ID:           10,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9100,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: 1,
+		ID:         10,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9100,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 1}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -84,12 +82,11 @@ func TestTCPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 		Cache:    cache,
 	})
 	rule := model.L4Rule{
-		ID:           24,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9501,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: 1,
+		ID:         24,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9501,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 1}},
 	}
 
 	report, err := prober.Diagnose(context.Background(), rule, nil)
@@ -133,13 +130,12 @@ func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 		RelayProvider: provider,
 	})
 	report, err := prober.Diagnose(context.Background(), model.L4Rule{
-		ID:           12,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9000,
-		UpstreamHost: host,
-		UpstreamPort: port,
-		RelayChain:   []int{51},
+		ID:          12,
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9000,
+		Backends:    []model.L4Backend{{Host: host, Port: port}},
+		RelayLayers: [][]int{{51}},
 	}, []model.RelayListener{relayListener})
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -170,13 +166,12 @@ func TestTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 		RelayProvider: provider,
 	})
 	rule := model.L4Rule{
-		ID:           25,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9502,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: 1,
-		RelayChain:   []int{52},
+		ID:          25,
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9502,
+		Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: 1}},
+		RelayLayers: [][]int{{52}},
 	}
 
 	report, err := prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
@@ -187,9 +182,12 @@ func TestTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 		t.Fatalf("first Summary = %+v", report.Summary)
 	}
 
-	_, err = prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
-	if err == nil || err.Error() != "no healthy backend candidates for 0.0.0.0:9502" {
+	report, err = prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
+	if err != nil {
 		t.Fatalf("second Diagnose() error = %v", err)
+	}
+	if report.Summary.Failed != 1 {
+		t.Fatalf("second Summary = %+v", report.Summary)
 	}
 }
 
@@ -257,12 +255,11 @@ func TestTCPProberDiagnoseGroupsResolvedHostnameCandidatesUnderConfiguredBackend
 		Cache:    cache,
 	})
 	report, err := prober.Diagnose(context.Background(), model.L4Rule{
-		ID:           28,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9600,
-		UpstreamHost: "resolved.example",
-		UpstreamPort: port,
+		ID:         28,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9600,
+		Backends:   []model.L4Backend{{Host: "resolved.example", Port: port}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -362,12 +359,11 @@ func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 		Cache:    cache,
 	})
 	report, err := prober.Diagnose(context.Background(), model.L4Rule{
-		ID:           23,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9500,
-		UpstreamHost: host,
-		UpstreamPort: port,
+		ID:         23,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9500,
+		Backends:   []model.L4Backend{{Host: host, Port: port}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
@@ -412,12 +408,11 @@ func TestTCPProberDiagnoseOmitsSustainedThroughputFromAdaptiveSummary(t *testing
 	})
 
 	report, err := prober.Diagnose(context.Background(), model.L4Rule{
-		ID:           88,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9880,
-		UpstreamHost: host,
-		UpstreamPort: port,
+		ID:         88,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9880,
+		Backends:   []model.L4Backend{{Host: host, Port: port}},
 		LoadBalancing: model.LoadBalancing{
 			Strategy: "adaptive",
 		},
@@ -616,12 +611,11 @@ func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	}
 
 	candidates, err := tcpCandidates(context.Background(), cache, model.L4Rule{
-		ID:           26,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9503,
-		UpstreamHost: "resolved.example",
-		UpstreamPort: 9001,
+		ID:         26,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9503,
+		Backends:   []model.L4Backend{{Host: "resolved.example", Port: 9001}},
 		LoadBalancing: model.LoadBalancing{
 			Strategy: "adaptive",
 		},
@@ -664,12 +658,10 @@ func TestTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 	}
 
 	candidates, err := tcpCandidates(context.Background(), cache, model.L4Rule{
-		ID:           27,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9504,
-		UpstreamHost: "",
-		UpstreamPort: 0,
+		ID:         27,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9504,
 		LoadBalancing: model.LoadBalancing{
 			Strategy: "adaptive",
 		},
@@ -723,11 +715,11 @@ func TestTCPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	})
 
 	rule := model.L4Rule{
-		ID:         2,
-		Protocol:   "tcp",
-		ListenHost: "0.0.0.0",
-		ListenPort: 9550,
-		RelayChain: []int{302},
+		ID:          2,
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9550,
+		RelayLayers: [][]int{{302}},
 		Backends: []model.L4Backend{{
 			Host: "relay-target.example",
 			Port: 9001,
@@ -805,11 +797,11 @@ func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddre
 		RelayProvider: provider,
 	})
 	report, err := prober.Diagnose(context.Background(), model.L4Rule{
-		ID:         103,
-		Protocol:   "tcp",
-		ListenHost: "0.0.0.0",
-		ListenPort: 9551,
-		RelayChain: []int{302},
+		ID:          103,
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9551,
+		RelayLayers: [][]int{{302}},
 		Backends: []model.L4Backend{{
 			Host: "relay-target.example",
 			Port: actualPort,
@@ -1177,12 +1169,11 @@ func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.
 	})
 
 	report, err := prober.Diagnose(context.Background(), model.L4Rule{
-		ID:           104,
-		Protocol:     "tcp",
-		ListenHost:   "0.0.0.0",
-		ListenPort:   9552,
-		UpstreamHost: host,
-		UpstreamPort: port,
+		ID:         104,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9552,
+		Backends:   []model.L4Backend{{Host: host, Port: port}},
 		LoadBalancing: model.LoadBalancing{
 			Strategy: "adaptive",
 		},
@@ -1238,11 +1229,11 @@ func TestTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeS
 	})
 
 	report, err := prober.Diagnose(context.Background(), model.L4Rule{
-		ID:         204,
-		Protocol:   "tcp",
-		ListenHost: "0.0.0.0",
-		ListenPort: 9556,
-		RelayChain: []int{542},
+		ID:          204,
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9556,
+		RelayLayers: [][]int{{542}},
 		Backends: []model.L4Backend{{
 			Host: "relay-target.example",
 			Port: actualPort,
@@ -1266,18 +1257,18 @@ func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 	cache := backends.NewCache(backends.Config{})
 
 	rule := model.L4Rule{
-		ID:         2,
-		Protocol:   "tcp",
-		ListenHost: "0.0.0.0",
-		ListenPort: 9550,
-		RelayChain: []int{302},
+		ID:          2,
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9550,
+		RelayLayers: [][]int{{302}},
 		Backends: []model.L4Backend{{
 			Host: "relay-target.example",
 			Port: 9001,
 		}},
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9001"))
+	cache.MarkFailure(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "relay-target.example:9001"))
 
 	candidates, err := tcpCandidates(context.Background(), cache, rule)
 	if err != nil {
@@ -1306,7 +1297,7 @@ func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 		}},
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9001"))
+	cache.MarkFailure(backends.RelayBackoffKey([]int{302, 402}, "relay-target.example:9001"))
 	candidates, err := tcpCandidates(context.Background(), cache, rule)
 	if err != nil {
 		t.Fatalf("tcpCandidates() error = %v", err)
@@ -1315,7 +1306,7 @@ func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 		t.Fatalf("legacy relay backoff key filtered layered candidates: %+v", candidates)
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, "relay-target.example:9001"))
+	cache.MarkFailure(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "relay-target.example:9001"))
 	candidates, err = tcpCandidates(context.Background(), cache, rule)
 	if err != nil {
 		t.Fatalf("tcpCandidates() error = %v", err)
@@ -1330,11 +1321,11 @@ func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 	provider := newDiagnosticTLSMaterialProvider()
 	relayListener := newDiagnosticRelayListener(t, provider, 342, "relay.internal.test")
 	rule := model.L4Rule{
-		ID:         2,
-		Protocol:   "tcp",
-		ListenHost: "0.0.0.0",
-		ListenPort: 9550,
-		RelayChain: []int{342},
+		ID:          2,
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9550,
+		RelayLayers: [][]int{{342}},
 		Backends: []model.L4Backend{{
 			Host: "relay-target.example",
 			Port: 9001,
@@ -1347,7 +1338,7 @@ func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 
 	backedOffAddress := "127.0.0.10:9001"
 	healthyAddress := "127.0.0.11:9001"
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, backedOffAddress))
+	cache.MarkFailure(backends.RelayBackoffKey([]int{342}, backedOffAddress))
 
 	previousResolveCandidates := diagnosticRelayResolveCandidates
 	t.Cleanup(func() {
@@ -1378,7 +1369,7 @@ func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 		t.Fatalf("resolved candidate address = %q, want %q", hydrated[0].resolvedCandidates[0].address, healthyAddress)
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, healthyAddress))
+	cache.MarkFailure(backends.RelayBackoffKey([]int{342}, healthyAddress))
 	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
 	if err != nil {
 		t.Fatalf("hydrateRelayCandidates(all backed off) error = %v", err)

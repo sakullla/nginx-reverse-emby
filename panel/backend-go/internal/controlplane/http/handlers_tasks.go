@@ -150,18 +150,12 @@ func diagnosticHTTPBackendCount(rule service.HTTPRule) int {
 	if len(rule.Backends) > 0 {
 		return len(rule.Backends)
 	}
-	if strings.TrimSpace(rule.BackendURL) != "" {
-		return 1
-	}
 	return 1
 }
 
 func diagnosticL4BackendCount(rule service.L4Rule) int {
 	if len(rule.Backends) > 0 {
 		return len(rule.Backends)
-	}
-	if strings.TrimSpace(rule.UpstreamHost) != "" && rule.UpstreamPort > 0 {
-		return 1
 	}
 	return 1
 }

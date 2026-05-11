@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -138,7 +139,7 @@ func (f *fakeL4Store) DeleteTrafficByScope(_ context.Context, agentID, scopeType
 	return 0, nil
 }
 
-func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
+func TestL4RuleServiceCreateAllowsRelayLayersForUDP(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -155,17 +156,15 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 	}, store)
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:     stringPtrL4("udp"),
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
-		RelayChain:   &[]int{7},
-		RelayLayers:  &[][]int{{7}, {8, 9}},
+		Protocol:    stringPtrL4("udp"),
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7}, {8, 9}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 7 {
+	if len(rule.RelayChain) != 0 {
 		t.Fatalf("RelayChain = %+v", rule.RelayChain)
 	}
 	if len(rule.RelayLayers) != 2 || len(rule.RelayLayers[1]) != 2 || rule.RelayLayers[1][1] != 9 {
@@ -173,6 +172,140 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 	}
 	if got := store.l4RulesByID["local"][0].RelayLayersJSON; got != `[[7],[8,9]]` {
 		t.Fatalf("persisted relay_layers = %s", got)
+	}
+	if got := store.l4RulesByID["local"][0].RelayChainJSON; got != `[]` {
+		t.Fatalf("persisted relay_chain = %s", got)
+	}
+	if row := store.l4RulesByID["local"][0]; row.UpstreamHost != "" || row.UpstreamPort != 0 {
+		t.Fatalf("persisted upstream fields = %q:%d", row.UpstreamHost, row.UpstreamPort)
+	}
+}
+
+func TestL4RuleServiceCreateRejectsUpstreamOnlyForTCPMode(t *testing.T) {
+	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream"),
+		UpstreamPort: intPtrL4(9001),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestL4RuleServiceUpdateRejectsUpstreamOnlyForTCPMode(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:           1,
+				AgentID:      "local",
+				Name:         "tcp",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   9000,
+				BackendsJSON: `[{"host":"upstream","port":9001}]`,
+				Enabled:      true,
+				Revision:     3,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		UpstreamHost: stringPtrL4("other-upstream"),
+		UpstreamPort: intPtrL4(9002),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestL4RuleFromRowDoesNotSynthesizeLegacyBackendFields(t *testing.T) {
+	rule := l4RuleFromRow(storage.L4RuleRow{
+		ID:             1,
+		AgentID:        "local",
+		Protocol:       "tcp",
+		ListenHost:     "0.0.0.0",
+		ListenPort:     9000,
+		UpstreamHost:   "legacy",
+		UpstreamPort:   9001,
+		RelayChainJSON: `[7]`,
+		Enabled:        true,
+	})
+
+	if rule.UpstreamHost != "" || rule.UpstreamPort != 0 || len(rule.Backends) != 0 {
+		t.Fatalf("legacy upstream fields were synthesized: upstream=%q:%d backends=%+v", rule.UpstreamHost, rule.UpstreamPort, rule.Backends)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("legacy relay_chain was synthesized: %+v", rule.RelayChain)
+	}
+}
+
+func TestL4RuleJSONOmitsLegacyFields(t *testing.T) {
+	raw, err := json.Marshal(L4Rule{
+		ID:           1,
+		AgentID:      "local",
+		Name:         "tcp",
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   25565,
+		UpstreamHost: "legacy",
+		UpstreamPort: 25566,
+		Backends:     []L4Backend{{Host: "upstream", Port: 25567}},
+		RelayChain:   []int{7},
+		RelayLayers:  [][]int{{7}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(L4Rule) error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(L4Rule) error = %v", err)
+	}
+	for _, key := range []string{"upstream_host", "upstream_port", "relay_chain"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("L4Rule JSON exposed legacy field %q: %s", key, raw)
+		}
+	}
+	if _, ok := payload["backends"]; !ok {
+		t.Fatalf("L4Rule JSON missing canonical backends: %s", raw)
+	}
+	if _, ok := payload["relay_layers"]; !ok {
+		t.Fatalf("L4Rule JSON missing canonical relay_layers: %s", raw)
+	}
+}
+
+func TestL4RuleServiceCreateRejectsRelayChainOnly(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{ID: 7, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:   stringPtrL4("tcp"),
+		ListenPort: intPtrL4(9000),
+		Backends:   &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayChain: &[]int{7},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 	}
 }
 
@@ -193,12 +326,11 @@ func TestL4RuleServiceCreatePreservesRelayObfsForRelayLayersOnly(t *testing.T) {
 	}, store)
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
-		RelayLayers:  &[][]int{{7}},
-		RelayObfs:    boolPtrL4(true),
+		Protocol:    stringPtrL4("tcp"),
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7}},
+		RelayObfs:   boolPtrL4(true),
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -230,8 +362,7 @@ func TestL4RuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
 			rule, err := svc.Create(context.Background(), "local", L4RuleInput{
 				Protocol:      stringPtrL4("tcp"),
 				ListenPort:    intPtrL4(9000),
-				UpstreamHost:  stringPtrL4("upstream"),
-				UpstreamPort:  intPtrL4(9001),
+				Backends:      &[]L4Backend{{Host: "upstream", Port: 9001}},
 				LoadBalancing: tt.input,
 			})
 			if err != nil {
@@ -617,19 +748,17 @@ func TestL4RuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testi
 	svc := NewL4RuleService(config.Config{}, store)
 
 	first, err := svc.Create(context.Background(), "agent-a", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream-a"),
-		UpstreamPort: intPtrL4(9001),
+		Protocol:   stringPtrL4("tcp"),
+		ListenPort: intPtrL4(9000),
+		Backends:   &[]L4Backend{{Host: "upstream-a", Port: 9001}},
 	})
 	if err != nil {
 		t.Fatalf("Create(agent-a) error = %v", err)
 	}
 	second, err := svc.Create(context.Background(), "agent-b", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(9100),
-		UpstreamHost: stringPtrL4("upstream-b"),
-		UpstreamPort: intPtrL4(9101),
+		Protocol:   stringPtrL4("tcp"),
+		ListenPort: intPtrL4(9100),
+		Backends:   &[]L4Backend{{Host: "upstream-b", Port: 9101}},
 	})
 	if err != nil {
 		t.Fatalf("Create(agent-b) error = %v", err)
@@ -669,17 +798,16 @@ func TestL4RuleServiceCreateAllocatesIDsAfterExistingHTTPRulesInSQLiteStore(t *t
 
 	httpRule, err := httpSvc.Create(context.Background(), "agent-a", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://agent-a.example.com"),
-		BackendURL:  stringPtrRule("http://backend-a.example.internal:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://backend-a.example.internal:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create HTTP rule error = %v", err)
 	}
 
 	l4Rule, err := l4Svc.Create(context.Background(), "agent-b", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(9100),
-		UpstreamHost: stringPtrL4("backend-b.example.internal"),
-		UpstreamPort: intPtrL4(9101),
+		Protocol:   stringPtrL4("tcp"),
+		ListenPort: intPtrL4(9100),
+		Backends:   &[]L4Backend{{Host: "backend-b.example.internal", Port: 9101}},
 	})
 	if err != nil {
 		t.Fatalf("Create L4 rule error = %v", err)
@@ -698,11 +826,10 @@ func TestL4RuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
-		RelayObfs:    boolPtrL4(true),
+		Protocol:   stringPtrL4("tcp"),
+		ListenPort: intPtrL4(9000),
+		Backends:   &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayObfs:  boolPtrL4(true),
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -739,10 +866,9 @@ func TestL4RuleServiceCreateDetachesCanceledTriggerContext(t *testing.T) {
 	})
 
 	rule, err := svc.Create(requestCtx, "local", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
+		Protocol:   stringPtrL4("tcp"),
+		ListenPort: intPtrL4(9000),
+		Backends:   &[]L4Backend{{Host: "upstream", Port: 9001}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -760,11 +886,10 @@ func TestL4RuleServiceCreateClearsRelayObfsForUDP(t *testing.T) {
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:     stringPtrL4("udp"),
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
-		RelayObfs:    boolPtrL4(true),
+		Protocol:   stringPtrL4("udp"),
+		ListenPort: intPtrL4(9000),
+		Backends:   &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayObfs:  boolPtrL4(true),
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -778,18 +903,17 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
-				ID:             1,
-				AgentID:        "local",
-				Name:           "relay rule",
-				Protocol:       "tcp",
-				ListenHost:     "0.0.0.0",
-				ListenPort:     9000,
-				UpstreamHost:   "upstream",
-				UpstreamPort:   9001,
-				RelayChainJSON: `[7]`,
-				RelayObfs:      true,
-				Enabled:        true,
-				Revision:       3,
+				ID:              1,
+				AgentID:         "local",
+				Name:            "relay rule",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9000,
+				BackendsJSON:    `[{"host":"upstream","port":9001}]`,
+				RelayLayersJSON: `[[7]]`,
+				RelayObfs:       true,
+				Enabled:         true,
+				Revision:        3,
 			}},
 		},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -803,7 +927,7 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
-		RelayChain: &[]int{},
+		RelayLayers: &[][]int{},
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -816,7 +940,7 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 	}
 }
 
-func TestL4RuleServiceUpdateClearsRelayLayersWhenRelayChainOnlyUpdate(t *testing.T) {
+func TestL4RuleServiceUpdateRejectsRelayChainOnly(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -826,9 +950,7 @@ func TestL4RuleServiceUpdateClearsRelayLayersWhenRelayChainOnlyUpdate(t *testing
 				Protocol:        "tcp",
 				ListenHost:      "0.0.0.0",
 				ListenPort:      9000,
-				UpstreamHost:    "upstream",
-				UpstreamPort:    9001,
-				RelayChainJSON:  `[7]`,
+				BackendsJSON:    `[{"host":"upstream","port":9001}]`,
 				RelayLayersJSON: `[[7],[8,9]]`,
 				Enabled:         true,
 				Revision:        3,
@@ -844,20 +966,11 @@ func TestL4RuleServiceUpdateClearsRelayLayersWhenRelayChainOnlyUpdate(t *testing
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+	_, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
 		RelayChain: &[]int{5},
 	})
-	if err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 5 {
-		t.Fatalf("expected relay_chain to update, got %+v", rule.RelayChain)
-	}
-	if len(rule.RelayLayers) != 0 {
-		t.Fatalf("expected relay_layers to be cleared, got %+v", rule.RelayLayers)
-	}
-	if got := store.l4RulesByID["local"][0].RelayLayersJSON; got != `[]` {
-		t.Fatalf("persisted relay_layers = %s", got)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
 	}
 }
 
@@ -871,9 +984,7 @@ func TestL4RuleServiceUpdateClearsRelayChainWhenRelayLayersSupplied(t *testing.T
 				Protocol:        "tcp",
 				ListenHost:      "0.0.0.0",
 				ListenPort:      9000,
-				UpstreamHost:    "upstream",
-				UpstreamPort:    9001,
-				RelayChainJSON:  `[7]`,
+				BackendsJSON:    `[{"host":"upstream","port":9001}]`,
 				RelayLayersJSON: `[[7]]`,
 				Enabled:         true,
 				Revision:        3,
@@ -916,9 +1027,7 @@ func TestL4RuleServiceUpdateClearsRelayWhenRelayLayersCleared(t *testing.T) {
 				Protocol:        "tcp",
 				ListenHost:      "0.0.0.0",
 				ListenPort:      9000,
-				UpstreamHost:    "upstream",
-				UpstreamPort:    9001,
-				RelayChainJSON:  `[7]`,
+				BackendsJSON:    `[{"host":"upstream","port":9001}]`,
 				RelayLayersJSON: `[[7]]`,
 				Enabled:         true,
 				Revision:        3,
@@ -954,8 +1063,7 @@ func TestL4RuleServiceUpdateDefaultsInvalidLoadBalancingToAdaptive(t *testing.T)
 				Protocol:          "tcp",
 				ListenHost:        "0.0.0.0",
 				ListenPort:        9000,
-				UpstreamHost:      "upstream",
-				UpstreamPort:      9001,
+				BackendsJSON:      `[{"host":"upstream","port":9001}]`,
 				LoadBalancingJSON: `{}`,
 				Enabled:           true,
 				Revision:          3,
@@ -992,8 +1100,7 @@ func TestL4RuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.
 						Protocol:          "tcp",
 						ListenHost:        "0.0.0.0",
 						ListenPort:        9000,
-						UpstreamHost:      "upstream",
-						UpstreamPort:      9001,
+						BackendsJSON:      `[{"host":"upstream","port":9001}]`,
 						LoadBalancingJSON: lbJSON,
 						Enabled:           true,
 						Revision:          3,
@@ -1019,22 +1126,21 @@ func TestL4RuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.
 	}
 }
 
-func TestL4RuleServiceUpdatePreservesRelayChainWhenSwitchingToUDP(t *testing.T) {
+func TestL4RuleServiceUpdatePreservesRelayLayersWhenSwitchingToUDP(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
-				ID:             1,
-				AgentID:        "local",
-				Name:           "relay rule",
-				Protocol:       "tcp",
-				ListenHost:     "0.0.0.0",
-				ListenPort:     9000,
-				UpstreamHost:   "upstream",
-				UpstreamPort:   9001,
-				RelayChainJSON: `[7]`,
-				RelayObfs:      true,
-				Enabled:        true,
-				Revision:       3,
+				ID:              1,
+				AgentID:         "local",
+				Name:            "relay rule",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9000,
+				BackendsJSON:    `[{"host":"upstream","port":9001}]`,
+				RelayLayersJSON: `[[7]]`,
+				RelayObfs:       true,
+				Enabled:         true,
+				Revision:        3,
 			}},
 		},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -1056,15 +1162,18 @@ func TestL4RuleServiceUpdatePreservesRelayChainWhenSwitchingToUDP(t *testing.T) 
 	if rule.Protocol != "udp" {
 		t.Fatalf("expected protocol udp, got %q", rule.Protocol)
 	}
-	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 7 {
-		t.Fatalf("expected relay_chain to be preserved for udp, got %+v", rule.RelayChain)
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be neutral, got %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 7 {
+		t.Fatalf("expected relay_layers to be preserved for udp, got %+v", rule.RelayLayers)
 	}
 	if rule.RelayObfs {
 		t.Fatalf("expected relay_obfs to be cleared for udp protocol")
 	}
 }
 
-func TestL4RuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
+func TestL4RuleServiceCreateRejectsDuplicateRelayLayerEntries(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -1081,15 +1190,14 @@ func TestL4RuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
 	}, store)
 
 	_, err := svc.Create(context.Background(), "local", L4RuleInput{
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
-		RelayChain:   &[]int{7, 7},
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7, 7}},
 	})
 	if err == nil {
 		t.Fatal("Create() error = nil")
 	}
-	if err.Error() != "invalid argument: relay_chain entries must not contain duplicates" {
+	if err.Error() != "invalid argument: relay_layers entries must not contain duplicates" {
 		t.Fatalf("Create() error = %v", err)
 	}
 }
@@ -1110,10 +1218,9 @@ func TestL4RuleServiceCreateRejectsDuplicateRelayLayerEntriesAcrossLayers(t *tes
 	}, store)
 
 	_, err := svc.Create(context.Background(), "local", L4RuleInput{
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
-		RelayLayers:  &[][]int{{7, 8}, {7}},
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7, 8}, {7}},
 	})
 	if err == nil {
 		t.Fatal("Create() error = nil")
@@ -1138,10 +1245,9 @@ func TestL4RuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
 	}, store)
 
 	_, err := svc.Create(context.Background(), "local", L4RuleInput{
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
-		RelayLayers:  &[][]int{{7, 8}},
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7, 8}},
 	})
 	if err == nil {
 		t.Fatal("Create() error = nil")
@@ -1167,8 +1273,7 @@ func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 				Protocol:     "tcp",
 				ListenHost:   "0.0.0.0",
 				ListenPort:   50381,
-				UpstreamHost: "127.0.0.1",
-				UpstreamPort: 26966,
+				BackendsJSON: `[{"host":"127.0.0.1","port":26966}]`,
 				Enabled:      true,
 				Revision:     4,
 			}},
@@ -1212,8 +1317,7 @@ func TestL4RuleServiceDeleteCascadesL4RuleTraffic(t *testing.T) {
 				Protocol:     "tcp",
 				ListenHost:   "0.0.0.0",
 				ListenPort:   50381,
-				UpstreamHost: "127.0.0.1",
-				UpstreamPort: 26966,
+				BackendsJSON: `[{"host":"127.0.0.1","port":26966}]`,
 				Enabled:      true,
 			}},
 		},
@@ -1306,10 +1410,9 @@ func TestL4RuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) 
 	}, store)
 
 	rule, err := svc.Create(context.Background(), "edge-1", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(50382),
-		UpstreamHost: stringPtrL4("127.0.0.1"),
-		UpstreamPort: intPtrL4(26967),
+		Protocol:   stringPtrL4("tcp"),
+		ListenPort: intPtrL4(50382),
+		Backends:   &[]L4Backend{{Host: "127.0.0.1", Port: 26967}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -1351,11 +1454,10 @@ func TestL4RuleServiceCreateReassignsPreferredIDWhenHTTPRuleAlreadyUsesIt(t *tes
 	}, store)
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		ID:           intPtrL4(9),
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(50382),
-		UpstreamHost: stringPtrL4("127.0.0.1"),
-		UpstreamPort: intPtrL4(26967),
+		ID:         intPtrL4(9),
+		Protocol:   stringPtrL4("tcp"),
+		ListenPort: intPtrL4(50382),
+		Backends:   &[]L4Backend{{Host: "127.0.0.1", Port: 26967}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -1382,8 +1484,7 @@ func TestL4RuleServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) 
 				Protocol:     "tcp",
 				ListenHost:   "0.0.0.0",
 				ListenPort:   50381,
-				UpstreamHost: "127.0.0.1",
-				UpstreamPort: 26966,
+				BackendsJSON: `[{"host":"127.0.0.1","port":26966}]`,
 				Enabled:      true,
 				Revision:     4,
 			}},

@@ -857,9 +857,6 @@ func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []in
 			referenced = append(referenced, listenerID)
 		}
 	}
-	addRelayChain := func(chainJSON string) {
-		addListenerIDs(parseIntSlice(chainJSON))
-	}
 	addRelayLayers := func(layersJSON string) {
 		addListenerIDs(flattenIntLayers(parseIntLayers(layersJSON)))
 	}
@@ -868,14 +865,12 @@ func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []in
 		if !row.Enabled {
 			continue
 		}
-		addRelayChain(row.RelayChainJSON)
 		addRelayLayers(row.RelayLayersJSON)
 	}
 	for _, row := range l4Rows {
 		if !row.Enabled {
 			continue
 		}
-		addRelayChain(row.RelayChainJSON)
 		addRelayLayers(row.RelayLayersJSON)
 	}
 	return referenced
@@ -916,14 +911,7 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 		return protocol == "tcp"
 	}
 
-	if len(parseL4Backends(row.BackendsJSON)) > 0 {
-		return true
-	}
-
-	if strings.TrimSpace(row.UpstreamHost) == "" {
-		return false
-	}
-	return row.UpstreamPort >= 1 && row.UpstreamPort <= 65535
+	return len(parseL4Backends(row.BackendsJSON)) > 0
 }
 
 func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
@@ -932,26 +920,16 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 		if !row.Enabled {
 			continue
 		}
-		backends := parseHTTPBackends(row.BackendsJSON)
-		backendURL := strings.TrimSpace(row.BackendURL)
-		if len(backends) == 0 && backendURL != "" {
-			backends = []HTTPBackend{{URL: backendURL}}
-		}
-		if backendURL == "" && len(backends) > 0 {
-			backendURL = backends[0].URL
-		}
 		rules = append(rules, HTTPRule{
 			ID:               row.ID,
 			AgentID:          row.AgentID,
 			FrontendURL:      row.FrontendURL,
-			BackendURL:       backendURL,
-			Backends:         backends,
+			Backends:         parseHTTPBackends(row.BackendsJSON),
 			LoadBalancing:    parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			ProxyRedirect:    row.ProxyRedirect,
 			PassProxyHeaders: row.PassProxyHeaders,
 			UserAgent:        row.UserAgent,
 			CustomHeaders:    parseHTTPHeaders(row.CustomHeadersJSON),
-			RelayChain:       parseIntSlice(row.RelayChainJSON),
 			RelayLayers:      parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:        row.RelayObfs,
 			Revision:         int64(row.Revision),
@@ -966,16 +944,6 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 		if !row.Enabled {
 			continue
 		}
-		backends := parseL4Backends(row.BackendsJSON)
-		upstreamHost := strings.TrimSpace(row.UpstreamHost)
-		upstreamPort := row.UpstreamPort
-		if len(backends) == 0 && upstreamHost != "" && upstreamPort > 0 {
-			backends = []L4Backend{{Host: upstreamHost, Port: upstreamPort}}
-		}
-		if len(backends) > 0 {
-			upstreamHost = backends[0].Host
-			upstreamPort = backends[0].Port
-		}
 		rules = append(rules, L4Rule{
 			ID:              row.ID,
 			AgentID:         row.AgentID,
@@ -983,12 +951,9 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			Protocol:        defaultString(row.Protocol, "tcp"),
 			ListenHost:      defaultString(row.ListenHost, "0.0.0.0"),
 			ListenPort:      row.ListenPort,
-			UpstreamHost:    upstreamHost,
-			UpstreamPort:    upstreamPort,
-			Backends:        backends,
+			Backends:        parseL4Backends(row.BackendsJSON),
 			LoadBalancing:   parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			Tuning:          parseL4Tuning(row.TuningJSON),
-			RelayChain:      parseIntSlice(row.RelayChainJSON),
 			RelayLayers:     parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:       row.RelayObfs,
 			ListenMode:      defaultString(row.ListenMode, "tcp"),

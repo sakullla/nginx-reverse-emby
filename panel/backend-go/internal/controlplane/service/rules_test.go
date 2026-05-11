@@ -182,7 +182,6 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 		},
 		LoadBalancing:    &HTTPLoadBalancing{Strategy: "RANDOM"},
 		Tags:             &[]string{" edge ", ""},
-		RelayChain:       &[]int{7},
 		RelayLayers:      &[][]int{{7}, {8, 9}},
 		RelayObfs:        boolPtrRule(true),
 		CustomHeaders:    &[]HTTPCustomHeader{{Name: "", Value: "drop"}, {Name: " X-Test ", Value: "1"}},
@@ -198,7 +197,7 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	if rule.FrontendURL != "https://new.example.com" {
 		t.Fatalf("Create() frontend_url = %q", rule.FrontendURL)
 	}
-	if rule.BackendURL != "http://upstream-a:8096" || len(rule.Backends) != 1 {
+	if rule.BackendURL != "" || len(rule.Backends) != 1 || rule.Backends[0].URL != "http://upstream-a:8096" {
 		t.Fatalf("Create() backends = %+v", rule.Backends)
 	}
 	if rule.LoadBalancing.Strategy != "random" {
@@ -206,9 +205,6 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 	if len(rule.Tags) != 1 || rule.Tags[0] != "edge" {
 		t.Fatalf("Create() tags = %+v", rule.Tags)
-	}
-	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 7 {
-		t.Fatalf("Create() relay_chain = %+v", rule.RelayChain)
 	}
 	if len(rule.RelayLayers) != 2 || len(rule.RelayLayers[1]) != 2 || rule.RelayLayers[1][1] != 9 {
 		t.Fatalf("Create() relay_layers = %+v", rule.RelayLayers)
@@ -227,6 +223,94 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 	if got := store.rulesByAgent["local"][1].RelayLayersJSON; got != `[[7],[8,9]]` {
 		t.Fatalf("persisted relay_layers = %s", got)
+	}
+	if got := store.rulesByAgent["local"][1].BackendURL; got != "" {
+		t.Fatalf("persisted backend_url = %q", got)
+	}
+	if got := store.rulesByAgent["local"][1].RelayChainJSON; got != `[]` {
+		t.Fatalf("persisted relay_chain = %s", got)
+	}
+}
+
+func TestRuleServiceCreateRejectsBackendURLOnly(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://new.example.com"),
+		BackendURL:  stringPtrRule("http://upstream-a:8096"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestRuleServiceUpdateRejectsBackendURLOnly(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:           3,
+				AgentID:      "local",
+				FrontendURL:  "https://before.example.com",
+				BackendsJSON: `[{"url":"http://emby:8096"}]`,
+				Enabled:      true,
+				Revision:     10,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "local", 3, HTTPRuleInput{
+		BackendURL: stringPtrRule("http://upstream-a:8096"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestHTTPRuleFromRowDoesNotSynthesizeLegacyBackendFields(t *testing.T) {
+	rule := httpRuleFromRow(storage.HTTPRuleRow{
+		ID:             1,
+		AgentID:        "local",
+		FrontendURL:    "https://legacy.example.com",
+		BackendURL:     "http://legacy:8096",
+		RelayChainJSON: `[7]`,
+		Enabled:        true,
+	})
+
+	if rule.BackendURL != "" || len(rule.Backends) != 0 {
+		t.Fatalf("legacy backend fields were synthesized: backend_url=%q backends=%+v", rule.BackendURL, rule.Backends)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("legacy relay_chain was synthesized: %+v", rule.RelayChain)
+	}
+}
+
+func TestRuleServiceCreateRejectsRelayChainOnly(t *testing.T) {
+	store := &fakeRuleStore{
+		listeners:    []storage.RelayListenerRow{{ID: 7, AgentID: "local", Enabled: true, Revision: 1}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://relay.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://upstream:8096"}},
+		RelayChain:  &[]int{7},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 	}
 }
 
@@ -247,7 +331,7 @@ func TestRuleServiceCreatePreservesRelayObfsForRelayLayersOnly(t *testing.T) {
 
 	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://layer-obfs.example.com"),
-		BackendURL:  stringPtrRule("http://upstream:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://upstream:8096"}},
 		RelayLayers: &[][]int{{7}},
 		RelayObfs:   boolPtrRule(true),
 	})
@@ -285,7 +369,7 @@ func TestRuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
 
 			rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 				FrontendURL:   stringPtrRule("https://new.example.com"),
-				BackendURL:    stringPtrRule("http://upstream-a:8096"),
+				Backends:      &[]HTTPRuleBackend{{URL: "http://upstream-a:8096"}},
 				LoadBalancing: tt.input,
 			})
 			if err != nil {
@@ -353,7 +437,7 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 		UserAgent:     stringPtrRule(" MyAgent "),
 		CustomHeaders: &[]HTTPCustomHeader{{Name: "  ", Value: "drop"}, {Name: "X-New", Value: "2"}},
 		Tags:          &[]string{"", "  media"},
-		RelayChain:    &[]int{5, 6},
+		RelayLayers:   &[][]int{{5, 6}},
 		RelayObfs:     boolPtrRule(true),
 	})
 	if err != nil {
@@ -363,7 +447,7 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	if rule.FrontendURL != "https://after.example.com" {
 		t.Fatalf("Update() frontend_url = %q", rule.FrontendURL)
 	}
-	if rule.BackendURL != "http://emby:8096" || len(rule.Backends) != 1 || rule.Backends[0].URL != "http://emby:8096" {
+	if rule.BackendURL != "" || len(rule.Backends) != 1 || rule.Backends[0].URL != "http://emby:8096" {
 		t.Fatalf("Update() backends fallback = %+v", rule.Backends)
 	}
 	if rule.LoadBalancing.Strategy != "adaptive" {
@@ -378,8 +462,11 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	if len(rule.Tags) != 1 || rule.Tags[0] != "media" {
 		t.Fatalf("Update() tags = %+v", rule.Tags)
 	}
-	if len(rule.RelayChain) != 2 || rule.RelayChain[0] != 5 || rule.RelayChain[1] != 6 {
+	if len(rule.RelayChain) != 0 {
 		t.Fatalf("Update() relay_chain = %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 2 || rule.RelayLayers[0][1] != 6 {
+		t.Fatalf("Update() relay_layers = %+v", rule.RelayLayers)
 	}
 	if !rule.RelayObfs {
 		t.Fatalf("Update() relay_obfs = false")
@@ -399,7 +486,7 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	if store.rulesByAgent["local"][0].Revision != 16 {
 		t.Fatalf("persisted revision = %d", store.rulesByAgent["local"][0].Revision)
 	}
-	if store.rulesByAgent["local"][0].BackendURL != "http://emby:8096" {
+	if store.rulesByAgent["local"][0].BackendURL != "" {
 		t.Fatalf("persisted backend fallback = %q", store.rulesByAgent["local"][0].BackendURL)
 	}
 	if store.rulesByAgent["local"][0].LoadBalancingJSON != `{"strategy":"adaptive"}` {
@@ -550,7 +637,7 @@ func TestRuleServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
 	}
 }
 
-func TestRuleServiceCreateRejectsUnknownRelayChainListener(t *testing.T) {
+func TestRuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
 	}
@@ -561,8 +648,8 @@ func TestRuleServiceCreateRejectsUnknownRelayChainListener(t *testing.T) {
 
 	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://relay.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
-		RelayChain:  &[]int{999},
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers: &[][]int{{999}},
 	})
 	if err == nil {
 		t.Fatalf("Create() error = nil")
@@ -578,7 +665,7 @@ func TestRuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 
 	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://relay.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 		RelayObfs:   boolPtrRule(true),
 	})
 	if err != nil {
@@ -593,22 +680,21 @@ func TestRuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
-				ID:             1,
-				AgentID:        "local",
-				FrontendURL:    "https://relay.example.com",
-				BackendURL:     "http://127.0.0.1:8096",
-				BackendsJSON:   `[{"url":"http://127.0.0.1:8096"}]`,
-				RelayChainJSON: `[7]`,
-				RelayObfs:      true,
-				Enabled:        true,
-				Revision:       2,
+				ID:              1,
+				AgentID:         "local",
+				FrontendURL:     "https://relay.example.com",
+				BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+				RelayLayersJSON: `[[7]]`,
+				RelayObfs:       true,
+				Enabled:         true,
+				Revision:        2,
 			}},
 		},
 	}
 	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
-		RelayChain: &[]int{},
+		RelayLayers: &[][]int{},
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -621,16 +707,14 @@ func TestRuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 	}
 }
 
-func TestRuleServiceUpdateClearsRelayLayersWhenRelayChainOnlyUpdate(t *testing.T) {
+func TestRuleServiceUpdateRejectsRelayChainOnly(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
 				ID:              1,
 				AgentID:         "local",
 				FrontendURL:     "https://relay.example.com",
-				BackendURL:      "http://127.0.0.1:8096",
 				BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
-				RelayChainJSON:  `[7]`,
 				RelayLayersJSON: `[[7],[8,9]]`,
 				Enabled:         true,
 				Revision:        2,
@@ -644,20 +728,11 @@ func TestRuleServiceUpdateClearsRelayLayersWhenRelayChainOnlyUpdate(t *testing.T
 	}
 	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	rule, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+	_, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
 		RelayChain: &[]int{5},
 	})
-	if err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 5 {
-		t.Fatalf("expected relay_chain to update, got %+v", rule.RelayChain)
-	}
-	if len(rule.RelayLayers) != 0 {
-		t.Fatalf("expected relay_layers to be cleared, got %+v", rule.RelayLayers)
-	}
-	if got := store.rulesByAgent["local"][0].RelayLayersJSON; got != `[]` {
-		t.Fatalf("persisted relay_layers = %s", got)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
 	}
 }
 
@@ -736,7 +811,7 @@ func TestRuleServiceUpdateClearsRelayWhenRelayLayersCleared(t *testing.T) {
 	}
 }
 
-func TestRuleServiceCreateRejectsInvalidRelayChainEntry(t *testing.T) {
+func TestRuleServiceCreateRejectsInvalidRelayLayerEntry(t *testing.T) {
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{{
 			ID:      7,
@@ -752,18 +827,18 @@ func TestRuleServiceCreateRejectsInvalidRelayChainEntry(t *testing.T) {
 
 	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://invalid.example.com"),
-		BackendURL:  stringPtrRule("http://upstream:8096"),
-		RelayChain:  &[]int{7, 0},
+		Backends:    &[]HTTPRuleBackend{{URL: "http://upstream:8096"}},
+		RelayLayers: &[][]int{{7, 0}},
 	})
 	if err == nil {
 		t.Fatal("Create() error = nil")
 	}
-	if err.Error() != "invalid argument: relay_chain entries must be positive integer listener IDs" {
+	if err.Error() != "invalid argument: relay_layers entries must be positive integer listener IDs" {
 		t.Fatalf("Create() error = %v", err)
 	}
 }
 
-func TestRuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
+func TestRuleServiceCreateRejectsDuplicateRelayLayerEntries(t *testing.T) {
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{{
 			ID:      7,
@@ -779,13 +854,13 @@ func TestRuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
 
 	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://duplicate.example.com"),
-		BackendURL:  stringPtrRule("http://upstream:8096"),
-		RelayChain:  &[]int{7, 7},
+		Backends:    &[]HTTPRuleBackend{{URL: "http://upstream:8096"}},
+		RelayLayers: &[][]int{{7, 7}},
 	})
 	if err == nil {
 		t.Fatal("Create() error = nil")
 	}
-	if err.Error() != "invalid argument: relay_chain entries must not contain duplicates" {
+	if err.Error() != "invalid argument: relay_layers entries must not contain duplicates" {
 		t.Fatalf("Create() error = %v", err)
 	}
 }
@@ -805,7 +880,7 @@ func TestRuleServiceCreateRejectsDuplicateRelayLayerEntriesAcrossLayers(t *testi
 
 	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://duplicate-layers.example.com"),
-		BackendURL:  stringPtrRule("http://upstream:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://upstream:8096"}},
 		RelayLayers: &[][]int{{7, 8}, {7}},
 	})
 	if err == nil {
@@ -836,7 +911,7 @@ func TestRuleServiceCreateRejectsDuplicateFrontendBindingOnSameAgent(t *testing.
 
 	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://media.example.com/emby/"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8097"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8097"}},
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() error = %v", err)
@@ -850,19 +925,19 @@ func TestRuleServiceUpdateRejectsDuplicateFrontendBindingOnSameAgent(t *testing.
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
-				ID:          1,
-				AgentID:     "local",
-				FrontendURL: "http://media.example.com/emby",
-				BackendURL:  "http://127.0.0.1:8096",
-				Enabled:     true,
-				Revision:    2,
+				ID:           1,
+				AgentID:      "local",
+				FrontendURL:  "http://media.example.com/emby",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`,
+				Enabled:      true,
+				Revision:     2,
 			}, {
-				ID:          2,
-				AgentID:     "local",
-				FrontendURL: "http://media.example.com/jellyfin",
-				BackendURL:  "http://127.0.0.1:8097",
-				Enabled:     true,
-				Revision:    3,
+				ID:           2,
+				AgentID:      "local",
+				FrontendURL:  "http://media.example.com/jellyfin",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8097"}]`,
+				Enabled:      true,
+				Revision:     3,
 			}},
 		},
 	}
@@ -908,7 +983,7 @@ func TestRuleServiceCreateUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 
 	rule, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://new.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -948,7 +1023,7 @@ func TestRuleServiceCreateDoesNotRegressRemoteDesiredRevisionBelowCurrentRevisio
 
 	rule, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://new.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -988,7 +1063,7 @@ func TestRuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 
 	rule, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://new.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -1031,7 +1106,7 @@ func TestRuleServiceCreateReassignsPreferredIDWhenL4RuleAlreadyUsesIt(t *testing
 	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		ID:          intPtrRule(9),
 		FrontendURL: stringPtrRule("http://new-http.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -1192,7 +1267,7 @@ func TestRuleServiceCreateHTTPSAutoCreatesManagedCertificateForLocalOrRemoteAgen
 
 			created, err := svc.Create(context.Background(), tc.agentID, HTTPRuleInput{
 				FrontendURL: stringPtrRule("https://media.example.com"),
-				BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+				Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 				Tags:        &[]string{" media ", " edge "},
 			})
 			if err != nil {
@@ -1248,7 +1323,7 @@ func TestRuleServiceCreateHTTPSPersistsManagedCertificateInSQLiteStore(t *testin
 
 	created, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://sqlite.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -1301,14 +1376,14 @@ func TestRuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing
 
 	first, err := svc.Create(context.Background(), "agent-a", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://agent-a.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create(agent-a) error = %v", err)
 	}
 	second, err := svc.Create(context.Background(), "agent-b", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://agent-b.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create(agent-b) error = %v", err)
@@ -1347,10 +1422,9 @@ func TestRuleServiceCreateAllocatesIDsAfterExistingL4RulesInSQLiteStore(t *testi
 	httpSvc := NewRuleService(config.Config{}, store)
 
 	l4Rule, err := l4Svc.Create(context.Background(), "agent-a", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("backend-a.example.internal"),
-		UpstreamPort: intPtrL4(9001),
+		Protocol:   stringPtrL4("tcp"),
+		ListenPort: intPtrL4(9000),
+		Backends:   &[]L4Backend{{Host: "backend-a.example.internal", Port: 9001}},
 	})
 	if err != nil {
 		t.Fatalf("Create L4 rule error = %v", err)
@@ -1358,7 +1432,7 @@ func TestRuleServiceCreateAllocatesIDsAfterExistingL4RulesInSQLiteStore(t *testi
 
 	httpRule, err := httpSvc.Create(context.Background(), "agent-b", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://agent-b.example.com"),
-		BackendURL:  stringPtrRule("http://backend-b.example.internal:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://backend-b.example.internal:8096"}},
 	})
 	if err != nil {
 		t.Fatalf("Create HTTP rule error = %v", err)
@@ -1396,7 +1470,7 @@ func TestRuleServiceCreateHTTPRuleDoesNotProvisionManagedCertificate(t *testing.
 
 	if _, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://plain.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1446,7 +1520,7 @@ func TestRuleServiceCreateHTTPRuleDoesNotCleanupStaleAutoManagedCertificate(t *t
 
 	if _, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("http://plain.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1556,7 +1630,7 @@ func TestRuleServiceCreateHTTPSReusesMatchingCertificateAndAddsAutoTarget(t *tes
 
 	if _, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://media.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1621,7 +1695,7 @@ func TestRuleServiceCreateHTTPSPrefersExactOverWildcardMatch(t *testing.T) {
 
 	if _, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://media.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1648,7 +1722,7 @@ func TestRuleServiceCreateHTTPSDomainUsesMasterCFDNSWhenManagedDNSEnabled(t *tes
 
 	if _, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://cf-managed.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1679,7 +1753,7 @@ func TestRuleServiceCreateHTTPSRemoteDomainRejectsMasterCFDNSForNonLocalTarget(t
 
 	_, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://cf-managed.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() error = %v", err)
@@ -1721,7 +1795,6 @@ func TestRuleServiceCreateHTTPSRemoteDomainReusesExistingMasterCFDNSWildcardWith
 
 	if _, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://edge.managed.example.com"),
-		BackendURL:  stringPtrRule("https://origin.example.net"),
 		Backends:    &[]HTTPRuleBackend{{URL: "https://origin.example.net"}},
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -1761,7 +1834,7 @@ func TestRuleServiceCreateHTTPSDomainFallsBackToLocalHTTP01WhenManagedDNSDisable
 
 	if _, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://local-http01.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1791,7 +1864,7 @@ func TestRuleServiceCreateHTTPSIPRequiresLocalACME(t *testing.T) {
 
 	_, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://192.168.1.10"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() error = %v", err)
@@ -1817,7 +1890,7 @@ func TestRuleServiceCreateHTTPSIPUsesLocalHTTP01WhenAgentSupportsLocalACME(t *te
 
 	if _, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://192.168.1.10"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1853,7 +1926,7 @@ func TestRuleServiceCreateHTTPSIPv6LiteralUsesLocalHTTP01WhenAgentSupportsLocalA
 
 	if _, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://[2001:db8::10]"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1889,7 +1962,7 @@ func TestRuleServiceCreateHTTPSDomainFailsWhenNoIssuerAvailable(t *testing.T) {
 
 	_, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://no-issuer.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() error = %v", err)
@@ -2076,7 +2149,7 @@ func TestRuleServiceCreateRollsBackManagedCertificatesWhenRuleSaveFails(t *testi
 
 	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://rollback.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
 	if err == nil {
 		t.Fatal("Create() error = nil")
