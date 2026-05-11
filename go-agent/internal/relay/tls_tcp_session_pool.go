@@ -87,8 +87,9 @@ type tlsTCPLogicalStream struct {
 }
 
 type tlsTCPReadChunk struct {
-	payload []byte
-	release func()
+	payload       []byte
+	pooledPayload []byte
+	release       func()
 }
 
 type tlsTCPWriteRequest struct {
@@ -101,6 +102,10 @@ func (c *tlsTCPReadChunk) consume(n int) {
 }
 
 func (c *tlsTCPReadChunk) releaseNow() {
+	if c.pooledPayload != nil {
+		tlsTCPBulkBufferPool.Put(c.pooledPayload)
+		c.pooledPayload = nil
+	}
 	if c.release != nil {
 		c.release()
 		c.release = nil
@@ -910,12 +915,10 @@ func newQueuedTLSTCPDataFrame(streamID uint32, payload []byte) muxFrame {
 	buf := tlsTCPBulkBufferPool.Get().([]byte)
 	copy(buf, payload)
 	return muxFrame{
-		Type:     muxFrameTypeData,
-		StreamID: streamID,
-		Payload:  buf[:len(payload)],
-		payloadRelease: func() {
-			tlsTCPBulkBufferPool.Put(buf)
-		},
+		Type:          muxFrameTypeData,
+		StreamID:      streamID,
+		Payload:       buf[:len(payload)],
+		pooledPayload: buf,
 	}
 }
 
