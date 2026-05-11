@@ -55,6 +55,8 @@ type Cache struct {
 	failures   map[string]failureEntry
 	roundRobin map[string]int
 	observed   map[string]candidateObservation
+
+	backendObserved map[backendObservationIndexKey]candidateObservation
 }
 
 type PruneStats struct {
@@ -149,6 +151,11 @@ type candidateOrder struct {
 	preference candidatePreference
 }
 
+type backendObservationIndexKey struct {
+	scope     string
+	backendID string
+}
+
 func NewCache(cfg Config) *Cache {
 	resolver := cfg.Resolver
 	if resolver == nil {
@@ -193,6 +200,8 @@ func NewCache(cfg Config) *Cache {
 		failures:     make(map[string]failureEntry),
 		roundRobin:   make(map[string]int),
 		observed:     make(map[string]candidateObservation),
+
+		backendObserved: make(map[backendObservationIndexKey]candidateObservation),
 	}
 }
 
@@ -214,6 +223,8 @@ func (c *Cache) Clone() *Cache {
 		failures:     make(map[string]failureEntry, len(c.failures)),
 		roundRobin:   make(map[string]int, len(c.roundRobin)),
 		observed:     make(map[string]candidateObservation, len(c.observed)),
+
+		backendObserved: make(map[backendObservationIndexKey]candidateObservation, len(c.backendObserved)),
 	}
 	for key, entry := range c.dnsCache {
 		clone.dnsCache[key] = dnsCacheEntry{
@@ -229,6 +240,9 @@ func (c *Cache) Clone() *Cache {
 	}
 	for key, entry := range c.observed {
 		clone.observed[key] = entry
+	}
+	for key, entry := range c.backendObserved {
+		clone.backendObserved[key] = entry
 	}
 	return clone
 }
@@ -281,6 +295,7 @@ func (c *Cache) pruneLocked(now time.Time, force bool) PruneStats {
 	for key, observation := range c.observed {
 		if observation.inactive(now) {
 			delete(c.observed, key)
+			c.deleteBackendObservationIndex(key)
 			stats.ObservationEntries++
 		}
 	}
@@ -407,6 +422,7 @@ func (c *Cache) ObserveBackendSuccess(scope string, latency time.Duration, total
 	entry := c.observed[key]
 	entry.recordSuccess(now, latency, totalDuration, bytesTransferred, c.slowStartWindowForKey(key))
 	c.observed[key] = entry
+	c.storeBackendObservationIndex(key, entry)
 	delete(c.failures, key)
 }
 
@@ -440,6 +456,7 @@ func (c *Cache) ObserveTransferSuccess(address string, latency time.Duration, to
 	entry := c.observed[key]
 	entry.recordSuccess(now, latency, totalDuration, bytesTransferred, c.slowStartWindowForKey(key))
 	c.observed[key] = entry
+	c.storeBackendObservationIndex(key, entry)
 	delete(c.failures, key)
 }
 
@@ -688,9 +705,10 @@ func (c *Cache) backendSnapshots(scope string, candidates []Candidate, now time.
 
 	snapshots := make([]candidateSnapshot, 0, len(candidates))
 	sharedMix := trafficMix{}
+	normalizedScope := strings.TrimSpace(scope)
 	for _, candidate := range candidates {
 		key := strings.TrimSpace(candidate.Address)
-		observation := c.observed[BackendObservationKey(scope, key)]
+		observation := c.backendObservation(normalizedScope, key)
 		snapshot, mix := snapshotFromObservation(key, observation, now)
 		snapshots = append(snapshots, snapshot)
 		if allowThroughput {
@@ -1386,8 +1404,54 @@ func (c *Cache) applyFailureLocked(key string, now time.Time) time.Duration {
 	observed.slowStartStartedAt = observed.recoveryUntil.Add(-recoveryWindow)
 	observed.slowStartUntil = observed.recoveryUntil
 	c.observed[key] = observed
+	c.storeBackendObservationIndex(key, observed)
 
 	return backoff
+}
+
+func (c *Cache) backendObservation(scope string, backendID string) candidateObservation {
+	if scope == "" || backendID == "" {
+		return candidateObservation{}
+	}
+	indexKey := backendObservationIndexKey{scope: scope, backendID: backendID}
+	if observation, ok := c.backendObserved[indexKey]; ok {
+		return observation
+	}
+	return c.observed[BackendObservationKey(scope, backendID)]
+}
+
+func (c *Cache) storeBackendObservationIndex(key string, observation candidateObservation) {
+	indexKey, ok := parseBackendObservationIndexKey(key)
+	if !ok {
+		return
+	}
+	c.backendObserved[indexKey] = observation
+}
+
+func (c *Cache) deleteBackendObservationIndex(key string) {
+	indexKey, ok := parseBackendObservationIndexKey(key)
+	if !ok {
+		return
+	}
+	delete(c.backendObserved, indexKey)
+}
+
+func parseBackendObservationIndexKey(key string) (backendObservationIndexKey, bool) {
+	normalized := strings.TrimSpace(key)
+	if !strings.HasPrefix(normalized, backendObservationPrefix) {
+		return backendObservationIndexKey{}, false
+	}
+	rest := normalized[len(backendObservationPrefix):]
+	sep := strings.IndexByte(rest, '|')
+	if sep < 0 {
+		return backendObservationIndexKey{}, false
+	}
+	scope := strings.TrimSpace(rest[:sep])
+	backendID := strings.TrimSpace(rest[sep+1:])
+	if scope == "" || backendID == "" {
+		return backendObservationIndexKey{}, false
+	}
+	return backendObservationIndexKey{scope: scope, backendID: backendID}, true
 }
 
 func (o candidateObservation) inBackoff(now time.Time) bool {

@@ -341,8 +341,8 @@ func TestCacheOrderAdaptiveAllocations(t *testing.T) {
 			t.Fatalf("Order() candidates = %d, want %d", len(ordered), len(candidates))
 		}
 	})
-	if allocs > 70 {
-		t.Fatalf("Order() allocations = %.2f, want <= 70", allocs)
+	if allocs > 8 {
+		t.Fatalf("Order() allocations = %.2f, want <= 8", allocs)
 	}
 }
 
@@ -1153,6 +1153,63 @@ func TestCacheOrderAdaptiveUsesScopedBackendStateWithoutResolvedOverlay(t *testi
 	got := cache.Order(scope, StrategyAdaptive, candidates)
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"10.0.0.1:443", "10.0.0.2:443"}) {
 		t.Fatalf("unexpected adaptive order when resolved overlay should be ignored: %v", ordered)
+	}
+}
+
+func TestCacheClonePreservesBackendObservationIndex(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	scope := "tcp:rule-clone-backend-order"
+	candidates := []Candidate{
+		{Address: "slow"},
+		{Address: "fast"},
+	}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "slow"), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "fast"), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
+	}
+
+	clone := cache.Clone()
+	got := clone.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"fast", "slow"}) {
+		t.Fatalf("unexpected cloned adaptive order: %v", ordered)
+	}
+	if summary := clone.Summary(BackendObservationKey(scope, "fast")); summary.RecentSucceeded != 3 || !summary.HasLatency {
+		t.Fatalf("cloned summary = %+v, want observed backend state", summary)
+	}
+}
+
+func TestCachePruneRemovesBackendObservationIndex(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	scope := "tcp:rule-prune-backend-order"
+	candidates := []Candidate{
+		{Address: "cold"},
+		{Address: "stale"},
+	}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "stale"), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
+	}
+	now = base.Add(observationWindow + time.Hour)
+	cache.Prune()
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"cold", "stale"}) {
+		t.Fatalf("unexpected adaptive order after prune: %v", ordered)
+	}
+	if summary := cache.Summary(BackendObservationKey(scope, "stale")); summary.RecentSucceeded != 0 || summary.HasLatency {
+		t.Fatalf("pruned summary = %+v, want empty backend state", summary)
 	}
 }
 
