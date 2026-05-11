@@ -865,6 +865,9 @@ func TestCachePreferResolvedCandidatesDampensSingleBandwidthSpikeWithConfidence(
 		Now: func() time.Time {
 			return base
 		},
+		RandomIntn: func(n int) int {
+			return n - 1
+		},
 	})
 	candidates := []Candidate{
 		{Address: "10.0.0.13:443"},
