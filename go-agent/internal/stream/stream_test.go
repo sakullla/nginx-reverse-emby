@@ -39,6 +39,20 @@ func (r *writerToReader) WriteTo(w io.Writer) (int64, error) {
 	return int64(n), err
 }
 
+type fixedBufferWriter struct {
+	buf []byte
+	off int
+}
+
+func (w *fixedBufferWriter) Write(p []byte) (int, error) {
+	n := copy(w.buf[w.off:], p)
+	w.off += n
+	if n != len(p) {
+		return n, io.ErrShortWrite
+	}
+	return n, nil
+}
+
 func TestCopyPreferReaderFromUsesDestinationFastPath(t *testing.T) {
 	dst := &readerFromBuffer{}
 	n, err := CopyPreferReaderFrom(dst, bytes.NewBufferString("payload"))
@@ -62,6 +76,29 @@ func TestCopyGenericSuppressesWriterTo(t *testing.T) {
 	}
 	if src.used {
 		t.Fatal("CopyGeneric used source WriteTo fast path")
+	}
+}
+
+func TestCopyGenericUsesReusableBuffer(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 64*1024)
+	warmDst := fixedBufferWriter{buf: make([]byte, len(payload))}
+	if _, err := CopyGeneric(&warmDst, bytes.NewReader(payload)); err != nil {
+		t.Fatalf("warm CopyGeneric() error = %v", err)
+	}
+	dstBuf := make([]byte, len(payload))
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		dst := fixedBufferWriter{buf: dstBuf}
+		n, err := CopyGeneric(&dst, bytes.NewReader(payload))
+		if err != nil {
+			t.Fatalf("CopyGeneric() error = %v", err)
+		}
+		if n != int64(len(payload)) || dst.off != len(payload) || !bytes.Equal(dst.buf, payload) {
+			t.Fatalf("CopyGeneric() copied n=%d len(dst)=%d, want %d", n, dst.off, len(payload))
+		}
+	})
+	if allocs > 4 {
+		t.Fatalf("CopyGeneric() allocations = %.2f, want <= 4", allocs)
 	}
 }
 

@@ -2,6 +2,7 @@ package stream
 
 import (
 	"io"
+	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
@@ -20,6 +21,15 @@ const (
 	FlushAtOrBelowThreshold
 )
 
+const copyBufferSize = 32 * 1024
+
+var copyBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, copyBufferSize)
+		return &buf
+	},
+}
+
 func CopyPreferReaderFrom(dst io.Writer, src io.Reader) (int64, error) {
 	if rf, ok := dst.(io.ReaderFrom); ok {
 		return rf.ReadFrom(readerWithoutWriterTo{Reader: src})
@@ -28,7 +38,9 @@ func CopyPreferReaderFrom(dst io.Writer, src io.Reader) (int64, error) {
 }
 
 func CopyGeneric(dst io.Writer, src io.Reader) (int64, error) {
-	return io.Copy(writerWithoutReaderFrom{Writer: dst}, readerWithoutWriterTo{Reader: src})
+	bufPtr := copyBufferPool.Get().(*[]byte)
+	defer copyBufferPool.Put(bufPtr)
+	return io.CopyBuffer(writerWithoutReaderFrom{Writer: dst}, readerWithoutWriterTo{Reader: src}, *bufPtr)
 }
 
 type readerWithoutWriterTo struct {
