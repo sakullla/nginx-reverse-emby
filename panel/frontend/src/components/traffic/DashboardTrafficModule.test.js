@@ -233,9 +233,10 @@ describe('DashboardTrafficModule', () => {
     await trigger.trigger('click')
     await nextTick()
 
-    const edge1Item = wrapper.findAll('.agent-picker__item').find((item) => item.text().includes('edge-1'))
+    const findItems = () => Array.from(document.body.querySelectorAll('.agent-picker__item'))
+    const edge1Item = findItems().find((item) => item.textContent.includes('edge-1'))
     expect(edge1Item).toBeTruthy()
-    await edge1Item.trigger('click')
+    edge1Item.click()
     await nextTick()
 
     await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith('edge-1', 'day'))
@@ -246,10 +247,10 @@ describe('DashboardTrafficModule', () => {
     await trigger.trigger('click')
     await nextTick()
 
-    const labels = wrapper.findAll('.agent-picker__item').map((item) => item.text())
+    const labels = findItems().map((item) => item.textContent)
     expect(labels).toContain('全部节点')
-    expect(labels).toContain('edge-1')
-    expect(labels).toContain('edge-2')
+    expect(labels.some((l) => l.includes('edge-1'))).toBe(true)
+    expect(labels.some((l) => l.includes('edge-2'))).toBe(true)
   })
 
   it('shows mixed cycle label when aggregate agents have different cycle windows', async () => {

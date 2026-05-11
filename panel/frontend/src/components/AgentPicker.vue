@@ -7,77 +7,79 @@
       </svg>
     </button>
 
-    <div
-      v-if="open"
-      ref="dropdownRef"
-      class="agent-picker__dropdown"
-      :style="dropdownStyle"
-    >
-      <!-- Search -->
-      <div class="agent-picker__search">
-        <input
-          v-model="searchQuery"
-          name="agent-picker-search"
-          class="agent-picker__search-input"
-          placeholder="搜索节点..."
-          @click.stop
-        />
-      </div>
+    <Teleport to="body">
+      <div
+        v-if="open"
+        ref="dropdownRef"
+        class="agent-picker__dropdown"
+        :style="dropdownStyle"
+      >
+        <!-- Search -->
+        <div class="agent-picker__search">
+          <input
+            v-model="searchQuery"
+            name="agent-picker-search"
+            class="agent-picker__search-input"
+            placeholder="搜索节点..."
+            @click.stop
+          />
+        </div>
 
-      <!-- Status Filters -->
-      <div class="agent-picker__filters">
-        <button
-          v-for="opt in statusOptions"
-          :key="opt.value"
-          class="agent-picker__filter-btn"
-          :class="{ active: statusFilter === opt.value }"
-          @click="statusFilter = opt.value"
-        >
-          {{ opt.label }}
-        </button>
-      </div>
+        <!-- Status Filters -->
+        <div class="agent-picker__filters">
+          <button
+            v-for="opt in statusOptions"
+            :key="opt.value"
+            class="agent-picker__filter-btn"
+            :class="{ active: statusFilter === opt.value }"
+            @click="statusFilter = opt.value"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
 
-      <!-- Agent List -->
-      <div class="agent-picker__list">
-        <button
-          v-if="showAllOption"
-          class="agent-picker__item agent-picker__item--all"
-          @click="selectAll()"
-        >
-          <span class="agent-picker__item-name">{{ allLabel }}</span>
-        </button>
-        <button
-          v-for="agent in displayedAgents"
-          :key="agent.id || agent.agent_id"
-          class="agent-picker__item"
-          @click="selectAgent(agent)"
-        >
-          <span v-if="agent.status != null || agent.desired_revision != null" class="agent-picker__dot" :class="`agent-picker__dot--${getAgentStatus(agent)}`"></span>
-          <span class="agent-picker__item-name">{{ agent.name }}</span>
-          <span v-if="agent.last_seen_at" class="agent-picker__item-time">{{ timeAgo(agent.last_seen_at) }}</span>
-        </button>
-        <div v-if="!displayedAgents.length" class="agent-picker__empty">没有匹配的节点</div>
-      </div>
+        <!-- Agent List -->
+        <div class="agent-picker__list">
+          <button
+            v-if="showAllOption"
+            class="agent-picker__item agent-picker__item--all"
+            @click="selectAll()"
+          >
+            <span class="agent-picker__item-name">{{ allLabel }}</span>
+          </button>
+          <button
+            v-for="agent in displayedAgents"
+            :key="agent.id || agent.agent_id"
+            class="agent-picker__item"
+            @click="selectAgent(agent)"
+          >
+            <span v-if="agent.status != null || agent.desired_revision != null" class="agent-picker__dot" :class="`agent-picker__dot--${getAgentStatus(agent)}`"></span>
+            <span class="agent-picker__item-name">{{ agent.name }}</span>
+            <span v-if="agent.last_seen_at" class="agent-picker__item-time">{{ timeAgo(agent.last_seen_at) }}</span>
+          </button>
+          <div v-if="!displayedAgents.length" class="agent-picker__empty">没有匹配的节点</div>
+        </div>
 
-      <!-- Sort -->
-      <div class="agent-picker__sort">
-        <span>排序:</span>
-        <button
-          class="agent-picker__sort-btn"
-          :class="{ active: sortBy === 'last_seen' }"
-          @click="sortBy = 'last_seen'"
-        >
-          最近活跃
-        </button>
-        <button
-          class="agent-picker__sort-btn"
-          :class="{ active: sortBy === 'name' }"
-          @click="sortBy = 'name'"
-        >
-          名称
-        </button>
+        <!-- Sort -->
+        <div class="agent-picker__sort">
+          <span>排序:</span>
+          <button
+            class="agent-picker__sort-btn"
+            :class="{ active: sortBy === 'last_seen' }"
+            @click="sortBy = 'last_seen'"
+          >
+            最近活跃
+          </button>
+          <button
+            class="agent-picker__sort-btn"
+            :class="{ active: sortBy === 'name' }"
+            @click="sortBy = 'name'"
+          >
+            名称
+          </button>
+        </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
