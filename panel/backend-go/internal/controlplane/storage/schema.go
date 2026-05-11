@@ -64,6 +64,10 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		}
 	}
 
+	if err := migrateLegacyRuleCanonicalFields(ctx, db); err != nil {
+		return err
+	}
+
 	return tx.
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(&LocalAgentStateRow{
@@ -230,10 +234,6 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 
-	if err := migrateLegacyRuleCanonicalFields(ctx, db); err != nil {
-		return err
-	}
-
 	if err := tx.Where("id <> ?", 1).Delete(&LocalAgentStateRow{}).Error; err != nil {
 		return err
 	}
@@ -276,6 +276,10 @@ func migrateLegacyRuleCanonicalFields(ctx context.Context, db *gorm.DB) error {
 }
 
 func migrateLegacyHTTPRuleCanonicalFields(tx *gorm.DB) error {
+	if !tx.Migrator().HasColumn(&HTTPRuleRow{}, "backend_url") || !tx.Migrator().HasColumn(&HTTPRuleRow{}, "relay_chain") {
+		return nil
+	}
+
 	var rows []legacyHTTPRuleMigrationRow
 	if err := tx.Model(&HTTPRuleRow{}).
 		Select("id", "agent_id", "backend_url", "backends", "relay_chain", "relay_layers").
@@ -322,6 +326,10 @@ func migrateLegacyHTTPRuleCanonicalFields(tx *gorm.DB) error {
 }
 
 func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
+	if !tx.Migrator().HasColumn(&L4RuleRow{}, "upstream_host") || !tx.Migrator().HasColumn(&L4RuleRow{}, "upstream_port") || !tx.Migrator().HasColumn(&L4RuleRow{}, "relay_chain") {
+		return nil
+	}
+
 	var rows []legacyL4RuleMigrationRow
 	if err := tx.Model(&L4RuleRow{}).
 		Select("id", "agent_id", "upstream_host", "upstream_port", "backends", "relay_chain", "relay_layers").

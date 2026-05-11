@@ -353,6 +353,79 @@ func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
 	}
 }
 
+func TestBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('general-bootstrap-agent', 'general-bootstrap-agent')`).Error; err != nil {
+		t.Fatalf("seed legacy agent error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO rules (
+		id, agent_id, frontend_url, backend_url, backends, load_balancing, enabled, tags, proxy_redirect,
+		pass_proxy_headers, user_agent, custom_headers, relay_chain, relay_layers, relay_obfs, revision
+	) VALUES (73, 'general-bootstrap-agent', 'https://general-http.example.com', 'http://10.0.0.10:8096', '[]', NULL, 1, '[]', 0,
+		1, '', '[]', '[101,102]', '[]', 0, 1)`).Error; err != nil {
+		t.Fatalf("seed legacy http rule error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO l4_rules (
+		id, agent_id, name, protocol, listen_host, listen_port, upstream_host, upstream_port, backends,
+		load_balancing, tuning, relay_chain, relay_layers, relay_obfs, enabled, tags, revision
+	) VALUES (74, 'general-bootstrap-agent', 'general-l4', 'tcp', '0.0.0.0', 25565, '10.0.0.11', 25566, '[]',
+		NULL, NULL, '[201,202]', '[]', 0, 1, '[]', 1)`).Error; err != nil {
+		t.Fatalf("seed legacy l4 rule error = %v", err)
+	}
+
+	if err := BootstrapSchema(t.Context(), db, SchemaOptions{TrafficStatsEnabled: true, SQLiteLegacyMigrations: false}); err != nil {
+		t.Fatalf("general BootstrapSchema() migration error = %v", err)
+	}
+
+	var httpRows []legacyHTTPRuleMigrationRow
+	if err := db.WithContext(t.Context()).
+		Model(&HTTPRuleRow{}).
+		Select("id", "agent_id", "backend_url", "backends", "relay_chain", "relay_layers").
+		Where("id = ?", 73).
+		Find(&httpRows).Error; err != nil {
+		t.Fatalf("query migrated HTTP row error = %v", err)
+	}
+	if len(httpRows) != 1 {
+		t.Fatalf("expected 1 HTTP row, got %+v", httpRows)
+	}
+	if httpRows[0].BackendsJSON != `[{"url":"http://10.0.0.10:8096"}]` {
+		t.Fatalf("unexpected migrated HTTP backends: %+v", httpRows[0])
+	}
+	if httpRows[0].RelayLayersJSON != `[[101],[102]]` {
+		t.Fatalf("unexpected migrated HTTP relay layers: %+v", httpRows[0])
+	}
+
+	var l4Rows []legacyL4RuleMigrationRow
+	if err := db.WithContext(t.Context()).
+		Model(&L4RuleRow{}).
+		Select("id", "agent_id", "upstream_host", "upstream_port", "backends", "relay_chain", "relay_layers").
+		Where("id = ?", 74).
+		Find(&l4Rows).Error; err != nil {
+		t.Fatalf("query migrated L4 row error = %v", err)
+	}
+	if len(l4Rows) != 1 {
+		t.Fatalf("expected 1 L4 row, got %+v", l4Rows)
+	}
+	if l4Rows[0].BackendsJSON != `[{"host":"10.0.0.11","port":25566}]` {
+		t.Fatalf("unexpected migrated L4 backends: %+v", l4Rows[0])
+	}
+	if l4Rows[0].RelayLayersJSON != `[[201],[202]]` {
+		t.Fatalf("unexpected migrated L4 relay layers: %+v", l4Rows[0])
+	}
+}
+
 func TestBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *testing.T) {
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
