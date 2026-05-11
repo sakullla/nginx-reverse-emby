@@ -16,6 +16,7 @@ func BenchmarkResolvePathsLayeredFanout(b *testing.B) {
 	}
 
 	b.ReportAllocs()
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		paths, err := ResolvePaths("benchmark rule", nil, layers, listeners, "backend.example:443")
 		if err != nil {
@@ -37,10 +38,12 @@ func BenchmarkClonePathsWithTargetLayeredFanout(b *testing.B) {
 	if err != nil {
 		b.Fatalf("ResolvePaths() error = %v", err)
 	}
+	target := "backend.example:443"
 
 	b.ReportAllocs()
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cloned := ClonePathsWithTarget(paths, "backend-"+strconv.Itoa(i)+".example:443")
+		cloned := ClonePathsWithTarget(paths, target)
 		if len(cloned) != len(paths) {
 			b.Fatalf("ClonePathsWithTarget() paths = %d, want %d", len(cloned), len(paths))
 		}
