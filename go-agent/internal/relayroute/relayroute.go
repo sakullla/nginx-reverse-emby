@@ -79,7 +79,7 @@ func ResolvePathsFromMap(chain []int, layers [][]int, listenersByID map[int]mode
 			})
 		}
 		paths = append(paths, relayplan.Path{
-			IDs:  append([]int(nil), ids...),
+			IDs:  ids,
 			Hops: hops,
 			Key:  relayplan.PathKey("relay_path", ids, target),
 		})

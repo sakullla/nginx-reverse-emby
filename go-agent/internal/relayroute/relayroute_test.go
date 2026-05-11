@@ -57,6 +57,39 @@ func TestResolvePathsBuildsHopsAndKeys(t *testing.T) {
 	}
 }
 
+func TestResolvePathsDoesNotAliasInputLayers(t *testing.T) {
+	layers := [][]int{{1}}
+	paths, err := ResolvePaths("rule", nil, layers, []model.RelayListener{testListener(1)}, "backend.example:443")
+	if err != nil {
+		t.Fatalf("ResolvePaths() error = %v", err)
+	}
+	layers[0][0] = 99
+	if paths[0].IDs[0] != 1 {
+		t.Fatalf("ResolvePaths() IDs aliased input layers: paths=%+v layers=%+v", paths, layers)
+	}
+}
+
+func TestResolvePathsAllocations(t *testing.T) {
+	listeners := benchmarkRelayListeners(12)
+	layers := [][]int{
+		{1, 2, 3},
+		{4, 5, 6},
+		{7, 8, 9},
+	}
+	allocs := testing.AllocsPerRun(1000, func() {
+		paths, err := ResolvePaths("benchmark rule", nil, layers, listeners, "backend.example:443")
+		if err != nil {
+			t.Fatalf("ResolvePaths() error = %v", err)
+		}
+		if len(paths) != 27 {
+			t.Fatalf("ResolvePaths() paths = %d, want 27", len(paths))
+		}
+	})
+	if allocs > 515 {
+		t.Fatalf("ResolvePaths() allocations = %.2f, want <= 515", allocs)
+	}
+}
+
 func TestResolvePathsWrapsMissingListenerWithLabel(t *testing.T) {
 	_, err := ResolvePaths("l4 rule 127.0.0.1:8443", nil, [][]int{{2}}, []model.RelayListener{testListener(1)}, "")
 	if err == nil || !strings.Contains(err.Error(), "l4 rule 127.0.0.1:8443: relay listener 2 not found") {
