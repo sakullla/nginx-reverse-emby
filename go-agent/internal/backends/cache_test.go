@@ -1196,8 +1196,21 @@ func TestRelayBackoffKeyForLayersIncludesFullLayerShape(t *testing.T) {
 	if layered == layeredAlternate {
 		t.Fatalf("different relay layers produced same key %q", layered)
 	}
+	if got, want := RelayBackoffKeyForLayers(nil, [][]int{{}, {3}}, addr), "relay_layers|/3|relay-target.example:9443"; got != want {
+		t.Fatalf("empty relay layer key = %q, want %q", got, want)
+	}
 	if got := RelayBackoffKeyForLayers([]int{1}, nil, addr); got != legacy {
 		t.Fatalf("chain-only key = %q, want %q", got, legacy)
+	}
+}
+
+func TestRelayBackoffKeyForLayersAllocations(t *testing.T) {
+	layers := [][]int{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = RelayBackoffKeyForLayers(nil, layers, "backend.example:443")
+	})
+	if allocs > 2 {
+		t.Fatalf("RelayBackoffKeyForLayers() allocations = %.2f, want <= 2", allocs)
 	}
 }
 
