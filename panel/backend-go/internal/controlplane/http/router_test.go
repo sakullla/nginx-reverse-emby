@@ -278,6 +278,14 @@ type fakeTaskServiceState struct {
 	updates              []service.TaskUpdateInput
 }
 
+type fullDuplexRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func (r *fullDuplexRecorder) EnableFullDuplex() error {
+	return nil
+}
+
 func (f fakeTaskService) CreateAndDispatch(req service.TaskCreateRequest) (service.TaskRecord, error) {
 	if f.state != nil {
 		f.state.createRequests = append(f.state.createRequests, req)
@@ -1057,6 +1065,98 @@ func TestHandleAgentTaskSessionResolvesAgentFromToken(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+func TestHandleAgentTaskStreamDispatchesNDJSONTask(t *testing.T) {
+	taskState := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agentsByToken: map[string]service.AgentSummary{
+				"agent-token": {ID: "edge-a", Name: "Edge A"},
+			},
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			registerDispatch: &service.TaskEnvelope{
+				ID:       "task-1",
+				Type:     service.TaskTypeDiagnoseHTTPRule,
+				Payload:  map[string]any{"rule_id": 7},
+				Deadline: time.Date(2026, 5, 11, 10, 0, 0, 0, time.UTC),
+			},
+			state: taskState,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/task-stream?agent_id=spoofed&session_id=session-1", nil)
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := &fullDuplexRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if got := resp.Header().Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q, want application/x-ndjson", got)
+	}
+	if len(taskState.sessionRegistrations) != 1 {
+		t.Fatalf("sessionRegistrations = %+v", taskState.sessionRegistrations)
+	}
+	registration := taskState.sessionRegistrations[0]
+	if registration.AgentID != "edge-a" {
+		t.Fatalf("registered AgentID = %q, want edge-a", registration.AgentID)
+	}
+	if registration.SessionID != "session-1" {
+		t.Fatalf("registered SessionID = %q, want session-1", registration.SessionID)
+	}
+
+	lines := strings.Split(strings.TrimSuffix(resp.Body.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("NDJSON lines = %d, body = %q", len(lines), resp.Body.String())
+	}
+	var message struct {
+		Type string `json:"type"`
+		Task struct {
+			TaskID   string          `json:"task_id"`
+			TaskType string          `json:"task_type"`
+			Deadline string          `json:"deadline"`
+			Payload  json.RawMessage `json:"payload"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &message); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v, line = %q", err, lines[0])
+	}
+	if message.Type != "task" {
+		t.Fatalf("message type = %q, want task", message.Type)
+	}
+	if message.Task.TaskID != "task-1" {
+		t.Fatalf("task_id = %q, want task-1", message.Task.TaskID)
+	}
+	if message.Task.TaskType != "diagnose_http_rule" {
+		t.Fatalf("task_type = %q, want diagnose_http_rule", message.Task.TaskType)
+	}
+	if message.Task.Deadline != "2026-05-11T10:00:00Z" {
+		t.Fatalf("deadline = %q, want 2026-05-11T10:00:00Z", message.Task.Deadline)
+	}
+	if string(message.Task.Payload) != `{"rule_id":7}` {
+		t.Fatalf("payload = %s, want {\"rule_id\":7}", message.Task.Payload)
+	}
 }
 
 func TestHandleAgentTaskUpdateAcceptsAgentResult(t *testing.T) {

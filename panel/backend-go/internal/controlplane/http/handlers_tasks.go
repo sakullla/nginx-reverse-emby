@@ -3,9 +3,11 @@ package http
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
@@ -254,6 +256,46 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 	<-r.Context().Done()
 }
 
+func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	agent, ok := d.authenticateAgentRequest(w, r)
+	if !ok {
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, errorPayload("streaming unsupported"))
+		return
+	}
+	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorPayload("streaming unsupported"))
+		return
+	}
+
+	session := newNDJSONTaskSession(w, flusher)
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	if err := d.TaskService.RegisterSession(service.TaskSessionRegistration{
+		AgentID:    agent.ID,
+		SessionID:  strings.TrimSpace(r.URL.Query().Get("session_id")),
+		Session:    session,
+		RemoteAddr: remoteIPFromRequest(r),
+	}); err != nil {
+		_ = session.Close()
+		return
+	}
+	defer session.Close()
+
+	_, _ = io.Copy(io.Discard, r.Body)
+}
+
 func (d Dependencies) authenticateAgentRequest(w http.ResponseWriter, r *http.Request) (service.AgentSummary, bool) {
 	agentToken := strings.TrimSpace(r.Header.Get("X-Agent-Token"))
 	if agentToken == "" {
@@ -306,6 +348,54 @@ func (s *sseTaskSession) SendTask(task service.TaskEnvelope) error {
 }
 
 func (s *sseTaskSession) Close() error {
+	s.closed = true
+	return nil
+}
+
+type ndjsonTaskSession struct {
+	writer  http.ResponseWriter
+	flusher http.Flusher
+	mu      sync.Mutex
+	closed  bool
+}
+
+func newNDJSONTaskSession(writer http.ResponseWriter, flusher http.Flusher) *ndjsonTaskSession {
+	return &ndjsonTaskSession{
+		writer:  writer,
+		flusher: flusher,
+	}
+}
+
+func (s *ndjsonTaskSession) SendTask(task service.TaskEnvelope) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"type": "task",
+		"task": map[string]any{
+			"task_id":   task.ID,
+			"task_type": task.Type,
+			"deadline":  task.Deadline.UTC().Format(time.RFC3339),
+			"payload":   task.Payload,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := s.writer.Write(append(payload, '\n')); err != nil {
+		return err
+	}
+	s.flusher.Flush()
+	return nil
+}
+
+func (s *ndjsonTaskSession) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.closed = true
 	return nil
 }
