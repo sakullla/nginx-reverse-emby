@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -246,6 +247,42 @@ func TestL4RuleFromRowDoesNotSynthesizeLegacyBackendFields(t *testing.T) {
 	}
 	if len(rule.RelayChain) != 0 {
 		t.Fatalf("legacy relay_chain was synthesized: %+v", rule.RelayChain)
+	}
+}
+
+func TestL4RuleJSONOmitsLegacyFields(t *testing.T) {
+	raw, err := json.Marshal(L4Rule{
+		ID:           1,
+		AgentID:      "local",
+		Name:         "tcp",
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   25565,
+		UpstreamHost: "legacy",
+		UpstreamPort: 25566,
+		Backends:     []L4Backend{{Host: "upstream", Port: 25567}},
+		RelayChain:   []int{7},
+		RelayLayers:  [][]int{{7}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(L4Rule) error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(L4Rule) error = %v", err)
+	}
+	for _, key := range []string{"upstream_host", "upstream_port", "relay_chain"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("L4Rule JSON exposed legacy field %q: %s", key, raw)
+		}
+	}
+	if _, ok := payload["backends"]; !ok {
+		t.Fatalf("L4Rule JSON missing canonical backends: %s", raw)
+	}
+	if _, ok := payload["relay_layers"]; !ok {
+		t.Fatalf("L4Rule JSON missing canonical relay_layers: %s", raw)
 	}
 }
 

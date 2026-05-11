@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -920,6 +921,38 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	}
 	if len(rule.CustomHeaders) != 1 || rule.CustomHeaders[0].Name != "X-Test" {
 		t.Fatalf("CustomHeaders = %+v", rule.CustomHeaders)
+	}
+}
+
+func TestHTTPRuleJSONOmitsLegacyFields(t *testing.T) {
+	raw, err := json.Marshal(HTTPRule{
+		ID:          1,
+		AgentID:     "local",
+		FrontendURL: "https://emby.example.com",
+		BackendURL:  "http://legacy:8096",
+		Backends:    []HTTPRuleBackend{{URL: "http://emby:8096"}},
+		RelayChain:  []int{7},
+		RelayLayers: [][]int{{7}},
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(HTTPRule) error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(HTTPRule) error = %v", err)
+	}
+	for _, key := range []string{"backend_url", "relay_chain"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("HTTPRule JSON exposed legacy field %q: %s", key, raw)
+		}
+	}
+	if _, ok := payload["backends"]; !ok {
+		t.Fatalf("HTTPRule JSON missing canonical backends: %s", raw)
+	}
+	if _, ok := payload["relay_layers"]; !ok {
+		t.Fatalf("HTTPRule JSON missing canonical relay_layers: %s", raw)
 	}
 }
 

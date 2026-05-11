@@ -96,13 +96,13 @@ type HTTPRule struct {
 	ID               int                `json:"id"`
 	AgentID          string             `json:"agent_id"`
 	FrontendURL      string             `json:"frontend_url"`
-	BackendURL       string             `json:"backend_url"`
+	BackendURL       string             `json:"-"`
 	Backends         []HTTPRuleBackend  `json:"backends"`
 	LoadBalancing    HTTPLoadBalancing  `json:"load_balancing"`
 	Enabled          bool               `json:"enabled"`
 	Tags             []string           `json:"tags"`
 	ProxyRedirect    bool               `json:"proxy_redirect"`
-	RelayChain       []int              `json:"relay_chain"`
+	RelayChain       []int              `json:"-"`
 	RelayLayers      [][]int            `json:"relay_layers"`
 	RelayObfs        bool               `json:"relay_obfs"`
 	PassProxyHeaders bool               `json:"pass_proxy_headers"`

@@ -539,7 +539,7 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 			return BackupBundle{}, err
 		}
 		for _, row := range ruleRows {
-			bundle.HTTPRules = append(bundle.HTTPRules, httpRuleFromRow(row))
+			bundle.HTTPRules = append(bundle.HTTPRules, backupHTTPRuleFromRule(httpRuleFromRow(row)))
 		}
 
 		l4Rows, err := s.store.ListL4Rules(ctx, agentID)
@@ -547,7 +547,7 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 			return BackupBundle{}, err
 		}
 		for _, row := range l4Rows {
-			bundle.L4Rules = append(bundle.L4Rules, l4RuleFromRow(row))
+			bundle.L4Rules = append(bundle.L4Rules, backupL4RuleFromRule(l4RuleFromRow(row)))
 		}
 	}
 
@@ -1585,6 +1585,53 @@ func certificateRequiresMaterial(cert ManagedCertificate) bool {
 		return true
 	}
 	return cert.Status == "active"
+}
+
+func backupHTTPRuleFromRule(rule HTTPRule) BackupHTTPRule {
+	return BackupHTTPRule{
+		ID:               rule.ID,
+		AgentID:          rule.AgentID,
+		FrontendURL:      rule.FrontendURL,
+		BackendURL:       rule.BackendURL,
+		Backends:         append([]HTTPRuleBackend(nil), rule.Backends...),
+		LoadBalancing:    rule.LoadBalancing,
+		Enabled:          rule.Enabled,
+		Tags:             append([]string(nil), rule.Tags...),
+		ProxyRedirect:    rule.ProxyRedirect,
+		RelayChain:       append([]int(nil), rule.RelayChain...),
+		RelayLayers:      cloneIntLayers(rule.RelayLayers),
+		RelayObfs:        rule.RelayObfs,
+		PassProxyHeaders: rule.PassProxyHeaders,
+		UserAgent:        rule.UserAgent,
+		CustomHeaders:    append([]HTTPCustomHeader(nil), rule.CustomHeaders...),
+		Revision:         rule.Revision,
+	}
+}
+
+func backupL4RuleFromRule(rule L4Rule) BackupL4Rule {
+	return BackupL4Rule{
+		ID:              rule.ID,
+		AgentID:         rule.AgentID,
+		Name:            rule.Name,
+		Protocol:        rule.Protocol,
+		ListenHost:      rule.ListenHost,
+		ListenPort:      rule.ListenPort,
+		UpstreamHost:    rule.UpstreamHost,
+		UpstreamPort:    rule.UpstreamPort,
+		Backends:        append([]L4Backend(nil), rule.Backends...),
+		LoadBalancing:   rule.LoadBalancing,
+		Tuning:          rule.Tuning,
+		RelayChain:      append([]int(nil), rule.RelayChain...),
+		RelayLayers:     cloneIntLayers(rule.RelayLayers),
+		RelayObfs:       rule.RelayObfs,
+		ListenMode:      rule.ListenMode,
+		ProxyEntryAuth:  rule.ProxyEntryAuth,
+		ProxyEgressMode: rule.ProxyEgressMode,
+		ProxyEgressURL:  rule.ProxyEgressURL,
+		Enabled:         rule.Enabled,
+		Tags:            append([]string(nil), rule.Tags...),
+		Revision:        rule.Revision,
+	}
 }
 
 func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int) HTTPRuleInput {

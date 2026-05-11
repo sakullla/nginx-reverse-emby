@@ -51,12 +51,12 @@ type L4Rule struct {
 	Protocol        string           `json:"protocol"`
 	ListenHost      string           `json:"listen_host"`
 	ListenPort      int              `json:"listen_port"`
-	UpstreamHost    string           `json:"upstream_host"`
-	UpstreamPort    int              `json:"upstream_port"`
+	UpstreamHost    string           `json:"-"`
+	UpstreamPort    int              `json:"-"`
 	Backends        []L4Backend      `json:"backends"`
 	LoadBalancing   L4LoadBalancing  `json:"load_balancing"`
 	Tuning          L4Tuning         `json:"tuning"`
-	RelayChain      []int            `json:"relay_chain"`
+	RelayChain      []int            `json:"-"`
 	RelayLayers     [][]int          `json:"relay_layers"`
 	RelayObfs       bool             `json:"relay_obfs"`
 	ListenMode      string           `json:"listen_mode"`
