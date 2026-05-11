@@ -19,6 +19,11 @@ import (
 
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
 var errTLSTCPInteractiveAdmissionRejected = errors.New("tls_tcp relay interactive admission rejected: all tunnels are congested")
+var tlsTCPWriteRequestPool = sync.Pool{
+	New: func() any {
+		return &tlsTCPWriteRequest{done: make(chan error, 1)}
+	},
+}
 
 const tlsTCPBulkFrameSize = 64 * 1024
 const tlsTCPMuxSessionsPerKey = 4
@@ -95,6 +100,25 @@ type tlsTCPReadChunk struct {
 type tlsTCPWriteRequest struct {
 	frame muxFrame
 	done  chan error
+}
+
+func newTLSTCPWriteRequest(frame muxFrame) *tlsTCPWriteRequest {
+	req := tlsTCPWriteRequestPool.Get().(*tlsTCPWriteRequest)
+	select {
+	case <-req.done:
+	default:
+	}
+	req.frame = frame
+	return req
+}
+
+func releaseTLSTCPWriteRequest(req *tlsTCPWriteRequest) {
+	req.frame = muxFrame{}
+	select {
+	case <-req.done:
+	default:
+	}
+	tlsTCPWriteRequestPool.Put(req)
 }
 
 func (c *tlsTCPReadChunk) consume(n int) {
@@ -611,22 +635,21 @@ func (t *tlsTCPTunnel) enqueueWriteFrame(ctx context.Context, frame muxFrame) (*
 	t.startWritePump()
 
 	payloadSize := int64(len(frame.Payload))
-	req := &tlsTCPWriteRequest{
-		frame: frame,
-		done:  make(chan error, 1),
-	}
+	req := newTLSTCPWriteRequest(frame)
 	t.queuedWrites.Add(1)
 	t.bufferedBytes.Add(payloadSize)
 	select {
 	case <-t.closed:
 		t.queuedWrites.Add(-1)
 		t.bufferedBytes.Add(-payloadSize)
-		frame.releasePayload()
+		req.frame.releasePayload()
+		releaseTLSTCPWriteRequest(req)
 		return nil, io.EOF
 	case <-ctx.Done():
 		t.queuedWrites.Add(-1)
 		t.bufferedBytes.Add(-payloadSize)
-		frame.releasePayload()
+		req.frame.releasePayload()
+		releaseTLSTCPWriteRequest(req)
 		return nil, ctx.Err()
 	case t.writeReqCh <- req:
 		return req, nil
@@ -636,10 +659,23 @@ func (t *tlsTCPTunnel) enqueueWriteFrame(ctx context.Context, frame muxFrame) (*
 func waitTLSTCPWriteRequest(ctx context.Context, req *tlsTCPWriteRequest, tunnel *tlsTCPTunnel) error {
 	select {
 	case err := <-req.done:
+		releaseTLSTCPWriteRequest(req)
 		return err
 	case <-tunnel.closed:
+		select {
+		case err := <-req.done:
+			releaseTLSTCPWriteRequest(req)
+			return err
+		default:
+		}
 		return io.EOF
 	case <-ctx.Done():
+		select {
+		case err := <-req.done:
+			releaseTLSTCPWriteRequest(req)
+			return err
+		default:
+		}
 		return ctx.Err()
 	}
 }
