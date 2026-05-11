@@ -2,6 +2,7 @@ package relayplan
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +51,33 @@ func TestExpandPathsHonorsMaximum(t *testing.T) {
 	_, err := ExpandPaths([][]int{{1, 2, 3}, {4, 5, 6}}, 8)
 	if err == nil {
 		t.Fatal("ExpandPaths() error = nil, want maximum path error")
+	}
+}
+
+func TestExpandPathsReportsDuplicateBeforeMaximum(t *testing.T) {
+	_, err := ExpandPaths([][]int{{1, 2, 3}, {1, 2, 3}}, 8)
+	if err == nil || !strings.Contains(err.Error(), "duplicate listener") {
+		t.Fatalf("ExpandPaths() error = %v, want duplicate listener error", err)
+	}
+}
+
+func TestExpandPathsAllocations(t *testing.T) {
+	layers := [][]int{
+		{1, 2, 3},
+		{4, 5, 6},
+		{7, 8, 9},
+	}
+	allocs := testing.AllocsPerRun(1000, func() {
+		paths, err := ExpandPaths(layers, 32)
+		if err != nil {
+			t.Fatalf("ExpandPaths() error = %v", err)
+		}
+		if len(paths) != 27 {
+			t.Fatalf("ExpandPaths() paths = %d, want 27", len(paths))
+		}
+	})
+	if allocs > 35 {
+		t.Fatalf("ExpandPaths() allocations = %.2f, want <= 35", allocs)
 	}
 }
 

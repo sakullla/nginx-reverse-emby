@@ -17,25 +17,51 @@ func ExpandPaths(layers [][]int, maxPaths int) ([][]int, error) {
 	if maxPaths <= 0 {
 		return nil, fmt.Errorf("max relay paths must be positive")
 	}
-	paths := [][]int{{}}
 	for layerIndex, layer := range layers {
 		if len(layer) == 0 {
 			return nil, fmt.Errorf("relay layer %d is empty", layerIndex)
 		}
-		next := make([][]int, 0, len(paths)*len(layer))
-		for _, path := range paths {
-			for _, id := range layer {
-				candidate := append(append([]int(nil), path...), id)
-				if hasDuplicate(candidate) {
-					return nil, fmt.Errorf("relay path contains duplicate listener id %d", id)
-				}
-				next = append(next, candidate)
-				if len(next) > maxPaths {
-					return nil, fmt.Errorf("relay paths exceed maximum %d", maxPaths)
-				}
-			}
+	}
+	total := 1
+	for _, layer := range layers {
+		if total <= maxPaths && total > maxPaths/len(layer) {
+			total = maxPaths + 1
+			break
 		}
-		paths = next
+		total *= len(layer)
+	}
+	capacity := total
+	if capacity > maxPaths {
+		capacity = maxPaths + 1
+	}
+	paths := make([][]int, 0, capacity)
+	current := make([]int, len(layers))
+	seen := make(map[int]struct{}, len(layers))
+	var walk func(int) error
+	walk = func(layerIndex int) error {
+		if layerIndex == len(layers) {
+			path := append([]int(nil), current...)
+			paths = append(paths, path)
+			if len(paths) > maxPaths {
+				return fmt.Errorf("relay paths exceed maximum %d", maxPaths)
+			}
+			return nil
+		}
+		for _, id := range layers[layerIndex] {
+			if _, ok := seen[id]; ok {
+				return fmt.Errorf("relay path contains duplicate listener id %d", id)
+			}
+			seen[id] = struct{}{}
+			current[layerIndex] = id
+			if err := walk(layerIndex + 1); err != nil {
+				return err
+			}
+			delete(seen, id)
+		}
+		return nil
+	}
+	if err := walk(0); err != nil {
+		return nil, err
 	}
 	return paths, nil
 }
@@ -90,15 +116,4 @@ func cloneLayers(layers [][]int) [][]int {
 		return nil
 	}
 	return out
-}
-
-func hasDuplicate(path []int) bool {
-	seen := make(map[int]struct{}, len(path))
-	for _, id := range path {
-		if _, ok := seen[id]; ok {
-			return true
-		}
-		seen[id] = struct{}{}
-	}
-	return false
 }
