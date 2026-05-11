@@ -30,15 +30,17 @@ func (w *benchmarkResponseWriter) Flush() {}
 
 func BenchmarkCopyResponse1MiBWithTrafficAccounting(b *testing.B) {
 	payload := bytes.Repeat([]byte("r"), 1<<20)
+	previous := traffic.Enabled()
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	b.Cleanup(func() {
-		traffic.SetEnabled(true)
+		traffic.SetEnabled(previous)
 		traffic.Reset()
 	})
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		resp := &http.Response{
 			StatusCode: http.StatusOK,
@@ -54,15 +56,17 @@ func BenchmarkCopyResponse1MiBWithTrafficAccounting(b *testing.B) {
 
 func BenchmarkCopySwitchProtocolTraffic1MiB(b *testing.B) {
 	payload := bytes.Repeat([]byte("u"), 1<<20)
+	previous := traffic.Enabled()
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	b.Cleanup(func() {
-		traffic.SetEnabled(true)
+		traffic.SetEnabled(previous)
 		traffic.Reset()
 	})
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := copySwitchProtocolTraffic(io.Discard, bytes.NewReader(payload), false, traffic.NewHTTPRecorder()); err != nil {
 			b.Fatalf("copySwitchProtocolTraffic() error = %v", err)
@@ -72,15 +76,17 @@ func BenchmarkCopySwitchProtocolTraffic1MiB(b *testing.B) {
 
 func BenchmarkPrepareReusableBody1MiB(b *testing.B) {
 	payload := bytes.Repeat([]byte("b"), 1<<20)
+	previous := traffic.Enabled()
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	b.Cleanup(func() {
-		traffic.SetEnabled(true)
+		traffic.SetEnabled(previous)
 		traffic.Reset()
 	})
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req := &http.Request{
 			Body:          io.NopCloser(bytes.NewReader(payload)),

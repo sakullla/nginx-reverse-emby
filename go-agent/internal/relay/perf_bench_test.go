@@ -13,6 +13,7 @@ func BenchmarkTLSTCPLogicalStreamReadFrom1MiB(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var wire bytes.Buffer
 		tunnel := &tlsTCPTunnel{
@@ -40,6 +41,7 @@ func BenchmarkUOTPacketRoundTrip1400B(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var buf bytes.Buffer
 		if err := writeUOTPacket(&buf, payload); err != nil {
@@ -65,6 +67,7 @@ func BenchmarkReadMuxFrame64KiB(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		frame, err := readMuxFrame(bytes.NewReader(frameBytes))
 		if err != nil {
@@ -82,6 +85,7 @@ func BenchmarkWriteMuxFrame64KiB(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var wire bytes.Buffer
 		if err := writeMuxFrame(&wire, muxFrame{
