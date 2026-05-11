@@ -6,24 +6,35 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 func BenchmarkCopyBidirectionalTCP1MiBWithTrafficAccounting(b *testing.B) {
 	payload := bytes.Repeat([]byte("t"), 1<<20)
+	previousTrafficEnabled := traffic.Enabled()
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	b.Cleanup(func() {
-		traffic.SetEnabled(true)
+		traffic.SetEnabled(previousTrafficEnabled)
 		traffic.Reset()
 	})
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload) * 2))
+	b.ResetTimer()
+
+	const transferTimeout = 5 * time.Second
 	for i := 0; i < b.N; i++ {
 		downstreamClient, downstreamServer := net.Pipe()
 		upstreamServer, upstreamBackend := net.Pipe()
+		deadline := time.Now().Add(transferTimeout)
+		_ = downstreamClient.SetDeadline(deadline)
+		_ = downstreamServer.SetDeadline(deadline)
+		_ = upstreamServer.SetDeadline(deadline)
+		_ = upstreamBackend.SetDeadline(deadline)
+
 		done := make(chan struct{})
 		go func() {
 			copyBidirectionalTCP(downstreamServer, upstreamServer, traffic.NewL4Recorder())
@@ -36,13 +47,36 @@ func BenchmarkCopyBidirectionalTCP1MiBWithTrafficAccounting(b *testing.B) {
 		go benchmarkDiscardN(b, &wg, upstreamBackend, len(payload))
 		go benchmarkWriteAll(b, &wg, upstreamBackend, payload)
 		go benchmarkDiscardN(b, &wg, downstreamClient, len(payload))
-		wg.Wait()
+		wgDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(wgDone)
+		}()
+
+		select {
+		case <-wgDone:
+		case <-time.After(transferTimeout):
+			_ = downstreamClient.Close()
+			_ = downstreamServer.Close()
+			_ = upstreamServer.Close()
+			_ = upstreamBackend.Close()
+			<-wgDone
+			b.Fatalf("timed out waiting for benchmark traffic after %s", transferTimeout)
+		}
 
 		_ = downstreamClient.Close()
 		_ = downstreamServer.Close()
 		_ = upstreamServer.Close()
 		_ = upstreamBackend.Close()
-		<-done
+		select {
+		case <-done:
+		case <-time.After(transferTimeout):
+			_ = downstreamClient.Close()
+			_ = downstreamServer.Close()
+			_ = upstreamServer.Close()
+			_ = upstreamBackend.Close()
+			b.Fatalf("timed out waiting for copyBidirectionalTCP after %s", transferTimeout)
+		}
 	}
 }
 
