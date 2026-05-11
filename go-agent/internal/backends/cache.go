@@ -144,6 +144,11 @@ type candidateSnapshot struct {
 	outlierThroughput          bool
 }
 
+type candidateOrder struct {
+	candidate  Candidate
+	preference candidatePreference
+}
+
 func NewCache(cfg Config) *Cache {
 	resolver := cfg.Resolver
 	if resolver == nil {
@@ -352,13 +357,11 @@ func (c *Cache) order(scope, strategy string, candidates []Candidate, allowThrou
 	case StrategyAdaptive:
 		now := c.now()
 		snapshots, sharedMix := c.backendSnapshots(scope, ordered, now, allowThroughput)
-		preferenceState, hasCold, hasRecovering := preferencesFromSnapshots(snapshots, now, allowThroughput, sharedMix)
+		orderedState, hasCold, hasRecovering := candidateOrderFromSnapshots(ordered, snapshots, now, allowThroughput, sharedMix)
 
-		sort.SliceStable(ordered, func(i, j int) bool {
-			leftKey := strings.TrimSpace(ordered[i].Address)
-			rightKey := strings.TrimSpace(ordered[j].Address)
-			left := preferenceState[leftKey]
-			right := preferenceState[rightKey]
+		sort.SliceStable(orderedState, func(i, j int) bool {
+			left := orderedState[i].preference
+			right := orderedState[j].preference
 			if left.inBackoff != right.inBackoff {
 				return !left.inBackoff
 			}
@@ -370,7 +373,8 @@ func (c *Cache) order(scope, strategy string, candidates []Candidate, allowThrou
 			}
 			return false
 		})
-		ordered = c.maybePromoteExplorationCandidate(ordered, preferenceState, hasCold, hasRecovering)
+		writeCandidatesFromOrder(ordered, orderedState)
+		ordered = c.maybePromoteExplorationCandidateFromOrder(ordered, orderedState, hasCold, hasRecovering)
 		return ordered
 	default:
 		offset := c.roundRobinOffset(scope, len(ordered))
@@ -731,6 +735,32 @@ func preferencesFromSnapshots(snapshots []candidateSnapshot, now time.Time, allo
 		}
 	}
 	return preferenceState, hasCold, hasRecovering
+}
+
+func candidateOrderFromSnapshots(candidates []Candidate, snapshots []candidateSnapshot, now time.Time, allowThroughput bool, sharedMix trafficMix) ([]candidateOrder, bool, bool) {
+	ordered := make([]candidateOrder, 0, len(candidates))
+	hasCold := false
+	hasRecovering := false
+	for i, candidate := range candidates {
+		preference := snapshots[i].preference(now, allowThroughput, sharedMix)
+		ordered = append(ordered, candidateOrder{
+			candidate:  candidate,
+			preference: preference,
+		})
+		switch preference.state {
+		case ObservationStateCold:
+			hasCold = true
+		case ObservationStateRecovering:
+			hasRecovering = true
+		}
+	}
+	return ordered, hasCold, hasRecovering
+}
+
+func writeCandidatesFromOrder(candidates []Candidate, ordered []candidateOrder) {
+	for i, entry := range ordered {
+		candidates[i] = entry.candidate
+	}
 }
 
 func snapshotFromObservation(key string, observation candidateObservation, now time.Time) (candidateSnapshot, trafficMix) {
@@ -1255,18 +1285,45 @@ func (c *Cache) maybePromoteExplorationCandidate(ordered []Candidate, preference
 	}
 	for i, candidate := range ordered {
 		pref := preferences[strings.TrimSpace(candidate.Address)]
-		if pref.inBackoff || pref.state != target {
-			continue
+		if rotated, ok := rotateExplorationCandidate(ordered, i, pref, target); ok {
+			return rotated
 		}
-		if i == 0 {
-			return ordered
-		}
-		rotated := make([]Candidate, 0, len(ordered))
-		rotated = append(rotated, ordered[i:]...)
-		rotated = append(rotated, ordered[:i]...)
-		return rotated
 	}
 	return ordered
+}
+
+func (c *Cache) maybePromoteExplorationCandidateFromOrder(ordered []Candidate, orderedState []candidateOrder, hasCold bool, hasRecovering bool) []Candidate {
+	budget := c.chooseExplorationBudget(hasRecovering, hasCold)
+	if budget == 0 {
+		return ordered
+	}
+	if c.randomIntn(100) >= budget {
+		return ordered
+	}
+
+	target := ObservationStateRecovering
+	if !hasRecovering {
+		target = ObservationStateCold
+	}
+	for i, entry := range orderedState {
+		if rotated, ok := rotateExplorationCandidate(ordered, i, entry.preference, target); ok {
+			return rotated
+		}
+	}
+	return ordered
+}
+
+func rotateExplorationCandidate(ordered []Candidate, index int, preference candidatePreference, target string) ([]Candidate, bool) {
+	if preference.inBackoff || preference.state != target {
+		return nil, false
+	}
+	if index == 0 {
+		return ordered, true
+	}
+	rotated := make([]Candidate, 0, len(ordered))
+	rotated = append(rotated, ordered[index:]...)
+	rotated = append(rotated, ordered[:index]...)
+	return rotated, true
 }
 
 func (c *Cache) hasState(preferences map[string]candidatePreference, state string) bool {

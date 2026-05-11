@@ -322,6 +322,30 @@ func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 	}
 }
 
+func TestCacheOrderAdaptiveAllocations(t *testing.T) {
+	now := time.Date(2026, time.May, 11, 0, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now:        func() time.Time { return now },
+		RandomIntn: func(n int) int { return 0 },
+	})
+	candidates := benchmarkCandidates(64)
+	for i, candidate := range candidates {
+		key := BackendObservationKey("http:bench", candidate.Address)
+		latency := time.Duration(10+i%20) * time.Millisecond
+		cache.ObserveBackendSuccess(key, latency, 120*time.Millisecond, int64(256*1024+i*1024))
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		ordered := cache.Order("http:bench", StrategyAdaptive, candidates)
+		if len(ordered) != len(candidates) {
+			t.Fatalf("Order() candidates = %d, want %d", len(ordered), len(candidates))
+		}
+	})
+	if allocs > 70 {
+		t.Fatalf("Order() allocations = %.2f, want <= 70", allocs)
+	}
+}
+
 func TestCacheOrderLatencyOnlyIgnoresBackendThroughput(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := NewCache(Config{
