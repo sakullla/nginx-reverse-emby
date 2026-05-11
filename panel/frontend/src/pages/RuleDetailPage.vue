@@ -73,6 +73,13 @@ function firstBackendUrl(rule) {
   return String(rule.backends[0]?.url || '').trim()
 }
 
+function existingRelayLayers(rule) {
+  if (!Array.isArray(rule?.relay_layers)) return []
+  return rule.relay_layers
+    .filter(layer => Array.isArray(layer))
+    .map(layer => layer.map(id => Number(id)).filter(Number.isFinite))
+}
+
 onMounted(() => {
   if (rule.value) {
     form.value = {
@@ -85,10 +92,11 @@ onMounted(() => {
 })
 
 async function submit() {
+  const relayLayers = isNew.value ? [] : existingRelayLayers(rule.value)
   const payload = {
     frontend_url: form.value.frontend_url,
     backends: form.value.backendUrl.trim() ? [{ url: form.value.backendUrl.trim() }] : [],
-    relay_layers: [],
+    relay_layers: relayLayers,
     tags: form.value.tags.split(',').map(t => t.trim()).filter(Boolean),
     enabled: form.value.enabled
   }
