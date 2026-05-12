@@ -224,6 +224,11 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	}
 	l4Rows = filterSyncL4RuleRows(l4Rows)
 
+	wireGuardRows, err := s.ListWireGuardProfiles(ctx, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+
 	relayRows, err := s.loadRelayListenersForSync(ctx, resolvedAgentID, httpRows, l4Rows)
 	if err != nil {
 		return Snapshot{}, err
@@ -263,7 +268,7 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
-		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, relevantCertRows)),
+		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, relevantCertRows)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
 		Rules:               SnapshotHTTPRules(httpRows),
@@ -779,6 +784,7 @@ func computeDesiredRevision(
 	httpRows []HTTPRuleRow,
 	l4Rows []L4RuleRow,
 	relayRows []RelayListenerRow,
+	wireGuardRows []WireGuardProfileRow,
 	certRows []ManagedCertificateRow,
 ) int {
 	desiredRevision := normalizeRevision(localState.DesiredRevision)
@@ -787,6 +793,7 @@ func computeDesiredRevision(
 		highestHTTPRuleRevision(httpRows),
 		highestL4RuleRevision(l4Rows),
 		highestRelayListenerRevision(relayRows),
+		highestWireGuardProfileRevision(wireGuardRows),
 		highestManagedCertificateRevision(certRows),
 	)
 
@@ -831,6 +838,14 @@ func highestRelayListenerRevision(rows []RelayListenerRow) int {
 }
 
 func highestManagedCertificateRevision(rows []ManagedCertificateRow) int {
+	maxRevision := 0
+	for _, row := range rows {
+		maxRevision = maxInt(maxRevision, normalizeRevision(row.Revision))
+	}
+	return maxRevision
+}
+
+func highestWireGuardProfileRevision(rows []WireGuardProfileRow) int {
 	maxRevision := 0
 	for _, row := range rows {
 		maxRevision = maxInt(maxRevision, normalizeRevision(row.Revision))

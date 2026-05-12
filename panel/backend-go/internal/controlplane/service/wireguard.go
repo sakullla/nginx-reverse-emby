@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -160,6 +161,7 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 		return WireGuardProfile{}, err
 	}
 	maxRevision := maxWireGuardProfileRevision(rows)
+	input.ID = 0
 	profile, err := normalizeWireGuardProfileInput(input, current, id)
 	if err != nil {
 		return WireGuardProfile{}, err
@@ -386,11 +388,51 @@ func validateWireGuardPeerEndpoint(endpoint string) error {
 	if strings.TrimSpace(host) == "" || strings.TrimSpace(portValue) == "" {
 		return fmt.Errorf("%w: endpoint must include host and port", ErrInvalidArgument)
 	}
+	if !isValidWireGuardEndpointHost(host) {
+		return fmt.Errorf("%w: endpoint host must be a valid IP address or DNS name", ErrInvalidArgument)
+	}
 	port, err := strconv.Atoi(portValue)
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("%w: endpoint port must be numeric and between 1 and 65535", ErrInvalidArgument)
 	}
 	return nil
+}
+
+func isValidWireGuardEndpointHost(host string) bool {
+	if host == "" || host != strings.TrimSpace(host) || len(host) > 253 {
+		return false
+	}
+	for _, r := range host {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsValid() {
+		return true
+	}
+	return isValidWireGuardEndpointDNSName(host)
+}
+
+func isValidWireGuardEndpointDNSName(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func validateWireGuardKey(value string, required bool) error {

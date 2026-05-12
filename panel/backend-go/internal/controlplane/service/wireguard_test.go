@@ -227,7 +227,7 @@ func TestWireGuardProfileRejectsUnsupportedMode(t *testing.T) {
 func TestWireGuardProfileRejectsInvalidPeerEndpoints(t *testing.T) {
 	ctx := context.Background()
 
-	for _, endpoint := range []string{"example.com:", "example.com:http", ":51820", "example.com:70000"} {
+	for _, endpoint := range []string{"example.com:", "example.com:http", ":51820", "example.com:70000", "bad host:51820"} {
 		t.Run(endpoint, func(t *testing.T) {
 			_, svc := newTestWireGuardProfileService(t)
 
@@ -239,6 +239,26 @@ func TestWireGuardProfileRejectsInvalidPeerEndpoints(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), "endpoint") {
 				t.Fatalf("Create() error = %v, want endpoint message", err)
+			}
+		})
+	}
+}
+
+func TestWireGuardProfileAcceptsValidPeerEndpoints(t *testing.T) {
+	ctx := context.Background()
+
+	for _, endpoint := range []string{"example.com:51820", "192.0.2.10:51820", "[2001:db8::1]:51820"} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, svc := newTestWireGuardProfileService(t)
+
+			input := testWireGuardProfileInput()
+			input.Peers[0].Endpoint = endpoint
+			created, err := svc.Create(ctx, "local", input)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if got := created.Peers[0].Endpoint; got != endpoint {
+				t.Fatalf("Create() endpoint = %q, want %q", got, endpoint)
 			}
 		})
 	}
@@ -271,6 +291,40 @@ func TestWireGuardProfileRevisionUsesRemoteAgentFloor(t *testing.T) {
 	}
 	if created.Revision != 12 {
 		t.Fatalf("Create() revision = %d, want 12", created.Revision)
+	}
+}
+
+func TestWireGuardProfileUpdateUsesPathIDWhenBodyIDDiffers(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	update := testWireGuardProfileInput()
+	update.ID = created.ID + 1000
+	update.Name = "path id wins"
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	updated, err := svc.Update(ctx, "local", created.ID, update)
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.ID != created.ID {
+		t.Fatalf("Update() id = %d, want path id %d", updated.ID, created.ID)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rawRows) != 1 {
+		t.Fatalf("raw row length = %d, want 1", len(rawRows))
+	}
+	if rawRows[0].ID != created.ID {
+		t.Fatalf("raw row id = %d, want path id %d", rawRows[0].ID, created.ID)
 	}
 }
 

@@ -2628,6 +2628,50 @@ func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testi
 	}
 }
 
+func TestStoreLoadAgentSnapshotUsesWireGuardProfileRevision(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveWireGuardProfiles(t.Context(), "remote-wg", []WireGuardProfileRow{{
+		ID:            7,
+		AgentID:       "remote-wg",
+		Name:          "wg remote",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		ListenPort:    51820,
+		AddressesJSON: `["10.10.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		MTU:           1420,
+		Enabled:       true,
+		TagsJSON:      `[]`,
+		Revision:      9,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-wg", AgentSnapshotInput{
+		DesiredRevision: 1,
+		CurrentRevision: 2,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.Revision != 9 {
+		t.Fatalf("snapshot revision = %d, want WireGuard profile revision 9", snapshot.Revision)
+	}
+}
+
 func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
