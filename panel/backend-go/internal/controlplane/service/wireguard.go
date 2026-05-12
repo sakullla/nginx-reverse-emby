@@ -38,6 +38,20 @@ type WireGuardProfile struct {
 	Revision   int             `json:"revision"`
 }
 
+type WireGuardProfileInput struct {
+	ID         int             `json:"id,omitempty"`
+	Name       string          `json:"name"`
+	Mode       string          `json:"mode"`
+	PrivateKey string          `json:"private_key,omitempty"`
+	ListenPort int             `json:"listen_port"`
+	Addresses  []string        `json:"addresses"`
+	Peers      []WireGuardPeer `json:"peers"`
+	DNS        []string        `json:"dns"`
+	MTU        int             `json:"mtu"`
+	Enabled    *bool           `json:"enabled,omitempty"`
+	Tags       []string        `json:"tags"`
+}
+
 type wireGuardProfileStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
@@ -75,7 +89,7 @@ func (s *wireGuardProfileService) List(ctx context.Context, agentID string) ([]W
 	return profiles, nil
 }
 
-func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, input WireGuardProfile) (WireGuardProfile, error) {
+func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, input WireGuardProfileInput) (WireGuardProfile, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardProfile{}, err
@@ -114,7 +128,7 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	return redactWireGuardProfile(profile), nil
 }
 
-func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id int, input WireGuardProfile) (WireGuardProfile, error) {
+func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id int, input WireGuardProfileInput) (WireGuardProfile, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardProfile{}, err
@@ -205,7 +219,7 @@ func (s *wireGuardProfileService) bumpRemoteDesiredRevision(ctx context.Context,
 	return ErrAgentNotFound
 }
 
-func normalizeWireGuardProfileInput(input WireGuardProfile, fallback WireGuardProfile, suggestedID int) (WireGuardProfile, error) {
+func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGuardProfile, suggestedID int) (WireGuardProfile, error) {
 	id := fallback.ID
 	if input.ID > 0 {
 		id = input.ID
@@ -276,7 +290,13 @@ func normalizeWireGuardProfileInput(input WireGuardProfile, fallback WireGuardPr
 		tags = append([]string(nil), fallback.Tags...)
 	}
 
-	enabled := input.Enabled
+	enabled := true
+	if fallback.ID > 0 {
+		enabled = fallback.Enabled
+	}
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
 
 	return WireGuardProfile{
 		ID:         id,
@@ -300,8 +320,15 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer) ([
 	if len(source) == 0 && len(fallback) > 0 {
 		source = fallback
 	}
+	fallbackByPublicKey := make(map[string]WireGuardPeer, len(fallback))
+	for _, peer := range fallback {
+		publicKey := strings.TrimSpace(peer.PublicKey)
+		if publicKey != "" {
+			fallbackByPublicKey[publicKey] = peer
+		}
+	}
 	peers := make([]WireGuardPeer, 0, len(source))
-	for i, peer := range source {
+	for _, peer := range source {
 		normalized := WireGuardPeer{
 			Name:                       strings.TrimSpace(peer.Name),
 			PublicKey:                  strings.TrimSpace(peer.PublicKey),
@@ -310,8 +337,12 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer) ([
 			AllowedIPs:                 normalizeStringList(peer.AllowedIPs),
 			PersistentKeepaliveSeconds: peer.PersistentKeepaliveSeconds,
 		}
-		if normalized.PresharedKey == redactedProxyPassword && i < len(fallback) {
-			normalized.PresharedKey = fallback[i].PresharedKey
+		if normalized.PresharedKey == redactedProxyPassword {
+			fallbackPeer, ok := fallbackByPublicKey[normalized.PublicKey]
+			if !ok {
+				return nil, fmt.Errorf("%w: peers preshared_key redaction requires matching public_key", ErrInvalidArgument)
+			}
+			normalized.PresharedKey = fallbackPeer.PresharedKey
 		}
 		if err := validateWireGuardKey(normalized.PublicKey, true); err != nil {
 			return nil, fmt.Errorf("%w: peers public_key must be a WireGuard key", ErrInvalidArgument)

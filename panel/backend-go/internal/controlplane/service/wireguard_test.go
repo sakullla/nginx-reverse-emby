@@ -12,9 +12,11 @@ import (
 )
 
 const (
-	testWireGuardPrivateKey   = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-	testWireGuardPublicKey    = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
-	testWireGuardPresharedKey = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC="
+	testWireGuardPrivateKey    = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	testWireGuardPublicKey     = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+	testWireGuardPresharedKey  = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC="
+	testWireGuardPublicKeyB    = "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD="
+	testWireGuardPresharedKeyB = "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE="
 )
 
 func TestWireGuardProfileCreateRedactsSecretsOnRead(t *testing.T) {
@@ -70,6 +72,41 @@ func TestWireGuardProfileRejectsInvalidCIDR(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCreateDefaultsEnabledToTrueWhenOmitted(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	created, err := svc.Create(ctx, "local", testWireGuardProfileInputWithoutEnabled())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !created.Enabled {
+		t.Fatalf("Create() enabled = false, want true")
+	}
+}
+
+func TestWireGuardProfileUpdatePreservesEnabledWhenOmitted(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	update := testWireGuardProfileInputWithoutEnabled()
+	update.Name = "renamed wg"
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	updated, err := svc.Update(ctx, "local", created.ID, update)
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !updated.Enabled {
+		t.Fatalf("Update() enabled = false, want preserved true")
+	}
+}
+
 func TestWireGuardProfileUpdateCanDisableProfile(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
@@ -82,7 +119,7 @@ func TestWireGuardProfileUpdateCanDisableProfile(t *testing.T) {
 	update := testWireGuardProfileInput()
 	update.PrivateKey = redactedProxyPassword
 	update.Peers[0].PresharedKey = redactedProxyPassword
-	update.Enabled = false
+	update.Enabled = boolPtr(false)
 	if _, err := svc.Update(ctx, "local", created.ID, update); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -184,6 +221,88 @@ func TestWireGuardProfileUpdateKeepsRedactedSecrets(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileUpdateKeepsReorderedRedactedPeerSecretsByPublicKey(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.Peers = append(input.Peers, WireGuardPeer{
+		Name:                       "peer-b",
+		PublicKey:                  testWireGuardPublicKeyB,
+		PresharedKey:               testWireGuardPresharedKeyB,
+		Endpoint:                   "example.net:51820",
+		AllowedIPs:                 []string{"10.0.0.3/32"},
+		PersistentKeepaliveSeconds: 30,
+	})
+	created, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	update := testWireGuardProfileInput()
+	update.PrivateKey = redactedProxyPassword
+	update.Peers = []WireGuardPeer{
+		{
+			Name:                       "peer-b renamed",
+			PublicKey:                  testWireGuardPublicKeyB,
+			PresharedKey:               redactedProxyPassword,
+			Endpoint:                   "example.net:51820",
+			AllowedIPs:                 []string{"10.0.0.3/32"},
+			PersistentKeepaliveSeconds: 30,
+		},
+		{
+			Name:                       "peer-a renamed",
+			PublicKey:                  testWireGuardPublicKey,
+			PresharedKey:               redactedProxyPassword,
+			Endpoint:                   "example.com:51820",
+			AllowedIPs:                 []string{"10.0.0.2/32"},
+			PersistentKeepaliveSeconds: 25,
+		},
+	}
+	if _, err := svc.Update(ctx, "local", created.ID, update); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	rawProfile := wireGuardProfileFromRow(rawRows[0])
+	if len(rawProfile.Peers) != 2 {
+		t.Fatalf("raw peer length = %d, want 2", len(rawProfile.Peers))
+	}
+	if rawProfile.Peers[0].PresharedKey != testWireGuardPresharedKeyB {
+		t.Fatalf("peer-b preshared_key = %q, want original peer-b secret", rawProfile.Peers[0].PresharedKey)
+	}
+	if rawProfile.Peers[1].PresharedKey != testWireGuardPresharedKey {
+		t.Fatalf("peer-a preshared_key = %q, want original peer-a secret", rawProfile.Peers[1].PresharedKey)
+	}
+}
+
+func TestWireGuardProfileUpdateRejectsUnknownRedactedPeerSecret(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	update := testWireGuardProfileInput()
+	update.PrivateKey = redactedProxyPassword
+	update.Peers = append(update.Peers, WireGuardPeer{
+		Name:         "unknown-peer",
+		PublicKey:    testWireGuardPublicKeyB,
+		PresharedKey: redactedProxyPassword,
+		Endpoint:     "example.net:51820",
+		AllowedIPs:   []string{"10.0.0.3/32"},
+	})
+	_, err = svc.Update(ctx, "local", created.ID, update)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+}
+
 func newTestWireGuardProfileService(t *testing.T) (*storage.SQLiteStore, *wireGuardProfileService) {
 	t.Helper()
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
@@ -200,8 +319,14 @@ func newTestWireGuardProfileService(t *testing.T) (*storage.SQLiteStore, *wireGu
 	return store, NewWireGuardProfileService(cfg, store)
 }
 
-func testWireGuardProfileInput() WireGuardProfile {
-	return WireGuardProfile{
+func testWireGuardProfileInput() WireGuardProfileInput {
+	input := testWireGuardProfileInputWithoutEnabled()
+	input.Enabled = boolPtr(true)
+	return input
+}
+
+func testWireGuardProfileInputWithoutEnabled() WireGuardProfileInput {
+	return WireGuardProfileInput{
 		Name:       "wg relay",
 		Mode:       "relay",
 		PrivateKey: testWireGuardPrivateKey,
@@ -215,9 +340,8 @@ func testWireGuardProfileInput() WireGuardProfile {
 			AllowedIPs:                 []string{"10.0.0.2/32"},
 			PersistentKeepaliveSeconds: 25,
 		}},
-		DNS:     []string{"1.1.1.1"},
-		MTU:     1420,
-		Enabled: true,
-		Tags:    []string{"relay"},
+		DNS:  []string{"1.1.1.1"},
+		MTU:  1420,
+		Tags: []string{"relay"},
 	}
 }
