@@ -1159,6 +1159,56 @@ func TestHandleAgentTaskStreamDispatchesNDJSONTask(t *testing.T) {
 	}
 }
 
+func TestHandleAgentTaskStreamSupportsHEADProbe(t *testing.T) {
+	taskState := &fakeTaskServiceState{}
+	agentState := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agentsByToken: map[string]service.AgentSummary{
+				"agent-token": {ID: "edge-a", Name: "Edge A"},
+			},
+			state: agentState,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService:          fakeTaskService{state: taskState},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodHead, "/api/agents/task-stream?agent_id=spoofed&session_id=session-1", nil)
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if got := resp.Header().Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q, want application/x-ndjson", got)
+	}
+	if len(agentState.resolveTokens) != 1 || agentState.resolveTokens[0] != "agent-token" {
+		t.Fatalf("resolveTokens = %+v", agentState.resolveTokens)
+	}
+	if len(taskState.sessionRegistrations) != 0 {
+		t.Fatalf("sessionRegistrations = %+v, want none for probe", taskState.sessionRegistrations)
+	}
+}
+
 func TestHandleAgentTaskStreamAppliesUpdateFromAuthenticatedAgent(t *testing.T) {
 	state := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{

@@ -30,6 +30,15 @@ func writeUnavailableTaskStream(t *testing.T, w http.ResponseWriter, r *http.Req
 	http.NotFound(w, r)
 }
 
+func writeTaskStreamProbe(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodHead || r.URL.Path != "/api/agents/task-stream" {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	return true
+}
+
 func TestTaskClientReconnectsAndSendsHello(t *testing.T) {
 	type capturedRequest struct {
 		AgentToken string
@@ -188,10 +197,7 @@ func TestTaskClientFallsBackToSSEOnlyWhenStreamUnavailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests <- requestRecord{Method: r.Method, Path: r.URL.Path}
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
-			if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-				t.Fatalf("EnableFullDuplex() error = %v", err)
-			}
+		case r.Method == http.MethodHead && r.URL.Path == "/api/agents/task-stream":
 			http.Error(w, "not ready", http.StatusNotFound)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -268,6 +274,9 @@ func TestTaskClientFallsBackToSSEOnlyWhenStreamUnavailable(t *testing.T) {
 	if gotRequests[0].Path != "/api/agents/task-stream" {
 		t.Fatalf("first request path = %q, want /api/agents/task-stream", gotRequests[0].Path)
 	}
+	if gotRequests[0].Method != http.MethodHead {
+		t.Fatalf("first request method = %q, want HEAD", gotRequests[0].Method)
+	}
 	if gotRequests[1].Path != "/api/agents/task-session" {
 		t.Fatalf("second request path = %q, want /api/agents/task-session", gotRequests[1].Path)
 	}
@@ -307,22 +316,87 @@ func TestTaskClientFallsBackToSSEOnlyWhenStreamUnavailable(t *testing.T) {
 	}
 }
 
+func TestTaskClientFallsBackToSSEWhenOldPanelDoesNotReadStreamBody(t *testing.T) {
+	type requestRecord struct {
+		Method string
+		Path   string
+	}
+
+	requests := make(chan requestRecord, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- requestRecord{Method: r.Method, Path: r.URL.Path}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
+			http.NotFound(w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(": connected\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	defer server.CloseClientConnections()
+
+	client := NewClient(ClientConfig{
+		MasterURL:     server.URL,
+		AgentToken:    "token",
+		AgentID:       "edge-a",
+		ReconnectWait: 10 * time.Millisecond,
+		HTTPTransport: HTTPTransportConfig{
+			ResponseHeaderTimeout: 25 * time.Millisecond,
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(ctx)
+	}()
+
+	gotRequests := make([]requestRecord, 0, 2)
+	for len(gotRequests) < 2 {
+		select {
+		case req := <-requests:
+			gotRequests = append(gotRequests, req)
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatal("timed out waiting for stream fallback to task session")
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for client shutdown")
+	}
+
+	if gotRequests[0].Path != "/api/agents/task-stream" {
+		t.Fatalf("first request path = %q, want /api/agents/task-stream", gotRequests[0].Path)
+	}
+	if gotRequests[0].Method != http.MethodHead {
+		t.Fatalf("first request method = %q, want HEAD", gotRequests[0].Method)
+	}
+	if gotRequests[1].Path != "/api/agents/task-session" {
+		t.Fatalf("second request path = %q, want /api/agents/task-session", gotRequests[1].Path)
+	}
+}
+
 func TestTaskClientDoesNotFallbackToSSEOnStream500(t *testing.T) {
 	sessionRequested := make(chan struct{}, 1)
 	streamRequests := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
-			if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
-				t.Fatalf("EnableFullDuplex() error = %v", err)
-			}
-			scanner := bufio.NewScanner(r.Body)
-			if !scanner.Scan() {
-				if err := scanner.Err(); err != nil {
-					t.Fatalf("task stream request body scanner error = %v", err)
-				}
-				t.Fatal("expected task stream hello before 500 response")
-			}
+		case r.Method == http.MethodHead && r.URL.Path == "/api/agents/task-stream":
 			select {
 			case streamRequests <- struct{}{}:
 			default:
@@ -528,6 +602,9 @@ func TestTaskClientUsesNDJSONTaskStreamForLifecycleUpdates(t *testing.T) {
 	firstPath := make(chan string, 1)
 	updates := make(chan taskUpdate, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if writeTaskStreamProbe(w, r) {
+			return
+		}
 		select {
 		case firstPath <- r.URL.Path:
 		default:
@@ -677,6 +754,9 @@ func TestTaskClientStreamsHelloAfterServerOKBeforeBodyRead(t *testing.T) {
 	helloSeen := make(chan HelloMessage, 1)
 	updates := make(chan taskUpdate, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if writeTaskStreamProbe(w, r) {
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
 			http.NotFound(w, r)
 			return
@@ -804,6 +884,9 @@ func TestTaskClientHandlesLargeNDJSONTaskStreamMessage(t *testing.T) {
 	updates := make(chan taskUpdate, 2)
 	seenBlob := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if writeTaskStreamProbe(w, r) {
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
 			http.NotFound(w, r)
 			return
@@ -932,6 +1015,9 @@ func TestTaskClientHandlesLargeNDJSONTaskStreamMessage(t *testing.T) {
 func TestTaskClientDoesNotSendExpectHeaderForTaskStream(t *testing.T) {
 	helloSeen := make(chan HelloMessage, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if writeTaskStreamProbe(w, r) {
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
 			http.NotFound(w, r)
 			return

@@ -125,6 +125,10 @@ func (c *Client) Run(ctx context.Context) error {
 
 func (c *Client) runStreamSession(ctx context.Context) error {
 	sessionID := c.nextSessionID()
+	if err := c.probeStreamSession(ctx, sessionID); err != nil {
+		return err
+	}
+
 	pr, pw := io.Pipe()
 	defer pw.Close()
 	var writeMu sync.Mutex
@@ -233,6 +237,37 @@ func (c *Client) runStreamSession(ctx context.Context) error {
 	}
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		return err
+	}
+	return nil
+}
+
+func (c *Client) probeStreamSession(ctx context.Context, sessionID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.streamURL(sessionID), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Agent-Token", c.cfg.AgentToken)
+
+	resp, err := c.cfg.HTTPClient.Do(req)
+	if err != nil {
+		c.discardConnections()
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
+		return streamStatusError{
+			statusCode: resp.StatusCode,
+			status:     resp.Status,
+		}
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.EqualFold(mediaType, "application/x-ndjson") {
+		c.discardConnections()
+		return fmt.Errorf("task stream probe returned content type %q", contentType)
 	}
 	return nil
 }

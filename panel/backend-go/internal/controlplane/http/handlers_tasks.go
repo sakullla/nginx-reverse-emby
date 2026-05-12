@@ -259,6 +259,14 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 }
 
 func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodHead {
+		if _, ok := d.authenticateAgentRequest(w, r); !ok {
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.NotFound(w, r)
 		return
