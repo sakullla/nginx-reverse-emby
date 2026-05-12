@@ -24,9 +24,10 @@ type TaskMessage struct {
 }
 
 type UpdateMessage struct {
-	TaskID string `json:"task_id"`
-	State  string `json:"state"`
-	Error  string `json:"error,omitempty"`
+	TaskID string         `json:"task_id"`
+	State  string         `json:"state"`
+	Result map[string]any `json:"result,omitempty"`
+	Error  string         `json:"error,omitempty"`
 }
 
 type PingMessage struct {
