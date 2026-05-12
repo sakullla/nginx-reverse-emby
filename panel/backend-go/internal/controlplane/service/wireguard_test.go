@@ -209,6 +209,41 @@ func TestWireGuardProfileDefaultsModeToGenericWireGuard(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileRejectsUnsupportedMode(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.Mode = "relay"
+	_, err := svc.Create(ctx, "local", input)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("Create() error = %v, want mode message", err)
+	}
+}
+
+func TestWireGuardProfileRejectsInvalidPeerEndpoints(t *testing.T) {
+	ctx := context.Background()
+
+	for _, endpoint := range []string{"example.com:", "example.com:http", ":51820", "example.com:70000"} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, svc := newTestWireGuardProfileService(t)
+
+			input := testWireGuardProfileInput()
+			input.Peers[0].Endpoint = endpoint
+			_, err := svc.Create(ctx, "local", input)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "endpoint") {
+				t.Fatalf("Create() error = %v, want endpoint message", err)
+			}
+		})
+	}
+}
+
 func TestWireGuardProfileRevisionUsesRemoteAgentFloor(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
@@ -379,7 +414,7 @@ func testWireGuardProfileInput() WireGuardProfileInput {
 func testWireGuardProfileInputWithoutEnabled() WireGuardProfileInput {
 	return WireGuardProfileInput{
 		Name:       "wg relay",
-		Mode:       "relay",
+		Mode:       "generic_wireguard",
 		PrivateKey: testWireGuardPrivateKey,
 		ListenPort: 51820,
 		Addresses:  []string{"10.0.0.1/24"},

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -267,6 +268,9 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 	if mode == "" {
 		mode = "generic_wireguard"
 	}
+	if mode != "generic_wireguard" {
+		return WireGuardProfile{}, fmt.Errorf("%w: mode must be generic_wireguard", ErrInvalidArgument)
+	}
 
 	listenPort := input.ListenPort
 	if listenPort == 0 {
@@ -362,8 +366,8 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer) ([
 			return nil, err
 		}
 		if normalized.Endpoint != "" {
-			if _, _, err := net.SplitHostPort(normalized.Endpoint); err != nil {
-				return nil, fmt.Errorf("%w: endpoint must be host:port", ErrInvalidArgument)
+			if err := validateWireGuardPeerEndpoint(normalized.Endpoint); err != nil {
+				return nil, err
 			}
 		}
 		if normalized.PersistentKeepaliveSeconds < 0 {
@@ -372,6 +376,21 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer) ([
 		peers = append(peers, normalized)
 	}
 	return peers, nil
+}
+
+func validateWireGuardPeerEndpoint(endpoint string) error {
+	host, portValue, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return fmt.Errorf("%w: endpoint must be host:port", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(host) == "" || strings.TrimSpace(portValue) == "" {
+		return fmt.Errorf("%w: endpoint must include host and port", ErrInvalidArgument)
+	}
+	port, err := strconv.Atoi(portValue)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("%w: endpoint port must be numeric and between 1 and 65535", ErrInvalidArgument)
+	}
+	return nil
 }
 
 func validateWireGuardKey(value string, required bool) error {
