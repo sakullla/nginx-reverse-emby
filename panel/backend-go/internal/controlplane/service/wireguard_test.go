@@ -72,6 +72,36 @@ func TestWireGuardProfileRejectsInvalidCIDR(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCreateRequiresAddresses(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = nil
+	_, err := svc.Create(ctx, "local", input)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "addresses is required") {
+		t.Fatalf("Create() error = %v, want addresses required message", err)
+	}
+}
+
+func TestWireGuardProfileCreateRequiresPeers(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.Peers = nil
+	_, err := svc.Create(ctx, "local", input)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "peers is required") {
+		t.Fatalf("Create() error = %v, want peers required message", err)
+	}
+}
+
 func TestWireGuardProfileCreateDefaultsEnabledToTrueWhenOmitted(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)

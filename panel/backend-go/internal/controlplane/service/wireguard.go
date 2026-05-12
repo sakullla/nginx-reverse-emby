@@ -115,6 +115,9 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	if err != nil {
 		return WireGuardProfile{}, err
 	}
+	if err := validateRequiredWireGuardProfileEssentials(profile); err != nil {
+		return WireGuardProfile{}, err
+	}
 	profile.AgentID = resolvedID
 	profile.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 
@@ -377,6 +380,16 @@ func validateWireGuardKey(value string, required bool) error {
 	decoded, err := base64.StdEncoding.DecodeString(value)
 	if err != nil || len(decoded) != 32 {
 		return fmt.Errorf("invalid key")
+	}
+	return nil
+}
+
+func validateRequiredWireGuardProfileEssentials(profile WireGuardProfile) error {
+	if len(profile.Addresses) == 0 {
+		return fmt.Errorf("%w: addresses is required", ErrInvalidArgument)
+	}
+	if len(profile.Peers) == 0 {
+		return fmt.Errorf("%w: peers is required", ErrInvalidArgument)
 	}
 	return nil
 }
