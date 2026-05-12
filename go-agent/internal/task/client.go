@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -328,21 +329,18 @@ func (c *Client) runSSESession(ctx context.Context) error {
 }
 
 func (c *Client) sessionURL(sessionID string) string {
-	return fmt.Sprintf(
-		"%s/api/agents/task-session?agent_id=%s&session_id=%s",
-		c.cfg.MasterURL,
-		c.cfg.AgentID,
-		sessionID,
-	)
+	return c.taskEndpointURL("/api/agents/task-session", sessionID)
 }
 
 func (c *Client) streamURL(sessionID string) string {
-	return fmt.Sprintf(
-		"%s/api/agents/task-stream?agent_id=%s&session_id=%s",
-		c.cfg.MasterURL,
-		c.cfg.AgentID,
-		sessionID,
-	)
+	return c.taskEndpointURL("/api/agents/task-stream", sessionID)
+}
+
+func (c *Client) taskEndpointURL(path string, sessionID string) string {
+	values := url.Values{}
+	values.Set("agent_id", c.cfg.AgentID)
+	values.Set("session_id", sessionID)
+	return c.cfg.MasterURL + path + "?" + values.Encode()
 }
 
 func (c *Client) nextSessionID() string {

@@ -6,14 +6,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func writeUnavailableTaskStream(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	t.Helper()
@@ -523,6 +531,56 @@ func TestTaskClientDoesNotFallbackToSSEOnStream500(t *testing.T) {
 	}
 }
 
+func TestTaskClientStreamPostFailureDoesNotBlockOnHelloWriter(t *testing.T) {
+	client := NewClient(ClientConfig{
+		MasterURL:  "https://panel.example.test",
+		AgentToken: "token",
+		AgentID:    "edge-a",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Method == http.MethodHead && req.URL.Path == "/api/agents/task-stream" {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+					Body:       http.NoBody,
+					Request:    req,
+				}, nil
+			}
+			if req.Method == http.MethodPost && req.URL.Path == "/api/agents/task-stream" {
+				return &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Status:     "500 Internal Server Error",
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader("failed")),
+					Request:    req,
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Header:     http.Header{},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		})},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.runStreamSession(context.Background())
+	}()
+
+	select {
+	case err := <-done:
+		var streamErr streamStatusError
+		if !errors.As(err, &streamErr) || streamErr.statusCode != http.StatusInternalServerError {
+			t.Fatalf("runStreamSession() error = %v, want stream 500", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runStreamSession() blocked after stream POST failure")
+	}
+}
+
 func TestIsStreamUnavailableTreatsOnlyProbe401AsUnavailable(t *testing.T) {
 	if !isStreamUnavailable(streamStatusError{statusCode: http.StatusUnauthorized, status: "401 Unauthorized", probe: true}) {
 		t.Fatal("probe 401 should be treated as stream unavailable")
@@ -554,6 +612,30 @@ func TestClientSendHelloEncodesExpectedMessage(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Fatal("expected non-empty encoded message")
+	}
+}
+
+func TestTaskClientURLsEncodeQueryParameters(t *testing.T) {
+	client := NewClient(ClientConfig{
+		MasterURL: "https://panel.example.test",
+		AgentID:   "edge&a + b",
+	})
+	sessionID := "session&x + y"
+
+	for _, rawURL := range []string{
+		client.sessionURL(sessionID),
+		client.streamURL(sessionID),
+	} {
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatalf("url.Parse(%q) error = %v", rawURL, err)
+		}
+		if got := parsed.Query().Get("agent_id"); got != "edge&a + b" {
+			t.Fatalf("agent_id from %q = %q, want encoded round-trip", rawURL, got)
+		}
+		if got := parsed.Query().Get("session_id"); got != sessionID {
+			t.Fatalf("session_id from %q = %q, want encoded round-trip", rawURL, got)
+		}
 	}
 }
 
