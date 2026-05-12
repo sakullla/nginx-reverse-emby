@@ -331,6 +331,7 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer) ([
 		}
 	}
 	peers := make([]WireGuardPeer, 0, len(source))
+	seenPublicKeys := map[string]struct{}{}
 	for _, peer := range source {
 		normalized := WireGuardPeer{
 			Name:                       strings.TrimSpace(peer.Name),
@@ -350,6 +351,10 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer) ([
 		if err := validateWireGuardKey(normalized.PublicKey, true); err != nil {
 			return nil, fmt.Errorf("%w: peers public_key must be a WireGuard key", ErrInvalidArgument)
 		}
+		if _, exists := seenPublicKeys[normalized.PublicKey]; exists {
+			return nil, fmt.Errorf("%w: duplicate peers public_key %q", ErrInvalidArgument, normalized.PublicKey)
+		}
+		seenPublicKeys[normalized.PublicKey] = struct{}{}
 		if err := validateWireGuardKey(normalized.PresharedKey, false); err != nil {
 			return nil, fmt.Errorf("%w: peers preshared_key must be a WireGuard key", ErrInvalidArgument)
 		}

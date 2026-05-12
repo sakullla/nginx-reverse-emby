@@ -15,6 +15,7 @@ type configIdentityAllocatorState struct {
 	HTTPRules      []storage.HTTPRuleRow
 	L4Rules        []storage.L4RuleRow
 	RelayListeners []storage.RelayListenerRow
+	WireGuard      []storage.WireGuardProfileRow
 	Certificates   []storage.ManagedCertificateRow
 }
 
@@ -33,6 +34,10 @@ type configIdentityAllocatorStore interface {
 	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
+}
+
+type wireGuardProfileLister interface {
+	ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error)
 }
 
 func newConfigIdentityAllocator(state configIdentityAllocatorState) *configIdentityAllocator {
@@ -73,6 +78,10 @@ func newConfigIdentityAllocatorFromStore(ctx context.Context, cfg config.Config,
 	if err != nil {
 		return nil, err
 	}
+	wireGuardRows, err := listAllWireGuardProfileRows(ctx, store, agentIDs)
+	if err != nil {
+		return nil, err
+	}
 	certRows, err := store.ListManagedCertificates(ctx)
 	if err != nil {
 		return nil, err
@@ -85,6 +94,7 @@ func newConfigIdentityAllocatorFromStore(ctx context.Context, cfg config.Config,
 		HTTPRules:      httpRows,
 		L4Rules:        l4Rows,
 		RelayListeners: relayRows,
+		WireGuard:      wireGuardRows,
 		Certificates:   certRows,
 	}), nil
 }
@@ -146,6 +156,11 @@ func (a *configIdentityAllocator) seedIDs(state configIdentityAllocatorState) {
 			a.usedRuleIDs[row.ID] = struct{}{}
 		}
 	}
+	for _, row := range state.WireGuard {
+		if row.ID > 0 {
+			a.usedRuleIDs[row.ID] = struct{}{}
+		}
+	}
 	for _, row := range state.RelayListeners {
 		if row.ID > 0 {
 			a.usedListenerIDs[row.ID] = struct{}{}
@@ -169,6 +184,7 @@ func (a *configIdentityAllocator) seedRevisionFloors(state configIdentityAllocat
 			row.CurrentRevision,
 			highestAgentRuleRevision(agentID, state.HTTPRules, state.L4Rules),
 			highestAgentRelayRevision(agentID, state.RelayListeners),
+			highestAgentWireGuardRevision(agentID, state.WireGuard),
 			highestTargetCertificateRevision(agentID, state.Certificates),
 		)
 		a.nextRevisionByAgent[agentID] = floor + 1
@@ -179,6 +195,7 @@ func (a *configIdentityAllocator) seedRevisionFloors(state configIdentityAllocat
 			state.LocalState.CurrentRevision,
 			highestAgentRuleRevision(a.localAgentID, state.HTTPRules, state.L4Rules),
 			highestAgentRelayRevision(a.localAgentID, state.RelayListeners),
+			highestAgentWireGuardRevision(a.localAgentID, state.WireGuard),
 			highestTargetCertificateRevision(a.localAgentID, state.Certificates),
 		)
 		a.nextRevisionByAgent[a.localAgentID] = floor + 1
@@ -234,6 +251,22 @@ func listAllL4RuleRows(ctx context.Context, store configIdentityAllocatorStore, 
 	return rows, nil
 }
 
+func listAllWireGuardProfileRows(ctx context.Context, store configIdentityAllocatorStore, agentIDs []string) ([]storage.WireGuardProfileRow, error) {
+	wireGuardStore, ok := store.(wireGuardProfileLister)
+	if !ok {
+		return nil, nil
+	}
+	rows := make([]storage.WireGuardProfileRow, 0)
+	for _, agentID := range agentIDs {
+		agentRows, err := wireGuardStore.ListWireGuardProfiles(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
+}
+
 func highestAgentRuleRevision(agentID string, httpRows []storage.HTTPRuleRow, l4Rows []storage.L4RuleRow) int {
 	maxRevision := 0
 	for _, row := range httpRows {
@@ -250,6 +283,16 @@ func highestAgentRuleRevision(agentID string, httpRows []storage.HTTPRuleRow, l4
 }
 
 func highestAgentRelayRevision(agentID string, rows []storage.RelayListenerRow) int {
+	maxRevision := 0
+	for _, row := range rows {
+		if strings.TrimSpace(row.AgentID) == agentID && row.Revision > maxRevision {
+			maxRevision = row.Revision
+		}
+	}
+	return maxRevision
+}
+
+func highestAgentWireGuardRevision(agentID string, rows []storage.WireGuardProfileRow) int {
 	maxRevision := 0
 	for _, row := range rows {
 		if strings.TrimSpace(row.AgentID) == agentID && row.Revision > maxRevision {

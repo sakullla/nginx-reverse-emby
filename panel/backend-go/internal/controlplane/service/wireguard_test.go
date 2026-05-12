@@ -102,6 +102,27 @@ func TestWireGuardProfileCreateRequiresPeers(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileRejectsDuplicatePeerPublicKey(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.Peers = append(input.Peers, WireGuardPeer{
+		Name:         "peer-b",
+		PublicKey:    testWireGuardPublicKey,
+		PresharedKey: testWireGuardPresharedKeyB,
+		Endpoint:     "example.net:51820",
+		AllowedIPs:   []string{"10.0.0.3/32"},
+	})
+	_, err := svc.Create(ctx, "local", input)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "duplicate peers public_key") {
+		t.Fatalf("Create() error = %v, want duplicate public_key message", err)
+	}
+}
+
 func TestWireGuardProfileCreateDefaultsEnabledToTrueWhenOmitted(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
