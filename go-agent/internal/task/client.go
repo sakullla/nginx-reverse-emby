@@ -49,6 +49,7 @@ func (f TaskHandlerFunc) HandleTask(ctx context.Context, task TaskMessage) (map[
 type streamStatusError struct {
 	statusCode int
 	status     string
+	probe      bool
 }
 
 func (e streamStatusError) Error() string {
@@ -260,6 +261,7 @@ func (c *Client) probeStreamSession(ctx context.Context, sessionID string) error
 		return streamStatusError{
 			statusCode: resp.StatusCode,
 			status:     resp.Status,
+			probe:      true,
 		}
 	}
 
@@ -485,6 +487,8 @@ func isStreamUnavailable(err error) bool {
 	switch streamErr.statusCode {
 	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
 		return true
+	case http.StatusUnauthorized:
+		return streamErr.probe
 	default:
 		return false
 	}

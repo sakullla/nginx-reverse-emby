@@ -391,6 +391,78 @@ func TestTaskClientFallsBackToSSEWhenOldPanelDoesNotReadStreamBody(t *testing.T)
 	}
 }
 
+func TestTaskClientFallsBackToSSEWhenLegacyPanelAuthRouteReturns401(t *testing.T) {
+	type requestRecord struct {
+		Method string
+		Path   string
+	}
+
+	requests := make(chan requestRecord, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- requestRecord{Method: r.Method, Path: r.URL.Path}
+		switch {
+		case r.Method == http.MethodHead && r.URL.Path == "/api/agents/task-stream":
+			http.Error(w, "missing panel token", http.StatusUnauthorized)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(": connected\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:     server.URL,
+		AgentToken:    "token",
+		AgentID:       "edge-a",
+		ReconnectWait: 10 * time.Millisecond,
+		HTTPClient:    server.Client(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(ctx)
+	}()
+
+	gotRequests := make([]requestRecord, 0, 2)
+	for len(gotRequests) < 2 {
+		select {
+		case req := <-requests:
+			gotRequests = append(gotRequests, req)
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatal("timed out waiting for legacy 401 stream fallback to task session")
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for client shutdown")
+	}
+
+	if gotRequests[0].Path != "/api/agents/task-stream" {
+		t.Fatalf("first request path = %q, want /api/agents/task-stream", gotRequests[0].Path)
+	}
+	if gotRequests[0].Method != http.MethodHead {
+		t.Fatalf("first request method = %q, want HEAD", gotRequests[0].Method)
+	}
+	if gotRequests[1].Path != "/api/agents/task-session" {
+		t.Fatalf("second request path = %q, want /api/agents/task-session", gotRequests[1].Path)
+	}
+}
+
 func TestTaskClientDoesNotFallbackToSSEOnStream500(t *testing.T) {
 	sessionRequested := make(chan struct{}, 1)
 	streamRequests := make(chan struct{}, 1)
@@ -448,6 +520,15 @@ func TestTaskClientDoesNotFallbackToSSEOnStream500(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for client shutdown")
+	}
+}
+
+func TestIsStreamUnavailableTreatsOnlyProbe401AsUnavailable(t *testing.T) {
+	if !isStreamUnavailable(streamStatusError{statusCode: http.StatusUnauthorized, status: "401 Unauthorized", probe: true}) {
+		t.Fatal("probe 401 should be treated as stream unavailable")
+	}
+	if isStreamUnavailable(streamStatusError{statusCode: http.StatusUnauthorized, status: "401 Unauthorized"}) {
+		t.Fatal("non-probe 401 should not be treated as stream unavailable")
 	}
 }
 
