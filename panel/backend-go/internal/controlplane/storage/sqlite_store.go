@@ -20,6 +20,7 @@ type Store interface {
 	ListL4Rules(context.Context, string) ([]L4RuleRow, error)
 	GetL4Rule(context.Context, string, int) (L4RuleRow, bool, error)
 	ListRelayListeners(context.Context, string) ([]RelayListenerRow, error)
+	ListWireGuardProfiles(context.Context, string) ([]WireGuardProfileRow, error)
 	LoadLocalAgentState(context.Context) (LocalAgentStateRow, error)
 	LoadAgentSnapshot(context.Context, string, AgentSnapshotInput) (Snapshot, error)
 	ListVersionPolicies(context.Context) ([]VersionPolicyRow, error)
@@ -27,6 +28,7 @@ type Store interface {
 	SaveAgent(context.Context, AgentRow) error
 	SaveL4Rules(context.Context, string, []L4RuleRow) error
 	SaveRelayListeners(context.Context, string, []RelayListenerRow) error
+	SaveWireGuardProfiles(context.Context, string, []WireGuardProfileRow) error
 	SaveVersionPolicies(context.Context, []VersionPolicyRow) error
 	SaveManagedCertificates(context.Context, []ManagedCertificateRow) error
 	LoadManagedCertificateMaterial(context.Context, string) (ManagedCertificateBundle, bool, error)
@@ -354,6 +356,24 @@ func (s *GormStore) ListRelayListeners(ctx context.Context, agentID string) ([]R
 	return listeners, nil
 }
 
+func (s *GormStore) ListWireGuardProfiles(ctx context.Context, agentID string) ([]WireGuardProfileRow, error) {
+	if agentID == "" {
+		agentID = s.localAgentID
+	}
+
+	var profiles []WireGuardProfileRow
+	if err := s.db.WithContext(ctx).
+		Where("agent_id = ?", agentID).
+		Order("id").
+		Find(&profiles).Error; err != nil {
+		return nil, err
+	}
+	for i := range profiles {
+		normalizeWireGuardProfileRow(&profiles[i])
+	}
+	return profiles, nil
+}
+
 func (s *GormStore) ListManagedCertificates(ctx context.Context) ([]ManagedCertificateRow, error) {
 	var certs []ManagedCertificateRow
 	if err := s.db.WithContext(ctx).Order("id").Find(&certs).Error; err != nil {
@@ -538,6 +558,30 @@ func (s *GormStore) SaveRelayListeners(ctx context.Context, agentID string, list
 	})
 }
 
+func (s *GormStore) SaveWireGuardProfiles(ctx context.Context, agentID string, profiles []WireGuardProfileRow) error {
+	if agentID == "" {
+		agentID = s.localAgentID
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("agent_id = ?", agentID).Delete(&WireGuardProfileRow{}).Error; err != nil {
+			return err
+		}
+
+		if len(profiles) == 0 {
+			return nil
+		}
+
+		rows := make([]WireGuardProfileRow, 0, len(profiles))
+		for _, row := range profiles {
+			row.AgentID = agentID
+			normalizeWireGuardProfileRow(&row)
+			rows = append(rows, row)
+		}
+		return tx.Create(&rows).Error
+	})
+}
+
 func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []ManagedCertificateRow) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&ManagedCertificateRow{}).Error; err != nil {
@@ -670,6 +714,16 @@ func normalizeRelayListenerRow(row *RelayListenerRow) {
 	row.ObfsMode = defaultString(row.ObfsMode, "off")
 	row.PinSetJSON = defaultJSON(row.PinSetJSON, "[]")
 	row.TrustedCACertificateIDs = defaultJSON(row.TrustedCACertificateIDs, "[]")
+	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
+}
+
+func normalizeWireGuardProfileRow(row *WireGuardProfileRow) {
+	row.Name = defaultString(row.Name, "")
+	row.Mode = defaultString(row.Mode, "generic_wireguard")
+	row.PrivateKey = defaultString(row.PrivateKey, "")
+	row.AddressesJSON = defaultJSON(row.AddressesJSON, "[]")
+	row.PeersJSON = defaultJSON(row.PeersJSON, "[]")
+	row.DNSJSON = defaultJSON(row.DNSJSON, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 }
 

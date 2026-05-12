@@ -36,6 +36,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&HTTPRuleRow{},
 		&L4RuleRow{},
 		&RelayListenerRow{},
+		&WireGuardProfileRow{},
 		&ManagedCertificateRow{},
 		&LocalAgentStateRow{},
 		&VersionPolicyRow{},
@@ -96,6 +97,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		{model: &HTTPRuleRow{}, name: "idx_rules_agent"},
 		{model: &L4RuleRow{}, name: "idx_l4_rules_agent"},
 		{model: &RelayListenerRow{}, name: "idx_relay_listeners_agent"},
+		{model: &WireGuardProfileRow{}, name: "idx_wireguard_profiles_agent"},
 	}
 	for _, index := range requiredIndexes {
 		if tx.Migrator().HasIndex(index.model, index.name) {

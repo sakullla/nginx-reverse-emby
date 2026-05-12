@@ -95,6 +95,10 @@ func (s *relayCertStore) ListRelayListeners(_ context.Context, agentID string) (
 	return append([]storage.RelayListenerRow(nil), s.relayByAgentID[agentID]...), nil
 }
 
+func (s *relayCertStore) ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error) {
+	return nil, nil
+}
+
 func (s *relayCertStore) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
 	return s.localState, nil
 }
@@ -150,6 +154,10 @@ func (s *relayCertStore) SaveRelayListeners(_ context.Context, agentID string, r
 		return s.saveRelayErr
 	}
 	s.relayByAgentID[agentID] = append([]storage.RelayListenerRow(nil), rows...)
+	return nil
+}
+
+func (s *relayCertStore) SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error {
 	return nil
 }
 

@@ -113,6 +113,22 @@ type RelayListenerRow struct {
 	Revision                int    `gorm:"column:revision"`
 }
 
+type WireGuardProfileRow struct {
+	ID            int    `gorm:"column:id;primaryKey"`
+	AgentID       string `gorm:"column:agent_id;primaryKey;index:idx_wireguard_profiles_agent"`
+	Name          string `gorm:"column:name"`
+	Mode          string `gorm:"column:mode"`
+	PrivateKey    string `gorm:"column:private_key"`
+	ListenPort    int    `gorm:"column:listen_port"`
+	AddressesJSON string `gorm:"column:addresses"`
+	PeersJSON     string `gorm:"column:peers"`
+	DNSJSON       string `gorm:"column:dns"`
+	MTU           int    `gorm:"column:mtu"`
+	Enabled       bool   `gorm:"column:enabled"`
+	TagsJSON      string `gorm:"column:tags"`
+	Revision      int    `gorm:"column:revision"`
+}
+
 type ManagedCertificateRow struct {
 	ID              int    `gorm:"column:id;primaryKey"`
 	Domain          string `gorm:"column:domain"`
@@ -236,6 +252,10 @@ func (VersionPolicyRow) TableName() string {
 
 func (RelayListenerRow) TableName() string {
 	return "relay_listeners"
+}
+
+func (WireGuardProfileRow) TableName() string {
+	return "wireguard_profiles"
 }
 
 func (ManagedCertificateRow) TableName() string {

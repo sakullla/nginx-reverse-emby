@@ -66,6 +66,10 @@ func (f *fakeL4Store) ListRelayListeners(_ context.Context, agentID string) ([]s
 	return append([]storage.RelayListenerRow(nil), f.relayByAgent[agentID]...), nil
 }
 
+func (f *fakeL4Store) ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error) {
+	return nil, nil
+}
+
 func (f *fakeL4Store) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
 	return storage.LocalAgentStateRow{}, nil
 }
@@ -101,6 +105,10 @@ func (f *fakeL4Store) SaveL4Rules(_ context.Context, agentID string, rows []stor
 }
 
 func (f *fakeL4Store) SaveRelayListeners(context.Context, string, []storage.RelayListenerRow) error {
+	return nil
+}
+
+func (f *fakeL4Store) SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error {
 	return nil
 }
 
