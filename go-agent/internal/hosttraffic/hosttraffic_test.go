@@ -50,6 +50,8 @@ func TestParseProcNetDevFiltersVirtualInterfaces(t *testing.T) {
   eth0: 1000 1 0 0 0 0 0 0 2000 2 0 0 0 0 0 0
 docker0: 3000 3 0 0 0 0 0 0 4000 4 0 0 0 0 0 0
 vethabc: 5000 5 0 0 0 0 0 0 6000 6 0 0 0 0 0 0
+ lxc68a65d636db0: 9000 9 0 0 0 0 0 0 10000 10 0 0 0 0 0 0
+cilium_vxlan: 11000 11 0 0 0 0 0 0 12000 12 0 0 0 0 0 0
   ens3: 7000 7 0 0 0 0 0 0 8000 8 0 0 0 0 0 0
 `
 
