@@ -150,7 +150,15 @@ func (c *Client) runStreamSession(ctx context.Context) error {
 	}
 	req.Header.Set("Content-Type", "application/x-ndjson")
 	req.Header.Set("X-Agent-Token", c.cfg.AgentToken)
-	req.Header.Set("Expect", "100-continue")
+
+	helloWritten := make(chan error, 1)
+	go func() {
+		if ctx.Err() != nil {
+			helloWritten <- nil
+			return
+		}
+		helloWritten <- writeMessage(c.helloMessage(sessionID))
+	}()
 
 	resp, err := c.cfg.HTTPClient.Do(req)
 	if err != nil {
@@ -177,7 +185,7 @@ func (c *Client) runStreamSession(ctx context.Context) error {
 		return fmt.Errorf("task stream returned content type %q", contentType)
 	}
 
-	if err := writeMessage(c.helloMessage(sessionID)); err != nil {
+	if err := <-helloWritten; err != nil {
 		return err
 	}
 

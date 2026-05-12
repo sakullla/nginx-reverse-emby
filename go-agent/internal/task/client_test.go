@@ -15,6 +15,21 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 )
 
+func writeUnavailableTaskStream(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+		t.Fatalf("EnableFullDuplex() error = %v", err)
+	}
+	scanner := bufio.NewScanner(r.Body)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			t.Fatalf("task stream request body scanner error = %v", err)
+		}
+		t.Fatal("expected task stream hello before unavailable response")
+	}
+	http.NotFound(w, r)
+}
+
 func TestTaskClientReconnectsAndSendsHello(t *testing.T) {
 	type capturedRequest struct {
 		AgentToken string
@@ -24,6 +39,13 @@ func TestTaskClientReconnectsAndSendsHello(t *testing.T) {
 
 	requests := make(chan capturedRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream" {
+			if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+				t.Fatalf("EnableFullDuplex() error = %v", err)
+			}
+			http.NotFound(w, r)
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/api/agents/task-session" {
 			http.NotFound(w, r)
 			return
@@ -91,6 +113,13 @@ func TestTaskClientReconnectsAndSendsHello(t *testing.T) {
 func TestTaskClientSupportsMasterURLWithApiPrefix(t *testing.T) {
 	requests := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream" {
+			if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+				t.Fatalf("EnableFullDuplex() error = %v", err)
+			}
+			http.NotFound(w, r)
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/api/agents/task-session" {
 			http.NotFound(w, r)
 			return
@@ -160,6 +189,9 @@ func TestTaskClientFallsBackToSSEOnlyWhenStreamUnavailable(t *testing.T) {
 		requests <- requestRecord{Method: r.Method, Path: r.URL.Path}
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
+			if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+				t.Fatalf("EnableFullDuplex() error = %v", err)
+			}
 			http.Error(w, "not ready", http.StatusNotFound)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -281,6 +313,16 @@ func TestTaskClientDoesNotFallbackToSSEOnStream500(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
+			if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+				t.Fatalf("EnableFullDuplex() error = %v", err)
+			}
+			scanner := bufio.NewScanner(r.Body)
+			if !scanner.Scan() {
+				if err := scanner.Err(); err != nil {
+					t.Fatalf("task stream request body scanner error = %v", err)
+				}
+				t.Fatal("expected task stream hello before 500 response")
+			}
 			select {
 			case streamRequests <- struct{}{}:
 			default:
@@ -371,6 +413,8 @@ func TestTaskClientConsumesTaskEventAndReportsLifecycle(t *testing.T) {
 	updates := make(chan taskUpdate, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
+			writeUnavailableTaskStream(t, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
@@ -616,6 +660,134 @@ func TestTaskClientUsesNDJSONTaskStreamForLifecycleUpdates(t *testing.T) {
 	}
 }
 
+func TestTaskClientStreamsHelloAfterServerOKBeforeBodyRead(t *testing.T) {
+	type taskUpdate struct {
+		TaskID string         `json:"task_id"`
+		State  string         `json:"state"`
+		Result map[string]any `json:"result"`
+		Error  string         `json:"error"`
+	}
+	type streamMessage struct {
+		Type   string         `json:"type"`
+		Hello  *HelloMessage  `json:"hello,omitempty"`
+		Update *taskUpdate    `json:"update,omitempty"`
+		Task   map[string]any `json:"task,omitempty"`
+	}
+
+	helloSeen := make(chan HelloMessage, 1)
+	updates := make(chan taskUpdate, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Expect"); got != "" {
+			t.Fatalf("Expect header = %q, want empty for full-duplex task stream", got)
+		}
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+			t.Fatalf("EnableFullDuplex() error = %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+
+		bodyDone := make(chan struct{})
+		go func() {
+			defer close(bodyDone)
+			defer r.Body.Close()
+			scanner := bufio.NewScanner(r.Body)
+			for scanner.Scan() {
+				var msg streamMessage
+				if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+					t.Errorf("Unmarshal() error = %v", err)
+					return
+				}
+				switch {
+				case msg.Type == "hello" && msg.Hello != nil:
+					helloSeen <- *msg.Hello
+				case msg.Type == "update" && msg.Update != nil:
+					updates <- *msg.Update
+				}
+			}
+			if err := scanner.Err(); err != nil && r.Context().Err() == nil {
+				t.Errorf("body scanner error = %v", err)
+			}
+		}()
+
+		select {
+		case hello := <-helloSeen:
+			if hello.AgentID != "edge-a" {
+				t.Errorf("hello agent_id = %q, want edge-a", hello.AgentID)
+			}
+		case <-time.After(time.Second):
+			t.Error("timed out waiting for hello after 200 OK")
+			return
+		}
+
+		_, _ = w.Write([]byte("{\"type\":\"task\",\"task\":{\"task_id\":\"task-1\",\"task_type\":\"diagnose_http_rule\",\"deadline\":\"2026-05-11T10:00:00Z\",\"payload\":{\"rule_id\":7}}}\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+		<-bodyDone
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:     server.URL,
+		AgentToken:    "token",
+		AgentID:       "edge-a",
+		AgentName:     "edge-a",
+		Version:       "1.0.0",
+		Capabilities:  []string{TaskTypeDiagnoseHTTPRule},
+		ReconnectWait: 10 * time.Millisecond,
+		HTTPClient:    server.Client(),
+		Handler: TaskHandlerFunc(func(_ context.Context, task TaskMessage) (map[string]any, error) {
+			if task.TaskID != "task-1" {
+				t.Fatalf("TaskID = %q", task.TaskID)
+			}
+			return map[string]any{"ok": true}, nil
+		}),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(ctx)
+	}()
+
+	got := make([]taskUpdate, 0, 2)
+	for len(got) < 2 {
+		select {
+		case update := <-updates:
+			got = append(got, update)
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatal("timed out waiting for stream task updates")
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for client shutdown")
+	}
+
+	if got[0].TaskID != "task-1" || got[0].State != "running" {
+		t.Fatalf("first update = %#v, want task-1 running", got[0])
+	}
+	if got[1].TaskID != "task-1" || got[1].State != "completed" {
+		t.Fatalf("second update = %#v, want task-1 completed", got[1])
+	}
+}
+
 func TestTaskClientHandlesLargeNDJSONTaskStreamMessage(t *testing.T) {
 	type taskUpdate struct {
 		TaskID string         `json:"task_id"`
@@ -757,23 +929,34 @@ func TestTaskClientHandlesLargeNDJSONTaskStreamMessage(t *testing.T) {
 	}
 }
 
-func TestTaskClientDoesNotSendStreamHelloBeforeOK(t *testing.T) {
-	bodyBytes := make(chan int, 1)
+func TestTaskClientDoesNotSendExpectHeaderForTaskStream(t *testing.T) {
+	helloSeen := make(chan HelloMessage, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/agents/task-stream" {
 			http.NotFound(w, r)
 			return
 		}
-		controller := http.NewResponseController(w)
-		if err := controller.EnableFullDuplex(); err != nil {
+		if got := r.Header.Get("Expect"); got != "" {
+			t.Fatalf("Expect header = %q, want empty for full-duplex task stream", got)
+		}
+		if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
 			t.Fatalf("EnableFullDuplex() error = %v", err)
 		}
-		if err := controller.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
-			t.Fatalf("SetReadDeadline() error = %v", err)
+		scanner := bufio.NewScanner(r.Body)
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				t.Fatalf("task stream request body scanner error = %v", err)
+			}
+			t.Fatal("expected task stream hello")
 		}
-		buf := make([]byte, 1)
-		n, _ := r.Body.Read(buf)
-		bodyBytes <- n
+		var msg Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
+		}
+		if msg.Type != "hello" || msg.Hello == nil {
+			t.Fatalf("first stream message = %+v, want hello", msg)
+		}
+		helloSeen <- *msg.Hello
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
@@ -791,12 +974,12 @@ func TestTaskClientDoesNotSendStreamHelloBeforeOK(t *testing.T) {
 	}
 
 	select {
-	case n := <-bodyBytes:
-		if n != 0 {
-			t.Fatalf("stream body read %d byte(s) before 200 OK, want none", n)
+	case hello := <-helloSeen:
+		if hello.AgentID != "edge-a" {
+			t.Fatalf("hello agent_id = %q, want edge-a", hello.AgentID)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for stream body read")
+		t.Fatal("timed out waiting for stream hello")
 	}
 }
 
@@ -805,6 +988,8 @@ func TestTaskClientUsesTaskDeadlineForHandlerContext(t *testing.T) {
 	handlerDeadline := make(chan time.Time, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
+			writeUnavailableTaskStream(t, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
@@ -874,6 +1059,8 @@ func TestTaskClientReportsFailedTaskExecution(t *testing.T) {
 	updates := make(chan map[string]any, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/agents/task-stream":
+			writeUnavailableTaskStream(t, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
