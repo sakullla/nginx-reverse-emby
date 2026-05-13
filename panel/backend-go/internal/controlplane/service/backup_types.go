@@ -19,27 +19,29 @@ type BackupManifest struct {
 }
 
 type BackupCounts struct {
-	Agents           int `json:"agents"`
-	HTTPRules        int `json:"http_rules"`
-	L4Rules          int `json:"l4_rules"`
-	RelayListeners   int `json:"relay_listeners"`
-	Certificates     int `json:"certificates"`
-	VersionPolicies  int `json:"version_policies"`
-	TrafficPolicies  int `json:"traffic_policies,omitempty"`
-	TrafficBaselines int `json:"traffic_baselines,omitempty"`
+	Agents            int `json:"agents"`
+	HTTPRules         int `json:"http_rules"`
+	L4Rules           int `json:"l4_rules"`
+	RelayListeners    int `json:"relay_listeners"`
+	WireGuardProfiles int `json:"wireguard_profiles,omitempty"`
+	Certificates      int `json:"certificates"`
+	VersionPolicies   int `json:"version_policies"`
+	TrafficPolicies   int `json:"traffic_policies,omitempty"`
+	TrafficBaselines  int `json:"traffic_baselines,omitempty"`
 }
 
 type BackupBundle struct {
-	Manifest         BackupManifest          `json:"manifest"`
-	Agents           []BackupAgent           `json:"agents"`
-	HTTPRules        []BackupHTTPRule        `json:"http_rules"`
-	L4Rules          []BackupL4Rule          `json:"l4_rules"`
-	RelayListeners   []BackupRelayListener   `json:"relay_listeners"`
-	Certificates     []BackupCertificate     `json:"certificates"`
-	VersionPolicies  []BackupVersionPolicy   `json:"version_policies"`
-	TrafficPolicies  []BackupTrafficPolicy   `json:"traffic_policies,omitempty"`
-	TrafficBaselines []BackupTrafficBaseline `json:"traffic_baselines,omitempty"`
-	Materials        []BackupCertificateFile `json:"-"`
+	Manifest          BackupManifest           `json:"manifest"`
+	Agents            []BackupAgent            `json:"agents"`
+	HTTPRules         []BackupHTTPRule         `json:"http_rules"`
+	L4Rules           []BackupL4Rule           `json:"l4_rules"`
+	WireGuardProfiles []BackupWireGuardProfile `json:"wireguard_profiles,omitempty"`
+	RelayListeners    []BackupRelayListener    `json:"relay_listeners"`
+	Certificates      []BackupCertificate      `json:"certificates"`
+	VersionPolicies   []BackupVersionPolicy    `json:"version_policies"`
+	TrafficPolicies   []BackupTrafficPolicy    `json:"traffic_policies,omitempty"`
+	TrafficBaselines  []BackupTrafficBaseline  `json:"traffic_baselines,omitempty"`
+	Materials         []BackupCertificateFile  `json:"-"`
 }
 
 type BackupAgent struct {
@@ -110,6 +112,22 @@ type BackupL4Rule struct {
 type BackupRelayListener = RelayListener
 type BackupCertificate = ManagedCertificate
 type BackupVersionPolicy = VersionPolicy
+
+type BackupWireGuardProfile struct {
+	ID         int             `json:"id"`
+	AgentID    string          `json:"agent_id"`
+	Name       string          `json:"name"`
+	Mode       string          `json:"mode"`
+	PrivateKey string          `json:"private_key,omitempty"`
+	ListenPort int             `json:"listen_port"`
+	Addresses  []string        `json:"addresses"`
+	Peers      []WireGuardPeer `json:"peers"`
+	DNS        []string        `json:"dns"`
+	MTU        int             `json:"mtu"`
+	Enabled    bool            `json:"enabled"`
+	Tags       []string        `json:"tags,omitempty"`
+	Revision   int             `json:"revision,omitempty"`
+}
 
 type BackupTrafficPolicy struct {
 	AgentID                string `json:"agent_id"`
