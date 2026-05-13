@@ -178,6 +178,46 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 	return redactWireGuardProfile(profile), nil
 }
 
+func (s *wireGuardProfileService) Delete(ctx context.Context, agentID string, id int) (WireGuardProfile, error) {
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	rows, err := s.store.ListWireGuardProfiles(ctx, resolvedID)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+
+	targetIndex := -1
+	var deleted WireGuardProfile
+	for i, row := range rows {
+		profile := wireGuardProfileFromRow(row)
+		if profile.ID == id {
+			targetIndex = i
+			deleted = profile
+			break
+		}
+	}
+	if targetIndex < 0 {
+		return WireGuardProfile{}, ErrRuleNotFound
+	}
+
+	nextRows := append([]storage.WireGuardProfileRow(nil), rows[:targetIndex]...)
+	nextRows = append(nextRows, rows[targetIndex+1:]...)
+	if err := s.store.SaveWireGuardProfiles(ctx, resolvedID, nextRows); err != nil {
+		return WireGuardProfile{}, err
+	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	nextRevision := allocator.AllocateRevisionForAgent(resolvedID, deleted.Revision)
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
+		return WireGuardProfile{}, err
+	}
+	return redactWireGuardProfile(deleted), nil
+}
+
 func (s *wireGuardProfileService) ensureAgentExists(ctx context.Context, agentID string) (string, error) {
 	resolvedID := strings.TrimSpace(agentID)
 	if resolvedID == "" {

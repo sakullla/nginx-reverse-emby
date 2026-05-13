@@ -114,6 +114,50 @@ func TestSnapshotDecodePreservesRelayBindAndPublicFields(t *testing.T) {
 	}
 }
 
+func TestSnapshotDecodePreservesWireGuardProfiles(t *testing.T) {
+	raw := []byte(`{
+		"wireguard_profiles":[
+			{
+				"id":7,
+				"agent_id":"remote-wg",
+				"name":"wg enabled",
+				"mode":"generic_wireguard",
+				"private_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+				"listen_port":51820,
+				"addresses":["10.10.0.1/24"],
+				"peers":[{"name":"peer-a","public_key":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=","preshared_key":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=","endpoint":"peer.example.com:51820","allowed_ips":["10.10.0.2/32"],"persistent_keepalive_seconds":25}],
+				"dns":["1.1.1.1"],
+				"mtu":1420,
+				"enabled":true,
+				"tags":["edge"],
+				"revision":9
+			}
+		]
+	}`)
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	if len(snapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("expected one WireGuard profile, got %d", len(snapshot.WireGuardProfiles))
+	}
+	profile := snapshot.WireGuardProfiles[0]
+	if profile.PrivateKey != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
+		t.Fatalf("private_key = %q", profile.PrivateKey)
+	}
+	if !reflect.DeepEqual(profile.Addresses, []string{"10.10.0.1/24"}) {
+		t.Fatalf("addresses = %+v", profile.Addresses)
+	}
+	if len(profile.Peers) != 1 || profile.Peers[0].PresharedKey != "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=" {
+		t.Fatalf("peers = %+v", profile.Peers)
+	}
+	if profile.Revision != 9 || !profile.Enabled || profile.Mode != "generic_wireguard" {
+		t.Fatalf("unexpected WireGuard profile metadata: %+v", profile)
+	}
+}
+
 func TestSnapshotDecodePreservesAgentConfigAndL4ProxyEntryFields(t *testing.T) {
 	raw := []byte(`{
 		"agent_config":{"outbound_proxy_url":"socks://127.0.0.1:1080"},

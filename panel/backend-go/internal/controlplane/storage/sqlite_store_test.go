@@ -2672,6 +2672,74 @@ func TestStoreLoadAgentSnapshotUsesWireGuardProfileRevision(t *testing.T) {
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesEnabledWireGuardProfilesWithRawSecrets(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveWireGuardProfiles(t.Context(), "remote-wg", []WireGuardProfileRow{
+		{
+			ID:            7,
+			AgentID:       "remote-wg",
+			Name:          "wg enabled",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			ListenPort:    51820,
+			AddressesJSON: `["10.10.0.1/24"]`,
+			PeersJSON:     `[{"name":"peer-a","public_key":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=","preshared_key":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=","endpoint":"peer.example.com:51820","allowed_ips":["10.10.0.2/32"],"persistent_keepalive_seconds":25}]`,
+			DNSJSON:       `["1.1.1.1"]`,
+			MTU:           1420,
+			Enabled:       true,
+			TagsJSON:      `["edge"]`,
+			Revision:      9,
+		},
+		{
+			ID:            8,
+			AgentID:       "remote-wg",
+			Name:          "wg disabled",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+			ListenPort:    51821,
+			AddressesJSON: `["10.11.0.1/24"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			MTU:           1420,
+			Enabled:       false,
+			TagsJSON:      `[]`,
+			Revision:      10,
+		},
+	}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-wg", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles length = %d, want 1: %+v", len(snapshot.WireGuardProfiles), snapshot.WireGuardProfiles)
+	}
+	profile := snapshot.WireGuardProfiles[0]
+	if profile.PrivateKey != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
+		t.Fatalf("private_key = %q, want raw private key", profile.PrivateKey)
+	}
+	if len(profile.Peers) != 1 || profile.Peers[0].PresharedKey != "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=" {
+		t.Fatalf("peer preshared_key not raw: %+v", profile.Peers)
+	}
+	if profile.ID != 7 || profile.AgentID != "remote-wg" || profile.Mode != "generic_wireguard" || !profile.Enabled || profile.Revision != 9 {
+		t.Fatalf("unexpected WireGuard profile metadata: %+v", profile)
+	}
+}
+
 func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

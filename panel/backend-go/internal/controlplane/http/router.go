@@ -75,6 +75,13 @@ type RelayListenerService interface {
 	Delete(context.Context, string, int) (service.RelayListener, error)
 }
 
+type WireGuardProfileService interface {
+	List(context.Context, string) ([]service.WireGuardProfile, error)
+	Create(context.Context, string, service.WireGuardProfileInput) (service.WireGuardProfile, error)
+	Update(context.Context, string, int, service.WireGuardProfileInput) (service.WireGuardProfile, error)
+	Delete(context.Context, string, int) (service.WireGuardProfile, error)
+}
+
 type CertificateService interface {
 	List(context.Context, string) ([]service.ManagedCertificate, error)
 	Create(context.Context, string, service.ManagedCertificateInput) (service.ManagedCertificate, error)
@@ -92,18 +99,19 @@ type BackupService interface {
 }
 
 type Dependencies struct {
-	Config               config.Config
-	SystemService        SystemService
-	AgentService         AgentService
-	RuleService          RuleService
-	L4RuleService        L4RuleService
-	VersionPolicyService VersionPolicyService
-	RelayListenerService RelayListenerService
-	CertificateService   CertificateService
-	TaskService          TaskService
-	BackupService        BackupService
-	TrafficService       TrafficService
-	cleanup              func() error
+	Config                  config.Config
+	SystemService           SystemService
+	AgentService            AgentService
+	RuleService             RuleService
+	L4RuleService           L4RuleService
+	VersionPolicyService    VersionPolicyService
+	RelayListenerService    RelayListenerService
+	WireGuardProfileService WireGuardProfileService
+	CertificateService      CertificateService
+	TaskService             TaskService
+	BackupService           BackupService
+	TrafficService          TrafficService
+	cleanup                 func() error
 }
 
 var openConfiguredStore = storage.NewConfiguredStore
@@ -119,6 +127,8 @@ type agentRuleServiceAdapter struct {
 type unavailableBackupService struct{}
 
 type unavailableTrafficService struct{}
+
+type unavailableWireGuardProfileService struct{}
 
 func (unavailableBackupService) Export(context.Context) ([]byte, string, error) {
 	return nil, "", fmt.Errorf("backup service unavailable")
@@ -174,6 +184,22 @@ func (unavailableTrafficService) Aggregate(context.Context, string, string, map[
 
 func trafficStatsDisabledError() error {
 	return service.TrafficServiceError{Code: service.ErrCodeTrafficStatsDisabled, Err: service.ErrTrafficStatsDisabled}
+}
+
+func (unavailableWireGuardProfileService) List(context.Context, string) ([]service.WireGuardProfile, error) {
+	return nil, fmt.Errorf("wireguard profile service unavailable")
+}
+
+func (unavailableWireGuardProfileService) Create(context.Context, string, service.WireGuardProfileInput) (service.WireGuardProfile, error) {
+	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
+}
+
+func (unavailableWireGuardProfileService) Update(context.Context, string, int, service.WireGuardProfileInput) (service.WireGuardProfile, error) {
+	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
+}
+
+func (unavailableWireGuardProfileService) Delete(context.Context, string, int) (service.WireGuardProfile, error) {
+	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
 }
 
 func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
@@ -248,6 +274,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/tasks/{taskID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTask)))
 		mux.Handle(prefix+"/agents/{agentID}/relay-listeners", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRelayListeners)))
 		mux.Handle(prefix+"/agents/{agentID}/relay-listeners/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRelayListener)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfiles)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfile)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificates)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificate)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}/issue", resolved.requirePanelToken(http.HandlerFunc(resolved.handleIssueCertificate)))
@@ -296,12 +324,15 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.BackupService = unavailableBackupService{}
 	}
 
-	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil
+	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || d.WireGuardProfileService == nil
 	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil {
 		return d, nil
 	}
 	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
 		d.TrafficService = unavailableTrafficService{}
+		if d.WireGuardProfileService == nil {
+			d.WireGuardProfileService = unavailableWireGuardProfileService{}
+		}
 		return d, nil
 	}
 
@@ -328,6 +359,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	}
 	if d.RelayListenerService == nil {
 		d.RelayListenerService = service.NewRelayListenerService(d.Config, store)
+	}
+	if d.WireGuardProfileService == nil {
+		d.WireGuardProfileService = service.NewWireGuardProfileService(d.Config, store)
 	}
 	if d.CertificateService == nil {
 		d.CertificateService = service.NewCertificateService(d.Config, store)

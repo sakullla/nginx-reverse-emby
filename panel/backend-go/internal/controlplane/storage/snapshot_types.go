@@ -8,6 +8,7 @@ type Snapshot struct {
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
+	WireGuardProfiles   []WireGuardProfile         `json:"wireguard_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 }
@@ -144,6 +145,31 @@ type RelayListener struct {
 	AllowSelfSigned         bool       `json:"allow_self_signed"`
 	Tags                    []string   `json:"tags"`
 	Revision                int64      `json:"revision"`
+}
+
+type WireGuardPeer struct {
+	Name                       string   `json:"name"`
+	PublicKey                  string   `json:"public_key"`
+	PresharedKey               string   `json:"preshared_key,omitempty"`
+	Endpoint                   string   `json:"endpoint"`
+	AllowedIPs                 []string `json:"allowed_ips"`
+	PersistentKeepaliveSeconds int      `json:"persistent_keepalive_seconds,omitempty"`
+}
+
+type WireGuardProfile struct {
+	ID         int             `json:"id"`
+	AgentID    string          `json:"agent_id"`
+	Name       string          `json:"name"`
+	Mode       string          `json:"mode"`
+	PrivateKey string          `json:"private_key,omitempty"`
+	ListenPort int             `json:"listen_port"`
+	Addresses  []string        `json:"addresses"`
+	Peers      []WireGuardPeer `json:"peers"`
+	DNS        []string        `json:"dns"`
+	MTU        int             `json:"mtu"`
+	Enabled    bool            `json:"enabled"`
+	Tags       []string        `json:"tags"`
+	Revision   int64           `json:"revision"`
 }
 
 type ManagedCertificateBundle struct {

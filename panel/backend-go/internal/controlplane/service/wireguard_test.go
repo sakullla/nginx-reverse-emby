@@ -443,6 +443,33 @@ func TestWireGuardProfileUpdateRejectsUnknownRedactedPeerSecret(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileDeleteRemovesProfile(t *testing.T) {
+	store, svc := newTestWireGuardProfileService(t)
+
+	created, err := svc.Create(t.Context(), "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	deleted, err := svc.Delete(t.Context(), "local", created.ID)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != created.ID {
+		t.Fatalf("Delete() ID = %d, want %d", deleted.ID, created.ID)
+	}
+	if deleted.PrivateKey != redactedProxyPassword {
+		t.Fatalf("Delete() private_key = %q, want redacted", deleted.PrivateKey)
+	}
+
+	rows, err := store.ListWireGuardProfiles(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("rows after Delete() = %+v, want none", rows)
+	}
+}
+
 func newTestWireGuardProfileService(t *testing.T) (*storage.SQLiteStore, *wireGuardProfileService) {
 	t.Helper()
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")

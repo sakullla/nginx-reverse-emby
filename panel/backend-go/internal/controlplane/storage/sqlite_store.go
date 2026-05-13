@@ -274,6 +274,7 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		Rules:               SnapshotHTTPRules(httpRows),
 		L4Rules:             SnapshotL4Rules(l4Rows),
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
+		WireGuardProfiles:   SnapshotWireGuardProfiles(wireGuardRows),
 		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
 	}, nil
@@ -1035,6 +1036,31 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 	return rules
 }
 
+func SnapshotWireGuardProfiles(rows []WireGuardProfileRow) []WireGuardProfile {
+	profiles := make([]WireGuardProfile, 0, len(rows))
+	for _, row := range rows {
+		if !row.Enabled {
+			continue
+		}
+		profiles = append(profiles, WireGuardProfile{
+			ID:         row.ID,
+			AgentID:    row.AgentID,
+			Name:       row.Name,
+			Mode:       defaultString(row.Mode, "generic_wireguard"),
+			PrivateKey: row.PrivateKey,
+			ListenPort: row.ListenPort,
+			Addresses:  parseStringSlice(row.AddressesJSON),
+			Peers:      parseWireGuardPeers(row.PeersJSON),
+			DNS:        parseStringSlice(row.DNSJSON),
+			MTU:        row.MTU,
+			Enabled:    row.Enabled,
+			Tags:       parseStringSlice(row.TagsJSON),
+			Revision:   int64(row.Revision),
+		})
+	}
+	return profiles
+}
+
 func (s *GormStore) relayListenerAgentNames(ctx context.Context, rows []RelayListenerRow) (map[string]string, error) {
 	if len(rows) == 0 {
 		return nil, nil
@@ -1436,6 +1462,17 @@ func parseStringSlice(raw string) []string {
 		}
 	}
 	return normalized
+}
+
+func parseWireGuardPeers(raw string) []WireGuardPeer {
+	var peers []WireGuardPeer
+	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &peers); err != nil {
+		return []WireGuardPeer{}
+	}
+	if peers == nil {
+		return []WireGuardPeer{}
+	}
+	return peers
 }
 
 func parseIntSlice(raw string) []int {
