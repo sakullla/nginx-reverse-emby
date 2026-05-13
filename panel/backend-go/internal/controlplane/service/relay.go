@@ -778,10 +778,10 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 	}
 
 	if enabled {
-		if transportMode != "wireguard" && certID == nil && !options.AllowMissingCertificate {
+		if certID == nil && !options.AllowMissingCertificate {
 			return RelayListener{}, fmt.Errorf("%w: certificate_id is required when relay listener is enabled", ErrInvalidArgument)
 		}
-		if transportMode != "wireguard" && !options.SkipTrustValidation && certID != nil {
+		if !options.SkipTrustValidation && certID != nil {
 			switch tlsMode {
 			case "pin_and_ca":
 				if len(pinSet) == 0 || len(trustedCAIDs) == 0 {

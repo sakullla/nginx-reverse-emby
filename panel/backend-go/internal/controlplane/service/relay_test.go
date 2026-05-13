@@ -571,6 +571,104 @@ func TestRelayListenerWireGuardValidatesProfileReference(t *testing.T) {
 	}
 }
 
+func TestRelayServiceCreateWireGuardAutoRelayCAIssuesCertificateAndDerivesTrust(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
+	store := &relayCertStore{
+		relayByAgentID:     map[string][]storage.RelayListenerRow{},
+		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:        map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{"local": {{ID: 7, AgentID: "local", Enabled: true}}},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              10,
+			Domain:          "__relay-ca.internal",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			MaterialHash:    hashRelayMaterial(relayCA.CertPEM, relayCA.KeyPEM),
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+			TagsJSON:        `["system:relay-ca","system"]`,
+			Revision:        3,
+		}},
+	}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:               stringPtr("wg-relay-auto"),
+		ListenPort:         intPtrService(7443),
+		PublicHost:         stringPtr("wg-relay.example.com"),
+		Enabled:            boolPtr(true),
+		TransportMode:      stringPtr("wireguard"),
+		WireGuardProfileID: intPtrService(7),
+		CertificateSource:  stringPtr("auto_relay_ca"),
+		TrustModeSource:    stringPtr("auto"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if listener.CertificateID == nil || *listener.CertificateID != 11 {
+		t.Fatalf("listener.CertificateID = %v", listener.CertificateID)
+	}
+	if listener.TLSMode != "pin_and_ca" {
+		t.Fatalf("listener.TLSMode = %q", listener.TLSMode)
+	}
+	if len(listener.PinSet) != 1 || listener.PinSet[0].Value == "" {
+		t.Fatalf("listener.PinSet = %+v", listener.PinSet)
+	}
+	if len(listener.TrustedCACertificateIDs) != 1 || listener.TrustedCACertificateIDs[0] != 10 {
+		t.Fatalf("listener.TrustedCACertificateIDs = %+v", listener.TrustedCACertificateIDs)
+	}
+	if !listener.AllowSelfSigned {
+		t.Fatalf("listener.AllowSelfSigned = false")
+	}
+	if listener.WireGuardProfileID == nil || *listener.WireGuardProfileID != 7 {
+		t.Fatalf("listener.WireGuardProfileID = %v", listener.WireGuardProfileID)
+	}
+	if len(store.managedCerts) != 2 {
+		t.Fatalf("len(store.managedCerts) = %d", len(store.managedCerts))
+	}
+	autoCert := managedCertificateFromRow(store.managedCerts[1])
+	material, ok := store.materialsByHost[autoCert.Domain]
+	if !ok || strings.TrimSpace(material.CertPEM) == "" || strings.TrimSpace(material.KeyPEM) == "" {
+		t.Fatalf("auto cert material missing: %+v", store.materialsByHost)
+	}
+}
+
+func TestRelayServiceCreateWireGuardRejectsEnabledListenerWithoutCertificate(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID:     map[string][]storage.RelayListenerRow{},
+		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:        map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{"local": {{ID: 7, AgentID: "local", Enabled: true}}},
+	}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:               stringPtr("wg-relay"),
+		ListenPort:         intPtrService(7443),
+		Enabled:            boolPtr(true),
+		TransportMode:      stringPtr("wireguard"),
+		WireGuardProfileID: intPtrService(7),
+		CertificateSource:  stringPtr("existing_certificate"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "certificate_id is required") {
+		t.Fatalf("Create() error = %v, want clear certificate_id validation", err)
+	}
+	if len(store.relayByAgentID["local"]) != 0 {
+		t.Fatalf("persisted relay listeners = %+v", store.relayByAgentID["local"])
+	}
+}
+
 func TestRelayServiceBootstrapPersistsCanonicalRelayCAWhenMissing(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},

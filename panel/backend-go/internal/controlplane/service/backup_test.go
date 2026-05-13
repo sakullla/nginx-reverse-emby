@@ -982,9 +982,10 @@ func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4Reference
 	defer targetStore.Close()
 
 	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
-		ID:         "edge-wg",
-		Name:       "edge-wg",
-		AgentToken: "token-edge-wg",
+		ID:               "edge-wg",
+		Name:             "edge-wg",
+		AgentToken:       "token-edge-wg",
+		CapabilitiesJSON: `["cert_install"]`,
 	}); err != nil {
 		t.Fatalf("SaveAgent(source) error = %v", err)
 	}
@@ -1012,6 +1013,31 @@ func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4Reference
 	}}); err != nil {
 		t.Fatalf("SaveWireGuardProfiles(source) error = %v", err)
 	}
+	if err := sourceStore.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{{
+		ID:              21,
+		Domain:          "relay.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["edge-wg"]`,
+		Status:          "active",
+		MaterialHash:    "relay-cert-hash",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{}`,
+		Usage:           "relay_tunnel",
+		CertificateType: "uploaded",
+		TagsJSON:        `["relay"]`,
+		Revision:        2,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates(source) error = %v", err)
+	}
+	if err := sourceStore.SaveManagedCertificateMaterial(ctx, "relay.example.com", storage.ManagedCertificateBundle{
+		Domain:  "relay.example.com",
+		CertPEM: "relay-cert-pem",
+		KeyPEM:  "relay-key-pem",
+	}); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial(source) error = %v", err)
+	}
 	if err := sourceStore.SaveRelayListeners(ctx, "edge-wg", []storage.RelayListenerRow{{
 		ID:                      70,
 		AgentID:                 "edge-wg",
@@ -1022,10 +1048,12 @@ func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4Reference
 		PublicHost:              "relay.example.com",
 		PublicPort:              7443,
 		Enabled:                 true,
+		CertificateID:           backupIntPtr(21),
+		TLSMode:                 "pin_only",
 		TransportMode:           "wireguard",
 		WireGuardProfileID:      &sourceProfileID,
 		ObfsMode:                "off",
-		PinSetJSON:              `[]`,
+		PinSetJSON:              `[{"type":"spki_sha256","value":"fixture-pin"}]`,
 		TrustedCACertificateIDs: `[]`,
 		TagsJSON:                `["relay"]`,
 		Revision:                2,
