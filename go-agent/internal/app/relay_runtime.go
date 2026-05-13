@@ -6,20 +6,34 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 type relayRuntimeManager struct {
-	mu         sync.Mutex
-	server     *relay.Server
-	provider   relay.TLSMaterialProvider
-	blockState relayTrafficBlockStateValue
+	mu                sync.Mutex
+	server            *relay.Server
+	provider          relay.TLSMaterialProvider
+	wireGuardManager  *wireguard.Manager
+	wireGuardProvider relay.WireGuardRuntimeProvider
+	blockState        relayTrafficBlockStateValue
 }
 
 func newRelayRuntimeManager(provider relay.TLSMaterialProvider) *relayRuntimeManager {
-	return &relayRuntimeManager{provider: provider}
+	manager := wireguard.NewManager(wireguard.ManagerOptions{})
+	runtimeProvider := wireGuardRuntimeProvider{manager: manager}
+	relay.SetDefaultWireGuardRuntimeProvider(runtimeProvider)
+	return &relayRuntimeManager{
+		provider:          provider,
+		wireGuardManager:  manager,
+		wireGuardProvider: runtimeProvider,
+	}
 }
 
 func (m *relayRuntimeManager) Apply(ctx context.Context, listeners []model.RelayListener) error {
+	return m.ApplyWithWireGuardProfiles(ctx, listeners, nil)
+}
+
+func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, listeners []model.RelayListener, profiles []model.WireGuardProfile) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -27,6 +41,9 @@ func (m *relayRuntimeManager) Apply(ctx context.Context, listeners []model.Relay
 		if m.server != nil {
 			_ = m.server.Close()
 			m.server = nil
+		}
+		if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -39,14 +56,26 @@ func (m *relayRuntimeManager) Apply(ctx context.Context, listeners []model.Relay
 		_ = previous.Close()
 		m.server = nil
 	}
+	if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
+		return err
+	}
 
-	server, err := relay.Start(ctx, listeners, m.provider)
+	server, err := relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
+		WireGuardProvider: m.wireGuardProvider,
+	})
 	if err != nil {
 		return err
 	}
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
 	m.server = server
 	return nil
+}
+
+func (m *relayRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
+	if m.wireGuardManager == nil {
+		return nil
+	}
+	return m.wireGuardManager.Apply(ctx, profiles)
 }
 
 func (m *relayRuntimeManager) UpdateTrafficBlockState(state relay.TrafficBlockState) {
@@ -67,10 +96,33 @@ func (m *relayRuntimeManager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.server == nil {
-		return nil
+	var firstErr error
+	if m.server != nil {
+		if err := m.server.Close(); err != nil {
+			firstErr = err
+		}
+		m.server = nil
 	}
-	err := m.server.Close()
-	m.server = nil
-	return err
+	if m.wireGuardManager != nil {
+		if err := m.wireGuardManager.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	relay.SetDefaultWireGuardRuntimeProvider(nil)
+	return firstErr
+}
+
+type wireGuardRuntimeProvider struct {
+	manager *wireguard.Manager
+}
+
+func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+	if p.manager == nil {
+		return nil, false
+	}
+	runtime, ok := p.manager.Runtime(profileID)
+	if !ok {
+		return nil, false
+	}
+	return runtime, true
 }

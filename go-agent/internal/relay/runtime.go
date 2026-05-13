@@ -13,9 +13,10 @@ import (
 )
 
 type DialOptions struct {
-	InitialPayload   []byte
-	TrafficClass     upstream.TrafficClass
-	OutboundProxyURL string
+	InitialPayload    []byte
+	TrafficClass      upstream.TrafficClass
+	OutboundProxyURL  string
+	WireGuardProvider WireGuardRuntimeProvider
 }
 
 type DialResult struct {
@@ -23,22 +24,28 @@ type DialResult struct {
 	TransportMode   string
 }
 
+type StartOptions struct {
+	WireGuardProvider WireGuardRuntimeProvider
+}
+
 func (o DialOptions) clone() DialOptions {
 	if len(o.InitialPayload) == 0 {
-		return DialOptions{TrafficClass: o.TrafficClass, OutboundProxyURL: o.OutboundProxyURL}
+		return DialOptions{TrafficClass: o.TrafficClass, OutboundProxyURL: o.OutboundProxyURL, WireGuardProvider: o.WireGuardProvider}
 	}
 	return DialOptions{
-		InitialPayload:   append([]byte(nil), o.InitialPayload...),
-		TrafficClass:     o.TrafficClass,
-		OutboundProxyURL: o.OutboundProxyURL,
+		InitialPayload:    append([]byte(nil), o.InitialPayload...),
+		TrafficClass:      o.TrafficClass,
+		OutboundProxyURL:  o.OutboundProxyURL,
+		WireGuardProvider: o.WireGuardProvider,
 	}
 }
 
 type Server struct {
-	ctx              context.Context
-	cancel           context.CancelFunc
-	provider         TLSMaterialProvider
-	finalHopSelector *finalHopSelector
+	ctx               context.Context
+	cancel            context.CancelFunc
+	provider          TLSMaterialProvider
+	wireGuardProvider WireGuardRuntimeProvider
+	finalHopSelector  *finalHopSelector
 
 	wg sync.WaitGroup
 
@@ -53,18 +60,23 @@ type Server struct {
 }
 
 func Start(ctx context.Context, listeners []Listener, provider TLSMaterialProvider) (*Server, error) {
+	return StartWithOptions(ctx, listeners, provider, StartOptions{})
+}
+
+func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMaterialProvider, options StartOptions) (*Server, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
 
 	runtimeCtx, cancel := context.WithCancel(ctx)
 	server := &Server{
-		ctx:              runtimeCtx,
-		cancel:           cancel,
-		provider:         provider,
-		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{}),
-		conns:            make(map[net.Conn]struct{}),
-		quicConns:        make(map[*quic.Conn]struct{}),
+		ctx:               runtimeCtx,
+		cancel:            cancel,
+		provider:          provider,
+		wireGuardProvider: options.WireGuardProvider,
+		finalHopSelector:  newFinalHopSelector(finalHopSelectorConfig{}),
+		conns:             make(map[net.Conn]struct{}),
+		quicConns:         make(map[*quic.Conn]struct{}),
 	}
 
 	for _, listener := range listeners {
@@ -110,6 +122,14 @@ func (s *Server) startListener(listener Listener) error {
 			s.quicListeners = append(s.quicListeners, ln)
 			s.wg.Add(1)
 			go s.acceptQUICLoop(ln.listener, listener)
+		case ListenerTransportModeWireGuard:
+			ln, err := s.listenWireGuardTCP(listener, addr)
+			if err != nil {
+				return err
+			}
+			s.listeners = append(s.listeners, ln)
+			s.wg.Add(1)
+			go s.acceptLoop(ln, listener)
 		default:
 			listenConfig := newRelayTCPListenConfig()
 			ln, err := listenConfig.Listen(s.ctx, "tcp", addr)
@@ -123,6 +143,24 @@ func (s *Server) startListener(listener Listener) error {
 		}
 	}
 	return nil
+}
+
+func (s *Server) listenWireGuardTCP(listener Listener, addr string) (net.Listener, error) {
+	if listener.WireGuardProfileID == nil || *listener.WireGuardProfileID <= 0 {
+		return nil, fmt.Errorf("wireguard_profile_id is required for wireguard transport")
+	}
+	if s.wireGuardProvider == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required")
+	}
+	runtime, ok := s.wireGuardProvider.WireGuardRuntime(*listener.WireGuardProfileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard profile %d runtime not found", *listener.WireGuardProfileID)
+	}
+	ln, err := runtime.ListenTCP(s.ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	return ln, nil
 }
 
 func (s *Server) Close() error {

@@ -50,6 +50,9 @@ func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	if next.RelayListeners == nil {
 		merged.RelayListeners = previous.RelayListeners
 	}
+	if next.WireGuardProfiles == nil {
+		merged.WireGuardProfiles = previous.WireGuardProfiles
+	}
 	if next.Certificates == nil {
 		merged.Certificates = previous.Certificates
 	}
@@ -77,8 +80,11 @@ func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
 }
 
 func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error {
-	if a.relayApplier == nil || snapshot.RelayListeners == nil {
+	if a.relayApplier == nil || (snapshot.RelayListeners == nil && snapshot.WireGuardProfiles == nil) {
 		return nil
+	}
+	if relayWireGuardApplier, ok := a.relayApplier.(RelayWireGuardApplier); ok {
+		return relayWireGuardApplier.ApplyWithWireGuardProfiles(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName), snapshot.WireGuardProfiles)
 	}
 	return a.relayApplier.Apply(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName))
 }
@@ -95,10 +101,6 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 		ActivateHTTPRules: handlers.ActivateHTTPRules,
 		ActivateL4Rules:   handlers.ActivateL4Rules,
 	})
-	relayActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
-		ActivateRelayListeners: handlers.ActivateRelayListeners,
-	})
-
 	return func(ctx context.Context, previous, next model.Snapshot) error {
 		if err := certActivator(ctx, previous, next); err != nil {
 			return err
@@ -112,8 +114,15 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 		localNext := next
 		localNext.RelayListeners = localRelayListeners(next.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
 
-		if err := relayActivator(ctx, localPrevious, localNext); err != nil {
-			return err
+		if (relay.ListenersChanged(localPrevious.RelayListeners, localNext.RelayListeners) ||
+			!reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles)) &&
+			handlers.ActivateRelayListeners != nil {
+			if err := a.applyRelayListeners(ctx, Snapshot{
+				RelayListeners:    localNext.RelayListeners,
+				WireGuardProfiles: next.WireGuardProfiles,
+			}); err != nil {
+				return err
+			}
 		}
 
 		return rulesActivator(ctx, previous, next)

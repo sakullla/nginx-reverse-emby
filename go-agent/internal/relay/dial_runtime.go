@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
@@ -14,6 +15,24 @@ import (
 )
 
 var relayOutboundProxyURL atomic.Value
+var relayWireGuardProvider defaultWireGuardProviderValue
+
+type defaultWireGuardProviderValue struct {
+	mu       sync.RWMutex
+	provider WireGuardRuntimeProvider
+}
+
+func (v *defaultWireGuardProviderValue) Store(provider WireGuardRuntimeProvider) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.provider = provider
+}
+
+func (v *defaultWireGuardProviderValue) Load() WireGuardRuntimeProvider {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.provider
+}
 
 func (s *Server) openUpstream(network, target string, chain []Hop, options DialOptions) (net.Conn, error) {
 	conn, _, err := s.openUpstreamWithResult(network, target, chain, options)
@@ -22,6 +41,9 @@ func (s *Server) openUpstream(network, target string, chain []Hop, options DialO
 
 func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, options DialOptions) (net.Conn, DialResult, error) {
 	if len(chain) > 0 {
+		if options.WireGuardProvider == nil {
+			options.WireGuardProvider = s.wireGuardProvider
+		}
 		conn, result, err := DialWithResult(s.ctx, network, target, chain, s.provider, options)
 		if err != nil {
 			return nil, result, err
@@ -53,6 +75,9 @@ func (s *Server) openUDPPeerWithResult(target string, chain []Hop) (udpPacketPee
 
 func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, options DialOptions) (udpPacketPeer, string, error) {
 	if len(chain) > 0 {
+		if options.WireGuardProvider == nil {
+			options.WireGuardProvider = s.wireGuardProvider
+		}
 		conn, result, err := DialWithResult(s.ctx, "udp", target, chain, s.provider, options)
 		if err != nil {
 			return nil, "", err
@@ -71,7 +96,7 @@ func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, option
 
 func (s *Server) resolveTargetCandidates(target string, chain []Hop) ([]string, error) {
 	if len(chain) > 0 {
-		return ResolveCandidates(s.ctx, target, chain, s.provider)
+		return ResolveCandidatesWithOptions(s.ctx, target, chain, s.provider, DialOptions{WireGuardProvider: s.wireGuardProvider})
 	}
 
 	selector := s.finalHopSelector
@@ -101,6 +126,9 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	options := DialOptions{}
 	if len(opts) > 0 {
 		options = opts[0].clone()
+	}
+	if options.WireGuardProvider == nil {
+		options.WireGuardProvider = DefaultWireGuardRuntimeProvider()
 	}
 	if strings.TrimSpace(options.OutboundProxyURL) == "" {
 		options.OutboundProxyURL = OutboundProxyURL()
@@ -190,7 +218,23 @@ func OutboundProxyURL() string {
 	return strings.TrimSpace(value)
 }
 
+func SetDefaultWireGuardRuntimeProvider(provider WireGuardRuntimeProvider) {
+	relayWireGuardProvider.Store(provider)
+}
+
+func DefaultWireGuardRuntimeProvider() WireGuardRuntimeProvider {
+	return relayWireGuardProvider.Load()
+}
+
 func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
+	return ResolveCandidatesWithOptions(ctx, target, chain, provider, DialOptions{})
+}
+
+func ResolveCandidatesWithOptions(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) ([]string, error) {
+	options = options.clone()
+	if options.WireGuardProvider == nil {
+		options.WireGuardProvider = DefaultWireGuardRuntimeProvider()
+	}
 	if provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
@@ -209,6 +253,9 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 	}
 
 	transportMode := selectRelayRuntimeTransport(firstHop)
+	if transportMode == ListenerTransportModeWireGuard {
+		return resolveCandidatesTLSTCPMux(ctx, target, chain, provider, options)
+	}
 
 	if transportMode == ListenerTransportModeQUIC {
 		addresses, err := resolveCandidatesQUIC(ctx, target, chain, provider)

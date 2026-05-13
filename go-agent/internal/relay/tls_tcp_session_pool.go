@@ -347,9 +347,15 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 	return conn, DialResult{SelectedAddress: result.SelectedAddress}, nil
 }
 
-func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
+func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) ([]string, error) {
 	firstHop := chain[0]
 	options := DialOptions{OutboundProxyURL: OutboundProxyURL()}
+	if len(opts) > 0 {
+		options = opts[0].clone()
+		if strings.TrimSpace(options.OutboundProxyURL) == "" {
+			options.OutboundProxyURL = OutboundProxyURL()
+		}
+	}
 	sessionKey, err := tlsTCPSessionPoolKey(firstHop, options.OutboundProxyURL)
 	if err != nil {
 		return nil, err
@@ -385,7 +391,7 @@ func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMa
 		return nil, err
 	}
 
-	rawConn, err := dialRelayTCPWithProxy(ctx, hop.Address, hop.Listener, options.OutboundProxyURL)
+	rawConn, err := dialRelayRawTCP(ctx, hop, options)
 	if err != nil {
 		return nil, err
 	}
@@ -417,6 +423,32 @@ func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMa
 	return tunnel, nil
 }
 
+func dialRelayRawTCP(ctx context.Context, hop Hop, options DialOptions) (net.Conn, error) {
+	if normalizeListenerTransportModeValue(hop.Listener.TransportMode) == ListenerTransportModeWireGuard {
+		return dialRelayWireGuardTCP(ctx, hop, options.WireGuardProvider)
+	}
+	return dialRelayTCPWithProxy(ctx, hop.Address, hop.Listener, options.OutboundProxyURL)
+}
+
+func dialRelayWireGuardTCP(ctx context.Context, hop Hop, provider WireGuardRuntimeProvider) (net.Conn, error) {
+	if hop.Listener.WireGuardProfileID == nil || *hop.Listener.WireGuardProfileID <= 0 {
+		return nil, fmt.Errorf("wireguard_profile_id is required for wireguard transport")
+	}
+	if provider == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required")
+	}
+	runtime, ok := provider.WireGuardRuntime(*hop.Listener.WireGuardProfileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard profile %d runtime not found", *hop.Listener.WireGuardProfileID)
+	}
+	conn, err := runtime.DialContext(ctx, "tcp", hop.Address)
+	if err != nil {
+		return nil, err
+	}
+	tuneBulkRelayConn(conn)
+	return conn, nil
+}
+
 func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
 	serverName, err := verificationServerName(hop.Address, hop.ServerName)
 	if err != nil {
@@ -431,12 +463,13 @@ func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(
-		"%d|%d|%s|%s|%s|%s|%t|%d|%s|%s|%s",
+		"%d|%d|%s|%s|%s|%d|%s|%t|%d|%s|%s|%s",
 		hop.Listener.ID,
 		hop.Listener.Revision,
 		hop.Address,
 		serverName,
 		normalizeListenerTransportModeValue(hop.Listener.TransportMode),
+		valueOrZero(hop.Listener.WireGuardProfileID),
 		normalizeTLSModeValue(hop.Listener.TLSMode),
 		hop.Listener.AllowSelfSigned,
 		valueOrZero(hop.Listener.CertificateID),
