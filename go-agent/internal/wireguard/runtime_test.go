@@ -193,6 +193,193 @@ func TestManagerPreflightsAndRollsBackSamePortReplacementFailure(t *testing.T) {
 	}
 }
 
+func TestManagerPrepareRetriesSamePortReplacementAfterClosingExistingRuntime(t *testing.T) {
+	t.Parallel()
+
+	var preflightCalls int
+	var replacementAttempts int
+	factory := &recordingFactory{}
+	manager := NewManager(ManagerOptions{
+		Factory: factory.Create,
+		Preflight: func(context.Context, Config) error {
+			preflightCalls++
+			return nil
+		},
+	})
+	defer manager.Close()
+
+	profile := validProfile()
+	if err := manager.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	first := factory.created[0]
+
+	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+		if cfg.Peers[0].Endpoint != "peer.example.com:51821" {
+			return nil, fmt.Errorf("unexpected endpoint %q", cfg.Peers[0].Endpoint)
+		}
+		replacementAttempts++
+		if replacementAttempts == 1 {
+			return nil, errors.New("address already in use")
+		}
+		return factory.newRuntime(cfg), nil
+	}
+	profile.Peers[0].Endpoint = "peer.example.com:51821"
+	transaction, err := manager.Prepare(context.Background(), []model.WireGuardProfile{profile})
+	if err != nil {
+		t.Fatalf("Prepare(changed) error = %v", err)
+	}
+	defer transaction.Rollback()
+
+	if preflightCalls != 1 {
+		t.Fatalf("preflight calls = %d, want 1", preflightCalls)
+	}
+	if replacementAttempts != 2 {
+		t.Fatalf("replacement attempts = %d, want 2", replacementAttempts)
+	}
+	if !first.closed {
+		t.Fatal("existing same-port runtime was not closed before replacement retry")
+	}
+	prepared, ok := transaction.Runtime(profile.ID)
+	if !ok {
+		t.Fatal("prepared transaction has no runtime")
+	}
+	if prepared == first {
+		t.Fatal("prepared transaction reused the closed runtime")
+	}
+	if got, ok := manager.Runtime(profile.ID); !ok || got != prepared {
+		t.Fatal("manager did not expose prepared same-port runtime before commit")
+	}
+}
+
+func TestManagerPrepareRollbackRestoresSamePortReplacement(t *testing.T) {
+	t.Parallel()
+
+	var replacementAttempts int
+	var rollback *fakeRuntime
+	factory := &recordingFactory{}
+	manager := NewManager(ManagerOptions{
+		Factory:   factory.Create,
+		Preflight: func(context.Context, Config) error { return nil },
+	})
+	defer manager.Close()
+
+	profile := validProfile()
+	if err := manager.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	first := factory.created[0]
+
+	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+		switch cfg.Peers[0].Endpoint {
+		case "peer.example.com:51821":
+			replacementAttempts++
+			if replacementAttempts == 1 {
+				return nil, errors.New("address already in use")
+			}
+			return factory.newRuntime(cfg), nil
+		case "peer.example.com:51820":
+			rollback = factory.newRuntime(cfg)
+			return rollback, nil
+		default:
+			return nil, fmt.Errorf("unexpected endpoint %q", cfg.Peers[0].Endpoint)
+		}
+	}
+	profile.Peers[0].Endpoint = "peer.example.com:51821"
+	transaction, err := manager.Prepare(context.Background(), []model.WireGuardProfile{profile})
+	if err != nil {
+		t.Fatalf("Prepare(changed) error = %v", err)
+	}
+	prepared, ok := transaction.Runtime(profile.ID)
+	if !ok {
+		t.Fatal("prepared transaction has no runtime")
+	}
+
+	transaction.Rollback()
+
+	if !first.closed {
+		t.Fatal("original runtime was not closed during same-port replacement")
+	}
+	if preparedRuntime, ok := prepared.(*fakeRuntime); !ok || !preparedRuntime.closed {
+		t.Fatalf("prepared runtime closed = %v, want true", ok && preparedRuntime.closed)
+	}
+	if rollback == nil || rollback.closed {
+		t.Fatalf("rollback runtime = %+v, want active rollback", rollback)
+	}
+	got, ok := manager.Runtime(profile.ID)
+	if !ok {
+		t.Fatal("manager has no runtime after prepared transaction rollback")
+	}
+	if got != rollback {
+		t.Fatal("manager did not restore previous runtime after prepared transaction rollback")
+	}
+}
+
+func TestManagerPrepareFailureAfterSamePortReplacementRestoresOldRuntime(t *testing.T) {
+	t.Parallel()
+
+	var replacementAttempts int
+	var rollback *fakeRuntime
+	factory := &recordingFactory{}
+	manager := NewManager(ManagerOptions{
+		Factory:   factory.Create,
+		Preflight: func(context.Context, Config) error { return nil },
+	})
+	defer manager.Close()
+
+	firstProfile := validProfile()
+	secondProfile := validProfile()
+	secondProfile.ID = 8
+	secondProfile.ListenPort = 51822
+	secondProfile.Peers[0].Endpoint = "peer.example.com:51822"
+	if err := manager.Apply(context.Background(), []model.WireGuardProfile{firstProfile}); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	first := factory.created[0]
+
+	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+		switch cfg.ID {
+		case firstProfile.ID:
+			switch cfg.Peers[0].Endpoint {
+			case "peer.example.com:51821":
+				replacementAttempts++
+				if replacementAttempts == 1 {
+					return nil, errors.New("address already in use")
+				}
+				return factory.newRuntime(cfg), nil
+			case "peer.example.com:51820":
+				rollback = factory.newRuntime(cfg)
+				return rollback, nil
+			default:
+				return nil, fmt.Errorf("unexpected endpoint %q", cfg.Peers[0].Endpoint)
+			}
+		case secondProfile.ID:
+			return nil, errors.New("second profile failed")
+		default:
+			return nil, fmt.Errorf("unexpected profile %d", cfg.ID)
+		}
+	}
+	firstProfile.Peers[0].Endpoint = "peer.example.com:51821"
+	_, err := manager.Prepare(context.Background(), []model.WireGuardProfile{firstProfile, secondProfile})
+	if err == nil || !strings.Contains(err.Error(), "second profile failed") {
+		t.Fatalf("Prepare() error = %v, want second profile failed", err)
+	}
+
+	if !first.closed {
+		t.Fatal("original runtime was not closed during same-port replacement")
+	}
+	if rollback == nil || rollback.closed {
+		t.Fatalf("rollback runtime = %+v, want active rollback", rollback)
+	}
+	got, ok := manager.Runtime(firstProfile.ID)
+	if !ok {
+		t.Fatal("manager has no runtime after later profile prepare failure")
+	}
+	if got != rollback {
+		t.Fatal("manager did not restore previous runtime after later profile prepare failure")
+	}
+}
+
 func TestManagerClosesUnusedRuntime(t *testing.T) {
 	t.Parallel()
 

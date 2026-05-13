@@ -45,12 +45,13 @@ type Manager struct {
 }
 
 type Transaction struct {
-	mu          sync.Mutex
-	manager     *Manager
-	candidates  map[int]*runtimeEntry
-	newRuntimes []Runtime
-	committed   bool
-	rolledBack  bool
+	mu                     sync.Mutex
+	manager                *Manager
+	candidates             map[int]*runtimeEntry
+	newRuntimes            []Runtime
+	closeFirstReplacements []runtimeReplacement
+	committed              bool
+	rolledBack             bool
 }
 
 type runtimeEntry struct {
@@ -218,11 +219,22 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 
 	candidates := make(map[int]*runtimeEntry, len(profiles))
 	var newRuntimes []Runtime
+	var closeFirstReplacements []runtimeReplacement
 
 	closeNewRuntimes := func() {
 		for _, runtime := range newRuntimes {
 			_ = runtime.Close()
 		}
+	}
+	rollbackPrepared := func() error {
+		closeNewRuntimes()
+		return m.rollbackCloseFirstReplacements(ctx, closeFirstReplacements)
+	}
+	wrapPrepareError := func(profileID int, stage string, err error) error {
+		if rollbackErr := rollbackPrepared(); rollbackErr != nil {
+			return fmt.Errorf("wireguard profile %d %s: %w; rollback failed: %v", profileID, stage, err, rollbackErr)
+		}
+		return fmt.Errorf("wireguard profile %d %s: %w", profileID, stage, err)
 	}
 
 	for _, profile := range profiles {
@@ -232,13 +244,14 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 
 		cfg, err := NormalizeConfig(profile)
 		if err != nil {
-			closeNewRuntimes()
+			if rollbackErr := rollbackPrepared(); rollbackErr != nil {
+				return nil, fmt.Errorf("wireguard profile %d: %w; rollback failed: %v", profile.ID, err, rollbackErr)
+			}
 			return nil, fmt.Errorf("wireguard profile %d: %w", profile.ID, err)
 		}
 		fingerprint, err := Fingerprint(profile)
 		if err != nil {
-			closeNewRuntimes()
-			return nil, fmt.Errorf("wireguard profile %d fingerprint: %w", profile.ID, err)
+			return nil, wrapPrepareError(profile.ID, "fingerprint", err)
 		}
 
 		if existing, ok := m.runtimes[profile.ID]; ok && existing.fingerprint == fingerprint {
@@ -250,10 +263,52 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 			continue
 		}
 
+		existing, hasExisting := m.runtimes[profile.ID]
 		runtime, err := m.factory(ctx, cfg)
 		if err != nil {
-			closeNewRuntimes()
-			return nil, fmt.Errorf("wireguard profile %d runtime: %w", profile.ID, err)
+			if !hasExisting || !sameListenPort(existing.config.ListenPort, cfg.ListenPort) || !isListenPortConflict(err) {
+				return nil, wrapPrepareError(profile.ID, "runtime", err)
+			}
+			if preflightErr := m.preflight(ctx, cfg); preflightErr != nil {
+				return nil, wrapPrepareError(profile.ID, "preflight", preflightErr)
+			}
+			_ = existing.runtime.Close()
+			delete(m.runtimes, profile.ID)
+			runtime, err = m.factory(ctx, cfg)
+			if err != nil {
+				rollbackErr := m.rollbackCloseFirstReplacement(ctx, runtimeReplacement{
+					profileID: profile.ID,
+					config:    cloneConfig(cfg),
+					existing:  existing,
+				})
+				if appliedRollbackErr := rollbackPrepared(); rollbackErr == nil {
+					rollbackErr = appliedRollbackErr
+				}
+				if rollbackErr != nil {
+					return nil, fmt.Errorf("wireguard profile %d runtime: %w; rollback failed: %v", profile.ID, err, rollbackErr)
+				}
+				return nil, fmt.Errorf("wireguard profile %d runtime: %w", profile.ID, err)
+			}
+			replacement := runtimeReplacement{
+				profileID:          profile.ID,
+				fingerprint:        fingerprint,
+				config:             cloneConfig(cfg),
+				runtime:            runtime,
+				existing:           existing,
+				requiresCloseFirst: true,
+			}
+			closeFirstReplacements = append(closeFirstReplacements, replacement)
+			candidates[profile.ID] = &runtimeEntry{
+				fingerprint: fingerprint,
+				config:      cloneConfig(cfg),
+				runtime:     runtime,
+			}
+			m.runtimes[profile.ID] = &runtimeEntry{
+				fingerprint: fingerprint,
+				config:      cloneConfig(cfg),
+				runtime:     runtime,
+			}
+			continue
 		}
 		newRuntimes = append(newRuntimes, runtime)
 		candidates[profile.ID] = &runtimeEntry{
@@ -264,9 +319,10 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 	}
 
 	return &Transaction{
-		manager:     m,
-		candidates:  candidates,
-		newRuntimes: newRuntimes,
+		manager:                m,
+		candidates:             candidates,
+		newRuntimes:            newRuntimes,
+		closeFirstReplacements: closeFirstReplacements,
 	}, nil
 }
 
@@ -325,10 +381,17 @@ func (t *Transaction) Rollback() {
 	}
 	t.rolledBack = true
 	newRuntimes := append([]Runtime(nil), t.newRuntimes...)
+	closeFirstReplacements := append([]runtimeReplacement(nil), t.closeFirstReplacements...)
+	manager := t.manager
 	t.mu.Unlock()
 
 	for _, runtime := range newRuntimes {
 		_ = runtime.Close()
+	}
+	if manager != nil {
+		manager.mu.Lock()
+		defer manager.mu.Unlock()
+		_ = manager.rollbackCloseFirstReplacements(context.Background(), closeFirstReplacements)
 	}
 }
 
