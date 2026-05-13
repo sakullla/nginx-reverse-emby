@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
@@ -81,12 +84,12 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	defer m.mu.Unlock()
 
 	if len(rules) == 0 {
+		if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
+			return err
+		}
 		if m.server != nil {
 			_ = m.server.Close()
 			m.server = nil
-		}
-		if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
-			return err
 		}
 		return nil
 	}
@@ -102,6 +105,17 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 
 	previous := m.server
 	if previous != nil {
+		server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, m.wireGuardProvider)
+		if err == nil {
+			server.SetTrafficBlockState(m.currentTrafficBlockState())
+			_ = previous.Close()
+			m.server = server
+			return nil
+		}
+		if !bindingKeysOverlap(l4ServerBindingKeys(previous), l4RuleBindingKeys(rules)) || !isRuntimeBindConflict(err) {
+			return err
+		}
+
 		_ = previous.Close()
 		m.server = nil
 	}
@@ -112,6 +126,33 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
 	m.server = server
 	return nil
+}
+
+func l4ServerBindingKeys(server *l4.Server) []string {
+	if server == nil {
+		return nil
+	}
+	return server.BindingKeys()
+}
+
+func l4RuleBindingKeys(rules []model.L4Rule) []string {
+	keys := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
+			keys = append(keys, "udp:"+l4RuleListenAddress(rule))
+			continue
+		}
+		keys = append(keys, "tcp:"+l4RuleListenAddress(rule))
+	}
+	return keys
+}
+
+func l4RuleListenAddress(rule model.L4Rule) string {
+	host := rule.ListenHost
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") && strings.TrimSpace(rule.WireGuardListenHost) != "" {
+		host = rule.WireGuardListenHost
+	}
+	return net.JoinHostPort(host, strconv.Itoa(rule.ListenPort))
 }
 
 func (m *l4RuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {

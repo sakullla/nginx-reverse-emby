@@ -35,6 +35,7 @@ type Server struct {
 
 	tcpListeners          []net.Listener
 	udpConns              []udpListener
+	bindingKeys           []string
 	udpMu                 sync.Mutex
 	udpSessions           map[string]*udpSession
 	udpReplyTimeout       time.Duration
@@ -142,11 +143,13 @@ func newServerWithOptions(
 				s.Close()
 				return nil, err
 			}
+			s.bindingKeys = append(s.bindingKeys, "tcp:"+l4ListenAddress(rule))
 		case "udp":
 			if err := s.startUDPListener(rule); err != nil {
 				s.Close()
 				return nil, err
 			}
+			s.bindingKeys = append(s.bindingKeys, "udp:"+l4ListenAddress(rule))
 		default:
 			s.Close()
 			return nil, fmt.Errorf("unsupported protocol %q", rule.Protocol)
@@ -167,6 +170,13 @@ func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
 		return
 	}
 	s.trafficBlockState.Store(state)
+}
+
+func (s *Server) BindingKeys() []string {
+	if s == nil {
+		return nil
+	}
+	return append([]string(nil), s.bindingKeys...)
 }
 
 func (s *Server) Close() error {

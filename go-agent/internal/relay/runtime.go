@@ -50,6 +50,7 @@ type Server struct {
 	wg sync.WaitGroup
 
 	mu            sync.Mutex
+	bindingKeys   []string
 	listeners     []net.Listener
 	quicListeners []*quicListenerHandle
 	conns         map[net.Conn]struct{}
@@ -100,6 +101,7 @@ func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMat
 			server.Close()
 			return nil, err
 		}
+		server.bindingKeys = append(server.bindingKeys, listenerBindingKeys(normalized)...)
 	}
 
 	return server, nil
@@ -200,6 +202,29 @@ func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
 	s.trafficBlockState.Store(state)
 }
 
+func (s *Server) BindingKeys() []string {
+	if s == nil {
+		return nil
+	}
+	return append([]string(nil), s.bindingKeys...)
+}
+
 func ListenersChanged(previous, next []Listener) bool {
 	return !reflect.DeepEqual(previous, next)
+}
+
+func listenerBindingKeys(listener Listener) []string {
+	transportMode, err := normalizeListenerTransportMode(listener.TransportMode)
+	if err != nil {
+		return nil
+	}
+	protocol := "tcp"
+	if transportMode == ListenerTransportModeQUIC {
+		protocol = "udp"
+	}
+	keys := make([]string, 0, len(listener.BindHosts))
+	for _, bindHost := range listener.BindHosts {
+		keys = append(keys, protocol+":"+net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort)))
+	}
+	return keys
 }

@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -65,6 +68,19 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 
 	previous := m.server
 	if previous != nil {
+		server, err := relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
+			WireGuardProvider: m.wireGuardProvider,
+		})
+		if err == nil {
+			server.SetTrafficBlockState(m.currentTrafficBlockState())
+			_ = previous.Close()
+			m.server = server
+			return nil
+		}
+		if !bindingKeysOverlap(relayServerBindingKeys(previous), relayListenerBindingKeys(listeners)) || !isRuntimeBindConflict(err) {
+			return err
+		}
+
 		_ = previous.Close()
 		m.server = nil
 	}
@@ -78,6 +94,83 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
 	m.server = server
 	return nil
+}
+
+func relayServerBindingKeys(server *relay.Server) []string {
+	if server == nil {
+		return nil
+	}
+	return server.BindingKeys()
+}
+
+func bindingKeysOverlap(left, right []string) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return false
+	}
+
+	seen := make(map[string]struct{}, len(left))
+	for _, binding := range left {
+		seen[binding] = struct{}{}
+	}
+	for _, binding := range right {
+		if _, ok := seen[binding]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isRuntimeBindConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "address already in use") ||
+		strings.Contains(message, "only one usage of each socket address") ||
+		strings.Contains(message, "an attempt was made to access a socket") ||
+		strings.Contains(message, "eaddrinuse")
+}
+
+func relayListenerBindingKeys(listeners []model.RelayListener) []string {
+	keys := make([]string, 0, len(listeners))
+	for _, listener := range listeners {
+		if !listener.Enabled {
+			continue
+		}
+		bindHosts := relayListenerBindHosts(listener)
+		protocol := relayListenerBindingProtocol(listener.TransportMode)
+		for _, bindHost := range bindHosts {
+			keys = append(keys, protocol+":"+net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort)))
+		}
+	}
+	return keys
+}
+
+func relayListenerBindHosts(listener model.RelayListener) []string {
+	bindHosts := make([]string, 0, len(listener.BindHosts))
+	seen := make(map[string]struct{}, len(listener.BindHosts))
+	for _, rawHost := range listener.BindHosts {
+		host := strings.TrimSpace(rawHost)
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		bindHosts = append(bindHosts, host)
+	}
+	if len(bindHosts) == 0 && strings.TrimSpace(listener.ListenHost) != "" {
+		bindHosts = append(bindHosts, strings.TrimSpace(listener.ListenHost))
+	}
+	return bindHosts
+}
+
+func relayListenerBindingProtocol(transportMode string) string {
+	if strings.EqualFold(strings.TrimSpace(transportMode), relay.ListenerTransportModeQUIC) {
+		return "udp"
+	}
+	return "tcp"
 }
 
 func (m *relayRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
