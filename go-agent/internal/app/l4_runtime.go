@@ -141,7 +141,23 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		_ = previous.Close()
 		m.server = nil
 	}
-	server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
+	server, err := retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
+		return l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
+	})
+	if err != nil && previous != nil && m.canRecreateWireGuardRuntimeForBindConflict(err, rules, wireGuardProfiles) {
+		if transaction != nil {
+			transaction.Rollback()
+			transaction = nil
+		}
+		if recreateErr := m.wireGuardRuntime.Recreate(ctx, wireGuardProfiles); recreateErr != nil {
+			err = fmt.Errorf("%w; wireguard runtime recreate failed: %v", err, recreateErr)
+		} else {
+			provider = m.wireGuardProvider
+			server, err = retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
+				return l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
+			})
+		}
+	}
 	if err != nil {
 		if previous != nil {
 			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
@@ -160,6 +176,18 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	return nil
 }
 
+func (m *l4RuntimeManager) canRecreateWireGuardRuntimeForBindConflict(err error, rules []model.L4Rule, profiles []model.WireGuardProfile) bool {
+	if m.wireGuardRuntime == nil || len(profiles) == 0 || !isRuntimeBindConflict(err) {
+		return false
+	}
+	for _, rule := range rules {
+		if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *l4RuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **wireguard.Transaction) error {
 	if transaction != nil && *transaction != nil {
 		(*transaction).Rollback()
@@ -173,7 +201,9 @@ func (m *l4RuntimeManager) restorePreviousServerLocked(ctx context.Context) erro
 		m.server = nil
 		return nil
 	}
-	server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, m.lastRules, m.lastRelayListeners, m.provider, m.cache, m.wireGuardProvider)
+	server, err := retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
+		return l4.NewServerWithResourcesAndWireGuardProvider(ctx, m.lastRules, m.lastRelayListeners, m.provider, m.cache, m.wireGuardProvider)
+	})
 	if err != nil {
 		if m.server != nil && isRuntimeBindConflict(err) {
 			return nil

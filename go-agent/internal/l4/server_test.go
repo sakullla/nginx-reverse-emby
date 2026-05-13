@@ -348,6 +348,92 @@ func TestProxyEntryDialUsesWireGuardEgress(t *testing.T) {
 	}
 }
 
+func TestProxyEntryHTTPForwardUsesWireGuardEgress(t *testing.T) {
+	downstreamClient, downstreamServer := net.Pipe()
+	defer downstreamClient.Close()
+	defer downstreamServer.Close()
+	upstreamClient, upstreamServer := net.Pipe()
+	defer upstreamClient.Close()
+	defer upstreamServer.Close()
+
+	backendErr := make(chan error, 1)
+	go func() {
+		defer upstreamServer.Close()
+		reader := bufio.NewReader(upstreamServer)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			backendErr <- err
+			return
+		}
+		if req.RequestURI != "/path?x=1" {
+			backendErr <- fmt.Errorf("RequestURI = %q", req.RequestURI)
+			return
+		}
+		if req.Host != "10.77.0.2:9001" {
+			backendErr <- fmt.Errorf("Host = %q", req.Host)
+			return
+		}
+		_, err = io.WriteString(upstreamServer, "HTTP/1.1 200 OK\r\nContent-Length: 17\r\n\r\nwireguard-forward")
+		backendErr <- err
+	}()
+
+	runtime := &fakeL4WireGuardRuntime{
+		dialContext: func(_ context.Context, network, address string) (net.Conn, error) {
+			if network != "tcp" || address != "10.77.0.2:9001" {
+				return nil, fmt.Errorf("DialContext(%q, %q), want tcp 10.77.0.2:9001", network, address)
+			}
+			return upstreamClient, nil
+		},
+	}
+	profileID := 9
+	srv := &Server{
+		ctx:      context.Background(),
+		tcpConns: make(map[net.Conn]struct{}),
+		wireGuardProvider: fakeL4WireGuardProvider{
+			runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+		},
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleProxyEntryConnection(downstreamServer, model.L4Rule{
+			Protocol:           "tcp",
+			ListenMode:         "proxy",
+			ProxyEgressMode:    "wireguard",
+			WireGuardProfileID: &profileID,
+		}, nil)
+	}()
+
+	if err := downstreamClient.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+	_, err := fmt.Fprint(downstreamClient, "GET http://10.77.0.2:9001/path?x=1 HTTP/1.1\r\nHost: 10.77.0.2:9001\r\n\r\n")
+	if err != nil {
+		t.Fatalf("write forward request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(downstreamClient), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(body) != "wireguard-forward" {
+		t.Fatalf("response body = %q", body)
+	}
+	if err := <-backendErr; err != nil {
+		t.Fatalf("backend error = %v", err)
+	}
+	_ = downstreamClient.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("proxy handler did not exit")
+	}
+}
+
 func TestProxyEntryDialWireGuardMissingProviderReturnsError(t *testing.T) {
 	profileID := 9
 	srv := &Server{ctx: context.Background()}

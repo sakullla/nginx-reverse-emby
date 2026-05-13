@@ -104,9 +104,27 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 		m.server = nil
 	}
 
-	server, err := relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
-		WireGuardProvider: provider,
+	server, err := retryRuntimeBindConflict(ctx, func() (*relay.Server, error) {
+		return relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
+			WireGuardProvider: provider,
+		})
 	})
+	if err != nil && previous != nil && m.canRecreateWireGuardRuntimeForBindConflict(err, listeners, profiles) {
+		if transaction != nil {
+			transaction.Rollback()
+			transaction = nil
+		}
+		if recreateErr := m.wireGuardRuntime.Recreate(ctx, profiles); recreateErr != nil {
+			err = fmt.Errorf("%w; wireguard runtime recreate failed: %v", err, recreateErr)
+		} else {
+			provider = m.wireGuardProvider
+			server, err = retryRuntimeBindConflict(ctx, func() (*relay.Server, error) {
+				return relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
+					WireGuardProvider: provider,
+				})
+			})
+		}
+	}
 	if err != nil {
 		if previous != nil {
 			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
@@ -125,6 +143,18 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 	return nil
 }
 
+func (m *relayRuntimeManager) canRecreateWireGuardRuntimeForBindConflict(err error, listeners []model.RelayListener, profiles []model.WireGuardProfile) bool {
+	if m.wireGuardRuntime == nil || len(profiles) == 0 || !isRuntimeBindConflict(err) {
+		return false
+	}
+	for _, listener := range listeners {
+		if listener.Enabled && strings.EqualFold(strings.TrimSpace(listener.TransportMode), relay.ListenerTransportModeWireGuard) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *relayRuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **wireguard.Transaction) error {
 	if transaction != nil && *transaction != nil {
 		(*transaction).Rollback()
@@ -138,8 +168,10 @@ func (m *relayRuntimeManager) restorePreviousServerLocked(ctx context.Context) e
 		m.server = nil
 		return nil
 	}
-	server, err := relay.StartWithOptions(ctx, m.lastListeners, m.provider, relay.StartOptions{
-		WireGuardProvider: m.wireGuardProvider,
+	server, err := retryRuntimeBindConflict(ctx, func() (*relay.Server, error) {
+		return relay.StartWithOptions(ctx, m.lastListeners, m.provider, relay.StartOptions{
+			WireGuardProvider: m.wireGuardProvider,
+		})
 	})
 	if err != nil {
 		if m.server != nil && isRuntimeBindConflict(err) {
@@ -247,6 +279,7 @@ func isRuntimeBindConflict(err error) bool {
 	}
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "address already in use") ||
+		strings.Contains(message, "port is in use") ||
 		strings.Contains(message, "only one usage of each socket address") ||
 		strings.Contains(message, "an attempt was made to access a socket") ||
 		strings.Contains(message, "eaddrinuse")
@@ -416,6 +449,13 @@ func (r *sharedWireGuardRuntime) Prepare(ctx context.Context, profiles []model.W
 		return nil, nil
 	}
 	return r.manager.Prepare(ctx, profiles)
+}
+
+func (r *sharedWireGuardRuntime) Recreate(ctx context.Context, profiles []model.WireGuardProfile) error {
+	if r == nil || r.manager == nil {
+		return nil
+	}
+	return r.manager.Recreate(ctx, profiles)
 }
 
 func (r *sharedWireGuardRuntime) Runtime(profileID int) (wireguard.Runtime, bool) {

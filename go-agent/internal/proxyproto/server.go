@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -22,10 +23,11 @@ type EntryAuth struct {
 }
 
 type ClientRequest struct {
-	Protocol string
-	Target   string
-	Host     string
-	Port     int
+	Protocol       string
+	Target         string
+	Host           string
+	Port           int
+	InitialPayload []byte
 }
 
 func ReadClientRequest(ctx context.Context, conn net.Conn, auth EntryAuth) (ClientRequest, error) {
@@ -52,9 +54,10 @@ func ReadClientRequest(ctx context.Context, conn net.Conn, auth EntryAuth) (Clie
 		return readSOCKS4Request(conn, conn)
 	case 0x05:
 		return readSOCKS5Request(conn, conn, auth)
-	case 'C':
-		return readHTTPConnectRequest(first[0], conn, auth)
 	default:
+		if isHTTPProxyRequestStart(first[0]) {
+			return readHTTPProxyRequest(first[0], conn, auth)
+		}
 		return ClientRequest{}, fmt.Errorf("unsupported proxy entry protocol 0x%02x", first[0])
 	}
 }
@@ -151,7 +154,7 @@ func readSOCKS5Request(reader io.Reader, conn net.Conn, auth EntryAuth) (ClientR
 	return req, nil
 }
 
-func readHTTPConnectRequest(first byte, conn net.Conn, auth EntryAuth) (ClientRequest, error) {
+func readHTTPProxyRequest(first byte, conn net.Conn, auth EntryAuth) (ClientRequest, error) {
 	header, err := readHTTPHeader(first, conn)
 	if err != nil {
 		writeHTTPProxyError(conn, http.StatusBadRequest)
@@ -164,28 +167,51 @@ func readHTTPConnectRequest(first byte, conn net.Conn, auth EntryAuth) (ClientRe
 		return ClientRequest{}, err
 	}
 	defer req.Body.Close()
-	if req.Method != http.MethodConnect {
-		writeHTTPProxyError(conn, http.StatusMethodNotAllowed)
-		return ClientRequest{}, fmt.Errorf("unsupported HTTP proxy method %s", req.Method)
-	}
 	if auth.Enabled && !validHTTPBasicAuth(req.Header.Get("Proxy-Authorization"), auth) {
 		_, _ = io.WriteString(conn, "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\n\r\n")
 		return ClientRequest{}, fmt.Errorf("HTTP proxy authentication failed")
 	}
+	if req.Method == http.MethodConnect {
+		target := strings.TrimSpace(req.Host)
+		if target == "" && req.URL != nil {
+			target = strings.TrimSpace(req.URL.Host)
+		}
+		if target == "" {
+			target = strings.TrimSpace(req.RequestURI)
+		}
+		host, port, err := splitTarget(target)
+		if err != nil {
+			writeHTTPProxyError(conn, http.StatusBadRequest)
+			return ClientRequest{}, err
+		}
+		return newClientRequest("http", host, port)
+	}
 
-	target := strings.TrimSpace(req.Host)
-	if target == "" && req.URL != nil {
+	target := ""
+	if req.URL != nil {
 		target = strings.TrimSpace(req.URL.Host)
 	}
 	if target == "" {
-		target = strings.TrimSpace(req.RequestURI)
+		target = strings.TrimSpace(req.Host)
 	}
+	target = withDefaultHTTPPort(target, req.URL)
 	host, port, err := splitTarget(target)
 	if err != nil {
 		writeHTTPProxyError(conn, http.StatusBadRequest)
 		return ClientRequest{}, err
 	}
-	return newClientRequest("http", host, port)
+	clientReq, err := newClientRequest("http_forward", host, port)
+	if err != nil {
+		writeHTTPProxyError(conn, http.StatusBadRequest)
+		return ClientRequest{}, err
+	}
+	initial, err := buildHTTPForwardInitialPayload(req)
+	if err != nil {
+		writeHTTPProxyError(conn, http.StatusBadRequest)
+		return ClientRequest{}, err
+	}
+	clientReq.InitialPayload = initial
+	return clientReq, nil
 }
 
 func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
@@ -193,6 +219,8 @@ func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
 	case "http":
 		_, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 		return err
+	case "http_forward":
+		return nil
 	case "socks4", "socks4a":
 		writeSOCKS4Reply(conn, true, req.Port, net.ParseIP(req.Host))
 		return nil
@@ -206,7 +234,7 @@ func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
 
 func WriteClientRequestFailure(conn net.Conn, req ClientRequest, status int) error {
 	switch req.Protocol {
-	case "http":
+	case "http", "http_forward":
 		if status <= 0 {
 			status = http.StatusBadGateway
 		}
@@ -220,6 +248,82 @@ func WriteClientRequestFailure(conn net.Conn, req ClientRequest, status int) err
 		return nil
 	default:
 		return nil
+	}
+}
+
+func isHTTPProxyRequestStart(first byte) bool {
+	switch first {
+	case 'C', 'D', 'G', 'H', 'O', 'P', 'T':
+		return true
+	default:
+		return false
+	}
+}
+
+func withDefaultHTTPPort(target string, u *url.URL) string {
+	if target == "" {
+		return target
+	}
+	if _, _, err := net.SplitHostPort(target); err == nil {
+		return target
+	}
+	scheme := ""
+	if u != nil {
+		scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
+	}
+	switch scheme {
+	case "https":
+		return net.JoinHostPort(target, "443")
+	default:
+		return net.JoinHostPort(target, "80")
+	}
+}
+
+func buildHTTPForwardInitialPayload(req *http.Request) ([]byte, error) {
+	if req == nil {
+		return nil, fmt.Errorf("missing HTTP request")
+	}
+	uri := "/"
+	if req.URL != nil && req.URL.RequestURI() != "" {
+		uri = req.URL.RequestURI()
+	}
+	proto := req.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	host := strings.TrimSpace(req.Host)
+	if host == "" && req.URL != nil {
+		host = strings.TrimSpace(req.URL.Host)
+	}
+	var payload bytes.Buffer
+	if _, err := fmt.Fprintf(&payload, "%s %s %s\r\n", req.Method, uri, proto); err != nil {
+		return nil, err
+	}
+	if host != "" {
+		if _, err := fmt.Fprintf(&payload, "Host: %s\r\n", host); err != nil {
+			return nil, err
+		}
+	}
+	for key, values := range req.Header {
+		if skipForwardProxyHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			if _, err := fmt.Fprintf(&payload, "%s: %s\r\n", key, value); err != nil {
+				return nil, err
+			}
+		}
+	}
+	payload.WriteString("\r\n")
+	return payload.Bytes(), nil
+}
+
+func skipForwardProxyHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "proxy-authorization", "proxy-authenticate", "proxy-connection":
+		return true
+	default:
+		return false
 	}
 }
 

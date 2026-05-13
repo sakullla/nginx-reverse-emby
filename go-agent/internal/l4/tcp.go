@@ -148,6 +148,14 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
 		return
 	}
+	if len(req.InitialPayload) > 0 {
+		if _, err := upstream.Write(req.InitialPayload); err != nil {
+			return
+		}
+		recorder = l4RecorderOrAggregate(recorder)
+		recorder.Add(int64(len(req.InitialPayload)), 0)
+		recorder.FlushIfPendingBelow(32 * 1024)
+	}
 
 	copyBidirectionalTCP(client, upstream, recorder)
 }

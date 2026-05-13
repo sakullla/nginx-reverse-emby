@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -727,6 +728,92 @@ func TestL4RuntimeManagerRestoresServerAfterBindConflictRetryFailure(t *testing.
 	}
 	if manager.server == original {
 		t.Fatal("expected l4 server to be rebuilt after bind-conflict fallback closed the original")
+	}
+	waitForPortState(t, listenPort, true)
+}
+
+func TestL4RuntimeManagerRetriesTransientWireGuardPortInUseAfterClosingPreviousServer(t *testing.T) {
+	runtime := &transientPortInUseWireGuardRuntime{}
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		return runtime, nil
+	})
+	defer manager.Close()
+
+	ctx := context.Background()
+	profileID := 23
+	listenPort := pickFreeTCPPort(t)
+	profile := validAppWireGuardProfile(profileID)
+	initial := model.L4Rule{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         listenPort,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}
+	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.L4Rule{initial}, nil, []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("failed to apply initial wireguard l4 runtime: %v", err)
+	}
+	waitForPortState(t, listenPort, true)
+
+	proxyRule := model.L4Rule{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         pickFreeTCPPort(t),
+		ListenMode:         "proxy",
+		ProxyEgressMode:    "wireguard",
+		WireGuardProfileID: &profileID,
+	}
+	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.L4Rule{initial, proxyRule}, nil, []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("failed to reapply l4 runtime after transient wireguard port conflict: %v", err)
+	}
+	if runtime.postCloseFailures() != 1 {
+		t.Fatalf("post-close transient failures = %d, want 1", runtime.postCloseFailures())
+	}
+	waitForPortState(t, listenPort, true)
+}
+
+func TestL4RuntimeManagerRecreatesWireGuardRuntimeWhenClosedListenerPortRemainsInUse(t *testing.T) {
+	var runtimes []*stickyPortInUseWireGuardRuntime
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		runtime := &stickyPortInUseWireGuardRuntime{}
+		runtimes = append(runtimes, runtime)
+		return runtime, nil
+	})
+	defer manager.Close()
+
+	ctx := context.Background()
+	profileID := 24
+	listenPort := pickFreeTCPPort(t)
+	profile := validAppWireGuardProfile(profileID)
+	initial := model.L4Rule{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         listenPort,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}
+	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.L4Rule{initial}, nil, []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("failed to apply initial wireguard l4 runtime: %v", err)
+	}
+
+	proxyRule := model.L4Rule{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         pickFreeTCPPort(t),
+		ListenMode:         "proxy",
+		ProxyEgressMode:    "wireguard",
+		WireGuardProfileID: &profileID,
+	}
+	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.L4Rule{initial, proxyRule}, nil, []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("failed to reapply l4 runtime with recreated wireguard runtime: %v", err)
+	}
+	if len(runtimes) < 2 {
+		t.Fatalf("wireguard runtime factory calls = %d, want at least 2", len(runtimes))
+	}
+	if !runtimes[0].closed() {
+		t.Fatal("expected original wireguard runtime to be closed during recreate")
 	}
 	waitForPortState(t, listenPort, true)
 }
@@ -1481,6 +1568,14 @@ func TestBindingKeysOverlapTreatsWildcardHostsAsSamePortOverlap(t *testing.T) {
 	}
 }
 
+func TestRuntimeBindConflictDetectsNetstackPortInUse(t *testing.T) {
+	err := fmt.Errorf("bind tcp 10.78.0.1:7443: port is in use")
+
+	if !isRuntimeBindConflict(err) {
+		t.Fatalf("isRuntimeBindConflict(%q) = false, want true", err)
+	}
+}
+
 func TestL4BindingKeysOverlapWildcardToSpecificHost(t *testing.T) {
 	port := pickFreeTCPPort(t)
 	previous := []string{"tcp:" + net.JoinHostPort("0.0.0.0", strconv.Itoa(port))}
@@ -1892,6 +1987,162 @@ func (r *testAppWireGuardRuntime) Close() error {
 		return r.onClose()
 	}
 	return nil
+}
+
+type transientPortInUseWireGuardRuntime struct {
+	mu                  sync.Mutex
+	active              *transientPortInUseListener
+	failNextAfterClose  bool
+	postCloseFailCount  int
+	inUseBeforeCloseHit int
+}
+
+func (r *transientPortInUseWireGuardRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, fmt.Errorf("unexpected wireguard DialContext call")
+}
+
+func (r *transientPortInUseWireGuardRuntime) ListenTCP(_ context.Context, address string) (net.Listener, error) {
+	r.mu.Lock()
+	if r.active != nil {
+		r.inUseBeforeCloseHit++
+		r.mu.Unlock()
+		return nil, fmt.Errorf("bind tcp %s: port is in use", address)
+	}
+	if r.failNextAfterClose {
+		r.failNextAfterClose = false
+		r.postCloseFailCount++
+		r.mu.Unlock()
+		return nil, fmt.Errorf("bind tcp %s: port is in use", address)
+	}
+	r.mu.Unlock()
+
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	wrapped := &transientPortInUseListener{Listener: ln, runtime: r}
+	r.mu.Lock()
+	r.active = wrapped
+	r.mu.Unlock()
+	return wrapped, nil
+}
+
+func (r *transientPortInUseWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
+	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
+}
+
+func (r *transientPortInUseWireGuardRuntime) Close() error {
+	r.mu.Lock()
+	active := r.active
+	r.active = nil
+	r.mu.Unlock()
+	if active != nil {
+		return active.Listener.Close()
+	}
+	return nil
+}
+
+func (r *transientPortInUseWireGuardRuntime) postCloseFailures() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.postCloseFailCount
+}
+
+type transientPortInUseListener struct {
+	net.Listener
+	runtime *transientPortInUseWireGuardRuntime
+	once    sync.Once
+}
+
+func (l *transientPortInUseListener) Close() error {
+	var err error
+	l.once.Do(func() {
+		if l.runtime != nil {
+			l.runtime.mu.Lock()
+			if l.runtime.active == l {
+				l.runtime.active = nil
+				l.runtime.failNextAfterClose = true
+			}
+			l.runtime.mu.Unlock()
+		}
+		err = l.Listener.Close()
+	})
+	return err
+}
+
+type stickyPortInUseWireGuardRuntime struct {
+	mu     sync.Mutex
+	active *stickyPortInUseListener
+	stuck  bool
+	done   bool
+}
+
+func (r *stickyPortInUseWireGuardRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, fmt.Errorf("unexpected wireguard DialContext call")
+}
+
+func (r *stickyPortInUseWireGuardRuntime) ListenTCP(_ context.Context, address string) (net.Listener, error) {
+	r.mu.Lock()
+	if r.active != nil || r.stuck {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("bind tcp %s: port is in use", address)
+	}
+	r.mu.Unlock()
+
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	wrapped := &stickyPortInUseListener{Listener: ln, runtime: r}
+	r.mu.Lock()
+	r.active = wrapped
+	r.mu.Unlock()
+	return wrapped, nil
+}
+
+func (r *stickyPortInUseWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
+	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
+}
+
+func (r *stickyPortInUseWireGuardRuntime) Close() error {
+	r.mu.Lock()
+	active := r.active
+	r.active = nil
+	r.stuck = false
+	r.done = true
+	r.mu.Unlock()
+	if active != nil {
+		return active.Listener.Close()
+	}
+	return nil
+}
+
+func (r *stickyPortInUseWireGuardRuntime) closed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.done
+}
+
+type stickyPortInUseListener struct {
+	net.Listener
+	runtime *stickyPortInUseWireGuardRuntime
+	once    sync.Once
+}
+
+func (l *stickyPortInUseListener) Close() error {
+	var err error
+	l.once.Do(func() {
+		if l.runtime != nil {
+			l.runtime.mu.Lock()
+			if l.runtime.active == l {
+				l.runtime.active = nil
+				l.runtime.stuck = true
+			}
+			l.runtime.mu.Unlock()
+		}
+		err = l.Listener.Close()
+	})
+	return err
 }
 
 func newListeningTestAppWireGuardRuntime(failListen *bool, listenErr error) *testAppWireGuardRuntime {

@@ -1,6 +1,7 @@
 package proxyproto
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -111,6 +112,30 @@ func TestReadClientRequestHTTPConnect(t *testing.T) {
 	}
 	if req.Target != "example.com:443" || req.Protocol != "http" {
 		t.Fatalf("request = %+v", req)
+	}
+}
+
+func TestReadClientRequestHTTPForwardRequest(t *testing.T) {
+	client, server := newPipe(t)
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		_, _ = fmt.Fprint(client, "GET http://10.77.0.2:9001/path?x=1 HTTP/1.1\r\nHost: 10.77.0.2:9001\r\nProxy-Connection: keep-alive\r\n\r\n")
+	}()
+
+	req, err := ReadClientRequest(context.Background(), server, EntryAuth{})
+	if err != nil {
+		t.Fatalf("ReadClientRequest() error = %v", err)
+	}
+	if req.Protocol != "http_forward" || req.Target != "10.77.0.2:9001" || req.Host != "10.77.0.2" || req.Port != 9001 {
+		t.Fatalf("request = %+v", req)
+	}
+	if !bytes.Contains(req.InitialPayload, []byte("GET /path?x=1 HTTP/1.1\r\n")) {
+		t.Fatalf("InitialPayload = %q, want origin-form request line", req.InitialPayload)
+	}
+	if bytes.Contains(req.InitialPayload, []byte("Proxy-Connection:")) {
+		t.Fatalf("InitialPayload forwarded hop-by-hop proxy header: %q", req.InitialPayload)
 	}
 }
 

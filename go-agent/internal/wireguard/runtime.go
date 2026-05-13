@@ -525,6 +525,21 @@ func (m *Manager) Runtime(profileID int) (Runtime, bool) {
 	return entry.runtime, true
 }
 
+func (m *Manager) Recreate(ctx context.Context, profiles []model.WireGuardProfile) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	for _, profile := range profiles {
+		if existing, ok := m.runtimes[profile.ID]; ok {
+			_ = existing.runtime.Close()
+			delete(m.runtimes, profile.ID)
+		}
+	}
+	m.mu.Unlock()
+	return m.Apply(ctx, profiles)
+}
+
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
