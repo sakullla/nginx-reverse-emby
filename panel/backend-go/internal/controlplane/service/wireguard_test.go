@@ -294,6 +294,86 @@ func TestWireGuardProfileRevisionUsesRemoteAgentFloor(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileLocalApplyTriggerFiresForLocalMutations(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+	triggered := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		triggered++
+		return nil
+	})
+
+	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if triggered != 1 {
+		t.Fatalf("trigger count after Create() = %d, want 1", triggered)
+	}
+
+	update := testWireGuardProfileInput()
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	if _, err := svc.Update(ctx, "local", created.ID, update); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if triggered != 2 {
+		t.Fatalf("trigger count after Update() = %d, want 2", triggered)
+	}
+
+	if _, err := svc.Delete(ctx, "local", created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if triggered != 3 {
+		t.Fatalf("trigger count after Delete() = %d, want 3", triggered)
+	}
+}
+
+func TestWireGuardProfileLocalApplyTriggerSkipsRemoteAgents(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:   "edge-1",
+		Name: "edge-1",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewWireGuardProfileService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	triggered := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		triggered++
+		return nil
+	})
+
+	created, err := svc.Create(ctx, "edge-1", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	update := testWireGuardProfileInput()
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	if _, err := svc.Update(ctx, "edge-1", created.ID, update); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if _, err := svc.Delete(ctx, "edge-1", created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if triggered != 0 {
+		t.Fatalf("trigger count = %d, want 0", triggered)
+	}
+}
+
 func TestWireGuardProfileUpdateUsesPathIDWhenBodyIDDiffers(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)

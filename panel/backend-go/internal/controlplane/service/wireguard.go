@@ -70,12 +70,24 @@ type wireGuardProfileStore interface {
 }
 
 type wireGuardProfileService struct {
-	cfg   config.Config
-	store wireGuardProfileStore
+	cfg               config.Config
+	store             wireGuardProfileStore
+	localApplyTrigger func(context.Context) error
 }
 
 func NewWireGuardProfileService(cfg config.Config, store wireGuardProfileStore) *wireGuardProfileService {
 	return &wireGuardProfileService{cfg: cfg, store: store}
+}
+
+func (s *wireGuardProfileService) SetLocalApplyTrigger(trigger func(context.Context) error) {
+	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
+}
+
+func (s *wireGuardProfileService) triggerLocalApply(ctx context.Context, agentID string) error {
+	if !s.cfg.EnableLocalAgent || agentID != s.cfg.LocalAgentID || s.localApplyTrigger == nil {
+		return nil
+	}
+	return s.localApplyTrigger(ctx)
 }
 
 func (s *wireGuardProfileService) List(ctx context.Context, agentID string) ([]WireGuardProfile, error) {
@@ -133,6 +145,9 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, profile.Revision); err != nil {
 		return WireGuardProfile{}, err
 	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return WireGuardProfile{}, err
+	}
 	return redactWireGuardProfile(profile), nil
 }
 
@@ -178,6 +193,9 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, profile.Revision); err != nil {
 		return WireGuardProfile{}, err
 	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return WireGuardProfile{}, err
+	}
 	return redactWireGuardProfile(profile), nil
 }
 
@@ -216,6 +234,9 @@ func (s *wireGuardProfileService) Delete(ctx context.Context, agentID string, id
 	}
 	nextRevision := allocator.AllocateRevisionForAgent(resolvedID, deleted.Revision)
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
+		return WireGuardProfile{}, err
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return WireGuardProfile{}, err
 	}
 	return redactWireGuardProfile(deleted), nil
