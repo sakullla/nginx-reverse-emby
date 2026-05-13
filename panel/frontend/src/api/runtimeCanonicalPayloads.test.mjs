@@ -132,7 +132,7 @@ describe('runtime canonical rule payloads', () => {
             id: 11,
             name: 'wg-relay',
             transport_mode: 'wireguard',
-            wireguard_profile_id: 'wg-local',
+            wireguard_profile_id: 101,
             obfs_mode: 'off',
             allow_transport_fallback: false
           }
@@ -150,14 +150,14 @@ describe('runtime canonical rule payloads', () => {
       await runtime.createRelayListener('edge-a', {
         name: 'wg-relay',
         transport_mode: 'wireguard',
-        wireguard_profile_id: 'wg-local',
+        wireguard_profile_id: 101,
         obfs_mode: 'early_window_v2',
         allow_transport_fallback: true
       })
       await runtime.updateRelayListener('edge-a', 11, {
         name: 'wg-relay',
         transport_mode: 'wireguard',
-        wireguard_profile_id: 'wg-local',
+        wireguard_profile_id: 101,
         obfs_mode: 'early_window_v2',
         allow_transport_fallback: true
       })
@@ -166,7 +166,7 @@ describe('runtime canonical rule payloads', () => {
       for (const request of requests) {
         const payload = JSON.parse(request.data)
         expect(payload.transport_mode).toBe('wireguard')
-        expect(payload.wireguard_profile_id).toBe('wg-local')
+        expect(payload.wireguard_profile_id).toBe(101)
         expect(payload.obfs_mode).toBe('off')
         expect(payload.allow_transport_fallback).toBe(false)
       }
@@ -203,7 +203,7 @@ describe('runtime canonical rule payloads', () => {
         listen_host: '0.0.0.0',
         listen_port: 51820,
         listen_mode: 'wireguard',
-        wireguard_profile_id: 'wg-local',
+        wireguard_profile_id: 101,
         wireguard_listen_host: '10.8.0.1',
         backends: [{ host: '10.8.0.2', port: 8080 }]
       })
@@ -212,7 +212,7 @@ describe('runtime canonical rule payloads', () => {
         listen_host: '0.0.0.0',
         listen_port: 51820,
         listen_mode: 'wireguard',
-        wireguard_profile_id: 'wg-local',
+        wireguard_profile_id: 101,
         wireguard_listen_host: '10.8.0.1',
         backends: [{ host: '10.8.0.2', port: 8080 }]
       })
@@ -221,7 +221,7 @@ describe('runtime canonical rule payloads', () => {
       for (const request of requests) {
         const payload = JSON.parse(request.data)
         expect(payload.listen_mode).toBe('wireguard')
-        expect(payload.wireguard_profile_id).toBe('wg-local')
+        expect(payload.wireguard_profile_id).toBe(101)
         expect(payload.wireguard_listen_host).toBe('10.8.0.1')
       }
       expect(created.listen_mode).toBe('wireguard')
@@ -260,7 +260,7 @@ describe('runtime canonical rule payloads', () => {
         listen_port: 1080,
         listen_mode: 'proxy',
         proxy_egress_mode: 'wireguard',
-        wireguard_profile_id: 'wg-exit',
+        wireguard_profile_id: 102,
         proxy_entry_auth: { enabled: false, username: '', password: '' },
         backends: []
       })
@@ -270,7 +270,7 @@ describe('runtime canonical rule payloads', () => {
         listen_port: 1080,
         listen_mode: 'proxy',
         proxy_egress_mode: 'wireguard',
-        wireguard_profile_id: 'wg-exit',
+        wireguard_profile_id: 102,
         proxy_entry_auth: { enabled: false, username: '', password: '' },
         backends: []
       })
@@ -280,7 +280,7 @@ describe('runtime canonical rule payloads', () => {
         const payload = JSON.parse(request.data)
         expect(payload.listen_mode).toBe('proxy')
         expect(payload.proxy_egress_mode).toBe('wireguard')
-        expect(payload.wireguard_profile_id).toBe('wg-exit')
+        expect(payload.wireguard_profile_id).toBe(102)
       }
       expect(created.proxy_egress_mode).toBe('wireguard')
       expect(updated.proxy_egress_mode).toBe('wireguard')
@@ -343,6 +343,18 @@ describe('runtime canonical rule payloads', () => {
       expect(l4Rules[0].backends).toEqual([])
     } finally {
       api.defaults.adapter = originalAdapter
+    }
+  })
+
+  it('Relay and L4 forms restrict WireGuard selection to enabled numeric profiles', async () => {
+    const relayForm = await import('../components/RelayListenerForm.vue?raw')
+    const l4Form = await import('../components/L4RuleForm.vue?raw')
+
+    for (const source of [relayForm.default, l4Form.default]) {
+      expect(source).toContain('enabledWireGuardProfiles')
+      expect(source).toContain('selectedWireGuardProfileID')
+      expect(source).toContain('Number.isInteger(id) && id > 0')
+      expect(source).not.toContain('payload.wireguard_profile_id = String')
     }
   })
 })

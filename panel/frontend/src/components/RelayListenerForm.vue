@@ -112,9 +112,9 @@
 
     <div v-if='form.transport_mode === "wireguard"' class='form-group'>
       <label class='form-label form-label--required'>WireGuard Profile</label>
-      <select v-model='form.wireguard_profile_id' class='input' :class="{ 'input--error': errors.wireguard_profile_id }">
+      <select v-model.number='form.wireguard_profile_id' class='input' :class="{ 'input--error': errors.wireguard_profile_id }">
         <option value=''>请选择 Profile</option>
-        <option v-for='profile in wireGuardProfiles' :key='profile.id' :value='profile.id'>
+        <option v-for='profile in enabledWireGuardProfiles' :key='profile.id' :value='Number(profile.id)'>
           {{ profile.name || profile.id }}
         </option>
       </select>
@@ -270,6 +270,15 @@ const { data: wireGuardProfilesData } = useWireGuardProfiles(props.agentId)
 
 const certificates = computed(() => certificatesData.value ?? [])
 const wireGuardProfiles = computed(() => wireGuardProfilesData.value ?? [])
+const enabledWireGuardProfiles = computed(() => wireGuardProfiles.value.filter((profile) => {
+  const id = Number(profile.id)
+  return Number.isInteger(id) && id > 0 && profile.enabled !== false
+}))
+const selectedWireGuardProfileID = computed(() => {
+  const id = Number(form.value.wireguard_profile_id)
+  if (!Number.isInteger(id) || id <= 0) return null
+  return enabledWireGuardProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
+})
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRelayListener.isPending.value || updateRelayListener.isPending.value)
 
@@ -353,6 +362,11 @@ watch(
       form.value.obfs_mode = 'off'
       if (value === 'wireguard') {
         form.value.allow_transport_fallback = false
+        if (selectedWireGuardProfileID.value == null) {
+          form.value.wireguard_profile_id = enabledWireGuardProfiles.value.length
+            ? Number(enabledWireGuardProfiles.value[0].id)
+            : ''
+        }
       }
     } else {
       form.value.obfs_mode = normalizeObfsMode(form.value.obfs_mode, value)
@@ -362,10 +376,15 @@ watch(
 )
 
 watch(
-  wireGuardProfiles,
+  enabledWireGuardProfiles,
   (profiles) => {
-    if (form.value.transport_mode !== 'wireguard' || form.value.wireguard_profile_id || !profiles.length) return
-    form.value.wireguard_profile_id = String(profiles[0].id)
+    if (form.value.transport_mode !== 'wireguard') return
+    if (selectedWireGuardProfileID.value != null) return
+    if (form.value.wireguard_profile_id === '') {
+      form.value.wireguard_profile_id = profiles.length ? Number(profiles[0].id) : ''
+      return
+    }
+    form.value.wireguard_profile_id = ''
   },
   { immediate: true }
 )
@@ -432,7 +451,7 @@ function createFormState(initialData) {
     transport_mode: transportMode,
     allow_transport_fallback: transportMode === 'wireguard' ? false : initialData.allow_transport_fallback !== false,
     obfs_mode: normalizeObfsMode(initialData.obfs_mode, transportMode),
-    wireguard_profile_id: initialData.wireguard_profile_id == null ? '' : String(initialData.wireguard_profile_id),
+    wireguard_profile_id: initialData.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
     enabled: initialData.enabled !== false,
     certificate_id: initialData.certificate_id == null ? null : Number(initialData.certificate_id),
     certificate_source: inferCertificateSource(initialData),
@@ -537,8 +556,8 @@ function validate() {
   if (form.value.enabled && form.value.certificate_source === 'existing_certificate' && form.value.certificate_id == null) {
     errors.value.certificate_id = '启用监听器时必须绑定监听证书'
   }
-  if (form.value.transport_mode === 'wireguard' && !String(form.value.wireguard_profile_id || '').trim()) {
-    errors.value.wireguard_profile_id = '请选择 WireGuard Profile'
+  if (form.value.transport_mode === 'wireguard' && selectedWireGuardProfileID.value == null) {
+    errors.value.wireguard_profile_id = '请选择当前 Agent 已启用的 WireGuard Profile'
   }
 
   const pinSet = parsePinSetRows()
@@ -590,7 +609,7 @@ async function handleSubmit() {
     tags: [...form.value.tags]
   }
   if (form.value.transport_mode === 'wireguard') {
-    payload.wireguard_profile_id = String(form.value.wireguard_profile_id || '').trim()
+    payload.wireguard_profile_id = selectedWireGuardProfileID.value
   }
   if (publicEndpoint.publicHost) {
     payload.public_host = publicEndpoint.publicHost

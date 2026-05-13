@@ -188,9 +188,9 @@
         <div v-if="usesWireGuard" class="form-row">
           <div class="form-group">
             <label class="form-label form-label--required">WireGuard Profile</label>
-            <select v-model="form.wireguard_profile_id" class="input">
+            <select v-model.number="form.wireguard_profile_id" class="input">
               <option value="">请选择 Profile</option>
-              <option v-for="profile in wireGuardProfiles" :key="profile.id" :value="profile.id">
+              <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
                 {{ profile.name || profile.id }}
               </option>
             </select>
@@ -360,6 +360,10 @@ const { data: wireGuardProfilesData } = useWireGuardProfiles(props.agentId)
 const isEdit = computed(() => !!props.initialData?.id)
 const relayListeners = computed(() => relayListenersData.value ?? [])
 const wireGuardProfiles = computed(() => wireGuardProfilesData.value ?? [])
+const enabledWireGuardProfiles = computed(() => wireGuardProfiles.value.filter((profile) => {
+  const id = Number(profile.id)
+  return Number.isInteger(id) && id > 0 && profile.enabled !== false
+}))
 
 let backendIdCounter = 0
 
@@ -423,7 +427,7 @@ function createFormState(initialData) {
     },
     proxy_egress_mode: initialData?.proxy_egress_mode || 'relay',
     proxy_egress_url: initialData?.proxy_egress_url || '',
-    wireguard_profile_id: initialData?.wireguard_profile_id == null ? '' : String(initialData.wireguard_profile_id),
+    wireguard_profile_id: initialData?.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
     wireguard_listen_host: initialData?.wireguard_listen_host || '',
     relay_layers: getRelayLayers(initialData),
     relay_obfs: initialData?.relay_obfs === true,
@@ -485,6 +489,11 @@ const isProxyEntry = computed(() => form.value.protocol === 'tcp' && form.value.
 const isWireGuardInbound = computed(() => form.value.listen_mode === 'wireguard')
 const isWireGuardEgress = computed(() => isProxyEntry.value && form.value.proxy_egress_mode === 'wireguard')
 const usesWireGuard = computed(() => isWireGuardInbound.value || isWireGuardEgress.value)
+const selectedWireGuardProfileID = computed(() => {
+  const id = Number(form.value.wireguard_profile_id)
+  if (!Number.isInteger(id) || id <= 0) return null
+  return enabledWireGuardProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
+})
 
 const hasProtocolTuning = computed(() => {
   const defaults = getDefaultTuning(form.value.protocol)
@@ -564,14 +573,22 @@ watch(() => form.value.protocol, (newProto) => {
 
 watch(usesWireGuard, (enabled) => {
   if (!enabled) return
-  if (!form.value.wireguard_profile_id && wireGuardProfiles.value.length) {
-    form.value.wireguard_profile_id = String(wireGuardProfiles.value[0].id)
+  if (selectedWireGuardProfileID.value != null) return
+  if (form.value.wireguard_profile_id === '' && enabledWireGuardProfiles.value.length) {
+    form.value.wireguard_profile_id = Number(enabledWireGuardProfiles.value[0].id)
+    return
   }
+  form.value.wireguard_profile_id = ''
 })
 
-watch(wireGuardProfiles, (profiles) => {
-  if (!usesWireGuard.value || form.value.wireguard_profile_id || !profiles.length) return
-  form.value.wireguard_profile_id = String(profiles[0].id)
+watch(enabledWireGuardProfiles, (profiles) => {
+  if (!usesWireGuard.value) return
+  if (selectedWireGuardProfileID.value != null) return
+  if (form.value.wireguard_profile_id === '') {
+    form.value.wireguard_profile_id = profiles.length ? Number(profiles[0].id) : ''
+    return
+  }
+  form.value.wireguard_profile_id = ''
 }, { immediate: true })
 
 watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
@@ -705,7 +722,7 @@ function buildPayload() {
     payload.proxy_egress_url = proxyEgressURL
   }
   if (usesWireGuard.value) {
-    payload.wireguard_profile_id = String(form.value.wireguard_profile_id || '').trim()
+    payload.wireguard_profile_id = selectedWireGuardProfileID.value
   }
   if (isWireGuardInbound.value) {
     payload.wireguard_listen_host = form.value.wireguard_listen_host.trim()
@@ -759,8 +776,8 @@ async function handleSubmit() {
     error.value = '至少需要一个有效的后端服务器'
     return
   }
-  if (usesWireGuard.value && !String(form.value.wireguard_profile_id || '').trim()) {
-    error.value = 'WireGuard 入站或出口必须选择 Profile'
+  if (usesWireGuard.value && selectedWireGuardProfileID.value == null) {
+    error.value = 'WireGuard 入站或出口必须选择当前 Agent 已启用的 Profile'
     return
   }
 

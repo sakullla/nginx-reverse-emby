@@ -1586,7 +1586,7 @@ const mockRelayListenersByAgent = {
       trust_mode_source: 'auto',
       tls_mode: 'pin_and_ca',
       transport_mode: 'wireguard',
-      wireguard_profile_id: 'wg-local',
+      wireguard_profile_id: 1,
       allow_transport_fallback: false,
       obfs_mode: 'off',
       pin_set: [],
@@ -1924,7 +1924,7 @@ export async function deleteRelayListener(agentId, id) {
 const mockWireGuardProfilesByAgent = {
   local: [
     {
-      id: 'wg-local',
+      id: 1,
       agent_id: 'local',
       name: 'local-wg',
       mode: 'generic_wireguard',
@@ -1950,7 +1950,7 @@ const mockWireGuardProfilesByAgent = {
   ],
   'edge-1': [
     {
-      id: 'wg-edge-1',
+      id: 2,
       agent_id: 'edge-1',
       name: 'edge-wg',
       mode: 'generic_wireguard',
@@ -1990,9 +1990,10 @@ function normalizeMockWireGuardPeer(peer = {}) {
 }
 
 function normalizeMockWireGuardProfile(agentId, profile = {}) {
+  const id = Number(profile.id || ++mockWireGuardProfileIdCounter)
   return {
     ...profile,
-    id: String(profile.id || `wg-${++mockWireGuardProfileIdCounter}`),
+    id: Number.isInteger(id) && id > 0 ? id : ++mockWireGuardProfileIdCounter,
     agent_id: String(profile.agent_id || agentId),
     name: String(profile.name || '').trim(),
     mode: 'generic_wireguard',
@@ -2024,7 +2025,7 @@ export async function createWireGuardProfile(agentId, payload) {
     ensureDevRelayAgentExists(agentId)
     const profile = normalizeMockWireGuardProfile(agentId, {
       ...payload,
-      id: `wg-${++mockWireGuardProfileIdCounter}`,
+      id: ++mockWireGuardProfileIdCounter,
       agent_id: agentId,
       revision: Date.now()
     })
