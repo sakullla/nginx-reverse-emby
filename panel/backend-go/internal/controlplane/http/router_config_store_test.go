@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -161,5 +163,76 @@ func TestNewRouterDefaultTrafficServiceUsesConfiguredTimezone(t *testing.T) {
 	}
 	if len(payload.Agents) != 1 || payload.Agents[0].CycleStart != "2026-05-04T16:00:00Z" {
 		t.Fatalf("agents = %+v, want Asia/Shanghai cycle start", payload.Agents)
+	}
+}
+
+func TestNewRouterInjectedCoreServicesWithoutWireGuardDoesNotOpenConfiguredStore(t *testing.T) {
+	previousOpenConfiguredStore := openConfiguredStore
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+	})
+
+	var opened bool
+	openConfiguredStore = func(config.Config) (*storage.GormStore, error) {
+		opened = true
+		return nil, errors.New("configured store should not be opened")
+	}
+
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret", TrafficStatsEnabled: true},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agents: []service.AgentSummary{{
+				ID:      "local",
+				Name:    "Local Agent",
+				Mode:    "local",
+				Status:  "online",
+				IsLocal: true,
+			}},
+		},
+		RuleService: fakeRuleService{
+			rules: map[string][]service.HTTPRule{
+				"local": {{
+					ID:          1,
+					AgentID:     "local",
+					FrontendURL: "https://media.example.com",
+					Backends:    []service.HTTPRuleBackend{{URL: "http://emby:8096"}},
+				}},
+			},
+		},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TrafficService:       fakeTrafficService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	if opened {
+		t.Fatal("NewRouter opened configured store")
+	}
+
+	agentsReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents", nil)
+	agentsReq.Header.Set("X-Panel-Token", "secret")
+	agentsResp := httptest.NewRecorder()
+	router.ServeHTTP(agentsResp, agentsReq)
+	if agentsResp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/agents = %d, body=%s", agentsResp.Code, agentsResp.Body.String())
+	}
+
+	rulesReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/local/rules", nil)
+	rulesReq.Header.Set("X-Panel-Token", "secret")
+	rulesResp := httptest.NewRecorder()
+	router.ServeHTTP(rulesResp, rulesReq)
+	if rulesResp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/agents/local/rules = %d, body=%s", rulesResp.Code, rulesResp.Body.String())
 	}
 }

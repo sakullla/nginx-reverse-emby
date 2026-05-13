@@ -443,6 +443,18 @@ func TestWireGuardProfileUpdateRejectsUnknownRedactedPeerSecret(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileUpdateAndDeleteMissingReturnWireGuardNotFound(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	if _, err := svc.Update(ctx, "local", 99, testWireGuardProfileInput()); !errors.Is(err, ErrWireGuardProfileNotFound) {
+		t.Fatalf("Update() error = %v, want ErrWireGuardProfileNotFound", err)
+	}
+	if _, err := svc.Delete(ctx, "local", 99); !errors.Is(err, ErrWireGuardProfileNotFound) {
+		t.Fatalf("Delete() error = %v, want ErrWireGuardProfileNotFound", err)
+	}
+}
+
 func TestWireGuardProfileDeleteRemovesProfile(t *testing.T) {
 	store, svc := newTestWireGuardProfileService(t)
 

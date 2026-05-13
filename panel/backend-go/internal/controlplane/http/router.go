@@ -324,15 +324,16 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.BackupService = unavailableBackupService{}
 	}
 
-	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || d.WireGuardProfileService == nil
+	if d.WireGuardProfileService == nil && d.hasCoreServices() {
+		d.WireGuardProfileService = unavailableWireGuardProfileService{}
+	}
+
+	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil
 	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil {
 		return d, nil
 	}
 	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
 		d.TrafficService = unavailableTrafficService{}
-		if d.WireGuardProfileService == nil {
-			d.WireGuardProfileService = unavailableWireGuardProfileService{}
-		}
 		return d, nil
 	}
 
@@ -404,6 +405,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
 	case errors.Is(err, service.ErrAgentNotFound):
 		return http.StatusNotFound, errorPayload("agent not found")
+	case errors.Is(err, service.ErrWireGuardProfileNotFound):
+		return http.StatusNotFound, errorPayload("wireguard profile not found")
 	case errors.Is(err, service.ErrRuleNotFound):
 		return http.StatusNotFound, errorPayload("rule id not found")
 	case errors.Is(err, service.ErrVersionPolicyNotFound):

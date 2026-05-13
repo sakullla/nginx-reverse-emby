@@ -95,6 +95,39 @@ func TestRouterWireGuardProfilesDeleteRouteWorks(t *testing.T) {
 	assertWireGuardHTTPSecretsRedacted(t, deleted)
 }
 
+func TestRouterWireGuardProfilesMissingIDReturnsWireGuardNotFound(t *testing.T) {
+	router, cleanup := newWireGuardHTTPTestRouter(t)
+	defer cleanup()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		body   string
+	}{
+		{name: "update", method: http.MethodPut, body: validWireGuardHTTPPayload()},
+		{name: "delete", method: http.MethodDelete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/panel-api/agents/local/wireguard-profiles/99", bytes.NewBufferString(tc.body))
+			req.Header.Set("X-Panel-Token", "secret")
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, req)
+			if resp.Code != http.StatusNotFound {
+				t.Fatalf("%s missing profile = %d, body=%s", tc.method, resp.Code, resp.Body.String())
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if payload["message"] != "wireguard profile not found" {
+				t.Fatalf("payload = %+v", payload)
+			}
+		})
+	}
+}
+
 func newWireGuardHTTPTestRouter(t *testing.T) (http.Handler, func()) {
 	t.Helper()
 

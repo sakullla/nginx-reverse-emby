@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -14,6 +15,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+var ErrWireGuardProfileNotFound = errors.New("wireguard profile not found")
 
 type WireGuardPeer struct {
 	Name                       string   `json:"name"`
@@ -153,7 +156,7 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 		}
 	}
 	if targetIndex < 0 {
-		return WireGuardProfile{}, ErrRuleNotFound
+		return WireGuardProfile{}, ErrWireGuardProfileNotFound
 	}
 
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
@@ -199,7 +202,7 @@ func (s *wireGuardProfileService) Delete(ctx context.Context, agentID string, id
 		}
 	}
 	if targetIndex < 0 {
-		return WireGuardProfile{}, ErrRuleNotFound
+		return WireGuardProfile{}, ErrWireGuardProfileNotFound
 	}
 
 	nextRows := append([]storage.WireGuardProfileRow(nil), rows[:targetIndex]...)
