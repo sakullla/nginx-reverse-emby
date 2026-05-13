@@ -505,6 +505,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		if wireGuardProfileID == nil {
 			return L4Rule{}, fmt.Errorf("%w: wireguard_profile_id is required when listen_mode=wireguard or proxy_egress_mode=wireguard", ErrInvalidArgument)
 		}
+		if listenMode == "wireguard" && wireGuardListenHost == "" {
+			wireGuardListenHost = listenHost
+		}
 	} else {
 		wireGuardProfileID = nil
 		wireGuardListenHost = ""

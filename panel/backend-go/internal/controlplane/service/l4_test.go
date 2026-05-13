@@ -584,6 +584,102 @@ func TestL4WireGuardProxyEgressRequiresProfile(t *testing.T) {
 	}
 }
 
+func TestL4WireGuardListenHostDefaultsToListenHostOnCreate(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:           stringPtrL4("udp"),
+		ListenHost:         stringPtrL4("127.0.0.1"),
+		ListenPort:         intPtrL4(51820),
+		ListenMode:         stringPtrL4("wireguard"),
+		WireGuardProfileID: intPtrL4(7),
+		Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.WireGuardListenHost != "127.0.0.1" {
+		t.Fatalf("WireGuardListenHost = %q, want listen_host", rule.WireGuardListenHost)
+	}
+	if got := store.l4RulesByID["local"][0].WireGuardListenHost; got != "127.0.0.1" {
+		t.Fatalf("persisted WireGuardListenHost = %q, want listen_host", got)
+	}
+}
+
+func TestL4WireGuardListenHostPreservesExplicitValueOnCreate(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:            stringPtrL4("udp"),
+		ListenHost:          stringPtrL4("0.0.0.0"),
+		ListenPort:          intPtrL4(51820),
+		ListenMode:          stringPtrL4("wireguard"),
+		WireGuardProfileID:  intPtrL4(7),
+		WireGuardListenHost: stringPtrL4("10.8.0.1"),
+		Backends:            &[]L4Backend{{Host: "upstream", Port: 9001}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.WireGuardListenHost != "10.8.0.1" {
+		t.Fatalf("WireGuardListenHost = %q, want explicit value", rule.WireGuardListenHost)
+	}
+	if got := store.l4RulesByID["local"][0].WireGuardListenHost; got != "10.8.0.1" {
+		t.Fatalf("persisted WireGuardListenHost = %q, want explicit value", got)
+	}
+}
+
+func TestL4WireGuardListenHostDefaultsToListenHostOnUpdate(t *testing.T) {
+	current := L4Rule{
+		ID:         1,
+		AgentID:    "local",
+		Name:       "TCP 9000",
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9000,
+		Backends:   []L4Backend{{Host: "upstream", Port: 9001}},
+		ListenMode: "tcp",
+		Enabled:    true,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(current)},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		Protocol:           stringPtrL4("udp"),
+		ListenHost:         stringPtrL4("127.0.0.1"),
+		ListenMode:         stringPtrL4("wireguard"),
+		WireGuardProfileID: intPtrL4(7),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.WireGuardListenHost != "127.0.0.1" {
+		t.Fatalf("WireGuardListenHost = %q, want resulting listen_host", rule.WireGuardListenHost)
+	}
+	if got := store.l4RulesByID["local"][0].WireGuardListenHost; got != "127.0.0.1" {
+		t.Fatalf("persisted WireGuardListenHost = %q, want resulting listen_host", got)
+	}
+}
+
 func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
 	tests := []struct {
 		name     string
