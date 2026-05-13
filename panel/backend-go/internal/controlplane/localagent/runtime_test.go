@@ -464,6 +464,68 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	}
 }
 
+func TestToEmbeddedSnapshotPreservesWireGuardProfilesWithRawSecrets(t *testing.T) {
+	snapshot := Snapshot{
+		WireGuardProfiles: []storage.WireGuardProfile{{
+			ID:         17,
+			AgentID:    "local",
+			Name:       "wg-egress",
+			Mode:       "generic_wireguard",
+			PrivateKey: "raw-private-key",
+			ListenPort: 51820,
+			Addresses:  []string{"10.50.0.2/32", "fd50::2/128"},
+			Peers: []storage.WireGuardPeer{{
+				Name:                       "hub",
+				PublicKey:                  "peer-public-key",
+				PresharedKey:               "raw-preshared-key",
+				Endpoint:                   "hub.example.com:51820",
+				AllowedIPs:                 []string{"0.0.0.0/0", "::/0"},
+				PersistentKeepaliveSeconds: 25,
+			}},
+			DNS:      []string{"1.1.1.1"},
+			MTU:      1420,
+			Enabled:  true,
+			Tags:     []string{"relay"},
+			Revision: 44,
+		}},
+	}
+
+	embedded := toEmbeddedSnapshot(snapshot)
+
+	if len(embedded.WireGuardProfiles) != 1 {
+		t.Fatalf("embedded WireGuardProfiles len = %d, want 1", len(embedded.WireGuardProfiles))
+	}
+	profile := embedded.WireGuardProfiles[0]
+	if profile.ID != 17 || profile.AgentID != "local" || profile.Name != "wg-egress" || profile.Mode != "generic_wireguard" {
+		t.Fatalf("embedded WireGuard profile identity = %+v", profile)
+	}
+	if profile.PrivateKey != "raw-private-key" {
+		t.Fatalf("embedded WireGuard profile PrivateKey = %q, want raw private key", profile.PrivateKey)
+	}
+	if profile.ListenPort != 51820 || profile.MTU != 1420 || !profile.Enabled || profile.Revision != 44 {
+		t.Fatalf("embedded WireGuard profile scalar fields = %+v", profile)
+	}
+	if !reflect.DeepEqual(profile.Addresses, []string{"10.50.0.2/32", "fd50::2/128"}) {
+		t.Fatalf("embedded WireGuard profile Addresses = %+v", profile.Addresses)
+	}
+	if !reflect.DeepEqual(profile.DNS, []string{"1.1.1.1"}) || !reflect.DeepEqual(profile.Tags, []string{"relay"}) {
+		t.Fatalf("embedded WireGuard profile DNS/Tags = dns %+v tags %+v", profile.DNS, profile.Tags)
+	}
+	if len(profile.Peers) != 1 {
+		t.Fatalf("embedded WireGuard profile Peers len = %d, want 1", len(profile.Peers))
+	}
+	peer := profile.Peers[0]
+	if peer.Name != "hub" || peer.PublicKey != "peer-public-key" || peer.PresharedKey != "raw-preshared-key" {
+		t.Fatalf("embedded WireGuard peer secrets = %+v", peer)
+	}
+	if peer.Endpoint != "hub.example.com:51820" || peer.PersistentKeepaliveSeconds != 25 {
+		t.Fatalf("embedded WireGuard peer endpoint/keepalive = %+v", peer)
+	}
+	if !reflect.DeepEqual(peer.AllowedIPs, []string{"0.0.0.0/0", "::/0"}) {
+		t.Fatalf("embedded WireGuard peer AllowedIPs = %+v", peer.AllowedIPs)
+	}
+}
+
 func TestLocalStateSinkPersistsRuntimeStateToControlPlaneStore(t *testing.T) {
 	store := &bridgeStoreStub{}
 	sink := NewStateSink(store, "local")
