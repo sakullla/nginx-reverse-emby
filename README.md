@@ -11,7 +11,7 @@
 - **可视化面板**：轻量管理界面，支持 HTTP/L4 规则增删改查、证书统一管理、Agent 状态监控
 - **自动化 SSL**：集成 ACME (lego)，支持 HTTP/DNS API 自动申请并续期证书
 - **Master/Agent 架构**：集中管理多个代理节点，Agent 通过心跳拉取配置，NAT 环境无需入站端口
-- **全栈协议支持**：HTTP/HTTPS 代理、L4 TCP 代理、Relay 隧道 (tls_tcp/quic)、HTTP/3、IPv4/IPv6 双栈
+- **全栈协议支持**：HTTP/HTTPS 代理、L4 TCP 代理、Relay 隧道 (tls_tcp/quic/wireguard)、HTTP/3、IPv4/IPv6 双栈
 - **流式恢复**：内置中断流恢复与 backend 重试机制，保障大文件传输稳定性
 - **版本管理**：支持通过 `desired_version` 从控制面向 Agent 推送版本升级
 
@@ -341,7 +341,7 @@ nre-control-plane migrate-storage \
 - `tls_tcp` 为单外层 TLS 连接承载多逻辑流的复用隧道，支持长连接复用和多路复用
 - `wireguard` 使用所选 WireGuard Profile 作为传输路径，Relay 原有 TLS、mux、认证仍在 WireGuard 链路上生效，不是认证绕过
 - 支持 `obfs_mode=off|early_window_v2`（仅对 `tls_tcp` 生效）
-- UDP relay：`quic` 走流内包帧，`tls_tcp` 走 UoT
+- UDP relay：`quic` 走流内包帧，`tls_tcp` 走 UoT，`wireguard` 复用所选 Profile 的隧道路径
 - 真实 TLS 0-RTT 仅在 `quic` 路径可用（Go `crypto/tls` 限制）
 
 ### WireGuard Profile
