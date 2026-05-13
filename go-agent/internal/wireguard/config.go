@@ -71,6 +71,9 @@ func NormalizeConfig(profile model.WireGuardProfile) (Config, error) {
 		profile.MTU = defaultMTU
 	}
 
+	if len(profile.Addresses) == 0 {
+		return Config{}, fmt.Errorf("addresses must contain at least one CIDR")
+	}
 	addresses, addressAddrs, err := parseAddressPrefixes(profile.Addresses)
 	if err != nil {
 		return Config{}, err
@@ -78,6 +81,9 @@ func NormalizeConfig(profile model.WireGuardProfile) (Config, error) {
 	dnsAddrs, err := parseDNSAddrs(profile.DNS)
 	if err != nil {
 		return Config{}, err
+	}
+	if len(profile.Peers) == 0 {
+		return Config{}, fmt.Errorf("peers must contain at least one peer")
 	}
 	peers, err := normalizePeers(profile.Peers)
 	if err != nil {

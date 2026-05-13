@@ -135,11 +135,25 @@ func TestNormalizeConfigRejectsCIDRAndEndpointErrors(t *testing.T) {
 		wantErr string
 	}{
 		{
+			name: "empty addresses",
+			mutate: func(profile *model.WireGuardProfile) {
+				profile.Addresses = nil
+			},
+			wantErr: "addresses",
+		},
+		{
 			name: "invalid address",
 			mutate: func(profile *model.WireGuardProfile) {
 				profile.Addresses = []string{"10.20.0.1"}
 			},
 			wantErr: "addresses[0] must be CIDR",
+		},
+		{
+			name: "empty peers",
+			mutate: func(profile *model.WireGuardProfile) {
+				profile.Peers = nil
+			},
+			wantErr: "peers",
 		},
 		{
 			name: "invalid allowed ip",
