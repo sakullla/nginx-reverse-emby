@@ -994,12 +994,31 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 				Revision:   6,
 			}},
 			RelayListeners: []storage.RelayListener{{
-				ID:         11,
+				ID:                 11,
+				AgentID:            "remote-a",
+				Name:               "relay-a",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         7443,
+				TransportMode:      "wireguard",
+				WireGuardProfileID: intPtrService(41),
+				Revision:           4,
+			}},
+			WireGuardProfiles: []storage.WireGuardProfile{{
+				ID:         41,
 				AgentID:    "remote-a",
-				Name:       "relay-a",
-				ListenHost: "0.0.0.0",
-				ListenPort: 7443,
-				Revision:   4,
+				Name:       "wg-relay",
+				Mode:       "generic_wireguard",
+				PrivateKey: "private-key",
+				Addresses:  []string{"10.44.0.2/32"},
+				Peers: []storage.WireGuardPeer{{
+					Name:         "relay-peer",
+					PublicKey:    "public-key",
+					PresharedKey: "preshared-key",
+					Endpoint:     "relay.example.com:51820",
+					AllowedIPs:   []string{"10.44.0.1/32"},
+				}},
+				Enabled:  true,
+				Revision: 8,
 			}},
 			Certificates: []storage.ManagedCertificateBundle{{
 				ID:       21,
@@ -1060,6 +1079,12 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 	if len(reply.Rules) != 1 || len(reply.L4Rules) != 1 || len(reply.RelayListeners) != 1 {
 		t.Fatalf("sync arrays = %+v", reply)
 	}
+	if len(reply.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles length = %d, want 1: %+v", len(reply.WireGuardProfiles), reply.WireGuardProfiles)
+	}
+	if profile := reply.WireGuardProfiles[0]; profile.ID != 41 || profile.PrivateKey != "private-key" || len(profile.Peers) != 1 || profile.Peers[0].PresharedKey != "preshared-key" {
+		t.Fatalf("WireGuardProfiles[0] = %+v", profile)
+	}
 	if len(reply.Certificates) != 1 || len(reply.CertificatePolicies) != 1 {
 		t.Fatalf("cert sync arrays = %+v", reply)
 	}
@@ -1099,10 +1124,11 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 				URL:      "https://example.com/agent-linux.tar.gz",
 				SHA256:   "sha-linux",
 			},
-			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://a.example.com", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
-			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}}}},
-			RelayListeners: []storage.RelayListener{{ID: 11, AgentID: "remote-b", Name: "relay-b", ListenHost: "0.0.0.0", ListenPort: 7443}},
-			Certificates:   []storage.ManagedCertificateBundle{{ID: 31, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
+			Rules:             []storage.HTTPRule{{ID: 1, FrontendURL: "https://a.example.com", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
+			L4Rules:           []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}}}},
+			RelayListeners:    []storage.RelayListener{{ID: 11, AgentID: "remote-b", Name: "relay-b", ListenHost: "0.0.0.0", ListenPort: 7443}},
+			WireGuardProfiles: []storage.WireGuardProfile{{ID: 41, AgentID: "remote-b", Name: "wg-relay", Mode: "generic_wireguard", PrivateKey: "private-key", Enabled: true, Revision: 7}},
+			Certificates:      []storage.ManagedCertificateBundle{{ID: 31, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
 			CertificatePolicies: []storage.ManagedCertificatePolicy{{
 				ID:              31,
 				Domain:          "relay.example.com",
@@ -1137,11 +1163,64 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 	if len(reply.RelayListeners) != 1 || reply.RelayListeners[0].ID != 11 {
 		t.Fatalf("expected relay listeners to remain populated when up-to-date: %+v", reply.RelayListeners)
 	}
+	if len(reply.WireGuardProfiles) != 1 || reply.WireGuardProfiles[0].ID != 41 {
+		t.Fatalf("expected wireguard profiles to remain populated when up-to-date: %+v", reply.WireGuardProfiles)
+	}
 	if reply.VersionPackage != "https://example.com/agent-linux.tar.gz" || reply.VersionSHA256 != "sha-linux" {
 		t.Fatalf("version package fields = %q / %q", reply.VersionPackage, reply.VersionSHA256)
 	}
 	if store.lastSnapshotInput.CurrentRevision != 7 || store.lastSnapshotInput.DesiredRevision != 1 {
 		t.Fatalf("snapshot input revision state = %+v", store.lastSnapshotInput)
+	}
+}
+
+func TestAgentServiceHeartbeatReturnsProfileOnlyUpdate(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-wg",
+			Name:            "remote-wg",
+			AgentToken:      "token-remote-wg",
+			DesiredVersion:  "3.0.0",
+			DesiredRevision: 10,
+			CurrentRevision: 9,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "3.0.0",
+			Revision:       10,
+			WireGuardProfiles: []storage.WireGuardProfile{{
+				ID:         77,
+				AgentID:    "remote-wg",
+				Name:       "wg-only",
+				Mode:       "generic_wireguard",
+				PrivateKey: "profile-only-private-key",
+				Addresses:  []string{"10.77.0.2/32"},
+				Enabled:    true,
+				Revision:   10,
+			}},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 9,
+		Platform:        "linux-amd64",
+	}, "token-remote-wg")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if !reply.HasUpdate {
+		t.Fatalf("HasUpdate = false, want true")
+	}
+	if len(reply.Rules) != 0 || len(reply.L4Rules) != 0 || len(reply.RelayListeners) != 0 {
+		t.Fatalf("expected profile-only sync payload, got %+v", reply)
+	}
+	if len(reply.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles length = %d, want 1: %+v", len(reply.WireGuardProfiles), reply.WireGuardProfiles)
+	}
+	if profile := reply.WireGuardProfiles[0]; profile.ID != 77 || profile.PrivateKey != "profile-only-private-key" || profile.Revision != 10 {
+		t.Fatalf("WireGuardProfiles[0] = %+v", profile)
 	}
 }
 

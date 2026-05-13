@@ -143,6 +143,7 @@ type HeartbeatReply struct {
 	Rules                []storage.HTTPRule                 `json:"rules"`
 	L4Rules              []storage.L4Rule                   `json:"l4_rules"`
 	RelayListeners       []storage.RelayListener            `json:"relay_listeners"`
+	WireGuardProfiles    []storage.WireGuardProfile         `json:"wireguard_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
 	OutboundProxyURL     string                             `json:"-"`
@@ -794,6 +795,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		Rules:                snapshot.Rules,
 		L4Rules:              snapshot.L4Rules,
 		RelayListeners:       snapshot.RelayListeners,
+		WireGuardProfiles:    snapshot.WireGuardProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
 		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
