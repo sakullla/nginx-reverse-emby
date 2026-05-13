@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -25,6 +27,8 @@ type Runtime interface {
 }
 
 type Factory func(context.Context, Config) (Runtime, error)
+
+type endpointResolver func(context.Context, string) ([]net.IP, error)
 
 type ManagerOptions struct {
 	Factory Factory
@@ -81,12 +85,13 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 			continue
 		}
 
+		if existing, ok := m.runtimes[profile.ID]; ok {
+			_ = existing.runtime.Close()
+			delete(m.runtimes, profile.ID)
+		}
 		runtime, err := m.factory(ctx, cfg)
 		if err != nil {
 			return fmt.Errorf("wireguard profile %d runtime: %w", profile.ID, err)
-		}
-		if existing, ok := m.runtimes[profile.ID]; ok {
-			_ = existing.runtime.Close()
 		}
 		m.runtimes[profile.ID] = &runtimeEntry{fingerprint: fingerprint, runtime: runtime}
 	}
@@ -128,14 +133,14 @@ func (m *Manager) Close() error {
 }
 
 type netstackRuntime struct {
+	mu     sync.Mutex
 	net    *netstack.Net
 	device *device.Device
 	tun    interface{ Close() error }
+	closed bool
 }
 
 func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
-	_ = ctx
-
 	tunDevice, tnet, err := netstack.CreateNetTUN(cfg.AddressAddrs, cfg.DNSAddrs, cfg.MTU)
 	if err != nil {
 		return nil, err
@@ -143,7 +148,12 @@ func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
 
 	dev := device.NewDevice(tunDevice, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, "wireguard: "))
 	runtime := &netstackRuntime{net: tnet, device: dev, tun: tunDevice}
-	if err := dev.IpcSet(ipcConfig(cfg)); err != nil {
+	ipc, err := ipcConfig(ctx, cfg, lookupEndpointIP)
+	if err != nil {
+		runtime.Close()
+		return nil, err
+	}
+	if err := dev.IpcSet(ipc); err != nil {
 		runtime.Close()
 		return nil, err
 	}
@@ -179,18 +189,29 @@ func (r *netstackRuntime) ListenUDP(ctx context.Context, address string) (Packet
 }
 
 func (r *netstackRuntime) Close() error {
-	if r.device != nil {
-		r.device.Close()
-		r.device = nil
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
 		return nil
 	}
-	if r.tun != nil {
-		return r.tun.Close()
+	r.closed = true
+	dev := r.device
+	tunDevice := r.tun
+	r.device = nil
+	r.tun = nil
+	r.mu.Unlock()
+
+	if dev != nil {
+		dev.Close()
+		return nil
 	}
-	return nil
+	if tunDevice == nil {
+		return nil
+	}
+	return tunDevice.Close()
 }
 
-func ipcConfig(cfg Config) string {
+func ipcConfig(ctx context.Context, cfg Config, resolve endpointResolver) (string, error) {
 	var builder strings.Builder
 	builder.WriteString("private_key=")
 	builder.WriteString(hex.EncodeToString(cfg.PrivateKeyBytes))
@@ -209,7 +230,11 @@ func ipcConfig(cfg Config) string {
 			builder.WriteString(hex.EncodeToString(peer.PresharedKeyBytes))
 			builder.WriteByte('\n')
 		}
-		if endpoint := strings.TrimSpace(peer.Endpoint); endpoint != "" {
+		endpoint, err := ipcEndpoint(ctx, peer, resolve)
+		if err != nil {
+			return "", err
+		}
+		if endpoint != "" {
 			builder.WriteString("endpoint=")
 			builder.WriteString(endpoint)
 			builder.WriteByte('\n')
@@ -225,5 +250,32 @@ func ipcConfig(cfg Config) string {
 		}
 	}
 	builder.WriteByte('\n')
-	return builder.String()
+	return builder.String(), nil
+}
+
+func ipcEndpoint(ctx context.Context, peer PeerConfig, resolve endpointResolver) (string, error) {
+	host := strings.TrimSpace(peer.EndpointHost)
+	if host == "" {
+		return "", nil
+	}
+	port := strconv.Itoa(int(peer.EndpointPort))
+	if addr, err := netip.ParseAddr(host); err == nil && addr.IsValid() {
+		return net.JoinHostPort(addr.String(), port), nil
+	}
+	ips, err := resolve(ctx, host)
+	if err != nil {
+		return "", fmt.Errorf("resolve endpoint %s: %w", host, err)
+	}
+	for _, ip := range ips {
+		addr, ok := netip.AddrFromSlice(ip)
+		if !ok || !addr.IsValid() {
+			continue
+		}
+		return net.JoinHostPort(addr.Unmap().String(), port), nil
+	}
+	return "", fmt.Errorf("resolve endpoint %s: no IP addresses returned", host)
+}
+
+func lookupEndpointIP(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }

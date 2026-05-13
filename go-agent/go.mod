@@ -6,6 +6,7 @@ require (
 	github.com/go-acme/lego/v4 v4.35.2
 	github.com/quic-go/quic-go v0.59.1
 	golang.org/x/sys v0.44.0
+	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 )
 
 require (
@@ -23,6 +24,5 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb // indirect
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 )
