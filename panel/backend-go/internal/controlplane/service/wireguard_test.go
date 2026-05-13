@@ -194,6 +194,134 @@ func TestWireGuardProfileUpdateCanDisableProfile(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		seed func(*testing.T, *storage.SQLiteStore, int)
+	}{
+		{
+			name: "relay listener",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveRelayListeners(ctx, "local", []storage.RelayListenerRow{{
+					ID:                 100,
+					AgentID:            "local",
+					Name:               "wg relay",
+					ListenHost:         "0.0.0.0",
+					BindHostsJSON:      `["0.0.0.0"]`,
+					ListenPort:         7443,
+					PublicHost:         "relay.example.com",
+					PublicPort:         7443,
+					Enabled:            true,
+					TLSMode:            "none",
+					TransportMode:      "wireguard",
+					WireGuardProfileID: &profileID,
+					ObfsMode:           "off",
+					PinSetJSON:         `[]`,
+					TagsJSON:           `[]`,
+					Revision:           1,
+				}}); err != nil {
+					t.Fatalf("SaveRelayListeners() error = %v", err)
+				}
+			},
+		},
+		{
+			name: "l4 listen",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
+					ID:                 101,
+					AgentID:            "local",
+					Name:               "wg listen",
+					Protocol:           "tcp",
+					ListenHost:         "0.0.0.0",
+					ListenPort:         9443,
+					BackendsJSON:       `[]`,
+					LoadBalancingJSON:  `{"strategy":"adaptive"}`,
+					TuningJSON:         `{"proxy_protocol":{"decode":false,"send":false}}`,
+					RelayLayersJSON:    `[]`,
+					ListenMode:         "wireguard",
+					WireGuardProfileID: &profileID,
+					Enabled:            true,
+					TagsJSON:           `[]`,
+					Revision:           1,
+				}}); err != nil {
+					t.Fatalf("SaveL4Rules() error = %v", err)
+				}
+			},
+		},
+		{
+			name: "l4 egress",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
+					ID:                 102,
+					AgentID:            "local",
+					Name:               "wg egress",
+					Protocol:           "tcp",
+					ListenHost:         "0.0.0.0",
+					ListenPort:         1080,
+					BackendsJSON:       `[]`,
+					LoadBalancingJSON:  `{"strategy":"adaptive"}`,
+					TuningJSON:         `{"proxy_protocol":{"decode":false,"send":false}}`,
+					RelayLayersJSON:    `[]`,
+					ListenMode:         "proxy",
+					WireGuardProfileID: &profileID,
+					ProxyEntryAuthJSON: `{}`,
+					ProxyEgressMode:    "wireguard",
+					Enabled:            true,
+					TagsJSON:           `[]`,
+					Revision:           1,
+				}}); err != nil {
+					t.Fatalf("SaveL4Rules() error = %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"/disable", func(t *testing.T) {
+			store, svc := newTestWireGuardProfileService(t)
+			created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			tt.seed(t, store, created.ID)
+
+			update := testWireGuardProfileInput()
+			update.PrivateKey = redactedProxyPassword
+			update.Peers[0].PresharedKey = redactedProxyPassword
+			update.Enabled = boolPtr(false)
+			_, err = svc.Update(ctx, "local", created.ID, update)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "wireguard profile is referenced") {
+				t.Fatalf("Update() error = %v, want referenced message", err)
+			}
+		})
+
+		t.Run(tt.name+"/delete", func(t *testing.T) {
+			store, svc := newTestWireGuardProfileService(t)
+			created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			tt.seed(t, store, created.ID)
+
+			_, err = svc.Delete(ctx, "local", created.ID)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Delete() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "wireguard profile is referenced") {
+				t.Fatalf("Delete() error = %v, want referenced message", err)
+			}
+		})
+	}
+}
+
 func TestWireGuardProfileDefaultsModeToGenericWireGuard(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)

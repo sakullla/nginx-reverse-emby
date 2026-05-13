@@ -82,27 +82,29 @@ type BackupHTTPRule struct {
 }
 
 type BackupL4Rule struct {
-	ID              int              `json:"id"`
-	AgentID         string           `json:"agent_id"`
-	Name            string           `json:"name"`
-	Protocol        string           `json:"protocol"`
-	ListenHost      string           `json:"listen_host"`
-	ListenPort      int              `json:"listen_port"`
-	UpstreamHost    string           `json:"upstream_host,omitempty"`
-	UpstreamPort    int              `json:"upstream_port,omitempty"`
-	Backends        []L4Backend      `json:"backends,omitempty"`
-	LoadBalancing   L4LoadBalancing  `json:"load_balancing,omitempty"`
-	Tuning          L4Tuning         `json:"tuning,omitempty"`
-	RelayChain      []int            `json:"relay_chain,omitempty"`
-	RelayLayers     [][]int          `json:"relay_layers,omitempty"`
-	RelayObfs       bool             `json:"relay_obfs,omitempty"`
-	ListenMode      string           `json:"listen_mode,omitempty"`
-	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
-	ProxyEgressMode string           `json:"proxy_egress_mode,omitempty"`
-	ProxyEgressURL  string           `json:"proxy_egress_url,omitempty"`
-	Enabled         bool             `json:"enabled"`
-	Tags            []string         `json:"tags,omitempty"`
-	Revision        int              `json:"revision,omitempty"`
+	ID                  int              `json:"id"`
+	AgentID             string           `json:"agent_id"`
+	Name                string           `json:"name"`
+	Protocol            string           `json:"protocol"`
+	ListenHost          string           `json:"listen_host"`
+	ListenPort          int              `json:"listen_port"`
+	UpstreamHost        string           `json:"upstream_host,omitempty"`
+	UpstreamPort        int              `json:"upstream_port,omitempty"`
+	Backends            []L4Backend      `json:"backends,omitempty"`
+	LoadBalancing       L4LoadBalancing  `json:"load_balancing,omitempty"`
+	Tuning              L4Tuning         `json:"tuning,omitempty"`
+	RelayChain          []int            `json:"relay_chain,omitempty"`
+	RelayLayers         [][]int          `json:"relay_layers,omitempty"`
+	RelayObfs           bool             `json:"relay_obfs,omitempty"`
+	ListenMode          string           `json:"listen_mode,omitempty"`
+	WireGuardProfileID  *int             `json:"wireguard_profile_id,omitempty"`
+	WireGuardListenHost string           `json:"wireguard_listen_host,omitempty"`
+	ProxyEntryAuth      L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	ProxyEgressMode     string           `json:"proxy_egress_mode,omitempty"`
+	ProxyEgressURL      string           `json:"proxy_egress_url,omitempty"`
+	Enabled             bool             `json:"enabled"`
+	Tags                []string         `json:"tags,omitempty"`
+	Revision            int              `json:"revision,omitempty"`
 }
 
 type BackupRelayListener = RelayListener

@@ -184,6 +184,11 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 	if err != nil {
 		return WireGuardProfile{}, err
 	}
+	if current.Enabled && !profile.Enabled {
+		if err := s.ensureProfileNotReferenced(ctx, resolvedID, profile.ID); err != nil {
+			return WireGuardProfile{}, err
+		}
+	}
 	profile.AgentID = resolvedID
 	profile.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 	rows[targetIndex] = wireGuardProfileToRow(profile)
@@ -222,6 +227,9 @@ func (s *wireGuardProfileService) Delete(ctx context.Context, agentID string, id
 	if targetIndex < 0 {
 		return WireGuardProfile{}, ErrWireGuardProfileNotFound
 	}
+	if err := s.ensureProfileNotReferenced(ctx, resolvedID, deleted.ID); err != nil {
+		return WireGuardProfile{}, err
+	}
 
 	nextRows := append([]storage.WireGuardProfileRow(nil), rows[:targetIndex]...)
 	nextRows = append(nextRows, rows[targetIndex+1:]...)
@@ -240,6 +248,37 @@ func (s *wireGuardProfileService) Delete(ctx context.Context, agentID string, id
 		return WireGuardProfile{}, err
 	}
 	return redactWireGuardProfile(deleted), nil
+}
+
+func (s *wireGuardProfileService) ensureProfileNotReferenced(ctx context.Context, agentID string, profileID int) error {
+	relayRows, err := s.store.ListRelayListeners(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, row := range relayRows {
+		if !strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") {
+			continue
+		}
+		if row.WireGuardProfileID != nil && *row.WireGuardProfileID == profileID {
+			return fmt.Errorf("%w: wireguard profile is referenced by relay listener %d", ErrInvalidArgument, row.ID)
+		}
+	}
+
+	l4Rows, err := s.store.ListL4Rules(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, row := range l4Rows {
+		listenMode := strings.ToLower(strings.TrimSpace(row.ListenMode))
+		proxyEgressMode := strings.ToLower(strings.TrimSpace(row.ProxyEgressMode))
+		if listenMode != "wireguard" && proxyEgressMode != "wireguard" {
+			continue
+		}
+		if row.WireGuardProfileID != nil && *row.WireGuardProfileID == profileID {
+			return fmt.Errorf("%w: wireguard profile is referenced by l4 rule %d", ErrInvalidArgument, row.ID)
+		}
+	}
+	return nil
 }
 
 func (s *wireGuardProfileService) ensureAgentExists(ctx context.Context, agentID string) (string, error) {

@@ -863,6 +863,43 @@ func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
 	}
 }
 
+func TestBackupL4RuleConversionPreservesWireGuardFields(t *testing.T) {
+	profileID := 77
+	rule := L4Rule{
+		ID:                  45,
+		AgentID:             "edge-wg",
+		Name:                "wireguard l4",
+		Protocol:            "tcp",
+		ListenHost:          "0.0.0.0",
+		ListenPort:          9443,
+		Backends:            []L4Backend{{Host: "127.0.0.1", Port: 9443}},
+		LoadBalancing:       L4LoadBalancing{Strategy: "adaptive"},
+		Tuning:              L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
+		ListenMode:          "wireguard",
+		WireGuardProfileID:  &profileID,
+		WireGuardListenHost: "10.44.0.1",
+		Enabled:             true,
+		Tags:                []string{"wg"},
+		Revision:            9,
+	}
+
+	backupRule := backupL4RuleFromRule(rule)
+	if backupRule.WireGuardProfileID == nil || *backupRule.WireGuardProfileID != profileID {
+		t.Fatalf("backup WireGuardProfileID = %v, want %d", backupRule.WireGuardProfileID, profileID)
+	}
+	if backupRule.WireGuardListenHost != "10.44.0.1" {
+		t.Fatalf("backup WireGuardListenHost = %q, want 10.44.0.1", backupRule.WireGuardListenHost)
+	}
+
+	input := l4RuleInputFromBackup(backupRule, nil)
+	if input.WireGuardProfileID == nil || *input.WireGuardProfileID != profileID {
+		t.Fatalf("input WireGuardProfileID = %v, want %d", input.WireGuardProfileID, profileID)
+	}
+	if input.WireGuardListenHost == nil || *input.WireGuardListenHost != "10.44.0.1" {
+		t.Fatalf("input WireGuardListenHost = %v, want 10.44.0.1", input.WireGuardListenHost)
+	}
+}
+
 func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testing.T) {
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
