@@ -47,16 +47,19 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 	defer m.mu.Unlock()
 
 	if len(listeners) == 0 {
+		if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
+			return err
+		}
 		if m.server != nil {
 			_ = m.server.Close()
 			m.server = nil
 		}
-		if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
-			return err
-		}
 		return nil
 	}
 	if err := validateRelayListeners(ctx, listeners, m.provider); err != nil {
+		return err
+	}
+	if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
 		return err
 	}
 
@@ -64,9 +67,6 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 	if previous != nil {
 		_ = previous.Close()
 		m.server = nil
-	}
-	if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
-		return err
 	}
 
 	server, err := relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{

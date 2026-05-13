@@ -16,13 +16,17 @@ import (
 )
 
 type relayPathDialer struct {
-	provider RelayMaterialProvider
+	provider          RelayMaterialProvider
+	wireGuardProvider relay.WireGuardRuntimeProvider
 }
 
 func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
 	options := relay.DialOptions{}
 	if len(req.Options) > 0 {
 		options = req.Options[0]
+	}
+	if options.WireGuardProvider == nil {
+		options.WireGuardProvider = d.wireGuardProvider
 	}
 	return relay.DialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, options)
 }
@@ -74,7 +78,7 @@ func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOp
 	}
 	dialer := s.relayPathDialer
 	if dialer == nil {
-		dialer = relayPathDialer{provider: s.relayProvider}
+		dialer = relayPathDialer{provider: s.relayProvider, wireGuardProvider: s.wireGuardProvider}
 	}
 	racer := relayplan.Racer{Dialer: dialer, Cache: s.cache, Concurrency: 3, MaxPaths: 32}
 	result, err := racer.Race(s.ctx, relayplan.Request{

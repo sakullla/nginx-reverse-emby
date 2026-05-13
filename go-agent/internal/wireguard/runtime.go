@@ -28,20 +28,25 @@ type Runtime interface {
 
 type Factory func(context.Context, Config) (Runtime, error)
 
+type Preflight func(context.Context, Config) error
+
 type endpointResolver func(context.Context, string) ([]net.IP, error)
 
 type ManagerOptions struct {
-	Factory Factory
+	Factory   Factory
+	Preflight Preflight
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	factory  Factory
-	runtimes map[int]*runtimeEntry
+	mu        sync.Mutex
+	factory   Factory
+	preflight Preflight
+	runtimes  map[int]*runtimeEntry
 }
 
 type runtimeEntry struct {
 	fingerprint string
+	config      Config
 	runtime     Runtime
 }
 
@@ -50,9 +55,14 @@ func NewManager(options ManagerOptions) *Manager {
 	if factory == nil {
 		factory = NewRuntime
 	}
+	preflight := options.Preflight
+	if preflight == nil {
+		preflight = PreflightConfig
+	}
 	return &Manager{
-		factory:  factory,
-		runtimes: make(map[int]*runtimeEntry),
+		factory:   factory,
+		preflight: preflight,
+		runtimes:  make(map[int]*runtimeEntry),
 	}
 }
 
@@ -61,39 +71,112 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 	defer m.mu.Unlock()
 
 	seen := make(map[int]struct{}, len(profiles))
+	var replacements []runtimeReplacement
 	for _, profile := range profiles {
+		seen[profile.ID] = struct{}{}
 		if !profile.Enabled {
-			seen[profile.ID] = struct{}{}
-			if existing, ok := m.runtimes[profile.ID]; ok {
-				_ = existing.runtime.Close()
-				delete(m.runtimes, profile.ID)
-			}
 			continue
 		}
 
 		cfg, err := NormalizeConfig(profile)
 		if err != nil {
+			closeReplacementRuntimes(replacements)
 			return fmt.Errorf("wireguard profile %d: %w", profile.ID, err)
 		}
 		fingerprint, err := Fingerprint(profile)
 		if err != nil {
+			closeReplacementRuntimes(replacements)
 			return fmt.Errorf("wireguard profile %d fingerprint: %w", profile.ID, err)
 		}
-		seen[profile.ID] = struct{}{}
 
 		if existing, ok := m.runtimes[profile.ID]; ok && existing.fingerprint == fingerprint {
 			continue
 		}
 
 		if existing, ok := m.runtimes[profile.ID]; ok {
-			_ = existing.runtime.Close()
-			delete(m.runtimes, profile.ID)
+			runtime, err := m.factory(ctx, cfg)
+			if err == nil {
+				replacements = append(replacements, runtimeReplacement{
+					profileID:   profile.ID,
+					fingerprint: fingerprint,
+					config:      cloneConfig(cfg),
+					runtime:     runtime,
+					existing:    existing,
+				})
+				continue
+			}
+			if !sameListenPort(existing.config.ListenPort, cfg.ListenPort) || !isListenPortConflict(err) {
+				closeReplacementRuntimes(replacements)
+				return fmt.Errorf("wireguard profile %d runtime: %w", profile.ID, err)
+			}
+			if preflightErr := m.preflight(ctx, cfg); preflightErr != nil {
+				closeReplacementRuntimes(replacements)
+				return fmt.Errorf("wireguard profile %d preflight: %w", profile.ID, preflightErr)
+			}
+			replacements = append(replacements, runtimeReplacement{
+				profileID:          profile.ID,
+				fingerprint:        fingerprint,
+				config:             cloneConfig(cfg),
+				existing:           existing,
+				requiresCloseFirst: true,
+			})
+			continue
 		}
 		runtime, err := m.factory(ctx, cfg)
 		if err != nil {
+			closeReplacementRuntimes(replacements)
 			return fmt.Errorf("wireguard profile %d runtime: %w", profile.ID, err)
 		}
-		m.runtimes[profile.ID] = &runtimeEntry{fingerprint: fingerprint, runtime: runtime}
+		replacements = append(replacements, runtimeReplacement{
+			profileID:   profile.ID,
+			fingerprint: fingerprint,
+			config:      cloneConfig(cfg),
+			runtime:     runtime,
+		})
+	}
+
+	var closeFirstApplied []runtimeReplacement
+	for _, replacement := range replacements {
+		if !replacement.requiresCloseFirst {
+			continue
+		}
+		if replacement.existing != nil {
+			_ = replacement.existing.runtime.Close()
+			delete(m.runtimes, replacement.profileID)
+		}
+		runtime, err := m.factory(ctx, replacement.config)
+		if err != nil {
+			rollbackErr := m.rollbackCloseFirstReplacement(ctx, replacement)
+			if appliedRollbackErr := m.rollbackCloseFirstReplacements(ctx, closeFirstApplied); rollbackErr == nil {
+				rollbackErr = appliedRollbackErr
+			}
+			closePendingReplacementRuntimes(replacements)
+			if rollbackErr != nil {
+				return fmt.Errorf("wireguard profile %d runtime: %w; rollback failed: %v", replacement.profileID, err, rollbackErr)
+			}
+			return fmt.Errorf("wireguard profile %d runtime: %w", replacement.profileID, err)
+		}
+		replacement.runtime = runtime
+		m.runtimes[replacement.profileID] = &runtimeEntry{
+			fingerprint: replacement.fingerprint,
+			config:      cloneConfig(replacement.config),
+			runtime:     replacement.runtime,
+		}
+		closeFirstApplied = append(closeFirstApplied, replacement)
+	}
+
+	for _, replacement := range replacements {
+		if replacement.requiresCloseFirst {
+			continue
+		}
+		if replacement.existing != nil {
+			_ = replacement.existing.runtime.Close()
+		}
+		m.runtimes[replacement.profileID] = &runtimeEntry{
+			fingerprint: replacement.fingerprint,
+			config:      cloneConfig(replacement.config),
+			runtime:     replacement.runtime,
+		}
 	}
 
 	for profileID, existing := range m.runtimes {
@@ -103,8 +186,121 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 		_ = existing.runtime.Close()
 		delete(m.runtimes, profileID)
 	}
+	for _, profile := range profiles {
+		if profile.Enabled {
+			continue
+		}
+		if existing, ok := m.runtimes[profile.ID]; ok {
+			_ = existing.runtime.Close()
+			delete(m.runtimes, profile.ID)
+		}
+	}
 
 	return nil
+}
+
+type runtimeReplacement struct {
+	profileID          int
+	fingerprint        string
+	config             Config
+	runtime            Runtime
+	existing           *runtimeEntry
+	requiresCloseFirst bool
+}
+
+func PreflightConfig(ctx context.Context, cfg Config) error {
+	_, err := ipcConfig(ctx, cfg, lookupEndpointIP)
+	return err
+}
+
+func sameListenPort(existingPort, nextPort int) bool {
+	return existingPort > 0 && existingPort == nextPort
+}
+
+func isListenPortConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "address already in use") ||
+		strings.Contains(message, "only one usage of each socket address") ||
+		strings.Contains(message, "an attempt was made to access a socket") ||
+		strings.Contains(message, "eaddrinuse")
+}
+
+func closeReplacementRuntimes(replacements []runtimeReplacement) {
+	for _, replacement := range replacements {
+		if replacement.runtime != nil {
+			_ = replacement.runtime.Close()
+		}
+	}
+}
+
+func closePendingReplacementRuntimes(replacements []runtimeReplacement) {
+	for _, replacement := range replacements {
+		if replacement.requiresCloseFirst || replacement.runtime == nil {
+			continue
+		}
+		_ = replacement.runtime.Close()
+	}
+}
+
+func (m *Manager) rollbackCloseFirstReplacements(ctx context.Context, replacements []runtimeReplacement) error {
+	for i := len(replacements) - 1; i >= 0; i-- {
+		if err := m.rollbackCloseFirstReplacement(ctx, replacements[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) rollbackCloseFirstReplacement(ctx context.Context, replacement runtimeReplacement) error {
+	if replacement.runtime != nil {
+		_ = replacement.runtime.Close()
+	}
+	if replacement.existing == nil {
+		delete(m.runtimes, replacement.profileID)
+		return nil
+	}
+	rollbackRuntime, err := m.factory(ctx, replacement.existing.config)
+	if err != nil {
+		delete(m.runtimes, replacement.profileID)
+		return err
+	}
+	m.runtimes[replacement.profileID] = &runtimeEntry{
+		fingerprint: replacement.existing.fingerprint,
+		config:      cloneConfig(replacement.existing.config),
+		runtime:     rollbackRuntime,
+	}
+	return nil
+}
+
+func cloneConfig(cfg Config) Config {
+	cloned := cfg
+	cloned.Addresses = append([]string(nil), cfg.Addresses...)
+	cloned.DNS = append([]string(nil), cfg.DNS...)
+	cloned.Peers = clonePeerConfigs(cfg.Peers)
+	cloned.Tags = append([]string(nil), cfg.Tags...)
+	cloned.PrivateKeyBytes = append([]byte(nil), cfg.PrivateKeyBytes...)
+	cloned.AddressPrefixes = append([]netip.Prefix(nil), cfg.AddressPrefixes...)
+	cloned.AddressAddrs = append([]netip.Addr(nil), cfg.AddressAddrs...)
+	cloned.DNSAddrs = append([]netip.Addr(nil), cfg.DNSAddrs...)
+	return cloned
+}
+
+func clonePeerConfigs(peers []PeerConfig) []PeerConfig {
+	if len(peers) == 0 {
+		return nil
+	}
+	cloned := make([]PeerConfig, len(peers))
+	for i, peer := range peers {
+		cloned[i] = peer
+		cloned[i].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
+		cloned[i].PublicKeyBytes = append([]byte(nil), peer.PublicKeyBytes...)
+		cloned[i].PresharedKeyBytes = append([]byte(nil), peer.PresharedKeyBytes...)
+		cloned[i].AllowedPrefixes = append([]netip.Prefix(nil), peer.AllowedPrefixes...)
+	}
+	return cloned
 }
 
 func (m *Manager) Runtime(profileID int) (Runtime, bool) {

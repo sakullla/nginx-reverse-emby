@@ -123,7 +123,7 @@ func newServerWithOptions(
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
-		relayPathDialer:       relayPathDialer{provider: relayProvider},
+		relayPathDialer:       relayPathDialer{provider: relayProvider, wireGuardProvider: wireGuardProvider},
 		wireGuardProvider:     wireGuardProvider,
 	}
 	for _, rule := range rules {

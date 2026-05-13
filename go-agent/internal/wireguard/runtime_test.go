@@ -3,6 +3,7 @@ package wireguard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -59,7 +60,7 @@ func TestManagerReplacesChangedConfigRuntime(t *testing.T) {
 	}
 }
 
-func TestManagerClosesExistingRuntimeBeforeCreatingReplacement(t *testing.T) {
+func TestManagerCreatesReplacementBeforeClosingExistingRuntime(t *testing.T) {
 	t.Parallel()
 
 	factory := &recordingFactory{}
@@ -77,17 +78,17 @@ func TestManagerClosesExistingRuntimeBeforeCreatingReplacement(t *testing.T) {
 		t.Fatalf("Apply(changed) error = %v", err)
 	}
 	if len(factory.events) < 3 {
-		t.Fatalf("events = %v, want at least initial create, close, replacement create", factory.events)
+		t.Fatalf("events = %v, want at least initial create, replacement create, close", factory.events)
 	}
-	if factory.events[1] != "close:7" || factory.events[2] != "create:7" {
-		t.Fatalf("events = %v, want close before replacement create", factory.events)
+	if factory.events[1] != "create:7" || factory.events[2] != "close:7" {
+		t.Fatalf("events = %v, want replacement create before close", factory.events)
 	}
 	if !first.closed {
 		t.Fatal("stale runtime was not closed")
 	}
 }
 
-func TestManagerDoesNotKeepStaleRuntimeAfterReplacementCreateFails(t *testing.T) {
+func TestManagerPreservesExistingRuntimeAfterReplacementCreateFails(t *testing.T) {
 	t.Parallel()
 
 	factory := &recordingFactory{}
@@ -106,11 +107,89 @@ func TestManagerDoesNotKeepStaleRuntimeAfterReplacementCreateFails(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "bind failed") {
 		t.Fatalf("Apply(changed) error = %v, want bind failed", err)
 	}
-	if !first.closed {
-		t.Fatal("stale runtime was not closed")
+	if first.closed {
+		t.Fatal("existing runtime was closed after replacement creation failed")
 	}
-	if _, ok := manager.Runtime(profile.ID); ok {
-		t.Fatal("stale runtime remained registered after replacement creation failed")
+	got, ok := manager.Runtime(profile.ID)
+	if !ok {
+		t.Fatal("existing runtime was unregistered after replacement creation failed")
+	}
+	if got != first {
+		t.Fatal("manager did not preserve the original runtime after replacement creation failed")
+	}
+}
+
+func TestManagerPreflightsAndRollsBackSamePortReplacementFailure(t *testing.T) {
+	t.Parallel()
+
+	var preflightCalls int
+	var replacementAttempts int
+	var rollback *fakeRuntime
+	factory := &recordingFactory{}
+	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+		switch cfg.Peers[0].Endpoint {
+		case "peer.example.com:51820":
+			return factory.newRuntime(cfg), nil
+		case "peer.example.com:51821":
+			replacementAttempts++
+			if replacementAttempts == 1 {
+				return nil, errors.New("address already in use")
+			}
+			return nil, errors.New("device setup failed")
+		default:
+			return nil, fmt.Errorf("unexpected endpoint %q", cfg.Peers[0].Endpoint)
+		}
+	}
+	manager := NewManager(ManagerOptions{
+		Factory: factory.Create,
+		Preflight: func(context.Context, Config) error {
+			preflightCalls++
+			return nil
+		},
+	})
+	defer manager.Close()
+
+	profile := validProfile()
+	if err := manager.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	first := factory.created[0]
+
+	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+		switch cfg.Peers[0].Endpoint {
+		case "peer.example.com:51821":
+			replacementAttempts++
+			if replacementAttempts == 1 {
+				return nil, errors.New("address already in use")
+			}
+			return nil, errors.New("device setup failed")
+		case "peer.example.com:51820":
+			rollback = factory.newRuntime(cfg)
+			return rollback, nil
+		default:
+			return nil, fmt.Errorf("unexpected endpoint %q", cfg.Peers[0].Endpoint)
+		}
+	}
+	profile.Peers[0].Endpoint = "peer.example.com:51821"
+	err := manager.Apply(context.Background(), []model.WireGuardProfile{profile})
+	if err == nil || !strings.Contains(err.Error(), "device setup failed") {
+		t.Fatalf("Apply(changed) error = %v, want device setup failed", err)
+	}
+	if preflightCalls != 1 {
+		t.Fatalf("preflight calls = %d, want 1", preflightCalls)
+	}
+	if !first.closed {
+		t.Fatal("existing same-port runtime was not closed before replacement retry")
+	}
+	if rollback == nil || rollback.closed {
+		t.Fatalf("rollback runtime = %+v, want active rollback", rollback)
+	}
+	got, ok := manager.Runtime(profile.ID)
+	if !ok {
+		t.Fatal("manager has no runtime after same-port replacement failure")
+	}
+	if got != rollback {
+		t.Fatal("manager did not restore the previous runtime after same-port replacement failure")
 	}
 }
 
@@ -271,26 +350,35 @@ type recordingFactory struct {
 	runtimeByProfileID map[int]*fakeRuntime
 	events             []string
 	createErr          error
+	createFunc         func(context.Context, Config) (Runtime, error)
 }
 
-func (f *recordingFactory) Create(_ context.Context, cfg Config) (Runtime, error) {
+func (f *recordingFactory) Create(ctx context.Context, cfg Config) (Runtime, error) {
 	f.events = append(f.events, "create:"+strconv.Itoa(cfg.ID))
+	if f.createFunc != nil {
+		return f.createFunc(ctx, cfg)
+	}
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
+	return f.newRuntime(cfg), nil
+}
+
+func (f *recordingFactory) newRuntime(cfg Config) *fakeRuntime {
 	if f.runtimeByProfileID == nil {
 		f.runtimeByProfileID = make(map[int]*fakeRuntime)
 	}
-	runtime := &fakeRuntime{profileID: cfg.ID, onClose: func(profileID int) {
+	runtime := &fakeRuntime{profileID: cfg.ID, endpoint: cfg.Peers[0].Endpoint, onClose: func(profileID int) {
 		f.events = append(f.events, "close:"+strconv.Itoa(profileID))
 	}}
 	f.created = append(f.created, runtime)
 	f.runtimeByProfileID[cfg.ID] = runtime
-	return runtime, nil
+	return runtime
 }
 
 type fakeRuntime struct {
 	profileID int
+	endpoint  string
 	closed    bool
 	onClose   func(int)
 }
