@@ -172,16 +172,73 @@ func bindingKeysOverlap(left, right []string) bool {
 		return false
 	}
 
-	seen := make(map[string]struct{}, len(left))
-	for _, binding := range left {
-		seen[binding] = struct{}{}
-	}
-	for _, binding := range right {
-		if _, ok := seen[binding]; ok {
-			return true
+	for _, leftBinding := range left {
+		leftKey, ok := parseBindingKey(leftBinding)
+		if !ok {
+			continue
+		}
+		for _, rightBinding := range right {
+			rightKey, ok := parseBindingKey(rightBinding)
+			if !ok {
+				continue
+			}
+			if leftKey.overlaps(rightKey) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+type bindingKey struct {
+	protocol string
+	host     string
+	port     string
+	wildcard bool
+}
+
+func parseBindingKey(raw string) (bindingKey, bool) {
+	protocol, address, ok := strings.Cut(raw, ":")
+	if !ok {
+		return bindingKey{}, false
+	}
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == "" {
+		return bindingKey{}, false
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" {
+		return bindingKey{}, false
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	return bindingKey{
+		protocol: protocol,
+		host:     normalizeBindingHost(host),
+		port:     port,
+		wildcard: bindingHostIsWildcard(host),
+	}, true
+}
+
+func (k bindingKey) overlaps(other bindingKey) bool {
+	if k.protocol != other.protocol || k.port != other.port {
+		return false
+	}
+	return k.host == other.host || k.wildcard || other.wildcard
+}
+
+func normalizeBindingHost(host string) string {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return strings.ToLower(host)
+}
+
+func bindingHostIsWildcard(host string) bool {
+	if strings.TrimSpace(host) == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }
 
 func isRuntimeBindConflict(err error) bool {

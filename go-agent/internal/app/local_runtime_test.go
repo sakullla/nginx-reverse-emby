@@ -1421,6 +1421,116 @@ func TestRelayRuntimeManagerRestoresServerAfterBindConflictRetryFailure(t *testi
 	waitForPortState(t, listenPort, true)
 }
 
+func TestBindingKeysOverlapTreatsWildcardHostsAsSamePortOverlap(t *testing.T) {
+	port := strconv.Itoa(pickFreeTCPPort(t))
+	tests := []struct {
+		name  string
+		left  string
+		right string
+		want  bool
+	}{
+		{
+			name:  "unspecified ipv4 overlaps specific host",
+			left:  "tcp:" + net.JoinHostPort("0.0.0.0", port),
+			right: "tcp:" + net.JoinHostPort("127.0.0.1", port),
+			want:  true,
+		},
+		{
+			name:  "empty host overlaps specific host",
+			left:  "tcp:" + net.JoinHostPort("", port),
+			right: "tcp:" + net.JoinHostPort("127.0.0.1", port),
+			want:  true,
+		},
+		{
+			name:  "unspecified ipv6 overlaps specific host",
+			left:  "tcp:" + net.JoinHostPort("::", port),
+			right: "tcp:" + net.JoinHostPort("127.0.0.1", port),
+			want:  true,
+		},
+		{
+			name:  "exact host overlaps",
+			left:  "tcp:" + net.JoinHostPort("127.0.0.1", port),
+			right: "tcp:" + net.JoinHostPort("127.0.0.1", port),
+			want:  true,
+		},
+		{
+			name:  "different protocols do not overlap",
+			left:  "tcp:" + net.JoinHostPort("0.0.0.0", port),
+			right: "udp:" + net.JoinHostPort("127.0.0.1", port),
+			want:  false,
+		},
+		{
+			name:  "different ports do not overlap",
+			left:  "tcp:" + net.JoinHostPort("0.0.0.0", port),
+			right: "tcp:" + net.JoinHostPort("127.0.0.1", strconv.Itoa(pickFreeTCPPort(t))),
+			want:  false,
+		},
+		{
+			name:  "different specific hosts do not overlap",
+			left:  "tcp:" + net.JoinHostPort("127.0.0.1", port),
+			right: "tcp:" + net.JoinHostPort("127.0.0.2", port),
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := bindingKeysOverlap([]string{tt.left}, []string{tt.right}); got != tt.want {
+				t.Fatalf("bindingKeysOverlap(%q, %q) = %v, want %v", tt.left, tt.right, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestL4BindingKeysOverlapWildcardToSpecificHost(t *testing.T) {
+	port := pickFreeTCPPort(t)
+	previous := []string{"tcp:" + net.JoinHostPort("0.0.0.0", strconv.Itoa(port))}
+	next := l4RuleBindingKeys([]model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: port,
+	}})
+
+	if !bindingKeysOverlap(previous, next) {
+		t.Fatalf("expected l4 wildcard binding %v to overlap specific binding %v", previous, next)
+	}
+}
+
+func TestL4BindingKeysUseWireGuardListenHostForOverlap(t *testing.T) {
+	port := pickFreeTCPPort(t)
+	previous := []string{"tcp:" + net.JoinHostPort("0.0.0.0", strconv.Itoa(port))}
+	next := l4RuleBindingKeys([]model.L4Rule{{
+		Protocol:            "tcp",
+		ListenHost:          "10.64.0.1",
+		ListenPort:          port,
+		ListenMode:          "wireguard",
+		WireGuardListenHost: "127.0.0.1",
+	}})
+
+	if !bindingKeysOverlap(previous, next) {
+		t.Fatalf("expected l4 wildcard binding %v to overlap wireguard binding %v", previous, next)
+	}
+}
+
+func TestRelayBindingKeysOverlapWildcardToSpecificHost(t *testing.T) {
+	port := pickFreeTCPPort(t)
+	previous := relayListenerBindingKeys([]model.RelayListener{{
+		Enabled:    true,
+		ListenHost: "0.0.0.0",
+		BindHosts:  []string{"0.0.0.0"},
+		ListenPort: port,
+	}})
+	next := relayListenerBindingKeys([]model.RelayListener{{
+		Enabled:    true,
+		ListenHost: "127.0.0.1",
+		BindHosts:  []string{"127.0.0.1"},
+		ListenPort: port,
+	}})
+
+	if !bindingKeysOverlap(previous, next) {
+		t.Fatalf("expected relay wildcard binding %v to overlap specific binding %v", previous, next)
+	}
+}
+
 func TestRelayRuntimeManagerReappliesQUICListenerOnSameUDPPort(t *testing.T) {
 	provider := &testRelayTLSProvider{
 		certificates: map[int]tls.Certificate{
