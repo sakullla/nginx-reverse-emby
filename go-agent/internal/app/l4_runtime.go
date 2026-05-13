@@ -16,14 +16,16 @@ import (
 )
 
 type l4RuntimeManager struct {
-	mu                sync.Mutex
-	server            *l4.Server
-	cache             *backends.Cache
-	provider          relay.TLSMaterialProvider
-	wireGuardRuntime  *sharedWireGuardRuntime
-	wireGuardProvider relay.WireGuardRuntimeProvider
-	ownsWireGuard     bool
-	blockState        l4TrafficBlockStateValue
+	mu                 sync.Mutex
+	server             *l4.Server
+	cache              *backends.Cache
+	provider           relay.TLSMaterialProvider
+	wireGuardRuntime   *sharedWireGuardRuntime
+	wireGuardProvider  relay.WireGuardRuntimeProvider
+	ownsWireGuard      bool
+	blockState         l4TrafficBlockStateValue
+	lastRules          []model.L4Rule
+	lastRelayListeners []model.RelayListener
 }
 
 func newL4RuntimeManager() *l4RuntimeManager {
@@ -91,6 +93,7 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 			_ = m.server.Close()
 			m.server = nil
 		}
+		m.storeLastAppliedInputsLocked(nil, nil)
 		return nil
 	}
 	if err := validateL4Rules(rules, relayListeners, m.provider); err != nil {
@@ -101,9 +104,16 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		return err
 	}
 	if transaction != nil {
-		defer transaction.Rollback()
+		defer func() {
+			if transaction != nil {
+				transaction.Rollback()
+			}
+		}()
 	}
 	if err := m.validateWireGuardReferencesLocked(rules, provider); err != nil {
+		if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+			return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+		}
 		return err
 	}
 
@@ -114,12 +124,17 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
 			if transaction != nil {
 				transaction.Commit()
+				transaction = nil
 			}
 			_ = previous.Close()
 			m.server = server
+			m.storeLastAppliedInputsLocked(rules, relayListeners)
 			return nil
 		}
 		if !bindingKeysOverlap(l4ServerBindingKeys(previous), l4RuleBindingKeys(rules)) || !isRuntimeBindConflict(err) {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+			}
 			return err
 		}
 
@@ -128,14 +143,55 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	}
 	server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
 	if err != nil {
+		if previous != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+			}
+		}
 		return err
 	}
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
 	if transaction != nil {
 		transaction.Commit()
+		transaction = nil
 	}
 	m.server = server
+	m.storeLastAppliedInputsLocked(rules, relayListeners)
 	return nil
+}
+
+func (m *l4RuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **wireguard.Transaction) error {
+	if transaction != nil && *transaction != nil {
+		(*transaction).Rollback()
+		*transaction = nil
+	}
+	return m.restorePreviousServerLocked(ctx)
+}
+
+func (m *l4RuntimeManager) restorePreviousServerLocked(ctx context.Context) error {
+	if len(m.lastRules) == 0 {
+		m.server = nil
+		return nil
+	}
+	server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, m.lastRules, m.lastRelayListeners, m.provider, m.cache, m.wireGuardProvider)
+	if err != nil {
+		if m.server != nil && isRuntimeBindConflict(err) {
+			return nil
+		}
+		return err
+	}
+	server.SetTrafficBlockState(m.currentTrafficBlockState())
+	abandoned := m.server
+	m.server = server
+	if abandoned != nil {
+		_ = abandoned.Close()
+	}
+	return nil
+}
+
+func (m *l4RuntimeManager) storeLastAppliedInputsLocked(rules []model.L4Rule, relayListeners []model.RelayListener) {
+	m.lastRules = cloneL4Rules(rules)
+	m.lastRelayListeners = cloneRelayListeners(relayListeners)
 }
 
 func l4ServerBindingKeys(server *l4.Server) []string {

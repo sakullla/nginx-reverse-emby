@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ type relayRuntimeManager struct {
 	wireGuardProvider relay.WireGuardRuntimeProvider
 	ownsWireGuard     bool
 	blockState        relayTrafficBlockStateValue
+	lastListeners     []model.RelayListener
 }
 
 func newRelayRuntimeManager(provider relay.TLSMaterialProvider) *relayRuntimeManager {
@@ -57,6 +59,7 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 			_ = m.server.Close()
 			m.server = nil
 		}
+		m.storeLastAppliedInputsLocked(nil)
 		return nil
 	}
 	if err := validateRelayListeners(ctx, listeners, m.provider); err != nil {
@@ -67,7 +70,11 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 		return err
 	}
 	if transaction != nil {
-		defer transaction.Rollback()
+		defer func() {
+			if transaction != nil {
+				transaction.Rollback()
+			}
+		}()
 	}
 
 	previous := m.server
@@ -79,12 +86,17 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
 			if transaction != nil {
 				transaction.Commit()
+				transaction = nil
 			}
 			_ = previous.Close()
 			m.server = server
+			m.storeLastAppliedInputsLocked(listeners)
 			return nil
 		}
 		if !bindingKeysOverlap(relayServerBindingKeys(previous), relayListenerBindingKeys(listeners)) || !isRuntimeBindConflict(err) {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+			}
 			return err
 		}
 
@@ -96,14 +108,56 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 		WireGuardProvider: provider,
 	})
 	if err != nil {
+		if previous != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+			}
+		}
 		return err
 	}
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
 	if transaction != nil {
 		transaction.Commit()
+		transaction = nil
 	}
 	m.server = server
+	m.storeLastAppliedInputsLocked(listeners)
 	return nil
+}
+
+func (m *relayRuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **wireguard.Transaction) error {
+	if transaction != nil && *transaction != nil {
+		(*transaction).Rollback()
+		*transaction = nil
+	}
+	return m.restorePreviousServerLocked(ctx)
+}
+
+func (m *relayRuntimeManager) restorePreviousServerLocked(ctx context.Context) error {
+	if len(m.lastListeners) == 0 {
+		m.server = nil
+		return nil
+	}
+	server, err := relay.StartWithOptions(ctx, m.lastListeners, m.provider, relay.StartOptions{
+		WireGuardProvider: m.wireGuardProvider,
+	})
+	if err != nil {
+		if m.server != nil && isRuntimeBindConflict(err) {
+			return nil
+		}
+		return err
+	}
+	server.SetTrafficBlockState(m.currentTrafficBlockState())
+	abandoned := m.server
+	m.server = server
+	if abandoned != nil {
+		_ = abandoned.Close()
+	}
+	return nil
+}
+
+func (m *relayRuntimeManager) storeLastAppliedInputsLocked(listeners []model.RelayListener) {
+	m.lastListeners = cloneRelayListeners(listeners)
 }
 
 func relayServerBindingKeys(server *relay.Server) []string {
@@ -181,6 +235,47 @@ func relayListenerBindingProtocol(transportMode string) string {
 		return "udp"
 	}
 	return "tcp"
+}
+
+func cloneL4Rules(rules []model.L4Rule) []model.L4Rule {
+	if rules == nil {
+		return nil
+	}
+	cloned := make([]model.L4Rule, len(rules))
+	for i, rule := range rules {
+		cloned[i] = rule
+		cloned[i].Backends = append([]model.L4Backend(nil), rule.Backends...)
+		cloned[i].RelayChain = append([]int(nil), rule.RelayChain...)
+		cloned[i].RelayLayers = cloneIntLayers(rule.RelayLayers)
+		cloned[i].Tags = append([]string(nil), rule.Tags...)
+	}
+	return cloned
+}
+
+func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener {
+	if listeners == nil {
+		return nil
+	}
+	cloned := make([]model.RelayListener, len(listeners))
+	for i, listener := range listeners {
+		cloned[i] = listener
+		cloned[i].BindHosts = append([]string(nil), listener.BindHosts...)
+		cloned[i].PinSet = append([]model.RelayPin(nil), listener.PinSet...)
+		cloned[i].TrustedCACertificateIDs = append([]int(nil), listener.TrustedCACertificateIDs...)
+		cloned[i].Tags = append([]string(nil), listener.Tags...)
+	}
+	return cloned
+}
+
+func cloneIntLayers(layers [][]int) [][]int {
+	if layers == nil {
+		return nil
+	}
+	cloned := make([][]int, len(layers))
+	for i, layer := range layers {
+		cloned[i] = append([]int(nil), layer...)
+	}
+	return cloned
 }
 
 func (m *relayRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {

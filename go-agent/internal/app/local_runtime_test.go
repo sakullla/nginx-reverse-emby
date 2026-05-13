@@ -626,6 +626,111 @@ func TestL4RuntimeManagerRollsBackWireGuardProfilesWhenReplacementStartFails(t *
 	waitForPortState(t, listenPort, true)
 }
 
+func TestL4RuntimeManagerRestoresServerAfterPreparedSamePortWireGuardFailure(t *testing.T) {
+	listenErr := fmt.Errorf("wireguard listen failed")
+	var runtimes []*testAppWireGuardRuntime
+	factoryCalls := 0
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+		factoryCalls++
+		if factoryCalls == 2 {
+			return nil, fmt.Errorf("address already in use")
+		}
+		failListen := cfg.Peers[0].Endpoint == "127.0.0.1:51821"
+		runtime := newListeningTestAppWireGuardRuntime(&failListen, listenErr)
+		runtimes = append(runtimes, runtime)
+		return runtime, nil
+	})
+	defer manager.Close()
+
+	ctx := context.Background()
+	profileID := 17
+	listenPort := pickFreeTCPPort(t)
+	profile := validAppWireGuardProfile(profileID)
+	initial := model.L4Rule{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         listenPort,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}
+	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.L4Rule{initial}, nil, []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("failed to apply initial l4 runtime: %v", err)
+	}
+	waitForPortState(t, listenPort, true)
+	originalServer := manager.server
+	originalRuntime := runtimes[0]
+
+	nextProfile := profile
+	nextProfile.Revision++
+	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
+	err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.L4Rule{initial}, nil, []model.WireGuardProfile{nextProfile})
+	if err == nil || !strings.Contains(err.Error(), listenErr.Error()) {
+		t.Fatalf("expected wireguard listen error, got %v", err)
+	}
+	if manager.server == nil {
+		t.Fatal("expected l4 server to be restored after failed prepared wireguard switch")
+	}
+	if !originalRuntime.closed {
+		t.Fatal("expected original wireguard runtime object to be closed during same-port replacement")
+	}
+	got, ok := manager.wireGuardRuntime.Runtime(profileID)
+	if !ok {
+		t.Fatal("expected wireguard profile runtime to be restored")
+	}
+	if got == originalRuntime {
+		t.Fatal("expected wireguard rollback to create a replacement runtime object")
+	}
+	if manager.server == originalServer {
+		t.Fatal("expected l4 server to be rebuilt because original server depended on closed wireguard runtime")
+	}
+	waitForPortState(t, listenPort, true)
+}
+
+func TestL4RuntimeManagerRestoresServerAfterBindConflictRetryFailure(t *testing.T) {
+	manager := newL4RuntimeManager()
+	defer manager.Close()
+
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+	initial := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}
+	if err := manager.Apply(ctx, []model.L4Rule{initial}); err != nil {
+		t.Fatalf("failed to apply initial l4 runtime: %v", err)
+	}
+	waitForPortState(t, listenPort, true)
+	original := manager.server
+
+	occupiedPort := pickFreeTCPPort(t)
+	occupier, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(occupiedPort)))
+	if err != nil {
+		t.Fatalf("failed to occupy retry-failure port: %v", err)
+	}
+	defer occupier.Close()
+	next := []model.L4Rule{initial, {
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: occupiedPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}
+
+	err = manager.Apply(ctx, next)
+	if err == nil {
+		t.Fatal("expected same-port l4 retry failure")
+	}
+	if manager.server == nil {
+		t.Fatal("expected l4 server to be restored after bind-conflict retry failure")
+	}
+	if manager.server == original {
+		t.Fatal("expected l4 server to be rebuilt after bind-conflict fallback closed the original")
+	}
+	waitForPortState(t, listenPort, true)
+}
+
 func TestL4RuntimeManagerPreservesRunningServerOnEmptyRulesBadWireGuardProfile(t *testing.T) {
 	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
 		return &testAppWireGuardRuntime{}, nil
@@ -1209,6 +1314,109 @@ func TestRelayRuntimeManagerRollsBackWireGuardProfilesWhenReplacementStartFails(
 	}
 	if got != originalRuntime {
 		t.Fatal("expected wireguard manager to retain original profile runtime after replacement startup failure")
+	}
+	waitForPortState(t, listenPort, true)
+}
+
+func TestRelayRuntimeManagerRestoresServerAfterPreparedSamePortWireGuardFailure(t *testing.T) {
+	provider := &testRelayTLSProvider{
+		certificates: map[int]tls.Certificate{
+			1: mustIssueTestTLSCertificate(t),
+		},
+	}
+	listenErr := fmt.Errorf("wireguard listen failed")
+	var runtimes []*testAppWireGuardRuntime
+	factoryCalls := 0
+	shared := newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+		factoryCalls++
+		if factoryCalls == 2 {
+			return nil, fmt.Errorf("address already in use")
+		}
+		failListen := cfg.Peers[0].Endpoint == "127.0.0.1:51821"
+		runtime := newListeningTestAppWireGuardRuntime(&failListen, listenErr)
+		runtimes = append(runtimes, runtime)
+		return runtime, nil
+	})
+	manager := newRelayRuntimeManagerWithWireGuard(provider, shared)
+	defer manager.Close()
+
+	ctx := context.Background()
+	profileID := 18
+	listenPort := pickFreeTCPPort(t)
+	profile := validAppWireGuardProfile(profileID)
+	initial := runtimeTestRelayListener(listenPort, 1)
+	initial.TransportMode = relay.ListenerTransportModeWireGuard
+	initial.WireGuardProfileID = &profileID
+	if err := manager.ApplyWithWireGuardProfiles(ctx, []model.RelayListener{initial}, []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("failed to apply initial relay runtime: %v", err)
+	}
+	waitForPortState(t, listenPort, true)
+	originalServer := manager.server
+	originalRuntime := runtimes[0]
+
+	nextProfile := profile
+	nextProfile.Revision++
+	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
+	err := manager.ApplyWithWireGuardProfiles(ctx, []model.RelayListener{initial}, []model.WireGuardProfile{nextProfile})
+	if err == nil || !strings.Contains(err.Error(), listenErr.Error()) {
+		t.Fatalf("expected wireguard listen error, got %v", err)
+	}
+	if manager.server == nil {
+		t.Fatal("expected relay server to be restored after failed prepared wireguard switch")
+	}
+	if !originalRuntime.closed {
+		t.Fatal("expected original wireguard runtime object to be closed during same-port replacement")
+	}
+	got, ok := manager.wireGuardRuntime.Runtime(profileID)
+	if !ok {
+		t.Fatal("expected wireguard profile runtime to be restored")
+	}
+	if got == originalRuntime {
+		t.Fatal("expected wireguard rollback to create a replacement runtime object")
+	}
+	if manager.server == originalServer {
+		t.Fatal("expected relay server to be rebuilt because original server depended on closed wireguard runtime")
+	}
+	waitForPortState(t, listenPort, true)
+}
+
+func TestRelayRuntimeManagerRestoresServerAfterBindConflictRetryFailure(t *testing.T) {
+	provider := &testRelayTLSProvider{
+		certificates: map[int]tls.Certificate{
+			1: mustIssueTestTLSCertificate(t),
+		},
+	}
+	manager := newRelayRuntimeManager(provider)
+	defer manager.Close()
+
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+	initial := runtimeTestRelayListener(listenPort, 1)
+	if err := manager.Apply(ctx, []model.RelayListener{initial}); err != nil {
+		t.Fatalf("failed to apply initial relay runtime: %v", err)
+	}
+	waitForPortState(t, listenPort, true)
+	original := manager.server
+
+	occupiedPort := pickFreeTCPPort(t)
+	occupier, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(occupiedPort)))
+	if err != nil {
+		t.Fatalf("failed to occupy retry-failure port: %v", err)
+	}
+	defer occupier.Close()
+	second := runtimeTestRelayListener(occupiedPort, 1)
+	second.ID = initial.ID + 1
+	second.Name = "relay-b"
+
+	err = manager.Apply(ctx, []model.RelayListener{initial, second})
+	if err == nil {
+		t.Fatal("expected same-port relay retry failure")
+	}
+	if manager.server == nil {
+		t.Fatal("expected relay server to be restored after bind-conflict retry failure")
+	}
+	if manager.server == original {
+		t.Fatal("expected relay server to be rebuilt after bind-conflict fallback closed the original")
 	}
 	waitForPortState(t, listenPort, true)
 }
