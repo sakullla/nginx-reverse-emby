@@ -439,6 +439,9 @@ const form = ref(createFormState(props.initialData))
 const tagInput = ref('')
 const error = ref('')
 const dragState = ref({ from: -1, to: -1 })
+const wireGuardModeHydratedFromInitialData = ref(false)
+const wireGuardProfileHydratedFromInitialData = ref(false)
+const wireGuardProfileRequiresExplicitSelection = ref(false)
 
 function onDragStart(index) {
   dragState.value = { from: index, to: index }
@@ -555,6 +558,13 @@ const relayObfsDisabled = computed(() => Boolean(relayObfsUnsupportedReason.valu
 
 watch(() => props.initialData, (value) => {
   form.value = createFormState(value)
+  wireGuardModeHydratedFromInitialData.value = !!value?.id && usesWireGuard.value
+  wireGuardProfileHydratedFromInitialData.value = !!value?.id
+    && usesWireGuard.value
+    && form.value.wireguard_profile_id !== ''
+  wireGuardProfileRequiresExplicitSelection.value = !!value?.id
+    && usesWireGuard.value
+    && form.value.wireguard_profile_id === ''
   tagInput.value = ''
   dragState.value = { from: -1, to: -1 }
   error.value = ''
@@ -571,25 +581,44 @@ watch(() => form.value.protocol, (newProto) => {
   }
 })
 
-watch(usesWireGuard, (enabled) => {
+watch(usesWireGuard, (enabled, wasEnabled) => {
   if (!enabled) return
   if (selectedWireGuardProfileID.value != null) return
-  if (form.value.wireguard_profile_id === '' && enabledWireGuardProfiles.value.length) {
-    form.value.wireguard_profile_id = Number(enabledWireGuardProfiles.value[0].id)
+  if (wireGuardModeHydratedFromInitialData.value) {
+    wireGuardModeHydratedFromInitialData.value = false
+    return
+  }
+  if (!wasEnabled) {
+    wireGuardProfileRequiresExplicitSelection.value = false
+    if (form.value.wireguard_profile_id === '') {
+      selectFirstEnabledWireGuardProfile()
+    }
     return
   }
   form.value.wireguard_profile_id = ''
 })
 
 watch(enabledWireGuardProfiles, (profiles) => {
+  if (wireGuardProfilesData.value == null) return
   if (!usesWireGuard.value) return
   if (selectedWireGuardProfileID.value != null) return
   if (form.value.wireguard_profile_id === '') {
-    form.value.wireguard_profile_id = profiles.length ? Number(profiles[0].id) : ''
+    if (!wireGuardProfileRequiresExplicitSelection.value) {
+      selectFirstEnabledWireGuardProfile()
+    }
     return
+  }
+  if (wireGuardProfileHydratedFromInitialData.value) {
+    wireGuardProfileRequiresExplicitSelection.value = true
   }
   form.value.wireguard_profile_id = ''
 }, { immediate: true })
+
+function selectFirstEnabledWireGuardProfile() {
+  form.value.wireguard_profile_id = enabledWireGuardProfiles.value.length
+    ? Number(enabledWireGuardProfiles.value[0].id)
+    : ''
+}
 
 watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
   if (

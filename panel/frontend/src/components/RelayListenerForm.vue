@@ -287,6 +287,9 @@ const showAdvanced = ref(false)
 const tagInput = ref('')
 const pinSetText = ref('')
 const trustedCaSet = ref(new Set())
+const wireGuardModeHydratedFromInitialData = ref(false)
+const wireGuardProfileHydratedFromInitialData = ref(false)
+const wireGuardProfileRequiresExplicitSelection = ref(false)
 const errors = ref({
   name: '',
   public_endpoint: '',
@@ -301,6 +304,14 @@ watch(
   () => props.initialData,
   (value) => {
     form.value = createFormState(value)
+    wireGuardModeHydratedFromInitialData.value = !!value?.id
+      && form.value.transport_mode === 'wireguard'
+    wireGuardProfileHydratedFromInitialData.value = !!value?.id
+      && form.value.transport_mode === 'wireguard'
+      && form.value.wireguard_profile_id !== ''
+    wireGuardProfileRequiresExplicitSelection.value = !!value?.id
+      && form.value.transport_mode === 'wireguard'
+      && form.value.wireguard_profile_id === ''
     showAdvanced.value = form.value.trust_mode_source === 'custom'
     tagInput.value = ''
     pinSetText.value = (form.value.pin_set || [])
@@ -357,15 +368,20 @@ watch(
 
 watch(
   () => form.value.transport_mode,
-  (value) => {
+  (value, oldValue) => {
     if (value === 'quic' || value === 'wireguard') {
       form.value.obfs_mode = 'off'
       if (value === 'wireguard') {
         form.value.allow_transport_fallback = false
-        if (selectedWireGuardProfileID.value == null) {
-          form.value.wireguard_profile_id = enabledWireGuardProfiles.value.length
-            ? Number(enabledWireGuardProfiles.value[0].id)
-            : ''
+        if (wireGuardModeHydratedFromInitialData.value) {
+          wireGuardModeHydratedFromInitialData.value = false
+          return
+        }
+        if (oldValue && oldValue !== 'wireguard') {
+          wireGuardProfileRequiresExplicitSelection.value = false
+          if (selectedWireGuardProfileID.value == null && form.value.wireguard_profile_id === '') {
+            selectFirstEnabledWireGuardProfile()
+          }
         }
       }
     } else {
@@ -378,11 +394,17 @@ watch(
 watch(
   enabledWireGuardProfiles,
   (profiles) => {
+    if (wireGuardProfilesData.value == null) return
     if (form.value.transport_mode !== 'wireguard') return
     if (selectedWireGuardProfileID.value != null) return
     if (form.value.wireguard_profile_id === '') {
-      form.value.wireguard_profile_id = profiles.length ? Number(profiles[0].id) : ''
+      if (!wireGuardProfileRequiresExplicitSelection.value) {
+        selectFirstEnabledWireGuardProfile()
+      }
       return
+    }
+    if (wireGuardProfileHydratedFromInitialData.value) {
+      wireGuardProfileRequiresExplicitSelection.value = true
     }
     form.value.wireguard_profile_id = ''
   },
@@ -429,6 +451,12 @@ function inferTrustModeSource(initialData) {
 function normalizeTransportMode(value) {
   if (value === 'wireguard') return 'wireguard'
   return value === 'quic' ? 'quic' : 'tls_tcp'
+}
+
+function selectFirstEnabledWireGuardProfile() {
+  form.value.wireguard_profile_id = enabledWireGuardProfiles.value.length
+    ? Number(enabledWireGuardProfiles.value[0].id)
+    : ''
 }
 
 function normalizeObfsMode(value, transportMode) {

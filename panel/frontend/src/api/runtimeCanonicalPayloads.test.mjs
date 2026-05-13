@@ -357,4 +357,16 @@ describe('runtime canonical rule payloads', () => {
       expect(source).not.toContain('payload.wireguard_profile_id = String')
     }
   })
+
+  it('Relay and L4 edit forms do not auto-replace invalid initial WireGuard profiles', async () => {
+    const relayForm = await import('../components/RelayListenerForm.vue?raw')
+    const l4Form = await import('../components/L4RuleForm.vue?raw')
+
+    for (const source of [relayForm.default, l4Form.default]) {
+      expect(source).toContain('wireGuardProfileHydratedFromInitialData')
+      expect(source).toContain('wireGuardProfileRequiresExplicitSelection')
+      expect(source).toContain('wireGuardProfileRequiresExplicitSelection.value = true')
+      expect(source).toContain('wireGuardProfileRequiresExplicitSelection.value = false')
+    }
+  })
 })
