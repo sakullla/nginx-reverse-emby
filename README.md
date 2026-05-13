@@ -337,11 +337,26 @@ nre-control-plane migrate-storage \
 
 ### Relay 隧道
 
-- 支持 `transport_mode=tls_tcp|quic`，默认 `tls_tcp`
+- 支持 `transport_mode=tls_tcp|quic|wireguard`，默认 `tls_tcp`
 - `tls_tcp` 为单外层 TLS 连接承载多逻辑流的复用隧道，支持长连接复用和多路复用
+- `wireguard` 使用所选 WireGuard Profile 作为传输路径，Relay 原有 TLS、mux、认证仍在 WireGuard 链路上生效，不是认证绕过
 - 支持 `obfs_mode=off|early_window_v2`（仅对 `tls_tcp` 生效）
 - UDP relay：`quic` 走流内包帧，`tls_tcp` 走 UoT
 - 真实 TLS 0-RTT 仅在 `quic` 路径可用（Go `crypto/tls` 限制）
+
+### WireGuard Profile
+
+控制面提供 WireGuard Profiles 页面，可按 Agent 管理标准 WireGuard 配置。Profile 包含 private key、listen port、addresses、peers、DNS、MTU、enabled 和 tags，可用于 Relay transport 或 L4 规则。密钥等敏感字段在接口和面板中会显示为 `xxxxx`；编辑时保持 redacted 值不变即可保留已存储密钥。
+
+创建通用 WireGuard Profile 时，按常规 WireGuard 配置填写本端私钥、监听 UDP 端口、本端隧道地址，以及 peer 的 public key、allowed IPs、endpoint 和 persistent keepalive 等参数。该功能只管理标准 WireGuard profile，不内置 Cloudflare WARP 注册、MASQUE 或密钥轮换。
+
+### L4 与 WireGuard
+
+L4 规则设置 `listen_mode=wireguard` 时，客户端先连接目标 Agent 的 WireGuard UDP endpoint，进入隧道后再访问规则配置的虚拟服务 IP/端口。未使用 WireGuard 的普通客户端仍访问常规公开 L4 监听端口。
+
+L4 规则设置 `proxy_egress_mode=wireguard` 时，TCP 代理入口的出站连接会通过所选 WireGuard Profile 发起，语义类似现有代理出站模式，只是 egress 路径改为 WireGuard。
+
+如需配合 Cloudflare WARP，可使用可导出的标准 WireGuard profile（如果账号/客户端支持），或在 Agent 主机外部运行 Cloudflare WARP 客户端并自行配置路由；内置 WireGuard 功能不负责 WARP 的注册和自动轮换。
 
 ### HTTP/3
 
