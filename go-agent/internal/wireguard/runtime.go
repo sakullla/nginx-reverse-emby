@@ -44,6 +44,15 @@ type Manager struct {
 	runtimes  map[int]*runtimeEntry
 }
 
+type Transaction struct {
+	mu          sync.Mutex
+	manager     *Manager
+	candidates  map[int]*runtimeEntry
+	newRuntimes []Runtime
+	committed   bool
+	rolledBack  bool
+}
+
 type runtimeEntry struct {
 	fingerprint string
 	config      Config
@@ -199,6 +208,130 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 	return nil
 }
 
+func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile) (*Transaction, error) {
+	if m == nil {
+		return nil, nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	candidates := make(map[int]*runtimeEntry, len(profiles))
+	var newRuntimes []Runtime
+
+	closeNewRuntimes := func() {
+		for _, runtime := range newRuntimes {
+			_ = runtime.Close()
+		}
+	}
+
+	for _, profile := range profiles {
+		if !profile.Enabled {
+			continue
+		}
+
+		cfg, err := NormalizeConfig(profile)
+		if err != nil {
+			closeNewRuntimes()
+			return nil, fmt.Errorf("wireguard profile %d: %w", profile.ID, err)
+		}
+		fingerprint, err := Fingerprint(profile)
+		if err != nil {
+			closeNewRuntimes()
+			return nil, fmt.Errorf("wireguard profile %d fingerprint: %w", profile.ID, err)
+		}
+
+		if existing, ok := m.runtimes[profile.ID]; ok && existing.fingerprint == fingerprint {
+			candidates[profile.ID] = &runtimeEntry{
+				fingerprint: existing.fingerprint,
+				config:      cloneConfig(existing.config),
+				runtime:     existing.runtime,
+			}
+			continue
+		}
+
+		runtime, err := m.factory(ctx, cfg)
+		if err != nil {
+			closeNewRuntimes()
+			return nil, fmt.Errorf("wireguard profile %d runtime: %w", profile.ID, err)
+		}
+		newRuntimes = append(newRuntimes, runtime)
+		candidates[profile.ID] = &runtimeEntry{
+			fingerprint: fingerprint,
+			config:      cloneConfig(cfg),
+			runtime:     runtime,
+		}
+	}
+
+	return &Transaction{
+		manager:     m,
+		candidates:  candidates,
+		newRuntimes: newRuntimes,
+	}, nil
+}
+
+func (t *Transaction) Runtime(profileID int) (Runtime, bool) {
+	if t == nil {
+		return nil, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.rolledBack {
+		return nil, false
+	}
+	entry, ok := t.candidates[profileID]
+	if !ok {
+		return nil, false
+	}
+	return entry.runtime, true
+}
+
+func (t *Transaction) Commit() {
+	if t == nil || t.manager == nil {
+		return
+	}
+
+	t.mu.Lock()
+	if t.committed || t.rolledBack {
+		t.mu.Unlock()
+		return
+	}
+	t.committed = true
+	candidates := cloneRuntimeEntries(t.candidates)
+	t.mu.Unlock()
+
+	t.manager.mu.Lock()
+	defer t.manager.mu.Unlock()
+
+	for profileID, existing := range t.manager.runtimes {
+		candidate, ok := candidates[profileID]
+		if ok && candidate.runtime == existing.runtime {
+			continue
+		}
+		_ = existing.runtime.Close()
+	}
+	t.manager.runtimes = candidates
+}
+
+func (t *Transaction) Rollback() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.committed || t.rolledBack {
+		t.mu.Unlock()
+		return
+	}
+	t.rolledBack = true
+	newRuntimes := append([]Runtime(nil), t.newRuntimes...)
+	t.mu.Unlock()
+
+	for _, runtime := range newRuntimes {
+		_ = runtime.Close()
+	}
+}
+
 type runtimeReplacement struct {
 	profileID          int
 	fingerprint        string
@@ -285,6 +418,21 @@ func cloneConfig(cfg Config) Config {
 	cloned.AddressPrefixes = append([]netip.Prefix(nil), cfg.AddressPrefixes...)
 	cloned.AddressAddrs = append([]netip.Addr(nil), cfg.AddressAddrs...)
 	cloned.DNSAddrs = append([]netip.Addr(nil), cfg.DNSAddrs...)
+	return cloned
+}
+
+func cloneRuntimeEntries(entries map[int]*runtimeEntry) map[int]*runtimeEntry {
+	cloned := make(map[int]*runtimeEntry, len(entries))
+	for profileID, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		cloned[profileID] = &runtimeEntry{
+			fingerprint: entry.fingerprint,
+			config:      cloneConfig(entry.config),
+			runtime:     entry.runtime,
+		}
+	}
 	return cloned
 }
 

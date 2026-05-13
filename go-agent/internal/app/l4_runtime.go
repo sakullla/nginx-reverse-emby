@@ -96,18 +96,25 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	if err := validateL4Rules(rules, relayListeners, m.provider); err != nil {
 		return err
 	}
-	if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
+	transaction, provider, err := m.prepareWireGuardProfilesLocked(ctx, wireGuardProfiles)
+	if err != nil {
 		return err
 	}
-	if err := m.validateWireGuardReferencesLocked(rules); err != nil {
+	if transaction != nil {
+		defer transaction.Rollback()
+	}
+	if err := m.validateWireGuardReferencesLocked(rules, provider); err != nil {
 		return err
 	}
 
 	previous := m.server
 	if previous != nil {
-		server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, m.wireGuardProvider)
+		server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
+			if transaction != nil {
+				transaction.Commit()
+			}
 			_ = previous.Close()
 			m.server = server
 			return nil
@@ -119,11 +126,14 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		_ = previous.Close()
 		m.server = nil
 	}
-	server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, m.wireGuardProvider)
+	server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
 	if err != nil {
 		return err
 	}
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
+	if transaction != nil {
+		transaction.Commit()
+	}
 	m.server = server
 	return nil
 }
@@ -162,7 +172,21 @@ func (m *l4RuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, pro
 	return m.wireGuardRuntime.Apply(ctx, profiles)
 }
 
-func (m *l4RuntimeManager) validateWireGuardReferencesLocked(rules []model.L4Rule) error {
+func (m *l4RuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+	if m.wireGuardRuntime == nil || profiles == nil {
+		return nil, m.wireGuardProvider, nil
+	}
+	transaction, err := m.wireGuardRuntime.Prepare(ctx, profiles)
+	if err != nil {
+		return nil, nil, err
+	}
+	if transaction == nil {
+		return nil, m.wireGuardProvider, nil
+	}
+	return transaction, wireGuardTransactionProvider{transaction: transaction}, nil
+}
+
+func (m *l4RuntimeManager) validateWireGuardReferencesLocked(rules []model.L4Rule, provider relay.WireGuardRuntimeProvider) error {
 	for _, rule := range rules {
 		if !l4RuleUsesWireGuard(rule) {
 			continue
@@ -170,10 +194,10 @@ func (m *l4RuntimeManager) validateWireGuardReferencesLocked(rules []model.L4Rul
 		if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
 			continue
 		}
-		if m.wireGuardProvider == nil {
+		if provider == nil {
 			return fmt.Errorf("wireguard runtime provider is required")
 		}
-		runtime, ok := m.wireGuardProvider.WireGuardRuntime(*rule.WireGuardProfileID)
+		runtime, ok := provider.WireGuardRuntime(*rule.WireGuardProfileID)
 		if !ok || runtime == nil {
 			return fmt.Errorf("wireguard profile %d runtime not found", *rule.WireGuardProfileID)
 		}

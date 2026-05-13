@@ -62,17 +62,24 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 	if err := validateRelayListeners(ctx, listeners, m.provider); err != nil {
 		return err
 	}
-	if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
+	transaction, provider, err := m.prepareWireGuardProfilesLocked(ctx, profiles)
+	if err != nil {
 		return err
+	}
+	if transaction != nil {
+		defer transaction.Rollback()
 	}
 
 	previous := m.server
 	if previous != nil {
 		server, err := relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
-			WireGuardProvider: m.wireGuardProvider,
+			WireGuardProvider: provider,
 		})
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
+			if transaction != nil {
+				transaction.Commit()
+			}
 			_ = previous.Close()
 			m.server = server
 			return nil
@@ -86,12 +93,15 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 	}
 
 	server, err := relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
-		WireGuardProvider: m.wireGuardProvider,
+		WireGuardProvider: provider,
 	})
 	if err != nil {
 		return err
 	}
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
+	if transaction != nil {
+		transaction.Commit()
+	}
 	m.server = server
 	return nil
 }
@@ -180,6 +190,20 @@ func (m *relayRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, 
 	return m.wireGuardRuntime.Apply(ctx, profiles)
 }
 
+func (m *relayRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+	if m.wireGuardRuntime == nil || profiles == nil {
+		return nil, m.wireGuardProvider, nil
+	}
+	transaction, err := m.wireGuardRuntime.Prepare(ctx, profiles)
+	if err != nil {
+		return nil, nil, err
+	}
+	if transaction == nil {
+		return nil, m.wireGuardProvider, nil
+	}
+	return transaction, wireGuardTransactionProvider{transaction: transaction}, nil
+}
+
 func (m *relayRuntimeManager) UpdateTrafficBlockState(state relay.TrafficBlockState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -235,6 +259,13 @@ func (r *sharedWireGuardRuntime) Apply(ctx context.Context, profiles []model.Wir
 	return r.manager.Apply(ctx, profiles)
 }
 
+func (r *sharedWireGuardRuntime) Prepare(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, error) {
+	if r == nil || r.manager == nil {
+		return nil, nil
+	}
+	return r.manager.Prepare(ctx, profiles)
+}
+
 func (r *sharedWireGuardRuntime) Runtime(profileID int) (wireguard.Runtime, bool) {
 	if r == nil || r.manager == nil {
 		return nil, false
@@ -262,6 +293,21 @@ func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGua
 		return nil, false
 	}
 	runtime, ok := p.runtime.Runtime(profileID)
+	if !ok {
+		return nil, false
+	}
+	return runtime, true
+}
+
+type wireGuardTransactionProvider struct {
+	transaction *wireguard.Transaction
+}
+
+func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+	if p.transaction == nil {
+		return nil, false
+	}
+	runtime, ok := p.transaction.Runtime(profileID)
 	if !ok {
 		return nil, false
 	}
