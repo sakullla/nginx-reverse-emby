@@ -17,6 +17,7 @@ type fakeL4Store struct {
 	httpRulesByID     map[string][]storage.HTTPRuleRow
 	l4RulesByID       map[string][]storage.L4RuleRow
 	relayByAgent      map[string][]storage.RelayListenerRow
+	wireGuardByAgent  map[string][]storage.WireGuardProfileRow
 	savedAgent        storage.AgentRow
 	loadSnapshotCalls int
 	listL4RulesErr    error
@@ -66,8 +67,8 @@ func (f *fakeL4Store) ListRelayListeners(_ context.Context, agentID string) ([]s
 	return append([]storage.RelayListenerRow(nil), f.relayByAgent[agentID]...), nil
 }
 
-func (f *fakeL4Store) ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error) {
-	return nil, nil
+func (f *fakeL4Store) ListWireGuardProfiles(_ context.Context, agentID string) ([]storage.WireGuardProfileRow, error) {
+	return append([]storage.WireGuardProfileRow(nil), f.wireGuardByAgent[agentID]...), nil
 }
 
 func (f *fakeL4Store) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
@@ -544,6 +545,174 @@ func TestNormalizeL4RuleInputRejectsProxyEntryInvalidEgressMode(t *testing.T) {
 	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
 	if err == nil || !strings.Contains(err.Error(), "proxy_egress_mode") {
 		t.Fatalf("error = %v, want proxy_egress_mode validation", err)
+	}
+}
+
+func TestL4WireGuardListenModeRequiresProfile(t *testing.T) {
+	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:   stringPtrL4("udp"),
+		ListenPort: intPtrL4(51820),
+		ListenMode: stringPtrL4("wireguard"),
+		Backends:   &[]L4Backend{{Host: "upstream", Port: 9001}},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "wireguard_profile_id is required") {
+		t.Fatalf("Create() error = %v, want clear wireguard_profile_id validation", err)
+	}
+}
+
+func TestL4WireGuardProxyEgressRequiresProfile(t *testing.T) {
+	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      stringPtrL4("proxy"),
+		ProxyEgressMode: stringPtrL4("wireguard"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "wireguard_profile_id is required") {
+		t.Fatalf("Create() error = %v, want clear wireguard_profile_id validation", err)
+	}
+}
+
+func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    L4RuleInput
+		profiles map[string][]storage.WireGuardProfileRow
+		assert   func(t *testing.T, rule L4Rule, row storage.L4RuleRow)
+		wantErr  string
+	}{
+		{
+			name: "accepts enabled profile for tcp listen",
+			input: L4RuleInput{
+				Protocol:           stringPtrL4("tcp"),
+				ListenPort:         intPtrL4(51820),
+				ListenMode:         stringPtrL4("wireguard"),
+				WireGuardProfileID: intPtrL4(7),
+				Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"local": {{ID: 7, AgentID: "local", Enabled: true}},
+			},
+			assert: func(t *testing.T, rule L4Rule, row storage.L4RuleRow) {
+				t.Helper()
+				if rule.ListenMode != "wireguard" || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 {
+					t.Fatalf("rule = %+v", rule)
+				}
+				if row.WireGuardProfileID == nil || *row.WireGuardProfileID != 7 {
+					t.Fatalf("persisted WireGuardProfileID = %v", row.WireGuardProfileID)
+				}
+			},
+		},
+		{
+			name: "accepts enabled profile for udp listen",
+			input: L4RuleInput{
+				Protocol:           stringPtrL4("udp"),
+				ListenPort:         intPtrL4(51820),
+				ListenMode:         stringPtrL4("wireguard"),
+				WireGuardProfileID: intPtrL4(7),
+				Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"local": {{ID: 7, AgentID: "local", Enabled: true}},
+			},
+			assert: func(t *testing.T, rule L4Rule, _ storage.L4RuleRow) {
+				t.Helper()
+				if rule.Protocol != "udp" || rule.ListenMode != "wireguard" {
+					t.Fatalf("rule = %+v", rule)
+				}
+			},
+		},
+		{
+			name: "accepts enabled profile for proxy egress",
+			input: L4RuleInput{
+				Protocol:           stringPtrL4("tcp"),
+				ListenPort:         intPtrL4(1080),
+				ListenMode:         stringPtrL4("proxy"),
+				ProxyEgressMode:    stringPtrL4("wireguard"),
+				WireGuardProfileID: intPtrL4(7),
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"local": {{ID: 7, AgentID: "local", Enabled: true}},
+			},
+			assert: func(t *testing.T, rule L4Rule, row storage.L4RuleRow) {
+				t.Helper()
+				if rule.ProxyEgressMode != "wireguard" || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 {
+					t.Fatalf("rule = %+v", rule)
+				}
+				if len(rule.Backends) != 0 || rule.ProxyEgressURL != "" {
+					t.Fatalf("proxy-entry wireguard targets = backends=%+v url=%q", rule.Backends, rule.ProxyEgressURL)
+				}
+				if row.WireGuardProfileID == nil || *row.WireGuardProfileID != 7 || row.ProxyEgressURL != "" {
+					t.Fatalf("persisted row = %+v", row)
+				}
+			},
+		},
+		{
+			name: "rejects disabled profile",
+			input: L4RuleInput{
+				Protocol:           stringPtrL4("tcp"),
+				ListenPort:         intPtrL4(51820),
+				ListenMode:         stringPtrL4("wireguard"),
+				WireGuardProfileID: intPtrL4(7),
+				Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"local": {{ID: 7, AgentID: "local", Enabled: false}},
+			},
+			wantErr: "wireguard profile 7 is disabled",
+		},
+		{
+			name: "rejects missing profile",
+			input: L4RuleInput{
+				Protocol:           stringPtrL4("tcp"),
+				ListenPort:         intPtrL4(51820),
+				ListenMode:         stringPtrL4("wireguard"),
+				WireGuardProfileID: intPtrL4(7),
+				Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"other": {{ID: 7, AgentID: "other", Enabled: true}},
+			},
+			wantErr: "wireguard profile 7 not found for agent local",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeL4Store{
+				l4RulesByID:      map[string][]storage.L4RuleRow{},
+				wireGuardByAgent: tt.profiles,
+			}
+			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			rule, err := svc.Create(context.Background(), "local", tt.input)
+			if tt.wantErr != "" {
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+				}
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Create() error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if tt.assert != nil {
+				tt.assert(t, rule, store.l4RulesByID["local"][0])
+			}
+		})
 	}
 }
 

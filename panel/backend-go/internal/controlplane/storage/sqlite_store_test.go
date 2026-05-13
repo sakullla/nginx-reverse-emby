@@ -1130,22 +1130,26 @@ func TestSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) 
 }
 
 func TestSnapshotL4RulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
+	wireGuardProfileID := 7
 	rules := SnapshotL4Rules([]L4RuleRow{{
-		ID:                1,
-		AgentID:           "local",
-		Name:              "canonical-l4",
-		Protocol:          "tcp",
-		ListenHost:        "127.0.0.1",
-		ListenPort:        9443,
-		UpstreamHost:      "legacy.example.com",
-		UpstreamPort:      9444,
-		BackendsJSON:      `[{"host":"canonical.example.com","port":9445}]`,
-		LoadBalancingJSON: `{}`,
-		TuningJSON:        `{}`,
-		RelayChainJSON:    `[101]`,
-		RelayLayersJSON:   `[[201,202]]`,
-		Enabled:           true,
-		Revision:          3,
+		ID:                  1,
+		AgentID:             "local",
+		Name:                "canonical-l4",
+		Protocol:            "tcp",
+		ListenHost:          "127.0.0.1",
+		ListenPort:          9443,
+		UpstreamHost:        "legacy.example.com",
+		UpstreamPort:        9444,
+		BackendsJSON:        `[{"host":"canonical.example.com","port":9445}]`,
+		LoadBalancingJSON:   `{}`,
+		TuningJSON:          `{}`,
+		RelayChainJSON:      `[101]`,
+		RelayLayersJSON:     `[[201,202]]`,
+		ListenMode:          "wireguard",
+		WireGuardProfileID:  &wireGuardProfileID,
+		WireGuardListenHost: "10.44.0.1",
+		Enabled:             true,
+		Revision:            3,
 	}})
 
 	if len(rules) != 1 {
@@ -1165,6 +1169,34 @@ func TestSnapshotL4RulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
 	}
 	if len(rules[0].RelayLayers) != 1 || len(rules[0].RelayLayers[0]) != 2 || rules[0].RelayLayers[0][0] != 201 || rules[0].RelayLayers[0][1] != 202 {
 		t.Fatalf("RelayLayers = %+v", rules[0].RelayLayers)
+	}
+	if rules[0].WireGuardProfileID == nil || *rules[0].WireGuardProfileID != wireGuardProfileID || rules[0].WireGuardListenHost != "10.44.0.1" {
+		t.Fatalf("WireGuard fields = profile %v listen_host %q", rules[0].WireGuardProfileID, rules[0].WireGuardListenHost)
+	}
+}
+
+func TestSnapshotRelayListenersPreservesWireGuardProfileID(t *testing.T) {
+	wireGuardProfileID := 12
+	listeners := snapshotRelayListeners([]RelayListenerRow{{
+		ID:                 1,
+		AgentID:            "local",
+		Name:               "wg-relay",
+		BindHostsJSON:      `["0.0.0.0"]`,
+		ListenHost:         "0.0.0.0",
+		ListenPort:         7443,
+		PublicHost:         "relay.example.test",
+		PublicPort:         7443,
+		Enabled:            true,
+		TransportMode:      "wireguard",
+		WireGuardProfileID: &wireGuardProfileID,
+		Revision:           4,
+	}}, map[string]string{"local": "Local"})
+
+	if len(listeners) != 1 {
+		t.Fatalf("listeners = %+v", listeners)
+	}
+	if listeners[0].TransportMode != "wireguard" || listeners[0].WireGuardProfileID == nil || *listeners[0].WireGuardProfileID != wireGuardProfileID {
+		t.Fatalf("listener = %+v", listeners[0])
 	}
 }
 

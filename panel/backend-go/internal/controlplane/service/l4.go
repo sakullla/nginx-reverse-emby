@@ -45,49 +45,53 @@ type L4Tuning struct {
 }
 
 type L4Rule struct {
-	ID              int              `json:"id"`
-	AgentID         string           `json:"agent_id"`
-	Name            string           `json:"name"`
-	Protocol        string           `json:"protocol"`
-	ListenHost      string           `json:"listen_host"`
-	ListenPort      int              `json:"listen_port"`
-	UpstreamHost    string           `json:"-"`
-	UpstreamPort    int              `json:"-"`
-	Backends        []L4Backend      `json:"backends"`
-	LoadBalancing   L4LoadBalancing  `json:"load_balancing"`
-	Tuning          L4Tuning         `json:"tuning"`
-	RelayChain      []int            `json:"-"`
-	RelayLayers     [][]int          `json:"relay_layers"`
-	RelayObfs       bool             `json:"relay_obfs"`
-	ListenMode      string           `json:"listen_mode"`
-	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth"`
-	ProxyEgressMode string           `json:"proxy_egress_mode"`
-	ProxyEgressURL  string           `json:"proxy_egress_url"`
-	Enabled         bool             `json:"enabled"`
-	Tags            []string         `json:"tags"`
-	Revision        int              `json:"revision"`
+	ID                  int              `json:"id"`
+	AgentID             string           `json:"agent_id"`
+	Name                string           `json:"name"`
+	Protocol            string           `json:"protocol"`
+	ListenHost          string           `json:"listen_host"`
+	ListenPort          int              `json:"listen_port"`
+	UpstreamHost        string           `json:"-"`
+	UpstreamPort        int              `json:"-"`
+	Backends            []L4Backend      `json:"backends"`
+	LoadBalancing       L4LoadBalancing  `json:"load_balancing"`
+	Tuning              L4Tuning         `json:"tuning"`
+	RelayChain          []int            `json:"-"`
+	RelayLayers         [][]int          `json:"relay_layers"`
+	RelayObfs           bool             `json:"relay_obfs"`
+	ListenMode          string           `json:"listen_mode"`
+	WireGuardProfileID  *int             `json:"wireguard_profile_id,omitempty"`
+	WireGuardListenHost string           `json:"wireguard_listen_host,omitempty"`
+	ProxyEntryAuth      L4ProxyEntryAuth `json:"proxy_entry_auth"`
+	ProxyEgressMode     string           `json:"proxy_egress_mode"`
+	ProxyEgressURL      string           `json:"proxy_egress_url"`
+	Enabled             bool             `json:"enabled"`
+	Tags                []string         `json:"tags"`
+	Revision            int              `json:"revision"`
 }
 
 type L4RuleInput struct {
-	ID              *int              `json:"id,omitempty"`
-	Name            *string           `json:"name,omitempty"`
-	Protocol        *string           `json:"protocol,omitempty"`
-	ListenHost      *string           `json:"listen_host,omitempty"`
-	ListenPort      *int              `json:"listen_port,omitempty"`
-	UpstreamHost    *string           `json:"upstream_host,omitempty"`
-	UpstreamPort    *int              `json:"upstream_port,omitempty"`
-	Backends        *[]L4Backend      `json:"backends,omitempty"`
-	LoadBalancing   *L4LoadBalancing  `json:"load_balancing,omitempty"`
-	Tuning          *L4Tuning         `json:"tuning,omitempty"`
-	RelayChain      *[]int            `json:"relay_chain,omitempty"`
-	RelayLayers     *[][]int          `json:"relay_layers,omitempty"`
-	RelayObfs       *bool             `json:"relay_obfs,omitempty"`
-	ListenMode      *string           `json:"listen_mode,omitempty"`
-	ProxyEntryAuth  *L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
-	ProxyEgressMode *string           `json:"proxy_egress_mode,omitempty"`
-	ProxyEgressURL  *string           `json:"proxy_egress_url,omitempty"`
-	Enabled         *bool             `json:"enabled,omitempty"`
-	Tags            *[]string         `json:"tags,omitempty"`
+	ID                  *int              `json:"id,omitempty"`
+	Name                *string           `json:"name,omitempty"`
+	Protocol            *string           `json:"protocol,omitempty"`
+	ListenHost          *string           `json:"listen_host,omitempty"`
+	ListenPort          *int              `json:"listen_port,omitempty"`
+	UpstreamHost        *string           `json:"upstream_host,omitempty"`
+	UpstreamPort        *int              `json:"upstream_port,omitempty"`
+	Backends            *[]L4Backend      `json:"backends,omitempty"`
+	LoadBalancing       *L4LoadBalancing  `json:"load_balancing,omitempty"`
+	Tuning              *L4Tuning         `json:"tuning,omitempty"`
+	RelayChain          *[]int            `json:"relay_chain,omitempty"`
+	RelayLayers         *[][]int          `json:"relay_layers,omitempty"`
+	RelayObfs           *bool             `json:"relay_obfs,omitempty"`
+	ListenMode          *string           `json:"listen_mode,omitempty"`
+	WireGuardProfileID  *int              `json:"wireguard_profile_id,omitempty"`
+	WireGuardListenHost *string           `json:"wireguard_listen_host,omitempty"`
+	ProxyEntryAuth      *L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	ProxyEgressMode     *string           `json:"proxy_egress_mode,omitempty"`
+	ProxyEgressURL      *string           `json:"proxy_egress_url,omitempty"`
+	Enabled             *bool             `json:"enabled,omitempty"`
+	Tags                *[]string         `json:"tags,omitempty"`
 }
 
 type l4Service struct {
@@ -187,6 +191,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err := s.validateRelayChain(ctx, flattenRelayLayers(rule.RelayLayers)); err != nil {
 		return L4Rule{}, err
 	}
+	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
+		return L4Rule{}, err
+	}
 
 	if err := ensureUniqueL4Listen(existing, rule, 0); err != nil {
 		return L4Rule{}, err
@@ -249,6 +256,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		return L4Rule{}, err
 	}
 	if err := s.validateRelayChain(ctx, flattenRelayLayers(rule.RelayLayers)); err != nil {
+		return L4Rule{}, err
+	}
+	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
 		return L4Rule{}, err
 	}
 
@@ -383,8 +393,8 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if listenMode == "" {
 		listenMode = "tcp"
 	}
-	if listenMode != "tcp" && listenMode != "proxy" {
-		return L4Rule{}, fmt.Errorf("%w: listen_mode must be tcp or proxy", ErrInvalidArgument)
+	if listenMode != "tcp" && listenMode != "proxy" && listenMode != "wireguard" {
+		return L4Rule{}, fmt.Errorf("%w: listen_mode must be tcp, proxy, or wireguard", ErrInvalidArgument)
 	}
 	if listenMode == "proxy" && protocol != "tcp" {
 		return L4Rule{}, fmt.Errorf("%w: listen_mode=proxy requires protocol tcp", ErrInvalidArgument)
@@ -402,6 +412,7 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if listenPort < 1 || listenPort > 65535 {
 		return L4Rule{}, fmt.Errorf("%w: listen_port must be a valid port", ErrInvalidArgument)
 	}
+	wireGuardListenHost := strings.TrimSpace(defaultString(pointerString(input.WireGuardListenHost), fallback.WireGuardListenHost))
 
 	id := fallback.ID
 	if input.ID != nil && *input.ID > 0 {
@@ -458,8 +469,8 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if listenMode != "proxy" {
 		proxyEntryAuth, proxyEgressMode, proxyEgressURL = normalizeL4ProxyEntryFields(listenMode, proxyEntryAuth, proxyEgressMode, proxyEgressURL)
 	} else {
-		if proxyEgressMode != "relay" && proxyEgressMode != "proxy" {
-			return L4Rule{}, fmt.Errorf("%w: proxy_egress_mode must be relay or proxy", ErrInvalidArgument)
+		if proxyEgressMode != "relay" && proxyEgressMode != "proxy" && proxyEgressMode != "wireguard" {
+			return L4Rule{}, fmt.Errorf("%w: proxy_egress_mode must be relay, proxy, or wireguard", ErrInvalidArgument)
 		}
 		if proxyEgressMode != "proxy" {
 			proxyEgressURL = ""
@@ -477,9 +488,26 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 			relayChain = []int{}
 			relayLayers = [][]int{}
 		}
+		if proxyEgressMode == "wireguard" {
+			relayChain = []int{}
+			relayLayers = [][]int{}
+		}
 		backends = []L4Backend{}
 		upstreamHost = ""
 		upstreamPort = 0
+	}
+	wireGuardProfileID := copyOptionalInt(fallback.WireGuardProfileID)
+	if input.WireGuardProfileID != nil && *input.WireGuardProfileID > 0 {
+		value := *input.WireGuardProfileID
+		wireGuardProfileID = &value
+	}
+	if listenMode == "wireguard" || proxyEgressMode == "wireguard" {
+		if wireGuardProfileID == nil {
+			return L4Rule{}, fmt.Errorf("%w: wireguard_profile_id is required when listen_mode=wireguard or proxy_egress_mode=wireguard", ErrInvalidArgument)
+		}
+	} else {
+		wireGuardProfileID = nil
+		wireGuardListenHost = ""
 	}
 
 	relayObfs := false
@@ -490,6 +518,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		relayObfs = *input.RelayObfs
 	}
 	if listenMode == "proxy" && proxyEgressMode == "proxy" {
+		relayObfs = false
+	}
+	if proxyEgressMode == "wireguard" {
 		relayObfs = false
 	}
 	if relayObfs && protocol != "tcp" {
@@ -521,27 +552,29 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	}
 
 	return L4Rule{
-		ID:              id,
-		AgentID:         fallback.AgentID,
-		Name:            name,
-		Protocol:        protocol,
-		ListenHost:      listenHost,
-		ListenPort:      listenPort,
-		UpstreamHost:    upstreamHost,
-		UpstreamPort:    upstreamPort,
-		Backends:        backends,
-		LoadBalancing:   loadBalancing,
-		Tuning:          tuning,
-		RelayChain:      relayChain,
-		RelayLayers:     relayLayers,
-		RelayObfs:       relayObfs,
-		ListenMode:      listenMode,
-		ProxyEntryAuth:  proxyEntryAuth,
-		ProxyEgressMode: proxyEgressMode,
-		ProxyEgressURL:  proxyEgressURL,
-		Enabled:         enabled,
-		Tags:            tags,
-		Revision:        fallback.Revision,
+		ID:                  id,
+		AgentID:             fallback.AgentID,
+		Name:                name,
+		Protocol:            protocol,
+		ListenHost:          listenHost,
+		ListenPort:          listenPort,
+		UpstreamHost:        upstreamHost,
+		UpstreamPort:        upstreamPort,
+		Backends:            backends,
+		LoadBalancing:       loadBalancing,
+		Tuning:              tuning,
+		RelayChain:          relayChain,
+		RelayLayers:         relayLayers,
+		RelayObfs:           relayObfs,
+		ListenMode:          listenMode,
+		WireGuardProfileID:  wireGuardProfileID,
+		WireGuardListenHost: wireGuardListenHost,
+		ProxyEntryAuth:      proxyEntryAuth,
+		ProxyEgressMode:     proxyEgressMode,
+		ProxyEgressURL:      proxyEgressURL,
+		Enabled:             enabled,
+		Tags:                tags,
+		Revision:            fallback.Revision,
 	}, nil
 }
 
@@ -551,6 +584,13 @@ func (s *l4Service) validateRelayChain(ctx context.Context, relayChain []int) er
 		return err
 	}
 	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain)
+}
+
+func (s *l4Service) validateWireGuardProfileReference(ctx context.Context, agentID string, rule L4Rule) error {
+	if rule.ListenMode != "wireguard" && rule.ProxyEgressMode != "wireguard" {
+		return nil
+	}
+	return validateEnabledWireGuardProfileReference(ctx, s.store, agentID, rule.WireGuardProfileID)
 }
 
 func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {
@@ -754,26 +794,28 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 	)
 
 	rule := L4Rule{
-		ID:              row.ID,
-		AgentID:         row.AgentID,
-		Name:            row.Name,
-		Protocol:        defaultString(row.Protocol, "tcp"),
-		ListenHost:      defaultString(row.ListenHost, "0.0.0.0"),
-		ListenPort:      row.ListenPort,
-		UpstreamHost:    "",
-		UpstreamPort:    0,
-		LoadBalancing:   L4LoadBalancing{Strategy: "adaptive"},
-		Tuning:          L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
-		RelayChain:      []int{},
-		RelayLayers:     [][]int{},
-		RelayObfs:       row.RelayObfs,
-		ListenMode:      listenMode,
-		ProxyEntryAuth:  proxyEntryAuth,
-		ProxyEgressMode: proxyEgressMode,
-		ProxyEgressURL:  proxyEgressURL,
-		Enabled:         row.Enabled,
-		Tags:            parseStringArray(row.TagsJSON),
-		Revision:        row.Revision,
+		ID:                  row.ID,
+		AgentID:             row.AgentID,
+		Name:                row.Name,
+		Protocol:            defaultString(row.Protocol, "tcp"),
+		ListenHost:          defaultString(row.ListenHost, "0.0.0.0"),
+		ListenPort:          row.ListenPort,
+		UpstreamHost:        "",
+		UpstreamPort:        0,
+		LoadBalancing:       L4LoadBalancing{Strategy: "adaptive"},
+		Tuning:              L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
+		RelayChain:          []int{},
+		RelayLayers:         [][]int{},
+		RelayObfs:           row.RelayObfs,
+		ListenMode:          listenMode,
+		WireGuardProfileID:  copyOptionalInt(row.WireGuardProfileID),
+		WireGuardListenHost: row.WireGuardListenHost,
+		ProxyEntryAuth:      proxyEntryAuth,
+		ProxyEgressMode:     proxyEgressMode,
+		ProxyEgressURL:      proxyEgressURL,
+		Enabled:             row.Enabled,
+		Tags:                parseStringArray(row.TagsJSON),
+		Revision:            row.Revision,
 	}
 
 	if backends := parseL4Backends(row.BackendsJSON); len(backends) > 0 {
@@ -793,27 +835,29 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 
 func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 	return storage.L4RuleRow{
-		ID:                 rule.ID,
-		AgentID:            rule.AgentID,
-		Name:               rule.Name,
-		Protocol:           rule.Protocol,
-		ListenHost:         rule.ListenHost,
-		ListenPort:         rule.ListenPort,
-		UpstreamHost:       "",
-		UpstreamPort:       0,
-		BackendsJSON:       marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON:  marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
-		TuningJSON:         marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
-		RelayChainJSON:     "[]",
-		RelayLayersJSON:    marshalJSON(rule.RelayLayers, "[]"),
-		RelayObfs:          rule.RelayObfs,
-		ListenMode:         defaultString(rule.ListenMode, "tcp"),
-		ProxyEntryAuthJSON: marshalJSON(rule.ProxyEntryAuth, "{}"),
-		ProxyEgressMode:    rule.ProxyEgressMode,
-		ProxyEgressURL:     rule.ProxyEgressURL,
-		Enabled:            rule.Enabled,
-		TagsJSON:           marshalJSON(rule.Tags, "[]"),
-		Revision:           rule.Revision,
+		ID:                  rule.ID,
+		AgentID:             rule.AgentID,
+		Name:                rule.Name,
+		Protocol:            rule.Protocol,
+		ListenHost:          rule.ListenHost,
+		ListenPort:          rule.ListenPort,
+		UpstreamHost:        "",
+		UpstreamPort:        0,
+		BackendsJSON:        marshalJSON(rule.Backends, "[]"),
+		LoadBalancingJSON:   marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
+		TuningJSON:          marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
+		RelayChainJSON:      "[]",
+		RelayLayersJSON:     marshalJSON(rule.RelayLayers, "[]"),
+		RelayObfs:           rule.RelayObfs,
+		ListenMode:          defaultString(rule.ListenMode, "tcp"),
+		WireGuardProfileID:  copyOptionalInt(rule.WireGuardProfileID),
+		WireGuardListenHost: rule.WireGuardListenHost,
+		ProxyEntryAuthJSON:  marshalJSON(rule.ProxyEntryAuth, "{}"),
+		ProxyEgressMode:     rule.ProxyEgressMode,
+		ProxyEgressURL:      rule.ProxyEgressURL,
+		Enabled:             rule.Enabled,
+		TagsJSON:            marshalJSON(rule.Tags, "[]"),
+		Revision:            rule.Revision,
 	}
 }
 

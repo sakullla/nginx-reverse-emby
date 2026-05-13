@@ -43,6 +43,7 @@ type RelayListener struct {
 	CertificateID           *int       `json:"certificate_id"`
 	TLSMode                 string     `json:"tls_mode"`
 	TransportMode           string     `json:"transport_mode"`
+	WireGuardProfileID      *int       `json:"wireguard_profile_id,omitempty"`
 	AllowTransportFallback  bool       `json:"allow_transport_fallback"`
 	ObfsMode                string     `json:"obfs_mode"`
 	PinSet                  []RelayPin `json:"pin_set"`
@@ -64,6 +65,7 @@ type RelayListenerInput struct {
 	CertificateID              *int        `json:"certificate_id,omitempty"`
 	TLSMode                    *string     `json:"tls_mode,omitempty"`
 	TransportMode              *string     `json:"transport_mode,omitempty"`
+	WireGuardProfileID         *int        `json:"wireguard_profile_id,omitempty"`
 	AllowTransportFallback     *bool       `json:"allow_transport_fallback,omitempty"`
 	ObfsMode                   *string     `json:"obfs_mode,omitempty"`
 	PinSet                     *[]RelayPin `json:"pin_set,omitempty"`
@@ -538,6 +540,9 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	if err != nil {
 		return relayPreparation{}, err
 	}
+	if err := validateEnabledWireGuardProfileReference(ctx, s.store, agentID, listener.WireGuardProfileID); err != nil {
+		return relayPreparation{}, err
+	}
 	return relayPreparation{
 		Listener:            listener,
 		OriginalCertRows:    originalCertRows,
@@ -712,9 +717,21 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 	switch transportMode {
 	case "", "tls_tcp":
 		transportMode = "tls_tcp"
-	case "quic":
+	case "quic", "wireguard":
 	default:
-		return RelayListener{}, fmt.Errorf("%w: transport_mode must be tls_tcp or quic", ErrInvalidArgument)
+		return RelayListener{}, fmt.Errorf("%w: transport_mode must be tls_tcp, quic, or wireguard", ErrInvalidArgument)
+	}
+	wireGuardProfileID := copyOptionalInt(fallback.WireGuardProfileID)
+	if input.WireGuardProfileID != nil && *input.WireGuardProfileID > 0 {
+		value := *input.WireGuardProfileID
+		wireGuardProfileID = &value
+	}
+	if transportMode == "wireguard" {
+		if wireGuardProfileID == nil {
+			return RelayListener{}, fmt.Errorf("%w: wireguard_profile_id is required when transport_mode=wireguard", ErrInvalidArgument)
+		}
+	} else {
+		wireGuardProfileID = nil
 	}
 
 	allowTransportFallback := fallback.AllowTransportFallback
@@ -761,10 +778,10 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 	}
 
 	if enabled {
-		if certID == nil && !options.AllowMissingCertificate {
+		if transportMode != "wireguard" && certID == nil && !options.AllowMissingCertificate {
 			return RelayListener{}, fmt.Errorf("%w: certificate_id is required when relay listener is enabled", ErrInvalidArgument)
 		}
-		if !options.SkipTrustValidation && certID != nil {
+		if transportMode != "wireguard" && !options.SkipTrustValidation && certID != nil {
 			switch tlsMode {
 			case "pin_and_ca":
 				if len(pinSet) == 0 || len(trustedCAIDs) == 0 {
@@ -799,6 +816,7 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		CertificateID:           certID,
 		TLSMode:                 tlsMode,
 		TransportMode:           transportMode,
+		WireGuardProfileID:      wireGuardProfileID,
 		AllowTransportFallback:  allowTransportFallback,
 		ObfsMode:                obfsMode,
 		PinSet:                  pinSet,
@@ -1192,6 +1210,34 @@ func containsInt(values []int, target int) bool {
 	return false
 }
 
+func copyOptionalInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
+func validateEnabledWireGuardProfileReference(ctx context.Context, store storage.Store, agentID string, profileID *int) error {
+	if profileID == nil || *profileID <= 0 {
+		return nil
+	}
+	rows, err := store.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.ID != *profileID {
+			continue
+		}
+		if !row.Enabled {
+			return fmt.Errorf("%w: wireguard profile %d is disabled", ErrInvalidArgument, *profileID)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: wireguard profile %d not found for agent %s", ErrInvalidArgument, *profileID, agentID)
+}
+
 func normalizeRelayPins(pins []RelayPin) []RelayPin {
 	normalized := make([]RelayPin, 0, len(pins))
 	for _, pin := range pins {
@@ -1370,6 +1416,7 @@ func relayListenerFromRow(row storage.RelayListenerRow) RelayListener {
 		CertificateID:          row.CertificateID,
 		TLSMode:                defaultString(row.TLSMode, "pin_or_ca"),
 		TransportMode:          defaultString(row.TransportMode, "tls_tcp"),
+		WireGuardProfileID:     copyOptionalInt(row.WireGuardProfileID),
 		ObfsMode:               defaultString(row.ObfsMode, "off"),
 		AllowTransportFallback: row.AllowTransportFallback,
 		AllowSelfSigned:        row.AllowSelfSigned,
@@ -1410,6 +1457,7 @@ func relayListenerToRow(listener RelayListener) storage.RelayListenerRow {
 		CertificateID:           listener.CertificateID,
 		TLSMode:                 listener.TLSMode,
 		TransportMode:           listener.TransportMode,
+		WireGuardProfileID:      copyOptionalInt(listener.WireGuardProfileID),
 		AllowTransportFallback:  listener.AllowTransportFallback,
 		ObfsMode:                listener.ObfsMode,
 		PinSetJSON:              marshalJSON(listener.PinSet, "[]"),

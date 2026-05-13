@@ -347,6 +347,8 @@ func TestLocalSyncSourceIngestsTrafficBeforeBlockState(t *testing.T) {
 
 func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	trafficStatsEnabled := false
+	l4WireGuardProfileID := 17
+	relayWireGuardProfileID := 18
 	snapshot := Snapshot{
 		Revision: 15,
 		AgentConfig: storage.AgentConfig{
@@ -362,15 +364,16 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 			RelayLayers: [][]int{{1, 2}, {3}},
 		}},
 		L4Rules: []storage.L4Rule{{
-			ID:              11,
-			Name:            "tcp-game",
-			Protocol:        "tcp",
-			ListenHost:      "0.0.0.0",
-			ListenPort:      19000,
-			ListenMode:      "proxy",
-			ProxyEntryAuth:  storage.L4ProxyEntryAuth{Enabled: true, Username: "client", Password: "secret"},
-			ProxyEgressMode: "proxy",
-			ProxyEgressURL:  "socks5h://egress:pass@127.0.0.1:1080",
+			ID:                  11,
+			Name:                "tcp-game",
+			Protocol:            "tcp",
+			ListenHost:          "0.0.0.0",
+			ListenPort:          19000,
+			ListenMode:          "proxy",
+			WireGuardProfileID:  &l4WireGuardProfileID,
+			WireGuardListenHost: "10.60.0.1",
+			ProxyEntryAuth:      storage.L4ProxyEntryAuth{Enabled: true, Username: "client", Password: "secret"},
+			ProxyEgressMode:     "wireguard",
 			Backends: []storage.L4Backend{{
 				Host: "relay-echo-test",
 				Port: 18081,
@@ -392,6 +395,7 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 			Enabled:                true,
 			TLSMode:                "pin_and_ca",
 			TransportMode:          "quic",
+			WireGuardProfileID:     &relayWireGuardProfileID,
 			AllowTransportFallback: true,
 			ObfsMode:               "early_window_v2",
 			PinSet: []storage.RelayPin{{
@@ -438,8 +442,11 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	if !embedded.L4Rules[0].ProxyEntryAuth.Enabled || embedded.L4Rules[0].ProxyEntryAuth.Username != "client" || embedded.L4Rules[0].ProxyEntryAuth.Password != "secret" {
 		t.Fatalf("embedded L4Rules[0].ProxyEntryAuth = %+v", embedded.L4Rules[0].ProxyEntryAuth)
 	}
-	if embedded.L4Rules[0].ProxyEgressMode != "proxy" || embedded.L4Rules[0].ProxyEgressURL != "socks5h://egress:pass@127.0.0.1:1080" {
+	if embedded.L4Rules[0].ProxyEgressMode != "wireguard" || embedded.L4Rules[0].ProxyEgressURL != "" {
 		t.Fatalf("embedded L4Rules[0] proxy egress = mode %q url %q", embedded.L4Rules[0].ProxyEgressMode, embedded.L4Rules[0].ProxyEgressURL)
+	}
+	if embedded.L4Rules[0].WireGuardProfileID == nil || *embedded.L4Rules[0].WireGuardProfileID != l4WireGuardProfileID || embedded.L4Rules[0].WireGuardListenHost != "10.60.0.1" {
+		t.Fatalf("embedded L4Rules[0] WireGuard fields = profile %v listen_host %q", embedded.L4Rules[0].WireGuardProfileID, embedded.L4Rules[0].WireGuardListenHost)
 	}
 	if len(embedded.L4Rules[0].RelayLayers) != 2 || embedded.L4Rules[0].RelayLayers[1][1] != 3 {
 		t.Fatalf("embedded L4Rules[0].RelayLayers = %+v", embedded.L4Rules[0].RelayLayers)
@@ -455,6 +462,9 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	}
 	if embedded.RelayListeners[0].TransportMode != "quic" {
 		t.Fatalf("embedded RelayListeners[0].TransportMode = %q, want quic", embedded.RelayListeners[0].TransportMode)
+	}
+	if embedded.RelayListeners[0].WireGuardProfileID == nil || *embedded.RelayListeners[0].WireGuardProfileID != relayWireGuardProfileID {
+		t.Fatalf("embedded RelayListeners[0].WireGuardProfileID = %v", embedded.RelayListeners[0].WireGuardProfileID)
 	}
 	if !embedded.RelayListeners[0].AllowTransportFallback {
 		t.Fatalf("embedded RelayListeners[0].AllowTransportFallback = false, want true")

@@ -113,6 +113,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		sql    string
 	}{
 		{column: "transport_mode", sql: `ALTER TABLE relay_listeners ADD COLUMN transport_mode TEXT NOT NULL DEFAULT 'tls_tcp'`},
+		{column: "wireguard_profile_id", sql: `ALTER TABLE relay_listeners ADD COLUMN wireguard_profile_id INTEGER`},
 		{column: "allow_transport_fallback", sql: `ALTER TABLE relay_listeners ADD COLUMN allow_transport_fallback INTEGER NOT NULL DEFAULT 1`},
 		{column: "obfs_mode", sql: `ALTER TABLE relay_listeners ADD COLUMN obfs_mode TEXT NOT NULL DEFAULT 'off'`},
 	}
@@ -148,6 +149,8 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		sql    string
 	}{
 		{column: "listen_mode", sql: `ALTER TABLE l4_rules ADD COLUMN listen_mode TEXT NOT NULL DEFAULT 'tcp'`},
+		{column: "wireguard_profile_id", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_profile_id INTEGER`},
+		{column: "wireguard_listen_host", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_listen_host TEXT NOT NULL DEFAULT ''`},
 		{column: "proxy_entry_auth", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_entry_auth TEXT NOT NULL DEFAULT '{}'`},
 		{column: "proxy_egress_mode", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_egress_mode TEXT NOT NULL DEFAULT ''`},
 		{column: "proxy_egress_url", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_egress_url TEXT NOT NULL DEFAULT ''`},
@@ -188,6 +191,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE l4_rules SET relay_layers = '[]' WHERE relay_layers IS NULL OR trim(relay_layers) = ''`,
 		`UPDATE l4_rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
 		`UPDATE l4_rules SET listen_mode = 'tcp' WHERE listen_mode IS NULL OR trim(listen_mode) = ''`,
+		`UPDATE l4_rules SET wireguard_listen_host = '' WHERE wireguard_listen_host IS NULL`,
 		`UPDATE l4_rules SET proxy_entry_auth = '{}' WHERE proxy_entry_auth IS NULL OR trim(proxy_entry_auth) = ''`,
 		`UPDATE l4_rules SET proxy_egress_mode = '' WHERE proxy_egress_mode IS NULL`,
 		`UPDATE l4_rules SET proxy_egress_url = '' WHERE proxy_egress_url IS NULL`,
