@@ -120,6 +120,175 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
+  it('sends Relay listener WireGuard payloads with profile id and neutralized transport options', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      return {
+        data: {
+          listener: {
+            id: 11,
+            name: 'wg-relay',
+            transport_mode: 'wireguard',
+            wireguard_profile_id: 'wg-local',
+            obfs_mode: 'off',
+            allow_transport_fallback: false
+          }
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      await runtime.createRelayListener('edge-a', {
+        name: 'wg-relay',
+        transport_mode: 'wireguard',
+        wireguard_profile_id: 'wg-local',
+        obfs_mode: 'early_window_v2',
+        allow_transport_fallback: true
+      })
+      await runtime.updateRelayListener('edge-a', 11, {
+        name: 'wg-relay',
+        transport_mode: 'wireguard',
+        wireguard_profile_id: 'wg-local',
+        obfs_mode: 'early_window_v2',
+        allow_transport_fallback: true
+      })
+
+      expect(requests).toHaveLength(2)
+      for (const request of requests) {
+        const payload = JSON.parse(request.data)
+        expect(payload.transport_mode).toBe('wireguard')
+        expect(payload.wireguard_profile_id).toBe('wg-local')
+        expect(payload.obfs_mode).toBe('off')
+        expect(payload.allow_transport_fallback).toBe(false)
+      }
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
+  it('sends L4 WireGuard inbound payloads with listen mode and profile id', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      return {
+        data: {
+          rule: {
+            id: 12,
+            ...JSON.parse(config.data)
+          }
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      const created = await runtime.createL4Rule('edge-a', {
+        protocol: 'udp',
+        listen_host: '0.0.0.0',
+        listen_port: 51820,
+        listen_mode: 'wireguard',
+        wireguard_profile_id: 'wg-local',
+        wireguard_listen_host: '10.8.0.1',
+        backends: [{ host: '10.8.0.2', port: 8080 }]
+      })
+      const updated = await runtime.updateL4Rule('edge-a', 12, {
+        protocol: 'udp',
+        listen_host: '0.0.0.0',
+        listen_port: 51820,
+        listen_mode: 'wireguard',
+        wireguard_profile_id: 'wg-local',
+        wireguard_listen_host: '10.8.0.1',
+        backends: [{ host: '10.8.0.2', port: 8080 }]
+      })
+
+      expect(requests).toHaveLength(2)
+      for (const request of requests) {
+        const payload = JSON.parse(request.data)
+        expect(payload.listen_mode).toBe('wireguard')
+        expect(payload.wireguard_profile_id).toBe('wg-local')
+        expect(payload.wireguard_listen_host).toBe('10.8.0.1')
+      }
+      expect(created.listen_mode).toBe('wireguard')
+      expect(updated.listen_mode).toBe('wireguard')
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
+  it('sends L4 WireGuard egress payloads with egress mode and profile id', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      return {
+        data: {
+          rule: {
+            id: 13,
+            ...JSON.parse(config.data)
+          }
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      const created = await runtime.createL4Rule('edge-a', {
+        protocol: 'tcp',
+        listen_host: '0.0.0.0',
+        listen_port: 1080,
+        listen_mode: 'proxy',
+        proxy_egress_mode: 'wireguard',
+        wireguard_profile_id: 'wg-exit',
+        proxy_entry_auth: { enabled: false, username: '', password: '' },
+        backends: []
+      })
+      const updated = await runtime.updateL4Rule('edge-a', 13, {
+        protocol: 'tcp',
+        listen_host: '0.0.0.0',
+        listen_port: 1080,
+        listen_mode: 'proxy',
+        proxy_egress_mode: 'wireguard',
+        wireguard_profile_id: 'wg-exit',
+        proxy_entry_auth: { enabled: false, username: '', password: '' },
+        backends: []
+      })
+
+      expect(requests).toHaveLength(2)
+      for (const request of requests) {
+        const payload = JSON.parse(request.data)
+        expect(payload.listen_mode).toBe('proxy')
+        expect(payload.proxy_egress_mode).toBe('wireguard')
+        expect(payload.wireguard_profile_id).toBe('wg-exit')
+      }
+      expect(created.proxy_egress_mode).toBe('wireguard')
+      expect(updated.proxy_egress_mode).toBe('wireguard')
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
   it('does not synthesize canonical backends from legacy runtime fields', async () => {
     const { api } = await vi.importActual('./client.js')
     const originalAdapter = api.defaults.adapter

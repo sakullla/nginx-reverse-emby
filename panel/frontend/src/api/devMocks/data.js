@@ -296,7 +296,7 @@ function normalizeL4Backends(rule = {}) {
 }
 
 function normalizeL4Rule(rule = {}) {
-  const listenMode = rule.listen_mode === 'proxy' ? 'proxy' : 'tcp'
+  const listenMode = ['proxy', 'wireguard'].includes(rule.listen_mode) ? rule.listen_mode : 'tcp'
   return {
     ...rule,
     backends: normalizeL4Backends(rule),
@@ -312,6 +312,16 @@ function normalizeL4Rule(rule = {}) {
     },
     proxy_egress_mode: listenMode === 'proxy' ? String(rule.proxy_egress_mode || 'relay') : '',
     proxy_egress_url: listenMode === 'proxy' ? String(rule.proxy_egress_url || '') : ''
+  }
+}
+
+function normalizeRelayListenerPayloadForTransport(payload = {}) {
+  if (payload.transport_mode !== 'wireguard') return payload
+  return {
+    ...payload,
+    transport_mode: 'wireguard',
+    obfs_mode: 'off',
+    allow_transport_fallback: false
   }
 }
 
@@ -1562,6 +1572,28 @@ const mockRelayListenersByAgent = {
       allow_self_signed: true,
       tags: ['relay', 'shared'],
       revision: 1
+    },
+    {
+      id: 5,
+      agent_id: 'local',
+      name: 'relay-wg-local',
+      bind_hosts: ['0.0.0.0'],
+      listen_port: 51820,
+      public_host: 'wg-relay.example.com',
+      enabled: true,
+      certificate_id: null,
+      certificate_source: 'auto_relay_ca',
+      trust_mode_source: 'auto',
+      tls_mode: 'pin_and_ca',
+      transport_mode: 'wireguard',
+      wireguard_profile_id: 'wg-local',
+      allow_transport_fallback: false,
+      obfs_mode: 'off',
+      pin_set: [],
+      trusted_ca_certificate_ids: [],
+      allow_self_signed: true,
+      tags: ['relay', 'wg'],
+      revision: 1
     }
   ],
   'edge-1': [
@@ -1610,7 +1642,7 @@ const mockRelayListenersByAgent = {
   ]
 }
 
-let mockRelayListenerIdCounter = 4
+let mockRelayListenerIdCounter = 5
 
 function findMockRelayListenerCertificate(agentId, certificateId) {
   const certificates = mockCertsByAgent[agentId] || []
@@ -1669,7 +1701,8 @@ function normalizeRelayBindHosts(rawBindHosts, legacyListenHost) {
 }
 
 function normalizeRelayTransportMode(value) {
-  return value === 'quic' ? 'quic' : 'tls_tcp'
+  if (value === 'quic' || value === 'wireguard') return value
+  return 'tls_tcp'
 }
 
 function normalizeRelayObfsMode(value, transportMode) {
@@ -1701,10 +1734,11 @@ function normalizeMockRelayListenerRecord(record = {}) {
 }
 
 function normalizeMockRelayListenerPayload(agentId, payload = {}) {
+  payload = normalizeRelayListenerPayloadForTransport(payload)
   const normalizedRecord = normalizeMockRelayListenerRecord(payload)
   const certificateSource = payload.certificate_source === 'existing_certificate' ? 'existing_certificate' : 'auto_relay_ca'
   const trustModeSource = payload.trust_mode_source === 'custom' ? 'custom' : 'auto'
-  const transportMode = payload.transport_mode === 'quic' ? 'quic' : 'tls_tcp'
+  const transportMode = normalizeRelayTransportMode(payload.transport_mode)
   const hasPublicPortInput = payload.public_port != null && String(payload.public_port).trim() !== ''
   if (hasPublicPortInput && normalizeRelayPort(payload.public_port) == null) {
     throw new Error('public_port must be an integer between 1 and 65535')
@@ -1762,7 +1796,7 @@ function normalizeMockRelayListenerPayload(agentId, payload = {}) {
     certificate_source: certificateSource,
     trust_mode_source: trustModeSource,
     transport_mode: transportMode,
-    allow_transport_fallback: payload.allow_transport_fallback !== false,
+    allow_transport_fallback: transportMode === 'wireguard' ? false : payload.allow_transport_fallback !== false,
     obfs_mode: transportMode === 'tls_tcp'
       ? normalizeRelayObfsMode(payload.obfs_mode, transportMode)
       : 'off',
@@ -1885,6 +1919,164 @@ export async function deleteRelayListener(agentId, id) {
     longRunningRequest
   )
   return data.listener
+}
+
+const mockWireGuardProfilesByAgent = {
+  local: [
+    {
+      id: 'wg-local',
+      agent_id: 'local',
+      name: 'local-wg',
+      mode: 'generic_wireguard',
+      private_key: 'xxxxx',
+      listen_port: 51820,
+      addresses: ['10.8.0.1/24'],
+      peers: [
+        {
+          name: 'edge-peer',
+          public_key: 'mock-public-key-edge',
+          preshared_key: 'xxxxx',
+          endpoint: 'edge.example.com:51820',
+          allowed_ips: ['10.8.0.2/32'],
+          persistent_keepalive_seconds: 25
+        }
+      ],
+      dns: ['1.1.1.1'],
+      mtu: 1420,
+      enabled: true,
+      tags: ['wg', 'local'],
+      revision: 1
+    }
+  ],
+  'edge-1': [
+    {
+      id: 'wg-edge-1',
+      agent_id: 'edge-1',
+      name: 'edge-wg',
+      mode: 'generic_wireguard',
+      private_key: 'xxxxx',
+      listen_port: 51821,
+      addresses: ['10.9.0.1/24'],
+      peers: [],
+      dns: [],
+      mtu: 1420,
+      enabled: true,
+      tags: ['wg', 'edge'],
+      revision: 1
+    }
+  ]
+}
+
+let mockWireGuardProfileIdCounter = 2
+
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+}
+
+function normalizeMockWireGuardPeer(peer = {}) {
+  return {
+    name: String(peer.name || '').trim(),
+    public_key: String(peer.public_key || '').trim(),
+    preshared_key: String(peer.preshared_key || '').trim(),
+    endpoint: String(peer.endpoint || '').trim(),
+    allowed_ips: normalizeStringList(peer.allowed_ips),
+    persistent_keepalive_seconds: peer.persistent_keepalive_seconds == null || peer.persistent_keepalive_seconds === ''
+      ? null
+      : Number(peer.persistent_keepalive_seconds)
+  }
+}
+
+function normalizeMockWireGuardProfile(agentId, profile = {}) {
+  return {
+    ...profile,
+    id: String(profile.id || `wg-${++mockWireGuardProfileIdCounter}`),
+    agent_id: String(profile.agent_id || agentId),
+    name: String(profile.name || '').trim(),
+    mode: 'generic_wireguard',
+    private_key: String(profile.private_key || '').trim(),
+    listen_port: profile.listen_port == null || profile.listen_port === '' ? null : Number(profile.listen_port),
+    addresses: normalizeStringList(profile.addresses),
+    peers: Array.isArray(profile.peers) ? profile.peers.map((peer) => normalizeMockWireGuardPeer(peer)) : [],
+    dns: normalizeStringList(profile.dns),
+    mtu: profile.mtu == null || profile.mtu === '' ? null : Number(profile.mtu),
+    enabled: profile.enabled !== false,
+    tags: normalizeStringList(profile.tags),
+    revision: Number(profile.revision || Date.now())
+  }
+}
+
+export async function fetchWireGuardProfiles(agentId) {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    return (mockWireGuardProfilesByAgent[agentId] || []).map((profile) => normalizeMockWireGuardProfile(agentId, profile))
+  }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/wireguard-profiles`)
+  return data.profiles || []
+}
+
+export async function createWireGuardProfile(agentId, payload) {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    const profile = normalizeMockWireGuardProfile(agentId, {
+      ...payload,
+      id: `wg-${++mockWireGuardProfileIdCounter}`,
+      agent_id: agentId,
+      revision: Date.now()
+    })
+    mockWireGuardProfilesByAgent[agentId] = mockWireGuardProfilesByAgent[agentId] || []
+    mockWireGuardProfilesByAgent[agentId].push(profile)
+    return profile
+  }
+  const { data } = await api.post(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles`,
+    payload,
+    longRunningRequest
+  )
+  return data.profile
+}
+
+export async function updateWireGuardProfile(agentId, id, payload) {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    const list = mockWireGuardProfilesByAgent[agentId] || []
+    const idx = list.findIndex((profile) => String(profile.id) === String(id))
+    if (idx === -1) return null
+    list[idx] = normalizeMockWireGuardProfile(agentId, {
+      ...list[idx],
+      ...payload,
+      id: list[idx].id,
+      revision: Date.now()
+    })
+    return list[idx]
+  }
+  const { data } = await api.put(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
+    payload,
+    longRunningRequest
+  )
+  return data.profile
+}
+
+export async function deleteWireGuardProfile(agentId, id) {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    const list = mockWireGuardProfilesByAgent[agentId] || []
+    const idx = list.findIndex((profile) => String(profile.id) === String(id))
+    if (idx === -1) return null
+    return list.splice(idx, 1)[0]
+  }
+  const { data } = await api.delete(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
+    longRunningRequest
+  )
+  return data.profile
 }
 
 const mockVersionPolicies = [

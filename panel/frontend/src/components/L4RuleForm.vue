@@ -163,15 +163,16 @@
 
     <!-- Tab 3: Protocol & Listen -->
     <div v-if="activeTab === 'protocol'" class="form-tab-panel">
-      <!-- Proxy Entry -->
-      <div v-if="form.protocol === 'tcp'" class="advanced-group">
-        <div class="advanced-group__title">代理入口</div>
+      <!-- Listen Mode / Proxy Entry -->
+      <div class="advanced-group">
+        <div class="advanced-group__title">监听模式</div>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">监听模式</label>
             <select v-model="form.listen_mode" class="input">
-              <option value="tcp">TCP 转发</option>
-              <option value="proxy">SOCKS / HTTP 代理</option>
+              <option value="tcp">{{ form.protocol === 'udp' ? 'UDP 转发' : 'TCP 转发' }}</option>
+              <option v-if="form.protocol === 'tcp'" value="proxy">SOCKS / HTTP 代理</option>
+              <option value="wireguard">WireGuard 入站</option>
             </select>
           </div>
           <div v-if="form.listen_mode === 'proxy'" class="form-group">
@@ -179,7 +180,24 @@
             <select v-model="form.proxy_egress_mode" class="input">
               <option value="relay">Relay</option>
               <option value="proxy">SOCKS / HTTP 代理</option>
+              <option value="wireguard">WireGuard</option>
             </select>
+          </div>
+        </div>
+
+        <div v-if="usesWireGuard" class="form-row">
+          <div class="form-group">
+            <label class="form-label form-label--required">WireGuard Profile</label>
+            <select v-model="form.wireguard_profile_id" class="input">
+              <option value="">请选择 Profile</option>
+              <option v-for="profile in wireGuardProfiles" :key="profile.id" :value="profile.id">
+                {{ profile.name || profile.id }}
+              </option>
+            </select>
+          </div>
+          <div v-if="isWireGuardInbound" class="form-group">
+            <label class="form-label">WireGuard Listen Host</label>
+            <input v-model="form.wireguard_listen_host" class="input" placeholder="10.8.0.1">
           </div>
         </div>
 
@@ -198,6 +216,9 @@
             <label class="form-label">密码</label>
             <input v-model="form.proxy_entry_auth.password" class="input" type="password" autocomplete="new-password">
           </div>
+        </div>
+        <div v-if="form.listen_mode === 'proxy' && form.proxy_egress_mode === 'wireguard'" class="form-help">
+          代理出口将通过所选 WireGuard Profile 转发。
         </div>
         <div v-if="form.listen_mode === 'proxy' && form.proxy_egress_mode === 'proxy'" class="form-group">
           <label class="form-label">出口代理 URL</label>
@@ -319,6 +340,7 @@
 import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
+import { useWireGuardProfiles } from '../hooks/useWireGuardProfiles'
 import RelayChainInput from './RelayChainInput.vue'
 import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
 import { buildProxyEgressURLPayload } from './l4/proxyEgressURL'
@@ -334,8 +356,10 @@ const emit = defineEmits(['success'])
 const createL4Rule = useCreateL4Rule(props.agentId)
 const updateL4Rule = useUpdateL4Rule(props.agentId)
 const { data: relayListenersData } = useAllRelayListeners()
+const { data: wireGuardProfilesData } = useWireGuardProfiles(props.agentId)
 const isEdit = computed(() => !!props.initialData?.id)
 const relayListeners = computed(() => relayListenersData.value ?? [])
+const wireGuardProfiles = computed(() => wireGuardProfilesData.value ?? [])
 
 let backendIdCounter = 0
 
@@ -377,6 +401,9 @@ function normalizeInitialBackends(initialData) {
 
 function createFormState(initialData) {
   const protocol = initialData?.protocol || 'tcp'
+  const initialListenMode = ['proxy', 'wireguard'].includes(initialData?.listen_mode)
+    ? initialData.listen_mode
+    : 'tcp'
   return {
     protocol,
     listen_host: initialData?.listen_host || '0.0.0.0',
@@ -388,7 +415,7 @@ function createFormState(initialData) {
     tuning: mergeTuning(initialData?.tuning, protocol),
     enabled: initialData?.enabled !== false,
     tags: Array.isArray(initialData?.tags) ? [...initialData.tags] : [],
-    listen_mode: protocol === 'tcp' ? (initialData?.listen_mode || 'tcp') : 'tcp',
+    listen_mode: initialListenMode,
     proxy_entry_auth: {
       enabled: initialData?.proxy_entry_auth?.enabled === true,
       username: initialData?.proxy_entry_auth?.username || '',
@@ -396,6 +423,8 @@ function createFormState(initialData) {
     },
     proxy_egress_mode: initialData?.proxy_egress_mode || 'relay',
     proxy_egress_url: initialData?.proxy_egress_url || '',
+    wireguard_profile_id: initialData?.wireguard_profile_id == null ? '' : String(initialData.wireguard_profile_id),
+    wireguard_listen_host: initialData?.wireguard_listen_host || '',
     relay_layers: getRelayLayers(initialData),
     relay_obfs: initialData?.relay_obfs === true,
   }
@@ -453,6 +482,9 @@ const hasTuningChanges = computed(() => {
 
 const activeTab = ref('basic')
 const isProxyEntry = computed(() => form.value.protocol === 'tcp' && form.value.listen_mode === 'proxy')
+const isWireGuardInbound = computed(() => form.value.listen_mode === 'wireguard')
+const isWireGuardEgress = computed(() => isProxyEntry.value && form.value.proxy_egress_mode === 'wireguard')
+const usesWireGuard = computed(() => isWireGuardInbound.value || isWireGuardEgress.value)
 
 const hasProtocolTuning = computed(() => {
   const defaults = getDefaultTuning(form.value.protocol)
@@ -461,6 +493,7 @@ const hasProtocolTuning = computed(() => {
     t.proxy_protocol.decode !== defaults.proxy_protocol.decode ||
     t.proxy_protocol.send !== defaults.proxy_protocol.send ||
     isProxyEntry.value ||
+    usesWireGuard.value ||
     t.listen.reuseport !== defaults.listen.reuseport ||
     t.listen.tcp_nodelay !== defaults.listen.tcp_nodelay ||
     t.listen.so_keepalive !== defaults.listen.so_keepalive ||
@@ -491,10 +524,7 @@ const selectedRelayListeners = computed(() => {
     .filter(Boolean)
 })
 const firstRelayListener = computed(() => {
-  const layers = getRelayLayers(form.value)
-  if (!layers.length || !layers[0]?.length) return null
-  const listenerMap = new Map(relayListeners.value.map((listener) => [Number(listener.id), listener]))
-  return listenerMap.get(Number(layers[0][0])) || null
+  return selectedRelayListeners.value[0] ?? null
 })
 const relayObfsUnsupportedReason = computed(() => {
   const layers = getRelayLayers(form.value)
@@ -526,9 +556,23 @@ watch(() => form.value.protocol, (newProto) => {
   form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
   if (newProto === 'udp') {
     form.value.relay_obfs = false
-    form.value.listen_mode = 'tcp'
+    if (form.value.listen_mode === 'proxy') {
+      form.value.listen_mode = 'tcp'
+    }
   }
 })
+
+watch(usesWireGuard, (enabled) => {
+  if (!enabled) return
+  if (!form.value.wireguard_profile_id && wireGuardProfiles.value.length) {
+    form.value.wireguard_profile_id = String(wireGuardProfiles.value[0].id)
+  }
+})
+
+watch(wireGuardProfiles, (profiles) => {
+  if (!usesWireGuard.value || form.value.wireguard_profile_id || !profiles.length) return
+  form.value.wireguard_profile_id = String(profiles[0].id)
+}, { immediate: true })
 
 watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
   if (
@@ -645,7 +689,7 @@ function buildPayload() {
     },
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
-    listen_mode: form.value.protocol === 'tcp' ? form.value.listen_mode : 'tcp',
+    listen_mode: form.value.listen_mode,
     proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : '',
     relay_layers: Array.isArray(form.value.relay_layers) ? form.value.relay_layers.map((l) => [...l]) : [],
     relay_obfs: form.value.protocol === 'tcp'
@@ -659,6 +703,12 @@ function buildPayload() {
   }
   if (proxyEgressURL !== undefined) {
     payload.proxy_egress_url = proxyEgressURL
+  }
+  if (usesWireGuard.value) {
+    payload.wireguard_profile_id = String(form.value.wireguard_profile_id || '').trim()
+  }
+  if (isWireGuardInbound.value) {
+    payload.wireguard_listen_host = form.value.wireguard_listen_host.trim()
   }
 
   // Only send tuning if advanced panel has non-default values or editing existing rule with tuning
@@ -707,6 +757,10 @@ async function handleSubmit() {
   const validBackends = form.value.backends.filter(b => b.host && b.port)
   if (!isProxyEntry.value && validBackends.length === 0) {
     error.value = '至少需要一个有效的后端服务器'
+    return
+  }
+  if (usesWireGuard.value && !String(form.value.wireguard_profile_id || '').trim()) {
+    error.value = 'WireGuard 入站或出口必须选择 Profile'
     return
   }
 

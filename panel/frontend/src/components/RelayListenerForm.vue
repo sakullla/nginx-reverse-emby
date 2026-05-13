@@ -76,6 +76,7 @@
         <select v-model='form.transport_mode' class='input'>
           <option value='tls_tcp'>TLS/TCP</option>
           <option value='quic'>QUIC</option>
+          <option value='wireguard'>WireGuard</option>
         </select>
         <p class='form-hint'>默认使用 TLS/TCP；如需更低握手耗时和更好的中继传输表现，可改为 QUIC。</p>
       </div>
@@ -90,18 +91,35 @@
       </div>
 
       <div v-else class='form-group'>
-        <label class='form-label'>QUIC 回退</label>
+        <label class='form-label'>{{ form.transport_mode === 'wireguard' ? 'WireGuard 传输' : 'QUIC 回退' }}</label>
         <label class='toggle-row toggle-row--panel'>
           <input
             v-model='form.allow_transport_fallback'
             type='checkbox'
             class='toggle__input'
+            :disabled='form.transport_mode === "wireguard"'
           >
           <span class='toggle__slider'></span>
-          <span class='toggle__label'>QUIC 不可用时允许回退到 TLS/TCP</span>
+          <span class='toggle__label'>
+            {{ form.transport_mode === 'wireguard' ? 'WireGuard 不使用 TLS/TCP 回退' : 'QUIC 不可用时允许回退到 TLS/TCP' }}
+          </span>
         </label>
-        <p class='form-hint'>开启后会优先尝试 QUIC，失败时自动回退到 TLS/TCP。</p>
+        <p class='form-hint'>
+          {{ form.transport_mode === 'wireguard' ? 'WireGuard 传输会自动关闭 obfs 与回退。' : '开启后会优先尝试 QUIC，失败时自动回退到 TLS/TCP。' }}
+        </p>
       </div>
+    </div>
+
+    <div v-if='form.transport_mode === "wireguard"' class='form-group'>
+      <label class='form-label form-label--required'>WireGuard Profile</label>
+      <select v-model='form.wireguard_profile_id' class='input' :class="{ 'input--error': errors.wireguard_profile_id }">
+        <option value=''>请选择 Profile</option>
+        <option v-for='profile in wireGuardProfiles' :key='profile.id' :value='profile.id'>
+          {{ profile.name || profile.id }}
+        </option>
+      </select>
+      <p class='form-hint'>WireGuard Relay 监听器会使用所选 Profile 的接口、密钥与 Peer 配置。</p>
+      <p v-if='errors.wireguard_profile_id' class='form-error'>{{ errors.wireguard_profile_id }}</p>
     </div>
 
     <div class='form-group'>
@@ -230,6 +248,7 @@
 import { computed, ref, watch } from 'vue'
 import { useCreateRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import { useCertificates } from '../hooks/useCertificates'
+import { useWireGuardProfiles } from '../hooks/useWireGuardProfiles'
 import {
   parsePublicEndpoint,
   buildPublicEndpoint,
@@ -247,8 +266,10 @@ const emit = defineEmits(['success'])
 const createRelayListener = useCreateRelayListener(props.agentId)
 const updateRelayListener = useUpdateRelayListener(props.agentId)
 const { data: certificatesData } = useCertificates(props.agentId)
+const { data: wireGuardProfilesData } = useWireGuardProfiles(props.agentId)
 
 const certificates = computed(() => certificatesData.value ?? [])
+const wireGuardProfiles = computed(() => wireGuardProfilesData.value ?? [])
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRelayListener.isPending.value || updateRelayListener.isPending.value)
 
@@ -262,6 +283,7 @@ const errors = ref({
   public_endpoint: '',
   listen_port: '',
   certificate_id: '',
+  wireguard_profile_id: '',
   trust_material: '',
   submit: ''
 })
@@ -327,12 +349,25 @@ watch(
 watch(
   () => form.value.transport_mode,
   (value) => {
-    if (value === 'quic') {
+    if (value === 'quic' || value === 'wireguard') {
       form.value.obfs_mode = 'off'
+      if (value === 'wireguard') {
+        form.value.allow_transport_fallback = false
+      }
     } else {
       form.value.obfs_mode = normalizeObfsMode(form.value.obfs_mode, value)
+      form.value.allow_transport_fallback = true
     }
   }
+)
+
+watch(
+  wireGuardProfiles,
+  (profiles) => {
+    if (form.value.transport_mode !== 'wireguard' || form.value.wireguard_profile_id || !profiles.length) return
+    form.value.wireguard_profile_id = String(profiles[0].id)
+  },
+  { immediate: true }
 )
 
 function createDefaultForm() {
@@ -344,6 +379,7 @@ function createDefaultForm() {
     transport_mode: 'tls_tcp',
     allow_transport_fallback: true,
     obfs_mode: 'off',
+    wireguard_profile_id: '',
     enabled: true,
     certificate_id: null,
     certificate_source: 'auto_relay_ca',
@@ -372,6 +408,7 @@ function inferTrustModeSource(initialData) {
 }
 
 function normalizeTransportMode(value) {
+  if (value === 'wireguard') return 'wireguard'
   return value === 'quic' ? 'quic' : 'tls_tcp'
 }
 
@@ -393,8 +430,9 @@ function createFormState(initialData) {
     public_endpoint: buildPublicEndpoint(initialData),
     listen_port: initialData.listen_port || 0,
     transport_mode: transportMode,
-    allow_transport_fallback: initialData.allow_transport_fallback !== false,
+    allow_transport_fallback: transportMode === 'wireguard' ? false : initialData.allow_transport_fallback !== false,
     obfs_mode: normalizeObfsMode(initialData.obfs_mode, transportMode),
+    wireguard_profile_id: initialData.wireguard_profile_id == null ? '' : String(initialData.wireguard_profile_id),
     enabled: initialData.enabled !== false,
     certificate_id: initialData.certificate_id == null ? null : Number(initialData.certificate_id),
     certificate_source: inferCertificateSource(initialData),
@@ -422,6 +460,7 @@ function resetErrors() {
     public_endpoint: '',
     listen_port: '',
     certificate_id: '',
+    wireguard_profile_id: '',
     trust_material: '',
     submit: ''
   }
@@ -498,6 +537,9 @@ function validate() {
   if (form.value.enabled && form.value.certificate_source === 'existing_certificate' && form.value.certificate_id == null) {
     errors.value.certificate_id = '启用监听器时必须绑定监听证书'
   }
+  if (form.value.transport_mode === 'wireguard' && !String(form.value.wireguard_profile_id || '').trim()) {
+    errors.value.wireguard_profile_id = '请选择 WireGuard Profile'
+  }
 
   const pinSet = parsePinSetRows()
   const trustedCaIds = [...trustedCaSet.value]
@@ -509,6 +551,7 @@ function validate() {
     && !errors.value.public_endpoint
     && !errors.value.listen_port
     && !errors.value.certificate_id
+    && !errors.value.wireguard_profile_id
     && !errors.value.trust_material
 }
 
@@ -526,7 +569,9 @@ async function handleSubmit() {
     bind_hosts: bindHosts,
     listen_port: form.value.listen_port,
     transport_mode: form.value.transport_mode,
-    allow_transport_fallback: form.value.transport_mode === 'quic'
+    allow_transport_fallback: form.value.transport_mode === 'wireguard'
+      ? false
+      : form.value.transport_mode === 'quic'
       ? form.value.allow_transport_fallback === true
       : true,
     obfs_mode: form.value.transport_mode === 'tls_tcp'
@@ -543,6 +588,9 @@ async function handleSubmit() {
     trusted_ca_certificate_ids: trustedCaIds,
     allow_self_signed: form.value.trust_mode_source === 'auto' ? true : form.value.allow_self_signed,
     tags: [...form.value.tags]
+  }
+  if (form.value.transport_mode === 'wireguard') {
+    payload.wireguard_profile_id = String(form.value.wireguard_profile_id || '').trim()
   }
   if (publicEndpoint.publicHost) {
     payload.public_host = publicEndpoint.publicHost

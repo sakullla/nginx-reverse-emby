@@ -49,7 +49,7 @@ function normalizeL4Backends(rule = {}) {
 }
 
 function normalizeL4Rule(rule = {}) {
-  const listenMode = rule.listen_mode === 'proxy' ? 'proxy' : 'tcp'
+  const listenMode = ['proxy', 'wireguard'].includes(rule.listen_mode) ? rule.listen_mode : 'tcp'
   return {
     ...rule,
     backends: normalizeL4Backends(rule),
@@ -65,6 +65,16 @@ function normalizeL4Rule(rule = {}) {
     },
     proxy_egress_mode: listenMode === 'proxy' ? String(rule.proxy_egress_mode || 'relay') : '',
     proxy_egress_url: listenMode === 'proxy' ? String(rule.proxy_egress_url || '') : ''
+  }
+}
+
+function normalizeRelayListenerPayload(payload = {}) {
+  if (payload.transport_mode !== 'wireguard') return payload
+  return {
+    ...payload,
+    transport_mode: 'wireguard',
+    obfs_mode: 'off',
+    allow_transport_fallback: false
   }
 }
 
@@ -396,18 +406,20 @@ export async function fetchAllRelayListeners() {
 }
 
 export async function createRelayListener(agentId, payload) {
+  const normalizedPayload = normalizeRelayListenerPayload(payload)
   const { data } = await api.post(
     `/agents/${encodeURIComponent(agentId)}/relay-listeners`,
-    payload,
+    normalizedPayload,
     longRunningRequest
   )
   return data.listener
 }
 
 export async function updateRelayListener(agentId, id, payload) {
+  const normalizedPayload = normalizeRelayListenerPayload(payload)
   const { data } = await api.put(
     `/agents/${encodeURIComponent(agentId)}/relay-listeners/${encodeURIComponent(id)}`,
-    payload,
+    normalizedPayload,
     longRunningRequest
   )
   return data.listener
@@ -419,6 +431,37 @@ export async function deleteRelayListener(agentId, id) {
     longRunningRequest
   )
   return data.listener
+}
+
+export async function fetchWireGuardProfiles(agentId) {
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/wireguard-profiles`)
+  return data.profiles || []
+}
+
+export async function createWireGuardProfile(agentId, payload) {
+  const { data } = await api.post(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles`,
+    payload,
+    longRunningRequest
+  )
+  return data.profile
+}
+
+export async function updateWireGuardProfile(agentId, id, payload) {
+  const { data } = await api.put(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
+    payload,
+    longRunningRequest
+  )
+  return data.profile
+}
+
+export async function deleteWireGuardProfile(agentId, id) {
+  const { data } = await api.delete(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
+    longRunningRequest
+  )
+  return data.profile
 }
 
 export async function fetchVersionPolicies() {
