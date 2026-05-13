@@ -25,6 +25,7 @@ type TLSMaterialProvider interface {
 type WireGuardRuntime interface {
 	DialContext(ctx context.Context, network string, address string) (net.Conn, error)
 	ListenTCP(ctx context.Context, address string) (net.Listener, error)
+	ListenUDP(ctx context.Context, address string) (net.PacketConn, error)
 }
 
 type WireGuardRuntimeProvider interface {

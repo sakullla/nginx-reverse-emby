@@ -17,6 +17,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,6 +29,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
@@ -379,6 +382,41 @@ func TestL4RuntimeManagerReusesSharedCacheAcrossReapply(t *testing.T) {
 
 	if err := manager.Close(); err != nil {
 		t.Fatalf("failed to close l4 manager: %v", err)
+	}
+}
+
+func TestL4RuntimeManagerAppliesWireGuardProfilesBeforeStartingL4(t *testing.T) {
+	var events []string
+	runtime := &testAppWireGuardRuntime{
+		onListenTCP: func(_ context.Context, address string) (net.Listener, error) {
+			events = append(events, "listen:"+address)
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+		events = append(events, fmt.Sprintf("apply:%d", cfg.ID))
+		return runtime, nil
+	})
+	defer manager.Close()
+
+	profileID := 9
+	listenPort := pickFreeTCPPort(t)
+	profile := validAppWireGuardProfile(profileID)
+	err := manager.ApplyWithRelayAndWireGuardProfiles(context.Background(), []model.L4Rule{{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         listenPort,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}, nil, []model.WireGuardProfile{profile})
+	if err != nil {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles() error = %v", err)
+	}
+
+	want := []string{"apply:9", "listen:" + net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort))}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %+v, want %+v", events, want)
 	}
 }
 
@@ -1118,6 +1156,58 @@ func (p *testRelayTLSProvider) TrustedCAPool(_ context.Context, ids []int) (*x50
 		return nil, nil
 	}
 	return pool, nil
+}
+
+type testAppWireGuardRuntime struct {
+	onDialContext func(context.Context, string, string) (net.Conn, error)
+	onListenTCP   func(context.Context, string) (net.Listener, error)
+	onListenUDP   func(context.Context, string) (net.PacketConn, error)
+}
+
+func (r *testAppWireGuardRuntime) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if r.onDialContext != nil {
+		return r.onDialContext(ctx, network, address)
+	}
+	return nil, fmt.Errorf("unexpected wireguard DialContext call")
+}
+
+func (r *testAppWireGuardRuntime) ListenTCP(ctx context.Context, address string) (net.Listener, error) {
+	if r.onListenTCP != nil {
+		return r.onListenTCP(ctx, address)
+	}
+	return nil, fmt.Errorf("unexpected wireguard ListenTCP call")
+}
+
+func (r *testAppWireGuardRuntime) ListenUDP(ctx context.Context, address string) (net.PacketConn, error) {
+	if r.onListenUDP != nil {
+		return r.onListenUDP(ctx, address)
+	}
+	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
+}
+
+func (r *testAppWireGuardRuntime) Close() error {
+	return nil
+}
+
+func validAppWireGuardProfile(profileID int) model.WireGuardProfile {
+	return model.WireGuardProfile{
+		ID:         profileID,
+		AgentID:    "agent-a",
+		Name:       "wg-a",
+		Mode:       wireguard.ModeGenericWireGuard,
+		PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		ListenPort: 51820,
+		Addresses:  []string{"10.20.0.1/24"},
+		Peers: []model.WireGuardPeer{{
+			Name:       "peer-a",
+			PublicKey:  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+			Endpoint:   "127.0.0.1:51820",
+			AllowedIPs: []string{"10.20.0.2/32"},
+		}},
+		MTU:      1420,
+		Enabled:  true,
+		Revision: 1,
+	}
 }
 
 type testHTTPRuntimeTLSProvider struct {

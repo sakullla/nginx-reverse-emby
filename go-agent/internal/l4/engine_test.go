@@ -126,6 +126,46 @@ func TestValidateRuleRejectsInvalidBackendPort(t *testing.T) {
 	}
 }
 
+func TestValidateRuleAllowsWireGuardListenModeWithProfile(t *testing.T) {
+	profileID := 7
+	for _, protocol := range []string{"tcp", "udp"} {
+		t.Run(protocol, func(t *testing.T) {
+			err := ValidateRule(Rule{
+				Protocol:           protocol,
+				ListenHost:         "127.0.0.1",
+				ListenPort:         9000,
+				ListenMode:         "wireguard",
+				WireGuardProfileID: &profileID,
+				Backends: []model.L4Backend{
+					{Host: "127.0.0.1", Port: 9001},
+				},
+			})
+			if err != nil {
+				t.Fatalf("ValidateRule() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRuleRejectsWireGuardListenModeWithoutProfile(t *testing.T) {
+	for _, protocol := range []string{"tcp", "udp"} {
+		t.Run(protocol, func(t *testing.T) {
+			err := ValidateRule(Rule{
+				Protocol:   protocol,
+				ListenHost: "127.0.0.1",
+				ListenPort: 9000,
+				ListenMode: "wireguard",
+				Backends: []model.L4Backend{
+					{Host: "127.0.0.1", Port: 9001},
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), "wireguard_profile_id") {
+				t.Fatalf("ValidateRule() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRuleAcceptsProxyEntryWithRelayEgress(t *testing.T) {
 	rule := model.L4Rule{
 		Protocol:        "tcp",
@@ -136,6 +176,34 @@ func TestValidateRuleAcceptsProxyEntryWithRelayEgress(t *testing.T) {
 		RelayLayers:     [][]int{{101}},
 	}
 	if err := ValidateRule(rule); err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
+func TestValidateRuleAcceptsProxyEntryWithWireGuardEgress(t *testing.T) {
+	profileID := 7
+	rule := model.L4Rule{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         1080,
+		ListenMode:         "proxy",
+		ProxyEgressMode:    "wireguard",
+		WireGuardProfileID: &profileID,
+	}
+	if err := ValidateRule(rule); err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
+func TestValidateRuleRejectsProxyEntryWithWireGuardEgressWithoutProfile(t *testing.T) {
+	err := ValidateRule(model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "wireguard",
+	})
+	if err == nil || !strings.Contains(err.Error(), "wireguard_profile_id") {
 		t.Fatalf("ValidateRule() error = %v", err)
 	}
 }

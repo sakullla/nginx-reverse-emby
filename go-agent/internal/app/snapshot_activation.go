@@ -73,6 +73,9 @@ func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
 	if a.l4Applier == nil || snapshot.L4Rules == nil {
 		return nil
 	}
+	if wireGuardAware, ok := a.l4Applier.(L4WireGuardAwareApplier); ok {
+		return wireGuardAware.ApplyWithRelayAndWireGuardProfiles(ctx, snapshot.L4Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles)
+	}
 	if relayAware, ok := a.l4Applier.(L4RelayAwareApplier); ok {
 		return relayAware.ApplyWithRelay(ctx, snapshot.L4Rules, snapshot.RelayListeners)
 	}
@@ -99,7 +102,6 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 	})
 	rulesActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
 		ActivateHTTPRules: handlers.ActivateHTTPRules,
-		ActivateL4Rules:   handlers.ActivateL4Rules,
 	})
 	return func(ctx context.Context, previous, next model.Snapshot) error {
 		if err := certActivator(ctx, previous, next); err != nil {
@@ -125,7 +127,22 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 			}
 		}
 
-		return rulesActivator(ctx, previous, next)
+		if err := rulesActivator(ctx, previous, next); err != nil {
+			return err
+		}
+
+		if (!reflect.DeepEqual(previous.L4Rules, next.L4Rules) ||
+			l4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners) ||
+			l4WireGuardInputsChanged(next.L4Rules, previous.WireGuardProfiles, next.WireGuardProfiles)) &&
+			handlers.ActivateL4Rules != nil {
+			return a.applyL4Rules(ctx, Snapshot{
+				L4Rules:           next.L4Rules,
+				RelayListeners:    next.RelayListeners,
+				WireGuardProfiles: next.WireGuardProfiles,
+			})
+		}
+
+		return nil
 	}
 }
 
@@ -166,6 +183,21 @@ func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandle
 			})
 		},
 	}
+}
+
+func l4WireGuardInputsChanged(rules []model.L4Rule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
+	for _, rule := range rules {
+		if !l4RuleUsesWireGuard(rule) {
+			continue
+		}
+		return !reflect.DeepEqual(previousProfiles, nextProfiles)
+	}
+	return false
+}
+
+func l4RuleUsesWireGuard(rule model.L4Rule) bool {
+	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") ||
+		strings.EqualFold(strings.TrimSpace(rule.ProxyEgressMode), "wireguard")
 }
 
 func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {

@@ -2760,6 +2760,7 @@ type fakeWireGuardRuntime struct {
 
 	dialContext func(context.Context, string, string) (net.Conn, error)
 	listenTCP   func(context.Context, string) (net.Listener, error)
+	listenUDP   func(context.Context, string) (net.PacketConn, error)
 }
 
 type fakeWireGuardDialCall struct {
@@ -2785,6 +2786,13 @@ func (r *fakeWireGuardRuntime) ListenTCP(ctx context.Context, address string) (n
 		return r.listenTCP(ctx, address)
 	}
 	return nil, fmt.Errorf("wireguard listen not configured")
+}
+
+func (r *fakeWireGuardRuntime) ListenUDP(ctx context.Context, address string) (net.PacketConn, error) {
+	if r.listenUDP != nil {
+		return r.listenUDP(ctx, address)
+	}
+	return nil, fmt.Errorf("wireguard udp listen not configured")
 }
 
 func (r *fakeWireGuardRuntime) dialContextCalls() []fakeWireGuardDialCall {

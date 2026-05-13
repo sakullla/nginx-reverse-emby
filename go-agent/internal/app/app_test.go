@@ -1554,6 +1554,12 @@ type relayWireGuardApplyCall struct {
 	profiles  []model.WireGuardProfile
 }
 
+type l4WireGuardApplyCall struct {
+	rules     []model.L4Rule
+	listeners []model.RelayListener
+	profiles  []model.WireGuardProfile
+}
+
 type updateCall struct {
 	desiredVersion string
 	pkg            model.VersionPackage
@@ -1644,6 +1650,46 @@ func (a *testL4Applier) snapshotCalls() []l4ApplyCall {
 
 func (a *testL4Applier) Close() error {
 	return nil
+}
+
+type testWireGuardL4Applier struct {
+	testL4Applier
+	wgMu    sync.Mutex
+	wgCalls []l4WireGuardApplyCall
+}
+
+func (a *testWireGuardL4Applier) ApplyWithRelayAndWireGuardProfiles(_ context.Context, rules []model.L4Rule, listeners []model.RelayListener, profiles []model.WireGuardProfile) error {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	var copiedRules []model.L4Rule
+	if rules != nil {
+		copiedRules = make([]model.L4Rule, len(rules))
+		copy(copiedRules, rules)
+	}
+	var copiedListeners []model.RelayListener
+	if listeners != nil {
+		copiedListeners = make([]model.RelayListener, len(listeners))
+		copy(copiedListeners, listeners)
+	}
+	var copiedProfiles []model.WireGuardProfile
+	if profiles != nil {
+		copiedProfiles = make([]model.WireGuardProfile, len(profiles))
+		copy(copiedProfiles, profiles)
+	}
+	a.wgCalls = append(a.wgCalls, l4WireGuardApplyCall{
+		rules:     copiedRules,
+		listeners: copiedListeners,
+		profiles:  copiedProfiles,
+	})
+	return a.applyErr
+}
+
+func (a *testWireGuardL4Applier) wireGuardCalls() []l4WireGuardApplyCall {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	out := make([]l4WireGuardApplyCall, len(a.wgCalls))
+	copy(out, a.wgCalls)
+	return out
 }
 
 type testRelayApplier struct {
@@ -3863,6 +3909,93 @@ func TestSnapshotActivatorRefreshesRelayWireGuardProfilesWhenListenersUnchanged(
 	calls := relayApplier.wireGuardCalls()
 	if len(calls) != 1 {
 		t.Fatalf("ApplyWithWireGuardProfiles calls = %d, want 1 after profile-only change", len(calls))
+	}
+	if calls[0].profiles[0].Revision != 2 {
+		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)
+	}
+}
+
+func TestSnapshotActivatorPassesWireGuardProfilesToL4Applier(t *testing.T) {
+	l4Applier := &testWireGuardL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 9
+	next := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:       profileID,
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:           "tcp",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         8443,
+			ListenMode:         "wireguard",
+			WireGuardProfileID: &profileID,
+			Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			Revision:           1,
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles calls = %d, want 1", len(calls))
+	}
+	if len(calls[0].profiles) != 1 || calls[0].profiles[0].ID != profileID {
+		t.Fatalf("wireguard profiles passed to l4 applier = %+v", calls[0].profiles)
+	}
+}
+
+func TestSnapshotActivatorRefreshesL4WireGuardProfilesWhenRulesUnchanged(t *testing.T) {
+	l4Applier := &testWireGuardL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 9
+	previous := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:       profileID,
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:           "tcp",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         8443,
+			ListenMode:         "wireguard",
+			WireGuardProfileID: &profileID,
+			Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			Revision:           1,
+		}},
+	}
+	next := previous
+	next.WireGuardProfiles = append([]model.WireGuardProfile(nil), previous.WireGuardProfiles...)
+	next.WireGuardProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles calls = %d, want 1 after profile-only change", len(calls))
 	}
 	if calls[0].profiles[0].Revision != 2 {
 		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)

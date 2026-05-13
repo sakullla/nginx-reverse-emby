@@ -29,6 +29,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 type fakeL4RelayPathDialer struct {
@@ -307,6 +308,188 @@ func TestL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
 	}
 	if !bytes.Equal(payload, reply) {
 		t.Fatalf("reply = %q, want %q", reply, payload)
+	}
+}
+
+func TestProxyEntryDialUsesWireGuardEgress(t *testing.T) {
+	serverConn, runtimeConn := net.Pipe()
+	defer serverConn.Close()
+	defer runtimeConn.Close()
+
+	runtime := &fakeL4WireGuardRuntime{
+		dialContext: func(_ context.Context, network, address string) (net.Conn, error) {
+			return runtimeConn, nil
+		},
+	}
+	profileID := 9
+	srv := &Server{
+		ctx: context.Background(),
+		wireGuardProvider: fakeL4WireGuardProvider{
+			runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+		},
+	}
+
+	target := "example.com:443"
+	upstream, err := srv.dialProxyEntryUpstream(model.L4Rule{
+		ProxyEgressMode:    "wireguard",
+		WireGuardProfileID: &profileID,
+	}, target)
+	if err != nil {
+		t.Fatalf("dialProxyEntryUpstream() error = %v", err)
+	}
+	defer upstream.Close()
+
+	calls := runtime.dialContextCalls()
+	if len(calls) != 1 {
+		t.Fatalf("DialContext calls = %d, want 1", len(calls))
+	}
+	if calls[0].network != "tcp" || calls[0].address != target {
+		t.Fatalf("DialContext call = %+v, want tcp %s", calls[0], target)
+	}
+}
+
+func TestProxyEntryDialWireGuardMissingProviderReturnsError(t *testing.T) {
+	profileID := 9
+	srv := &Server{ctx: context.Background()}
+
+	_, err := srv.dialProxyEntryUpstream(model.L4Rule{
+		ProxyEgressMode:    "wireguard",
+		WireGuardProfileID: &profileID,
+	}, "example.com:443")
+	if err == nil || !strings.Contains(err.Error(), "wireguard runtime provider") {
+		t.Fatalf("dialProxyEntryUpstream() error = %v", err)
+	}
+}
+
+func TestProxyEntryDialWireGuardMissingProfileReturnsError(t *testing.T) {
+	profileID := 9
+	srv := &Server{
+		ctx:               context.Background(),
+		wireGuardProvider: fakeL4WireGuardProvider{},
+	}
+
+	_, err := srv.dialProxyEntryUpstream(model.L4Rule{
+		ProxyEgressMode:    "wireguard",
+		WireGuardProfileID: &profileID,
+	}, "example.com:443")
+	if err == nil || !strings.Contains(err.Error(), "wireguard profile 9 runtime not found") {
+		t.Fatalf("dialProxyEntryUpstream() error = %v", err)
+	}
+}
+
+func TestWireGuardTCPListenUsesRuntimeListenTCPWithSelectedHost(t *testing.T) {
+	runtime := &fakeL4WireGuardRuntime{
+		listenTCP: func(_ context.Context, address string) (net.Listener, error) {
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	profileID := 9
+	listenPort := pickFreeTCPPort(t)
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:            "tcp",
+		ListenHost:          "127.0.0.1",
+		ListenPort:          listenPort,
+		ListenMode:          "wireguard",
+		WireGuardProfileID:  &profileID,
+		WireGuardListenHost: "10.64.0.2",
+		Backends:            []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}, nil, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+
+	calls := runtime.listenTCPCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ListenTCP calls = %d, want 1", len(calls))
+	}
+	want := net.JoinHostPort("10.64.0.2", strconv.Itoa(listenPort))
+	if calls[0] != want {
+		t.Fatalf("ListenTCP address = %q, want %q", calls[0], want)
+	}
+}
+
+func TestWireGuardTCPListenFallsBackToListenHost(t *testing.T) {
+	runtime := &fakeL4WireGuardRuntime{
+		listenTCP: func(_ context.Context, address string) (net.Listener, error) {
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	profileID := 9
+	listenPort := pickFreeTCPPort(t)
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         listenPort,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}, nil, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+
+	calls := runtime.listenTCPCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ListenTCP calls = %d, want 1", len(calls))
+	}
+	want := net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort))
+	if calls[0] != want {
+		t.Fatalf("ListenTCP address = %q, want %q", calls[0], want)
+	}
+}
+
+func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
+	runtime := &fakeL4WireGuardRuntime{
+		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {
+			return net.ListenPacket("udp", "127.0.0.1:0")
+		},
+	}
+	profileID := 9
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:            "udp",
+		ListenHost:          "127.0.0.1",
+		ListenPort:          listenPort,
+		ListenMode:          "wireguard",
+		WireGuardProfileID:  &profileID,
+		WireGuardListenHost: "10.64.0.2",
+		Backends:            []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeUDPPort(t)}},
+	}}, nil, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+
+	calls := runtime.listenUDPCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ListenUDP calls = %d, want 1", len(calls))
+	}
+	want := net.JoinHostPort("10.64.0.2", strconv.Itoa(listenPort))
+	if calls[0] != want {
+		t.Fatalf("ListenUDP address = %q, want %q", calls[0], want)
+	}
+}
+
+func TestWireGuardListenMissingProviderReturnsError(t *testing.T) {
+	profileID := 9
+	_, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         pickFreeTCPPort(t),
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "wireguard runtime provider") {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
 	}
 }
 
@@ -3411,6 +3594,81 @@ func (p *runtimeL4RelayProvider) ServerCertificate(_ context.Context, certificat
 
 func (p *runtimeL4RelayProvider) TrustedCAPool(_ context.Context, _ []int) (*x509.CertPool, error) {
 	return x509.NewCertPool(), nil
+}
+
+type fakeL4WireGuardProvider struct {
+	runtimes map[int]*fakeL4WireGuardRuntime
+}
+
+func (p fakeL4WireGuardProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+	runtime, ok := p.runtimes[profileID]
+	if !ok {
+		return nil, false
+	}
+	return runtime, true
+}
+
+type fakeL4WireGuardDialCall struct {
+	network string
+	address string
+}
+
+type fakeL4WireGuardRuntime struct {
+	mu          sync.Mutex
+	dialCalls   []fakeL4WireGuardDialCall
+	listenTCPOn []string
+	listenUDPOn []string
+	dialContext func(context.Context, string, string) (net.Conn, error)
+	listenTCP   func(context.Context, string) (net.Listener, error)
+	listenUDP   func(context.Context, string) (wireguard.PacketConn, error)
+}
+
+func (r *fakeL4WireGuardRuntime) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	r.mu.Lock()
+	r.dialCalls = append(r.dialCalls, fakeL4WireGuardDialCall{network: network, address: address})
+	r.mu.Unlock()
+	if r.dialContext != nil {
+		return r.dialContext(ctx, network, address)
+	}
+	return nil, fmt.Errorf("unexpected wireguard DialContext call")
+}
+
+func (r *fakeL4WireGuardRuntime) ListenTCP(ctx context.Context, address string) (net.Listener, error) {
+	r.mu.Lock()
+	r.listenTCPOn = append(r.listenTCPOn, address)
+	r.mu.Unlock()
+	if r.listenTCP != nil {
+		return r.listenTCP(ctx, address)
+	}
+	return nil, fmt.Errorf("unexpected wireguard ListenTCP call")
+}
+
+func (r *fakeL4WireGuardRuntime) ListenUDP(ctx context.Context, address string) (wireguard.PacketConn, error) {
+	r.mu.Lock()
+	r.listenUDPOn = append(r.listenUDPOn, address)
+	r.mu.Unlock()
+	if r.listenUDP != nil {
+		return r.listenUDP(ctx, address)
+	}
+	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
+}
+
+func (r *fakeL4WireGuardRuntime) dialContextCalls() []fakeL4WireGuardDialCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]fakeL4WireGuardDialCall(nil), r.dialCalls...)
+}
+
+func (r *fakeL4WireGuardRuntime) listenTCPCalls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.listenTCPOn...)
+}
+
+func (r *fakeL4WireGuardRuntime) listenUDPCalls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.listenUDPOn...)
 }
 
 type l4RelayTestRequest struct {

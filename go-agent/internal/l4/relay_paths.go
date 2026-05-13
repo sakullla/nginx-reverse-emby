@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -123,6 +125,29 @@ func (s *Server) resolveRelayPaths(rule model.L4Rule) ([]relayplan.Path, error) 
 
 func ruleUsesRelay(rule model.L4Rule) bool {
 	return relayroute.UsesRelay(nil, rule.RelayLayers)
+}
+
+func (s *Server) wireGuardRuntime(rule model.L4Rule) (relay.WireGuardRuntime, error) {
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
+		return nil, fmt.Errorf("wireguard_profile_id is required")
+	}
+	if s.wireGuardProvider == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required")
+	}
+	runtime, ok := s.wireGuardProvider.WireGuardRuntime(*rule.WireGuardProfileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard profile %d runtime not found", *rule.WireGuardProfileID)
+	}
+	return runtime, nil
+}
+
+func l4ListenAddress(rule model.L4Rule) string {
+	host := rule.ListenHost
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
+		strings.TrimSpace(rule.WireGuardListenHost) != "" {
+		host = rule.WireGuardListenHost
+	}
+	return net.JoinHostPort(host, strconv.Itoa(rule.ListenPort))
 }
 
 func RelayInputsChanged(rules []model.L4Rule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {

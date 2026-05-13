@@ -34,7 +34,7 @@ type Server struct {
 	now   func() time.Time
 
 	tcpListeners          []net.Listener
-	udpConns              []*net.UDPConn
+	udpConns              []udpListener
 	udpMu                 sync.Mutex
 	udpSessions           map[string]*udpSession
 	udpReplyTimeout       time.Duration
@@ -44,6 +44,7 @@ type Server struct {
 	relayListenersByID map[int]model.RelayListener
 	relayProvider      RelayMaterialProvider
 	relayPathDialer    relayplan.Dialer
+	wireGuardProvider  relay.WireGuardRuntimeProvider
 
 	tcpMu    sync.Mutex
 	tcpConns map[net.Conn]struct{}
@@ -61,12 +62,44 @@ func NewServer(
 	return NewServerWithResources(ctx, rules, relayListeners, relayProvider, nil)
 }
 
+func NewServerWithWireGuardProvider(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	relayProvider RelayMaterialProvider,
+	wireGuardProvider relay.WireGuardRuntimeProvider,
+) (*Server, error) {
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, nil, wireGuardProvider)
+}
+
 func NewServerWithResources(
 	ctx context.Context,
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
+) (*Server, error) {
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, cache, nil)
+}
+
+func NewServerWithResourcesAndWireGuardProvider(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	relayProvider RelayMaterialProvider,
+	cache *backends.Cache,
+	wireGuardProvider relay.WireGuardRuntimeProvider,
+) (*Server, error) {
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider)
+}
+
+func newServerWithOptions(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	relayProvider RelayMaterialProvider,
+	cache *backends.Cache,
+	wireGuardProvider relay.WireGuardRuntimeProvider,
 ) (*Server, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
@@ -91,6 +124,7 @@ func NewServerWithResources(
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
 		relayPathDialer:       relayPathDialer{provider: relayProvider},
+		wireGuardProvider:     wireGuardProvider,
 	}
 	for _, rule := range rules {
 		if err := ValidateRule(rule); err != nil {
