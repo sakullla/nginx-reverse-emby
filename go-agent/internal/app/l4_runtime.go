@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
@@ -16,8 +17,9 @@ type l4RuntimeManager struct {
 	server            *l4.Server
 	cache             *backends.Cache
 	provider          relay.TLSMaterialProvider
-	wireGuardManager  *wireguard.Manager
+	wireGuardRuntime  *sharedWireGuardRuntime
 	wireGuardProvider relay.WireGuardRuntimeProvider
+	ownsWireGuard     bool
 	blockState        l4TrafficBlockStateValue
 }
 
@@ -34,21 +36,30 @@ func newL4RuntimeManagerWithConfig(cfg Config) *l4RuntimeManager {
 }
 
 func newL4RuntimeManagerWithRelayAndConfig(provider relay.TLSMaterialProvider, cfg Config) *l4RuntimeManager {
-	manager := wireguard.NewManager(wireguard.ManagerOptions{})
+	return newL4RuntimeManagerWithRelayConfigAndWireGuard(provider, cfg, newSharedWireGuardRuntime(), true)
+}
+
+func newL4RuntimeManagerWithRelayConfigAndWireGuard(provider relay.TLSMaterialProvider, cfg Config, wireGuardRuntime *sharedWireGuardRuntime, ownsWireGuard ...bool) *l4RuntimeManager {
+	if wireGuardRuntime == nil {
+		wireGuardRuntime = newSharedWireGuardRuntime()
+	}
+	owns := len(ownsWireGuard) > 0 && ownsWireGuard[0]
 	return &l4RuntimeManager{
 		cache:             backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
 		provider:          provider,
-		wireGuardManager:  manager,
-		wireGuardProvider: wireGuardRuntimeProvider{manager: manager},
+		wireGuardRuntime:  wireGuardRuntime,
+		wireGuardProvider: wireGuardRuntime.provider(),
+		ownsWireGuard:     owns,
 	}
 }
 
 func newL4RuntimeManagerWithWireGuardFactory(factory wireguard.Factory) *l4RuntimeManager {
-	manager := wireguard.NewManager(wireguard.ManagerOptions{Factory: factory})
+	wireGuardRuntime := newSharedWireGuardRuntimeWithFactory(factory)
 	return &l4RuntimeManager{
 		cache:             backends.NewCache(backends.Config{}),
-		wireGuardManager:  manager,
-		wireGuardProvider: wireGuardRuntimeProvider{manager: manager},
+		wireGuardRuntime:  wireGuardRuntime,
+		wireGuardProvider: wireGuardRuntime.provider(),
+		ownsWireGuard:     true,
 	}
 }
 
@@ -82,16 +93,18 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	if err := validateL4Rules(rules, relayListeners, m.provider); err != nil {
 		return err
 	}
+	if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
+		return err
+	}
+	if err := m.validateWireGuardReferencesLocked(rules); err != nil {
+		return err
+	}
 
 	previous := m.server
 	if previous != nil {
 		_ = previous.Close()
 		m.server = nil
 	}
-	if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
-		return err
-	}
-
 	server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, m.wireGuardProvider)
 	if err != nil {
 		return err
@@ -102,10 +115,29 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 }
 
 func (m *l4RuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
-	if m.wireGuardManager == nil {
+	if m.wireGuardRuntime == nil || profiles == nil {
 		return nil
 	}
-	return m.wireGuardManager.Apply(ctx, profiles)
+	return m.wireGuardRuntime.Apply(ctx, profiles)
+}
+
+func (m *l4RuntimeManager) validateWireGuardReferencesLocked(rules []model.L4Rule) error {
+	for _, rule := range rules {
+		if !l4RuleUsesWireGuard(rule) {
+			continue
+		}
+		if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
+			continue
+		}
+		if m.wireGuardProvider == nil {
+			return fmt.Errorf("wireguard runtime provider is required")
+		}
+		runtime, ok := m.wireGuardProvider.WireGuardRuntime(*rule.WireGuardProfileID)
+		if !ok || runtime == nil {
+			return fmt.Errorf("wireguard profile %d runtime not found", *rule.WireGuardProfileID)
+		}
+	}
+	return nil
 }
 
 func (m *l4RuntimeManager) UpdateTrafficBlockState(state l4.TrafficBlockState) {
@@ -133,8 +165,8 @@ func (m *l4RuntimeManager) Close() error {
 		}
 		m.server = nil
 	}
-	if m.wireGuardManager != nil {
-		if err := m.wireGuardManager.Close(); err != nil && firstErr == nil {
+	if m.ownsWireGuard && m.wireGuardRuntime != nil {
+		if err := m.wireGuardRuntime.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

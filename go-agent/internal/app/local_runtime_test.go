@@ -420,6 +420,107 @@ func TestL4RuntimeManagerAppliesWireGuardProfilesBeforeStartingL4(t *testing.T) 
 	}
 }
 
+func TestSnapshotActivatorSharedWireGuardRuntimeAppliesRelayAndL4ProfileOnce(t *testing.T) {
+	createCount := 0
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		createCount++
+		return &testAppWireGuardRuntime{
+			onListenTCP: func(context.Context, string) (net.Listener, error) {
+				return net.Listen("tcp", "127.0.0.1:0")
+			},
+		}, nil
+	})
+	defer shared.Close()
+
+	provider := &testRelayTLSProvider{
+		certificates: map[int]tls.Certificate{
+			1: mustIssueTestTLSCertificate(t),
+		},
+	}
+	relayManager := newRelayRuntimeManagerWithWireGuard(provider, shared)
+	defer relayManager.Close()
+	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(provider, Config{}, shared)
+	defer l4Manager.Close()
+	app := newAppWithHTTPDeps(
+		Config{AgentID: "agent-a", AgentName: "agent-a"},
+		store.NewInMemory(),
+		staticSyncClient{},
+		nil,
+		nil,
+		l4Manager,
+		relayManager,
+	)
+
+	profileID := 9
+	profile := validAppWireGuardProfile(profileID)
+	relayListener := runtimeTestRelayListener(pickFreeTCPPort(t), 1)
+	relayListener.TransportMode = relay.ListenerTransportModeWireGuard
+	relayListener.WireGuardProfileID = &profileID
+
+	l4Port := pickFreeTCPPort(t)
+	snapshot := Snapshot{
+		RelayListeners:    []model.RelayListener{relayListener},
+		WireGuardProfiles: []model.WireGuardProfile{profile},
+		L4Rules: []model.L4Rule{{
+			Protocol:           "tcp",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         l4Port,
+			ListenMode:         "wireguard",
+			WireGuardProfileID: &profileID,
+			Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+		}},
+	}
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, snapshot); err != nil {
+		t.Fatalf("snapshotActivator() error = %v", err)
+	}
+
+	if createCount != 1 {
+		t.Fatalf("wireguard runtime creations = %d, want 1", createCount)
+	}
+}
+
+func TestL4RuntimeManagerPreservesRunningServerOnMissingWireGuardProfileReconfigure(t *testing.T) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		return &testAppWireGuardRuntime{
+			onListenTCP: func(context.Context, string) (net.Listener, error) {
+				return net.Listen("tcp", "127.0.0.1:0")
+			},
+		}, nil
+	})
+	defer manager.Close()
+
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+	initial := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}
+	if err := manager.Apply(ctx, []model.L4Rule{initial}); err != nil {
+		t.Fatalf("failed to apply initial l4 runtime: %v", err)
+	}
+	waitForPortState(t, listenPort, true)
+
+	original := manager.server
+	profileID := 10
+	err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.L4Rule{{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         listenPort,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}, nil, nil)
+	if err == nil || err.Error() != "wireguard profile 10 runtime not found" {
+		t.Fatalf("expected missing wireguard profile error, got %v", err)
+	}
+	if manager.server != original {
+		t.Fatal("expected existing l4 runtime to be preserved on missing wireguard profile")
+	}
+	waitForPortState(t, listenPort, true)
+}
+
 func TestHTTPRuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T) {
 	manager := newHTTPRuntimeManager()
 	ctx := context.Background()

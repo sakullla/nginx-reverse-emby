@@ -82,6 +82,7 @@ type App struct {
 	httpProber                    *diagnostics.HTTPProber
 	tcpProber                     *diagnostics.TCPProber
 	hostTrafficCollector          hostTrafficCollector
+	wireGuardRuntime              *sharedWireGuardRuntime
 	relayTimeoutReset             func()
 	closeOnce                     sync.Once
 	syncMu                        sync.Mutex
@@ -170,7 +171,8 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	httpManager := newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg)
-	l4Manager := newL4RuntimeManagerWithRelayAndConfig(certManager, cfg)
+	wireGuardRuntime := newSharedWireGuardRuntime()
+	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
 	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	taskClient := agenttask.NewClient(agenttask.ClientConfig{
@@ -191,7 +193,7 @@ func New(cfg Config) (*App, error) {
 		httpManager,
 		certManager,
 		l4Manager,
-		newRelayRuntimeManager(certManager),
+		newRelayRuntimeManagerWithWireGuard(certManager, wireGuardRuntime),
 		agentupdate.NewManager(
 			cfg.DataDir,
 			executablePath,
@@ -204,6 +206,7 @@ func New(cfg Config) (*App, error) {
 	)
 	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
 	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
+	app.wireGuardRuntime = wireGuardRuntime
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil
@@ -397,6 +400,10 @@ func (a *App) closeLocalRuntimes() {
 	}
 	if a.l4Applier != nil {
 		_ = a.l4Applier.Close()
+	}
+	if a.wireGuardRuntime != nil {
+		_ = a.wireGuardRuntime.Close()
+		a.wireGuardRuntime = nil
 	}
 	if a.relayTimeoutReset != nil {
 		a.relayTimeoutReset()

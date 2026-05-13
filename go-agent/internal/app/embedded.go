@@ -45,7 +45,8 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	}
 
 	httpManager := newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg)
-	l4Manager := newL4RuntimeManagerWithRelayAndConfig(certManager, cfg)
+	wireGuardRuntime := newSharedWireGuardRuntime()
+	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
 	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	app := newAppWithAllDeps(
@@ -55,12 +56,13 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		httpManager,
 		certManager,
 		l4Manager,
-		newRelayRuntimeManager(certManager),
+		newRelayRuntimeManagerWithWireGuard(certManager, wireGuardRuntime),
 		nil,
 		nil,
 	)
 	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
 	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
+	app.wireGuardRuntime = wireGuardRuntime
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil
