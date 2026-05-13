@@ -178,6 +178,10 @@ func shouldCollectInterfaceWithFlags(name string, allowed map[string]struct{}, f
 		return false
 	case strings.HasPrefix(name, "veth"):
 		return false
+	case strings.HasPrefix(name, "lxc"):
+		return false
+	case strings.HasPrefix(name, "cilium_"):
+		return false
 	case strings.HasPrefix(name, "virbr"):
 		return false
 	case strings.HasPrefix(name, "tun"):
