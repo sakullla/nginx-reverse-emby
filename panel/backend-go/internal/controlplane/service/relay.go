@@ -756,6 +756,10 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 	if transportMode == "quic" {
 		obfsMode = "off"
 	}
+	if transportMode == "wireguard" {
+		allowTransportFallback = false
+		obfsMode = "off"
+	}
 
 	pinSet := append([]RelayPin(nil), fallback.PinSet...)
 	if input.PinSet != nil {

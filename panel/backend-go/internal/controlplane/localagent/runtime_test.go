@@ -536,6 +536,19 @@ func TestToEmbeddedSnapshotPreservesWireGuardProfilesWithRawSecrets(t *testing.T
 	}
 }
 
+func TestToEmbeddedSnapshotClearsWireGuardProfilesWithEmptySlice(t *testing.T) {
+	embedded := toEmbeddedSnapshot(Snapshot{
+		WireGuardProfiles: []storage.WireGuardProfile{},
+	})
+
+	if embedded.WireGuardProfiles == nil {
+		t.Fatal("embedded WireGuardProfiles = nil, want explicit empty slice")
+	}
+	if len(embedded.WireGuardProfiles) != 0 {
+		t.Fatalf("embedded WireGuardProfiles len = %d, want 0", len(embedded.WireGuardProfiles))
+	}
+}
+
 func TestLocalStateSinkPersistsRuntimeStateToControlPlaneStore(t *testing.T) {
 	store := &bridgeStoreStub{}
 	sink := NewStateSink(store, "local")

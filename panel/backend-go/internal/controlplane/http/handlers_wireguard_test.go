@@ -95,6 +95,47 @@ func TestRouterWireGuardProfilesDeleteRouteWorks(t *testing.T) {
 	assertWireGuardHTTPSecretsRedacted(t, deleted)
 }
 
+func TestRouterWireGuardProfilesUpdateClearsDNSAndTags(t *testing.T) {
+	router, cleanup := newWireGuardHTTPTestRouter(t)
+	defer cleanup()
+
+	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/wireguard-profiles", bytes.NewBufferString(validWireGuardHTTPPayload()))
+	createReq.Header.Set("X-Panel-Token", "secret")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/agents/local/wireguard-profiles = %d, body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/wireguard-profiles/1", bytes.NewBufferString(`{
+		"name":"wg-a",
+		"mode":"generic_wireguard",
+		"private_key":"`+httpTestWireGuardRedacted+`",
+		"listen_port":51820,
+		"addresses":["10.20.0.1/24"],
+		"peers":[{"name":"peer-a","public_key":"`+httpTestWireGuardPublicKey+`","preshared_key":"`+httpTestWireGuardRedacted+`","endpoint":"peer.example.com:51820","allowed_ips":["10.20.0.2/32"],"persistent_keepalive_seconds":25}],
+		"dns":[],
+		"mtu":1420,
+		"enabled":true,
+		"tags":[]
+	}`))
+	updateReq.Header.Set("X-Panel-Token", "secret")
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateResp := httptest.NewRecorder()
+	router.ServeHTTP(updateResp, updateReq)
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/agents/local/wireguard-profiles/1 = %d, body=%s", updateResp.Code, updateResp.Body.String())
+	}
+	updated := decodeWireGuardHTTPProfileResponse(t, updateResp.Body.Bytes(), "profile")
+	if updated.DNS == nil || len(updated.DNS) != 0 {
+		t.Fatalf("updated DNS = %+v, want explicit empty slice", updated.DNS)
+	}
+	if updated.Tags == nil || len(updated.Tags) != 0 {
+		t.Fatalf("updated Tags = %+v, want explicit empty slice", updated.Tags)
+	}
+}
+
 func TestRouterWireGuardProfilesMissingIDReturnsWireGuardNotFound(t *testing.T) {
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()

@@ -269,9 +269,6 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 }
 
 func copyEmbeddedWireGuardProfiles(embedded *goagentembedded.Snapshot, profiles []storage.WireGuardProfile) {
-	if len(profiles) == 0 {
-		return
-	}
 	data, err := json.Marshal(profiles)
 	if err != nil {
 		return

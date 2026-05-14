@@ -194,6 +194,46 @@ func TestWireGuardProfileUpdateCanDisableProfile(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileUpdateCanClearDNSAndTags(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	update := testWireGuardProfileInput()
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	update.DNS = []string{}
+	update.Tags = []string{}
+	updated, err := svc.Update(ctx, "local", created.ID, update)
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.DNS == nil || len(updated.DNS) != 0 {
+		t.Fatalf("Update() DNS = %+v, want explicit empty slice", updated.DNS)
+	}
+	if updated.Tags == nil || len(updated.Tags) != 0 {
+		t.Fatalf("Update() Tags = %+v, want explicit empty slice", updated.Tags)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rawRows) != 1 {
+		t.Fatalf("raw rows len = %d, want 1", len(rawRows))
+	}
+	if rawRows[0].DNSJSON != "[]" {
+		t.Fatalf("raw DNSJSON = %q, want []", rawRows[0].DNSJSON)
+	}
+	if rawRows[0].TagsJSON != "[]" {
+		t.Fatalf("raw TagsJSON = %q, want []", rawRows[0].TagsJSON)
+	}
+}
+
 func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 	ctx := context.Background()
 

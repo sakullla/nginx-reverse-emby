@@ -499,6 +499,34 @@ func TestRelayListenerWireGuardRequiresProfile(t *testing.T) {
 	}
 }
 
+func TestRelayListenerWireGuardForcesFallbackAndObfsOff(t *testing.T) {
+	profileID := 7
+	listener, err := normalizeRelayListenerInput(RelayListenerInput{
+		Name:                   stringPtr("wg-relay"),
+		ListenPort:             intPtrService(7443),
+		TransportMode:          stringPtr("wireguard"),
+		WireGuardProfileID:     intPtrService(profileID),
+		AllowTransportFallback: boolPtr(true),
+		ObfsMode:               stringPtr("early_window_v2"),
+	}, RelayListener{
+		ID:                     1,
+		AllowTransportFallback: true,
+		ObfsMode:               "early_window_v2",
+	}, 1, relayNormalizeOptions{
+		AllowMissingCertificate: true,
+		SkipTrustValidation:     true,
+	})
+	if err != nil {
+		t.Fatalf("normalizeRelayListenerInput() error = %v", err)
+	}
+	if listener.AllowTransportFallback {
+		t.Fatal("AllowTransportFallback = true, want forced false for wireguard transport")
+	}
+	if listener.ObfsMode != "off" {
+		t.Fatalf("ObfsMode = %q, want off for wireguard transport", listener.ObfsMode)
+	}
+}
+
 func TestRelayListenerWireGuardValidatesProfileReference(t *testing.T) {
 	tests := []struct {
 		name      string

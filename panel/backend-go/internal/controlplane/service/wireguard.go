@@ -394,11 +394,11 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 	}
 
 	dns := normalizeStringList(input.DNS)
-	if len(dns) == 0 && fallback.ID > 0 {
+	if input.DNS == nil && fallback.ID > 0 {
 		dns = append([]string(nil), fallback.DNS...)
 	}
 	tags := normalizeTags(input.Tags)
-	if len(tags) == 0 && fallback.ID > 0 {
+	if input.Tags == nil && fallback.ID > 0 {
 		tags = append([]string(nil), fallback.Tags...)
 	}
 
