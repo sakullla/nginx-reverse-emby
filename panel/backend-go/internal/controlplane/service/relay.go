@@ -1290,12 +1290,12 @@ func normalizeRelayCAIDs(values []int) []int {
 }
 
 func ensureUniqueRelayListen(listeners []RelayListener, next RelayListener, excludeID int) error {
-	nextTransport := normalizeRelayTransportModeIdentity(next.TransportMode)
+	nextTransport := relayListenStackIdentity(next)
 	for _, listener := range listeners {
 		if listener.ID == excludeID || !listener.Enabled {
 			continue
 		}
-		if normalizeRelayTransportModeIdentity(listener.TransportMode) != nextTransport || listener.ListenPort != next.ListenPort {
+		if relayListenStackIdentity(listener) != nextTransport || listener.ListenPort != next.ListenPort {
 			continue
 		}
 		if conflictHost, ok := relayBindHostConflictsWithExisting(listener.BindHosts, next.BindHosts); ok {
@@ -1310,6 +1310,17 @@ func ensureUniqueRelayListen(listeners []RelayListener, next RelayListener, excl
 		}
 	}
 	return nil
+}
+
+func relayListenStackIdentity(listener RelayListener) string {
+	transport := normalizeRelayTransportModeIdentity(listener.TransportMode)
+	if transport == "wireguard" {
+		if listener.WireGuardProfileID != nil && *listener.WireGuardProfileID > 0 {
+			return fmt.Sprintf("wireguard:%d", *listener.WireGuardProfileID)
+		}
+		return "wireguard"
+	}
+	return transport
 }
 
 // Empty transport_mode defaults to "tls_tcp" (the system default when omitted).

@@ -821,6 +821,9 @@ func effectiveL4ListenHost(rule L4Rule) string {
 
 func effectiveL4ListenStack(rule L4Rule) string {
 	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		if rule.WireGuardProfileID != nil && *rule.WireGuardProfileID > 0 {
+			return fmt.Sprintf("wireguard:%d", *rule.WireGuardProfileID)
+		}
 		return "wireguard"
 	}
 	return "host"

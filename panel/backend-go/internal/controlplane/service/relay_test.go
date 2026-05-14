@@ -599,6 +599,101 @@ func TestRelayListenerWireGuardValidatesProfileReference(t *testing.T) {
 	}
 }
 
+func TestRelayListenerWireGuardListenUniquenessAllowsSameBindAcrossProfiles(t *testing.T) {
+	existingProfileID := 7
+	nextProfileID := 8
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:                 1,
+				AgentID:            "local",
+				Name:               "wg-relay-a",
+				BindHostsJSON:      `["10.8.0.1"]`,
+				ListenHost:         "10.8.0.1",
+				ListenPort:         7443,
+				PublicHost:         "relay-a.example.com",
+				PublicPort:         7443,
+				Enabled:            true,
+				TLSMode:            "pin_only",
+				TransportMode:      "wireguard",
+				WireGuardProfileID: &existingProfileID,
+				Revision:           1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {
+				{ID: existingProfileID, AgentID: "local", Enabled: true},
+				{ID: nextProfileID, AgentID: "local", Enabled: true},
+			},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:               stringPtr("wg-relay-b"),
+		BindHosts:          &[]string{"10.8.0.1"},
+		ListenPort:         intPtrService(7443),
+		Enabled:            boolPtr(false),
+		TransportMode:      stringPtr("wireguard"),
+		WireGuardProfileID: intPtrService(nextProfileID),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.WireGuardProfileID == nil || *listener.WireGuardProfileID != nextProfileID {
+		t.Fatalf("WireGuardProfileID = %v, want %d", listener.WireGuardProfileID, nextProfileID)
+	}
+	if got := len(store.relayByAgentID["local"]); got != 2 {
+		t.Fatalf("persisted relay listeners len = %d, want 2", got)
+	}
+}
+
+func TestRelayListenerWireGuardListenUniquenessRejectsSameBindOnSameProfile(t *testing.T) {
+	profileID := 7
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:                 1,
+				AgentID:            "local",
+				Name:               "wg-relay-a",
+				BindHostsJSON:      `["10.8.0.1"]`,
+				ListenHost:         "10.8.0.1",
+				ListenPort:         7443,
+				PublicHost:         "relay-a.example.com",
+				PublicPort:         7443,
+				Enabled:            true,
+				TLSMode:            "pin_only",
+				TransportMode:      "wireguard",
+				WireGuardProfileID: &profileID,
+				Revision:           1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:               stringPtr("wg-relay-b"),
+		BindHosts:          &[]string{"10.8.0.1"},
+		ListenPort:         intPtrService(7443),
+		Enabled:            boolPtr(false),
+		TransportMode:      stringPtr("wireguard"),
+		WireGuardProfileID: intPtrService(profileID),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "conflicts with relay listener #1") {
+		t.Fatalf("Create() error = %v, want bind conflict", err)
+	}
+}
+
 func TestRelayServiceCreateWireGuardAutoRelayCAIssuesCertificateAndDerivesTrust(t *testing.T) {
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{

@@ -715,6 +715,55 @@ func TestL4WireGuardListenHostConflictsUseTunnelHost(t *testing.T) {
 	}
 }
 
+func TestL4WireGuardListenUniquenessAllowsSameTunnelAddressAcrossProfiles(t *testing.T) {
+	existingProfileID := 7
+	nextProfileID := 8
+	existing := L4Rule{
+		ID:                  1,
+		AgentID:             "local",
+		Name:                "wg-a",
+		Protocol:            "udp",
+		ListenHost:          "0.0.0.0",
+		ListenPort:          51820,
+		Backends:            []L4Backend{{Host: "upstream-a", Port: 9001}},
+		ListenMode:          "wireguard",
+		WireGuardProfileID:  &existingProfileID,
+		WireGuardListenHost: "10.8.0.1",
+		Enabled:             true,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(existing)},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {
+				{ID: existingProfileID, AgentID: "local", Enabled: true},
+				{ID: nextProfileID, AgentID: "local", Enabled: true},
+			},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:            stringPtrL4("udp"),
+		ListenHost:          stringPtrL4("0.0.0.0"),
+		ListenPort:          intPtrL4(51820),
+		ListenMode:          stringPtrL4("wireguard"),
+		WireGuardProfileID:  intPtrL4(nextProfileID),
+		WireGuardListenHost: stringPtrL4("10.8.0.1"),
+		Backends:            &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != nextProfileID {
+		t.Fatalf("WireGuardProfileID = %v, want %d", rule.WireGuardProfileID, nextProfileID)
+	}
+	if got := len(store.l4RulesByID["local"]); got != 2 {
+		t.Fatalf("persisted L4 rules len = %d, want 2", got)
+	}
+}
+
 func TestL4ListenUniquenessAllowsHostAndWireGuardStacksToShareAddress(t *testing.T) {
 	profileID := 7
 	existing := L4Rule{
