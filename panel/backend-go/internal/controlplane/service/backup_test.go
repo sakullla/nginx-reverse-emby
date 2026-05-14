@@ -1328,6 +1328,118 @@ func TestBackupServiceImportSkipsWireGuardL4TunnelListenConflicts(t *testing.T) 
 	}
 }
 
+func TestBackupServiceImportAllowsWireGuardL4TunnelListenReuseAcrossProfiles(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-l4-profile-reuse-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	profileAID := 1
+	profileBID := 2
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-wg",
+			Name:       "edge-wg",
+			AgentToken: "token-edge-wg",
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{
+			{
+				ID:         profileAID,
+				AgentID:    "edge-wg",
+				Name:       "wg-edge-a",
+				Mode:       "generic_wireguard",
+				PrivateKey: testWireGuardPrivateKey,
+				Addresses:  []string{"10.96.0.2/32"},
+				Peers: []WireGuardPeer{{
+					Name:       "peer-a",
+					PublicKey:  testWireGuardPublicKey,
+					AllowedIPs: []string{"10.96.0.1/32"},
+				}},
+				Enabled: true,
+			},
+			{
+				ID:         profileBID,
+				AgentID:    "edge-wg",
+				Name:       "wg-edge-b",
+				Mode:       "generic_wireguard",
+				PrivateKey: testWireGuardPrivateKey,
+				Addresses:  []string{"10.97.0.2/32"},
+				Peers: []WireGuardPeer{{
+					Name:       "peer-b",
+					PublicKey:  testWireGuardPublicKeyB,
+					AllowedIPs: []string{"10.97.0.1/32"},
+				}},
+				Enabled: true,
+			},
+		},
+		L4Rules: []BackupL4Rule{
+			{
+				ID:                  91,
+				AgentID:             "edge-wg",
+				Name:                "wg-l4-a",
+				Protocol:            "udp",
+				ListenHost:          "0.0.0.0",
+				ListenPort:          51820,
+				Backends:            []L4Backend{{Host: "10.96.0.1", Port: 51820}},
+				LoadBalancing:       L4LoadBalancing{Strategy: "round_robin"},
+				ListenMode:          "wireguard",
+				WireGuardProfileID:  &profileAID,
+				WireGuardListenHost: "10.96.0.2",
+				Enabled:             true,
+			},
+			{
+				ID:                  92,
+				AgentID:             "edge-wg",
+				Name:                "wg-l4-b",
+				Protocol:            "udp",
+				ListenHost:          "0.0.0.0",
+				ListenPort:          51820,
+				Backends:            []L4Backend{{Host: "10.97.0.1", Port: 51820}},
+				LoadBalancing:       L4LoadBalancing{Strategy: "round_robin"},
+				ListenMode:          "wireguard",
+				WireGuardProfileID:  &profileBID,
+				WireGuardListenHost: "10.96.0.2",
+				Enabled:             true,
+			},
+		},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore)
+	preview, err := svc.Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	if preview.Summary.Imported.L4Rules != 2 || preview.Summary.SkippedConflict.L4Rules != 0 {
+		t.Fatalf("preview summary = %+v", preview.Summary)
+	}
+
+	result, err := svc.Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.L4Rules != 2 || result.Summary.SkippedConflict.L4Rules != 0 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+	l4Rules, err := targetStore.ListL4Rules(ctx, "edge-wg")
+	if err != nil {
+		t.Fatalf("ListL4Rules(edge-wg) error = %v", err)
+	}
+	if len(l4Rules) != 2 {
+		t.Fatalf("imported l4 rules = %+v, want two", l4Rules)
+	}
+}
+
 func TestRemapBackupWireGuardProfileIDQualifiesEnabledStateByAgent(t *testing.T) {
 	profileID := 1
 	profileIDMap := map[string]int{

@@ -1873,6 +1873,92 @@ func TestStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesForReferencedRelayListeners(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	for _, agentID := range []string{"relay-wg-client", "relay-wg-peer"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{
+			ID:         agentID,
+			Name:       agentID,
+			AgentToken: "token-" + agentID,
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+	profileID := 17
+	if err := store.SaveWireGuardProfiles(t.Context(), "relay-wg-peer", []WireGuardProfileRow{{
+		ID:            profileID,
+		AgentID:       "relay-wg-peer",
+		Name:          "peer-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "peer-private-key",
+		ListenPort:    51820,
+		AddressesJSON: `["10.90.0.2/32"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      12,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(peer) error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "relay-wg-client", []HTTPRuleRow{{
+		ID:                51,
+		AgentID:           "relay-wg-client",
+		FrontendURL:       "https://relay-wg-client.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		RelayLayersJSON:   `[[44]]`,
+		Enabled:           true,
+		Revision:          5,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-wg-peer", []RelayListenerRow{{
+		ID:                 44,
+		AgentID:            "relay-wg-peer",
+		Name:               "relay-wg-peer",
+		ListenHost:         "10.90.0.2",
+		BindHostsJSON:      `["10.90.0.2"]`,
+		ListenPort:         7443,
+		PublicHost:         "relay-wg-peer.example.com",
+		PublicPort:         7443,
+		Enabled:            true,
+		TransportMode:      "wireguard",
+		WireGuardProfileID: &profileID,
+		Revision:           13,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(peer) error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-wg-client", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.RelayListeners) != 1 || snapshot.RelayListeners[0].ID != 44 {
+		t.Fatalf("RelayListeners = %+v", snapshot.RelayListeners)
+	}
+	if snapshot.RelayListeners[0].WireGuardProfileID == nil || *snapshot.RelayListeners[0].WireGuardProfileID != profileID {
+		t.Fatalf("Relay listener WireGuardProfileID = %v", snapshot.RelayListeners[0].WireGuardProfileID)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles = %+v, want referenced relay profile", snapshot.WireGuardProfiles)
+	}
+	if snapshot.WireGuardProfiles[0].ID != profileID || snapshot.WireGuardProfiles[0].AgentID != "relay-wg-peer" {
+		t.Fatalf("WireGuardProfiles[0] = %+v", snapshot.WireGuardProfiles[0])
+	}
+}
+
 func TestStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

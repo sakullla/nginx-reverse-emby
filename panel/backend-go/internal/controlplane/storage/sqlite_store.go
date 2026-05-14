@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -224,12 +225,11 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	}
 	l4Rows = filterSyncL4RuleRows(l4Rows)
 
-	wireGuardRows, err := s.ListWireGuardProfiles(ctx, resolvedAgentID)
+	relayRows, err := s.loadRelayListenersForSync(ctx, resolvedAgentID, httpRows, l4Rows)
 	if err != nil {
 		return Snapshot{}, err
 	}
-
-	relayRows, err := s.loadRelayListenersForSync(ctx, resolvedAgentID, httpRows, l4Rows)
+	wireGuardRows, err := s.loadWireGuardProfilesForSync(ctx, resolvedAgentID, relayRows)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -911,6 +911,47 @@ func (s *GormStore) loadRelayListenersForSync(
 		}
 	}
 	return syncRows, nil
+}
+
+func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID string, relayRows []RelayListenerRow) ([]WireGuardProfileRow, error) {
+	rows, err := s.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	included := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		included[wireGuardProfileRowKey(row.AgentID, row.ID)] = struct{}{}
+	}
+
+	agentIDs := make(map[string]struct{})
+	for _, row := range relayRows {
+		if !strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") || row.WireGuardProfileID == nil || *row.WireGuardProfileID <= 0 {
+			continue
+		}
+		if _, ok := included[wireGuardProfileRowKey(row.AgentID, *row.WireGuardProfileID)]; ok {
+			continue
+		}
+		agentIDs[row.AgentID] = struct{}{}
+	}
+	for relayAgentID := range agentIDs {
+		relayAgentRows, err := s.ListWireGuardProfiles(ctx, relayAgentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range relayAgentRows {
+			key := wireGuardProfileRowKey(row.AgentID, row.ID)
+			if _, ok := included[key]; ok {
+				continue
+			}
+			included[key] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
+}
+
+func wireGuardProfileRowKey(agentID string, id int) string {
+	return strings.TrimSpace(agentID) + "|" + strconv.Itoa(id)
 }
 
 func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []int {

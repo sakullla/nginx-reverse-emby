@@ -300,22 +300,22 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	}
 	existingL4Keys := map[string]struct{}{}
 	for _, row := range existingL4Rules {
-		existingL4Keys[l4BackupConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort, row.ListenMode, row.WireGuardListenHost)] = struct{}{}
+		existingL4Keys[l4BackupConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort, row.ListenMode, row.WireGuardListenHost, row.WireGuardProfileID)] = struct{}{}
 	}
 	for _, item := range bundle.L4Rules {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
-		key := l4BackupConflictKey(item.AgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardListenHost)
+		key := l4BackupConflictKey(item.AgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardListenHost, item.WireGuardProfileID)
 		if !ok {
 			result.addSkippedInvalid("l4_rule", key, "l4 rule references unknown agent")
 			continue
 		}
-		key = l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardListenHost)
+		wireGuardProfileID, profileOK := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		key = l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardListenHost, wireGuardProfileID)
 		if _, exists := existingL4Keys[key]; exists {
 			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
 			continue
 		}
-		wireGuardProfileID, ok := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
-		if (strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") || strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard")) && !ok {
+		if (strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") || strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard")) && !profileOK {
 			result.addSkippedInvalid("l4_rule", key, "wireguard profile was not imported")
 			continue
 		}
@@ -1205,7 +1205,7 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 	maxRevisionByAgent := map[string]int{}
 
 	for _, row := range existingRules {
-		key := l4BackupConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort, row.ListenMode, row.WireGuardListenHost)
+		key := l4BackupConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort, row.ListenMode, row.WireGuardListenHost, row.WireGuardProfileID)
 		conflictSet[key] = struct{}{}
 		grouped[row.AgentID] = append(grouped[row.AgentID], row)
 		if row.Revision > maxRevisionByAgent[row.AgentID] {
@@ -1215,7 +1215,8 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 
 	for _, item := range incoming {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
-		key := l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardListenHost)
+		wireGuardProfileID, profileOK := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		key := l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardListenHost, wireGuardProfileID)
 		if !ok {
 			result.addSkippedInvalid("l4_rule", key, "l4 rule references unknown agent")
 			continue
@@ -1225,8 +1226,7 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			continue
 		}
 
-		wireGuardProfileID, ok := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
-		if (strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") || strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard")) && !ok {
+		if (strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") || strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard")) && !profileOK {
 			result.addSkippedInvalid("l4_rule", key, "wireguard profile was not imported")
 			continue
 		}
@@ -1602,11 +1602,14 @@ func l4ConflictKey(agentID string, protocol string, listenHost string, listenPor
 	return strings.TrimSpace(agentID) + "|" + strings.ToLower(strings.TrimSpace(protocol)) + "|" + strings.TrimSpace(listenHost) + "|" + fmt.Sprintf("%d", listenPort) + "|" + strings.TrimSpace(listenStack)
 }
 
-func l4BackupConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenMode string, wireGuardListenHost string) string {
+func l4BackupConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenMode string, wireGuardListenHost string, wireGuardProfileID *int) string {
 	effectiveHost := strings.TrimSpace(listenHost)
 	listenStack := "host"
 	if strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") {
 		listenStack = "wireguard"
+		if wireGuardProfileID != nil && *wireGuardProfileID > 0 {
+			listenStack = fmt.Sprintf("wireguard:%d", *wireGuardProfileID)
+		}
 		if host := strings.TrimSpace(wireGuardListenHost); host != "" {
 			effectiveHost = host
 		}
