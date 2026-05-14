@@ -2455,6 +2455,72 @@ func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesWireGuardProxyEntryL4RuleWithoutBackend(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "wg-proxy-entry-agent",
+		Name:            "wg-proxy-entry-agent",
+		AgentToken:      "token-wg-proxy-entry-agent",
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	profileID := 7
+	if err := store.SaveL4Rules(t.Context(), "wg-proxy-entry-agent", []L4RuleRow{{
+		ID:                 72,
+		AgentID:            "wg-proxy-entry-agent",
+		Name:               "wg-proxy-entry",
+		Protocol:           "tcp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         1081,
+		BackendsJSON:       `[]`,
+		LoadBalancingJSON:  `{}`,
+		TuningJSON:         `{}`,
+		RelayChainJSON:     `[]`,
+		RelayLayersJSON:    `[]`,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		ProxyEntryAuthJSON: `{"enabled":true,"username":"client","password":"secret"}`,
+		ProxyEgressMode:    "wireguard",
+		Enabled:            true,
+		Revision:           18,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-proxy-entry-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	rule := snapshot.L4Rules[0]
+	if rule.ID != 72 || rule.ListenMode != "wireguard" || rule.ProxyEgressMode != "wireguard" {
+		t.Fatalf("L4Rules[0] = %+v", rule)
+	}
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != profileID {
+		t.Fatalf("WireGuardProfileID = %v, want %d", rule.WireGuardProfileID, profileID)
+	}
+	if len(rule.Backends) != 0 {
+		t.Fatalf("Backends = %+v, want empty proxy entry target list", rule.Backends)
+	}
+}
+
 func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

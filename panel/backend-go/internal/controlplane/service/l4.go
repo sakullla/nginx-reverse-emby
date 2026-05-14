@@ -422,19 +422,14 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		id = suggestedID
 	}
 
-	backends, upstreamHost, upstreamPort, err := normalizeL4BackendsInput(input, fallback)
-	if err != nil {
-		if listenMode != "proxy" {
-			return L4Rule{}, err
-		}
-		backends = []L4Backend{}
-		upstreamHost = ""
-		upstreamPort = 0
-	}
+	var backends []L4Backend
+	var upstreamHost string
+	var upstreamPort int
 
 	loadBalancing := normalizeL4LoadBalancingInput(input.LoadBalancing, fallback.LoadBalancing)
 	tuning := normalizeL4TuningInput(protocol, input.Tuning, fallback.Tuning)
 
+	var err error
 	relayChain := []int{}
 	relayLayers := cloneIntLayers(fallback.RelayLayers)
 	if input.RelayLayers != nil {
@@ -466,9 +461,22 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if input.ProxyEntryAuth != nil {
 		proxyEntryAuth = normalizeL4ProxyEntryAuthUpdate(*input.ProxyEntryAuth, fallback.ProxyEntryAuth)
 	}
-	if listenMode != "proxy" {
+	proxyEntryMode := isL4ProxyEntryListenMode(listenMode, proxyEgressMode)
+	backends, upstreamHost, upstreamPort, err = normalizeL4BackendsInput(input, fallback, proxyEntryMode)
+	if err != nil {
+		if !proxyEntryMode {
+			return L4Rule{}, err
+		}
+		backends = []L4Backend{}
+		upstreamHost = ""
+		upstreamPort = 0
+	}
+	if !proxyEntryMode {
 		proxyEntryAuth, proxyEgressMode, proxyEgressURL = normalizeL4ProxyEntryFields(listenMode, proxyEntryAuth, proxyEgressMode, proxyEgressURL)
 	} else {
+		if listenMode == "wireguard" && protocol != "tcp" {
+			return L4Rule{}, fmt.Errorf("%w: wireguard proxy entry requires protocol tcp", ErrInvalidArgument)
+		}
 		if proxyEgressMode != "relay" && proxyEgressMode != "proxy" && proxyEgressMode != "wireguard" {
 			return L4Rule{}, fmt.Errorf("%w: proxy_egress_mode must be relay, proxy, or wireguard", ErrInvalidArgument)
 		}
@@ -600,10 +608,18 @@ func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {
 	return allKnownAgentIDs(ctx, s.cfg, s.store)
 }
 
-func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule) ([]L4Backend, string, int, error) {
+func isL4ProxyEntryListenMode(listenMode string, proxyEgressMode string) bool {
+	return strings.EqualFold(strings.TrimSpace(listenMode), "proxy") ||
+		(strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") && strings.TrimSpace(proxyEgressMode) != "")
+}
+
+func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule, allowEmpty bool) ([]L4Backend, string, int, error) {
 	if input.Backends != nil {
 		backends := normalizeL4BackendList(*input.Backends)
 		if len(backends) == 0 {
+			if allowEmpty {
+				return []L4Backend{}, "", 0, nil
+			}
 			return nil, "", 0, fmt.Errorf("%w: at least one valid backend is required", ErrInvalidArgument)
 		}
 		return backends, "", 0, nil
@@ -616,11 +632,17 @@ func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule) ([]L4Backend, 
 	if len(fallback.Backends) > 0 {
 		backends := normalizeL4BackendList(fallback.Backends)
 		if len(backends) == 0 {
+			if allowEmpty {
+				return []L4Backend{}, "", 0, nil
+			}
 			return nil, "", 0, fmt.Errorf("%w: at least one valid backend is required", ErrInvalidArgument)
 		}
 		return backends, "", 0, nil
 	}
 
+	if allowEmpty {
+		return []L4Backend{}, "", 0, nil
+	}
 	return nil, "", 0, fmt.Errorf("%w: at least one valid backend is required", ErrInvalidArgument)
 }
 
@@ -748,7 +770,8 @@ func validateL4ProxyEgressURL(raw string) error {
 }
 
 func normalizeL4ProxyEntryFields(listenMode string, auth L4ProxyEntryAuth, egressMode string, egressURL string) (L4ProxyEntryAuth, string, string) {
-	if strings.ToLower(strings.TrimSpace(listenMode)) != "proxy" {
+	listenMode = strings.ToLower(strings.TrimSpace(listenMode))
+	if listenMode != "proxy" && listenMode != "wireguard" {
 		return L4ProxyEntryAuth{}, "", ""
 	}
 	return normalizeL4ProxyEntryAuth(auth), strings.ToLower(strings.TrimSpace(egressMode)), strings.TrimSpace(egressURL)

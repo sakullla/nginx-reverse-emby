@@ -70,7 +70,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}
 
 	recorder := traffic.NewL4RuleRecorder(rule.ID)
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "proxy") {
+	if isProxyEntryRule(rule) {
 		s.handleProxyEntryConnection(client, rule, recorder)
 		return
 	}

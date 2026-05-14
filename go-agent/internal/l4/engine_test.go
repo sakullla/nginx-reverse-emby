@@ -195,6 +195,21 @@ func TestValidateRuleAcceptsProxyEntryWithWireGuardEgress(t *testing.T) {
 	}
 }
 
+func TestValidateRuleAcceptsWireGuardProxyEntryWithWireGuardEgress(t *testing.T) {
+	profileID := 7
+	rule := model.L4Rule{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         1080,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		ProxyEgressMode:    "wireguard",
+	}
+	if err := ValidateRule(rule); err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
 func TestValidateRuleRejectsProxyEntryWithWireGuardEgressWithoutProfile(t *testing.T) {
 	err := ValidateRule(model.L4Rule{
 		Protocol:        "tcp",

@@ -2136,6 +2136,7 @@ type backupStateSnapshot struct {
 	agents               []storage.AgentRow
 	httpRulesByAgentID   map[string][]storage.HTTPRuleRow
 	l4RulesByAgentID     map[string][]storage.L4RuleRow
+	wireGuardByAgentID   map[string][]storage.WireGuardProfileRow
 	relayByAgentID       map[string][]storage.RelayListenerRow
 	certificates         []storage.ManagedCertificateRow
 	versionPolicies      []storage.VersionPolicyRow
@@ -2155,6 +2156,7 @@ func (s *backupService) captureState(ctx context.Context) (backupStateSnapshot, 
 	}
 	httpRulesByAgentID := map[string][]storage.HTTPRuleRow{}
 	l4RulesByAgentID := map[string][]storage.L4RuleRow{}
+	wireGuardByAgentID := map[string][]storage.WireGuardProfileRow{}
 	for _, agentID := range knownAgentIDs {
 		rules, err := s.store.ListHTTPRules(ctx, agentID)
 		if err != nil {
@@ -2166,6 +2168,11 @@ func (s *backupService) captureState(ctx context.Context) (backupStateSnapshot, 
 			return backupStateSnapshot{}, err
 		}
 		l4RulesByAgentID[agentID] = append([]storage.L4RuleRow(nil), l4Rules...)
+		wireGuardProfiles, err := s.store.ListWireGuardProfiles(ctx, agentID)
+		if err != nil {
+			return backupStateSnapshot{}, err
+		}
+		wireGuardByAgentID[agentID] = append([]storage.WireGuardProfileRow(nil), wireGuardProfiles...)
 	}
 
 	relayRows, err := s.store.ListRelayListeners(ctx, "")
@@ -2209,6 +2216,7 @@ func (s *backupService) captureState(ctx context.Context) (backupStateSnapshot, 
 		agents:               append([]storage.AgentRow(nil), agents...),
 		httpRulesByAgentID:   httpRulesByAgentID,
 		l4RulesByAgentID:     l4RulesByAgentID,
+		wireGuardByAgentID:   wireGuardByAgentID,
 		relayByAgentID:       relayByAgentID,
 		certificates:         append([]storage.ManagedCertificateRow(nil), certs...),
 		versionPolicies:      append([]storage.VersionPolicyRow(nil), policies...),
@@ -2237,6 +2245,9 @@ func (s *backupService) restoreState(ctx context.Context, snapshot backupStateSn
 	for agentID := range snapshot.l4RulesByAgentID {
 		agentIDs[agentID] = struct{}{}
 	}
+	for agentID := range snapshot.wireGuardByAgentID {
+		agentIDs[agentID] = struct{}{}
+	}
 	for agentID := range snapshot.relayByAgentID {
 		agentIDs[agentID] = struct{}{}
 	}
@@ -2245,6 +2256,9 @@ func (s *backupService) restoreState(ctx context.Context, snapshot backupStateSn
 			return err
 		}
 		if err := s.store.SaveL4Rules(ctx, agentID, snapshot.l4RulesByAgentID[agentID]); err != nil {
+			return err
+		}
+		if err := s.store.SaveWireGuardProfiles(ctx, agentID, snapshot.wireGuardByAgentID[agentID]); err != nil {
 			return err
 		}
 		if err := s.store.SaveRelayListeners(ctx, agentID, snapshot.relayByAgentID[agentID]); err != nil {

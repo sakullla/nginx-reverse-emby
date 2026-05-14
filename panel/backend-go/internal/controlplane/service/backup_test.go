@@ -1630,6 +1630,108 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	}
 }
 
+func TestBackupServiceRollbackRestoresWireGuardProfilesOnImportFailure(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rollback-wg-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	ctx := t.Context()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "source-edge-wg",
+		Name:       "existing-agent",
+		AgentToken: "token-source-edge-wg",
+	}); err != nil {
+		t.Fatalf("SaveAgent(source) error = %v", err)
+	}
+	if err := sourceStore.SaveWireGuardProfiles(ctx, "source-edge-wg", []storage.WireGuardProfileRow{{
+		ID:            7,
+		AgentID:       "source-edge-wg",
+		Name:          "imported-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    testWireGuardPrivateKey,
+		ListenPort:    51820,
+		AddressesJSON: `["10.80.0.2/32"]`,
+		PeersJSON: marshalJSON([]WireGuardPeer{{
+			Name:         "peer-a",
+			PublicKey:    testWireGuardPublicKey,
+			PresharedKey: testWireGuardPresharedKey,
+			Endpoint:     "relay.example.com:51820",
+			AllowedIPs:   []string{"10.80.0.1/32"},
+		}}, "[]"),
+		DNSJSON:  `[]`,
+		Enabled:  true,
+		Revision: 2,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(source) error = %v", err)
+	}
+	if err := sourceStore.SaveHTTPRules(ctx, "source-edge-wg", []storage.HTTPRuleRow{{
+		ID:                11,
+		AgentID:           "source-edge-wg",
+		FrontendURL:       "https://edge-wg.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[]`,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          2,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(source) error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rollback-wg-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "existing-agent",
+		Name:       "existing-agent",
+		AgentToken: "token-existing",
+	}); err != nil {
+		t.Fatalf("SaveAgent(target) error = %v", err)
+	}
+	if err := targetStore.SaveWireGuardProfiles(ctx, "existing-agent", []storage.WireGuardProfileRow{{
+		ID:            3,
+		AgentID:       "existing-agent",
+		Name:          "existing-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    testWireGuardPrivateKey,
+		ListenPort:    51821,
+		AddressesJSON: `["10.81.0.2/32"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      9,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(target) error = %v", err)
+	}
+
+	failingStore := &failingBackupStore{
+		backupStore:               targetStore,
+		remainingHTTPRuleFailures: 1,
+	}
+	if _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, failingStore).Import(ctx, archive); err == nil {
+		t.Fatal("Import() error = nil, want forced import failure")
+	}
+
+	existingProfiles, err := targetStore.ListWireGuardProfiles(ctx, "existing-agent")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(existing-agent) error = %v", err)
+	}
+	if len(existingProfiles) != 1 || existingProfiles[0].Name != "existing-wg" || existingProfiles[0].Revision != 9 {
+		t.Fatalf("existing wireguard profiles after rollback = %+v", existingProfiles)
+	}
+}
+
 func TestBackupServiceImportBumpsLocalSnapshotRevisionForRestoredLocalRules(t *testing.T) {
 	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "local-source"), "local")
 	if err != nil {

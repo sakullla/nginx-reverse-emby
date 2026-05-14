@@ -584,6 +584,38 @@ func TestL4WireGuardProxyEgressRequiresProfile(t *testing.T) {
 	}
 }
 
+func TestL4WireGuardListenModeAllowsProxyEntryWithoutBackend(t *testing.T) {
+	profileID := 7
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:           stringPtrL4("tcp"),
+		ListenHost:         stringPtrL4("0.0.0.0"),
+		ListenPort:         intPtrL4(1081),
+		ListenMode:         stringPtrL4("wireguard"),
+		WireGuardProfileID: intPtrL4(profileID),
+		ProxyEgressMode:    stringPtrL4("wireguard"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.ListenMode != "wireguard" || rule.ProxyEgressMode != "wireguard" {
+		t.Fatalf("created rule modes = listen %q egress %q", rule.ListenMode, rule.ProxyEgressMode)
+	}
+	if len(rule.Backends) != 0 || rule.ProxyEgressURL != "" {
+		t.Fatalf("proxy-entry targets = backends=%+v url=%q", rule.Backends, rule.ProxyEgressURL)
+	}
+	if got := store.l4RulesByID["local"][0]; got.ProxyEgressMode != "wireguard" || got.BackendsJSON != "[]" {
+		t.Fatalf("persisted row = %+v", got)
+	}
+}
+
 func TestL4WireGuardListenHostDefaultsToListenHostOnCreate(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},

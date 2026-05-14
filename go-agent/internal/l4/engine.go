@@ -36,8 +36,11 @@ func ValidateRule(rule Rule) error {
 	if listenMode == "wireguard" && !hasWireGuardProfile(rule) {
 		return fmt.Errorf("wireguard_profile_id is required for wireguard listen mode")
 	}
-	if listenMode == "proxy" {
+	if isProxyEntryRule(rule) {
 		if protocol != "tcp" {
+			if listenMode == "wireguard" {
+				return fmt.Errorf("wireguard proxy entry requires protocol tcp")
+			}
 			return fmt.Errorf("listen_mode=proxy requires protocol tcp")
 		}
 		return validateProxyEntryRule(rule)
@@ -80,6 +83,12 @@ func validateProxyEntryRule(rule Rule) error {
 		return fmt.Errorf("proxy_egress_mode must be relay or proxy")
 	}
 	return nil
+}
+
+func isProxyEntryRule(rule Rule) bool {
+	listenMode := strings.ToLower(strings.TrimSpace(rule.ListenMode))
+	return listenMode == "proxy" ||
+		(listenMode == "wireguard" && strings.TrimSpace(rule.ProxyEgressMode) != "")
 }
 
 func hasWireGuardProfile(rule Rule) bool {
