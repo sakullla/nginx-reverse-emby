@@ -1598,18 +1598,20 @@ func httpRuleConflictKey(agentID string, frontendURL string) string {
 	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(frontendURL)
 }
 
-func l4ConflictKey(agentID string, protocol string, listenHost string, listenPort int) string {
-	return strings.TrimSpace(agentID) + "|" + strings.ToLower(strings.TrimSpace(protocol)) + "|" + strings.TrimSpace(listenHost) + "|" + fmt.Sprintf("%d", listenPort)
+func l4ConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenStack string) string {
+	return strings.TrimSpace(agentID) + "|" + strings.ToLower(strings.TrimSpace(protocol)) + "|" + strings.TrimSpace(listenHost) + "|" + fmt.Sprintf("%d", listenPort) + "|" + strings.TrimSpace(listenStack)
 }
 
 func l4BackupConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenMode string, wireGuardListenHost string) string {
 	effectiveHost := strings.TrimSpace(listenHost)
+	listenStack := "host"
 	if strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") {
+		listenStack = "wireguard"
 		if host := strings.TrimSpace(wireGuardListenHost); host != "" {
 			effectiveHost = host
 		}
 	}
-	return l4ConflictKey(agentID, protocol, effectiveHost, listenPort)
+	return l4ConflictKey(agentID, protocol, effectiveHost, listenPort, listenStack)
 }
 
 func trafficBaselineKey(agentID string, cycleStart string) string {

@@ -767,12 +767,13 @@ func normalizeTags(values []string) []string {
 
 func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 	nextListenHost := effectiveL4ListenHost(next)
+	nextListenStack := effectiveL4ListenStack(next)
 	for _, rule := range rules {
 		if rule.ID == excludeID {
 			continue
 		}
 		ruleListenHost := effectiveL4ListenHost(rule)
-		if rule.Protocol == next.Protocol && ruleListenHost == nextListenHost && rule.ListenPort == next.ListenPort {
+		if rule.Protocol == next.Protocol && effectiveL4ListenStack(rule) == nextListenStack && ruleListenHost == nextListenHost && rule.ListenPort == next.ListenPort {
 			return fmt.Errorf(
 				"%w: listen %s:%s:%d conflicts with rule #%d",
 				ErrInvalidArgument,
@@ -793,6 +794,13 @@ func effectiveL4ListenHost(rule L4Rule) string {
 		}
 	}
 	return strings.TrimSpace(rule.ListenHost)
+}
+
+func effectiveL4ListenStack(rule L4Rule) string {
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		return "wireguard"
+	}
+	return "host"
 }
 
 func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
