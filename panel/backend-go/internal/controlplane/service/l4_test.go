@@ -641,6 +641,48 @@ func TestL4WireGuardListenHostPreservesExplicitValueOnCreate(t *testing.T) {
 	}
 }
 
+func TestL4WireGuardListenHostConflictsUseTunnelHost(t *testing.T) {
+	profileID := 7
+	existing := L4Rule{
+		ID:                  1,
+		AgentID:             "local",
+		Name:                "wg-a",
+		Protocol:            "udp",
+		ListenHost:          "0.0.0.0",
+		ListenPort:          51820,
+		Backends:            []L4Backend{{Host: "upstream-a", Port: 9001}},
+		ListenMode:          "wireguard",
+		WireGuardProfileID:  &profileID,
+		WireGuardListenHost: "10.8.0.1",
+		Enabled:             true,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(existing)},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:            stringPtrL4("udp"),
+		ListenHost:          stringPtrL4("127.0.0.1"),
+		ListenPort:          intPtrL4(51820),
+		ListenMode:          stringPtrL4("wireguard"),
+		WireGuardProfileID:  intPtrL4(profileID),
+		WireGuardListenHost: stringPtrL4("10.8.0.1"),
+		Backends:            &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "10.8.0.1:51820 conflicts") {
+		t.Fatalf("Create() error = %v, want tunnel listen host conflict", err)
+	}
+}
+
 func TestL4WireGuardListenHostDefaultsToListenHostOnUpdate(t *testing.T) {
 	current := L4Rule{
 		ID:         1,

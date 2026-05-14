@@ -300,16 +300,16 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	}
 	existingL4Keys := map[string]struct{}{}
 	for _, row := range existingL4Rules {
-		existingL4Keys[l4ConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort)] = struct{}{}
+		existingL4Keys[l4BackupConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort, row.ListenMode, row.WireGuardListenHost)] = struct{}{}
 	}
 	for _, item := range bundle.L4Rules {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
-		key := l4ConflictKey(item.AgentID, item.Protocol, item.ListenHost, item.ListenPort)
+		key := l4BackupConflictKey(item.AgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardListenHost)
 		if !ok {
 			result.addSkippedInvalid("l4_rule", key, "l4 rule references unknown agent")
 			continue
 		}
-		key = l4ConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort)
+		key = l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardListenHost)
 		if _, exists := existingL4Keys[key]; exists {
 			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
 			continue
@@ -325,6 +325,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			continue
 		}
 		result.addImported("l4_rule", key)
+		existingL4Keys[key] = struct{}{}
 	}
 	existingPolicyRows, err := s.store.ListVersionPolicies(ctx)
 	if err != nil {
@@ -439,7 +440,7 @@ func previewAgentCapabilities(agents []BackupAgent, agentIDMap map[string]string
 	return capabilitiesByAgentID
 }
 
-func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.RelayListenerRow, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[int]struct{}, cfg config.Config) map[int]int {
+func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.RelayListenerRow, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, cfg config.Config) map[int]int {
 	listenerIDMap := map[int]int{}
 	conflictIndex := map[string]RelayListener{}
 	for _, row := range existing {
@@ -958,7 +959,7 @@ func (s *backupService) importCertificates(ctx context.Context, existing []stora
 	return certIDMap, nil
 }
 
-func (s *backupService) importRelayListeners(ctx context.Context, existing []storage.RelayListenerRow, incoming []BackupRelayListener, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[int]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[int]int, error) {
+func (s *backupService) importRelayListeners(ctx context.Context, existing []storage.RelayListenerRow, incoming []BackupRelayListener, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[int]int, error) {
 	listenerIDMap := map[int]int{}
 	maxRevisionByAgent := map[string]int{}
 	grouped := map[string][]storage.RelayListenerRow{}
@@ -1189,7 +1190,7 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 	return nil
 }
 
-func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Rule, agentIDMap map[string]string, listenerIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[int]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
+func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Rule, agentIDMap map[string]string, listenerIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
 	l4Svc := &l4Service{cfg: s.cfg, store: s.store}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
@@ -1204,7 +1205,7 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 	maxRevisionByAgent := map[string]int{}
 
 	for _, row := range existingRules {
-		key := l4ConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort)
+		key := l4BackupConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort, row.ListenMode, row.WireGuardListenHost)
 		conflictSet[key] = struct{}{}
 		grouped[row.AgentID] = append(grouped[row.AgentID], row)
 		if row.Revision > maxRevisionByAgent[row.AgentID] {
@@ -1214,7 +1215,7 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 
 	for _, item := range incoming {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
-		key := l4ConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort)
+		key := l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardListenHost)
 		if !ok {
 			result.addSkippedInvalid("l4_rule", key, "l4 rule references unknown agent")
 			continue
@@ -1601,6 +1602,16 @@ func l4ConflictKey(agentID string, protocol string, listenHost string, listenPor
 	return strings.TrimSpace(agentID) + "|" + strings.ToLower(strings.TrimSpace(protocol)) + "|" + strings.TrimSpace(listenHost) + "|" + fmt.Sprintf("%d", listenPort)
 }
 
+func l4BackupConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenMode string, wireGuardListenHost string) string {
+	effectiveHost := strings.TrimSpace(listenHost)
+	if strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") {
+		if host := strings.TrimSpace(wireGuardListenHost); host != "" {
+			effectiveHost = host
+		}
+	}
+	return l4ConflictKey(agentID, protocol, effectiveHost, listenPort)
+}
+
 func trafficBaselineKey(agentID string, cycleStart string) string {
 	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(cycleStart)
 }
@@ -1765,21 +1776,22 @@ func wireGuardProfileConflictKey(agentID string, name string) string {
 	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(name)
 }
 
-func remapBackupWireGuardProfileID(agentID string, profileID *int, profileIDMap map[string]int, enabledProfileIDs map[int]struct{}) (*int, bool) {
+func remapBackupWireGuardProfileID(agentID string, profileID *int, profileIDMap map[string]int, enabledProfileIDs map[string]struct{}) (*int, bool) {
 	if profileID == nil || *profileID <= 0 {
 		return nil, true
 	}
-	mapped, ok := profileIDMap[wireGuardProfileKey(agentID, *profileID)]
+	profileKey := wireGuardProfileKey(agentID, *profileID)
+	mapped, ok := profileIDMap[profileKey]
 	if !ok || mapped <= 0 {
 		return nil, false
 	}
-	if _, ok := enabledProfileIDs[mapped]; !ok {
+	if _, ok := enabledProfileIDs[profileKey]; !ok {
 		return nil, false
 	}
 	return backupIntPtr(mapped), true
 }
 
-func previewWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, cfg config.Config, store backupStore) (map[string]int, map[int]struct{}, error) {
+func previewWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, cfg config.Config, store backupStore) (map[string]int, map[string]struct{}, error) {
 	knownAgentIDs, err := allKnownAgentIDs(ctx, cfg, store)
 	if err != nil {
 		return nil, nil, err
@@ -1799,7 +1811,7 @@ func previewWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardPro
 	return profileIDMap, enabledProfileIDs, nil
 }
 
-func (s *backupService) importWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[string]int, map[int]struct{}, error) {
+func (s *backupService) importWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[string]int, map[string]struct{}, error) {
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
 		return nil, nil, err
@@ -1830,9 +1842,9 @@ func (s *backupService) importWireGuardProfiles(ctx context.Context, incoming []
 	return profileIDMap, enabledProfileIDs, nil
 }
 
-func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing []storage.WireGuardProfileRow, agentIDMap map[string]string, cfg config.Config, allocator *configIdentityAllocator) (map[string]int, map[int]struct{}, map[string][]storage.WireGuardProfileRow, map[string]int, error) {
+func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing []storage.WireGuardProfileRow, agentIDMap map[string]string, cfg config.Config, allocator *configIdentityAllocator) (map[string]int, map[string]struct{}, map[string][]storage.WireGuardProfileRow, map[string]int, error) {
 	profileIDMap := map[string]int{}
-	enabledProfileIDs := map[int]struct{}{}
+	enabledProfileIDs := map[string]struct{}{}
 	grouped := map[string][]storage.WireGuardProfileRow{}
 	maxRevisionByAgent := map[string]int{}
 	revisionsByAgent := map[string]int{}
@@ -1844,7 +1856,7 @@ func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing [
 		if row.ID > 0 {
 			profileIDMap[wireGuardProfileKey(row.AgentID, row.ID)] = row.ID
 			if row.Enabled {
-				enabledProfileIDs[row.ID] = struct{}{}
+				enabledProfileIDs[wireGuardProfileKey(row.AgentID, row.ID)] = struct{}{}
 			}
 		}
 		if row.Revision > maxRevisionByAgent[row.AgentID] {
@@ -1861,7 +1873,7 @@ func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing [
 		if existingRow, ok := conflictIndex[conflictKey]; ok {
 			profileIDMap[wireGuardProfileKey(item.AgentID, item.ID)] = existingRow.ID
 			if existingRow.Enabled {
-				enabledProfileIDs[existingRow.ID] = struct{}{}
+				enabledProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
 			}
 			continue
 		}
@@ -1889,7 +1901,7 @@ func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing [
 		normalized.ID = assignedID
 		profileIDMap[wireGuardProfileKey(item.AgentID, item.ID)] = assignedID
 		if normalized.Enabled {
-			enabledProfileIDs[assignedID] = struct{}{}
+			enabledProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
 		}
 		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
 		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
