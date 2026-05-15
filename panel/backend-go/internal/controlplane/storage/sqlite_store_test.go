@@ -1897,19 +1897,35 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesForReferencedRelayListen
 		}
 	}
 	profileID := 17
-	if err := store.SaveWireGuardProfiles(t.Context(), "relay-wg-peer", []WireGuardProfileRow{{
-		ID:            profileID,
-		AgentID:       "relay-wg-peer",
-		Name:          "peer-wg",
-		Mode:          "generic_wireguard",
-		PrivateKey:    "peer-private-key",
-		ListenPort:    51820,
-		AddressesJSON: `["10.90.0.2/32"]`,
-		PeersJSON:     `[]`,
-		DNSJSON:       `[]`,
-		Enabled:       true,
-		Revision:      12,
-	}}); err != nil {
+	unrelatedProfileID := 18
+	if err := store.SaveWireGuardProfiles(t.Context(), "relay-wg-peer", []WireGuardProfileRow{
+		{
+			ID:            profileID,
+			AgentID:       "relay-wg-peer",
+			Name:          "peer-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "peer-private-key",
+			ListenPort:    51820,
+			AddressesJSON: `["10.90.0.2/32"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      12,
+		},
+		{
+			ID:            unrelatedProfileID,
+			AgentID:       "relay-wg-peer",
+			Name:          "unrelated-peer-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "unrelated-private-key",
+			ListenPort:    51821,
+			AddressesJSON: `["10.91.0.2/32"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      14,
+		},
+	}); err != nil {
 		t.Fatalf("SaveWireGuardProfiles(peer) error = %v", err)
 	}
 	if err := store.SaveHTTPRules(t.Context(), "relay-wg-client", []HTTPRuleRow{{

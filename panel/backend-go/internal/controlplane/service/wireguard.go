@@ -121,14 +121,9 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 		return WireGuardProfile{}, err
 	}
 
-	usedIDs := map[int]struct{}{}
-	for _, row := range rows {
-		if row.ID > 0 {
-			usedIDs[row.ID] = struct{}{}
-		}
-	}
 	maxRevision := maxWireGuardProfileRevision(rows)
-	profile, err := normalizeWireGuardProfileInput(input, WireGuardProfile{}, allocatePreferredID(usedIDs, input.ID))
+	allocatedID := allocator.AllocateRuleID(input.ID)
+	profile, err := normalizeWireGuardProfileInput(input, WireGuardProfile{}, allocatedID)
 	if err != nil {
 		return WireGuardProfile{}, err
 	}

@@ -923,7 +923,7 @@ func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID st
 		included[wireGuardProfileRowKey(row.AgentID, row.ID)] = struct{}{}
 	}
 
-	agentIDs := make(map[string]struct{})
+	referencedByAgent := make(map[string]map[int]struct{})
 	for _, row := range relayRows {
 		if !strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") || row.WireGuardProfileID == nil || *row.WireGuardProfileID <= 0 {
 			continue
@@ -931,14 +931,24 @@ func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID st
 		if _, ok := included[wireGuardProfileRowKey(row.AgentID, *row.WireGuardProfileID)]; ok {
 			continue
 		}
-		agentIDs[row.AgentID] = struct{}{}
+		relayAgentID := strings.TrimSpace(row.AgentID)
+		if relayAgentID == "" {
+			continue
+		}
+		if referencedByAgent[relayAgentID] == nil {
+			referencedByAgent[relayAgentID] = map[int]struct{}{}
+		}
+		referencedByAgent[relayAgentID][*row.WireGuardProfileID] = struct{}{}
 	}
-	for relayAgentID := range agentIDs {
+	for relayAgentID, referencedIDs := range referencedByAgent {
 		relayAgentRows, err := s.ListWireGuardProfiles(ctx, relayAgentID)
 		if err != nil {
 			return nil, err
 		}
 		for _, row := range relayAgentRows {
+			if _, ok := referencedIDs[row.ID]; !ok {
+				continue
+			}
 			key := wireGuardProfileRowKey(row.AgentID, row.ID)
 			if _, ok := included[key]; ok {
 				continue

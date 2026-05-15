@@ -57,6 +57,45 @@ func TestWireGuardProfileCreateRedactsSecretsOnRead(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCreateAllocatesIDAcrossAgents(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:         "remote",
+		Name:       "remote",
+		AgentToken: "token-remote",
+	}); err != nil {
+		t.Fatalf("SaveAgent(remote) error = %v", err)
+	}
+	if err := store.SaveWireGuardProfiles(ctx, "remote", []storage.WireGuardProfileRow{{
+		ID:            1,
+		AgentID:       "remote",
+		Name:          "remote-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    testWireGuardPrivateKey,
+		ListenPort:    51820,
+		AddressesJSON: `["10.0.1.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      1,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(remote) error = %v", err)
+	}
+
+	profile, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if profile.ID == 1 {
+		t.Fatalf("Create() ID = %d, want globally unique ID", profile.ID)
+	}
+	if profile.ID != 2 {
+		t.Fatalf("Create() ID = %d, want next global ID 2", profile.ID)
+	}
+}
+
 func TestWireGuardProfileRejectsInvalidCIDR(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
