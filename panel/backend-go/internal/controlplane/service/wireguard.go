@@ -51,7 +51,9 @@ type WireGuardProfileInput struct {
 	ListenPort    int             `json:"listen_port"`
 	ListenPortSet bool            `json:"-"`
 	Addresses     []string        `json:"addresses"`
+	AddressesSet  bool            `json:"-"`
 	Peers         []WireGuardPeer `json:"peers"`
+	PeersSet      bool            `json:"-"`
 	DNS           []string        `json:"dns"`
 	MTU           int             `json:"mtu"`
 	Enabled       *bool           `json:"enabled,omitempty"`
@@ -71,6 +73,12 @@ func (i *WireGuardProfileInput) UnmarshalJSON(data []byte) error {
 	*i = WireGuardProfileInput(decoded)
 	if _, ok := fields["listen_port"]; ok {
 		i.ListenPortSet = true
+	}
+	if _, ok := fields["addresses"]; ok {
+		i.AddressesSet = true
+	}
+	if _, ok := fields["peers"]; ok {
+		i.PeersSet = true
 	}
 	return nil
 }
@@ -201,6 +209,9 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 	input.ID = 0
 	profile, err := normalizeWireGuardProfileInput(input, current, id)
 	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	if err := validateRequiredWireGuardProfileEssentials(profile); err != nil {
 		return WireGuardProfile{}, err
 	}
 	if current.Enabled && !profile.Enabled {
@@ -451,14 +462,14 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 	}
 
 	addresses := normalizeStringList(input.Addresses)
-	if len(addresses) == 0 && fallback.ID > 0 {
+	if !input.hasAddressesField() && fallback.ID > 0 {
 		addresses = append([]string(nil), fallback.Addresses...)
 	}
 	if err := validateWireGuardPrefixes(addresses, "addresses"); err != nil {
 		return WireGuardProfile{}, err
 	}
 
-	peers, err := normalizeWireGuardPeers(input.Peers, fallback.Peers)
+	peers, err := normalizeWireGuardPeers(input.Peers, fallback.Peers, input.hasPeersField())
 	if err != nil {
 		return WireGuardProfile{}, err
 	}
@@ -535,9 +546,17 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 	}, nil
 }
 
-func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer) ([]WireGuardPeer, error) {
+func (input WireGuardProfileInput) hasAddressesField() bool {
+	return input.AddressesSet || input.Addresses != nil
+}
+
+func (input WireGuardProfileInput) hasPeersField() bool {
+	return input.PeersSet || input.Peers != nil
+}
+
+func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer, hasInput bool) ([]WireGuardPeer, error) {
 	source := input
-	if len(source) == 0 && len(fallback) > 0 {
+	if !hasInput && len(fallback) > 0 {
 		source = fallback
 	}
 	fallbackByPublicKey := make(map[string]WireGuardPeer, len(fallback))
