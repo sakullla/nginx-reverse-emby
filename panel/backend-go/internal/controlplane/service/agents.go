@@ -813,6 +813,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if !reply.HasUpdate {
 		reply.Rules = nil
 		reply.L4Rules = nil
+		reply.WireGuardProfiles = nil
 		reply.Certificates = nil
 		reply.CertificatePolicies = nil
 	}

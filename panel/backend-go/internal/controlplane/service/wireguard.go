@@ -392,6 +392,9 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 	if input.DNS == nil && fallback.ID > 0 {
 		dns = append([]string(nil), fallback.DNS...)
 	}
+	if err := validateWireGuardDNSAddrs(dns); err != nil {
+		return WireGuardProfile{}, err
+	}
 	tags := normalizeTags(input.Tags)
 	if input.Tags == nil && fallback.ID > 0 {
 		tags = append([]string(nil), fallback.Tags...)
@@ -572,6 +575,15 @@ func validateWireGuardPrefixes(values []string, field string) error {
 	for _, value := range values {
 		if _, err := netip.ParsePrefix(value); err != nil {
 			return fmt.Errorf("%w: %s must be CIDR", ErrInvalidArgument, field)
+		}
+	}
+	return nil
+}
+
+func validateWireGuardDNSAddrs(values []string) error {
+	for _, value := range values {
+		if _, err := netip.ParseAddr(value); err != nil {
+			return fmt.Errorf("%w: dns must be IP addresses", ErrInvalidArgument)
 		}
 	}
 	return nil

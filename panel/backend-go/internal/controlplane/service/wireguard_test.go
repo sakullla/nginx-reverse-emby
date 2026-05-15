@@ -141,6 +141,21 @@ func TestWireGuardProfileCreateRequiresPeers(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCreateRejectsDNSHostname(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.DNS = []string{"dns.example.com"}
+	_, err := svc.Create(ctx, "local", input)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "dns must be IP addresses") {
+		t.Fatalf("Create() error = %v, want DNS IP address message", err)
+	}
+}
+
 func TestWireGuardProfileRejectsDuplicatePeerPublicKey(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)

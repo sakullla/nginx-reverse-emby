@@ -441,6 +441,46 @@ func TestDialWireGuardRelayUsesRuntimeDialContext(t *testing.T) {
 	}
 }
 
+func TestDialWireGuardRelayRawTCPUsesDefaultProvider(t *testing.T) {
+	oldDefaultProvider := DefaultWireGuardRuntimeProvider()
+	defer SetDefaultWireGuardRuntimeProvider(oldDefaultProvider)
+
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{
+		dialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			client, server := net.Pipe()
+			t.Cleanup(func() {
+				_ = server.Close()
+			})
+			return client, nil
+		},
+	}
+	wgProvider := fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{9: wgRuntime}}
+	SetDefaultWireGuardRuntimeProvider(wgProvider)
+
+	profileID := 9
+	listener, hop := newRelayEndpoint(t, provider, 904, "relay-wg-default-provider", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	listener.AllowTransportFallback = false
+	hop.Listener = listener
+	hop.Address = "10.0.0.2:7443"
+
+	conn, err := dialRelayRawTCP(context.Background(), hop, DialOptions{})
+	if err != nil {
+		t.Fatalf("dialRelayRawTCP() error = %v", err)
+	}
+	defer conn.Close()
+
+	calls := wgRuntime.dialContextCalls()
+	if len(calls) != 1 {
+		t.Fatalf("DialContext calls = %d, want 1", len(calls))
+	}
+	if calls[0].network != "tcp" || calls[0].address != hop.Address {
+		t.Fatalf("DialContext call = %+v, want tcp %s", calls[0], hop.Address)
+	}
+}
+
 func TestDialWireGuardRelayErrorsWhenProviderOrProfileMissing(t *testing.T) {
 	t.Parallel()
 

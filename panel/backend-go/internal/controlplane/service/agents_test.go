@@ -1163,8 +1163,8 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 	if len(reply.RelayListeners) != 1 || reply.RelayListeners[0].ID != 11 {
 		t.Fatalf("expected relay listeners to remain populated when up-to-date: %+v", reply.RelayListeners)
 	}
-	if len(reply.WireGuardProfiles) != 1 || reply.WireGuardProfiles[0].ID != 41 {
-		t.Fatalf("expected wireguard profiles to remain populated when up-to-date: %+v", reply.WireGuardProfiles)
+	if reply.WireGuardProfiles != nil {
+		t.Fatalf("expected wireguard profiles omitted when up-to-date: %+v", reply.WireGuardProfiles)
 	}
 	if reply.VersionPackage != "https://example.com/agent-linux.tar.gz" || reply.VersionSHA256 != "sha-linux" {
 		t.Fatalf("version package fields = %q / %q", reply.VersionPackage, reply.VersionSHA256)

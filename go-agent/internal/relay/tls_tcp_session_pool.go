@@ -425,6 +425,9 @@ func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMa
 
 func dialRelayRawTCP(ctx context.Context, hop Hop, options DialOptions) (net.Conn, error) {
 	if normalizeListenerTransportModeValue(hop.Listener.TransportMode) == ListenerTransportModeWireGuard {
+		if options.WireGuardProvider == nil {
+			options.WireGuardProvider = DefaultWireGuardRuntimeProvider()
+		}
 		return dialRelayWireGuardTCP(ctx, hop, options.WireGuardProvider)
 	}
 	return dialRelayTCPWithProxy(ctx, hop.Address, hop.Listener, options.OutboundProxyURL)
