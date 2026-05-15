@@ -177,6 +177,62 @@ func TestWireGuardProfileRejectsDuplicatePeerPublicKey(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileRejectsDuplicateEnabledListenPort(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	first := testWireGuardProfileInput()
+	first.ListenPort = 51820
+	created, err := svc.Create(ctx, "local", first)
+	if err != nil {
+		t.Fatalf("Create(first) error = %v", err)
+	}
+
+	duplicate := testWireGuardProfileInput()
+	duplicate.Name = "wg duplicate"
+	duplicate.PrivateKey = testWireGuardPresharedKey
+	duplicate.ListenPort = 51820
+	duplicate.Peers[0].PublicKey = testWireGuardPublicKeyB
+	duplicate.Peers[0].PresharedKey = testWireGuardPresharedKeyB
+	_, err = svc.Create(ctx, "local", duplicate)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create(duplicate) error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "duplicate listen_port") {
+		t.Fatalf("Create(duplicate) error = %v, want duplicate listen_port message", err)
+	}
+
+	disabled := duplicate
+	disabled.Enabled = boolPtr(false)
+	disabledCreated, err := svc.Create(ctx, "local", disabled)
+	if err != nil {
+		t.Fatalf("Create(disabled duplicate) error = %v", err)
+	}
+
+	enableDuplicate := disabled
+	enableDuplicate.PrivateKey = redactedProxyPassword
+	enableDuplicate.Peers[0].PresharedKey = redactedProxyPassword
+	enableDuplicate.Enabled = boolPtr(true)
+	_, err = svc.Update(ctx, "local", disabledCreated.ID, enableDuplicate)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update(enable duplicate) error = %v, want ErrInvalidArgument", err)
+	}
+
+	zeroPort := duplicate
+	zeroPort.ListenPort = 0
+	zeroPort.Enabled = boolPtr(true)
+	zeroPort.PrivateKey = testWireGuardPublicKey
+	zeroPort.Peers[0].PublicKey = testWireGuardPrivateKey
+	zeroPort.Peers[0].PresharedKey = testWireGuardPresharedKey
+	if _, err := svc.Create(ctx, "local", zeroPort); err != nil {
+		t.Fatalf("Create(zero listen_port) error = %v", err)
+	}
+
+	if _, err := svc.Delete(ctx, "local", created.ID); err != nil {
+		t.Fatalf("Delete(first) error = %v", err)
+	}
+}
+
 func TestWireGuardProfileCreateDefaultsEnabledToTrueWhenOmitted(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)

@@ -346,6 +346,45 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
+  it('preserves L4 WireGuard proxy egress mode on read', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => ({
+      data: {
+        rules: [
+          {
+            id: 14,
+            protocol: 'tcp',
+            listen_host: '0.0.0.0',
+            listen_port: 1080,
+            listen_mode: 'wireguard',
+            proxy_egress_mode: 'proxy',
+            proxy_egress_url: 'socks5://127.0.0.1:1080',
+            wireguard_profile_id: 101,
+            wireguard_listen_host: '10.8.0.1',
+            backends: []
+          }
+        ]
+      },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config
+    })
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      const rules = await runtime.fetchL4Rules('edge-a')
+
+      expect(rules[0].listen_mode).toBe('wireguard')
+      expect(rules[0].proxy_egress_mode).toBe('proxy')
+      expect(rules[0].proxy_egress_url).toBe('socks5://127.0.0.1:1080')
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
   it('Relay and L4 forms restrict WireGuard selection to enabled numeric profiles', async () => {
     const relayForm = await import('../components/RelayListenerForm.vue?raw')
     const l4Form = await import('../components/L4RuleForm.vue?raw')

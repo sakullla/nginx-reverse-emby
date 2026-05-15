@@ -50,6 +50,12 @@ function normalizeL4Backends(rule = {}) {
 
 function normalizeL4Rule(rule = {}) {
   const listenMode = ['proxy', 'wireguard'].includes(rule.listen_mode) ? rule.listen_mode : 'tcp'
+  const proxyEgressMode = listenMode === 'proxy'
+    ? String(rule.proxy_egress_mode || 'relay')
+    : listenMode === 'wireguard'
+      ? String(rule.proxy_egress_mode || '')
+      : ''
+  const proxyEntryMode = listenMode === 'proxy' || (listenMode === 'wireguard' && proxyEgressMode)
   return {
     ...rule,
     backends: normalizeL4Backends(rule),
@@ -63,8 +69,8 @@ function normalizeL4Rule(rule = {}) {
       username: String(rule.proxy_entry_auth?.username || ''),
       password: String(rule.proxy_entry_auth?.password || '')
     },
-    proxy_egress_mode: listenMode === 'proxy' ? String(rule.proxy_egress_mode || 'relay') : '',
-    proxy_egress_url: listenMode === 'proxy' ? String(rule.proxy_egress_url || '') : ''
+    proxy_egress_mode: proxyEgressMode,
+    proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : ''
   }
 }
 

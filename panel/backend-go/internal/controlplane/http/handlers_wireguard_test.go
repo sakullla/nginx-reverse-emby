@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -23,8 +24,8 @@ func TestRouterWireGuardProfilesCreateAndListRedactsSecrets(t *testing.T) {
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
-	for _, prefix := range []string{"/api", "/panel-api"} {
-		createReq := httptest.NewRequest(http.MethodPost, prefix+"/agents/local/wireguard-profiles", bytes.NewBufferString(validWireGuardHTTPPayload()))
+	for i, prefix := range []string{"/api", "/panel-api"} {
+		createReq := httptest.NewRequest(http.MethodPost, prefix+"/agents/local/wireguard-profiles", bytes.NewBufferString(validWireGuardHTTPPayloadWithPort(51820+i)))
 		createReq.Header.Set("X-Panel-Token", "secret")
 		createReq.Header.Set("Content-Type", "application/json")
 		createResp := httptest.NewRecorder()
@@ -198,11 +199,15 @@ func newWireGuardHTTPTestRouter(t *testing.T) (http.Handler, func()) {
 }
 
 func validWireGuardHTTPPayload() string {
+	return validWireGuardHTTPPayloadWithPort(51820)
+}
+
+func validWireGuardHTTPPayloadWithPort(listenPort int) string {
 	return `{
 		"name":"wg-a",
 		"mode":"generic_wireguard",
 		"private_key":"` + httpTestWireGuardPrivateKey + `",
-		"listen_port":51820,
+		"listen_port":` + strconv.Itoa(listenPort) + `,
 		"addresses":["10.20.0.1/24"],
 		"peers":[{"name":"peer-a","public_key":"` + httpTestWireGuardPublicKey + `","preshared_key":"` + httpTestWireGuardPresharedKey + `","endpoint":"peer.example.com:51820","allowed_ips":["10.20.0.2/32"],"persistent_keepalive_seconds":25}],
 		"dns":["1.1.1.1"],

@@ -134,6 +134,9 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	profile.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 
 	rows = append(rows, wireGuardProfileToRow(profile))
+	if err := validateUniqueEnabledWireGuardListenPorts(rows); err != nil {
+		return WireGuardProfile{}, err
+	}
 	if err := s.store.SaveWireGuardProfiles(ctx, resolvedID, rows); err != nil {
 		return WireGuardProfile{}, err
 	}
@@ -187,6 +190,9 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 	profile.AgentID = resolvedID
 	profile.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 	rows[targetIndex] = wireGuardProfileToRow(profile)
+	if err := validateUniqueEnabledWireGuardListenPorts(rows); err != nil {
+		return WireGuardProfile{}, err
+	}
 	if err := s.store.SaveWireGuardProfiles(ctx, resolvedID, rows); err != nil {
 		return WireGuardProfile{}, err
 	}
@@ -557,6 +563,26 @@ func validateRequiredWireGuardProfileEssentials(profile WireGuardProfile) error 
 	}
 	if len(profile.Peers) == 0 {
 		return fmt.Errorf("%w: peers is required", ErrInvalidArgument)
+	}
+	return nil
+}
+
+func validateUniqueEnabledWireGuardListenPorts(rows []storage.WireGuardProfileRow) error {
+	seenByPort := map[int]storage.WireGuardProfileRow{}
+	for _, row := range rows {
+		if !row.Enabled || row.ListenPort == 0 {
+			continue
+		}
+		if existing, ok := seenByPort[row.ListenPort]; ok {
+			return fmt.Errorf(
+				"%w: duplicate listen_port %d for enabled wireguard profiles %d and %d",
+				ErrInvalidArgument,
+				row.ListenPort,
+				existing.ID,
+				row.ID,
+			)
+		}
+		seenByPort[row.ListenPort] = row
 	}
 	return nil
 }
