@@ -1134,6 +1134,9 @@ func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4Reference
 	if importedProfiles[0].PrivateKey != testWireGuardPrivateKey {
 		t.Fatalf("imported private_key = %q, want raw key", importedProfiles[0].PrivateKey)
 	}
+	if importedProfiles[0].Revision == 0 {
+		t.Fatalf("imported profile revision = 0, want allocated revision")
+	}
 
 	listeners, err := targetStore.ListRelayListeners(ctx, "edge-wg")
 	if err != nil {

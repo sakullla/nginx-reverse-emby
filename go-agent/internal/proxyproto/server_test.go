@@ -139,6 +139,24 @@ func TestReadClientRequestHTTPForwardRequest(t *testing.T) {
 	}
 }
 
+func TestReadClientRequestHTTPForwardIPv6DefaultPort(t *testing.T) {
+	client, server := newPipe(t)
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		_, _ = fmt.Fprint(client, "GET http://[::1]/path HTTP/1.1\r\nHost: [::1]\r\n\r\n")
+	}()
+
+	req, err := ReadClientRequest(context.Background(), server, EntryAuth{})
+	if err != nil {
+		t.Fatalf("ReadClientRequest() error = %v", err)
+	}
+	if req.Protocol != "http_forward" || req.Target != "[::1]:80" || req.Host != "::1" || req.Port != 80 {
+		t.Fatalf("request = %+v", req)
+	}
+}
+
 func TestReadClientRequestHTTPConnectBasicAuth(t *testing.T) {
 	client, server := newPipe(t)
 	defer client.Close()

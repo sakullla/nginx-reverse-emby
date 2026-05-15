@@ -271,11 +271,15 @@ func withDefaultHTTPPort(target string, u *url.URL) string {
 	if u != nil {
 		scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
 	}
+	host := strings.TrimSpace(target)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	}
 	switch scheme {
 	case "https":
-		return net.JoinHostPort(target, "443")
+		return net.JoinHostPort(host, "443")
 	default:
-		return net.JoinHostPort(target, "80")
+		return net.JoinHostPort(host, "80")
 	}
 }
 

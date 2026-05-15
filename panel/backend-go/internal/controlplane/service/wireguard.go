@@ -44,17 +44,35 @@ type WireGuardProfile struct {
 }
 
 type WireGuardProfileInput struct {
-	ID         int             `json:"id,omitempty"`
-	Name       string          `json:"name"`
-	Mode       string          `json:"mode"`
-	PrivateKey string          `json:"private_key,omitempty"`
-	ListenPort int             `json:"listen_port"`
-	Addresses  []string        `json:"addresses"`
-	Peers      []WireGuardPeer `json:"peers"`
-	DNS        []string        `json:"dns"`
-	MTU        int             `json:"mtu"`
-	Enabled    *bool           `json:"enabled,omitempty"`
-	Tags       []string        `json:"tags"`
+	ID            int             `json:"id,omitempty"`
+	Name          string          `json:"name"`
+	Mode          string          `json:"mode"`
+	PrivateKey    string          `json:"private_key,omitempty"`
+	ListenPort    int             `json:"listen_port"`
+	ListenPortSet bool            `json:"-"`
+	Addresses     []string        `json:"addresses"`
+	Peers         []WireGuardPeer `json:"peers"`
+	DNS           []string        `json:"dns"`
+	MTU           int             `json:"mtu"`
+	Enabled       *bool           `json:"enabled,omitempty"`
+	Tags          []string        `json:"tags"`
+}
+
+func (i *WireGuardProfileInput) UnmarshalJSON(data []byte) error {
+	type wireGuardProfileInputJSON WireGuardProfileInput
+	var decoded wireGuardProfileInputJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*i = WireGuardProfileInput(decoded)
+	if _, ok := fields["listen_port"]; ok {
+		i.ListenPortSet = true
+	}
+	return nil
 }
 
 type wireGuardProfileStore interface {
@@ -465,7 +483,7 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 	}
 
 	listenPort := input.ListenPort
-	if listenPort == 0 {
+	if listenPort == 0 && !input.ListenPortSet {
 		listenPort = fallback.ListenPort
 	}
 	if listenPort < 0 || listenPort > 65535 {

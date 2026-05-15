@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -265,6 +266,55 @@ func TestWireGuardProfileUpdatePreservesEnabledWhenOmitted(t *testing.T) {
 	}
 	if !updated.Enabled {
 		t.Fatalf("Update() enabled = false, want preserved true")
+	}
+}
+
+func TestWireGuardProfileUpdateCanClearListenPortFromJSONNull(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var update WireGuardProfileInput
+	if err := json.Unmarshal([]byte(`{
+		"name":"wg relay",
+		"mode":"generic_wireguard",
+		"private_key":"xxxxx",
+		"listen_port":null,
+		"addresses":["10.0.0.1/24"],
+		"peers":[{
+			"name":"peer-a",
+			"public_key":"`+testWireGuardPublicKey+`",
+			"preshared_key":"xxxxx",
+			"endpoint":"example.com:51820",
+			"allowed_ips":["10.0.0.2/32"],
+			"persistent_keepalive_seconds":25
+		}],
+		"dns":["1.1.1.1"],
+		"mtu":1420,
+		"enabled":true,
+		"tags":["relay"]
+	}`), &update); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	updated, err := svc.Update(ctx, "local", created.ID, update)
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.ListenPort != 0 {
+		t.Fatalf("Update() listen_port = %d, want 0", updated.ListenPort)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rawRows) != 1 || rawRows[0].ListenPort != 0 {
+		t.Fatalf("raw listen_port rows = %+v, want listen_port 0", rawRows)
 	}
 }
 

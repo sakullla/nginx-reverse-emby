@@ -1936,6 +1936,7 @@ func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing [
 		if normalized.Revision > revisionsByAgent[resolvedAgentID] {
 			revisionsByAgent[resolvedAgentID] = normalized.Revision
 		}
+		candidateRow = wireGuardProfileToRow(normalized)
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], candidateRow)
 		conflictIndex[conflictKey] = candidateRow
 		if result != nil {
