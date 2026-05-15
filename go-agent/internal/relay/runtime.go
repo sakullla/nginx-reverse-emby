@@ -154,7 +154,7 @@ func (s *Server) listenWireGuardTCP(listener Listener, addr string) (net.Listene
 	if s.wireGuardProvider == nil {
 		return nil, fmt.Errorf("wireguard runtime provider is required")
 	}
-	runtime, ok := s.wireGuardProvider.WireGuardRuntime(*listener.WireGuardProfileID)
+	runtime, ok := ResolveWireGuardRuntime(s.wireGuardProvider, listener.AgentID, *listener.WireGuardProfileID)
 	if !ok || runtime == nil {
 		return nil, fmt.Errorf("wireguard profile %d runtime not found", *listener.WireGuardProfileID)
 	}

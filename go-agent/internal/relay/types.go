@@ -31,3 +31,18 @@ type WireGuardRuntime interface {
 type WireGuardRuntimeProvider interface {
 	WireGuardRuntime(profileID int) (WireGuardRuntime, bool)
 }
+
+type AgentWireGuardRuntimeProvider interface {
+	WireGuardRuntimeProvider
+	WireGuardRuntimeForAgent(agentID string, profileID int) (WireGuardRuntime, bool)
+}
+
+func ResolveWireGuardRuntime(provider WireGuardRuntimeProvider, agentID string, profileID int) (WireGuardRuntime, bool) {
+	if provider == nil {
+		return nil, false
+	}
+	if agentProvider, ok := provider.(AgentWireGuardRuntimeProvider); ok && agentID != "" {
+		return agentProvider.WireGuardRuntimeForAgent(agentID, profileID)
+	}
+	return provider.WireGuardRuntime(profileID)
+}

@@ -385,6 +385,41 @@ func TestStartWireGuardRelayUsesRuntimeListenTCP(t *testing.T) {
 	}
 }
 
+func TestStartWireGuardRelayLooksUpRuntimeByListenerAgent(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+		listenConfig := newRelayTCPListenConfig()
+		return listenConfig.Listen(ctx, "tcp", address)
+	}}
+	profileID := 9
+	listener, _ := newRelayEndpoint(t, provider, 903, "relay-wg-agent", "pin_only", true, false)
+	listener.AgentID = "remote-relay"
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	listener.AllowTransportFallback = false
+	listener.ListenPort = pickFreeTCPPort(t)
+	wgProvider := &fakeAgentWireGuardRuntimeProvider{
+		runtimes: map[string]map[int]*fakeWireGuardRuntime{
+			"remote-relay": {profileID: wgRuntime},
+		},
+	}
+
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions() error = %v", err)
+	}
+	defer server.Close()
+
+	if wgProvider.idOnlyCalls != 0 {
+		t.Fatalf("id-only runtime lookups = %d, want agent-qualified lookup", wgProvider.idOnlyCalls)
+	}
+	if wgProvider.agentCalls != 1 || wgProvider.lastAgentID != "remote-relay" || wgProvider.lastProfileID != profileID {
+		t.Fatalf("agent runtime lookup = calls %d agent %q profile %d", wgProvider.agentCalls, wgProvider.lastAgentID, wgProvider.lastProfileID)
+	}
+}
+
 func TestDialWireGuardRelayUsesRuntimeDialContext(t *testing.T) {
 	resetTLSTCPSessionPoolForTest()
 
@@ -2790,6 +2825,27 @@ type fakeWireGuardRuntimeProvider struct {
 
 func (p fakeWireGuardRuntimeProvider) WireGuardRuntime(profileID int) (WireGuardRuntime, bool) {
 	runtime, ok := p.runtimes[profileID]
+	return runtime, ok
+}
+
+type fakeAgentWireGuardRuntimeProvider struct {
+	runtimes      map[string]map[int]*fakeWireGuardRuntime
+	idOnlyCalls   int
+	agentCalls    int
+	lastAgentID   string
+	lastProfileID int
+}
+
+func (p *fakeAgentWireGuardRuntimeProvider) WireGuardRuntime(profileID int) (WireGuardRuntime, bool) {
+	p.idOnlyCalls++
+	return nil, false
+}
+
+func (p *fakeAgentWireGuardRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (WireGuardRuntime, bool) {
+	p.agentCalls++
+	p.lastAgentID = agentID
+	p.lastProfileID = profileID
+	runtime, ok := p.runtimes[agentID][profileID]
 	return runtime, ok
 }
 

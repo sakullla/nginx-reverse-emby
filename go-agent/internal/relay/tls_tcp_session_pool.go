@@ -440,7 +440,7 @@ func dialRelayWireGuardTCP(ctx context.Context, hop Hop, provider WireGuardRunti
 	if provider == nil {
 		return nil, fmt.Errorf("wireguard runtime provider is required")
 	}
-	runtime, ok := provider.WireGuardRuntime(*hop.Listener.WireGuardProfileID)
+	runtime, ok := ResolveWireGuardRuntime(provider, hop.Listener.AgentID, *hop.Listener.WireGuardProfileID)
 	if !ok || runtime == nil {
 		return nil, fmt.Errorf("wireguard profile %d runtime not found", *hop.Listener.WireGuardProfileID)
 	}

@@ -627,6 +627,59 @@ func TestL4RuntimeManagerRollsBackWireGuardProfilesWhenReplacementStartFails(t *
 	waitForPortState(t, listenPort, true)
 }
 
+func TestL4RuntimeManagerUsesLocalAgentWireGuardProfileWhenIDsOverlap(t *testing.T) {
+	localAgentID := "local-agent"
+	var localListenCalls int
+	var remoteListenCalls int
+	manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(nil, Config{AgentID: localAgentID}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+		runtime := &testAppWireGuardRuntime{}
+		switch cfg.AgentID {
+		case localAgentID:
+			runtime.onListenTCP = func(ctx context.Context, address string) (net.Listener, error) {
+				localListenCalls++
+				listenConfig := net.ListenConfig{}
+				return listenConfig.Listen(ctx, "tcp", address)
+			}
+		case "remote-relay":
+			runtime.onListenTCP = func(context.Context, string) (net.Listener, error) {
+				remoteListenCalls++
+				return nil, fmt.Errorf("remote wireguard runtime selected")
+			}
+		default:
+			return nil, fmt.Errorf("unexpected wireguard profile agent %q", cfg.AgentID)
+		}
+		return runtime, nil
+	}), true)
+	defer manager.Close()
+
+	profileID := 31
+	localProfile := validAppWireGuardProfile(profileID)
+	localProfile.AgentID = localAgentID
+	remoteProfile := validAppWireGuardProfile(profileID)
+	remoteProfile.AgentID = "remote-relay"
+	remoteProfile.ListenPort = 0
+	remoteProfile.Addresses = []string{"10.30.0.1/32"}
+	remoteProfile.Peers[0].Endpoint = "127.0.0.1:51831"
+
+	err := manager.ApplyWithRelayAndWireGuardProfiles(context.Background(), []model.L4Rule{{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         pickFreeTCPPort(t),
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}, nil, []model.WireGuardProfile{localProfile, remoteProfile})
+	if err != nil {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles() error = %v", err)
+	}
+	if localListenCalls != 1 {
+		t.Fatalf("local ListenTCP calls = %d, want 1", localListenCalls)
+	}
+	if remoteListenCalls != 0 {
+		t.Fatalf("remote ListenTCP calls = %d, want 0", remoteListenCalls)
+	}
+}
+
 func TestL4RuntimeManagerRestoresServerAfterPreparedSamePortWireGuardFailure(t *testing.T) {
 	listenErr := fmt.Errorf("wireguard listen failed")
 	var runtimes []*testAppWireGuardRuntime

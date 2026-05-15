@@ -23,6 +23,7 @@ type l4RuntimeManager struct {
 	wireGuardRuntime   *sharedWireGuardRuntime
 	wireGuardProvider  relay.WireGuardRuntimeProvider
 	ownsWireGuard      bool
+	localAgentID       string
 	blockState         l4TrafficBlockStateValue
 	lastRules          []model.L4Rule
 	lastRelayListeners []model.RelayListener
@@ -53,8 +54,9 @@ func newL4RuntimeManagerWithRelayConfigAndWireGuard(provider relay.TLSMaterialPr
 		cache:             backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
 		provider:          provider,
 		wireGuardRuntime:  wireGuardRuntime,
-		wireGuardProvider: wireGuardRuntime.provider(),
+		wireGuardProvider: wireGuardRuntime.providerForAgent(cfg.AgentID),
 		ownsWireGuard:     owns,
+		localAgentID:      strings.TrimSpace(cfg.AgentID),
 	}
 }
 
@@ -269,7 +271,7 @@ func (m *l4RuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, p
 	if transaction == nil {
 		return nil, m.wireGuardProvider, nil
 	}
-	return transaction, wireGuardTransactionProvider{transaction: transaction}, nil
+	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID}, nil
 }
 
 func (m *l4RuntimeManager) validateWireGuardReferencesLocked(rules []model.L4Rule, provider relay.WireGuardRuntimeProvider) error {

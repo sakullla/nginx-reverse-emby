@@ -465,6 +465,13 @@ func (r *sharedWireGuardRuntime) Runtime(profileID int) (wireguard.Runtime, bool
 	return r.manager.Runtime(profileID)
 }
 
+func (r *sharedWireGuardRuntime) RuntimeForAgent(agentID string, profileID int) (wireguard.Runtime, bool) {
+	if r == nil || r.manager == nil {
+		return nil, false
+	}
+	return r.manager.RuntimeForAgent(agentID, profileID)
+}
+
 func (r *sharedWireGuardRuntime) Close() error {
 	if r == nil || r.manager == nil {
 		return nil
@@ -476,13 +483,25 @@ func (r *sharedWireGuardRuntime) provider() relay.WireGuardRuntimeProvider {
 	return wireGuardRuntimeProvider{runtime: r}
 }
 
+func (r *sharedWireGuardRuntime) providerForAgent(agentID string) relay.WireGuardRuntimeProvider {
+	return wireGuardRuntimeProvider{runtime: r, agentID: strings.TrimSpace(agentID)}
+}
+
 type wireGuardRuntimeProvider struct {
 	runtime *sharedWireGuardRuntime
+	agentID string
 }
 
 func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
 	if p.runtime == nil {
 		return nil, false
+	}
+	if p.agentID != "" {
+		runtime, ok := p.runtime.RuntimeForAgent(p.agentID, profileID)
+		if !ok {
+			return nil, false
+		}
+		return runtime, true
 	}
 	runtime, ok := p.runtime.Runtime(profileID)
 	if !ok {
@@ -491,15 +510,45 @@ func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGua
 	return runtime, true
 }
 
+func (p wireGuardRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
+	if p.runtime == nil {
+		return nil, false
+	}
+	runtime, ok := p.runtime.RuntimeForAgent(agentID, profileID)
+	if !ok {
+		return nil, false
+	}
+	return runtime, true
+}
+
 type wireGuardTransactionProvider struct {
 	transaction *wireguard.Transaction
+	agentID     string
 }
 
 func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
 	if p.transaction == nil {
 		return nil, false
 	}
+	if p.agentID != "" {
+		runtime, ok := p.transaction.RuntimeForAgent(p.agentID, profileID)
+		if !ok {
+			return nil, false
+		}
+		return runtime, true
+	}
 	runtime, ok := p.transaction.Runtime(profileID)
+	if !ok {
+		return nil, false
+	}
+	return runtime, true
+}
+
+func (p wireGuardTransactionProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
+	if p.transaction == nil {
+		return nil, false
+	}
+	runtime, ok := p.transaction.RuntimeForAgent(agentID, profileID)
 	if !ok {
 		return nil, false
 	}

@@ -41,17 +41,22 @@ type Manager struct {
 	mu        sync.Mutex
 	factory   Factory
 	preflight Preflight
-	runtimes  map[int]*runtimeEntry
+	runtimes  map[runtimeKey]*runtimeEntry
 }
 
 type Transaction struct {
 	mu                     sync.Mutex
 	manager                *Manager
-	candidates             map[int]*runtimeEntry
+	candidates             map[runtimeKey]*runtimeEntry
 	newRuntimes            []Runtime
 	closeFirstReplacements []runtimeReplacement
 	committed              bool
 	rolledBack             bool
+}
+
+type runtimeKey struct {
+	agentID   string
+	profileID int
 }
 
 type runtimeEntry struct {
@@ -72,7 +77,7 @@ func NewManager(options ManagerOptions) *Manager {
 	return &Manager{
 		factory:   factory,
 		preflight: preflight,
-		runtimes:  make(map[int]*runtimeEntry),
+		runtimes:  make(map[runtimeKey]*runtimeEntry),
 	}
 }
 
@@ -80,10 +85,11 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	seen := make(map[int]struct{}, len(profiles))
+	seen := make(map[runtimeKey]struct{}, len(profiles))
 	var replacements []runtimeReplacement
 	for _, profile := range profiles {
-		seen[profile.ID] = struct{}{}
+		key := keyForProfile(profile)
+		seen[key] = struct{}{}
 		if !profile.Enabled {
 			continue
 		}
@@ -99,14 +105,15 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 			return fmt.Errorf("wireguard profile %d fingerprint: %w", profile.ID, err)
 		}
 
-		if existing, ok := m.runtimes[profile.ID]; ok && existing.fingerprint == fingerprint {
+		if existing, ok := m.runtimes[key]; ok && existing.fingerprint == fingerprint {
 			continue
 		}
 
-		if existing, ok := m.runtimes[profile.ID]; ok {
+		if existing, ok := m.runtimes[key]; ok {
 			runtime, err := m.factory(ctx, cfg)
 			if err == nil {
 				replacements = append(replacements, runtimeReplacement{
+					key:         key,
 					profileID:   profile.ID,
 					fingerprint: fingerprint,
 					config:      cloneConfig(cfg),
@@ -124,6 +131,7 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 				return fmt.Errorf("wireguard profile %d preflight: %w", profile.ID, preflightErr)
 			}
 			replacements = append(replacements, runtimeReplacement{
+				key:                key,
 				profileID:          profile.ID,
 				fingerprint:        fingerprint,
 				config:             cloneConfig(cfg),
@@ -138,6 +146,7 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 			return fmt.Errorf("wireguard profile %d runtime: %w", profile.ID, err)
 		}
 		replacements = append(replacements, runtimeReplacement{
+			key:         key,
 			profileID:   profile.ID,
 			fingerprint: fingerprint,
 			config:      cloneConfig(cfg),
@@ -152,7 +161,7 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 		}
 		if replacement.existing != nil {
 			_ = replacement.existing.runtime.Close()
-			delete(m.runtimes, replacement.profileID)
+			delete(m.runtimes, replacement.key)
 		}
 		runtime, err := m.factory(ctx, replacement.config)
 		if err != nil {
@@ -167,7 +176,7 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 			return fmt.Errorf("wireguard profile %d runtime: %w", replacement.profileID, err)
 		}
 		replacement.runtime = runtime
-		m.runtimes[replacement.profileID] = &runtimeEntry{
+		m.runtimes[replacement.key] = &runtimeEntry{
 			fingerprint: replacement.fingerprint,
 			config:      cloneConfig(replacement.config),
 			runtime:     replacement.runtime,
@@ -182,27 +191,28 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 		if replacement.existing != nil {
 			_ = replacement.existing.runtime.Close()
 		}
-		m.runtimes[replacement.profileID] = &runtimeEntry{
+		m.runtimes[replacement.key] = &runtimeEntry{
 			fingerprint: replacement.fingerprint,
 			config:      cloneConfig(replacement.config),
 			runtime:     replacement.runtime,
 		}
 	}
 
-	for profileID, existing := range m.runtimes {
-		if _, ok := seen[profileID]; ok {
+	for key, existing := range m.runtimes {
+		if _, ok := seen[key]; ok {
 			continue
 		}
 		_ = existing.runtime.Close()
-		delete(m.runtimes, profileID)
+		delete(m.runtimes, key)
 	}
 	for _, profile := range profiles {
 		if profile.Enabled {
 			continue
 		}
-		if existing, ok := m.runtimes[profile.ID]; ok {
+		key := keyForProfile(profile)
+		if existing, ok := m.runtimes[key]; ok {
 			_ = existing.runtime.Close()
-			delete(m.runtimes, profile.ID)
+			delete(m.runtimes, key)
 		}
 	}
 
@@ -217,7 +227,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	candidates := make(map[int]*runtimeEntry, len(profiles))
+	candidates := make(map[runtimeKey]*runtimeEntry, len(profiles))
 	var newRuntimes []Runtime
 	var closeFirstReplacements []runtimeReplacement
 
@@ -241,6 +251,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 		if !profile.Enabled {
 			continue
 		}
+		key := keyForProfile(profile)
 
 		cfg, err := NormalizeConfig(profile)
 		if err != nil {
@@ -254,8 +265,8 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 			return nil, wrapPrepareError(profile.ID, "fingerprint", err)
 		}
 
-		if existing, ok := m.runtimes[profile.ID]; ok && existing.fingerprint == fingerprint {
-			candidates[profile.ID] = &runtimeEntry{
+		if existing, ok := m.runtimes[key]; ok && existing.fingerprint == fingerprint {
+			candidates[key] = &runtimeEntry{
 				fingerprint: existing.fingerprint,
 				config:      cloneConfig(existing.config),
 				runtime:     existing.runtime,
@@ -263,7 +274,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 			continue
 		}
 
-		existing, hasExisting := m.runtimes[profile.ID]
+		existing, hasExisting := m.runtimes[key]
 		runtime, err := m.factory(ctx, cfg)
 		if err != nil {
 			if !hasExisting || !sameListenPort(existing.config.ListenPort, cfg.ListenPort) || !isListenPortConflict(err) {
@@ -273,10 +284,11 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 				return nil, wrapPrepareError(profile.ID, "preflight", preflightErr)
 			}
 			_ = existing.runtime.Close()
-			delete(m.runtimes, profile.ID)
+			delete(m.runtimes, key)
 			runtime, err = m.factory(ctx, cfg)
 			if err != nil {
 				rollbackErr := m.rollbackCloseFirstReplacement(ctx, runtimeReplacement{
+					key:       key,
 					profileID: profile.ID,
 					config:    cloneConfig(cfg),
 					existing:  existing,
@@ -290,6 +302,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 				return nil, fmt.Errorf("wireguard profile %d runtime: %w", profile.ID, err)
 			}
 			replacement := runtimeReplacement{
+				key:                key,
 				profileID:          profile.ID,
 				fingerprint:        fingerprint,
 				config:             cloneConfig(cfg),
@@ -298,12 +311,12 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 				requiresCloseFirst: true,
 			}
 			closeFirstReplacements = append(closeFirstReplacements, replacement)
-			candidates[profile.ID] = &runtimeEntry{
+			candidates[key] = &runtimeEntry{
 				fingerprint: fingerprint,
 				config:      cloneConfig(cfg),
 				runtime:     runtime,
 			}
-			m.runtimes[profile.ID] = &runtimeEntry{
+			m.runtimes[key] = &runtimeEntry{
 				fingerprint: fingerprint,
 				config:      cloneConfig(cfg),
 				runtime:     runtime,
@@ -311,7 +324,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 			continue
 		}
 		newRuntimes = append(newRuntimes, runtime)
-		candidates[profile.ID] = &runtimeEntry{
+		candidates[key] = &runtimeEntry{
 			fingerprint: fingerprint,
 			config:      cloneConfig(cfg),
 			runtime:     runtime,
@@ -327,6 +340,10 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 }
 
 func (t *Transaction) Runtime(profileID int) (Runtime, bool) {
+	return t.RuntimeForAgent("", profileID)
+}
+
+func (t *Transaction) RuntimeForAgent(agentID string, profileID int) (Runtime, bool) {
 	if t == nil {
 		return nil, false
 	}
@@ -336,7 +353,7 @@ func (t *Transaction) Runtime(profileID int) (Runtime, bool) {
 	if t.rolledBack {
 		return nil, false
 	}
-	entry, ok := t.candidates[profileID]
+	entry, ok := runtimeEntryByProfile(t.candidates, agentID, profileID)
 	if !ok {
 		return nil, false
 	}
@@ -396,6 +413,7 @@ func (t *Transaction) Rollback() {
 }
 
 type runtimeReplacement struct {
+	key                runtimeKey
 	profileID          int
 	fingerprint        string
 	config             Config
@@ -455,20 +473,46 @@ func (m *Manager) rollbackCloseFirstReplacement(ctx context.Context, replacement
 		_ = replacement.runtime.Close()
 	}
 	if replacement.existing == nil {
-		delete(m.runtimes, replacement.profileID)
+		delete(m.runtimes, replacement.key)
 		return nil
 	}
 	rollbackRuntime, err := m.factory(ctx, replacement.existing.config)
 	if err != nil {
-		delete(m.runtimes, replacement.profileID)
+		delete(m.runtimes, replacement.key)
 		return err
 	}
-	m.runtimes[replacement.profileID] = &runtimeEntry{
+	m.runtimes[replacement.key] = &runtimeEntry{
 		fingerprint: replacement.existing.fingerprint,
 		config:      cloneConfig(replacement.existing.config),
 		runtime:     rollbackRuntime,
 	}
 	return nil
+}
+
+func keyForProfile(profile model.WireGuardProfile) runtimeKey {
+	return runtimeKey{
+		agentID:   strings.TrimSpace(profile.AgentID),
+		profileID: profile.ID,
+	}
+}
+
+func runtimeEntryByProfile(entries map[runtimeKey]*runtimeEntry, agentID string, profileID int) (*runtimeEntry, bool) {
+	key := runtimeKey{agentID: strings.TrimSpace(agentID), profileID: profileID}
+	if key.agentID != "" {
+		entry, ok := entries[key]
+		return entry, ok
+	}
+	var found *runtimeEntry
+	for candidateKey, entry := range entries {
+		if candidateKey.profileID != profileID {
+			continue
+		}
+		if found != nil {
+			return nil, false
+		}
+		found = entry
+	}
+	return found, found != nil
 }
 
 func cloneConfig(cfg Config) Config {
@@ -484,13 +528,13 @@ func cloneConfig(cfg Config) Config {
 	return cloned
 }
 
-func cloneRuntimeEntries(entries map[int]*runtimeEntry) map[int]*runtimeEntry {
-	cloned := make(map[int]*runtimeEntry, len(entries))
-	for profileID, entry := range entries {
+func cloneRuntimeEntries(entries map[runtimeKey]*runtimeEntry) map[runtimeKey]*runtimeEntry {
+	cloned := make(map[runtimeKey]*runtimeEntry, len(entries))
+	for key, entry := range entries {
 		if entry == nil {
 			continue
 		}
-		cloned[profileID] = &runtimeEntry{
+		cloned[key] = &runtimeEntry{
 			fingerprint: entry.fingerprint,
 			config:      cloneConfig(entry.config),
 			runtime:     entry.runtime,
@@ -515,10 +559,14 @@ func clonePeerConfigs(peers []PeerConfig) []PeerConfig {
 }
 
 func (m *Manager) Runtime(profileID int) (Runtime, bool) {
+	return m.RuntimeForAgent("", profileID)
+}
+
+func (m *Manager) RuntimeForAgent(agentID string, profileID int) (Runtime, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	entry, ok := m.runtimes[profileID]
+	entry, ok := runtimeEntryByProfile(m.runtimes, agentID, profileID)
 	if !ok {
 		return nil, false
 	}
@@ -531,9 +579,10 @@ func (m *Manager) Recreate(ctx context.Context, profiles []model.WireGuardProfil
 	}
 	m.mu.Lock()
 	for _, profile := range profiles {
-		if existing, ok := m.runtimes[profile.ID]; ok {
+		key := keyForProfile(profile)
+		if existing, ok := m.runtimes[key]; ok {
 			_ = existing.runtime.Close()
-			delete(m.runtimes, profile.ID)
+			delete(m.runtimes, key)
 		}
 	}
 	m.mu.Unlock()
@@ -545,11 +594,11 @@ func (m *Manager) Close() error {
 	defer m.mu.Unlock()
 
 	var firstErr error
-	for profileID, existing := range m.runtimes {
+	for key, existing := range m.runtimes {
 		if err := existing.runtime.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		delete(m.runtimes, profileID)
+		delete(m.runtimes, key)
 	}
 	return firstErr
 }

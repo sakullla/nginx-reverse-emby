@@ -35,6 +35,84 @@ func TestManagerReusesSameFingerprintRuntime(t *testing.T) {
 	}
 }
 
+func TestManagerKeepsSameProfileIDForDifferentAgents(t *testing.T) {
+	t.Parallel()
+
+	factory := &recordingFactory{}
+	manager := NewManager(ManagerOptions{Factory: factory.Create})
+	defer manager.Close()
+
+	localProfile := validProfile()
+	localProfile.AgentID = "local"
+	remoteProfile := validProfile()
+	remoteProfile.AgentID = "remote"
+	remoteProfile.Addresses = []string{"10.71.0.2/32"}
+	remoteProfile.Peers[0].Endpoint = "remote.example.com:51820"
+
+	if err := manager.Apply(context.Background(), []model.WireGuardProfile{localProfile, remoteProfile}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	localRuntime, ok := manager.RuntimeForAgent("local", localProfile.ID)
+	if !ok {
+		t.Fatal("local runtime not found")
+	}
+	remoteRuntime, ok := manager.RuntimeForAgent("remote", remoteProfile.ID)
+	if !ok {
+		t.Fatal("remote runtime not found")
+	}
+	if localRuntime == remoteRuntime {
+		t.Fatal("same numeric profile ID on different agents reused one runtime")
+	}
+}
+
+func TestManagerPrepareKeepsSameProfileIDForDifferentAgents(t *testing.T) {
+	t.Parallel()
+
+	factory := &recordingFactory{}
+	manager := NewManager(ManagerOptions{Factory: factory.Create})
+	defer manager.Close()
+
+	localProfile := validProfile()
+	localProfile.AgentID = "local"
+	remoteProfile := validProfile()
+	remoteProfile.AgentID = "remote"
+	remoteProfile.Addresses = []string{"10.71.0.2/32"}
+	remoteProfile.Peers[0].Endpoint = "remote.example.com:51820"
+
+	transaction, err := manager.Prepare(context.Background(), []model.WireGuardProfile{localProfile, remoteProfile})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	defer transaction.Rollback()
+
+	localRuntime, ok := transaction.RuntimeForAgent("local", localProfile.ID)
+	if !ok {
+		t.Fatal("local transaction runtime not found")
+	}
+	remoteRuntime, ok := transaction.RuntimeForAgent("remote", remoteProfile.ID)
+	if !ok {
+		t.Fatal("remote transaction runtime not found")
+	}
+	if localRuntime == remoteRuntime {
+		t.Fatal("same numeric profile ID on different agents reused one transaction runtime")
+	}
+
+	transaction.Commit()
+
+	committedLocalRuntime, ok := manager.RuntimeForAgent("local", localProfile.ID)
+	if !ok {
+		t.Fatal("committed local runtime not found")
+	}
+	committedRemoteRuntime, ok := manager.RuntimeForAgent("remote", remoteProfile.ID)
+	if !ok {
+		t.Fatal("committed remote runtime not found")
+	}
+	if committedLocalRuntime != localRuntime || committedRemoteRuntime != remoteRuntime {
+		t.Fatal("commit did not preserve agent-qualified runtimes")
+	}
+}
+
 func TestManagerReplacesChangedConfigRuntime(t *testing.T) {
 	t.Parallel()
 
