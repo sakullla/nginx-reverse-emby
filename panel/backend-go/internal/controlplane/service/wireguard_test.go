@@ -268,6 +268,88 @@ func TestWireGuardProfileUpdatePreservesEnabledWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileUpdateBumpsAgentsThatReferenceRelayProfile(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:              "relay-agent",
+		Name:            "relay-agent",
+		AgentToken:      "token-relay",
+		DesiredRevision: 1,
+		CurrentRevision: 1,
+	}); err != nil {
+		t.Fatalf("SaveAgent(relay-agent) error = %v", err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:              "client-agent",
+		Name:            "client-agent",
+		AgentToken:      "token-client",
+		DesiredRevision: 50,
+		CurrentRevision: 50,
+	}); err != nil {
+		t.Fatalf("SaveAgent(client-agent) error = %v", err)
+	}
+
+	input := testWireGuardProfileInput()
+	input.ListenPort = 51820
+	created, err := svc.Create(ctx, "relay-agent", input)
+	if err != nil {
+		t.Fatalf("Create(relay profile) error = %v", err)
+	}
+
+	profileID := created.ID
+	if err := store.SaveRelayListeners(ctx, "relay-agent", []storage.RelayListenerRow{{
+		ID:                 100,
+		AgentID:            "relay-agent",
+		Name:               "wg-relay",
+		ListenPort:         8443,
+		Enabled:            true,
+		TransportMode:      "wireguard",
+		WireGuardProfileID: &profileID,
+		Revision:           2,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-agent) error = %v", err)
+	}
+	if err := store.SaveHTTPRules(ctx, "client-agent", []storage.HTTPRuleRow{{
+		ID:              200,
+		AgentID:         "client-agent",
+		FrontendURL:     "https://client.example.com",
+		BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+		Enabled:         true,
+		RelayLayersJSON: `[[100]]`,
+		Revision:        50,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(client-agent) error = %v", err)
+	}
+
+	update := testWireGuardProfileInput()
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	update.Peers[0].Endpoint = "updated.example.com:51820"
+	if _, err := svc.Update(ctx, "relay-agent", created.ID, update); err != nil {
+		t.Fatalf("Update(relay profile) error = %v", err)
+	}
+
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	var client storage.AgentRow
+	for _, row := range agents {
+		if row.ID == "client-agent" {
+			client = row
+			break
+		}
+	}
+	if client.ID == "" {
+		t.Fatal("client-agent not found")
+	}
+	if client.DesiredRevision <= client.CurrentRevision {
+		t.Fatalf("client-agent revisions = desired %d current %d, want desired bumped above current", client.DesiredRevision, client.CurrentRevision)
+	}
+}
+
 func TestWireGuardProfileUpdateCanDisableProfile(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)

@@ -1155,6 +1155,252 @@ func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4Reference
 	}
 }
 
+func TestBackupServiceImportReportsWireGuardProfileResults(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-report-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-wg",
+			Name:       "edge-wg",
+			AgentToken: "token-edge-wg",
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{
+			{
+				ID:         1,
+				AgentID:    "edge-wg",
+				Name:       "wg-valid",
+				Mode:       "generic_wireguard",
+				PrivateKey: testWireGuardPrivateKey,
+				ListenPort: 51820,
+				Addresses:  []string{"10.80.0.2/32"},
+				Peers: []WireGuardPeer{{
+					Name:       "peer-a",
+					PublicKey:  testWireGuardPublicKey,
+					AllowedIPs: []string{"10.80.0.1/32"},
+				}},
+				Enabled: true,
+			},
+			{
+				ID:         2,
+				AgentID:    "edge-wg",
+				Name:       "wg-invalid",
+				Mode:       "generic_wireguard",
+				PrivateKey: testWireGuardPrivateKey,
+				ListenPort: 51821,
+				Peers: []WireGuardPeer{{
+					Name:       "peer-b",
+					PublicKey:  testWireGuardPublicKeyB,
+					AllowedIPs: []string{"10.81.0.1/32"},
+				}},
+				Enabled: true,
+			},
+		},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore)
+	preview, err := svc.Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	if preview.Summary.Imported.WireGuardProfiles != 1 || preview.Summary.SkippedInvalid.WireGuardProfiles != 1 {
+		t.Fatalf("preview WireGuard summary = imported %+v skipped invalid %+v", preview.Summary.Imported, preview.Summary.SkippedInvalid)
+	}
+
+	result, err := svc.Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.WireGuardProfiles != 1 || result.Summary.SkippedInvalid.WireGuardProfiles != 1 {
+		t.Fatalf("import WireGuard summary = imported %+v skipped invalid %+v", result.Summary.Imported, result.Summary.SkippedInvalid)
+	}
+
+	profiles, err := targetStore.ListWireGuardProfiles(ctx, "edge-wg")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(edge-wg) error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].Name != "wg-valid" {
+		t.Fatalf("imported WireGuard profiles = %+v, want only wg-valid", profiles)
+	}
+}
+
+func TestBackupServiceImportSkipsWireGuardProfileListenPortConflicts(t *testing.T) {
+	t.Run("existing profile", func(t *testing.T) {
+		ctx := t.Context()
+		targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-existing-port-conflict-target"), "target-local")
+		if err != nil {
+			t.Fatalf("NewSQLiteStore(target) error = %v", err)
+		}
+		defer targetStore.Close()
+
+		if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+			ID:         "edge-wg",
+			Name:       "edge-wg",
+			AgentToken: "token-edge-wg",
+		}); err != nil {
+			t.Fatalf("SaveAgent(edge-wg) error = %v", err)
+		}
+		if err := targetStore.SaveWireGuardProfiles(ctx, "edge-wg", []storage.WireGuardProfileRow{{
+			ID:            10,
+			AgentID:       "edge-wg",
+			Name:          "wg-existing",
+			Mode:          "generic_wireguard",
+			PrivateKey:    testWireGuardPrivateKey,
+			ListenPort:    51820,
+			AddressesJSON: `["10.90.0.2/32"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      4,
+		}}); err != nil {
+			t.Fatalf("SaveWireGuardProfiles(edge-wg) error = %v", err)
+		}
+
+		bundle := BackupBundle{
+			Manifest: BackupManifest{
+				PackageVersion:     BackupPackageVersion,
+				SourceArchitecture: BackupSourceArchitectureGo,
+				ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+			},
+			Agents: []BackupAgent{{
+				ID:         "edge-wg",
+				Name:       "edge-wg",
+				AgentToken: "token-edge-wg",
+			}},
+			WireGuardProfiles: []BackupWireGuardProfile{{
+				ID:         1,
+				AgentID:    "edge-wg",
+				Name:       "wg-imported",
+				Mode:       "generic_wireguard",
+				PrivateKey: testWireGuardPrivateKey,
+				ListenPort: 51820,
+				Addresses:  []string{"10.90.0.3/32"},
+				Peers: []WireGuardPeer{{
+					Name:       "peer-a",
+					PublicKey:  testWireGuardPublicKey,
+					AllowedIPs: []string{"10.90.0.1/32"},
+				}},
+				Enabled: true,
+			}},
+		}
+		archive, err := encodeBackupBundle(bundle)
+		if err != nil {
+			t.Fatalf("encodeBackupBundle() error = %v", err)
+		}
+
+		svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore)
+		preview, err := svc.Preview(ctx, archive)
+		if err != nil {
+			t.Fatalf("Preview() error = %v", err)
+		}
+		if preview.Summary.Imported.WireGuardProfiles != 0 || preview.Summary.SkippedConflict.WireGuardProfiles != 1 {
+			t.Fatalf("preview WireGuard summary = imported %+v skipped conflict %+v", preview.Summary.Imported, preview.Summary.SkippedConflict)
+		}
+
+		result, err := svc.Import(ctx, archive)
+		if err != nil {
+			t.Fatalf("Import() error = %v", err)
+		}
+		if result.Summary.Imported.WireGuardProfiles != 0 || result.Summary.SkippedConflict.WireGuardProfiles != 1 {
+			t.Fatalf("import WireGuard summary = imported %+v skipped conflict %+v", result.Summary.Imported, result.Summary.SkippedConflict)
+		}
+		profiles, err := targetStore.ListWireGuardProfiles(ctx, "edge-wg")
+		if err != nil {
+			t.Fatalf("ListWireGuardProfiles(edge-wg) error = %v", err)
+		}
+		if len(profiles) != 1 || profiles[0].Name != "wg-existing" {
+			t.Fatalf("profiles after import = %+v, want only existing profile", profiles)
+		}
+	})
+
+	t.Run("incoming profiles", func(t *testing.T) {
+		ctx := t.Context()
+		targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-incoming-port-conflict-target"), "target-local")
+		if err != nil {
+			t.Fatalf("NewSQLiteStore(target) error = %v", err)
+		}
+		defer targetStore.Close()
+
+		bundle := BackupBundle{
+			Manifest: BackupManifest{
+				PackageVersion:     BackupPackageVersion,
+				SourceArchitecture: BackupSourceArchitectureGo,
+				ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+			},
+			Agents: []BackupAgent{{
+				ID:         "edge-wg",
+				Name:       "edge-wg",
+				AgentToken: "token-edge-wg",
+			}},
+			WireGuardProfiles: []BackupWireGuardProfile{
+				{
+					ID:         1,
+					AgentID:    "edge-wg",
+					Name:       "wg-a",
+					Mode:       "generic_wireguard",
+					PrivateKey: testWireGuardPrivateKey,
+					ListenPort: 51820,
+					Addresses:  []string{"10.91.0.2/32"},
+					Peers: []WireGuardPeer{{
+						Name:       "peer-a",
+						PublicKey:  testWireGuardPublicKey,
+						AllowedIPs: []string{"10.91.0.1/32"},
+					}},
+					Enabled: true,
+				},
+				{
+					ID:         2,
+					AgentID:    "edge-wg",
+					Name:       "wg-b",
+					Mode:       "generic_wireguard",
+					PrivateKey: testWireGuardPresharedKey,
+					ListenPort: 51820,
+					Addresses:  []string{"10.92.0.2/32"},
+					Peers: []WireGuardPeer{{
+						Name:       "peer-b",
+						PublicKey:  testWireGuardPublicKeyB,
+						AllowedIPs: []string{"10.92.0.1/32"},
+					}},
+					Enabled: true,
+				},
+			},
+		}
+		archive, err := encodeBackupBundle(bundle)
+		if err != nil {
+			t.Fatalf("encodeBackupBundle() error = %v", err)
+		}
+
+		svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore)
+		result, err := svc.Import(ctx, archive)
+		if err != nil {
+			t.Fatalf("Import() error = %v", err)
+		}
+		if result.Summary.Imported.WireGuardProfiles != 1 || result.Summary.SkippedConflict.WireGuardProfiles != 1 {
+			t.Fatalf("import WireGuard summary = imported %+v skipped conflict %+v", result.Summary.Imported, result.Summary.SkippedConflict)
+		}
+		profiles, err := targetStore.ListWireGuardProfiles(ctx, "edge-wg")
+		if err != nil {
+			t.Fatalf("ListWireGuardProfiles(edge-wg) error = %v", err)
+		}
+		if len(profiles) != 1 || profiles[0].Name != "wg-a" {
+			t.Fatalf("profiles after import = %+v, want only wg-a", profiles)
+		}
+	})
+}
+
 func TestBackupServiceImportSkipsWireGuardRelayAndL4EntriesWithUnmappedProfiles(t *testing.T) {
 	ctx := t.Context()
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-missing-target"), "target-local")

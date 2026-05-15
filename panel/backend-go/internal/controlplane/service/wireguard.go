@@ -143,6 +143,9 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, profile.Revision); err != nil {
 		return WireGuardProfile{}, err
 	}
+	if err := s.bumpProfileRelayDependents(ctx, resolvedID, profile.ID, profile.Revision); err != nil {
+		return WireGuardProfile{}, err
+	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return WireGuardProfile{}, err
 	}
@@ -197,6 +200,9 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 		return WireGuardProfile{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, profile.Revision); err != nil {
+		return WireGuardProfile{}, err
+	}
+	if err := s.bumpProfileRelayDependents(ctx, resolvedID, profile.ID, profile.Revision); err != nil {
 		return WireGuardProfile{}, err
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
@@ -314,19 +320,99 @@ func (s *wireGuardProfileService) bumpRemoteDesiredRevision(ctx context.Context,
 		if row.ID != agentID {
 			continue
 		}
-		nextRevision := revision
-		if row.DesiredRevision > nextRevision {
-			nextRevision = row.DesiredRevision
-		}
-		if row.CurrentRevision > nextRevision {
-			nextRevision = row.CurrentRevision
-		}
+		nextRevision := maxInt(revision, row.DesiredRevision, row.CurrentRevision+1)
 		if row.DesiredRevision < nextRevision {
 			row.DesiredRevision = nextRevision
 		}
 		return s.store.SaveAgent(ctx, row)
 	}
 	return ErrAgentNotFound
+}
+
+func (s *wireGuardProfileService) bumpProfileRelayDependents(ctx context.Context, profileAgentID string, profileID int, revision int) error {
+	listenerIDs, err := s.relayListenerIDsForProfile(ctx, profileAgentID, profileID)
+	if err != nil {
+		return err
+	}
+	if len(listenerIDs) == 0 {
+		return nil
+	}
+	agentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
+	if err != nil {
+		return err
+	}
+	for _, agentID := range agentIDs {
+		if strings.TrimSpace(agentID) == "" || agentID == profileAgentID {
+			continue
+		}
+		referencesProfile, err := s.agentReferencesRelayListeners(ctx, agentID, listenerIDs)
+		if err != nil {
+			return err
+		}
+		if !referencesProfile {
+			continue
+		}
+		if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+			if err := s.triggerLocalApply(ctx, agentID); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := s.bumpRemoteDesiredRevision(ctx, agentID, revision); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *wireGuardProfileService) relayListenerIDsForProfile(ctx context.Context, agentID string, profileID int) (map[int]struct{}, error) {
+	rows, err := s.store.ListRelayListeners(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	listenerIDs := map[int]struct{}{}
+	for _, row := range rows {
+		if !row.Enabled || row.ID <= 0 || row.WireGuardProfileID == nil || *row.WireGuardProfileID != profileID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") {
+			continue
+		}
+		listenerIDs[row.ID] = struct{}{}
+	}
+	return listenerIDs, nil
+}
+
+func (s *wireGuardProfileService) agentReferencesRelayListeners(ctx context.Context, agentID string, listenerIDs map[int]struct{}) (bool, error) {
+	httpRows, err := s.store.ListHTTPRules(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range httpRows {
+		if !row.Enabled {
+			continue
+		}
+		for listenerID := range listenerIDs {
+			if relayLayersReferenceListener(row.RelayLayersJSON, listenerID) {
+				return true, nil
+			}
+		}
+	}
+	l4Rows, err := s.store.ListL4Rules(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range l4Rows {
+		if !row.Enabled {
+			continue
+		}
+		for listenerID := range listenerIDs {
+			if relayLayersReferenceListener(row.RelayLayersJSON, listenerID) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGuardProfile, suggestedID int) (WireGuardProfile, error) {
