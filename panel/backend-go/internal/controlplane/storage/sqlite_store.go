@@ -704,6 +704,10 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.ProxyEntryAuthJSON = defaultJSON(row.ProxyEntryAuthJSON, "{}")
 	row.ProxyEgressMode = defaultString(row.ProxyEgressMode, "")
 	row.ProxyEgressURL = defaultString(row.ProxyEgressURL, "")
+	row.WireGuardEgressURI = defaultString(row.WireGuardEgressURI, "")
+	if row.ProxyEgressMode != "wireguard" {
+		row.WireGuardEgressURI = ""
+	}
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 }
 
@@ -1207,6 +1211,7 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			ProxyEntryAuth:       parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
 			ProxyEgressMode:      row.ProxyEgressMode,
 			ProxyEgressURL:       row.ProxyEgressURL,
+			WireGuardEgressURI:   row.WireGuardEgressURI,
 			Revision:             int64(row.Revision),
 		})
 	}

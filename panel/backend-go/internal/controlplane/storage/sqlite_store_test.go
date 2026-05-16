@@ -107,6 +107,7 @@ func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
 	assertSQLiteColumnContract(t, l4Columns, "proxy_entry_auth", 1, `"{}"`)
 	assertSQLiteColumnContract(t, l4Columns, "proxy_egress_mode", 1, `""`)
 	assertSQLiteColumnContract(t, l4Columns, "proxy_egress_url", 1, `""`)
+	assertSQLiteColumnContract(t, l4Columns, "wireguard_egress_uri", 1, `""`)
 }
 
 func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {

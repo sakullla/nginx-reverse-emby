@@ -89,6 +89,9 @@ function normalizeL4Rule(rule = {}) {
     },
     proxy_egress_mode: proxyEgressMode,
     proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : '',
+    wireguard_egress_uri: proxyEntryMode && proxyEgressMode === 'wireguard'
+      ? String(rule.wireguard_egress_uri || '')
+      : '',
     wireguard_inbound_mode: wireGuardInboundMode
   }
 }
@@ -159,6 +162,8 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
     : listenMode === 'wireguard'
       ? 'address'
       : ''
+  const proxyEgressMode = String(payload.proxy_egress_mode || '')
+  const wireGuardEgressURI = String(payload.wireguard_egress_uri || '').trim()
   const normalizedPayload = {
     ...rest,
     backends: normalizeL4Backends(payload),
@@ -174,6 +179,12 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
   } else {
     delete normalizedPayload.wireguard_inbound_mode
     delete normalizedPayload.wireguard_listen_host
+  }
+  if (proxyEgressMode === 'wireguard' && wireGuardEgressURI) {
+    normalizedPayload.wireguard_egress_uri = wireGuardEgressURI
+    delete normalizedPayload.wireguard_profile_id
+  } else {
+    delete normalizedPayload.wireguard_egress_uri
   }
   if (Array.isArray(payload.relay_layers)) {
     normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)

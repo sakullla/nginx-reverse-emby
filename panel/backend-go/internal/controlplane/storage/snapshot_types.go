@@ -123,6 +123,7 @@ type L4Rule struct {
 	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
 	ProxyEgressMode      string           `json:"proxy_egress_mode,omitempty"`
 	ProxyEgressURL       string           `json:"proxy_egress_url,omitempty"`
+	WireGuardEgressURI   string           `json:"-"`
 	Revision             int64            `json:"revision,omitempty"`
 }
 

@@ -85,6 +85,7 @@ type L4RuleRow struct {
 	ProxyEntryAuthJSON   string `gorm:"column:proxy_entry_auth;not null;default:'{}'"`
 	ProxyEgressMode      string `gorm:"column:proxy_egress_mode;not null;default:''"`
 	ProxyEgressURL       string `gorm:"column:proxy_egress_url;not null;default:''"`
+	WireGuardEgressURI   string `gorm:"column:wireguard_egress_uri;not null;default:''"`
 	Enabled              bool   `gorm:"column:enabled"`
 	TagsJSON             string `gorm:"column:tags"`
 	Revision             int    `gorm:"column:revision"`

@@ -317,7 +317,10 @@ function normalizeL4Rule(rule = {}) {
       password: String(rule.proxy_entry_auth?.password || '')
     },
     proxy_egress_mode: proxyEgressMode,
-    proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : ''
+    proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : '',
+    wireguard_egress_uri: proxyEntryMode && proxyEgressMode === 'wireguard'
+      ? String(rule.wireguard_egress_uri || '')
+      : ''
   }
 }
 
