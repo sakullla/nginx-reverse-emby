@@ -327,6 +327,48 @@ func TestRuleServiceWireGuardEntryRequiresAgentCapability(t *testing.T) {
 	}
 }
 
+func TestRuleServiceUpdateWireGuardEntryRequiresAgentCapability(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: marshalStringArray([]string{"http_rules"}),
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:                1,
+				AgentID:           "edge-1",
+				FrontendURL:       "http://app.internal",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"adaptive"}`,
+				Enabled:           true,
+				TagsJSON:          "[]",
+				RelayChainJSON:    "[]",
+				RelayLayersJSON:   "[]",
+				CustomHeadersJSON: "[]",
+				Revision:          1,
+			}},
+		},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"edge-1": {{ID: 7, AgentID: "edge-1", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+		},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Update(context.Background(), "edge-1", 1, HTTPRuleInput{
+		WireGuardEntryEnabled:    boolPtrRule(true),
+		WireGuardProfileID:       intPtrRule(7),
+		WireGuardEntryListenHost: stringPtrRule("10.8.0.1"),
+		WireGuardEntryListenPort: intPtrRule(8080),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "agent does not support WireGuard") {
+		t.Fatalf("Update() error = %v, want WireGuard capability message", err)
+	}
+}
+
 func TestRuleServiceDisablingWireGuardInnerEntryClearsFields(t *testing.T) {
 	profileID := 7
 	store := &fakeRuleStore{
