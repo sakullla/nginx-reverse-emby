@@ -197,6 +197,13 @@
             </select>
           </div>
           <div v-if="isWireGuardInbound" class="form-group">
+            <label class="form-label">WireGuard 入站模式</label>
+            <select v-model="form.wireguard_inbound_mode" class="input">
+              <option value="address">Address</option>
+              <option value="transparent">Transparent</option>
+            </select>
+          </div>
+          <div v-if="isWireGuardInbound && form.wireguard_inbound_mode === 'address'" class="form-group">
             <label class="form-label">WireGuard Listen Host</label>
             <input v-model="form.wireguard_listen_host" class="input" placeholder="10.8.0.1">
           </div>
@@ -430,6 +437,7 @@ function createFormState(initialData) {
     proxy_egress_mode: initialProxyEgressMode,
     proxy_egress_url: initialData?.proxy_egress_url || '',
     wireguard_profile_id: initialData?.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
+    wireguard_inbound_mode: initialData?.wireguard_inbound_mode === 'transparent' ? 'transparent' : 'address',
     wireguard_listen_host: initialData?.wireguard_listen_host || '',
     relay_layers: getRelayLayers(initialData),
     relay_obfs: initialData?.relay_obfs === true,
@@ -760,6 +768,9 @@ function buildPayload() {
     payload.wireguard_profile_id = selectedWireGuardProfileID.value
   }
   if (isWireGuardInbound.value) {
+    payload.wireguard_inbound_mode = form.value.wireguard_inbound_mode
+  }
+  if (isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'address') {
     payload.wireguard_listen_host = form.value.wireguard_listen_host.trim()
   }
 

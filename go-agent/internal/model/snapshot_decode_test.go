@@ -73,6 +73,34 @@ func TestSnapshotDecodePreservesHTTPAndL4BackendFields(t *testing.T) {
 	}
 }
 
+func TestSnapshotDecodePreservesL4WireGuardInboundMode(t *testing.T) {
+	raw := []byte(`{
+		"l4_rules":[
+			{
+				"protocol":"udp",
+				"listen_host":"0.0.0.0",
+				"listen_port":51820,
+				"listen_mode":"wireguard",
+				"wireguard_inbound_mode":"transparent",
+				"wireguard_profile_id":7,
+				"backends":[{"host":"10.0.0.21","port":9001}]
+			}
+		]
+	}`)
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("expected one l4 rule, got %d", len(snapshot.L4Rules))
+	}
+	if snapshot.L4Rules[0].WireGuardInboundMode != "transparent" {
+		t.Fatalf("WireGuardInboundMode = %q, want transparent", snapshot.L4Rules[0].WireGuardInboundMode)
+	}
+}
+
 func TestSnapshotDecodePreservesRelayBindAndPublicFields(t *testing.T) {
 	raw := []byte(`{
 		"desired_version":"2.1.0",

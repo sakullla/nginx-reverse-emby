@@ -33,6 +33,13 @@ func ValidateRule(rule Rule) error {
 	if listenMode != "tcp" && listenMode != "proxy" && listenMode != "wireguard" {
 		return fmt.Errorf("listen_mode must be tcp, proxy, or wireguard")
 	}
+	wireGuardInboundMode := strings.ToLower(strings.TrimSpace(rule.WireGuardInboundMode))
+	if wireGuardInboundMode == "" {
+		wireGuardInboundMode = "address"
+	}
+	if listenMode == "wireguard" && wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
+		return fmt.Errorf("wireguard_inbound_mode must be address or transparent")
+	}
 	if listenMode == "wireguard" && !hasWireGuardProfile(rule) {
 		return fmt.Errorf("wireguard_profile_id is required for wireguard listen mode")
 	}
@@ -93,4 +100,14 @@ func isProxyEntryRule(rule Rule) bool {
 
 func hasWireGuardProfile(rule Rule) bool {
 	return rule.WireGuardProfileID != nil && *rule.WireGuardProfileID > 0
+}
+
+func wireGuardInboundMode(rule Rule) string {
+	if !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent") {
+		return "transparent"
+	}
+	return "address"
 }

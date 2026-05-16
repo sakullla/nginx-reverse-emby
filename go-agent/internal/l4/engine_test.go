@@ -147,6 +147,43 @@ func TestValidateRuleAllowsWireGuardListenModeWithProfile(t *testing.T) {
 	}
 }
 
+func TestValidateRuleAcceptsWireGuardTransparentInboundMode(t *testing.T) {
+	profileID := 7
+	err := ValidateRule(Rule{
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           51820,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+		WireGuardListenHost:  "10.8.0.1",
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: 9001},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
+func TestValidateRuleRejectsInvalidWireGuardInboundMode(t *testing.T) {
+	profileID := 7
+	err := ValidateRule(Rule{
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           51820,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "capture",
+		WireGuardProfileID:   &profileID,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: 9001},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "wireguard_inbound_mode") {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
 func TestValidateRuleRejectsWireGuardListenModeWithoutProfile(t *testing.T) {
 	for _, protocol := range []string{"tcp", "udp"} {
 		t.Run(protocol, func(t *testing.T) {

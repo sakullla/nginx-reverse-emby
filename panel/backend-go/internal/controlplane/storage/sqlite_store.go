@@ -693,11 +693,24 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.RelayChainJSON = defaultJSON(row.RelayChainJSON, "[]")
 	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
 	row.ListenMode = defaultString(row.ListenMode, "tcp")
+	row.WireGuardInboundMode = normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode)
 	row.WireGuardListenHost = defaultString(row.WireGuardListenHost, "")
 	row.ProxyEntryAuthJSON = defaultJSON(row.ProxyEntryAuthJSON, "{}")
 	row.ProxyEgressMode = defaultString(row.ProxyEgressMode, "")
 	row.ProxyEgressURL = defaultString(row.ProxyEgressURL, "")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
+}
+
+func normalizeWireGuardInboundMode(listenMode string, inboundMode string) string {
+	if !strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(inboundMode)) {
+	case "transparent":
+		return "transparent"
+	default:
+		return "address"
+	}
 }
 
 func normalizeVersionPolicyRow(row *VersionPolicyRow) {
@@ -1121,24 +1134,25 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			continue
 		}
 		rules = append(rules, L4Rule{
-			ID:                  row.ID,
-			AgentID:             row.AgentID,
-			Name:                row.Name,
-			Protocol:            defaultString(row.Protocol, "tcp"),
-			ListenHost:          defaultString(row.ListenHost, "0.0.0.0"),
-			ListenPort:          row.ListenPort,
-			Backends:            parseL4Backends(row.BackendsJSON),
-			LoadBalancing:       parseLoadBalancingStrategy(row.LoadBalancingJSON),
-			Tuning:              parseL4Tuning(row.TuningJSON),
-			RelayLayers:         parseIntLayers(row.RelayLayersJSON),
-			RelayObfs:           row.RelayObfs,
-			ListenMode:          defaultString(row.ListenMode, "tcp"),
-			WireGuardProfileID:  copyOptionalInt(row.WireGuardProfileID),
-			WireGuardListenHost: row.WireGuardListenHost,
-			ProxyEntryAuth:      parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
-			ProxyEgressMode:     row.ProxyEgressMode,
-			ProxyEgressURL:      row.ProxyEgressURL,
-			Revision:            int64(row.Revision),
+			ID:                   row.ID,
+			AgentID:              row.AgentID,
+			Name:                 row.Name,
+			Protocol:             defaultString(row.Protocol, "tcp"),
+			ListenHost:           defaultString(row.ListenHost, "0.0.0.0"),
+			ListenPort:           row.ListenPort,
+			Backends:             parseL4Backends(row.BackendsJSON),
+			LoadBalancing:        parseLoadBalancingStrategy(row.LoadBalancingJSON),
+			Tuning:               parseL4Tuning(row.TuningJSON),
+			RelayLayers:          parseIntLayers(row.RelayLayersJSON),
+			RelayObfs:            row.RelayObfs,
+			ListenMode:           defaultString(row.ListenMode, "tcp"),
+			WireGuardProfileID:   copyOptionalInt(row.WireGuardProfileID),
+			WireGuardInboundMode: normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode),
+			WireGuardListenHost:  row.WireGuardListenHost,
+			ProxyEntryAuth:       parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
+			ProxyEgressMode:      row.ProxyEgressMode,
+			ProxyEgressURL:       row.ProxyEgressURL,
+			Revision:             int64(row.Revision),
 		})
 	}
 	return rules

@@ -139,12 +139,18 @@ func newServerWithOptions(
 
 		switch strings.ToLower(rule.Protocol) {
 		case "tcp":
+			if wireGuardInboundMode(rule) == "transparent" {
+				continue
+			}
 			if err := s.startTCPListener(rule); err != nil {
 				s.Close()
 				return nil, err
 			}
 			s.bindingKeys = append(s.bindingKeys, "tcp:"+l4ListenAddress(rule))
 		case "udp":
+			if wireGuardInboundMode(rule) == "transparent" {
+				continue
+			}
 			if err := s.startUDPListener(rule); err != nil {
 				s.Close()
 				return nil, err

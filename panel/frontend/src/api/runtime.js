@@ -50,6 +50,11 @@ function normalizeL4Backends(rule = {}) {
 
 function normalizeL4Rule(rule = {}) {
   const listenMode = ['proxy', 'wireguard'].includes(rule.listen_mode) ? rule.listen_mode : 'tcp'
+  const wireGuardInboundMode = listenMode === 'wireguard' && rule.wireguard_inbound_mode === 'transparent'
+    ? 'transparent'
+    : listenMode === 'wireguard'
+      ? 'address'
+      : ''
   const proxyEgressMode = listenMode === 'proxy'
     ? String(rule.proxy_egress_mode || 'relay')
     : listenMode === 'wireguard'
@@ -70,7 +75,8 @@ function normalizeL4Rule(rule = {}) {
       password: String(rule.proxy_entry_auth?.password || '')
     },
     proxy_egress_mode: proxyEgressMode,
-    proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : ''
+    proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : '',
+    wireguard_inbound_mode: wireGuardInboundMode
   }
 }
 
@@ -117,12 +123,27 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
 function normalizeL4RulePayload(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
   const { upstream_host, upstream_port, relay_chain, ...rest } = payload
+  const listenMode = payload.listen_mode === 'wireguard' ? 'wireguard' : payload.listen_mode
+  const wireGuardInboundMode = listenMode === 'wireguard' && payload.wireguard_inbound_mode === 'transparent'
+    ? 'transparent'
+    : listenMode === 'wireguard'
+      ? 'address'
+      : ''
   const normalizedPayload = {
     ...rest,
     backends: normalizeL4Backends(payload),
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
     }
+  }
+  if (listenMode === 'wireguard') {
+    normalizedPayload.wireguard_inbound_mode = wireGuardInboundMode
+    if (wireGuardInboundMode !== 'address') {
+      delete normalizedPayload.wireguard_listen_host
+    }
+  } else {
+    delete normalizedPayload.wireguard_inbound_mode
+    delete normalizedPayload.wireguard_listen_host
   }
   if (Array.isArray(payload.relay_layers)) {
     normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)

@@ -236,6 +236,9 @@ func l4ServerBindingKeys(server *l4.Server) []string {
 func l4RuleBindingKeys(rules []model.L4Rule) []string {
 	keys := make([]string, 0, len(rules))
 	for _, rule := range rules {
+		if wireGuardTransparentInbound(rule) {
+			continue
+		}
 		if strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
 			keys = append(keys, "udp:"+l4RuleListenAddress(rule))
 			continue
@@ -247,10 +250,15 @@ func l4RuleBindingKeys(rules []model.L4Rule) []string {
 
 func l4RuleListenAddress(rule model.L4Rule) string {
 	host := rule.ListenHost
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") && strings.TrimSpace(rule.WireGuardListenHost) != "" {
+	if !wireGuardTransparentInbound(rule) && strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") && strings.TrimSpace(rule.WireGuardListenHost) != "" {
 		host = rule.WireGuardListenHost
 	}
 	return net.JoinHostPort(host, strconv.Itoa(rule.ListenPort))
+}
+
+func wireGuardTransparentInbound(rule model.L4Rule) bool {
+	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
+		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent")
 }
 
 func (m *l4RuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {

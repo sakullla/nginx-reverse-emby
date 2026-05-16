@@ -147,7 +147,7 @@ func (s *Server) wireGuardRuntime(rule model.L4Rule) (relay.WireGuardRuntime, er
 
 func l4ListenAddress(rule model.L4Rule) string {
 	host := rule.ListenHost
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
+	if wireGuardInboundMode(rule) == "address" &&
 		strings.TrimSpace(rule.WireGuardListenHost) != "" {
 		host = rule.WireGuardListenHost
 	}

@@ -611,6 +611,38 @@ func TestWireGuardTCPListenFallsBackToListenHost(t *testing.T) {
 	}
 }
 
+func TestWireGuardTransparentInboundDoesNotStartAddressTCPListener(t *testing.T) {
+	runtime := &fakeL4WireGuardRuntime{
+		listenTCP: func(_ context.Context, address string) (net.Listener, error) {
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	profileID := 9
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           pickFreeTCPPort(t),
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+		WireGuardListenHost:  "10.64.0.2",
+		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}, nil, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+
+	if calls := runtime.listenTCPCalls(); len(calls) != 0 {
+		t.Fatalf("ListenTCP calls = %+v, want none for transparent inbound", calls)
+	}
+	if keys := srv.BindingKeys(); len(keys) != 0 {
+		t.Fatalf("BindingKeys() = %+v, want none for transparent inbound", keys)
+	}
+}
+
 func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 	runtime := &fakeL4WireGuardRuntime{
 		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {
