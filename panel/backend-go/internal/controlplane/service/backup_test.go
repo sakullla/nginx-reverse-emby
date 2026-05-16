@@ -1114,6 +1114,89 @@ func TestBackupServiceImportSkipsHTTPWireGuardEntryWithUnmappedProfile(t *testin
 	}
 }
 
+func TestBackupServiceImportSkipsHTTPWireGuardEntryWithDisabledProfile(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-wg-disabled-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	disabledProfileID := 7
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-http-wg",
+			Name:       "edge-http-wg",
+			AgentToken: "token-edge-http-wg",
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{{
+			ID:         disabledProfileID,
+			AgentID:    "edge-http-wg",
+			Name:       "wg-http-disabled",
+			Mode:       "generic_wireguard",
+			PrivateKey: testWireGuardPrivateKey,
+			ListenPort: 51820,
+			Addresses:  []string{"10.71.0.1/24"},
+			Peers: []WireGuardPeer{{
+				Name:       "peer-a",
+				PublicKey:  testWireGuardPublicKey,
+				AllowedIPs: []string{"10.71.0.2/32"},
+			}},
+			Enabled: false,
+		}},
+	}
+	httpRules := []map[string]any{{
+		"id":                          11,
+		"agent_id":                    "edge-http-wg",
+		"frontend_url":                "https://disabled-wg.example.com",
+		"backends":                    []map[string]any{{"url": "http://127.0.0.1:8096"}},
+		"load_balancing":              map[string]any{"strategy": "adaptive"},
+		"enabled":                     true,
+		"proxy_redirect":              false,
+		"relay_layers":                [][]int{},
+		"pass_proxy_headers":          true,
+		"custom_headers":              []map[string]any{},
+		"wireguard_entry_enabled":     true,
+		"wireguard_profile_id":        disabledProfileID,
+		"wireguard_entry_listen_host": "10.71.0.1",
+		"wireguard_entry_listen_port": 18096,
+	}}
+	archive, err := encodeBackupBundleWithHTTPRules(t, bundle, httpRules)
+	if err != nil {
+		t.Fatalf("encodeBackupBundleWithHTTPRules() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.WireGuardProfiles != 1 || result.Summary.SkippedInvalid.WireGuardProfiles != 0 {
+		t.Fatalf("wireguard profile summary = %+v", result.Summary)
+	}
+	if result.Summary.SkippedInvalid.HTTPRules != 1 || result.Summary.Imported.HTTPRules != 0 {
+		t.Fatalf("http import summary = %+v", result.Summary)
+	}
+	profiles, err := targetStore.ListWireGuardProfiles(ctx, "edge-http-wg")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(edge-http-wg) error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].Enabled {
+		t.Fatalf("profiles = %+v, want one disabled imported profile", profiles)
+	}
+	rows, err := targetStore.ListHTTPRules(ctx, "edge-http-wg")
+	if err != nil {
+		t.Fatalf("ListHTTPRules(edge-http-wg) error = %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("http rules = %+v, want disabled-profile rule skipped", rows)
+	}
+}
+
 func TestBackupL4RuleConversionPreservesWireGuardFields(t *testing.T) {
 	profileID := 77
 	rule := L4Rule{
