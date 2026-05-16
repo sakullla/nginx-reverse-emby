@@ -756,11 +756,10 @@ func (s *l4Service) materializeWireGuardURIEgressProfile(ctx context.Context, ag
 }
 
 func (s *l4Service) rollbackWireGuardURIEgressMaterialization(ctx context.Context, agentID string, l4Rows []storage.L4RuleRow, wireGuardRows []storage.WireGuardProfileRow) {
-	if wireGuardRows == nil {
-		return
-	}
 	_ = s.store.SaveL4Rules(ctx, agentID, append([]storage.L4RuleRow(nil), l4Rows...))
-	_ = s.store.SaveWireGuardProfiles(ctx, agentID, append([]storage.WireGuardProfileRow(nil), wireGuardRows...))
+	if wireGuardRows != nil {
+		_ = s.store.SaveWireGuardProfiles(ctx, agentID, append([]storage.WireGuardProfileRow(nil), wireGuardRows...))
+	}
 }
 
 func ownedWireGuardURIEgressProfileCandidate(rule L4Rule) (int, bool) {

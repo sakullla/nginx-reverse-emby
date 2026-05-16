@@ -892,6 +892,52 @@ func TestL4RuleServiceUpdateWireGuardURIEgressPartialUpdateKeepsMaterializedProf
 	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], uriProfileID)
 }
 
+func TestL4RuleServiceUpdateWireGuardURIEgressPartialUpdateRollsBackL4RowsWhenLocalApplyFails(t *testing.T) {
+	uriProfileID := 8
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                 11,
+				AgentID:            "local",
+				Name:               "entry",
+				Protocol:           "tcp",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         1080,
+				BackendsJSON:       `[]`,
+				ListenMode:         "proxy",
+				ProxyEgressMode:    "wireguard",
+				WireGuardProfileID: &uriProfileID,
+				WireGuardEgressURI: uri,
+				Enabled:            true,
+				Revision:           3,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: uriProfileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		return errors.New("apply failed")
+	})
+
+	_, err := svc.Update(context.Background(), "local", 11, L4RuleInput{
+		Name: stringPtrL4("renamed entry"),
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil, want apply error")
+	}
+	rows := store.l4RulesByID["local"]
+	if len(rows) != 1 {
+		t.Fatalf("l4 rules after failed apply = %+v, want original row", rows)
+	}
+	if rows[0].Name != "entry" || rows[0].Revision != 3 {
+		t.Fatalf("l4 row after failed apply = %+v, want original name and revision", rows[0])
+	}
+	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], uriProfileID)
+}
+
 func TestL4RuleServiceDeleteWireGuardURIEgressRemovesMaterializedProfile(t *testing.T) {
 	uriProfileID := 8
 	manualProfileID := 7
@@ -927,6 +973,52 @@ func TestL4RuleServiceDeleteWireGuardURIEgressRemovesMaterializedProfile(t *test
 		t.Fatalf("Delete() error = %v", err)
 	}
 	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], manualProfileID)
+}
+
+func TestL4RuleServiceDeleteWireGuardURIEgressRestoresL4RowsWhenMissingProfileAndLocalApplyFails(t *testing.T) {
+	uriProfileID := 8
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                 11,
+				AgentID:            "local",
+				Name:               "entry",
+				Protocol:           "tcp",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         1080,
+				BackendsJSON:       `[]`,
+				ListenMode:         "proxy",
+				ProxyEgressMode:    "wireguard",
+				WireGuardProfileID: &uriProfileID,
+				WireGuardEgressURI: uri,
+				Enabled:            true,
+				Revision:           3,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		return errors.New("apply failed")
+	})
+
+	_, err := svc.Delete(context.Background(), "local", 11)
+	if err == nil {
+		t.Fatal("Delete() error = nil, want apply error")
+	}
+	rows := store.l4RulesByID["local"]
+	if len(rows) != 1 {
+		t.Fatalf("l4 rules after failed apply = %+v, want restored row", rows)
+	}
+	if rows[0].ID != 11 || rows[0].Name != "entry" || rows[0].WireGuardEgressURI != uri {
+		t.Fatalf("l4 row after failed apply = %+v, want deleted row restored", rows[0])
+	}
+	if rows := store.wireGuardByAgent["local"]; len(rows) != 0 {
+		t.Fatalf("wireguard profiles after failed apply = %+v, want none", rows)
+	}
 }
 
 func TestL4RuleServiceCreateRejectsWireGuardInboundWithURIEgress(t *testing.T) {
