@@ -97,6 +97,42 @@ Example:
 
 For Relay over WireGuard, the rule only references Relay listeners. Any required agent-to-agent peer is generated automatically from that reference.
 
+## WireGuard URI Egress
+
+L4 WireGuard egress can be configured directly from a URI, without requiring the user to create a reusable profile first. This mirrors SOCKS/HTTP URI entry and is the fastest path for one-off outbound WireGuard connections.
+
+The project supports its own WireGuard URI dialect because WireGuard does not define an official URI sharing standard. The parser accepts:
+
+```text
+wireguard://<private_key>@<endpoint_host>:<endpoint_port>?publickey=<peer_public_key>&psk=<preshared_key>&address=<cidr,cidr>&allowedips=<cidr,cidr>&dns=<ip,ip>&mtu=<mtu>&reserved=<byte,byte,byte>#<name>
+```
+
+Required fields:
+
+- private key in the URI userinfo.
+- endpoint host and port.
+- peer public key as `publickey`.
+- at least one local address as `address`.
+
+Optional fields:
+
+- `psk` for preshared key.
+- `allowedips`, defaulting to `0.0.0.0/0,::/0` for outbound egress.
+- `dns`.
+- `mtu`.
+- `reserved`, parsed as one to three bytes for WireGuard implementations that need reserved bytes.
+- URI fragment as display name.
+
+L4 egress UI offers:
+
+- `WireGuard URI`: paste a URI directly on the rule.
+- `WireGuard Profile`: select a reusable profile.
+- "Save as Profile" action after parsing a URI.
+
+Internally, direct URI egress should be materialized as a managed hidden profile owned by the rule, for example `l4-rule-12-wireguard-egress`. This keeps the agent runtime path unchanged: snapshots still contain WireGuard profiles and L4 rules still reference `wireguard_profile_id`.
+
+When a rule switches away from direct URI egress, the managed profile is deleted or disabled if no longer referenced. If multiple rules should share the same URI, users should save it as a normal Profile and select that Profile from each rule.
+
 ## API Shape
 
 Profile CRUD remains under agent scope and gains the new profile fields.
@@ -110,6 +146,13 @@ Client routes:
 - `GET /api/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}/config`
 
 The config endpoint returns `text/plain` WireGuard config. QR rendering can be done in the frontend from that config text.
+
+URI helper routes:
+
+- `POST /api/wireguard/parse-uri` validates a URI and returns a redacted preview.
+- `POST /api/agents/{agentID}/wireguard-profiles/import-uri` creates a reusable outbound Profile from a URI.
+
+L4 rule create/update accepts direct WireGuard egress URI when `proxy_egress_mode=wireguard`. The backend parses the URI, creates or updates the managed hidden profile, and stores the resulting `wireguard_profile_id` on the rule.
 
 ## UI
 
@@ -135,6 +178,13 @@ The create/edit profile modal exposes:
 
 It does not expose raw peer editing in the default view.
 
+L4 rule form adds a WireGuard egress source selector:
+
+- `Profile`: existing behavior, choose a reusable profile.
+- `URI`: paste `wireguard://...`, preview parsed endpoint/name/address, and optionally save as Profile.
+
+Secrets in parsed URI previews are redacted after validation.
+
 ## Validation
 
 Backend rejects:
@@ -146,6 +196,9 @@ Backend rejects:
 - duplicate enabled listen ports on one agent.
 - client config download without a public endpoint host.
 - public endpoint port outside `1..65535`.
+- invalid WireGuard URI schemes or missing URI fields.
+- invalid URI reserved bytes outside `0..255`.
+- direct URI egress on non-TCP proxy-entry modes that cannot use WireGuard egress.
 
 Profile creation can succeed without a public endpoint, but the UI should label the profile as "client config unavailable" until the endpoint is set.
 
@@ -155,6 +208,8 @@ Existing profiles with raw peers continue to load. Imported or existing peers ar
 
 New client-created peers are marked as managed clients. System-generated peers are marked as managed system connections. The runtime snapshot continues to expose the same WireGuard profile shape to the agent, so the agent can remain mostly unchanged.
 
+Managed profiles created from direct L4 URI egress are hidden from the main Profile list by default, but can be shown in an advanced "managed profiles" filter for debugging.
+
 ## Testing
 
 Backend tests:
@@ -163,6 +218,9 @@ Backend tests:
 - client address allocation.
 - generated config content.
 - config endpoint rejects missing public endpoint.
+- WireGuard URI parser accepts full URI and redacts secrets in previews.
+- L4 direct WireGuard URI egress creates and updates a managed profile.
+- switching L4 egress away from direct URI cleans up the managed profile.
 - snapshot profiles include client and system peers.
 - L4 WireGuard inbound defaults to profile server address.
 
@@ -170,6 +228,7 @@ Agent tests:
 
 - existing WireGuard runtime accepts generated peers unchanged.
 - L4 WireGuard inbound works with generated client peers in snapshot.
+- L4 WireGuard egress works with profiles generated from URI imports.
 
 Frontend tests:
 
@@ -177,3 +236,4 @@ Frontend tests:
 - client creation payload is minimal.
 - config/QR actions require endpoint.
 - L4 WireGuard form defaults to enabled profile and server address.
+- L4 WireGuard egress URI payloads are generated and previews redact secrets.
