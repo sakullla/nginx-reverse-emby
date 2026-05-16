@@ -806,23 +806,49 @@ func (s *l4Service) confirmOwnedWireGuardURIEgressProfile(ctx context.Context, a
 
 func wireGuardProfileRowMatchesURI(row storage.WireGuardProfileRow, parsed ParsedWireGuardURI) bool {
 	profile := wireGuardProfileFromRow(row)
-	if profile.Mode != "generic_wireguard" || profile.PrivateKey != parsed.PrivateKey || profile.MTU != parsed.MTU {
+	expectedInput := wireGuardProfileInputFromURI(parsed, profile.Name)
+	expectedInput.ID = row.ID
+	expected, err := normalizeWireGuardProfileInput(expectedInput, WireGuardProfile{}, row.ID)
+	if err != nil {
 		return false
 	}
-	if !stringSlicesEqual(normalizeStringList(profile.Addresses), parsed.Addresses) {
+	if profile.Mode != expected.Mode ||
+		profile.PrivateKey != expected.PrivateKey ||
+		profile.ListenPort != expected.ListenPort ||
+		profile.PublicEndpoint != expected.PublicEndpoint ||
+		profile.MTU != expected.MTU ||
+		profile.Enabled != expected.Enabled {
 		return false
 	}
-	if !stringSlicesEqual(normalizeStringList(profile.DNS), parsed.DNS) {
+	if !stringSlicesEqual(normalizeStringList(profile.Addresses), normalizeStringList(expected.Addresses)) {
 		return false
 	}
-	if len(profile.Peers) != 1 {
+	if !stringSlicesEqual(normalizeStringList(profile.DNS), normalizeStringList(expected.DNS)) {
 		return false
 	}
-	peer := profile.Peers[0]
-	if peer.Endpoint != parsed.Endpoint || peer.PublicKey != parsed.PublicKey || peer.PresharedKey != parsed.PresharedKey {
+	if !stringSlicesEqual(normalizeStringList(profile.Tags), normalizeStringList(expected.Tags)) {
 		return false
 	}
-	return stringSlicesEqual(normalizeStringList(peer.AllowedIPs), parsed.AllowedIPs)
+	if len(profile.Peers) != len(expected.Peers) {
+		return false
+	}
+	for i := range profile.Peers {
+		if !wireGuardPeerMatchesExpected(profile.Peers[i], expected.Peers[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func wireGuardPeerMatchesExpected(peer WireGuardPeer, expected WireGuardPeer) bool {
+	if peer.Name != expected.Name ||
+		peer.Endpoint != expected.Endpoint ||
+		peer.PublicKey != expected.PublicKey ||
+		peer.PresharedKey != expected.PresharedKey ||
+		peer.PersistentKeepaliveSeconds != expected.PersistentKeepaliveSeconds {
+		return false
+	}
+	return stringSlicesEqual(normalizeStringList(peer.AllowedIPs), normalizeStringList(expected.AllowedIPs))
 }
 
 func stringSlicesEqual(a []string, b []string) bool {

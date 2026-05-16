@@ -1208,6 +1208,79 @@ func TestL4RuleServiceDeleteWireGuardURIEgressSkipsManualProfileThatDoesNotMatch
 	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], manualProfileID)
 }
 
+func TestL4RuleServiceDeleteWireGuardURIEgressSkipsManualProfileWithURICoreFieldsAndManualDefaults(t *testing.T) {
+	manualProfileID := 7
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&psk=" + testWireGuardPresharedKey + "&address=10.44.0.2/32&allowedips=10.0.0.0/8&dns=1.1.1.1&mtu=1420#URI%20egress"
+	tests := []struct {
+		name   string
+		mutate func(*storage.WireGuardProfileRow)
+	}{
+		{
+			name: "listen_port",
+			mutate: func(row *storage.WireGuardProfileRow) {
+				row.ListenPort = 51820
+			},
+		},
+		{
+			name: "public_endpoint",
+			mutate: func(row *storage.WireGuardProfileRow) {
+				row.PublicEndpoint = "public.example.com:51820"
+			},
+		},
+		{
+			name: "tags",
+			mutate: func(row *storage.WireGuardProfileRow) {
+				profile := wireGuardProfileFromRow(*row)
+				profile.Tags = []string{"manual"}
+				*row = wireGuardProfileToRow(profile)
+			},
+		},
+		{
+			name: "peer_keepalive",
+			mutate: func(row *storage.WireGuardProfileRow) {
+				profile := wireGuardProfileFromRow(*row)
+				profile.Peers[0].PersistentKeepaliveSeconds = 25
+				*row = wireGuardProfileToRow(profile)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profileRow := materializedWireGuardURIProfileRow(t, "local", manualProfileID, uri)
+			tt.mutate(&profileRow)
+			store := &fakeL4Store{
+				l4RulesByID: map[string][]storage.L4RuleRow{
+					"local": {{
+						ID:                 11,
+						AgentID:            "local",
+						Name:               "entry",
+						Protocol:           "tcp",
+						ListenHost:         "0.0.0.0",
+						ListenPort:         1080,
+						BackendsJSON:       `[]`,
+						ListenMode:         "proxy",
+						ProxyEgressMode:    "wireguard",
+						WireGuardProfileID: &manualProfileID,
+						WireGuardEgressURI: uri,
+						Enabled:            true,
+						Revision:           3,
+					}},
+				},
+				wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+					"local": {profileRow},
+				},
+			}
+			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			if _, err := svc.Delete(context.Background(), "local", 11); err != nil {
+				t.Fatalf("Delete() error = %v", err)
+			}
+			assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], manualProfileID)
+		})
+	}
+}
+
 func TestL4RuleServiceDeleteWireGuardURIEgressRestoresL4RowsWhenMissingProfileAndLocalApplyFails(t *testing.T) {
 	uriProfileID := 8
 	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
