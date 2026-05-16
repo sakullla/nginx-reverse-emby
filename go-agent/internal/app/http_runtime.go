@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 type httpRuntimeManager struct {
@@ -22,6 +24,7 @@ type httpRuntimeManager struct {
 	options           proxy.StreamResilienceOptions
 	http3Enabled      bool
 	blockState        proxyTrafficBlockStateValue
+	localAgentID      string
 }
 
 func newHTTPRuntimeManager() *httpRuntimeManager {
@@ -69,6 +72,7 @@ func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMater
 			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
 		},
 		http3Enabled: http3Enabled,
+		localAgentID: strings.TrimSpace(cfg.AgentID),
 	}
 }
 
@@ -98,10 +102,18 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 	if relayProvider, ok := m.provider.(proxy.RelayMaterialProvider); ok {
 		providers.Relay = relayProvider
 	}
-	if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
+	transaction, wireGuardProvider, err := m.prepareWireGuardProfilesLocked(ctx, wireGuardProfiles)
+	if err != nil {
 		return err
 	}
-	providers.WireGuard = m.wireGuardProvider
+	if transaction != nil {
+		defer func() {
+			if transaction != nil {
+				transaction.Rollback()
+			}
+		}()
+	}
+	providers.WireGuard = wireGuardProvider
 
 	bindings, err := proxy.BindingKeys(ctx, rules, relayListeners, providers)
 	if err != nil {
@@ -115,6 +127,10 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 			return err
 		}
 		runtime.SetTrafficBlockState(m.currentTrafficBlockState())
+		if transaction != nil {
+			transaction.Commit()
+			transaction = nil
+		}
 		_ = previous.Close()
 		m.runtime = runtime
 		return nil
@@ -129,6 +145,10 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 		return err
 	}
 	runtime.SetTrafficBlockState(m.currentTrafficBlockState())
+	if transaction != nil {
+		transaction.Commit()
+		transaction = nil
+	}
 	m.runtime = runtime
 	return nil
 }
@@ -138,6 +158,20 @@ func (m *httpRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, p
 		return nil
 	}
 	return m.wireGuardRuntime.Apply(ctx, profiles)
+}
+
+func (m *httpRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+	if m.wireGuardRuntime == nil || profiles == nil {
+		return nil, m.wireGuardProvider, nil
+	}
+	transaction, err := m.wireGuardRuntime.Prepare(ctx, profiles)
+	if err != nil {
+		return nil, nil, err
+	}
+	if transaction == nil {
+		return nil, m.wireGuardProvider, nil
+	}
+	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID}, nil
 }
 
 func (m *httpRuntimeManager) UpdateTrafficBlockState(state proxy.TrafficBlockState) {
