@@ -1589,10 +1589,10 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard") {
-			if rawURI := strings.TrimSpace(item.WireGuardEgressURI); rawURI != "" {
-				normalized.WireGuardEgressURI = rawURI
-			}
+		if restoreURI, err := s.shouldRestoreImportedL4WireGuardEgressURI(ctx, item, resolvedAgentID, wireGuardProfileID, importedWireGuardProfileIDs); err != nil {
+			return err
+		} else if restoreURI {
+			normalized.WireGuardEgressURI = strings.TrimSpace(item.WireGuardEgressURI)
 		}
 		if err := l4Svc.validateRelayChain(ctx, resolvedAgentID, normalized.RelayChain); err != nil {
 			result.addSkippedInvalid("l4_rule", key, err.Error())
@@ -1631,6 +1631,39 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		}
 	}
 	return nil
+}
+
+func (s *backupService) shouldRestoreImportedL4WireGuardEgressURI(ctx context.Context, item BackupL4Rule, resolvedAgentID string, mappedProfileID *int, importedWireGuardProfileIDs map[string]struct{}) (bool, error) {
+	if mappedProfileID == nil || *mappedProfileID <= 0 || item.WireGuardProfileID == nil || *item.WireGuardProfileID <= 0 {
+		return false, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard") {
+		return false, nil
+	}
+	rawURI := strings.TrimSpace(item.WireGuardEgressURI)
+	if rawURI == "" {
+		return false, nil
+	}
+	if !backupWireGuardProfileWasImported(item.AgentID, resolvedAgentID, *item.WireGuardProfileID, importedWireGuardProfileIDs) {
+		return false, nil
+	}
+	parsed, err := ParseWireGuardURI(rawURI)
+	if err != nil {
+		return false, nil
+	}
+
+	rows, err := s.store.ListWireGuardProfiles(ctx, resolvedAgentID)
+	if err != nil {
+		return false, err
+	}
+	expectedProfileName := fmt.Sprintf("l4-rule-%d-wireguard-egress", item.ID)
+	for _, row := range rows {
+		if row.ID != *mappedProfileID {
+			continue
+		}
+		return wireGuardProfileRowMatchesURI(row, parsed, expectedProfileName), nil
+	}
+	return false, nil
 }
 
 func (s *backupService) remapImportedL4WireGuardURIEgressProfileOwnership(ctx context.Context, item BackupL4Rule, resolvedAgentID string, assignedRuleID int, mappedProfileID *int, importedWireGuardProfileIDs map[string]struct{}) error {

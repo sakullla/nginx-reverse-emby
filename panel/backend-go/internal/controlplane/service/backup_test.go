@@ -1190,6 +1190,106 @@ func TestBackupServiceImportRemapsL4WireGuardURIEgressProfileOwnershipWhenRuleID
 	}
 }
 
+func TestBackupServiceImportClearsL4WireGuardEgressURIWhenProfileImportConflicts(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-wg-import-conflict-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-l4-wg",
+		Name:             "edge-l4-wg",
+		AgentToken:       "token-existing",
+		CapabilitiesJSON: `["l4","wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(existing) error = %v", err)
+	}
+
+	sourceProfileID := 41
+	existingProfileID := 88
+	ruleID := 71
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
+	existingProfile := materializedWireGuardURIProfileRowForRule(t, "edge-l4-wg", existingProfileID, ruleID, uri)
+	if err := targetStore.SaveWireGuardProfiles(ctx, "edge-l4-wg", []storage.WireGuardProfileRow{existingProfile}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(existing) error = %v", err)
+	}
+
+	sourceProfile := materializedWireGuardURIProfileRowForRule(t, "edge-l4-wg", sourceProfileID, ruleID, uri)
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:           "edge-l4-wg",
+			Name:         "edge-l4-wg",
+			AgentToken:   "token-edge-l4-wg",
+			Capabilities: []string{"l4", "wireguard"},
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{backupWireGuardProfileFromRow(sourceProfile)},
+		L4Rules: []BackupL4Rule{{
+			ID:                 ruleID,
+			AgentID:            "edge-l4-wg",
+			Name:               "wg-egress",
+			Protocol:           "tcp",
+			ListenHost:         "0.0.0.0",
+			ListenPort:         9443,
+			Backends:           []L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			LoadBalancing:      L4LoadBalancing{Strategy: "adaptive"},
+			Tuning:             L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
+			ListenMode:         "proxy",
+			WireGuardProfileID: &sourceProfileID,
+			ProxyEgressMode:    "wireguard",
+			WireGuardEgressURI: uri,
+			Enabled:            true,
+			Tags:               []string{"wg"},
+			Revision:           5,
+		}},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.L4Rules != 1 || result.Summary.Imported.WireGuardProfiles != 0 || result.Summary.SkippedConflict.WireGuardProfiles != 1 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+
+	rows, err := targetStore.ListL4Rules(ctx, "edge-l4-wg")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("l4 rules len = %d, want 1: %+v", len(rows), rows)
+	}
+	importedRule := rows[0]
+	if importedRule.WireGuardProfileID == nil || *importedRule.WireGuardProfileID != existingProfileID {
+		t.Fatalf("L4 wireguard profile ID = %v, want existing profile ID %d", importedRule.WireGuardProfileID, existingProfileID)
+	}
+	if importedRule.WireGuardEgressURI != "" {
+		t.Fatalf("WireGuardEgressURI = %q, want empty for conflicted profile import", importedRule.WireGuardEgressURI)
+	}
+
+	l4Svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore)
+	if _, err := l4Svc.Delete(ctx, "edge-l4-wg", importedRule.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	profiles, err := targetStore.ListWireGuardProfiles(ctx, "edge-l4-wg")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(after delete) error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].ID != existingProfileID {
+		t.Fatalf("wireguard profiles after L4 delete = %+v, want existing profile ID %d preserved", profiles, existingProfileID)
+	}
+}
+
 func TestBackupServiceImportAcceptsLegacyL4WireGuardEgressBackupWithoutURI(t *testing.T) {
 	ctx := t.Context()
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-wg-legacy-target"), "target-local")
