@@ -24,6 +24,7 @@ type BackupCounts struct {
 	L4Rules           int `json:"l4_rules"`
 	RelayListeners    int `json:"relay_listeners"`
 	WireGuardProfiles int `json:"wireguard_profiles,omitempty"`
+	WireGuardClients  int `json:"wireguard_clients,omitempty"`
 	Certificates      int `json:"certificates"`
 	VersionPolicies   int `json:"version_policies"`
 	TrafficPolicies   int `json:"traffic_policies,omitempty"`
@@ -36,6 +37,7 @@ type BackupBundle struct {
 	HTTPRules         []BackupHTTPRule         `json:"http_rules"`
 	L4Rules           []BackupL4Rule           `json:"l4_rules"`
 	WireGuardProfiles []BackupWireGuardProfile `json:"wireguard_profiles,omitempty"`
+	WireGuardClients  []BackupWireGuardClient  `json:"wireguard_clients,omitempty"`
 	RelayListeners    []BackupRelayListener    `json:"relay_listeners"`
 	Certificates      []BackupCertificate      `json:"certificates"`
 	VersionPolicies   []BackupVersionPolicy    `json:"version_policies"`
@@ -65,22 +67,26 @@ type BackupAgent struct {
 }
 
 type BackupHTTPRule struct {
-	ID               int                `json:"id"`
-	AgentID          string             `json:"agent_id"`
-	FrontendURL      string             `json:"frontend_url"`
-	BackendURL       string             `json:"backend_url,omitempty"`
-	Backends         []HTTPRuleBackend  `json:"backends,omitempty"`
-	LoadBalancing    HTTPLoadBalancing  `json:"load_balancing,omitempty"`
-	Enabled          bool               `json:"enabled"`
-	Tags             []string           `json:"tags,omitempty"`
-	ProxyRedirect    bool               `json:"proxy_redirect"`
-	RelayChain       []int              `json:"relay_chain,omitempty"`
-	RelayLayers      [][]int            `json:"relay_layers,omitempty"`
-	RelayObfs        bool               `json:"relay_obfs,omitempty"`
-	PassProxyHeaders bool               `json:"pass_proxy_headers"`
-	UserAgent        string             `json:"user_agent,omitempty"`
-	CustomHeaders    []HTTPCustomHeader `json:"custom_headers,omitempty"`
-	Revision         int                `json:"revision,omitempty"`
+	ID                       int                `json:"id"`
+	AgentID                  string             `json:"agent_id"`
+	FrontendURL              string             `json:"frontend_url"`
+	BackendURL               string             `json:"backend_url,omitempty"`
+	Backends                 []HTTPRuleBackend  `json:"backends,omitempty"`
+	LoadBalancing            HTTPLoadBalancing  `json:"load_balancing,omitempty"`
+	Enabled                  bool               `json:"enabled"`
+	Tags                     []string           `json:"tags,omitempty"`
+	ProxyRedirect            bool               `json:"proxy_redirect"`
+	RelayChain               []int              `json:"relay_chain,omitempty"`
+	RelayLayers              [][]int            `json:"relay_layers,omitempty"`
+	RelayObfs                bool               `json:"relay_obfs,omitempty"`
+	PassProxyHeaders         bool               `json:"pass_proxy_headers"`
+	UserAgent                string             `json:"user_agent,omitempty"`
+	CustomHeaders            []HTTPCustomHeader `json:"custom_headers,omitempty"`
+	WireGuardEntryEnabled    bool               `json:"wireguard_entry_enabled,omitempty"`
+	WireGuardProfileID       *int               `json:"wireguard_profile_id,omitempty"`
+	WireGuardEntryListenHost string             `json:"wireguard_entry_listen_host,omitempty"`
+	WireGuardEntryListenPort int                `json:"wireguard_entry_listen_port,omitempty"`
+	Revision                 int                `json:"revision,omitempty"`
 }
 
 type BackupL4Rule struct {
@@ -129,6 +135,22 @@ type BackupWireGuardProfile struct {
 	Enabled        bool            `json:"enabled"`
 	Tags           []string        `json:"tags,omitempty"`
 	Revision       int             `json:"revision,omitempty"`
+}
+
+type BackupWireGuardClient struct {
+	ID           int      `json:"id"`
+	AgentID      string   `json:"agent_id"`
+	ProfileID    int      `json:"profile_id"`
+	Name         string   `json:"name"`
+	PrivateKey   string   `json:"private_key,omitempty"`
+	PublicKey    string   `json:"public_key"`
+	PresharedKey string   `json:"preshared_key,omitempty"`
+	Address      string   `json:"address"`
+	AllowedIPs   []string `json:"allowed_ips"`
+	DNS          []string `json:"dns"`
+	Enabled      bool     `json:"enabled"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	UpdatedAt    string   `json:"updated_at,omitempty"`
 }
 
 type BackupTrafficPolicy struct {

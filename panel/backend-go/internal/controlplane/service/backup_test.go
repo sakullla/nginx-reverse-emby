@@ -863,6 +863,257 @@ func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
 	}
 }
 
+func TestBackupServiceExportIncludesHTTPWireGuardEntryFields(t *testing.T) {
+	ctx := t.Context()
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-wg-export-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "edge-http-wg",
+		Name:       "edge-http-wg",
+		AgentToken: "token-edge-http-wg",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	profileID := 41
+	if err := sourceStore.SaveWireGuardProfiles(ctx, "edge-http-wg", []storage.WireGuardProfileRow{{
+		ID:            profileID,
+		AgentID:       "edge-http-wg",
+		Name:          "wg-http",
+		Mode:          "generic_wireguard",
+		PrivateKey:    testWireGuardPrivateKey,
+		ListenPort:    51820,
+		AddressesJSON: `["10.44.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      3,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := sourceStore.SaveHTTPRules(ctx, "edge-http-wg", []storage.HTTPRuleRow{{
+		ID:                       11,
+		AgentID:                  "edge-http-wg",
+		FrontendURL:              "https://media.example.com",
+		BackendsJSON:             `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON:        `{"strategy":"adaptive"}`,
+		Enabled:                  true,
+		TagsJSON:                 `[]`,
+		RelayLayersJSON:          `[]`,
+		CustomHeadersJSON:        `[]`,
+		WireGuardEntryEnabled:    true,
+		WireGuardProfileID:       &profileID,
+		WireGuardEntryListenHost: "10.44.0.1",
+		WireGuardEntryListenPort: 18096,
+		Revision:                 4,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	var rules []map[string]any
+	if err := json.Unmarshal(backupArchiveJSONFile(t, archive, "http_rules.json"), &rules); err != nil {
+		t.Fatalf("unmarshal http_rules.json: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("http rules len = %d, want 1", len(rules))
+	}
+	rule := rules[0]
+	if rule["wireguard_entry_enabled"] != true {
+		t.Fatalf("wireguard_entry_enabled = %#v, want true", rule["wireguard_entry_enabled"])
+	}
+	if rule["wireguard_profile_id"] != float64(profileID) {
+		t.Fatalf("wireguard_profile_id = %#v, want %d", rule["wireguard_profile_id"], profileID)
+	}
+	if rule["wireguard_entry_listen_host"] != "10.44.0.1" {
+		t.Fatalf("wireguard_entry_listen_host = %#v", rule["wireguard_entry_listen_host"])
+	}
+	if rule["wireguard_entry_listen_port"] != float64(18096) {
+		t.Fatalf("wireguard_entry_listen_port = %#v, want 18096", rule["wireguard_entry_listen_port"])
+	}
+}
+
+func TestBackupServiceImportPreservesHTTPWireGuardEntryFieldsAndRemapsProfileID(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-wg-import-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	sourceProfileID := 7
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-http-wg",
+			Name:       "edge-http-wg",
+			AgentToken: "token-edge-http-wg",
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{{
+			ID:         sourceProfileID,
+			AgentID:    "edge-http-wg",
+			Name:       "wg-http",
+			Mode:       "generic_wireguard",
+			PrivateKey: testWireGuardPrivateKey,
+			ListenPort: 51820,
+			Addresses:  []string{"10.44.0.1/24"},
+			Peers: []WireGuardPeer{{
+				Name:       "peer-a",
+				PublicKey:  testWireGuardPublicKey,
+				AllowedIPs: []string{"10.44.0.2/32"},
+			}},
+			Enabled: true,
+		}},
+	}
+	httpRules := []map[string]any{{
+		"id":                          11,
+		"agent_id":                    "edge-http-wg",
+		"frontend_url":                "https://media.example.com",
+		"backends":                    []map[string]any{{"url": "http://127.0.0.1:8096"}},
+		"load_balancing":              map[string]any{"strategy": "adaptive"},
+		"enabled":                     true,
+		"proxy_redirect":              false,
+		"relay_layers":                [][]int{},
+		"pass_proxy_headers":          true,
+		"custom_headers":              []map[string]any{},
+		"wireguard_entry_enabled":     true,
+		"wireguard_profile_id":        sourceProfileID,
+		"wireguard_entry_listen_host": "10.44.0.1",
+		"wireguard_entry_listen_port": 18096,
+	}}
+	archive, err := encodeBackupBundleWithHTTPRules(t, bundle, httpRules)
+	if err != nil {
+		t.Fatalf("encodeBackupBundleWithHTTPRules() error = %v", err)
+	}
+
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "existing-agent",
+		Name:       "existing-agent",
+		AgentToken: "token-existing",
+	}); err != nil {
+		t.Fatalf("SaveAgent(target existing) error = %v", err)
+	}
+	if err := targetStore.SaveWireGuardProfiles(ctx, "existing-agent", []storage.WireGuardProfileRow{{
+		ID:            sourceProfileID,
+		AgentID:       "existing-agent",
+		Name:          "existing-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    testWireGuardPrivateKey,
+		ListenPort:    51821,
+		AddressesJSON: `["10.60.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      9,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(target existing) error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.HTTPRules != 1 || result.Summary.SkippedInvalid.HTTPRules != 0 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+	profiles, err := targetStore.ListWireGuardProfiles(ctx, "edge-http-wg")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(edge-http-wg) error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("profiles = %+v, want one imported profile", profiles)
+	}
+	importedProfileID := profiles[0].ID
+	if importedProfileID == sourceProfileID {
+		t.Fatalf("imported profile id = %d, want remapped away from existing id", importedProfileID)
+	}
+	rows, err := targetStore.ListHTTPRules(ctx, "edge-http-wg")
+	if err != nil {
+		t.Fatalf("ListHTTPRules(edge-http-wg) error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("http rules = %+v, want one imported rule", rows)
+	}
+	row := rows[0]
+	if !row.WireGuardEntryEnabled {
+		t.Fatalf("WireGuardEntryEnabled = false, want true")
+	}
+	if row.WireGuardProfileID == nil || *row.WireGuardProfileID != importedProfileID {
+		t.Fatalf("WireGuardProfileID = %v, want %d", row.WireGuardProfileID, importedProfileID)
+	}
+	if row.WireGuardEntryListenHost != "10.44.0.1" || row.WireGuardEntryListenPort != 18096 {
+		t.Fatalf("wireguard entry listen = %q:%d, want 10.44.0.1:18096", row.WireGuardEntryListenHost, row.WireGuardEntryListenPort)
+	}
+}
+
+func TestBackupServiceImportSkipsHTTPWireGuardEntryWithUnmappedProfile(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-wg-missing-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	missingProfileID := 99
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-http-wg",
+			Name:       "edge-http-wg",
+			AgentToken: "token-edge-http-wg",
+		}},
+	}
+	httpRules := []map[string]any{{
+		"id":                          11,
+		"agent_id":                    "edge-http-wg",
+		"frontend_url":                "https://missing-wg.example.com",
+		"backends":                    []map[string]any{{"url": "http://127.0.0.1:8096"}},
+		"load_balancing":              map[string]any{"strategy": "adaptive"},
+		"enabled":                     true,
+		"proxy_redirect":              false,
+		"relay_layers":                [][]int{},
+		"pass_proxy_headers":          true,
+		"custom_headers":              []map[string]any{},
+		"wireguard_entry_enabled":     true,
+		"wireguard_profile_id":        missingProfileID,
+		"wireguard_entry_listen_host": "10.70.0.1",
+		"wireguard_entry_listen_port": 18096,
+	}}
+	archive, err := encodeBackupBundleWithHTTPRules(t, bundle, httpRules)
+	if err != nil {
+		t.Fatalf("encodeBackupBundleWithHTTPRules() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.SkippedInvalid.HTTPRules != 1 || result.Summary.Imported.HTTPRules != 0 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+	rows, err := targetStore.ListHTTPRules(ctx, "edge-http-wg")
+	if err != nil {
+		t.Fatalf("ListHTTPRules(edge-http-wg) error = %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("http rules = %+v, want missing-profile rule skipped", rows)
+	}
+}
+
 func TestBackupL4RuleConversionPreservesWireGuardFields(t *testing.T) {
 	profileID := 77
 	rule := L4Rule{
@@ -976,6 +1227,125 @@ func TestBackupServiceExportIncludesWireGuardProfilesWithRawSecrets(t *testing.T
 	}
 	if profile.PublicEndpoint != "wg.example.com:51820" {
 		t.Fatalf("public_endpoint = %q, want wg.example.com:51820", profile.PublicEndpoint)
+	}
+}
+
+func TestBackupServiceExportIncludesWireGuardClientsWithRawSecretsAndDisabledRows(t *testing.T) {
+	ctx := t.Context()
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-export-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "edge-wg",
+		Name:       "edge-wg",
+		AgentToken: "token-edge-wg",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := sourceStore.SaveWireGuardProfiles(ctx, "edge-wg", []storage.WireGuardProfileRow{{
+		ID:            41,
+		AgentID:       "edge-wg",
+		Name:          "wg-clients",
+		Mode:          "generic_wireguard",
+		PrivateKey:    testWireGuardPrivateKey,
+		ListenPort:    51820,
+		AddressesJSON: `["10.44.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `["1.1.1.1"]`,
+		Enabled:       true,
+		Revision:      3,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := sourceStore.SaveWireGuardClients(ctx, "edge-wg", 41, []storage.WireGuardClientRow{
+		{
+			ID:             1,
+			AgentID:        "edge-wg",
+			ProfileID:      41,
+			Name:           "phone",
+			PrivateKey:     testWireGuardPrivateKey,
+			PublicKey:      testWireGuardPublicKey,
+			PresharedKey:   testWireGuardPresharedKey,
+			Address:        "10.44.0.2/32",
+			AllowedIPsJSON: `["0.0.0.0/0"]`,
+			DNSJSON:        `["1.1.1.1"]`,
+			Enabled:        true,
+			CreatedAt:      "2026-05-16T10:00:00Z",
+			UpdatedAt:      "2026-05-16T10:01:00Z",
+		},
+		{
+			ID:             2,
+			AgentID:        "edge-wg",
+			ProfileID:      41,
+			Name:           "tablet",
+			PrivateKey:     testWireGuardPresharedKey,
+			PublicKey:      testWireGuardPublicKeyB,
+			PresharedKey:   testWireGuardPresharedKeyB,
+			Address:        "10.44.0.3/32",
+			AllowedIPsJSON: `["10.44.0.0/24"]`,
+			DNSJSON:        `["9.9.9.9"]`,
+			Enabled:        false,
+			CreatedAt:      "2026-05-16T11:00:00Z",
+			UpdatedAt:      "2026-05-16T11:01:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("SaveWireGuardClients() error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	files := backupArchiveFileNames(t, archive)
+	if !files["wireguard_clients.json"] {
+		t.Fatalf("backup files missing wireguard_clients.json: %#v", files)
+	}
+	bundle, err := decodeBackupBundle(archive)
+	if err != nil {
+		t.Fatalf("decodeBackupBundle() error = %v", err)
+	}
+	var counts map[string]int
+	countsRaw, err := json.Marshal(bundle.Manifest.Counts)
+	if err != nil {
+		t.Fatalf("marshal manifest counts: %v", err)
+	}
+	if err := json.Unmarshal(countsRaw, &counts); err != nil {
+		t.Fatalf("unmarshal manifest counts: %v", err)
+	}
+	if counts["wireguard_clients"] != 2 {
+		t.Fatalf("wireguard client count = %d, want 2", counts["wireguard_clients"])
+	}
+	var clients []testBackupWireGuardClient
+	if err := json.Unmarshal(backupArchiveJSONFile(t, archive, "wireguard_clients.json"), &clients); err != nil {
+		t.Fatalf("unmarshal wireguard_clients.json: %v", err)
+	}
+	if len(clients) != 2 {
+		t.Fatalf("wireguard clients len = %d, want 2", len(clients))
+	}
+	clientsByName := map[string]testBackupWireGuardClient{}
+	for _, client := range clients {
+		clientsByName[client.Name] = client
+	}
+	phone := clientsByName["phone"]
+	if phone.PrivateKey != testWireGuardPrivateKey || phone.PublicKey != testWireGuardPublicKey || phone.PresharedKey != testWireGuardPresharedKey {
+		t.Fatalf("phone secrets = private %q public %q psk %q, want raw secrets", phone.PrivateKey, phone.PublicKey, phone.PresharedKey)
+	}
+	if phone.AgentID != "edge-wg" || phone.ProfileID != 41 || phone.Address != "10.44.0.2/32" || !phone.Enabled {
+		t.Fatalf("phone client = %+v, want source identifiers/address/enabled", phone)
+	}
+	if len(phone.AllowedIPs) != 1 || phone.AllowedIPs[0] != "0.0.0.0/0" || len(phone.DNS) != 1 || phone.DNS[0] != "1.1.1.1" {
+		t.Fatalf("phone client routes/dns = allowed %+v dns %+v", phone.AllowedIPs, phone.DNS)
+	}
+	tablet := clientsByName["tablet"]
+	if tablet.Enabled {
+		t.Fatalf("tablet Enabled = true, want disabled row preserved")
+	}
+	if tablet.PrivateKey != testWireGuardPresharedKey || tablet.PresharedKey != testWireGuardPresharedKeyB {
+		t.Fatalf("tablet secrets = private %q psk %q, want raw disabled secrets", tablet.PrivateKey, tablet.PresharedKey)
 	}
 }
 
@@ -1170,6 +1540,257 @@ func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4Reference
 	}
 	if l4Rules[0].WireGuardListenHost != "10.50.0.2" {
 		t.Fatalf("WireGuardListenHost = %q, want 10.50.0.2", l4Rules[0].WireGuardListenHost)
+	}
+}
+
+func TestBackupServiceImportRestoresWireGuardClientsAndReconcilesProfilePeers(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-import-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	sourceProfileID := 7
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-wg",
+			Name:       "edge-wg",
+			AgentToken: "token-edge-wg",
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{{
+			ID:             sourceProfileID,
+			AgentID:        "edge-wg",
+			Name:           "wg-clients",
+			Mode:           "generic_wireguard",
+			PrivateKey:     testWireGuardPrivateKey,
+			ListenPort:     51820,
+			PublicEndpoint: "wg.example.com:51820",
+			Addresses:      []string{"10.44.0.1/24"},
+			Peers: []WireGuardPeer{{
+				Name:         "phone",
+				PublicKey:    testWireGuardPublicKey,
+				PresharedKey: testWireGuardPresharedKey,
+				AllowedIPs:   []string{"10.44.0.2/32"},
+			}},
+			DNS:      []string{"1.1.1.1"},
+			MTU:      1420,
+			Enabled:  true,
+			Revision: 3,
+		}},
+	}
+	clients := []testBackupWireGuardClient{
+		{
+			ID:           1,
+			AgentID:      "edge-wg",
+			ProfileID:    sourceProfileID,
+			Name:         "phone",
+			PrivateKey:   testWireGuardPrivateKey,
+			PublicKey:    testWireGuardPublicKey,
+			PresharedKey: testWireGuardPresharedKey,
+			Address:      "10.44.0.2/32",
+			AllowedIPs:   []string{"0.0.0.0/0"},
+			DNS:          []string{"1.1.1.1"},
+			Enabled:      true,
+			CreatedAt:    "2026-05-16T10:00:00Z",
+			UpdatedAt:    "2026-05-16T10:01:00Z",
+		},
+		{
+			ID:           2,
+			AgentID:      "edge-wg",
+			ProfileID:    sourceProfileID,
+			Name:         "laptop",
+			PrivateKey:   testWireGuardPresharedKey,
+			PublicKey:    testWireGuardPublicKeyB,
+			PresharedKey: testWireGuardPresharedKeyB,
+			Address:      "10.44.0.3/32",
+			AllowedIPs:   []string{"10.44.0.0/24"},
+			DNS:          []string{"9.9.9.9"},
+			Enabled:      true,
+			CreatedAt:    "2026-05-16T11:00:00Z",
+			UpdatedAt:    "2026-05-16T11:01:00Z",
+		},
+		{
+			ID:           3,
+			AgentID:      "edge-wg",
+			ProfileID:    sourceProfileID,
+			Name:         "disabled",
+			PrivateKey:   "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=",
+			PublicKey:    "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG=",
+			PresharedKey: "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH=",
+			Address:      "10.44.0.4/32",
+			AllowedIPs:   []string{"10.44.0.0/24"},
+			DNS:          []string{"8.8.8.8"},
+			Enabled:      false,
+			CreatedAt:    "2026-05-16T12:00:00Z",
+			UpdatedAt:    "2026-05-16T12:01:00Z",
+		},
+	}
+	archive, err := encodeBackupBundleWithWireGuardClients(t, bundle, clients)
+	if err != nil {
+		t.Fatalf("encodeBackupBundleWithWireGuardClients() error = %v", err)
+	}
+
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "existing-agent",
+		Name:       "existing-agent",
+		AgentToken: "token-existing",
+	}); err != nil {
+		t.Fatalf("SaveAgent(target existing) error = %v", err)
+	}
+	if err := targetStore.SaveWireGuardProfiles(ctx, "existing-agent", []storage.WireGuardProfileRow{{
+		ID:            sourceProfileID,
+		AgentID:       "existing-agent",
+		Name:          "existing-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    testWireGuardPrivateKey,
+		ListenPort:    51821,
+		AddressesJSON: `["10.60.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      9,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(target existing) error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	var importedCounts map[string]int
+	importedRaw, err := json.Marshal(result.Summary.Imported)
+	if err != nil {
+		t.Fatalf("marshal imported summary: %v", err)
+	}
+	if err := json.Unmarshal(importedRaw, &importedCounts); err != nil {
+		t.Fatalf("unmarshal imported summary: %v", err)
+	}
+	if result.Summary.Imported.WireGuardProfiles != 1 || importedCounts["wireguard_clients"] != 3 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+
+	profiles, err := targetStore.ListWireGuardProfiles(ctx, "edge-wg")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(edge-wg) error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("profiles = %+v, want one imported profile", profiles)
+	}
+	importedProfileID := profiles[0].ID
+	if importedProfileID == sourceProfileID {
+		t.Fatalf("imported profile id = %d, want remapped away from existing id", importedProfileID)
+	}
+	rows, err := targetStore.ListWireGuardClients(ctx, "edge-wg", importedProfileID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(edge-wg) error = %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("wireguard clients = %+v, want three restored rows", rows)
+	}
+	clientsByName := map[string]storage.WireGuardClientRow{}
+	for _, row := range rows {
+		clientsByName[row.Name] = row
+		if row.AgentID != "edge-wg" || row.ProfileID != importedProfileID {
+			t.Fatalf("client row = %+v, want remapped agent/profile", row)
+		}
+	}
+	phone := clientsByName["phone"]
+	if phone.PrivateKey != testWireGuardPrivateKey || phone.PublicKey != testWireGuardPublicKey || phone.PresharedKey != testWireGuardPresharedKey {
+		t.Fatalf("phone secrets = %+v, want source raw secrets", phone)
+	}
+	if phone.Address != "10.44.0.2/32" || phone.AllowedIPsJSON != `["0.0.0.0/0"]` || phone.DNSJSON != `["1.1.1.1"]` || !phone.Enabled {
+		t.Fatalf("phone row = %+v, want restored address/routes/dns/enabled", phone)
+	}
+	disabled := clientsByName["disabled"]
+	if disabled.Enabled {
+		t.Fatalf("disabled client row = %+v, want disabled preserved", disabled)
+	}
+
+	profile := wireGuardProfileFromRow(profiles[0])
+	peerCounts := map[string]int{}
+	for _, peer := range profile.Peers {
+		peerCounts[peer.PublicKey]++
+	}
+	if peerCounts[testWireGuardPublicKey] != 1 || peerCounts[testWireGuardPublicKeyB] != 1 {
+		t.Fatalf("profile peers = %+v, want one peer for each enabled client", profile.Peers)
+	}
+	if peerCounts["GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG="] != 0 {
+		t.Fatalf("profile peers = %+v, want disabled client omitted", profile.Peers)
+	}
+}
+
+func TestBackupServiceImportRestoresWireGuardClientsForDisabledProfile(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-disabled-profile-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	profileID := 7
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-wg-disabled",
+			Name:       "edge-wg-disabled",
+			AgentToken: "token-edge-wg-disabled",
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{{
+			ID:         profileID,
+			AgentID:    "edge-wg-disabled",
+			Name:       "wg-disabled",
+			Mode:       "generic_wireguard",
+			PrivateKey: testWireGuardPrivateKey,
+			Addresses:  []string{"10.45.0.1/24"},
+			Peers:      []WireGuardPeer{},
+			Enabled:    false,
+		}},
+	}
+	archive, err := encodeBackupBundleWithWireGuardClients(t, bundle, []testBackupWireGuardClient{{
+		ID:           1,
+		AgentID:      "edge-wg-disabled",
+		ProfileID:    profileID,
+		Name:         "disabled-profile-client",
+		PrivateKey:   testWireGuardPrivateKey,
+		PublicKey:    testWireGuardPublicKey,
+		PresharedKey: testWireGuardPresharedKey,
+		Address:      "10.45.0.2/32",
+		AllowedIPs:   []string{"10.45.0.0/24"},
+		DNS:          []string{"1.1.1.1"},
+		Enabled:      false,
+		CreatedAt:    "2026-05-16T10:00:00Z",
+		UpdatedAt:    "2026-05-16T10:01:00Z",
+	}})
+	if err != nil {
+		t.Fatalf("encodeBackupBundleWithWireGuardClients() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.WireGuardClients != 1 || result.Summary.SkippedInvalid.WireGuardClients != 0 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+	rows, err := targetStore.ListWireGuardClients(ctx, "edge-wg-disabled", profileID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(edge-wg-disabled) error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("wireguard clients = %+v, want one restored row", rows)
+	}
+	if rows[0].Enabled || rows[0].PrivateKey != testWireGuardPrivateKey || rows[0].Address != "10.45.0.2/32" {
+		t.Fatalf("restored disabled-profile client = %+v", rows[0])
 	}
 }
 
@@ -1832,6 +2453,22 @@ func (s *countingBackupStore) ListAgents(ctx context.Context) ([]storage.AgentRo
 	return s.backupStore.ListAgents(ctx)
 }
 
+type testBackupWireGuardClient struct {
+	ID           int      `json:"id"`
+	AgentID      string   `json:"agent_id"`
+	ProfileID    int      `json:"profile_id"`
+	Name         string   `json:"name"`
+	PrivateKey   string   `json:"private_key,omitempty"`
+	PublicKey    string   `json:"public_key"`
+	PresharedKey string   `json:"preshared_key,omitempty"`
+	Address      string   `json:"address"`
+	AllowedIPs   []string `json:"allowed_ips"`
+	DNS          []string `json:"dns"`
+	Enabled      bool     `json:"enabled"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	UpdatedAt    string   `json:"updated_at,omitempty"`
+}
+
 func backupArchiveFileNames(t *testing.T, archive []byte) map[string]bool {
 	t.Helper()
 	gz, err := gzip.NewReader(bytes.NewReader(archive))
@@ -1853,6 +2490,98 @@ func backupArchiveFileNames(t *testing.T, archive []byte) map[string]bool {
 		files[header.Name] = true
 	}
 	return files
+}
+
+func backupArchiveJSONFile(t *testing.T, archive []byte, name string) []byte {
+	t.Helper()
+	gz, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatalf("gzip.NewReader() error = %v", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar.Next() error = %v", err)
+		}
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("ReadAll(%s) error = %v", header.Name, err)
+		}
+		if header.Name == name {
+			return content
+		}
+	}
+	t.Fatalf("backup file %s not found", name)
+	return nil
+}
+
+func encodeBackupBundleWithWireGuardClients(t *testing.T, bundle BackupBundle, clients []testBackupWireGuardClient) ([]byte, error) {
+	t.Helper()
+	return encodeBackupBundleWithOverrides(t, bundle, map[string]any{
+		"wireguard_clients.json": clients,
+	})
+}
+
+func encodeBackupBundleWithHTTPRules(t *testing.T, bundle BackupBundle, rules []map[string]any) ([]byte, error) {
+	t.Helper()
+	return encodeBackupBundleWithOverrides(t, bundle, map[string]any{
+		backupHTTPRulesFile: rules,
+	})
+}
+
+func encodeBackupBundleWithOverrides(t *testing.T, bundle BackupBundle, overrides map[string]any) ([]byte, error) {
+	t.Helper()
+	var buffer bytes.Buffer
+	gz := gzip.NewWriter(&buffer)
+	tw := tar.NewWriter(gz)
+	files := []struct {
+		name    string
+		payload any
+	}{
+		{backupManifestFile, bundle.Manifest},
+		{backupAgentsFile, bundle.Agents},
+		{backupHTTPRulesFile, bundle.HTTPRules},
+		{backupL4RulesFile, bundle.L4Rules},
+		{backupWireGuardProfilesFile, bundle.WireGuardProfiles},
+		{backupWireGuardClientsFile, nil},
+		{backupRelayListenersFile, bundle.RelayListeners},
+		{backupCertificatesFile, bundle.Certificates},
+		{backupVersionPoliciesFile, bundle.VersionPolicies},
+		{backupTrafficPoliciesFile, bundle.TrafficPolicies},
+		{backupTrafficBaselinesFile, bundle.TrafficBaselines},
+	}
+	written := map[string]struct{}{}
+	for _, item := range files {
+		payload := item.payload
+		if override, ok := overrides[item.name]; ok {
+			payload = override
+		}
+		if err := writeBackupJSONFile(tw, item.name, payload); err != nil {
+			return nil, err
+		}
+		written[item.name] = struct{}{}
+	}
+	for name, payload := range overrides {
+		if _, ok := written[name]; ok {
+			continue
+		}
+		if err := writeBackupJSONFile(tw, name, payload); err != nil {
+			return nil, err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
 }
 
 func encodeBackupBundleWithoutTrafficFiles(bundle BackupBundle) ([]byte, error) {
@@ -2105,6 +2834,145 @@ func TestBackupServiceRollbackRestoresWireGuardProfilesOnImportFailure(t *testin
 	}
 	if len(existingProfiles) != 1 || existingProfiles[0].Name != "existing-wg" || existingProfiles[0].Revision != 9 {
 		t.Fatalf("existing wireguard profiles after rollback = %+v", existingProfiles)
+	}
+}
+
+func TestBackupServiceRollbackRestoresWireGuardClientsOnImportFailure(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rollback-wg-clients-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "existing-agent",
+		Name:       "existing-agent",
+		AgentToken: "token-existing",
+	}); err != nil {
+		t.Fatalf("SaveAgent(target) error = %v", err)
+	}
+	if err := targetStore.SaveWireGuardProfiles(ctx, "existing-agent", []storage.WireGuardProfileRow{{
+		ID:            3,
+		AgentID:       "existing-agent",
+		Name:          "existing-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    testWireGuardPrivateKey,
+		AddressesJSON: `["10.81.0.1/24"]`,
+		PeersJSON: marshalJSON([]WireGuardPeer{{
+			Name:         "existing-phone",
+			PublicKey:    testWireGuardPublicKey,
+			PresharedKey: testWireGuardPresharedKey,
+			AllowedIPs:   []string{"10.81.0.2/32"},
+		}}, "[]"),
+		DNSJSON:  `[]`,
+		Enabled:  true,
+		Revision: 9,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(target) error = %v", err)
+	}
+	if err := targetStore.SaveWireGuardClients(ctx, "existing-agent", 3, []storage.WireGuardClientRow{{
+		ID:             1,
+		AgentID:        "existing-agent",
+		ProfileID:      3,
+		Name:           "existing-phone",
+		PrivateKey:     testWireGuardPrivateKey,
+		PublicKey:      testWireGuardPublicKey,
+		PresharedKey:   testWireGuardPresharedKey,
+		Address:        "10.81.0.2/32",
+		AllowedIPsJSON: `["0.0.0.0/0"]`,
+		DNSJSON:        `["1.1.1.1"]`,
+		Enabled:        false,
+		CreatedAt:      "2026-05-16T08:00:00Z",
+		UpdatedAt:      "2026-05-16T08:01:00Z",
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardClients(target) error = %v", err)
+	}
+
+	sourceProfileID := 7
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:         "source-edge-wg",
+			Name:       "source-edge-wg",
+			AgentToken: "token-source-edge-wg",
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{{
+			ID:         sourceProfileID,
+			AgentID:    "source-edge-wg",
+			Name:       "imported-wg",
+			Mode:       "generic_wireguard",
+			PrivateKey: testWireGuardPrivateKey,
+			Addresses:  []string{"10.82.0.1/24"},
+			Peers: []WireGuardPeer{{
+				Name:       "imported-phone",
+				PublicKey:  testWireGuardPublicKeyB,
+				AllowedIPs: []string{"10.82.0.2/32"},
+			}},
+			Enabled: true,
+		}},
+		HTTPRules: []BackupHTTPRule{{
+			ID:               11,
+			AgentID:          "source-edge-wg",
+			FrontendURL:      "https://force-failure.example.com",
+			Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+			LoadBalancing:    HTTPLoadBalancing{Strategy: "adaptive"},
+			Enabled:          true,
+			RelayLayers:      [][]int{},
+			PassProxyHeaders: true,
+		}},
+	}
+	archive, err := encodeBackupBundleWithWireGuardClients(t, bundle, []testBackupWireGuardClient{{
+		ID:           1,
+		AgentID:      "source-edge-wg",
+		ProfileID:    sourceProfileID,
+		Name:         "imported-phone",
+		PrivateKey:   testWireGuardPresharedKey,
+		PublicKey:    testWireGuardPublicKeyB,
+		PresharedKey: testWireGuardPresharedKeyB,
+		Address:      "10.82.0.2/32",
+		AllowedIPs:   []string{"0.0.0.0/0"},
+		DNS:          []string{"9.9.9.9"},
+		Enabled:      true,
+		CreatedAt:    "2026-05-16T09:00:00Z",
+		UpdatedAt:    "2026-05-16T09:01:00Z",
+	}})
+	if err != nil {
+		t.Fatalf("encodeBackupBundleWithWireGuardClients() error = %v", err)
+	}
+
+	failingStore := &failingBackupStore{
+		backupStore:               targetStore,
+		remainingHTTPRuleFailures: 1,
+	}
+	if _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, failingStore).Import(ctx, archive); err == nil {
+		t.Fatal("Import() error = nil, want forced import failure")
+	}
+
+	rows, err := targetStore.ListWireGuardClients(ctx, "existing-agent", 3)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(existing-agent) error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("existing wireguard clients after rollback = %+v", rows)
+	}
+	row := rows[0]
+	if row.Name != "existing-phone" || row.PrivateKey != testWireGuardPrivateKey || row.PublicKey != testWireGuardPublicKey || row.PresharedKey != testWireGuardPresharedKey {
+		t.Fatalf("existing wireguard client after rollback = %+v", row)
+	}
+	if row.Enabled || row.Address != "10.81.0.2/32" || row.AllowedIPsJSON != `["0.0.0.0/0"]` || row.DNSJSON != `["1.1.1.1"]` {
+		t.Fatalf("existing wireguard client state after rollback = %+v", row)
+	}
+	importedRows, err := targetStore.ListWireGuardClients(ctx, "source-edge-wg", 0)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(source-edge-wg) error = %v", err)
+	}
+	if len(importedRows) != 0 {
+		t.Fatalf("imported wireguard clients after rollback = %+v, want none", importedRows)
 	}
 }
 
