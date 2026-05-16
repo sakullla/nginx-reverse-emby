@@ -115,19 +115,20 @@ type BackupCertificate = ManagedCertificate
 type BackupVersionPolicy = VersionPolicy
 
 type BackupWireGuardProfile struct {
-	ID         int             `json:"id"`
-	AgentID    string          `json:"agent_id"`
-	Name       string          `json:"name"`
-	Mode       string          `json:"mode"`
-	PrivateKey string          `json:"private_key,omitempty"`
-	ListenPort int             `json:"listen_port"`
-	Addresses  []string        `json:"addresses"`
-	Peers      []WireGuardPeer `json:"peers"`
-	DNS        []string        `json:"dns"`
-	MTU        int             `json:"mtu"`
-	Enabled    bool            `json:"enabled"`
-	Tags       []string        `json:"tags,omitempty"`
-	Revision   int             `json:"revision,omitempty"`
+	ID             int             `json:"id"`
+	AgentID        string          `json:"agent_id"`
+	Name           string          `json:"name"`
+	Mode           string          `json:"mode"`
+	PrivateKey     string          `json:"private_key,omitempty"`
+	ListenPort     int             `json:"listen_port"`
+	PublicEndpoint string          `json:"public_endpoint,omitempty"`
+	Addresses      []string        `json:"addresses"`
+	Peers          []WireGuardPeer `json:"peers"`
+	DNS            []string        `json:"dns"`
+	MTU            int             `json:"mtu"`
+	Enabled        bool            `json:"enabled"`
+	Tags           []string        `json:"tags,omitempty"`
+	Revision       int             `json:"revision,omitempty"`
 }
 
 type BackupTrafficPolicy struct {

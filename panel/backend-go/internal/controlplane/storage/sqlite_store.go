@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -40,6 +41,12 @@ type Store interface {
 type SQLiteStore = GormStore
 
 const localRuntimeStateMetaKey = "local_runtime_state"
+
+type WireGuardClientProfileMutation struct {
+	Profiles     []WireGuardProfileRow
+	ProfileIndex int
+	Clients      []WireGuardClientRow
+}
 
 func NewSQLiteStore(dataRoot string, localAgentID string) (*SQLiteStore, error) {
 	return NewStore(StoreConfig{
@@ -380,6 +387,27 @@ func (s *GormStore) ListWireGuardProfiles(ctx context.Context, agentID string) (
 	return profiles, nil
 }
 
+func (s *GormStore) ListWireGuardClients(ctx context.Context, agentID string, profileID int) ([]WireGuardClientRow, error) {
+	if agentID == "" {
+		agentID = s.localAgentID
+	}
+
+	var clients []WireGuardClientRow
+	query := s.db.WithContext(ctx).
+		Where("agent_id = ?", agentID).
+		Order("id")
+	if profileID > 0 {
+		query = query.Where("profile_id = ?", profileID)
+	}
+	if err := query.Find(&clients).Error; err != nil {
+		return nil, err
+	}
+	for i := range clients {
+		normalizeWireGuardClientRow(&clients[i])
+	}
+	return clients, nil
+}
+
 func (s *GormStore) ListManagedCertificates(ctx context.Context) ([]ManagedCertificateRow, error) {
 	var certs []ManagedCertificateRow
 	if err := s.db.WithContext(ctx).Order("id").Find(&certs).Error; err != nil {
@@ -570,22 +598,138 @@ func (s *GormStore) SaveWireGuardProfiles(ctx context.Context, agentID string, p
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("agent_id = ?", agentID).Delete(&WireGuardProfileRow{}).Error; err != nil {
+		return s.saveWireGuardProfilesTx(tx, agentID, profiles)
+	})
+}
+
+func (s *GormStore) SaveWireGuardClients(ctx context.Context, agentID string, profileID int, clients []WireGuardClientRow) error {
+	if agentID == "" {
+		agentID = s.localAgentID
+	}
+	if profileID <= 0 {
+		return fmt.Errorf("wireguard profile_id is required")
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return s.saveWireGuardClientsTx(tx, agentID, profileID, clients)
+	})
+}
+
+func (s *GormStore) SaveWireGuardClientProfileMutation(ctx context.Context, agentID string, profileID int, clients []WireGuardClientRow, profiles []WireGuardProfileRow) error {
+	if agentID == "" {
+		agentID = s.localAgentID
+	}
+	if profileID <= 0 {
+		return fmt.Errorf("wireguard profile_id is required")
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.saveWireGuardClientsTx(tx, agentID, profileID, clients); err != nil {
+			return err
+		}
+		return s.saveWireGuardProfilesTx(tx, agentID, profiles)
+	})
+}
+
+func (s *GormStore) MutateWireGuardClientProfile(ctx context.Context, agentID string, profileID int, mutate func(WireGuardClientProfileMutation) (WireGuardClientProfileMutation, error)) error {
+	if agentID == "" {
+		agentID = s.localAgentID
+	}
+	if profileID <= 0 {
+		return fmt.Errorf("wireguard profile_id is required")
+	}
+	if mutate == nil {
+		return fmt.Errorf("wireguard mutation callback is required")
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("UPDATE local_agent_state SET desired_revision = desired_revision WHERE id = ?", 1).Error; err != nil {
 			return err
 		}
 
-		if len(profiles) == 0 {
-			return nil
+		var profiles []WireGuardProfileRow
+		if err := tx.Where("agent_id = ?", agentID).Order("id").Find(&profiles).Error; err != nil {
+			return err
+		}
+		profileIndex := -1
+		for i := range profiles {
+			normalizeWireGuardProfileRow(&profiles[i])
+			if profiles[i].ID == profileID {
+				profileIndex = i
+			}
 		}
 
+		var clients []WireGuardClientRow
+		if err := tx.Where("agent_id = ? AND profile_id = ?", agentID, profileID).Order("id").Find(&clients).Error; err != nil {
+			return err
+		}
+		for i := range clients {
+			normalizeWireGuardClientRow(&clients[i])
+		}
+
+		next, err := mutate(WireGuardClientProfileMutation{
+			Profiles:     profiles,
+			ProfileIndex: profileIndex,
+			Clients:      clients,
+		})
+		if err != nil {
+			return err
+		}
+		if err := s.saveWireGuardClientsTx(tx, agentID, profileID, next.Clients); err != nil {
+			return err
+		}
+		return s.saveWireGuardProfilesTx(tx, agentID, next.Profiles)
+	})
+}
+
+func (s *GormStore) saveWireGuardProfilesTx(tx *gorm.DB, agentID string, profiles []WireGuardProfileRow) error {
+	if err := tx.Where("agent_id = ?", agentID).Delete(&WireGuardProfileRow{}).Error; err != nil {
+		return err
+	}
+
+	nextProfileIDs := make([]int, 0, len(profiles))
+	if len(profiles) > 0 {
 		rows := make([]WireGuardProfileRow, 0, len(profiles))
 		for _, row := range profiles {
 			row.AgentID = agentID
 			normalizeWireGuardProfileRow(&row)
 			rows = append(rows, row)
+			if row.ID > 0 {
+				nextProfileIDs = append(nextProfileIDs, row.ID)
+			}
 		}
-		return tx.Create(&rows).Error
-	})
+		if err := tx.Create(&rows).Error; err != nil {
+			return err
+		}
+	}
+
+	clientCleanup := tx.Where("agent_id = ?", agentID)
+	if len(nextProfileIDs) > 0 {
+		clientCleanup = clientCleanup.Where("profile_id NOT IN ?", nextProfileIDs)
+	}
+	return clientCleanup.Delete(&WireGuardClientRow{}).Error
+}
+
+func (s *GormStore) saveWireGuardClientsTx(tx *gorm.DB, agentID string, profileID int, clients []WireGuardClientRow) error {
+	if profileID <= 0 {
+		return fmt.Errorf("wireguard profile_id is required")
+	}
+	if err := tx.Where("agent_id = ? AND profile_id = ?", agentID, profileID).Delete(&WireGuardClientRow{}).Error; err != nil {
+		return err
+	}
+
+	if len(clients) == 0 {
+		return nil
+	}
+
+	rows := make([]WireGuardClientRow, 0, len(clients))
+	for _, row := range clients {
+		row.AgentID = agentID
+		row.ProfileID = profileID
+		normalizeWireGuardClientRow(&row)
+		rows = append(rows, row)
+	}
+	return tx.Create(&rows).Error
 }
 
 func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []ManagedCertificateRow) error {
@@ -751,10 +895,23 @@ func normalizeWireGuardProfileRow(row *WireGuardProfileRow) {
 	row.Name = defaultString(row.Name, "")
 	row.Mode = defaultString(row.Mode, "generic_wireguard")
 	row.PrivateKey = defaultString(row.PrivateKey, "")
+	row.PublicEndpoint = defaultString(row.PublicEndpoint, "")
 	row.AddressesJSON = defaultJSON(row.AddressesJSON, "[]")
 	row.PeersJSON = defaultJSON(row.PeersJSON, "[]")
 	row.DNSJSON = defaultJSON(row.DNSJSON, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
+}
+
+func normalizeWireGuardClientRow(row *WireGuardClientRow) {
+	row.Name = defaultString(row.Name, "")
+	row.PrivateKey = defaultString(row.PrivateKey, "")
+	row.PublicKey = defaultString(row.PublicKey, "")
+	row.PresharedKey = defaultString(row.PresharedKey, "")
+	row.Address = defaultString(row.Address, "")
+	row.AllowedIPsJSON = defaultJSON(row.AllowedIPsJSON, "[]")
+	row.DNSJSON = defaultJSON(row.DNSJSON, "[]")
+	row.CreatedAt = defaultString(row.CreatedAt, "")
+	row.UpdatedAt = defaultString(row.UpdatedAt, "")
 }
 
 func normalizeManagedCertificateRow(row *ManagedCertificateRow) {

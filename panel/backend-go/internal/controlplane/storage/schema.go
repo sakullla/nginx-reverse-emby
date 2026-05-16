@@ -37,6 +37,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&L4RuleRow{},
 		&RelayListenerRow{},
 		&WireGuardProfileRow{},
+		&WireGuardClientRow{},
 		&ManagedCertificateRow{},
 		&LocalAgentStateRow{},
 		&VersionPolicyRow{},
@@ -98,6 +99,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		{model: &L4RuleRow{}, name: "idx_l4_rules_agent"},
 		{model: &RelayListenerRow{}, name: "idx_relay_listeners_agent"},
 		{model: &WireGuardProfileRow{}, name: "idx_wireguard_profiles_agent"},
+		{model: &WireGuardClientRow{}, name: "idx_wireguard_clients_agent_profile"},
 	}
 	for _, index := range requiredIndexes {
 		if tx.Migrator().HasIndex(index.model, index.name) {
@@ -159,6 +161,21 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 	}
 	for _, migration := range l4ColumnMigrations {
 		if tx.Migrator().HasColumn(&L4RuleRow{}, migration.column) {
+			continue
+		}
+		if err := tx.Exec(migration.sql).Error; err != nil {
+			return err
+		}
+	}
+
+	wireGuardProfileColumnMigrations := []struct {
+		column string
+		sql    string
+	}{
+		{column: "public_endpoint", sql: `ALTER TABLE wireguard_profiles ADD COLUMN public_endpoint TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, migration := range wireGuardProfileColumnMigrations {
+		if tx.Migrator().HasColumn(&WireGuardProfileRow{}, migration.column) {
 			continue
 		}
 		if err := tx.Exec(migration.sql).Error; err != nil {
@@ -244,6 +261,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE relay_listeners SET transport_mode = 'tls_tcp' WHERE transport_mode IS NULL OR trim(transport_mode) = ''`,
 		`UPDATE relay_listeners SET allow_transport_fallback = 1 WHERE allow_transport_fallback IS NULL`,
 		`UPDATE relay_listeners SET obfs_mode = 'off' WHERE obfs_mode IS NULL OR trim(obfs_mode) = ''`,
+		`UPDATE wireguard_profiles SET public_endpoint = '' WHERE public_endpoint IS NULL`,
 	}
 	for _, stmt := range normalizationStatements {
 		if err := tx.Exec(stmt).Error; err != nil {

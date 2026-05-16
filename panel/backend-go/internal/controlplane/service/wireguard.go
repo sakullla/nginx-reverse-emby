@@ -28,36 +28,39 @@ type WireGuardPeer struct {
 }
 
 type WireGuardProfile struct {
-	ID         int             `json:"id"`
-	AgentID    string          `json:"agent_id"`
-	Name       string          `json:"name"`
-	Mode       string          `json:"mode"`
-	PrivateKey string          `json:"private_key,omitempty"`
-	ListenPort int             `json:"listen_port"`
-	Addresses  []string        `json:"addresses"`
-	Peers      []WireGuardPeer `json:"peers"`
-	DNS        []string        `json:"dns"`
-	MTU        int             `json:"mtu"`
-	Enabled    bool            `json:"enabled"`
-	Tags       []string        `json:"tags"`
-	Revision   int             `json:"revision"`
+	ID             int             `json:"id"`
+	AgentID        string          `json:"agent_id"`
+	Name           string          `json:"name"`
+	Mode           string          `json:"mode"`
+	PrivateKey     string          `json:"private_key,omitempty"`
+	ListenPort     int             `json:"listen_port"`
+	PublicEndpoint string          `json:"public_endpoint"`
+	Addresses      []string        `json:"addresses"`
+	Peers          []WireGuardPeer `json:"peers"`
+	DNS            []string        `json:"dns"`
+	MTU            int             `json:"mtu"`
+	Enabled        bool            `json:"enabled"`
+	Tags           []string        `json:"tags"`
+	Revision       int             `json:"revision"`
 }
 
 type WireGuardProfileInput struct {
-	ID            int             `json:"id,omitempty"`
-	Name          string          `json:"name"`
-	Mode          string          `json:"mode"`
-	PrivateKey    string          `json:"private_key,omitempty"`
-	ListenPort    int             `json:"listen_port"`
-	ListenPortSet bool            `json:"-"`
-	Addresses     []string        `json:"addresses"`
-	AddressesSet  bool            `json:"-"`
-	Peers         []WireGuardPeer `json:"peers"`
-	PeersSet      bool            `json:"-"`
-	DNS           []string        `json:"dns"`
-	MTU           int             `json:"mtu"`
-	Enabled       *bool           `json:"enabled,omitempty"`
-	Tags          []string        `json:"tags"`
+	ID                int             `json:"id,omitempty"`
+	Name              string          `json:"name"`
+	Mode              string          `json:"mode"`
+	PrivateKey        string          `json:"private_key,omitempty"`
+	ListenPort        int             `json:"listen_port"`
+	ListenPortSet     bool            `json:"-"`
+	PublicEndpoint    string          `json:"public_endpoint"`
+	PublicEndpointSet bool            `json:"-"`
+	Addresses         []string        `json:"addresses"`
+	AddressesSet      bool            `json:"-"`
+	Peers             []WireGuardPeer `json:"peers"`
+	PeersSet          bool            `json:"-"`
+	DNS               []string        `json:"dns"`
+	MTU               int             `json:"mtu"`
+	Enabled           *bool           `json:"enabled,omitempty"`
+	Tags              []string        `json:"tags"`
 }
 
 func (i *WireGuardProfileInput) UnmarshalJSON(data []byte) error {
@@ -73,6 +76,9 @@ func (i *WireGuardProfileInput) UnmarshalJSON(data []byte) error {
 	*i = WireGuardProfileInput(decoded)
 	if _, ok := fields["listen_port"]; ok {
 		i.ListenPortSet = true
+	}
+	if _, ok := fields["public_endpoint"]; ok {
+		i.PublicEndpointSet = true
 	}
 	if _, ok := fields["addresses"]; ok {
 		i.AddressesSet = true
@@ -504,6 +510,16 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 		return WireGuardProfile{}, fmt.Errorf("%w: listen_port must be a valid port", ErrInvalidArgument)
 	}
 
+	publicEndpoint := strings.TrimSpace(input.PublicEndpoint)
+	if !input.hasPublicEndpointField() && fallback.ID > 0 {
+		publicEndpoint = strings.TrimSpace(fallback.PublicEndpoint)
+	}
+	if publicEndpoint != "" {
+		if err := validateWireGuardPeerEndpoint(publicEndpoint); err != nil {
+			return WireGuardProfile{}, fmt.Errorf("%w: public_endpoint must be host:port", ErrInvalidArgument)
+		}
+	}
+
 	mtu := input.MTU
 	if mtu == 0 {
 		mtu = fallback.MTU
@@ -533,24 +549,29 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 	}
 
 	return WireGuardProfile{
-		ID:         id,
-		AgentID:    fallback.AgentID,
-		Name:       name,
-		Mode:       mode,
-		PrivateKey: privateKey,
-		ListenPort: listenPort,
-		Addresses:  addresses,
-		Peers:      peers,
-		DNS:        dns,
-		MTU:        mtu,
-		Enabled:    enabled,
-		Tags:       tags,
-		Revision:   fallback.Revision,
+		ID:             id,
+		AgentID:        fallback.AgentID,
+		Name:           name,
+		Mode:           mode,
+		PrivateKey:     privateKey,
+		ListenPort:     listenPort,
+		PublicEndpoint: publicEndpoint,
+		Addresses:      addresses,
+		Peers:          peers,
+		DNS:            dns,
+		MTU:            mtu,
+		Enabled:        enabled,
+		Tags:           tags,
+		Revision:       fallback.Revision,
 	}, nil
 }
 
 func (input WireGuardProfileInput) hasAddressesField() bool {
 	return input.AddressesSet || input.Addresses != nil
+}
+
+func (input WireGuardProfileInput) hasPublicEndpointField() bool {
+	return input.PublicEndpointSet || strings.TrimSpace(input.PublicEndpoint) != ""
 }
 
 func (input WireGuardProfileInput) hasPeersField() bool {
@@ -788,37 +809,39 @@ func redactWireGuardProfile(profile WireGuardProfile) WireGuardProfile {
 
 func wireGuardProfileFromRow(row storage.WireGuardProfileRow) WireGuardProfile {
 	return WireGuardProfile{
-		ID:         row.ID,
-		AgentID:    row.AgentID,
-		Name:       row.Name,
-		Mode:       row.Mode,
-		PrivateKey: row.PrivateKey,
-		ListenPort: row.ListenPort,
-		Addresses:  parseStringArray(row.AddressesJSON),
-		Peers:      parseWireGuardPeers(row.PeersJSON),
-		DNS:        parseStringArray(row.DNSJSON),
-		MTU:        row.MTU,
-		Enabled:    row.Enabled,
-		Tags:       parseStringArray(row.TagsJSON),
-		Revision:   row.Revision,
+		ID:             row.ID,
+		AgentID:        row.AgentID,
+		Name:           row.Name,
+		Mode:           row.Mode,
+		PrivateKey:     row.PrivateKey,
+		ListenPort:     row.ListenPort,
+		PublicEndpoint: row.PublicEndpoint,
+		Addresses:      parseStringArray(row.AddressesJSON),
+		Peers:          parseWireGuardPeers(row.PeersJSON),
+		DNS:            parseStringArray(row.DNSJSON),
+		MTU:            row.MTU,
+		Enabled:        row.Enabled,
+		Tags:           parseStringArray(row.TagsJSON),
+		Revision:       row.Revision,
 	}
 }
 
 func wireGuardProfileToRow(profile WireGuardProfile) storage.WireGuardProfileRow {
 	return storage.WireGuardProfileRow{
-		ID:            profile.ID,
-		AgentID:       profile.AgentID,
-		Name:          profile.Name,
-		Mode:          profile.Mode,
-		PrivateKey:    profile.PrivateKey,
-		ListenPort:    profile.ListenPort,
-		AddressesJSON: marshalJSON(profile.Addresses, "[]"),
-		PeersJSON:     marshalJSON(profile.Peers, "[]"),
-		DNSJSON:       marshalJSON(profile.DNS, "[]"),
-		MTU:           profile.MTU,
-		Enabled:       profile.Enabled,
-		TagsJSON:      marshalJSON(profile.Tags, "[]"),
-		Revision:      profile.Revision,
+		ID:             profile.ID,
+		AgentID:        profile.AgentID,
+		Name:           profile.Name,
+		Mode:           profile.Mode,
+		PrivateKey:     profile.PrivateKey,
+		ListenPort:     profile.ListenPort,
+		PublicEndpoint: profile.PublicEndpoint,
+		AddressesJSON:  marshalJSON(profile.Addresses, "[]"),
+		PeersJSON:      marshalJSON(profile.Peers, "[]"),
+		DNSJSON:        marshalJSON(profile.DNS, "[]"),
+		MTU:            profile.MTU,
+		Enabled:        profile.Enabled,
+		TagsJSON:       marshalJSON(profile.Tags, "[]"),
+		Revision:       profile.Revision,
 	}
 }
 

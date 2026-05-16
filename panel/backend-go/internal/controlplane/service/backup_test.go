@@ -923,13 +923,14 @@ func TestBackupServiceExportIncludesWireGuardProfilesWithRawSecrets(t *testing.T
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
 	if err := sourceStore.SaveWireGuardProfiles(ctx, "edge-wg", []storage.WireGuardProfileRow{{
-		ID:            41,
-		AgentID:       "edge-wg",
-		Name:          "wg-egress",
-		Mode:          "generic_wireguard",
-		PrivateKey:    testWireGuardPrivateKey,
-		ListenPort:    51820,
-		AddressesJSON: `["10.44.0.2/32"]`,
+		ID:             41,
+		AgentID:        "edge-wg",
+		Name:           "wg-egress",
+		Mode:           "generic_wireguard",
+		PrivateKey:     testWireGuardPrivateKey,
+		ListenPort:     51820,
+		PublicEndpoint: "wg.example.com:51820",
+		AddressesJSON:  `["10.44.0.2/32"]`,
 		PeersJSON: marshalJSON([]WireGuardPeer{{
 			Name:         "relay",
 			PublicKey:    testWireGuardPublicKey,
@@ -973,6 +974,9 @@ func TestBackupServiceExportIncludesWireGuardProfilesWithRawSecrets(t *testing.T
 	if len(profile.Peers) != 1 || profile.Peers[0].PresharedKey != testWireGuardPresharedKey {
 		t.Fatalf("peers = %+v, want raw preshared key", profile.Peers)
 	}
+	if profile.PublicEndpoint != "wg.example.com:51820" {
+		t.Fatalf("public_endpoint = %q, want wg.example.com:51820", profile.PublicEndpoint)
+	}
 }
 
 func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4References(t *testing.T) {
@@ -998,13 +1002,14 @@ func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4Reference
 	}
 	sourceProfileID := 7
 	if err := sourceStore.SaveWireGuardProfiles(ctx, "edge-wg", []storage.WireGuardProfileRow{{
-		ID:            sourceProfileID,
-		AgentID:       "edge-wg",
-		Name:          "wg-relay",
-		Mode:          "generic_wireguard",
-		PrivateKey:    testWireGuardPrivateKey,
-		ListenPort:    51820,
-		AddressesJSON: `["10.50.0.2/32"]`,
+		ID:             sourceProfileID,
+		AgentID:        "edge-wg",
+		Name:           "wg-relay",
+		Mode:           "generic_wireguard",
+		PrivateKey:     testWireGuardPrivateKey,
+		ListenPort:     51820,
+		PublicEndpoint: "wg.example.com:51820",
+		AddressesJSON:  `["10.50.0.2/32"]`,
 		PeersJSON: marshalJSON([]WireGuardPeer{{
 			Name:         "peer-a",
 			PublicKey:    testWireGuardPublicKey,
@@ -1140,6 +1145,9 @@ func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4Reference
 	}
 	if importedProfiles[0].PrivateKey != testWireGuardPrivateKey {
 		t.Fatalf("imported private_key = %q, want raw key", importedProfiles[0].PrivateKey)
+	}
+	if importedProfiles[0].PublicEndpoint != "wg.example.com:51820" {
+		t.Fatalf("imported public_endpoint = %q, want wg.example.com:51820", importedProfiles[0].PublicEndpoint)
 	}
 	if importedProfiles[0].Revision == 0 {
 		t.Fatalf("imported profile revision = 0, want allocated revision")

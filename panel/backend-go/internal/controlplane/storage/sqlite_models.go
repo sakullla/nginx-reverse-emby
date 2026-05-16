@@ -123,19 +123,36 @@ type RelayListenerRow struct {
 }
 
 type WireGuardProfileRow struct {
-	ID            int    `gorm:"column:id;primaryKey"`
-	AgentID       string `gorm:"column:agent_id;primaryKey;index:idx_wireguard_profiles_agent"`
-	Name          string `gorm:"column:name"`
-	Mode          string `gorm:"column:mode"`
-	PrivateKey    string `gorm:"column:private_key"`
-	ListenPort    int    `gorm:"column:listen_port"`
-	AddressesJSON string `gorm:"column:addresses"`
-	PeersJSON     string `gorm:"column:peers"`
-	DNSJSON       string `gorm:"column:dns"`
-	MTU           int    `gorm:"column:mtu"`
-	Enabled       bool   `gorm:"column:enabled"`
-	TagsJSON      string `gorm:"column:tags"`
-	Revision      int    `gorm:"column:revision"`
+	ID             int    `gorm:"column:id;primaryKey"`
+	AgentID        string `gorm:"column:agent_id;primaryKey;index:idx_wireguard_profiles_agent"`
+	Name           string `gorm:"column:name"`
+	Mode           string `gorm:"column:mode"`
+	PrivateKey     string `gorm:"column:private_key"`
+	ListenPort     int    `gorm:"column:listen_port"`
+	PublicEndpoint string `gorm:"column:public_endpoint;not null;default:''"`
+	AddressesJSON  string `gorm:"column:addresses"`
+	PeersJSON      string `gorm:"column:peers"`
+	DNSJSON        string `gorm:"column:dns"`
+	MTU            int    `gorm:"column:mtu"`
+	Enabled        bool   `gorm:"column:enabled"`
+	TagsJSON       string `gorm:"column:tags"`
+	Revision       int    `gorm:"column:revision"`
+}
+
+type WireGuardClientRow struct {
+	ID             int    `gorm:"column:id;primaryKey"`
+	AgentID        string `gorm:"column:agent_id;primaryKey;index:idx_wireguard_clients_agent_profile"`
+	ProfileID      int    `gorm:"column:profile_id;primaryKey;index:idx_wireguard_clients_agent_profile"`
+	Name           string `gorm:"column:name"`
+	PrivateKey     string `gorm:"column:private_key"`
+	PublicKey      string `gorm:"column:public_key"`
+	PresharedKey   string `gorm:"column:preshared_key"`
+	Address        string `gorm:"column:address"`
+	AllowedIPsJSON string `gorm:"column:allowed_ips"`
+	DNSJSON        string `gorm:"column:dns"`
+	Enabled        bool   `gorm:"column:enabled"`
+	CreatedAt      string `gorm:"column:created_at"`
+	UpdatedAt      string `gorm:"column:updated_at"`
 }
 
 type ManagedCertificateRow struct {
@@ -265,6 +282,10 @@ func (RelayListenerRow) TableName() string {
 
 func (WireGuardProfileRow) TableName() string {
 	return "wireguard_profiles"
+}
+
+func (WireGuardClientRow) TableName() string {
+	return "wireguard_clients"
 }
 
 func (ManagedCertificateRow) TableName() string {

@@ -758,6 +758,181 @@ func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
 	}
 }
 
+func TestStoreSaveWireGuardClientsRequiresProfileID(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	if err := store.SaveWireGuardClients(t.Context(), "local", 7, []WireGuardClientRow{{
+		ID:             1,
+		AgentID:        "local",
+		ProfileID:      7,
+		Name:           "phone",
+		PrivateKey:     "private",
+		PublicKey:      "public",
+		PresharedKey:   "psk",
+		Address:        "10.8.0.2/32",
+		AllowedIPsJSON: `["10.8.0.2/32"]`,
+		DNSJSON:        `[]`,
+		Enabled:        true,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardClients(seed) error = %v", err)
+	}
+
+	err = store.SaveWireGuardClients(t.Context(), "local", 0, nil)
+	if err == nil {
+		t.Fatal("SaveWireGuardClients(profileID 0) error = nil, want error")
+	}
+	clients, err := store.ListWireGuardClients(t.Context(), "local", 7)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients() error = %v", err)
+	}
+	if len(clients) != 1 {
+		t.Fatalf("clients after invalid save = %+v, want original client", clients)
+	}
+}
+
+func TestStoreSaveWireGuardClientProfileMutationRollsBackClientsWhenProfilesFail(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	profile := WireGuardProfileRow{
+		ID:            7,
+		AgentID:       "local",
+		Name:          "wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "private",
+		AddressesJSON: `["10.8.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		TagsJSON:      `[]`,
+		Revision:      1,
+	}
+	badProfiles := []WireGuardProfileRow{profile, profile}
+	err = store.SaveWireGuardClientProfileMutation(t.Context(), "local", 7, []WireGuardClientRow{{
+		ID:             1,
+		AgentID:        "local",
+		ProfileID:      7,
+		Name:           "phone",
+		PrivateKey:     "private",
+		PublicKey:      "public",
+		PresharedKey:   "psk",
+		Address:        "10.8.0.2/32",
+		AllowedIPsJSON: `["10.8.0.2/32"]`,
+		DNSJSON:        `[]`,
+		Enabled:        true,
+	}}, badProfiles)
+	if err == nil {
+		t.Fatal("SaveWireGuardClientProfileMutation() error = nil, want profile save failure")
+	}
+
+	clients, err := store.ListWireGuardClients(t.Context(), "local", 7)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients() error = %v", err)
+	}
+	if len(clients) != 0 {
+		t.Fatalf("clients after failed profile mutation = %+v, want rollback", clients)
+	}
+}
+
+func TestStoreMutateWireGuardClientProfileReadsAndWritesCurrentRowsInTransaction(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	profile := WireGuardProfileRow{
+		ID:            7,
+		AgentID:       "local",
+		Name:          "wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "private",
+		AddressesJSON: `["10.8.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		TagsJSON:      `[]`,
+		Revision:      1,
+	}
+	if err := store.SaveWireGuardProfiles(t.Context(), "local", []WireGuardProfileRow{profile}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := store.SaveWireGuardClients(t.Context(), "local", 7, []WireGuardClientRow{{
+		ID:             1,
+		AgentID:        "local",
+		ProfileID:      7,
+		Name:           "phone",
+		PrivateKey:     "private-a",
+		PublicKey:      "public-a",
+		PresharedKey:   "psk-a",
+		Address:        "10.8.0.2/32",
+		AllowedIPsJSON: `["10.8.0.2/32"]`,
+		DNSJSON:        `[]`,
+		Enabled:        true,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardClients() error = %v", err)
+	}
+
+	var observedClientCount int
+	err = store.MutateWireGuardClientProfile(t.Context(), "local", 7, func(state WireGuardClientProfileMutation) (WireGuardClientProfileMutation, error) {
+		observedClientCount = len(state.Clients)
+		state.Clients = append(state.Clients, WireGuardClientRow{
+			ID:             2,
+			AgentID:        "local",
+			ProfileID:      7,
+			Name:           "tablet",
+			PrivateKey:     "private-b",
+			PublicKey:      "public-b",
+			PresharedKey:   "psk-b",
+			Address:        "10.8.0.3/32",
+			AllowedIPsJSON: `["10.8.0.3/32"]`,
+			DNSJSON:        `[]`,
+			Enabled:        true,
+		})
+		state.Profiles[state.ProfileIndex].Revision = 2
+		return state, nil
+	})
+	if err != nil {
+		t.Fatalf("MutateWireGuardClientProfile() error = %v", err)
+	}
+	if observedClientCount != 1 {
+		t.Fatalf("callback observed %d clients, want current 1", observedClientCount)
+	}
+	clients, err := store.ListWireGuardClients(t.Context(), "local", 7)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients() error = %v", err)
+	}
+	if len(clients) != 2 {
+		t.Fatalf("clients after mutation = %+v, want 2", clients)
+	}
+	profiles, err := store.ListWireGuardProfiles(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].Revision != 2 {
+		t.Fatalf("profiles after mutation = %+v, want revision 2", profiles)
+	}
+}
+
 func TestSQLiteStorePersistsAgentOutboundProxyURL(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()
