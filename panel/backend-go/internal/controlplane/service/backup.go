@@ -349,7 +349,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	}
 	existingL4Keys := map[string]struct{}{}
 	for _, row := range existingL4Rules {
-		existingL4Keys[l4BackupConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort, row.ListenMode, row.WireGuardInboundMode, row.WireGuardListenHost, row.WireGuardProfileID, row.ProxyEgressMode)] = struct{}{}
+		existingL4Keys[l4RuleConflictKey(l4RuleFromRow(row))] = struct{}{}
 	}
 	for _, item := range bundle.L4Rules {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
@@ -360,10 +360,6 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		}
 		wireGuardProfileID, profileOK := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
 		key = l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardInboundMode, item.WireGuardListenHost, wireGuardProfileID, item.ProxyEgressMode)
-		if _, exists := existingL4Keys[key]; exists {
-			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
-			continue
-		}
 		if strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") || strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard") {
 			if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, previewCapabilityStore, resolvedAgentID); err != nil {
 				result.addSkippedInvalid("l4_rule", key, err.Error())
@@ -377,6 +373,16 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		input := l4RuleInputFromBackup(item, listenerIDMap, wireGuardProfileID)
 		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
+			continue
+		}
+		normalized, err := normalizeL4RuleInput(input, L4Rule{AgentID: resolvedAgentID}, 0)
+		if err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
+			continue
+		}
+		key = l4RuleConflictKey(normalized)
+		if _, exists := existingL4Keys[key]; exists {
+			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
 			continue
 		}
 		if err := validateRelayChainReferencesFromRows(knownAgentIDs, previewRelayListeners, flattenRelayLayers(pointerRelayLayers(input.RelayLayers)), relayChainValidationOptions{RuleAgentID: resolvedAgentID}); err != nil {
@@ -1547,7 +1553,7 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 	maxRevisionByAgent := map[string]int{}
 
 	for _, row := range existingRules {
-		key := l4BackupConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort, row.ListenMode, row.WireGuardInboundMode, row.WireGuardListenHost, row.WireGuardProfileID, row.ProxyEgressMode)
+		key := l4RuleConflictKey(l4RuleFromRow(row))
 		conflictSet[key] = struct{}{}
 		grouped[row.AgentID] = append(grouped[row.AgentID], row)
 		if row.Revision > maxRevisionByAgent[row.AgentID] {
@@ -1561,10 +1567,6 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		key := l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardInboundMode, item.WireGuardListenHost, wireGuardProfileID, item.ProxyEgressMode)
 		if !ok {
 			result.addSkippedInvalid("l4_rule", key, "l4 rule references unknown agent")
-			continue
-		}
-		if _, exists := conflictSet[key]; exists {
-			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") || strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard") {
@@ -1587,6 +1589,11 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		normalized, err := normalizeL4RuleInput(input, L4Rule{AgentID: resolvedAgentID}, 0)
 		if err != nil {
 			result.addSkippedInvalid("l4_rule", key, err.Error())
+			continue
+		}
+		key = l4RuleConflictKey(normalized)
+		if _, exists := conflictSet[key]; exists {
+			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
 			continue
 		}
 		if restoreURI, err := s.shouldRestoreImportedL4WireGuardEgressURI(ctx, item, resolvedAgentID, wireGuardProfileID, importedWireGuardProfileIDs); err != nil {
@@ -2059,6 +2066,10 @@ func httpRuleConflictKey(agentID string, frontendURL string) string {
 
 func l4ConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenStack string) string {
 	return strings.TrimSpace(agentID) + "|" + strings.ToLower(strings.TrimSpace(protocol)) + "|" + strings.TrimSpace(listenHost) + "|" + fmt.Sprintf("%d", listenPort) + "|" + strings.TrimSpace(listenStack)
+}
+
+func l4RuleConflictKey(rule L4Rule) string {
+	return l4ConflictKey(rule.AgentID, rule.Protocol, effectiveL4ListenHost(rule), rule.ListenPort, effectiveL4ListenStack(rule))
 }
 
 func l4BackupConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenMode string, wireGuardInboundMode string, wireGuardListenHost string, wireGuardProfileID *int, proxyEgressMode string) string {
