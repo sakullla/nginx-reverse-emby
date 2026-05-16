@@ -54,27 +54,7 @@ func newConfigIdentityAllocator(state configIdentityAllocatorState) *configIdent
 }
 
 func newConfigIdentityAllocatorFromStore(ctx context.Context, cfg config.Config, store configIdentityAllocatorStore) (*configIdentityAllocator, error) {
-	agentRows, err := store.ListAgents(ctx)
-	if err != nil {
-		return nil, err
-	}
-	localState, err := store.LoadLocalAgentState(ctx)
-	if err != nil {
-		return nil, err
-	}
-	agentIDs, err := allKnownAgentIDs(ctx, cfg, store)
-	if err != nil {
-		return nil, err
-	}
-	httpRows, err := listAllHTTPRuleRows(ctx, store, agentIDs)
-	if err != nil {
-		return nil, err
-	}
-	l4Rows, err := listAllL4RuleRows(ctx, store, agentIDs)
-	if err != nil {
-		return nil, err
-	}
-	relayRows, err := store.ListRelayListeners(ctx, "")
+	state, agentIDs, err := loadConfigIdentityAllocatorBaseState(ctx, cfg, store)
 	if err != nil {
 		return nil, err
 	}
@@ -82,21 +62,50 @@ func newConfigIdentityAllocatorFromStore(ctx context.Context, cfg config.Config,
 	if err != nil {
 		return nil, err
 	}
+	state.WireGuard = wireGuardRows
+
+	return newConfigIdentityAllocator(state), nil
+}
+
+func loadConfigIdentityAllocatorBaseState(ctx context.Context, cfg config.Config, store configIdentityAllocatorStore) (configIdentityAllocatorState, []string, error) {
+	agentRows, err := store.ListAgents(ctx)
+	if err != nil {
+		return configIdentityAllocatorState{}, nil, err
+	}
+	localState, err := store.LoadLocalAgentState(ctx)
+	if err != nil {
+		return configIdentityAllocatorState{}, nil, err
+	}
+	agentIDs, err := allKnownAgentIDs(ctx, cfg, store)
+	if err != nil {
+		return configIdentityAllocatorState{}, nil, err
+	}
+	httpRows, err := listAllHTTPRuleRows(ctx, store, agentIDs)
+	if err != nil {
+		return configIdentityAllocatorState{}, nil, err
+	}
+	l4Rows, err := listAllL4RuleRows(ctx, store, agentIDs)
+	if err != nil {
+		return configIdentityAllocatorState{}, nil, err
+	}
+	relayRows, err := store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return configIdentityAllocatorState{}, nil, err
+	}
 	certRows, err := store.ListManagedCertificates(ctx)
 	if err != nil {
-		return nil, err
+		return configIdentityAllocatorState{}, nil, err
 	}
 
-	return newConfigIdentityAllocator(configIdentityAllocatorState{
+	return configIdentityAllocatorState{
 		LocalAgentID:   cfg.LocalAgentID,
 		Agents:         agentRows,
 		LocalState:     localState,
 		HTTPRules:      httpRows,
 		L4Rules:        l4Rows,
 		RelayListeners: relayRows,
-		WireGuard:      wireGuardRows,
 		Certificates:   certRows,
-	}), nil
+	}, agentIDs, nil
 }
 
 func (a *configIdentityAllocator) AllocateRuleID(preferredID int) int {

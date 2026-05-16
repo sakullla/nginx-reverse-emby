@@ -338,6 +338,79 @@ func TestWireGuardProfileUpdatePreservesEnabledGeneratedClientPeer(t *testing.T)
 	}
 }
 
+func TestWireGuardProfileUpdateUsesTransactionalClientStateForGeneratedPeers(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers = []WireGuardPeer{}
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+	staleEnabledRows, err := store.ListWireGuardClients(ctx, "local", profile.ID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(stale) error = %v", err)
+	}
+	if len(staleEnabledRows) != 1 || !staleEnabledRows[0].Enabled {
+		t.Fatalf("stale enabled rows = %+v, want one enabled client", staleEnabledRows)
+	}
+
+	enabled := false
+	if _, err := clientSvc.UpdateClient(ctx, "local", profile.ID, client.ID, WireGuardClientInput{Enabled: &enabled}); err != nil {
+		t.Fatalf("UpdateClient(disable) error = %v", err)
+	}
+	currentDisabledRows, err := store.ListWireGuardClients(ctx, "local", profile.ID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(current) error = %v", err)
+	}
+	if len(currentDisabledRows) != 1 || currentDisabledRows[0].Enabled {
+		t.Fatalf("current rows = %+v, want one disabled client", currentDisabledRows)
+	}
+
+	staleStore := &staleWireGuardClientListStore{
+		SQLiteStore:  store,
+		staleClients: append([]storage.WireGuardClientRow(nil), staleEnabledRows...),
+	}
+	staleProfileSvc := NewWireGuardProfileService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, staleStore)
+	update := input
+	update.PrivateKey = redactedProxyPassword
+	update.Peers = []WireGuardPeer{}
+	updated, err := staleProfileSvc.Update(ctx, "local", profile.ID, update)
+	if err != nil {
+		t.Fatalf("Update(profile) error = %v", err)
+	}
+	for _, peer := range updated.Peers {
+		if peer.PublicKey == client.PublicKey {
+			t.Fatalf("Update(profile) used stale enabled client snapshot and re-added peer: %+v", updated.Peers)
+		}
+	}
+
+	profiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	storedProfile := wireGuardProfileFromRow(profiles[0])
+	for _, peer := range storedProfile.Peers {
+		if peer.PublicKey == client.PublicKey {
+			t.Fatalf("stored profile used stale enabled client snapshot and re-added peer: %+v", storedProfile.Peers)
+		}
+	}
+	afterRows, err := store.ListWireGuardClients(ctx, "local", profile.ID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(after) error = %v", err)
+	}
+	if len(afterRows) != len(currentDisabledRows) || afterRows[0] != currentDisabledRows[0] {
+		t.Fatalf("Update(profile) mutated client rows: before=%+v after=%+v", currentDisabledRows, afterRows)
+	}
+}
+
 func TestWireGuardProfileUpdateDoesNotReaddDisabledGeneratedClientPeer(t *testing.T) {
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
@@ -676,4 +749,13 @@ func newTestWireGuardClientService(t *testing.T) (*storage.SQLiteStore, *wireGua
 
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
 	return store, NewWireGuardProfileService(cfg, store), NewWireGuardClientService(cfg, store)
+}
+
+type staleWireGuardClientListStore struct {
+	*storage.SQLiteStore
+	staleClients []storage.WireGuardClientRow
+}
+
+func (s *staleWireGuardClientListStore) ListWireGuardClients(_ context.Context, _ string, _ int) ([]storage.WireGuardClientRow, error) {
+	return append([]storage.WireGuardClientRow(nil), s.staleClients...), nil
 }

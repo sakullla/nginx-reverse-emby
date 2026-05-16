@@ -97,8 +97,8 @@ type wireGuardProfileStore interface {
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error)
-	ListWireGuardClients(context.Context, string, int) ([]storage.WireGuardClientRow, error)
 	SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error
+	MutateWireGuardClientProfile(context.Context, string, int, func(storage.WireGuardClientProfileMutation) (storage.WireGuardClientProfileMutation, error)) error
 	SaveAgent(context.Context, storage.AgentRow) error
 }
 
@@ -193,54 +193,45 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 	if err != nil {
 		return WireGuardProfile{}, err
 	}
-	rows, err := s.store.ListWireGuardProfiles(ctx, resolvedID)
+	allocatorState, _, err := loadConfigIdentityAllocatorBaseState(ctx, s.cfg, s.store)
 	if err != nil {
 		return WireGuardProfile{}, err
 	}
 
-	targetIndex := -1
-	var current WireGuardProfile
-	for i, row := range rows {
-		profile := wireGuardProfileFromRow(row)
-		if profile.ID == id {
-			targetIndex = i
-			current = profile
-		}
-	}
-	if targetIndex < 0 {
-		return WireGuardProfile{}, ErrWireGuardProfileNotFound
-	}
-
-	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
-	if err != nil {
-		return WireGuardProfile{}, err
-	}
-	maxRevision := maxWireGuardProfileRevision(rows)
+	var profile WireGuardProfile
 	input.ID = 0
-	profile, err := normalizeWireGuardProfileInput(input, current, id)
-	if err != nil {
-		return WireGuardProfile{}, err
-	}
-	clients, err := s.store.ListWireGuardClients(ctx, resolvedID, profile.ID)
-	if err != nil {
-		return WireGuardProfile{}, err
-	}
-	profile.Peers = reconcileWireGuardGeneratedClientPeers(profile.Peers, clients)
-	if err := validateRequiredWireGuardProfileEssentials(profile); err != nil {
-		return WireGuardProfile{}, err
-	}
-	if current.Enabled && !profile.Enabled {
-		if err := s.ensureProfileNotReferenced(ctx, resolvedID, profile.ID); err != nil {
-			return WireGuardProfile{}, err
+	err = s.store.MutateWireGuardClientProfile(ctx, resolvedID, id, func(state storage.WireGuardClientProfileMutation) (storage.WireGuardClientProfileMutation, error) {
+		if state.ProfileIndex < 0 {
+			return state, ErrWireGuardProfileNotFound
 		}
-	}
-	profile.AgentID = resolvedID
-	profile.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
-	rows[targetIndex] = wireGuardProfileToRow(profile)
-	if err := validateUniqueEnabledWireGuardListenPorts(rows); err != nil {
-		return WireGuardProfile{}, err
-	}
-	if err := s.store.SaveWireGuardProfiles(ctx, resolvedID, rows); err != nil {
+
+		current := wireGuardProfileFromRow(state.Profiles[state.ProfileIndex])
+		normalized, err := normalizeWireGuardProfileInput(input, current, id)
+		if err != nil {
+			return state, err
+		}
+		normalized.Peers = reconcileWireGuardGeneratedClientPeers(normalized.Peers, state.Clients)
+		if err := validateRequiredWireGuardProfileEssentials(normalized); err != nil {
+			return state, err
+		}
+		if current.Enabled && !normalized.Enabled {
+			if err := s.ensureProfileNotReferenced(ctx, resolvedID, normalized.ID); err != nil {
+				return state, err
+			}
+		}
+		normalized.AgentID = resolvedID
+		allocatorState.WireGuard = state.Profiles
+		allocator := newConfigIdentityAllocator(allocatorState)
+		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxWireGuardProfileRevision(state.Profiles))
+		state.Profiles[state.ProfileIndex] = wireGuardProfileToRow(normalized)
+		if err := validateUniqueEnabledWireGuardListenPorts(state.Profiles); err != nil {
+			return state, err
+		}
+
+		profile = normalized
+		return state, nil
+	})
+	if err != nil {
 		return WireGuardProfile{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, profile.Revision); err != nil {
