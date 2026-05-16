@@ -3143,6 +3143,225 @@ func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testi
 	}
 }
 
+func TestBackupServicePreviewUsesExistingRelayListenerForConflictValidation(t *testing.T) {
+	const (
+		ruleAgentID     = "edge-a"
+		relayAgentID    = "relay-b"
+		existingRelayID = 500
+		conflictRelayID = 77
+		freshRelayID    = 78
+	)
+
+	tests := []struct {
+		name                      string
+		existingTransport         string
+		incomingConflictTransport string
+		wantImportedRules         int
+		wantSkippedInvalidRules   int
+		wantInvalidReason         string
+	}{
+		{
+			name:                      "stored cross-agent wireguard conflict rejects even when incoming conflict is tls",
+			existingTransport:         "wireguard",
+			incomingConflictTransport: "tls_tcp",
+			wantImportedRules:         1,
+			wantSkippedInvalidRules:   1,
+			wantInvalidReason:         "invalid argument: wireguard relay listener 500 belongs to relay-b and cannot be used by agent edge-a",
+		},
+		{
+			name:                      "stored tls conflict allows even when incoming conflict is cross-agent wireguard",
+			existingTransport:         "tls_tcp",
+			incomingConflictTransport: "wireguard",
+			wantImportedRules:         2,
+			wantSkippedInvalidRules:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+			if err != nil {
+				t.Fatalf("NewSQLiteStore(target) error = %v", err)
+			}
+			defer targetStore.Close()
+
+			ctx := t.Context()
+			for _, agent := range []storage.AgentRow{
+				{ID: ruleAgentID, Name: ruleAgentID, AgentToken: "token-edge"},
+				{ID: relayAgentID, Name: relayAgentID, AgentToken: "token-relay"},
+			} {
+				if err := targetStore.SaveAgent(ctx, agent); err != nil {
+					t.Fatalf("SaveAgent(%s) error = %v", agent.ID, err)
+				}
+			}
+			if err := targetStore.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{{
+				ID:              21,
+				Domain:          "relay.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["relay-b"]`,
+				Status:          "active",
+				AgentReports:    `{}`,
+				ACMEInfo:        `{}`,
+				Usage:           "relay_tunnel",
+				CertificateType: "uploaded",
+				Revision:        2,
+			}}); err != nil {
+				t.Fatalf("SaveManagedCertificates() error = %v", err)
+			}
+			if err := targetStore.SaveRelayListeners(ctx, relayAgentID, []storage.RelayListenerRow{{
+				ID:                 existingRelayID,
+				AgentID:            relayAgentID,
+				Name:               "relay-conflict",
+				ListenHost:         "0.0.0.0",
+				BindHostsJSON:      `["0.0.0.0"]`,
+				ListenPort:         7443,
+				PublicHost:         "relay.example.com",
+				PublicPort:         7443,
+				Enabled:            true,
+				TransportMode:      tt.existingTransport,
+				WireGuardProfileID: backupIntPtr(41),
+				Revision:           3,
+			}}); err != nil {
+				t.Fatalf("SaveRelayListeners(existing) error = %v", err)
+			}
+
+			bundle := BackupBundle{
+				Manifest: BackupManifest{
+					PackageVersion:     BackupPackageVersion,
+					SourceArchitecture: BackupSourceArchitectureGo,
+					ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+					Counts: BackupCounts{
+						HTTPRules:      2,
+						L4Rules:        2,
+						RelayListeners: 2,
+					},
+				},
+				RelayListeners: []BackupRelayListener{
+					{
+						ID:                 conflictRelayID,
+						AgentID:            relayAgentID,
+						Name:               "relay-conflict",
+						BindHosts:          []string{"0.0.0.0"},
+						ListenHost:         "0.0.0.0",
+						ListenPort:         7443,
+						PublicHost:         "relay.example.com",
+						PublicPort:         7443,
+						Enabled:            true,
+						TransportMode:      tt.incomingConflictTransport,
+						WireGuardProfileID: backupIntPtr(41),
+						Revision:           9,
+					},
+					{
+						ID:            freshRelayID,
+						AgentID:       relayAgentID,
+						Name:          "relay-fresh",
+						BindHosts:     []string{"0.0.0.0"},
+						ListenHost:    "0.0.0.0",
+						ListenPort:    7444,
+						PublicHost:    "fresh-relay.example.com",
+						PublicPort:    7444,
+						Enabled:       true,
+						CertificateID: backupIntPtr(21),
+						TLSMode:       "pin_only",
+						TransportMode: "tls_tcp",
+						PinSet:        []RelayPin{{Type: "spki_sha256", Value: "fixture-pin"}},
+						Revision:      10,
+					},
+				},
+				HTTPRules: []BackupHTTPRule{
+					{
+						ID:               11,
+						AgentID:          ruleAgentID,
+						FrontendURL:      "https://conflict-relay.example.com",
+						BackendURL:       "http://127.0.0.1:8096",
+						Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+						Enabled:          true,
+						RelayLayers:      [][]int{{conflictRelayID}},
+						ProxyRedirect:    true,
+						PassProxyHeaders: defaultPassProxyHeaders(),
+					},
+					{
+						ID:               12,
+						AgentID:          ruleAgentID,
+						FrontendURL:      "https://fresh-relay.example.com",
+						BackendURL:       "http://127.0.0.1:8097",
+						Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8097"}},
+						Enabled:          true,
+						RelayLayers:      [][]int{{freshRelayID}},
+						ProxyRedirect:    true,
+						PassProxyHeaders: defaultPassProxyHeaders(),
+					},
+				},
+				L4Rules: []BackupL4Rule{
+					{
+						ID:           21,
+						AgentID:      ruleAgentID,
+						Name:         "conflict relay",
+						Protocol:     "tcp",
+						ListenHost:   "0.0.0.0",
+						ListenPort:   9000,
+						UpstreamHost: "127.0.0.1",
+						UpstreamPort: 9001,
+						Backends:     []L4Backend{{Host: "127.0.0.1", Port: 9001}},
+						Enabled:      true,
+						RelayLayers:  [][]int{{conflictRelayID}},
+					},
+					{
+						ID:           22,
+						AgentID:      ruleAgentID,
+						Name:         "fresh relay",
+						Protocol:     "tcp",
+						ListenHost:   "0.0.0.0",
+						ListenPort:   9002,
+						UpstreamHost: "127.0.0.1",
+						UpstreamPort: 9003,
+						Backends:     []L4Backend{{Host: "127.0.0.1", Port: 9003}},
+						Enabled:      true,
+						RelayLayers:  [][]int{{freshRelayID}},
+					},
+				},
+			}
+			archive, err := encodeBackupBundle(bundle)
+			if err != nil {
+				t.Fatalf("encodeBackupBundle() error = %v", err)
+			}
+
+			svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore)
+			preview, err := svc.Preview(ctx, archive)
+			if err != nil {
+				t.Fatalf("Preview() error = %v", err)
+			}
+			assertBackupConflictRelayPreview(t, preview, tt.wantImportedRules, tt.wantSkippedInvalidRules, tt.wantInvalidReason)
+
+			result, err := svc.Import(ctx, archive)
+			if err != nil {
+				t.Fatalf("Import() error = %v", err)
+			}
+			assertBackupConflictRelayPreview(t, result, tt.wantImportedRules, tt.wantSkippedInvalidRules, tt.wantInvalidReason)
+		})
+	}
+}
+
+func assertBackupConflictRelayPreview(t *testing.T, result BackupImportResult, wantImportedRules int, wantSkippedInvalidRules int, wantInvalidReason string) {
+	t.Helper()
+	if result.Summary.SkippedConflict.RelayListeners != 1 || result.Summary.Imported.RelayListeners != 1 {
+		t.Fatalf("relay summary = imported %+v skipped conflict %+v", result.Summary.Imported, result.Summary.SkippedConflict)
+	}
+	if result.Summary.Imported.HTTPRules != wantImportedRules || result.Summary.Imported.L4Rules != wantImportedRules {
+		t.Fatalf("imported rules = %+v, want HTTP/L4 %d", result.Summary.Imported, wantImportedRules)
+	}
+	if result.Summary.SkippedInvalid.HTTPRules != wantSkippedInvalidRules || result.Summary.SkippedInvalid.L4Rules != wantSkippedInvalidRules {
+		t.Fatalf("invalid rules = %+v, want HTTP/L4 %d", result.Summary.SkippedInvalid, wantSkippedInvalidRules)
+	}
+	if wantInvalidReason == "" {
+		return
+	}
+	assertBackupSkippedInvalidReason(t, result, "http_rule", "https://conflict-relay.example.com", wantInvalidReason)
+	assertBackupSkippedInvalidReason(t, result, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", wantInvalidReason)
+}
+
 func TestBackupServicePreviewAndImportSkipCrossAgentWireGuardRelayReferences(t *testing.T) {
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {

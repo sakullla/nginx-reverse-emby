@@ -507,9 +507,11 @@ func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.Re
 
 func previewRelayListenersByID(existing []storage.RelayListenerRow, incoming []BackupRelayListener, listenerIDMap map[int]int, agentIDMap map[string]string, cfg config.Config) map[int]storage.RelayListenerRow {
 	listenersByID := map[int]storage.RelayListenerRow{}
+	existingConflictIDs := map[string]int{}
 	for _, row := range existing {
 		if row.ID > 0 {
 			listenersByID[row.ID] = row
+			existingConflictIDs[relayConflictKey(row.AgentID, row.Name)] = row.ID
 		}
 	}
 	for _, item := range incoming {
@@ -519,6 +521,10 @@ func previewRelayListenersByID(existing []storage.RelayListenerRow, incoming []B
 		}
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, cfg)
 		if !ok {
+			continue
+		}
+		conflictKey := relayConflictKey(resolvedAgentID, item.Name)
+		if existingID, exists := existingConflictIDs[conflictKey]; exists && existingID == mappedID {
 			continue
 		}
 		row := relayListenerToRow(RelayListener{
