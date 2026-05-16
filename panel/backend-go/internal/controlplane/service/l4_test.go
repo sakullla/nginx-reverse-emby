@@ -2213,6 +2213,53 @@ func TestL4UpdateWireGuardRequiresAgentCapability(t *testing.T) {
 	}
 }
 
+func TestL4UpdateWireGuardProxyEgressRequiresAgentCapability(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: marshalStringArray([]string{"l4"}),
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:                1,
+				AgentID:           "edge-1",
+				Name:              "tcp rule",
+				Protocol:          "tcp",
+				ListenHost:        "0.0.0.0",
+				ListenPort:        9000,
+				BackendsJSON:      `[{"host":"upstream","port":9001}]`,
+				LoadBalancingJSON: `{"strategy":"adaptive"}`,
+				TuningJSON:        `{"proxy_protocol":{}}`,
+				RelayChainJSON:    "[]",
+				RelayLayersJSON:   "[]",
+				ListenMode:        "tcp",
+				TagsJSON:          "[]",
+				Enabled:           true,
+				Revision:          1,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"edge-1": {{ID: 7, AgentID: "edge-1", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Update(context.Background(), "edge-1", 1, L4RuleInput{
+		ListenMode:         stringPtrL4("proxy"),
+		ProxyEgressMode:    stringPtrL4("wireguard"),
+		WireGuardProfileID: intPtrL4(7),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "agent does not support WireGuard") {
+		t.Fatalf("Update() error = %v, want WireGuard capability message", err)
+	}
+}
+
 func TestL4UpdateAllowsSwitchingAwayFromWireGuardWithoutCapability(t *testing.T) {
 	profileID := 7
 	store := &fakeL4Store{
@@ -2259,6 +2306,63 @@ func TestL4UpdateAllowsSwitchingAwayFromWireGuardWithoutCapability(t *testing.T)
 	}
 	if rule.ListenMode != "tcp" || rule.WireGuardProfileID != nil || rule.WireGuardListenHost != "" {
 		t.Fatalf("Update() rule = %+v, want non-WireGuard listener with WireGuard fields cleared", rule)
+	}
+}
+
+func TestL4UpdateAllowsSwitchingProxyEgressAwayFromWireGuardWithoutCapability(t *testing.T) {
+	profileID := 7
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: marshalStringArray([]string{"l4"}),
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:                   1,
+				AgentID:              "edge-1",
+				Name:                 "wg egress rule",
+				Protocol:             "tcp",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           1080,
+				BackendsJSON:         "[]",
+				LoadBalancingJSON:    `{"strategy":"adaptive"}`,
+				TuningJSON:           `{"proxy_protocol":{}}`,
+				RelayChainJSON:       "[]",
+				RelayLayersJSON:      "[]",
+				ListenMode:           "proxy",
+				ProxyEgressMode:      "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "address",
+				TagsJSON:             "[]",
+				Enabled:              true,
+				Revision:             1,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"edge-1": {{ID: profileID, AgentID: "edge-1", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "edge-1", 1, L4RuleInput{
+		ListenMode: stringPtrL4("tcp"),
+		Backends:   &[]L4Backend{{Host: "upstream", Port: 9001}},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.ListenMode != "tcp" || rule.ProxyEgressMode != "" || rule.WireGuardProfileID != nil {
+		t.Fatalf("Update() rule = %+v, want normal backend forwarding without WireGuard fields", rule)
+	}
+	if len(rule.Backends) != 1 || rule.Backends[0].Host != "upstream" || rule.Backends[0].Port != 9001 {
+		t.Fatalf("Update() backends = %+v, want normal backend forwarding", rule.Backends)
+	}
+	row := store.l4RulesByID["edge-1"][0]
+	if row.ListenMode != "tcp" || row.ProxyEgressMode != "" || row.WireGuardProfileID != nil {
+		t.Fatalf("persisted rule = %+v, want WireGuard egress fields cleared", row)
 	}
 }
 
