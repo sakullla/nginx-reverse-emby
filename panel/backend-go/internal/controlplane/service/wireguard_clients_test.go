@@ -288,6 +288,52 @@ func TestWireGuardClientUpdateEnablesDisabledClient(t *testing.T) {
 	}
 }
 
+func TestWireGuardClientUpdateRejectsMissingEnabledWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+	beforeRows, err := store.ListWireGuardClients(ctx, "local", profile.ID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(before) error = %v", err)
+	}
+	beforeProfiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(before) error = %v", err)
+	}
+
+	_, err = clientSvc.UpdateClient(ctx, "local", profile.ID, client.ID, WireGuardClientInput{})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("UpdateClient(missing enabled) error = %v, want ErrInvalidArgument", err)
+	}
+
+	afterRows, err := store.ListWireGuardClients(ctx, "local", profile.ID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(after) error = %v", err)
+	}
+	if len(afterRows) != len(beforeRows) || afterRows[0] != beforeRows[0] {
+		t.Fatalf("UpdateClient(missing enabled) mutated client rows: before=%+v after=%+v", beforeRows, afterRows)
+	}
+	afterProfiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(after) error = %v", err)
+	}
+	if len(afterProfiles) != len(beforeProfiles) || afterProfiles[0] != beforeProfiles[0] {
+		t.Fatalf("UpdateClient(missing enabled) mutated profiles: before=%+v after=%+v", beforeProfiles, afterProfiles)
+	}
+}
+
 func TestWireGuardClientUpdateMissingClientReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)

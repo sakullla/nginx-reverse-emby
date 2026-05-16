@@ -96,13 +96,13 @@
           <div class="client-row__actions">
             <button
               class="btn btn--secondary btn--sm"
-              :disabled="updateClient.isPending.value"
+              :disabled="isClientRowPending(client)"
               @click="toggleClientEnabled(client)"
             >
               {{ client.enabled === false ? '启用' : '停用' }}
             </button>
-            <button class="btn btn--secondary btn--sm" @click="downloadClientConfig(client)">下载配置</button>
-            <button class="btn btn--danger btn--sm" @click="deleteClient.mutate(client.id)">删除</button>
+            <button class="btn btn--secondary btn--sm" :disabled="isClientRowPending(client)" @click="downloadClientConfig(client)">下载配置</button>
+            <button class="btn btn--danger btn--sm" :disabled="isClientRowPending(client)" @click="deleteWireGuardClientRow(client)">删除</button>
           </div>
         </div>
       </div>
@@ -348,6 +348,7 @@ const showForm = ref(false)
 const showClientForm = ref(false)
 const editingProfile = ref(null)
 const deletingProfile = ref(null)
+const pendingClientRowIds = ref(new Set())
 const tagInput = ref('')
 const form = ref(createFormState())
 const errors = ref({ name: '', submit: '' })
@@ -359,6 +360,7 @@ watch(agentId, () => {
   closeForm()
   closeClientForm()
   deletingProfile.value = null
+  pendingClientRowIds.value = new Set()
   selectedProfileId.value = null
 })
 
@@ -368,6 +370,25 @@ watch(profiles, () => {
 
 function listText(items) {
   return Array.isArray(items) ? items.join(', ') : ''
+}
+
+function clientRowKey(clientOrID) {
+  return String(typeof clientOrID === 'object' ? clientOrID?.id : clientOrID)
+}
+
+function isClientRowPending(client) {
+  return pendingClientRowIds.value.has(clientRowKey(client))
+}
+
+function setClientRowPending(clientID, pending) {
+  const next = new Set(pendingClientRowIds.value)
+  const key = clientRowKey(clientID)
+  if (pending) {
+    next.add(key)
+  } else {
+    next.delete(key)
+  }
+  pendingClientRowIds.value = next
 }
 
 function splitLines(value) {
@@ -556,14 +577,19 @@ async function handleCreateClient() {
 
 function toggleClientEnabled(client) {
   if (!client?.id) return
+  if (isClientRowPending(client)) return
+  setClientRowPending(client.id, true)
   updateClient.mutate({
     clientId: client.id,
     enabled: client.enabled === false
+  }, {
+    onSettled: () => setClientRowPending(client.id, false)
   })
 }
 
 async function downloadClientConfig(client) {
   if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  if (isClientRowPending(client)) return
   let url = ''
   let link = null
   try {
@@ -581,6 +607,15 @@ async function downloadClientConfig(client) {
     if (link?.parentNode) link.remove()
     if (url) URL.revokeObjectURL(url)
   }
+}
+
+function deleteWireGuardClientRow(client) {
+  if (!client?.id) return
+  if (isClientRowPending(client)) return
+  setClientRowPending(client.id, true)
+  deleteClient.mutate(client.id, {
+    onSettled: () => setClientRowPending(client.id, false)
+  })
 }
 
 function confirmDelete() {

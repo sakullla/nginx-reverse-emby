@@ -237,6 +237,9 @@ func (s *wireGuardClientService) DeleteClient(ctx context.Context, agentID strin
 }
 
 func (s *wireGuardClientService) UpdateClient(ctx context.Context, agentID string, profileID int, clientID int, input WireGuardClientInput) (WireGuardClient, error) {
+	if input.Enabled == nil {
+		return WireGuardClient{}, fmt.Errorf("%w: enabled is required", ErrInvalidArgument)
+	}
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardClient{}, err
@@ -262,9 +265,7 @@ func (s *wireGuardClientService) UpdateClient(ctx context.Context, agentID strin
 		if targetIndex < 0 {
 			return state, ErrWireGuardClientNotFound
 		}
-		if input.Enabled != nil {
-			updated.Enabled = *input.Enabled
-		}
+		updated.Enabled = *input.Enabled
 		updated.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		state.Clients[targetIndex] = updated
 

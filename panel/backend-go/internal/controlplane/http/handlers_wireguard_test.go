@@ -530,6 +530,55 @@ func TestWireGuardProfileClientPatchUpdatesEnabled(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileClientPatchRejectsMissingEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing", body: `{}`},
+		{name: "null", body: `{"enabled":null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, cleanup := newWireGuardHTTPTestRouter(t)
+			defer cleanup()
+
+			profile := createWireGuardHTTPClientProfile(t, router, "/panel-api", 51820)
+			basePath := "/panel-api/agents/local/wireguard-profiles/" + strconv.Itoa(profile.ID) + "/clients"
+
+			createReq := httptest.NewRequest(http.MethodPost, basePath, bytes.NewBufferString(`{"name":"phone"}`))
+			createReq.Header.Set("X-Panel-Token", "secret")
+			createReq.Header.Set("Content-Type", "application/json")
+			createResp := httptest.NewRecorder()
+			router.ServeHTTP(createResp, createReq)
+			if createResp.Code != http.StatusCreated {
+				t.Fatalf("POST clients = %d, body=%s", createResp.Code, createResp.Body.String())
+			}
+			client := decodeWireGuardHTTPClientResponse(t, createResp.Body.Bytes())
+
+			patchReq := httptest.NewRequest(http.MethodPatch, basePath+"/"+strconv.Itoa(client.ID), bytes.NewBufferString(tc.body))
+			patchReq.Header.Set("X-Panel-Token", "secret")
+			patchReq.Header.Set("Content-Type", "application/json")
+			patchResp := httptest.NewRecorder()
+			router.ServeHTTP(patchResp, patchReq)
+			if patchResp.Code != http.StatusBadRequest {
+				t.Fatalf("PATCH client %s enabled = %d, body=%s", tc.name, patchResp.Code, patchResp.Body.String())
+			}
+
+			listReq := httptest.NewRequest(http.MethodGet, basePath, nil)
+			listReq.Header.Set("X-Panel-Token", "secret")
+			listResp := httptest.NewRecorder()
+			router.ServeHTTP(listResp, listReq)
+			if listResp.Code != http.StatusOK {
+				t.Fatalf("GET clients after rejected patch = %d, body=%s", listResp.Code, listResp.Body.String())
+			}
+			clients := decodeWireGuardHTTPClientsResponse(t, listResp.Body.Bytes())
+			if len(clients) != 1 || !clients[0].Enabled {
+				t.Fatalf("clients after rejected patch = %+v, want unchanged enabled client", clients)
+			}
+		})
+	}
+}
+
 func TestWireGuardProfileClientPatchMissingReturnsNotFound(t *testing.T) {
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
