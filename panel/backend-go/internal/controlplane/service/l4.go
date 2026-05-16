@@ -194,10 +194,10 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 			return L4Rule{}, err
 		}
 	}
-	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
+	if err := s.validateRelayChain(ctx, resolvedID, rule.RelayChain); err != nil {
 		return L4Rule{}, err
 	}
-	if err := s.validateRelayChain(ctx, flattenRelayLayers(rule.RelayLayers)); err != nil {
+	if err := s.validateRelayChain(ctx, resolvedID, flattenRelayLayers(rule.RelayLayers)); err != nil {
 		return L4Rule{}, err
 	}
 	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
@@ -282,10 +282,10 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 			return L4Rule{}, err
 		}
 	}
-	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
+	if err := s.validateRelayChain(ctx, resolvedID, rule.RelayChain); err != nil {
 		return L4Rule{}, err
 	}
-	if err := s.validateRelayChain(ctx, flattenRelayLayers(rule.RelayLayers)); err != nil {
+	if err := s.validateRelayChain(ctx, resolvedID, flattenRelayLayers(rule.RelayLayers)); err != nil {
 		return L4Rule{}, err
 	}
 	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
@@ -715,12 +715,14 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	}, nil
 }
 
-func (s *l4Service) validateRelayChain(ctx context.Context, relayChain []int) error {
+func (s *l4Service) validateRelayChain(ctx context.Context, agentID string, relayChain []int) error {
 	knownAgentIDs, err := s.allKnownAgentIDs(ctx)
 	if err != nil {
 		return err
 	}
-	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain)
+	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain, relayChainValidationOptions{
+		RuleAgentID: agentID,
+	})
 }
 
 func (s *l4Service) validateWireGuardProfileReference(ctx context.Context, agentID string, rule L4Rule) error {

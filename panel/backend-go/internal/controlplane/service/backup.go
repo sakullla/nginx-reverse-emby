@@ -243,6 +243,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		return BackupImportResult{}, err
 	}
 	listenerIDMap := previewListenerIDMap(bundle.RelayListeners, existingRelayRows, agentIDMap, certIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, s.cfg)
+	previewRelayListeners := previewRelayListenersByID(existingRelayRows, bundle.RelayListeners, listenerIDMap, agentIDMap, s.cfg)
 	existingRelayKeys := map[string]struct{}{}
 	for _, row := range existingRelayRows {
 		existingRelayKeys[relayConflictKey(row.AgentID, row.Name)] = struct{}{}
@@ -279,6 +280,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	if err != nil {
 		return BackupImportResult{}, err
 	}
+	knownAgentIDs = appendKnownAgentIDs(knownAgentIDs, agentIDMap)
 	existingHTTPRules, err := s.listAllHTTPRules(ctx, knownAgentIDs)
 	if err != nil {
 		return BackupImportResult{}, err
@@ -302,6 +304,10 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		input := httpRuleInputFromBackup(item, listenerIDMap, nil)
 		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
+			continue
+		}
+		if err := validateRelayChainReferencesFromRows(knownAgentIDs, previewRelayListeners, flattenRelayLayers(pointerRelayLayers(input.RelayLayers)), relayChainValidationOptions{RuleAgentID: resolvedAgentID}); err != nil {
+			result.addSkippedInvalid("http_rule", key, err.Error())
 			continue
 		}
 		if item.WireGuardEntryEnabled {
@@ -340,6 +346,10 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		input := l4RuleInputFromBackup(item, listenerIDMap, wireGuardProfileID)
 		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
+			continue
+		}
+		if err := validateRelayChainReferencesFromRows(knownAgentIDs, previewRelayListeners, flattenRelayLayers(pointerRelayLayers(input.RelayLayers)), relayChainValidationOptions{RuleAgentID: resolvedAgentID}); err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
 		result.addImported("l4_rule", key)
@@ -493,6 +503,63 @@ func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.Re
 		}
 	}
 	return listenerIDMap
+}
+
+func previewRelayListenersByID(existing []storage.RelayListenerRow, incoming []BackupRelayListener, listenerIDMap map[int]int, agentIDMap map[string]string, cfg config.Config) map[int]storage.RelayListenerRow {
+	listenersByID := map[int]storage.RelayListenerRow{}
+	for _, row := range existing {
+		if row.ID > 0 {
+			listenersByID[row.ID] = row
+		}
+	}
+	for _, item := range incoming {
+		mappedID, ok := listenerIDMap[item.ID]
+		if !ok || mappedID <= 0 {
+			continue
+		}
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, cfg)
+		if !ok {
+			continue
+		}
+		row := relayListenerToRow(RelayListener{
+			ID:                 mappedID,
+			AgentID:            resolvedAgentID,
+			Name:               item.Name,
+			Enabled:            item.Enabled,
+			TransportMode:      defaultString(item.TransportMode, "tls_tcp"),
+			WireGuardProfileID: copyOptionalInt(item.WireGuardProfileID),
+		})
+		listenersByID[mappedID] = row
+	}
+	return listenersByID
+}
+
+func appendKnownAgentIDs(known []string, agentIDMap map[string]string) []string {
+	seen := make(map[string]struct{}, len(known)+len(agentIDMap))
+	out := make([]string, 0, len(known)+len(agentIDMap))
+	for _, agentID := range known {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			continue
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	for _, agentID := range agentIDMap {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			continue
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	return out
 }
 
 func previewAgentIDMap(manifest BackupManifest, agents []BackupAgent, existingByName map[string]storage.AgentRow, existingByID map[string]storage.AgentRow, cfg config.Config) map[string]string {
@@ -1400,11 +1467,11 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
-		if err := l4Svc.validateRelayChain(ctx, normalized.RelayChain); err != nil {
+		if err := l4Svc.validateRelayChain(ctx, resolvedAgentID, normalized.RelayChain); err != nil {
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
-		if err := l4Svc.validateRelayChain(ctx, flattenRelayLayers(normalized.RelayLayers)); err != nil {
+		if err := l4Svc.validateRelayChain(ctx, resolvedAgentID, flattenRelayLayers(normalized.RelayLayers)); err != nil {
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
@@ -2370,6 +2437,13 @@ func remappedBackupRelayLayersComplete(relayChain []int, relayLayers [][]int, ma
 		return true
 	}
 	return remappedIntLayersComplete(relayLayers, mapped)
+}
+
+func pointerRelayLayers(values *[][]int) [][]int {
+	if values == nil {
+		return nil
+	}
+	return *values
 }
 
 func pointerIntSlice(values *[]int) []int {

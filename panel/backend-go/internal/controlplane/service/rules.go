@@ -925,7 +925,7 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	} else if input.RelayChain != nil {
 		return HTTPRule{}, fmt.Errorf("%w: relay_chain is legacy; use relay_layers", ErrInvalidArgument)
 	}
-	if err := s.validateRelayChain(ctx, flattenRelayLayers(relayLayers)); err != nil {
+	if err := s.validateRelayChain(ctx, fallback.AgentID, flattenRelayLayers(relayLayers)); err != nil {
 		return HTTPRule{}, err
 	}
 
@@ -1023,12 +1023,14 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	}, nil
 }
 
-func (s *ruleService) validateRelayChain(ctx context.Context, relayChain []int) error {
+func (s *ruleService) validateRelayChain(ctx context.Context, agentID string, relayChain []int) error {
 	knownAgentIDs, err := s.allKnownAgentIDs(ctx)
 	if err != nil {
 		return err
 	}
-	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain)
+	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain, relayChainValidationOptions{
+		RuleAgentID: agentID,
+	})
 }
 
 func (s *ruleService) validateHTTPWireGuardProfileReference(ctx context.Context, agentID string, profileID *int) error {

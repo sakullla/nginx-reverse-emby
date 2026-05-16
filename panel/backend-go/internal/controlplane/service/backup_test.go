@@ -17,6 +17,16 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+func assertBackupSkippedInvalidReason(t *testing.T, result BackupImportResult, kind string, key string, reason string) {
+	t.Helper()
+	for _, item := range result.Report.SkippedInvalid {
+		if item.Kind == kind && item.Key == key && item.Reason == reason {
+			return
+		}
+	}
+	t.Fatalf("missing skipped invalid item kind=%q key=%q reason=%q in %+v", kind, key, reason, result.Report.SkippedInvalid)
+}
+
 func TestBackupManifestRoundTripShape(t *testing.T) {
 	manifest := BackupManifest{
 		PackageVersion:       BackupPackageVersion,
@@ -3131,6 +3141,133 @@ func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testi
 	if len(l4Rules) != 0 {
 		t.Fatalf("expected no imported l4 rules, got %+v", l4Rules)
 	}
+}
+
+func TestBackupServicePreviewAndImportSkipCrossAgentWireGuardRelayReferences(t *testing.T) {
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+			Counts: BackupCounts{
+				Agents:            2,
+				HTTPRules:         1,
+				L4Rules:           1,
+				RelayListeners:    1,
+				WireGuardProfiles: 1,
+				Certificates:      1,
+			},
+		},
+		Agents: []BackupAgent{
+			{ID: "edge-a", Name: "edge-a", AgentToken: "token-edge-a", Capabilities: []string{"l4"}},
+			{ID: "relay-b", Name: "relay-b", AgentToken: "token-relay-b", Capabilities: []string{"l4", "cert_install"}},
+		},
+		WireGuardProfiles: []BackupWireGuardProfile{{
+			ID:         41,
+			AgentID:    "relay-b",
+			Name:       "relay wg",
+			Mode:       "generic_wireguard",
+			PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			ListenPort: 51820,
+			Addresses:  []string{"10.44.0.1/24"},
+			Peers:      []WireGuardPeer{},
+			DNS:        []string{},
+			MTU:        1420,
+			Enabled:    true,
+			Tags:       []string{},
+			Revision:   4,
+		}},
+		Certificates: []BackupCertificate{{
+			ID:              21,
+			Domain:          "relay.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  []string{"relay-b"},
+			Status:          "pending",
+			Usage:           "relay_tunnel",
+			CertificateType: "acme",
+			Revision:        4,
+		}},
+		RelayListeners: []BackupRelayListener{{
+			ID:                     77,
+			AgentID:                "relay-b",
+			Name:                   "relay wg",
+			BindHosts:              []string{"0.0.0.0"},
+			ListenHost:             "0.0.0.0",
+			ListenPort:             7443,
+			PublicHost:             "relay.example.com",
+			PublicPort:             7443,
+			Enabled:                true,
+			CertificateID:          intPtrService(21),
+			TLSMode:                "pin_only",
+			TransportMode:          "wireguard",
+			WireGuardProfileID:     intPtrService(41),
+			AllowTransportFallback: false,
+			ObfsMode:               "off",
+			PinSet:                 []RelayPin{{Type: "spki_sha256", Value: "fixture-pin"}},
+			Tags:                   []string{},
+			Revision:               5,
+		}},
+		HTTPRules: []BackupHTTPRule{{
+			ID:               11,
+			AgentID:          "edge-a",
+			FrontendURL:      "https://cross-wg.example.com",
+			BackendURL:       "http://127.0.0.1:8096",
+			Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+			Enabled:          true,
+			RelayLayers:      [][]int{{77}},
+			ProxyRedirect:    true,
+			PassProxyHeaders: defaultPassProxyHeaders(),
+		}},
+		L4Rules: []BackupL4Rule{{
+			ID:           12,
+			AgentID:      "edge-a",
+			Name:         "cross wg",
+			Protocol:     "tcp",
+			ListenHost:   "0.0.0.0",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			Backends:     []L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Enabled:      true,
+			RelayLayers:  [][]int{{77}},
+		}},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore)
+	preview, err := svc.Preview(t.Context(), archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	if preview.Summary.SkippedInvalid.HTTPRules != 1 || preview.Summary.SkippedInvalid.L4Rules != 1 {
+		t.Fatalf("preview invalid summary = %+v", preview.Summary.SkippedInvalid)
+	}
+	assertBackupSkippedInvalidReason(t, preview, "http_rule", "https://cross-wg.example.com", "invalid argument: wireguard relay listener 77 belongs to relay-b and cannot be used by agent edge-a")
+	assertBackupSkippedInvalidReason(t, preview, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", "invalid argument: wireguard relay listener 77 belongs to relay-b and cannot be used by agent edge-a")
+
+	result, err := svc.Import(t.Context(), archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.SkippedInvalid.HTTPRules != 1 || result.Summary.SkippedInvalid.L4Rules != 1 {
+		t.Fatalf("import invalid summary = %+v", result.Summary.SkippedInvalid)
+	}
+	if result.Summary.Imported.HTTPRules != 0 || result.Summary.Imported.L4Rules != 0 {
+		t.Fatalf("imported rule summary = %+v", result.Summary.Imported)
+	}
+	assertBackupSkippedInvalidReason(t, result, "http_rule", "https://cross-wg.example.com", "invalid argument: wireguard relay listener 77 belongs to relay-b and cannot be used by agent edge-a")
+	assertBackupSkippedInvalidReason(t, result, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", "invalid argument: wireguard relay listener 77 belongs to relay-b and cannot be used by agent edge-a")
 }
 
 type failingBackupStore struct {

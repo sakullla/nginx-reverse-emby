@@ -655,6 +655,93 @@ func TestMergeSnapshotPayloadAppliesExplicitEmptyAgentConfig(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotPayloadAppliesExplicitEmptyWireGuardProfiles(t *testing.T) {
+	previous := Snapshot{
+		DesiredVersion: "previous",
+		Revision:       7,
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:         41,
+			AgentID:    "remote-leaked",
+			Name:       "leaked",
+			PrivateKey: "leaked-private-key",
+			Enabled:    true,
+			Revision:   7,
+		}},
+	}
+	var next Snapshot
+	if err := json.Unmarshal([]byte(`{"desired_version":"cleanup","desired_revision":8,"wireguard_profiles":[]}`), &next); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	merged := mergeSnapshotPayload(next, previous)
+
+	if merged.WireGuardProfiles == nil {
+		t.Fatal("WireGuardProfiles = nil, want explicit empty slice")
+	}
+	if len(merged.WireGuardProfiles) != 0 {
+		t.Fatalf("WireGuardProfiles = %+v, want cleared", merged.WireGuardProfiles)
+	}
+}
+
+func TestRunAppliesExplicitEmptyWireGuardProfilesToClearStaleProfiles(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+	previous := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       7,
+		RelayListeners: []model.RelayListener{},
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:         41,
+			AgentID:    "remote-leaked",
+			Name:       "leaked",
+			PrivateKey: "leaked-private-key",
+			Enabled:    true,
+			Revision:   7,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion:    "cleanup",
+		Revision:          8,
+		RelayListeners:    []model.RelayListener{},
+		WireGuardProfiles: []model.WireGuardProfile{},
+	}})
+	relayApplier := &testWireGuardRelayApplier{}
+	app := newAppWithDeps(cfg, mem, client, nil, nil, relayApplier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if applied.WireGuardProfiles == nil || len(applied.WireGuardProfiles) != 0 {
+		t.Fatalf("applied WireGuardProfiles = %+v, want explicit empty slice", applied.WireGuardProfiles)
+	}
+	calls := relayApplier.wireGuardCalls()
+	if len(calls) == 0 {
+		t.Fatal("ApplyWithWireGuardProfiles was not called")
+	}
+	lastCall := calls[len(calls)-1]
+	if lastCall.profiles == nil || len(lastCall.profiles) != 0 {
+		t.Fatalf("applied relay WireGuard profiles = %+v, want explicit empty slice", lastCall.profiles)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *testing.T) {
 	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()

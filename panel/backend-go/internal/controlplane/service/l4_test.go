@@ -3145,6 +3145,146 @@ func TestL4RuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceCreateRejectsCrossAgentWireGuardRelayListener(t *testing.T) {
+	profileID := 41
+	store := &fakeL4Store{
+		agents:      []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay", CapabilitiesJSON: `["l4"]`}},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"remote-relay": {{
+				ID:                 7,
+				AgentID:            "remote-relay",
+				Enabled:            true,
+				TransportMode:      "wireguard",
+				WireGuardProfileID: &profileID,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if err.Error() != "invalid argument: wireguard relay listener 7 belongs to remote-relay and cannot be used by agent local" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestL4RuleServiceCreateAllowsSameAgentWireGuardRelayListener(t *testing.T) {
+	profileID := 41
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:                 7,
+				AgentID:            "local",
+				Enabled:            true,
+				TransportMode:      "wireguard",
+				WireGuardProfileID: &profileID,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 7 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
+	}
+}
+
+func TestL4RuleServiceCreateAllowsCrossAgentTLSRelayListener(t *testing.T) {
+	store := &fakeL4Store{
+		agents:      []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay", CapabilitiesJSON: `["l4"]`}},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"remote-relay": {{
+				ID:            7,
+				AgentID:       "remote-relay",
+				Enabled:       true,
+				TransportMode: "tls_tcp",
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 7 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
+	}
+}
+
+func TestL4RuleServiceUpdateRejectsCrossAgentWireGuardRelayListener(t *testing.T) {
+	profileID := 41
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay", CapabilitiesJSON: `["l4"]`}},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                1,
+				AgentID:           "local",
+				Name:              "existing",
+				Protocol:          "tcp",
+				ListenHost:        "0.0.0.0",
+				ListenPort:        9000,
+				BackendsJSON:      `[{"host":"upstream","port":9001}]`,
+				LoadBalancingJSON: `{"strategy":"adaptive"}`,
+				Enabled:           true,
+				Revision:          3,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"remote-relay": {{
+				ID:                 7,
+				AgentID:            "remote-relay",
+				Enabled:            true,
+				TransportMode:      "wireguard",
+				WireGuardProfileID: &profileID,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		RelayLayers: &[][]int{{7}},
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+	if err.Error() != "invalid argument: wireguard relay listener 7 belongs to remote-relay and cannot be used by agent local" {
+		t.Fatalf("Update() error = %v", err)
+	}
+}
+
 func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{

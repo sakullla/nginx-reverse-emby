@@ -9,6 +9,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const wireGuardAgentLocalSnapshotMarkerKey = "migration.wireguard_snapshots_agent_local.v1"
+
 type SchemaOptions struct {
 	TrafficStatsEnabled    bool
 	SQLiteLegacyMigrations bool
@@ -70,12 +72,59 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		return err
 	}
 
+	if err := markWireGuardSnapshotsAgentLocal(ctx, db); err != nil {
+		return err
+	}
+
 	return tx.
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(&LocalAgentStateRow{
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func markWireGuardSnapshotsAgentLocal(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if !tx.Migrator().HasTable(&MetaRow{}) || !tx.Migrator().HasTable(&AgentRow{}) {
+		return nil
+	}
+
+	var markerCount int64
+	if err := tx.Model(&MetaRow{}).
+		Where("key = ?", wireGuardAgentLocalSnapshotMarkerKey).
+		Count(&markerCount).Error; err != nil {
+		return err
+	}
+	if markerCount > 0 {
+		return nil
+	}
+
+	return tx.Transaction(func(tx *gorm.DB) error {
+		var agents []AgentRow
+		if err := tx.Find(&agents).Error; err != nil {
+			return err
+		}
+		for _, row := range agents {
+			normalizeAgentRow(&row)
+			if strings.TrimSpace(row.ID) == "" {
+				continue
+			}
+			nextRevision := maxInt(row.DesiredRevision, row.CurrentRevision) + 1
+			if row.DesiredRevision >= nextRevision {
+				continue
+			}
+			if err := tx.Model(&AgentRow{}).
+				Where("id = ?", row.ID).
+				Update("desired_revision", nextRevision).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&MetaRow{
+			Key:   wireGuardAgentLocalSnapshotMarkerKey,
+			Value: "applied",
+		}).Error
+	})
 }
 
 func cleanupSQLiteLegacyLocalAgentState(ctx context.Context, db *gorm.DB) error {

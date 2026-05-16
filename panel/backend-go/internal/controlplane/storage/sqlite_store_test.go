@@ -3298,6 +3298,161 @@ func TestStoreLoadAgentSnapshotUsesWireGuardProfileRevision(t *testing.T) {
 	}
 }
 
+func TestStoreBootstrapBumpsAgentRevisionsForWireGuardSnapshotCleanupOnce(t *testing.T) {
+	dataRoot := t.TempDir()
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "remote-cleanup",
+		Name:             "remote-cleanup",
+		AgentToken:       "token-remote-cleanup",
+		DesiredVersion:   "3.0.0",
+		DesiredRevision:  7,
+		CurrentRevision:  7,
+		LastApplyStatus:  "success",
+		CapabilitiesJSON: `[]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.db.WithContext(t.Context()).
+		Where("key = ?", wireGuardAgentLocalSnapshotMarkerKey).
+		Delete(&MetaRow{}).Error; err != nil {
+		t.Fatalf("delete migration marker error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	upgraded, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(upgraded) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = upgraded.Close()
+	})
+
+	agents, err := upgraded.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	var remote AgentRow
+	for _, row := range agents {
+		if row.ID == "remote-cleanup" {
+			remote = row
+			break
+		}
+	}
+	if remote.ID == "" {
+		t.Fatal("remote-cleanup agent not found")
+	}
+	if remote.DesiredRevision <= remote.CurrentRevision {
+		t.Fatalf("agent revisions = desired %d current %d, want desired bumped once", remote.DesiredRevision, remote.CurrentRevision)
+	}
+	if remote.DesiredRevision != 8 {
+		t.Fatalf("agent desired revision = %d, want 8", remote.DesiredRevision)
+	}
+
+	snapshot, err := upgraded.LoadAgentSnapshot(t.Context(), "remote-cleanup", AgentSnapshotInput{
+		DesiredVersion:  remote.DesiredVersion,
+		DesiredRevision: remote.DesiredRevision,
+		CurrentRevision: remote.CurrentRevision,
+		Platform:        "linux-amd64",
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.Revision != int64(remote.DesiredRevision) {
+		t.Fatalf("snapshot revision = %d, want bumped desired revision %d", snapshot.Revision, remote.DesiredRevision)
+	}
+	if snapshot.WireGuardProfiles == nil || len(snapshot.WireGuardProfiles) != 0 {
+		t.Fatalf("WireGuardProfiles = %+v, want explicit empty slice", snapshot.WireGuardProfiles)
+	}
+
+	revisionAfterFirstBootstrap := remote.DesiredRevision
+	if err := upgraded.Close(); err != nil {
+		t.Fatalf("Close(upgraded) error = %v", err)
+	}
+
+	reopened, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(reopened) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = reopened.Close()
+	})
+	agents, err = reopened.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents(reopened) error = %v", err)
+	}
+	for _, row := range agents {
+		if row.ID == "remote-cleanup" {
+			remote = row
+			break
+		}
+	}
+	if remote.DesiredRevision != revisionAfterFirstBootstrap {
+		t.Fatalf("desired revision after second bootstrap = %d, want unchanged %d", remote.DesiredRevision, revisionAfterFirstBootstrap)
+	}
+}
+
+func TestStoreBootstrapBumpsAgentRevisionAboveExistingDesiredForWireGuardSnapshotCleanup(t *testing.T) {
+	dataRoot := t.TempDir()
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "remote-cleanup",
+		Name:             "remote-cleanup",
+		AgentToken:       "token-remote-cleanup",
+		DesiredVersion:   "3.0.0",
+		DesiredRevision:  12,
+		CurrentRevision:  7,
+		LastApplyStatus:  "success",
+		CapabilitiesJSON: `[]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.db.WithContext(t.Context()).
+		Where("key = ?", wireGuardAgentLocalSnapshotMarkerKey).
+		Delete(&MetaRow{}).Error; err != nil {
+		t.Fatalf("delete migration marker error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	upgraded, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(upgraded) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = upgraded.Close()
+	})
+
+	agents, err := upgraded.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	var remote AgentRow
+	for _, row := range agents {
+		if row.ID == "remote-cleanup" {
+			remote = row
+			break
+		}
+	}
+	if remote.ID == "" {
+		t.Fatal("remote-cleanup agent not found")
+	}
+	if remote.DesiredRevision != 13 {
+		t.Fatalf("agent desired revision = %d, want bumped above existing desired revision 13", remote.DesiredRevision)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesEnabledWireGuardProfilesWithRawSecrets(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
