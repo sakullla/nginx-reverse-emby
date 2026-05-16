@@ -248,6 +248,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	for _, row := range existingRelayRows {
 		existingRelayKeys[relayConflictKey(row.AgentID, row.Name)] = struct{}{}
 	}
+	previewRelayKeys := map[string]struct{}{}
 	for _, item := range bundle.RelayListeners {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
 		key := relayConflictKey(item.AgentID, item.Name)
@@ -257,6 +258,10 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		}
 		conflictKey := relayConflictKey(resolvedAgentID, item.Name)
 		if _, exists := existingRelayKeys[conflictKey]; exists {
+			result.addSkippedConflict("relay_listener", conflictKey, "relay listener already exists")
+			continue
+		}
+		if _, exists := previewRelayKeys[conflictKey]; exists {
 			result.addSkippedConflict("relay_listener", conflictKey, "relay listener already exists")
 			continue
 		}
@@ -275,6 +280,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			continue
 		}
 		result.addImported("relay_listener", conflictKey)
+		previewRelayKeys[conflictKey] = struct{}{}
 	}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
@@ -470,11 +476,13 @@ func previewAgentCapabilities(agents []BackupAgent, agentIDMap map[string]string
 
 func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.RelayListenerRow, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, cfg config.Config) map[int]int {
 	listenerIDMap := map[int]int{}
-	conflictIndex := map[string]RelayListener{}
+	conflictIndex := map[string]int{}
 	for _, row := range existing {
 		listener := relayListenerFromRow(row)
-		conflictIndex[relayConflictKey(listener.AgentID, listener.Name)] = listener
-		listenerIDMap[listener.ID] = listener.ID
+		conflictIndex[relayConflictKey(listener.AgentID, listener.Name)] = listener.ID
+		if listener.ID > 0 {
+			listenerIDMap[listener.ID] = listener.ID
+		}
 	}
 
 	for _, item := range listeners {
@@ -483,8 +491,10 @@ func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.Re
 			continue
 		}
 		conflictKey := relayConflictKey(resolvedAgentID, item.Name)
-		if existingListener, ok := conflictIndex[conflictKey]; ok {
-			listenerIDMap[item.ID] = existingListener.ID
+		if mappedID, ok := conflictIndex[conflictKey]; ok {
+			if item.ID > 0 {
+				listenerIDMap[item.ID] = mappedID
+			}
 			continue
 		}
 		wireGuardProfileID, ok := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
@@ -500,6 +510,7 @@ func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.Re
 		}
 		if item.ID > 0 {
 			listenerIDMap[item.ID] = item.ID
+			conflictIndex[conflictKey] = item.ID
 		}
 	}
 	return listenerIDMap
@@ -525,6 +536,9 @@ func previewRelayListenersByID(existing []storage.RelayListenerRow, incoming []B
 		}
 		conflictKey := relayConflictKey(resolvedAgentID, item.Name)
 		if existingID, exists := existingConflictIDs[conflictKey]; exists && existingID == mappedID {
+			continue
+		}
+		if _, exists := listenersByID[mappedID]; exists {
 			continue
 		}
 		row := relayListenerToRow(RelayListener{

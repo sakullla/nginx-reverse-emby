@@ -3362,6 +3362,158 @@ func assertBackupConflictRelayPreview(t *testing.T, result BackupImportResult, w
 	assertBackupSkippedInvalidReason(t, result, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", wantInvalidReason)
 }
 
+func TestBackupServicePreviewMapsDuplicateIncomingRelayListenerToFirstImportable(t *testing.T) {
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	for _, agent := range []storage.AgentRow{
+		{ID: "edge-a", Name: "edge-a", AgentToken: "token-edge"},
+		{ID: "relay-live", Name: "relay-live", AgentToken: "token-relay"},
+	} {
+		if err := targetStore.SaveAgent(ctx, agent); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agent.ID, err)
+		}
+	}
+
+	const (
+		firstRelayID = 77
+		laterRelayID = 78
+	)
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+			Counts: BackupCounts{
+				Agents:            2,
+				HTTPRules:         1,
+				L4Rules:           1,
+				RelayListeners:    2,
+				WireGuardProfiles: 1,
+			},
+		},
+		Agents: []BackupAgent{
+			{ID: "relay-first", Name: "relay-live", AgentToken: "token-first"},
+			{ID: "relay-later", Name: "relay-live", AgentToken: "token-later"},
+		},
+		WireGuardProfiles: []BackupWireGuardProfile{{
+			ID:         41,
+			AgentID:    "relay-first",
+			Name:       "first wg",
+			Mode:       "generic_wireguard",
+			PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			ListenPort: 51820,
+			Addresses:  []string{"10.44.0.1/24"},
+			Peers:      []WireGuardPeer{},
+			DNS:        []string{},
+			MTU:        1420,
+			Enabled:    true,
+			Tags:       []string{},
+			Revision:   4,
+		}},
+		RelayListeners: []BackupRelayListener{
+			{
+				ID:                 firstRelayID,
+				AgentID:            "relay-first",
+				Name:               "shared-relay",
+				BindHosts:          []string{"0.0.0.0"},
+				ListenHost:         "0.0.0.0",
+				ListenPort:         7443,
+				PublicHost:         "relay.example.com",
+				PublicPort:         7443,
+				Enabled:            false,
+				TransportMode:      "wireguard",
+				WireGuardProfileID: backupIntPtr(41),
+				Revision:           5,
+			},
+			{
+				ID:            laterRelayID,
+				AgentID:       "relay-later",
+				Name:          "shared-relay",
+				BindHosts:     []string{"0.0.0.0"},
+				ListenHost:    "0.0.0.0",
+				ListenPort:    7444,
+				PublicHost:    "relay-later.example.com",
+				PublicPort:    7444,
+				Enabled:       true,
+				TransportMode: "tls_tcp",
+				Revision:      6,
+			},
+		},
+		HTTPRules: []BackupHTTPRule{{
+			ID:               11,
+			AgentID:          "edge-a",
+			FrontendURL:      "https://duplicate-relay.example.com",
+			BackendURL:       "http://127.0.0.1:8096",
+			Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+			Enabled:          true,
+			RelayLayers:      [][]int{{laterRelayID}},
+			ProxyRedirect:    true,
+			PassProxyHeaders: defaultPassProxyHeaders(),
+		}},
+		L4Rules: []BackupL4Rule{{
+			ID:           12,
+			AgentID:      "edge-a",
+			Name:         "duplicate relay",
+			Protocol:     "tcp",
+			ListenHost:   "0.0.0.0",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			Backends:     []L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Enabled:      true,
+			RelayLayers:  [][]int{{laterRelayID}},
+		}},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore)
+	preview, err := svc.Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	assertBackupDuplicateIncomingRelayResult(t, preview)
+
+	result, err := svc.Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	assertBackupDuplicateIncomingRelayResult(t, result)
+
+	listeners, err := targetStore.ListRelayListeners(ctx, "relay-live")
+	if err != nil {
+		t.Fatalf("ListRelayListeners(relay-live) error = %v", err)
+	}
+	if len(listeners) != 1 {
+		t.Fatalf("imported relay listeners = %+v, want one first listener", listeners)
+	}
+	if listeners[0].ID != firstRelayID || listeners[0].Enabled || listeners[0].TransportMode != "wireguard" || listeners[0].AgentID != "relay-live" {
+		t.Fatalf("imported relay listener = %+v, want first disabled wireguard listener on resolved agent", listeners[0])
+	}
+}
+
+func assertBackupDuplicateIncomingRelayResult(t *testing.T, result BackupImportResult) {
+	t.Helper()
+	if result.Summary.Imported.RelayListeners != 1 || result.Summary.SkippedConflict.RelayListeners != 1 {
+		t.Fatalf("relay summary = imported %+v skipped conflict %+v", result.Summary.Imported, result.Summary.SkippedConflict)
+	}
+	if result.Summary.Imported.HTTPRules != 0 || result.Summary.Imported.L4Rules != 0 {
+		t.Fatalf("imported rules = %+v, want none", result.Summary.Imported)
+	}
+	if result.Summary.SkippedInvalid.HTTPRules != 1 || result.Summary.SkippedInvalid.L4Rules != 1 {
+		t.Fatalf("invalid rules = %+v, want one HTTP and one L4", result.Summary.SkippedInvalid)
+	}
+	assertBackupSkippedInvalidReason(t, result, "http_rule", "https://duplicate-relay.example.com", "invalid argument: relay listener is disabled: 77")
+	assertBackupSkippedInvalidReason(t, result, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", "invalid argument: relay listener is disabled: 77")
+}
+
 func TestBackupServicePreviewAndImportSkipCrossAgentWireGuardRelayReferences(t *testing.T) {
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
