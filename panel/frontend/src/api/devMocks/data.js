@@ -2405,6 +2405,9 @@ export async function updateWireGuardClient(agentId, profileId, clientId, payloa
   if (isDev) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
+    if (!Object.prototype.hasOwnProperty.call(payload || {}, 'enabled') || typeof payload.enabled !== 'boolean') {
+      throw new Error('enabled must be a boolean')
+    }
     const profile = findMockWireGuardProfile(agentId, profileId)
     if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
     const clients = mockWireGuardClientsByProfile[agentId]?.[profileId] || []
@@ -2412,7 +2415,7 @@ export async function updateWireGuardClient(agentId, profileId, clientId, payloa
     if (idx === -1) throw new Error(`WireGuard Client not found: ${clientId}`)
     clients[idx] = normalizeMockWireGuardClient(agentId, profileId, {
       ...clients[idx],
-      enabled: Object.prototype.hasOwnProperty.call(payload || {}, 'enabled') ? payload.enabled !== false : clients[idx].enabled,
+      enabled: payload.enabled,
       revision: Date.now()
     })
     upsertMockWireGuardClientPeer(profile, clients[idx])

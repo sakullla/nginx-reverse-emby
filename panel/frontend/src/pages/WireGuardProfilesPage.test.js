@@ -54,6 +54,15 @@ vi.mock('../hooks/useWireGuardProfiles', () => ({
         addresses: ['10.8.0.1/24'],
         peers: [],
         public_endpoint: 'wg.example.com:51820'
+      },
+      {
+        id: 8,
+        name: 'wg-backup',
+        enabled: true,
+        listen_port: 51821,
+        addresses: ['10.9.0.1/24'],
+        peers: [],
+        public_endpoint: 'wg-backup.example.com:51821'
       }
     ]),
     isLoading: ref(false)
@@ -103,6 +112,23 @@ describe('WireGuardProfilesPage client row actions', () => {
       { onSettled: expect.any(Function) }
     )
     expect(wrapper.findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+  })
+
+  it('keeps a pending client row scoped to the selected profile', async () => {
+    mocks.updateMutate.mockImplementation((_payload, options) => {
+      expect(options?.onSettled).toEqual(expect.any(Function))
+    })
+    const wrapper = mountPage()
+
+    const profileButtons = wrapper.findAll('.profile-card__actions .btn')
+    await profileButtons[0].trigger('click')
+    await wrapper.findAll('.client-row__actions .btn')[0].trigger('click')
+    expect(wrapper.findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+
+    await profileButtons[3].trigger('click')
+
+    expect(wrapper.text()).toContain('wg-backup Clients')
+    expect(wrapper.findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') === undefined)).toBe(true)
   })
 
   it('disables toggle, download, and delete while a client delete is pending', async () => {

@@ -734,6 +734,24 @@ describe('runtime canonical rule payloads', () => {
     expect(emptyDNS).not.toHaveProperty('preshared_key')
   })
 
+  it('dev mock WireGuard client update requires explicit boolean enabled', async () => {
+    const devData = await vi.importActual('./devMocks/data.js')
+    const client = await devData.createWireGuardClient('local', 1, {
+      name: 'toggle-contract',
+      enabled: true
+    })
+
+    await expect(devData.updateWireGuardClient('local', 1, client.id, {})).rejects.toThrow()
+    await expect(devData.updateWireGuardClient('local', 1, client.id, { enabled: null })).rejects.toThrow()
+    await expect(devData.updateWireGuardClient('local', 1, client.id, { enabled: 'false' })).rejects.toThrow()
+
+    const disabled = await devData.updateWireGuardClient('local', 1, client.id, { enabled: false })
+    const enabled = await devData.updateWireGuardClient('local', 1, client.id, { enabled: true })
+
+    expect(disabled.enabled).toBe(false)
+    expect(enabled.enabled).toBe(true)
+  })
+
   it('dev mock WireGuard client create rejects invalid CIDR and DNS input', async () => {
     const devData = await vi.importActual('./devMocks/data.js')
 

@@ -372,17 +372,17 @@ function listText(items) {
   return Array.isArray(items) ? items.join(', ') : ''
 }
 
-function clientRowKey(clientOrID) {
-  return String(typeof clientOrID === 'object' ? clientOrID?.id : clientOrID)
+function clientRowKey(profileID, clientOrID) {
+  return `${String(profileID)}:${String(typeof clientOrID === 'object' ? clientOrID?.id : clientOrID)}`
 }
 
 function isClientRowPending(client) {
-  return pendingClientRowIds.value.has(clientRowKey(client))
+  return pendingClientRowIds.value.has(clientRowKey(selectedProfileId.value, client))
 }
 
-function setClientRowPending(clientID, pending) {
+function setClientRowPending(profileID, clientID, pending) {
   const next = new Set(pendingClientRowIds.value)
-  const key = clientRowKey(clientID)
+  const key = clientRowKey(profileID, clientID)
   if (pending) {
     next.add(key)
   } else {
@@ -578,12 +578,13 @@ async function handleCreateClient() {
 function toggleClientEnabled(client) {
   if (!client?.id) return
   if (isClientRowPending(client)) return
-  setClientRowPending(client.id, true)
+  const profileID = selectedProfileId.value
+  setClientRowPending(profileID, client.id, true)
   updateClient.mutate({
     clientId: client.id,
     enabled: client.enabled === false
   }, {
-    onSettled: () => setClientRowPending(client.id, false)
+    onSettled: () => setClientRowPending(profileID, client.id, false)
   })
 }
 
@@ -612,9 +613,10 @@ async function downloadClientConfig(client) {
 function deleteWireGuardClientRow(client) {
   if (!client?.id) return
   if (isClientRowPending(client)) return
-  setClientRowPending(client.id, true)
+  const profileID = selectedProfileId.value
+  setClientRowPending(profileID, client.id, true)
   deleteClient.mutate(client.id, {
-    onSettled: () => setClientRowPending(client.id, false)
+    onSettled: () => setClientRowPending(profileID, client.id, false)
   })
 }
 
