@@ -149,13 +149,6 @@ func TestNormalizeConfigRejectsCIDRAndEndpointErrors(t *testing.T) {
 			wantErr: "addresses[0] must be CIDR",
 		},
 		{
-			name: "empty peers",
-			mutate: func(profile *model.WireGuardProfile) {
-				profile.Peers = nil
-			},
-			wantErr: "peers",
-		},
-		{
 			name: "invalid allowed ip",
 			mutate: func(profile *model.WireGuardProfile) {
 				profile.Peers[0].AllowedIPs = []string{"10.20.0.2"}
@@ -197,6 +190,21 @@ func TestNormalizeConfigRejectsCIDRAndEndpointErrors(t *testing.T) {
 				t.Fatalf("NormalizeConfig() error = %v, want containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestNormalizeConfigAllowsEmptyPeersForGeneratedClientBootstrap(t *testing.T) {
+	t.Parallel()
+
+	profile := validProfile()
+	profile.Peers = nil
+
+	cfg, err := NormalizeConfig(profile)
+	if err != nil {
+		t.Fatalf("NormalizeConfig() error = %v", err)
+	}
+	if len(cfg.Peers) != 0 {
+		t.Fatalf("NormalizeConfig() peers = %+v, want empty bootstrap peer set", cfg.Peers)
 	}
 }
 

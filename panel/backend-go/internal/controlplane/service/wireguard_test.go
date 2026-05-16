@@ -152,18 +152,30 @@ func TestWireGuardProfileCreateAllocatesNextAvailableAddress(t *testing.T) {
 	}
 }
 
-func TestWireGuardProfileCreateRequiresPeers(t *testing.T) {
+func TestWireGuardProfileCreateAllowsEmptyPeersForGeneratedClientBootstrap(t *testing.T) {
 	ctx := context.Background()
-	_, svc := newTestWireGuardProfileService(t)
+	store, svc := newTestWireGuardProfileService(t)
 
 	input := testWireGuardProfileInput()
-	input.Peers = nil
-	_, err := svc.Create(ctx, "local", input)
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	input.Peers = []WireGuardPeer{}
+	created, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "peers is required") {
-		t.Fatalf("Create() error = %v, want peers required message", err)
+	if len(created.Peers) != 0 {
+		t.Fatalf("Create() peers = %+v, want empty generated-client bootstrap profile", created.Peers)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rawRows) != 1 {
+		t.Fatalf("raw row length = %d, want 1", len(rawRows))
+	}
+	rawProfile := wireGuardProfileFromRow(rawRows[0])
+	if !rawProfile.Enabled || len(rawProfile.Peers) != 0 {
+		t.Fatalf("raw profile = %+v, want enabled profile with no runtime peers until generated clients are added", rawProfile)
 	}
 }
 
@@ -334,9 +346,9 @@ func TestWireGuardProfileUpdateRejectsExplicitEmptyAddresses(t *testing.T) {
 	}
 }
 
-func TestWireGuardProfileUpdateRejectsExplicitEmptyPeers(t *testing.T) {
+func TestWireGuardProfileUpdateAcceptsExplicitEmptyPeers(t *testing.T) {
 	ctx := context.Background()
-	_, svc := newTestWireGuardProfileService(t)
+	store, svc := newTestWireGuardProfileService(t)
 
 	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
 	if err != nil {
@@ -358,12 +370,21 @@ func TestWireGuardProfileUpdateRejectsExplicitEmptyPeers(t *testing.T) {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 
-	_, err = svc.Update(ctx, "local", created.ID, update)
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	updated, err := svc.Update(ctx, "local", created.ID, update)
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "peers is required") {
-		t.Fatalf("Update() error = %v, want peers required message", err)
+	if len(updated.Peers) != 0 {
+		t.Fatalf("Update() peers = %+v, want explicit empty peer list", updated.Peers)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	rawProfile := wireGuardProfileFromRow(rawRows[0])
+	if len(rawProfile.Peers) != 0 {
+		t.Fatalf("raw profile peers = %+v, want explicit empty peer list", rawProfile.Peers)
 	}
 }
 

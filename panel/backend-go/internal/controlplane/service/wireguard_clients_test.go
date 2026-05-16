@@ -288,6 +288,197 @@ func TestWireGuardClientUpdateEnablesDisabledClient(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileUpdatePreservesEnabledGeneratedClientPeer(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers = []WireGuardPeer{}
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	update := input
+	update.PrivateKey = redactedProxyPassword
+	update.Peers = []WireGuardPeer{}
+	updated, err := profileSvc.Update(ctx, "local", profile.ID, update)
+	if err != nil {
+		t.Fatalf("Update(profile) error = %v", err)
+	}
+	if len(updated.Peers) != 1 || updated.Peers[0].PublicKey != client.PublicKey {
+		t.Fatalf("Update(profile) peers = %+v, want enabled generated client peer", updated.Peers)
+	}
+
+	profiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	storedProfile := wireGuardProfileFromRow(profiles[0])
+	if len(storedProfile.Peers) != 1 {
+		t.Fatalf("stored profile peers = %+v, want enabled generated client peer", storedProfile.Peers)
+	}
+	peer := storedProfile.Peers[0]
+	if peer.PublicKey != client.PublicKey || peer.PresharedKey == "" || len(peer.AllowedIPs) != 1 || peer.AllowedIPs[0] != client.Address {
+		t.Fatalf("stored generated peer = %+v, want generated client %v", peer, client)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(ctx, "local", storage.AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 || len(snapshot.WireGuardProfiles[0].Peers) != 1 || snapshot.WireGuardProfiles[0].Peers[0].PublicKey != client.PublicKey {
+		t.Fatalf("snapshot WireGuardProfiles = %+v, want enabled generated client peer", snapshot.WireGuardProfiles)
+	}
+}
+
+func TestWireGuardProfileUpdateDoesNotReaddDisabledGeneratedClientPeer(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers = []WireGuardPeer{}
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	enabled := false
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone", Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("CreateClient(disabled) error = %v", err)
+	}
+
+	update := input
+	update.PrivateKey = redactedProxyPassword
+	update.Peers = []WireGuardPeer{}
+	updated, err := profileSvc.Update(ctx, "local", profile.ID, update)
+	if err != nil {
+		t.Fatalf("Update(profile) error = %v", err)
+	}
+	for _, peer := range updated.Peers {
+		if peer.PublicKey == client.PublicKey {
+			t.Fatalf("Update(profile) re-added disabled generated client peer: %+v", updated.Peers)
+		}
+	}
+
+	profiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	storedProfile := wireGuardProfileFromRow(profiles[0])
+	for _, peer := range storedProfile.Peers {
+		if peer.PublicKey == client.PublicKey {
+			t.Fatalf("stored profile re-added disabled generated client peer: %+v", storedProfile.Peers)
+		}
+	}
+}
+
+func TestWireGuardProfileUpdateHonorsExplicitEmptyManualPeersWhenGeneratedClientExists(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	input.Peers[0].AllowedIPs = []string{"10.8.0.2/32"}
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	update := input
+	update.PrivateKey = redactedProxyPassword
+	update.Peers = []WireGuardPeer{}
+	updated, err := profileSvc.Update(ctx, "local", profile.ID, update)
+	if err != nil {
+		t.Fatalf("Update(profile) error = %v", err)
+	}
+	if len(updated.Peers) != 1 || updated.Peers[0].PublicKey != client.PublicKey {
+		t.Fatalf("Update(profile) peers = %+v, want only generated client peer", updated.Peers)
+	}
+	if updated.Peers[0].PublicKey == testWireGuardPublicKey {
+		t.Fatalf("Update(profile) retained removed manual peer: %+v", updated.Peers)
+	}
+
+	profiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	storedProfile := wireGuardProfileFromRow(profiles[0])
+	if len(storedProfile.Peers) != 1 || storedProfile.Peers[0].PublicKey != client.PublicKey {
+		t.Fatalf("stored profile peers = %+v, want only generated client peer", storedProfile.Peers)
+	}
+}
+
+func TestWireGuardProfileUpdatePreservesManualPeersWhenGeneratedClientExists(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	input.Peers[0].AllowedIPs = []string{"10.8.0.2/32"}
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	update := input
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].Name = "manual-renamed"
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	updated, err := profileSvc.Update(ctx, "local", profile.ID, update)
+	if err != nil {
+		t.Fatalf("Update(profile) error = %v", err)
+	}
+	if len(updated.Peers) != 2 {
+		t.Fatalf("Update(profile) peers = %+v, want manual plus generated peer", updated.Peers)
+	}
+
+	profiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	storedProfile := wireGuardProfileFromRow(profiles[0])
+	var foundManual bool
+	var foundGenerated bool
+	for _, peer := range storedProfile.Peers {
+		switch peer.PublicKey {
+		case testWireGuardPublicKey:
+			foundManual = true
+			if peer.Name != "manual-renamed" || peer.PresharedKey != testWireGuardPresharedKey {
+				t.Fatalf("manual peer = %+v, want edited manual peer with preserved secret", peer)
+			}
+		case client.PublicKey:
+			foundGenerated = true
+			if len(peer.AllowedIPs) != 1 || peer.AllowedIPs[0] != client.Address {
+				t.Fatalf("generated peer = %+v, want generated client address %q", peer, client.Address)
+			}
+		}
+	}
+	if !foundManual || !foundGenerated {
+		t.Fatalf("stored peers = %+v, want manual and generated peers", storedProfile.Peers)
+	}
+}
+
 func TestWireGuardClientUpdateRejectsMissingEnabledWithoutMutation(t *testing.T) {
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)

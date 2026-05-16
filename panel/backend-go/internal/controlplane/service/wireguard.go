@@ -97,6 +97,7 @@ type wireGuardProfileStore interface {
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error)
+	ListWireGuardClients(context.Context, string, int) ([]storage.WireGuardClientRow, error)
 	SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error
 	SaveAgent(context.Context, storage.AgentRow) error
 }
@@ -220,6 +221,11 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 	if err != nil {
 		return WireGuardProfile{}, err
 	}
+	clients, err := s.store.ListWireGuardClients(ctx, resolvedID, profile.ID)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	profile.Peers = reconcileWireGuardGeneratedClientPeers(profile.Peers, clients)
 	if err := validateRequiredWireGuardProfileEssentials(profile); err != nil {
 		return WireGuardProfile{}, err
 	}
@@ -720,9 +726,6 @@ func validateWireGuardKey(value string, required bool) error {
 func validateRequiredWireGuardProfileEssentials(profile WireGuardProfile) error {
 	if len(profile.Addresses) == 0 {
 		return fmt.Errorf("%w: addresses is required", ErrInvalidArgument)
-	}
-	if len(profile.Peers) == 0 {
-		return fmt.Errorf("%w: peers is required", ErrInvalidArgument)
 	}
 	return nil
 }

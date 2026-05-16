@@ -505,6 +505,14 @@ func upsertWireGuardClientPeer(peers []WireGuardPeer, row storage.WireGuardClien
 	})
 }
 
+func reconcileWireGuardGeneratedClientPeers(peers []WireGuardPeer, clients []storage.WireGuardClientRow) []WireGuardPeer {
+	next := append([]WireGuardPeer(nil), peers...)
+	for _, client := range clients {
+		next = upsertWireGuardClientPeer(next, client)
+	}
+	return next
+}
+
 func removeWireGuardClientPeer(peers []WireGuardPeer, publicKey string) []WireGuardPeer {
 	publicKey = strings.TrimSpace(publicKey)
 	next := make([]WireGuardPeer, 0, len(peers))

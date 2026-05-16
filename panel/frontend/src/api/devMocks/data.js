@@ -2177,6 +2177,14 @@ function upsertMockWireGuardClientPeer(profile = {}, client = {}) {
   }))
 }
 
+function reconcileMockWireGuardGeneratedClientPeers(agentId, profile = {}) {
+  if (!profile) return profile
+  for (const client of mockWireGuardClientsByProfile[agentId]?.[profile.id] || []) {
+    upsertMockWireGuardClientPeer(profile, client)
+  }
+  return profile
+}
+
 function normalizeMockWireGuardProfile(agentId, profile = {}) {
   const id = Number(profile.id || ++mockWireGuardProfileIdCounter)
   return {
@@ -2305,12 +2313,12 @@ export async function updateWireGuardProfile(agentId, id, payload) {
     const list = mockWireGuardProfilesByAgent[agentId] || []
     const idx = list.findIndex((profile) => String(profile.id) === String(id))
     if (idx === -1) return null
-    list[idx] = normalizeMockWireGuardProfile(agentId, {
+    list[idx] = reconcileMockWireGuardGeneratedClientPeers(agentId, normalizeMockWireGuardProfile(agentId, {
       ...list[idx],
       ...payload,
       id: list[idx].id,
       revision: Date.now()
-    })
+    }))
     return list[idx]
   }
   const { data } = await api.put(

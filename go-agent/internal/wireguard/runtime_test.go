@@ -35,6 +35,27 @@ func TestManagerReusesSameFingerprintRuntime(t *testing.T) {
 	}
 }
 
+func TestManagerAppliesEnabledBootstrapProfileWithoutPeers(t *testing.T) {
+	t.Parallel()
+
+	factory := &recordingFactory{}
+	manager := NewManager(ManagerOptions{Factory: factory.Create})
+	defer manager.Close()
+
+	profile := validProfile()
+	profile.Peers = nil
+	if err := manager.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(factory.created) != 1 {
+		t.Fatalf("created runtimes = %d, want 1", len(factory.created))
+	}
+	runtime, ok := manager.RuntimeForAgent(profile.AgentID, profile.ID)
+	if !ok || runtime == nil {
+		t.Fatalf("RuntimeForAgent() = %v, %v; want bootstrap runtime", runtime, ok)
+	}
+}
+
 func TestManagerKeepsSameProfileIDForDifferentAgents(t *testing.T) {
 	t.Parallel()
 
@@ -633,7 +654,11 @@ func (f *recordingFactory) newRuntime(cfg Config) *fakeRuntime {
 	if f.runtimeByProfileID == nil {
 		f.runtimeByProfileID = make(map[int]*fakeRuntime)
 	}
-	runtime := &fakeRuntime{profileID: cfg.ID, endpoint: cfg.Peers[0].Endpoint, onClose: func(profileID int) {
+	endpoint := ""
+	if len(cfg.Peers) > 0 {
+		endpoint = cfg.Peers[0].Endpoint
+	}
+	runtime := &fakeRuntime{profileID: cfg.ID, endpoint: endpoint, onClose: func(profileID int) {
 		f.events = append(f.events, "close:"+strconv.Itoa(profileID))
 	}}
 	f.created = append(f.created, runtime)

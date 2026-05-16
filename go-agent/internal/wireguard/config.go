@@ -82,9 +82,6 @@ func NormalizeConfig(profile model.WireGuardProfile) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if len(profile.Peers) == 0 {
-		return Config{}, fmt.Errorf("peers must contain at least one peer")
-	}
 	peers, err := normalizePeers(profile.Peers)
 	if err != nil {
 		return Config{}, err
