@@ -5082,20 +5082,22 @@ func TestBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *
 		Manifest: BackupManifest{
 			PackageVersion:     BackupPackageVersion,
 			SourceArchitecture: BackupSourceArchitectureGo,
+			SourceLocalAgentID: "source-local",
 			Counts: BackupCounts{
 				Agents:    1,
 				HTTPRules: 2,
 			},
 		},
 		Agents: []BackupAgent{{
-			ID:         "edge-a",
-			Name:       "edge-a",
-			AgentToken: "token-edge-a",
+			ID:         "backup-local",
+			Name:       "backup-local",
+			AgentToken: "token-backup-local",
+			Mode:       "local",
 		}},
 		HTTPRules: []BackupHTTPRule{
 			{
 				ID:                    1,
-				AgentID:               "edge-a",
+				AgentID:               "source-local",
 				FrontendURL:           "https://shared.example.com",
 				Backends:              []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 				LoadBalancing:         HTTPLoadBalancing{Strategy: "adaptive"},
@@ -5106,7 +5108,7 @@ func TestBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *
 			},
 			{
 				ID:                    2,
-				AgentID:               "edge-a",
+				AgentID:               "backup-local",
 				FrontendURL:           "https://shared.example.com",
 				Backends:              []HTTPRuleBackend{{URL: "http://127.0.0.1:9096"}},
 				LoadBalancing:         HTTPLoadBalancing{Strategy: "adaptive"},
@@ -5137,11 +5139,23 @@ func TestBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *
 	if result.Summary.Imported.HTTPRules != 1 || result.Summary.SkippedConflict.HTTPRules != 1 {
 		t.Fatalf("http preview summary = imported %+v skipped conflict %+v report %+v", result.Summary.Imported, result.Summary.SkippedConflict, result.Report)
 	}
-	if len(result.Report.Imported) != 2 {
-		t.Fatalf("preview imported report = %+v, want agent and first http rule", result.Report.Imported)
+	importedHTTPRules := 0
+	for _, item := range result.Report.Imported {
+		if item.Kind == "http_rule" && item.Key == "https://shared.example.com" {
+			importedHTTPRules++
+		}
 	}
-	if got := result.Report.SkippedConflict; len(got) != 1 || got[0].Kind != "http_rule" || got[0].Key != "https://shared.example.com" || got[0].Reason != "frontend_url already exists" {
-		t.Fatalf("preview skipped conflict report = %+v", got)
+	if importedHTTPRules != 1 {
+		t.Fatalf("preview imported http rules = %d in report %+v, want first remapped rule imported once", importedHTTPRules, result.Report.Imported)
+	}
+	var skippedHTTPRules []BackupImportItem
+	for _, item := range result.Report.SkippedConflict {
+		if item.Kind == "http_rule" {
+			skippedHTTPRules = append(skippedHTTPRules, item)
+		}
+	}
+	if len(skippedHTTPRules) != 1 || skippedHTTPRules[0].Key != "https://shared.example.com" || skippedHTTPRules[0].Reason != "frontend_url already exists" {
+		t.Fatalf("preview skipped http conflicts = %+v in report %+v", skippedHTTPRules, result.Report.SkippedConflict)
 	}
 }
 
