@@ -2069,7 +2069,7 @@ func l4BackupConflictKey(agentID string, protocol string, listenHost string, lis
 		if wireGuardProfileID != nil && *wireGuardProfileID > 0 {
 			listenStack = fmt.Sprintf("wireguard:%d", *wireGuardProfileID)
 		}
-		if strings.EqualFold(strings.TrimSpace(wireGuardInboundMode), "transparent") && strings.TrimSpace(proxyEgressMode) == "" {
+		if strings.EqualFold(strings.TrimSpace(wireGuardInboundMode), "transparent") {
 			effectiveHost = "transparent"
 		} else if host := strings.TrimSpace(wireGuardListenHost); host != "" {
 			effectiveHost = host

@@ -1765,6 +1765,79 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 	}
 }
 
+func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnCreate(t *testing.T) {
+	profileID := 7
+	tests := []struct {
+		name     string
+		existing L4Rule
+	}{
+		{
+			name: "backend forwarding",
+			existing: L4Rule{
+				ID:                   1,
+				AgentID:              "local",
+				Name:                 "wg-backend",
+				Protocol:             "tcp",
+				ListenHost:           "10.8.0.10",
+				ListenPort:           8443,
+				Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "transparent",
+				Enabled:              true,
+			},
+		},
+		{
+			name: "proxy entry",
+			existing: L4Rule{
+				ID:                   1,
+				AgentID:              "local",
+				Name:                 "wg-proxy-a",
+				Protocol:             "tcp",
+				ListenHost:           "10.8.0.10",
+				ListenPort:           8443,
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "transparent",
+				ProxyEgressMode:      "proxy",
+				ProxyEgressURL:       "socks5://127.0.0.1:1080",
+				Enabled:              true,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeL4Store{
+				l4RulesByID: map[string][]storage.L4RuleRow{
+					"local": {l4RuleToRow(tc.existing)},
+				},
+				wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+					"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+				},
+			}
+			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			_, err := svc.Create(context.Background(), "local", L4RuleInput{
+				Protocol:             stringPtrL4("tcp"),
+				ListenHost:           stringPtrL4("10.8.0.11"),
+				ListenPort:           intPtrL4(8443),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(profileID),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				ProxyEgressMode:      stringPtrL4("proxy"),
+				ProxyEgressURL:       stringPtrL4("socks5://127.0.0.1:1081"),
+			})
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "8443 conflicts") {
+				t.Fatalf("Create() error = %v, want transparent WireGuard proxy-entry listen conflict", err)
+			}
+		})
+	}
+}
+
 func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testing.T) {
 	profileID := 7
 	existing := L4Rule{
@@ -1811,6 +1884,56 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testin
 	}
 	if err == nil || !strings.Contains(err.Error(), "51820 conflicts") {
 		t.Fatalf("Update() error = %v, want transparent WireGuard listen conflict", err)
+	}
+}
+
+func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnUpdate(t *testing.T) {
+	profileID := 7
+	existing := L4Rule{
+		ID:                   1,
+		AgentID:              "local",
+		Name:                 "wg-proxy",
+		Protocol:             "tcp",
+		ListenHost:           "10.8.0.10",
+		ListenPort:           8443,
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		ProxyEgressMode:      "proxy",
+		ProxyEgressURL:       "socks5://127.0.0.1:1080",
+		Enabled:              true,
+	}
+	current := L4Rule{
+		ID:                   2,
+		AgentID:              "local",
+		Name:                 "wg-backend",
+		Protocol:             "tcp",
+		ListenHost:           "10.8.0.11",
+		ListenPort:           8444,
+		Backends:             []L4Backend{{Host: "upstream-b", Port: 9002}},
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		Enabled:              true,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(existing), l4RuleToRow(current)},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Update(context.Background(), "local", current.ID, L4RuleInput{
+		ListenPort: intPtrL4(8443),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "8443 conflicts") {
+		t.Fatalf("Update() error = %v, want transparent WireGuard proxy-entry listen conflict", err)
 	}
 }
 

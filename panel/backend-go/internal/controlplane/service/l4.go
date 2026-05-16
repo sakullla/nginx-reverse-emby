@@ -1224,7 +1224,7 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 }
 
 func effectiveL4ListenHost(rule L4Rule) string {
-	if isL4TransparentWireGuardBackendForwarding(rule) {
+	if isL4TransparentWireGuardListen(rule) {
 		return "transparent"
 	}
 	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
@@ -1235,10 +1235,9 @@ func effectiveL4ListenHost(rule L4Rule) string {
 	return strings.TrimSpace(rule.ListenHost)
 }
 
-func isL4TransparentWireGuardBackendForwarding(rule L4Rule) bool {
+func isL4TransparentWireGuardListen(rule L4Rule) bool {
 	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
-		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent") &&
-		strings.TrimSpace(rule.ProxyEgressMode) == ""
+		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent")
 }
 
 func effectiveL4ListenStack(rule L4Rule) string {
