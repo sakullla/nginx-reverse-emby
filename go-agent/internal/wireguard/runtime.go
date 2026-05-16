@@ -360,6 +360,15 @@ func (t *Transaction) RuntimeForAgent(agentID string, profileID int) (Runtime, b
 	return entry.runtime, true
 }
 
+func (t *Transaction) HasCloseFirstReplacements() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return !t.committed && !t.rolledBack && len(t.closeFirstReplacements) > 0
+}
+
 func (t *Transaction) Commit() {
 	if t == nil || t.manager == nil {
 		return

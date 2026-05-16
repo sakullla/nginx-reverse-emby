@@ -1071,6 +1071,96 @@ func TestHTTPRuntimeManagerRollsBackPreparedWireGuardProfilesWhenBindingKeysFail
 	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
 }
 
+func TestHTTPRuntimeManagerRestoresServerAfterCloseFirstWireGuardPrepareBindingFailure(t *testing.T) {
+	var (
+		mu                   sync.Mutex
+		activeWireGuardPorts = make(map[int]bool)
+		runtimes             []*testAppWireGuardRuntime
+	)
+	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+		mu.Lock()
+		if activeWireGuardPorts[cfg.ListenPort] {
+			mu.Unlock()
+			return nil, fmt.Errorf("listen udp :%d: address already in use", cfg.ListenPort)
+		}
+		activeWireGuardPorts[cfg.ListenPort] = true
+		mu.Unlock()
+
+		var listeners []net.Listener
+		runtime := &testAppWireGuardRuntime{}
+		runtime.onListenTCP = func(_ context.Context, address string) (net.Listener, error) {
+			ln, err := net.Listen("tcp", address)
+			if err != nil {
+				return nil, err
+			}
+			listeners = append(listeners, ln)
+			return ln, nil
+		}
+		runtime.onClose = func() error {
+			for _, ln := range listeners {
+				_ = ln.Close()
+			}
+			mu.Lock()
+			delete(activeWireGuardPorts, cfg.ListenPort)
+			mu.Unlock()
+			return nil
+		}
+		runtimes = append(runtimes, runtime)
+		return runtime, nil
+	}))
+	defer manager.Close()
+
+	ctx := context.Background()
+	publicPort := pickFreeTCPPort(t)
+	wireGuardEntryPort := pickFreeTCPPort(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	profileID := 42
+	profile := validAppWireGuardProfile(profileID)
+	profile.ListenPort = pickFreeTCPAndUDPPort(t)
+	initial := runtimeTestHTTPRule(publicPort, backend.URL)
+	initial.WireGuardEntryEnabled = true
+	initial.WireGuardProfileID = &profileID
+	initial.WireGuardEntryListenHost = "127.0.0.1"
+	initial.WireGuardEntryListenPort = wireGuardEntryPort
+	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.HTTPRule{initial}, nil, []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("failed to apply initial http wireguard runtime: %v", err)
+	}
+	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
+	if len(runtimes) != 1 {
+		t.Fatalf("wireguard runtime creations after initial apply = %d, want 1", len(runtimes))
+	}
+	originalWireGuardRuntime := runtimes[0]
+	originalHTTPRuntime := manager.runtime
+
+	nextProfile := profile
+	nextProfile.Revision++
+	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
+	next := initial
+	next.FrontendURL = fmt.Sprintf("https://edge.example.test:%d", publicPort)
+	err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.HTTPRule{next}, nil, []model.WireGuardProfile{nextProfile})
+	if err == nil || !strings.Contains(err.Error(), "https frontend is not supported without certificate bindings") {
+		t.Fatalf("expected https binding error, got %v", err)
+	}
+	if !originalWireGuardRuntime.closed {
+		t.Fatal("expected close-first prepare path to close the original wireguard runtime")
+	}
+	if manager.runtime == originalHTTPRuntime {
+		t.Fatal("expected http runtime to be rebuilt after close-first wireguard rollback")
+	}
+	got, ok := manager.wireGuardRuntime.Runtime(profileID)
+	if !ok {
+		t.Fatal("expected original wireguard profile runtime to be restored")
+	}
+	if got == originalWireGuardRuntime {
+		t.Fatal("expected restored wireguard runtime to replace the closed original runtime")
+	}
+	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
+}
+
 func TestHTTPRuntimeManagerServesHTTPSRulesWithTLSProvider(t *testing.T) {
 	provider := &testHTTPRuntimeTLSProvider{
 		certificates: map[string]tls.Certificate{

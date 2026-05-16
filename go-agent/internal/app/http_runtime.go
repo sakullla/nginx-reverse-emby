@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,17 +15,19 @@ import (
 )
 
 type httpRuntimeManager struct {
-	mu                sync.Mutex
-	runtime           *proxy.Runtime
-	provider          proxy.TLSMaterialProvider
-	wireGuardRuntime  *sharedWireGuardRuntime
-	wireGuardProvider relay.WireGuardRuntimeProvider
-	cache             *backends.Cache
-	transport         *http.Transport
-	options           proxy.StreamResilienceOptions
-	http3Enabled      bool
-	blockState        proxyTrafficBlockStateValue
-	localAgentID      string
+	mu                 sync.Mutex
+	runtime            *proxy.Runtime
+	provider           proxy.TLSMaterialProvider
+	wireGuardRuntime   *sharedWireGuardRuntime
+	wireGuardProvider  relay.WireGuardRuntimeProvider
+	cache              *backends.Cache
+	transport          *http.Transport
+	options            proxy.StreamResilienceOptions
+	http3Enabled       bool
+	blockState         proxyTrafficBlockStateValue
+	localAgentID       string
+	lastRules          []model.HTTPRule
+	lastRelayListeners []model.RelayListener
 }
 
 func newHTTPRuntimeManager() *httpRuntimeManager {
@@ -96,6 +99,7 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 			_ = m.runtime.Close()
 			m.runtime = nil
 		}
+		m.storeLastAppliedInputsLocked(nil, nil)
 		return nil
 	}
 	providers := proxy.Providers{TLS: m.provider}
@@ -117,6 +121,11 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 
 	bindings, err := proxy.BindingKeys(ctx, rules, relayListeners, providers)
 	if err != nil {
+		if m.runtime != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx, &transaction); restoreErr != nil {
+				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+			}
+		}
 		return err
 	}
 
@@ -124,6 +133,9 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 	if previous != nil && !httpBindingsOverlap(previous.BindingKeys(), bindings) {
 		runtime, err := proxy.StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 		if err != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx, &transaction); restoreErr != nil {
+				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+			}
 			return err
 		}
 		runtime.SetTrafficBlockState(m.currentTrafficBlockState())
@@ -133,6 +145,7 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 		}
 		_ = previous.Close()
 		m.runtime = runtime
+		m.storeLastAppliedInputsLocked(rules, relayListeners)
 		return nil
 	}
 	if previous != nil {
@@ -142,6 +155,11 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 
 	runtime, err := proxy.StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 	if err != nil {
+		if previous != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx, &transaction); restoreErr != nil {
+				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+			}
+		}
 		return err
 	}
 	runtime.SetTrafficBlockState(m.currentTrafficBlockState())
@@ -150,7 +168,75 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 		transaction = nil
 	}
 	m.runtime = runtime
+	m.storeLastAppliedInputsLocked(rules, relayListeners)
 	return nil
+}
+
+func (m *httpRuntimeManager) rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx context.Context, transaction **wireguard.Transaction) error {
+	rebuild := false
+	if transaction != nil && *transaction != nil {
+		rebuild = (*transaction).HasCloseFirstReplacements()
+		(*transaction).Rollback()
+		*transaction = nil
+	}
+	return m.restorePreviousRuntimeLocked(ctx, rebuild)
+}
+
+func (m *httpRuntimeManager) restorePreviousRuntimeLocked(ctx context.Context, rebuild bool) error {
+	if len(m.lastRules) == 0 {
+		m.runtime = nil
+		return nil
+	}
+	abandoned := m.runtime
+	if rebuild && abandoned != nil {
+		_ = abandoned.Close()
+		m.runtime = nil
+	}
+	providers := proxy.Providers{TLS: m.provider}
+	if relayProvider, ok := m.provider.(proxy.RelayMaterialProvider); ok {
+		providers.Relay = relayProvider
+	}
+	providers.WireGuard = m.wireGuardProvider
+	runtime, err := retryRuntimeBindConflict(ctx, func() (*proxy.Runtime, error) {
+		return proxy.StartWithResourcesAndOptions(ctx, m.lastRules, m.lastRelayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
+	})
+	if err != nil {
+		if m.runtime != nil && isRuntimeBindConflict(err) {
+			return nil
+		}
+		return err
+	}
+	runtime.SetTrafficBlockState(m.currentTrafficBlockState())
+	m.runtime = runtime
+	if abandoned != nil {
+		_ = abandoned.Close()
+	}
+	return nil
+}
+
+func (m *httpRuntimeManager) storeLastAppliedInputsLocked(rules []model.HTTPRule, relayListeners []model.RelayListener) {
+	m.lastRules = cloneHTTPRules(rules)
+	m.lastRelayListeners = cloneRelayListeners(relayListeners)
+}
+
+func cloneHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
+	if rules == nil {
+		return nil
+	}
+	cloned := make([]model.HTTPRule, len(rules))
+	for i, rule := range rules {
+		cloned[i] = rule
+		cloned[i].Backends = append([]model.HTTPBackend(nil), rule.Backends...)
+		cloned[i].CustomHeaders = append([]model.HTTPHeader(nil), rule.CustomHeaders...)
+		cloned[i].RelayChain = append([]int(nil), rule.RelayChain...)
+		cloned[i].RelayLayers = cloneIntLayers(rule.RelayLayers)
+		cloned[i].Tags = append([]string(nil), rule.Tags...)
+		if rule.WireGuardProfileID != nil {
+			profileID := *rule.WireGuardProfileID
+			cloned[i].WireGuardProfileID = &profileID
+		}
+	}
+	return cloned
 }
 
 func (m *httpRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
