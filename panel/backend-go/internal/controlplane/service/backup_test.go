@@ -3362,6 +3362,162 @@ func assertBackupConflictRelayPreview(t *testing.T, result BackupImportResult, w
 	assertBackupSkippedInvalidReason(t, result, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", wantInvalidReason)
 }
 
+func TestBackupServicePreviewAllocatesRelayListenerIDWhenSourceIDCollidesWithExistingListener(t *testing.T) {
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	for _, agent := range []storage.AgentRow{
+		{ID: "edge-a", Name: "edge-a", AgentToken: "token-edge"},
+		{ID: "relay-a", Name: "relay-a", AgentToken: "token-relay-a"},
+		{ID: "relay-existing", Name: "relay-existing", AgentToken: "token-relay-existing"},
+	} {
+		if err := targetStore.SaveAgent(ctx, agent); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agent.ID, err)
+		}
+	}
+	if err := targetStore.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{{
+		ID:              21,
+		Domain:          "incoming-relay.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["relay-a"]`,
+		Status:          "active",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{}`,
+		Usage:           "relay_tunnel",
+		CertificateType: "uploaded",
+		Revision:        2,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	if err := targetStore.SaveRelayListeners(ctx, "relay-existing", []storage.RelayListenerRow{{
+		ID:            77,
+		AgentID:       "relay-existing",
+		Name:          "stored-id-collision",
+		ListenHost:    "0.0.0.0",
+		BindHostsJSON: `["0.0.0.0"]`,
+		ListenPort:    7443,
+		PublicHost:    "stored-relay.example.com",
+		PublicPort:    7443,
+		Enabled:       false,
+		TransportMode: "tls_tcp",
+		Revision:      3,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(existing) error = %v", err)
+	}
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+			Counts: BackupCounts{
+				Agents:         2,
+				HTTPRules:      1,
+				L4Rules:        1,
+				RelayListeners: 1,
+			},
+		},
+		Agents: []BackupAgent{
+			{ID: "edge-a", Name: "edge-a", AgentToken: "token-edge"},
+			{ID: "relay-a", Name: "relay-a", AgentToken: "token-relay-a"},
+		},
+		RelayListeners: []BackupRelayListener{{
+			ID:            77,
+			AgentID:       "relay-a",
+			Name:          "incoming-relay",
+			BindHosts:     []string{"0.0.0.0"},
+			ListenHost:    "0.0.0.0",
+			ListenPort:    7444,
+			PublicHost:    "incoming-relay.example.com",
+			PublicPort:    7444,
+			Enabled:       true,
+			CertificateID: backupIntPtr(21),
+			TLSMode:       "pin_only",
+			TransportMode: "tls_tcp",
+			PinSet:        []RelayPin{{Type: "spki_sha256", Value: "fixture-pin"}},
+			Revision:      5,
+		}},
+		HTTPRules: []BackupHTTPRule{{
+			ID:               11,
+			AgentID:          "edge-a",
+			FrontendURL:      "https://id-collision.example.com",
+			BackendURL:       "http://127.0.0.1:8096",
+			Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+			Enabled:          true,
+			RelayLayers:      [][]int{{77}},
+			ProxyRedirect:    true,
+			PassProxyHeaders: defaultPassProxyHeaders(),
+		}},
+		L4Rules: []BackupL4Rule{{
+			ID:           12,
+			AgentID:      "edge-a",
+			Name:         "id collision",
+			Protocol:     "tcp",
+			ListenHost:   "0.0.0.0",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			Backends:     []L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Enabled:      true,
+			RelayLayers:  [][]int{{77}},
+		}},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore)
+	preview, err := svc.Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	assertBackupRelayIDCollisionResult(t, preview)
+
+	result, err := svc.Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	assertBackupRelayIDCollisionResult(t, result)
+
+	listeners, err := targetStore.ListRelayListeners(ctx, "relay-a")
+	if err != nil {
+		t.Fatalf("ListRelayListeners(relay-a) error = %v", err)
+	}
+	if len(listeners) != 1 {
+		t.Fatalf("imported relay listeners = %+v, want one", listeners)
+	}
+	if listeners[0].ID == 77 || listeners[0].ID <= 0 {
+		t.Fatalf("imported relay listener id = %d, want remapped away from existing id 77", listeners[0].ID)
+	}
+	httpRules, err := targetStore.ListHTTPRules(ctx, "edge-a")
+	if err != nil {
+		t.Fatalf("ListHTTPRules(edge-a) error = %v", err)
+	}
+	if len(httpRules) != 1 || httpRules[0].RelayLayersJSON != fmt.Sprintf("[[%d]]", listeners[0].ID) {
+		t.Fatalf("imported HTTP rules = %+v, want relay layer remapped to %d", httpRules, listeners[0].ID)
+	}
+}
+
+func assertBackupRelayIDCollisionResult(t *testing.T, result BackupImportResult) {
+	t.Helper()
+	if result.Summary.Imported.RelayListeners != 1 || result.Summary.SkippedConflict.RelayListeners != 0 {
+		t.Fatalf("relay summary = imported %+v skipped conflict %+v skipped invalid %+v report %+v", result.Summary.Imported, result.Summary.SkippedConflict, result.Summary.SkippedInvalid, result.Report)
+	}
+	if result.Summary.Imported.HTTPRules != 1 || result.Summary.Imported.L4Rules != 1 {
+		t.Fatalf("imported rules = %+v, want one HTTP and one L4", result.Summary.Imported)
+	}
+	if result.Summary.SkippedInvalid.HTTPRules != 0 || result.Summary.SkippedInvalid.L4Rules != 0 {
+		t.Fatalf("invalid rules = %+v, want none", result.Summary.SkippedInvalid)
+	}
+}
+
 func TestBackupServicePreviewMapsDuplicateIncomingRelayListenerToFirstImportable(t *testing.T) {
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {

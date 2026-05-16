@@ -242,7 +242,11 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	if err != nil {
 		return BackupImportResult{}, err
 	}
-	listenerIDMap := previewListenerIDMap(bundle.RelayListeners, existingRelayRows, agentIDMap, certIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, s.cfg)
+	listenerAllocator := newConfigIdentityAllocator(configIdentityAllocatorState{
+		LocalAgentID:   s.cfg.LocalAgentID,
+		RelayListeners: existingRelayRows,
+	})
+	listenerIDMap := previewListenerIDMap(bundle.RelayListeners, existingRelayRows, agentIDMap, certIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, listenerAllocator, s.cfg)
 	previewRelayListeners := previewRelayListenersByID(existingRelayRows, bundle.RelayListeners, listenerIDMap, agentIDMap, s.cfg)
 	existingRelayKeys := map[string]struct{}{}
 	for _, row := range existingRelayRows {
@@ -474,7 +478,7 @@ func previewAgentCapabilities(agents []BackupAgent, agentIDMap map[string]string
 	return capabilitiesByAgentID
 }
 
-func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.RelayListenerRow, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, cfg config.Config) map[int]int {
+func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.RelayListenerRow, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, allocator *configIdentityAllocator, cfg config.Config) map[int]int {
 	listenerIDMap := map[int]int{}
 	conflictIndex := map[string]int{}
 	for _, row := range existing {
@@ -508,10 +512,12 @@ func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.Re
 		if len(item.TrustedCACertificateIDs) > 0 && len(pointerIntSlice(input.TrustedCACertificateIDs)) != len(item.TrustedCACertificateIDs) {
 			continue
 		}
-		if item.ID > 0 {
-			listenerIDMap[item.ID] = item.ID
-			conflictIndex[conflictKey] = item.ID
+		assignedID := item.ID
+		if allocator != nil {
+			assignedID = allocator.AllocateListenerID(item.ID)
 		}
+		listenerIDMap[item.ID] = assignedID
+		conflictIndex[conflictKey] = assignedID
 	}
 	return listenerIDMap
 }

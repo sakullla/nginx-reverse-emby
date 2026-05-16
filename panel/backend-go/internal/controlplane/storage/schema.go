@@ -90,17 +90,19 @@ func markWireGuardSnapshotsAgentLocal(ctx context.Context, db *gorm.DB) error {
 		return nil
 	}
 
-	var markerCount int64
-	if err := tx.Model(&MetaRow{}).
-		Where("key = ?", wireGuardAgentLocalSnapshotMarkerKey).
-		Count(&markerCount).Error; err != nil {
-		return err
-	}
-	if markerCount > 0 {
-		return nil
-	}
-
 	return tx.Transaction(func(tx *gorm.DB) error {
+		marker := MetaRow{
+			Key:   wireGuardAgentLocalSnapshotMarkerKey,
+			Value: "applied",
+		}
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&marker)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+
 		var agents []AgentRow
 		if err := tx.Find(&agents).Error; err != nil {
 			return err
@@ -120,10 +122,7 @@ func markWireGuardSnapshotsAgentLocal(ctx context.Context, db *gorm.DB) error {
 				return err
 			}
 		}
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&MetaRow{
-			Key:   wireGuardAgentLocalSnapshotMarkerKey,
-			Value: "applied",
-		}).Error
+		return nil
 	})
 }
 

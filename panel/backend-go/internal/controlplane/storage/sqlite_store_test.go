@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3450,6 +3452,114 @@ func TestStoreBootstrapBumpsAgentRevisionAboveExistingDesiredForWireGuardSnapsho
 	}
 	if remote.DesiredRevision != 13 {
 		t.Fatalf("agent desired revision = %d, want bumped above existing desired revision 13", remote.DesiredRevision)
+	}
+}
+
+func TestMarkWireGuardSnapshotsAgentLocalBumpsOnceUnderConcurrentMarkerRace(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db") + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeSQLiteForTest(t, db)
+	})
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
+	}
+	if err := db.Save(&AgentRow{
+		ID:               "remote-race",
+		Name:             "remote-race",
+		AgentToken:       "token-remote-race",
+		DesiredVersion:   "3.0.0",
+		DesiredRevision:  5,
+		CurrentRevision:  5,
+		LastApplyStatus:  "success",
+		CapabilitiesJSON: `[]`,
+	}).Error; err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).
+		Where("key = ?", wireGuardAgentLocalSnapshotMarkerKey).
+		Delete(&MetaRow{}).Error; err != nil {
+		t.Fatalf("delete migration marker error = %v", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("db.DB() error = %v", err)
+	}
+	sqlDB.SetMaxOpenConns(2)
+
+	var countArrivals int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	const countBarrierName = "test:wireguard_marker_count_barrier"
+	db.Callback().Query().After("gorm:query").Register(countBarrierName, func(tx *gorm.DB) {
+		if _, ok := tx.Statement.Dest.(*int64); !ok {
+			return
+		}
+		if tx.Statement.Table != "meta" {
+			return
+		}
+		if atomic.AddInt32(&countArrivals, 1) == 2 {
+			releaseOnce.Do(func() {
+				close(release)
+			})
+		}
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+			tx.AddError(errors.New("timed out waiting for concurrent marker count"))
+		}
+	})
+	var agentUpdateCount int32
+	const updateCountName = "test:wireguard_marker_update_count"
+	db.Callback().Update().After("gorm:update").Register(updateCountName, func(tx *gorm.DB) {
+		if tx.Statement.Table != "agents" {
+			return
+		}
+		if !strings.Contains(strings.ToLower(tx.Statement.SQL.String()), "desired_revision") {
+			return
+		}
+		atomic.AddInt32(&agentUpdateCount, 1)
+	})
+
+	errCh := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			errCh <- markWireGuardSnapshotsAgentLocal(t.Context(), db)
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("markWireGuardSnapshotsAgentLocal() error = %v", err)
+		}
+	}
+
+	db.Callback().Query().Remove(countBarrierName)
+	db.Callback().Update().Remove(updateCountName)
+
+	if got := atomic.LoadInt32(&agentUpdateCount); got != 1 {
+		t.Fatalf("agent desired_revision update count = %d, want 1", got)
+	}
+
+	var remote AgentRow
+	if err := db.First(&remote, "id = ?", "remote-race").Error; err != nil {
+		t.Fatalf("load remote agent error = %v", err)
+	}
+	if remote.DesiredRevision != 6 {
+		t.Fatalf("remote desired revision = %d, want 6", remote.DesiredRevision)
+	}
+	var markerCount int64
+	if err := db.Model(&MetaRow{}).Where("key = ?", wireGuardAgentLocalSnapshotMarkerKey).Count(&markerCount).Error; err != nil {
+		t.Fatalf("count migration marker error = %v", err)
+	}
+	if markerCount != 1 {
+		t.Fatalf("migration marker count = %d, want 1", markerCount)
 	}
 }
 
