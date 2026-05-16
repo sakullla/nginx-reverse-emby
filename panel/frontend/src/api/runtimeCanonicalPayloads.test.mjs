@@ -655,6 +655,8 @@ describe('runtime canonical rule payloads', () => {
       public_key: 'legacy-public-key'
     })
     const clients = await devData.fetchWireGuardClients('local', 1)
+    const omittedDefaultsConfig = await devData.fetchWireGuardClientConfig('local', 1, omittedDefaults.id)
+    const emptyDNSConfig = await devData.fetchWireGuardClientConfig('local', 1, emptyDNS.id)
     const initialClient = clients.find((client) => client.name === 'phone')
     const listed = clients.find((client) => client.id === created.id)
 
@@ -663,6 +665,8 @@ describe('runtime canonical rule payloads', () => {
     expect(emptyAllowedIPs.allowed_ips).toEqual([emptyAllowedIPs.address])
     expect(omittedDefaults.dns).toEqual(['1.1.1.1'])
     expect(emptyDNS.dns).toEqual([])
+    expect(omittedDefaultsConfig).toContain('DNS = 1.1.1.1')
+    expect(emptyDNSConfig).not.toContain('DNS =')
     expect(created.name).toBe('tablet')
     expect(created.allowed_ips).toEqual(['10.40.0.0/16'])
     expect(created.dns).toEqual(['9.9.9.9'])

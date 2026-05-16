@@ -2393,7 +2393,7 @@ export async function fetchWireGuardClientConfig(agentId, profileId, clientId) {
     const client = (mockWireGuardClientsByProfile[agentId]?.[profileId] || [])
       .find((item) => String(item.id) === String(clientId))
     if (!client) throw new Error(`WireGuard Client not found: ${clientId}`)
-    const dns = normalizeStringList(client.dns).length ? normalizeStringList(client.dns) : normalizeStringList(profile.dns)
+    const dns = normalizeStringList(client.dns)
     return [
       '[Interface]',
       `PrivateKey = ${client.private_key}`,
