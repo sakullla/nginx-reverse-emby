@@ -410,6 +410,98 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
+  it('calls WireGuard URI preview and import endpoints', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      if (config.url === '/wireguard/parse-uri') {
+        return {
+          data: {
+            ok: true,
+            uri: 'wireguard://xxxxx@peer.example.test:51820?publickey=pub&psk=xxxxx&address=10.8.0.2%2F32#phone',
+            profile: {
+              name: 'phone',
+              endpoint: 'peer.example.test:51820',
+              public_key: 'pub',
+              addresses: ['10.8.0.2/32'],
+              allowed_ips: ['0.0.0.0/0', '::/0']
+            }
+          },
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config
+        }
+      }
+      return {
+        data: {
+          ok: true,
+          profile: {
+            id: 17,
+            agent_id: 'edge-a',
+            name: 'phone',
+            mode: 'generic_wireguard',
+            listen_port: 0,
+            addresses: ['10.8.0.2/32'],
+            peers: []
+          }
+        },
+        status: 201,
+        statusText: 'Created',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+      const uri = 'wireguard://private@peer.example.test:51820?publickey=pub&psk=secret&address=10.8.0.2%2F32#phone'
+
+      const preview = await runtime.parseWireGuardURI(uri)
+      const profile = await runtime.importWireGuardURIProfile('edge-a', uri, 'fallback')
+
+      expect(preview.profile.endpoint).toBe('peer.example.test:51820')
+      expect(profile.id).toBe(17)
+      expect(requests).toHaveLength(2)
+      expect(requests[0].method).toBe('post')
+      expect(requests[0].url).toBe('/wireguard/parse-uri')
+      expect(JSON.parse(requests[0].data)).toEqual({ uri })
+      expect(requests[1].method).toBe('post')
+      expect(requests[1].url).toBe('/agents/edge-a/wireguard-profiles/import-uri')
+      expect(JSON.parse(requests[1].data)).toEqual({ uri, name: 'fallback' })
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
+  it('exports WireGuard URI helpers from API facades and dev mocks', async () => {
+    const index = await import('./index.js?raw')
+    const devRuntime = await import('./devRuntime.js?raw')
+    const devMocks = await import('./devMocks/index.js?raw')
+    const devData = await import('./devMocks/data.js?raw')
+
+    for (const source of [index.default, devRuntime.default, devMocks.default, devData.default]) {
+      expect(source).toContain('parseWireGuardURI')
+      expect(source).toContain('importWireGuardURIProfile')
+    }
+  })
+
+  it('dev mock WireGuard URI parsing preserves literal plus in keys and redacts secrets', async () => {
+    const devData = await vi.importActual('./devMocks/data.js')
+    const uri = 'wireguard://AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=@peer.example.test:51820?publickey=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB+&psk=CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC+&address=10.8.0.2%2F32#phone'
+
+    const preview = await devData.parseWireGuardURI(uri)
+    const profile = await devData.importWireGuardURIProfile('local', uri)
+
+    expect(preview.profile.public_key).toBe('BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB+')
+    expect(preview.uri).not.toContain('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=')
+    expect(preview.uri).not.toContain('CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC+')
+    expect(profile.peers[0].public_key).toBe('BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB+')
+    expect(profile.peers[0].preshared_key).toBe('xxxxx')
+  })
+
   it('omits stale L4 WireGuard egress URI when egress is not WireGuard', async () => {
     const { api } = await vi.importActual('./client.js')
     const requests = []

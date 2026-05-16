@@ -53,6 +53,8 @@ export const fetchWireGuardProfiles = (...args) => call('fetchWireGuardProfiles'
 export const createWireGuardProfile = (...args) => call('createWireGuardProfile', ...args)
 export const updateWireGuardProfile = (...args) => call('updateWireGuardProfile', ...args)
 export const deleteWireGuardProfile = (...args) => call('deleteWireGuardProfile', ...args)
+export const parseWireGuardURI = (...args) => call('parseWireGuardURI', ...args)
+export const importWireGuardURIProfile = (...args) => call('importWireGuardURIProfile', ...args)
 export const fetchVersionPolicies = (...args) => call('fetchVersionPolicies', ...args)
 export const createVersionPolicy = (...args) => call('createVersionPolicy', ...args)
 export const updateVersionPolicy = (...args) => call('updateVersionPolicy', ...args)

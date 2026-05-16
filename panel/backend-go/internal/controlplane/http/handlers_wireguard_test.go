@@ -20,6 +20,110 @@ const (
 	httpTestWireGuardRedacted     = "xxxxx"
 )
 
+func TestWireGuardURIParsePreviewRedactsSecretsAndRequiresPanelToken(t *testing.T) {
+	router, cleanup := newWireGuardHTTPTestRouter(t)
+	defer cleanup()
+
+	for _, prefix := range []string{"/api", "/panel-api"} {
+		req := httptest.NewRequest(http.MethodPost, prefix+"/wireguard/parse-uri", bytes.NewBufferString(`{"uri":"`+validWireGuardHTTPURI()+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("POST %s/wireguard/parse-uri without token = %d, body=%s", prefix, resp.Code, resp.Body.String())
+		}
+
+		req = httptest.NewRequest(http.MethodPost, prefix+"/wireguard/parse-uri", bytes.NewBufferString(`{"uri":"`+validWireGuardHTTPURI()+`"}`))
+		req.Header.Set("X-Panel-Token", "secret")
+		req.Header.Set("Content-Type", "application/json")
+		resp = httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("POST %s/wireguard/parse-uri = %d, body=%s", prefix, resp.Code, resp.Body.String())
+		}
+		assertWireGuardHTTPBodyDoesNotLeakURISecrets(t, resp.Body.String())
+
+		var payload struct {
+			OK      bool   `json:"ok"`
+			URI     string `json:"uri"`
+			Profile struct {
+				Name       string   `json:"name"`
+				Endpoint   string   `json:"endpoint"`
+				PublicKey  string   `json:"public_key"`
+				Addresses  []string `json:"addresses"`
+				AllowedIPs []string `json:"allowed_ips"`
+				DNS        []string `json:"dns"`
+				MTU        int      `json:"mtu"`
+			} `json:"profile"`
+		}
+		if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error = %v", err)
+		}
+		if !payload.OK {
+			t.Fatalf("ok = false in %s", resp.Body.String())
+		}
+		if payload.URI == "" || payload.Profile.PublicKey != httpTestWireGuardPublicKey || payload.Profile.Endpoint != "peer.example.com:51820" {
+			t.Fatalf("payload = %+v", payload)
+		}
+		if payload.Profile.Name != "phone" || payload.Profile.MTU != 1420 {
+			t.Fatalf("profile preview = %+v", payload.Profile)
+		}
+		if len(payload.Profile.Addresses) != 1 || payload.Profile.Addresses[0] != "10.44.0.2/32" {
+			t.Fatalf("addresses = %+v", payload.Profile.Addresses)
+		}
+		if len(payload.Profile.AllowedIPs) != 2 || payload.Profile.AllowedIPs[0] != "0.0.0.0/0" || payload.Profile.AllowedIPs[1] != "::/0" {
+			t.Fatalf("allowed_ips = %+v", payload.Profile.AllowedIPs)
+		}
+		if len(payload.Profile.DNS) != 2 || payload.Profile.DNS[0] != "1.1.1.1" || payload.Profile.DNS[1] != "2606:4700:4700::1111" {
+			t.Fatalf("dns = %+v", payload.Profile.DNS)
+		}
+	}
+}
+
+func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T) {
+	router, cleanup := newWireGuardHTTPTestRouter(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/wireguard-profiles/import-uri", bytes.NewBufferString(`{
+		"uri":"`+validWireGuardHTTPURI()+`",
+		"name":"fallback-name"
+	}`))
+	req.Header.Set("X-Panel-Token", "secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("POST import-uri = %d, body=%s", resp.Code, resp.Body.String())
+	}
+	assertWireGuardHTTPBodyDoesNotLeakURISecrets(t, resp.Body.String())
+	profile := decodeWireGuardHTTPProfileResponse(t, resp.Body.Bytes(), "profile")
+	assertWireGuardHTTPSecretsRedacted(t, profile)
+	if profile.Name != "phone" || profile.Mode != "generic_wireguard" || profile.ListenPort != 0 || !profile.Enabled {
+		t.Fatalf("profile core fields = %+v", profile)
+	}
+	if len(profile.Addresses) != 1 || profile.Addresses[0] != "10.44.0.2/32" {
+		t.Fatalf("addresses = %+v", profile.Addresses)
+	}
+	if len(profile.Peers) != 1 || profile.Peers[0].PublicKey != httpTestWireGuardPublicKey || profile.Peers[0].Endpoint != "peer.example.com:51820" {
+		t.Fatalf("peers = %+v", profile.Peers)
+	}
+	if len(profile.Peers[0].AllowedIPs) != 2 || profile.Peers[0].AllowedIPs[1] != "::/0" {
+		t.Fatalf("allowed_ips = %+v", profile.Peers[0].AllowedIPs)
+	}
+	if len(profile.DNS) != 2 || profile.DNS[1] != "2606:4700:4700::1111" || profile.MTU != 1420 {
+		t.Fatalf("dns/mtu = %+v/%d", profile.DNS, profile.MTU)
+	}
+
+	reservedReq := httptest.NewRequest(http.MethodPost, "/api/agents/local/wireguard-profiles/import-uri", bytes.NewBufferString(`{"uri":"`+validWireGuardHTTPURIWithReserved()+`"}`))
+	reservedReq.Header.Set("X-Panel-Token", "secret")
+	reservedReq.Header.Set("Content-Type", "application/json")
+	reservedResp := httptest.NewRecorder()
+	router.ServeHTTP(reservedResp, reservedReq)
+	if reservedResp.Code != http.StatusBadRequest {
+		t.Fatalf("POST import-uri reserved = %d, body=%s", reservedResp.Code, reservedResp.Body.String())
+	}
+}
+
 func TestRouterWireGuardProfilesCreateAndListRedactsSecrets(t *testing.T) {
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
@@ -217,6 +321,27 @@ func validWireGuardHTTPPayloadWithPort(listenPort int) string {
 	}`
 }
 
+func validWireGuardHTTPURI() string {
+	return "wireguard://" + httpTestWireGuardPrivateKey + "@peer.example.com:51820/?" +
+		"publickey=" + httpTestWireGuardPublicKey +
+		"&psk=" + httpTestWireGuardPresharedKey +
+		"&address=10.44.0.2%2F32" +
+		"&allowedips=0.0.0.0%2F0%2C%3A%3A%2F0" +
+		"&dns=1.1.1.1%2C2606%3A4700%3A4700%3A%3A1111" +
+		"&mtu=1420#phone"
+}
+
+func validWireGuardHTTPURIWithReserved() string {
+	return "wireguard://" + httpTestWireGuardPrivateKey + "@peer.example.com:51820/?" +
+		"publickey=" + httpTestWireGuardPublicKey +
+		"&psk=" + httpTestWireGuardPresharedKey +
+		"&address=10.44.0.2%2F32" +
+		"&allowedips=0.0.0.0%2F0%2C%3A%3A%2F0" +
+		"&dns=1.1.1.1%2C2606%3A4700%3A4700%3A%3A1111" +
+		"&mtu=1420" +
+		"&reserved=1,2,3#phone"
+}
+
 func decodeWireGuardHTTPProfileResponse(t *testing.T, body []byte, field string) service.WireGuardProfile {
 	t.Helper()
 	var payload struct {
@@ -260,5 +385,14 @@ func assertWireGuardHTTPSecretsRedacted(t *testing.T, profile service.WireGuardP
 	}
 	if profile.Peers[0].PresharedKey != httpTestWireGuardRedacted {
 		t.Fatalf("peer preshared_key = %q, want redacted", profile.Peers[0].PresharedKey)
+	}
+}
+
+func assertWireGuardHTTPBodyDoesNotLeakURISecrets(t *testing.T, body string) {
+	t.Helper()
+	for _, secret := range []string{httpTestWireGuardPrivateKey, httpTestWireGuardPresharedKey} {
+		if bytes.Contains([]byte(body), []byte(secret)) {
+			t.Fatalf("response leaked secret %q in body %s", secret, body)
+		}
 	}
 }

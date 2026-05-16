@@ -8,6 +8,95 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
+type wireGuardURIRequest struct {
+	URI  string `json:"uri"`
+	Name string `json:"name"`
+}
+
+type wireGuardURIProfilePreview struct {
+	Name       string   `json:"name,omitempty"`
+	Endpoint   string   `json:"endpoint"`
+	PublicKey  string   `json:"public_key"`
+	Addresses  []string `json:"addresses"`
+	AllowedIPs []string `json:"allowed_ips"`
+	DNS        []string `json:"dns,omitempty"`
+	MTU        int      `json:"mtu,omitempty"`
+}
+
+func (d Dependencies) handleWireGuardURIParse(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+
+	var payload wireGuardURIRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+		return
+	}
+	parsed, err := service.ParseWireGuardURI(payload.URI)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	redactedURI, err := service.RedactWireGuardURIPreview(payload.URI)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":  true,
+		"uri": redactedURI,
+		"profile": wireGuardURIProfilePreview{
+			Name:       parsed.Name,
+			Endpoint:   parsed.Endpoint,
+			PublicKey:  parsed.PublicKey,
+			Addresses:  parsed.Addresses,
+			AllowedIPs: parsed.AllowedIPs,
+			DNS:        parsed.DNS,
+			MTU:        parsed.MTU,
+		},
+	})
+}
+
+func (d Dependencies) handleWireGuardProfileImportURI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+
+	var payload wireGuardURIRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+		return
+	}
+	parsed, err := service.ParseWireGuardURI(payload.URI)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	input, err := service.WireGuardProfileInputFromURI(parsed, payload.Name)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	profile, err := d.WireGuardProfileService.Create(r.Context(), r.PathValue("agentID"), input)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":      true,
+		"profile": profile,
+	})
+}
+
 func (d Dependencies) handleWireGuardProfiles(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agentID")
 

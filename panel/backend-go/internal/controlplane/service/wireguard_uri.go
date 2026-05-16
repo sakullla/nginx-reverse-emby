@@ -153,6 +153,13 @@ func wireGuardURIValueHasUnsupportedReserved(parsed ParsedWireGuardURI) bool {
 	return len(parsed.Reserved) > 0
 }
 
+func WireGuardProfileInputFromURI(parsed ParsedWireGuardURI, name string) (WireGuardProfileInput, error) {
+	if wireGuardURIValueHasUnsupportedReserved(parsed) {
+		return WireGuardProfileInput{}, fmt.Errorf("%w: wireguard URI reserved is not supported", ErrInvalidArgument)
+	}
+	return wireGuardProfileInputFromURI(parsed, name), nil
+}
+
 func splitWireGuardURIList(raw string) []string {
 	values := strings.Split(raw, ",")
 	normalized := make([]string, 0, len(values))

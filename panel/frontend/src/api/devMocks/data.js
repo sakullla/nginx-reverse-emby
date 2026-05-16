@@ -2034,6 +2034,72 @@ function normalizeMockWireGuardProfile(agentId, profile = {}) {
   }
 }
 
+function redactedMockWireGuardURI(uri) {
+  const raw = String(uri || '').trim()
+  if (!raw) return ''
+  try {
+    const parsed = new URL(raw)
+    if (parsed.username) parsed.username = 'xxxxx'
+    if (parsed.searchParams.has('psk')) parsed.searchParams.set('psk', 'xxxxx')
+    return parsed.toString()
+  } catch {
+    return raw.replace(/^wireguard:\/\/[^@]+@/i, 'wireguard://xxxxx@')
+  }
+}
+
+function parseMockWireGuardURIQuery(raw = '') {
+  const out = {}
+  for (const part of String(raw || '').replace(/^\?/, '').split('&')) {
+    if (!part) continue
+    const [rawKey, ...rawValueParts] = part.split('=')
+    let key = ''
+    let value = rawValueParts.join('=')
+    try {
+      key = decodeURIComponent(rawKey)
+    } catch {
+      continue
+    }
+    try {
+      value = decodeURIComponent(value)
+    } catch {
+      // Keep the raw value if the preview URI contains a malformed escape.
+    }
+    out[String(key || '').trim().toLowerCase()] = value
+  }
+  return out
+}
+
+function parseMockWireGuardURI(uri) {
+  const raw = String(uri || '').trim()
+  const parsed = new URL(raw)
+  if (parsed.protocol !== 'wireguard:') {
+    throw new Error('wireguard URI scheme must be wireguard')
+  }
+  const query = parseMockWireGuardURIQuery(parsed.search)
+  const addresses = normalizeStringList((query.address || query.addresses || '').split(','))
+  const allowedIPs = normalizeStringList((query.allowedips || query.allowed_ips || '').split(','))
+  const dns = normalizeStringList((query.dns || '').split(','))
+  const publicKey = String(query.publickey || query.peer_public_key || '').trim()
+  const mtu = Number(query.mtu || 0)
+  if (!parsed.username || !parsed.hostname || !parsed.port || !publicKey || addresses.length === 0) {
+    throw new Error('invalid wireguard URI')
+  }
+  if (query.reserved != null) {
+    throw new Error('wireguard URI reserved is not supported')
+  }
+  return {
+    name: decodeURIComponent(parsed.hash.replace(/^#/, '') || ''),
+    private_key: parsed.username,
+    endpoint: `${parsed.hostname}:${parsed.port}`,
+    public_key: publicKey,
+    preshared_key: String(query.psk || '').trim(),
+    addresses,
+    allowed_ips: allowedIPs.length ? allowedIPs : ['0.0.0.0/0', '::/0'],
+    dns,
+    mtu: Number.isInteger(mtu) && mtu > 0 ? mtu : null
+  }
+}
+
 export async function fetchWireGuardProfiles(agentId) {
   if (isDev) {
     await sleep()
@@ -2102,6 +2168,67 @@ export async function deleteWireGuardProfile(agentId, id) {
   }
   const { data } = await api.delete(
     `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
+    longRunningRequest
+  )
+  return data.profile
+}
+
+export async function parseWireGuardURI(uri) {
+  if (isDev) {
+    await sleep()
+    const parsed = parseMockWireGuardURI(uri)
+    return {
+      ok: true,
+      uri: redactedMockWireGuardURI(uri),
+      profile: {
+        name: parsed.name,
+        endpoint: parsed.endpoint,
+        public_key: parsed.public_key,
+        addresses: parsed.addresses,
+        allowed_ips: parsed.allowed_ips,
+        dns: parsed.dns,
+        mtu: parsed.mtu
+      }
+    }
+  }
+  const { data } = await api.post('/wireguard/parse-uri', { uri })
+  return data
+}
+
+export async function importWireGuardURIProfile(agentId, uri, name = '') {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    const parsed = parseMockWireGuardURI(uri)
+    const profile = normalizeMockWireGuardProfile(agentId, {
+      id: ++mockWireGuardProfileIdCounter,
+      agent_id: agentId,
+      name: parsed.name || String(name || '').trim() || `wireguard-${mockWireGuardProfileIdCounter}`,
+      private_key: 'xxxxx',
+      listen_port: 0,
+      addresses: parsed.addresses,
+      peers: [{
+        name: 'egress',
+        public_key: parsed.public_key,
+        preshared_key: parsed.preshared_key ? 'xxxxx' : '',
+        endpoint: parsed.endpoint,
+        allowed_ips: parsed.allowed_ips,
+        persistent_keepalive_seconds: 0
+      }],
+      dns: parsed.dns,
+      mtu: parsed.mtu,
+      enabled: true,
+      revision: Date.now()
+    })
+    mockWireGuardProfilesByAgent[agentId] = mockWireGuardProfilesByAgent[agentId] || []
+    mockWireGuardProfilesByAgent[agentId].push(profile)
+    return profile
+  }
+  const payload = { uri }
+  if (String(name || '').trim()) payload.name = String(name || '').trim()
+  const { data } = await api.post(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/import-uri`,
+    payload,
     longRunningRequest
   )
   return data.profile

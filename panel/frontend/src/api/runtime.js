@@ -532,6 +532,22 @@ export async function deleteWireGuardProfile(agentId, id) {
   return data.profile
 }
 
+export async function parseWireGuardURI(uri) {
+  const { data } = await api.post('/wireguard/parse-uri', { uri })
+  return data
+}
+
+export async function importWireGuardURIProfile(agentId, uri, name = '') {
+  const payload = { uri }
+  if (String(name || '').trim()) payload.name = String(name || '').trim()
+  const { data } = await api.post(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/import-uri`,
+    payload,
+    longRunningRequest
+  )
+  return data.profile
+}
+
 export async function fetchVersionPolicies() {
   const { data } = await api.get('/version-policies')
   return data.policies || []

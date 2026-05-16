@@ -42,6 +42,8 @@ export {
   createWireGuardProfile,
   updateWireGuardProfile,
   deleteWireGuardProfile,
+  parseWireGuardURI,
+  importWireGuardURIProfile,
   fetchVersionPolicies,
   createVersionPolicy,
   updateVersionPolicy,
