@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -172,4 +173,114 @@ func (d Dependencies) handleWireGuardProfile(w http.ResponseWriter, r *http.Requ
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (d Dependencies) handleWireGuardProfileClients(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("agentID")
+	profileID, ok := parseWireGuardProfilePathID(w, r.PathValue("profileID"))
+	if !ok {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		clients, err := d.WireGuardClientService.ListClients(r.Context(), agentID, profileID)
+		if err != nil {
+			status, payload := mapServiceError(err)
+			writeJSON(w, status, payload)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"clients": clients,
+		})
+	case http.MethodPost:
+		var payload service.WireGuardClientInput
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+			return
+		}
+		client, err := d.WireGuardClientService.CreateClient(r.Context(), agentID, profileID, payload)
+		if err != nil {
+			status, body := mapServiceError(err)
+			writeJSON(w, status, body)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"ok":     true,
+			"client": client,
+		})
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (d Dependencies) handleWireGuardProfileClient(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.NotFound(w, r)
+		return
+	}
+	agentID := r.PathValue("agentID")
+	profileID, ok := parseWireGuardProfilePathID(w, r.PathValue("profileID"))
+	if !ok {
+		return
+	}
+	clientID, ok := parseWireGuardClientPathID(w, r.PathValue("clientID"))
+	if !ok {
+		return
+	}
+	client, err := d.WireGuardClientService.DeleteClient(r.Context(), agentID, profileID, clientID)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"client": client,
+	})
+}
+
+func (d Dependencies) handleWireGuardProfileClientConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	agentID := r.PathValue("agentID")
+	profileID, ok := parseWireGuardProfilePathID(w, r.PathValue("profileID"))
+	if !ok {
+		return
+	}
+	clientID, ok := parseWireGuardClientPathID(w, r.PathValue("clientID"))
+	if !ok {
+		return
+	}
+	configText, err := d.WireGuardClientService.ClientConfig(r.Context(), agentID, profileID, clientID)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="wireguard-client-%d.conf"`, clientID))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(configText))
+}
+
+func parseWireGuardProfilePathID(w http.ResponseWriter, raw string) (int, bool) {
+	id, err := strconv.Atoi(raw)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid wireguard profile id"))
+		return 0, false
+	}
+	return id, true
+}
+
+func parseWireGuardClientPathID(w http.ResponseWriter, raw string) (int, bool) {
+	id, err := strconv.Atoi(raw)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid wireguard client id"))
+		return 0, false
+	}
+	return id, true
 }

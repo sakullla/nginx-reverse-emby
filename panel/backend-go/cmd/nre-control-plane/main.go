@@ -438,6 +438,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
 	certSvc := service.NewCertificateService(cfg, serviceStore)
 	wireGuardSvc := service.NewWireGuardProfileService(cfg, serviceStore)
+	wireGuardClientSvc := service.NewWireGuardClientService(cfg, serviceStore)
 
 	runtimeStore, err := openConfiguredStore(cfg)
 	if err != nil {
@@ -473,6 +474,11 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	}); ok {
 		triggerSvc.SetLocalApplyTrigger(runtime.SyncNow)
 	}
+	if triggerSvc, ok := any(wireGuardClientSvc).(interface {
+		SetLocalApplyTrigger(func(context.Context) error)
+	}); ok {
+		triggerSvc.SetLocalApplyTrigger(runtime.SyncNow)
+	}
 
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
 
@@ -490,6 +496,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		RelayListenerService:    relaySvc,
 		CertificateService:      certSvc,
 		WireGuardProfileService: wireGuardSvc,
+		WireGuardClientService:  wireGuardClientSvc,
 		BackupService:           service.NewBackupService(cfg, serviceStore),
 		TaskService:             taskSvc,
 	})

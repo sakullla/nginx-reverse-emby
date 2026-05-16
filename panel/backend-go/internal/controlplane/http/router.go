@@ -82,6 +82,13 @@ type WireGuardProfileService interface {
 	Delete(context.Context, string, int) (service.WireGuardProfile, error)
 }
 
+type WireGuardClientService interface {
+	ListClients(context.Context, string, int) ([]service.WireGuardClient, error)
+	CreateClient(context.Context, string, int, service.WireGuardClientInput) (service.WireGuardClient, error)
+	DeleteClient(context.Context, string, int, int) (service.WireGuardClient, error)
+	ClientConfig(context.Context, string, int, int) (string, error)
+}
+
 type CertificateService interface {
 	List(context.Context, string) ([]service.ManagedCertificate, error)
 	Create(context.Context, string, service.ManagedCertificateInput) (service.ManagedCertificate, error)
@@ -107,6 +114,7 @@ type Dependencies struct {
 	VersionPolicyService    VersionPolicyService
 	RelayListenerService    RelayListenerService
 	WireGuardProfileService WireGuardProfileService
+	WireGuardClientService  WireGuardClientService
 	CertificateService      CertificateService
 	TaskService             TaskService
 	BackupService           BackupService
@@ -129,6 +137,8 @@ type unavailableBackupService struct{}
 type unavailableTrafficService struct{}
 
 type unavailableWireGuardProfileService struct{}
+
+type unavailableWireGuardClientService struct{}
 
 func (unavailableBackupService) Export(context.Context) ([]byte, string, error) {
 	return nil, "", fmt.Errorf("backup service unavailable")
@@ -200,6 +210,22 @@ func (unavailableWireGuardProfileService) Update(context.Context, string, int, s
 
 func (unavailableWireGuardProfileService) Delete(context.Context, string, int) (service.WireGuardProfile, error) {
 	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
+}
+
+func (unavailableWireGuardClientService) ListClients(context.Context, string, int) ([]service.WireGuardClient, error) {
+	return nil, fmt.Errorf("wireguard client service unavailable")
+}
+
+func (unavailableWireGuardClientService) CreateClient(context.Context, string, int, service.WireGuardClientInput) (service.WireGuardClient, error) {
+	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
+}
+
+func (unavailableWireGuardClientService) DeleteClient(context.Context, string, int, int) (service.WireGuardClient, error) {
+	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
+}
+
+func (unavailableWireGuardClientService) ClientConfig(context.Context, string, int, int) (string, error) {
+	return "", fmt.Errorf("wireguard client service unavailable")
 }
 
 func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
@@ -278,6 +304,9 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/wireguard/parse-uri", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardURIParse)))
 		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfiles)))
 		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/import-uri", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileImportURI)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClients)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClient)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}/config", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClientConfig)))
 		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfile)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificates)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificate)))
@@ -330,12 +359,15 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if d.WireGuardProfileService == nil && d.hasCoreServices() {
 		d.WireGuardProfileService = unavailableWireGuardProfileService{}
 	}
+	if d.WireGuardClientService == nil && d.hasCoreServices() {
+		d.WireGuardClientService = unavailableWireGuardClientService{}
+	}
 
 	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil
-	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil {
+	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil {
 		return d, nil
 	}
-	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
+	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
 		d.TrafficService = unavailableTrafficService{}
 		return d, nil
 	}
@@ -366,6 +398,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	}
 	if d.WireGuardProfileService == nil {
 		d.WireGuardProfileService = service.NewWireGuardProfileService(d.Config, store)
+	}
+	if d.WireGuardClientService == nil {
+		d.WireGuardClientService = service.NewWireGuardClientService(d.Config, store)
 	}
 	if d.CertificateService == nil {
 		d.CertificateService = service.NewCertificateService(d.Config, store)
@@ -410,6 +445,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusNotFound, errorPayload("agent not found")
 	case errors.Is(err, service.ErrWireGuardProfileNotFound):
 		return http.StatusNotFound, errorPayload("wireguard profile not found")
+	case errors.Is(err, service.ErrWireGuardClientNotFound):
+		return http.StatusNotFound, errorPayload("wireguard client not found")
 	case errors.Is(err, service.ErrRuleNotFound):
 		return http.StatusNotFound, errorPayload("rule id not found")
 	case errors.Is(err, service.ErrVersionPolicyNotFound):

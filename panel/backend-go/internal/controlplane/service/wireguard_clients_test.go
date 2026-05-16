@@ -53,6 +53,35 @@ func TestWireGuardClientCreateAllocatesAddressAndGeneratesConfig(t *testing.T) {
 	}
 }
 
+func TestWireGuardClientListReturnsRedactedClients(t *testing.T) {
+	ctx := context.Background()
+	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	created, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	clients, err := clientSvc.ListClients(ctx, "local", profile.ID)
+	if err != nil {
+		t.Fatalf("ListClients() error = %v", err)
+	}
+	if len(clients) != 1 {
+		t.Fatalf("ListClients() len = %d, want 1", len(clients))
+	}
+	if clients[0].ID != created.ID || clients[0].ProfileID != profile.ID || clients[0].Name != "phone" || clients[0].Address != "10.8.0.2/32" {
+		t.Fatalf("ListClients()[0] = %+v, want %+v", clients[0], created)
+	}
+}
+
 func TestWireGuardClientConfigRejectsMissingEndpoint(t *testing.T) {
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)

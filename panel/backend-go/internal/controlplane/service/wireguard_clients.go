@@ -74,6 +74,25 @@ func (s *wireGuardClientService) SetLocalApplyTrigger(trigger func(context.Conte
 	s.profileService.SetLocalApplyTrigger(trigger)
 }
 
+func (s *wireGuardClientService) ListClients(ctx context.Context, agentID string, profileID int) ([]WireGuardClient, error) {
+	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if _, _, _, err := s.loadProfile(ctx, resolvedID, profileID); err != nil {
+		return nil, err
+	}
+	rows, err := s.store.ListWireGuardClients(ctx, resolvedID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	clients := make([]WireGuardClient, 0, len(rows))
+	for _, row := range rows {
+		clients = append(clients, wireGuardClientFromRow(row))
+	}
+	return clients, nil
+}
+
 func (s *wireGuardClientService) CreateClient(ctx context.Context, agentID string, profileID int, input WireGuardClientInput) (WireGuardClient, error) {
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
