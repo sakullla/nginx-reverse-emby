@@ -540,7 +540,12 @@ describe('runtime canonical rule payloads', () => {
 
     try {
       const runtime = await vi.importActual('./runtime.js')
-      const payload = { name: 'phone', address: '10.8.0.2/32', enabled: true }
+      const payload = {
+        name: 'phone',
+        allowed_ips: ['0.0.0.0/0', '::/0'],
+        dns: ['1.1.1.1'],
+        enabled: true
+      }
 
       const clients = await runtime.fetchWireGuardClients('edge/a', 'profile 1')
       const client = await runtime.createWireGuardClient('edge/a', 'profile 1', payload)
@@ -556,6 +561,8 @@ describe('runtime canonical rule payloads', () => {
       expect(requests[1].method).toBe('post')
       expect(requests[1].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients')
       expect(JSON.parse(requests[1].data)).toEqual(payload)
+      expect(JSON.parse(requests[1].data)).not.toHaveProperty('address')
+      expect(JSON.parse(requests[1].data)).not.toHaveProperty('public_key')
       expect(requests[2].method).toBe('delete')
       expect(requests[2].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients/client%201')
       expect(requests[3].method).toBe('get')
@@ -605,10 +612,51 @@ describe('runtime canonical rule payloads', () => {
     expect(source).toContain('showClientForm')
     expect(source).toContain('handleCreateClient')
     expect(source).toContain('downloadClientConfig')
+    expect(source).toContain('clientForm.allowed_ips_text')
+    expect(source).toContain('clientForm.dns_text')
+    expect(source).not.toContain('clientForm.address')
+    expect(source).not.toContain('clientForm.public_key')
+    expect(source).toContain('messageStore.error(error, \'下载 WireGuard Client 配置失败\')')
     expect(source).toContain('高级 Legacy Peers')
     expect(source).toContain('<details')
     expect(source).not.toContain('client.private_key')
     expect(source).not.toContain('client.preshared_key')
+  })
+
+  it('WireGuard client mutations refresh clients and related WireGuard references for the raw target', async () => {
+    const hooks = await import('../hooks/useWireGuardProfiles.js?raw')
+    const source = hooks.default
+
+    expect(source).toContain('invalidateWireGuardReferences(qc, rawAgentId)')
+    expect(source).toContain("qc.invalidateQueries({ queryKey: ['wireGuardClients', rawAgentId, rawProfileId] })")
+    expect(source).toContain('api.createWireGuardClient(rawAgentId, rawProfileId, payload)')
+    expect(source).toContain('api.deleteWireGuardClient(rawAgentId, rawProfileId, rawClientId)')
+  })
+
+  it('dev mock WireGuard clients follow create contract and keep list secrets private', async () => {
+    const devData = await vi.importActual('./devMocks/data.js')
+    const created = await devData.createWireGuardClient('local', 1, {
+      name: 'tablet',
+      allowed_ips: ['10.40.0.0/16'],
+      dns: ['9.9.9.9'],
+      enabled: false,
+      address: '192.0.2.44/32',
+      public_key: 'legacy-public-key'
+    })
+    const clients = await devData.fetchWireGuardClients('local', 1)
+    const listed = clients.find((client) => client.id === created.id)
+
+    expect(created.name).toBe('tablet')
+    expect(created.allowed_ips).toEqual(['10.40.0.0/16'])
+    expect(created.dns).toEqual(['9.9.9.9'])
+    expect(created.enabled).toBe(false)
+    expect(created.address).not.toBe('192.0.2.44/32')
+    expect(created.public_key).not.toBe('legacy-public-key')
+    expect(created).not.toHaveProperty('private_key')
+    expect(created).not.toHaveProperty('preshared_key')
+    expect(listed).toBeTruthy()
+    expect(listed).not.toHaveProperty('private_key')
+    expect(listed).not.toHaveProperty('preshared_key')
   })
 
   it('dev mock WireGuard URI parsing preserves literal plus in keys and redacts secrets', async () => {

@@ -12,6 +12,11 @@ function invalidateWireGuardReferences(qc, agentId) {
   qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
 }
 
+function invalidateWireGuardClientTarget(qc, rawAgentId, rawProfileId) {
+  qc.invalidateQueries({ queryKey: ['wireGuardClients', rawAgentId, rawProfileId] })
+  invalidateWireGuardReferences(qc, rawAgentId)
+}
+
 export function useWireGuardProfiles(agentId) {
   return useQuery({
     queryKey: ['wireGuardProfiles', agentId],
@@ -81,9 +86,19 @@ export function useWireGuardClients(agentId, profileId) {
 export function useCreateWireGuardClient(agentId, profileId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload) => api.createWireGuardClient(unref(agentId), unref(profileId), payload),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['wireGuardClients', agentId, profileId] })
+    mutationFn: (payload) => {
+      const rawAgentId = unref(agentId)
+      const rawProfileId = unref(profileId)
+      return api.createWireGuardClient(rawAgentId, rawProfileId, payload)
+    },
+    onMutate: () => ({
+      rawAgentId: unref(agentId),
+      rawProfileId: unref(profileId)
+    }),
+    onSuccess: (_client, _payload, context) => {
+      const rawAgentId = context?.rawAgentId
+      const rawProfileId = context?.rawProfileId
+      invalidateWireGuardClientTarget(qc, rawAgentId, rawProfileId)
       messageStore.success('WireGuard Client 创建成功')
     },
     onError: (error) => {
@@ -95,9 +110,21 @@ export function useCreateWireGuardClient(agentId, profileId) {
 export function useDeleteWireGuardClient(agentId, profileId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (clientId) => api.deleteWireGuardClient(unref(agentId), unref(profileId), clientId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['wireGuardClients', agentId, profileId] })
+    mutationFn: (clientId) => {
+      const rawAgentId = unref(agentId)
+      const rawProfileId = unref(profileId)
+      const rawClientId = clientId
+      return api.deleteWireGuardClient(rawAgentId, rawProfileId, rawClientId)
+    },
+    onMutate: (clientId) => ({
+      rawAgentId: unref(agentId),
+      rawProfileId: unref(profileId),
+      rawClientId: clientId
+    }),
+    onSuccess: (_client, _clientId, context) => {
+      const rawAgentId = context?.rawAgentId
+      const rawProfileId = context?.rawProfileId
+      invalidateWireGuardClientTarget(qc, rawAgentId, rawProfileId)
       messageStore.success('WireGuard Client 已删除')
     },
     onError: (error) => {

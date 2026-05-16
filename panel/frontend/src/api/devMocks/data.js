@@ -2083,6 +2083,15 @@ function normalizeMockWireGuardClient(agentId, profileId, client = {}) {
   }
 }
 
+function normalizeMockWireGuardClientInput(payload = {}) {
+  return {
+    name: String(payload.name || '').trim(),
+    allowed_ips: normalizeStringList(payload.allowed_ips),
+    dns: normalizeStringList(payload.dns),
+    enabled: payload.enabled !== false
+  }
+}
+
 function publicMockWireGuardClient(client = {}) {
   const { private_key, preshared_key, ...safeClient } = client
   return safeClient
@@ -2271,8 +2280,9 @@ export async function createWireGuardClient(agentId, profileId, payload) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
     if (!findMockWireGuardProfile(agentId, profileId)) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    const input = normalizeMockWireGuardClientInput(payload)
     const client = normalizeMockWireGuardClient(agentId, profileId, {
-      ...payload,
+      ...input,
       id: ++mockWireGuardClientIdCounter,
       revision: Date.now()
     })

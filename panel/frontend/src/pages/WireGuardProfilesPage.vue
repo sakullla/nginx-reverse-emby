@@ -245,12 +245,12 @@
           <p v-if="clientErrors.name" class="form-error">{{ clientErrors.name }}</p>
         </div>
         <div class="form-group">
-          <label class="form-label">Address</label>
-          <input v-model="clientForm.address" class="input" placeholder="10.8.0.2/32">
+          <label class="form-label">Allowed IPs（每行一个）</label>
+          <textarea v-model="clientForm.allowed_ips_text" class="input textarea" placeholder="0.0.0.0/0&#10;::/0"></textarea>
         </div>
         <div class="form-group">
-          <label class="form-label">Public Key</label>
-          <input v-model="clientForm.public_key" class="input" placeholder="留空由后端生成">
+          <label class="form-label">DNS（每行一个）</label>
+          <textarea v-model="clientForm.dns_text" class="input textarea" placeholder="1.1.1.1"></textarea>
         </div>
         <label class="toggle-row">
           <input v-model="clientForm.enabled" type="checkbox" class="toggle__input">
@@ -284,6 +284,7 @@ import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { fetchWireGuardClients, fetchWireGuardClientConfig } from '../api'
+import { messageStore } from '../stores/messages'
 import {
   useWireGuardProfiles,
   useCreateWireGuardProfile,
@@ -401,8 +402,8 @@ function createFormState(profile = null) {
 function createClientFormState() {
   return {
     name: '',
-    address: '',
-    public_key: '',
+    allowed_ips_text: '',
+    dns_text: '',
     enabled: true
   }
 }
@@ -498,13 +499,12 @@ function buildPayload() {
 }
 
 function buildClientPayload() {
-  const payload = {
+  return {
     name: clientForm.value.name.trim(),
+    allowed_ips: splitLines(clientForm.value.allowed_ips_text),
+    dns: splitLines(clientForm.value.dns_text),
     enabled: clientForm.value.enabled
   }
-  if (clientForm.value.address.trim()) payload.address = clientForm.value.address.trim()
-  if (clientForm.value.public_key.trim()) payload.public_key = clientForm.value.public_key.trim()
-  return payload
 }
 
 function validate() {
@@ -544,19 +544,22 @@ async function handleCreateClient() {
 
 async function downloadClientConfig(client) {
   if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  let url = ''
+  let link = null
   try {
     const config = await fetchWireGuardClientConfig(agentId.value, selectedProfileId.value, client.id)
     const blob = new Blob([config], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
+    url = URL.createObjectURL(blob)
+    link = document.createElement('a')
     link.href = url
     link.download = `${client.name || `client-${client.id}`}.conf`
     document.body.appendChild(link)
     link.click()
-    link.remove()
-    URL.revokeObjectURL(url)
   } catch (error) {
-    clientErrors.value.submit = error?.message || '下载 Client 配置失败'
+    messageStore.error(error, '下载 WireGuard Client 配置失败')
+  } finally {
+    if (link?.parentNode) link.remove()
+    if (url) URL.revokeObjectURL(url)
   }
 }
 
