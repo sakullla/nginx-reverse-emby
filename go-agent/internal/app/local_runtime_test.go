@@ -121,6 +121,48 @@ func TestNewEmbeddedConfiguresHostTrafficCollector(t *testing.T) {
 	}
 }
 
+func TestNewEmbeddedSharesWireGuardRuntimeAcrossHTTPAndL4AndRelay(t *testing.T) {
+	app, err := NewEmbedded(Config{
+		AgentID:   "local",
+		AgentName: "local",
+		DataDir:   t.TempDir(),
+	}, store.NewInMemory(), staticSyncClient{})
+	if err != nil {
+		t.Fatalf("NewEmbedded() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	if app.wireGuardRuntime == nil {
+		t.Fatal("app.wireGuardRuntime = nil")
+	}
+	httpManager, ok := app.httpApplier.(*httpRuntimeManager)
+	if !ok {
+		t.Fatalf("httpApplier type = %T, want *httpRuntimeManager", app.httpApplier)
+	}
+	l4Manager, ok := app.l4Applier.(*l4RuntimeManager)
+	if !ok {
+		t.Fatalf("l4Applier type = %T, want *l4RuntimeManager", app.l4Applier)
+	}
+	relayManager, ok := app.relayApplier.(*relayRuntimeManager)
+	if !ok {
+		t.Fatalf("relayApplier type = %T, want *relayRuntimeManager", app.relayApplier)
+	}
+
+	if httpManager.wireGuardRuntime != app.wireGuardRuntime {
+		t.Fatal("http manager does not share app WireGuard runtime")
+	}
+	if l4Manager.wireGuardRuntime != app.wireGuardRuntime {
+		t.Fatal("l4 manager does not share app WireGuard runtime")
+	}
+	if relayManager.wireGuardRuntime != app.wireGuardRuntime {
+		t.Fatal("relay manager does not share app WireGuard runtime")
+	}
+}
+
 func TestHTTPRuntimeManagerTask1DefaultsPreserveLegacyBackoffCap(t *testing.T) {
 	manager := newHTTPRuntimeManagerWithConfig(config.Default())
 

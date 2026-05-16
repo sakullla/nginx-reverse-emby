@@ -44,8 +44,8 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		return nil, err
 	}
 
-	httpManager := newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg)
 	wireGuardRuntime := newSharedWireGuardRuntime()
+	httpManager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(certManager, cfg.HTTP3Enabled, cfg, wireGuardRuntime)
 	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
 	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
