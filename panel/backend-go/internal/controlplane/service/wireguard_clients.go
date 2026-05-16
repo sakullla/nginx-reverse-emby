@@ -116,7 +116,7 @@ func (s *wireGuardClientService) CreateClient(ctx context.Context, agentID strin
 		}
 		allowedIPs := normalizeStringList(input.AllowedIPs)
 		if len(allowedIPs) == 0 {
-			allowedIPs = []string{address}
+			allowedIPs = append([]string(nil), profile.Addresses...)
 		}
 		if err := validateWireGuardPrefixes(allowedIPs, "allowed_ips"); err != nil {
 			return state, err

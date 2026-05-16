@@ -43,6 +43,12 @@ func TestWireGuardClientCreateAllocatesAddressAndGeneratesConfig(t *testing.T) {
 	if !strings.Contains(configText, "Address = 10.8.0.2/32") {
 		t.Fatalf("ClientConfig() missing address:\n%s", configText)
 	}
+	if !strings.Contains(configText, "AllowedIPs = 10.8.0.1/24") {
+		t.Fatalf("ClientConfig() missing profile allowed IPs:\n%s", configText)
+	}
+	if strings.Contains(configText, "AllowedIPs = 10.8.0.2/32") {
+		t.Fatalf("ClientConfig() used client address for allowed IPs:\n%s", configText)
+	}
 
 	rows, err := store.ListWireGuardClients(ctx, "local", profile.ID)
 	if err != nil {
@@ -50,6 +56,94 @@ func TestWireGuardClientCreateAllocatesAddressAndGeneratesConfig(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].PrivateKey == "" || rows[0].PresharedKey == "" {
 		t.Fatalf("client row secrets were not persisted: %+v", rows)
+	}
+}
+
+func TestWireGuardClientCreateHonorsExplicitAllowedIPs(t *testing.T) {
+	ctx := context.Background()
+	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{
+		Name:       "phone",
+		AllowedIPs: []string{"0.0.0.0/0", "::/0"},
+	})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	configText, err := clientSvc.ClientConfig(ctx, "local", profile.ID, client.ID)
+	if err != nil {
+		t.Fatalf("ClientConfig() error = %v", err)
+	}
+	if !strings.Contains(configText, "AllowedIPs = 0.0.0.0/0, ::/0") {
+		t.Fatalf("ClientConfig() missing explicit allowed IPs:\n%s", configText)
+	}
+	if strings.Contains(configText, "AllowedIPs = 10.8.0.1/24") {
+		t.Fatalf("ClientConfig() replaced explicit allowed IPs with profile addresses:\n%s", configText)
+	}
+}
+
+func TestWireGuardClientCreateDefaultsBlankAllowedIPsToProfileAddresses(t *testing.T) {
+	ctx := context.Background()
+	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{
+		Name:       "phone",
+		AllowedIPs: []string{"", " \t "},
+	})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	configText, err := clientSvc.ClientConfig(ctx, "local", profile.ID, client.ID)
+	if err != nil {
+		t.Fatalf("ClientConfig() error = %v", err)
+	}
+	if !strings.Contains(configText, "AllowedIPs = 10.8.0.1/24") {
+		t.Fatalf("ClientConfig() missing profile allowed IPs:\n%s", configText)
+	}
+}
+
+func TestWireGuardClientCreateRejectsInvalidAllowedIPs(t *testing.T) {
+	ctx := context.Background()
+	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+
+	_, err = clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{
+		Name:       "phone",
+		AllowedIPs: []string{"not-a-cidr"},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("CreateClient() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "allowed_ips must be CIDR") {
+		t.Fatalf("CreateClient() error = %v, want allowed_ips CIDR message", err)
 	}
 }
 
