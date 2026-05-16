@@ -430,6 +430,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		if wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
 			return L4Rule{}, fmt.Errorf("%w: wireguard_inbound_mode must be address or transparent", ErrInvalidArgument)
 		}
+		if wireGuardInboundMode == "transparent" {
+			return L4Rule{}, fmt.Errorf("%w: wireguard transparent inbound is not supported yet", ErrInvalidArgument)
+		}
 	} else {
 		wireGuardInboundMode = ""
 	}

@@ -8,17 +8,20 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 type httpRuntimeManager struct {
-	mu           sync.Mutex
-	runtime      *proxy.Runtime
-	provider     proxy.TLSMaterialProvider
-	cache        *backends.Cache
-	transport    *http.Transport
-	options      proxy.StreamResilienceOptions
-	http3Enabled bool
-	blockState   proxyTrafficBlockStateValue
+	mu                sync.Mutex
+	runtime           *proxy.Runtime
+	provider          proxy.TLSMaterialProvider
+	wireGuardRuntime  *sharedWireGuardRuntime
+	wireGuardProvider relay.WireGuardRuntimeProvider
+	cache             *backends.Cache
+	transport         *http.Transport
+	options           proxy.StreamResilienceOptions
+	http3Enabled      bool
+	blockState        proxyTrafficBlockStateValue
 }
 
 func newHTTPRuntimeManager() *httpRuntimeManager {
@@ -38,6 +41,10 @@ func newHTTPRuntimeManagerWithConfig(cfg Config) *httpRuntimeManager {
 }
 
 func newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(provider proxy.TLSMaterialProvider, http3Enabled bool, cfg Config) *httpRuntimeManager {
+	return newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider, http3Enabled, cfg, newSharedWireGuardRuntime())
+}
+
+func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMaterialProvider, http3Enabled bool, cfg Config, wireGuardRuntime *sharedWireGuardRuntime) *httpRuntimeManager {
 	transport := proxy.NewSharedTransport()
 	proxy.ApplyTransportOptions(transport, proxy.TransportOptions{
 		DialTimeout:           cfg.HTTPTransport.DialTimeout,
@@ -47,10 +54,15 @@ func newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(provider proxy.TLSMaterialPro
 		KeepAlive:             cfg.HTTPTransport.KeepAlive,
 		MaxConnsPerHost:       cfg.HTTPTransport.MaxConnsPerHost,
 	})
+	if wireGuardRuntime == nil {
+		wireGuardRuntime = newSharedWireGuardRuntime()
+	}
 	return &httpRuntimeManager{
-		provider:  provider,
-		cache:     backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
-		transport: transport,
+		provider:          provider,
+		wireGuardRuntime:  wireGuardRuntime,
+		wireGuardProvider: wireGuardRuntime.providerForAgent(cfg.AgentID),
+		cache:             backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
+		transport:         transport,
 		options: proxy.StreamResilienceOptions{
 			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
 			ResumeMaxAttempts:        cfg.HTTPResilience.ResumeMaxAttempts,
@@ -61,14 +73,21 @@ func newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(provider proxy.TLSMaterialPro
 }
 
 func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) error {
-	return m.ApplyWithRelay(ctx, rules, nil)
+	return m.ApplyWithRelayAndWireGuardProfiles(ctx, rules, nil, nil)
 }
 
 func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener) error {
+	return m.ApplyWithRelayAndWireGuardProfiles(ctx, rules, relayListeners, nil)
+}
+
+func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener, wireGuardProfiles []model.WireGuardProfile) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if len(rules) == 0 {
+		if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
+			return err
+		}
 		if m.runtime != nil {
 			_ = m.runtime.Close()
 			m.runtime = nil
@@ -79,6 +98,10 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 	if relayProvider, ok := m.provider.(proxy.RelayMaterialProvider); ok {
 		providers.Relay = relayProvider
 	}
+	if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
+		return err
+	}
+	providers.WireGuard = m.wireGuardProvider
 
 	bindings, err := proxy.BindingKeys(ctx, rules, relayListeners, providers)
 	if err != nil {
@@ -108,6 +131,13 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 	runtime.SetTrafficBlockState(m.currentTrafficBlockState())
 	m.runtime = runtime
 	return nil
+}
+
+func (m *httpRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
+	if m.wireGuardRuntime == nil || profiles == nil {
+		return nil
+	}
+	return m.wireGuardRuntime.Apply(ctx, profiles)
 }
 
 func (m *httpRuntimeManager) UpdateTrafficBlockState(state proxy.TrafficBlockState) {

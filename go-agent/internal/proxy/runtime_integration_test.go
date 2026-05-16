@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
@@ -133,6 +135,47 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 	}
 }
 
+func TestHTTPRuntimeUsesWireGuardListenerForInnerEntry(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	profileID := 7
+	frontendPort := pickFreePort(t)
+	wireGuardPort := pickFreePort(t)
+	wireGuardAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(wireGuardPort))
+	wgRuntime := &fakeHTTPWireGuardRuntime{
+		listenTCP: func(_ context.Context, address string) (net.Listener, error) {
+			if address != wireGuardAddress {
+				t.Fatalf("ListenTCP address = %q, want %s", address, wireGuardAddress)
+			}
+			return net.Listen("tcp", address)
+		},
+	}
+	runtime, err := Start(context.Background(), []model.HTTPRule{{
+		ID:                       11,
+		FrontendURL:              fmt.Sprintf("http://app.internal:%d", frontendPort),
+		Backends:                 []model.HTTPBackend{{URL: backend.URL}},
+		WireGuardEntryEnabled:    true,
+		WireGuardProfileID:       &profileID,
+		WireGuardEntryListenHost: "127.0.0.1",
+		WireGuardEntryListenPort: wireGuardPort,
+	}}, nil, Providers{WireGuard: fakeHTTPWireGuardProvider{runtimes: map[int]*fakeHTTPWireGuardRuntime{profileID: wgRuntime}}})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer runtime.Close()
+
+	bindings := runtime.BindingKeys()
+	if len(bindings) != 2 {
+		t.Fatalf("BindingKeys() = %+v, want public and wireguard bindings", bindings)
+	}
+	if len(wgRuntime.listenTCPCalls()) != 1 {
+		t.Fatalf("ListenTCP calls = %+v", wgRuntime.listenTCPCalls())
+	}
+}
+
 func startHTTPRuntimeWithRetry(t *testing.T, backendOneURL, backendTwoURL string) (*Runtime, int) {
 	t.Helper()
 
@@ -173,4 +216,43 @@ func isAddressInUseError(err error) bool {
 	}
 	var errno syscall.Errno
 	return errors.As(err, &errno) && errno == syscall.EADDRINUSE
+}
+
+type fakeHTTPWireGuardProvider struct {
+	runtimes map[int]*fakeHTTPWireGuardRuntime
+}
+
+func (p fakeHTTPWireGuardProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+	runtime, ok := p.runtimes[profileID]
+	return runtime, ok
+}
+
+type fakeHTTPWireGuardRuntime struct {
+	mu        sync.Mutex
+	listenTCP func(context.Context, string) (net.Listener, error)
+	calls     []string
+}
+
+func (r *fakeHTTPWireGuardRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, fmt.Errorf("unexpected WireGuard DialContext call")
+}
+
+func (r *fakeHTTPWireGuardRuntime) ListenTCP(ctx context.Context, address string) (net.Listener, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, address)
+	r.mu.Unlock()
+	if r.listenTCP != nil {
+		return r.listenTCP(ctx, address)
+	}
+	return nil, fmt.Errorf("unexpected WireGuard ListenTCP call")
+}
+
+func (r *fakeHTTPWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
+	return nil, fmt.Errorf("unexpected WireGuard ListenUDP call")
+}
+
+func (r *fakeHTTPWireGuardRuntime) listenTCPCalls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
 }

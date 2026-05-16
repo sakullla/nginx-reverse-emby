@@ -101,6 +101,34 @@ func TestSnapshotDecodePreservesL4WireGuardInboundMode(t *testing.T) {
 	}
 }
 
+func TestSnapshotDecodePreservesHTTPWireGuardEntry(t *testing.T) {
+	raw := []byte(`{
+		"rules":[
+			{
+				"frontend_url":"http://app.internal",
+				"backends":[{"url":"http://127.0.0.1:8096"}],
+				"wireguard_entry_enabled":true,
+				"wireguard_profile_id":7,
+				"wireguard_entry_listen_host":"10.8.0.1",
+				"wireguard_entry_listen_port":8080
+			}
+		]
+	}`)
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	if len(snapshot.Rules) != 1 {
+		t.Fatalf("expected one http rule, got %d", len(snapshot.Rules))
+	}
+	rule := snapshot.Rules[0]
+	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 || rule.WireGuardEntryListenHost != "10.8.0.1" || rule.WireGuardEntryListenPort != 8080 {
+		t.Fatalf("HTTP WireGuard entry = %+v", rule)
+	}
+}
+
 func TestSnapshotDecodePreservesRelayBindAndPublicFields(t *testing.T) {
 	raw := []byte(`{
 		"desired_version":"2.1.0",

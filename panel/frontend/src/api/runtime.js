@@ -26,13 +26,26 @@ function normalizeRelayLayers(value) {
 }
 
 function normalizeHttpRule(rule = {}) {
+  const wireGuardEntryEnabled = rule.wireguard_entry_enabled === true
+  const wireGuardProfileID = Number(rule.wireguard_profile_id)
+  const wireGuardEntryListenPort = Number(rule.wireguard_entry_listen_port)
   return {
     ...rule,
     backends: normalizeHttpBackends(rule),
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
     },
-    relay_obfs: rule.relay_obfs === true
+    relay_obfs: rule.relay_obfs === true,
+    wireguard_entry_enabled: wireGuardEntryEnabled,
+    wireguard_profile_id: wireGuardEntryEnabled && Number.isInteger(wireGuardProfileID) && wireGuardProfileID > 0
+      ? wireGuardProfileID
+      : undefined,
+    wireguard_entry_listen_host: wireGuardEntryEnabled
+      ? String(rule.wireguard_entry_listen_host || '').trim()
+      : undefined,
+    wireguard_entry_listen_port: wireGuardEntryEnabled && Number.isInteger(wireGuardEntryListenPort) && wireGuardEntryListenPort > 0
+      ? wireGuardEntryListenPort
+      : undefined
   }
 }
 
@@ -93,6 +106,9 @@ function normalizeRelayListenerPayload(payload = {}) {
 function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
   const { backend_url, relay_chain, ...rest } = payload
+  const wireGuardEntryEnabled = payload.wireguard_entry_enabled === true
+  const wireGuardProfileID = Number(payload.wireguard_profile_id)
+  const wireGuardEntryListenPort = Number(payload.wireguard_entry_listen_port)
   const normalizedPayload = {
     ...rest,
     frontend_url: String(payload.frontend_url || '').trim(),
@@ -105,7 +121,21 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     proxy_redirect: payload.proxy_redirect !== false,
     pass_proxy_headers: payload.pass_proxy_headers === true,
     user_agent: String(payload.user_agent || ''),
-    custom_headers: Array.isArray(payload.custom_headers) ? payload.custom_headers : []
+    custom_headers: Array.isArray(payload.custom_headers) ? payload.custom_headers : [],
+    wireguard_entry_enabled: wireGuardEntryEnabled
+  }
+  if (wireGuardEntryEnabled) {
+    normalizedPayload.wireguard_profile_id = Number.isInteger(wireGuardProfileID) && wireGuardProfileID > 0
+      ? wireGuardProfileID
+      : undefined
+    normalizedPayload.wireguard_entry_listen_host = String(payload.wireguard_entry_listen_host || '').trim()
+    normalizedPayload.wireguard_entry_listen_port = Number.isInteger(wireGuardEntryListenPort) && wireGuardEntryListenPort > 0
+      ? wireGuardEntryListenPort
+      : undefined
+  } else {
+    delete normalizedPayload.wireguard_profile_id
+    delete normalizedPayload.wireguard_entry_listen_host
+    delete normalizedPayload.wireguard_entry_listen_port
   }
   if (Array.isArray(payload.relay_layers)) {
     normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)

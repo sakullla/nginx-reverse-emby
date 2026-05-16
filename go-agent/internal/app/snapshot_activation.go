@@ -27,6 +27,9 @@ func (a *App) applyHTTPRules(ctx context.Context, snapshot Snapshot) error {
 	if a.httpApplier == nil || snapshot.Rules == nil {
 		return nil
 	}
+	if wireGuardAware, ok := a.httpApplier.(HTTPWireGuardAwareApplier); ok {
+		return wireGuardAware.ApplyWithRelayAndWireGuardProfiles(ctx, snapshot.Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles)
+	}
 	if relayAware, ok := a.httpApplier.(HTTPRelayAwareApplier); ok {
 		return relayAware.ApplyWithRelay(ctx, snapshot.Rules, snapshot.RelayListeners)
 	}
@@ -100,9 +103,6 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 	configActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
 		ActivateAgentConfig: handlers.ActivateAgentConfig,
 	})
-	rulesActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
-		ActivateHTTPRules: handlers.ActivateHTTPRules,
-	})
 	return func(ctx context.Context, previous, next model.Snapshot) error {
 		if err := certActivator(ctx, previous, next); err != nil {
 			return err
@@ -127,8 +127,16 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 			}
 		}
 
-		if err := rulesActivator(ctx, previous, next); err != nil {
-			return err
+		if !reflect.DeepEqual(previous.Rules, next.Rules) ||
+			httpRelayInputsChanged(next.Rules, previous.RelayListeners, next.RelayListeners) ||
+			httpWireGuardInputsChanged(next.Rules, previous.WireGuardProfiles, next.WireGuardProfiles) {
+			if err := a.applyHTTPRules(ctx, Snapshot{
+				Rules:             next.Rules,
+				RelayListeners:    next.RelayListeners,
+				WireGuardProfiles: next.WireGuardProfiles,
+			}); err != nil {
+				return err
+			}
 		}
 
 		if (!reflect.DeepEqual(previous.L4Rules, next.L4Rules) ||
@@ -193,6 +201,49 @@ func l4WireGuardInputsChanged(rules []model.L4Rule, previousProfiles, nextProfil
 		return !reflect.DeepEqual(previousProfiles, nextProfiles)
 	}
 	return false
+}
+
+func httpWireGuardInputsChanged(rules []model.HTTPRule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
+	for _, rule := range rules {
+		if rule.WireGuardEntryEnabled {
+			return !reflect.DeepEqual(previousProfiles, nextProfiles)
+		}
+	}
+	return false
+}
+
+func httpRelayInputsChanged(rules []model.HTTPRule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {
+	for _, rule := range rules {
+		for _, layer := range rule.RelayLayers {
+			for _, listenerID := range layer {
+				if relayListenerChangedByID(listenerID, previousRelayListeners, nextRelayListeners) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func relayListenerChangedByID(listenerID int, previous, next []model.RelayListener) bool {
+	previousListener, previousOK := relayListenerByID(listenerID, previous)
+	nextListener, nextOK := relayListenerByID(listenerID, next)
+	if previousOK != nextOK {
+		return true
+	}
+	if !previousOK {
+		return false
+	}
+	return !reflect.DeepEqual(previousListener, nextListener)
+}
+
+func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.RelayListener, bool) {
+	for _, listener := range listeners {
+		if listener.ID == listenerID {
+			return listener, true
+		}
+	}
+	return model.RelayListener{}, false
 }
 
 func l4RuleUsesWireGuard(rule model.L4Rule) bool {

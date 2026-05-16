@@ -866,21 +866,22 @@ func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
 func TestBackupL4RuleConversionPreservesWireGuardFields(t *testing.T) {
 	profileID := 77
 	rule := L4Rule{
-		ID:                  45,
-		AgentID:             "edge-wg",
-		Name:                "wireguard l4",
-		Protocol:            "tcp",
-		ListenHost:          "0.0.0.0",
-		ListenPort:          9443,
-		Backends:            []L4Backend{{Host: "127.0.0.1", Port: 9443}},
-		LoadBalancing:       L4LoadBalancing{Strategy: "adaptive"},
-		Tuning:              L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
-		ListenMode:          "wireguard",
-		WireGuardProfileID:  &profileID,
-		WireGuardListenHost: "10.44.0.1",
-		Enabled:             true,
-		Tags:                []string{"wg"},
-		Revision:            9,
+		ID:                   45,
+		AgentID:              "edge-wg",
+		Name:                 "wireguard l4",
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           9443,
+		Backends:             []L4Backend{{Host: "127.0.0.1", Port: 9443}},
+		LoadBalancing:        L4LoadBalancing{Strategy: "adaptive"},
+		Tuning:               L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "address",
+		WireGuardListenHost:  "10.44.0.1",
+		Enabled:              true,
+		Tags:                 []string{"wg"},
+		Revision:             9,
 	}
 
 	backupRule := backupL4RuleFromRule(rule)
@@ -890,6 +891,9 @@ func TestBackupL4RuleConversionPreservesWireGuardFields(t *testing.T) {
 	if backupRule.WireGuardListenHost != "10.44.0.1" {
 		t.Fatalf("backup WireGuardListenHost = %q, want 10.44.0.1", backupRule.WireGuardListenHost)
 	}
+	if backupRule.WireGuardInboundMode != "address" {
+		t.Fatalf("backup WireGuardInboundMode = %q, want address", backupRule.WireGuardInboundMode)
+	}
 
 	input := l4RuleInputFromBackup(backupRule, nil, backupRule.WireGuardProfileID)
 	if input.WireGuardProfileID == nil || *input.WireGuardProfileID != profileID {
@@ -897,6 +901,9 @@ func TestBackupL4RuleConversionPreservesWireGuardFields(t *testing.T) {
 	}
 	if input.WireGuardListenHost == nil || *input.WireGuardListenHost != "10.44.0.1" {
 		t.Fatalf("input WireGuardListenHost = %v, want 10.44.0.1", input.WireGuardListenHost)
+	}
+	if input.WireGuardInboundMode == nil || *input.WireGuardInboundMode != "address" {
+		t.Fatalf("input WireGuardInboundMode = %v, want address", input.WireGuardInboundMode)
 	}
 }
 

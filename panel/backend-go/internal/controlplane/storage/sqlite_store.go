@@ -229,7 +229,7 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
-	wireGuardRows, err := s.loadWireGuardProfilesForSync(ctx, resolvedAgentID, relayRows, l4Rows)
+	wireGuardRows, err := s.loadWireGuardProfilesForSync(ctx, resolvedAgentID, httpRows, relayRows, l4Rows)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -674,6 +674,12 @@ func normalizeHTTPRuleRow(row *HTTPRuleRow) {
 	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
 	row.UserAgent = defaultString(row.UserAgent, "")
 	row.CustomHeadersJSON = defaultJSON(row.CustomHeadersJSON, "[]")
+	if !row.WireGuardEntryEnabled {
+		row.WireGuardProfileID = nil
+		row.WireGuardEntryListenHost = ""
+		row.WireGuardEntryListenPort = 0
+	}
+	row.WireGuardEntryListenHost = defaultString(row.WireGuardEntryListenHost, "")
 }
 
 func normalizeLocalAgentStateRow(row *LocalAgentStateRow) {
@@ -926,7 +932,7 @@ func (s *GormStore) loadRelayListenersForSync(
 	return syncRows, nil
 }
 
-func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID string, relayRows []RelayListenerRow, l4Rows []L4RuleRow) ([]WireGuardProfileRow, error) {
+func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID string, httpRows []HTTPRuleRow, relayRows []RelayListenerRow, l4Rows []L4RuleRow) ([]WireGuardProfileRow, error) {
 	rows, err := s.ListWireGuardProfiles(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -989,7 +995,52 @@ func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID st
 			rows = append(rows, row)
 		}
 	}
+	missingHTTPIDs := referencedWireGuardProfileIDsFromHTTPRows(httpRows, rows)
+	if len(missingHTTPIDs) > 0 {
+		var httpReferencedRows []WireGuardProfileRow
+		if err := s.db.WithContext(ctx).
+			Where("id IN ?", missingHTTPIDs).
+			Order("agent_id, id").
+			Find(&httpReferencedRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range httpReferencedRows {
+			normalizeWireGuardProfileRow(&row)
+			key := wireGuardProfileRowKey(row.AgentID, row.ID)
+			if _, ok := included[key]; ok {
+				continue
+			}
+			included[key] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
 	return rows, nil
+}
+
+func referencedWireGuardProfileIDsFromHTTPRows(httpRows []HTTPRuleRow, includedRows []WireGuardProfileRow) []int {
+	includedIDs := make(map[int]struct{}, len(includedRows))
+	for _, row := range includedRows {
+		if row.ID > 0 {
+			includedIDs[row.ID] = struct{}{}
+		}
+	}
+	seen := make(map[int]struct{})
+	referenced := make([]int, 0)
+	for _, row := range httpRows {
+		if !row.WireGuardEntryEnabled || row.WireGuardProfileID == nil || *row.WireGuardProfileID <= 0 {
+			continue
+		}
+		profileID := *row.WireGuardProfileID
+		if _, ok := includedIDs[profileID]; ok {
+			continue
+		}
+		if _, ok := seen[profileID]; ok {
+			continue
+		}
+		seen[profileID] = struct{}{}
+		referenced = append(referenced, profileID)
+	}
+	return referenced
 }
 
 func wireGuardProfileRowKey(agentID string, id int) string {
@@ -1110,18 +1161,22 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 			continue
 		}
 		rules = append(rules, HTTPRule{
-			ID:               row.ID,
-			AgentID:          row.AgentID,
-			FrontendURL:      row.FrontendURL,
-			Backends:         parseHTTPBackends(row.BackendsJSON),
-			LoadBalancing:    parseLoadBalancingStrategy(row.LoadBalancingJSON),
-			ProxyRedirect:    row.ProxyRedirect,
-			PassProxyHeaders: row.PassProxyHeaders,
-			UserAgent:        row.UserAgent,
-			CustomHeaders:    parseHTTPHeaders(row.CustomHeadersJSON),
-			RelayLayers:      parseIntLayers(row.RelayLayersJSON),
-			RelayObfs:        row.RelayObfs,
-			Revision:         int64(row.Revision),
+			ID:                       row.ID,
+			AgentID:                  row.AgentID,
+			FrontendURL:              row.FrontendURL,
+			Backends:                 parseHTTPBackends(row.BackendsJSON),
+			LoadBalancing:            parseLoadBalancingStrategy(row.LoadBalancingJSON),
+			ProxyRedirect:            row.ProxyRedirect,
+			PassProxyHeaders:         row.PassProxyHeaders,
+			UserAgent:                row.UserAgent,
+			CustomHeaders:            parseHTTPHeaders(row.CustomHeadersJSON),
+			WireGuardEntryEnabled:    row.WireGuardEntryEnabled,
+			WireGuardProfileID:       copyOptionalInt(row.WireGuardProfileID),
+			WireGuardEntryListenHost: row.WireGuardEntryListenHost,
+			WireGuardEntryListenPort: row.WireGuardEntryListenPort,
+			RelayLayers:              parseIntLayers(row.RelayLayersJSON),
+			RelayObfs:                row.RelayObfs,
+			Revision:                 int64(row.Revision),
 		})
 	}
 	return rules

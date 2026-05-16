@@ -54,6 +54,10 @@ type HTTPRelayAwareApplier interface {
 	ApplyWithRelay(context.Context, []model.HTTPRule, []model.RelayListener) error
 }
 
+type HTTPWireGuardAwareApplier interface {
+	ApplyWithRelayAndWireGuardProfiles(context.Context, []model.HTTPRule, []model.RelayListener, []model.WireGuardProfile) error
+}
+
 type L4RelayAwareApplier interface {
 	ApplyWithRelay(context.Context, []model.L4Rule, []model.RelayListener) error
 }
@@ -170,8 +174,8 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpManager := newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg)
 	wireGuardRuntime := newSharedWireGuardRuntime()
+	httpManager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(certManager, cfg.HTTP3Enabled, cfg, wireGuardRuntime)
 	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
 	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)

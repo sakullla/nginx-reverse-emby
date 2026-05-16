@@ -200,7 +200,6 @@
             <label class="form-label">WireGuard 入站模式</label>
             <select v-model="form.wireguard_inbound_mode" class="input">
               <option value="address">Address</option>
-              <option value="transparent">Transparent</option>
             </select>
           </div>
           <div v-if="isWireGuardInbound && form.wireguard_inbound_mode === 'address'" class="form-group">

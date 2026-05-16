@@ -11,11 +11,12 @@ import (
 )
 
 type fakeRuleStore struct {
-	agents         []storage.AgentRow
-	rulesByAgent   map[string][]storage.HTTPRuleRow
-	l4RulesByAgent map[string][]storage.L4RuleRow
-	listeners      []storage.RelayListenerRow
-	managedCerts   []storage.ManagedCertificateRow
+	agents             []storage.AgentRow
+	rulesByAgent       map[string][]storage.HTTPRuleRow
+	l4RulesByAgent     map[string][]storage.L4RuleRow
+	wireGuardByAgentID map[string][]storage.WireGuardProfileRow
+	listeners          []storage.RelayListenerRow
+	managedCerts       []storage.ManagedCertificateRow
 
 	listHTTPRulesErr  error
 	saveHTTPRulesErrs []error
@@ -58,6 +59,10 @@ func (f *fakeRuleStore) GetHTTPRule(_ context.Context, agentID string, id int) (
 
 func (f *fakeRuleStore) ListL4Rules(_ context.Context, agentID string) ([]storage.L4RuleRow, error) {
 	return append([]storage.L4RuleRow(nil), f.l4RulesByAgent[agentID]...), nil
+}
+
+func (f *fakeRuleStore) ListWireGuardProfiles(_ context.Context, agentID string) ([]storage.WireGuardProfileRow, error) {
+	return append([]storage.WireGuardProfileRow(nil), f.wireGuardByAgentID[agentID]...), nil
 }
 
 func (f *fakeRuleStore) SaveHTTPRules(_ context.Context, agentID string, rows []storage.HTTPRuleRow) error {
@@ -229,6 +234,78 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 	if got := store.rulesByAgent["local"][1].RelayChainJSON; got != `[]` {
 		t.Fatalf("persisted relay_chain = %s", got)
+	}
+}
+
+func TestRuleServicePreservesAdvancedWireGuardInnerEntry(t *testing.T) {
+	store := &fakeRuleStore{
+		agents:       []storage.AgentRow{{ID: "local", Name: "local"}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+		},
+	}
+	svc := NewRuleService(config.Config{LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL:              stringPtr("http://app.internal"),
+		Backends:                 &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		WireGuardEntryEnabled:    boolPtr(true),
+		WireGuardProfileID:       intPtrRule(7),
+		WireGuardEntryListenHost: stringPtr("10.8.0.1"),
+		WireGuardEntryListenPort: intPtrRule(8080),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 || rule.WireGuardEntryListenHost != "10.8.0.1" || rule.WireGuardEntryListenPort != 8080 {
+		t.Fatalf("WireGuard HTTP entry = %+v", rule)
+	}
+
+	row := store.rulesByAgent["local"][0]
+	if !row.WireGuardEntryEnabled || row.WireGuardProfileID == nil || *row.WireGuardProfileID != 7 || row.WireGuardEntryListenHost != "10.8.0.1" || row.WireGuardEntryListenPort != 8080 {
+		t.Fatalf("persisted WireGuard HTTP entry = %+v", row)
+	}
+}
+
+func TestRuleServiceDisablingWireGuardInnerEntryClearsFields(t *testing.T) {
+	profileID := 7
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{ID: "local", Name: "local"}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:                       1,
+				AgentID:                  "local",
+				FrontendURL:              "http://app.internal",
+				BackendsJSON:             `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON:        `{"strategy":"adaptive"}`,
+				Enabled:                  true,
+				TagsJSON:                 "[]",
+				ProxyRedirect:            true,
+				RelayChainJSON:           "[]",
+				RelayLayersJSON:          "[]",
+				CustomHeadersJSON:        "[]",
+				WireGuardEntryEnabled:    true,
+				WireGuardProfileID:       &profileID,
+				WireGuardEntryListenHost: "10.8.0.1",
+				WireGuardEntryListenPort: 8080,
+				Revision:                 1,
+			}},
+		},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+		},
+	}
+	svc := NewRuleService(config.Config{LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		WireGuardEntryEnabled: boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.WireGuardEntryEnabled || rule.WireGuardProfileID != nil || rule.WireGuardEntryListenHost != "" || rule.WireGuardEntryListenPort != 0 {
+		t.Fatalf("WireGuard HTTP entry was not cleared: %+v", rule)
 	}
 }
 

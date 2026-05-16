@@ -158,16 +158,20 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded.Rules = make([]goagentembedded.HTTPRule, 0, len(snapshot.Rules))
 	for _, rule := range snapshot.Rules {
 		embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
-			ID:               rule.ID,
-			FrontendURL:      rule.FrontendURL,
-			Backends:         toEmbeddedHTTPBackends(rule.Backends),
-			LoadBalancing:    goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
-			ProxyRedirect:    rule.ProxyRedirect,
-			PassProxyHeaders: rule.PassProxyHeaders,
-			UserAgent:        rule.UserAgent,
-			CustomHeaders:    toEmbeddedHTTPHeaders(rule.CustomHeaders),
-			RelayLayers:      cloneRelayLayers(rule.RelayLayers),
-			Revision:         rule.Revision,
+			ID:                       rule.ID,
+			FrontendURL:              rule.FrontendURL,
+			Backends:                 toEmbeddedHTTPBackends(rule.Backends),
+			LoadBalancing:            goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
+			ProxyRedirect:            rule.ProxyRedirect,
+			PassProxyHeaders:         rule.PassProxyHeaders,
+			UserAgent:                rule.UserAgent,
+			CustomHeaders:            toEmbeddedHTTPHeaders(rule.CustomHeaders),
+			WireGuardEntryEnabled:    rule.WireGuardEntryEnabled,
+			WireGuardProfileID:       copyOptionalInt(rule.WireGuardProfileID),
+			WireGuardEntryListenHost: rule.WireGuardEntryListenHost,
+			WireGuardEntryListenPort: rule.WireGuardEntryListenPort,
+			RelayLayers:              cloneRelayLayers(rule.RelayLayers),
+			Revision:                 rule.Revision,
 		})
 	}
 	embedded.L4Rules = make([]goagentembedded.L4Rule, 0, len(snapshot.L4Rules))

@@ -2713,6 +2713,81 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByL4Rules(t *t
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByHTTPRules(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	for _, agentID := range []string{"wg-http-agent", "wg-http-peer"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{
+			ID:         agentID,
+			Name:       agentID,
+			AgentToken: "token-" + agentID,
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+	profileID := 81
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-http-peer", []WireGuardProfileRow{{
+		ID:            profileID,
+		AgentID:       "wg-http-peer",
+		Name:          "http-peer-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "http-peer-private-key",
+		ListenPort:    51820,
+		AddressesJSON: `["10.81.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      21,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(peer) error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "wg-http-agent", []HTTPRuleRow{{
+		ID:                       83,
+		AgentID:                  "wg-http-agent",
+		FrontendURL:              "http://app.internal",
+		BackendsJSON:             `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON:        `{"strategy":"adaptive"}`,
+		Enabled:                  true,
+		TagsJSON:                 `[]`,
+		ProxyRedirect:            true,
+		RelayChainJSON:           `[]`,
+		RelayLayersJSON:          `[]`,
+		CustomHeadersJSON:        `[]`,
+		WireGuardEntryEnabled:    true,
+		WireGuardProfileID:       &profileID,
+		WireGuardEntryListenHost: "10.81.0.1",
+		WireGuardEntryListenPort: 8080,
+		Revision:                 19,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-http-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.Rules) != 1 || !snapshot.Rules[0].WireGuardEntryEnabled {
+		t.Fatalf("Rules = %+v, want HTTP WireGuard entry", snapshot.Rules)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles = %+v, want HTTP referenced profile", snapshot.WireGuardProfiles)
+	}
+	if snapshot.WireGuardProfiles[0].ID != profileID || snapshot.WireGuardProfiles[0].AgentID != "wg-http-peer" {
+		t.Fatalf("WireGuardProfiles[0] = %+v", snapshot.WireGuardProfiles[0])
+	}
+}
+
 func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

@@ -14,20 +14,24 @@ import (
 )
 
 type HTTPRuleInput struct {
-	ID               *int                `json:"id,omitempty"`
-	FrontendURL      *string             `json:"frontend_url,omitempty"`
-	BackendURL       *string             `json:"backend_url,omitempty"`
-	Backends         *[]HTTPRuleBackend  `json:"backends,omitempty"`
-	LoadBalancing    *HTTPLoadBalancing  `json:"load_balancing,omitempty"`
-	Enabled          *bool               `json:"enabled,omitempty"`
-	Tags             *[]string           `json:"tags,omitempty"`
-	ProxyRedirect    *bool               `json:"proxy_redirect,omitempty"`
-	RelayChain       *[]int              `json:"relay_chain,omitempty"`
-	RelayLayers      *[][]int            `json:"relay_layers,omitempty"`
-	RelayObfs        *bool               `json:"relay_obfs,omitempty"`
-	PassProxyHeaders *bool               `json:"pass_proxy_headers,omitempty"`
-	UserAgent        *string             `json:"user_agent,omitempty"`
-	CustomHeaders    *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
+	ID                       *int                `json:"id,omitempty"`
+	FrontendURL              *string             `json:"frontend_url,omitempty"`
+	BackendURL               *string             `json:"backend_url,omitempty"`
+	Backends                 *[]HTTPRuleBackend  `json:"backends,omitempty"`
+	LoadBalancing            *HTTPLoadBalancing  `json:"load_balancing,omitempty"`
+	Enabled                  *bool               `json:"enabled,omitempty"`
+	Tags                     *[]string           `json:"tags,omitempty"`
+	ProxyRedirect            *bool               `json:"proxy_redirect,omitempty"`
+	RelayChain               *[]int              `json:"relay_chain,omitempty"`
+	RelayLayers              *[][]int            `json:"relay_layers,omitempty"`
+	RelayObfs                *bool               `json:"relay_obfs,omitempty"`
+	PassProxyHeaders         *bool               `json:"pass_proxy_headers,omitempty"`
+	UserAgent                *string             `json:"user_agent,omitempty"`
+	CustomHeaders            *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
+	WireGuardEntryEnabled    *bool               `json:"wireguard_entry_enabled,omitempty"`
+	WireGuardProfileID       *int                `json:"wireguard_profile_id,omitempty"`
+	WireGuardEntryListenHost *string             `json:"wireguard_entry_listen_host,omitempty"`
+	WireGuardEntryListenPort *int                `json:"wireguard_entry_listen_port,omitempty"`
 }
 
 type ruleStore interface {
@@ -35,6 +39,7 @@ type ruleStore interface {
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
 	GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
+	ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error)
 	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
@@ -130,7 +135,7 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	// Keep the caller's preferred ID only for allocator conflict resolution.
 	// Normalization should see the assigned ID, not re-read the raw preference.
 	normalizedInput.ID = nil
-	rule, err := s.normalizeHTTPRuleInput(ctx, normalizedInput, HTTPRule{}, allocatedID)
+	rule, err := s.normalizeHTTPRuleInput(ctx, normalizedInput, HTTPRule{AgentID: resolvedID}, allocatedID)
 	if err != nil {
 		return HTTPRule{}, err
 	}
@@ -908,23 +913,68 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		customHeaders = normalizeHTTPCustomHeaders(*input.CustomHeaders)
 	}
 
+	wireGuardEntryEnabled := false
+	if fallback.ID > 0 {
+		wireGuardEntryEnabled = fallback.WireGuardEntryEnabled
+	}
+	if input.WireGuardEntryEnabled != nil {
+		wireGuardEntryEnabled = *input.WireGuardEntryEnabled
+	}
+	var wireGuardProfileID *int
+	wireGuardEntryListenHost := ""
+	wireGuardEntryListenPort := 0
+	if wireGuardEntryEnabled {
+		wireGuardProfileID = copyOptionalInt(fallback.WireGuardProfileID)
+		if input.WireGuardProfileID != nil {
+			wireGuardProfileID = copyOptionalInt(input.WireGuardProfileID)
+		}
+		if wireGuardProfileID == nil || *wireGuardProfileID <= 0 {
+			return HTTPRule{}, fmt.Errorf("%w: wireguard_profile_id is required when wireguard entry is enabled", ErrInvalidArgument)
+		}
+		if err := s.validateHTTPWireGuardProfileReference(ctx, fallback.AgentID, wireGuardProfileID); err != nil {
+			return HTTPRule{}, err
+		}
+		wireGuardEntryListenHost = strings.TrimSpace(fallback.WireGuardEntryListenHost)
+		if input.WireGuardEntryListenHost != nil {
+			wireGuardEntryListenHost = strings.TrimSpace(*input.WireGuardEntryListenHost)
+		}
+		if wireGuardEntryListenHost == "" {
+			host, err := s.defaultHTTPWireGuardEntryListenHost(ctx, fallback.AgentID, wireGuardProfileID)
+			if err != nil {
+				return HTTPRule{}, err
+			}
+			wireGuardEntryListenHost = host
+		}
+		wireGuardEntryListenPort = fallback.WireGuardEntryListenPort
+		if input.WireGuardEntryListenPort != nil {
+			wireGuardEntryListenPort = *input.WireGuardEntryListenPort
+		}
+		if wireGuardEntryListenPort < 1 || wireGuardEntryListenPort > 65535 {
+			return HTTPRule{}, fmt.Errorf("%w: wireguard_entry_listen_port must be a valid port", ErrInvalidArgument)
+		}
+	}
+
 	return HTTPRule{
-		ID:               id,
-		AgentID:          fallback.AgentID,
-		FrontendURL:      frontendURL,
-		BackendURL:       backendURL,
-		Backends:         backends,
-		LoadBalancing:    loadBalancing,
-		Enabled:          enabled,
-		Tags:             tags,
-		ProxyRedirect:    proxyRedirect,
-		RelayChain:       relayChain,
-		RelayLayers:      relayLayers,
-		RelayObfs:        relayObfs,
-		PassProxyHeaders: passProxyHeaders,
-		UserAgent:        userAgent,
-		CustomHeaders:    customHeaders,
-		Revision:         fallback.Revision,
+		ID:                       id,
+		AgentID:                  fallback.AgentID,
+		FrontendURL:              frontendURL,
+		BackendURL:               backendURL,
+		Backends:                 backends,
+		LoadBalancing:            loadBalancing,
+		Enabled:                  enabled,
+		Tags:                     tags,
+		ProxyRedirect:            proxyRedirect,
+		RelayChain:               relayChain,
+		RelayLayers:              relayLayers,
+		RelayObfs:                relayObfs,
+		PassProxyHeaders:         passProxyHeaders,
+		UserAgent:                userAgent,
+		CustomHeaders:            customHeaders,
+		WireGuardEntryEnabled:    wireGuardEntryEnabled,
+		WireGuardProfileID:       wireGuardProfileID,
+		WireGuardEntryListenHost: wireGuardEntryListenHost,
+		WireGuardEntryListenPort: wireGuardEntryListenPort,
+		Revision:                 fallback.Revision,
 	}, nil
 }
 
@@ -934,6 +984,43 @@ func (s *ruleService) validateRelayChain(ctx context.Context, relayChain []int) 
 		return err
 	}
 	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain)
+}
+
+func (s *ruleService) validateHTTPWireGuardProfileReference(ctx context.Context, agentID string, profileID *int) error {
+	if profileID == nil || *profileID <= 0 {
+		return nil
+	}
+	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.ID != *profileID {
+			continue
+		}
+		if !row.Enabled {
+			return fmt.Errorf("%w: wireguard profile %d is disabled", ErrInvalidArgument, *profileID)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: wireguard profile %d not found for agent %s", ErrInvalidArgument, *profileID, agentID)
+}
+
+func (s *ruleService) defaultHTTPWireGuardEntryListenHost(ctx context.Context, agentID string, profileID *int) (string, error) {
+	if profileID == nil || *profileID <= 0 {
+		return "", nil
+	}
+	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return "", err
+	}
+	for _, row := range rows {
+		if row.ID != *profileID {
+			continue
+		}
+		return firstWireGuardProfileAddressHost(row.AddressesJSON), nil
+	}
+	return "", nil
 }
 
 func normalizeHTTPBackendsInput(input HTTPRuleInput, fallback HTTPRule) ([]HTTPRuleBackend, error) {
@@ -1029,43 +1116,51 @@ func httpRuleFromRow(row storage.HTTPRuleRow) HTTPRule {
 	backends := parseBackends(row.BackendsJSON)
 
 	return HTTPRule{
-		ID:               row.ID,
-		AgentID:          row.AgentID,
-		FrontendURL:      row.FrontendURL,
-		BackendURL:       "",
-		Backends:         backends,
-		LoadBalancing:    parseLoadBalancing(row.LoadBalancingJSON),
-		Enabled:          row.Enabled,
-		Tags:             parseStringArray(row.TagsJSON),
-		ProxyRedirect:    row.ProxyRedirect,
-		RelayChain:       []int{},
-		RelayLayers:      parseIntLayers(row.RelayLayersJSON),
-		RelayObfs:        row.RelayObfs,
-		PassProxyHeaders: row.PassProxyHeaders,
-		UserAgent:        row.UserAgent,
-		CustomHeaders:    parseCustomHeaders(row.CustomHeadersJSON),
-		Revision:         row.Revision,
+		ID:                       row.ID,
+		AgentID:                  row.AgentID,
+		FrontendURL:              row.FrontendURL,
+		BackendURL:               "",
+		Backends:                 backends,
+		LoadBalancing:            parseLoadBalancing(row.LoadBalancingJSON),
+		Enabled:                  row.Enabled,
+		Tags:                     parseStringArray(row.TagsJSON),
+		ProxyRedirect:            row.ProxyRedirect,
+		RelayChain:               []int{},
+		RelayLayers:              parseIntLayers(row.RelayLayersJSON),
+		RelayObfs:                row.RelayObfs,
+		PassProxyHeaders:         row.PassProxyHeaders,
+		UserAgent:                row.UserAgent,
+		CustomHeaders:            parseCustomHeaders(row.CustomHeadersJSON),
+		WireGuardEntryEnabled:    row.WireGuardEntryEnabled,
+		WireGuardProfileID:       copyOptionalInt(row.WireGuardProfileID),
+		WireGuardEntryListenHost: row.WireGuardEntryListenHost,
+		WireGuardEntryListenPort: row.WireGuardEntryListenPort,
+		Revision:                 row.Revision,
 	}
 }
 
 func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 	return storage.HTTPRuleRow{
-		ID:                rule.ID,
-		AgentID:           rule.AgentID,
-		FrontendURL:       rule.FrontendURL,
-		BackendURL:        "",
-		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
-		Enabled:           rule.Enabled,
-		TagsJSON:          marshalJSON(rule.Tags, "[]"),
-		ProxyRedirect:     rule.ProxyRedirect,
-		RelayChainJSON:    "[]",
-		RelayLayersJSON:   marshalJSON(rule.RelayLayers, "[]"),
-		RelayObfs:         rule.RelayObfs,
-		PassProxyHeaders:  rule.PassProxyHeaders,
-		UserAgent:         rule.UserAgent,
-		CustomHeadersJSON: marshalJSON(rule.CustomHeaders, "[]"),
-		Revision:          rule.Revision,
+		ID:                       rule.ID,
+		AgentID:                  rule.AgentID,
+		FrontendURL:              rule.FrontendURL,
+		BackendURL:               "",
+		BackendsJSON:             marshalJSON(rule.Backends, "[]"),
+		LoadBalancingJSON:        marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
+		Enabled:                  rule.Enabled,
+		TagsJSON:                 marshalJSON(rule.Tags, "[]"),
+		ProxyRedirect:            rule.ProxyRedirect,
+		RelayChainJSON:           "[]",
+		RelayLayersJSON:          marshalJSON(rule.RelayLayers, "[]"),
+		RelayObfs:                rule.RelayObfs,
+		PassProxyHeaders:         rule.PassProxyHeaders,
+		UserAgent:                rule.UserAgent,
+		CustomHeadersJSON:        marshalJSON(rule.CustomHeaders, "[]"),
+		WireGuardEntryEnabled:    rule.WireGuardEntryEnabled,
+		WireGuardProfileID:       copyOptionalInt(rule.WireGuardProfileID),
+		WireGuardEntryListenHost: rule.WireGuardEntryListenHost,
+		WireGuardEntryListenPort: rule.WireGuardEntryListenPort,
+		Revision:                 rule.Revision,
 	}
 }
 

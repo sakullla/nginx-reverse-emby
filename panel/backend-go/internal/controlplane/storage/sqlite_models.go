@@ -31,22 +31,26 @@ type AgentRow struct {
 }
 
 type HTTPRuleRow struct {
-	ID                int    `gorm:"column:id;primaryKey"`
-	AgentID           string `gorm:"column:agent_id;primaryKey;index:idx_rules_agent"`
-	FrontendURL       string `gorm:"column:frontend_url"`
-	BackendURL        string `gorm:"column:backend_url"`
-	BackendsJSON      string `gorm:"column:backends"`
-	LoadBalancingJSON string `gorm:"column:load_balancing"`
-	Enabled           bool   `gorm:"column:enabled"`
-	TagsJSON          string `gorm:"column:tags"`
-	ProxyRedirect     bool   `gorm:"column:proxy_redirect"`
-	RelayChainJSON    string `gorm:"column:relay_chain"`
-	RelayLayersJSON   string `gorm:"column:relay_layers"`
-	RelayObfs         bool   `gorm:"column:relay_obfs"`
-	PassProxyHeaders  bool   `gorm:"column:pass_proxy_headers"`
-	UserAgent         string `gorm:"column:user_agent"`
-	CustomHeadersJSON string `gorm:"column:custom_headers"`
-	Revision          int    `gorm:"column:revision"`
+	ID                       int    `gorm:"column:id;primaryKey"`
+	AgentID                  string `gorm:"column:agent_id;primaryKey;index:idx_rules_agent"`
+	FrontendURL              string `gorm:"column:frontend_url"`
+	BackendURL               string `gorm:"column:backend_url"`
+	BackendsJSON             string `gorm:"column:backends"`
+	LoadBalancingJSON        string `gorm:"column:load_balancing"`
+	Enabled                  bool   `gorm:"column:enabled"`
+	TagsJSON                 string `gorm:"column:tags"`
+	ProxyRedirect            bool   `gorm:"column:proxy_redirect"`
+	RelayChainJSON           string `gorm:"column:relay_chain"`
+	RelayLayersJSON          string `gorm:"column:relay_layers"`
+	RelayObfs                bool   `gorm:"column:relay_obfs"`
+	PassProxyHeaders         bool   `gorm:"column:pass_proxy_headers"`
+	UserAgent                string `gorm:"column:user_agent"`
+	CustomHeadersJSON        string `gorm:"column:custom_headers"`
+	WireGuardEntryEnabled    bool   `gorm:"column:wireguard_entry_enabled;not null;default:false"`
+	WireGuardProfileID       *int   `gorm:"column:wireguard_profile_id"`
+	WireGuardEntryListenHost string `gorm:"column:wireguard_entry_listen_host;not null;default:''"`
+	WireGuardEntryListenPort int    `gorm:"column:wireguard_entry_listen_port;not null;default:0"`
+	Revision                 int    `gorm:"column:revision"`
 }
 
 type LocalAgentStateRow struct {

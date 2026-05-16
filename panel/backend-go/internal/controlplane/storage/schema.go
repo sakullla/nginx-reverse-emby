@@ -171,6 +171,10 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		sql    string
 	}{
 		{model: &HTTPRuleRow{}, column: "relay_layers", sql: `ALTER TABLE rules ADD COLUMN relay_layers TEXT NOT NULL DEFAULT '[]'`},
+		{model: &HTTPRuleRow{}, column: "wireguard_entry_enabled", sql: `ALTER TABLE rules ADD COLUMN wireguard_entry_enabled INTEGER NOT NULL DEFAULT 0`},
+		{model: &HTTPRuleRow{}, column: "wireguard_profile_id", sql: `ALTER TABLE rules ADD COLUMN wireguard_profile_id INTEGER`},
+		{model: &HTTPRuleRow{}, column: "wireguard_entry_listen_host", sql: `ALTER TABLE rules ADD COLUMN wireguard_entry_listen_host TEXT NOT NULL DEFAULT ''`},
+		{model: &HTTPRuleRow{}, column: "wireguard_entry_listen_port", sql: `ALTER TABLE rules ADD COLUMN wireguard_entry_listen_port INTEGER NOT NULL DEFAULT 0`},
 		{model: &L4RuleRow{}, column: "relay_layers", sql: `ALTER TABLE l4_rules ADD COLUMN relay_layers TEXT NOT NULL DEFAULT '[]'`},
 	}
 	for _, migration := range ruleColumnMigrations {
@@ -189,6 +193,9 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE rules SET relay_chain = '[]' WHERE relay_chain IS NULL OR trim(relay_chain) = ''`,
 		`UPDATE rules SET relay_layers = '[]' WHERE relay_layers IS NULL OR trim(relay_layers) = ''`,
 		`UPDATE rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
+		`UPDATE rules SET wireguard_entry_enabled = 0 WHERE wireguard_entry_enabled IS NULL`,
+		`UPDATE rules SET wireguard_entry_listen_host = '' WHERE wireguard_entry_listen_host IS NULL`,
+		`UPDATE rules SET wireguard_entry_listen_port = 0 WHERE wireguard_entry_listen_port IS NULL`,
 		`UPDATE l4_rules SET relay_layers = '[]' WHERE relay_layers IS NULL OR trim(relay_layers) = ''`,
 		`UPDATE l4_rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
 		`UPDATE l4_rules SET listen_mode = 'tcp' WHERE listen_mode IS NULL OR trim(listen_mode) = ''`,

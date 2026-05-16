@@ -701,7 +701,7 @@ func TestL4RuleServiceWireGuardDefaultsInboundModeAddress(t *testing.T) {
 	}
 }
 
-func TestL4RuleServiceWireGuardTransparentInboundModePassesThrough(t *testing.T) {
+func TestL4RuleServiceWireGuardTransparentInboundModeRejectsUntilRuntimeSupportsCapturedFlows(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -710,7 +710,7 @@ func TestL4RuleServiceWireGuardTransparentInboundModePassesThrough(t *testing.T)
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
 		Protocol:             stringPtrL4("udp"),
 		ListenHost:           stringPtrL4("0.0.0.0"),
 		ListenPort:           intPtrL4(51820),
@@ -720,21 +720,11 @@ func TestL4RuleServiceWireGuardTransparentInboundModePassesThrough(t *testing.T)
 		WireGuardListenHost:  stringPtrL4("10.8.0.1"),
 		Backends:             &[]L4Backend{{Host: "upstream", Port: 9001}},
 	})
-	if err != nil {
+	if err == nil {
+		t.Fatal("Create() error = nil, want unsupported transparent inbound error")
+	}
+	if !strings.Contains(err.Error(), "wireguard transparent inbound is not supported yet") {
 		t.Fatalf("Create() error = %v", err)
-	}
-	if rule.WireGuardInboundMode != "transparent" {
-		t.Fatalf("WireGuardInboundMode = %q, want transparent", rule.WireGuardInboundMode)
-	}
-	if rule.WireGuardListenHost != "" {
-		t.Fatalf("WireGuardListenHost = %q, want cleared for transparent mode", rule.WireGuardListenHost)
-	}
-	row := store.l4RulesByID["local"][0]
-	if row.WireGuardInboundMode != "transparent" {
-		t.Fatalf("persisted WireGuardInboundMode = %q, want transparent", row.WireGuardInboundMode)
-	}
-	if row.WireGuardListenHost != "" {
-		t.Fatalf("persisted WireGuardListenHost = %q, want cleared for transparent mode", row.WireGuardListenHost)
 	}
 }
 

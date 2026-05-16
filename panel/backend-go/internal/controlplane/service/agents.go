@@ -93,22 +93,26 @@ type HTTPCustomHeader struct {
 }
 
 type HTTPRule struct {
-	ID               int                `json:"id"`
-	AgentID          string             `json:"agent_id"`
-	FrontendURL      string             `json:"frontend_url"`
-	BackendURL       string             `json:"-"`
-	Backends         []HTTPRuleBackend  `json:"backends"`
-	LoadBalancing    HTTPLoadBalancing  `json:"load_balancing"`
-	Enabled          bool               `json:"enabled"`
-	Tags             []string           `json:"tags"`
-	ProxyRedirect    bool               `json:"proxy_redirect"`
-	RelayChain       []int              `json:"-"`
-	RelayLayers      [][]int            `json:"relay_layers"`
-	RelayObfs        bool               `json:"relay_obfs"`
-	PassProxyHeaders bool               `json:"pass_proxy_headers"`
-	UserAgent        string             `json:"user_agent"`
-	CustomHeaders    []HTTPCustomHeader `json:"custom_headers"`
-	Revision         int                `json:"revision"`
+	ID                       int                `json:"id"`
+	AgentID                  string             `json:"agent_id"`
+	FrontendURL              string             `json:"frontend_url"`
+	BackendURL               string             `json:"-"`
+	Backends                 []HTTPRuleBackend  `json:"backends"`
+	LoadBalancing            HTTPLoadBalancing  `json:"load_balancing"`
+	Enabled                  bool               `json:"enabled"`
+	Tags                     []string           `json:"tags"`
+	ProxyRedirect            bool               `json:"proxy_redirect"`
+	RelayChain               []int              `json:"-"`
+	RelayLayers              [][]int            `json:"relay_layers"`
+	RelayObfs                bool               `json:"relay_obfs"`
+	PassProxyHeaders         bool               `json:"pass_proxy_headers"`
+	UserAgent                string             `json:"user_agent"`
+	CustomHeaders            []HTTPCustomHeader `json:"custom_headers"`
+	WireGuardEntryEnabled    bool               `json:"wireguard_entry_enabled"`
+	WireGuardProfileID       *int               `json:"wireguard_profile_id,omitempty"`
+	WireGuardEntryListenHost string             `json:"wireguard_entry_listen_host,omitempty"`
+	WireGuardEntryListenPort int                `json:"wireguard_entry_listen_port,omitempty"`
+	Revision                 int                `json:"revision"`
 }
 
 type HeartbeatRequest struct {

@@ -120,6 +120,63 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
+  it('sends HTTP WireGuard entry payload only when enabled', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      return {
+        data: {
+          rule: {
+            id: 8,
+            ...JSON.parse(config.data)
+          }
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      await runtime.createRule('edge-a', {
+        frontend_url: 'https://app.example.test',
+        backends: [{ url: 'http://origin.example.test' }],
+        wireguard_entry_enabled: true,
+        wireguard_profile_id: '101',
+        wireguard_entry_listen_host: ' 10.8.0.1 ',
+        wireguard_entry_listen_port: '18096'
+      })
+      await runtime.updateRule('edge-a', 8, {
+        frontend_url: 'https://app.example.test',
+        backends: [{ url: 'http://origin.example.test' }],
+        wireguard_entry_enabled: false,
+        wireguard_profile_id: 101,
+        wireguard_entry_listen_host: '10.8.0.1',
+        wireguard_entry_listen_port: 18096
+      })
+
+      expect(requests).toHaveLength(2)
+      const enabledPayload = JSON.parse(requests[0].data)
+      expect(enabledPayload.wireguard_entry_enabled).toBe(true)
+      expect(enabledPayload.wireguard_profile_id).toBe(101)
+      expect(enabledPayload.wireguard_entry_listen_host).toBe('10.8.0.1')
+      expect(enabledPayload.wireguard_entry_listen_port).toBe(18096)
+
+      const disabledPayload = JSON.parse(requests[1].data)
+      expect(disabledPayload.wireguard_entry_enabled).toBe(false)
+      expect(disabledPayload).not.toHaveProperty('wireguard_profile_id')
+      expect(disabledPayload).not.toHaveProperty('wireguard_entry_listen_host')
+      expect(disabledPayload).not.toHaveProperty('wireguard_entry_listen_port')
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
   it('sends Relay listener WireGuard payloads with profile id and neutralized transport options', async () => {
     const { api } = await vi.importActual('./client.js')
     const requests = []
@@ -229,63 +286,6 @@ describe('runtime canonical rule payloads', () => {
       }
       expect(created.listen_mode).toBe('wireguard')
       expect(updated.listen_mode).toBe('wireguard')
-    } finally {
-      api.defaults.adapter = originalAdapter
-    }
-  })
-
-  it('sends L4 WireGuard transparent inbound mode without address listen host', async () => {
-    const { api } = await vi.importActual('./client.js')
-    const requests = []
-    const originalAdapter = api.defaults.adapter
-    api.defaults.adapter = async (config) => {
-      requests.push(config)
-      return {
-        data: {
-          rule: {
-            id: 15,
-            ...JSON.parse(config.data)
-          }
-        },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config
-      }
-    }
-
-    try {
-      const runtime = await vi.importActual('./runtime.js')
-
-      await runtime.createL4Rule('edge-a', {
-        protocol: 'udp',
-        listen_host: '0.0.0.0',
-        listen_port: 51820,
-        listen_mode: 'wireguard',
-        wireguard_inbound_mode: 'transparent',
-        wireguard_profile_id: 101,
-        wireguard_listen_host: '10.8.0.1',
-        backends: [{ host: '10.8.0.2', port: 8080 }]
-      })
-      await runtime.updateL4Rule('edge-a', 15, {
-        protocol: 'udp',
-        listen_host: '0.0.0.0',
-        listen_port: 51820,
-        listen_mode: 'wireguard',
-        wireguard_inbound_mode: 'transparent',
-        wireguard_profile_id: 101,
-        wireguard_listen_host: '10.8.0.1',
-        backends: [{ host: '10.8.0.2', port: 8080 }]
-      })
-
-      expect(requests).toHaveLength(2)
-      for (const request of requests) {
-        const payload = JSON.parse(request.data)
-        expect(payload.listen_mode).toBe('wireguard')
-        expect(payload.wireguard_inbound_mode).toBe('transparent')
-        expect(payload.wireguard_profile_id).toBe(101)
-        expect(payload).not.toHaveProperty('wireguard_listen_host')
-      }
     } finally {
       api.defaults.adapter = originalAdapter
     }
@@ -483,5 +483,27 @@ describe('runtime canonical rule payloads', () => {
     expect(l4Form.default).toContain("wireguard_inbound_mode: initialData?.wireguard_inbound_mode === 'transparent' ? 'transparent' : 'address'")
     expect(l4Form.default).toContain('payload.wireguard_inbound_mode = form.value.wireguard_inbound_mode')
     expect(l4Form.default).toContain("if (isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'address')")
+    expect(l4Form.default).not.toContain('<option value="transparent">Transparent</option>')
+  })
+
+  it('HTTP form keeps WireGuard entry controls in the advanced tab', async () => {
+    const ruleForm = await import('../components/RuleForm.vue?raw')
+    const source = ruleForm.default
+    const basicTabIndex = source.indexOf('<div v-if="activeTab === \'basic\'"')
+    const advancedTabIndex = source.indexOf('<div v-else-if="activeTab === \'headers\'"')
+    const relayTabIndex = source.indexOf('<div v-else-if="activeTab === \'relay\'"')
+    const wireGuardControlIndex = source.indexOf('wireguard_entry_enabled')
+
+    expect(basicTabIndex).toBeGreaterThanOrEqual(0)
+    expect(advancedTabIndex).toBeGreaterThan(basicTabIndex)
+    expect(relayTabIndex).toBeGreaterThan(advancedTabIndex)
+    expect(wireGuardControlIndex).toBeGreaterThan(advancedTabIndex)
+    expect(wireGuardControlIndex).toBeLessThan(relayTabIndex)
+    expect(source.slice(basicTabIndex, advancedTabIndex)).not.toContain('wireguard_entry_enabled')
+    expect(source).toContain('wireguard_profile_id')
+    expect(source).toContain('wireguard_entry_listen_host')
+    expect(source).toContain('wireguard_entry_listen_port')
+    expect(source).toContain('enabledWireGuardProfiles')
+    expect(source).toContain('selectedWireGuardProfileID')
   })
 })
