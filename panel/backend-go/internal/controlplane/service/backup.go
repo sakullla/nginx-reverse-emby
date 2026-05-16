@@ -1147,6 +1147,14 @@ func (s *backupService) importTrafficBaselines(ctx context.Context, incoming []B
 
 func (s *backupService) importWireGuardClients(ctx context.Context, incoming []BackupWireGuardClient, agentIDMap map[string]string, wireGuardProfileIDMap map[string]int, acceptedProfileIDs map[string]struct{}, skippedConflictProfileIDs map[string]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
 	grouped := map[string]map[int][]storage.WireGuardClientRow{}
+	skippedGeneratedPeers := map[string]map[int][]storage.WireGuardClientRow{}
+	touchedProfiles := map[string]map[int]struct{}{}
+	markTouchedProfile := func(agentID string, profileID int) {
+		if touchedProfiles[agentID] == nil {
+			touchedProfiles[agentID] = map[int]struct{}{}
+		}
+		touchedProfiles[agentID][profileID] = struct{}{}
+	}
 	for _, item := range incoming {
 		key := wireGuardClientBackupKey(item.AgentID, item.ProfileID, item.Name, item.ID)
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
@@ -1166,16 +1174,24 @@ func (s *backupService) importWireGuardClients(ctx context.Context, incoming []B
 		row := wireGuardClientRowFromBackup(item, resolvedAgentID, mappedProfileID)
 		if err := validateBackupWireGuardClientRow(row); err != nil {
 			result.addSkippedInvalid("wireguard_client", key, err.Error())
+			if strings.TrimSpace(row.PublicKey) != "" {
+				if skippedGeneratedPeers[resolvedAgentID] == nil {
+					skippedGeneratedPeers[resolvedAgentID] = map[int][]storage.WireGuardClientRow{}
+				}
+				skippedGeneratedPeers[resolvedAgentID][mappedProfileID] = append(skippedGeneratedPeers[resolvedAgentID][mappedProfileID], row)
+				markTouchedProfile(resolvedAgentID, mappedProfileID)
+			}
 			continue
 		}
 		if grouped[resolvedAgentID] == nil {
 			grouped[resolvedAgentID] = map[int][]storage.WireGuardClientRow{}
 		}
 		grouped[resolvedAgentID][mappedProfileID] = append(grouped[resolvedAgentID][mappedProfileID], row)
+		markTouchedProfile(resolvedAgentID, mappedProfileID)
 		result.addImported("wireguard_client", key)
 	}
 
-	for agentID, byProfileID := range grouped {
+	for agentID, profileIDs := range touchedProfiles {
 		profiles, err := s.store.ListWireGuardProfiles(ctx, agentID)
 		if err != nil {
 			return err
@@ -1185,7 +1201,8 @@ func (s *backupService) importWireGuardClients(ctx context.Context, incoming []B
 			profileIndexByID[profiles[i].ID] = i
 		}
 		profilesChanged := false
-		for profileID, rows := range byProfileID {
+		for profileID := range profileIDs {
+			rows, hasValidRows := grouped[agentID][profileID]
 			index, ok := profileIndexByID[profileID]
 			var existingClients []storage.WireGuardClientRow
 			if ok {
@@ -1195,14 +1212,17 @@ func (s *backupService) importWireGuardClients(ctx context.Context, incoming []B
 					return err
 				}
 			}
-			if err := s.store.SaveWireGuardClients(ctx, agentID, profileID, rows); err != nil {
-				return err
+			if hasValidRows {
+				if err := s.store.SaveWireGuardClients(ctx, agentID, profileID, rows); err != nil {
+					return err
+				}
 			}
 			if !ok {
 				continue
 			}
 			profile := wireGuardProfileFromRow(profiles[index])
 			profile.Peers = removeWireGuardGeneratedClientPeers(profile.Peers, existingClients)
+			profile.Peers = removeWireGuardGeneratedClientPeers(profile.Peers, skippedGeneratedPeers[agentID][profileID])
 			profile.Peers = reconcileWireGuardGeneratedClientPeers(profile.Peers, rows)
 			nextRow := wireGuardProfileToRow(profile)
 			if nextRow != profiles[index] {
