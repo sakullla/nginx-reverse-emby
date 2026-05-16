@@ -926,7 +926,7 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 	if err := s.importHTTPRules(ctx, bundle.HTTPRules, agentIDMap, listenerIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, &result, modifiedAgents, allocator); err != nil {
 		return BackupImportResult{}, err
 	}
-	if err := s.importL4Rules(ctx, bundle.L4Rules, agentIDMap, listenerIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, &result, modifiedAgents, allocator); err != nil {
+	if err := s.importL4Rules(ctx, bundle.L4Rules, agentIDMap, listenerIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, &result, modifiedAgents, allocator); err != nil {
 		return BackupImportResult{}, err
 	}
 	if err := s.bumpModifiedAgents(ctx, modifiedAgents); err != nil {
@@ -1532,7 +1532,7 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 	return nil
 }
 
-func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Rule, agentIDMap map[string]string, listenerIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
+func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Rule, agentIDMap map[string]string, listenerIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, importedWireGuardProfileIDs map[string]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
 	l4Svc := &l4Service{cfg: s.cfg, store: s.store}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
@@ -1605,6 +1605,9 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		normalized.AgentID = resolvedAgentID
 		assignedID := allocator.AllocateRuleID(item.ID)
 		normalized.ID = assignedID
+		if err := s.remapImportedL4WireGuardURIEgressProfileOwnership(ctx, item, resolvedAgentID, assignedID, wireGuardProfileID, importedWireGuardProfileIDs); err != nil {
+			return err
+		}
 		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
 		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
 			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
@@ -1628,6 +1631,69 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		}
 	}
 	return nil
+}
+
+func (s *backupService) remapImportedL4WireGuardURIEgressProfileOwnership(ctx context.Context, item BackupL4Rule, resolvedAgentID string, assignedRuleID int, mappedProfileID *int, importedWireGuardProfileIDs map[string]struct{}) error {
+	if assignedRuleID <= 0 || assignedRuleID == item.ID || mappedProfileID == nil || *mappedProfileID <= 0 || item.WireGuardProfileID == nil || *item.WireGuardProfileID <= 0 {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard") {
+		return nil
+	}
+	rawURI := strings.TrimSpace(item.WireGuardEgressURI)
+	if rawURI == "" {
+		return nil
+	}
+	if !backupWireGuardProfileWasImported(item.AgentID, resolvedAgentID, *item.WireGuardProfileID, importedWireGuardProfileIDs) {
+		return nil
+	}
+	parsed, err := ParseWireGuardURI(rawURI)
+	if err != nil {
+		return nil
+	}
+
+	sourceProfileName := fmt.Sprintf("l4-rule-%d-wireguard-egress", item.ID)
+	targetProfileInput := wireGuardProfileInputFromURI(parsed, fmt.Sprintf("l4-rule-%d-wireguard-egress", assignedRuleID))
+	targetProfileName := strings.TrimSpace(targetProfileInput.Name)
+	if targetProfileName == "" {
+		return nil
+	}
+	sourceProfileInput := wireGuardProfileInputFromURI(parsed, sourceProfileName)
+	if strings.TrimSpace(sourceProfileInput.Name) == targetProfileName {
+		return nil
+	}
+
+	rows, err := s.store.ListWireGuardProfiles(ctx, resolvedAgentID)
+	if err != nil {
+		return err
+	}
+	for i := range rows {
+		if rows[i].ID != *mappedProfileID {
+			continue
+		}
+		if !wireGuardProfileRowMatchesURI(rows[i], parsed, sourceProfileName) {
+			return nil
+		}
+		nextRows := append([]storage.WireGuardProfileRow(nil), rows...)
+		nextRows[i].Name = targetProfileName
+		return s.store.SaveWireGuardProfiles(ctx, resolvedAgentID, nextRows)
+	}
+	return nil
+}
+
+func backupWireGuardProfileWasImported(sourceAgentID string, resolvedAgentID string, sourceProfileID int, importedWireGuardProfileIDs map[string]struct{}) bool {
+	if sourceProfileID <= 0 {
+		return false
+	}
+	for _, key := range []string{
+		wireGuardProfileKey(sourceAgentID, sourceProfileID),
+		wireGuardProfileKey(resolvedAgentID, sourceProfileID),
+	} {
+		if _, ok := importedWireGuardProfileIDs[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func recordModifiedAgentRevision(modifiedAgents modifiedAgentRevisions, agentID string, revision int) {
