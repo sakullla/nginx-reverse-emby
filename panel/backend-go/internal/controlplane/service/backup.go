@@ -231,8 +231,11 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		}
 		result.addImported("certificate", key)
 	}
-	wireGuardProfileIDMap, enabledWireGuardProfileIDs, err := previewWireGuardProfiles(ctx, bundle.WireGuardProfiles, agentIDMap, s.cfg, s.store, &result)
+	wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, err := previewWireGuardProfiles(ctx, bundle.WireGuardProfiles, agentIDMap, s.cfg, s.store, &result)
 	if err != nil {
+		return BackupImportResult{}, err
+	}
+	if err := previewWireGuardClients(bundle.WireGuardClients, agentIDMap, wireGuardProfileIDMap, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, &result, s.cfg); err != nil {
 		return BackupImportResult{}, err
 	}
 	existingRelayRows, err := s.store.ListRelayListeners(ctx, "")
@@ -717,11 +720,11 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 		return BackupImportResult{}, err
 	}
 
-	wireGuardProfileIDMap, enabledWireGuardProfileIDs, err := s.importWireGuardProfiles(ctx, bundle.WireGuardProfiles, agentIDMap, &result, modifiedAgents, allocator)
+	wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, err := s.importWireGuardProfiles(ctx, bundle.WireGuardProfiles, agentIDMap, &result, modifiedAgents, allocator)
 	if err != nil {
 		return BackupImportResult{}, err
 	}
-	if err := s.importWireGuardClients(ctx, bundle.WireGuardClients, agentIDMap, wireGuardProfileIDMap, &result, modifiedAgents, allocator); err != nil {
+	if err := s.importWireGuardClients(ctx, bundle.WireGuardClients, agentIDMap, wireGuardProfileIDMap, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, &result, modifiedAgents, allocator); err != nil {
 		return BackupImportResult{}, err
 	}
 
@@ -1142,7 +1145,7 @@ func (s *backupService) importTrafficBaselines(ctx context.Context, incoming []B
 	return nil
 }
 
-func (s *backupService) importWireGuardClients(ctx context.Context, incoming []BackupWireGuardClient, agentIDMap map[string]string, wireGuardProfileIDMap map[string]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
+func (s *backupService) importWireGuardClients(ctx context.Context, incoming []BackupWireGuardClient, agentIDMap map[string]string, wireGuardProfileIDMap map[string]int, acceptedProfileIDs map[string]struct{}, skippedConflictProfileIDs map[string]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
 	grouped := map[string]map[int][]storage.WireGuardClientRow{}
 	for _, item := range incoming {
 		key := wireGuardClientBackupKey(item.AgentID, item.ProfileID, item.Name, item.ID)
@@ -1151,9 +1154,13 @@ func (s *backupService) importWireGuardClients(ctx context.Context, incoming []B
 			result.addSkippedInvalid("wireguard_client", key, "wireguard client references unknown agent")
 			continue
 		}
-		mappedProfileID, ok := remapBackupWireGuardClientProfileID(item.AgentID, item.ProfileID, wireGuardProfileIDMap)
+		mappedProfileID, ok := remapBackupWireGuardClientProfileID(item.AgentID, resolvedAgentID, item.ProfileID, wireGuardProfileIDMap, acceptedProfileIDs)
 		if !ok {
-			result.addSkippedInvalid("wireguard_client", key, "wireguard profile was not imported")
+			if _, conflict := skippedConflictProfileIDs[wireGuardProfileKey(item.AgentID, item.ProfileID)]; conflict {
+				result.addSkippedConflict("wireguard_client", key, "wireguard profile was skipped due to conflict")
+			} else {
+				result.addSkippedInvalid("wireguard_client", key, "wireguard profile was not imported")
+			}
 			continue
 		}
 		row := wireGuardClientRowFromBackup(item, resolvedAgentID, mappedProfileID)
@@ -1179,14 +1186,23 @@ func (s *backupService) importWireGuardClients(ctx context.Context, incoming []B
 		}
 		profilesChanged := false
 		for profileID, rows := range byProfileID {
+			index, ok := profileIndexByID[profileID]
+			var existingClients []storage.WireGuardClientRow
+			if ok {
+				var err error
+				existingClients, err = s.store.ListWireGuardClients(ctx, agentID, profileID)
+				if err != nil {
+					return err
+				}
+			}
 			if err := s.store.SaveWireGuardClients(ctx, agentID, profileID, rows); err != nil {
 				return err
 			}
-			index, ok := profileIndexByID[profileID]
 			if !ok {
 				continue
 			}
 			profile := wireGuardProfileFromRow(profiles[index])
+			profile.Peers = removeWireGuardGeneratedClientPeers(profile.Peers, existingClients)
 			profile.Peers = reconcileWireGuardGeneratedClientPeers(profile.Peers, rows)
 			nextRow := wireGuardProfileToRow(profile)
 			if nextRow != profiles[index] {
@@ -1202,6 +1218,33 @@ func (s *backupService) importWireGuardClients(ctx context.Context, incoming []B
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func previewWireGuardClients(incoming []BackupWireGuardClient, agentIDMap map[string]string, wireGuardProfileIDMap map[string]int, acceptedProfileIDs map[string]struct{}, skippedConflictProfileIDs map[string]struct{}, result *BackupImportResult, cfg config.Config) error {
+	for _, item := range incoming {
+		key := wireGuardClientBackupKey(item.AgentID, item.ProfileID, item.Name, item.ID)
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, cfg)
+		if !ok {
+			result.addSkippedInvalid("wireguard_client", key, "wireguard client references unknown agent")
+			continue
+		}
+		mappedProfileID, ok := remapBackupWireGuardClientProfileID(item.AgentID, resolvedAgentID, item.ProfileID, wireGuardProfileIDMap, acceptedProfileIDs)
+		if !ok {
+			if _, conflict := skippedConflictProfileIDs[wireGuardProfileKey(item.AgentID, item.ProfileID)]; conflict {
+				result.addSkippedConflict("wireguard_client", key, "wireguard profile was skipped due to conflict")
+			} else {
+				result.addSkippedInvalid("wireguard_client", key, "wireguard profile was not imported")
+			}
+			continue
+		}
+		row := wireGuardClientRowFromBackup(item, resolvedAgentID, mappedProfileID)
+		if err := validateBackupWireGuardClientRow(row); err != nil {
+			result.addSkippedInvalid("wireguard_client", key, err.Error())
+			continue
+		}
+		result.addImported("wireguard_client", key)
 	}
 	return nil
 }
@@ -1954,15 +1997,23 @@ func remapBackupWireGuardProfileID(agentID string, profileID *int, profileIDMap 
 	return backupIntPtr(mapped), true
 }
 
-func remapBackupWireGuardClientProfileID(agentID string, profileID int, profileIDMap map[string]int) (int, bool) {
+func remapBackupWireGuardClientProfileID(agentID string, resolvedAgentID string, profileID int, profileIDMap map[string]int, acceptedProfileIDs map[string]struct{}) (int, bool) {
 	if profileID <= 0 {
 		return 0, false
 	}
-	mapped, ok := profileIDMap[wireGuardProfileKey(agentID, profileID)]
-	if !ok || mapped <= 0 {
-		return 0, false
+	for _, profileKey := range []string{
+		wireGuardProfileKey(agentID, profileID),
+		wireGuardProfileKey(resolvedAgentID, profileID),
+	} {
+		if _, ok := acceptedProfileIDs[profileKey]; !ok {
+			continue
+		}
+		mapped, ok := profileIDMap[profileKey]
+		if ok && mapped > 0 {
+			return mapped, true
+		}
 	}
-	return mapped, true
+	return 0, false
 }
 
 func validateBackupWireGuardClientRow(row storage.WireGuardClientRow) error {
@@ -1974,6 +2025,15 @@ func validateBackupWireGuardClientRow(row storage.WireGuardClientRow) error {
 	}
 	if strings.TrimSpace(row.PrivateKey) == "" || strings.TrimSpace(row.PublicKey) == "" {
 		return fmt.Errorf("%w: wireguard client private_key and public_key are required", ErrInvalidArgument)
+	}
+	if err := validateWireGuardKey(row.PrivateKey, true); err != nil {
+		return fmt.Errorf("%w: wireguard client private_key must be a WireGuard key", ErrInvalidArgument)
+	}
+	if err := validateWireGuardKey(row.PublicKey, true); err != nil {
+		return fmt.Errorf("%w: wireguard client public_key must be a WireGuard key", ErrInvalidArgument)
+	}
+	if err := validateWireGuardKey(row.PresharedKey, false); err != nil {
+		return fmt.Errorf("%w: wireguard client preshared_key must be a WireGuard key", ErrInvalidArgument)
 	}
 	if strings.TrimSpace(row.Address) == "" {
 		return fmt.Errorf("%w: wireguard client address is required", ErrInvalidArgument)
@@ -1990,60 +2050,62 @@ func validateBackupWireGuardClientRow(row storage.WireGuardClientRow) error {
 	return nil
 }
 
-func previewWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, cfg config.Config, store backupStore, result *BackupImportResult) (map[string]int, map[string]struct{}, error) {
+func previewWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, cfg config.Config, store backupStore, result *BackupImportResult) (map[string]int, map[string]struct{}, map[string]struct{}, map[string]struct{}, error) {
 	knownAgentIDs, err := allKnownAgentIDs(ctx, cfg, store)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	existingRows, err := listAllWireGuardProfileRows(ctx, store, knownAgentIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, cfg, store)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	profileIDMap, enabledProfileIDs, _, _, err := planWireGuardProfilesWithRows(incoming, existingRows, agentIDMap, cfg, allocator, result)
+	profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, _, _, err := planWireGuardProfilesWithRows(incoming, existingRows, agentIDMap, cfg, allocator, result)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return profileIDMap, enabledProfileIDs, nil
+	return profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, nil
 }
 
-func (s *backupService) importWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[string]int, map[string]struct{}, error) {
+func (s *backupService) importWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[string]int, map[string]struct{}, map[string]struct{}, map[string]struct{}, error) {
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	existingRows, err := listAllWireGuardProfileRows(ctx, s.store, knownAgentIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	profileIDMap, enabledProfileIDs, groupedRows, revisionsByAgent, err := planWireGuardProfilesWithRows(incoming, existingRows, agentIDMap, s.cfg, allocator, result)
+	profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, groupedRows, revisionsByAgent, err := planWireGuardProfilesWithRows(incoming, existingRows, agentIDMap, s.cfg, allocator, result)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	for agentID, rows := range groupedRows {
 		existingAgentRows, err := s.store.ListWireGuardProfiles(ctx, agentID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		if wireGuardProfileRowsEqual(existingAgentRows, rows) {
 			continue
 		}
 		if err := s.store.SaveWireGuardProfiles(ctx, agentID, rows); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 	}
 	for agentID, revision := range revisionsByAgent {
 		recordModifiedAgentRevision(modifiedAgents, agentID, revision)
 	}
-	return profileIDMap, enabledProfileIDs, nil
+	return profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, nil
 }
 
-func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing []storage.WireGuardProfileRow, agentIDMap map[string]string, cfg config.Config, allocator *configIdentityAllocator, result *BackupImportResult) (map[string]int, map[string]struct{}, map[string][]storage.WireGuardProfileRow, map[string]int, error) {
+func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing []storage.WireGuardProfileRow, agentIDMap map[string]string, cfg config.Config, allocator *configIdentityAllocator, result *BackupImportResult) (map[string]int, map[string]struct{}, map[string]struct{}, map[string]struct{}, map[string][]storage.WireGuardProfileRow, map[string]int, error) {
 	profileIDMap := map[string]int{}
 	enabledProfileIDs := map[string]struct{}{}
+	importedProfileIDs := map[string]struct{}{}
+	skippedConflictProfileIDs := map[string]struct{}{}
 	grouped := map[string][]storage.WireGuardProfileRow{}
 	maxRevisionByAgent := map[string]int{}
 	revisionsByAgent := map[string]int{}
@@ -2075,9 +2137,13 @@ func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing [
 		conflictKey := wireGuardProfileConflictKey(resolvedAgentID, item.Name)
 		if existingRow, ok := conflictIndex[conflictKey]; ok {
 			profileIDMap[wireGuardProfileKey(item.AgentID, item.ID)] = existingRow.ID
+			profileIDMap[wireGuardProfileKey(resolvedAgentID, item.ID)] = existingRow.ID
 			if existingRow.Enabled {
 				enabledProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+				enabledProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
 			}
+			skippedConflictProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+			skippedConflictProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
 			if result != nil {
 				result.addSkippedConflict("wireguard_profile", conflictKey, "wireguard profile already exists")
 			}
@@ -2118,11 +2184,17 @@ func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing [
 			if result != nil {
 				result.addSkippedConflict("wireguard_profile", conflictKey, err.Error())
 			}
+			skippedConflictProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+			skippedConflictProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
 			continue
 		}
 		profileIDMap[wireGuardProfileKey(item.AgentID, item.ID)] = assignedID
+		profileIDMap[wireGuardProfileKey(resolvedAgentID, item.ID)] = assignedID
+		importedProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+		importedProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
 		if normalized.Enabled {
 			enabledProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+			enabledProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
 		}
 		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
 		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
@@ -2139,7 +2211,7 @@ func planWireGuardProfilesWithRows(incoming []BackupWireGuardProfile, existing [
 		}
 	}
 
-	return profileIDMap, enabledProfileIDs, grouped, revisionsByAgent, nil
+	return profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, grouped, revisionsByAgent, nil
 }
 
 func backupHTTPBackends(backends []HTTPRuleBackend, backendURL string) []HTTPRuleBackend {
