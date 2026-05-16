@@ -440,10 +440,16 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	} else if input.RelayChain != nil {
 		return L4Rule{}, fmt.Errorf("%w: relay_chain is legacy; use relay_layers", ErrInvalidArgument)
 	}
+	shouldClearProxyEntryFallback := input.ListenMode != nil && listenMode != "proxy" && input.ProxyEgressMode == nil
+	if shouldClearProxyEntryFallback && fallback.ListenMode == "proxy" && fallback.ProxyEgressMode != "" && input.RelayLayers == nil {
+		relayLayers = [][]int{}
+	}
 
 	rawProxyEgressMode := fallback.ProxyEgressMode
 	if input.ProxyEgressMode != nil {
 		rawProxyEgressMode = *input.ProxyEgressMode
+	} else if shouldClearProxyEntryFallback {
+		rawProxyEgressMode = ""
 	}
 	rawProxyEgressURL := fallback.ProxyEgressURL
 	if input.ProxyEgressURL != nil {
@@ -451,6 +457,8 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		if err != nil {
 			return L4Rule{}, err
 		}
+	} else if shouldClearProxyEntryFallback {
+		rawProxyEgressURL = ""
 	}
 	proxyEntryAuth, proxyEgressMode, proxyEgressURL := normalizeL4ProxyEntryFields(
 		listenMode,

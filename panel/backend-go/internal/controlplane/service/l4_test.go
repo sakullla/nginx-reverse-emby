@@ -846,6 +846,57 @@ func TestL4WireGuardListenHostDefaultsToListenHostOnUpdate(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceUpdateToWireGuardInboundClearsStaleProxyEgress(t *testing.T) {
+	profileID := 7
+	current := L4Rule{
+		ID:              1,
+		AgentID:         "local",
+		Name:            "proxy entry",
+		Protocol:        "tcp",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "relay",
+		RelayLayers:     [][]int{{101}},
+		Enabled:         true,
+		Revision:        3,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(current)},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		ListenMode:         stringPtrL4("wireguard"),
+		WireGuardProfileID: intPtrL4(profileID),
+		Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.ProxyEgressMode != "" || rule.ProxyEgressURL != "" || rule.ProxyEntryAuth != (L4ProxyEntryAuth{}) {
+		t.Fatalf("proxy entry fields = mode=%q url=%q auth=%+v, want cleared", rule.ProxyEgressMode, rule.ProxyEgressURL, rule.ProxyEntryAuth)
+	}
+	if len(rule.Backends) != 1 || rule.Backends[0] != (L4Backend{Host: "upstream", Port: 9001}) {
+		t.Fatalf("Backends = %+v, want supplied backend", rule.Backends)
+	}
+	row := store.l4RulesByID["local"][0]
+	if row.ProxyEgressMode != "" || row.ProxyEgressURL != "" {
+		t.Fatalf("persisted proxy egress fields = mode=%q url=%q, want cleared", row.ProxyEgressMode, row.ProxyEgressURL)
+	}
+	if row.BackendsJSON != `[{"host":"upstream","port":9001}]` {
+		t.Fatalf("persisted backends = %s, want supplied backend", row.BackendsJSON)
+	}
+	if row.RelayLayersJSON != "[]" {
+		t.Fatalf("persisted relay_layers = %s, want cleared", row.RelayLayersJSON)
+	}
+}
+
 func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
 	tests := []struct {
 		name     string
