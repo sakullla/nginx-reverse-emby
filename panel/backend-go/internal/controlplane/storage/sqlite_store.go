@@ -229,7 +229,7 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
-	wireGuardRows, err := s.loadWireGuardProfilesForSync(ctx, resolvedAgentID, relayRows)
+	wireGuardRows, err := s.loadWireGuardProfilesForSync(ctx, resolvedAgentID, relayRows, l4Rows)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -913,7 +913,7 @@ func (s *GormStore) loadRelayListenersForSync(
 	return syncRows, nil
 }
 
-func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID string, relayRows []RelayListenerRow) ([]WireGuardProfileRow, error) {
+func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID string, relayRows []RelayListenerRow, l4Rows []L4RuleRow) ([]WireGuardProfileRow, error) {
 	rows, err := s.ListWireGuardProfiles(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -957,11 +957,61 @@ func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID st
 			rows = append(rows, row)
 		}
 	}
+	missingL4IDs := referencedWireGuardProfileIDsFromL4Rows(l4Rows, rows)
+	if len(missingL4IDs) > 0 {
+		var l4ReferencedRows []WireGuardProfileRow
+		if err := s.db.WithContext(ctx).
+			Where("id IN ?", missingL4IDs).
+			Order("agent_id, id").
+			Find(&l4ReferencedRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range l4ReferencedRows {
+			normalizeWireGuardProfileRow(&row)
+			key := wireGuardProfileRowKey(row.AgentID, row.ID)
+			if _, ok := included[key]; ok {
+				continue
+			}
+			included[key] = struct{}{}
+			rows = append(rows, row)
+		}
+	}
 	return rows, nil
 }
 
 func wireGuardProfileRowKey(agentID string, id int) string {
 	return strings.TrimSpace(agentID) + "|" + strconv.Itoa(id)
+}
+
+func referencedWireGuardProfileIDsFromL4Rows(l4Rows []L4RuleRow, includedRows []WireGuardProfileRow) []int {
+	includedIDs := make(map[int]struct{}, len(includedRows))
+	for _, row := range includedRows {
+		if row.ID > 0 {
+			includedIDs[row.ID] = struct{}{}
+		}
+	}
+	seen := make(map[int]struct{})
+	referenced := make([]int, 0)
+	for _, row := range l4Rows {
+		if row.WireGuardProfileID == nil || *row.WireGuardProfileID <= 0 {
+			continue
+		}
+		listenMode := strings.ToLower(strings.TrimSpace(row.ListenMode))
+		proxyEgressMode := strings.ToLower(strings.TrimSpace(row.ProxyEgressMode))
+		if listenMode != "wireguard" && proxyEgressMode != "wireguard" {
+			continue
+		}
+		profileID := *row.WireGuardProfileID
+		if _, ok := includedIDs[profileID]; ok {
+			continue
+		}
+		if _, ok := seen[profileID]; ok {
+			continue
+		}
+		seen[profileID] = struct{}{}
+		referenced = append(referenced, profileID)
+	}
+	return referenced
 }
 
 func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []int {

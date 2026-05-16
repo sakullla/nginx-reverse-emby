@@ -2623,6 +2623,96 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProxyEntryL4RuleWithoutBackend(t
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByL4Rules(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	for _, agentID := range []string{"wg-l4-agent", "wg-l4-peer"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{
+			ID:         agentID,
+			Name:       agentID,
+			AgentToken: "token-" + agentID,
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+	profileID := 91
+	unrelatedProfileID := 92
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-l4-peer", []WireGuardProfileRow{
+		{
+			ID:            profileID,
+			AgentID:       "wg-l4-peer",
+			Name:          "l4-peer-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "l4-peer-private-key",
+			ListenPort:    51820,
+			AddressesJSON: `["10.92.0.2/32"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      21,
+		},
+		{
+			ID:            unrelatedProfileID,
+			AgentID:       "wg-l4-peer",
+			Name:          "unrelated-l4-peer-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "unrelated-l4-peer-private-key",
+			ListenPort:    51821,
+			AddressesJSON: `["10.93.0.2/32"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      22,
+		},
+	}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(peer) error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "wg-l4-agent", []L4RuleRow{{
+		ID:                 73,
+		AgentID:            "wg-l4-agent",
+		Name:               "wg-l4-inbound",
+		Protocol:           "tcp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         9443,
+		BackendsJSON:       `[{"host":"10.92.0.9","port":9443}]`,
+		LoadBalancingJSON:  `{"strategy":"round_robin"}`,
+		TuningJSON:         `{}`,
+		RelayChainJSON:     `[]`,
+		RelayLayersJSON:    `[]`,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Enabled:            true,
+		Revision:           19,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-l4-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles = %+v, want L4 referenced profile", snapshot.WireGuardProfiles)
+	}
+	if snapshot.WireGuardProfiles[0].ID != profileID || snapshot.WireGuardProfiles[0].AgentID != "wg-l4-peer" {
+		t.Fatalf("WireGuardProfiles[0] = %+v", snapshot.WireGuardProfiles[0])
+	}
+}
+
 func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

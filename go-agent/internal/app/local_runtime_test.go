@@ -680,6 +680,43 @@ func TestL4RuntimeManagerUsesLocalAgentWireGuardProfileWhenIDsOverlap(t *testing
 	}
 }
 
+func TestL4RuntimeManagerAllowsCrossAgentWireGuardRuntimeWhenIDIsUnambiguous(t *testing.T) {
+	localAgentID := "local-agent"
+	var listenCalls int
+	manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(nil, Config{AgentID: localAgentID}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+		if cfg.AgentID != "remote-relay" {
+			return nil, fmt.Errorf("unexpected wireguard profile agent %q", cfg.AgentID)
+		}
+		return &testAppWireGuardRuntime{
+			onListenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+				listenCalls++
+				listenConfig := net.ListenConfig{}
+				return listenConfig.Listen(ctx, "tcp", address)
+			},
+		}, nil
+	}), true)
+	defer manager.Close()
+
+	profileID := 32
+	profile := validAppWireGuardProfile(profileID)
+	profile.AgentID = "remote-relay"
+
+	err := manager.ApplyWithRelayAndWireGuardProfiles(context.Background(), []model.L4Rule{{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         pickFreeTCPPort(t),
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}, nil, []model.WireGuardProfile{profile})
+	if err != nil {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles() error = %v", err)
+	}
+	if listenCalls != 1 {
+		t.Fatalf("ListenTCP calls = %d, want 1", listenCalls)
+	}
+}
+
 func TestL4RuntimeManagerRestoresServerAfterPreparedSamePortWireGuardFailure(t *testing.T) {
 	listenErr := fmt.Errorf("wireguard listen failed")
 	var runtimes []*testAppWireGuardRuntime
