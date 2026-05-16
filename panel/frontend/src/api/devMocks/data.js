@@ -2011,6 +2011,61 @@ function normalizeStringList(value) {
     .filter(Boolean)
 }
 
+function isMockIPv4Address(value) {
+  const parts = String(value || '').split('.')
+  return parts.length === 4 && parts.every((part) => {
+    if (!/^\d+$/.test(part)) return false
+    const octet = Number(part)
+    return Number.isInteger(octet) && octet >= 0 && octet <= 255
+  })
+}
+
+function isMockIPv6Address(value) {
+  const raw = String(value || '').trim()
+  if (!raw.includes(':')) return false
+  try {
+    new URL(`http://[${raw}]/`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function isMockIPAddress(value) {
+  return isMockIPv4Address(value) || isMockIPv6Address(value)
+}
+
+function validateMockWireGuardPrefixes(values, field) {
+  for (const value of values) {
+    const raw = String(value || '').trim()
+    const slashIndex = raw.lastIndexOf('/')
+    if (slashIndex <= 0 || slashIndex === raw.length - 1) {
+      throw new Error(`${field} must be CIDR`)
+    }
+    const address = raw.slice(0, slashIndex)
+    const bitsText = raw.slice(slashIndex + 1)
+    if (!/^\d+$/.test(bitsText)) {
+      throw new Error(`${field} must be CIDR`)
+    }
+    const bits = Number(bitsText)
+    if (isMockIPv4Address(address)) {
+      if (!Number.isInteger(bits) || bits < 0 || bits > 32) throw new Error(`${field} must be CIDR`)
+      continue
+    }
+    if (isMockIPv6Address(address)) {
+      if (!Number.isInteger(bits) || bits < 0 || bits > 128) throw new Error(`${field} must be CIDR`)
+      continue
+    }
+    throw new Error(`${field} must be CIDR`)
+  }
+}
+
+function validateMockWireGuardDNSAddrs(values) {
+  for (const value of values) {
+    if (!isMockIPAddress(value)) throw new Error('dns must be IP addresses')
+  }
+}
+
 function normalizeMockWireGuardPeer(peer = {}) {
   return {
     name: String(peer.name || '').trim(),
@@ -2068,6 +2123,10 @@ function nextMockWireGuardClientAddress(agentId, profileId) {
 function normalizeMockWireGuardClient(agentId, profileId, client = {}) {
   const id = Number(client.id || ++mockWireGuardClientIdCounter)
   const address = String(client.address || '').trim() || nextMockWireGuardClientAddress(agentId, profileId)
+  const allowedIPs = normalizeStringList(client.allowed_ips)
+  const dns = normalizeStringList(client.dns)
+  validateMockWireGuardPrefixes(allowedIPs.length ? allowedIPs : [address], 'allowed_ips')
+  validateMockWireGuardDNSAddrs(dns)
   return {
     ...client,
     id: Number.isInteger(id) && id > 0 ? id : ++mockWireGuardClientIdCounter,
@@ -2076,18 +2135,24 @@ function normalizeMockWireGuardClient(agentId, profileId, client = {}) {
     public_key: String(client.public_key || `mock-client-public-key-${id}`).trim(),
     private_key: String(client.private_key || `mock-client-private-key-${id}`).trim(),
     preshared_key: String(client.preshared_key || `mock-client-psk-${id}`).trim(),
-    dns: normalizeStringList(client.dns),
-    allowed_ips: normalizeStringList(client.allowed_ips).length ? normalizeStringList(client.allowed_ips) : ['0.0.0.0/0', '::/0'],
+    dns,
+    allowed_ips: allowedIPs.length ? allowedIPs : [address],
     enabled: client.enabled !== false,
     revision: Number(client.revision || Date.now())
   }
 }
 
-function normalizeMockWireGuardClientInput(payload = {}) {
+function normalizeMockWireGuardClientInput(payload = {}, profile = {}) {
+  const allowedIPs = normalizeStringList(payload.allowed_ips)
+  const dns = Object.prototype.hasOwnProperty.call(payload, 'dns')
+    ? normalizeStringList(payload.dns)
+    : normalizeStringList(profile.dns)
+  validateMockWireGuardPrefixes(allowedIPs, 'allowed_ips')
+  validateMockWireGuardDNSAddrs(dns)
   return {
     name: String(payload.name || '').trim(),
-    allowed_ips: normalizeStringList(payload.allowed_ips),
-    dns: normalizeStringList(payload.dns),
+    allowed_ips: allowedIPs,
+    dns,
     enabled: payload.enabled !== false
   }
 }
@@ -2279,8 +2344,9 @@ export async function createWireGuardClient(agentId, profileId, payload) {
   if (isDev) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
-    if (!findMockWireGuardProfile(agentId, profileId)) throw new Error(`WireGuard Profile not found: ${profileId}`)
-    const input = normalizeMockWireGuardClientInput(payload)
+    const profile = findMockWireGuardProfile(agentId, profileId)
+    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    const input = normalizeMockWireGuardClientInput(payload, profile)
     const client = normalizeMockWireGuardClient(agentId, profileId, {
       ...input,
       id: ++mockWireGuardClientIdCounter,

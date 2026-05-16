@@ -635,6 +635,17 @@ describe('runtime canonical rule payloads', () => {
 
   it('dev mock WireGuard clients follow create contract and keep list secrets private', async () => {
     const devData = await vi.importActual('./devMocks/data.js')
+    const omittedDefaults = await devData.createWireGuardClient('local', 1, {
+      name: 'watch'
+    })
+    const emptyAllowedIPs = await devData.createWireGuardClient('local', 1, {
+      name: 'laptop',
+      allowed_ips: []
+    })
+    const emptyDNS = await devData.createWireGuardClient('local', 1, {
+      name: 'router',
+      dns: []
+    })
     const created = await devData.createWireGuardClient('local', 1, {
       name: 'tablet',
       allowed_ips: ['10.40.0.0/16'],
@@ -644,8 +655,14 @@ describe('runtime canonical rule payloads', () => {
       public_key: 'legacy-public-key'
     })
     const clients = await devData.fetchWireGuardClients('local', 1)
+    const initialClient = clients.find((client) => client.name === 'phone')
     const listed = clients.find((client) => client.id === created.id)
 
+    expect(initialClient.allowed_ips).toEqual(['0.0.0.0/0', '::/0'])
+    expect(omittedDefaults.allowed_ips).toEqual([omittedDefaults.address])
+    expect(emptyAllowedIPs.allowed_ips).toEqual([emptyAllowedIPs.address])
+    expect(omittedDefaults.dns).toEqual(['1.1.1.1'])
+    expect(emptyDNS.dns).toEqual([])
     expect(created.name).toBe('tablet')
     expect(created.allowed_ips).toEqual(['10.40.0.0/16'])
     expect(created.dns).toEqual(['9.9.9.9'])
@@ -657,6 +674,33 @@ describe('runtime canonical rule payloads', () => {
     expect(listed).toBeTruthy()
     expect(listed).not.toHaveProperty('private_key')
     expect(listed).not.toHaveProperty('preshared_key')
+    expect(omittedDefaults).not.toHaveProperty('private_key')
+    expect(omittedDefaults).not.toHaveProperty('preshared_key')
+    expect(emptyAllowedIPs).not.toHaveProperty('private_key')
+    expect(emptyAllowedIPs).not.toHaveProperty('preshared_key')
+    expect(emptyDNS).not.toHaveProperty('private_key')
+    expect(emptyDNS).not.toHaveProperty('preshared_key')
+  })
+
+  it('dev mock WireGuard client create rejects invalid CIDR and DNS input', async () => {
+    const devData = await vi.importActual('./devMocks/data.js')
+
+    await expect(devData.createWireGuardClient('local', 1, {
+      name: 'bad-cidr',
+      allowed_ips: ['not-cidr']
+    })).rejects.toThrow()
+    await expect(devData.createWireGuardClient('local', 1, {
+      name: 'bad-address',
+      allowed_ips: ['999.1.1.1/32']
+    })).rejects.toThrow()
+    await expect(devData.createWireGuardClient('local', 1, {
+      name: 'bad-dns-ip',
+      dns: ['999.999.999.999']
+    })).rejects.toThrow()
+    await expect(devData.createWireGuardClient('local', 1, {
+      name: 'bad-dns-host',
+      dns: ['bad host name']
+    })).rejects.toThrow()
   })
 
   it('dev mock WireGuard URI parsing preserves literal plus in keys and redacts secrets', async () => {
