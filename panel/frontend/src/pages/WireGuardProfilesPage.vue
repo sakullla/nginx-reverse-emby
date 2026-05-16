@@ -94,6 +94,13 @@
             {{ client.enabled === false ? 'Off' : 'On' }}
           </span>
           <div class="client-row__actions">
+            <button
+              class="btn btn--secondary btn--sm"
+              :disabled="updateClient.isPending.value"
+              @click="toggleClientEnabled(client)"
+            >
+              {{ client.enabled === false ? '启用' : '停用' }}
+            </button>
             <button class="btn btn--secondary btn--sm" @click="downloadClientConfig(client)">下载配置</button>
             <button class="btn btn--danger btn--sm" @click="deleteClient.mutate(client.id)">删除</button>
           </div>
@@ -291,6 +298,7 @@ import {
   useUpdateWireGuardProfile,
   useDeleteWireGuardProfile,
   useCreateWireGuardClient,
+  useUpdateWireGuardClient,
   useDeleteWireGuardClient
 } from '../hooks/useWireGuardProfiles'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
@@ -333,6 +341,7 @@ const {
 })
 const clients = computed(() => clientsData.value ?? [])
 const createClient = useCreateWireGuardClient(agentId, selectedProfileId)
+const updateClient = useUpdateWireGuardClient(agentId, selectedProfileId)
 const deleteClient = useDeleteWireGuardClient(agentId, selectedProfileId)
 
 const showForm = ref(false)
@@ -543,6 +552,14 @@ async function handleCreateClient() {
   } catch (error) {
     clientErrors.value.submit = error?.message || '创建 Client 失败'
   }
+}
+
+function toggleClientEnabled(client) {
+  if (!client?.id) return
+  updateClient.mutate({
+    clientId: client.id,
+    enabled: client.enabled === false
+  })
 }
 
 async function downloadClientConfig(client) {

@@ -85,6 +85,7 @@ type WireGuardProfileService interface {
 type WireGuardClientService interface {
 	ListClients(context.Context, string, int) ([]service.WireGuardClient, error)
 	CreateClient(context.Context, string, int, service.WireGuardClientInput) (service.WireGuardClient, error)
+	UpdateClient(context.Context, string, int, int, service.WireGuardClientInput) (service.WireGuardClient, error)
 	DeleteClient(context.Context, string, int, int) (service.WireGuardClient, error)
 	ClientConfig(context.Context, string, int, int) (string, error)
 }
@@ -217,6 +218,10 @@ func (unavailableWireGuardClientService) ListClients(context.Context, string, in
 }
 
 func (unavailableWireGuardClientService) CreateClient(context.Context, string, int, service.WireGuardClientInput) (service.WireGuardClient, error) {
+	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
+}
+
+func (unavailableWireGuardClientService) UpdateClient(context.Context, string, int, int, service.WireGuardClientInput) (service.WireGuardClient, error) {
 	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
 }
 

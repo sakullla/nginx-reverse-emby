@@ -107,6 +107,32 @@ export function useCreateWireGuardClient(agentId, profileId) {
   })
 }
 
+export function useUpdateWireGuardClient(agentId, profileId) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ clientId, ...payload }) => {
+      const rawAgentId = unref(agentId)
+      const rawProfileId = unref(profileId)
+      const rawClientId = clientId
+      return api.updateWireGuardClient(rawAgentId, rawProfileId, rawClientId, payload)
+    },
+    onMutate: ({ clientId }) => ({
+      rawAgentId: unref(agentId),
+      rawProfileId: unref(profileId),
+      rawClientId: clientId
+    }),
+    onSuccess: (_client, _payload, context) => {
+      const rawAgentId = context?.rawAgentId
+      const rawProfileId = context?.rawProfileId
+      invalidateWireGuardClientTarget(qc, rawAgentId, rawProfileId)
+      messageStore.success('WireGuard Client 已更新')
+    },
+    onError: (error) => {
+      messageStore.error(error, '更新 WireGuard Client 失败')
+    }
+  })
+}
+
 export function useDeleteWireGuardClient(agentId, profileId) {
   const qc = useQueryClient()
   return useMutation({

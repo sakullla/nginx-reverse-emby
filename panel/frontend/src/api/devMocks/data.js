@@ -2162,6 +2162,21 @@ function publicMockWireGuardClient(client = {}) {
   return safeClient
 }
 
+function upsertMockWireGuardClientPeer(profile = {}, client = {}) {
+  if (!profile) return
+  const publicKey = String(client.public_key || '').trim()
+  if (!publicKey) return
+  profile.peers = (Array.isArray(profile.peers) ? profile.peers : [])
+    .filter((peer) => String(peer.public_key || '').trim() !== publicKey)
+  if (client.enabled === false) return
+  profile.peers.push(normalizeMockWireGuardPeer({
+    name: client.name,
+    public_key: publicKey,
+    preshared_key: client.preshared_key,
+    allowed_ips: [client.address]
+  }))
+}
+
 function normalizeMockWireGuardProfile(agentId, profile = {}) {
   const id = Number(profile.id || ++mockWireGuardProfileIdCounter)
   return {
@@ -2355,6 +2370,7 @@ export async function createWireGuardClient(agentId, profileId, payload) {
     mockWireGuardClientsByProfile[agentId] = mockWireGuardClientsByProfile[agentId] || {}
     mockWireGuardClientsByProfile[agentId][profileId] = mockWireGuardClientsByProfile[agentId][profileId] || []
     mockWireGuardClientsByProfile[agentId][profileId].push(client)
+    upsertMockWireGuardClientPeer(profile, client)
     return publicMockWireGuardClient(client)
   }
   const { data } = await api.post(
@@ -2369,13 +2385,42 @@ export async function deleteWireGuardClient(agentId, profileId, clientId) {
   if (isDev) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
+    const profile = findMockWireGuardProfile(agentId, profileId)
+    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
     const clients = mockWireGuardClientsByProfile[agentId]?.[profileId] || []
     const idx = clients.findIndex((client) => String(client.id) === String(clientId))
     if (idx === -1) return null
-    return publicMockWireGuardClient(clients.splice(idx, 1)[0])
+    const deleted = clients.splice(idx, 1)[0]
+    upsertMockWireGuardClientPeer(profile, { ...deleted, enabled: false })
+    return publicMockWireGuardClient(deleted)
   }
   const { data } = await api.delete(
     `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
+    longRunningRequest
+  )
+  return data.client
+}
+
+export async function updateWireGuardClient(agentId, profileId, clientId, payload) {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    const profile = findMockWireGuardProfile(agentId, profileId)
+    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    const clients = mockWireGuardClientsByProfile[agentId]?.[profileId] || []
+    const idx = clients.findIndex((client) => String(client.id) === String(clientId))
+    if (idx === -1) throw new Error(`WireGuard Client not found: ${clientId}`)
+    clients[idx] = normalizeMockWireGuardClient(agentId, profileId, {
+      ...clients[idx],
+      enabled: Object.prototype.hasOwnProperty.call(payload || {}, 'enabled') ? payload.enabled !== false : clients[idx].enabled,
+      revision: Date.now()
+    })
+    upsertMockWireGuardClientPeer(profile, clients[idx])
+    return publicMockWireGuardClient(clients[idx])
+  }
+  const { data } = await api.patch(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
+    payload,
     longRunningRequest
   )
   return data.client

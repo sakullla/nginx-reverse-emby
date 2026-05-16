@@ -216,10 +216,6 @@ func (d Dependencies) handleWireGuardProfileClients(w http.ResponseWriter, r *ht
 }
 
 func (d Dependencies) handleWireGuardProfileClient(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.NotFound(w, r)
-		return
-	}
 	agentID := r.PathValue("agentID")
 	profileID, ok := parseWireGuardProfilePathID(w, r.PathValue("profileID"))
 	if !ok {
@@ -229,16 +225,38 @@ func (d Dependencies) handleWireGuardProfileClient(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
-	client, err := d.WireGuardClientService.DeleteClient(r.Context(), agentID, profileID, clientID)
-	if err != nil {
-		status, body := mapServiceError(err)
-		writeJSON(w, status, body)
-		return
+
+	switch r.Method {
+	case http.MethodPatch:
+		var payload service.WireGuardClientInput
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+			return
+		}
+		client, err := d.WireGuardClientService.UpdateClient(r.Context(), agentID, profileID, clientID, payload)
+		if err != nil {
+			status, body := mapServiceError(err)
+			writeJSON(w, status, body)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":     true,
+			"client": client,
+		})
+	case http.MethodDelete:
+		client, err := d.WireGuardClientService.DeleteClient(r.Context(), agentID, profileID, clientID)
+		if err != nil {
+			status, body := mapServiceError(err)
+			writeJSON(w, status, body)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":     true,
+			"client": client,
+		})
+	default:
+		http.NotFound(w, r)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":     true,
-		"client": client,
-	})
 }
 
 func (d Dependencies) handleWireGuardProfileClientConfig(w http.ResponseWriter, r *http.Request) {

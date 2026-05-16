@@ -487,6 +487,73 @@ func TestWireGuardProfileClientLifecycleAndConfig(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileClientPatchUpdatesEnabled(t *testing.T) {
+	router, cleanup := newWireGuardHTTPTestRouter(t)
+	defer cleanup()
+
+	profile := createWireGuardHTTPClientProfile(t, router, "/panel-api", 51820)
+	basePath := "/panel-api/agents/local/wireguard-profiles/" + strconv.Itoa(profile.ID) + "/clients"
+
+	createReq := httptest.NewRequest(http.MethodPost, basePath, bytes.NewBufferString(`{"name":"phone"}`))
+	createReq.Header.Set("X-Panel-Token", "secret")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST clients = %d, body=%s", createResp.Code, createResp.Body.String())
+	}
+	client := decodeWireGuardHTTPClientResponse(t, createResp.Body.Bytes())
+
+	patchReq := httptest.NewRequest(http.MethodPatch, basePath+"/"+strconv.Itoa(client.ID), bytes.NewBufferString(`{"enabled":false}`))
+	patchReq.Header.Set("X-Panel-Token", "secret")
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp := httptest.NewRecorder()
+	router.ServeHTTP(patchResp, patchReq)
+	if patchResp.Code != http.StatusOK {
+		t.Fatalf("PATCH client = %d, body=%s", patchResp.Code, patchResp.Body.String())
+	}
+	updated := decodeWireGuardHTTPClientResponse(t, patchResp.Body.Bytes())
+	if updated.ID != client.ID || updated.Enabled {
+		t.Fatalf("patched client = %+v, want id %d enabled false", updated, client.ID)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, basePath, nil)
+	listReq.Header.Set("X-Panel-Token", "secret")
+	listResp := httptest.NewRecorder()
+	router.ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("GET clients after patch = %d, body=%s", listResp.Code, listResp.Body.String())
+	}
+	clients := decodeWireGuardHTTPClientsResponse(t, listResp.Body.Bytes())
+	if len(clients) != 1 || clients[0].Enabled {
+		t.Fatalf("clients after patch = %+v, want disabled client", clients)
+	}
+}
+
+func TestWireGuardProfileClientPatchMissingReturnsNotFound(t *testing.T) {
+	router, cleanup := newWireGuardHTTPTestRouter(t)
+	defer cleanup()
+
+	profile := createWireGuardHTTPClientProfile(t, router, "/panel-api", 51820)
+	path := "/panel-api/agents/local/wireguard-profiles/" + strconv.Itoa(profile.ID) + "/clients/404"
+	req := httptest.NewRequest(http.MethodPatch, path, bytes.NewBufferString(`{"enabled":false}`))
+	req.Header.Set("X-Panel-Token", "secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("PATCH missing client = %d, body=%s", resp.Code, resp.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["message"] != "wireguard client not found" {
+		t.Fatalf("payload = %+v", payload)
+	}
+}
+
 func newWireGuardHTTPTestRouter(t *testing.T) (http.Handler, func()) {
 	t.Helper()
 

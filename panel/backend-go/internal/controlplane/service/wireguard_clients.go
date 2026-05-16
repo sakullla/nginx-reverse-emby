@@ -236,6 +236,60 @@ func (s *wireGuardClientService) DeleteClient(ctx context.Context, agentID strin
 	return wireGuardClientFromRow(deleted), nil
 }
 
+func (s *wireGuardClientService) UpdateClient(ctx context.Context, agentID string, profileID int, clientID int, input WireGuardClientInput) (WireGuardClient, error) {
+	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return WireGuardClient{}, err
+	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return WireGuardClient{}, err
+	}
+	var updated storage.WireGuardClientRow
+	var revision int
+	err = s.store.MutateWireGuardClientProfile(ctx, resolvedID, profileID, func(state storage.WireGuardClientProfileMutation) (storage.WireGuardClientProfileMutation, error) {
+		if state.ProfileIndex < 0 {
+			return state, ErrWireGuardProfileNotFound
+		}
+		targetIndex := -1
+		for i, row := range state.Clients {
+			if row.ID == clientID {
+				targetIndex = i
+				updated = row
+				break
+			}
+		}
+		if targetIndex < 0 {
+			return state, ErrWireGuardClientNotFound
+		}
+		if input.Enabled != nil {
+			updated.Enabled = *input.Enabled
+		}
+		updated.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		state.Clients[targetIndex] = updated
+
+		profile := wireGuardProfileFromRow(state.Profiles[state.ProfileIndex])
+		profile.Peers = upsertWireGuardClientPeer(profile.Peers, updated)
+		revision = allocator.AllocateRevisionForAgent(resolvedID, maxWireGuardProfileRevision(state.Profiles))
+		profile.Revision = revision
+		state.Profiles[state.ProfileIndex] = wireGuardProfileToRow(profile)
+		return state, nil
+	})
+	if err != nil {
+		return WireGuardClient{}, err
+	}
+	if err := s.profileService.bumpRemoteDesiredRevision(ctx, resolvedID, revision); err != nil {
+		return WireGuardClient{}, err
+	}
+	if err := s.profileService.bumpProfileRelayDependents(ctx, resolvedID, profileID, revision); err != nil {
+		return WireGuardClient{}, err
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return WireGuardClient{}, err
+	}
+	return wireGuardClientFromRow(updated), nil
+}
+
 func (s *wireGuardClientService) ClientConfig(ctx context.Context, agentID string, profileID int, clientID int) (string, error) {
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {

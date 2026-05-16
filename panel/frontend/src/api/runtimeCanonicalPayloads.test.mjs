@@ -524,6 +524,21 @@ describe('runtime canonical rule payloads', () => {
           config
         }
       }
+      if (config.method === 'patch') {
+        return {
+          data: {
+            client: {
+              id: 502,
+              name: 'phone',
+              ...JSON.parse(config.data)
+            }
+          },
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config
+        }
+      }
       return {
         data: {
           client: {
@@ -549,13 +564,15 @@ describe('runtime canonical rule payloads', () => {
 
       const clients = await runtime.fetchWireGuardClients('edge/a', 'profile 1')
       const client = await runtime.createWireGuardClient('edge/a', 'profile 1', payload)
+      const updated = await runtime.updateWireGuardClient('edge/a', 'profile 1', 'client 1', { enabled: false })
       await runtime.deleteWireGuardClient('edge/a', 'profile 1', 'client 1')
       const configText = await runtime.fetchWireGuardClientConfig('edge/a', 'profile 1', 'client 1')
 
       expect(clients).toHaveLength(1)
       expect(client.name).toBe('phone')
+      expect(updated.enabled).toBe(false)
       expect(configText).toContain('[Interface]')
-      expect(requests).toHaveLength(4)
+      expect(requests).toHaveLength(5)
       expect(requests[0].method).toBe('get')
       expect(requests[0].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients')
       expect(requests[1].method).toBe('post')
@@ -563,11 +580,14 @@ describe('runtime canonical rule payloads', () => {
       expect(JSON.parse(requests[1].data)).toEqual(payload)
       expect(JSON.parse(requests[1].data)).not.toHaveProperty('address')
       expect(JSON.parse(requests[1].data)).not.toHaveProperty('public_key')
-      expect(requests[2].method).toBe('delete')
+      expect(requests[2].method).toBe('patch')
       expect(requests[2].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients/client%201')
-      expect(requests[3].method).toBe('get')
-      expect(requests[3].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients/client%201/config')
-      expect(requests[3].responseType).toBe('text')
+      expect(JSON.parse(requests[2].data)).toEqual({ enabled: false })
+      expect(requests[3].method).toBe('delete')
+      expect(requests[3].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients/client%201')
+      expect(requests[4].method).toBe('get')
+      expect(requests[4].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients/client%201/config')
+      expect(requests[4].responseType).toBe('text')
     } finally {
       api.defaults.adapter = originalAdapter
     }
@@ -595,11 +615,13 @@ describe('runtime canonical rule payloads', () => {
     for (const source of [index.default, devRuntime.default, devMocks.default, devData.default]) {
       expect(source).toContain('fetchWireGuardClients')
       expect(source).toContain('createWireGuardClient')
+      expect(source).toContain('updateWireGuardClient')
       expect(source).toContain('deleteWireGuardClient')
       expect(source).toContain('fetchWireGuardClientConfig')
     }
     expect(hooks.default).toContain('useWireGuardClients')
     expect(hooks.default).toContain('useCreateWireGuardClient')
+    expect(hooks.default).toContain('useUpdateWireGuardClient')
     expect(hooks.default).toContain('useDeleteWireGuardClient')
   })
 
@@ -611,6 +633,7 @@ describe('runtime canonical rule payloads', () => {
     expect(source).toContain('fetchWireGuardClients')
     expect(source).toContain('showClientForm')
     expect(source).toContain('handleCreateClient')
+    expect(source).toContain('toggleClientEnabled')
     expect(source).toContain('downloadClientConfig')
     expect(source).toContain('clientForm.allowed_ips_text')
     expect(source).toContain('clientForm.dns_text')
@@ -639,10 +662,11 @@ describe('runtime canonical rule payloads', () => {
     expect(source).toContain('invalidateWireGuardReferences(qc, rawAgentId)')
     expect(source).toContain("qc.invalidateQueries({ queryKey: ['wireGuardClients', rawAgentId, rawProfileId] })")
     expect(source).toContain('api.createWireGuardClient(rawAgentId, rawProfileId, payload)')
+    expect(source).toContain('api.updateWireGuardClient(rawAgentId, rawProfileId, rawClientId, payload)')
     expect(source).toContain('api.deleteWireGuardClient(rawAgentId, rawProfileId, rawClientId)')
   })
 
-  it('dev mock WireGuard clients follow create contract and keep list secrets private', async () => {
+  it('dev mock WireGuard clients follow create and update contracts while keeping list secrets private', async () => {
     const devData = await vi.importActual('./devMocks/data.js')
     const omittedDefaults = await devData.createWireGuardClient('local', 1, {
       name: 'watch'
@@ -663,6 +687,12 @@ describe('runtime canonical rule payloads', () => {
       address: '192.0.2.44/32',
       public_key: 'legacy-public-key'
     })
+    const updated = await devData.updateWireGuardClient('local', 1, created.id, {
+      enabled: true,
+      name: 'renamed',
+      allowed_ips: ['192.0.2.0/24'],
+      dns: ['8.8.8.8']
+    })
     const clients = await devData.fetchWireGuardClients('local', 1)
     const omittedDefaultsConfig = await devData.fetchWireGuardClientConfig('local', 1, omittedDefaults.id)
     const emptyDNSConfig = await devData.fetchWireGuardClientConfig('local', 1, emptyDNS.id)
@@ -680,6 +710,12 @@ describe('runtime canonical rule payloads', () => {
     expect(created.allowed_ips).toEqual(['10.40.0.0/16'])
     expect(created.dns).toEqual(['9.9.9.9'])
     expect(created.enabled).toBe(false)
+    expect(updated.enabled).toBe(true)
+    expect(updated.name).toBe('tablet')
+    expect(updated.allowed_ips).toEqual(['10.40.0.0/16'])
+    expect(updated.dns).toEqual(['9.9.9.9'])
+    expect(updated.address).toBe(created.address)
+    expect(updated.public_key).toBe(created.public_key)
     expect(created.address).not.toBe('192.0.2.44/32')
     expect(created.public_key).not.toBe('legacy-public-key')
     expect(created).not.toHaveProperty('private_key')

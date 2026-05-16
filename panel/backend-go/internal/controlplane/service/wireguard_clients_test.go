@@ -176,6 +176,138 @@ func TestWireGuardClientListReturnsRedactedClients(t *testing.T) {
 	}
 }
 
+func TestWireGuardClientUpdateDisablesEnabledClientAndKeepsSecretsStable(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{
+		Name:       "phone",
+		AllowedIPs: []string{"0.0.0.0/0"},
+		DNS:        []string{"9.9.9.9"},
+	})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+	beforeRows, err := store.ListWireGuardClients(ctx, "local", profile.ID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(before) error = %v", err)
+	}
+	if len(beforeRows) != 1 {
+		t.Fatalf("before rows len = %d, want 1", len(beforeRows))
+	}
+
+	disabled := false
+	updated, err := clientSvc.UpdateClient(ctx, "local", profile.ID, client.ID, WireGuardClientInput{Enabled: &disabled})
+	if err != nil {
+		t.Fatalf("UpdateClient(disable) error = %v", err)
+	}
+	if updated.Enabled {
+		t.Fatalf("UpdateClient(disable) Enabled = true, want false")
+	}
+	if updated.Name != client.Name || updated.Address != client.Address || updated.PublicKey != client.PublicKey {
+		t.Fatalf("UpdateClient(disable) changed stable public fields: before=%+v after=%+v", client, updated)
+	}
+	if strings.Join(updated.AllowedIPs, ",") != "0.0.0.0/0" || strings.Join(updated.DNS, ",") != "9.9.9.9" {
+		t.Fatalf("UpdateClient(disable) changed allowed_ips/dns: %+v", updated)
+	}
+
+	afterRows, err := store.ListWireGuardClients(ctx, "local", profile.ID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(after) error = %v", err)
+	}
+	if len(afterRows) != 1 {
+		t.Fatalf("after rows len = %d, want 1", len(afterRows))
+	}
+	if afterRows[0].PrivateKey != beforeRows[0].PrivateKey || afterRows[0].PresharedKey != beforeRows[0].PresharedKey || afterRows[0].Address != beforeRows[0].Address {
+		t.Fatalf("UpdateClient(disable) changed stable row secrets/address: before=%+v after=%+v", beforeRows[0], afterRows[0])
+	}
+
+	profiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	storedProfile := wireGuardProfileFromRow(profiles[0])
+	for _, peer := range storedProfile.Peers {
+		if peer.PublicKey == client.PublicKey {
+			t.Fatalf("disabled client peer still present: %+v", storedProfile.Peers)
+		}
+	}
+}
+
+func TestWireGuardClientUpdateEnablesDisabledClient(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	enabled := false
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone", Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("CreateClient(disabled) error = %v", err)
+	}
+
+	enabled = true
+	updated, err := clientSvc.UpdateClient(ctx, "local", profile.ID, client.ID, WireGuardClientInput{Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("UpdateClient(enable) error = %v", err)
+	}
+	if !updated.Enabled {
+		t.Fatalf("UpdateClient(enable) Enabled = false, want true")
+	}
+
+	profiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	storedProfile := wireGuardProfileFromRow(profiles[0])
+	foundPeer := false
+	for _, peer := range storedProfile.Peers {
+		if peer.PublicKey == client.PublicKey {
+			foundPeer = true
+			if peer.Name != client.Name || len(peer.AllowedIPs) != 1 || peer.AllowedIPs[0] != client.Address {
+				t.Fatalf("enabled client peer = %+v, want name/address from client %+v", peer, client)
+			}
+		}
+	}
+	if !foundPeer {
+		t.Fatalf("enabled client peer not present: %+v", storedProfile.Peers)
+	}
+}
+
+func TestWireGuardClientUpdateMissingClientReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+
+	enabled := false
+	_, err = clientSvc.UpdateClient(ctx, "local", profile.ID, 404, WireGuardClientInput{Enabled: &enabled})
+	if !errors.Is(err, ErrWireGuardClientNotFound) {
+		t.Fatalf("UpdateClient(missing) error = %v, want ErrWireGuardClientNotFound", err)
+	}
+}
+
 func TestWireGuardClientConfigRejectsMissingEndpoint(t *testing.T) {
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)

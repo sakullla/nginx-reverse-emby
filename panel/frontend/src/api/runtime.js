@@ -548,6 +548,15 @@ export async function createWireGuardClient(agentId, profileId, payload) {
   return data.client
 }
 
+export async function updateWireGuardClient(agentId, profileId, clientId, payload) {
+  const { data } = await api.patch(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
+    payload,
+    longRunningRequest
+  )
+  return data.client
+}
+
 export async function deleteWireGuardClient(agentId, profileId, clientId) {
   const { data } = await api.delete(
     `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
