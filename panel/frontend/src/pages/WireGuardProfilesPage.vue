@@ -499,12 +499,15 @@ function buildPayload() {
 }
 
 function buildClientPayload() {
-  return {
+  const payload = {
     name: clientForm.value.name.trim(),
     allowed_ips: splitLines(clientForm.value.allowed_ips_text),
-    dns: splitLines(clientForm.value.dns_text),
     enabled: clientForm.value.enabled
   }
+  if (clientForm.value.dns_text.trim()) {
+    payload.dns = splitLines(clientForm.value.dns_text)
+  }
+  return payload
 }
 
 function validate() {
