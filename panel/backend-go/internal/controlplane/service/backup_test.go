@@ -5071,6 +5071,80 @@ func TestBackupServicePreviewAccountsForAgentRemapBeforeConflictChecks(t *testin
 	}
 }
 
+func TestBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *testing.T) {
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	archive, err := encodeBackupBundle(BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			Counts: BackupCounts{
+				Agents:    1,
+				HTTPRules: 2,
+			},
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-a",
+			Name:       "edge-a",
+			AgentToken: "token-edge-a",
+		}},
+		HTTPRules: []BackupHTTPRule{
+			{
+				ID:                    1,
+				AgentID:               "edge-a",
+				FrontendURL:           "https://shared.example.com",
+				Backends:              []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+				LoadBalancing:         HTTPLoadBalancing{Strategy: "adaptive"},
+				Enabled:               true,
+				PassProxyHeaders:      defaultPassProxyHeaders(),
+				CustomHeaders:         []HTTPCustomHeader{},
+				WireGuardEntryEnabled: false,
+			},
+			{
+				ID:                    2,
+				AgentID:               "edge-a",
+				FrontendURL:           "https://shared.example.com",
+				Backends:              []HTTPRuleBackend{{URL: "http://127.0.0.1:9096"}},
+				LoadBalancing:         HTTPLoadBalancing{Strategy: "adaptive"},
+				Enabled:               true,
+				PassProxyHeaders:      defaultPassProxyHeaders(),
+				CustomHeaders:         []HTTPCustomHeader{},
+				WireGuardEntryEnabled: false,
+			},
+		},
+		L4Rules:           []BackupL4Rule{},
+		WireGuardProfiles: []BackupWireGuardProfile{},
+		WireGuardClients:  []BackupWireGuardClient{},
+		RelayListeners:    []BackupRelayListener{},
+		Certificates:      []BackupCertificate{},
+		VersionPolicies:   []BackupVersionPolicy{},
+		TrafficPolicies:   []BackupTrafficPolicy{},
+		TrafficBaselines:  []BackupTrafficBaseline{},
+	})
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Preview(t.Context(), archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+
+	if result.Summary.Imported.HTTPRules != 1 || result.Summary.SkippedConflict.HTTPRules != 1 {
+		t.Fatalf("http preview summary = imported %+v skipped conflict %+v report %+v", result.Summary.Imported, result.Summary.SkippedConflict, result.Report)
+	}
+	if len(result.Report.Imported) != 2 {
+		t.Fatalf("preview imported report = %+v, want agent and first http rule", result.Report.Imported)
+	}
+	if got := result.Report.SkippedConflict; len(got) != 1 || got[0].Kind != "http_rule" || got[0].Key != "https://shared.example.com" || got[0].Reason != "frontend_url already exists" {
+		t.Fatalf("preview skipped conflict report = %+v", got)
+	}
+}
+
 func TestBackupServicePreviewTreatsIncomingLocalAgentAsRemappedConflict(t *testing.T) {
 	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-local-source"), "local")
 	if err != nil {

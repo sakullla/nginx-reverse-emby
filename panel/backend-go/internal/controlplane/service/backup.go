@@ -327,6 +327,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			}
 		}
 		result.addImported("http_rule", key)
+		existingHTTPKeys[conflictKey] = struct{}{}
 	}
 	existingL4Rules, err := s.listAllL4Rules(ctx, knownAgentIDs)
 	if err != nil {
