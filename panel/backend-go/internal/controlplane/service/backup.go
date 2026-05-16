@@ -1589,6 +1589,11 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(item.ProxyEgressMode), "wireguard") {
+			if rawURI := strings.TrimSpace(item.WireGuardEgressURI); rawURI != "" {
+				normalized.WireGuardEgressURI = rawURI
+			}
+		}
 		if err := l4Svc.validateRelayChain(ctx, resolvedAgentID, normalized.RelayChain); err != nil {
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
@@ -2063,6 +2068,7 @@ func backupL4RuleFromRule(rule L4Rule) BackupL4Rule {
 		ProxyEntryAuth:       rule.ProxyEntryAuth,
 		ProxyEgressMode:      rule.ProxyEgressMode,
 		ProxyEgressURL:       rule.ProxyEgressURL,
+		WireGuardEgressURI:   rule.WireGuardEgressURI,
 		Enabled:              rule.Enabled,
 		Tags:                 append([]string(nil), rule.Tags...),
 		Revision:             rule.Revision,
@@ -2168,10 +2174,11 @@ func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int, wireGua
 			Username: rule.ProxyEntryAuth.Username,
 			Password: rule.ProxyEntryAuth.Password,
 		},
-		ProxyEgressMode: backupStringPtr(rule.ProxyEgressMode),
-		ProxyEgressURL:  backupStringPtr(rule.ProxyEgressURL),
-		Enabled:         backupBoolPtr(rule.Enabled),
-		Tags:            &rule.Tags,
+		ProxyEgressMode:    backupStringPtr(rule.ProxyEgressMode),
+		ProxyEgressURL:     backupStringPtr(rule.ProxyEgressURL),
+		WireGuardEgressURI: backupStringPtr(rule.WireGuardEgressURI),
+		Enabled:            backupBoolPtr(rule.Enabled),
+		Tags:               &rule.Tags,
 	}
 }
 
