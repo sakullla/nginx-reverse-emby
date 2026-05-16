@@ -139,23 +139,17 @@ func newServerWithOptions(
 
 		switch strings.ToLower(rule.Protocol) {
 		case "tcp":
-			if wireGuardInboundMode(rule) == "transparent" {
-				continue
-			}
 			if err := s.startTCPListener(rule); err != nil {
 				s.Close()
 				return nil, err
 			}
-			s.bindingKeys = append(s.bindingKeys, "tcp:"+l4ListenAddress(rule))
+			s.bindingKeys = append(s.bindingKeys, l4BindingKey(rule))
 		case "udp":
-			if wireGuardInboundMode(rule) == "transparent" {
-				continue
-			}
 			if err := s.startUDPListener(rule); err != nil {
 				s.Close()
 				return nil, err
 			}
-			s.bindingKeys = append(s.bindingKeys, "udp:"+l4ListenAddress(rule))
+			s.bindingKeys = append(s.bindingKeys, l4BindingKey(rule))
 		default:
 			s.Close()
 			return nil, fmt.Errorf("unsupported protocol %q", rule.Protocol)

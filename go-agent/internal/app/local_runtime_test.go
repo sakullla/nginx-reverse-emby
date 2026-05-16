@@ -1722,19 +1722,52 @@ func TestL4BindingKeysOverlapWildcardToSpecificHost(t *testing.T) {
 	}
 }
 
-func TestL4BindingKeysUseWireGuardListenHostForOverlap(t *testing.T) {
+func TestL4BindingKeysUseWireGuardListenHostForSameProfileOverlap(t *testing.T) {
 	port := pickFreeTCPPort(t)
-	previous := []string{"tcp:" + net.JoinHostPort("0.0.0.0", strconv.Itoa(port))}
+	profileID := 9
+	previous := []string{"wireguard:9:tcp:" + net.JoinHostPort("0.0.0.0", strconv.Itoa(port))}
 	next := l4RuleBindingKeys([]model.L4Rule{{
 		Protocol:            "tcp",
 		ListenHost:          "10.64.0.1",
 		ListenPort:          port,
 		ListenMode:          "wireguard",
+		WireGuardProfileID:  &profileID,
 		WireGuardListenHost: "127.0.0.1",
 	}})
 
 	if !bindingKeysOverlap(previous, next) {
-		t.Fatalf("expected l4 wildcard binding %v to overlap wireguard binding %v", previous, next)
+		t.Fatalf("expected same-profile wireguard wildcard binding %v to overlap wireguard binding %v", previous, next)
+	}
+	if bindingKeysOverlap([]string{"tcp:" + net.JoinHostPort("0.0.0.0", strconv.Itoa(port))}, next) {
+		t.Fatalf("did not expect host wildcard binding to overlap wireguard binding %v", next)
+	}
+}
+
+func TestL4TransparentWireGuardBindingKeysOverlapSameProfileOnly(t *testing.T) {
+	port := pickFreeTCPPort(t)
+	profileID := 9
+	addressMode := []string{"wireguard:9:tcp:" + net.JoinHostPort("10.64.0.2", strconv.Itoa(port))}
+	transparent := l4RuleBindingKeys([]model.L4Rule{{
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           port,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+	}})
+
+	wantTransparent := []string{"wireguard:9:tcp:" + net.JoinHostPort("", strconv.Itoa(port))}
+	if !reflect.DeepEqual(transparent, wantTransparent) {
+		t.Fatalf("l4RuleBindingKeys() = %+v, want %+v", transparent, wantTransparent)
+	}
+	if !bindingKeysOverlap(addressMode, transparent) {
+		t.Fatalf("expected same-profile wireguard bindings %v and %v to overlap", addressMode, transparent)
+	}
+	if bindingKeysOverlap([]string{"tcp:" + net.JoinHostPort("0.0.0.0", strconv.Itoa(port))}, transparent) {
+		t.Fatalf("did not expect host wildcard binding to overlap transparent wireguard binding %v", transparent)
+	}
+	if bindingKeysOverlap([]string{"wireguard:10:tcp:" + net.JoinHostPort("", strconv.Itoa(port))}, transparent) {
+		t.Fatalf("did not expect different-profile wireguard bindings to overlap %v", transparent)
 	}
 }
 

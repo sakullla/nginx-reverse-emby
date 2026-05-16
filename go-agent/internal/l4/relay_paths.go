@@ -147,11 +147,32 @@ func (s *Server) wireGuardRuntime(rule model.L4Rule) (relay.WireGuardRuntime, er
 
 func l4ListenAddress(rule model.L4Rule) string {
 	host := rule.ListenHost
-	if wireGuardInboundMode(rule) == "address" &&
-		strings.TrimSpace(rule.WireGuardListenHost) != "" {
-		host = rule.WireGuardListenHost
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		switch wireGuardInboundMode(rule) {
+		case "transparent":
+			host = ""
+		case "address":
+			if strings.TrimSpace(rule.WireGuardListenHost) != "" {
+				host = rule.WireGuardListenHost
+			}
+		}
 	}
 	return net.JoinHostPort(host, strconv.Itoa(rule.ListenPort))
+}
+
+func l4BindingKey(rule model.L4Rule) string {
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		return "wireguard:" + strconv.Itoa(valueOrZeroIntPtr(rule.WireGuardProfileID)) + ":" + protocol + ":" + l4ListenAddress(rule)
+	}
+	return protocol + ":" + l4ListenAddress(rule)
+}
+
+func valueOrZeroIntPtr(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func RelayInputsChanged(rules []model.L4Rule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {

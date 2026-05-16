@@ -223,10 +223,11 @@ func bindingKeysOverlap(left, right []string) bool {
 }
 
 type bindingKey struct {
-	protocol string
-	host     string
-	port     string
-	wildcard bool
+	namespace string
+	protocol  string
+	host      string
+	port      string
+	wildcard  bool
 }
 
 func parseBindingKey(raw string) (bindingKey, bool) {
@@ -238,21 +239,38 @@ func parseBindingKey(raw string) (bindingKey, bool) {
 	if protocol == "" {
 		return bindingKey{}, false
 	}
+	namespace := "host"
+	if protocol == "wireguard" {
+		profileID, rest, ok := strings.Cut(address, ":")
+		if !ok || strings.TrimSpace(profileID) == "" {
+			return bindingKey{}, false
+		}
+		protocol, address, ok = strings.Cut(rest, ":")
+		if !ok {
+			return bindingKey{}, false
+		}
+		protocol = strings.ToLower(strings.TrimSpace(protocol))
+		if protocol == "" {
+			return bindingKey{}, false
+		}
+		namespace = "wireguard:" + strings.TrimSpace(profileID)
+	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || port == "" {
 		return bindingKey{}, false
 	}
 	host = strings.TrimSpace(strings.Trim(host, "[]"))
 	return bindingKey{
-		protocol: protocol,
-		host:     normalizeBindingHost(host),
-		port:     port,
-		wildcard: bindingHostIsWildcard(host),
+		namespace: namespace,
+		protocol:  protocol,
+		host:      normalizeBindingHost(host),
+		port:      port,
+		wildcard:  bindingHostIsWildcard(host),
 	}, true
 }
 
 func (k bindingKey) overlaps(other bindingKey) bool {
-	if k.protocol != other.protocol || k.port != other.port {
+	if k.namespace != other.namespace || k.protocol != other.protocol || k.port != other.port {
 		return false
 	}
 	return k.host == other.host || k.wildcard || other.wildcard

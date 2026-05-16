@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 func TestManagerReusesSameFingerprintRuntime(t *testing.T) {
@@ -53,6 +55,46 @@ func TestManagerAppliesEnabledBootstrapProfileWithoutPeers(t *testing.T) {
 	runtime, ok := manager.RuntimeForAgent(profile.AgentID, profile.ID)
 	if !ok || runtime == nil {
 		t.Fatalf("RuntimeForAgent() = %v, %v; want bootstrap runtime", runtime, ok)
+	}
+}
+
+func TestNetstackRuntimeListenTCPAcceptsWildcardAddress(t *testing.T) {
+	runtime := newTestNetstackRuntime(t)
+	defer runtime.Close()
+
+	const listenPort = 18443
+	ln, err := runtime.ListenTCP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
+	if err != nil {
+		t.Fatalf("ListenTCP wildcard error = %v", err)
+	}
+	defer ln.Close()
+
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address type = %T", ln.Addr())
+	}
+	if addr.Port != listenPort {
+		t.Fatalf("listener port = %d, want %d", addr.Port, listenPort)
+	}
+}
+
+func TestNetstackRuntimeListenUDPAcceptsWildcardAddress(t *testing.T) {
+	runtime := newTestNetstackRuntime(t)
+	defer runtime.Close()
+
+	const listenPort = 18444
+	conn, err := runtime.ListenUDP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
+	if err != nil {
+		t.Fatalf("ListenUDP wildcard error = %v", err)
+	}
+	defer conn.Close()
+
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("listener address type = %T", conn.LocalAddr())
+	}
+	if addr.Port != listenPort {
+		t.Fatalf("listener port = %d, want %d", addr.Port, listenPort)
 	}
 }
 
@@ -629,6 +671,16 @@ func TestNetstackRuntimeCloseIsIdempotent(t *testing.T) {
 	if closer.count != 1 {
 		t.Fatalf("tun close count = %d, want 1", closer.count)
 	}
+}
+
+func newTestNetstackRuntime(t *testing.T) *netstackRuntime {
+	t.Helper()
+
+	tunDevice, tnet, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.99.0.1")}, nil, 1420)
+	if err != nil {
+		t.Fatalf("CreateNetTUN() error = %v", err)
+	}
+	return &netstackRuntime{net: tnet, tun: tunDevice}
 }
 
 type recordingFactory struct {

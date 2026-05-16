@@ -611,22 +611,36 @@ func TestWireGuardTCPListenFallsBackToListenHost(t *testing.T) {
 	}
 }
 
-func TestWireGuardTransparentInboundDoesNotStartAddressTCPListener(t *testing.T) {
+func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *testing.T) {
+	backend := newTCPEchoListener(t)
+	defer backend.Close()
+
+	profileID := 9
+	listenPort := pickFreeTCPPort(t)
+	var wireGuardListener net.Listener
 	runtime := &fakeL4WireGuardRuntime{
 		listenTCP: func(_ context.Context, address string) (net.Listener, error) {
-			return net.Listen("tcp", "127.0.0.1:0")
+			want := net.JoinHostPort("", strconv.Itoa(listenPort))
+			if address != want {
+				t.Fatalf("ListenTCP address = %q, want %q", address, want)
+			}
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return nil, err
+			}
+			wireGuardListener = ln
+			return ln, nil
 		},
 	}
-	profileID := 9
 	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "tcp",
 		ListenHost:           "0.0.0.0",
-		ListenPort:           pickFreeTCPPort(t),
+		ListenPort:           listenPort,
 		ListenMode:           "wireguard",
 		WireGuardInboundMode: "transparent",
 		WireGuardProfileID:   &profileID,
 		WireGuardListenHost:  "10.64.0.2",
-		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: backend.Port()}},
 	}}, nil, nil, fakeL4WireGuardProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
@@ -635,11 +649,36 @@ func TestWireGuardTransparentInboundDoesNotStartAddressTCPListener(t *testing.T)
 	}
 	defer srv.Close()
 
-	if calls := runtime.listenTCPCalls(); len(calls) != 0 {
-		t.Fatalf("ListenTCP calls = %+v, want none for transparent inbound", calls)
+	if wireGuardListener == nil {
+		t.Fatal("wireguard ListenTCP was not started for transparent inbound")
 	}
-	if keys := srv.BindingKeys(); len(keys) != 0 {
-		t.Fatalf("BindingKeys() = %+v, want none for transparent inbound", keys)
+	if calls := runtime.listenTCPCalls(); len(calls) != 1 {
+		t.Fatalf("ListenTCP calls = %+v, want one transparent listener", calls)
+	}
+	wantKey := "wireguard:9:tcp:" + net.JoinHostPort("", strconv.Itoa(listenPort))
+	if keys := srv.BindingKeys(); len(keys) != 1 || keys[0] != wantKey {
+		t.Fatalf("BindingKeys() = %+v, want [%s]", keys, wantKey)
+	}
+
+	client, err := net.Dial("tcp", wireGuardListener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial wireguard transparent listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("transparent tcp")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write tcp payload: %v", err)
+	}
+	reply := make([]byte, len(payload))
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set tcp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read tcp reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("tcp payload mismatch; got %q", reply)
 	}
 }
 
@@ -674,6 +713,102 @@ func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 	want := net.JoinHostPort("10.64.0.2", strconv.Itoa(listenPort))
 	if calls[0] != want {
 		t.Fatalf("ListenUDP address = %q, want %q", calls[0], want)
+	}
+}
+
+func TestWireGuardTransparentUDPInboundForwardsViaRuntimeWildcardListener(t *testing.T) {
+	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve upstream addr: %v", err)
+	}
+	upstreamConn, err := net.ListenUDP("udp", upstreamAddr)
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if _, err := upstreamConn.WriteToUDP(buf[:n], addr); err != nil {
+				return
+			}
+		}
+	}()
+
+	profileID := 9
+	listenPort := pickFreeUDPPort(t)
+	var wireGuardConn wireguard.PacketConn
+	runtime := &fakeL4WireGuardRuntime{
+		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {
+			want := net.JoinHostPort("", strconv.Itoa(listenPort))
+			if address != want {
+				t.Fatalf("ListenUDP address = %q, want %q", address, want)
+			}
+			conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				return nil, err
+			}
+			wireGuardConn = conn
+			return conn, nil
+		},
+	}
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           listenPort,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+		WireGuardListenHost:  "10.64.0.2",
+		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
+	}}, nil, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+
+	if wireGuardConn == nil {
+		t.Fatal("wireguard ListenUDP was not started for transparent inbound")
+	}
+	if calls := runtime.listenUDPCalls(); len(calls) != 1 {
+		t.Fatalf("ListenUDP calls = %+v, want one transparent listener", calls)
+	}
+	wantKey := "wireguard:9:udp:" + net.JoinHostPort("", strconv.Itoa(listenPort))
+	if keys := srv.BindingKeys(); len(keys) != 1 || keys[0] != wantKey {
+		t.Fatalf("BindingKeys() = %+v, want [%s]", keys, wantKey)
+	}
+
+	udpAddr, ok := wireGuardConn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("wireguard UDP listener addr type = %T", wireGuardConn.LocalAddr())
+	}
+	client, err := net.DialUDP("udp", nil, udpAddr)
+	if err != nil {
+		t.Fatalf("dial wireguard transparent udp listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("transparent udp")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write udp payload: %v", err)
+	}
+	reply := make([]byte, len(payload))
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set udp read deadline: %v", err)
+	}
+	n, err := client.Read(reply)
+	if err != nil {
+		t.Fatalf("read udp reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply[:n]) {
+		t.Fatalf("udp payload mismatch; got %q", reply[:n])
 	}
 }
 

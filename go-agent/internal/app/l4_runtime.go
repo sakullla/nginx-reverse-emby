@@ -236,24 +236,39 @@ func l4ServerBindingKeys(server *l4.Server) []string {
 func l4RuleBindingKeys(rules []model.L4Rule) []string {
 	keys := make([]string, 0, len(rules))
 	for _, rule := range rules {
-		if wireGuardTransparentInbound(rule) {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
-			keys = append(keys, "udp:"+l4RuleListenAddress(rule))
-			continue
-		}
-		keys = append(keys, "tcp:"+l4RuleListenAddress(rule))
+		keys = append(keys, l4RuleBindingKey(rule))
 	}
 	return keys
 }
 
 func l4RuleListenAddress(rule model.L4Rule) string {
 	host := rule.ListenHost
-	if !wireGuardTransparentInbound(rule) && strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") && strings.TrimSpace(rule.WireGuardListenHost) != "" {
-		host = rule.WireGuardListenHost
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		if wireGuardTransparentInbound(rule) {
+			host = ""
+		} else if strings.TrimSpace(rule.WireGuardListenHost) != "" {
+			host = rule.WireGuardListenHost
+		}
 	}
 	return net.JoinHostPort(host, strconv.Itoa(rule.ListenPort))
+}
+
+func l4RuleBindingKey(rule model.L4Rule) string {
+	protocol := "tcp"
+	if strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
+		protocol = "udp"
+	}
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		return "wireguard:" + strconv.Itoa(valueOrZeroWireGuardProfileID(rule.WireGuardProfileID)) + ":" + protocol + ":" + l4RuleListenAddress(rule)
+	}
+	return protocol + ":" + l4RuleListenAddress(rule)
+}
+
+func valueOrZeroWireGuardProfileID(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func wireGuardTransparentInbound(rule model.L4Rule) bool {
