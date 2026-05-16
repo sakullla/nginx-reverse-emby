@@ -53,6 +53,10 @@
             <dd>{{ Array.isArray(profile.peers) ? profile.peers.length : 0 }}</dd>
           </div>
           <div>
+            <dt>Endpoint</dt>
+            <dd>{{ profile.public_endpoint || '-' }}</dd>
+          </div>
+          <div>
             <dt>MTU</dt>
             <dd>{{ profile.mtu || '-' }}</dd>
           </div>
@@ -61,11 +65,41 @@
           <span v-for="tag in profile.tags || []" :key="tag" class="tag">{{ tag }}</span>
         </div>
         <div class="profile-card__actions">
+          <button class="btn btn--secondary" @click="openProfileClients(profile)">客户端</button>
           <button class="btn btn--secondary" @click="startEdit(profile)">编辑</button>
           <button class="btn btn--danger" @click="deletingProfile = profile">删除</button>
         </div>
       </article>
     </div>
+
+    <section v-if="selectedProfile" class="clients-section">
+      <div class="section-title-row">
+        <div>
+          <h2 class="section-heading">{{ selectedProfile.name || selectedProfile.id }} Clients</h2>
+          <p class="section-subtitle">管理客户端配置；私钥和 PSK 仅在下载的 .conf 中返回。</p>
+        </div>
+        <button class="btn btn--primary" @click="startCreateClient">新建 Client</button>
+      </div>
+
+      <div v-if="isClientsLoading" class="empty-inline">正在加载 Clients...</div>
+      <div v-else-if="!clients.length" class="empty-inline">暂无 Client</div>
+      <div v-else class="client-list">
+        <div v-for="client in clients" :key="client.id" class="client-row">
+          <div class="client-row__main">
+            <strong>{{ client.name || `client-${client.id}` }}</strong>
+            <span>{{ client.address || '-' }}</span>
+            <span>{{ client.public_key || '-' }}</span>
+          </div>
+          <span class="status-pill" :class="{ 'status-pill--off': client.enabled === false }">
+            {{ client.enabled === false ? 'Off' : 'On' }}
+          </span>
+          <div class="client-row__actions">
+            <button class="btn btn--secondary btn--sm" @click="downloadClientConfig(client)">下载配置</button>
+            <button class="btn btn--danger btn--sm" @click="deleteClient.mutate(client.id)">删除</button>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <div v-if="isLoading" class="wg-page__empty">
       <div class="spinner"></div>
@@ -115,48 +149,57 @@
         </div>
 
         <div class="form-group">
-          <div class="section-title-row">
-            <label class="form-label">Peers</label>
-            <button type="button" class="btn btn--secondary btn--sm" @click="addPeer">添加 Peer</button>
-          </div>
-          <div v-if="!form.peers.length" class="empty-inline">暂无 Peer</div>
-          <div v-for="(peer, index) in form.peers" :key="peer.local_id" class="peer-panel">
-            <div class="peer-panel__header">
-              <strong>Peer {{ index + 1 }}</strong>
-              <button type="button" class="btn btn--danger btn--sm" @click="removePeer(index)">删除</button>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">名称</label>
-                <input v-model="peer.name" class="input" placeholder="client-a">
-              </div>
-              <div class="form-group">
-                <label class="form-label">Endpoint</label>
-                <input v-model="peer.endpoint" class="input" placeholder="vpn.example.com:51820">
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">Public Key</label>
-                <input v-model="peer.public_key" class="input">
-              </div>
-              <div class="form-group">
-                <label class="form-label">Preshared Key</label>
-                <input v-model="peer.preshared_key" class="input" type="password" autocomplete="new-password" placeholder="xxxxx">
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">Allowed IPs（每行一个）</label>
-                <textarea v-model="peer.allowed_ips_text" class="input textarea textarea--sm" placeholder="10.8.0.2/32"></textarea>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Keepalive 秒</label>
-                <input v-model.number="peer.persistent_keepalive_seconds" class="input" type="number" min="0" placeholder="25">
-              </div>
-            </div>
-          </div>
+          <label class="form-label">Public Endpoint</label>
+          <input v-model="form.public_endpoint" class="input" placeholder="vpn.example.com:51820">
+          <p class="form-hint">用于生成客户端配置的 Endpoint。</p>
         </div>
+
+        <details class="advanced-block">
+          <summary>高级 Legacy Peers</summary>
+          <div class="form-group advanced-block__body">
+            <div class="section-title-row">
+              <label class="form-label">Peers</label>
+              <button type="button" class="btn btn--secondary btn--sm" @click="addPeer">添加 Peer</button>
+            </div>
+            <div v-if="!form.peers.length" class="empty-inline">暂无 Peer</div>
+            <div v-for="(peer, index) in form.peers" :key="peer.local_id" class="peer-panel">
+              <div class="peer-panel__header">
+                <strong>Peer {{ index + 1 }}</strong>
+                <button type="button" class="btn btn--danger btn--sm" @click="removePeer(index)">删除</button>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">名称</label>
+                  <input v-model="peer.name" class="input" placeholder="client-a">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Endpoint</label>
+                  <input v-model="peer.endpoint" class="input" placeholder="vpn.example.com:51820">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">Public Key</label>
+                  <input v-model="peer.public_key" class="input">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Preshared Key</label>
+                  <input v-model="peer.preshared_key" class="input" type="password" autocomplete="new-password" placeholder="xxxxx">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">Allowed IPs（每行一个）</label>
+                  <textarea v-model="peer.allowed_ips_text" class="input textarea textarea--sm" placeholder="10.8.0.2/32"></textarea>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Keepalive 秒</label>
+                  <input v-model.number="peer.persistent_keepalive_seconds" class="input" type="number" min="0" placeholder="25">
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
 
         <div class="form-group">
           <label class="form-label">标签</label>
@@ -188,6 +231,39 @@
       </form>
     </BaseModal>
 
+    <BaseModal
+      :model-value="showClientForm"
+      title="新建 WireGuard Client"
+      size="md"
+      :close-on-click-modal="false"
+      @update:model-value="closeClientForm"
+    >
+      <form class="wg-form" @submit.prevent="handleCreateClient">
+        <div class="form-group">
+          <label class="form-label form-label--required">名称</label>
+          <input v-model="clientForm.name" class="input" :class="{ 'input--error': clientErrors.name }" placeholder="phone">
+          <p v-if="clientErrors.name" class="form-error">{{ clientErrors.name }}</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Address</label>
+          <input v-model="clientForm.address" class="input" placeholder="10.8.0.2/32">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Public Key</label>
+          <input v-model="clientForm.public_key" class="input" placeholder="留空由后端生成">
+        </div>
+        <label class="toggle-row">
+          <input v-model="clientForm.enabled" type="checkbox" class="toggle__input">
+          <span class="toggle__slider"></span>
+          <span class="toggle__label">启用 Client</span>
+        </label>
+        <p v-if="clientErrors.submit" class="form-error form-error--block">{{ clientErrors.submit }}</p>
+        <button type="submit" class="btn btn--primary btn--full" :disabled="createClient.isPending.value">
+          创建 Client
+        </button>
+      </form>
+    </BaseModal>
+
     <DeleteConfirmDialog
       :show="!!deletingProfile"
       title="确认删除 WireGuard Profile"
@@ -204,13 +280,17 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
+import { fetchWireGuardClients, fetchWireGuardClientConfig } from '../api'
 import {
   useWireGuardProfiles,
   useCreateWireGuardProfile,
   useUpdateWireGuardProfile,
-  useDeleteWireGuardProfile
+  useDeleteWireGuardProfile,
+  useCreateWireGuardClient,
+  useDeleteWireGuardClient
 } from '../hooks/useWireGuardProfiles'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import BaseModal from '../components/base/BaseModal.vue'
@@ -237,18 +317,43 @@ const deleteProfile = useDeleteWireGuardProfile(agentId)
 const profiles = computed(() => profilesData.value ?? [])
 const enabledCount = computed(() => profiles.value.filter((profile) => profile.enabled !== false).length)
 const isSaving = computed(() => createProfile.isPending.value || updateProfile.isPending.value)
+const selectedProfileId = ref(null)
+const selectedProfile = computed(() => profiles.value.find((profile) => String(profile.id) === String(selectedProfileId.value)) || null)
+const {
+  data: clientsData,
+  isLoading: isClientsLoading
+} = useQuery({
+  queryKey: ['wireGuardClients', agentId, selectedProfileId],
+  queryFn: () => {
+    if (!agentId.value || !selectedProfileId.value) return []
+    return fetchWireGuardClients(agentId.value, selectedProfileId.value)
+  },
+  enabled: computed(() => Boolean(agentId.value && selectedProfileId.value))
+})
+const clients = computed(() => clientsData.value ?? [])
+const createClient = useCreateWireGuardClient(agentId, selectedProfileId)
+const deleteClient = useDeleteWireGuardClient(agentId, selectedProfileId)
 
 const showForm = ref(false)
+const showClientForm = ref(false)
 const editingProfile = ref(null)
 const deletingProfile = ref(null)
 const tagInput = ref('')
 const form = ref(createFormState())
 const errors = ref({ name: '', submit: '' })
+const clientForm = ref(createClientFormState())
+const clientErrors = ref({ name: '', submit: '' })
 let peerIdCounter = 0
 
 watch(agentId, () => {
   closeForm()
+  closeClientForm()
   deletingProfile.value = null
+  selectedProfileId.value = null
+})
+
+watch(profiles, () => {
+  if (selectedProfileId.value && !selectedProfile.value) selectedProfileId.value = null
 })
 
 function listText(items) {
@@ -283,6 +388,7 @@ function createFormState(profile = null) {
     name: profile?.name || '',
     private_key: profile?.private_key || '',
     listen_port: profile?.listen_port ?? null,
+    public_endpoint: profile?.public_endpoint || '',
     addresses_text: lines(profile?.addresses),
     peers: Array.isArray(profile?.peers) ? profile.peers.map((peer) => createPeerState(peer)) : [],
     dns_text: lines(profile?.dns),
@@ -292,8 +398,21 @@ function createFormState(profile = null) {
   }
 }
 
+function createClientFormState() {
+  return {
+    name: '',
+    address: '',
+    public_key: '',
+    enabled: true
+  }
+}
+
 function resetErrors() {
   errors.value = { name: '', submit: '' }
+}
+
+function resetClientErrors() {
+  clientErrors.value = { name: '', submit: '' }
 }
 
 function handleAgentSelect(id) {
@@ -321,6 +440,20 @@ function closeForm() {
   editingProfile.value = null
 }
 
+function openProfileClients(profile) {
+  selectedProfileId.value = profile?.id || null
+}
+
+function startCreateClient() {
+  clientForm.value = createClientFormState()
+  resetClientErrors()
+  showClientForm.value = true
+}
+
+function closeClientForm() {
+  showClientForm.value = false
+}
+
 function addPeer() {
   form.value.peers.push(createPeerState())
 }
@@ -345,6 +478,7 @@ function buildPayload() {
     mode: 'generic_wireguard',
     private_key: form.value.private_key,
     listen_port: form.value.listen_port == null || form.value.listen_port === '' ? null : Number(form.value.listen_port),
+    public_endpoint: form.value.public_endpoint.trim(),
     addresses: splitLines(form.value.addresses_text),
     peers: form.value.peers.map((peer) => ({
       name: peer.name.trim(),
@@ -361,6 +495,16 @@ function buildPayload() {
     enabled: form.value.enabled,
     tags: [...form.value.tags]
   }
+}
+
+function buildClientPayload() {
+  const payload = {
+    name: clientForm.value.name.trim(),
+    enabled: clientForm.value.enabled
+  }
+  if (clientForm.value.address.trim()) payload.address = clientForm.value.address.trim()
+  if (clientForm.value.public_key.trim()) payload.public_key = clientForm.value.public_key.trim()
+  return payload
 }
 
 function validate() {
@@ -381,6 +525,38 @@ async function handleSubmit() {
     closeForm()
   } catch (error) {
     errors.value.submit = error?.message || '操作失败'
+  }
+}
+
+async function handleCreateClient() {
+  resetClientErrors()
+  if (!clientForm.value.name.trim()) {
+    clientErrors.value.name = '请输入 Client 名称'
+    return
+  }
+  try {
+    await createClient.mutateAsync(buildClientPayload())
+    closeClientForm()
+  } catch (error) {
+    clientErrors.value.submit = error?.message || '创建 Client 失败'
+  }
+}
+
+async function downloadClientConfig(client) {
+  if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  try {
+    const config = await fetchWireGuardClientConfig(agentId.value, selectedProfileId.value, client.id)
+    const blob = new Blob([config], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${client.name || `client-${client.id}`}.conf`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    clientErrors.value.submit = error?.message || '下载 Client 配置失败'
   }
 }
 
@@ -438,6 +614,18 @@ function confirmDelete() {
   gap: var(--space-4);
 }
 
+.clients-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
 .profile-card {
   display: flex;
   flex-direction: column;
@@ -463,6 +651,18 @@ function confirmDelete() {
   margin: 0;
   font-size: var(--text-base);
   color: var(--color-text-primary);
+}
+
+.section-heading {
+  margin: 0;
+  font-size: var(--text-lg);
+  color: var(--color-text-primary);
+}
+
+.section-subtitle {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
 }
 
 .profile-card p {
@@ -562,6 +762,62 @@ function confirmDelete() {
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
   background: var(--color-bg-subtle);
+}
+
+.advanced-block {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-subtle);
+}
+
+.advanced-block summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+}
+
+.advanced-block__body {
+  margin-top: var(--space-3);
+}
+
+.client-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.client-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-subtle);
+}
+
+.client-row__main {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(100px, 0.7fr) minmax(160px, 1.5fr);
+  gap: var(--space-3);
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.client-row__main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-row__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .tag-row,
@@ -717,8 +973,19 @@ function confirmDelete() {
 
 @media (max-width: 720px) {
   .form-row,
-  .profile-meta {
+  .profile-meta,
+  .client-row,
+  .client-row__main {
     grid-template-columns: 1fr;
+  }
+
+  .client-row {
+    align-items: stretch;
+  }
+
+  .client-row__actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }
 </style>

@@ -532,6 +532,38 @@ export async function deleteWireGuardProfile(agentId, id) {
   return data.profile
 }
 
+export async function fetchWireGuardClients(agentId, profileId) {
+  const { data } = await api.get(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients`
+  )
+  return data.clients || []
+}
+
+export async function createWireGuardClient(agentId, profileId, payload) {
+  const { data } = await api.post(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients`,
+    payload,
+    longRunningRequest
+  )
+  return data.client
+}
+
+export async function deleteWireGuardClient(agentId, profileId, clientId) {
+  const { data } = await api.delete(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
+    longRunningRequest
+  )
+  return data.client
+}
+
+export async function fetchWireGuardClientConfig(agentId, profileId, clientId) {
+  const { data } = await api.get(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}/config`,
+    { responseType: 'text' }
+  )
+  return data
+}
+
 export async function parseWireGuardURI(uri) {
   const { data } = await api.post('/wireguard/parse-uri', { uri })
   return data

@@ -1939,6 +1939,7 @@ const mockWireGuardProfilesByAgent = {
       mode: 'generic_wireguard',
       private_key: 'xxxxx',
       listen_port: 51820,
+      public_endpoint: 'local.example.com:51820',
       addresses: ['10.8.0.1/24'],
       peers: [
         {
@@ -1965,6 +1966,7 @@ const mockWireGuardProfilesByAgent = {
       mode: 'generic_wireguard',
       private_key: 'xxxxx',
       listen_port: 51821,
+      public_endpoint: 'edge-1.example.com:51821',
       addresses: ['10.9.0.1/24'],
       peers: [],
       dns: [],
@@ -1977,6 +1979,30 @@ const mockWireGuardProfilesByAgent = {
 }
 
 let mockWireGuardProfileIdCounter = 2
+
+const mockWireGuardClientsByProfile = {
+  local: {
+    1: [
+      {
+        id: 1,
+        name: 'phone',
+        address: '10.8.0.2/32',
+        public_key: 'mock-client-public-key-phone',
+        private_key: 'mock-client-private-key-phone',
+        preshared_key: 'mock-client-psk-phone',
+        dns: ['1.1.1.1'],
+        allowed_ips: ['0.0.0.0/0', '::/0'],
+        enabled: true,
+        revision: 1
+      }
+    ]
+  },
+  'edge-1': {
+    2: []
+  }
+}
+
+let mockWireGuardClientIdCounter = 1
 
 function normalizeStringList(value) {
   if (!Array.isArray(value)) return []
@@ -2014,6 +2040,54 @@ function allocateMockWireGuardAddress(agentId) {
   return '10.8.0.1/24'
 }
 
+function findMockWireGuardProfile(agentId, profileId) {
+  return (mockWireGuardProfilesByAgent[agentId] || []).find((profile) => String(profile.id) === String(profileId))
+}
+
+function profileSubnetPrefix(profile = {}) {
+  const address = normalizeStringList(profile.addresses)[0] || '10.8.0.1/24'
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}\/\d{1,2}$/.exec(address)
+  return match ? `${match[1]}.${match[2]}.${match[3]}` : '10.8.0'
+}
+
+function nextMockWireGuardClientAddress(agentId, profileId) {
+  const profile = findMockWireGuardProfile(agentId, profileId)
+  const prefix = profileSubnetPrefix(profile)
+  const used = new Set((mockWireGuardClientsByProfile[agentId]?.[profileId] || [])
+    .map((client) => {
+      const match = new RegExp(`^${prefix.replace(/\./g, '\\.')}\\.(\\d{1,3})/32$`).exec(String(client.address || ''))
+      return match ? Number(match[1]) : null
+    })
+    .filter((item) => Number.isInteger(item)))
+  for (let host = 2; host <= 254; host += 1) {
+    if (!used.has(host)) return `${prefix}.${host}/32`
+  }
+  return `${prefix}.2/32`
+}
+
+function normalizeMockWireGuardClient(agentId, profileId, client = {}) {
+  const id = Number(client.id || ++mockWireGuardClientIdCounter)
+  const address = String(client.address || '').trim() || nextMockWireGuardClientAddress(agentId, profileId)
+  return {
+    ...client,
+    id: Number.isInteger(id) && id > 0 ? id : ++mockWireGuardClientIdCounter,
+    name: String(client.name || '').trim() || `client-${id}`,
+    address,
+    public_key: String(client.public_key || `mock-client-public-key-${id}`).trim(),
+    private_key: String(client.private_key || `mock-client-private-key-${id}`).trim(),
+    preshared_key: String(client.preshared_key || `mock-client-psk-${id}`).trim(),
+    dns: normalizeStringList(client.dns),
+    allowed_ips: normalizeStringList(client.allowed_ips).length ? normalizeStringList(client.allowed_ips) : ['0.0.0.0/0', '::/0'],
+    enabled: client.enabled !== false,
+    revision: Number(client.revision || Date.now())
+  }
+}
+
+function publicMockWireGuardClient(client = {}) {
+  const { private_key, preshared_key, ...safeClient } = client
+  return safeClient
+}
+
 function normalizeMockWireGuardProfile(agentId, profile = {}) {
   const id = Number(profile.id || ++mockWireGuardProfileIdCounter)
   return {
@@ -2024,6 +2098,7 @@ function normalizeMockWireGuardProfile(agentId, profile = {}) {
     mode: 'generic_wireguard',
     private_key: String(profile.private_key || '').trim(),
     listen_port: profile.listen_port == null || profile.listen_port === '' ? null : Number(profile.listen_port),
+    public_endpoint: String(profile.public_endpoint || '').trim(),
     addresses: normalizeStringList(profile.addresses),
     peers: Array.isArray(profile.peers) ? profile.peers.map((peer) => normalizeMockWireGuardPeer(peer)) : [],
     dns: normalizeStringList(profile.dns),
@@ -2164,13 +2239,105 @@ export async function deleteWireGuardProfile(agentId, id) {
     const list = mockWireGuardProfilesByAgent[agentId] || []
     const idx = list.findIndex((profile) => String(profile.id) === String(id))
     if (idx === -1) return null
-    return list.splice(idx, 1)[0]
+    const deleted = list.splice(idx, 1)[0]
+    if (mockWireGuardClientsByProfile[agentId]) {
+      delete mockWireGuardClientsByProfile[agentId][id]
+    }
+    return deleted
   }
   const { data } = await api.delete(
     `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
     longRunningRequest
   )
   return data.profile
+}
+
+export async function fetchWireGuardClients(agentId, profileId) {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    if (!findMockWireGuardProfile(agentId, profileId)) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    const clients = mockWireGuardClientsByProfile[agentId]?.[profileId] || []
+    return clients.map((client) => publicMockWireGuardClient(normalizeMockWireGuardClient(agentId, profileId, client)))
+  }
+  const { data } = await api.get(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients`
+  )
+  return data.clients || []
+}
+
+export async function createWireGuardClient(agentId, profileId, payload) {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    if (!findMockWireGuardProfile(agentId, profileId)) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    const client = normalizeMockWireGuardClient(agentId, profileId, {
+      ...payload,
+      id: ++mockWireGuardClientIdCounter,
+      revision: Date.now()
+    })
+    mockWireGuardClientsByProfile[agentId] = mockWireGuardClientsByProfile[agentId] || {}
+    mockWireGuardClientsByProfile[agentId][profileId] = mockWireGuardClientsByProfile[agentId][profileId] || []
+    mockWireGuardClientsByProfile[agentId][profileId].push(client)
+    return publicMockWireGuardClient(client)
+  }
+  const { data } = await api.post(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients`,
+    payload,
+    longRunningRequest
+  )
+  return data.client
+}
+
+export async function deleteWireGuardClient(agentId, profileId, clientId) {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    const clients = mockWireGuardClientsByProfile[agentId]?.[profileId] || []
+    const idx = clients.findIndex((client) => String(client.id) === String(clientId))
+    if (idx === -1) return null
+    return publicMockWireGuardClient(clients.splice(idx, 1)[0])
+  }
+  const { data } = await api.delete(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
+    longRunningRequest
+  )
+  return data.client
+}
+
+export async function fetchWireGuardClientConfig(agentId, profileId, clientId) {
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    const profile = findMockWireGuardProfile(agentId, profileId)
+    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    if (!String(profile.public_endpoint || '').trim()) {
+      throw new Error('public_endpoint is required to generate client config')
+    }
+    const client = (mockWireGuardClientsByProfile[agentId]?.[profileId] || [])
+      .find((item) => String(item.id) === String(clientId))
+    if (!client) throw new Error(`WireGuard Client not found: ${clientId}`)
+    const dns = normalizeStringList(client.dns).length ? normalizeStringList(client.dns) : normalizeStringList(profile.dns)
+    return [
+      '[Interface]',
+      `PrivateKey = ${client.private_key}`,
+      `Address = ${client.address}`,
+      ...(dns.length ? [`DNS = ${dns.join(', ')}`] : []),
+      '',
+      '[Peer]',
+      `PublicKey = mock-server-public-key-${profile.id}`,
+      ...(client.preshared_key ? [`PresharedKey = ${client.preshared_key}`] : []),
+      `AllowedIPs = ${normalizeStringList(client.allowed_ips).join(', ') || '0.0.0.0/0, ::/0'}`,
+      `Endpoint = ${profile.public_endpoint}`,
+      'PersistentKeepalive = 25',
+      ''
+    ].join('\n')
+  }
+  const { data } = await api.get(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}/config`,
+    { responseType: 'text' }
+  )
+  return data
 }
 
 export async function parseWireGuardURI(uri) {
@@ -2206,6 +2373,7 @@ export async function importWireGuardURIProfile(agentId, uri, name = '') {
       name: parsed.name || String(name || '').trim() || `wireguard-${mockWireGuardProfileIdCounter}`,
       private_key: 'xxxxx',
       listen_port: 0,
+      public_endpoint: parsed.endpoint,
       addresses: parsed.addresses,
       peers: [{
         name: 'egress',

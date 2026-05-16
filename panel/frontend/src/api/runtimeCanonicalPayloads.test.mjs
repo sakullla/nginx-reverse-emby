@@ -476,6 +476,96 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
+  it('calls WireGuard profile client endpoints and fetches config as text', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      if (config.url.endsWith('/config')) {
+        return {
+          data: '[Interface]\nAddress = 10.8.0.2/32\n',
+          status: 200,
+          statusText: 'OK',
+          headers: { 'content-type': 'text/plain' },
+          config
+        }
+      }
+      if (config.method === 'get') {
+        return {
+          data: {
+            clients: [
+              {
+                id: 501,
+                name: 'phone',
+                address: '10.8.0.2/32',
+                public_key: 'client-public-key',
+                enabled: true
+              }
+            ]
+          },
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config
+        }
+      }
+      if (config.method === 'post') {
+        return {
+          data: {
+            client: {
+              id: 502,
+              ...JSON.parse(config.data)
+            }
+          },
+          status: 201,
+          statusText: 'Created',
+          headers: {},
+          config
+        }
+      }
+      return {
+        data: {
+          client: {
+            id: 502,
+            name: 'phone'
+          }
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+      const payload = { name: 'phone', address: '10.8.0.2/32', enabled: true }
+
+      const clients = await runtime.fetchWireGuardClients('edge/a', 'profile 1')
+      const client = await runtime.createWireGuardClient('edge/a', 'profile 1', payload)
+      await runtime.deleteWireGuardClient('edge/a', 'profile 1', 'client 1')
+      const configText = await runtime.fetchWireGuardClientConfig('edge/a', 'profile 1', 'client 1')
+
+      expect(clients).toHaveLength(1)
+      expect(client.name).toBe('phone')
+      expect(configText).toContain('[Interface]')
+      expect(requests).toHaveLength(4)
+      expect(requests[0].method).toBe('get')
+      expect(requests[0].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients')
+      expect(requests[1].method).toBe('post')
+      expect(requests[1].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients')
+      expect(JSON.parse(requests[1].data)).toEqual(payload)
+      expect(requests[2].method).toBe('delete')
+      expect(requests[2].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients/client%201')
+      expect(requests[3].method).toBe('get')
+      expect(requests[3].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients/client%201/config')
+      expect(requests[3].responseType).toBe('text')
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
   it('exports WireGuard URI helpers from API facades and dev mocks', async () => {
     const index = await import('./index.js?raw')
     const devRuntime = await import('./devRuntime.js?raw')
@@ -486,6 +576,39 @@ describe('runtime canonical rule payloads', () => {
       expect(source).toContain('parseWireGuardURI')
       expect(source).toContain('importWireGuardURIProfile')
     }
+  })
+
+  it('exports WireGuard profile client helpers from API facades, dev mocks, and hooks', async () => {
+    const index = await import('./index.js?raw')
+    const devRuntime = await import('./devRuntime.js?raw')
+    const devMocks = await import('./devMocks/index.js?raw')
+    const devData = await import('./devMocks/data.js?raw')
+    const hooks = await import('../hooks/useWireGuardProfiles.js?raw')
+
+    for (const source of [index.default, devRuntime.default, devMocks.default, devData.default]) {
+      expect(source).toContain('fetchWireGuardClients')
+      expect(source).toContain('createWireGuardClient')
+      expect(source).toContain('deleteWireGuardClient')
+      expect(source).toContain('fetchWireGuardClientConfig')
+    }
+    expect(hooks.default).toContain('useWireGuardClients')
+    expect(hooks.default).toContain('useCreateWireGuardClient')
+    expect(hooks.default).toContain('useDeleteWireGuardClient')
+  })
+
+  it('WireGuard Profiles page exposes clients workflow and keeps legacy peers advanced', async () => {
+    const page = await import('../pages/WireGuardProfilesPage.vue?raw')
+    const source = page.default
+
+    expect(source).toContain('public_endpoint')
+    expect(source).toContain('fetchWireGuardClients')
+    expect(source).toContain('showClientForm')
+    expect(source).toContain('handleCreateClient')
+    expect(source).toContain('downloadClientConfig')
+    expect(source).toContain('高级 Legacy Peers')
+    expect(source).toContain('<details')
+    expect(source).not.toContain('client.private_key')
+    expect(source).not.toContain('client.preshared_key')
   })
 
   it('dev mock WireGuard URI parsing preserves literal plus in keys and redacts secrets', async () => {
