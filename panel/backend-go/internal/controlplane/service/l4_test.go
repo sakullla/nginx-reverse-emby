@@ -782,7 +782,7 @@ func TestL4RuleServiceUpdateSwitchesWireGuardURIEgressToProfileEgress(t *testing
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
 			"local": {
 				{ID: selectedProfileID, AgentID: "local", Enabled: true},
-				{ID: uriProfileID, AgentID: "local", Enabled: true},
+				materializedWireGuardURIProfileRow(t, "local", uriProfileID, uri),
 			},
 		},
 	}
@@ -803,6 +803,62 @@ func TestL4RuleServiceUpdateSwitchesWireGuardURIEgressToProfileEgress(t *testing
 	}
 	if got := store.l4RulesByID["local"][0].WireGuardEgressURI; got != "" {
 		t.Fatalf("persisted WireGuardEgressURI = %q, want cleared", got)
+	}
+	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], selectedProfileID)
+}
+
+func TestL4RuleServiceUpdateWireGuardURIEgressPayloadProfileIDClearsOriginalURI(t *testing.T) {
+	uriProfileID := 8
+	selectedProfileID := 7
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                 11,
+				AgentID:            "local",
+				Name:               "entry",
+				Protocol:           "tcp",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         1080,
+				BackendsJSON:       `[]`,
+				ListenMode:         "proxy",
+				ProxyEgressMode:    "wireguard",
+				WireGuardProfileID: &uriProfileID,
+				WireGuardEgressURI: uri,
+				Enabled:            true,
+				Revision:           3,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {
+				{ID: selectedProfileID, AgentID: "local", Enabled: true},
+				materializedWireGuardURIProfileRow(t, "local", uriProfileID, uri),
+			},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 11, L4RuleInput{
+		ProxyEgressMode:    stringPtrL4("wireguard"),
+		WireGuardEgressURI: stringPtrL4(uri),
+		WireGuardProfileID: intPtrL4(selectedProfileID),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != selectedProfileID {
+		t.Fatalf("WireGuardProfileID = %v, want %d", rule.WireGuardProfileID, selectedProfileID)
+	}
+	if rule.WireGuardEgressURI != "" {
+		t.Fatalf("WireGuardEgressURI = %q, want cleared", rule.WireGuardEgressURI)
+	}
+	if got := store.l4RulesByID["local"][0].WireGuardEgressURI; got != "" {
+		t.Fatalf("persisted WireGuardEgressURI = %q, want cleared", got)
+	}
+	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], selectedProfileID)
+
+	if _, err := svc.Delete(context.Background(), "local", 11); err != nil {
+		t.Fatalf("Delete() error = %v", err)
 	}
 	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], selectedProfileID)
 }
@@ -830,7 +886,7 @@ func TestL4RuleServiceUpdateWireGuardURIEgressToNewURIRemovesOldMaterializedProf
 			}},
 		},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
-			"local": {{ID: uriProfileID, AgentID: "local", Enabled: true}},
+			"local": {materializedWireGuardURIProfileRow(t, "local", uriProfileID, oldURI)},
 		},
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
@@ -848,6 +904,66 @@ func TestL4RuleServiceUpdateWireGuardURIEgressToNewURIRemovesOldMaterializedProf
 		t.Fatalf("WireGuardEgressURI = %q, want new URI", rule.WireGuardEgressURI)
 	}
 	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], *rule.WireGuardProfileID)
+}
+
+func TestL4RuleServiceUpdateWireGuardURIEgressKeepsProfileReferencedByOtherL4Rule(t *testing.T) {
+	uriProfileID := 8
+	selectedProfileID := 7
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {
+				{
+					ID:                 11,
+					AgentID:            "local",
+					Name:               "entry",
+					Protocol:           "tcp",
+					ListenHost:         "0.0.0.0",
+					ListenPort:         1080,
+					BackendsJSON:       `[]`,
+					ListenMode:         "proxy",
+					ProxyEgressMode:    "wireguard",
+					WireGuardProfileID: &uriProfileID,
+					WireGuardEgressURI: uri,
+					Enabled:            true,
+					Revision:           3,
+				},
+				{
+					ID:                 12,
+					AgentID:            "local",
+					Name:               "other",
+					Protocol:           "tcp",
+					ListenHost:         "0.0.0.0",
+					ListenPort:         1081,
+					BackendsJSON:       `[]`,
+					ListenMode:         "proxy",
+					ProxyEgressMode:    "wireguard",
+					WireGuardProfileID: &uriProfileID,
+					Enabled:            true,
+					Revision:           3,
+				},
+			},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {
+				{ID: selectedProfileID, AgentID: "local", Enabled: true},
+				materializedWireGuardURIProfileRow(t, "local", uriProfileID, uri),
+			},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 11, L4RuleInput{
+		ProxyEgressMode:    stringPtrL4("wireguard"),
+		WireGuardProfileID: intPtrL4(selectedProfileID),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != selectedProfileID {
+		t.Fatalf("WireGuardProfileID = %v, want %d", rule.WireGuardProfileID, selectedProfileID)
+	}
+	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], selectedProfileID, uriProfileID)
 }
 
 func TestL4RuleServiceUpdateWireGuardURIEgressPartialUpdateKeepsMaterializedProfile(t *testing.T) {
@@ -963,8 +1079,125 @@ func TestL4RuleServiceDeleteWireGuardURIEgressRemovesMaterializedProfile(t *test
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
 			"local": {
 				{ID: manualProfileID, AgentID: "local", Enabled: true},
-				{ID: uriProfileID, AgentID: "local", Enabled: true},
+				materializedWireGuardURIProfileRow(t, "local", uriProfileID, uri),
 			},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	if _, err := svc.Delete(context.Background(), "local", 11); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], manualProfileID)
+}
+
+func TestL4RuleServiceDeleteWireGuardURIEgressKeepsProfileReferencedByHTTPRule(t *testing.T) {
+	uriProfileID := 8
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
+	store := &fakeL4Store{
+		httpRulesByID: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:                    21,
+				AgentID:               "local",
+				WireGuardEntryEnabled: true,
+				WireGuardProfileID:    &uriProfileID,
+				Enabled:               true,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                 11,
+				AgentID:            "local",
+				Name:               "entry",
+				Protocol:           "tcp",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         1080,
+				BackendsJSON:       `[]`,
+				ListenMode:         "proxy",
+				ProxyEgressMode:    "wireguard",
+				WireGuardProfileID: &uriProfileID,
+				WireGuardEgressURI: uri,
+				Enabled:            true,
+				Revision:           3,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {materializedWireGuardURIProfileRow(t, "local", uriProfileID, uri)},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	if _, err := svc.Delete(context.Background(), "local", 11); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], uriProfileID)
+}
+
+func TestL4RuleServiceDeleteWireGuardURIEgressKeepsProfileReferencedByRelayListener(t *testing.T) {
+	uriProfileID := 8
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                 11,
+				AgentID:            "local",
+				Name:               "entry",
+				Protocol:           "tcp",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         1080,
+				BackendsJSON:       `[]`,
+				ListenMode:         "proxy",
+				ProxyEgressMode:    "wireguard",
+				WireGuardProfileID: &uriProfileID,
+				WireGuardEgressURI: uri,
+				Enabled:            true,
+				Revision:           3,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:                 31,
+				AgentID:            "local",
+				TransportMode:      "wireguard",
+				WireGuardProfileID: &uriProfileID,
+				Enabled:            true,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {materializedWireGuardURIProfileRow(t, "local", uriProfileID, uri)},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	if _, err := svc.Delete(context.Background(), "local", 11); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], uriProfileID)
+}
+
+func TestL4RuleServiceDeleteWireGuardURIEgressSkipsManualProfileThatDoesNotMatchURI(t *testing.T) {
+	manualProfileID := 7
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                 11,
+				AgentID:            "local",
+				Name:               "entry",
+				Protocol:           "tcp",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         1080,
+				BackendsJSON:       `[]`,
+				ListenMode:         "proxy",
+				ProxyEgressMode:    "wireguard",
+				WireGuardProfileID: &manualProfileID,
+				WireGuardEgressURI: uri,
+				Enabled:            true,
+				Revision:           3,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: manualProfileID, AgentID: "local", Enabled: true}},
 		},
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
@@ -1022,12 +1255,9 @@ func TestL4RuleServiceDeleteWireGuardURIEgressRestoresL4RowsWhenMissingProfileAn
 }
 
 func TestL4RuleServiceCreateRejectsWireGuardInboundWithURIEgress(t *testing.T) {
-	profileID := 7
 	store := &fakeL4Store{
-		l4RulesByID: map[string][]storage.L4RuleRow{},
-		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
-			"local": {{ID: profileID, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
-		},
+		l4RulesByID:      map[string][]storage.L4RuleRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{},
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32"
@@ -1037,7 +1267,6 @@ func TestL4RuleServiceCreateRejectsWireGuardInboundWithURIEgress(t *testing.T) {
 		ListenPort:           intPtrL4(1080),
 		ListenMode:           stringPtrL4("wireguard"),
 		ProxyEgressMode:      stringPtrL4("wireguard"),
-		WireGuardProfileID:   intPtrL4(profileID),
 		WireGuardListenHost:  stringPtrL4("10.8.0.1"),
 		WireGuardEgressURI:   stringPtrL4(uri),
 		WireGuardInboundMode: stringPtrL4("address"),
@@ -2794,6 +3023,22 @@ func intPtrL4(value int) *int {
 
 func boolPtrL4(value bool) *bool {
 	return &value
+}
+
+func materializedWireGuardURIProfileRow(t *testing.T, agentID string, id int, uri string) storage.WireGuardProfileRow {
+	t.Helper()
+	parsed, err := ParseWireGuardURI(uri)
+	if err != nil {
+		t.Fatalf("ParseWireGuardURI() error = %v", err)
+	}
+	input := wireGuardProfileInputFromURI(parsed, fmt.Sprintf("l4-rule-%d-wireguard-egress", id))
+	input.ID = id
+	profile, err := normalizeWireGuardProfileInput(input, WireGuardProfile{}, id)
+	if err != nil {
+		t.Fatalf("normalizeWireGuardProfileInput() error = %v", err)
+	}
+	profile.AgentID = agentID
+	return wireGuardProfileToRow(profile)
 }
 
 func assertWireGuardProfileIDs(t *testing.T, rows []storage.WireGuardProfileRow, want ...int) {

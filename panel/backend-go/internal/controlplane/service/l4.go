@@ -355,11 +355,21 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 		return L4Rule{}, err
 	}
 	var rollbackWireGuardProfiles []storage.WireGuardProfileRow
-	if profileID, ok := ownedWireGuardURIEgressProfileCandidate(deleted); ok {
-		rollbackWireGuardProfiles, err = s.deleteWireGuardProfileRow(ctx, resolvedID, profileID)
+	if profileID, ok, err := s.confirmOwnedWireGuardURIEgressProfile(ctx, resolvedID, deleted); err != nil {
+		_ = s.store.SaveL4Rules(ctx, resolvedID, rows)
+		return L4Rule{}, err
+	} else if ok {
+		referenced, err := s.wireGuardProfileReferenced(ctx, resolvedID, profileID, deleted.ID)
 		if err != nil {
 			_ = s.store.SaveL4Rules(ctx, resolvedID, rows)
 			return L4Rule{}, err
+		}
+		if !referenced {
+			rollbackWireGuardProfiles, err = s.deleteWireGuardProfileRow(ctx, resolvedID, profileID)
+			if err != nil {
+				_ = s.store.SaveL4Rules(ctx, resolvedID, rows)
+				return L4Rule{}, err
+			}
 		}
 	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
@@ -539,13 +549,13 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	)
 	wireGuardEgressURI := strings.TrimSpace(fallback.WireGuardEgressURI)
 	if proxyEgressMode == "wireguard" {
-		if input.WireGuardEgressURI != nil {
+		if input.WireGuardProfileID != nil && *input.WireGuardProfileID > 0 {
+			wireGuardEgressURI = ""
+		} else if input.WireGuardEgressURI != nil {
 			wireGuardEgressURI, err = normalizeWireGuardEgressURIUpdate(*input.WireGuardEgressURI, fallback.WireGuardEgressURI)
 			if err != nil {
 				return L4Rule{}, err
 			}
-		} else if input.WireGuardProfileID != nil && *input.WireGuardProfileID > 0 {
-			wireGuardEgressURI = ""
 		}
 	} else {
 		wireGuardEgressURI = ""
@@ -769,7 +779,69 @@ func ownedWireGuardURIEgressProfileCandidate(rule L4Rule) (int, bool) {
 	return *rule.WireGuardProfileID, true
 }
 
+func (s *l4Service) confirmOwnedWireGuardURIEgressProfile(ctx context.Context, agentID string, rule L4Rule) (int, bool, error) {
+	profileID, ok := ownedWireGuardURIEgressProfileCandidate(rule)
+	if !ok {
+		return 0, false, nil
+	}
+	parsed, err := ParseWireGuardURI(rule.WireGuardEgressURI)
+	if err != nil {
+		return 0, false, nil
+	}
+	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, row := range rows {
+		if row.ID != profileID {
+			continue
+		}
+		if wireGuardProfileRowMatchesURI(row, parsed) {
+			return profileID, true, nil
+		}
+		return 0, false, nil
+	}
+	return 0, false, nil
+}
+
+func wireGuardProfileRowMatchesURI(row storage.WireGuardProfileRow, parsed ParsedWireGuardURI) bool {
+	profile := wireGuardProfileFromRow(row)
+	if profile.Mode != "generic_wireguard" || profile.PrivateKey != parsed.PrivateKey || profile.MTU != parsed.MTU {
+		return false
+	}
+	if !stringSlicesEqual(normalizeStringList(profile.Addresses), parsed.Addresses) {
+		return false
+	}
+	if !stringSlicesEqual(normalizeStringList(profile.DNS), parsed.DNS) {
+		return false
+	}
+	if len(profile.Peers) != 1 {
+		return false
+	}
+	peer := profile.Peers[0]
+	if peer.Endpoint != parsed.Endpoint || peer.PublicKey != parsed.PublicKey || peer.PresharedKey != parsed.PresharedKey {
+		return false
+	}
+	return stringSlicesEqual(normalizeStringList(peer.AllowedIPs), parsed.AllowedIPs)
+}
+
+func stringSlicesEqual(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *l4Service) deleteWireGuardProfileRow(ctx context.Context, agentID string, profileID int) ([]storage.WireGuardProfileRow, error) {
+	return s.deleteWireGuardProfileRowWithRollback(ctx, agentID, profileID, nil)
+}
+
+func (s *l4Service) deleteWireGuardProfileRowWithRollback(ctx context.Context, agentID string, profileID int, rollbackRows []storage.WireGuardProfileRow) ([]storage.WireGuardProfileRow, error) {
 	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -784,63 +856,74 @@ func (s *l4Service) deleteWireGuardProfileRow(ctx context.Context, agentID strin
 		nextRows = append(nextRows, row)
 	}
 	if !found {
-		return nil, nil
+		return rollbackRows, nil
 	}
-	rollbackRows := append([]storage.WireGuardProfileRow(nil), rows...)
+	if rollbackRows == nil {
+		rollbackRows = append([]storage.WireGuardProfileRow(nil), rows...)
+	}
 	if err := s.store.SaveWireGuardProfiles(ctx, agentID, nextRows); err != nil {
-		return nil, err
+		return rollbackRows, err
 	}
 	return rollbackRows, nil
 }
 
 func (s *l4Service) cleanupUnusedWireGuardURIEgressProfile(ctx context.Context, agentID string, oldRule L4Rule, newRule L4Rule, rollbackRows []storage.WireGuardProfileRow) ([]storage.WireGuardProfileRow, error) {
-	profileID, ok := ownedWireGuardURIEgressProfileCandidate(oldRule)
-	if !ok || ruleUsesWireGuardProfile(newRule, profileID) {
-		return rollbackRows, nil
-	}
-	if rollbackRows == nil {
-		rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
-		if err != nil {
-			return nil, err
-		}
-		rollbackRows = append([]storage.WireGuardProfileRow(nil), rows...)
-		nextRows := make([]storage.WireGuardProfileRow, 0, len(rows))
-		found := false
-		for _, row := range rows {
-			if row.ID == profileID {
-				found = true
-				continue
-			}
-			nextRows = append(nextRows, row)
-		}
-		if !found {
-			return nil, nil
-		}
-		if err := s.store.SaveWireGuardProfiles(ctx, agentID, nextRows); err != nil {
-			return nil, err
-		}
-		return rollbackRows, nil
-	}
-	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+	profileID, ok, err := s.confirmOwnedWireGuardURIEgressProfile(ctx, agentID, oldRule)
 	if err != nil {
 		return rollbackRows, err
 	}
-	nextRows := make([]storage.WireGuardProfileRow, 0, len(rows))
-	found := false
-	for _, row := range rows {
-		if row.ID == profileID {
-			found = true
-			continue
-		}
-		nextRows = append(nextRows, row)
-	}
-	if !found {
+	if !ok || ruleUsesWireGuardProfile(newRule, profileID) {
 		return rollbackRows, nil
 	}
-	if err := s.store.SaveWireGuardProfiles(ctx, agentID, nextRows); err != nil {
+	referenced, err := s.wireGuardProfileReferenced(ctx, agentID, profileID, oldRule.ID)
+	if err != nil {
 		return rollbackRows, err
 	}
-	return rollbackRows, nil
+	if referenced {
+		return rollbackRows, nil
+	}
+	return s.deleteWireGuardProfileRowWithRollback(ctx, agentID, profileID, rollbackRows)
+}
+
+func (s *l4Service) wireGuardProfileReferenced(ctx context.Context, agentID string, profileID int, excludedL4RuleID int) (bool, error) {
+	httpRows, err := s.store.ListHTTPRules(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range httpRows {
+		if row.WireGuardEntryEnabled && row.WireGuardProfileID != nil && *row.WireGuardProfileID == profileID {
+			return true, nil
+		}
+	}
+
+	relayRows, err := s.store.ListRelayListeners(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range relayRows {
+		if strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") && row.WireGuardProfileID != nil && *row.WireGuardProfileID == profileID {
+			return true, nil
+		}
+	}
+
+	l4Rows, err := s.store.ListL4Rules(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range l4Rows {
+		if row.ID == excludedL4RuleID {
+			continue
+		}
+		listenMode := strings.ToLower(strings.TrimSpace(row.ListenMode))
+		proxyEgressMode := strings.ToLower(strings.TrimSpace(row.ProxyEgressMode))
+		if listenMode != "wireguard" && proxyEgressMode != "wireguard" {
+			continue
+		}
+		if row.WireGuardProfileID != nil && *row.WireGuardProfileID == profileID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func ruleUsesWireGuardProfile(rule L4Rule, profileID int) bool {
