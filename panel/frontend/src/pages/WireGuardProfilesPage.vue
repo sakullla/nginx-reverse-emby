@@ -580,12 +580,12 @@ function toggleClientEnabled(client) {
   if (isClientRowPending(client)) return
   const profileID = selectedProfileId.value
   setClientRowPending(profileID, client.id, true)
-  updateClient.mutate({
+  void updateClient.mutateAsync({
     clientId: client.id,
     enabled: client.enabled === false
-  }, {
-    onSettled: () => setClientRowPending(profileID, client.id, false)
   })
+    .finally(() => setClientRowPending(profileID, client.id, false))
+    .catch(() => {})
 }
 
 async function downloadClientConfig(client) {
@@ -615,9 +615,9 @@ function deleteWireGuardClientRow(client) {
   if (isClientRowPending(client)) return
   const profileID = selectedProfileId.value
   setClientRowPending(profileID, client.id, true)
-  deleteClient.mutate(client.id, {
-    onSettled: () => setClientRowPending(profileID, client.id, false)
-  })
+  void deleteClient.mutateAsync(client.id)
+    .finally(() => setClientRowPending(profileID, client.id, false))
+    .catch(() => {})
 }
 
 function confirmDelete() {
