@@ -23,7 +23,7 @@ import (
 var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
-var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic"}
+var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard"}
 
 type agentStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
@@ -1334,6 +1334,7 @@ func normalizeCapabilities(values []string) []string {
 		"cert_install":  {},
 		"l4":            {},
 		"relay_quic":    {},
+		"wireguard":     {},
 		"http3_ingress": {},
 	}
 	seen := map[string]struct{}{}

@@ -2075,6 +2075,98 @@ func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
 	}
 }
 
+func TestL4WireGuardRequiresAgentCapability(t *testing.T) {
+	tests := []struct {
+		name         string
+		capabilities []string
+		input        L4RuleInput
+		wantErr      bool
+	}{
+		{
+			name:         "rejects wireguard listen without capability",
+			capabilities: []string{"l4"},
+			input: L4RuleInput{
+				Protocol:           stringPtrL4("tcp"),
+				ListenPort:         intPtrL4(51820),
+				ListenMode:         stringPtrL4("wireguard"),
+				WireGuardProfileID: intPtrL4(7),
+				Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+			wantErr: true,
+		},
+		{
+			name:         "accepts wireguard listen with capability",
+			capabilities: []string{"l4", "wireguard"},
+			input: L4RuleInput{
+				Protocol:           stringPtrL4("tcp"),
+				ListenPort:         intPtrL4(51820),
+				ListenMode:         stringPtrL4("wireguard"),
+				WireGuardProfileID: intPtrL4(7),
+				Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+		},
+		{
+			name:         "rejects wireguard egress without capability",
+			capabilities: []string{"l4"},
+			input: L4RuleInput{
+				Protocol:           stringPtrL4("tcp"),
+				ListenPort:         intPtrL4(1080),
+				ListenMode:         stringPtrL4("proxy"),
+				ProxyEgressMode:    stringPtrL4("wireguard"),
+				WireGuardProfileID: intPtrL4(7),
+			},
+			wantErr: true,
+		},
+		{
+			name:         "accepts wireguard egress with capability",
+			capabilities: []string{"l4", "wireguard"},
+			input: L4RuleInput{
+				Protocol:           stringPtrL4("tcp"),
+				ListenPort:         intPtrL4(1080),
+				ListenMode:         stringPtrL4("proxy"),
+				ProxyEgressMode:    stringPtrL4("wireguard"),
+				WireGuardProfileID: intPtrL4(7),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeL4Store{
+				agents: []storage.AgentRow{{
+					ID:               "edge-1",
+					Name:             "Edge 1",
+					CapabilitiesJSON: marshalStringArray(tt.capabilities),
+				}},
+				httpRulesByID: map[string][]storage.HTTPRuleRow{},
+				l4RulesByID:   map[string][]storage.L4RuleRow{},
+				relayByAgent:  map[string][]storage.RelayListenerRow{},
+				wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+					"edge-1": {{ID: 7, AgentID: "edge-1", Enabled: true}},
+				},
+			}
+			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			rule, err := svc.Create(context.Background(), "edge-1", tt.input)
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+				}
+				if err == nil || !strings.Contains(err.Error(), "agent does not support WireGuard") {
+					t.Fatalf("Create() error = %v, want WireGuard capability message", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 {
+				t.Fatalf("Create() rule = %+v", rule)
+			}
+		})
+	}
+}
+
 func TestNormalizeL4RuleInputAcceptsProxyEntryProxyEgress(t *testing.T) {
 	protocol := "tcp"
 	listenMode := "proxy"

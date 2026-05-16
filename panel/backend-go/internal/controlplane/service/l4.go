@@ -189,6 +189,11 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
+	if l4RuleUsesWireGuard(rule) {
+		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+			return L4Rule{}, err
+		}
+	}
 	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
 		return L4Rule{}, err
 	}
@@ -272,6 +277,11 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
+	if l4RuleUsesWireGuard(rule) {
+		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+			return L4Rule{}, err
+		}
+	}
 	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
 		return L4Rule{}, err
 	}
@@ -444,6 +454,11 @@ func (s *l4Service) ensureAgentSupportsL4(ctx context.Context, agentID string) (
 		return "", ErrL4Unsupported
 	}
 	return "", ErrAgentNotFound
+}
+
+func l4RuleUsesWireGuard(rule L4Rule) bool {
+	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") ||
+		strings.EqualFold(strings.TrimSpace(rule.ProxyEgressMode), "wireguard")
 }
 
 func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (L4Rule, error) {

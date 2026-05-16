@@ -262,10 +262,10 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	if agents[0].HTTPRulesCount != 1 {
 		t.Fatalf("local HTTPRulesCount = %d", agents[0].HTTPRulesCount)
 	}
-	if len(agents[0].Capabilities) != 5 {
+	if len(agents[0].Capabilities) != 6 {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
-	if agents[0].Capabilities[4] != "relay_quic" {
+	if agents[0].Capabilities[4] != "relay_quic" || agents[0].Capabilities[5] != "wireguard" {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
 
@@ -856,12 +856,14 @@ func TestNormalizeCapabilitiesPreservesRelayQUICAndHTTP3Ingress(t *testing.T) {
 	got := normalizeCapabilities([]string{
 		"http_rules",
 		"relay_quic",
+		"wireguard",
 		"http3_ingress",
 		"bad",
+		"wireguard",
 		"relay_quic",
 	})
 
-	want := []string{"http_rules", "relay_quic", "http3_ingress"}
+	want := []string{"http_rules", "relay_quic", "wireguard", "http3_ingress"}
 	if len(got) != len(want) {
 		t.Fatalf("normalizeCapabilities() len = %d, want %d (%+v)", len(got), len(want), got)
 	}

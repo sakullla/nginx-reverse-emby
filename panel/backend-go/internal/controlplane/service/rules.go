@@ -109,6 +109,11 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	if httpRuleInputEnablesWireGuard(input, HTTPRule{}) {
+		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+			return HTTPRule{}, err
+		}
+	}
 
 	rows, err := s.store.ListHTTPRules(ctx, resolvedID)
 	if err != nil {
@@ -225,6 +230,11 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	}
 	if targetIndex < 0 {
 		return HTTPRule{}, ErrRuleNotFound
+	}
+	if httpRuleInputEnablesWireGuard(input, current) {
+		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+			return HTTPRule{}, err
+		}
 	}
 
 	rule, err := s.normalizeHTTPRuleInput(ctx, input, current, id)
@@ -584,24 +594,8 @@ func (s *ruleService) chooseAutoManagedCertificateIssuerMode(
 }
 
 func (s *ruleService) resolveAgentCapabilities(ctx context.Context, agentID string) (string, []string, error) {
-	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		return s.cfg.LocalAgentID, append([]string(nil), defaultLocalCapabilities...), nil
-	}
-	rows, err := s.store.ListAgents(ctx)
-	if err != nil {
-		return "", nil, err
-	}
-	for _, row := range rows {
-		if row.ID != agentID {
-			continue
-		}
-		name := strings.TrimSpace(row.Name)
-		if name == "" {
-			name = row.ID
-		}
-		return name, parseStringArray(row.CapabilitiesJSON), nil
-	}
-	return "", nil, ErrAgentNotFound
+	_, name, capabilities, err := resolveAgentCapabilitiesForStore(ctx, s.cfg, s.store, agentID)
+	return name, capabilities, err
 }
 
 func httpRulesFromRows(rows []storage.HTTPRuleRow) []HTTPRule {
@@ -815,6 +809,57 @@ func agentHasCapability(capabilities []string, capability string) bool {
 		}
 	}
 	return false
+}
+
+type agentCapabilityStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+}
+
+func resolveAgentCapabilitiesForStore(ctx context.Context, cfg config.Config, store agentCapabilityStore, agentID string) (string, string, []string, error) {
+	resolvedID := strings.TrimSpace(agentID)
+	if resolvedID == "" {
+		resolvedID = cfg.LocalAgentID
+	}
+	if cfg.EnableLocalAgent && resolvedID == cfg.LocalAgentID {
+		return resolvedID, cfg.LocalAgentID, append([]string(nil), defaultLocalCapabilities...), nil
+	}
+	rows, err := store.ListAgents(ctx)
+	if err != nil {
+		return "", "", nil, err
+	}
+	for _, row := range rows {
+		if row.ID != resolvedID {
+			continue
+		}
+		name := strings.TrimSpace(row.Name)
+		if name == "" {
+			name = row.ID
+		}
+		return resolvedID, name, parseStringArray(row.CapabilitiesJSON), nil
+	}
+	return "", "", nil, ErrAgentNotFound
+}
+
+func ensureAgentSupportsWireGuardCapability(ctx context.Context, cfg config.Config, store agentCapabilityStore, agentID string) error {
+	_, name, capabilities, err := resolveAgentCapabilitiesForStore(ctx, cfg, store, agentID)
+	if err != nil {
+		return err
+	}
+	if !agentHasCapability(capabilities, "wireguard") {
+		return fmt.Errorf("%w: agent does not support WireGuard: %s", ErrInvalidArgument, name)
+	}
+	return nil
+}
+
+func httpRuleInputEnablesWireGuard(input HTTPRuleInput, fallback HTTPRule) bool {
+	enabled := false
+	if fallback.ID > 0 {
+		enabled = fallback.WireGuardEntryEnabled
+	}
+	if input.WireGuardEntryEnabled != nil {
+		enabled = *input.WireGuardEntryEnabled
+	}
+	return enabled
 }
 
 func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRuleInput, fallback HTTPRule, suggestedID int) (HTTPRule, error) {

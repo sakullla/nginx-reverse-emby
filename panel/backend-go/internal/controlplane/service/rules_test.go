@@ -245,7 +245,7 @@ func TestRuleServicePreservesAdvancedWireGuardInnerEntry(t *testing.T) {
 			"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
 		},
 	}
-	svc := NewRuleService(config.Config{LocalAgentID: "local"}, store)
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL:              stringPtr("http://app.internal"),
@@ -265,6 +265,65 @@ func TestRuleServicePreservesAdvancedWireGuardInnerEntry(t *testing.T) {
 	row := store.rulesByAgent["local"][0]
 	if !row.WireGuardEntryEnabled || row.WireGuardProfileID == nil || *row.WireGuardProfileID != 7 || row.WireGuardEntryListenHost != "10.8.0.1" || row.WireGuardEntryListenPort != 8080 {
 		t.Fatalf("persisted WireGuard HTTP entry = %+v", row)
+	}
+}
+
+func TestRuleServiceWireGuardEntryRequiresAgentCapability(t *testing.T) {
+	tests := []struct {
+		name         string
+		capabilities []string
+		wantErr      bool
+	}{
+		{
+			name:         "rejects without wireguard capability",
+			capabilities: []string{"http_rules"},
+			wantErr:      true,
+		},
+		{
+			name:         "accepts with wireguard capability",
+			capabilities: []string{"http_rules", "wireguard"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeRuleStore{
+				agents: []storage.AgentRow{{
+					ID:               "edge-1",
+					Name:             "Edge 1",
+					CapabilitiesJSON: marshalStringArray(tt.capabilities),
+				}},
+				rulesByAgent: map[string][]storage.HTTPRuleRow{},
+				wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+					"edge-1": {{ID: 7, AgentID: "edge-1", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+				},
+			}
+			svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			rule, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
+				FrontendURL:              stringPtrRule("http://app.internal"),
+				Backends:                 &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+				WireGuardEntryEnabled:    boolPtrRule(true),
+				WireGuardProfileID:       intPtrRule(7),
+				WireGuardEntryListenHost: stringPtrRule("10.8.0.1"),
+				WireGuardEntryListenPort: intPtrRule(8080),
+			})
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+				}
+				if err == nil || !strings.Contains(err.Error(), "agent does not support WireGuard") {
+					t.Fatalf("Create() error = %v, want WireGuard capability message", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 {
+				t.Fatalf("Create() rule = %+v", rule)
+			}
+		})
 	}
 }
 

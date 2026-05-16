@@ -485,6 +485,11 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	if err != nil {
 		return relayPreparation{}, err
 	}
+	if draft.TransportMode == "wireguard" {
+		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, agentID); err != nil {
+			return relayPreparation{}, err
+		}
+	}
 	previousUsesAutoCert := relayListenerUsesAutoCertificate(certRows, fallback)
 	shouldRotateAutoCert := shouldRotateAutoRelayListenerCertificate(certificateSource, input, fallback, draft, previousUsesAutoCert)
 	shouldIssueCert := shouldAutoIssueRelayListenerCertificate(certificateSource, draft, previousUsesAutoCert, shouldRotateAutoCert)

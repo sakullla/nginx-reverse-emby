@@ -221,12 +221,12 @@ func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing
 		{
 			name:         "http3 disabled",
 			http3Enabled: false,
-			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"},
+			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard"},
 		},
 		{
 			name:         "http3 enabled",
 			http3Enabled: true,
-			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "http3_ingress"},
+			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "http3_ingress"},
 		},
 	}
 

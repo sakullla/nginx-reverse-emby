@@ -599,6 +599,66 @@ func TestRelayListenerWireGuardValidatesProfileReference(t *testing.T) {
 	}
 }
 
+func TestRelayListenerWireGuardTransportRequiresAgentCapability(t *testing.T) {
+	tests := []struct {
+		name         string
+		capabilities []string
+		wantErr      bool
+	}{
+		{
+			name:         "rejects without wireguard capability",
+			capabilities: []string{"relay_quic"},
+			wantErr:      true,
+		},
+		{
+			name:         "accepts with wireguard capability",
+			capabilities: []string{"relay_quic", "wireguard"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &relayCertStore{
+				agents: []storage.AgentRow{{
+					ID:               "edge-1",
+					Name:             "Edge 1",
+					CapabilitiesJSON: marshalStringArray(tt.capabilities),
+				}},
+				relayByAgentID: map[string][]storage.RelayListenerRow{},
+				httpRulesByID:  map[string][]storage.HTTPRuleRow{},
+				l4RulesByID:    map[string][]storage.L4RuleRow{},
+				wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+					"edge-1": {{ID: 7, AgentID: "edge-1", Enabled: true}},
+				},
+			}
+			svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			listener, err := svc.Create(context.Background(), "edge-1", RelayListenerInput{
+				Name:               stringPtr("wg-relay"),
+				ListenPort:         intPtrService(7443),
+				Enabled:            boolPtr(false),
+				TransportMode:      stringPtr("wireguard"),
+				WireGuardProfileID: intPtrService(7),
+			})
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+				}
+				if err == nil || !strings.Contains(err.Error(), "agent does not support WireGuard") {
+					t.Fatalf("Create() error = %v, want WireGuard capability message", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if listener.TransportMode != "wireguard" || listener.WireGuardProfileID == nil || *listener.WireGuardProfileID != 7 {
+				t.Fatalf("Create() listener = %+v", listener)
+			}
+		})
+	}
+}
+
 func TestRelayListenerWireGuardListenUniquenessAllowsSameBindAcrossProfiles(t *testing.T) {
 	existingProfileID := 7
 	nextProfileID := 8
