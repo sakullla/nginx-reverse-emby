@@ -149,6 +149,9 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 
 	maxRevision := maxWireGuardProfileRevision(rows)
 	allocatedID := allocator.AllocateRuleID(input.ID)
+	if len(normalizeStringList(input.Addresses)) == 0 {
+		input.Addresses = []string{allocateWireGuardProfileAddress(rows)}
+	}
 	profile, err := normalizeWireGuardProfileInput(input, WireGuardProfile{}, allocatedID)
 	if err != nil {
 		return WireGuardProfile{}, err
@@ -718,6 +721,28 @@ func maxWireGuardProfileRevision(rows []storage.WireGuardProfileRow) int {
 		}
 	}
 	return maxRevision
+}
+
+func allocateWireGuardProfileAddress(rows []storage.WireGuardProfileRow) string {
+	used := map[int]struct{}{}
+	for _, row := range rows {
+		for _, address := range parseStringArray(row.AddressesJSON) {
+			prefix, err := netip.ParsePrefix(address)
+			if err != nil || prefix.Bits() != 24 || !prefix.Addr().Is4() {
+				continue
+			}
+			octets := prefix.Masked().Addr().As4()
+			if octets[0] == 10 && octets[1] == 8 {
+				used[int(octets[2])] = struct{}{}
+			}
+		}
+	}
+	for subnet := 0; subnet <= 255; subnet++ {
+		if _, exists := used[subnet]; !exists {
+			return fmt.Sprintf("10.8.%d.1/24", subnet)
+		}
+	}
+	return "10.8.0.1/24"
 }
 
 func validateWireGuardPrefixes(values []string, field string) error {

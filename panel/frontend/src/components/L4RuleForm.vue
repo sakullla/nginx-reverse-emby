@@ -172,12 +172,13 @@
             <select v-model="form.listen_mode" class="input">
               <option value="tcp">{{ form.protocol === 'udp' ? 'UDP 转发' : 'TCP 转发' }}</option>
               <option v-if="form.protocol === 'tcp'" value="proxy">SOCKS / HTTP 代理</option>
-              <option value="wireguard">WireGuard 入站</option>
+              <option value="wireguard">WireGuard</option>
             </select>
           </div>
-          <div v-if="form.listen_mode === 'proxy'" class="form-group">
+          <div v-if="supportsProxyEgress" class="form-group">
             <label class="form-label">出口模式</label>
             <select v-model="form.proxy_egress_mode" class="input">
+              <option v-if="form.listen_mode === 'wireguard'" value="">后端转发</option>
               <option value="relay">Relay</option>
               <option value="proxy">SOCKS / HTTP 代理</option>
               <option value="wireguard">WireGuard</option>
@@ -201,13 +202,13 @@
           </div>
         </div>
 
-        <div v-if="form.listen_mode === 'proxy'" class="advanced-checks">
+        <div v-if="isProxyEntry" class="advanced-checks">
           <label class="backend-checkbox">
             <input v-model="form.proxy_entry_auth.enabled" type="checkbox">
             <span>启用入口认证</span>
           </label>
         </div>
-        <div v-if="form.listen_mode === 'proxy' && form.proxy_entry_auth.enabled" class="form-row">
+        <div v-if="isProxyEntry && form.proxy_entry_auth.enabled" class="form-row">
           <div class="form-group">
             <label class="form-label">用户名</label>
             <input v-model="form.proxy_entry_auth.username" class="input" autocomplete="off">
@@ -217,10 +218,10 @@
             <input v-model="form.proxy_entry_auth.password" class="input" type="password" autocomplete="new-password">
           </div>
         </div>
-        <div v-if="form.listen_mode === 'proxy' && form.proxy_egress_mode === 'wireguard'" class="form-help">
+        <div v-if="isProxyEntry && form.proxy_egress_mode === 'wireguard'" class="form-help">
           代理出口将通过所选 WireGuard Profile 转发。
         </div>
-        <div v-if="form.listen_mode === 'proxy' && form.proxy_egress_mode === 'proxy'" class="form-group">
+        <div v-if="isProxyEntry && form.proxy_egress_mode === 'proxy'" class="form-group">
           <label class="form-label">出口代理 URL</label>
           <input v-model="form.proxy_egress_url" class="input" placeholder="socks://user:pass@127.0.0.1:1080">
         </div>
@@ -408,6 +409,7 @@ function createFormState(initialData) {
   const initialListenMode = ['proxy', 'wireguard'].includes(initialData?.listen_mode)
     ? initialData.listen_mode
     : 'tcp'
+  const initialProxyEgressMode = initialData?.proxy_egress_mode || (initialListenMode === 'wireguard' ? '' : 'relay')
   return {
     protocol,
     listen_host: initialData?.listen_host || '0.0.0.0',
@@ -425,7 +427,7 @@ function createFormState(initialData) {
       username: initialData?.proxy_entry_auth?.username || '',
       password: initialData?.proxy_entry_auth?.password || '',
     },
-    proxy_egress_mode: initialData?.proxy_egress_mode || 'relay',
+    proxy_egress_mode: initialProxyEgressMode,
     proxy_egress_url: initialData?.proxy_egress_url || '',
     wireguard_profile_id: initialData?.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
     wireguard_listen_host: initialData?.wireguard_listen_host || '',
@@ -488,7 +490,8 @@ const hasTuningChanges = computed(() => {
 })
 
 const activeTab = ref('basic')
-const isProxyEntry = computed(() => form.value.protocol === 'tcp' && form.value.listen_mode === 'proxy')
+const supportsProxyEgress = computed(() => form.value.protocol === 'tcp' && (form.value.listen_mode === 'proxy' || form.value.listen_mode === 'wireguard'))
+const isProxyEntry = computed(() => form.value.protocol === 'tcp' && (form.value.listen_mode === 'proxy' || (form.value.listen_mode === 'wireguard' && form.value.proxy_egress_mode !== '')))
 const isWireGuardInbound = computed(() => form.value.listen_mode === 'wireguard')
 const isWireGuardEgress = computed(() => isProxyEntry.value && form.value.proxy_egress_mode === 'wireguard')
 const usesWireGuard = computed(() => isWireGuardInbound.value || isWireGuardEgress.value)
@@ -577,6 +580,9 @@ watch(() => form.value.protocol, (newProto) => {
     form.value.relay_obfs = false
     if (form.value.listen_mode === 'proxy') {
       form.value.listen_mode = 'tcp'
+    }
+    if (form.value.listen_mode === 'wireguard') {
+      form.value.proxy_egress_mode = ''
     }
   }
 })

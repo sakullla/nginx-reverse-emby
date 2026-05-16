@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -191,6 +192,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err := s.validateRelayChain(ctx, flattenRelayLayers(rule.RelayLayers)); err != nil {
 		return L4Rule{}, err
 	}
+	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
 		return L4Rule{}, err
 	}
@@ -256,6 +260,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		return L4Rule{}, err
 	}
 	if err := s.validateRelayChain(ctx, flattenRelayLayers(rule.RelayLayers)); err != nil {
+		return L4Rule{}, err
+	}
+	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
 		return L4Rule{}, err
 	}
 	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
@@ -521,9 +528,6 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		if wireGuardProfileID == nil {
 			return L4Rule{}, fmt.Errorf("%w: wireguard_profile_id is required when listen_mode=wireguard or proxy_egress_mode=wireguard", ErrInvalidArgument)
 		}
-		if listenMode == "wireguard" && wireGuardListenHost == "" {
-			wireGuardListenHost = listenHost
-		}
 	} else {
 		wireGuardProfileID = nil
 		wireGuardListenHost = ""
@@ -610,6 +614,37 @@ func (s *l4Service) validateWireGuardProfileReference(ctx context.Context, agent
 		return nil
 	}
 	return validateEnabledWireGuardProfileReference(ctx, s.store, agentID, rule.WireGuardProfileID)
+}
+
+func (s *l4Service) defaultWireGuardListenHost(ctx context.Context, agentID string, rule *L4Rule) error {
+	if rule == nil || rule.ListenMode != "wireguard" || strings.TrimSpace(rule.WireGuardListenHost) != "" || rule.WireGuardProfileID == nil {
+		return nil
+	}
+	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.ID != *rule.WireGuardProfileID {
+			continue
+		}
+		if host := firstWireGuardProfileAddressHost(row.AddressesJSON); host != "" {
+			rule.WireGuardListenHost = host
+			return nil
+		}
+	}
+	rule.WireGuardListenHost = strings.TrimSpace(rule.ListenHost)
+	return nil
+}
+
+func firstWireGuardProfileAddressHost(raw string) string {
+	for _, address := range parseStringArray(raw) {
+		prefix, err := netip.ParsePrefix(address)
+		if err == nil {
+			return prefix.Addr().String()
+		}
+	}
+	return ""
 }
 
 func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {

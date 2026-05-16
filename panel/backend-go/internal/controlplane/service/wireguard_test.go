@@ -112,18 +112,43 @@ func TestWireGuardProfileRejectsInvalidCIDR(t *testing.T) {
 	}
 }
 
-func TestWireGuardProfileCreateRequiresAddresses(t *testing.T) {
+func TestWireGuardProfileCreateAllocatesAddressWhenOmitted(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
 	input := testWireGuardProfileInput()
 	input.Addresses = nil
-	_, err := svc.Create(ctx, "local", input)
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	created, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "addresses is required") {
-		t.Fatalf("Create() error = %v, want addresses required message", err)
+	if len(created.Addresses) != 1 || created.Addresses[0] != "10.8.0.1/24" {
+		t.Fatalf("Create() addresses = %+v, want allocated 10.8.0.1/24", created.Addresses)
+	}
+}
+
+func TestWireGuardProfileCreateAllocatesNextAvailableAddress(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	first := testWireGuardProfileInput()
+	first.Addresses = []string{"10.8.0.1/24"}
+	if _, err := svc.Create(ctx, "local", first); err != nil {
+		t.Fatalf("Create(first) error = %v", err)
+	}
+
+	second := testWireGuardProfileInput()
+	second.PrivateKey = testWireGuardPresharedKey
+	second.Peers[0].PublicKey = testWireGuardPublicKeyB
+	second.Peers[0].PresharedKey = testWireGuardPresharedKeyB
+	second.Addresses = nil
+	second.ListenPort = 51821
+	created, err := svc.Create(ctx, "local", second)
+	if err != nil {
+		t.Fatalf("Create(second) error = %v", err)
+	}
+	if len(created.Addresses) != 1 || created.Addresses[0] != "10.8.1.1/24" {
+		t.Fatalf("Create(second) addresses = %+v, want allocated 10.8.1.1/24", created.Addresses)
 	}
 }
 

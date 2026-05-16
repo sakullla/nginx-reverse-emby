@@ -1995,6 +1995,22 @@ function normalizeMockWireGuardPeer(peer = {}) {
   }
 }
 
+function allocateMockWireGuardAddress(agentId) {
+  const used = new Set()
+  for (const profile of mockWireGuardProfilesByAgent[agentId] || []) {
+    for (const address of normalizeStringList(profile.addresses)) {
+      const match = /^10\.8\.(\d{1,3})\.1\/24$/.exec(address)
+      if (!match) continue
+      const subnet = Number(match[1])
+      if (Number.isInteger(subnet) && subnet >= 0 && subnet <= 255) used.add(subnet)
+    }
+  }
+  for (let subnet = 0; subnet <= 255; subnet += 1) {
+    if (!used.has(subnet)) return `10.8.${subnet}.1/24`
+  }
+  return '10.8.0.1/24'
+}
+
 function normalizeMockWireGuardProfile(agentId, profile = {}) {
   const id = Number(profile.id || ++mockWireGuardProfileIdCounter)
   return {
@@ -2029,10 +2045,12 @@ export async function createWireGuardProfile(agentId, payload) {
   if (isDev) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
+    const addresses = normalizeStringList(payload.addresses)
     const profile = normalizeMockWireGuardProfile(agentId, {
       ...payload,
       id: ++mockWireGuardProfileIdCounter,
       agent_id: agentId,
+      addresses: addresses.length ? addresses : [allocateMockWireGuardAddress(agentId)],
       revision: Date.now()
     })
     mockWireGuardProfilesByAgent[agentId] = mockWireGuardProfilesByAgent[agentId] || []

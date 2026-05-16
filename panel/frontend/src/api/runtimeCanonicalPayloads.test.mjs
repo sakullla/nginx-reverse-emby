@@ -289,6 +289,14 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
+  it('L4 form treats WireGuard listen mode as a proxy entry when egress is selected', async () => {
+    const l4Form = await import('../components/L4RuleForm.vue?raw')
+
+    expect(l4Form.default).toContain('const isProxyEntry = computed(() => form.value.protocol === \'tcp\' && (form.value.listen_mode === \'proxy\' || (form.value.listen_mode === \'wireguard\' && form.value.proxy_egress_mode !== \'\')))')
+    expect(l4Form.default).toContain('proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : \'\'')
+    expect(l4Form.default).toContain('if (!isProxyEntry.value && validBackends.length === 0)')
+  })
+
   it('does not synthesize canonical backends from legacy runtime fields', async () => {
     const { api } = await vi.importActual('./client.js')
     const originalAdapter = api.defaults.adapter

@@ -846,6 +846,40 @@ func TestL4WireGuardListenHostDefaultsToListenHostOnUpdate(t *testing.T) {
 	}
 }
 
+func TestL4WireGuardListenHostDefaultsToProfileAddress(t *testing.T) {
+	profileID := 7
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{
+				ID:            profileID,
+				AgentID:       "local",
+				AddressesJSON: `["10.8.9.1/24"]`,
+				Enabled:       true,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:           stringPtrL4("tcp"),
+		ListenHost:         stringPtrL4("0.0.0.0"),
+		ListenPort:         intPtrL4(8443),
+		ListenMode:         stringPtrL4("wireguard"),
+		WireGuardProfileID: intPtrL4(profileID),
+		Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.WireGuardListenHost != "10.8.9.1" {
+		t.Fatalf("WireGuardListenHost = %q, want profile address", rule.WireGuardListenHost)
+	}
+	if got := store.l4RulesByID["local"][0].WireGuardListenHost; got != "10.8.9.1" {
+		t.Fatalf("persisted WireGuardListenHost = %q, want profile address", got)
+	}
+}
+
 func TestL4RuleServiceUpdateToWireGuardInboundClearsStaleProxyEgress(t *testing.T) {
 	profileID := 7
 	current := L4Rule{
@@ -967,6 +1001,30 @@ func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
 					t.Fatalf("proxy-entry wireguard targets = backends=%+v url=%q", rule.Backends, rule.ProxyEgressURL)
 				}
 				if row.WireGuardProfileID == nil || *row.WireGuardProfileID != 7 || row.ProxyEgressURL != "" {
+					t.Fatalf("persisted row = %+v", row)
+				}
+			},
+		},
+		{
+			name: "accepts enabled profile for wireguard listen with proxy egress",
+			input: L4RuleInput{
+				Protocol:            stringPtrL4("tcp"),
+				ListenPort:          intPtrL4(8443),
+				ListenMode:          stringPtrL4("wireguard"),
+				WireGuardProfileID:  intPtrL4(7),
+				WireGuardListenHost: stringPtrL4("10.8.0.1"),
+				ProxyEgressMode:     stringPtrL4("proxy"),
+				ProxyEgressURL:      stringPtrL4("socks://127.0.0.1:1080"),
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+			},
+			assert: func(t *testing.T, rule L4Rule, row storage.L4RuleRow) {
+				t.Helper()
+				if rule.ListenMode != "wireguard" || rule.ProxyEgressMode != "proxy" || len(rule.Backends) != 0 {
+					t.Fatalf("rule = %+v, want wireguard proxy entry", rule)
+				}
+				if row.ProxyEgressMode != "proxy" || row.ProxyEgressURL != "socks://127.0.0.1:1080" || row.BackendsJSON != "[]" {
 					t.Fatalf("persisted row = %+v", row)
 				}
 			},

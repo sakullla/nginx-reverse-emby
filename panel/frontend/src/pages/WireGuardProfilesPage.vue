@@ -106,6 +106,7 @@
           <div class="form-group">
             <label class="form-label">Addresses（每行一个）</label>
             <textarea v-model="form.addresses_text" class="input textarea" placeholder="10.8.0.1/24"></textarea>
+            <p class="form-hint">留空时会自动分配下一个 10.8.x.1/24 地址。</p>
           </div>
           <div class="form-group">
             <label class="form-label">DNS（每行一个）</label>
