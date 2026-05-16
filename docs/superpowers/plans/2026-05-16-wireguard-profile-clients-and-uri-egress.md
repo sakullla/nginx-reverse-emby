@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let L4 rules use WireGuard as a transparent client-traffic inbound, let L4 rules use a pasted WireGuard URI as an outbound egress, and make WireGuard Profiles manage ordinary client access without exposing raw peer editing to normal users.
+**Goal:** Let L4 rules use WireGuard as either an inner address listener or a transparent client-traffic inbound, let HTTP rules optionally expose an advanced WireGuard inner entry, let L4 rules use a pasted WireGuard URI as an outbound egress, and make WireGuard Profiles manage ordinary client access without exposing raw peer editing to normal users.
 
-**Architecture:** Keep the agent runtime shape centered on WireGuard profiles. WireGuard inbound L4 rules consume flows captured from profile client traffic instead of requiring users to connect to a special `server_address:port`; L4 matching decides which backend, Relay path, or egress handles each flow. Direct L4 URI egress is parsed by the control plane and materialized as a managed hidden profile referenced by the L4 rule; reusable profiles and human clients use the same runtime peer model.
+**Architecture:** Keep the agent runtime shape centered on WireGuard profiles. L4 WireGuard inbound has an explicit `wireguard_inbound_mode`: `address` listens on a WireGuard inner IP:port and `transparent` consumes captured client flows matched by destination fields. HTTP WireGuard support is an advanced per-rule inner listener, not transparent interception. Direct L4 URI egress is parsed by the control plane and materialized as a managed hidden profile referenced by the L4 rule.
 
 **Tech Stack:** Go control plane with GORM/SQLite storage, Go agent WireGuard netstack runtime, Vue 3/Vite frontend, standard Go tests and frontend build/test commands.
 
@@ -19,18 +19,23 @@
 - `panel/backend-go/internal/controlplane/service/wireguard_uri.go`: new URI parser and redacted preview helpers.
 - `panel/backend-go/internal/controlplane/service/wireguard_clients.go`: new client CRUD/config generation helpers.
 - `panel/backend-go/internal/controlplane/service/wireguard.go`: profile defaults, endpoint fields, client/system peer assembly, URI import integration.
-- `panel/backend-go/internal/controlplane/service/l4.go`: accept direct WireGuard URI egress and materialize managed profiles.
+- `panel/backend-go/internal/controlplane/service/l4.go`: add `wireguard_inbound_mode`, reuse `listen_host/listen_port` as transparent destination matching fields, add direct WireGuard URI egress, and managed profile materialization.
+- `panel/backend-go/internal/controlplane/service/rules.go`: add advanced HTTP WireGuard inner entry normalization and validation.
 - `panel/backend-go/internal/controlplane/http/handlers_wireguard.go`: client routes, config download, URI parse/import routes.
 - `panel/backend-go/internal/controlplane/http/handlers_l4.go`: wire L4 URI egress payloads.
+- `panel/backend-go/internal/controlplane/http/handlers_rules.go`: wire HTTP advanced WireGuard entry payloads.
 - `go-agent/internal/model/wireguard.go`: add optional peer `reserved`.
 - `go-agent/internal/wireguard/config.go`: normalize reserved bytes.
 - `go-agent/internal/wireguard/runtime.go`: pass reserved bytes to IPC if supported by the current netstack API; otherwise keep parsed data in fingerprint only if no IPC support exists; expose captured TCP/UDP flow hooks for transparent inbound.
 - `go-agent/internal/app/l4_runtime.go`: wire transparent WireGuard inbound profiles into the L4 server.
+- `go-agent/internal/app/http_runtime.go`: pass WireGuard profiles to HTTP runtime when HTTP rules use advanced WireGuard inner entries.
 - `go-agent/internal/l4/server.go`: route captured WireGuard flows through existing L4 backend/Relay/egress handling.
+- `go-agent/internal/httpserver`: listen for advanced HTTP WireGuard inner entries inside selected profile runtime.
 - `panel/frontend/src/api/runtime.js`: add WireGuard URI parse/import/client APIs and canonical L4 payload fields.
 - `panel/frontend/src/api/devMocks/data.js`: mock profile endpoint fields, clients, URI parse/import, and L4 direct URI egress.
 - `panel/frontend/src/pages/WireGuardProfilesPage.vue`: hide raw peers in default flow; add profile endpoint fields, client table, config download/QR entry points, system connection placeholder.
-- `panel/frontend/src/components/L4RuleForm.vue`: add transparent WireGuard inbound matching fields and WireGuard egress source selector: Profile vs URI.
+- `panel/frontend/src/components/RuleForm.vue`: add HTTP advanced WireGuard inner entry controls.
+- `panel/frontend/src/components/L4RuleForm.vue`: add WireGuard inbound mode selector and WireGuard egress source selector: Profile vs URI.
 - `panel/frontend/src/api/runtimeCanonicalPayloads.test.mjs`: cover canonical frontend payloads and raw-source checks.
 
 ## Phase 1: WireGuard URI Parser
@@ -628,19 +633,109 @@ git add panel/backend-go/internal/controlplane/storage/sqlite_models.go panel/ba
 git commit -m "feat(wireguard): manage profile clients"
 ```
 
-## Phase 5: Transparent WireGuard Inbound
+## Phase 5: L4 WireGuard Inbound Modes
 
-### Task 5: Route Captured WireGuard Client Traffic Through L4 Rules
+### Task 5: Support L4 Address And Transparent WireGuard Inbound Modes
 
 **Files:**
 - Modify: `go-agent/internal/wireguard/runtime.go`
 - Modify: `go-agent/internal/app/l4_runtime.go`
 - Modify: `go-agent/internal/l4/server.go`
 - Modify: `go-agent/internal/model/l4.go`
+- Modify: `panel/backend-go/internal/controlplane/service/l4.go`
+- Modify: `panel/backend-go/internal/controlplane/storage/sqlite_models.go`
+- Modify: `panel/backend-go/internal/controlplane/storage/snapshot_types.go`
+- Modify: `panel/frontend/src/components/L4RuleForm.vue`
 - Test: `go-agent/internal/app/local_runtime_test.go`
 - Test: `go-agent/internal/l4/server_test.go`
+- Test: `panel/backend-go/internal/controlplane/service/l4_test.go`
+- Test: `panel/frontend/src/api/runtimeCanonicalPayloads.test.mjs`
 
-- [ ] **Step 1: Write failing agent behavior test**
+- [ ] **Step 1: Write failing backend normalization tests**
+
+Add to `panel/backend-go/internal/controlplane/service/l4_test.go`:
+
+```go
+func TestL4RuleServiceWireGuardDefaultsToAddressInboundMode(t *testing.T) {
+	store := &fakeL4Store{
+		agents: map[string]storage.AgentRow{"local": {ID: "local", Name: "local"}},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+	}
+	svc := NewL4RuleService(config.Config{LocalAgentID: "local"}, store)
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:           stringPtrL4("tcp"),
+		ListenMode:         stringPtrL4("wireguard"),
+		WireGuardProfileID: intPtrL4(7),
+		ListenPort:         intPtrL4(9443),
+		Backends:           &[]L4Backend{{Host: "127.0.0.1", Port: 443}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.WireGuardInboundMode != "address" {
+		t.Fatalf("WireGuardInboundMode = %q", rule.WireGuardInboundMode)
+	}
+	if rule.WireGuardListenHost != "10.8.0.1" {
+		t.Fatalf("WireGuardListenHost = %q", rule.WireGuardListenHost)
+	}
+}
+
+func TestL4RuleServiceWireGuardTransparentModeKeepsMatchFields(t *testing.T) {
+	store := &fakeL4Store{
+		agents: map[string]storage.AgentRow{"local": {ID: "local", Name: "local"}},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+	}
+	svc := NewL4RuleService(config.Config{LocalAgentID: "local"}, store)
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:              stringPtrL4("tcp"),
+		ListenMode:            stringPtrL4("wireguard"),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+		WireGuardProfileID:   intPtrL4(7),
+		ListenHost:           stringPtrL4("0.0.0.0"),
+		ListenPort:           intPtrL4(443),
+		ProxyEgressMode:      stringPtrL4("relay"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.WireGuardInboundMode != "transparent" || rule.ListenPort != 443 {
+		t.Fatalf("transparent fields = %+v", rule)
+	}
+	if rule.WireGuardListenHost != "" {
+		t.Fatalf("WireGuardListenHost = %q, want empty in transparent mode", rule.WireGuardListenHost)
+	}
+}
+```
+
+- [ ] **Step 2: Run backend test to verify it fails**
+
+Run: `cd panel/backend-go && go test ./internal/controlplane/service -run 'TestL4RuleServiceWireGuard(Default|Transparent)' -count=1`
+
+Expected: FAIL because `WireGuardInboundMode` does not exist.
+
+- [ ] **Step 3: Add backend fields**
+
+Add to storage/service/snapshot L4 structs:
+
+```go
+WireGuardInboundMode string `json:"wireguard_inbound_mode,omitempty"`
+```
+
+Persist as a column on `L4RuleRow`, normalize mode to `address` or `transparent`, and keep existing `wireguard_listen_host` behavior only for `address` mode. In `transparent` mode, use existing `listen_host/listen_port` as destination matching fields, with `listen_host` empty or `0.0.0.0` meaning any destination host.
+
+- [ ] **Step 4: Run backend tests**
+
+Run: `cd panel/backend-go && go test ./internal/controlplane/service -run 'TestL4RuleServiceWireGuard(Default|Transparent)' -count=1`
+
+Expected: PASS.
+
+- [ ] **Step 5: Write failing agent behavior test**
 
 Add to `go-agent/internal/app/local_runtime_test.go`:
 
@@ -671,7 +766,9 @@ func TestL4RuntimeManagerRoutesTransparentWireGuardInboundTraffic(t *testing.T) 
 	err = manager.ApplyWithRelayAndWireGuardProfiles(context.Background(), []model.L4Rule{{
 		Protocol:           "tcp",
 		ListenMode:         "wireguard",
+		WireGuardInboundMode: "transparent",
 		WireGuardProfileID: &profileID,
+		ListenHost:         "0.0.0.0",
 		ListenPort:         443,
 		Backends:           []model.L4Backend{{Host: host, Port: port}},
 	}}, nil, []model.WireGuardProfile{validAppWireGuardProfile(profileID)})
@@ -695,15 +792,15 @@ func TestL4RuntimeManagerRoutesTransparentWireGuardInboundTraffic(t *testing.T) 
 }
 ```
 
-If `testAppWireGuardRuntime` does not expose `DeliverTCPFlow`, add only the test method call first and let the test fail. This verifies the missing transparent inbound contract.
+If `testAppWireGuardRuntime` does not expose `DeliverTCPFlow`, add only the test method call first and let the test fail. This verifies the missing transparent inbound contract. Keep existing address-mode tests that listen inside the WireGuard runtime on `wireguard_listen_host:listen_port`.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 6: Run agent test to verify it fails**
 
 Run: `cd go-agent && go test ./internal/app -run TestL4RuntimeManagerRoutesTransparentWireGuardInboundTraffic -count=1`
 
 Expected: FAIL because the test runtime and manager do not support transparent flow delivery.
 
-- [ ] **Step 3: Define transparent flow interfaces**
+- [ ] **Step 7: Define transparent flow interfaces**
 
 In `go-agent/internal/wireguard/runtime.go`, extend runtime support with interfaces rather than changing every runtime immediately:
 
@@ -734,14 +831,14 @@ func (r *testAppWireGuardRuntime) DeliverTCPFlow(source, destination string, con
 }
 ```
 
-- [ ] **Step 4: Install handlers from L4 runtime**
+- [ ] **Step 8: Install handlers from L4 runtime**
 
 In `go-agent/internal/app/l4_runtime.go`, after WireGuard profiles are prepared and before L4 server start, register a handler for profiles referenced by `listen_mode=wireguard` rules:
 
 ```go
 func (m *l4RuntimeManager) installWireGuardTransparentInboundHandlersLocked(ctx context.Context, rules []model.L4Rule, provider relay.WireGuardRuntimeProvider, server *l4.Server) error {
 	for _, rule := range rules {
-		if !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
+	if !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") || !strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent") || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
 			continue
 		}
 		runtime, ok := provider.WireGuardRuntime(*rule.WireGuardProfileID)
@@ -762,7 +859,7 @@ func (m *l4RuntimeManager) installWireGuardTransparentInboundHandlersLocked(ctx 
 
 Adjust imports as needed.
 
-- [ ] **Step 5: Add L4 server flow entrypoint**
+- [ ] **Step 9: Add L4 server flow entrypoint**
 
 In `go-agent/internal/l4/server.go`, add:
 
@@ -786,7 +883,7 @@ func (s *Server) matchWireGuardTCPFlow(destination string) (model.L4Rule, bool) 
 		return model.L4Rule{}, false
 	}
 	for _, rule := range s.rules {
-		if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") && strings.EqualFold(strings.TrimSpace(rule.Protocol), "tcp") && rule.ListenPort == port {
+		if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") && strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent") && strings.EqualFold(strings.TrimSpace(rule.Protocol), "tcp") && rule.ListenPort == port {
 			return rule, true
 		}
 	}
@@ -796,22 +893,121 @@ func (s *Server) matchWireGuardTCPFlow(destination string) (model.L4Rule, bool) 
 
 If the existing server does not expose `rules` or `handleAcceptedTCPConn`, add narrow unexported helpers around the current TCP accept path instead of duplicating relay/backend forwarding logic.
 
-- [ ] **Step 6: Run transparent inbound test**
+- [ ] **Step 10: Run transparent inbound test**
 
 Run: `cd go-agent && go test ./internal/app -run TestL4RuntimeManagerRoutesTransparentWireGuardInboundTraffic -count=1`
+
+Expected: PASS.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add go-agent/internal/wireguard/runtime.go go-agent/internal/app/l4_runtime.go go-agent/internal/app/local_runtime_test.go go-agent/internal/l4/server.go go-agent/internal/l4/server_test.go go-agent/internal/model/l4.go panel/backend-go/internal/controlplane/service/l4.go panel/backend-go/internal/controlplane/storage/sqlite_models.go panel/backend-go/internal/controlplane/storage/snapshot_types.go panel/backend-go/internal/controlplane/service/l4_test.go panel/frontend/src/components/L4RuleForm.vue panel/frontend/src/api/runtimeCanonicalPayloads.test.mjs
+git commit -m "feat(l4): support WireGuard inbound modes"
+```
+
+## Phase 6: HTTP WireGuard Inner Entry
+
+### Task 6: Add Advanced HTTP WireGuard Inner Entry
+
+**Files:**
+- Modify: `panel/backend-go/internal/controlplane/service/rules.go`
+- Modify: `panel/backend-go/internal/controlplane/storage/sqlite_models.go`
+- Modify: `panel/backend-go/internal/controlplane/storage/snapshot_types.go`
+- Modify: `go-agent/internal/model/http.go`
+- Modify: `go-agent/internal/app/http_runtime.go`
+- Modify: HTTP runtime package that starts listeners.
+- Modify: `panel/frontend/src/components/RuleForm.vue`
+- Test: `panel/backend-go/internal/controlplane/service/rules_test.go`
+- Test: `go-agent/internal/app/app_test.go`
+- Test: `panel/frontend/src/api/runtimeCanonicalPayloads.test.mjs`
+
+- [ ] **Step 1: Write failing backend HTTP rule test**
+
+Add to `panel/backend-go/internal/controlplane/service/rules_test.go`:
+
+```go
+func TestRuleServicePreservesAdvancedWireGuardInnerEntry(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{ID: "local", Name: "local"}},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+		},
+	}
+	svc := NewRuleService(config.Config{LocalAgentID: "local"}, store)
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL:             stringPtr("http://app.internal"),
+		Backends:                &[]Backend{{URL: "http://127.0.0.1:8096"}},
+		WireGuardEntryEnabled:   boolPtr(true),
+		WireGuardProfileID:      intPtr(7),
+		WireGuardEntryListenHost: stringPtr("10.8.0.1"),
+		WireGuardEntryListenPort: intPtr(8080),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 || rule.WireGuardEntryListenHost != "10.8.0.1" || rule.WireGuardEntryListenPort != 8080 {
+		t.Fatalf("WireGuard HTTP entry = %+v", rule)
+	}
+}
+```
+
+- [ ] **Step 2: Run backend test to verify failure**
+
+Run: `cd panel/backend-go && go test ./internal/controlplane/service -run TestRuleServicePreservesAdvancedWireGuardInnerEntry -count=1`
+
+Expected: FAIL because HTTP WireGuard entry fields do not exist.
+
+- [ ] **Step 3: Add HTTP rule fields through backend and snapshot**
+
+Add:
+
+```go
+WireGuardEntryEnabled    bool   `json:"wireguard_entry_enabled,omitempty"`
+WireGuardProfileID       *int   `json:"wireguard_profile_id,omitempty"`
+WireGuardEntryListenHost string `json:"wireguard_entry_listen_host,omitempty"`
+WireGuardEntryListenPort int    `json:"wireguard_entry_listen_port,omitempty"`
+```
+
+to service, storage row, snapshot, backup if required by existing patterns, and normalize only when enabled.
+
+- [ ] **Step 4: Add agent HTTP runtime support**
+
+Pass WireGuard profiles to HTTP runtime when any rule has `WireGuardEntryEnabled`. Start an additional HTTP listener inside the selected WireGuard runtime at `wireguard_entry_listen_host:wireguard_entry_listen_port`, using the same rule routing logic as the public listener.
+
+- [ ] **Step 5: Add frontend advanced controls**
+
+In `RuleForm.vue` advanced tab, add:
+
+- toggle `WireGuard 内网入口`.
+- profile selector.
+- listen host input defaulting to profile first address host.
+- listen port input.
+
+Keep these controls out of the default/basic HTTP rule view.
+
+- [ ] **Step 6: Run focused tests**
+
+Run:
+
+```bash
+cd panel/backend-go && go test ./internal/controlplane/service -run TestRuleServicePreservesAdvancedWireGuardInnerEntry -count=1
+cd go-agent && go test ./internal/app -run WireGuard.*HTTP -count=1
+cd panel/frontend && npm run test -- runtimeCanonicalPayloads
+```
 
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add go-agent/internal/wireguard/runtime.go go-agent/internal/app/l4_runtime.go go-agent/internal/app/local_runtime_test.go go-agent/internal/l4/server.go go-agent/internal/l4/server_test.go go-agent/internal/model/l4.go
-git commit -m "feat(agent): route WireGuard client flows through L4"
+git add panel/backend-go/internal/controlplane/service/rules.go panel/backend-go/internal/controlplane/storage/sqlite_models.go panel/backend-go/internal/controlplane/storage/snapshot_types.go panel/backend-go/internal/controlplane/service/rules_test.go go-agent/internal/model/http.go go-agent/internal/app/http_runtime.go panel/frontend/src/components/RuleForm.vue panel/frontend/src/api/runtimeCanonicalPayloads.test.mjs
+git commit -m "feat(http): add WireGuard inner entry"
 ```
 
-## Phase 6: Frontend URI Egress
+## Phase 7: Frontend URI Egress
 
-### Task 6: Add L4 WireGuard URI Form Support
+### Task 7: Add L4 WireGuard URI Form Support
 
 **Files:**
 - Modify: `panel/frontend/src/api/runtime.js`
@@ -864,9 +1060,9 @@ git add panel/frontend/src/api/runtime.js panel/frontend/src/api/devMocks/data.j
 git commit -m "feat(panel): support WireGuard URI egress"
 ```
 
-## Phase 7: Frontend Profile Clients
+## Phase 8: Frontend Profile Clients
 
-### Task 7: Add Client Management UI
+### Task 8: Add Client Management UI
 
 **Files:**
 - Modify: `panel/frontend/src/api/runtime.js`

@@ -78,24 +78,44 @@ Users do not edit system peers directly. The UI shows them as a read-only "Syste
 
 The control plane assembles system peers before snapshot generation. Agent snapshots receive only the effective profile runtime: profile identity plus generated client and system peers.
 
-## L4 User Flow
+## HTTP And L4 User Flow
 
-For L4 WireGuard inbound, WireGuard is a transparent traffic entry, not a service bound to `server_address:listen_port`.
+L4 WireGuard inbound supports two explicit modes selected on the rule:
+
+1. `address`: WireGuard inner address and port listener.
+2. `transparent`: transparent WireGuard client traffic matching.
+
+In `address` mode:
 
 1. User selects `Listen Mode = WireGuard`.
-2. Form selects the current agent's default enabled profile, with an option to choose another profile.
-3. User configures traffic matching fields: protocol, destination port, and optionally destination CIDR/domain in later iterations.
-4. User configures the target: direct backends, Relay layers, SOCKS/HTTP egress, WireGuard URI egress, or WireGuard Profile egress.
-5. A normal client created under the same profile connects with WireGuard and sends traffic normally. The agent captures that WireGuard client traffic and routes matching flows through the L4 rule.
+2. User selects `WireGuard Inbound Mode = Address`.
+3. Form selects the current agent's default enabled profile, with an option to choose another profile.
+4. `wireguard_listen_host` defaults to the profile server address, such as `10.8.0.1`.
+5. User configures `listen_port` and target: direct backends, Relay layers, SOCKS/HTTP egress, WireGuard URI egress, or WireGuard Profile egress.
+6. A client created under the same profile connects with WireGuard and accesses `wireguard_listen_host:listen_port`.
 
 Example:
 
 - Profile `wg-main`: client `iphone` gets address `10.8.0.2/32`.
-- L4 rule: WireGuard inbound, match TCP destination port `443`, egress through Relay listener `tokyo-relay`.
+- L4 rule: WireGuard address mode, `10.8.0.1:9443`, backend `127.0.0.1:443`.
+- User imports the WireGuard config and opens `10.8.0.1:9443`.
+
+In `transparent` mode:
+
+1. User selects `Listen Mode = WireGuard`.
+2. User selects `WireGuard Inbound Mode = Transparent`.
+3. User configures destination matching with existing `listen_host/listen_port`: port is required, host can be empty or `0.0.0.0` to match any destination host.
+4. User configures the target: direct backends, Relay layers, SOCKS/HTTP egress, WireGuard URI egress, or WireGuard Profile egress.
+5. The agent captures matching WireGuard client traffic and routes matching flows through the L4 rule.
+
+Example:
+
+- Profile `wg-main`: client `iphone` gets address `10.8.0.2/32`.
+- L4 rule: WireGuard transparent mode, `listen_host=0.0.0.0`, `listen_port=443`, egress through Relay listener `tokyo-relay`.
 - User imports the WireGuard config and opens `https://example.com`.
 - The agent receives the client's TCP flow from the WireGuard runtime, matches destination port `443`, then forwards through the configured Relay path.
 
-This is similar to a TUN inbound plus route rule in proxy tools: WireGuard brings traffic into the agent, L4 rules decide where that traffic goes. Users do not need to access a special `10.8.0.1:9443` address unless an explicit rule chooses to expose that address.
+HTTP rules support WireGuard inner address matching as an advanced setting. This is not HTTP transparent interception. In the HTTP rule advanced section, users can enable `WireGuard inner entry`, select a profile, and configure an inner listen host/port such as `10.8.0.1:8080`. Clients connect to that inner HTTP endpoint and the existing HTTP rule routing, headers, TLS policy, and Relay behavior apply. The default/basic HTTP rule form remains focused on the public `frontend_url`.
 
 For Relay over WireGuard, the rule only references Relay listeners. Any required agent-to-agent peer is generated automatically from that reference.
 
@@ -224,12 +244,15 @@ Backend tests:
 - L4 direct WireGuard URI egress creates and updates a managed profile.
 - switching L4 egress away from direct URI cleans up the managed profile.
 - snapshot profiles include client and system peers.
-- L4 WireGuard inbound stores transparent traffic matching fields and does not require `wireguard_listen_host`.
+- L4 WireGuard inbound stores explicit inbound mode and supports both address-mode `wireguard_listen_host` and transparent matching via existing `listen_host/listen_port`.
+- HTTP rules store advanced WireGuard inner entry fields.
 
 Agent tests:
 
 - existing WireGuard runtime accepts generated peers unchanged.
+- L4 WireGuard address mode works with generated client peers in snapshot.
 - L4 WireGuard inbound captures generated client traffic and forwards matching flows through L4 routing.
+- HTTP WireGuard inner entry listens inside the selected profile and forwards through the HTTP rule.
 - L4 WireGuard egress works with profiles generated from URI imports.
 
 Frontend tests:
@@ -237,5 +260,6 @@ Frontend tests:
 - profile payload includes endpoint fields.
 - client creation payload is minimal.
 - config/QR actions require endpoint.
-- L4 WireGuard form defaults to enabled profile and shows traffic matching fields instead of special address fields.
+- L4 WireGuard form defaults to enabled profile and exposes address/transparent inbound mode choices.
+- HTTP rule advanced settings expose WireGuard inner entry without affecting the default public HTTP flow.
 - L4 WireGuard egress URI payloads are generated and previews redact secrets.
