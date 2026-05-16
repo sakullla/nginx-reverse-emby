@@ -792,11 +792,12 @@ func (s *l4Service) confirmOwnedWireGuardURIEgressProfile(ctx context.Context, a
 	if err != nil {
 		return 0, false, err
 	}
+	expectedProfileName := fmt.Sprintf("l4-rule-%d-wireguard-egress", rule.ID)
 	for _, row := range rows {
 		if row.ID != profileID {
 			continue
 		}
-		if wireGuardProfileRowMatchesURI(row, parsed) {
+		if wireGuardProfileRowMatchesURI(row, parsed, expectedProfileName) {
 			return profileID, true, nil
 		}
 		return 0, false, nil
@@ -804,15 +805,16 @@ func (s *l4Service) confirmOwnedWireGuardURIEgressProfile(ctx context.Context, a
 	return 0, false, nil
 }
 
-func wireGuardProfileRowMatchesURI(row storage.WireGuardProfileRow, parsed ParsedWireGuardURI) bool {
+func wireGuardProfileRowMatchesURI(row storage.WireGuardProfileRow, parsed ParsedWireGuardURI, expectedProfileName string) bool {
 	profile := wireGuardProfileFromRow(row)
-	expectedInput := wireGuardProfileInputFromURI(parsed, profile.Name)
+	expectedInput := wireGuardProfileInputFromURI(parsed, expectedProfileName)
 	expectedInput.ID = row.ID
 	expected, err := normalizeWireGuardProfileInput(expectedInput, WireGuardProfile{}, row.ID)
 	if err != nil {
 		return false
 	}
-	if profile.Mode != expected.Mode ||
+	if profile.Name != expected.Name ||
+		profile.Mode != expected.Mode ||
 		profile.PrivateKey != expected.PrivateKey ||
 		profile.ListenPort != expected.ListenPort ||
 		profile.PublicEndpoint != expected.PublicEndpoint ||

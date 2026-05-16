@@ -1091,6 +1091,42 @@ func TestL4RuleServiceDeleteWireGuardURIEgressRemovesMaterializedProfile(t *test
 	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], manualProfileID)
 }
 
+func TestL4RuleServiceDeleteWireGuardURIEgressSkipsRenamedMaterializedProfile(t *testing.T) {
+	uriProfileID := 8
+	ruleID := 11
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32"
+	profileRow := materializedWireGuardURIProfileRowForRule(t, "local", uriProfileID, ruleID, uri)
+	profileRow.Name = "manual rename"
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                 ruleID,
+				AgentID:            "local",
+				Name:               "entry",
+				Protocol:           "tcp",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         1080,
+				BackendsJSON:       `[]`,
+				ListenMode:         "proxy",
+				ProxyEgressMode:    "wireguard",
+				WireGuardProfileID: &uriProfileID,
+				WireGuardEgressURI: uri,
+				Enabled:            true,
+				Revision:           3,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {profileRow},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	if _, err := svc.Delete(context.Background(), "local", ruleID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	assertWireGuardProfileIDs(t, store.wireGuardByAgent["local"], uriProfileID)
+}
+
 func TestL4RuleServiceDeleteWireGuardURIEgressKeepsProfileReferencedByHTTPRule(t *testing.T) {
 	uriProfileID := 8
 	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
@@ -3100,11 +3136,16 @@ func boolPtrL4(value bool) *bool {
 
 func materializedWireGuardURIProfileRow(t *testing.T, agentID string, id int, uri string) storage.WireGuardProfileRow {
 	t.Helper()
+	return materializedWireGuardURIProfileRowForRule(t, agentID, id, id, uri)
+}
+
+func materializedWireGuardURIProfileRowForRule(t *testing.T, agentID string, id int, ruleID int, uri string) storage.WireGuardProfileRow {
+	t.Helper()
 	parsed, err := ParseWireGuardURI(uri)
 	if err != nil {
 		t.Fatalf("ParseWireGuardURI() error = %v", err)
 	}
-	input := wireGuardProfileInputFromURI(parsed, fmt.Sprintf("l4-rule-%d-wireguard-egress", id))
+	input := wireGuardProfileInputFromURI(parsed, fmt.Sprintf("l4-rule-%d-wireguard-egress", ruleID))
 	input.ID = id
 	profile, err := normalizeWireGuardProfileInput(input, WireGuardProfile{}, id)
 	if err != nil {
