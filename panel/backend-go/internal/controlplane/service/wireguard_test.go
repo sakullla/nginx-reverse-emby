@@ -578,11 +578,13 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name string
-		seed func(*testing.T, *storage.SQLiteStore, int)
+		name        string
+		wantMessage string
+		seed        func(*testing.T, *storage.SQLiteStore, int)
 	}{
 		{
-			name: "relay listener",
+			name:        "relay listener",
+			wantMessage: "wireguard profile is referenced",
 			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
 				t.Helper()
 				if err := store.SaveRelayListeners(ctx, "local", []storage.RelayListenerRow{{
@@ -608,7 +610,8 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 			},
 		},
 		{
-			name: "l4 listen",
+			name:        "l4 listen",
+			wantMessage: "wireguard profile is referenced",
 			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
 				t.Helper()
 				if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
@@ -633,7 +636,8 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 			},
 		},
 		{
-			name: "l4 egress",
+			name:        "l4 egress",
+			wantMessage: "wireguard profile is referenced",
 			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
 				t.Helper()
 				if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
@@ -659,6 +663,32 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:        "http wireguard entry",
+			wantMessage: "HTTP rule 103",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+					ID:                       103,
+					AgentID:                  "local",
+					FrontendURL:              "http://app.example.com",
+					BackendsJSON:             `[{"url":"http://127.0.0.1:8096"}]`,
+					LoadBalancingJSON:        `{"strategy":"adaptive"}`,
+					Enabled:                  false,
+					TagsJSON:                 `[]`,
+					RelayChainJSON:           `[]`,
+					RelayLayersJSON:          `[]`,
+					CustomHeadersJSON:        `[]`,
+					WireGuardEntryEnabled:    true,
+					WireGuardProfileID:       &profileID,
+					WireGuardEntryListenHost: "10.0.0.1",
+					WireGuardEntryListenPort: 8080,
+					Revision:                 1,
+				}}); err != nil {
+					t.Fatalf("SaveHTTPRules() error = %v", err)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -678,8 +708,8 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), "wireguard profile is referenced") {
-				t.Fatalf("Update() error = %v, want referenced message", err)
+			if err == nil || !strings.Contains(err.Error(), "wireguard profile is referenced") || !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("Update() error = %v, want referenced message containing %q", err, tt.wantMessage)
 			}
 		})
 
@@ -695,8 +725,8 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("Delete() error = %v, want ErrInvalidArgument", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), "wireguard profile is referenced") {
-				t.Fatalf("Delete() error = %v, want referenced message", err)
+			if err == nil || !strings.Contains(err.Error(), "wireguard profile is referenced") || !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("Delete() error = %v, want referenced message containing %q", err, tt.wantMessage)
 			}
 		})
 	}

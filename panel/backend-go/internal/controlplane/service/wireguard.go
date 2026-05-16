@@ -323,6 +323,19 @@ func (s *wireGuardProfileService) ensureProfileNotReferenced(ctx context.Context
 			return fmt.Errorf("%w: wireguard profile is referenced by l4 rule %d", ErrInvalidArgument, row.ID)
 		}
 	}
+
+	httpRows, err := s.store.ListHTTPRules(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, row := range httpRows {
+		if !row.WireGuardEntryEnabled {
+			continue
+		}
+		if row.WireGuardProfileID != nil && *row.WireGuardProfileID == profileID {
+			return fmt.Errorf("%w: wireguard profile is referenced by HTTP rule %d", ErrInvalidArgument, row.ID)
+		}
+	}
 	return nil
 }
 
