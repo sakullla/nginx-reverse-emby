@@ -1707,6 +1707,113 @@ func TestL4RuleServiceUpdateWireGuardTransparentInboundModeAccepted(t *testing.T
 	}
 }
 
+func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testing.T) {
+	profileID := 7
+	existing := L4Rule{
+		ID:                   1,
+		AgentID:              "local",
+		Name:                 "wg-a",
+		Protocol:             "udp",
+		ListenHost:           "10.8.0.10",
+		ListenPort:           51820,
+		Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		Enabled:              true,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(existing)},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:             stringPtrL4("udp"),
+		ListenHost:           stringPtrL4("10.8.0.11"),
+		ListenPort:           intPtrL4(51820),
+		ListenMode:           stringPtrL4("wireguard"),
+		WireGuardProfileID:   intPtrL4(profileID),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+		Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "51820 conflicts") {
+		t.Fatalf("Create() error = %v, want transparent WireGuard listen conflict", err)
+	}
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:             stringPtrL4("udp"),
+		ListenHost:           stringPtrL4("10.8.0.11"),
+		ListenPort:           intPtrL4(51821),
+		ListenMode:           stringPtrL4("wireguard"),
+		WireGuardProfileID:   intPtrL4(profileID),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+		Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+	})
+	if err != nil {
+		t.Fatalf("Create() different port error = %v", err)
+	}
+	if rule.ListenPort != 51821 {
+		t.Fatalf("created ListenPort = %d, want 51821", rule.ListenPort)
+	}
+}
+
+func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testing.T) {
+	profileID := 7
+	existing := L4Rule{
+		ID:                   1,
+		AgentID:              "local",
+		Name:                 "wg-a",
+		Protocol:             "udp",
+		ListenHost:           "10.8.0.10",
+		ListenPort:           51820,
+		Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		Enabled:              true,
+	}
+	current := L4Rule{
+		ID:                   2,
+		AgentID:              "local",
+		Name:                 "wg-b",
+		Protocol:             "udp",
+		ListenHost:           "10.8.0.11",
+		ListenPort:           51821,
+		Backends:             []L4Backend{{Host: "upstream-b", Port: 9002}},
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		Enabled:              true,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(existing), l4RuleToRow(current)},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Update(context.Background(), "local", current.ID, L4RuleInput{
+		ListenPort: intPtrL4(51820),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "51820 conflicts") {
+		t.Fatalf("Update() error = %v, want transparent WireGuard listen conflict", err)
+	}
+}
+
 func TestL4RuleServiceWireGuardInvalidInboundModeReject(t *testing.T) {
 	_, err := normalizeL4RuleInput(L4RuleInput{
 		Protocol:             stringPtrL4("udp"),
