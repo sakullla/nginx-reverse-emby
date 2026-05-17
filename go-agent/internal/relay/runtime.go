@@ -65,10 +65,6 @@ func Start(ctx context.Context, listeners []Listener, provider TLSMaterialProvid
 }
 
 func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMaterialProvider, options StartOptions) (*Server, error) {
-	if provider == nil {
-		return nil, fmt.Errorf("tls material provider is required")
-	}
-
 	runtimeCtx, cancel := context.WithCancel(ctx)
 	server := &Server{
 		ctx:               runtimeCtx,
@@ -93,9 +89,15 @@ func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMat
 			server.Close()
 			return nil, fmt.Errorf("relay listener %d: %w", listener.ID, err)
 		}
-		if normalized.TransportMode != ListenerTransportModeWireGuard && normalized.CertificateID == nil {
-			server.Close()
-			return nil, fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
+		if normalized.TransportMode != ListenerTransportModeWireGuard {
+			if err := requireTLSMaterialProvider(provider); err != nil {
+				server.Close()
+				return nil, err
+			}
+			if normalized.CertificateID == nil {
+				server.Close()
+				return nil, fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
+			}
 		}
 		if err := server.startListener(normalized); err != nil {
 			server.Close()

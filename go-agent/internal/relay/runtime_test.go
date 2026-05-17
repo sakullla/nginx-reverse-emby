@@ -425,7 +425,7 @@ func TestStartWireGuardRelayUsesRuntimeListenTCP(t *testing.T) {
 	listener.AllowTransportFallback = false
 	listener.ListenPort = pickFreeTCPPort(t)
 
-	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, nil, StartOptions{
 		WireGuardProvider: wgProvider,
 	})
 	if err != nil {
@@ -440,6 +440,12 @@ func TestStartWireGuardRelayUsesRuntimeListenTCP(t *testing.T) {
 	wantAddr := net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
 	if calls[0] != wantAddr {
 		t.Fatalf("ListenTCP address = %q, want %q", calls[0], wantAddr)
+	}
+	if calls := provider.serverCertificateCallCount(); calls != 0 {
+		t.Fatalf("ServerCertificate calls = %d, want 0", calls)
+	}
+	if calls := provider.trustedCAPoolCallCount(); calls != 0 {
+		t.Fatalf("TrustedCAPool calls = %d, want 0", calls)
 	}
 }
 
@@ -512,7 +518,7 @@ func TestDialWireGuardRelayUsesRuntimeDialContext(t *testing.T) {
 	}
 	defer server.Close()
 
-	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, nil, DialOptions{
 		WireGuardProvider: wgProvider,
 	})
 	if err != nil {
@@ -531,6 +537,12 @@ func TestDialWireGuardRelayUsesRuntimeDialContext(t *testing.T) {
 	}
 	if calls[0].network != "tcp" || calls[0].address != hop.Address {
 		t.Fatalf("DialContext call = %+v, want tcp %s", calls[0], hop.Address)
+	}
+	if calls := provider.serverCertificateCallCount(); calls != 0 {
+		t.Fatalf("ServerCertificate calls = %d, want 0", calls)
+	}
+	if calls := provider.trustedCAPoolCallCount(); calls != 0 {
+		t.Fatalf("TrustedCAPool calls = %d, want 0", calls)
 	}
 }
 
@@ -662,6 +674,20 @@ func TestDialWireGuardRelayErrorsWhenProviderOrProfileMissing(t *testing.T) {
 		t.Fatal("DialWithResult() error = nil, want missing WireGuard profile error")
 	} else if !strings.Contains(err.Error(), "wireguard profile 9 runtime not found") {
 		t.Fatalf("DialWithResult() error = %v, want missing WireGuard profile error", err)
+	}
+}
+
+func TestDialTLSTCPRelayRequiresTLSMaterialProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := newFakeTLSMaterialProvider()
+	_, hop := newRelayEndpoint(t, provider, 907, "relay-tls-provider-required", "pin_only", true, false)
+
+	if conn, _, err := DialWithResult(context.Background(), "tcp", "127.0.0.1:80", []Hop{hop}, nil); err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want missing TLS material provider error")
+	} else if !strings.Contains(err.Error(), "tls material provider is required") {
+		t.Fatalf("DialWithResult() error = %v, want missing TLS material provider error", err)
 	}
 }
 
@@ -2666,6 +2692,62 @@ func TestResolveCandidatesUsesLastHopResolution(t *testing.T) {
 	}
 	if addresses[1] != "127.0.0.11:8096" {
 		t.Fatalf("second address = %q", addresses[1])
+	}
+}
+
+func TestResolveCandidatesWireGuardRelayAllowsNilTLSMaterialProvider(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{
+		dialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		},
+		listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+			listenConfig := newRelayTCPListenConfig()
+			return listenConfig.Listen(ctx, "tcp", address)
+		},
+	}
+	wgProvider := fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{9: wgRuntime}}
+	profileID := 9
+	listener := Listener{
+		ID:                 908,
+		AgentID:            "agent-wg",
+		Name:               "relay-wg-resolve",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         pickFreeTCPPort(t),
+		Enabled:            true,
+		TransportMode:      ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+		Revision:           1,
+	}
+	hop := Hop{
+		Address:  net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort)),
+		Listener: listener,
+	}
+
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions() error = %v", err)
+	}
+	defer server.Close()
+
+	addresses, err := ResolveCandidatesWithOptions(context.Background(), "localhost:8096", []Hop{hop}, nil, DialOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("ResolveCandidatesWithOptions() error = %v", err)
+	}
+	if len(addresses) == 0 {
+		t.Fatal("ResolveCandidatesWithOptions() returned no addresses")
+	}
+	if calls := provider.serverCertificateCallCount(); calls != 0 {
+		t.Fatalf("ServerCertificate calls = %d, want 0", calls)
+	}
+	if calls := provider.trustedCAPoolCallCount(); calls != 0 {
+		t.Fatalf("TrustedCAPool calls = %d, want 0", calls)
 	}
 }
 
