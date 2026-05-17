@@ -2163,8 +2163,8 @@ func TestStoreLoadAgentSnapshotDoesNotIncludeWireGuardProfilesForRemoteRelayList
 	if err != nil {
 		t.Fatalf("LoadAgentSnapshot(owner) error = %v", err)
 	}
-	if len(ownerSnapshot.WireGuardProfiles) != 2 {
-		t.Fatalf("owner WireGuardProfiles = %+v, want local owner profiles", ownerSnapshot.WireGuardProfiles)
+	if len(ownerSnapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("owner WireGuardProfiles = %+v, want referenced local owner profile", ownerSnapshot.WireGuardProfiles)
 	}
 	if ownerSnapshot.WireGuardProfiles[0].ID != profileID || ownerSnapshot.WireGuardProfiles[0].AgentID != "relay-wg-peer" || ownerSnapshot.WireGuardProfiles[0].PrivateKey != "peer-private-key" {
 		t.Fatalf("owner WireGuardProfiles[0] = %+v", ownerSnapshot.WireGuardProfiles[0])
@@ -3058,6 +3058,268 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByHTTPRules(t 
 	}
 }
 
+func TestStoreLoadAgentSnapshotExcludesUnreferencedWireGuardProfiles(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "wg-filter-agent",
+		Name:             "wg-filter-agent",
+		AgentToken:       "token-wg-filter-agent",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	referencedProfileID := 111
+	unreferencedProfileID := 112
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-filter-agent", []WireGuardProfileRow{
+		{
+			ID:            referencedProfileID,
+			AgentID:       "wg-filter-agent",
+			Name:          "referenced-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "referenced-private-key",
+			ListenPort:    51820,
+			AddressesJSON: `["10.111.0.1/24"]`,
+			PeersJSON:     `[{"name":"referenced-peer","public_key":"referenced-public-key","preshared_key":"referenced-psk","allowed_ips":["10.111.0.2/32"]}]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      21,
+		},
+		{
+			ID:            unreferencedProfileID,
+			AgentID:       "wg-filter-agent",
+			Name:          "stale-manual-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "unreferenced-private-key",
+			ListenPort:    51821,
+			AddressesJSON: `["10.112.0.1/24"]`,
+			PeersJSON:     `[{"name":"unreferenced-peer","public_key":"unreferenced-public-key","preshared_key":"unreferenced-psk","allowed_ips":["10.112.0.2/32"]}]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      22,
+		},
+	}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "wg-filter-agent", []HTTPRuleRow{{
+		ID:                       113,
+		AgentID:                  "wg-filter-agent",
+		FrontendURL:              "http://wg-filter.internal",
+		BackendsJSON:             `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON:        `{"strategy":"adaptive"}`,
+		Enabled:                  true,
+		TagsJSON:                 `[]`,
+		ProxyRedirect:            true,
+		RelayChainJSON:           `[]`,
+		RelayLayersJSON:          `[]`,
+		CustomHeadersJSON:        `[]`,
+		WireGuardEntryEnabled:    true,
+		WireGuardProfileID:       &referencedProfileID,
+		WireGuardEntryListenHost: "10.111.0.1",
+		WireGuardEntryListenPort: 8080,
+		Revision:                 19,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-filter-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles = %+v, want only referenced profile", snapshot.WireGuardProfiles)
+	}
+	profile := snapshot.WireGuardProfiles[0]
+	if profile.ID != referencedProfileID || profile.PrivateKey != "referenced-private-key" {
+		t.Fatalf("WireGuardProfiles[0] = %+v, want referenced profile", profile)
+	}
+	for _, profile := range snapshot.WireGuardProfiles {
+		if profile.PrivateKey == "unreferenced-private-key" || profile.ID == unreferencedProfileID {
+			t.Fatalf("snapshot leaked unreferenced WireGuard profile: %+v", profile)
+		}
+		for _, peer := range profile.Peers {
+			if peer.PresharedKey == "unreferenced-psk" {
+				t.Fatalf("snapshot leaked unreferenced WireGuard peer secret: %+v", profile)
+			}
+		}
+	}
+}
+
+func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByRelayAndL4ProxyEntry(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "wg-graph-agent",
+		Name:             "wg-graph-agent",
+		AgentToken:       "token-wg-graph-agent",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	relayProfileID := 121
+	l4ProfileID := 122
+	l4EgressProfileID := 123
+	staleProfileID := 126
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-graph-agent", []WireGuardProfileRow{
+		{
+			ID:            relayProfileID,
+			AgentID:       "wg-graph-agent",
+			Name:          "relay-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "relay-private-key",
+			ListenPort:    51820,
+			AddressesJSON: `["10.121.0.1/24"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      31,
+		},
+		{
+			ID:            l4ProfileID,
+			AgentID:       "wg-graph-agent",
+			Name:          "l4-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "l4-private-key",
+			ListenPort:    51821,
+			AddressesJSON: `["10.122.0.1/24"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      32,
+		},
+		{
+			ID:            l4EgressProfileID,
+			AgentID:       "wg-graph-agent",
+			Name:          "l4-egress-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "l4-egress-private-key",
+			ListenPort:    51822,
+			AddressesJSON: `["10.123.0.1/24"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      33,
+		},
+		{
+			ID:            staleProfileID,
+			AgentID:       "wg-graph-agent",
+			Name:          "stale-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "stale-private-key",
+			ListenPort:    51823,
+			AddressesJSON: `["10.126.0.1/24"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      36,
+		},
+	}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "wg-graph-agent", []RelayListenerRow{{
+		ID:                 124,
+		AgentID:            "wg-graph-agent",
+		Name:               "relay-entry",
+		ListenHost:         "0.0.0.0",
+		BindHostsJSON:      `["0.0.0.0"]`,
+		ListenPort:         9443,
+		PublicHost:         "relay-entry.example.com",
+		PublicPort:         9443,
+		TransportMode:      "wireguard",
+		WireGuardProfileID: &relayProfileID,
+		Enabled:            true,
+		TagsJSON:           `[]`,
+		Revision:           24,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "wg-graph-agent", []L4RuleRow{
+		{
+			ID:                 125,
+			AgentID:            "wg-graph-agent",
+			Name:               "wg-l4-listen",
+			Protocol:           "tcp",
+			ListenHost:         "0.0.0.0",
+			ListenPort:         1081,
+			BackendsJSON:       `[{"host":"10.122.0.9","port":9443}]`,
+			LoadBalancingJSON:  `{}`,
+			TuningJSON:         `{}`,
+			RelayChainJSON:     `[]`,
+			RelayLayersJSON:    `[]`,
+			ListenMode:         "wireguard",
+			WireGuardProfileID: &l4ProfileID,
+			Enabled:            true,
+			Revision:           25,
+		},
+		{
+			ID:                 127,
+			AgentID:            "wg-graph-agent",
+			Name:               "wg-l4-egress",
+			Protocol:           "tcp",
+			ListenHost:         "0.0.0.0",
+			ListenPort:         1082,
+			BackendsJSON:       `[{"host":"10.123.0.9","port":9443}]`,
+			LoadBalancingJSON:  `{}`,
+			TuningJSON:         `{}`,
+			RelayChainJSON:     `[]`,
+			RelayLayersJSON:    `[]`,
+			ListenMode:         "tcp",
+			WireGuardProfileID: &l4EgressProfileID,
+			ProxyEgressMode:    "wireguard",
+			Enabled:            true,
+			Revision:           27,
+		},
+	}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-graph-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.WireGuardProfiles) != 3 {
+		t.Fatalf("WireGuardProfiles = %+v, want relay and L4 referenced profiles", snapshot.WireGuardProfiles)
+	}
+	got := map[int]WireGuardProfile{}
+	for _, profile := range snapshot.WireGuardProfiles {
+		got[profile.ID] = profile
+	}
+	if got[relayProfileID].PrivateKey != "relay-private-key" {
+		t.Fatalf("relay profile = %+v", got[relayProfileID])
+	}
+	if got[l4ProfileID].PrivateKey != "l4-private-key" {
+		t.Fatalf("l4 profile = %+v", got[l4ProfileID])
+	}
+	if got[l4EgressProfileID].PrivateKey != "l4-egress-private-key" {
+		t.Fatalf("l4 egress profile = %+v", got[l4EgressProfileID])
+	}
+	if _, ok := got[staleProfileID]; ok {
+		t.Fatalf("snapshot leaked stale WireGuard profile: %+v", got[staleProfileID])
+	}
+}
+
 func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3301,6 +3563,27 @@ func TestStoreLoadAgentSnapshotUsesWireGuardProfileRevision(t *testing.T) {
 		Revision:      9,
 	}}); err != nil {
 		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	profileID := 7
+	if err := store.SaveHTTPRules(t.Context(), "remote-wg", []HTTPRuleRow{{
+		ID:                       89,
+		AgentID:                  "remote-wg",
+		FrontendURL:              "http://remote-wg-revision.internal",
+		BackendsJSON:             `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON:        `{"strategy":"adaptive"}`,
+		Enabled:                  true,
+		TagsJSON:                 `[]`,
+		ProxyRedirect:            true,
+		RelayChainJSON:           `[]`,
+		RelayLayersJSON:          `[]`,
+		CustomHeadersJSON:        `[]`,
+		WireGuardEntryEnabled:    true,
+		WireGuardProfileID:       &profileID,
+		WireGuardEntryListenHost: "10.10.0.1",
+		WireGuardEntryListenPort: 8080,
+		Revision:                 1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
 	}
 
 	snapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-wg", AgentSnapshotInput{
@@ -3704,6 +3987,27 @@ func TestStoreLoadAgentSnapshotIncludesEnabledWireGuardProfilesWithRawSecrets(t 
 		},
 	}); err != nil {
 		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	profileID := 7
+	if err := store.SaveHTTPRules(t.Context(), "remote-wg", []HTTPRuleRow{{
+		ID:                       87,
+		AgentID:                  "remote-wg",
+		FrontendURL:              "http://remote-wg.internal",
+		BackendsJSON:             `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON:        `{"strategy":"adaptive"}`,
+		Enabled:                  true,
+		TagsJSON:                 `[]`,
+		ProxyRedirect:            true,
+		RelayChainJSON:           `[]`,
+		RelayLayersJSON:          `[]`,
+		CustomHeadersJSON:        `[]`,
+		WireGuardEntryEnabled:    true,
+		WireGuardProfileID:       &profileID,
+		WireGuardEntryListenHost: "10.10.0.1",
+		WireGuardEntryListenPort: 8080,
+		Revision:                 8,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
 	}
 
 	snapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-wg", AgentSnapshotInput{})

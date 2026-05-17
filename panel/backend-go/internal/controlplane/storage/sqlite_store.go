@@ -240,6 +240,7 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
+	wireGuardRows = filterWireGuardProfilesForSnapshotGraph(wireGuardRows, httpRows, l4Rows, relayRows)
 	supportsWireGuard, err := s.agentSupportsWireGuardSnapshots(ctx, resolvedAgentID)
 	if err != nil {
 		return Snapshot{}, err
@@ -1102,6 +1103,63 @@ func (s *GormStore) loadRelayListenersForSync(
 
 func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID string) ([]WireGuardProfileRow, error) {
 	return s.ListWireGuardProfiles(ctx, agentID)
+}
+
+func filterWireGuardProfilesForSnapshotGraph(
+	profiles []WireGuardProfileRow,
+	httpRows []HTTPRuleRow,
+	l4Rows []L4RuleRow,
+	relayRows []RelayListenerRow,
+) []WireGuardProfileRow {
+	if len(profiles) == 0 {
+		return profiles
+	}
+
+	referenced := referencedWireGuardProfileIDs(httpRows, l4Rows, relayRows)
+	filtered := make([]WireGuardProfileRow, 0, len(profiles))
+	for _, row := range profiles {
+		if _, ok := referenced[row.ID]; ok {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func referencedWireGuardProfileIDs(
+	httpRows []HTTPRuleRow,
+	l4Rows []L4RuleRow,
+	relayRows []RelayListenerRow,
+) map[int]struct{} {
+	referenced := make(map[int]struct{})
+	add := func(profileID *int) {
+		if profileID == nil || *profileID <= 0 {
+			return
+		}
+		referenced[*profileID] = struct{}{}
+	}
+
+	for _, row := range httpRows {
+		if !row.Enabled || !row.WireGuardEntryEnabled {
+			continue
+		}
+		add(row.WireGuardProfileID)
+	}
+	for _, row := range l4Rows {
+		if !row.Enabled {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(row.ListenMode), "wireguard") ||
+			strings.EqualFold(strings.TrimSpace(row.ProxyEgressMode), "wireguard") {
+			add(row.WireGuardProfileID)
+		}
+	}
+	for _, row := range relayRows {
+		if !row.Enabled || !strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") {
+			continue
+		}
+		add(row.WireGuardProfileID)
+	}
+	return referenced
 }
 
 func (s *GormStore) agentSupportsWireGuardSnapshots(ctx context.Context, agentID string) (bool, error) {
