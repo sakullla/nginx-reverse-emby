@@ -81,7 +81,7 @@ func TestWireGuardURIParsePreviewRedactsSecretsAndRequiresPanelToken(t *testing.
 	}
 }
 
-func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T) {
+func TestWireGuardURIImportCreatesRedactedProfileAndAllowsReserved(t *testing.T) {
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -120,8 +120,17 @@ func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T
 	reservedReq.Header.Set("Content-Type", "application/json")
 	reservedResp := httptest.NewRecorder()
 	router.ServeHTTP(reservedResp, reservedReq)
-	if reservedResp.Code != http.StatusBadRequest {
+	if reservedResp.Code != http.StatusCreated {
 		t.Fatalf("POST import-uri reserved = %d, body=%s", reservedResp.Code, reservedResp.Body.String())
+	}
+	assertWireGuardHTTPBodyDoesNotLeakURISecrets(t, reservedResp.Body.String())
+	reservedProfile := decodeWireGuardHTTPProfileResponse(t, reservedResp.Body.Bytes(), "profile")
+	assertWireGuardHTTPSecretsRedacted(t, reservedProfile)
+	if len(reservedProfile.Peers) != 1 {
+		t.Fatalf("reserved peers = %+v, want one peer", reservedProfile.Peers)
+	}
+	if got := reservedProfile.Peers[0].Reserved; len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
+		t.Fatalf("reserved bytes = %+v, want [1 2 3]", got)
 	}
 }
 

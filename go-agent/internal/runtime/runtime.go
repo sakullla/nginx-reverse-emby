@@ -255,6 +255,9 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 					if peer.AllowedIPs != nil {
 						cloned.WireGuardProfiles[i].Peers[j].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
 					}
+					if peer.Reserved != nil {
+						cloned.WireGuardProfiles[i].Peers[j].Reserved = append([]byte(nil), peer.Reserved...)
+					}
 				}
 			}
 		}
