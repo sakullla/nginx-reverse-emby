@@ -2396,7 +2396,7 @@ func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForCrossAgentRelay(t *testi
 		PrivateKey:     remotePrivateKey,
 		ListenPort:     51820,
 		PublicEndpoint: "relay-owner.example.com:51820",
-		AddressesJSON:  `["10.71.0.1/32"]`,
+		AddressesJSON:  `["10.71.0.254/32"]`,
 		PeersJSON:      `[]`,
 		DNSJSON:        `[]`,
 		MTU:            1280,
@@ -2486,8 +2486,8 @@ func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForCrossAgentRelay(t *testi
 	if peer.Endpoint != "relay-owner.example.com:51820" {
 		t.Fatalf("peer endpoint = %q, want relay public endpoint", peer.Endpoint)
 	}
-	if len(peer.AllowedIPs) != 1 || peer.AllowedIPs[0] != "10.71.0.1/32" {
-		t.Fatalf("peer allowed_ips = %+v, want remote WireGuard address", peer.AllowedIPs)
+	if !stringSliceContains(peer.AllowedIPs, "10.71.0.1/32") {
+		t.Fatalf("peer allowed_ips = %+v, want relay listener tunnel address", peer.AllowedIPs)
 	}
 	if peer.PersistentKeepaliveSeconds != 25 {
 		t.Fatalf("peer keepalive = %d, want 25", peer.PersistentKeepaliveSeconds)
@@ -4342,6 +4342,15 @@ func testWireGuardPublicKeyFromPrivate(t *testing.T, privateKey string) string {
 		t.Fatalf("derive test WireGuard public key: %v", err)
 	}
 	return base64.StdEncoding.EncodeToString(publicBytes)
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.T) {

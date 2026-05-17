@@ -2438,12 +2438,17 @@ func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
 	defer stopRelay()
 
 	profileID := 9
+	relayListenPort := pickFreeTCPPort(t)
+	wireGuardTunnelAddress := fmt.Sprintf("10.71.0.1:%d", relayListenPort)
 	wgRuntime := &fakeL4WireGuardRuntime{
 		dialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			if network != "tcp" {
 				return nil, fmt.Errorf("unexpected wireguard network %q", network)
 			}
-			return (&net.Dialer{}).DialContext(ctx, network, address)
+			if address != wireGuardTunnelAddress {
+				return nil, fmt.Errorf("unexpected wireguard tunnel address %q", address)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, fmt.Sprintf("127.0.0.1:%d", relayPublicPort))
 		},
 	}
 	oldDefaultProvider := relay.DefaultWireGuardRuntimeProvider()
@@ -2455,9 +2460,9 @@ func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
 		ID:                 51,
 		AgentID:            "relay-agent",
 		Name:               "relay-hop",
-		ListenHost:         "127.0.0.1",
-		BindHosts:          []string{"127.0.0.1"},
-		ListenPort:         pickFreeTCPPort(t),
+		ListenHost:         "10.71.0.1",
+		BindHosts:          []string{"10.71.0.1"},
+		ListenPort:         relayListenPort,
 		PublicHost:         "127.0.0.1",
 		PublicPort:         relayPublicPort,
 		Enabled:            true,
@@ -2504,8 +2509,8 @@ func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
 		t.Fatalf("relay-backed tcp payload mismatch; got %q", reply)
 	}
 
-	if calls := wgRuntime.dialContextCalls(); len(calls) != 1 || calls[0].address != fmt.Sprintf("127.0.0.1:%d", relayPublicPort) {
-		t.Fatalf("wireguard dial calls = %+v, want relay public address", calls)
+	if calls := wgRuntime.dialContextCalls(); len(calls) != 1 || calls[0].address != wireGuardTunnelAddress {
+		t.Fatalf("wireguard dial calls = %+v, want relay tunnel address", calls)
 	}
 	select {
 	case relayReq := <-relayRequests:

@@ -1391,7 +1391,12 @@ func firstEnabledWireGuardProfileIndex(profiles []WireGuardProfileRow) int {
 
 func snapshotWireGuardRelayPeer(relayRow RelayListenerRow, remoteProfile WireGuardProfileRow) (WireGuardPeer, bool) {
 	endpoint := defaultString(remoteProfile.PublicEndpoint, relayPublicEndpoint(relayRow))
-	return snapshotWireGuardProfilePeer("system:relay-listener:"+strconv.Itoa(relayRow.ID), withWireGuardProfileEndpoint(remoteProfile, endpoint))
+	peer, ok := snapshotWireGuardProfilePeer("system:relay-listener:"+strconv.Itoa(relayRow.ID), withWireGuardProfileEndpoint(remoteProfile, endpoint))
+	if !ok {
+		return WireGuardPeer{}, false
+	}
+	peer.AllowedIPs = appendUniqueStrings(peer.AllowedIPs, relayListenerTunnelAllowedIPs(relayRow)...)
+	return peer, len(peer.AllowedIPs) > 0
 }
 
 func snapshotWireGuardProfilePeer(name string, profile WireGuardProfileRow) (WireGuardPeer, bool) {
@@ -1442,6 +1447,38 @@ func wireGuardProfileHostAllowedIPs(addresses []string) []string {
 		}
 	}
 	return allowed
+}
+
+func relayListenerTunnelAllowedIPs(row RelayListenerRow) []string {
+	values := make([]string, 0, 1+len(parseStringSlice(row.BindHostsJSON)))
+	if host := strings.TrimSpace(row.ListenHost); host != "" {
+		values = append(values, host)
+	}
+	values = append(values, parseStringSlice(row.BindHostsJSON)...)
+	allowed := make([]string, 0, len(values))
+	for _, value := range values {
+		if allowedIP, ok := wireGuardAddressHostPrefix(value); ok {
+			allowed = append(allowed, allowedIP)
+		}
+	}
+	return allowed
+}
+
+func appendUniqueStrings(values []string, additions ...string) []string {
+	seen := make(map[string]struct{}, len(values)+len(additions))
+	next := make([]string, 0, len(values)+len(additions))
+	for _, value := range append(values, additions...) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		next = append(next, trimmed)
+	}
+	return next
 }
 
 func wireGuardAddressHostPrefix(address string) (string, bool) {

@@ -71,10 +71,10 @@ func ResolvePathsFromMap(chain []int, layers [][]int, listenersByID map[int]mode
 			if err := relay.ValidateListener(listener); err != nil {
 				return nil, fmt.Errorf("relay listener %d: %w", listenerID, err)
 			}
-			host, port := netutil.RelayListenerDialEndpoint(listener)
+			host, port := relayHopDialEndpoint(listener)
 			hops = append(hops, relay.Hop{
 				Address:    net.JoinHostPort(host, strconv.Itoa(port)),
-				ServerName: host,
+				ServerName: relayHopServerName(listener, host),
 				Listener:   listener,
 			})
 		}
@@ -85,6 +85,29 @@ func ResolvePathsFromMap(chain []int, layers [][]int, listenersByID map[int]mode
 		})
 	}
 	return paths, nil
+}
+
+func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
+	if strings.EqualFold(strings.TrimSpace(listener.TransportMode), relay.ListenerTransportModeWireGuard) {
+		host := strings.TrimSpace(listener.ListenHost)
+		if host == "" {
+			for _, bindHost := range listener.BindHosts {
+				if trimmed := strings.TrimSpace(bindHost); trimmed != "" {
+					host = trimmed
+					break
+				}
+			}
+		}
+		return host, listener.ListenPort
+	}
+	return netutil.RelayListenerDialEndpoint(listener)
+}
+
+func relayHopServerName(listener model.RelayListener, fallback string) string {
+	if publicHost := strings.TrimSpace(listener.PublicHost); publicHost != "" {
+		return publicHost
+	}
+	return fallback
 }
 
 func ClonePaths(paths []relayplan.Path) []relayplan.Path {
