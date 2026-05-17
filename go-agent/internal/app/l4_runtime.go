@@ -15,10 +15,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
-type transparentWireGuardUDPFlowRuntime interface {
-	SetTransparentUDPHandler(func(context.Context, string, string, []byte, func([]byte) error))
-}
-
 type l4RuntimeManager struct {
 	mu                 sync.Mutex
 	server             *l4.Server
@@ -128,7 +124,6 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
-			m.installTransparentWireGuardUDPHandlersLocked(server, rules, provider)
 			if transaction != nil {
 				transaction.Commit()
 				transaction = nil
@@ -174,7 +169,6 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		return err
 	}
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
-	m.installTransparentWireGuardUDPHandlersLocked(server, rules, provider)
 	if transaction != nil {
 		transaction.Commit()
 		transaction = nil
@@ -182,43 +176,6 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	m.server = server
 	m.storeLastAppliedInputsLocked(rules, relayListeners)
 	return nil
-}
-
-func (m *l4RuntimeManager) installTransparentWireGuardUDPHandlersLocked(server *l4.Server, rules []model.L4Rule, provider relay.WireGuardRuntimeProvider) {
-	if provider == nil {
-		return
-	}
-	profileIDs := make(map[int]struct{})
-	for _, rule := range append(append([]model.L4Rule(nil), m.lastRules...), rules...) {
-		if !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") ||
-			rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
-			continue
-		}
-		profileIDs[*rule.WireGuardProfileID] = struct{}{}
-	}
-	handlers := make(map[int]func(context.Context, string, string, []byte, func([]byte) error))
-	if server != nil {
-		for _, rule := range rules {
-			if !strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") ||
-				!strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") ||
-				!strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent") ||
-				rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
-				continue
-			}
-			handlers[*rule.WireGuardProfileID] = server.HandleWireGuardUDPFlow
-		}
-	}
-	for profileID := range profileIDs {
-		runtime, ok := provider.WireGuardRuntime(profileID)
-		if !ok || runtime == nil {
-			continue
-		}
-		transparent, ok := runtime.(transparentWireGuardUDPFlowRuntime)
-		if !ok {
-			continue
-		}
-		transparent.SetTransparentUDPHandler(handlers[profileID])
-	}
 }
 
 func (m *l4RuntimeManager) canRecreateWireGuardRuntimeForBindConflict(err error, rules []model.L4Rule, profiles []model.WireGuardProfile) bool {
@@ -256,7 +213,6 @@ func (m *l4RuntimeManager) restorePreviousServerLocked(ctx context.Context) erro
 		return err
 	}
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
-	m.installTransparentWireGuardUDPHandlersLocked(server, m.lastRules, m.wireGuardProvider)
 	abandoned := m.server
 	m.server = server
 	if abandoned != nil {

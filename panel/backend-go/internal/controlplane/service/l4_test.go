@@ -1770,7 +1770,7 @@ func TestL4RuleServiceWireGuardTransparentTCPClearsSubmittedBackends(t *testing.
 	}
 }
 
-func TestL4RuleServiceWireGuardTransparentUDPAccepted(t *testing.T) {
+func TestL4RuleServiceWireGuardTransparentUDPRejected(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -1779,7 +1779,7 @@ func TestL4RuleServiceWireGuardTransparentUDPAccepted(t *testing.T) {
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
 		Protocol:             stringPtrL4("udp"),
 		ListenHost:           stringPtrL4("0.0.0.0"),
 		ListenPort:           intPtrL4(51820),
@@ -1788,17 +1788,8 @@ func TestL4RuleServiceWireGuardTransparentUDPAccepted(t *testing.T) {
 		WireGuardInboundMode: stringPtrL4("transparent"),
 		Backends:             &[]L4Backend{{Host: "upstream", Port: 9001}},
 	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if rule.WireGuardInboundMode != "transparent" || rule.WireGuardListenHost != "" {
-		t.Fatalf("rule = %+v, want transparent udp with cleared listen host", rule)
-	}
-	if len(rule.Backends) != 0 {
-		t.Fatalf("Backends = %+v, want cleared for transparent udp inbound", rule.Backends)
-	}
-	if row := store.l4RulesByID["local"][0]; row.BackendsJSON != "[]" {
-		t.Fatalf("persisted BackendsJSON = %s, want [] for transparent udp inbound", row.BackendsJSON)
+	if err == nil || !strings.Contains(err.Error(), "transparent") || !strings.Contains(err.Error(), "udp") {
+		t.Fatalf("Create() error = %v, want transparent udp validation", err)
 	}
 }
 

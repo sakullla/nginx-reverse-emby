@@ -464,38 +464,6 @@ func TestL4RuntimeManagerAppliesWireGuardProfilesBeforeStartingL4(t *testing.T) 
 	}
 }
 
-func TestL4RuntimeManagerInstallsTransparentWireGuardUDPHandler(t *testing.T) {
-	runtime := &testAppWireGuardRuntime{
-		onListenUDP: func(_ context.Context, address string) (net.PacketConn, error) {
-			return net.ListenPacket("udp", "127.0.0.1:0")
-		},
-	}
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
-		if cfg.ID != 9 {
-			return nil, fmt.Errorf("unexpected wireguard profile id %d", cfg.ID)
-		}
-		return runtime, nil
-	})
-	defer manager.Close()
-
-	profileID := 9
-	profile := validAppWireGuardProfile(profileID)
-	err := manager.ApplyWithRelayAndWireGuardProfiles(context.Background(), []model.L4Rule{{
-		Protocol:             "udp",
-		ListenHost:           "0.0.0.0",
-		ListenPort:           pickFreeUDPPort(t),
-		ListenMode:           "wireguard",
-		WireGuardInboundMode: "transparent",
-		WireGuardProfileID:   &profileID,
-	}}, nil, []model.WireGuardProfile{profile})
-	if err != nil {
-		t.Fatalf("ApplyWithRelayAndWireGuardProfiles() error = %v", err)
-	}
-	if runtime.udpHandler == nil {
-		t.Fatal("expected transparent wireguard udp handler to be installed")
-	}
-}
-
 func TestSnapshotActivatorSharedWireGuardRuntimeAppliesRelayAndL4ProfileOnce(t *testing.T) {
 	createCount := 0
 	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
@@ -1954,34 +1922,6 @@ func TestL4TransparentWireGuardBindingKeysOverlapSameProfileOnly(t *testing.T) {
 	}
 }
 
-func TestL4TransparentWireGuardUDPBindingKeysOverlapSameProfileOnly(t *testing.T) {
-	port := pickFreeUDPPort(t)
-	profileID := 9
-	addressMode := []string{"wireguard:9:udp:" + net.JoinHostPort("10.64.0.2", strconv.Itoa(port))}
-	transparent := l4RuleBindingKeys([]model.L4Rule{{
-		Protocol:             "udp",
-		ListenHost:           "0.0.0.0",
-		ListenPort:           port,
-		ListenMode:           "wireguard",
-		WireGuardInboundMode: "transparent",
-		WireGuardProfileID:   &profileID,
-	}})
-
-	wantTransparent := []string{"wireguard:9:udp:" + net.JoinHostPort("", strconv.Itoa(port))}
-	if !reflect.DeepEqual(transparent, wantTransparent) {
-		t.Fatalf("l4RuleBindingKeys() = %+v, want %+v", transparent, wantTransparent)
-	}
-	if !bindingKeysOverlap(addressMode, transparent) {
-		t.Fatalf("expected same-profile wireguard bindings %v and %v to overlap", addressMode, transparent)
-	}
-	if bindingKeysOverlap([]string{"udp:" + net.JoinHostPort("0.0.0.0", strconv.Itoa(port))}, transparent) {
-		t.Fatalf("did not expect host wildcard binding to overlap transparent wireguard binding %v", transparent)
-	}
-	if bindingKeysOverlap([]string{"wireguard:10:udp:" + net.JoinHostPort("", strconv.Itoa(port))}, transparent) {
-		t.Fatalf("did not expect different-profile wireguard bindings to overlap %v", transparent)
-	}
-}
-
 func TestRelayBindingKeysOverlapWildcardToSpecificHost(t *testing.T) {
 	port := pickFreeTCPPort(t)
 	previous := relayListenerBindingKeys([]model.RelayListener{{
@@ -2330,7 +2270,6 @@ type testAppWireGuardRuntime struct {
 	onListenTCP   func(context.Context, string) (net.Listener, error)
 	onListenUDP   func(context.Context, string) (net.PacketConn, error)
 	onClose       func() error
-	udpHandler    func(context.Context, string, string, []byte, func([]byte) error)
 	closed        bool
 }
 
@@ -2364,10 +2303,6 @@ func (r *testAppWireGuardRuntime) Close() error {
 		return r.onClose()
 	}
 	return nil
-}
-
-func (r *testAppWireGuardRuntime) SetTransparentUDPHandler(handler func(context.Context, string, string, []byte, func([]byte) error)) {
-	r.udpHandler = handler
 }
 
 type transientPortInUseWireGuardRuntime struct {

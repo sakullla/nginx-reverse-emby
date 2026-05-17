@@ -36,7 +36,6 @@ type Server struct {
 	tcpListeners          []net.Listener
 	udpConns              []udpListener
 	bindingKeys           []string
-	rules                 []model.L4Rule
 	udpMu                 sync.Mutex
 	udpSessions           map[string]*udpSession
 	udpReplyTimeout       time.Duration
@@ -124,7 +123,6 @@ func newServerWithOptions(
 		udpSessionIdleTimeout: 30 * time.Second,
 		upstreamScore:         upstream.NewScoreStore(time.Now),
 		tcpListeners:          nil,
-		rules:                 append([]model.L4Rule(nil), rules...),
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
 		relayPathDialer:       relayPathDialer{provider: relayProvider, wireGuardProvider: wireGuardProvider},

@@ -512,6 +512,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		if wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
 			return L4Rule{}, fmt.Errorf("%w: wireguard_inbound_mode must be address or transparent", ErrInvalidArgument)
 		}
+		if wireGuardInboundMode == "transparent" && protocol == "udp" {
+			return L4Rule{}, fmt.Errorf("%w: wireguard transparent inbound does not support udp dynamic destination routing", ErrInvalidArgument)
+		}
 	} else {
 		wireGuardInboundMode = ""
 	}

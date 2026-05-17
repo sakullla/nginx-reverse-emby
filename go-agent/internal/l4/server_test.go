@@ -751,19 +751,16 @@ func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 	}
 }
 
-func TestWireGuardTransparentUDPInboundUsesRuntimeWildcardListener(t *testing.T) {
+func TestWireGuardTransparentUDPInboundRejected(t *testing.T) {
 	profileID := 9
 	listenPort := pickFreeUDPPort(t)
 	runtime := &fakeL4WireGuardRuntime{
 		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {
-			want := net.JoinHostPort("", strconv.Itoa(listenPort))
-			if address != want {
-				t.Fatalf("ListenUDP address = %q, want %q", address, want)
-			}
-			return net.ListenPacket("udp", "127.0.0.1:0")
+			t.Fatalf("ListenUDP address = %q, want validation before listener start", address)
+			return nil, nil
 		},
 	}
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	_, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "udp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           listenPort,
@@ -771,89 +768,12 @@ func TestWireGuardTransparentUDPInboundUsesRuntimeWildcardListener(t *testing.T)
 		WireGuardInboundMode: "transparent",
 		WireGuardProfileID:   &profileID,
 		WireGuardListenHost:  "10.64.0.2",
+		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeUDPPort(t)}},
 	}}, nil, nil, fakeL4WireGuardProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
-	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
-	}
-	defer srv.Close()
-
-	calls := runtime.listenUDPCalls()
-	if len(calls) != 1 {
-		t.Fatalf("ListenUDP calls = %d, want 1", len(calls))
-	}
-	wantKey := "wireguard:9:udp:" + net.JoinHostPort("", strconv.Itoa(listenPort))
-	if keys := srv.BindingKeys(); len(keys) != 1 || keys[0] != wantKey {
-		t.Fatalf("BindingKeys() = %+v, want [%s]", keys, wantKey)
-	}
-}
-
-func TestWireGuardTransparentUDPInboundForwardsUsingOriginalDestination(t *testing.T) {
-	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("resolve upstream addr: %v", err)
-	}
-	upstreamConn, err := net.ListenUDP("udp", upstreamAddr)
-	if err != nil {
-		t.Fatalf("listen udp upstream: %v", err)
-	}
-	defer upstreamConn.Close()
-
-	payloadSeen := make(chan []byte, 1)
-	go func() {
-		buf := make([]byte, 64)
-		n, addr, err := upstreamConn.ReadFromUDP(buf)
-		if err != nil {
-			return
-		}
-		payloadSeen <- append([]byte(nil), buf[:n]...)
-		_, _ = upstreamConn.WriteToUDP([]byte("pong"), addr)
-	}()
-
-	profileID := 9
-	runtime := &fakeL4WireGuardRuntime{
-		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {
-			return net.ListenPacket("udp", "127.0.0.1:0")
-		},
-	}
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
-		Protocol:             "udp",
-		ListenHost:           "0.0.0.0",
-		ListenPort:           upstreamConn.LocalAddr().(*net.UDPAddr).Port,
-		ListenMode:           "wireguard",
-		WireGuardInboundMode: "transparent",
-		WireGuardProfileID:   &profileID,
-	}}, nil, nil, fakeL4WireGuardProvider{
-		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
-	})
-	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
-	}
-	defer srv.Close()
-
-	replyCh := make(chan []byte, 1)
-	srv.HandleWireGuardUDPFlow(context.Background(), "10.20.0.10:12345", upstreamConn.LocalAddr().String(), []byte("ping"), func(reply []byte) error {
-		replyCh <- append([]byte(nil), reply...)
-		return nil
-	})
-
-	select {
-	case got := <-payloadSeen:
-		if !bytes.Equal(got, []byte("ping")) {
-			t.Fatalf("upstream payload = %q, want %q", got, []byte("ping"))
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for upstream payload")
-	}
-
-	select {
-	case reply := <-replyCh:
-		if !bytes.Equal(reply, []byte("pong")) {
-			t.Fatalf("reply = %q, want %q", reply, []byte("pong"))
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for transparent udp reply")
+	if err == nil || !strings.Contains(err.Error(), "transparent") || !strings.Contains(err.Error(), "udp") {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v, want transparent udp validation", err)
 	}
 }
 
