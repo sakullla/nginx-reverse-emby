@@ -417,4 +417,3 @@ docker build -t nginx-reverse-emby .
 ```
 
 Expected: image builds successfully.
-

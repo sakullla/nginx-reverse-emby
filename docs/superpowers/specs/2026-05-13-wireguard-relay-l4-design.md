@@ -114,4 +114,3 @@ Secrets are redacted on read:
 Backend tests cover normalization, redaction, CRUD, snapshot inclusion, and validation references. Agent tests cover WireGuard config conversion, runtime lifecycle with a test double where possible, Relay transport selection, and L4 inbound/outbound path selection. Frontend tests cover payload generation and secret redaction handling.
 
 Full live WireGuard data-plane integration may be gated behind focused tests because userspace WireGuard netstack setup can be sensitive to CI networking. The minimal required verification is backend Go tests, agent package tests for relay/l4/wireguard, and frontend build.
-
