@@ -144,6 +144,9 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	if err != nil {
 		return WireGuardProfile{}, err
 	}
+	if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+		return WireGuardProfile{}, err
+	}
 	rows, err := s.store.ListWireGuardProfiles(ctx, resolvedID)
 	if err != nil {
 		return WireGuardProfile{}, err
@@ -191,6 +194,9 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id int, input WireGuardProfileInput) (WireGuardProfile, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
 		return WireGuardProfile{}, err
 	}
 	allocatorState, _, err := loadConfigIdentityAllocatorBaseState(ctx, s.cfg, s.store)

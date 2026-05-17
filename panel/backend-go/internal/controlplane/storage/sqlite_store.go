@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -238,6 +239,13 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	wireGuardRows, err := s.loadWireGuardProfilesForSync(ctx, resolvedAgentID)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	supportsWireGuard, err := s.agentSupportsWireGuardSnapshots(ctx, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if !supportsWireGuard {
+		wireGuardRows = nil
 	}
 
 	certRows, err := s.ListManagedCertificates(ctx)
@@ -1094,6 +1102,29 @@ func (s *GormStore) loadRelayListenersForSync(
 
 func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID string) ([]WireGuardProfileRow, error) {
 	return s.ListWireGuardProfiles(ctx, agentID)
+}
+
+func (s *GormStore) agentSupportsWireGuardSnapshots(ctx context.Context, agentID string) (bool, error) {
+	if strings.TrimSpace(agentID) == s.localAgentID {
+		return true, nil
+	}
+	var row AgentRow
+	err := s.db.WithContext(ctx).
+		Select("id", "capabilities").
+		Where("id = ?", strings.TrimSpace(agentID)).
+		First(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, capability := range parseStringSlice(row.CapabilitiesJSON) {
+		if capability == "wireguard" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []int {

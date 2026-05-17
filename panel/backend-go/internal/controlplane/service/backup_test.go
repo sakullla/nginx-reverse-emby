@@ -1622,9 +1622,10 @@ func TestBackupServiceImportSkipsHTTPWireGuardEntryWithUnmappedProfile(t *testin
 			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
 		},
 		Agents: []BackupAgent{{
-			ID:         "edge-http-wg",
-			Name:       "edge-http-wg",
-			AgentToken: "token-edge-http-wg",
+			ID:           "edge-http-wg",
+			Name:         "edge-http-wg",
+			AgentToken:   "token-edge-http-wg",
+			Capabilities: []string{"wireguard"},
 		}},
 	}
 	httpRules := []map[string]any{{
@@ -1680,9 +1681,10 @@ func TestBackupServiceImportSkipsHTTPWireGuardEntryWithDisabledProfile(t *testin
 			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
 		},
 		Agents: []BackupAgent{{
-			ID:         "edge-http-wg",
-			Name:       "edge-http-wg",
-			AgentToken: "token-edge-http-wg",
+			ID:           "edge-http-wg",
+			Name:         "edge-http-wg",
+			AgentToken:   "token-edge-http-wg",
+			Capabilities: []string{"wireguard"},
 		}},
 		WireGuardProfiles: []BackupWireGuardProfile{{
 			ID:         disabledProfileID,
@@ -2386,9 +2388,10 @@ func TestBackupServiceImportRestoresWireGuardClientsForDisabledProfile(t *testin
 			ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
 		},
 		Agents: []BackupAgent{{
-			ID:         "edge-wg-disabled",
-			Name:       "edge-wg-disabled",
-			AgentToken: "token-edge-wg-disabled",
+			ID:           "edge-wg-disabled",
+			Name:         "edge-wg-disabled",
+			AgentToken:   "token-edge-wg-disabled",
+			Capabilities: []string{"wireguard"},
 		}},
 		WireGuardProfiles: []BackupWireGuardProfile{{
 			ID:         profileID,
@@ -2448,9 +2451,10 @@ func TestBackupServiceImportSkipsWireGuardClientsForConflictingProfileWithoutTou
 	defer targetStore.Close()
 
 	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
-		ID:         "edge-wg",
-		Name:       "edge-wg",
-		AgentToken: "token-edge-wg",
+		ID:               "edge-wg",
+		Name:             "edge-wg",
+		AgentToken:       "token-edge-wg",
+		CapabilitiesJSON: `["wireguard"]`,
 	}); err != nil {
 		t.Fatalf("SaveAgent(target) error = %v", err)
 	}
@@ -2584,9 +2588,10 @@ func TestBackupServiceImportReplacingWireGuardClientsRemovesStaleGeneratedPeersA
 	defer targetStore.Close()
 
 	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
-		ID:         "edge-wg",
-		Name:       "edge-wg",
-		AgentToken: "token-edge-wg",
+		ID:               "edge-wg",
+		Name:             "edge-wg",
+		AgentToken:       "token-edge-wg",
+		CapabilitiesJSON: `["wireguard"]`,
 	}); err != nil {
 		t.Fatalf("SaveAgent(target) error = %v", err)
 	}
@@ -2719,9 +2724,10 @@ func TestBackupServicePreviewReportsWireGuardClientCountsAndRejectsInvalidKeyMat
 	defer targetStore.Close()
 
 	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
-		ID:         "edge-wg",
-		Name:       "edge-wg",
-		AgentToken: "token-edge-wg",
+		ID:               "edge-wg",
+		Name:             "edge-wg",
+		AgentToken:       "token-edge-wg",
+		CapabilitiesJSON: `["wireguard"]`,
 	}); err != nil {
 		t.Fatalf("SaveAgent(target) error = %v", err)
 	}
@@ -3176,9 +3182,10 @@ func TestBackupServiceImportSkipsWireGuardProfileListenPortConflicts(t *testing.
 		defer targetStore.Close()
 
 		if err := targetStore.SaveAgent(ctx, storage.AgentRow{
-			ID:         "edge-wg",
-			Name:       "edge-wg",
-			AgentToken: "token-edge-wg",
+			ID:               "edge-wg",
+			Name:             "edge-wg",
+			AgentToken:       "token-edge-wg",
+			CapabilitiesJSON: `["wireguard"]`,
 		}); err != nil {
 			t.Fatalf("SaveAgent(edge-wg) error = %v", err)
 		}
@@ -3205,9 +3212,10 @@ func TestBackupServiceImportSkipsWireGuardProfileListenPortConflicts(t *testing.
 				ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
 			},
 			Agents: []BackupAgent{{
-				ID:         "edge-wg",
-				Name:       "edge-wg",
-				AgentToken: "token-edge-wg",
+				ID:           "edge-wg",
+				Name:         "edge-wg",
+				AgentToken:   "token-edge-wg",
+				Capabilities: []string{"wireguard"},
 			}},
 			WireGuardProfiles: []BackupWireGuardProfile{{
 				ID:         1,
@@ -3270,9 +3278,10 @@ func TestBackupServiceImportSkipsWireGuardProfileListenPortConflicts(t *testing.
 				ExportedAt:         time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC),
 			},
 			Agents: []BackupAgent{{
-				ID:         "edge-wg",
-				Name:       "edge-wg",
-				AgentToken: "token-edge-wg",
+				ID:           "edge-wg",
+				Name:         "edge-wg",
+				AgentToken:   "token-edge-wg",
+				Capabilities: []string{"wireguard"},
 			}},
 			WireGuardProfiles: []BackupWireGuardProfile{
 				{
@@ -5080,6 +5089,7 @@ func TestBackupServicePreviewAndImportSkipWireGuardRulesWhenAgentLacksCapability
 				L4Rules:           2,
 				RelayListeners:    1,
 				WireGuardProfiles: 1,
+				WireGuardClients:  1,
 			},
 		},
 		Agents: []BackupAgent{
@@ -5109,6 +5119,21 @@ func TestBackupServicePreviewAndImportSkipWireGuardRulesWhenAgentLacksCapability
 				Enabled:    true,
 				Tags:       []string{},
 				Revision:   4,
+			},
+		},
+		WireGuardClients: []BackupWireGuardClient{
+			{
+				ID:           9,
+				AgentID:      "edge-a",
+				ProfileID:    wgProfileID,
+				Name:         "phone",
+				PrivateKey:   testWireGuardPrivateKey,
+				PublicKey:    testWireGuardPublicKey,
+				PresharedKey: testWireGuardPresharedKey,
+				Address:      "10.44.0.2/32",
+				AllowedIPs:   []string{"10.44.0.1/24"},
+				DNS:          []string{},
+				Enabled:      true,
 			},
 		},
 		RelayListeners: []BackupRelayListener{
@@ -5189,8 +5214,8 @@ func TestBackupServicePreviewAndImportSkipWireGuardRulesWhenAgentLacksCapability
 	}{
 		{kind: "relay_listener", key: relayConflictKey("edge-a", "wg-relay")},
 		{kind: "http_rule", key: "https://wg-http.example.com"},
-		{kind: "l4_rule", key: l4BackupConflictKey("edge-a", "tcp", "0.0.0.0", 9000, "wireguard", "", "10.44.0.1", intPtrService(wgProfileID), "")},
-		{kind: "l4_rule", key: l4BackupConflictKey("edge-a", "tcp", "0.0.0.0", 9001, "proxy", "", "", intPtrService(wgProfileID), "wireguard")},
+		{kind: "l4_rule", key: l4BackupConflictKey("edge-a", "tcp", "0.0.0.0", 9000, "wireguard", "", "10.44.0.1", nil, "")},
+		{kind: "l4_rule", key: l4BackupConflictKey("edge-a", "tcp", "0.0.0.0", 9001, "proxy", "", "", nil, "wireguard")},
 	}
 	for _, tc := range []struct {
 		name string
@@ -5214,13 +5239,15 @@ func TestBackupServicePreviewAndImportSkipWireGuardRulesWhenAgentLacksCapability
 			if err != nil {
 				t.Fatalf("%s() error = %v", tc.name, err)
 			}
-			if result.Summary.Imported.WireGuardProfiles != 1 {
-				t.Fatalf("%s summary imported wireguard profiles = %+v, want 1", tc.name, result.Summary.Imported)
+			if result.Summary.Imported.WireGuardProfiles != 0 || result.Summary.Imported.WireGuardClients != 0 {
+				t.Fatalf("%s summary imported wireguard material = %+v, want no wireguard profile/client imports", tc.name, result.Summary.Imported)
 			}
-			if result.Summary.SkippedInvalid.RelayListeners != 1 || result.Summary.SkippedInvalid.HTTPRules != 1 || result.Summary.SkippedInvalid.L4Rules != 2 {
-				t.Fatalf("%s summary skipped invalid = %+v, want relay=1 http=1 l4=2", tc.name, result.Summary.SkippedInvalid)
+			if result.Summary.SkippedInvalid.WireGuardProfiles != 1 || result.Summary.SkippedInvalid.WireGuardClients != 1 || result.Summary.SkippedInvalid.RelayListeners != 1 || result.Summary.SkippedInvalid.HTTPRules != 1 || result.Summary.SkippedInvalid.L4Rules != 2 {
+				t.Fatalf("%s summary skipped invalid = %+v, want wg_profiles=1 wg_clients=1 relay=1 http=1 l4=2", tc.name, result.Summary.SkippedInvalid)
 			}
 			wantReason := "invalid argument: agent does not support WireGuard: edge-a"
+			assertBackupSkippedInvalidReason(t, result, "wireguard_profile", wireGuardProfileConflictKey("edge-a", "edge-a-wireguard"), wantReason)
+			assertBackupSkippedInvalidReason(t, result, "wireguard_client", wireGuardClientBackupKey("edge-a", wgProfileID, "phone", 9), "wireguard profile was not imported")
 			for _, item := range expectedInvalid {
 				assertBackupSkippedInvalidReason(t, result, item.kind, item.key, wantReason)
 			}
@@ -5231,8 +5258,20 @@ func TestBackupServicePreviewAndImportSkipWireGuardRulesWhenAgentLacksCapability
 	if err != nil {
 		t.Fatalf("ListWireGuardProfiles(edge-a) error = %v", err)
 	}
-	if len(profiles) != 1 || profiles[0].Name != "edge-a-wireguard" {
-		t.Fatalf("imported wireguard profiles = %+v, want only edge-a-wireguard", profiles)
+	if len(profiles) != 0 {
+		t.Fatalf("imported wireguard profiles = %+v, want none", profiles)
+	}
+	for _, profile := range profiles {
+		if profile.PrivateKey == testWireGuardPrivateKey {
+			t.Fatalf("unsupported agent imported wireguard private key in profile %+v", profile)
+		}
+	}
+	clients, err := targetStore.ListWireGuardClients(ctx, "edge-a", wgProfileID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(edge-a) error = %v", err)
+	}
+	if len(clients) != 0 {
+		t.Fatalf("imported wireguard clients = %+v, want none", clients)
 	}
 	if listeners, err := targetStore.ListRelayListeners(ctx, "edge-a"); err != nil {
 		t.Fatalf("ListRelayListeners(edge-a) error = %v", err)

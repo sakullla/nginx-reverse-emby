@@ -112,6 +112,78 @@ func TestWireGuardProfileRejectsInvalidCIDR(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCreateRejectsRemoteAgentWithoutWireGuardCapability(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-no-wg",
+		Name:             "edge-no-wg",
+		AgentToken:       "token-edge-no-wg",
+		CapabilitiesJSON: `["http_rules","l4"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	_, err := svc.Create(ctx, "edge-no-wg", testWireGuardProfileInput())
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "agent does not support WireGuard") {
+		t.Fatalf("Create() error = %v, want wireguard capability message", err)
+	}
+	rows, err := store.ListWireGuardProfiles(ctx, "edge-no-wg")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("stored wireguard profiles = %+v, want none", rows)
+	}
+}
+
+func TestWireGuardProfileUpdateRejectsRemoteAgentWithoutWireGuardCapability(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-no-wg",
+		Name:             "edge-no-wg",
+		AgentToken:       "token-edge-no-wg",
+		CapabilitiesJSON: `["http_rules","l4"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	seed := wireGuardProfileToRow(WireGuardProfile{
+		ID:         41,
+		AgentID:    "edge-no-wg",
+		Name:       "seed",
+		Mode:       "generic_wireguard",
+		PrivateKey: testWireGuardPrivateKey,
+		Addresses:  []string{"10.44.0.1/24"},
+		Peers:      []WireGuardPeer{},
+		Enabled:    false,
+		Revision:   1,
+	})
+	if err := store.SaveWireGuardProfiles(ctx, "edge-no-wg", []storage.WireGuardProfileRow{seed}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+
+	update := testWireGuardProfileInput()
+	update.Name = "updated"
+	_, err := svc.Update(ctx, "edge-no-wg", 41, update)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "agent does not support WireGuard") {
+		t.Fatalf("Update() error = %v, want wireguard capability message", err)
+	}
+	rows, err := store.ListWireGuardProfiles(ctx, "edge-no-wg")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 1 || rows[0] != seed {
+		t.Fatalf("stored wireguard profiles = %+v, want unchanged seed %+v", rows, seed)
+	}
+}
+
 func TestWireGuardProfileCreateAllocatesAddressWhenOmitted(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
@@ -442,11 +514,12 @@ func TestWireGuardProfileUpdateBumpsAgentsThatReferenceRelayProfile(t *testing.T
 	store, svc := newTestWireGuardProfileService(t)
 
 	if err := store.SaveAgent(ctx, storage.AgentRow{
-		ID:              "relay-agent",
-		Name:            "relay-agent",
-		AgentToken:      "token-relay",
-		DesiredRevision: 1,
-		CurrentRevision: 1,
+		ID:               "relay-agent",
+		Name:             "relay-agent",
+		AgentToken:       "token-relay",
+		DesiredRevision:  1,
+		CurrentRevision:  1,
+		CapabilitiesJSON: `["wireguard"]`,
 	}); err != nil {
 		t.Fatalf("SaveAgent(relay-agent) error = %v", err)
 	}
@@ -835,10 +908,11 @@ func TestWireGuardProfileRevisionUsesRemoteAgentFloor(t *testing.T) {
 		}
 	})
 	if err := store.SaveAgent(ctx, storage.AgentRow{
-		ID:              "edge-1",
-		Name:            "edge-1",
-		DesiredRevision: 8,
-		CurrentRevision: 11,
+		ID:               "edge-1",
+		Name:             "edge-1",
+		DesiredRevision:  8,
+		CurrentRevision:  11,
+		CapabilitiesJSON: `["wireguard"]`,
 	}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
@@ -900,8 +974,9 @@ func TestWireGuardProfileLocalApplyTriggerSkipsRemoteAgents(t *testing.T) {
 		}
 	})
 	if err := store.SaveAgent(ctx, storage.AgentRow{
-		ID:   "edge-1",
-		Name: "edge-1",
+		ID:               "edge-1",
+		Name:             "edge-1",
+		CapabilitiesJSON: `["wireguard"]`,
 	}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}

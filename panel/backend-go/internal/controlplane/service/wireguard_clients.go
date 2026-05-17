@@ -98,6 +98,9 @@ func (s *wireGuardClientService) CreateClient(ctx context.Context, agentID strin
 	if err != nil {
 		return WireGuardClient{}, err
 	}
+	if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+		return WireGuardClient{}, err
+	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
 		return WireGuardClient{}, err
@@ -242,6 +245,9 @@ func (s *wireGuardClientService) UpdateClient(ctx context.Context, agentID strin
 	}
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
+		return WireGuardClient{}, err
+	}
+	if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
 		return WireGuardClient{}, err
 	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
