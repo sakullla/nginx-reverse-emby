@@ -27,6 +27,16 @@ func assertBackupSkippedInvalidReason(t *testing.T, result BackupImportResult, k
 	t.Fatalf("missing skipped invalid item kind=%q key=%q reason=%q in %+v", kind, key, reason, result.Report.SkippedInvalid)
 }
 
+func assertBackupSkippedConflictReason(t *testing.T, result BackupImportResult, kind string, key string, reason string) {
+	t.Helper()
+	for _, item := range result.Report.SkippedConflict {
+		if item.Kind == kind && item.Key == key && item.Reason == reason {
+			return
+		}
+	}
+	t.Fatalf("missing skipped conflict item kind=%q key=%q reason=%q in %+v", kind, key, reason, result.Report.SkippedConflict)
+}
+
 func TestBackupManifestRoundTripShape(t *testing.T) {
 	manifest := BackupManifest{
 		PackageVersion:       BackupPackageVersion,
@@ -6500,6 +6510,125 @@ func TestBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *
 	}
 	if len(skippedHTTPRules) != 1 || skippedHTTPRules[0].Key != "https://shared.example.com" || skippedHTTPRules[0].Reason != "frontend_url already exists" {
 		t.Fatalf("preview skipped http conflicts = %+v in report %+v", skippedHTTPRules, result.Report.SkippedConflict)
+	}
+}
+
+func TestBackupServicePreviewAndImportSkipDuplicateHTTPWireGuardInternalRoutes(t *testing.T) {
+	sourceProfileID := 7
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			SourceLocalAgentID: "source-local",
+			Counts: BackupCounts{
+				Agents:            1,
+				HTTPRules:         2,
+				WireGuardProfiles: 1,
+			},
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-http-wg",
+			Name:       "edge-http-wg",
+			AgentToken: "token-edge-http-wg",
+			Capabilities: []string{
+				"http_rules",
+				"wireguard",
+			},
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{{
+			ID:         sourceProfileID,
+			AgentID:    "edge-http-wg",
+			Name:       "wg-http",
+			Mode:       "generic_wireguard",
+			PrivateKey: testWireGuardPrivateKey,
+			ListenPort: 51820,
+			Addresses:  []string{"10.44.0.1/24"},
+			Peers: []WireGuardPeer{{
+				Name:       "peer-a",
+				PublicKey:  testWireGuardPublicKey,
+				AllowedIPs: []string{"10.44.0.2/32"},
+			}},
+			DNS:     []string{},
+			Enabled: true,
+		}},
+		HTTPRules: []BackupHTTPRule{
+			{
+				ID:                       1,
+				AgentID:                  "edge-http-wg",
+				FrontendURL:              "https://public-a.example.com/app/",
+				Backends:                 []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+				LoadBalancing:            HTTPLoadBalancing{Strategy: "adaptive"},
+				Enabled:                  true,
+				PassProxyHeaders:         defaultPassProxyHeaders(),
+				CustomHeaders:            []HTTPCustomHeader{},
+				WireGuardEntryEnabled:    true,
+				WireGuardProfileID:       &sourceProfileID,
+				WireGuardEntryListenHost: "10.44.0.1",
+				WireGuardEntryListenPort: 18096,
+			},
+			{
+				ID:                       2,
+				AgentID:                  "edge-http-wg",
+				FrontendURL:              "https://public-b.example.com/app",
+				Backends:                 []HTTPRuleBackend{{URL: "http://127.0.0.1:9096"}},
+				LoadBalancing:            HTTPLoadBalancing{Strategy: "adaptive"},
+				Enabled:                  true,
+				PassProxyHeaders:         defaultPassProxyHeaders(),
+				CustomHeaders:            []HTTPCustomHeader{},
+				WireGuardEntryEnabled:    true,
+				WireGuardProfileID:       &sourceProfileID,
+				WireGuardEntryListenHost: "10.44.0.1",
+				WireGuardEntryListenPort: 18096,
+			},
+		},
+		L4Rules:          []BackupL4Rule{},
+		WireGuardClients: []BackupWireGuardClient{},
+		RelayListeners:   []BackupRelayListener{},
+		Certificates:     []BackupCertificate{},
+		VersionPolicies:  []BackupVersionPolicy{},
+		TrafficPolicies:  []BackupTrafficPolicy{},
+		TrafficBaselines: []BackupTrafficBaseline{},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	previewStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-http-wg-duplicate-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(preview target) error = %v", err)
+	}
+	defer previewStore.Close()
+
+	preview, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, previewStore).Preview(t.Context(), archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	if preview.Summary.Imported.HTTPRules != 1 || preview.Summary.SkippedConflict.HTTPRules != 1 {
+		t.Fatalf("preview http summary = imported %+v skipped conflict %+v report %+v", preview.Summary.Imported, preview.Summary.SkippedConflict, preview.Report)
+	}
+	assertBackupSkippedConflictReason(t, preview, "http_rule", "https://public-b.example.com/app", "wireguard entry route already exists")
+
+	importStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "import-http-wg-duplicate-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(import target) error = %v", err)
+	}
+	defer importStore.Close()
+
+	importResult, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, importStore).Import(t.Context(), archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if importResult.Summary.Imported.HTTPRules != 1 || importResult.Summary.SkippedConflict.HTTPRules != 1 {
+		t.Fatalf("import http summary = imported %+v skipped conflict %+v report %+v", importResult.Summary.Imported, importResult.Summary.SkippedConflict, importResult.Report)
+	}
+	assertBackupSkippedConflictReason(t, importResult, "http_rule", "https://public-b.example.com/app", "wireguard entry route already exists")
+	rows, err := importStore.ListHTTPRules(t.Context(), "edge-http-wg")
+	if err != nil {
+		t.Fatalf("ListHTTPRules(edge-http-wg) error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].FrontendURL != "https://public-a.example.com/app/" {
+		t.Fatalf("imported http rows = %+v, want only first WireGuard route", rows)
 	}
 }
 

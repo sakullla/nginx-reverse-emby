@@ -317,8 +317,12 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		return BackupImportResult{}, err
 	}
 	existingHTTPKeys := map[string]struct{}{}
+	existingHTTPWireGuardEntryRouteKeys := map[string]struct{}{}
 	for _, row := range existingHTTPRules {
 		existingHTTPKeys[httpRuleConflictKey(row.AgentID, row.FrontendURL)] = struct{}{}
+		if routeKey, ok := httpWireGuardEntryRouteKey(httpRuleFromRow(row)); ok {
+			existingHTTPWireGuardEntryRouteKeys[routeKey] = struct{}{}
+		}
 	}
 	for _, item := range bundle.HTTPRules {
 		key := strings.TrimSpace(item.FrontendURL)
@@ -352,6 +356,14 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 				result.addSkippedInvalid("http_rule", key, "wireguard profile was not imported")
 				continue
 			}
+		}
+		wireGuardProfileID, _ := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		if routeKey, ok := backupHTTPWireGuardEntryRouteKey(resolvedAgentID, item, wireGuardProfileID); ok {
+			if _, exists := existingHTTPWireGuardEntryRouteKeys[routeKey]; exists {
+				result.addSkippedConflict("http_rule", key, "wireguard entry route already exists")
+				continue
+			}
+			existingHTTPWireGuardEntryRouteKeys[routeKey] = struct{}{}
 		}
 		result.addImported("http_rule", key)
 		existingHTTPKeys[conflictKey] = struct{}{}
@@ -1499,12 +1511,16 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 		return err
 	}
 	conflictSet := map[string]struct{}{}
+	wireGuardRouteConflictSet := map[string]struct{}{}
 	grouped := map[string][]storage.HTTPRuleRow{}
 	maxRevisionByAgent := map[string]int{}
 
 	for _, row := range existingRules {
 		key := httpRuleConflictKey(row.AgentID, row.FrontendURL)
 		conflictSet[key] = struct{}{}
+		if routeKey, ok := httpWireGuardEntryRouteKey(httpRuleFromRow(row)); ok {
+			wireGuardRouteConflictSet[routeKey] = struct{}{}
+		}
 		grouped[row.AgentID] = append(grouped[row.AgentID], row)
 		if row.Revision > maxRevisionByAgent[row.AgentID] {
 			maxRevisionByAgent[row.AgentID] = row.Revision
@@ -1547,6 +1563,13 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 			continue
 		}
 		normalized.AgentID = resolvedAgentID
+		if routeKey, ok := httpWireGuardEntryRouteKey(normalized); ok {
+			if _, exists := wireGuardRouteConflictSet[routeKey]; exists {
+				result.addSkippedConflict("http_rule", key, "wireguard entry route already exists")
+				continue
+			}
+			wireGuardRouteConflictSet[routeKey] = struct{}{}
+		}
 		assignedID := allocator.AllocateRuleID(item.ID)
 		normalized.ID = assignedID
 		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
@@ -2098,6 +2121,18 @@ func relayConflictKey(agentID string, name string) string {
 
 func httpRuleConflictKey(agentID string, frontendURL string) string {
 	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(frontendURL)
+}
+
+func backupHTTPWireGuardEntryRouteKey(agentID string, rule BackupHTTPRule, wireGuardProfileID *int) (string, bool) {
+	return httpWireGuardEntryRouteKey(HTTPRule{
+		AgentID:                  agentID,
+		FrontendURL:              rule.FrontendURL,
+		Enabled:                  rule.Enabled,
+		WireGuardEntryEnabled:    rule.WireGuardEntryEnabled,
+		WireGuardProfileID:       copyOptionalInt(wireGuardProfileID),
+		WireGuardEntryListenHost: rule.WireGuardEntryListenHost,
+		WireGuardEntryListenPort: rule.WireGuardEntryListenPort,
+	})
 }
 
 func l4ConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenStack string) string {

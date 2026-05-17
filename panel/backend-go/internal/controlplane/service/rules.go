@@ -149,6 +149,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err := validateUniqueHTTPFrontendBinding(append(rows, httpRuleToRow(rule))); err != nil {
 		return HTTPRule{}, err
 	}
+	if err := validateUniqueHTTPWireGuardEntryRoutes(append(rows, httpRuleToRow(rule))); err != nil {
+		return HTTPRule{}, err
+	}
 
 	nextRows := append(append([]storage.HTTPRuleRow(nil), rows...), httpRuleToRow(rule))
 	certRowsChanged := false
@@ -247,6 +250,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows...)
 	nextRows[targetIndex] = httpRuleToRow(rule)
 	if err := validateUniqueHTTPFrontendBinding(nextRows); err != nil {
+		return HTTPRule{}, err
+	}
+	if err := validateUniqueHTTPWireGuardEntryRoutes(nextRows); err != nil {
 		return HTTPRule{}, err
 	}
 	originalCertRows, nextCertRows, certRowsChanged, err := s.prepareManagedCertificatesForRuleMutation(
@@ -1236,6 +1242,21 @@ func validateUniqueHTTPFrontendBinding(rows []storage.HTTPRuleRow) error {
 	return nil
 }
 
+func validateUniqueHTTPWireGuardEntryRoutes(rows []storage.HTTPRuleRow) error {
+	seen := make(map[string]int, len(rows))
+	for _, row := range rows {
+		key, ok := httpWireGuardEntryRouteKey(httpRuleFromRow(row))
+		if !ok {
+			continue
+		}
+		if existingID, exists := seen[key]; exists && existingID != row.ID {
+			return fmt.Errorf("%w: wireguard entry route conflicts with existing rule: %d", ErrInvalidArgument, existingID)
+		}
+		seen[key] = row.ID
+	}
+	return nil
+}
+
 func frontendBindingIdentity(rule HTTPRule) (string, bool) {
 	parsed, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
 	if err != nil || parsed == nil {
@@ -1258,6 +1279,28 @@ func frontendBindingIdentity(rule HTTPRule) (string, bool) {
 		}
 	}
 	return scheme + "://" + host + ":" + port + normalizeRuleFrontendPath(parsed.Path), true
+}
+
+func httpWireGuardEntryRouteKey(rule HTTPRule) (string, bool) {
+	if !rule.Enabled || !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
+		return "", false
+	}
+	listenHost := strings.TrimSpace(rule.WireGuardEntryListenHost)
+	if listenHost == "" || rule.WireGuardEntryListenPort < 1 || rule.WireGuardEntryListenPort > 65535 {
+		return "", false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
+	if err != nil || parsed == nil {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"%s|%d|%s|%d|%s",
+		strings.TrimSpace(rule.AgentID),
+		*rule.WireGuardProfileID,
+		strings.ToLower(listenHost),
+		rule.WireGuardEntryListenPort,
+		normalizeRuleFrontendPath(parsed.Path),
+	), true
 }
 
 func normalizeRuleFrontendPath(raw string) string {
