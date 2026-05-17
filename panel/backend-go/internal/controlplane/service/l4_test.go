@@ -589,9 +589,16 @@ func TestNormalizeL4RuleInputRejectsProxyEntryInvalidEgressMode(t *testing.T) {
 	}
 }
 
-func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDP(t *testing.T) {
-	for _, protocol := range []string{"tcp", "udp"} {
-		t.Run(protocol, func(t *testing.T) {
+func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDPRejectsUDP(t *testing.T) {
+	tests := []struct {
+		protocol string
+		wantErr  string
+	}{
+		{protocol: "tcp"},
+		{protocol: "udp", wantErr: "transparent inbound does not support udp"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.protocol, func(t *testing.T) {
 			store := &fakeL4Store{
 				l4RulesByID: map[string][]storage.L4RuleRow{},
 				wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -608,12 +615,21 @@ func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDP(t *testing.T) {
 			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 			rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-				Protocol:   stringPtrL4(protocol),
+				Protocol:   stringPtrL4(tt.protocol),
 				ListenMode: stringPtrL4("wireguard"),
 				ListenHost: stringPtrL4("0.0.0.0"),
 				ListenPort: intPtrL4(443),
 				Backends:   &[]L4Backend{{Host: "backend", Port: 8443}},
 			})
+			if tt.wantErr != "" {
+				if !errors.Is(err, ErrInvalidArgument) {
+					t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+				}
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Create() error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Create() error = %v", err)
 			}
@@ -1590,24 +1606,25 @@ func TestL4WireGuardListenHostDefaultsToListenHostOnCreate(t *testing.T) {
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:           stringPtrL4("udp"),
-		ListenHost:         stringPtrL4("127.0.0.1"),
-		ListenPort:         intPtrL4(51820),
-		ListenMode:         stringPtrL4("wireguard"),
-		WireGuardProfileID: intPtrL4(7),
-		Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+		Protocol:             stringPtrL4("udp"),
+		ListenHost:           stringPtrL4("127.0.0.1"),
+		ListenPort:           intPtrL4(51820),
+		ListenMode:           stringPtrL4("wireguard"),
+		WireGuardProfileID:   intPtrL4(7),
+		WireGuardInboundMode: stringPtrL4("address"),
+		Backends:             &[]L4Backend{{Host: "upstream", Port: 9001}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if rule.WireGuardInboundMode != "transparent" {
-		t.Fatalf("WireGuardInboundMode = %q, want transparent", rule.WireGuardInboundMode)
+	if rule.WireGuardInboundMode != "address" {
+		t.Fatalf("WireGuardInboundMode = %q, want address", rule.WireGuardInboundMode)
 	}
-	if rule.WireGuardListenHost != "" {
-		t.Fatalf("WireGuardListenHost = %q, want cleared for transparent mode", rule.WireGuardListenHost)
+	if rule.WireGuardListenHost != "127.0.0.1" {
+		t.Fatalf("WireGuardListenHost = %q, want listen host default", rule.WireGuardListenHost)
 	}
-	if got := store.l4RulesByID["local"][0].WireGuardListenHost; got != "" {
-		t.Fatalf("persisted WireGuardListenHost = %q, want empty for transparent mode", got)
+	if got := store.l4RulesByID["local"][0].WireGuardListenHost; got != "127.0.0.1" {
+		t.Fatalf("persisted WireGuardListenHost = %q, want listen host default", got)
 	}
 }
 
@@ -1651,7 +1668,7 @@ func TestL4RuleServiceWireGuardDefaultsInboundModeTransparent(t *testing.T) {
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:           stringPtrL4("udp"),
+		Protocol:           stringPtrL4("tcp"),
 		ListenHost:         stringPtrL4("0.0.0.0"),
 		ListenPort:         intPtrL4(51820),
 		ListenMode:         stringPtrL4("wireguard"),
@@ -2320,17 +2337,18 @@ func TestL4WireGuardListenUniquenessAllowsSameTunnelAddressAcrossProfiles(t *tes
 	existingProfileID := 7
 	nextProfileID := 8
 	existing := L4Rule{
-		ID:                  1,
-		AgentID:             "local",
-		Name:                "wg-a",
-		Protocol:            "udp",
-		ListenHost:          "0.0.0.0",
-		ListenPort:          51820,
-		Backends:            []L4Backend{{Host: "upstream-a", Port: 9001}},
-		ListenMode:          "wireguard",
-		WireGuardProfileID:  &existingProfileID,
-		WireGuardListenHost: "10.8.0.1",
-		Enabled:             true,
+		ID:                   1,
+		AgentID:              "local",
+		Name:                 "wg-a",
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           51820,
+		Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &existingProfileID,
+		WireGuardInboundMode: "address",
+		WireGuardListenHost:  "10.8.0.1",
+		Enabled:              true,
 	}
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
@@ -2346,13 +2364,14 @@ func TestL4WireGuardListenUniquenessAllowsSameTunnelAddressAcrossProfiles(t *tes
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:            stringPtrL4("udp"),
-		ListenHost:          stringPtrL4("0.0.0.0"),
-		ListenPort:          intPtrL4(51820),
-		ListenMode:          stringPtrL4("wireguard"),
-		WireGuardProfileID:  intPtrL4(nextProfileID),
-		WireGuardListenHost: stringPtrL4("10.8.0.1"),
-		Backends:            &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+		Protocol:             stringPtrL4("udp"),
+		ListenHost:           stringPtrL4("0.0.0.0"),
+		ListenPort:           intPtrL4(51820),
+		ListenMode:           stringPtrL4("wireguard"),
+		WireGuardProfileID:   intPtrL4(nextProfileID),
+		WireGuardInboundMode: stringPtrL4("address"),
+		WireGuardListenHost:  stringPtrL4("10.8.0.1"),
+		Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -2430,19 +2449,20 @@ func TestL4WireGuardListenHostDefaultsToListenHostOnUpdate(t *testing.T) {
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
-		Protocol:           stringPtrL4("udp"),
-		ListenHost:         stringPtrL4("127.0.0.1"),
-		ListenMode:         stringPtrL4("wireguard"),
-		WireGuardProfileID: intPtrL4(7),
+		Protocol:             stringPtrL4("udp"),
+		ListenHost:           stringPtrL4("127.0.0.1"),
+		ListenMode:           stringPtrL4("wireguard"),
+		WireGuardProfileID:   intPtrL4(7),
+		WireGuardInboundMode: stringPtrL4("address"),
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if rule.WireGuardInboundMode != "transparent" || rule.WireGuardListenHost != "" {
-		t.Fatalf("rule = %+v, want transparent mode with empty listen host", rule)
+	if rule.WireGuardInboundMode != "address" || rule.WireGuardListenHost != "127.0.0.1" {
+		t.Fatalf("rule = %+v, want address mode with listen host default", rule)
 	}
-	if got := store.l4RulesByID["local"][0].WireGuardListenHost; got != "" {
-		t.Fatalf("persisted WireGuardListenHost = %q, want empty for transparent mode", got)
+	if got := store.l4RulesByID["local"][0].WireGuardListenHost; got != "127.0.0.1" {
+		t.Fatalf("persisted WireGuardListenHost = %q, want listen host default", got)
 	}
 }
 
@@ -2568,18 +2588,20 @@ func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
 		{
 			name: "accepts enabled profile for udp listen",
 			input: L4RuleInput{
-				Protocol:           stringPtrL4("udp"),
-				ListenPort:         intPtrL4(51820),
-				ListenMode:         stringPtrL4("wireguard"),
-				WireGuardProfileID: intPtrL4(7),
-				Backends:           &[]L4Backend{{Host: "upstream", Port: 9001}},
+				Protocol:             stringPtrL4("udp"),
+				ListenPort:           intPtrL4(51820),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("address"),
+				WireGuardListenHost:  stringPtrL4("10.8.0.1"),
+				Backends:             &[]L4Backend{{Host: "upstream", Port: 9001}},
 			},
 			profiles: map[string][]storage.WireGuardProfileRow{
 				"local": {{ID: 7, AgentID: "local", Enabled: true}},
 			},
 			assert: func(t *testing.T, rule L4Rule, _ storage.L4RuleRow) {
 				t.Helper()
-				if rule.Protocol != "udp" || rule.ListenMode != "wireguard" {
+				if rule.Protocol != "udp" || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "address" {
 					t.Fatalf("rule = %+v", rule)
 				}
 			},
