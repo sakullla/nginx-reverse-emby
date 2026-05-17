@@ -1,11 +1,13 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import WireGuardProfilesPage from './WireGuardProfilesPage.vue'
+import * as api from '../api'
 
 const mocks = vi.hoisted(() => ({
   updateMutate: vi.fn(),
-  deleteClientMutate: vi.fn()
+  deleteClientMutate: vi.fn(),
+  qrCodeToDataURL: vi.fn()
 }))
 
 vi.mock('vue-router', () => ({
@@ -47,7 +49,14 @@ vi.mock('../hooks/useAgents', () => ({
 
 vi.mock('../api', () => ({
   fetchWireGuardClients: vi.fn(),
-  fetchWireGuardClientConfig: vi.fn()
+  fetchWireGuardClientConfig: vi.fn(),
+  fetchWireGuardClientURI: vi.fn()
+}))
+
+vi.mock('qrcode', () => ({
+  default: {
+    toDataURL: mocks.qrCodeToDataURL
+  }
 }))
 
 vi.mock('../hooks/useWireGuardProfiles', () => ({
@@ -88,33 +97,70 @@ function mountPage() {
       stubs: {
         QuickAgentSelect: true,
         RouterLink: true,
-        BaseModal: true,
+        BaseModal: {
+          props: ['modelValue', 'title'],
+          emits: ['update:modelValue'],
+          template: `
+            <section v-if="modelValue" class="base-modal-stub" :data-title="title">
+              <button class="base-modal-stub__close" @click="$emit('update:modelValue', false)">close</button>
+              <slot />
+            </section>
+          `
+        },
         DeleteConfirmDialog: true
       }
     }
   })
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+
+async function openClients(wrapper) {
+  await wrapper.get('.profile-card__actions .btn').trigger('click')
+}
+
+function clientActionButtons(wrapper, rowIndex = 0) {
+  return wrapper.findAll('.client-row').at(rowIndex).findAll('.client-row__actions .btn')
+}
+
+function clientActionButton(wrapper, label, rowIndex = 0) {
+  const button = clientActionButtons(wrapper, rowIndex).find((item) => item.text() === label)
+  if (!button) throw new Error(`Missing client action button: ${label}`)
+  return button
+}
+
 describe('WireGuardProfilesPage client row actions', () => {
   beforeEach(() => {
     mocks.updateMutate.mockReset()
     mocks.deleteClientMutate.mockReset()
+    mocks.qrCodeToDataURL.mockReset()
+    mocks.qrCodeToDataURL.mockResolvedValue('data:image/png;base64,qr')
+    api.fetchWireGuardClientConfig.mockReset()
+    api.fetchWireGuardClientURI.mockReset()
   })
 
-  it('disables toggle, download, and delete while a client toggle is pending', async () => {
+  it('disables client row actions while a client toggle is pending', async () => {
     mocks.updateMutate.mockReturnValue(new Promise(() => {}))
     const wrapper = mountPage()
 
-    await wrapper.get('.profile-card__actions .btn').trigger('click')
-    const buttons = wrapper.findAll('.client-row').at(0).findAll('.client-row__actions .btn')
-    expect(buttons).toHaveLength(3)
+    await openClients(wrapper)
+    const buttons = clientActionButtons(wrapper)
+    expect(buttons.map((button) => button.text())).toEqual(['停用', '下载配置', '二维码', '复制 URI', '删除'])
     expect(buttons.every((button) => button.attributes('disabled') === undefined)).toBe(true)
 
     await buttons[0].trigger('click')
 
     expect(mocks.updateMutate.mock.calls[0][0]).toEqual({ clientId: 1, enabled: false })
-    expect(wrapper.findAll('.client-row').at(0).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
-    expect(wrapper.findAll('.client-row').at(1).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') === undefined)).toBe(true)
+    expect(clientActionButtons(wrapper).every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(clientActionButtons(wrapper, 1).every((button) => button.attributes('disabled') === undefined)).toBe(true)
   })
 
   it('keeps a pending client row scoped to the selected profile', async () => {
@@ -123,8 +169,8 @@ describe('WireGuardProfilesPage client row actions', () => {
 
     const profileButtons = wrapper.findAll('.profile-card__actions .btn')
     await profileButtons[0].trigger('click')
-    await wrapper.findAll('.client-row').at(0).findAll('.client-row__actions .btn')[0].trigger('click')
-    expect(wrapper.findAll('.client-row').at(0).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    await clientActionButtons(wrapper)[0].trigger('click')
+    expect(clientActionButtons(wrapper).every((button) => button.attributes('disabled') !== undefined)).toBe(true)
 
     await profileButtons[3].trigger('click')
 
@@ -132,17 +178,16 @@ describe('WireGuardProfilesPage client row actions', () => {
     expect(wrapper.findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') === undefined)).toBe(true)
   })
 
-  it('disables toggle, download, and delete while a client delete is pending', async () => {
+  it('disables client row actions while a client delete is pending', async () => {
     mocks.deleteClientMutate.mockReturnValue(new Promise(() => {}))
     const wrapper = mountPage()
 
-    await wrapper.get('.profile-card__actions .btn').trigger('click')
-    const buttons = wrapper.findAll('.client-row').at(0).findAll('.client-row__actions .btn')
-    await buttons[2].trigger('click')
+    await openClients(wrapper)
+    await clientActionButton(wrapper, '删除').trigger('click')
 
     expect(mocks.deleteClientMutate.mock.calls[0][0]).toBe(1)
-    expect(wrapper.findAll('.client-row').at(0).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
-    expect(wrapper.findAll('.client-row').at(1).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') === undefined)).toBe(true)
+    expect(clientActionButtons(wrapper).every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(clientActionButtons(wrapper, 1).every((button) => button.attributes('disabled') === undefined)).toBe(true)
   })
 
   it('clears pending state for overlapping client row operations when both settle', async () => {
@@ -157,28 +202,85 @@ describe('WireGuardProfilesPage client row actions', () => {
     })
     const wrapper = mountPage()
 
-    await wrapper.get('.profile-card__actions .btn').trigger('click')
-    const clientRows = wrapper.findAll('.client-row')
-    await clientRows.at(0).findAll('.client-row__actions .btn')[0].trigger('click')
-    await clientRows.at(1).findAll('.client-row__actions .btn')[0].trigger('click')
+    await openClients(wrapper)
+    await clientActionButtons(wrapper)[0].trigger('click')
+    await clientActionButtons(wrapper, 1)[0].trigger('click')
 
     expect(mocks.updateMutate.mock.calls[0][0]).toEqual({ clientId: 1, enabled: false })
     expect(mocks.updateMutate.mock.calls[1][0]).toEqual({ clientId: 2, enabled: false })
-    expect(wrapper.findAll('.client-row').at(0).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
-    expect(wrapper.findAll('.client-row').at(1).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(clientActionButtons(wrapper).every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(clientActionButtons(wrapper, 1).every((button) => button.attributes('disabled') !== undefined)).toBe(true)
 
     deferreds[1].resolve()
     await deferreds[1].promise
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.findAll('.client-row').at(0).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
-    expect(wrapper.findAll('.client-row').at(1).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') === undefined)).toBe(true)
+    expect(clientActionButtons(wrapper).every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(clientActionButtons(wrapper, 1).every((button) => button.attributes('disabled') === undefined)).toBe(true)
 
     deferreds[0].resolve()
     await deferreds[0].promise
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.findAll('.client-row').at(0).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') === undefined)).toBe(true)
-    expect(wrapper.findAll('.client-row').at(1).findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') === undefined)).toBe(true)
+    expect(clientActionButtons(wrapper).every((button) => button.attributes('disabled') === undefined)).toBe(true)
+    expect(clientActionButtons(wrapper, 1).every((button) => button.attributes('disabled') === undefined)).toBe(true)
+  })
+
+  it('opens the QR modal by fetching client config and rendering a QR image', async () => {
+    api.fetchWireGuardClientConfig.mockResolvedValue('[Interface]\nAddress = 10.8.0.2/32\n')
+    const wrapper = mountPage()
+
+    await openClients(wrapper)
+    await clientActionButton(wrapper, '二维码').trigger('click')
+    await flushPromises()
+
+    expect(api.fetchWireGuardClientConfig).toHaveBeenCalledWith('local', 7, 1)
+    expect(mocks.qrCodeToDataURL).toHaveBeenCalledWith('[Interface]\nAddress = 10.8.0.2/32\n', {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      width: 280
+    })
+    expect(wrapper.get('.base-modal-stub[data-title="phone QR"]').exists()).toBe(true)
+    expect(wrapper.get('.client-qr__image').attributes('src')).toBe('data:image/png;base64,qr')
+    expect(wrapper.get('.client-qr__config').element.value).toBe('[Interface]\nAddress = 10.8.0.2/32\n')
+  })
+
+  it('keeps config text fallback visible when QR image generation fails', async () => {
+    api.fetchWireGuardClientConfig.mockResolvedValue('[Interface]\nAddress = 10.8.0.2/32\n')
+    mocks.qrCodeToDataURL.mockRejectedValue(new Error('QR too large'))
+    const wrapper = mountPage()
+
+    await openClients(wrapper)
+    await clientActionButton(wrapper, '二维码').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.base-modal-stub[data-title="phone QR"]').exists()).toBe(true)
+    expect(wrapper.find('.client-qr__image').exists()).toBe(false)
+    expect(wrapper.get('.client-qr__config').element.value).toBe('[Interface]\nAddress = 10.8.0.2/32\n')
+    expect(wrapper.text()).toContain('二维码生成失败，请使用配置文本。')
+  })
+
+  it('does not allow an older QR request to overwrite the latest modal state', async () => {
+    const firstRequest = deferred()
+    api.fetchWireGuardClientConfig
+      .mockReturnValueOnce(firstRequest.promise)
+      .mockResolvedValueOnce('[Interface]\nAddress = 10.8.0.3/32\n')
+    mocks.qrCodeToDataURL.mockResolvedValueOnce('data:image/png;base64,tablet-qr')
+    const wrapper = mountPage()
+
+    await openClients(wrapper)
+    await clientActionButton(wrapper, '二维码').trigger('click')
+    await clientActionButton(wrapper, '二维码', 1).trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.base-modal-stub[data-title="tablet QR"]').exists()).toBe(true)
+    expect(wrapper.get('.client-qr__config').element.value).toBe('[Interface]\nAddress = 10.8.0.3/32\n')
+
+    firstRequest.resolve('[Interface]\nAddress = 10.8.0.2/32\n')
+    await flushPromises()
+
+    expect(wrapper.get('.base-modal-stub[data-title="tablet QR"]').exists()).toBe(true)
+    expect(wrapper.get('.client-qr__config').element.value).toBe('[Interface]\nAddress = 10.8.0.3/32\n')
+    expect(wrapper.get('.client-qr__image').attributes('src')).toBe('data:image/png;base64,tablet-qr')
   })
 })

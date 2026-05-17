@@ -102,6 +102,7 @@
               {{ client.enabled === false ? '启用' : '停用' }}
             </button>
             <button class="btn btn--secondary btn--sm" :disabled="isClientRowPending(client)" @click="downloadClientConfig(client)">下载配置</button>
+            <button class="btn btn--secondary btn--sm" :disabled="isClientRowPending(client)" @click="showClientQRCode(client)">二维码</button>
             <button class="btn btn--secondary btn--sm" :disabled="isClientRowPending(client)" @click="copyClientURI(client)">复制 URI</button>
             <button class="btn btn--danger btn--sm" :disabled="isClientRowPending(client)" @click="deleteWireGuardClientRow(client)">删除</button>
           </div>
@@ -272,6 +273,28 @@
       </form>
     </BaseModal>
 
+    <BaseModal
+      :model-value="showClientQRCodeModal"
+      :title="qrClientName ? `${qrClientName} QR` : 'WireGuard Client QR'"
+      size="md"
+      :close-on-click-modal="false"
+      @update:model-value="closeClientQRCode"
+    >
+      <div class="client-qr">
+        <div v-if="qrLoading" class="empty-inline">正在生成二维码...</div>
+        <template v-else>
+          <div v-if="qrImageURL" class="client-qr__image-wrap">
+            <img class="client-qr__image" :src="qrImageURL" alt="WireGuard Client QR code">
+          </div>
+          <p v-if="qrError" class="form-error">{{ qrError }}</p>
+          <div class="form-group">
+            <label class="form-label">配置文本</label>
+            <textarea class="input textarea client-qr__config" :value="qrConfigText" readonly></textarea>
+          </div>
+        </template>
+      </div>
+    </BaseModal>
+
     <DeleteConfirmDialog
       :show="!!deletingProfile"
       title="确认删除 WireGuard Profile"
@@ -289,6 +312,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
+import QRCode from 'qrcode'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { fetchWireGuardClients, fetchWireGuardClientConfig, fetchWireGuardClientURI } from '../api'
@@ -347,19 +371,27 @@ const deleteClient = useDeleteWireGuardClient(agentId, selectedProfileId)
 
 const showForm = ref(false)
 const showClientForm = ref(false)
+const showClientQRCodeModal = ref(false)
 const editingProfile = ref(null)
 const deletingProfile = ref(null)
 const pendingClientRowIds = ref(new Set())
+const qrClientName = ref('')
+const qrConfigText = ref('')
+const qrImageURL = ref('')
+const qrError = ref('')
+const qrLoading = ref(false)
 const tagInput = ref('')
 const form = ref(createFormState())
 const errors = ref({ name: '', submit: '' })
 const clientForm = ref(createClientFormState())
 const clientErrors = ref({ name: '', submit: '' })
 let peerIdCounter = 0
+let qrRequestGeneration = 0
 
 watch(agentId, () => {
   closeForm()
   closeClientForm()
+  closeClientQRCode()
   deletingProfile.value = null
   pendingClientRowIds.value = new Set()
   selectedProfileId.value = null
@@ -486,6 +518,20 @@ function closeClientForm() {
   showClientForm.value = false
 }
 
+function closeClientQRCode() {
+  qrRequestGeneration += 1
+  showClientQRCodeModal.value = false
+  qrClientName.value = ''
+  qrConfigText.value = ''
+  qrImageURL.value = ''
+  qrError.value = ''
+  qrLoading.value = false
+}
+
+function isActiveClientQRCodeRequest(requestGeneration) {
+  return showClientQRCodeModal.value && qrRequestGeneration === requestGeneration
+}
+
 function addPeer() {
   form.value.peers.push(createPeerState())
 }
@@ -608,6 +654,41 @@ async function downloadClientConfig(client) {
   } finally {
     if (link?.parentNode) link.remove()
     if (url) URL.revokeObjectURL(url)
+  }
+}
+
+async function showClientQRCode(client) {
+  if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  if (isClientRowPending(client)) return
+  const requestGeneration = ++qrRequestGeneration
+  qrClientName.value = client.name || `client-${client.id}`
+  qrConfigText.value = ''
+  qrImageURL.value = ''
+  qrError.value = ''
+  qrLoading.value = true
+  showClientQRCodeModal.value = true
+  try {
+    const config = await fetchWireGuardClientConfig(agentId.value, selectedProfileId.value, client.id)
+    if (!isActiveClientQRCodeRequest(requestGeneration)) return
+    qrConfigText.value = config
+    try {
+      const imageURL = await QRCode.toDataURL(config, {
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        width: 280
+      })
+      if (!isActiveClientQRCodeRequest(requestGeneration)) return
+      qrImageURL.value = imageURL
+    } catch (error) {
+      if (!isActiveClientQRCodeRequest(requestGeneration)) return
+      qrError.value = '二维码生成失败，请使用配置文本。'
+    }
+  } catch (error) {
+    if (!isActiveClientQRCodeRequest(requestGeneration)) return
+    closeClientQRCode()
+    messageStore.error(error, '生成 WireGuard Client 二维码失败')
+  } finally {
+    if (isActiveClientQRCodeRequest(requestGeneration)) qrLoading.value = false
   }
 }
 
@@ -891,6 +972,31 @@ function confirmDelete() {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+.client-qr {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.client-qr__image-wrap {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: white;
+}
+
+.client-qr__image {
+  width: min(280px, 100%);
+  height: auto;
+}
+
+.client-qr__config {
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
 }
 
 .tag-row,

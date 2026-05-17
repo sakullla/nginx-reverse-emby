@@ -681,7 +681,7 @@ describe('runtime canonical rule payloads', () => {
     expect(hooks.default).toContain('useDeleteWireGuardClient')
   })
 
-  it('WireGuard Profiles page exposes clients workflow and keeps legacy peers advanced', async () => {
+  it('WireGuard Profiles page exposes clients workflow and client sharing actions without mihomo YAML', async () => {
     const page = await import('../pages/WireGuardProfilesPage.vue?raw')
     const source = page.default
 
@@ -694,7 +694,11 @@ describe('runtime canonical rule payloads', () => {
     expect(source).toContain('pendingClientRowIds')
     expect(source).toContain('deleteWireGuardClientRow')
     expect(source).toContain('downloadClientConfig')
+    expect(source).toContain('showClientQRCode')
     expect(source).toContain('copyClientURI')
+    expect(source).toContain('下载配置')
+    expect(source).toContain('二维码')
+    expect(source).toContain('复制 URI')
     expect(source).toContain('clientForm.allowed_ips_text')
     expect(source).toContain('clientForm.dns_text')
     expect(source).not.toContain('clientForm.address')
@@ -702,6 +706,8 @@ describe('runtime canonical rule payloads', () => {
     expect(source).toContain('messageStore.error(error, \'下载 WireGuard Client 配置失败\')')
     expect(source).toContain('高级 Legacy Peers')
     expect(source).toContain('<details')
+    expect(source.toLowerCase()).not.toContain('mihomo')
+    expect(source.toLowerCase()).not.toContain('yaml')
     expect(source).not.toContain('client.private_key')
     expect(source).not.toContain('client.preshared_key')
   })
@@ -1028,16 +1034,25 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('Relay and L4 edit forms do not auto-replace invalid initial WireGuard profiles', async () => {
-    const relayForm = await import('../components/RelayListenerForm.vue?raw')
+  it('Relay listener form hides WireGuard profile selection from ordinary flow', async () => {
+    const form = await import('../components/RelayListenerForm.vue?raw')
+    const source = form.default
+    expect(source).toContain('高级设置')
+    const ordinaryStart = source.indexOf('Relay Transport')
+    const advancedStart = source.indexOf('advanced-panel')
+    expect(source.slice(ordinaryStart, advancedStart)).not.toContain("v-model.number='form.wireguard_profile_id'")
+    expect(source.slice(ordinaryStart, advancedStart)).not.toContain('form-label form-label--required\'>WireGuard Profile')
+    expect(source).toContain('自动复用或创建默认 WireGuard Profile')
+    expect(source).toContain("form.value.transport_mode === 'wireguard' && selectedWireGuardProfileID.value != null")
+  })
+
+  it('L4 edit form does not auto-replace invalid initial WireGuard profiles', async () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
 
-    for (const source of [relayForm.default, l4Form.default]) {
-      expect(source).toContain('wireGuardProfileHydratedFromInitialData')
-      expect(source).toContain('wireGuardProfileRequiresExplicitSelection')
-      expect(source).toContain('wireGuardProfileRequiresExplicitSelection.value = true')
-      expect(source).toContain('wireGuardProfileRequiresExplicitSelection.value = false')
-    }
+    expect(l4Form.default).toContain('wireGuardProfileHydratedFromInitialData')
+    expect(l4Form.default).toContain('wireGuardProfileRequiresExplicitSelection')
+    expect(l4Form.default).toContain('wireGuardProfileRequiresExplicitSelection.value = true')
+    expect(l4Form.default).toContain('wireGuardProfileRequiresExplicitSelection.value = false')
   })
 
   it('L4 form sends WireGuard inbound mode and limits address listen host to address mode', async () => {

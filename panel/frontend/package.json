@@ -14,9 +14,10 @@
     "apexcharts": "^5.10.6",
     "axios": "^1.15.0",
     "pinia": "^2.1.7",
+    "qrcode": "^1.5.4",
     "vue": "^3.4.21",
-    "vue3-apexcharts": "^1.11.1",
-    "vue-router": "^4.6.4"
+    "vue-router": "^4.6.4",
+    "vue3-apexcharts": "^1.11.1"
   },
   "devDependencies": {
     "@iconify-json/mdi": "^1.2.3",

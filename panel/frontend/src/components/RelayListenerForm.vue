@@ -111,15 +111,8 @@
     </div>
 
     <div v-if='form.transport_mode === "wireguard"' class='form-group'>
-      <label class='form-label form-label--required'>WireGuard Profile</label>
-      <select v-model.number='form.wireguard_profile_id' class='input' :class="{ 'input--error': errors.wireguard_profile_id }">
-        <option value=''>请选择 Profile</option>
-        <option v-for='profile in enabledWireGuardProfiles' :key='profile.id' :value='Number(profile.id)'>
-          {{ profile.name || profile.id }}
-        </option>
-      </select>
-      <p class='form-hint'>WireGuard Relay 监听器会使用所选 Profile 的接口、密钥与 Peer 配置。</p>
-      <p v-if='errors.wireguard_profile_id' class='form-error'>{{ errors.wireguard_profile_id }}</p>
+      <label class='form-label'>WireGuard 公网入口</label>
+      <p class='form-hint'>系统会自动复用或创建默认 WireGuard Profile，并使用该 Profile 的 Endpoint 作为公网 UDP 入口。</p>
     </div>
 
     <div class='form-group'>
@@ -196,6 +189,18 @@
           ? '自动模式下会由系统派生 Relay CA + Pin；切回高级自定义后，下面这些字段才会参与编辑和提交。'
           : '高级自定义模式会直接提交你填写的 TLS 模式、Pin Set 和 CA 配置。' }}
       </p>
+
+      <div v-if='form.transport_mode === "wireguard"' class='form-group'>
+        <label class='form-label'>WireGuard Profile</label>
+        <select v-model.number='form.wireguard_profile_id' class='input' :class="{ 'input--error': errors.wireguard_profile_id }">
+          <option value=''>自动默认 Profile</option>
+          <option v-for='profile in enabledWireGuardProfiles' :key='profile.id' :value='Number(profile.id)'>
+            {{ profile.name || profile.id }}
+          </option>
+        </select>
+        <p class='form-hint'>仅在需要覆盖默认 Profile 时选择；留空时由系统自动复用或创建默认 Profile。</p>
+        <p v-if='errors.wireguard_profile_id' class='form-error'>{{ errors.wireguard_profile_id }}</p>
+      </div>
 
       <div class='form-row'>
         <div class='form-group'>
@@ -287,9 +292,6 @@ const showAdvanced = ref(false)
 const tagInput = ref('')
 const pinSetText = ref('')
 const trustedCaSet = ref(new Set())
-const wireGuardModeHydratedFromInitialData = ref(false)
-const wireGuardProfileHydratedFromInitialData = ref(false)
-const wireGuardProfileRequiresExplicitSelection = ref(false)
 const errors = ref({
   name: '',
   public_endpoint: '',
@@ -304,15 +306,10 @@ watch(
   () => props.initialData,
   (value) => {
     form.value = createFormState(value)
-    wireGuardModeHydratedFromInitialData.value = !!value?.id
-      && form.value.transport_mode === 'wireguard'
-    wireGuardProfileHydratedFromInitialData.value = !!value?.id
+    const hasExplicitWireGuardProfile = !!value?.id
       && form.value.transport_mode === 'wireguard'
       && form.value.wireguard_profile_id !== ''
-    wireGuardProfileRequiresExplicitSelection.value = !!value?.id
-      && form.value.transport_mode === 'wireguard'
-      && form.value.wireguard_profile_id === ''
-    showAdvanced.value = form.value.trust_mode_source === 'custom'
+    showAdvanced.value = form.value.trust_mode_source === 'custom' || hasExplicitWireGuardProfile
     tagInput.value = ''
     pinSetText.value = (form.value.pin_set || [])
       .map((item) => `${item.type}:${item.value}`)
@@ -368,47 +365,17 @@ watch(
 
 watch(
   () => form.value.transport_mode,
-  (value, oldValue) => {
+  (value) => {
     if (value === 'quic' || value === 'wireguard') {
       form.value.obfs_mode = 'off'
       if (value === 'wireguard') {
         form.value.allow_transport_fallback = false
-        if (wireGuardModeHydratedFromInitialData.value) {
-          wireGuardModeHydratedFromInitialData.value = false
-          return
-        }
-        if (oldValue && oldValue !== 'wireguard') {
-          wireGuardProfileRequiresExplicitSelection.value = false
-          if (selectedWireGuardProfileID.value == null && form.value.wireguard_profile_id === '') {
-            selectFirstEnabledWireGuardProfile()
-          }
-        }
       }
     } else {
       form.value.obfs_mode = normalizeObfsMode(form.value.obfs_mode, value)
       form.value.allow_transport_fallback = true
     }
   }
-)
-
-watch(
-  enabledWireGuardProfiles,
-  (profiles) => {
-    if (wireGuardProfilesData.value == null) return
-    if (form.value.transport_mode !== 'wireguard') return
-    if (selectedWireGuardProfileID.value != null) return
-    if (form.value.wireguard_profile_id === '') {
-      if (!wireGuardProfileRequiresExplicitSelection.value) {
-        selectFirstEnabledWireGuardProfile()
-      }
-      return
-    }
-    if (wireGuardProfileHydratedFromInitialData.value) {
-      wireGuardProfileRequiresExplicitSelection.value = true
-    }
-    form.value.wireguard_profile_id = ''
-  },
-  { immediate: true }
 )
 
 function createDefaultForm() {
@@ -453,15 +420,15 @@ function normalizeTransportMode(value) {
   return value === 'quic' ? 'quic' : 'tls_tcp'
 }
 
-function selectFirstEnabledWireGuardProfile() {
-  form.value.wireguard_profile_id = enabledWireGuardProfiles.value.length
-    ? Number(enabledWireGuardProfiles.value[0].id)
-    : ''
-}
-
 function normalizeObfsMode(value, transportMode) {
   if (transportMode !== 'tls_tcp') return 'off'
   return value === 'early_window_v2' ? 'early_window_v2' : 'off'
+}
+
+function normalizeWireGuardProfileID(value) {
+  if (value == null || String(value).trim() === '') return ''
+  const id = Number(value)
+  return Number.isInteger(id) && id > 0 ? id : ''
 }
 
 function createFormState(initialData) {
@@ -479,7 +446,7 @@ function createFormState(initialData) {
     transport_mode: transportMode,
     allow_transport_fallback: transportMode === 'wireguard' ? false : initialData.allow_transport_fallback !== false,
     obfs_mode: normalizeObfsMode(initialData.obfs_mode, transportMode),
-    wireguard_profile_id: initialData.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
+    wireguard_profile_id: normalizeWireGuardProfileID(initialData.wireguard_profile_id),
     enabled: initialData.enabled !== false,
     certificate_id: initialData.certificate_id == null ? null : Number(initialData.certificate_id),
     certificate_source: inferCertificateSource(initialData),
@@ -584,7 +551,11 @@ function validate() {
   if (form.value.enabled && form.value.certificate_source === 'existing_certificate' && form.value.certificate_id == null) {
     errors.value.certificate_id = '启用监听器时必须绑定监听证书'
   }
-  if (form.value.transport_mode === 'wireguard' && selectedWireGuardProfileID.value == null) {
+  if (
+    form.value.transport_mode === 'wireguard'
+    && form.value.wireguard_profile_id !== ''
+    && selectedWireGuardProfileID.value == null
+  ) {
     errors.value.wireguard_profile_id = '请选择当前 Agent 已启用的 WireGuard Profile'
   }
 
@@ -636,7 +607,7 @@ async function handleSubmit() {
     allow_self_signed: form.value.trust_mode_source === 'auto' ? true : form.value.allow_self_signed,
     tags: [...form.value.tags]
   }
-  if (form.value.transport_mode === 'wireguard') {
+  if (form.value.transport_mode === 'wireguard' && selectedWireGuardProfileID.value != null) {
     payload.wireguard_profile_id = selectedWireGuardProfileID.value
   }
   if (publicEndpoint.publicHost) {
