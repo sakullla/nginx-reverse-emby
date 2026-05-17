@@ -155,9 +155,10 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
 
 function normalizeL4RulePayload(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
-  const { upstream_host, upstream_port, relay_chain, ...rest } = payload
+  const { upstream_host, upstream_port, relay_chain, wireguard_profile_override, ...rest } = payload
   const listenMode = payload.listen_mode === 'wireguard' ? 'wireguard' : payload.listen_mode
-  const wireGuardInboundMode = listenMode === 'wireguard' && payload.wireguard_inbound_mode === 'transparent'
+  const protocol = String(payload.protocol || '').toLowerCase()
+  const wireGuardInboundMode = listenMode === 'wireguard' && protocol !== 'udp' && payload.wireguard_inbound_mode === 'transparent'
     ? 'transparent'
     : listenMode === 'wireguard'
       ? 'address'
@@ -185,6 +186,13 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
     delete normalizedPayload.wireguard_profile_id
   } else {
     delete normalizedPayload.wireguard_egress_uri
+  }
+  if (
+    normalizedPayload.wireguard_profile_id != null
+    && !(listenMode === 'wireguard' && wireGuardInboundMode === 'address')
+    && !(proxyEgressMode === 'wireguard' && wireGuardEgressURI === '' && wireguard_profile_override === true)
+  ) {
+    delete normalizedPayload.wireguard_profile_id
   }
   if (Array.isArray(payload.relay_layers)) {
     normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)

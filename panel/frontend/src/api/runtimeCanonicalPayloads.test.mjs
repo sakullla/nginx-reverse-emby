@@ -232,7 +232,7 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('sends L4 WireGuard inbound payloads with listen mode and profile id', async () => {
+  it('sends ordinary TCP L4 WireGuard entry payloads without profile id', async () => {
     const { api } = await vi.importActual('./client.js')
     const requests = []
     const originalAdapter = api.defaults.adapter
@@ -256,23 +256,21 @@ describe('runtime canonical rule payloads', () => {
       const runtime = await vi.importActual('./runtime.js')
 
       const created = await runtime.createL4Rule('edge-a', {
-        protocol: 'udp',
+        protocol: 'tcp',
         listen_host: '0.0.0.0',
         listen_port: 51820,
         listen_mode: 'wireguard',
-        wireguard_inbound_mode: 'address',
+        wireguard_inbound_mode: 'transparent',
         wireguard_profile_id: 101,
-        wireguard_listen_host: '10.8.0.1',
         backends: [{ host: '10.8.0.2', port: 8080 }]
       })
       const updated = await runtime.updateL4Rule('edge-a', 12, {
-        protocol: 'udp',
+        protocol: 'tcp',
         listen_host: '0.0.0.0',
         listen_port: 51820,
         listen_mode: 'wireguard',
-        wireguard_inbound_mode: 'address',
+        wireguard_inbound_mode: 'transparent',
         wireguard_profile_id: 101,
-        wireguard_listen_host: '10.8.0.1',
         backends: [{ host: '10.8.0.2', port: 8080 }]
       })
 
@@ -280,9 +278,9 @@ describe('runtime canonical rule payloads', () => {
       for (const request of requests) {
         const payload = JSON.parse(request.data)
         expect(payload.listen_mode).toBe('wireguard')
-        expect(payload.wireguard_inbound_mode).toBe('address')
-        expect(payload.wireguard_profile_id).toBe(101)
-        expect(payload.wireguard_listen_host).toBe('10.8.0.1')
+        expect(payload.wireguard_inbound_mode).toBe('transparent')
+        expect(payload).not.toHaveProperty('wireguard_profile_id')
+        expect(payload).not.toHaveProperty('wireguard_listen_host')
       }
       expect(created.listen_mode).toBe('wireguard')
       expect(updated.listen_mode).toBe('wireguard')
@@ -291,7 +289,7 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('sends L4 WireGuard egress payloads with egress mode and profile id', async () => {
+  it('sends advanced L4 WireGuard address entry payloads with profile id', async () => {
     const { api } = await vi.importActual('./client.js')
     const requests = []
     const originalAdapter = api.defaults.adapter
@@ -314,36 +312,35 @@ describe('runtime canonical rule payloads', () => {
     try {
       const runtime = await vi.importActual('./runtime.js')
 
-      const created = await runtime.createL4Rule('edge-a', {
+      await runtime.createL4Rule('edge-a', {
         protocol: 'tcp',
         listen_host: '0.0.0.0',
-        listen_port: 1080,
-        listen_mode: 'proxy',
-        proxy_egress_mode: 'wireguard',
+        listen_port: 51820,
+        listen_mode: 'wireguard',
+        wireguard_inbound_mode: 'address',
         wireguard_profile_id: 102,
-        proxy_entry_auth: { enabled: false, username: '', password: '' },
-        backends: []
+        wireguard_listen_host: '10.8.0.1',
+        backends: [{ host: '10.8.0.2', port: 8080 }]
       })
-      const updated = await runtime.updateL4Rule('edge-a', 13, {
+      await runtime.updateL4Rule('edge-a', 13, {
         protocol: 'tcp',
         listen_host: '0.0.0.0',
-        listen_port: 1080,
-        listen_mode: 'proxy',
-        proxy_egress_mode: 'wireguard',
+        listen_port: 51820,
+        listen_mode: 'wireguard',
+        wireguard_inbound_mode: 'address',
         wireguard_profile_id: 102,
-        proxy_entry_auth: { enabled: false, username: '', password: '' },
-        backends: []
+        wireguard_listen_host: '10.8.0.1',
+        backends: [{ host: '10.8.0.2', port: 8080 }]
       })
 
       expect(requests).toHaveLength(2)
       for (const request of requests) {
         const payload = JSON.parse(request.data)
-        expect(payload.listen_mode).toBe('proxy')
-        expect(payload.proxy_egress_mode).toBe('wireguard')
+        expect(payload.listen_mode).toBe('wireguard')
+        expect(payload.wireguard_inbound_mode).toBe('address')
         expect(payload.wireguard_profile_id).toBe(102)
+        expect(payload.wireguard_listen_host).toBe('10.8.0.1')
       }
-      expect(created.proxy_egress_mode).toBe('wireguard')
-      expect(updated.proxy_egress_mode).toBe('wireguard')
     } finally {
       api.defaults.adapter = originalAdapter
     }
@@ -405,6 +402,50 @@ describe('runtime canonical rule payloads', () => {
       expect(updated.proxy_egress_mode).toBe('wireguard')
       expect(created.wireguard_egress_uri).toBe('wireguard://endpoint.example.test?profile=egress')
       expect(updated.wireguard_egress_uri).toBe('wireguard://endpoint.example.test?profile=egress')
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
+  it('normalizes L4 transparent UDP payloads back to address mode', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      return {
+        data: {
+          rule: {
+            id: 18,
+            ...JSON.parse(config.data)
+          }
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      await runtime.createL4Rule('edge-a', {
+        protocol: 'udp',
+        listen_host: '0.0.0.0',
+        listen_port: 53,
+        listen_mode: 'wireguard',
+        wireguard_inbound_mode: 'transparent',
+        wireguard_profile_id: 101,
+        wireguard_listen_host: '10.8.0.1',
+        backends: [{ host: '10.8.0.2', port: 53 }]
+      })
+
+      const payload = JSON.parse(requests[0].data)
+      expect(payload.protocol).toBe('udp')
+      expect(payload.wireguard_inbound_mode).toBe('address')
+      expect(payload.wireguard_profile_id).toBe(101)
+      expect(payload.wireguard_listen_host).toBe('10.8.0.1')
     } finally {
       api.defaults.adapter = originalAdapter
     }
@@ -842,7 +883,7 @@ describe('runtime canonical rule payloads', () => {
       const payload = JSON.parse(requests[0].data)
       expect(payload.proxy_egress_mode).toBe('relay')
       expect(payload).not.toHaveProperty('wireguard_egress_uri')
-      expect(payload.wireguard_profile_id).toBe(102)
+      expect(payload).not.toHaveProperty('wireguard_profile_id')
     } finally {
       api.defaults.adapter = originalAdapter
     }
@@ -864,9 +905,19 @@ describe('runtime canonical rule payloads', () => {
     expect(l4Form.default).toContain('wireguard_egress_source')
     expect(l4Form.default).toContain('wireguard_egress_uri')
     expect(l4Form.default).toContain('WireGuard 连接 URI')
-    expect(l4Form.default).toContain('<option v-if="!isWireGuardInbound" value="uri">WireGuard URI</option>')
+    expect(l4Form.default).toContain('<option value="uri">WireGuard URI</option>')
     expect(l4Form.default).toContain('payload.wireguard_egress_uri = form.value.wireguard_egress_uri.trim()')
     expect(l4Form.default).toContain('payload.wireguard_profile_id = selectedWireGuardProfileID.value')
+  })
+
+  it('does not present L4 transparent UDP as supported', async () => {
+    const l4Form = await import('../components/L4RuleForm.vue?raw')
+    const source = l4Form.default
+
+    expect(source).toContain('<option v-if="form.protocol === \'tcp\'" value="transparent">透明</option>')
+    expect(source).toContain("form.value.wireguard_inbound_mode = 'address'")
+    expect(source).not.toContain('transparent UDP')
+    expect(source).not.toContain('透明 UDP')
   })
 
   it('does not synthesize canonical backends from legacy runtime fields', async () => {
@@ -992,7 +1043,7 @@ describe('runtime canonical rule payloads', () => {
   it('L4 form sends WireGuard inbound mode and limits address listen host to address mode', async () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
 
-    expect(l4Form.default).toContain("wireguard_inbound_mode: initialData?.wireguard_inbound_mode === 'transparent' ? 'transparent' : 'address'")
+    expect(l4Form.default).toContain("wireguard_inbound_mode: initialData?.wireguard_inbound_mode || 'transparent'")
     expect(l4Form.default).toContain('payload.wireguard_inbound_mode = form.value.wireguard_inbound_mode')
     expect(l4Form.default).toContain("if (isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'address')")
     expect(l4Form.default).not.toContain('<option value="transparent">Transparent</option>')

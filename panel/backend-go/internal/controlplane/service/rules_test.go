@@ -65,6 +65,14 @@ func (f *fakeRuleStore) ListWireGuardProfiles(_ context.Context, agentID string)
 	return append([]storage.WireGuardProfileRow(nil), f.wireGuardByAgentID[agentID]...), nil
 }
 
+func (f *fakeRuleStore) SaveWireGuardProfiles(_ context.Context, agentID string, rows []storage.WireGuardProfileRow) error {
+	if f.wireGuardByAgentID == nil {
+		f.wireGuardByAgentID = map[string][]storage.WireGuardProfileRow{}
+	}
+	f.wireGuardByAgentID[agentID] = append([]storage.WireGuardProfileRow(nil), rows...)
+	return nil
+}
+
 func (f *fakeRuleStore) SaveHTTPRules(_ context.Context, agentID string, rows []storage.HTTPRuleRow) error {
 	if err := popRuleStoreError(&f.saveHTTPRulesErrs); err != nil {
 		return err
@@ -130,6 +138,29 @@ func (f *fakeRuleStore) CleanupManagedCertificateMaterial(_ context.Context, pre
 		}
 		delete(f.materialByDomain, domain)
 	}
+	return nil
+}
+
+func (f *fakeRuleStore) MutateWireGuardClientProfile(_ context.Context, agentID string, id int, mutate func(storage.WireGuardClientProfileMutation) (storage.WireGuardClientProfileMutation, error)) error {
+	rows := append([]storage.WireGuardProfileRow(nil), f.wireGuardByAgentID[agentID]...)
+	index := -1
+	for i, row := range rows {
+		if row.ID == id {
+			index = i
+			break
+		}
+	}
+	next, err := mutate(storage.WireGuardClientProfileMutation{
+		Profiles:     rows,
+		ProfileIndex: index,
+	})
+	if err != nil {
+		return err
+	}
+	if f.wireGuardByAgentID == nil {
+		f.wireGuardByAgentID = map[string][]storage.WireGuardProfileRow{}
+	}
+	f.wireGuardByAgentID[agentID] = append([]storage.WireGuardProfileRow(nil), next.Profiles...)
 	return nil
 }
 
@@ -234,6 +265,94 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 	if got := store.rulesByAgent["local"][1].RelayChainJSON; got != `[]` {
 		t.Fatalf("persisted relay_chain = %s", got)
+	}
+}
+
+func TestRuleServiceCreateWireGuardEntryDefaultsToNewDefaultProfile(t *testing.T) {
+	store := &fakeRuleStore{
+		agents:       []storage.AgentRow{{ID: "local", Name: "local"}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL:              stringPtrRule("http://app.internal"),
+		Backends:                 &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		WireGuardEntryEnabled:    boolPtrRule(true),
+		WireGuardEntryListenPort: intPtrRule(8080),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 1 {
+		t.Fatalf("Create() WireGuard profile = %+v", rule)
+	}
+	if rule.ID != 2 {
+		t.Fatalf("Create() rule id = %d, want 2 after default profile allocation", rule.ID)
+	}
+	if rule.WireGuardEntryListenHost != "10.8.0.1" {
+		t.Fatalf("Create() listen host = %q", rule.WireGuardEntryListenHost)
+	}
+	if len(store.wireGuardByAgentID["local"]) != 1 {
+		t.Fatalf("default WireGuard profiles = %+v", store.wireGuardByAgentID["local"])
+	}
+	profile := wireGuardProfileFromRow(store.wireGuardByAgentID["local"][0])
+	if !profile.Enabled || !hasTag(profile.Tags, "system:default-wireguard") {
+		t.Fatalf("default WireGuard profile = %+v", profile)
+	}
+}
+
+func TestRuleServiceUpdateWireGuardEntryDefaultsToExistingDefaultProfile(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{ID: "local", Name: "local"}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:                1,
+				AgentID:           "local",
+				FrontendURL:       "http://app.internal",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"adaptive"}`,
+				Enabled:           true,
+				TagsJSON:          "[]",
+				ProxyRedirect:     true,
+				RelayChainJSON:    "[]",
+				RelayLayersJSON:   "[]",
+				CustomHeadersJSON: "[]",
+				Revision:          1,
+			}},
+		},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{
+				ID:            9,
+				AgentID:       "local",
+				Name:          "Default WireGuard",
+				Mode:          "generic_wireguard",
+				AddressesJSON: `["10.44.0.1/24"]`,
+				Enabled:       true,
+				TagsJSON:      `["system:default-wireguard"]`,
+				Revision:      2,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		WireGuardEntryEnabled:    boolPtrRule(true),
+		WireGuardEntryListenPort: intPtrRule(8081),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 9 {
+		t.Fatalf("Update() WireGuard profile = %+v", rule)
+	}
+	if rule.WireGuardEntryListenHost != "10.44.0.1" {
+		t.Fatalf("Update() listen host = %q", rule.WireGuardEntryListenHost)
+	}
+	if len(store.wireGuardByAgentID["local"]) != 1 {
+		t.Fatalf("WireGuard profile should be reused, got %+v", store.wireGuardByAgentID["local"])
 	}
 }
 

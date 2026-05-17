@@ -113,6 +113,13 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
 			return HTTPRule{}, err
 		}
+		if input.WireGuardProfileID == nil {
+			profile, err := s.ensureDefaultHTTPWireGuardProfile(ctx, resolvedID)
+			if err != nil {
+				return HTTPRule{}, err
+			}
+			input.WireGuardProfileID = &profile.ID
+		}
 	}
 
 	rows, err := s.store.ListHTTPRules(ctx, resolvedID)
@@ -208,11 +215,6 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if err != nil {
 		return HTTPRule{}, err
 	}
-	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
-	if err != nil {
-		return HTTPRule{}, err
-	}
-
 	maxRevision := 0
 	targetIndex := -1
 	var current HTTPRule
@@ -238,6 +240,18 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
 			return HTTPRule{}, err
 		}
+		if input.WireGuardProfileID == nil && current.WireGuardProfileID == nil {
+			profile, err := s.ensureDefaultHTTPWireGuardProfile(ctx, resolvedID)
+			if err != nil {
+				return HTTPRule{}, err
+			}
+			input.WireGuardProfileID = &profile.ID
+		}
+	}
+
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return HTTPRule{}, err
 	}
 
 	rule, err := s.normalizeHTTPRuleInput(ctx, input, current, id)
@@ -979,6 +993,16 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		if input.WireGuardProfileID != nil {
 			wireGuardProfileID = copyOptionalInt(input.WireGuardProfileID)
 		}
+		if input.WireGuardProfileID != nil && *input.WireGuardProfileID <= 0 {
+			return HTTPRule{}, fmt.Errorf("%w: wireguard_profile_id is required when wireguard entry is enabled", ErrInvalidArgument)
+		}
+		if wireGuardProfileID == nil {
+			profile, err := s.ensureDefaultHTTPWireGuardProfile(ctx, fallback.AgentID)
+			if err != nil {
+				return HTTPRule{}, err
+			}
+			wireGuardProfileID = &profile.ID
+		}
 		if wireGuardProfileID == nil || *wireGuardProfileID <= 0 {
 			return HTTPRule{}, fmt.Errorf("%w: wireguard_profile_id is required when wireguard entry is enabled", ErrInvalidArgument)
 		}
@@ -1027,6 +1051,14 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		WireGuardEntryListenPort: wireGuardEntryListenPort,
 		Revision:                 fallback.Revision,
 	}, nil
+}
+
+func (s *ruleService) ensureDefaultHTTPWireGuardProfile(ctx context.Context, agentID string) (WireGuardProfile, error) {
+	store, ok := s.store.(wireGuardProfileStore)
+	if !ok {
+		return WireGuardProfile{}, fmt.Errorf("%w: wireguard default profile store is unavailable", ErrInvalidArgument)
+	}
+	return NewWireGuardProfileService(s.cfg, store).EnsureDefault(ctx, agentID)
 }
 
 func (s *ruleService) validateRelayChain(ctx context.Context, agentID string, relayChain []int) error {
