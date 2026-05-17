@@ -302,6 +302,9 @@ func (s *wireGuardClientService) ClientConfig(ctx context.Context, agentID strin
 	if err != nil {
 		return "", err
 	}
+	if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+		return "", err
+	}
 	_, profile, _, err := s.loadProfile(ctx, resolvedID, profileID)
 	if err != nil {
 		return "", err

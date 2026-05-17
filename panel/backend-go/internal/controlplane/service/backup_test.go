@@ -3520,6 +3520,118 @@ func TestBackupServiceImportSkipsWireGuardL4TunnelListenConflicts(t *testing.T) 
 	}
 }
 
+func TestBackupServicePreviewAndImportDefaultWireGuardL4ListenHostBeforeConflicts(t *testing.T) {
+	ctx := t.Context()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-l4-defaulted-conflict-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	profileID := 1
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{{
+			ID:           "edge-wg",
+			Name:         "edge-wg",
+			AgentToken:   "token-edge-wg",
+			Capabilities: []string{"l4", "wireguard"},
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{{
+			ID:         profileID,
+			AgentID:    "edge-wg",
+			Name:       "wg-edge",
+			Mode:       "generic_wireguard",
+			PrivateKey: testWireGuardPrivateKey,
+			Addresses:  []string{"10.96.0.2/32"},
+			Peers: []WireGuardPeer{{
+				Name:       "peer-a",
+				PublicKey:  testWireGuardPublicKey,
+				AllowedIPs: []string{"10.96.0.1/32"},
+			}},
+			Enabled: true,
+		}},
+	}
+	l4Rules := []map[string]any{
+		{
+			"id":                   91,
+			"agent_id":             "edge-wg",
+			"name":                 "omitted wg listen host",
+			"protocol":             "udp",
+			"listen_host":          "0.0.0.0",
+			"listen_port":          51820,
+			"backends":             []L4Backend{{Host: "10.96.0.10", Port: 51820}},
+			"load_balancing":       L4LoadBalancing{Strategy: "round_robin"},
+			"listen_mode":          "wireguard",
+			"wireguard_profile_id": profileID,
+			"enabled":              true,
+		},
+		{
+			"id":                    92,
+			"agent_id":              "edge-wg",
+			"name":                  "blank wg listen host",
+			"protocol":              "udp",
+			"listen_host":           "127.0.0.1",
+			"listen_port":           51820,
+			"backends":              []L4Backend{{Host: "10.96.0.11", Port: 51820}},
+			"load_balancing":        L4LoadBalancing{Strategy: "round_robin"},
+			"listen_mode":           "wireguard",
+			"wireguard_profile_id":  profileID,
+			"wireguard_listen_host": "   ",
+			"enabled":               true,
+		},
+		{
+			"id":                    93,
+			"agent_id":              "edge-wg",
+			"name":                  "explicit defaulted wg listen host",
+			"protocol":              "udp",
+			"listen_host":           "10.96.0.20",
+			"listen_port":           51820,
+			"backends":              []L4Backend{{Host: "10.96.0.12", Port: 51820}},
+			"load_balancing":        L4LoadBalancing{Strategy: "round_robin"},
+			"listen_mode":           "wireguard",
+			"wireguard_profile_id":  profileID,
+			"wireguard_listen_host": "10.96.0.2",
+			"enabled":               true,
+		},
+	}
+	archive, err := encodeBackupBundleWithOverrides(t, bundle, map[string]any{backupL4RulesFile: l4Rules})
+	if err != nil {
+		t.Fatalf("encodeBackupBundleWithOverrides() error = %v", err)
+	}
+
+	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore)
+	preview, err := svc.Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	if preview.Summary.Imported.L4Rules != 1 || preview.Summary.SkippedConflict.L4Rules != 2 {
+		t.Fatalf("preview summary = %+v", preview.Summary)
+	}
+
+	result, err := svc.Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.L4Rules != preview.Summary.Imported.L4Rules || result.Summary.SkippedConflict.L4Rules != preview.Summary.SkippedConflict.L4Rules {
+		t.Fatalf("import summary = %+v, want preview counts %+v", result.Summary, preview.Summary)
+	}
+	l4Rows, err := targetStore.ListL4Rules(ctx, "edge-wg")
+	if err != nil {
+		t.Fatalf("ListL4Rules(edge-wg) error = %v", err)
+	}
+	if len(l4Rows) != 1 {
+		t.Fatalf("imported l4 rules = %+v, want exactly one", l4Rows)
+	}
+	if l4Rows[0].WireGuardListenHost != "10.96.0.2" {
+		t.Fatalf("imported WireGuardListenHost = %q, want profile address default", l4Rows[0].WireGuardListenHost)
+	}
+}
+
 func TestBackupServicePreviewAndImportUseNormalizedL4ListenHostConflictKeys(t *testing.T) {
 	ctx := t.Context()
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-normalized-listen-host-conflict-target"), "target-local")

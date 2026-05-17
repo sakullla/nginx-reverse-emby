@@ -417,6 +417,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
+		defaultWireGuardListenHostFromRows(&normalized, previewWireGuardProfileRowsByAgent[resolvedAgentID])
 		key = l4RuleConflictKey(normalized)
 		if err := ensureUniqueL4Listen(l4RulesFromRows(existingL4RulesByAgent[resolvedAgentID]), normalized, -1); err != nil {
 			result.addSkippedConflict("l4_rule", key, err.Error())
@@ -1695,6 +1696,9 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		if err != nil {
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
+		}
+		if err := l4Svc.defaultWireGuardListenHost(ctx, resolvedAgentID, &normalized); err != nil {
+			return err
 		}
 		key = l4RuleConflictKey(normalized)
 		if err := ensureUniqueL4Listen(l4RulesFromRows(grouped[resolvedAgentID]), normalized, -1); err != nil {

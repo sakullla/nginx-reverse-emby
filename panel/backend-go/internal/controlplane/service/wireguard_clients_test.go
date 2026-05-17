@@ -211,6 +211,61 @@ func TestWireGuardClientCreateAndToggleRejectRemoteAgentWithoutWireGuardCapabili
 	}
 }
 
+func TestWireGuardClientConfigRejectsRemoteAgentWithoutWireGuardCapability(t *testing.T) {
+	ctx := context.Background()
+	store, _, clientSvc := newTestWireGuardClientService(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-no-wg",
+		Name:             "edge-no-wg",
+		AgentToken:       "token-edge-no-wg",
+		CapabilitiesJSON: `["http_rules","l4"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	profile := wireGuardProfileToRow(WireGuardProfile{
+		ID:             41,
+		AgentID:        "edge-no-wg",
+		Name:           "seed",
+		Mode:           "generic_wireguard",
+		PrivateKey:     testWireGuardPrivateKey,
+		PublicEndpoint: "wg.example.com:51820",
+		Addresses:      []string{"10.44.0.1/24"},
+		Peers:          []WireGuardPeer{},
+		Enabled:        true,
+		Revision:       1,
+	})
+	if err := store.SaveWireGuardProfiles(ctx, "edge-no-wg", []storage.WireGuardProfileRow{profile}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	client := storage.WireGuardClientRow{
+		ID:             7,
+		AgentID:        "edge-no-wg",
+		ProfileID:      41,
+		Name:           "phone",
+		PrivateKey:     testWireGuardPrivateKey,
+		PublicKey:      testWireGuardPublicKey,
+		PresharedKey:   testWireGuardPresharedKey,
+		Address:        "10.44.0.2/32",
+		AllowedIPsJSON: `["10.44.0.1/24"]`,
+		DNSJSON:        `[]`,
+		Enabled:        true,
+	}
+	if err := store.SaveWireGuardClients(ctx, "edge-no-wg", 41, []storage.WireGuardClientRow{client}); err != nil {
+		t.Fatalf("SaveWireGuardClients() error = %v", err)
+	}
+
+	configText, err := clientSvc.ClientConfig(ctx, "edge-no-wg", 41, 7)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("ClientConfig() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "agent does not support WireGuard") {
+		t.Fatalf("ClientConfig() error = %v, want wireguard capability message", err)
+	}
+	if configText != "" {
+		t.Fatalf("ClientConfig() returned private material for unsupported agent:\n%s", configText)
+	}
+}
+
 func TestWireGuardClientListReturnsRedactedClients(t *testing.T) {
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)

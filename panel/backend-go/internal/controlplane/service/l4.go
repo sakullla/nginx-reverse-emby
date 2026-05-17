@@ -980,17 +980,24 @@ func (s *l4Service) defaultWireGuardListenHost(ctx context.Context, agentID stri
 	if err != nil {
 		return err
 	}
+	defaultWireGuardListenHostFromRows(rule, rows)
+	return nil
+}
+
+func defaultWireGuardListenHostFromRows(rule *L4Rule, rows []storage.WireGuardProfileRow) {
+	if rule == nil || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode == "transparent" || strings.TrimSpace(rule.WireGuardListenHost) != "" || rule.WireGuardProfileID == nil {
+		return
+	}
 	for _, row := range rows {
 		if row.ID != *rule.WireGuardProfileID {
 			continue
 		}
 		if host := firstWireGuardProfileAddressHost(row.AddressesJSON); host != "" {
 			rule.WireGuardListenHost = host
-			return nil
+			return
 		}
 	}
 	rule.WireGuardListenHost = strings.TrimSpace(rule.ListenHost)
-	return nil
 }
 
 func firstWireGuardProfileAddressHost(raw string) string {
