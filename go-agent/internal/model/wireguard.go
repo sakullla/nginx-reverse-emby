@@ -6,6 +6,7 @@ type WireGuardPeer struct {
 	PresharedKey               string   `json:"preshared_key,omitempty"`
 	Endpoint                   string   `json:"endpoint"`
 	AllowedIPs                 []string `json:"allowed_ips"`
+	Reserved                   []byte   `json:"reserved,omitempty"`
 	PersistentKeepaliveSeconds int      `json:"persistent_keepalive_seconds,omitempty"`
 }
 

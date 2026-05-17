@@ -24,6 +24,7 @@ type WireGuardPeer struct {
 	PresharedKey               string   `json:"preshared_key,omitempty"`
 	Endpoint                   string   `json:"endpoint"`
 	AllowedIPs                 []string `json:"allowed_ips"`
+	Reserved                   []byte   `json:"reserved,omitempty"`
 	PersistentKeepaliveSeconds int      `json:"persistent_keepalive_seconds,omitempty"`
 }
 
@@ -615,6 +616,7 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer, ha
 			PresharedKey:               strings.TrimSpace(peer.PresharedKey),
 			Endpoint:                   strings.TrimSpace(peer.Endpoint),
 			AllowedIPs:                 normalizeStringList(peer.AllowedIPs),
+			Reserved:                   append([]byte(nil), peer.Reserved...),
 			PersistentKeepaliveSeconds: peer.PersistentKeepaliveSeconds,
 		}
 		if normalized.PresharedKey == redactedProxyPassword {
@@ -644,6 +646,9 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer, ha
 		}
 		if normalized.PersistentKeepaliveSeconds < 0 {
 			return nil, fmt.Errorf("%w: persistent_keepalive_seconds must be non-negative", ErrInvalidArgument)
+		}
+		if len(normalized.Reserved) > 3 {
+			return nil, fmt.Errorf("%w: reserved accepts at most 3 bytes", ErrInvalidArgument)
 		}
 		peers = append(peers, normalized)
 	}

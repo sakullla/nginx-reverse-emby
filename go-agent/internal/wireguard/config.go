@@ -205,6 +205,13 @@ func parseDNSAddrs(values []string) ([]netip.Addr, error) {
 func normalizePeers(peers []model.WireGuardPeer) ([]PeerConfig, error) {
 	out := make([]PeerConfig, 0, len(peers))
 	for i, peer := range peers {
+		reserved := append([]byte(nil), peer.Reserved...)
+		if len(reserved) > 3 {
+			return nil, fmt.Errorf("peers[%d].reserved accepts at most 3 bytes", i)
+		}
+		if len(reserved) > 0 {
+			return nil, fmt.Errorf("peers[%d].reserved is not supported by this WireGuard runtime", i)
+		}
 		publicKey, err := decodeWireGuardKey(fmt.Sprintf("peers[%d].public_key", i), peer.PublicKey, true)
 		if err != nil {
 			return nil, err
@@ -227,6 +234,7 @@ func normalizePeers(peers []model.WireGuardPeer) ([]PeerConfig, error) {
 		if peer.PersistentKeepaliveSeconds < 0 {
 			return nil, fmt.Errorf("peers[%d].persistent_keepalive_seconds must be non-negative", i)
 		}
+		peer.Reserved = reserved
 		out = append(out, PeerConfig{
 			WireGuardPeer:     peer,
 			PublicKeyBytes:    publicKey,

@@ -154,9 +154,6 @@ func wireGuardURIValueHasUnsupportedReserved(parsed ParsedWireGuardURI) bool {
 }
 
 func WireGuardProfileInputFromURI(parsed ParsedWireGuardURI, name string) (WireGuardProfileInput, error) {
-	if wireGuardURIValueHasUnsupportedReserved(parsed) {
-		return WireGuardProfileInput{}, fmt.Errorf("%w: wireguard URI reserved is not supported", ErrInvalidArgument)
-	}
 	return wireGuardProfileInputFromURI(parsed, name), nil
 }
 
@@ -206,6 +203,7 @@ func wireGuardProfileInputFromURI(parsed ParsedWireGuardURI, name string) WireGu
 			PresharedKey: parsed.PresharedKey,
 			Endpoint:     parsed.Endpoint,
 			AllowedIPs:   append([]string(nil), parsed.AllowedIPs...),
+			Reserved:     append([]byte(nil), parsed.Reserved...),
 		}},
 		PeersSet: true,
 		DNS:      append([]string(nil), parsed.DNS...),

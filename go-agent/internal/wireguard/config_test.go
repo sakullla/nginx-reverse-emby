@@ -224,6 +224,34 @@ func TestNormalizeConfigRejectsDisabledAndUnsupportedMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigRejectsPeerReservedUntilRuntimeSupportsIt(t *testing.T) {
+	t.Parallel()
+
+	profile := validWireGuardProfile()
+	profile.Peers[0].Reserved = []byte{1, 2, 3}
+	_, err := NormalizeConfig(profile)
+	if err == nil {
+		t.Fatal("NormalizeConfig() error = nil, want unsupported reserved error")
+	}
+	if !strings.Contains(err.Error(), "reserved is not supported by this WireGuard runtime") {
+		t.Fatalf("NormalizeConfig() error = %v, want unsupported reserved message", err)
+	}
+}
+
+func TestNormalizeConfigRejectsTooManyPeerReservedBytes(t *testing.T) {
+	t.Parallel()
+
+	profile := validWireGuardProfile()
+	profile.Peers[0].Reserved = []byte{1, 2, 3, 4}
+	_, err := NormalizeConfig(profile)
+	if err == nil {
+		t.Fatal("NormalizeConfig() error = nil, want reserved length error")
+	}
+	if !strings.Contains(err.Error(), "reserved accepts at most 3 bytes") {
+		t.Fatalf("NormalizeConfig() error = %v, want reserved length message", err)
+	}
+}
+
 func TestFingerprintChangesWhenEndpointChanges(t *testing.T) {
 	t.Parallel()
 
@@ -258,7 +286,7 @@ func TestFingerprintIsStableForSameInput(t *testing.T) {
 	}
 }
 
-func validProfile() model.WireGuardProfile {
+func validWireGuardProfile() model.WireGuardProfile {
 	return model.WireGuardProfile{
 		ID:         7,
 		AgentID:    "agent-a",
@@ -281,4 +309,8 @@ func validProfile() model.WireGuardProfile {
 		Tags:     []string{"edge"},
 		Revision: 9,
 	}
+}
+
+func validProfile() model.WireGuardProfile {
+	return validWireGuardProfile()
 }
