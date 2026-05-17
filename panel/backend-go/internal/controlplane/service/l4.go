@@ -1203,13 +1203,11 @@ func normalizeTags(values []string) []string {
 
 func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 	nextListenHost := effectiveL4ListenHost(next)
-	nextListenStack := effectiveL4ListenStack(next)
 	for _, rule := range rules {
 		if rule.ID == excludeID {
 			continue
 		}
-		ruleListenHost := effectiveL4ListenHost(rule)
-		if rule.Protocol == next.Protocol && effectiveL4ListenStack(rule) == nextListenStack && ruleListenHost == nextListenHost && rule.ListenPort == next.ListenPort {
+		if l4ListenConflicts(rule, next) {
 			return fmt.Errorf(
 				"%w: listen %s:%s:%d conflicts with rule #%d",
 				ErrInvalidArgument,
@@ -1221,6 +1219,23 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 		}
 	}
 	return nil
+}
+
+func l4ListenConflicts(rule L4Rule, next L4Rule) bool {
+	if !strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol)) ||
+		effectiveL4ListenStack(rule) != effectiveL4ListenStack(next) ||
+		rule.ListenPort != next.ListenPort {
+		return false
+	}
+	if effectiveL4ListenHost(rule) == effectiveL4ListenHost(next) {
+		return true
+	}
+	if !rule.Enabled || !next.Enabled {
+		return false
+	}
+	return l4RuleIsWireGuardListen(rule) &&
+		l4RuleIsWireGuardListen(next) &&
+		(isL4TransparentWireGuardListen(rule) || isL4TransparentWireGuardListen(next))
 }
 
 func effectiveL4ListenHost(rule L4Rule) string {
@@ -1235,8 +1250,12 @@ func effectiveL4ListenHost(rule L4Rule) string {
 	return strings.TrimSpace(rule.ListenHost)
 }
 
+func l4RuleIsWireGuardListen(rule L4Rule) bool {
+	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
+}
+
 func isL4TransparentWireGuardListen(rule L4Rule) bool {
-	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
+	return l4RuleIsWireGuardListen(rule) &&
 		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent")
 }
 
@@ -1302,6 +1321,14 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 	rule.RelayChain = []int{}
 	rule.RelayLayers = parseIntLayers(row.RelayLayersJSON)
 	return rule
+}
+
+func l4RulesFromRows(rows []storage.L4RuleRow) []L4Rule {
+	rules := make([]L4Rule, 0, len(rows))
+	for _, row := range rows {
+		rules = append(rules, l4RuleFromRow(row))
+	}
+	return rules
 }
 
 func l4RuleToRow(rule L4Rule) storage.L4RuleRow {

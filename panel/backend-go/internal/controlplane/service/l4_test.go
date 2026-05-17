@@ -1765,6 +1765,90 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 	}
 }
 
+func TestL4WireGuardTransparentListenConflictsWithAddressModeOnCreate(t *testing.T) {
+	profileID := 7
+	tests := []struct {
+		name     string
+		existing L4Rule
+		input    L4RuleInput
+	}{
+		{
+			name: "address mode conflicts with existing transparent",
+			existing: L4Rule{
+				ID:                   1,
+				AgentID:              "local",
+				Name:                 "wg-transparent",
+				Protocol:             "tcp",
+				ListenHost:           "10.8.0.20",
+				ListenPort:           8443,
+				Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "transparent",
+				Enabled:              true,
+			},
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("tcp"),
+				ListenHost:           stringPtrL4("0.0.0.0"),
+				ListenPort:           intPtrL4(8443),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(profileID),
+				WireGuardInboundMode: stringPtrL4("address"),
+				WireGuardListenHost:  stringPtrL4("10.8.0.1"),
+				Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+			},
+		},
+		{
+			name: "transparent conflicts with existing address mode",
+			existing: L4Rule{
+				ID:                   1,
+				AgentID:              "local",
+				Name:                 "wg-address",
+				Protocol:             "tcp",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           8443,
+				Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "address",
+				WireGuardListenHost:  "10.8.0.1",
+				Enabled:              true,
+			},
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("tcp"),
+				ListenHost:           stringPtrL4("10.8.0.20"),
+				ListenPort:           intPtrL4(8443),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(profileID),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeL4Store{
+				l4RulesByID: map[string][]storage.L4RuleRow{
+					"local": {l4RuleToRow(tc.existing)},
+				},
+				wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+					"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+				},
+			}
+			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			_, err := svc.Create(context.Background(), "local", tc.input)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "8443 conflicts") {
+				t.Fatalf("Create() error = %v, want transparent WireGuard wildcard listen conflict", err)
+			}
+		})
+	}
+}
+
 func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnCreate(t *testing.T) {
 	profileID := 7
 	tests := []struct {
@@ -1884,6 +1968,105 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testin
 	}
 	if err == nil || !strings.Contains(err.Error(), "51820 conflicts") {
 		t.Fatalf("Update() error = %v, want transparent WireGuard listen conflict", err)
+	}
+}
+
+func TestL4WireGuardTransparentListenConflictsWithAddressModeOnUpdate(t *testing.T) {
+	profileID := 7
+	tests := []struct {
+		name     string
+		existing L4Rule
+		current  L4Rule
+		input    L4RuleInput
+	}{
+		{
+			name: "address mode conflicts with existing transparent",
+			existing: L4Rule{
+				ID:                   1,
+				AgentID:              "local",
+				Name:                 "wg-transparent",
+				Protocol:             "tcp",
+				ListenHost:           "10.8.0.20",
+				ListenPort:           8443,
+				Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "transparent",
+				Enabled:              true,
+			},
+			current: L4Rule{
+				ID:                   2,
+				AgentID:              "local",
+				Name:                 "wg-address",
+				Protocol:             "tcp",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           8444,
+				Backends:             []L4Backend{{Host: "upstream-b", Port: 9002}},
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "address",
+				WireGuardListenHost:  "10.8.0.1",
+				Enabled:              true,
+			},
+			input: L4RuleInput{
+				ListenPort: intPtrL4(8443),
+			},
+		},
+		{
+			name: "transparent conflicts with existing address mode",
+			existing: L4Rule{
+				ID:                   1,
+				AgentID:              "local",
+				Name:                 "wg-address",
+				Protocol:             "tcp",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           8443,
+				Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "address",
+				WireGuardListenHost:  "10.8.0.1",
+				Enabled:              true,
+			},
+			current: L4Rule{
+				ID:                   2,
+				AgentID:              "local",
+				Name:                 "wg-transparent",
+				Protocol:             "tcp",
+				ListenHost:           "10.8.0.20",
+				ListenPort:           8444,
+				Backends:             []L4Backend{{Host: "upstream-b", Port: 9002}},
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "transparent",
+				Enabled:              true,
+			},
+			input: L4RuleInput{
+				ListenPort: intPtrL4(8443),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeL4Store{
+				l4RulesByID: map[string][]storage.L4RuleRow{
+					"local": {l4RuleToRow(tc.existing), l4RuleToRow(tc.current)},
+				},
+				wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+					"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+				},
+			}
+			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			_, err := svc.Update(context.Background(), "local", tc.current.ID, tc.input)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "8443 conflicts") {
+				t.Fatalf("Update() error = %v, want transparent WireGuard wildcard listen conflict", err)
+			}
+		})
 	}
 }
 

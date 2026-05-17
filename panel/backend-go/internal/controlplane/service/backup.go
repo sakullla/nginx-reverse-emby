@@ -384,9 +384,9 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	if err != nil {
 		return BackupImportResult{}, err
 	}
-	existingL4Keys := map[string]struct{}{}
+	existingL4RulesByAgent := map[string][]storage.L4RuleRow{}
 	for _, row := range existingL4Rules {
-		existingL4Keys[l4RuleConflictKey(l4RuleFromRow(row))] = struct{}{}
+		existingL4RulesByAgent[row.AgentID] = append(existingL4RulesByAgent[row.AgentID], row)
 	}
 	for _, item := range bundle.L4Rules {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
@@ -418,8 +418,8 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			continue
 		}
 		key = l4RuleConflictKey(normalized)
-		if _, exists := existingL4Keys[key]; exists {
-			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
+		if err := ensureUniqueL4Listen(l4RulesFromRows(existingL4RulesByAgent[resolvedAgentID]), normalized, -1); err != nil {
+			result.addSkippedConflict("l4_rule", key, err.Error())
 			continue
 		}
 		if err := validateRelayChainReferencesFromRows(knownAgentIDs, previewRelayListeners, flattenRelayLayers(pointerRelayLayers(input.RelayLayers)), relayChainValidationOptions{RuleAgentID: resolvedAgentID}); err != nil {
@@ -427,7 +427,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			continue
 		}
 		result.addImported("l4_rule", key)
-		existingL4Keys[key] = struct{}{}
+		existingL4RulesByAgent[resolvedAgentID] = append(existingL4RulesByAgent[resolvedAgentID], l4RuleToRow(normalized))
 	}
 	existingPolicyRows, err := s.store.ListVersionPolicies(ctx)
 	if err != nil {
@@ -1656,13 +1656,10 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 	if err != nil {
 		return err
 	}
-	conflictSet := map[string]struct{}{}
 	grouped := map[string][]storage.L4RuleRow{}
 	maxRevisionByAgent := map[string]int{}
 
 	for _, row := range existingRules {
-		key := l4RuleConflictKey(l4RuleFromRow(row))
-		conflictSet[key] = struct{}{}
 		grouped[row.AgentID] = append(grouped[row.AgentID], row)
 		if row.Revision > maxRevisionByAgent[row.AgentID] {
 			maxRevisionByAgent[row.AgentID] = row.Revision
@@ -1700,8 +1697,8 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			continue
 		}
 		key = l4RuleConflictKey(normalized)
-		if _, exists := conflictSet[key]; exists {
-			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
+		if err := ensureUniqueL4Listen(l4RulesFromRows(grouped[resolvedAgentID]), normalized, -1); err != nil {
+			result.addSkippedConflict("l4_rule", key, err.Error())
 			continue
 		}
 		if restoreURI, err := s.shouldRestoreImportedL4WireGuardEgressURI(ctx, item, resolvedAgentID, wireGuardProfileID, importedWireGuardProfileIDs); err != nil {
@@ -1728,7 +1725,6 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
 		}
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], l4RuleToRow(normalized))
-		conflictSet[key] = struct{}{}
 		recordModifiedAgentRevision(modifiedAgents, resolvedAgentID, normalized.Revision)
 		result.addImported("l4_rule", key)
 	}
