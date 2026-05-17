@@ -101,6 +101,16 @@ describe('RelayListenerForm WireGuard profile override', () => {
     expect(mocks.createMutateAsync.mock.calls[0][0]).not.toHaveProperty('wireguard_profile_id')
   })
 
+  it('labels the WireGuard public endpoint as the Profile endpoint in the ordinary flow', async () => {
+    const wrapper = mountForm()
+
+    await fillValidWireGuardForm(wrapper)
+
+    expect(wrapper.text()).toContain('WireGuard Profile Endpoint（可选）')
+    expect(wrapper.text()).toContain('作为公网 UDP 入口')
+    expect(wrapper.text()).not.toContain('默认使用 TLS/TCP；如需更低握手耗时')
+  })
+
   it('includes wireguard_profile_id when the advanced WireGuard override is selected', async () => {
     const wrapper = mountForm()
 

@@ -48,6 +48,7 @@
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
           </svg>
         </span>
+        <span class="relay-card__endpoint-label">{{ publicEndpointLabel }}</span>
         <code class="relay-card__addr">{{ publicEndpoint }}</code>
       </div>
       <div class="relay-card__endpoint">
@@ -57,6 +58,7 @@
             <path d="M12 5l7 7-7 7"/>
           </svg>
         </span>
+        <span class="relay-card__endpoint-label">{{ bindEndpointLabel }}</span>
         <code class="relay-card__addr">{{ bindEndpoint }}</code>
       </div>
     </div>
@@ -134,11 +136,17 @@ const bindEndpoint = computed(() => {
 })
 
 const isQuic = computed(() => props.listener?.transport_mode === 'quic')
+const isWireGuard = computed(() => props.listener?.transport_mode === 'wireguard')
+const publicEndpointLabel = computed(() => (isWireGuard.value ? 'Profile Endpoint' : '公网入口'))
+const bindEndpointLabel = computed(() => (isWireGuard.value ? 'Relay 内部监听' : '绑定监听'))
 
-const transportLabel = computed(() => (isQuic.value ? 'QUIC' : 'TLS/TCP'))
+const transportLabel = computed(() => {
+  if (isWireGuard.value) return 'WireGuard'
+  return isQuic.value ? 'QUIC' : 'TLS/TCP'
+})
 
 const obfsLabel = computed(() => {
-  const isTlsTcp = !isQuic.value
+  const isTlsTcp = !isQuic.value && !isWireGuard.value
   const obfs = isTlsTcp && props.listener?.obfs_mode === 'early_window_v2'
     ? '隐匿 early_window_v2'
     : '隐匿关闭'
@@ -183,6 +191,13 @@ const hasTags = computed(() => Array.isArray(props.listener.tags) && props.liste
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.relay-card__endpoint-label {
+  flex-shrink: 0;
+  min-width: 6.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
 }
 .relay-card__url-icon {
   display: flex;

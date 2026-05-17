@@ -1491,8 +1491,8 @@ func TestBackupServiceExportIncludesHTTPWireGuardEntryFields(t *testing.T) {
 	if rule["wireguard_entry_listen_host"] != "10.44.0.1" {
 		t.Fatalf("wireguard_entry_listen_host = %#v", rule["wireguard_entry_listen_host"])
 	}
-	if rule["wireguard_entry_listen_port"] != float64(18096) {
-		t.Fatalf("wireguard_entry_listen_port = %#v, want 18096", rule["wireguard_entry_listen_port"])
+	if rule["wireguard_entry_listen_port"] != float64(443) {
+		t.Fatalf("wireguard_entry_listen_port = %#v, want 443", rule["wireguard_entry_listen_port"])
 	}
 }
 
@@ -1614,8 +1614,8 @@ func TestBackupServiceImportPreservesHTTPWireGuardEntryFieldsAndRemapsProfileID(
 	if row.WireGuardProfileID == nil || *row.WireGuardProfileID != importedProfileID {
 		t.Fatalf("WireGuardProfileID = %v, want %d", row.WireGuardProfileID, importedProfileID)
 	}
-	if row.WireGuardEntryListenHost != "10.44.0.1" || row.WireGuardEntryListenPort != 18096 {
-		t.Fatalf("wireguard entry listen = %q:%d, want 10.44.0.1:18096", row.WireGuardEntryListenHost, row.WireGuardEntryListenPort)
+	if row.WireGuardEntryListenHost != "10.44.0.1" || row.WireGuardEntryListenPort != 443 {
+		t.Fatalf("wireguard entry listen = %q:%d, want 10.44.0.1:443", row.WireGuardEntryListenHost, row.WireGuardEntryListenPort)
 	}
 }
 

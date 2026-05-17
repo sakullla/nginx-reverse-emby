@@ -164,8 +164,8 @@ describe('runtime canonical rule payloads', () => {
       const enabledPayload = JSON.parse(requests[0].data)
       expect(enabledPayload.wireguard_entry_enabled).toBe(true)
       expect(enabledPayload.wireguard_profile_id).toBe(101)
-      expect(enabledPayload.wireguard_entry_listen_host).toBe('10.8.0.1')
-      expect(enabledPayload.wireguard_entry_listen_port).toBe(18096)
+      expect(enabledPayload).not.toHaveProperty('wireguard_entry_listen_host')
+      expect(enabledPayload).not.toHaveProperty('wireguard_entry_listen_port')
 
       const disabledPayload = JSON.parse(requests[1].data)
       expect(disabledPayload.wireguard_entry_enabled).toBe(false)
@@ -279,7 +279,7 @@ describe('runtime canonical rule payloads', () => {
         const payload = JSON.parse(request.data)
         expect(payload.listen_mode).toBe('wireguard')
         expect(payload.wireguard_inbound_mode).toBe('transparent')
-        expect(payload).not.toHaveProperty('wireguard_profile_id')
+        expect(payload.wireguard_profile_id).toBe(101)
         expect(payload).not.toHaveProperty('wireguard_listen_host')
       }
       expect(created.listen_mode).toBe('wireguard')
@@ -289,7 +289,7 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('sends advanced L4 WireGuard address entry payloads with profile id', async () => {
+  it('sends advanced L4 WireGuard address entry payloads with profile id and derived listen host', async () => {
     const { api } = await vi.importActual('./client.js')
     const requests = []
     const originalAdapter = api.defaults.adapter
@@ -339,7 +339,7 @@ describe('runtime canonical rule payloads', () => {
         expect(payload.listen_mode).toBe('wireguard')
         expect(payload.wireguard_inbound_mode).toBe('address')
         expect(payload.wireguard_profile_id).toBe(102)
-        expect(payload.wireguard_listen_host).toBe('10.8.0.1')
+        expect(payload).not.toHaveProperty('wireguard_listen_host')
       }
     } finally {
       api.defaults.adapter = originalAdapter
@@ -445,7 +445,7 @@ describe('runtime canonical rule payloads', () => {
       expect(payload.protocol).toBe('udp')
       expect(payload.wireguard_inbound_mode).toBe('address')
       expect(payload.wireguard_profile_id).toBe(101)
-      expect(payload.wireguard_listen_host).toBe('10.8.0.1')
+      expect(payload).not.toHaveProperty('wireguard_listen_host')
     } finally {
       api.defaults.adapter = originalAdapter
     }
@@ -1055,12 +1055,13 @@ describe('runtime canonical rule payloads', () => {
     expect(l4Form.default).toContain('wireGuardProfileRequiresExplicitSelection.value = false')
   })
 
-  it('L4 form sends WireGuard inbound mode and limits address listen host to address mode', async () => {
+  it('L4 form sends WireGuard inbound mode and derives address listen host from the profile', async () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
 
     expect(l4Form.default).toContain("wireguard_inbound_mode: initialData?.wireguard_inbound_mode || 'transparent'")
     expect(l4Form.default).toContain('payload.wireguard_inbound_mode = form.value.wireguard_inbound_mode')
-    expect(l4Form.default).toContain("if (isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'address')")
+    expect(l4Form.default).toContain('监听 Host 自动使用所选 WireGuard Profile 的第一个地址')
+    expect(l4Form.default).not.toContain('payload.wireguard_listen_host')
     expect(l4Form.default).not.toContain('<option value="transparent">Transparent</option>')
   })
 
@@ -1079,8 +1080,8 @@ describe('runtime canonical rule payloads', () => {
     expect(wireGuardControlIndex).toBeLessThan(relayTabIndex)
     expect(source.slice(basicTabIndex, advancedTabIndex)).not.toContain('wireguard_entry_enabled')
     expect(source).toContain('wireguard_profile_id')
-    expect(source).toContain('wireguard_entry_listen_host')
-    expect(source).toContain('wireguard_entry_listen_port')
+    expect(source).not.toContain('wireguard_entry_listen_host')
+    expect(source).not.toContain('wireguard_entry_listen_port')
     expect(source).toContain('enabledWireGuardProfiles')
     expect(source).toContain('selectedWireGuardProfileID')
   })

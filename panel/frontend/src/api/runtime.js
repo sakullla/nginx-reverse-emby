@@ -82,11 +82,13 @@ function normalizeL4Rule(rule = {}) {
     },
     relay_obfs: rule.relay_obfs === true,
     listen_mode: listenMode,
-    proxy_entry_auth: {
-      enabled: rule.proxy_entry_auth?.enabled === true,
-      username: String(rule.proxy_entry_auth?.username || ''),
-      password: String(rule.proxy_entry_auth?.password || '')
-    },
+    proxy_entry_auth: listenMode === 'proxy'
+      ? {
+          enabled: rule.proxy_entry_auth?.enabled === true,
+          username: String(rule.proxy_entry_auth?.username || ''),
+          password: String(rule.proxy_entry_auth?.password || '')
+        }
+      : { enabled: false, username: '', password: '' },
     proxy_egress_mode: proxyEgressMode,
     proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : '',
     wireguard_egress_uri: proxyEntryMode && proxyEgressMode === 'wireguard'
@@ -108,10 +110,9 @@ function normalizeRelayListenerPayload(payload = {}) {
 
 function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
-  const { backend_url, relay_chain, ...rest } = payload
+  const { backend_url, relay_chain, wireguard_entry_listen_host, wireguard_entry_listen_port, ...rest } = payload
   const wireGuardEntryEnabled = payload.wireguard_entry_enabled === true
   const wireGuardProfileID = Number(payload.wireguard_profile_id)
-  const wireGuardEntryListenPort = Number(payload.wireguard_entry_listen_port)
   const normalizedPayload = {
     ...rest,
     frontend_url: String(payload.frontend_url || '').trim(),
@@ -130,10 +131,6 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   if (wireGuardEntryEnabled) {
     normalizedPayload.wireguard_profile_id = Number.isInteger(wireGuardProfileID) && wireGuardProfileID > 0
       ? wireGuardProfileID
-      : undefined
-    normalizedPayload.wireguard_entry_listen_host = String(payload.wireguard_entry_listen_host || '').trim()
-    normalizedPayload.wireguard_entry_listen_port = Number.isInteger(wireGuardEntryListenPort) && wireGuardEntryListenPort > 0
-      ? wireGuardEntryListenPort
       : undefined
   } else {
     delete normalizedPayload.wireguard_profile_id
@@ -155,7 +152,7 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
 
 function normalizeL4RulePayload(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
-  const { upstream_host, upstream_port, relay_chain, wireguard_profile_override, ...rest } = payload
+  const { upstream_host, upstream_port, relay_chain, wireguard_profile_override, wireguard_listen_host, ...rest } = payload
   const listenMode = payload.listen_mode === 'wireguard' ? 'wireguard' : payload.listen_mode
   const protocol = String(payload.protocol || '').toLowerCase()
   const wireGuardInboundMode = listenMode === 'wireguard' && protocol !== 'udp' && payload.wireguard_inbound_mode === 'transparent'
@@ -173,23 +170,24 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
     }
   }
   if (listenMode === 'wireguard') {
+    normalizedPayload.proxy_entry_auth = { enabled: false, username: '', password: '' }
+  }
+  if (listenMode === 'wireguard') {
     normalizedPayload.wireguard_inbound_mode = wireGuardInboundMode
-    if (wireGuardInboundMode !== 'address') {
-      delete normalizedPayload.wireguard_listen_host
-    }
   } else {
     delete normalizedPayload.wireguard_inbound_mode
-    delete normalizedPayload.wireguard_listen_host
   }
   if (proxyEgressMode === 'wireguard' && wireGuardEgressURI) {
     normalizedPayload.wireguard_egress_uri = wireGuardEgressURI
-    delete normalizedPayload.wireguard_profile_id
+    if (listenMode !== 'wireguard') {
+      delete normalizedPayload.wireguard_profile_id
+    }
   } else {
     delete normalizedPayload.wireguard_egress_uri
   }
   if (
     normalizedPayload.wireguard_profile_id != null
-    && !(listenMode === 'wireguard' && wireGuardInboundMode === 'address')
+    && listenMode !== 'wireguard'
     && !(proxyEgressMode === 'wireguard' && wireGuardEgressURI === '' && wireguard_profile_override === true)
   ) {
     delete normalizedPayload.wireguard_profile_id

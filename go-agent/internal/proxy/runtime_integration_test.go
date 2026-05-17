@@ -168,8 +168,8 @@ func TestHTTPRuntimeUsesWireGuardListenerForInnerEntry(t *testing.T) {
 	defer runtime.Close()
 
 	bindings := runtime.BindingKeys()
-	if len(bindings) != 2 {
-		t.Fatalf("BindingKeys() = %+v, want public and wireguard bindings", bindings)
+	if len(bindings) != 1 {
+		t.Fatalf("BindingKeys() = %+v, want only wireguard binding", bindings)
 	}
 	if len(wgRuntime.listenTCPCalls()) != 1 {
 		t.Fatalf("ListenTCP calls = %+v", wgRuntime.listenTCPCalls())

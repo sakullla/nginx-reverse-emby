@@ -1015,7 +1015,7 @@ func TestHTTPRuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing
 	}
 }
 
-func TestHTTPRuntimeManagerRollsBackPreparedWireGuardProfilesWhenBindingKeysFail(t *testing.T) {
+func TestHTTPRuntimeManagerSkipsPublicHTTPSBindingForWireGuardEntry(t *testing.T) {
 	var runtimes []*testAppWireGuardRuntime
 	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
 		runtime := newListeningTestAppWireGuardRuntime(nil, nil)
@@ -1043,40 +1043,26 @@ func TestHTTPRuntimeManagerRollsBackPreparedWireGuardProfilesWhenBindingKeysFail
 		t.Fatalf("failed to apply initial http wireguard runtime: %v", err)
 	}
 	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
-	originalRuntime := runtimes[0]
-	originalHTTPRuntime := manager.runtime
 
 	nextProfile := profile
 	nextProfile.Revision++
 	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
 	next := initial
 	next.FrontendURL = fmt.Sprintf("https://edge.example.test:%d", publicPort)
-	cancelledCtx, cancel := context.WithCancel(ctx)
-	cancel()
-	err := manager.ApplyWithRelayAndWireGuardProfiles(cancelledCtx, []model.HTTPRule{next}, nil, []model.WireGuardProfile{nextProfile})
-	if err == nil || !strings.Contains(err.Error(), "https frontend is not supported without certificate bindings") {
-		t.Fatalf("expected https binding error, got %v", err)
-	}
-	if strings.Contains(err.Error(), "restore failed") {
-		t.Fatalf("expected no-close-first rollback to preserve existing runtime without restore, got %v", err)
-	}
-	if manager.runtime != originalHTTPRuntime {
-		t.Fatal("expected existing http runtime to be preserved")
-	}
-	if originalRuntime.closed {
-		t.Fatal("expected original wireguard runtime to remain active after failed http reconfigure")
+	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.HTTPRule{next}, nil, []model.WireGuardProfile{nextProfile}); err != nil {
+		t.Fatalf("expected http reconfigure to succeed without public binding, got %v", err)
 	}
 	got, ok := manager.wireGuardRuntime.Runtime(profileID)
 	if !ok {
 		t.Fatal("expected original wireguard profile runtime to remain registered")
 	}
-	if got != originalRuntime {
-		t.Fatal("expected wireguard manager to retain original profile runtime after failed http reconfigure")
-	}
 	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
+	if got == nil {
+		t.Fatal("expected active wireguard runtime after reconfigure")
+	}
 }
 
-func TestHTTPRuntimeManagerRestoresServerAfterCloseFirstWireGuardPrepareBindingFailure(t *testing.T) {
+func TestHTTPRuntimeManagerKeepsWireGuardEntryActiveWhenFrontendURLIsHTTPS(t *testing.T) {
 	var (
 		mu                   sync.Mutex
 		activeWireGuardPorts = make(map[int]bool)
@@ -1135,33 +1121,21 @@ func TestHTTPRuntimeManagerRestoresServerAfterCloseFirstWireGuardPrepareBindingF
 		t.Fatalf("failed to apply initial http wireguard runtime: %v", err)
 	}
 	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
-	if len(runtimes) != 1 {
-		t.Fatalf("wireguard runtime creations after initial apply = %d, want 1", len(runtimes))
-	}
-	originalWireGuardRuntime := runtimes[0]
-	originalHTTPRuntime := manager.runtime
 
 	nextProfile := profile
 	nextProfile.Revision++
 	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
 	next := initial
 	next.FrontendURL = fmt.Sprintf("https://edge.example.test:%d", publicPort)
-	err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.HTTPRule{next}, nil, []model.WireGuardProfile{nextProfile})
-	if err == nil || !strings.Contains(err.Error(), "https frontend is not supported without certificate bindings") {
-		t.Fatalf("expected https binding error, got %v", err)
-	}
-	if !originalWireGuardRuntime.closed {
-		t.Fatal("expected close-first prepare path to close the original wireguard runtime")
-	}
-	if manager.runtime == originalHTTPRuntime {
-		t.Fatal("expected http runtime to be rebuilt after close-first wireguard rollback")
+	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.HTTPRule{next}, nil, []model.WireGuardProfile{nextProfile}); err != nil {
+		t.Fatalf("expected http reconfigure to succeed without public binding, got %v", err)
 	}
 	got, ok := manager.wireGuardRuntime.Runtime(profileID)
 	if !ok {
-		t.Fatal("expected original wireguard profile runtime to be restored")
+		t.Fatal("expected active wireguard profile runtime after reconfigure")
 	}
-	if got == originalWireGuardRuntime {
-		t.Fatal("expected restored wireguard runtime to replace the closed original runtime")
+	if got == nil {
+		t.Fatal("expected active wireguard profile runtime after reconfigure")
 	}
 	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
 }

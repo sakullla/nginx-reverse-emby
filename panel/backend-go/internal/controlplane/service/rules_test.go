@@ -276,10 +276,9 @@ func TestRuleServiceCreateWireGuardEntryDefaultsToNewDefaultProfile(t *testing.T
 	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
-		FrontendURL:              stringPtrRule("http://app.internal"),
-		Backends:                 &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
-		WireGuardEntryEnabled:    boolPtrRule(true),
-		WireGuardEntryListenPort: intPtrRule(8080),
+		FrontendURL:           stringPtrRule("http://app.internal"),
+		Backends:              &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		WireGuardEntryEnabled: boolPtrRule(true),
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -293,6 +292,9 @@ func TestRuleServiceCreateWireGuardEntryDefaultsToNewDefaultProfile(t *testing.T
 	}
 	if rule.WireGuardEntryListenHost != "10.8.0.1" {
 		t.Fatalf("Create() listen host = %q", rule.WireGuardEntryListenHost)
+	}
+	if rule.WireGuardEntryListenPort != 80 {
+		t.Fatalf("Create() listen port = %d, want 80 from frontend_url", rule.WireGuardEntryListenPort)
 	}
 	if len(store.wireGuardByAgentID["local"]) != 1 {
 		t.Fatalf("default WireGuard profiles = %+v", store.wireGuardByAgentID["local"])
@@ -338,8 +340,7 @@ func TestRuleServiceUpdateWireGuardEntryDefaultsToExistingDefaultProfile(t *test
 	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
-		WireGuardEntryEnabled:    boolPtrRule(true),
-		WireGuardEntryListenPort: intPtrRule(8081),
+		WireGuardEntryEnabled: boolPtrRule(true),
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -350,6 +351,9 @@ func TestRuleServiceUpdateWireGuardEntryDefaultsToExistingDefaultProfile(t *test
 	}
 	if rule.WireGuardEntryListenHost != "10.44.0.1" {
 		t.Fatalf("Update() listen host = %q", rule.WireGuardEntryListenHost)
+	}
+	if rule.WireGuardEntryListenPort != 80 {
+		t.Fatalf("Update() listen port = %d, want 80 from frontend_url", rule.WireGuardEntryListenPort)
 	}
 	if len(store.wireGuardByAgentID["local"]) != 1 {
 		t.Fatalf("WireGuard profile should be reused, got %+v", store.wireGuardByAgentID["local"])
@@ -377,13 +381,38 @@ func TestRuleServicePreservesAdvancedWireGuardInnerEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 || rule.WireGuardEntryListenHost != "10.8.0.1" || rule.WireGuardEntryListenPort != 8080 {
+	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 || rule.WireGuardEntryListenHost != "10.8.0.1" || rule.WireGuardEntryListenPort != 80 {
 		t.Fatalf("WireGuard HTTP entry = %+v", rule)
 	}
 
 	row := store.rulesByAgent["local"][0]
-	if !row.WireGuardEntryEnabled || row.WireGuardProfileID == nil || *row.WireGuardProfileID != 7 || row.WireGuardEntryListenHost != "10.8.0.1" || row.WireGuardEntryListenPort != 8080 {
+	if !row.WireGuardEntryEnabled || row.WireGuardProfileID == nil || *row.WireGuardProfileID != 7 || row.WireGuardEntryListenHost != "10.8.0.1" || row.WireGuardEntryListenPort != 80 {
 		t.Fatalf("persisted WireGuard HTTP entry = %+v", row)
+	}
+}
+
+func TestRuleServiceWireGuardEntryPortFollowsFrontendURL(t *testing.T) {
+	store := &fakeRuleStore{
+		agents:       []storage.AgentRow{{ID: "local", Name: "local"}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+		},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL:              stringPtr("https://app.internal:9443/path"),
+		Backends:                 &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		WireGuardEntryEnabled:    boolPtr(true),
+		WireGuardProfileID:       intPtrRule(7),
+		WireGuardEntryListenPort: intPtrRule(18096),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.WireGuardEntryListenPort != 9443 {
+		t.Fatalf("WireGuardEntryListenPort = %d, want frontend_url port 9443", rule.WireGuardEntryListenPort)
 	}
 }
 
@@ -435,8 +464,11 @@ func TestRuleServiceCreateRejectsDuplicateHTTPWireGuardInternalRoute(t *testing.
 		WireGuardEntryListenHost: stringPtrRule("10.8.0.1"),
 		WireGuardEntryListenPort: intPtrRule(8081),
 	})
-	if err != nil {
-		t.Fatalf("Create(different port) error = %v", err)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create(ignored port) error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "wireguard entry route conflicts") {
+		t.Fatalf("Create(ignored port) error = %v, want WireGuard route conflict", err)
 	}
 }
 
@@ -491,6 +523,7 @@ func TestRuleServiceUpdateRejectsDuplicateHTTPWireGuardInternalRoute(t *testing.
 	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	_, err := svc.Update(context.Background(), "local", 2, HTTPRuleInput{
+		FrontendURL:              stringPtrRule("https://public-a-alt.example.com/app"),
 		WireGuardEntryListenPort: intPtrRule(8080),
 	})
 	if !errors.Is(err, ErrInvalidArgument) {

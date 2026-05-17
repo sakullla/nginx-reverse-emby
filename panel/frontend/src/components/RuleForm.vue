@@ -329,35 +329,7 @@
             <p v-if="errors.wireguard_profile_id" class="field-error">{{ errors.wireguard_profile_id }}</p>
           </div>
 
-          <div class="form-group">
-            <label for="wireguard-entry-listen-host" class="form-label form-label--required">监听 Host</label>
-            <input
-              id="wireguard-entry-listen-host"
-              v-model="form.wireguard_entry_listen_host"
-              type="text"
-              class="input"
-              :class="{ 'input--error': errors.wireguard_entry_listen_host }"
-              placeholder="例如：10.8.0.1"
-              @input="errors.wireguard_entry_listen_host = ''; errors.submit = ''"
-            >
-            <p v-if="errors.wireguard_entry_listen_host" class="field-error">{{ errors.wireguard_entry_listen_host }}</p>
-          </div>
-
-          <div class="form-group">
-            <label for="wireguard-entry-listen-port" class="form-label form-label--required">监听 Port</label>
-            <input
-              id="wireguard-entry-listen-port"
-              v-model.number="form.wireguard_entry_listen_port"
-              type="number"
-              min="1"
-              max="65535"
-              class="input"
-              :class="{ 'input--error': errors.wireguard_entry_listen_port }"
-              placeholder="8096"
-              @input="errors.wireguard_entry_listen_port = ''; errors.submit = ''"
-            >
-            <p v-if="errors.wireguard_entry_listen_port" class="field-error">{{ errors.wireguard_entry_listen_port }}</p>
-          </div>
+          <p class="form-help form-help--inline">监听地址自动使用所选 WireGuard Profile 的第一个地址，监听端口跟随前端访问地址。</p>
         </div>
       </div>
 
@@ -637,8 +609,6 @@ const errors = ref({
   frontend_url: '',
   backend: '',
   wireguard_profile_id: '',
-  wireguard_entry_listen_host: '',
-  wireguard_entry_listen_port: '',
   submit: ''
 })
 const dragState = ref({ from: -1, to: -1 })
@@ -745,8 +715,6 @@ watch(
     errors.value.frontend_url = ''
     errors.value.backend = ''
     errors.value.wireguard_profile_id = ''
-    errors.value.wireguard_entry_listen_host = ''
-    errors.value.wireguard_entry_listen_port = ''
     errors.value.submit = ''
     activeTab.value = 'basic'
   },
@@ -802,8 +770,6 @@ function createDefaultForm() {
     custom_headers: [],
     wireguard_entry_enabled: false,
     wireguard_profile_id: '',
-    wireguard_entry_listen_host: '',
-    wireguard_entry_listen_port: '',
     relay_layers: [],
     relay_obfs: false
   }
@@ -857,8 +823,6 @@ function createFormState(initialData) {
     custom_headers: normalizeCustomHeaders(initialData.custom_headers),
     wireguard_entry_enabled: initialData.wireguard_entry_enabled === true,
     wireguard_profile_id: initialData.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
-    wireguard_entry_listen_host: initialData.wireguard_entry_listen_host || '',
-    wireguard_entry_listen_port: initialData.wireguard_entry_listen_port || '',
     relay_layers: getRelayLayers(initialData),
     relay_obfs: initialData.relay_obfs === true
   }
@@ -1026,8 +990,6 @@ function validateCustomHeaderRows() {
 function validate() {
   errors.value.submit = ''
   errors.value.wireguard_profile_id = ''
-  errors.value.wireguard_entry_listen_host = ''
-  errors.value.wireguard_entry_listen_port = ''
   shouldValidateCustomHeaders.value = true
 
   const basicValid = validateBasicFields()
@@ -1050,18 +1012,7 @@ function validateWireGuardEntry() {
     errors.value.wireguard_profile_id = '请选择当前 Agent 已启用的 WireGuard Profile'
   }
 
-  if (!String(form.value.wireguard_entry_listen_host || '').trim()) {
-    errors.value.wireguard_entry_listen_host = '请输入监听 Host'
-  }
-
-  const listenPort = Number(form.value.wireguard_entry_listen_port)
-  if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
-    errors.value.wireguard_entry_listen_port = '监听端口必须在 1-65535 之间'
-  }
-
   return !errors.value.wireguard_profile_id
-    && !errors.value.wireguard_entry_listen_host
-    && !errors.value.wireguard_entry_listen_port
 }
 
 async function handleSubmit() {
@@ -1095,8 +1046,6 @@ async function handleSubmit() {
     }
     if (form.value.wireguard_entry_enabled) {
       payload.wireguard_profile_id = selectedWireGuardProfileID.value
-      payload.wireguard_entry_listen_host = form.value.wireguard_entry_listen_host.trim()
-      payload.wireguard_entry_listen_port = Number(form.value.wireguard_entry_listen_port)
     }
 
     if (isEdit.value) {

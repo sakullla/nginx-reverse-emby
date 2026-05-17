@@ -311,11 +311,13 @@ function normalizeL4Rule(rule = {}) {
     },
     relay_obfs: rule.relay_obfs === true,
     listen_mode: listenMode,
-    proxy_entry_auth: {
-      enabled: rule.proxy_entry_auth?.enabled === true,
-      username: String(rule.proxy_entry_auth?.username || ''),
-      password: String(rule.proxy_entry_auth?.password || '')
-    },
+    proxy_entry_auth: listenMode === 'proxy'
+      ? {
+          enabled: rule.proxy_entry_auth?.enabled === true,
+          username: String(rule.proxy_entry_auth?.username || ''),
+          password: String(rule.proxy_entry_auth?.password || '')
+        }
+      : { enabled: false, username: '', password: '' },
     proxy_egress_mode: proxyEgressMode,
     proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : '',
     wireguard_egress_uri: proxyEntryMode && proxyEgressMode === 'wireguard'
@@ -367,12 +369,16 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
 function normalizeL4RulePayload(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
   const { upstream_host, upstream_port, relay_chain, ...rest } = payload
+  const listenMode = payload.listen_mode === 'wireguard' ? 'wireguard' : payload.listen_mode
   const normalizedPayload = {
     ...rest,
     backends: normalizeL4Backends(payload),
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
     }
+  }
+  if (listenMode === 'wireguard') {
+    normalizedPayload.proxy_entry_auth = { enabled: false, username: '', password: '' }
   }
   if (Array.isArray(payload.relay_layers)) {
     normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)

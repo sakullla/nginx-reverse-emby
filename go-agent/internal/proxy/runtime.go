@@ -213,28 +213,28 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 		if err := validateRelayChain(rule, relayListeners, providers.Relay); err != nil {
 			return nil, err
 		}
-		if _, ok := groups[spec.key]; !ok {
-			order = append(order, spec.key)
-			addresses[spec.key] = spec.address
-			schemes[spec.key] = spec.scheme
-			hosts[spec.key] = make(map[string]struct{})
-		}
-		groups[spec.key] = append(groups[spec.key], rule)
-		if spec.scheme == "https" {
-			if providers.TLS == nil {
-				return nil, fmt.Errorf("http rule %q: https frontend is not supported without certificate bindings", rule.FrontendURL)
+		if !rule.WireGuardEntryEnabled {
+			if _, ok := groups[spec.key]; !ok {
+				order = append(order, spec.key)
+				addresses[spec.key] = spec.address
+				schemes[spec.key] = spec.scheme
+				hosts[spec.key] = make(map[string]struct{})
 			}
-			host := HostFromRule(rule)
-			if host == "" {
-				return nil, fmt.Errorf("http rule %q: frontend_url must include a host", rule.FrontendURL)
+			groups[spec.key] = append(groups[spec.key], rule)
+			if spec.scheme == "https" {
+				if providers.TLS == nil {
+					return nil, fmt.Errorf("http rule %q: https frontend is not supported without certificate bindings", rule.FrontendURL)
+				}
+				host := HostFromRule(rule)
+				if host == "" {
+					return nil, fmt.Errorf("http rule %q: frontend_url must include a host", rule.FrontendURL)
+				}
+				if _, err := providers.TLS.ServerCertificateForHost(ctx, host); err != nil {
+					return nil, fmt.Errorf("http rule %q: %w", rule.FrontendURL, err)
+				}
+				hosts[spec.key][host] = struct{}{}
 			}
-			if _, err := providers.TLS.ServerCertificateForHost(ctx, host); err != nil {
-				return nil, fmt.Errorf("http rule %q: %w", rule.FrontendURL, err)
-			}
-			hosts[spec.key][host] = struct{}{}
-		}
-
-		if rule.WireGuardEntryEnabled {
+		} else {
 			wgSpec, err := runtimeRuleWireGuardEntrySpec(rule)
 			if err != nil {
 				return nil, err

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -1020,12 +1021,10 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 			}
 			wireGuardEntryListenHost = host
 		}
-		wireGuardEntryListenPort = fallback.WireGuardEntryListenPort
-		if input.WireGuardEntryListenPort != nil {
-			wireGuardEntryListenPort = *input.WireGuardEntryListenPort
-		}
-		if wireGuardEntryListenPort < 1 || wireGuardEntryListenPort > 65535 {
-			return HTTPRule{}, fmt.Errorf("%w: wireguard_entry_listen_port must be a valid port", ErrInvalidArgument)
+		var err error
+		wireGuardEntryListenPort, err = httpRuleFrontendListenPort(frontendURL)
+		if err != nil {
+			return HTTPRule{}, fmt.Errorf("%w: frontend_url must contain a valid http/https port", ErrInvalidArgument)
 		}
 	}
 
@@ -1197,8 +1196,36 @@ func isValidHTTPURL(raw string) bool {
 	}
 }
 
+func httpRuleFrontendListenPort(raw string) (int, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil {
+		return 0, err
+	}
+	if portText := parsed.Port(); portText != "" {
+		port, err := strconv.Atoi(portText)
+		if err != nil || port < 1 || port > 65535 {
+			return 0, err
+		}
+		return port, nil
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		return 443, nil
+	case "http":
+		return 80, nil
+	default:
+		return 0, fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+	}
+}
+
 func httpRuleFromRow(row storage.HTTPRuleRow) HTTPRule {
 	backends := parseBackends(row.BackendsJSON)
+	wireGuardEntryListenPort := row.WireGuardEntryListenPort
+	if row.WireGuardEntryEnabled {
+		if port, err := httpRuleFrontendListenPort(row.FrontendURL); err == nil {
+			wireGuardEntryListenPort = port
+		}
+	}
 
 	return HTTPRule{
 		ID:                       row.ID,
@@ -1219,7 +1246,7 @@ func httpRuleFromRow(row storage.HTTPRuleRow) HTTPRule {
 		WireGuardEntryEnabled:    row.WireGuardEntryEnabled,
 		WireGuardProfileID:       copyOptionalInt(row.WireGuardProfileID),
 		WireGuardEntryListenHost: row.WireGuardEntryListenHost,
-		WireGuardEntryListenPort: row.WireGuardEntryListenPort,
+		WireGuardEntryListenPort: wireGuardEntryListenPort,
 		Revision:                 row.Revision,
 	}
 }
@@ -1318,7 +1345,11 @@ func httpWireGuardEntryRouteKey(rule HTTPRule) (string, bool) {
 		return "", false
 	}
 	listenHost := strings.TrimSpace(rule.WireGuardEntryListenHost)
-	if listenHost == "" || rule.WireGuardEntryListenPort < 1 || rule.WireGuardEntryListenPort > 65535 {
+	listenPort, err := httpRuleFrontendListenPort(rule.FrontendURL)
+	if err != nil && rule.WireGuardEntryListenPort >= 1 && rule.WireGuardEntryListenPort <= 65535 {
+		listenPort = rule.WireGuardEntryListenPort
+	}
+	if listenHost == "" || listenPort < 1 || listenPort > 65535 {
 		return "", false
 	}
 	parsed, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
@@ -1330,7 +1361,7 @@ func httpWireGuardEntryRouteKey(rule HTTPRule) (string, bool) {
 		strings.TrimSpace(rule.AgentID),
 		*rule.WireGuardProfileID,
 		strings.ToLower(listenHost),
-		rule.WireGuardEntryListenPort,
+		listenPort,
 		normalizeRuleFrontendPath(parsed.Path),
 	), true
 }

@@ -1745,6 +1745,12 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 		if !row.Enabled {
 			continue
 		}
+		wireGuardEntryListenPort := row.WireGuardEntryListenPort
+		if row.WireGuardEntryEnabled {
+			if port, ok := snapshotHTTPFrontendListenPort(row.FrontendURL); ok {
+				wireGuardEntryListenPort = port
+			}
+		}
 		rules = append(rules, HTTPRule{
 			ID:                       row.ID,
 			AgentID:                  row.AgentID,
@@ -1758,13 +1764,32 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 			WireGuardEntryEnabled:    row.WireGuardEntryEnabled,
 			WireGuardProfileID:       copyOptionalInt(row.WireGuardProfileID),
 			WireGuardEntryListenHost: row.WireGuardEntryListenHost,
-			WireGuardEntryListenPort: row.WireGuardEntryListenPort,
+			WireGuardEntryListenPort: wireGuardEntryListenPort,
 			RelayLayers:              parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:                row.RelayObfs,
 			Revision:                 int64(row.Revision),
 		})
 	}
 	return rules
+}
+
+func snapshotHTTPFrontendListenPort(raw string) (int, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil {
+		return 0, false
+	}
+	if portText := parsed.Port(); portText != "" {
+		port, err := strconv.Atoi(portText)
+		return port, err == nil && port >= 1 && port <= 65535
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		return 443, true
+	case "http":
+		return 80, true
+	default:
+		return 0, false
+	}
 }
 
 func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {

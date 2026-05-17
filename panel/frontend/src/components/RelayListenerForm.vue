@@ -59,14 +59,14 @@
     </div>
 
     <div class='form-group'>
-      <label class='form-label'>公网入口（可选）</label>
+      <label class='form-label'>{{ publicEndpointLabel }}</label>
       <input
         v-model='form.public_endpoint'
         class='input'
         :class="{ 'input--error': errors.public_endpoint }"
-        placeholder='relay.example.com:7443'
+        :placeholder='publicEndpointPlaceholder'
       >
-      <p class='form-hint'>支持空值、host、host:port。留空时由后端使用 bind/listen 默认值。</p>
+      <p class='form-hint'>{{ publicEndpointHint }}</p>
       <p v-if='errors.public_endpoint' class='form-error'>{{ errors.public_endpoint }}</p>
     </div>
 
@@ -78,7 +78,7 @@
           <option value='quic'>QUIC</option>
           <option value='wireguard'>WireGuard</option>
         </select>
-        <p class='form-hint'>默认使用 TLS/TCP；如需更低握手耗时和更好的中继传输表现，可改为 QUIC。</p>
+        <p class='form-hint'>{{ transportModeHint }}</p>
       </div>
 
       <div v-if='form.transport_mode === "tls_tcp"' class='form-group'>
@@ -286,6 +286,30 @@ const selectedWireGuardProfileID = computed(() => {
 })
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRelayListener.isPending.value || updateRelayListener.isPending.value)
+const publicEndpointLabel = computed(() => (
+  form.value.transport_mode === 'wireguard'
+    ? 'WireGuard Profile Endpoint（可选）'
+    : '公网入口（可选）'
+))
+const publicEndpointPlaceholder = computed(() => (
+  form.value.transport_mode === 'wireguard'
+    ? 'relay.example.com:51820'
+    : 'relay.example.com:7443'
+))
+const publicEndpointHint = computed(() => (
+  form.value.transport_mode === 'wireguard'
+    ? '填写所选 Profile 的公网 UDP endpoint；留空时由默认 WireGuard Profile 提供。'
+    : '支持空值、host、host:port。留空时由后端使用 bind/listen 默认值。'
+))
+const transportModeHint = computed(() => {
+  if (form.value.transport_mode === 'wireguard') {
+    return 'WireGuard 使用 Profile Endpoint 作为公网 UDP 入口，Relay 监听地址由系统放在隧道内部。'
+  }
+  if (form.value.transport_mode === 'quic') {
+    return 'QUIC 可降低握手耗时；需要兼容 TLS/TCP 时可启用回退。'
+  }
+  return '默认使用 TLS/TCP；如需更低握手耗时和更好的中继传输表现，可改为 QUIC。'
+})
 
 const form = ref(createDefaultForm())
 const showAdvanced = ref(false)
