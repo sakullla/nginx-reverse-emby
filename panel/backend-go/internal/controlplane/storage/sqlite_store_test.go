@@ -2263,6 +2263,102 @@ func TestStoreLoadAgentSnapshotDoesNotRecoverRemoteWireGuardProfilesByNumericID(
 	}
 }
 
+func TestStoreLoadAgentSnapshotDoesNotIncludeLocalWireGuardProfileForRemoteRelayNumericCollision(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "wg-collision-target",
+		Name:             "wg-collision-target",
+		AgentToken:       "token-wg-collision-target",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(target) error = %v", err)
+	}
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "wg-collision-peer",
+		Name:             "wg-collision-peer",
+		AgentToken:       "token-wg-collision-peer",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(peer) error = %v", err)
+	}
+
+	profileID := 88
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-collision-target", []WireGuardProfileRow{{
+		ID:            profileID,
+		AgentID:       "wg-collision-target",
+		Name:          "target-unrelated",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "target-private-key",
+		ListenPort:    51888,
+		AddressesJSON: `["10.88.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      8,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(target) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "wg-collision-peer", []RelayListenerRow{{
+		ID:                 881,
+		AgentID:            "wg-collision-peer",
+		Name:               "remote-wireguard-relay",
+		ListenHost:         "10.88.0.2",
+		BindHostsJSON:      `["10.88.0.2"]`,
+		ListenPort:         7443,
+		PublicHost:         "wg-collision-peer.example.com",
+		PublicPort:         7443,
+		Enabled:            true,
+		TransportMode:      "wireguard",
+		WireGuardProfileID: &profileID,
+		Revision:           9,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(peer) error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "wg-collision-target", []HTTPRuleRow{{
+		ID:                882,
+		AgentID:           "wg-collision-target",
+		FrontendURL:       "https://wg-collision-target.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		RelayLayersJSON:   `[[881]]`,
+		Enabled:           true,
+		Revision:          10,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-collision-target", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.RelayListeners) != 1 || snapshot.RelayListeners[0].ID != 881 {
+		t.Fatalf("RelayListeners = %+v", snapshot.RelayListeners)
+	}
+	if snapshot.RelayListeners[0].WireGuardProfileID == nil || *snapshot.RelayListeners[0].WireGuardProfileID != profileID {
+		t.Fatalf("Relay listener WireGuardProfileID = %v", snapshot.RelayListeners[0].WireGuardProfileID)
+	}
+	if len(snapshot.WireGuardProfiles) != 0 {
+		t.Fatalf("WireGuardProfiles = %+v, want no local profile from remote relay numeric collision", snapshot.WireGuardProfiles)
+	}
+	for _, profile := range snapshot.WireGuardProfiles {
+		if profile.PrivateKey == "target-private-key" {
+			t.Fatalf("leaked local WireGuard private key via remote relay numeric collision: %+v", profile)
+		}
+	}
+}
+
 func TestStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

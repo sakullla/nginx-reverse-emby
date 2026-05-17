@@ -240,7 +240,7 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
-	wireGuardRows = filterWireGuardProfilesForSnapshotGraph(wireGuardRows, httpRows, l4Rows, relayRows)
+	wireGuardRows = filterWireGuardProfilesForSnapshotGraph(resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows)
 	supportsWireGuard, err := s.agentSupportsWireGuardSnapshots(ctx, resolvedAgentID)
 	if err != nil {
 		return Snapshot{}, err
@@ -1106,6 +1106,7 @@ func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID st
 }
 
 func filterWireGuardProfilesForSnapshotGraph(
+	agentID string,
 	profiles []WireGuardProfileRow,
 	httpRows []HTTPRuleRow,
 	l4Rows []L4RuleRow,
@@ -1115,7 +1116,7 @@ func filterWireGuardProfilesForSnapshotGraph(
 		return profiles
 	}
 
-	referenced := referencedWireGuardProfileIDs(httpRows, l4Rows, relayRows)
+	referenced := referencedWireGuardProfileIDs(agentID, httpRows, l4Rows, relayRows)
 	filtered := make([]WireGuardProfileRow, 0, len(profiles))
 	for _, row := range profiles {
 		if _, ok := referenced[row.ID]; ok {
@@ -1126,6 +1127,7 @@ func filterWireGuardProfilesForSnapshotGraph(
 }
 
 func referencedWireGuardProfileIDs(
+	agentID string,
 	httpRows []HTTPRuleRow,
 	l4Rows []L4RuleRow,
 	relayRows []RelayListenerRow,
@@ -1154,7 +1156,9 @@ func referencedWireGuardProfileIDs(
 		}
 	}
 	for _, row := range relayRows {
-		if !row.Enabled || !strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") {
+		if row.AgentID != agentID ||
+			!row.Enabled ||
+			!strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") {
 			continue
 		}
 		add(row.WireGuardProfileID)
