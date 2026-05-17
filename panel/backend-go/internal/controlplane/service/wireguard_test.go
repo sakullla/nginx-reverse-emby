@@ -265,6 +265,63 @@ func TestWireGuardProfileCreateAllocatesNextAvailableAddress(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileEnsureDefaultAllocatesNextGlobalAddressAcrossAgents(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "remote",
+		Name:             "remote",
+		AgentToken:       "token-remote",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(remote) error = %v", err)
+	}
+
+	remoteProfile, err := svc.EnsureDefault(ctx, "remote")
+	if err != nil {
+		t.Fatalf("EnsureDefault(remote) error = %v", err)
+	}
+	if len(remoteProfile.Addresses) != 1 || remoteProfile.Addresses[0] != "10.8.0.1/24" {
+		t.Fatalf("EnsureDefault(remote) addresses = %+v, want allocated 10.8.0.1/24", remoteProfile.Addresses)
+	}
+
+	localProfile, err := svc.EnsureDefault(ctx, "local")
+	if err != nil {
+		t.Fatalf("EnsureDefault(local) error = %v", err)
+	}
+	if len(localProfile.Addresses) != 1 || localProfile.Addresses[0] != "10.8.1.1/24" {
+		t.Fatalf("EnsureDefault(local) addresses = %+v, want allocated 10.8.1.1/24", localProfile.Addresses)
+	}
+}
+
+func TestWireGuardProfileCreateAllocatesNextGlobalAddressAcrossAgentsWhenOmitted(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "remote",
+		Name:             "remote",
+		AgentToken:       "token-remote",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(remote) error = %v", err)
+	}
+	if _, err := svc.EnsureDefault(ctx, "remote"); err != nil {
+		t.Fatalf("EnsureDefault(remote) error = %v", err)
+	}
+
+	input := testWireGuardProfileInput()
+	input.Addresses = nil
+	created, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(created.Addresses) != 1 || created.Addresses[0] != "10.8.1.1/24" {
+		t.Fatalf("Create() addresses = %+v, want allocated 10.8.1.1/24", created.Addresses)
+	}
+}
+
 func TestWireGuardProfileCreateAllowsEmptyPeersForGeneratedClientBootstrap(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)

@@ -3248,6 +3248,84 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByL4Rules(t *t
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentL4RuleWithoutBackends(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "wg-transparent-agent",
+		Name:             "wg-transparent-agent",
+		AgentToken:       "token-wg-transparent-agent",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	profileID := 93
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-transparent-agent", []WireGuardProfileRow{{
+		ID:            profileID,
+		AgentID:       "wg-transparent-agent",
+		Name:          "transparent-local-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "transparent-local-private-key",
+		ListenPort:    51820,
+		AddressesJSON: `["10.93.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      21,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "wg-transparent-agent", []L4RuleRow{{
+		ID:                   74,
+		AgentID:              "wg-transparent-agent",
+		Name:                 "wg-transparent",
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           18080,
+		BackendsJSON:         `[]`,
+		LoadBalancingJSON:    `{}`,
+		TuningJSON:           `{}`,
+		RelayChainJSON:       `[]`,
+		RelayLayersJSON:      `[[1],[2]]`,
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		Enabled:              true,
+		Revision:             22,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-transparent-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	rule := snapshot.L4Rules[0]
+	if rule.ID != 74 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" {
+		t.Fatalf("L4Rules[0] = %+v", rule)
+	}
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != profileID {
+		t.Fatalf("WireGuardProfileID = %v, want %d", rule.WireGuardProfileID, profileID)
+	}
+	if len(rule.Backends) != 0 {
+		t.Fatalf("Backends = %+v, want empty transparent target list", rule.Backends)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByHTTPRules(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

@@ -1724,8 +1724,16 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 	if listenMode == "proxy" {
 		return protocol == "tcp"
 	}
-	if listenMode == "wireguard" && strings.TrimSpace(row.ProxyEgressMode) != "" {
-		return protocol == "tcp" && row.WireGuardProfileID != nil
+	if listenMode == "wireguard" {
+		if row.WireGuardProfileID == nil {
+			return false
+		}
+		if strings.TrimSpace(row.ProxyEgressMode) != "" {
+			return protocol == "tcp"
+		}
+		if normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode) == "transparent" {
+			return protocol == "tcp"
+		}
 	}
 
 	return len(parseL4Backends(row.BackendsJSON)) > 0

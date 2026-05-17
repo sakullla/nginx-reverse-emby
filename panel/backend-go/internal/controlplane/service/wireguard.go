@@ -152,6 +152,10 @@ func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID str
 	if err != nil {
 		return WireGuardProfile{}, err
 	}
+	allRows, err := s.listAllWireGuardProfiles(ctx)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
 	for _, row := range rows {
 		profile := wireGuardProfileFromRow(row)
 		if profile.Enabled && hasTag(profile.Tags, "system:default-wireguard") {
@@ -168,7 +172,7 @@ func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID str
 		Mode:       "generic_wireguard",
 		PrivateKey: privateKey,
 		ListenPort: listenPort,
-		Addresses:  []string{allocateWireGuardProfileAddress(rows)},
+		Addresses:  []string{allocateWireGuardProfileAddress(allRows)},
 		MTU:        1280,
 		Enabled:    wireGuardBoolPtr(true),
 		Tags:       []string{"system:default-wireguard"},
@@ -188,6 +192,10 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	if err != nil {
 		return WireGuardProfile{}, err
 	}
+	allRows, err := s.listAllWireGuardProfiles(ctx)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
 
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
@@ -197,7 +205,7 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	maxRevision := maxWireGuardProfileRevision(rows)
 	allocatedID := allocator.AllocateRuleID(input.ID)
 	if len(normalizeStringList(input.Addresses)) == 0 {
-		input.Addresses = []string{allocateWireGuardProfileAddress(rows)}
+		input.Addresses = []string{allocateWireGuardProfileAddress(allRows)}
 	}
 	profile, err := normalizeWireGuardProfileInput(input, WireGuardProfile{}, allocatedID)
 	if err != nil {
@@ -833,6 +841,26 @@ func allocateWireGuardProfileAddress(rows []storage.WireGuardProfileRow) string 
 		}
 	}
 	return "10.8.0.1/24"
+}
+
+func (s *wireGuardProfileService) listAllWireGuardProfiles(ctx context.Context) ([]storage.WireGuardProfileRow, error) {
+	agentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]storage.WireGuardProfileRow, 0)
+	for _, agentID := range agentIDs {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			continue
+		}
+		agentRows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
 }
 
 func hasTag(tags []string, target string) bool {
