@@ -1,6 +1,7 @@
 package l4
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -110,6 +111,17 @@ func (s *Server) startUDPListener(rule model.L4Rule) error {
 	return nil
 }
 
+func (s *Server) HandleWireGuardUDPFlow(ctx context.Context, source string, destination string, payload []byte, respond func([]byte) error) {
+	if s == nil || respond == nil {
+		return
+	}
+	rule, ok := s.matchWireGuardTransparentUDPRule(destination)
+	if !ok {
+		return
+	}
+	s.forwardTransparentUDPPacket(ctx, rule, source, destination, payload, respond)
+}
+
 func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, error) {
 	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
 		runtime, err := s.wireGuardRuntime(rule)
@@ -131,6 +143,38 @@ func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, erro
 		return nil, err
 	}
 	return net.ListenUDP("udp", addr)
+}
+
+func (s *Server) matchWireGuardTransparentUDPRule(destination string) (model.L4Rule, bool) {
+	if s == nil {
+		return model.L4Rule{}, false
+	}
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(destination))
+	if err != nil {
+		return model.L4Rule{}, false
+	}
+	port, err := net.LookupPort("udp", portText)
+	if err != nil {
+		return model.L4Rule{}, false
+	}
+	for _, rule := range s.rules {
+		if !strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent") {
+			continue
+		}
+		if rule.ListenPort != port {
+			continue
+		}
+		if strings.TrimSpace(host) == "" || strings.EqualFold(strings.TrimSpace(rule.ListenHost), "0.0.0.0") || strings.EqualFold(strings.TrimSpace(rule.ListenHost), "::") || strings.EqualFold(strings.TrimSpace(rule.ListenHost), host) {
+			return rule, true
+		}
+	}
+	return model.L4Rule{}, false
 }
 
 func (s *Server) udpReadLoop(conn udpListener, rule model.L4Rule) {
@@ -183,6 +227,31 @@ func (s *Server) proxyUDPPacket(listener udpListener, rule model.L4Rule, payload
 	session.trafficRecorder.Add(int64(len(payload)), 0)
 	session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
 	s.markUDPSessionWrite(session.key)
+}
+
+func (s *Server) forwardTransparentUDPPacket(ctx context.Context, rule model.L4Rule, source string, destination string, payload []byte, respond func([]byte) error) {
+	upstream, candidate, err := s.dialTransparentUDPUpstream(rule, destination)
+	if err != nil {
+		return
+	}
+	defer upstream.Close()
+
+	timeout := s.udpReplyTimeoutForCandidate(candidate)
+	_ = upstream.SetWriteDeadline(s.now().Add(timeout))
+	if err := upstream.WritePacket(payload); err != nil {
+		s.observeCandidateFailure(candidate)
+		return
+	}
+	_ = upstream.SetReadDeadline(s.now().Add(timeout))
+	reply, err := upstream.ReadPacket()
+	if err != nil {
+		s.observeCandidateFailure(candidate)
+		return
+	}
+	s.observeCandidateSuccess(candidate, 0)
+	_ = ctx
+	_ = source
+	_ = respond(reply)
 }
 
 func (s *Server) sessionForPeer(rule model.L4Rule, listener udpListener, peer *net.UDPAddr) (*udpSession, error) {
@@ -253,7 +322,36 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener udpListener, peer *n
 	return session, nil
 }
 
+func (s *Server) dialTransparentUDPUpstream(rule model.L4Rule, target string) (udpUpstream, l4Candidate, error) {
+	candidate := l4Candidate{
+		address:       target,
+		directUDPPath: !ruleUsesRelay(rule),
+	}
+	if !ruleUsesRelay(rule) {
+		addr, err := net.ResolveUDPAddr("udp", target)
+		if err != nil {
+			return nil, l4Candidate{}, err
+		}
+		upstream, err := net.DialUDP("udp", nil, addr)
+		if err != nil {
+			return nil, l4Candidate{}, err
+		}
+		return &directUDPUpstream{conn: upstream}, candidate, nil
+	}
+	upstream, err := s.dialRelayPath("udp", target, rule, relay.DialOptions{
+		TrafficClass: upstream.TrafficClassBulk,
+	})
+	if err != nil {
+		return nil, l4Candidate{}, err
+	}
+	return &relayUDPUpstream{conn: upstream}, candidate, nil
+}
+
 func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, error) {
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
+		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent") {
+		return nil, l4Candidate{}, fmt.Errorf("transparent wireguard udp requires original destination flow handling")
+	}
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
 		return nil, l4Candidate{}, err

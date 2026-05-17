@@ -40,9 +40,6 @@ func ValidateRule(rule Rule) error {
 	if listenMode == "wireguard" && wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
 		return fmt.Errorf("wireguard_inbound_mode must be address or transparent")
 	}
-	if listenMode == "wireguard" && wireGuardInboundMode == "transparent" && protocol == "udp" {
-		return fmt.Errorf("wireguard transparent inbound does not support udp dynamic destination routing")
-	}
 	if listenMode == "wireguard" && !hasWireGuardProfile(rule) {
 		return fmt.Errorf("wireguard_profile_id is required for wireguard listen mode")
 	}
@@ -76,7 +73,7 @@ func isWireGuardTransparentForwardRule(rule Rule) bool {
 	if protocol == "" {
 		protocol = "tcp"
 	}
-	return protocol == "tcp" &&
+	return (protocol == "tcp" || protocol == "udp") &&
 		strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
 		wireGuardInboundMode(rule) == "transparent" &&
 		!isProxyEntryRule(rule)

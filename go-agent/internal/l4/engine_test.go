@@ -163,7 +163,7 @@ func TestValidateRuleAcceptsWireGuardTransparentTCPWithoutBackends(t *testing.T)
 	}
 }
 
-func TestValidateRuleRejectsWireGuardTransparentUDP(t *testing.T) {
+func TestValidateRuleAcceptsWireGuardTransparentUDPWithoutBackends(t *testing.T) {
 	profileID := 7
 	err := ValidateRule(Rule{
 		Protocol:             "udp",
@@ -172,11 +172,8 @@ func TestValidateRuleRejectsWireGuardTransparentUDP(t *testing.T) {
 		ListenMode:           "wireguard",
 		WireGuardInboundMode: "transparent",
 		WireGuardProfileID:   &profileID,
-		Backends: []model.L4Backend{
-			{Host: "127.0.0.1", Port: 9001},
-		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "transparent") || !strings.Contains(err.Error(), "udp") {
+	if err != nil {
 		t.Fatalf("ValidateRule() error = %v", err)
 	}
 }
