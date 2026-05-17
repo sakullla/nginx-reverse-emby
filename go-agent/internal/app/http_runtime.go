@@ -179,6 +179,9 @@ func (m *httpRuntimeManager) rollbackWireGuardAndRestorePreviousRuntimeLocked(ct
 		(*transaction).Rollback()
 		*transaction = nil
 	}
+	if !rebuild && m.runtime != nil {
+		return nil
+	}
 	return m.restorePreviousRuntimeLocked(ctx, rebuild)
 }
 

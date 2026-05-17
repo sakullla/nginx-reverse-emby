@@ -1051,9 +1051,14 @@ func TestHTTPRuntimeManagerRollsBackPreparedWireGuardProfilesWhenBindingKeysFail
 	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
 	next := initial
 	next.FrontendURL = fmt.Sprintf("https://edge.example.test:%d", publicPort)
-	err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.HTTPRule{next}, nil, []model.WireGuardProfile{nextProfile})
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	err := manager.ApplyWithRelayAndWireGuardProfiles(cancelledCtx, []model.HTTPRule{next}, nil, []model.WireGuardProfile{nextProfile})
 	if err == nil || !strings.Contains(err.Error(), "https frontend is not supported without certificate bindings") {
 		t.Fatalf("expected https binding error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "restore failed") {
+		t.Fatalf("expected no-close-first rollback to preserve existing runtime without restore, got %v", err)
 	}
 	if manager.runtime != originalHTTPRuntime {
 		t.Fatal("expected existing http runtime to be preserved")
