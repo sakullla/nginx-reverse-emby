@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -283,6 +284,57 @@ func (d Dependencies) handleWireGuardProfileClientConfig(w http.ResponseWriter, 
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="wireguard-client-%d.conf"`, clientID))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(configText))
+}
+
+func (d Dependencies) handleWireGuardProfileClientURI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	agentID := r.PathValue("agentID")
+	profileID, ok := parseWireGuardProfilePathID(w, r.PathValue("profileID"))
+	if !ok {
+		return
+	}
+	clientID, ok := parseWireGuardClientPathID(w, r.PathValue("clientID"))
+	if !ok {
+		return
+	}
+	reserved, err := parseWireGuardClientURIReserved(r.URL.Query().Get("reserved"))
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	uriText, err := d.WireGuardClientService.ClientURI(r.Context(), agentID, profileID, clientID, reserved)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(uriText))
+}
+
+func parseWireGuardClientURIReserved(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > 3 {
+		return nil, fmt.Errorf("%w: reserved accepts at most 3 bytes", service.ErrInvalidArgument)
+	}
+	reserved := make([]byte, 0, len(parts))
+	for _, part := range parts {
+		value, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || value < 0 || value > 255 {
+			return nil, fmt.Errorf("%w: reserved bytes must be between 0 and 255", service.ErrInvalidArgument)
+		}
+		reserved = append(reserved, byte(value))
+	}
+	return reserved, nil
 }
 
 func parseWireGuardProfilePathID(w http.ResponseWriter, raw string) (int, bool) {

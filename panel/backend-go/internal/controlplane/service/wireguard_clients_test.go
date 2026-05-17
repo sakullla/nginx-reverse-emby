@@ -43,8 +43,8 @@ func TestWireGuardClientCreateAllocatesAddressAndGeneratesConfig(t *testing.T) {
 	if !strings.Contains(configText, "Address = 10.8.0.2/32") {
 		t.Fatalf("ClientConfig() missing address:\n%s", configText)
 	}
-	if !strings.Contains(configText, "AllowedIPs = 10.8.0.1/24") {
-		t.Fatalf("ClientConfig() missing profile allowed IPs:\n%s", configText)
+	if !strings.Contains(configText, "AllowedIPs = 0.0.0.0/0, ::/0") {
+		t.Fatalf("ClientConfig() missing full tunnel allowed IPs:\n%s", configText)
 	}
 	if strings.Contains(configText, "AllowedIPs = 10.8.0.2/32") {
 		t.Fatalf("ClientConfig() used client address for allowed IPs:\n%s", configText)
@@ -92,7 +92,7 @@ func TestWireGuardClientCreateHonorsExplicitAllowedIPs(t *testing.T) {
 	}
 }
 
-func TestWireGuardClientCreateDefaultsBlankAllowedIPsToProfileAddresses(t *testing.T) {
+func TestWireGuardClientConfigDefaultsAllowedIPsToFullTunnel(t *testing.T) {
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -117,8 +117,35 @@ func TestWireGuardClientCreateDefaultsBlankAllowedIPsToProfileAddresses(t *testi
 	if err != nil {
 		t.Fatalf("ClientConfig() error = %v", err)
 	}
-	if !strings.Contains(configText, "AllowedIPs = 10.8.0.1/24") {
-		t.Fatalf("ClientConfig() missing profile allowed IPs:\n%s", configText)
+	if !strings.Contains(configText, "AllowedIPs = 0.0.0.0/0, ::/0") {
+		t.Fatalf("ClientConfig() missing full tunnel allowed IPs:\n%s", configText)
+	}
+}
+
+func TestWireGuardClientURIIncludesReservedWhenPresent(t *testing.T) {
+	ctx := context.Background()
+	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+	uri, err := clientSvc.ClientURI(ctx, "local", profile.ID, client.ID, []byte{1, 2, 3})
+	if err != nil {
+		t.Fatalf("ClientURI() error = %v", err)
+	}
+	for _, want := range []string{"wireguard://", "publickey=", "address=", "allowedips=0.0.0.0%2F0%2C%3A%3A%2F0", "reserved=1%2C2%2C3"} {
+		if !strings.Contains(uri, want) {
+			t.Fatalf("uri %q missing %q", uri, want)
+		}
 	}
 }
 

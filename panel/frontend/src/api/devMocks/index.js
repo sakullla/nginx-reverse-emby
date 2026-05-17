@@ -47,6 +47,7 @@ export {
   updateWireGuardClient,
   deleteWireGuardClient,
   fetchWireGuardClientConfig,
+  fetchWireGuardClientURI,
   parseWireGuardURI,
   importWireGuardURIProfile,
   fetchVersionPolicies,

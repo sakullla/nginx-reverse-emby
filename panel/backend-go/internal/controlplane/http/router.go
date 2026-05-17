@@ -88,6 +88,7 @@ type WireGuardClientService interface {
 	UpdateClient(context.Context, string, int, int, service.WireGuardClientInput) (service.WireGuardClient, error)
 	DeleteClient(context.Context, string, int, int) (service.WireGuardClient, error)
 	ClientConfig(context.Context, string, int, int) (string, error)
+	ClientURI(context.Context, string, int, int, []byte) (string, error)
 }
 
 type CertificateService interface {
@@ -233,6 +234,10 @@ func (unavailableWireGuardClientService) ClientConfig(context.Context, string, i
 	return "", fmt.Errorf("wireguard client service unavailable")
 }
 
+func (unavailableWireGuardClientService) ClientURI(context.Context, string, int, int, []byte) (string, error) {
+	return "", fmt.Errorf("wireguard client service unavailable")
+}
+
 func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
 	return a.agent.ListHTTPRules(ctx, agentID)
 }
@@ -310,8 +315,9 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfiles)))
 		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/import-uri", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileImportURI)))
 		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClients)))
-		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClient)))
 		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}/config", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClientConfig)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}/uri", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClientURI)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClient)))
 		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfile)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificates)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificate)))

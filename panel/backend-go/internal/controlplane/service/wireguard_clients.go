@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -119,7 +121,7 @@ func (s *wireGuardClientService) CreateClient(ctx context.Context, agentID strin
 		}
 		allowedIPs := normalizeStringList(input.AllowedIPs)
 		if len(allowedIPs) == 0 {
-			allowedIPs = append([]string(nil), profile.Addresses...)
+			allowedIPs = []string{"0.0.0.0/0", "::/0"}
 		}
 		if err := validateWireGuardPrefixes(allowedIPs, "allowed_ips"); err != nil {
 			return state, err
@@ -365,6 +367,71 @@ func (s *wireGuardClientService) ClientConfig(ctx context.Context, agentID strin
 	builder.WriteString(strings.Join(parseStringArray(client.AllowedIPsJSON), ", "))
 	builder.WriteString("\n")
 	return builder.String(), nil
+}
+
+func (s *wireGuardClientService) ClientURI(ctx context.Context, agentID string, profileID int, clientID int, reserved []byte) (string, error) {
+	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return "", err
+	}
+	if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+		return "", err
+	}
+	_, profile, _, err := s.loadProfile(ctx, resolvedID, profileID)
+	if err != nil {
+		return "", err
+	}
+	clients, err := s.store.ListWireGuardClients(ctx, resolvedID, profileID)
+	if err != nil {
+		return "", err
+	}
+	var client storage.WireGuardClientRow
+	found := false
+	for _, row := range clients {
+		if row.ID == clientID {
+			client = row
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", ErrWireGuardClientNotFound
+	}
+	endpoint := strings.TrimSpace(profile.PublicEndpoint)
+	if endpoint == "" {
+		return "", fmt.Errorf("%w: wireguard profile public endpoint is required", ErrInvalidArgument)
+	}
+	serverPublicKey, err := wireGuardPublicKeyFromPrivateKey(profile.PrivateKey)
+	if err != nil {
+		return "", fmt.Errorf("%w: profile private_key must be a WireGuard key", ErrInvalidArgument)
+	}
+	if len(reserved) > 3 {
+		return "", fmt.Errorf("%w: reserved accepts at most 3 bytes", ErrInvalidArgument)
+	}
+
+	u := url.URL{Scheme: "wireguard", Host: endpoint, User: url.User(client.PrivateKey), Fragment: client.Name}
+	q := u.Query()
+	q.Set("publickey", serverPublicKey)
+	if strings.TrimSpace(client.PresharedKey) != "" {
+		q.Set("psk", client.PresharedKey)
+	}
+	q.Set("address", client.Address)
+	q.Set("allowedips", strings.Join(parseStringArray(client.AllowedIPsJSON), ","))
+	if dns := parseStringArray(client.DNSJSON); len(dns) > 0 {
+		q.Set("dns", strings.Join(dns, ","))
+	}
+	if profile.MTU > 0 {
+		q.Set("mtu", strconv.Itoa(profile.MTU))
+	}
+	if len(reserved) > 0 {
+		parts := make([]string, 0, len(reserved))
+		for _, b := range reserved {
+			parts = append(parts, strconv.Itoa(int(b)))
+		}
+		q.Set("reserved", strings.Join(parts, ","))
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 func (s *wireGuardClientService) loadProfile(ctx context.Context, agentID string, profileID int) ([]storage.WireGuardProfileRow, WireGuardProfile, int, error) {

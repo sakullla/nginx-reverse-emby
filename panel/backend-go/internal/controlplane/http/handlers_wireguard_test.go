@@ -397,6 +397,11 @@ func TestWireGuardProfileClientSensitiveRoutesRequirePanelToken(t *testing.T) {
 			method: http.MethodGet,
 			path:   basePath + "/" + strconv.Itoa(client.ID) + "/config",
 		},
+		{
+			name:   "uri",
+			method: http.MethodGet,
+			path:   basePath + "/" + strconv.Itoa(client.ID) + "/uri",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
@@ -407,6 +412,41 @@ func TestWireGuardProfileClientSensitiveRoutesRequirePanelToken(t *testing.T) {
 				t.Fatalf("%s %s without token = %d, body=%s", tc.method, tc.path, resp.Code, resp.Body.String())
 			}
 		})
+	}
+}
+
+func TestWireGuardClientURIEndpointReturnsText(t *testing.T) {
+	router, cleanup := newWireGuardHTTPTestRouter(t)
+	defer cleanup()
+
+	profile := createWireGuardHTTPClientProfile(t, router, "/panel-api", 51820)
+	basePath := "/panel-api/agents/local/wireguard-profiles/" + strconv.Itoa(profile.ID) + "/clients"
+
+	createReq := httptest.NewRequest(http.MethodPost, basePath, bytes.NewBufferString(`{"name":"phone"}`))
+	createReq.Header.Set("X-Panel-Token", "secret")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST client = %d, body=%s", createResp.Code, createResp.Body.String())
+	}
+	client := decodeWireGuardHTTPClientResponse(t, createResp.Body.Bytes())
+
+	uriReq := httptest.NewRequest(http.MethodGet, basePath+"/"+strconv.Itoa(client.ID)+"/uri?reserved=1,2,3", nil)
+	uriReq.Header.Set("X-Panel-Token", "secret")
+	uriResp := httptest.NewRecorder()
+	router.ServeHTTP(uriResp, uriReq)
+	if uriResp.Code != http.StatusOK {
+		t.Fatalf("GET client uri = %d, body=%s", uriResp.Code, uriResp.Body.String())
+	}
+	if got := uriResp.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
+	}
+	body := strings.TrimSpace(uriResp.Body.String())
+	for _, want := range []string{"wireguard://", "publickey=", "address=", "allowedips=0.0.0.0%2F0%2C%3A%3A%2F0", "reserved=1%2C2%2C3"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("uri %q missing %q", body, want)
+		}
 	}
 }
 

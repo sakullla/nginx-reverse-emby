@@ -58,6 +58,7 @@ export const createWireGuardClient = (...args) => call('createWireGuardClient', 
 export const updateWireGuardClient = (...args) => call('updateWireGuardClient', ...args)
 export const deleteWireGuardClient = (...args) => call('deleteWireGuardClient', ...args)
 export const fetchWireGuardClientConfig = (...args) => call('fetchWireGuardClientConfig', ...args)
+export const fetchWireGuardClientURI = (...args) => call('fetchWireGuardClientURI', ...args)
 export const parseWireGuardURI = (...args) => call('parseWireGuardURI', ...args)
 export const importWireGuardURIProfile = (...args) => call('importWireGuardURIProfile', ...args)
 export const fetchVersionPolicies = (...args) => call('fetchVersionPolicies', ...args)

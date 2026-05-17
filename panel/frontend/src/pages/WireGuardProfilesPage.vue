@@ -102,6 +102,7 @@
               {{ client.enabled === false ? '启用' : '停用' }}
             </button>
             <button class="btn btn--secondary btn--sm" :disabled="isClientRowPending(client)" @click="downloadClientConfig(client)">下载配置</button>
+            <button class="btn btn--secondary btn--sm" :disabled="isClientRowPending(client)" @click="copyClientURI(client)">复制 URI</button>
             <button class="btn btn--danger btn--sm" :disabled="isClientRowPending(client)" @click="deleteWireGuardClientRow(client)">删除</button>
           </div>
         </div>
@@ -290,7 +291,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
-import { fetchWireGuardClients, fetchWireGuardClientConfig } from '../api'
+import { fetchWireGuardClients, fetchWireGuardClientConfig, fetchWireGuardClientURI } from '../api'
 import { messageStore } from '../stores/messages'
 import {
   useWireGuardProfiles,
@@ -607,6 +608,18 @@ async function downloadClientConfig(client) {
   } finally {
     if (link?.parentNode) link.remove()
     if (url) URL.revokeObjectURL(url)
+  }
+}
+
+async function copyClientURI(client) {
+  if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  if (isClientRowPending(client)) return
+  try {
+    const uri = await fetchWireGuardClientURI(agentId.value, selectedProfileId.value, client.id)
+    await navigator.clipboard.writeText(uri)
+    messageStore.success('WireGuard URI 已复制')
+  } catch (error) {
+    messageStore.error(error, '复制 WireGuard URI 失败')
   }
 }
 

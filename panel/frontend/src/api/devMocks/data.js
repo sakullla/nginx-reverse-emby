@@ -2472,6 +2472,38 @@ export async function fetchWireGuardClientConfig(agentId, profileId, clientId) {
   return data
 }
 
+export async function fetchWireGuardClientURI(agentId, profileId, clientId, reserved = '') {
+  const suffix = reserved ? `?reserved=${encodeURIComponent(reserved)}` : ''
+  if (isDev) {
+    await sleep()
+    ensureDevRelayAgentExists(agentId)
+    const profile = findMockWireGuardProfile(agentId, profileId)
+    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    if (!String(profile.public_endpoint || '').trim()) {
+      throw new Error('public_endpoint is required to generate client URI')
+    }
+    const client = (mockWireGuardClientsByProfile[agentId]?.[profileId] || [])
+      .find((item) => String(item.id) === String(clientId))
+    if (!client) throw new Error(`WireGuard Client not found: ${clientId}`)
+    const uri = new URL(`wireguard://${encodeURIComponent(client.private_key)}@${profile.public_endpoint}`)
+    uri.searchParams.set('publickey', `mock-server-public-key-${profile.id}`)
+    if (client.preshared_key) uri.searchParams.set('psk', client.preshared_key)
+    uri.searchParams.set('address', client.address)
+    uri.searchParams.set('allowedips', normalizeStringList(client.allowed_ips).join(',') || '0.0.0.0/0,::/0')
+    const dns = normalizeStringList(client.dns)
+    if (dns.length) uri.searchParams.set('dns', dns.join(','))
+    if (profile.mtu) uri.searchParams.set('mtu', String(profile.mtu))
+    if (reserved) uri.searchParams.set('reserved', reserved)
+    uri.hash = client.name || `client-${client.id}`
+    return uri.toString()
+  }
+  const { data } = await api.get(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}/uri${suffix}`,
+    { responseType: 'text' }
+  )
+  return data
+}
+
 export async function parseWireGuardURI(uri) {
   if (isDev) {
     await sleep()

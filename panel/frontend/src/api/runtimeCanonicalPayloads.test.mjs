@@ -491,6 +491,15 @@ describe('runtime canonical rule payloads', () => {
           config
         }
       }
+      if (String(config.url).includes('/uri')) {
+        return {
+          data: 'wireguard://client-private@wg.example.test:51820?publickey=server&address=10.8.0.2%2F32',
+          status: 200,
+          statusText: 'OK',
+          headers: { 'content-type': 'text/plain' },
+          config
+        }
+      }
       if (config.method === 'get') {
         return {
           data: {
@@ -567,12 +576,14 @@ describe('runtime canonical rule payloads', () => {
       const updated = await runtime.updateWireGuardClient('edge/a', 'profile 1', 'client 1', { enabled: false })
       await runtime.deleteWireGuardClient('edge/a', 'profile 1', 'client 1')
       const configText = await runtime.fetchWireGuardClientConfig('edge/a', 'profile 1', 'client 1')
+      const uriText = await runtime.fetchWireGuardClientURI('edge/a', 'profile 1', 'client 1', '1,2,3')
 
       expect(clients).toHaveLength(1)
       expect(client.name).toBe('phone')
       expect(updated.enabled).toBe(false)
       expect(configText).toContain('[Interface]')
-      expect(requests).toHaveLength(5)
+      expect(uriText).toContain('wireguard://')
+      expect(requests).toHaveLength(6)
       expect(requests[0].method).toBe('get')
       expect(requests[0].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients')
       expect(requests[1].method).toBe('post')
@@ -588,6 +599,9 @@ describe('runtime canonical rule payloads', () => {
       expect(requests[4].method).toBe('get')
       expect(requests[4].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients/client%201/config')
       expect(requests[4].responseType).toBe('text')
+      expect(requests[5].method).toBe('get')
+      expect(requests[5].url).toBe('/agents/edge%2Fa/wireguard-profiles/profile%201/clients/client%201/uri?reserved=1%2C2%2C3')
+      expect(requests[5].responseType).toBe('text')
     } finally {
       api.defaults.adapter = originalAdapter
     }
@@ -618,6 +632,7 @@ describe('runtime canonical rule payloads', () => {
       expect(source).toContain('updateWireGuardClient')
       expect(source).toContain('deleteWireGuardClient')
       expect(source).toContain('fetchWireGuardClientConfig')
+      expect(source).toContain('fetchWireGuardClientURI')
     }
     expect(hooks.default).toContain('useWireGuardClients')
     expect(hooks.default).toContain('useCreateWireGuardClient')
@@ -638,6 +653,7 @@ describe('runtime canonical rule payloads', () => {
     expect(source).toContain('pendingClientRowIds')
     expect(source).toContain('deleteWireGuardClientRow')
     expect(source).toContain('downloadClientConfig')
+    expect(source).toContain('copyClientURI')
     expect(source).toContain('clientForm.allowed_ips_text')
     expect(source).toContain('clientForm.dns_text')
     expect(source).not.toContain('clientForm.address')

@@ -573,6 +573,15 @@ export async function fetchWireGuardClientConfig(agentId, profileId, clientId) {
   return data
 }
 
+export async function fetchWireGuardClientURI(agentId, profileId, clientId, reserved = '') {
+  const suffix = reserved ? `?reserved=${encodeURIComponent(reserved)}` : ''
+  const { data } = await api.get(
+    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}/uri${suffix}`,
+    { responseType: 'text' }
+  )
+  return data
+}
+
 export async function parseWireGuardURI(uri) {
   const { data } = await api.post('/wireguard/parse-uri', { uri })
   return data
