@@ -502,6 +502,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		if wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
 			return L4Rule{}, fmt.Errorf("%w: wireguard_inbound_mode must be address or transparent", ErrInvalidArgument)
 		}
+		if wireGuardInboundMode == "transparent" && protocol == "udp" {
+			return L4Rule{}, fmt.Errorf("%w: wireguard transparent inbound does not support udp dynamic destination routing", ErrInvalidArgument)
+		}
 	} else {
 		wireGuardInboundMode = ""
 	}
@@ -576,7 +579,8 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		proxyEntryAuth = normalizeL4ProxyEntryAuthUpdate(*input.ProxyEntryAuth, fallback.ProxyEntryAuth)
 	}
 	proxyEntryMode := isL4ProxyEntryListenMode(listenMode, proxyEgressMode)
-	backends, upstreamHost, upstreamPort, err = normalizeL4BackendsInput(input, fallback, proxyEntryMode)
+	transparentTCPForwardMode := isL4WireGuardTransparentForwardRule(protocol, listenMode, wireGuardInboundMode, proxyEgressMode)
+	backends, upstreamHost, upstreamPort, err = normalizeL4BackendsInput(input, fallback, proxyEntryMode || transparentTCPForwardMode)
 	if err != nil {
 		if !proxyEntryMode {
 			return L4Rule{}, err
@@ -1017,6 +1021,17 @@ func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {
 func isL4ProxyEntryListenMode(listenMode string, proxyEgressMode string) bool {
 	return strings.EqualFold(strings.TrimSpace(listenMode), "proxy") ||
 		(strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") && strings.TrimSpace(proxyEgressMode) != "")
+}
+
+func isL4WireGuardTransparentForwardRule(protocol, listenMode, wireGuardInboundMode, proxyEgressMode string) bool {
+	normalizedProtocol := strings.ToLower(strings.TrimSpace(protocol))
+	if normalizedProtocol == "" {
+		normalizedProtocol = "tcp"
+	}
+	return normalizedProtocol == "tcp" &&
+		strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") &&
+		strings.EqualFold(strings.TrimSpace(wireGuardInboundMode), "transparent") &&
+		strings.TrimSpace(proxyEgressMode) == ""
 }
 
 func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule, allowEmpty bool) ([]L4Backend, string, int, error) {

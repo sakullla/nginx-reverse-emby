@@ -43,7 +43,7 @@
       </div>
 
       <!-- Backends List -->
-      <div v-if="!isProxyEntry" class="form-group">
+      <div v-if="requiresBackends" class="form-group">
         <div class="backends-header">
           <label class="form-label form-label--required">后端服务器</label>
           <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
@@ -214,7 +214,7 @@
             <label class="form-label">WireGuard 入站模式</label>
             <select v-model="form.wireguard_inbound_mode" class="input">
               <option value="address">地址</option>
-              <option value="transparent">透明</option>
+              <option v-if="form.protocol === 'tcp'" value="transparent">透明</option>
             </select>
           </div>
           <div v-if="isWireGuardInbound && form.wireguard_inbound_mode === 'address'" class="form-group">
@@ -525,6 +525,11 @@ const supportsProxyEgress = computed(() => form.value.protocol === 'tcp' && (for
 const isProxyEntry = computed(() => form.value.protocol === 'tcp' && (form.value.listen_mode === 'proxy' || (form.value.listen_mode === 'wireguard' && form.value.proxy_egress_mode !== '')))
 const isWireGuardInbound = computed(() => form.value.listen_mode === 'wireguard')
 const isWireGuardEgress = computed(() => isProxyEntry.value && form.value.proxy_egress_mode === 'wireguard')
+const isWireGuardTransparentForward = computed(() => form.value.protocol === 'tcp'
+  && isWireGuardInbound.value
+  && form.value.wireguard_inbound_mode === 'transparent'
+  && !isProxyEntry.value)
+const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)
 const isWireGuardEgressProfileSource = computed(() => isWireGuardEgress.value && form.value.wireguard_egress_source === 'profile')
 const isWireGuardEgressUriSource = computed(() => isWireGuardEgress.value && form.value.wireguard_egress_source === 'uri')
 const usesWireGuard = computed(() => isWireGuardInbound.value || isWireGuardEgress.value)
@@ -617,6 +622,7 @@ watch(() => form.value.protocol, (newProto) => {
     }
     if (form.value.listen_mode === 'wireguard') {
       form.value.proxy_egress_mode = ''
+      form.value.wireguard_inbound_mode = 'address'
     }
   }
 })
@@ -625,7 +631,10 @@ watch([isWireGuardInbound, isWireGuardEgress], ([inbound, egress]) => {
   if (inbound && egress && form.value.wireguard_egress_source === 'uri') {
     form.value.wireguard_egress_source = 'profile'
   }
-})
+  if (inbound && form.value.protocol === 'udp' && form.value.wireguard_inbound_mode === 'transparent') {
+    form.value.wireguard_inbound_mode = 'address'
+  }
+}, { immediate: true })
 
 watch(requiresWireGuardProfile, (enabled, wasEnabled) => {
   if (!enabled) return
@@ -853,7 +862,7 @@ async function handleSubmit() {
   error.value = ''
   form.value.backends.forEach((_, index) => parseBackendAddress(index))
   const validBackends = form.value.backends.filter(b => b.host && b.port)
-  if (!isProxyEntry.value && validBackends.length === 0) {
+  if (requiresBackends.value && validBackends.length === 0) {
     error.value = '至少需要一个有效的后端服务器'
     return
   }

@@ -35,6 +35,7 @@ import (
 type fakeL4RelayPathDialer struct {
 	mu      sync.Mutex
 	calls   [][]int
+	targets []string
 	options []relay.DialOptions
 	conn    net.Conn
 }
@@ -46,6 +47,7 @@ func (d *fakeL4RelayPathDialer) DialPath(_ context.Context, req relayplan.Reques
 	}
 	d.mu.Lock()
 	d.calls = append(d.calls, append([]int(nil), path.IDs...))
+	d.targets = append(d.targets, req.Target)
 	d.options = append(d.options, cloneRelayDialOptionsForL4Test(options))
 	d.mu.Unlock()
 	if path.IDs[0] == 2 {
@@ -64,6 +66,12 @@ func (d *fakeL4RelayPathDialer) calledPaths() [][]int {
 	return out
 }
 
+func (d *fakeL4RelayPathDialer) calledTargets() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.targets...)
+}
+
 func (d *fakeL4RelayPathDialer) calledOptions() []relay.DialOptions {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -79,6 +87,20 @@ func cloneRelayDialOptionsForL4Test(options relay.DialOptions) relay.DialOptions
 		InitialPayload: append([]byte(nil), options.InitialPayload...),
 		TrafficClass:   options.TrafficClass,
 	}
+}
+
+type addrOverrideConn struct {
+	net.Conn
+	localAddr  net.Addr
+	remoteAddr net.Addr
+}
+
+func (c *addrOverrideConn) LocalAddr() net.Addr {
+	return c.localAddr
+}
+
+func (c *addrOverrideConn) RemoteAddr() net.Addr {
+	return c.remoteAddr
 }
 
 func TestServerCloseStopsTCPHandlers(t *testing.T) {
@@ -659,6 +681,11 @@ func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *tes
 	if keys := srv.BindingKeys(); len(keys) != 1 || keys[0] != wantKey {
 		t.Fatalf("BindingKeys() = %+v, want [%s]", keys, wantKey)
 	}
+	dialTargets := make(chan string, 1)
+	srv.tcpDialer = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialTargets <- address
+		return (&net.Dialer{}).DialContext(ctx, network, fmt.Sprintf("127.0.0.1:%d", backend.Port()))
+	}
 
 	client, err := net.Dial("tcp", wireGuardListener.Addr().String())
 	if err != nil {
@@ -679,6 +706,14 @@ func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *tes
 	}
 	if !bytes.Equal(payload, reply) {
 		t.Fatalf("tcp payload mismatch; got %q", reply)
+	}
+	select {
+	case target := <-dialTargets:
+		if target != wireGuardListener.Addr().String() {
+			t.Fatalf("transparent tcp target = %q, want downstream local addr %q", target, wireGuardListener.Addr().String())
+		}
+	default:
+		t.Fatal("transparent tcp dialer was not called")
 	}
 }
 
@@ -716,48 +751,16 @@ func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 	}
 }
 
-func TestWireGuardTransparentUDPInboundForwardsViaRuntimeWildcardListener(t *testing.T) {
-	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("resolve upstream addr: %v", err)
-	}
-	upstreamConn, err := net.ListenUDP("udp", upstreamAddr)
-	if err != nil {
-		t.Fatalf("listen udp upstream: %v", err)
-	}
-	defer upstreamConn.Close()
-
-	go func() {
-		buf := make([]byte, 64)
-		for {
-			n, addr, err := upstreamConn.ReadFromUDP(buf)
-			if err != nil {
-				return
-			}
-			if _, err := upstreamConn.WriteToUDP(buf[:n], addr); err != nil {
-				return
-			}
-		}
-	}()
-
+func TestWireGuardTransparentUDPInboundRejected(t *testing.T) {
 	profileID := 9
 	listenPort := pickFreeUDPPort(t)
-	var wireGuardConn wireguard.PacketConn
 	runtime := &fakeL4WireGuardRuntime{
 		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {
-			want := net.JoinHostPort("", strconv.Itoa(listenPort))
-			if address != want {
-				t.Fatalf("ListenUDP address = %q, want %q", address, want)
-			}
-			conn, err := net.ListenPacket("udp", "127.0.0.1:0")
-			if err != nil {
-				return nil, err
-			}
-			wireGuardConn = conn
-			return conn, nil
+			t.Fatalf("ListenUDP address = %q, want validation before listener start", address)
+			return nil, nil
 		},
 	}
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	_, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "udp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           listenPort,
@@ -765,50 +768,12 @@ func TestWireGuardTransparentUDPInboundForwardsViaRuntimeWildcardListener(t *tes
 		WireGuardInboundMode: "transparent",
 		WireGuardProfileID:   &profileID,
 		WireGuardListenHost:  "10.64.0.2",
-		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
+		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeUDPPort(t)}},
 	}}, nil, nil, fakeL4WireGuardProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
-	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
-	}
-	defer srv.Close()
-
-	if wireGuardConn == nil {
-		t.Fatal("wireguard ListenUDP was not started for transparent inbound")
-	}
-	if calls := runtime.listenUDPCalls(); len(calls) != 1 {
-		t.Fatalf("ListenUDP calls = %+v, want one transparent listener", calls)
-	}
-	wantKey := "wireguard:9:udp:" + net.JoinHostPort("", strconv.Itoa(listenPort))
-	if keys := srv.BindingKeys(); len(keys) != 1 || keys[0] != wantKey {
-		t.Fatalf("BindingKeys() = %+v, want [%s]", keys, wantKey)
-	}
-
-	udpAddr, ok := wireGuardConn.LocalAddr().(*net.UDPAddr)
-	if !ok {
-		t.Fatalf("wireguard UDP listener addr type = %T", wireGuardConn.LocalAddr())
-	}
-	client, err := net.DialUDP("udp", nil, udpAddr)
-	if err != nil {
-		t.Fatalf("dial wireguard transparent udp listener: %v", err)
-	}
-	defer client.Close()
-
-	payload := []byte("transparent udp")
-	if _, err := client.Write(payload); err != nil {
-		t.Fatalf("write udp payload: %v", err)
-	}
-	reply := make([]byte, len(payload))
-	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("set udp read deadline: %v", err)
-	}
-	n, err := client.Read(reply)
-	if err != nil {
-		t.Fatalf("read udp reply: %v", err)
-	}
-	if !bytes.Equal(payload, reply[:n]) {
-		t.Fatalf("udp payload mismatch; got %q", reply[:n])
+	if err == nil || !strings.Contains(err.Error(), "transparent") || !strings.Contains(err.Error(), "udp") {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v, want transparent udp validation", err)
 	}
 }
 
@@ -2034,6 +1999,104 @@ func TestDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	}
 	if !waitForL4RelayPathCalls(dialer, 1, 2) {
 		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
+	}
+}
+
+func TestDialTCPUpstreamWireGuardTransparentDirectUsesClientLocalAddr(t *testing.T) {
+	profileID := 7
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	localAddr := &net.TCPAddr{IP: net.ParseIP("10.64.0.20"), Port: 443}
+	remoteAddr := &net.TCPAddr{IP: net.ParseIP("10.64.0.10"), Port: 51000}
+	client := &addrOverrideConn{Conn: clientConn, localAddr: localAddr, remoteAddr: remoteAddr}
+	dialed := make(chan string, 1)
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		tcpDialer: func(_ context.Context, network, address string) (net.Conn, error) {
+			if network != "tcp" {
+				t.Fatalf("network = %q, want tcp", network)
+			}
+			dialed <- address
+			upstream, _ := net.Pipe()
+			return upstream, nil
+		},
+	}
+	rule := model.L4Rule{
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           443,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+	}
+
+	upstream, candidate, _, err := srv.dialTCPUpstreamForClient(rule, client, relay.DialOptions{})
+	if err != nil {
+		t.Fatalf("dialTCPUpstreamForClient() error = %v", err)
+	}
+	defer upstream.Close()
+	if candidate.address != localAddr.String() {
+		t.Fatalf("candidate address = %q, want %q", candidate.address, localAddr.String())
+	}
+	select {
+	case target := <-dialed:
+		if target != localAddr.String() {
+			t.Fatalf("dial target = %q, want %q", target, localAddr.String())
+		}
+	default:
+		t.Fatal("tcp dialer was not called")
+	}
+}
+
+func TestDialTCPUpstreamWireGuardTransparentRelayUsesClientLocalAddr(t *testing.T) {
+	profileID := 7
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	upstream, relayConn := net.Pipe()
+	defer relayConn.Close()
+	localAddr := &net.TCPAddr{IP: net.ParseIP("10.64.0.20"), Port: 443}
+	remoteAddr := &net.TCPAddr{IP: net.ParseIP("10.64.0.10"), Port: 51000}
+	client := &addrOverrideConn{Conn: clientConn, localAddr: localAddr, remoteAddr: remoteAddr}
+	dialer := &fakeL4RelayPathDialer{conn: upstream}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		},
+		relayPathDialer: dialer,
+	}
+	rule := model.L4Rule{
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           443,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+		RelayLayers:          [][]int{{1, 2}},
+	}
+
+	conn, candidate, _, err := srv.dialTCPUpstreamForClient(rule, client, relay.DialOptions{})
+	if err != nil {
+		t.Fatalf("dialTCPUpstreamForClient() error = %v", err)
+	}
+	defer conn.Close()
+	if candidate.address != localAddr.String() {
+		t.Fatalf("candidate address = %q, want %q", candidate.address, localAddr.String())
+	}
+	if !waitForL4RelayPathCalls(dialer, 1, 2) {
+		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
+	}
+	for _, target := range dialer.calledTargets() {
+		if target != localAddr.String() {
+			t.Fatalf("relay target = %q, want %q", target, localAddr.String())
+		}
 	}
 }
 

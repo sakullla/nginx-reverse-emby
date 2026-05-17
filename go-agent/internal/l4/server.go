@@ -46,6 +46,7 @@ type Server struct {
 	relayProvider      RelayMaterialProvider
 	relayPathDialer    relayplan.Dialer
 	wireGuardProvider  relay.WireGuardRuntimeProvider
+	tcpDialer          func(context.Context, string, string) (net.Conn, error)
 
 	tcpMu    sync.Mutex
 	tcpConns map[net.Conn]struct{}
@@ -126,6 +127,7 @@ func newServerWithOptions(
 		relayProvider:         relayProvider,
 		relayPathDialer:       relayPathDialer{provider: relayProvider, wireGuardProvider: wireGuardProvider},
 		wireGuardProvider:     wireGuardProvider,
+		tcpDialer:             (&net.Dialer{}).DialContext,
 	}
 	for _, rule := range rules {
 		if err := ValidateRule(rule); err != nil {

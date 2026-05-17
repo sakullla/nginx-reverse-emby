@@ -1619,7 +1619,7 @@ func TestL4RuleServiceWireGuardDefaultsInboundModeAddress(t *testing.T) {
 	}
 }
 
-func TestL4RuleServiceWireGuardTransparentInboundModeAccepted(t *testing.T) {
+func TestL4RuleServiceWireGuardTransparentTCPAllowsEmptyBackends(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -1629,14 +1629,14 @@ func TestL4RuleServiceWireGuardTransparentInboundModeAccepted(t *testing.T) {
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:             stringPtrL4("udp"),
+		Protocol:             stringPtrL4("tcp"),
 		ListenHost:           stringPtrL4("0.0.0.0"),
-		ListenPort:           intPtrL4(51820),
+		ListenPort:           intPtrL4(443),
 		ListenMode:           stringPtrL4("wireguard"),
 		WireGuardProfileID:   intPtrL4(7),
 		WireGuardInboundMode: stringPtrL4("transparent"),
 		WireGuardListenHost:  stringPtrL4("10.8.0.1"),
-		Backends:             &[]L4Backend{{Host: "upstream", Port: 9001}},
+		Backends:             &[]L4Backend{},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -1647,6 +1647,9 @@ func TestL4RuleServiceWireGuardTransparentInboundModeAccepted(t *testing.T) {
 	if rule.WireGuardListenHost != "" {
 		t.Fatalf("WireGuardListenHost = %q, want cleared for transparent mode", rule.WireGuardListenHost)
 	}
+	if len(rule.Backends) != 0 {
+		t.Fatalf("Backends = %#v, want empty", rule.Backends)
+	}
 	row := store.l4RulesByID["local"][0]
 	if row.WireGuardInboundMode != "transparent" {
 		t.Fatalf("persisted WireGuardInboundMode = %q, want transparent", row.WireGuardInboundMode)
@@ -1654,14 +1657,43 @@ func TestL4RuleServiceWireGuardTransparentInboundModeAccepted(t *testing.T) {
 	if row.WireGuardListenHost != "" {
 		t.Fatalf("persisted WireGuardListenHost = %q, want cleared for transparent mode", row.WireGuardListenHost)
 	}
+	if row.BackendsJSON != "[]" {
+		t.Fatalf("persisted BackendsJSON = %s, want []", row.BackendsJSON)
+	}
 }
 
-func TestL4RuleServiceUpdateWireGuardTransparentInboundModeAccepted(t *testing.T) {
+func TestL4RuleServiceWireGuardTransparentUDPRejected(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:             stringPtrL4("udp"),
+		ListenHost:           stringPtrL4("0.0.0.0"),
+		ListenPort:           intPtrL4(51820),
+		ListenMode:           stringPtrL4("wireguard"),
+		WireGuardProfileID:   intPtrL4(7),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+		Backends:             &[]L4Backend{{Host: "upstream", Port: 9001}},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "transparent") || !strings.Contains(err.Error(), "udp") {
+		t.Fatalf("Create() error = %v, want transparent udp validation", err)
+	}
+}
+
+func TestL4RuleServiceUpdateWireGuardTransparentTCPInboundModeAccepted(t *testing.T) {
 	profileID := 7
 	existing := L4Rule{
 		ID:                 1,
 		AgentID:            "local",
-		Protocol:           "udp",
+		Protocol:           "tcp",
 		ListenHost:         "0.0.0.0",
 		ListenPort:         51820,
 		Backends:           []L4Backend{{Host: "upstream", Port: 9001}},
@@ -1680,7 +1712,7 @@ func TestL4RuleServiceUpdateWireGuardTransparentInboundModeAccepted(t *testing.T
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	rule, err := svc.Update(context.Background(), "local", existing.ID, L4RuleInput{
-		Protocol:             stringPtrL4("udp"),
+		Protocol:             stringPtrL4("tcp"),
 		ListenHost:           stringPtrL4("0.0.0.0"),
 		ListenPort:           intPtrL4(51820),
 		ListenMode:           stringPtrL4("wireguard"),
@@ -1713,7 +1745,7 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 		ID:                   1,
 		AgentID:              "local",
 		Name:                 "wg-a",
-		Protocol:             "udp",
+		Protocol:             "tcp",
 		ListenHost:           "10.8.0.10",
 		ListenPort:           51820,
 		Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
@@ -1733,7 +1765,7 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
 	_, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:             stringPtrL4("udp"),
+		Protocol:             stringPtrL4("tcp"),
 		ListenHost:           stringPtrL4("10.8.0.11"),
 		ListenPort:           intPtrL4(51820),
 		ListenMode:           stringPtrL4("wireguard"),
@@ -1749,7 +1781,7 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 	}
 
 	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:             stringPtrL4("udp"),
+		Protocol:             stringPtrL4("tcp"),
 		ListenHost:           stringPtrL4("10.8.0.11"),
 		ListenPort:           intPtrL4(51821),
 		ListenMode:           stringPtrL4("wireguard"),
@@ -1928,7 +1960,7 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testin
 		ID:                   1,
 		AgentID:              "local",
 		Name:                 "wg-a",
-		Protocol:             "udp",
+		Protocol:             "tcp",
 		ListenHost:           "10.8.0.10",
 		ListenPort:           51820,
 		Backends:             []L4Backend{{Host: "upstream-a", Port: 9001}},
@@ -1941,7 +1973,7 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testin
 		ID:                   2,
 		AgentID:              "local",
 		Name:                 "wg-b",
-		Protocol:             "udp",
+		Protocol:             "tcp",
 		ListenHost:           "10.8.0.11",
 		ListenPort:           51821,
 		Backends:             []L4Backend{{Host: "upstream-b", Port: 9002}},

@@ -32,6 +32,21 @@ func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, pa
 }
 
 func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
+	return s.dialTCPUpstreamCandidates(rule, dialOptions)
+}
+
+func (s *Server) dialTCPUpstreamForClient(rule model.L4Rule, client net.Conn, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
+	if isWireGuardTransparentForwardRule(rule) {
+		target, err := transparentTCPTargetFromConn(client)
+		if err != nil {
+			return nil, l4Candidate{}, 0, err
+		}
+		return s.dialTransparentTCPUpstream(rule, target, dialOptions)
+	}
+	return s.dialTCPUpstreamCandidates(rule, dialOptions)
+}
+
+func (s *Server) dialTCPUpstreamCandidates(rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
 		return nil, l4Candidate{}, 0, err
@@ -46,7 +61,7 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOption
 		start := s.now()
 		var upstream net.Conn
 		if !ruleUsesRelay(rule) {
-			upstream, err = (&net.Dialer{}).DialContext(s.ctx, "tcp", target)
+			upstream, err = s.dialTCPDirect(target)
 		} else {
 			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 		}
@@ -65,6 +80,47 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOption
 		return nil, l4Candidate{}, 0, lastErr
 	}
 	return nil, l4Candidate{}, 0, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
+}
+
+func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
+	candidate := l4Candidate{address: target}
+	start := s.now()
+	var (
+		upstream net.Conn
+		err      error
+	)
+	if !ruleUsesRelay(rule) {
+		upstream, err = s.dialTCPDirect(target)
+	} else {
+		upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
+	}
+	if err != nil {
+		return nil, candidate, 0, err
+	}
+	return upstream, candidate, s.now().Sub(start), nil
+}
+
+func (s *Server) dialTCPDirect(target string) (net.Conn, error) {
+	dialer := s.tcpDialer
+	if dialer == nil {
+		dialer = (&net.Dialer{}).DialContext
+	}
+	return dialer(s.ctx, "tcp", target)
+}
+
+func transparentTCPTargetFromConn(client net.Conn) (string, error) {
+	if client == nil {
+		return "", fmt.Errorf("transparent tcp downstream connection is nil")
+	}
+	addr := client.LocalAddr()
+	if addr == nil {
+		return "", fmt.Errorf("transparent tcp downstream destination is unavailable")
+	}
+	target := strings.TrimSpace(addr.String())
+	if target == "" {
+		return "", fmt.Errorf("transparent tcp downstream destination is empty")
+	}
+	return target, nil
 }
 
 func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, error) {
