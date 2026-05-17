@@ -232,7 +232,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		}
 		result.addImported("certificate", key)
 	}
-	wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, err := previewWireGuardProfiles(ctx, bundle.WireGuardProfiles, agentIDMap, s.cfg, s.store, &result)
+	wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, previewWireGuardProfileRowsByAgent, err := previewWireGuardProfiles(ctx, bundle.WireGuardProfiles, agentIDMap, s.cfg, s.store, &result)
 	if err != nil {
 		return BackupImportResult{}, err
 	}
@@ -250,6 +250,12 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	previewCapabilityStore := previewAgentCapabilityStore{rows: previewAgentRowsByID}
 	listenerIDMap := previewListenerIDMap(ctx, bundle.RelayListeners, existingRelayRows, agentIDMap, certIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, listenerAllocator, previewCapabilityStore, s.cfg)
 	previewRelayListeners := previewRelayListenersByID(existingRelayRows, bundle.RelayListeners, listenerIDMap, agentIDMap, s.cfg)
+	previewRuleSvc := &ruleService{cfg: s.cfg, store: previewHTTPRuleNormalizationStore{
+		ruleStore:                s.store,
+		agents:                   previewAgentRowsByID,
+		wireGuardProfilesByAgent: previewWireGuardProfileRowsByAgent,
+		relayListenersByListener: previewRelayListeners,
+	}}
 	existingRelayKeys := map[string]struct{}{}
 	previewRelayRowsByAgent := map[string][]storage.RelayListenerRow{}
 	for _, row := range existingRelayRows {
@@ -342,7 +348,8 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 				continue
 			}
 		}
-		input := httpRuleInputFromBackup(item, listenerIDMap, nil)
+		wireGuardProfileID, profileOK := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		input := httpRuleInputFromBackup(item, listenerIDMap, wireGuardProfileID)
 		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
 			continue
@@ -352,18 +359,23 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			continue
 		}
 		if item.WireGuardEntryEnabled {
-			if _, ok := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs); !ok {
+			if !profileOK {
 				result.addSkippedInvalid("http_rule", key, "wireguard profile was not imported")
 				continue
 			}
-		}
-		wireGuardProfileID, _ := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
-		if routeKey, ok := backupHTTPWireGuardEntryRouteKey(resolvedAgentID, item, wireGuardProfileID); ok {
-			if _, exists := existingHTTPWireGuardEntryRouteKeys[routeKey]; exists {
-				result.addSkippedConflict("http_rule", key, "wireguard entry route already exists")
+			normalized, err := previewRuleSvc.normalizeHTTPRuleInput(ctx, input, HTTPRule{AgentID: resolvedAgentID}, 0)
+			if err != nil {
+				result.addSkippedInvalid("http_rule", key, err.Error())
 				continue
 			}
-			existingHTTPWireGuardEntryRouteKeys[routeKey] = struct{}{}
+			normalized.AgentID = resolvedAgentID
+			if routeKey, ok := httpWireGuardEntryRouteKey(normalized); ok {
+				if _, exists := existingHTTPWireGuardEntryRouteKeys[routeKey]; exists {
+					result.addSkippedConflict("http_rule", key, "wireguard entry route already exists")
+					continue
+				}
+				existingHTTPWireGuardEntryRouteKeys[routeKey] = struct{}{}
+			}
 		}
 		result.addImported("http_rule", key)
 		existingHTTPKeys[conflictKey] = struct{}{}
@@ -504,6 +516,43 @@ type previewAgentCapabilityStore struct {
 func (s previewAgentCapabilityStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
 	rows := make([]storage.AgentRow, 0, len(s.rows))
 	for _, row := range s.rows {
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+type previewHTTPRuleNormalizationStore struct {
+	ruleStore
+	agents                   map[string]storage.AgentRow
+	wireGuardProfilesByAgent map[string][]storage.WireGuardProfileRow
+	relayListenersByListener map[int]storage.RelayListenerRow
+}
+
+func (s previewHTTPRuleNormalizationStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
+	rows := make([]storage.AgentRow, 0, len(s.agents))
+	for _, row := range s.agents {
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func (s previewHTTPRuleNormalizationStore) ListWireGuardProfiles(_ context.Context, agentID string) ([]storage.WireGuardProfileRow, error) {
+	if strings.TrimSpace(agentID) != "" {
+		return append([]storage.WireGuardProfileRow(nil), s.wireGuardProfilesByAgent[agentID]...), nil
+	}
+	rows := []storage.WireGuardProfileRow{}
+	for _, agentRows := range s.wireGuardProfilesByAgent {
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
+}
+
+func (s previewHTTPRuleNormalizationStore) ListRelayListeners(_ context.Context, agentID string) ([]storage.RelayListenerRow, error) {
+	rows := []storage.RelayListenerRow{}
+	for _, row := range s.relayListenersByListener {
+		if strings.TrimSpace(agentID) != "" && row.AgentID != agentID {
+			continue
+		}
 		rows = append(rows, row)
 	}
 	return rows, nil
@@ -2123,18 +2172,6 @@ func httpRuleConflictKey(agentID string, frontendURL string) string {
 	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(frontendURL)
 }
 
-func backupHTTPWireGuardEntryRouteKey(agentID string, rule BackupHTTPRule, wireGuardProfileID *int) (string, bool) {
-	return httpWireGuardEntryRouteKey(HTTPRule{
-		AgentID:                  agentID,
-		FrontendURL:              rule.FrontendURL,
-		Enabled:                  rule.Enabled,
-		WireGuardEntryEnabled:    rule.WireGuardEntryEnabled,
-		WireGuardProfileID:       copyOptionalInt(wireGuardProfileID),
-		WireGuardEntryListenHost: rule.WireGuardEntryListenHost,
-		WireGuardEntryListenPort: rule.WireGuardEntryListenPort,
-	})
-}
-
 func l4ConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenStack string) string {
 	return strings.TrimSpace(agentID) + "|" + strings.ToLower(strings.TrimSpace(protocol)) + "|" + strings.TrimSpace(listenHost) + "|" + fmt.Sprintf("%d", listenPort) + "|" + strings.TrimSpace(listenStack)
 }
@@ -2449,24 +2486,24 @@ func validateBackupWireGuardClientRow(row storage.WireGuardClientRow) error {
 	return nil
 }
 
-func previewWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, cfg config.Config, store backupStore, result *BackupImportResult) (map[string]int, map[string]struct{}, map[string]struct{}, map[string]struct{}, error) {
+func previewWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, cfg config.Config, store backupStore, result *BackupImportResult) (map[string]int, map[string]struct{}, map[string]struct{}, map[string]struct{}, map[string][]storage.WireGuardProfileRow, error) {
 	knownAgentIDs, err := allKnownAgentIDs(ctx, cfg, store)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	existingRows, err := listAllWireGuardProfileRows(ctx, store, knownAgentIDs)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, cfg, store)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
-	profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, _, _, err := planWireGuardProfilesWithRows(incoming, existingRows, agentIDMap, cfg, allocator, result)
+	profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, groupedRows, _, err := planWireGuardProfilesWithRows(incoming, existingRows, agentIDMap, cfg, allocator, result)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
-	return profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, nil
+	return profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, groupedRows, nil
 }
 
 func (s *backupService) importWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[string]int, map[string]struct{}, map[string]struct{}, map[string]struct{}, error) {
