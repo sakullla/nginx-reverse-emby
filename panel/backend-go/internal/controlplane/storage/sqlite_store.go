@@ -240,7 +240,11 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
-	wireGuardRows = filterWireGuardProfilesForSnapshotGraph(resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows)
+	wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	wireGuardRows = filterWireGuardProfilesForSnapshotGraph(resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows, wireGuardClientRows)
 	supportsWireGuard, err := s.agentSupportsWireGuardSnapshots(ctx, resolvedAgentID)
 	if err != nil {
 		return Snapshot{}, err
@@ -1111,12 +1115,13 @@ func filterWireGuardProfilesForSnapshotGraph(
 	httpRows []HTTPRuleRow,
 	l4Rows []L4RuleRow,
 	relayRows []RelayListenerRow,
+	wireGuardClientRows []WireGuardClientRow,
 ) []WireGuardProfileRow {
 	if len(profiles) == 0 {
 		return profiles
 	}
 
-	referenced := referencedWireGuardProfileIDs(agentID, httpRows, l4Rows, relayRows)
+	referenced := referencedWireGuardProfileIDs(agentID, httpRows, l4Rows, relayRows, wireGuardClientRows)
 	filtered := make([]WireGuardProfileRow, 0, len(profiles))
 	for _, row := range profiles {
 		if _, ok := referenced[row.ID]; ok {
@@ -1131,6 +1136,7 @@ func referencedWireGuardProfileIDs(
 	httpRows []HTTPRuleRow,
 	l4Rows []L4RuleRow,
 	relayRows []RelayListenerRow,
+	wireGuardClientRows []WireGuardClientRow,
 ) map[int]struct{} {
 	referenced := make(map[int]struct{})
 	add := func(profileID *int) {
@@ -1162,6 +1168,13 @@ func referencedWireGuardProfileIDs(
 			continue
 		}
 		add(row.WireGuardProfileID)
+	}
+	for _, row := range wireGuardClientRows {
+		if row.AgentID != agentID || !row.Enabled || row.ProfileID <= 0 {
+			continue
+		}
+		profileID := row.ProfileID
+		add(&profileID)
 	}
 	return referenced
 }
