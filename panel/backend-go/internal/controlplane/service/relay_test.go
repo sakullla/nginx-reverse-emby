@@ -538,6 +538,53 @@ func TestRelayListenerCreateWireGuardUsesDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestRelayListenerCreateWireGuardDerivesBindAndPublicEndpointFromProfile(t *testing.T) {
+	profileID := 7
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{},
+		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:    map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{
+				ID:             profileID,
+				AgentID:        "local",
+				Enabled:        true,
+				AddressesJSON:  `["10.88.0.1/32"]`,
+				PublicEndpoint: "wg.example.com:51820",
+			}},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:               stringPtr("wg-relay"),
+		TransportMode:      stringPtr("wireguard"),
+		WireGuardProfileID: intPtrService(profileID),
+		ListenPort:         intPtrService(19001),
+		BindHosts:          &[]string{"0.0.0.0"},
+		PublicHost:         stringPtr("relay.example.com"),
+		PublicPort:         intPtrService(7443),
+		Enabled:            boolPtr(true),
+		CertificateSource:  stringPtr("existing_certificate"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.ListenHost != "10.88.0.1" || len(listener.BindHosts) != 1 || listener.BindHosts[0] != "10.88.0.1" {
+		t.Fatalf("listener bind = host %q hosts %+v, want profile address", listener.ListenHost, listener.BindHosts)
+	}
+	if listener.PublicHost != "" || listener.PublicPort != 0 {
+		t.Fatalf("relay public endpoint = %q:%d, want cleared for wireguard transport", listener.PublicHost, listener.PublicPort)
+	}
+	row := store.relayByAgentID["local"][0]
+	if row.ListenHost != "10.88.0.1" || row.BindHostsJSON != `["10.88.0.1"]` {
+		t.Fatalf("persisted bind = host %q hosts %s, want profile address", row.ListenHost, row.BindHostsJSON)
+	}
+	if row.PublicHost != "" || row.PublicPort != 0 {
+		t.Fatalf("persisted relay public endpoint = %q:%d, want cleared", row.PublicHost, row.PublicPort)
+	}
+}
+
 func TestRelayListenerWireGuardForcesFallbackAndObfsOff(t *testing.T) {
 	profileID := 7
 	listener, err := normalizeRelayListenerInput(RelayListenerInput{

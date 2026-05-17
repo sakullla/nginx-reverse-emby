@@ -34,7 +34,7 @@
     </div>
 
     <div class='form-row'>
-      <div class='form-group'>
+      <div v-if='form.transport_mode !== "wireguard"' class='form-group'>
         <label class='form-label form-label--required'>绑定地址（每行一个）</label>
         <textarea
           v-model='form.bind_hosts_text'
@@ -58,7 +58,7 @@
       </div>
     </div>
 
-    <div class='form-group'>
+    <div v-if='form.transport_mode !== "wireguard"' class='form-group'>
       <label class='form-label'>{{ publicEndpointLabel }}</label>
       <input
         v-model='form.public_endpoint'
@@ -303,7 +303,7 @@ const publicEndpointHint = computed(() => (
 ))
 const transportModeHint = computed(() => {
   if (form.value.transport_mode === 'wireguard') {
-    return 'WireGuard 使用 Profile Endpoint 作为公网 UDP 入口，Relay 监听地址由系统放在隧道内部。'
+    return 'WireGuard 使用所选 Profile 的 Endpoint 作为公网 UDP 入口，Relay 监听地址自动使用该 Profile 的隧道地址。'
   }
   if (form.value.transport_mode === 'quic') {
     return 'QUIC 可降低握手耗时；需要兼容 TLS/TCP 时可启用回退。'
@@ -608,7 +608,6 @@ async function handleSubmit() {
     : [...trustedCaSet.value].map((id) => Number(id))
   const payload = {
     name: form.value.name.trim(),
-    bind_hosts: bindHosts,
     listen_port: form.value.listen_port,
     transport_mode: form.value.transport_mode,
     allow_transport_fallback: form.value.transport_mode === 'wireguard'
@@ -630,6 +629,9 @@ async function handleSubmit() {
     trusted_ca_certificate_ids: trustedCaIds,
     allow_self_signed: form.value.trust_mode_source === 'auto' ? true : form.value.allow_self_signed,
     tags: [...form.value.tags]
+  }
+  if (form.value.transport_mode !== 'wireguard') {
+    payload.bind_hosts = bindHosts
   }
   if (form.value.transport_mode === 'wireguard' && selectedWireGuardProfileID.value != null) {
     payload.wireguard_profile_id = selectedWireGuardProfileID.value

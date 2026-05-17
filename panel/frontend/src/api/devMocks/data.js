@@ -328,8 +328,9 @@ function normalizeL4Rule(rule = {}) {
 
 function normalizeRelayListenerPayloadForTransport(payload = {}) {
   if (payload.transport_mode !== 'wireguard') return payload
+  const { bind_hosts, public_host, public_port, listen_host, ...rest } = payload
   return {
-    ...payload,
+    ...rest,
     transport_mode: 'wireguard',
     obfs_mode: 'off',
     allow_transport_fallback: false

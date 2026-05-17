@@ -499,9 +499,18 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		}
 		id := profile.ID
 		workingInput.WireGuardProfileID = &id
-		if workingInput.ListenHost == nil || strings.TrimSpace(*workingInput.ListenHost) == "" {
+	}
+	if inputTransportMode == "wireguard" {
+		if profile, ok, err := s.relayWireGuardProfile(ctx, agentID, workingInput.WireGuardProfileID, fallback.WireGuardProfileID); err != nil {
+			return relayPreparation{}, err
+		} else if ok {
 			host := firstWireGuardAddressHost(profile.Addresses)
 			workingInput.ListenHost = &host
+			workingInput.BindHosts = &[]string{host}
+			publicHost := ""
+			publicPort := 0
+			workingInput.PublicHost = &publicHost
+			workingInput.PublicPort = &publicPort
 		}
 	}
 
@@ -601,6 +610,28 @@ func firstWireGuardAddressHost(addresses []string) string {
 		}
 	}
 	return "0.0.0.0"
+}
+
+func (s *relayService) relayWireGuardProfile(ctx context.Context, agentID string, inputProfileID *int, fallbackProfileID *int) (WireGuardProfile, bool, error) {
+	profileID := 0
+	if inputProfileID != nil && *inputProfileID > 0 {
+		profileID = *inputProfileID
+	} else if fallbackProfileID != nil && *fallbackProfileID > 0 {
+		profileID = *fallbackProfileID
+	}
+	if profileID <= 0 {
+		return WireGuardProfile{}, false, nil
+	}
+	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, false, err
+	}
+	for _, row := range rows {
+		if row.ID == profileID {
+			return wireGuardProfileFromRow(row), true, nil
+		}
+	}
+	return WireGuardProfile{}, false, nil
 }
 
 func shouldAutoIssueRelayListenerCertificate(certificateSource string, draft RelayListener, previousUsesAutoCert bool, shouldRotateAutoCert bool) bool {
@@ -770,6 +801,8 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		if wireGuardProfileID == nil {
 			return RelayListener{}, fmt.Errorf("%w: wireguard_profile_id is required when transport_mode=wireguard", ErrInvalidArgument)
 		}
+		publicHost = ""
+		publicPort = 0
 	} else {
 		wireGuardProfileID = nil
 	}

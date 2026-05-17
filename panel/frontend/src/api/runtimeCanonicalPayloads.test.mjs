@@ -208,6 +208,9 @@ describe('runtime canonical rule payloads', () => {
         name: 'wg-relay',
         transport_mode: 'wireguard',
         wireguard_profile_id: 101,
+        bind_hosts: ['0.0.0.0'],
+        public_host: 'stale.example.com',
+        public_port: 7443,
         obfs_mode: 'early_window_v2',
         allow_transport_fallback: true
       })
@@ -215,6 +218,9 @@ describe('runtime canonical rule payloads', () => {
         name: 'wg-relay',
         transport_mode: 'wireguard',
         wireguard_profile_id: 101,
+        bind_hosts: ['0.0.0.0'],
+        public_host: 'stale.example.com',
+        public_port: 7443,
         obfs_mode: 'early_window_v2',
         allow_transport_fallback: true
       })
@@ -226,6 +232,9 @@ describe('runtime canonical rule payloads', () => {
         expect(payload.wireguard_profile_id).toBe(101)
         expect(payload.obfs_mode).toBe('off')
         expect(payload.allow_transport_fallback).toBe(false)
+        expect(payload).not.toHaveProperty('bind_hosts')
+        expect(payload).not.toHaveProperty('public_host')
+        expect(payload).not.toHaveProperty('public_port')
       }
     } finally {
       api.defaults.adapter = originalAdapter
