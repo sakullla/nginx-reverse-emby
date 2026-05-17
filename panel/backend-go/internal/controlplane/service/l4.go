@@ -648,6 +648,11 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if listenMode == "wireguard" && wireGuardInboundMode == "transparent" {
 		wireGuardListenHost = ""
 	}
+	if transparentTCPForwardMode {
+		backends = []L4Backend{}
+		upstreamHost = ""
+		upstreamPort = 0
+	}
 
 	relayObfs := false
 	if fallback.ID > 0 {

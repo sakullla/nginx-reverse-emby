@@ -1662,6 +1662,35 @@ func TestL4RuleServiceWireGuardTransparentTCPAllowsEmptyBackends(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceWireGuardTransparentTCPClearsSubmittedBackends(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:             stringPtrL4("tcp"),
+		ListenHost:           stringPtrL4("0.0.0.0"),
+		ListenPort:           intPtrL4(443),
+		ListenMode:           stringPtrL4("wireguard"),
+		WireGuardProfileID:   intPtrL4(7),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+		Backends:             &[]L4Backend{{Host: "stale.example", Port: 9001}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(rule.Backends) != 0 {
+		t.Fatalf("Backends = %#v, want empty for transparent forwarding", rule.Backends)
+	}
+	if row := store.l4RulesByID["local"][0]; row.BackendsJSON != "[]" {
+		t.Fatalf("persisted BackendsJSON = %s, want []", row.BackendsJSON)
+	}
+}
+
 func TestL4RuleServiceWireGuardTransparentUDPRejected(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},

@@ -784,7 +784,7 @@ function buildPayload() {
     protocol: form.value.protocol,
     listen_host: form.value.listen_host.trim(),
     listen_port: listenPort,
-    backends: validBackends,
+    backends: requiresBackends.value ? validBackends : [],
     load_balancing: {
       strategy: normalizeL4Strategy(form.value.load_balancing.strategy),
     },
