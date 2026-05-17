@@ -2434,7 +2434,7 @@ func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
 	}
 	relayPublicPort := pickFreeTCPPort(t)
 	relayRequests := make(chan l4RelayTestRequest, 1)
-	stopRelay := startL4RelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayRequests, relay.RelayObfsModeOff)
+	stopRelay := startL4RawMuxRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayRequests)
 	defer stopRelay()
 
 	profileID := 9
@@ -4221,6 +4221,58 @@ func startL4RelayServer(
 		defer conn.Close()
 
 		relayConn, request, err := acceptL4RelayTestConn(conn, obfsMode)
+		if err != nil {
+			return
+		}
+		requests <- request
+		if err := writeL4RelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
+			return
+		}
+
+		dataConn := net.Conn(relayConn)
+		if len(request.InitialData) > 0 {
+			if _, err := dataConn.Write(request.InitialData); err != nil {
+				return
+			}
+		}
+		_ = dataConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+		buf := make([]byte, 1024)
+		n, err := dataConn.Read(buf)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				return
+			}
+			return
+		}
+		_ = dataConn.SetReadDeadline(time.Time{})
+		_, _ = dataConn.Write(buf[:n])
+	}()
+
+	return func() {
+		_ = ln.Close()
+		<-done
+	}
+}
+
+func startL4RawMuxRelayServer(t *testing.T, address string, requests chan<- l4RelayTestRequest) func() {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("failed to start raw l4 relay test server: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		relayConn, request, err := acceptL4RelayTestConn(conn, relay.RelayObfsModeOff)
 		if err != nil {
 			return
 		}
