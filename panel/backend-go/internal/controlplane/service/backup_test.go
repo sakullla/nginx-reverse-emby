@@ -4338,12 +4338,11 @@ func TestBackupServicePreviewUsesExistingRelayListenerForConflictValidation(t *t
 		wantInvalidReason         string
 	}{
 		{
-			name:                      "stored cross-agent wireguard conflict rejects even when incoming conflict is tls",
+			name:                      "stored cross-agent wireguard conflict allows imported rules",
 			existingTransport:         "wireguard",
 			incomingConflictTransport: "tls_tcp",
-			wantImportedRules:         1,
-			wantSkippedInvalidRules:   1,
-			wantInvalidReason:         "invalid argument: wireguard relay listener 500 belongs to relay-b and cannot be used by agent edge-a",
+			wantImportedRules:         2,
+			wantSkippedInvalidRules:   0,
 		},
 		{
 			name:                      "stored tls conflict allows even when incoming conflict is cross-agent wireguard",
@@ -5054,7 +5053,7 @@ func assertBackupRelayBindDuplicateResult(t *testing.T, result BackupImportResul
 	t.Fatalf("missing relay_listener conflict key %q in %+v", conflictKey, result.Report.SkippedConflict)
 }
 
-func TestBackupServicePreviewAndImportSkipCrossAgentWireGuardRelayReferences(t *testing.T) {
+func TestBackupServicePreviewAndImportAllowCrossAgentWireGuardRelayReferences(t *testing.T) {
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
@@ -5161,24 +5160,23 @@ func TestBackupServicePreviewAndImportSkipCrossAgentWireGuardRelayReferences(t *
 	if err != nil {
 		t.Fatalf("Preview() error = %v", err)
 	}
-	if preview.Summary.SkippedInvalid.HTTPRules != 1 || preview.Summary.SkippedInvalid.L4Rules != 1 {
+	if preview.Summary.SkippedInvalid.HTTPRules != 0 || preview.Summary.SkippedInvalid.L4Rules != 0 {
 		t.Fatalf("preview invalid summary = %+v", preview.Summary.SkippedInvalid)
 	}
-	assertBackupSkippedInvalidReason(t, preview, "http_rule", "https://cross-wg.example.com", "invalid argument: wireguard relay listener 77 belongs to relay-b and cannot be used by agent edge-a")
-	assertBackupSkippedInvalidReason(t, preview, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", "invalid argument: wireguard relay listener 77 belongs to relay-b and cannot be used by agent edge-a")
+	if preview.Summary.Imported.HTTPRules != 1 || preview.Summary.Imported.L4Rules != 1 {
+		t.Fatalf("preview imported rule summary = %+v", preview.Summary.Imported)
+	}
 
 	result, err := svc.Import(t.Context(), archive)
 	if err != nil {
 		t.Fatalf("Import() error = %v", err)
 	}
-	if result.Summary.SkippedInvalid.HTTPRules != 1 || result.Summary.SkippedInvalid.L4Rules != 1 {
+	if result.Summary.SkippedInvalid.HTTPRules != 0 || result.Summary.SkippedInvalid.L4Rules != 0 {
 		t.Fatalf("import invalid summary = %+v", result.Summary.SkippedInvalid)
 	}
-	if result.Summary.Imported.HTTPRules != 0 || result.Summary.Imported.L4Rules != 0 {
+	if result.Summary.Imported.HTTPRules != 1 || result.Summary.Imported.L4Rules != 1 {
 		t.Fatalf("imported rule summary = %+v", result.Summary.Imported)
 	}
-	assertBackupSkippedInvalidReason(t, result, "http_rule", "https://cross-wg.example.com", "invalid argument: wireguard relay listener 77 belongs to relay-b and cannot be used by agent edge-a")
-	assertBackupSkippedInvalidReason(t, result, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", "invalid argument: wireguard relay listener 77 belongs to relay-b and cannot be used by agent edge-a")
 }
 
 func TestBackupServicePreviewAndImportSkipWireGuardRulesWhenAgentLacksCapability(t *testing.T) {

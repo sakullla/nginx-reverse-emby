@@ -951,7 +951,7 @@ func TestRuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
 	}
 }
 
-func TestRuleServiceCreateRejectsCrossAgentWireGuardRelayListener(t *testing.T) {
+func TestRuleServiceCreateAllowsCrossAgentWireGuardRelayListener(t *testing.T) {
 	profileID := 41
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay"}},
@@ -969,16 +969,16 @@ func TestRuleServiceCreateRejectsCrossAgentWireGuardRelayListener(t *testing.T) 
 		LocalAgentID:     "local",
 	}, store)
 
-	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://cross-wg.example.com"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://upstream:8096"}},
 		RelayLayers: &[][]int{{7}},
 	})
-	if err == nil {
-		t.Fatal("Create() error = nil")
-	}
-	if err.Error() != "invalid argument: wireguard relay listener 7 belongs to remote-relay and cannot be used by agent local" {
+	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 7 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
 	}
 }
 
@@ -1041,7 +1041,7 @@ func TestRuleServiceCreateAllowsCrossAgentTLSRelayListener(t *testing.T) {
 	}
 }
 
-func TestRuleServiceUpdateRejectsCrossAgentWireGuardRelayListener(t *testing.T) {
+func TestRuleServiceUpdateAllowsCrossAgentWireGuardRelayListener(t *testing.T) {
 	profileID := 41
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay"}},
@@ -1069,14 +1069,14 @@ func TestRuleServiceUpdateRejectsCrossAgentWireGuardRelayListener(t *testing.T) 
 		LocalAgentID:     "local",
 	}, store)
 
-	_, err := svc.Update(context.Background(), "local", 3, HTTPRuleInput{
+	rule, err := svc.Update(context.Background(), "local", 3, HTTPRuleInput{
 		RelayLayers: &[][]int{{7}},
 	})
-	if err == nil {
-		t.Fatal("Update() error = nil")
-	}
-	if err.Error() != "invalid argument: wireguard relay listener 7 belongs to remote-relay and cannot be used by agent local" {
+	if err != nil {
 		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 7 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
 	}
 }
 

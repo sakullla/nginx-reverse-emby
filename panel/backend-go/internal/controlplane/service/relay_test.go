@@ -158,7 +158,35 @@ func (s *relayCertStore) SaveRelayListeners(_ context.Context, agentID string, r
 	return nil
 }
 
-func (s *relayCertStore) SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error {
+func (s *relayCertStore) SaveWireGuardProfiles(_ context.Context, agentID string, rows []storage.WireGuardProfileRow) error {
+	if s.wireGuardByAgentID == nil {
+		s.wireGuardByAgentID = map[string][]storage.WireGuardProfileRow{}
+	}
+	s.wireGuardByAgentID[agentID] = append([]storage.WireGuardProfileRow(nil), rows...)
+	return nil
+}
+
+func (s *relayCertStore) MutateWireGuardClientProfile(_ context.Context, agentID string, profileID int, mutate func(storage.WireGuardClientProfileMutation) (storage.WireGuardClientProfileMutation, error)) error {
+	if s.wireGuardByAgentID == nil {
+		s.wireGuardByAgentID = map[string][]storage.WireGuardProfileRow{}
+	}
+	profiles := append([]storage.WireGuardProfileRow(nil), s.wireGuardByAgentID[agentID]...)
+	profileIndex := -1
+	for i, row := range profiles {
+		if row.ID == profileID {
+			profileIndex = i
+			break
+		}
+	}
+	next, err := mutate(storage.WireGuardClientProfileMutation{
+		Profiles:     profiles,
+		ProfileIndex: profileIndex,
+		Clients:      nil,
+	})
+	if err != nil {
+		return err
+	}
+	s.wireGuardByAgentID[agentID] = append([]storage.WireGuardProfileRow(nil), next.Profiles...)
 	return nil
 }
 
@@ -477,25 +505,36 @@ func TestRelayListenerDefaultsTransportAndObfs(t *testing.T) {
 	}
 }
 
-func TestRelayListenerWireGuardRequiresProfile(t *testing.T) {
+func TestRelayListenerCreateWireGuardUsesDefaultProfile(t *testing.T) {
 	store := &relayCertStore{
-		relayByAgentID: map[string][]storage.RelayListenerRow{},
-		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
-		l4RulesByID:    map[string][]storage.L4RuleRow{},
+		relayByAgentID:     map[string][]storage.RelayListenerRow{},
+		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:        map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
 	}
 	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	_, err := svc.Create(context.Background(), "local", RelayListenerInput{
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
 		Name:          stringPtr("wg-relay"),
-		ListenPort:    intPtrService(7443),
-		Enabled:       boolPtr(false),
 		TransportMode: stringPtr("wireguard"),
+		ListenPort:    intPtrService(19001),
+		Enabled:       boolPtr(true),
 	})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "wireguard_profile_id is required") {
-		t.Fatalf("Create() error = %v, want clear wireguard_profile_id validation", err)
+	if listener.WireGuardProfileID == nil || *listener.WireGuardProfileID <= 0 {
+		t.Fatalf("WireGuardProfileID = %v, want default profile", listener.WireGuardProfileID)
+	}
+	if listener.ListenHost == "" {
+		t.Fatalf("ListenHost = %q, want generated WG inner host", listener.ListenHost)
+	}
+	rows, err := store.ListWireGuardProfiles(context.Background(), "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("profiles = %+v, want generated default profile", rows)
 	}
 }
 
@@ -915,7 +954,7 @@ func TestRelayServiceCreateWireGuardAutoRelayCAIssuesCertificateAndDerivesTrust(
 	}
 }
 
-func TestRelayServiceCreateWireGuardRejectsEnabledListenerWithoutCertificate(t *testing.T) {
+func TestRelayServiceCreateWireGuardAllowsEnabledListenerWithoutCertificate(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
 		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
@@ -924,7 +963,7 @@ func TestRelayServiceCreateWireGuardRejectsEnabledListenerWithoutCertificate(t *
 	}
 	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	_, err := svc.Create(context.Background(), "local", RelayListenerInput{
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
 		Name:               stringPtr("wg-relay"),
 		ListenPort:         intPtrService(7443),
 		Enabled:            boolPtr(true),
@@ -932,14 +971,14 @@ func TestRelayServiceCreateWireGuardRejectsEnabledListenerWithoutCertificate(t *
 		WireGuardProfileID: intPtrService(7),
 		CertificateSource:  stringPtr("existing_certificate"),
 	})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "certificate_id is required") {
-		t.Fatalf("Create() error = %v, want clear certificate_id validation", err)
+	if listener.CertificateID != nil {
+		t.Fatalf("CertificateID = %v, want nil for wireguard transport", listener.CertificateID)
 	}
-	if len(store.relayByAgentID["local"]) != 0 {
-		t.Fatalf("persisted relay listeners = %+v", store.relayByAgentID["local"])
+	if len(store.relayByAgentID["local"]) != 1 {
+		t.Fatalf("persisted relay listeners = %+v, want one listener", store.relayByAgentID["local"])
 	}
 }
 

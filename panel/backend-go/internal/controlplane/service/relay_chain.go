@@ -150,19 +150,6 @@ func validateRelayChainReferencesFromRows(knownAgentIDs []string, listenersByID 
 		if _, ok := knownAgents[strings.TrimSpace(listener.AgentID)]; !ok {
 			return fmt.Errorf("%w: relay listener belongs to unknown agent: %d", ErrInvalidArgument, listenerID)
 		}
-		if isWireGuardRelayTransport(listener.TransportMode) && strings.TrimSpace(opts.RuleAgentID) != "" && strings.TrimSpace(listener.AgentID) != strings.TrimSpace(opts.RuleAgentID) {
-			return fmt.Errorf(
-				"%w: wireguard relay listener %d belongs to %s and cannot be used by agent %s",
-				ErrInvalidArgument,
-				listenerID,
-				strings.TrimSpace(listener.AgentID),
-				strings.TrimSpace(opts.RuleAgentID),
-			)
-		}
 	}
 	return nil
-}
-
-func isWireGuardRelayTransport(value string) bool {
-	return strings.EqualFold(strings.TrimSpace(value), "wireguard")
 }

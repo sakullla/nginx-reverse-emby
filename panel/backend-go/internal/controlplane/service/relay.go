@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -478,7 +479,33 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	}
 	originalCertRows := append([]storage.ManagedCertificateRow(nil), certRows...)
 
-	draft, err := normalizeRelayListenerInput(input, fallback, suggestedID, relayNormalizeOptions{
+	workingInput := input
+	inputTransportMode := strings.TrimSpace(pointerString(input.TransportMode))
+	if inputTransportMode == "" {
+		inputTransportMode = fallback.TransportMode
+	}
+	if inputTransportMode == "wireguard" && input.WireGuardProfileID == nil && fallback.WireGuardProfileID == nil {
+		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, agentID); err != nil {
+			return relayPreparation{}, err
+		}
+		profileStore, ok := s.store.(wireGuardProfileStore)
+		if !ok {
+			return relayPreparation{}, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
+		}
+		profileSvc := NewWireGuardProfileService(s.cfg, profileStore)
+		profile, err := profileSvc.EnsureDefault(ctx, agentID)
+		if err != nil {
+			return relayPreparation{}, err
+		}
+		id := profile.ID
+		workingInput.WireGuardProfileID = &id
+		if workingInput.ListenHost == nil || strings.TrimSpace(*workingInput.ListenHost) == "" {
+			host := firstWireGuardAddressHost(profile.Addresses)
+			workingInput.ListenHost = &host
+		}
+	}
+
+	draft, err := normalizeRelayListenerInput(workingInput, fallback, suggestedID, relayNormalizeOptions{
 		AllowMissingCertificate: true,
 		SkipTrustValidation:     true,
 	})
@@ -495,7 +522,6 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	shouldIssueCert := shouldAutoIssueRelayListenerCertificate(certificateSource, draft, previousUsesAutoCert, shouldRotateAutoCert)
 	shouldDeriveTrust := shouldAutoDeriveRelayTrust(trustModeSource, certificateSource, input, draft, fallback, previousUsesAutoCert)
 
-	workingInput := input
 	persistCertificates := false
 	materialBundles := make([]storage.ManagedCertificateBundle, 0)
 	if shouldIssueCert {
@@ -566,6 +592,15 @@ func relayListenerUsesAutoCertificate(rows []storage.ManagedCertificateRow, list
 		return false
 	}
 	return isAutoRelayListenerCertificate(cert, listener.ID)
+}
+
+func firstWireGuardAddressHost(addresses []string) string {
+	for _, raw := range addresses {
+		if prefix, err := netip.ParsePrefix(strings.TrimSpace(raw)); err == nil {
+			return prefix.Addr().String()
+		}
+	}
+	return "0.0.0.0"
 }
 
 func shouldAutoIssueRelayListenerCertificate(certificateSource string, draft RelayListener, previousUsesAutoCert bool, shouldRotateAutoCert bool) bool {
@@ -786,7 +821,7 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		tags = normalizeTags(*input.Tags)
 	}
 
-	if enabled {
+	if enabled && transportMode != "wireguard" {
 		if certID == nil && !options.AllowMissingCertificate {
 			return RelayListener{}, fmt.Errorf("%w: certificate_id is required when relay listener is enabled", ErrInvalidArgument)
 		}
