@@ -836,8 +836,10 @@ describe('runtime canonical rule payloads', () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
 
     expect(l4Form.default).toContain('const isProxyEntry = computed(() => form.value.protocol === \'tcp\' && (form.value.listen_mode === \'proxy\' || (form.value.listen_mode === \'wireguard\' && form.value.proxy_egress_mode !== \'\')))')
+    expect(l4Form.default).toContain('const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)')
+    expect(l4Form.default).toContain('backends: requiresBackends.value ? validBackends : []')
     expect(l4Form.default).toContain('proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : \'\'')
-    expect(l4Form.default).toContain('if (!isProxyEntry.value && validBackends.length === 0)')
+    expect(l4Form.default).toContain('if (requiresBackends.value && validBackends.length === 0)')
   })
 
   it('L4 form exposes WireGuard egress URI source controls', async () => {
