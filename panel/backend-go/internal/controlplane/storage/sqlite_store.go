@@ -2,15 +2,21 @@ package storage
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 
+	"golang.org/x/crypto/curve25519"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -241,6 +247,10 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		return Snapshot{}, err
 	}
 	wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	wireGuardRows, err = s.attachWireGuardRelayPeersForSnapshot(ctx, resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -1109,6 +1119,400 @@ func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID st
 	return s.ListWireGuardProfiles(ctx, agentID)
 }
 
+func (s *GormStore) attachWireGuardRelayPeersForSnapshot(
+	ctx context.Context,
+	agentID string,
+	profiles []WireGuardProfileRow,
+	httpRows []HTTPRuleRow,
+	l4Rows []L4RuleRow,
+	relayRows []RelayListenerRow,
+) ([]WireGuardProfileRow, error) {
+	if len(profiles) == 0 || len(relayRows) == 0 {
+		return profiles, nil
+	}
+	localIndex := defaultWireGuardProfileIndex(profiles)
+	if localIndex < 0 {
+		localIndex = firstEnabledWireGuardProfileIndex(profiles)
+	}
+	if localIndex < 0 {
+		return profiles, nil
+	}
+
+	remoteProfileIDsByAgent := make(map[string]map[int]struct{})
+	for _, relayRow := range relayRows {
+		if relayRow.AgentID == agentID ||
+			!relayRow.Enabled ||
+			!strings.EqualFold(strings.TrimSpace(relayRow.TransportMode), "wireguard") ||
+			relayRow.WireGuardProfileID == nil ||
+			*relayRow.WireGuardProfileID <= 0 {
+			continue
+		}
+		ownerAgentID := strings.TrimSpace(relayRow.AgentID)
+		if ownerAgentID == "" {
+			continue
+		}
+		if _, ok := remoteProfileIDsByAgent[ownerAgentID]; !ok {
+			remoteProfileIDsByAgent[ownerAgentID] = make(map[int]struct{})
+		}
+		remoteProfileIDsByAgent[ownerAgentID][*relayRow.WireGuardProfileID] = struct{}{}
+	}
+	if len(remoteProfileIDsByAgent) == 0 {
+		return s.attachWireGuardRelayOwnerPeersForSnapshot(ctx, agentID, profiles, httpRows, l4Rows, relayRows)
+	}
+
+	remoteProfiles := make(map[string]WireGuardProfileRow)
+	for ownerAgentID, profileIDs := range remoteProfileIDsByAgent {
+		rows, err := s.ListWireGuardProfiles(ctx, ownerAgentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if _, ok := profileIDs[row.ID]; !ok || !row.Enabled {
+				continue
+			}
+			remoteProfiles[wireGuardProfileGraphKey(row.AgentID, row.ID)] = row
+		}
+	}
+	if len(remoteProfiles) == 0 {
+		return s.attachWireGuardRelayOwnerPeersForSnapshot(ctx, agentID, profiles, httpRows, l4Rows, relayRows)
+	}
+
+	next := append([]WireGuardProfileRow(nil), profiles...)
+	localProfile := next[localIndex]
+	peers := parseWireGuardPeers(localProfile.PeersJSON)
+	changed := false
+	for _, relayRow := range relayRows {
+		if relayRow.AgentID == agentID ||
+			!relayRow.Enabled ||
+			!strings.EqualFold(strings.TrimSpace(relayRow.TransportMode), "wireguard") ||
+			relayRow.WireGuardProfileID == nil ||
+			*relayRow.WireGuardProfileID <= 0 {
+			continue
+		}
+		remoteProfile, ok := remoteProfiles[wireGuardProfileGraphKey(relayRow.AgentID, *relayRow.WireGuardProfileID)]
+		if !ok {
+			continue
+		}
+		peer, ok := snapshotWireGuardRelayPeer(relayRow, remoteProfile)
+		if !ok {
+			continue
+		}
+		if wireGuardPeersContainPublicKey(peers, peer.PublicKey) {
+			continue
+		}
+		peers = append(peers, peer)
+		changed = true
+	}
+	if !changed {
+		return s.attachWireGuardRelayOwnerPeersForSnapshot(ctx, agentID, profiles, httpRows, l4Rows, relayRows)
+	}
+	next[localIndex].PeersJSON = marshalSnapshotWireGuardPeers(peers)
+	next[localIndex].Revision = maxInt(next[localIndex].Revision, highestRelayListenerRevision(relayRows))
+	return s.attachWireGuardRelayOwnerPeersForSnapshot(ctx, agentID, next, httpRows, l4Rows, relayRows)
+}
+
+func (s *GormStore) attachWireGuardRelayOwnerPeersForSnapshot(
+	ctx context.Context,
+	agentID string,
+	profiles []WireGuardProfileRow,
+	httpRows []HTTPRuleRow,
+	l4Rows []L4RuleRow,
+	relayRows []RelayListenerRow,
+) ([]WireGuardProfileRow, error) {
+	localWireGuardRelayProfileIDs := make(map[int]struct{})
+	localRelayIDs := make(map[int]struct{})
+	for _, relayRow := range relayRows {
+		if relayRow.AgentID != agentID ||
+			!relayRow.Enabled ||
+			!strings.EqualFold(strings.TrimSpace(relayRow.TransportMode), "wireguard") ||
+			relayRow.WireGuardProfileID == nil ||
+			*relayRow.WireGuardProfileID <= 0 {
+			continue
+		}
+		localRelayIDs[relayRow.ID] = struct{}{}
+		localWireGuardRelayProfileIDs[*relayRow.WireGuardProfileID] = struct{}{}
+	}
+	if len(localRelayIDs) == 0 {
+		return profiles, nil
+	}
+
+	callerAgentIDs, err := s.wireGuardRelayCallerAgentIDs(ctx, agentID, localRelayIDs, httpRows, l4Rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(callerAgentIDs) == 0 {
+		return profiles, nil
+	}
+
+	callerProfiles := make([]WireGuardProfileRow, 0, len(callerAgentIDs))
+	for _, callerAgentID := range callerAgentIDs {
+		rows, err := s.ListWireGuardProfiles(ctx, callerAgentID)
+		if err != nil {
+			return nil, err
+		}
+		index := defaultWireGuardProfileIndex(rows)
+		if index < 0 {
+			index = firstEnabledWireGuardProfileIndex(rows)
+		}
+		if index >= 0 {
+			callerProfiles = append(callerProfiles, rows[index])
+		}
+	}
+	if len(callerProfiles) == 0 {
+		return profiles, nil
+	}
+
+	next := append([]WireGuardProfileRow(nil), profiles...)
+	changed := false
+	for i := range next {
+		if _, ok := localWireGuardRelayProfileIDs[next[i].ID]; !ok || !next[i].Enabled {
+			continue
+		}
+		peers := parseWireGuardPeers(next[i].PeersJSON)
+		profileChanged := false
+		for _, callerProfile := range callerProfiles {
+			peer, ok := snapshotWireGuardProfilePeer("system:relay-caller:"+strings.TrimSpace(callerProfile.AgentID), callerProfile)
+			if !ok || wireGuardPeersContainPublicKey(peers, peer.PublicKey) {
+				continue
+			}
+			peers = append(peers, peer)
+			profileChanged = true
+		}
+		if profileChanged {
+			next[i].PeersJSON = marshalSnapshotWireGuardPeers(peers)
+			next[i].Revision = maxInt(next[i].Revision, highestRelayListenerRevision(relayRows))
+			changed = true
+		}
+	}
+	if !changed {
+		return profiles, nil
+	}
+	return next, nil
+}
+
+func (s *GormStore) wireGuardRelayCallerAgentIDs(
+	ctx context.Context,
+	agentID string,
+	localRelayIDs map[int]struct{},
+	httpRows []HTTPRuleRow,
+	l4Rows []L4RuleRow,
+) ([]string, error) {
+	callerSet := make(map[string]struct{})
+	addIfReferences := func(rowAgentID string, relayLayersJSON string) {
+		rowAgentID = strings.TrimSpace(rowAgentID)
+		if rowAgentID == "" || rowAgentID == agentID {
+			return
+		}
+		for _, listenerID := range flattenIntLayers(parseIntLayers(relayLayersJSON)) {
+			if _, ok := localRelayIDs[listenerID]; ok {
+				callerSet[rowAgentID] = struct{}{}
+				return
+			}
+		}
+	}
+
+	for _, row := range httpRows {
+		if row.Enabled {
+			addIfReferences(row.AgentID, row.RelayLayersJSON)
+		}
+	}
+	for _, row := range l4Rows {
+		if row.Enabled {
+			addIfReferences(row.AgentID, row.RelayLayersJSON)
+		}
+	}
+
+	allHTTPRows, err := s.loadAllHTTPRulesForSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range allHTTPRows {
+		if row.Enabled {
+			addIfReferences(row.AgentID, row.RelayLayersJSON)
+		}
+	}
+	allL4Rows, err := s.loadAllL4RulesForSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range filterSyncL4RuleRows(allL4Rows) {
+		if row.Enabled {
+			addIfReferences(row.AgentID, row.RelayLayersJSON)
+		}
+	}
+
+	agentIDs := make([]string, 0, len(callerSet))
+	for callerAgentID := range callerSet {
+		agentIDs = append(agentIDs, callerAgentID)
+	}
+	sort.Strings(agentIDs)
+	return agentIDs, nil
+}
+
+func (s *GormStore) loadAllHTTPRulesForSnapshot(ctx context.Context) ([]HTTPRuleRow, error) {
+	var rows []HTTPRuleRow
+	if err := s.db.WithContext(ctx).Order("agent_id, id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		normalizeHTTPRuleRow(&rows[i])
+	}
+	return rows, nil
+}
+
+func (s *GormStore) loadAllL4RulesForSnapshot(ctx context.Context) ([]L4RuleRow, error) {
+	var rows []L4RuleRow
+	if err := s.db.WithContext(ctx).Order("agent_id, id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		normalizeL4RuleRow(&rows[i])
+	}
+	return rows, nil
+}
+
+func defaultWireGuardProfileIndex(profiles []WireGuardProfileRow) int {
+	for i, row := range profiles {
+		if row.Enabled && hasStringValue(parseStringSlice(row.TagsJSON), "system:default-wireguard") {
+			return i
+		}
+	}
+	return -1
+}
+
+func firstEnabledWireGuardProfileIndex(profiles []WireGuardProfileRow) int {
+	for i, row := range profiles {
+		if row.Enabled {
+			return i
+		}
+	}
+	return -1
+}
+
+func snapshotWireGuardRelayPeer(relayRow RelayListenerRow, remoteProfile WireGuardProfileRow) (WireGuardPeer, bool) {
+	endpoint := defaultString(remoteProfile.PublicEndpoint, relayPublicEndpoint(relayRow))
+	return snapshotWireGuardProfilePeer("system:relay-listener:"+strconv.Itoa(relayRow.ID), withWireGuardProfileEndpoint(remoteProfile, endpoint))
+}
+
+func snapshotWireGuardProfilePeer(name string, profile WireGuardProfileRow) (WireGuardPeer, bool) {
+	publicKey, err := wireGuardPublicKeyFromPrivateKey(profile.PrivateKey)
+	if err != nil {
+		return WireGuardPeer{}, false
+	}
+	endpoint := strings.TrimSpace(profile.PublicEndpoint)
+	allowedIPs := wireGuardProfileHostAllowedIPs(parseStringSlice(profile.AddressesJSON))
+	if endpoint == "" || len(allowedIPs) == 0 {
+		return WireGuardPeer{}, false
+	}
+	return WireGuardPeer{
+		Name:                       name,
+		PublicKey:                  publicKey,
+		Endpoint:                   endpoint,
+		AllowedIPs:                 allowedIPs,
+		PersistentKeepaliveSeconds: 25,
+	}, true
+}
+
+func withWireGuardProfileEndpoint(profile WireGuardProfileRow, endpoint string) WireGuardProfileRow {
+	profile.PublicEndpoint = endpoint
+	return profile
+}
+
+func relayPublicEndpoint(row RelayListenerRow) string {
+	host := strings.TrimSpace(row.PublicHost)
+	if host == "" {
+		host = strings.TrimSpace(row.ListenHost)
+	}
+	port := row.PublicPort
+	if port <= 0 {
+		port = row.ListenPort
+	}
+	if host == "" || port <= 0 {
+		return ""
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+func wireGuardProfileHostAllowedIPs(addresses []string) []string {
+	allowed := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		addr, ok := wireGuardAddressHostPrefix(address)
+		if ok {
+			allowed = append(allowed, addr)
+		}
+	}
+	return allowed
+}
+
+func wireGuardAddressHostPrefix(address string) (string, bool) {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(address))
+	if err != nil {
+		addr, addrErr := netip.ParseAddr(strings.TrimSpace(address))
+		if addrErr != nil {
+			return "", false
+		}
+		if addr.Is4() {
+			return netip.PrefixFrom(addr, 32).String(), true
+		}
+		return netip.PrefixFrom(addr, 128).String(), true
+	}
+	addr := prefix.Addr()
+	if addr.Is4() {
+		return netip.PrefixFrom(addr, 32).String(), true
+	}
+	return netip.PrefixFrom(addr, 128).String(), true
+}
+
+func wireGuardPeersContainPublicKey(peers []WireGuardPeer, publicKey string) bool {
+	publicKey = strings.TrimSpace(publicKey)
+	if publicKey == "" {
+		return false
+	}
+	for _, peer := range peers {
+		if strings.TrimSpace(peer.PublicKey) == publicKey {
+			return true
+		}
+	}
+	return false
+}
+
+func marshalSnapshotWireGuardPeers(peers []WireGuardPeer) string {
+	data, err := json.Marshal(peers)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func wireGuardPublicKeyFromPrivateKey(privateKey string) (string, error) {
+	privateBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(privateKey))
+	if err != nil || len(privateBytes) != 32 {
+		return "", fmt.Errorf("invalid key")
+	}
+	privateBytes[0] &= 248
+	privateBytes[31] &= 127
+	privateBytes[31] |= 64
+	publicBytes, err := curve25519.X25519(privateBytes, curve25519.Basepoint)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(publicBytes), nil
+}
+
+func wireGuardProfileGraphKey(agentID string, profileID int) string {
+	return strings.TrimSpace(agentID) + ":" + strconv.Itoa(profileID)
+}
+
+func hasStringValue(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, value := range values {
+		if strings.TrimSpace(value) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func filterWireGuardProfilesForSnapshotGraph(
 	agentID string,
 	profiles []WireGuardProfileRow,
@@ -1124,11 +1528,23 @@ func filterWireGuardProfilesForSnapshotGraph(
 	referenced := referencedWireGuardProfileIDs(agentID, httpRows, l4Rows, relayRows, wireGuardClientRows)
 	filtered := make([]WireGuardProfileRow, 0, len(profiles))
 	for _, row := range profiles {
-		if _, ok := referenced[row.ID]; ok {
+		if _, ok := referenced[row.ID]; ok || wireGuardProfileHasSystemRelayPeer(row) {
 			filtered = append(filtered, row)
 		}
 	}
 	return filtered
+}
+
+func wireGuardProfileHasSystemRelayPeer(row WireGuardProfileRow) bool {
+	if row.AgentID == "" || !row.Enabled {
+		return false
+	}
+	for _, peer := range parseWireGuardPeers(row.PeersJSON) {
+		if strings.HasPrefix(strings.TrimSpace(peer.Name), "system:relay-listener:") {
+			return true
+		}
+	}
+	return false
 }
 
 func referencedWireGuardProfileIDs(

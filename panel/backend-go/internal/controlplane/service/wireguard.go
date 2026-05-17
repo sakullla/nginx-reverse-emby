@@ -170,7 +170,7 @@ func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID str
 		ListenPort: listenPort,
 		Addresses:  []string{allocateWireGuardProfileAddress(rows)},
 		MTU:        1280,
-		Enabled:    boolPtr(true),
+		Enabled:    wireGuardBoolPtr(true),
 		Tags:       []string{"system:default-wireguard"},
 	}
 	return s.Create(ctx, resolvedID, input)
@@ -842,6 +842,10 @@ func hasTag(tags []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func wireGuardBoolPtr(value bool) *bool {
+	return &value
 }
 
 func validateWireGuardPrefixes(values []string, field string) error {
