@@ -58,6 +58,47 @@ func TestWireGuardProfileCreateRedactsSecretsOnRead(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileServiceEnsureDefaultCreatesProfile(t *testing.T) {
+	store, svc := newTestWireGuardProfileService(t)
+	agentID := "local"
+	profile, err := svc.EnsureDefault(t.Context(), agentID)
+	if err != nil {
+		t.Fatalf("EnsureDefault() error = %v", err)
+	}
+	if profile.ID <= 0 || profile.Name != "Default WireGuard" || profile.ListenPort != 51820 || len(profile.Addresses) != 1 || profile.Enabled != true {
+		t.Fatalf("profile = %+v", profile)
+	}
+	rows, err := store.ListWireGuardProfiles(t.Context(), agentID)
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v, want one default profile", rows)
+	}
+}
+
+func TestWireGuardProfileServiceEnsureDefaultReusesExistingDefault(t *testing.T) {
+	store, svc := newTestWireGuardProfileService(t)
+	first, err := svc.EnsureDefault(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("EnsureDefault(first) error = %v", err)
+	}
+	second, err := svc.EnsureDefault(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("EnsureDefault(second) error = %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("default profile IDs = %d and %d, want reuse", first.ID, second.ID)
+	}
+	rows, err := store.ListWireGuardProfiles(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v, want one reused default profile", rows)
+	}
+}
+
 func TestWireGuardProfileCreateAllocatesIDAcrossAgents(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)

@@ -140,6 +140,42 @@ func (s *wireGuardProfileService) List(ctx context.Context, agentID string) ([]W
 	return profiles, nil
 }
 
+func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID string) (WireGuardProfile, error) {
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+		return WireGuardProfile{}, err
+	}
+	rows, err := s.store.ListWireGuardProfiles(ctx, resolvedID)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	for _, row := range rows {
+		profile := wireGuardProfileFromRow(row)
+		if profile.Enabled && hasTag(profile.Tags, "system:default-wireguard") {
+			return redactWireGuardProfile(profile), nil
+		}
+	}
+	privateKey, _, err := generateWireGuardKeyPair()
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	listenPort := nextAvailableWireGuardListenPort(rows, 51820)
+	input := WireGuardProfileInput{
+		Name:       "Default WireGuard",
+		Mode:       "generic_wireguard",
+		PrivateKey: privateKey,
+		ListenPort: listenPort,
+		Addresses:  []string{allocateWireGuardProfileAddress(rows)},
+		MTU:        1280,
+		Enabled:    boolPtr(true),
+		Tags:       []string{"system:default-wireguard"},
+	}
+	return s.Create(ctx, resolvedID, input)
+}
+
 func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, input WireGuardProfileInput) (WireGuardProfile, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
@@ -762,6 +798,21 @@ func maxWireGuardProfileRevision(rows []storage.WireGuardProfileRow) int {
 	return maxRevision
 }
 
+func nextAvailableWireGuardListenPort(rows []storage.WireGuardProfileRow, start int) int {
+	used := map[int]struct{}{}
+	for _, row := range rows {
+		if row.Enabled && row.ListenPort > 0 {
+			used[row.ListenPort] = struct{}{}
+		}
+	}
+	for port := start; port <= 65535; port++ {
+		if _, ok := used[port]; !ok {
+			return port
+		}
+	}
+	return 0
+}
+
 func allocateWireGuardProfileAddress(rows []storage.WireGuardProfileRow) string {
 	used := map[int]struct{}{}
 	for _, row := range rows {
@@ -782,6 +833,15 @@ func allocateWireGuardProfileAddress(rows []storage.WireGuardProfileRow) string 
 		}
 	}
 	return "10.8.0.1/24"
+}
+
+func hasTag(tags []string, target string) bool {
+	for _, tag := range tags {
+		if strings.EqualFold(strings.TrimSpace(tag), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateWireGuardPrefixes(values []string, field string) error {
