@@ -251,8 +251,10 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	listenerIDMap := previewListenerIDMap(ctx, bundle.RelayListeners, existingRelayRows, agentIDMap, certIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, listenerAllocator, previewCapabilityStore, s.cfg)
 	previewRelayListeners := previewRelayListenersByID(existingRelayRows, bundle.RelayListeners, listenerIDMap, agentIDMap, s.cfg)
 	existingRelayKeys := map[string]struct{}{}
+	previewRelayRowsByAgent := map[string][]storage.RelayListenerRow{}
 	for _, row := range existingRelayRows {
 		existingRelayKeys[relayConflictKey(row.AgentID, row.Name)] = struct{}{}
+		previewRelayRowsByAgent[row.AgentID] = append(previewRelayRowsByAgent[row.AgentID], row)
 	}
 	previewRelayKeys := map[string]struct{}{}
 	for _, item := range bundle.RelayListeners {
@@ -291,8 +293,19 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedInvalid("relay_listener", conflictKey, "referenced trusted CA certificate was not imported")
 			continue
 		}
+		normalized, err := normalizeRelayListenerInput(input, RelayListener{}, item.ID, relayNormalizeOptions{})
+		if err != nil {
+			result.addSkippedInvalid("relay_listener", conflictKey, err.Error())
+			continue
+		}
+		normalized.AgentID = resolvedAgentID
+		if err := ensureUniqueRelayListen(relayListenersFromRows(previewRelayRowsByAgent[resolvedAgentID]), normalized, 0); err != nil {
+			result.addSkippedConflict("relay_listener", conflictKey, err.Error())
+			continue
+		}
 		result.addImported("relay_listener", conflictKey)
 		previewRelayKeys[conflictKey] = struct{}{}
+		previewRelayRowsByAgent[resolvedAgentID] = append(previewRelayRowsByAgent[resolvedAgentID], relayListenerToRow(normalized))
 	}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
@@ -560,9 +573,11 @@ func previewAgentCapabilities(agents []BackupAgent, agentIDMap map[string]string
 func previewListenerIDMap(ctx context.Context, listeners []BackupRelayListener, existing []storage.RelayListenerRow, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, allocator *configIdentityAllocator, capabilityStore agentCapabilityStore, cfg config.Config) map[int]int {
 	listenerIDMap := map[int]int{}
 	conflictIndex := map[string]int{}
+	grouped := map[string][]storage.RelayListenerRow{}
 	for _, row := range existing {
 		listener := relayListenerFromRow(row)
 		conflictIndex[relayConflictKey(listener.AgentID, listener.Name)] = listener.ID
+		grouped[row.AgentID] = append(grouped[row.AgentID], row)
 		if listener.ID > 0 {
 			listenerIDMap[listener.ID] = listener.ID
 		}
@@ -600,10 +615,27 @@ func previewListenerIDMap(ctx context.Context, listeners []BackupRelayListener, 
 		if allocator != nil {
 			assignedID = allocator.AllocateListenerID(item.ID)
 		}
+		normalized, err := normalizeRelayListenerInput(input, RelayListener{}, assignedID, relayNormalizeOptions{})
+		if err != nil {
+			continue
+		}
+		normalized.AgentID = resolvedAgentID
+		if err := ensureUniqueRelayListen(relayListenersFromRows(grouped[resolvedAgentID]), normalized, 0); err != nil {
+			continue
+		}
 		listenerIDMap[item.ID] = assignedID
 		conflictIndex[conflictKey] = assignedID
+		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], relayListenerToRow(normalized))
 	}
 	return listenerIDMap
+}
+
+func relayListenersFromRows(rows []storage.RelayListenerRow) []RelayListener {
+	listeners := make([]RelayListener, 0, len(rows))
+	for _, row := range rows {
+		listeners = append(listeners, relayListenerFromRow(row))
+	}
+	return listeners
 }
 
 func previewRelayListenersByID(existing []storage.RelayListenerRow, incoming []BackupRelayListener, listenerIDMap map[int]int, agentIDMap map[string]string, cfg config.Config) map[int]storage.RelayListenerRow {
@@ -1225,6 +1257,10 @@ func (s *backupService) importRelayListeners(ctx context.Context, existing []sto
 		}
 		normalized.AgentID = resolvedAgentID
 
+		if err := ensureUniqueRelayListen(relayListenersFromRows(grouped[resolvedAgentID]), normalized, 0); err != nil {
+			result.addSkippedConflict("relay_listener", conflictKey, err.Error())
+			continue
+		}
 		listenerIDMap[item.ID] = assignedID
 		normalized.ID = assignedID
 		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])

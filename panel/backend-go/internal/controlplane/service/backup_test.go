@@ -4616,6 +4616,213 @@ func assertBackupDuplicateIncomingRelayResult(t *testing.T, result BackupImportR
 	assertBackupSkippedInvalidReason(t, result, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", "invalid argument: relay listener is disabled: 77")
 }
 
+func TestBackupServicePreviewAndImportRejectRelayListenerBindDuplicateAfterNormalization(t *testing.T) {
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{ID: "relay-a", Name: "relay-a", AgentToken: "token-relay", CapabilitiesJSON: `["cert_install"]`}); err != nil {
+		t.Fatalf("SaveAgent(relay-a) error = %v", err)
+	}
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+			Counts: BackupCounts{
+				RelayListeners: 2,
+				Certificates:   1,
+			},
+		},
+		Certificates: []BackupCertificate{{
+			ID:              21,
+			Domain:          "relay.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  []string{"relay-a"},
+			Status:          "pending",
+			AgentReports:    map[string]ManagedCertificateAgentReport{},
+			ACMEInfo:        ManagedCertificateACMEInfo{},
+			Usage:           "relay_tunnel",
+			CertificateType: "acme",
+		}},
+		RelayListeners: []BackupRelayListener{
+			{
+				ID:            77,
+				AgentID:       "relay-a",
+				Name:          "relay-explicit-host",
+				BindHosts:     []string{"0.0.0.0"},
+				ListenHost:    "0.0.0.0",
+				ListenPort:    7443,
+				PublicHost:    "relay.example.com",
+				PublicPort:    7443,
+				Enabled:       true,
+				CertificateID: backupIntPtr(21),
+				TLSMode:       "pin_only",
+				TransportMode: "tls_tcp",
+				PinSet:        []RelayPin{{Type: "spki_sha256", Value: "fixture-pin"}},
+				Revision:      5,
+			},
+			{
+				ID:            78,
+				AgentID:       "relay-a",
+				Name:          "relay-default-host",
+				ListenPort:    7443,
+				PublicHost:    "relay-default.example.com",
+				PublicPort:    7443,
+				Enabled:       true,
+				CertificateID: backupIntPtr(21),
+				TLSMode:       "pin_only",
+				PinSet:        []RelayPin{{Type: "spki_sha256", Value: "fixture-pin"}},
+				Revision:      6,
+			},
+		},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore)
+	preview, err := svc.Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	assertBackupRelayBindDuplicateResult(t, preview, "relay-a|relay-default-host", 1)
+
+	result, err := svc.Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	assertBackupRelayBindDuplicateResult(t, result, "relay-a|relay-default-host", 1)
+
+	listeners, err := targetStore.ListRelayListeners(ctx, "relay-a")
+	if err != nil {
+		t.Fatalf("ListRelayListeners(relay-a) error = %v", err)
+	}
+	if len(listeners) != 1 {
+		t.Fatalf("imported relay listeners = %+v, want only first listener", listeners)
+	}
+	if listeners[0].Name != "relay-explicit-host" || listeners[0].ListenHost != "0.0.0.0" || listeners[0].TransportMode != "tls_tcp" {
+		t.Fatalf("imported relay listener = %+v, want normalized first listener", listeners[0])
+	}
+}
+
+func TestBackupServicePreviewAndImportRejectRelayListenerBindConflictWithExisting(t *testing.T) {
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{ID: "relay-a", Name: "relay-a", AgentToken: "token-relay", CapabilitiesJSON: `["cert_install"]`}); err != nil {
+		t.Fatalf("SaveAgent(relay-a) error = %v", err)
+	}
+	if err := targetStore.SaveRelayListeners(ctx, "relay-a", []storage.RelayListenerRow{{
+		ID:            50,
+		AgentID:       "relay-a",
+		Name:          "existing-relay",
+		ListenHost:    "0.0.0.0",
+		BindHostsJSON: `["0.0.0.0"]`,
+		ListenPort:    7443,
+		PublicHost:    "existing.example.com",
+		PublicPort:    7443,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+		Revision:      2,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(existing) error = %v", err)
+	}
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+			Counts: BackupCounts{
+				RelayListeners: 1,
+				Certificates:   1,
+			},
+		},
+		Certificates: []BackupCertificate{{
+			ID:              21,
+			Domain:          "incoming.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  []string{"relay-a"},
+			Status:          "pending",
+			AgentReports:    map[string]ManagedCertificateAgentReport{},
+			ACMEInfo:        ManagedCertificateACMEInfo{},
+			Usage:           "relay_tunnel",
+			CertificateType: "acme",
+		}},
+		RelayListeners: []BackupRelayListener{{
+			ID:            77,
+			AgentID:       "relay-a",
+			Name:          "incoming-relay",
+			BindHosts:     []string{"127.0.0.1"},
+			ListenHost:    "127.0.0.1",
+			ListenPort:    7443,
+			PublicHost:    "incoming.example.com",
+			PublicPort:    7443,
+			Enabled:       true,
+			CertificateID: backupIntPtr(21),
+			TLSMode:       "pin_only",
+			TransportMode: "tls_tcp",
+			PinSet:        []RelayPin{{Type: "spki_sha256", Value: "fixture-pin"}},
+			Revision:      5,
+		}},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore)
+	preview, err := svc.Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	assertBackupRelayBindDuplicateResult(t, preview, "relay-a|incoming-relay", 0)
+
+	result, err := svc.Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	assertBackupRelayBindDuplicateResult(t, result, "relay-a|incoming-relay", 0)
+
+	listeners, err := targetStore.ListRelayListeners(ctx, "relay-a")
+	if err != nil {
+		t.Fatalf("ListRelayListeners(relay-a) error = %v", err)
+	}
+	if len(listeners) != 1 || listeners[0].Name != "existing-relay" {
+		t.Fatalf("relay listeners after import = %+v, want only existing listener", listeners)
+	}
+}
+
+func assertBackupRelayBindDuplicateResult(t *testing.T, result BackupImportResult, conflictKey string, wantImported int) {
+	t.Helper()
+	if result.Summary.Imported.RelayListeners != wantImported {
+		t.Fatalf("relay imported summary = %+v, want %d; report = %+v", result.Summary.Imported, wantImported, result.Report)
+	}
+	if result.Summary.SkippedConflict.RelayListeners != 1 {
+		t.Fatalf("relay skipped conflict summary = %+v, want one; report = %+v", result.Summary.SkippedConflict, result.Report)
+	}
+	for _, item := range result.Report.SkippedConflict {
+		if item.Kind == "relay_listener" && item.Key == conflictKey {
+			return
+		}
+	}
+	t.Fatalf("missing relay_listener conflict key %q in %+v", conflictKey, result.Report.SkippedConflict)
+}
+
 func TestBackupServicePreviewAndImportSkipCrossAgentWireGuardRelayReferences(t *testing.T) {
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
