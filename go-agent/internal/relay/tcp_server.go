@@ -32,6 +32,11 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 
 	tuneBulkRelayConn(rawConn)
 
+	if normalizeListenerTransportModeValue(listener.TransportMode) == ListenerTransportModeWireGuard {
+		s.handleMuxTLSTCPConn(rawConn, listener)
+		return
+	}
+
 	tlsConfig, err := serverTLSConfig(s.ctx, s.provider, listener)
 	if err != nil {
 		return

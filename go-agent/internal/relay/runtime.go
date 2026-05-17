@@ -93,7 +93,7 @@ func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMat
 			server.Close()
 			return nil, fmt.Errorf("relay listener %d: %w", listener.ID, err)
 		}
-		if normalized.CertificateID == nil {
+		if normalized.TransportMode != ListenerTransportModeWireGuard && normalized.CertificateID == nil {
 			server.Close()
 			return nil, fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
 		}

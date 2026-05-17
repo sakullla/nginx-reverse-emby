@@ -386,6 +386,24 @@ func dialNewTLSTCPTunnel(ctx context.Context, hop Hop, provider TLSMaterialProvi
 }
 
 func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMaterialProvider, options DialOptions) (*tlsTCPTunnel, error) {
+	if normalizeListenerTransportModeValue(hop.Listener.TransportMode) == ListenerTransportModeWireGuard {
+		rawConn, err := dialRelayRawTCP(ctx, hop, options)
+		if err != nil {
+			return nil, err
+		}
+		tunnel := &tlsTCPTunnel{
+			key:        hop.Address,
+			rawConn:    rawConn,
+			reader:     rawConn,
+			writer:     rawConn,
+			closeOuter: rawConn.Close,
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+		go tunnel.readLoop()
+		return tunnel, nil
+	}
+
 	tlsConfig, err := clientTLSConfig(ctx, provider, hop.Listener, hop.Address, hop.ServerName)
 	if err != nil {
 		return nil, err
@@ -453,6 +471,19 @@ func dialRelayWireGuardTCP(ctx context.Context, hop Hop, provider WireGuardRunti
 }
 
 func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
+	if normalizeListenerTransportModeValue(hop.Listener.TransportMode) == ListenerTransportModeWireGuard {
+		return fmt.Sprintf(
+			"%d|%d|%s|%s|%s|%d|%s",
+			hop.Listener.ID,
+			hop.Listener.Revision,
+			strings.TrimSpace(hop.Listener.AgentID),
+			hop.Address,
+			ListenerTransportModeWireGuard,
+			valueOrZero(hop.Listener.WireGuardProfileID),
+			strings.TrimSpace(outboundProxyURL),
+		), nil
+	}
+
 	serverName, err := verificationServerName(hop.Address, hop.ServerName)
 	if err != nil {
 		return "", err
