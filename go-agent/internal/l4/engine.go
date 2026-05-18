@@ -40,18 +40,12 @@ func ValidateRule(rule Rule) error {
 	if listenMode == "wireguard" && wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
 		return fmt.Errorf("wireguard_inbound_mode must be address or transparent")
 	}
-	if listenMode == "wireguard" && wireGuardInboundMode == "transparent" && protocol == "udp" {
-		return fmt.Errorf("wireguard transparent inbound does not support udp dynamic destination routing")
-	}
 	if listenMode == "wireguard" && !hasWireGuardProfile(rule) {
 		return fmt.Errorf("wireguard_profile_id is required for wireguard listen mode")
 	}
 	if isProxyEntryRule(rule) {
-		if protocol != "tcp" {
-			if listenMode == "wireguard" {
-				return fmt.Errorf("wireguard proxy entry requires protocol tcp")
-			}
-			return fmt.Errorf("listen_mode=proxy requires protocol tcp")
+		if protocol != "tcp" && protocol != "udp" {
+			return fmt.Errorf("listen_mode=proxy requires protocol tcp or udp")
 		}
 		return validateProxyEntryRule(rule)
 	}
@@ -76,7 +70,7 @@ func isWireGuardTransparentForwardRule(rule Rule) bool {
 	if protocol == "" {
 		protocol = "tcp"
 	}
-	return protocol == "tcp" &&
+	return (protocol == "tcp" || protocol == "udp") &&
 		strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
 		wireGuardInboundMode(rule) == "transparent" &&
 		!isProxyEntryRule(rule)
@@ -84,6 +78,25 @@ func isWireGuardTransparentForwardRule(rule Rule) bool {
 
 func validateProxyEntryRule(rule Rule) error {
 	mode := strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode))
+	if strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
+		switch mode {
+		case "relay", "wireguard":
+			return nil
+		case "proxy":
+			parsed, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
+			if err != nil {
+				return fmt.Errorf("invalid proxy_egress_url: %w", err)
+			}
+			switch parsed.Scheme {
+			case "socks", "socks5", "socks5h":
+				return nil
+			default:
+				return fmt.Errorf("udp proxy entry requires a SOCKS5-family proxy")
+			}
+		default:
+			return fmt.Errorf("proxy_egress_mode must be relay, proxy, or wireguard")
+		}
+	}
 	switch mode {
 	case "relay":
 		if !ruleUsesRelay(rule) {
@@ -101,7 +114,7 @@ func validateProxyEntryRule(rule Rule) error {
 			return fmt.Errorf("invalid proxy_egress_url: %w", err)
 		}
 	default:
-		return fmt.Errorf("proxy_egress_mode must be relay or proxy")
+		return fmt.Errorf("proxy_egress_mode must be relay, proxy, or wireguard")
 	}
 	return nil
 }
