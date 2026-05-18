@@ -82,23 +82,11 @@ func DialUDP(ctx context.Context, proxyURL string) (*UDPAssociation, error) {
 		_ = control.Close()
 		return nil, err
 	}
-	if bindAddr.IP == nil || bindAddr.IP.IsUnspecified() {
-		host, _, splitErr := net.SplitHostPort(cfg.Address)
-		if splitErr != nil {
-			_ = packet.Close()
-			_ = control.Close()
-			return nil, splitErr
-		}
-		ips, lookupErr := net.LookupIP(host)
-		if lookupErr != nil || len(ips) == 0 {
-			_ = packet.Close()
-			_ = control.Close()
-			if lookupErr != nil {
-				return nil, lookupErr
-			}
-			return nil, fmt.Errorf("resolve SOCKS5 UDP relay host %q: no IPs", host)
-		}
-		bindAddr.IP = ips[0]
+	bindAddr, err = socks5UDPRelayAddr(bindAddr, control.RemoteAddr())
+	if err != nil {
+		_ = packet.Close()
+		_ = control.Close()
+		return nil, err
 	}
 	return &UDPAssociation{
 		control:   control,
@@ -441,6 +429,27 @@ func buildSOCKS5UDPPacketForProxy(target string, payload []byte, remoteDNS bool)
 		host = resolvedHost
 	}
 	return BuildSOCKS5UDPPacket(net.JoinHostPort(host, fmt.Sprintf("%d", port)), payload)
+}
+
+func socks5UDPRelayAddr(bindAddr *net.UDPAddr, controlRemoteAddr net.Addr) (*net.UDPAddr, error) {
+	if bindAddr == nil {
+		return nil, fmt.Errorf("SOCKS5 UDP relay address is missing")
+	}
+	if bindAddr.IP != nil && !bindAddr.IP.IsUnspecified() {
+		return bindAddr, nil
+	}
+	if controlRemoteAddr == nil {
+		return nil, fmt.Errorf("SOCKS5 UDP relay host is unspecified and control peer is missing")
+	}
+	host, _, err := net.SplitHostPort(controlRemoteAddr.String())
+	if err != nil {
+		return nil, fmt.Errorf("parse SOCKS5 control peer %q: %w", controlRemoteAddr.String(), err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil, fmt.Errorf("parse SOCKS5 control peer host %q", host)
+	}
+	return &net.UDPAddr{IP: ip, Port: bindAddr.Port, Zone: bindAddr.Zone}, nil
 }
 
 func readSOCKS5ReplyBindAddress(conn net.Conn) (*net.UDPAddr, error) {
