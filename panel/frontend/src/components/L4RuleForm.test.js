@@ -41,12 +41,23 @@ function mountForm() {
   })
 }
 
+function mountFormWithRules(l4Rules = []) {
+  return mount(L4RuleForm, {
+    props: { agentId: 'local', l4Rules },
+    global: {
+      stubs: {
+        RouterLink: true
+      }
+    }
+  })
+}
+
 function selectByLabel(wrapper, labelText) {
   const group = wrapper
     .findAll('.form-group')
     .find((item) => item.find('.form-label').exists() && item.find('.form-label').text() === labelText)
   if (!group) throw new Error(`Missing form group: ${labelText}`)
-  return group.get('select')
+  return group.find('select').exists() ? group.get('select') : group.get('input')
 }
 
 describe('L4RuleForm WireGuard egress', () => {
@@ -132,5 +143,55 @@ describe('L4RuleForm WireGuard egress', () => {
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('启用入口认证')
+  })
+
+  it('rejects UDP proxy entry without same-port TCP SOCKS5 rule', async () => {
+    const wrapper = mountFormWithRules([
+      {
+        id: 2,
+        protocol: 'tcp',
+        listen_mode: 'proxy',
+        listen_host: '0.0.0.0',
+        listen_port: 2080
+      }
+    ])
+
+    await selectByLabel(wrapper, '协议').setValue('udp')
+    await selectByLabel(wrapper, '监听端口').setValue('1080')
+    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    await selectByLabel(wrapper, '监听模式').setValue('proxy')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('需要先维护同端口 TCP SOCKS5 入口规则')
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('allows UDP proxy entry when a same-port TCP SOCKS5 rule exists', async () => {
+    const wrapper = mountFormWithRules([
+      {
+        id: 3,
+        protocol: 'tcp',
+        listen_mode: 'proxy',
+        listen_host: '0.0.0.0',
+        listen_port: 1080
+      }
+    ])
+
+    await selectByLabel(wrapper, '协议').setValue('udp')
+    await selectByLabel(wrapper, '监听端口').setValue('1080')
+    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    await selectByLabel(wrapper, '监听模式').setValue('proxy')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('需要先维护同端口 TCP SOCKS5 入口规则')
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
+      protocol: 'udp',
+      listen_mode: 'proxy',
+      listen_host: '0.0.0.0',
+      listen_port: 1080
+    })
   })
 })

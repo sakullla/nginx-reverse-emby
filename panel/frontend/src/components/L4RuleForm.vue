@@ -7,6 +7,15 @@
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'relay' }" @click="activeTab = 'relay'">Relay 配置 <span v-if="hasRelayConfig" class="form-tabs__dot" title="已配置"></span></button>
     </div>
 
+    <div v-if="error" class="form-error">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="12" y1="8" x2="12" y2="12"/>
+        <line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      {{ error }}
+    </div>
+
     <!-- Tab 1: Basic -->
     <div v-if="activeTab === 'basic'" class="form-tab-panel">
       <!-- Protocol -->
@@ -139,15 +148,6 @@
         </div>
       </div>
 
-      <div v-if="error" class="form-error">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="8" x2="12" y2="12"/>
-          <line x1="12" y1="16" x2="12.01" y2="16"/>
-        </svg>
-        {{ error }}
-      </div>
-
       <!-- Enabled Toggle -->
       <label class="toggle-row">
         <input v-model="form.enabled" type="checkbox" class="toggle__input">
@@ -171,7 +171,7 @@
             <label class="form-label">监听模式</label>
             <select v-model="form.listen_mode" class="input">
               <option value="tcp">{{ form.protocol === 'udp' ? 'UDP 转发' : 'TCP 转发' }}</option>
-              <option v-if="form.protocol === 'tcp'" value="proxy">SOCKS / HTTP 代理</option>
+              <option value="proxy">SOCKS / HTTP 代理</option>
               <option value="wireguard">WireGuard</option>
             </select>
           </div>
@@ -184,6 +184,9 @@
               <option value="wireguard">WireGuard</option>
             </select>
           </div>
+        </div>
+        <div v-if="form.protocol === 'udp' && form.listen_mode === 'proxy'" class="form-help">
+          UDP SOCKS5 入口依赖同监听地址、同端口的 TCP SOCKS5 入口规则完成认证与 UDP ASSOCIATE。
         </div>
 
         <div v-if="usesWireGuard" class="form-row">
@@ -375,6 +378,7 @@ import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuni
 
 const props = defineProps({
   initialData: { type: Object, default: null },
+  l4Rules: { type: Array, default: () => [] },
   agentId: { type: [String, Object], required: true }
 })
 const emit = defineEmits(['success'])
@@ -524,9 +528,9 @@ const hasTuningChanges = computed(() => {
 })
 
 const activeTab = ref('basic')
-const supportsProxyEgress = computed(() => form.value.protocol === 'tcp' && (form.value.listen_mode === 'proxy' || form.value.listen_mode === 'wireguard'))
-const isProxyEntry = computed(() => form.value.protocol === 'tcp' && (form.value.listen_mode === 'proxy' || (form.value.listen_mode === 'wireguard' && form.value.proxy_egress_mode !== '')))
-const isProxyEntryAuthAvailable = computed(() => form.value.protocol === 'tcp' && form.value.listen_mode === 'proxy')
+const supportsProxyEgress = computed(() => form.value.listen_mode === 'proxy' || form.value.listen_mode === 'wireguard')
+const isProxyEntry = computed(() => form.value.listen_mode === 'proxy' || (form.value.listen_mode === 'wireguard' && form.value.proxy_egress_mode !== ''))
+const isProxyEntryAuthAvailable = computed(() => form.value.listen_mode === 'proxy')
 const isWireGuardInbound = computed(() => form.value.listen_mode === 'wireguard')
 const isWireGuardEgress = computed(() => isProxyEntry.value && form.value.proxy_egress_mode === 'wireguard')
 const isWireGuardTransparentForward = computed(() => form.value.protocol === 'tcp'
@@ -547,6 +551,19 @@ const selectedWireGuardProfileID = computed(() => {
   const id = Number(form.value.wireguard_profile_id)
   if (!Number.isInteger(id) || id <= 0) return null
   return enabledWireGuardProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
+})
+const samePortTCPProxyRule = computed(() => {
+  if (!(form.value.protocol === 'udp' && form.value.listen_mode === 'proxy')) return true
+  const currentId = props.initialData?.id
+  const listenPort = Number(form.value.listen_port)
+  const listenHost = String(form.value.listen_host || '0.0.0.0').trim()
+  return (props.l4Rules || []).some((rule) =>
+    rule?.id !== currentId
+    && rule?.protocol === 'tcp'
+    && rule?.listen_mode === 'proxy'
+    && Number(rule?.listen_port) === listenPort
+    && String(rule?.listen_host || '0.0.0.0').trim() === listenHost
+  )
 })
 
 const hasProtocolTuning = computed(() => {
@@ -626,11 +643,7 @@ watch(() => form.value.protocol, (newProto) => {
   form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
   if (newProto === 'udp') {
     form.value.relay_obfs = false
-    if (form.value.listen_mode === 'proxy') {
-      form.value.listen_mode = 'tcp'
-    }
-    if (form.value.listen_mode === 'wireguard') {
-      form.value.proxy_egress_mode = ''
+    if (form.value.listen_mode === 'wireguard' && form.value.wireguard_inbound_mode !== 'transparent') {
       form.value.wireguard_inbound_mode = 'address'
     }
   }
@@ -638,7 +651,7 @@ watch(() => form.value.protocol, (newProto) => {
 
 watch([isWireGuardInbound, isWireGuardEgress], ([inbound, egress]) => {
   if (inbound && form.value.protocol === 'udp' && form.value.wireguard_inbound_mode === 'transparent') {
-    form.value.wireguard_inbound_mode = 'address'
+    return
   }
 }, { immediate: true })
 
@@ -877,6 +890,10 @@ async function handleSubmit() {
   }
   if (isWireGuardEgressUriSource.value && !form.value.wireguard_egress_uri.trim()) {
     error.value = 'WireGuard URI 不能为空'
+    return
+  }
+  if (!samePortTCPProxyRule.value) {
+    error.value = '需要先维护同端口 TCP SOCKS5 入口规则'
     return
   }
   try {

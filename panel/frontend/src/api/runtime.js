@@ -156,7 +156,7 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
   const { upstream_host, upstream_port, relay_chain, wireguard_profile_override, wireguard_listen_host, ...rest } = payload
   const listenMode = payload.listen_mode === 'wireguard' ? 'wireguard' : payload.listen_mode
   const protocol = String(payload.protocol || '').toLowerCase()
-  const wireGuardInboundMode = listenMode === 'wireguard' && protocol !== 'udp' && payload.wireguard_inbound_mode === 'transparent'
+  const wireGuardInboundMode = listenMode === 'wireguard' && payload.wireguard_inbound_mode === 'transparent'
     ? 'transparent'
     : listenMode === 'wireguard'
       ? 'address'

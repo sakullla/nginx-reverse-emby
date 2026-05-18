@@ -416,7 +416,7 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('normalizes L4 transparent UDP payloads back to address mode', async () => {
+  it('preserves L4 transparent UDP payloads for wireguard listen mode', async () => {
     const { api } = await vi.importActual('./client.js')
     const requests = []
     const originalAdapter = api.defaults.adapter
@@ -452,9 +452,54 @@ describe('runtime canonical rule payloads', () => {
 
       const payload = JSON.parse(requests[0].data)
       expect(payload.protocol).toBe('udp')
-      expect(payload.wireguard_inbound_mode).toBe('address')
+      expect(payload.wireguard_inbound_mode).toBe('transparent')
       expect(payload.wireguard_profile_id).toBe(101)
       expect(payload).not.toHaveProperty('wireguard_listen_host')
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
+  it('preserves UDP proxy entry payloads', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      return {
+        data: {
+          rule: {
+            id: 19,
+            ...JSON.parse(config.data)
+          }
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      await runtime.createL4Rule('edge-a', {
+        protocol: 'udp',
+        listen_host: '0.0.0.0',
+        listen_port: 1080,
+        listen_mode: 'proxy',
+        proxy_egress_mode: 'proxy',
+        proxy_egress_url: 'socks5://127.0.0.1:2080',
+        proxy_entry_auth: { enabled: true, username: 'user', password: 'pass' },
+        backends: []
+      })
+
+      const payload = JSON.parse(requests[0].data)
+      expect(payload.protocol).toBe('udp')
+      expect(payload.listen_mode).toBe('proxy')
+      expect(payload.proxy_egress_mode).toBe('proxy')
+      expect(payload.proxy_egress_url).toBe('socks5://127.0.0.1:2080')
+      expect(payload.proxy_entry_auth).toEqual({ enabled: true, username: 'user', password: 'pass' })
     } finally {
       api.defaults.adapter = originalAdapter
     }
@@ -907,7 +952,7 @@ describe('runtime canonical rule payloads', () => {
   it('L4 form treats WireGuard listen mode as a proxy entry when egress is selected', async () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
 
-    expect(l4Form.default).toContain('const isProxyEntry = computed(() => form.value.protocol === \'tcp\' && (form.value.listen_mode === \'proxy\' || (form.value.listen_mode === \'wireguard\' && form.value.proxy_egress_mode !== \'\')))')
+    expect(l4Form.default).toContain('const isProxyEntry = computed(() => form.value.listen_mode === \'proxy\' || (form.value.listen_mode === \'wireguard\' && form.value.proxy_egress_mode !== \'\'))')
     expect(l4Form.default).toContain('const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)')
     expect(l4Form.default).toContain('backends: requiresBackends.value ? validBackends : []')
     expect(l4Form.default).toContain('proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : \'\'')
