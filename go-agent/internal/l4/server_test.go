@@ -751,16 +751,15 @@ func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 	}
 }
 
-func TestWireGuardTransparentUDPInboundRejected(t *testing.T) {
+func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 	profileID := 9
 	listenPort := pickFreeUDPPort(t)
 	runtime := &fakeL4WireGuardRuntime{
 		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {
-			t.Fatalf("ListenUDP address = %q, want validation before listener start", address)
-			return nil, nil
+			return net.ListenPacket("udp", "127.0.0.1:0")
 		},
 	}
-	_, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "udp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           listenPort,
@@ -772,8 +771,18 @@ func TestWireGuardTransparentUDPInboundRejected(t *testing.T) {
 	}}, nil, nil, fakeL4WireGuardProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
-	if err == nil || !strings.Contains(err.Error(), "transparent") || !strings.Contains(err.Error(), "udp") {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v, want transparent udp validation", err)
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+
+	calls := runtime.listenUDPCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ListenUDP calls = %d, want 1", len(calls))
+	}
+	want := net.JoinHostPort("", strconv.Itoa(listenPort))
+	if calls[0] != want {
+		t.Fatalf("ListenUDP address = %q, want %q", calls[0], want)
 	}
 }
 

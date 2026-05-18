@@ -178,7 +178,7 @@ func TestValidateRuleAllowsWireGuardTransparentUDP(t *testing.T) {
 	}
 }
 
-func TestValidateRuleRejectsLegacyWireGuardTransparentUDPWithBackends(t *testing.T) {
+func TestValidateRuleAllowsWireGuardTransparentUDPWithRuntimeFields(t *testing.T) {
 	profileID := 7
 	err := ValidateRule(Rule{
 		Protocol:             "udp",
@@ -192,7 +192,7 @@ func TestValidateRuleRejectsLegacyWireGuardTransparentUDPWithBackends(t *testing
 			{Host: "127.0.0.1", Port: 9001},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "transparent") || !strings.Contains(err.Error(), "udp") {
+	if err != nil {
 		t.Fatalf("ValidateRule() error = %v", err)
 	}
 }
@@ -337,6 +337,35 @@ func TestValidateRuleAllowsUDPProxyEntry(t *testing.T) {
 		ListenMode:      "proxy",
 		ProxyEgressMode: "proxy",
 		ProxyEgressURL:  "socks5://127.0.0.1:2080",
+	})
+	if err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
+func TestValidateRuleAllowsUDPProxyEntryWithRelayEgress(t *testing.T) {
+	err := ValidateRule(model.L4Rule{
+		Protocol:        "udp",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "relay",
+		RelayLayers:     [][]int{{101}},
+	})
+	if err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
+func TestValidateRuleAllowsUDPProxyEntryWithWireGuardEgress(t *testing.T) {
+	profileID := 7
+	err := ValidateRule(model.L4Rule{
+		Protocol:           "udp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         1080,
+		ListenMode:         "proxy",
+		ProxyEgressMode:    "wireguard",
+		WireGuardProfileID: &profileID,
 	})
 	if err != nil {
 		t.Fatalf("ValidateRule() error = %v", err)
