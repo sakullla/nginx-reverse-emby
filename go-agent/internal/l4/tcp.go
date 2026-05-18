@@ -139,9 +139,11 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 		return
 	}
 	if req.Protocol == "socks5-udp" {
-		unregister := s.registerProxyUDPAssociation(client, rule)
+		bindAddr := s.proxyUDPBindAddr(client, rule)
+		associationAddr := s.proxyUDPAssociationListenAddr(rule, bindAddr)
+		unregister := s.registerProxyUDPAssociation(client, rule, req, associationAddr)
 		defer unregister()
-		if err := proxyproto.WriteClientRequestSuccessWithBind(client, req, s.proxyUDPBindAddr(client, rule)); err != nil {
+		if err := proxyproto.WriteClientRequestSuccessWithBind(client, req, bindAddr); err != nil {
 			return
 		}
 		done := make(chan struct{}, 1)

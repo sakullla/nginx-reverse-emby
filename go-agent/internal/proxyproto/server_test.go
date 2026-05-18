@@ -118,6 +118,51 @@ func TestReadClientRequestSOCKS5UDPAssociate(t *testing.T) {
 	}
 }
 
+func TestReadClientRequestSOCKS5UDPAssociateAllowsAllZeroEndpoint(t *testing.T) {
+	client, server := newPipe(t)
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		_, _ = client.Write([]byte{0x05, 0x01, 0x00})
+		buf := make([]byte, 2)
+		_, _ = io.ReadFull(client, buf)
+		_, _ = client.Write([]byte{
+			0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0x00, 0x00,
+		})
+	}()
+
+	req, err := ReadClientRequest(context.Background(), server, EntryAuth{})
+	if err != nil {
+		t.Fatalf("ReadClientRequest() error = %v", err)
+	}
+	if req.Protocol != "socks5-udp" || req.Target != "0.0.0.0:0" || req.Host != "0.0.0.0" || req.Port != 0 {
+		t.Fatalf("req = %+v, want socks5-udp 0.0.0.0:0", req)
+	}
+}
+
+func TestReadClientRequestSOCKS5ConnectRejectsPortZero(t *testing.T) {
+	client, server := newPipe(t)
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		_, _ = client.Write([]byte{0x05, 0x01, 0x00})
+		buf := make([]byte, 2)
+		_, _ = io.ReadFull(client, buf)
+		_, _ = client.Write([]byte{
+			0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0x00, 0x00,
+		})
+		reply := make([]byte, 10)
+		_, _ = io.ReadFull(client, reply)
+	}()
+
+	_, err := ReadClientRequest(context.Background(), server, EntryAuth{})
+	if err == nil {
+		t.Fatalf("ReadClientRequest() error = nil, want port zero rejection")
+	}
+}
+
 func TestWriteClientRequestSuccessWithBindSOCKS5UDPAssociate(t *testing.T) {
 	client, server := newPipe(t)
 	defer client.Close()

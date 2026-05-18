@@ -476,21 +476,95 @@ func TestProxyUDPAssociationKeepsSameSourceKeyUntilLastControlSessionCloses(t *t
 		Conn:       serverB,
 		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40002},
 	}
+	bindAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}
+	req := proxyproto.ClientRequest{
+		Protocol: "socks5-udp",
+		Host:     "127.0.0.1",
+		Port:     53000,
+		Target:   "127.0.0.1:53000",
+	}
+	peer := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53000}
 
-	unregisterA := srv.registerProxyUDPAssociation(wrappedA, rule)
-	unregisterB := srv.registerProxyUDPAssociation(wrappedB, rule)
-	if !srv.hasProxyUDPAssociation("127.0.0.1", 1080) {
+	unregisterA := srv.registerProxyUDPAssociation(wrappedA, rule, req, bindAddr)
+	unregisterB := srv.registerProxyUDPAssociation(wrappedB, rule, req, bindAddr)
+	if !srv.hasProxyUDPAssociation(peer, bindAddr) {
 		t.Fatalf("association missing after two registrations")
 	}
 
 	unregisterA()
-	if !srv.hasProxyUDPAssociation("127.0.0.1", 1080) {
+	if !srv.hasProxyUDPAssociation(peer, bindAddr) {
 		t.Fatalf("association removed while another same-source control session remains active")
 	}
 
 	unregisterB()
-	if srv.hasProxyUDPAssociation("127.0.0.1", 1080) {
+	if srv.hasProxyUDPAssociation(peer, bindAddr) {
 		t.Fatalf("association still present after last control session unregistered")
+	}
+}
+
+func TestProxyUDPAssociationHonorsRequestedEndpoint(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	srv := &Server{
+		udpAssociations: make(map[string]udpProxyAssociation),
+	}
+	rule := model.L4Rule{ID: 1, ListenPort: 1080}
+	wrapped := &addrOverrideConn{
+		Conn:       server,
+		localAddr:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080},
+		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40001},
+	}
+
+	bindAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}
+	unregister := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+		Protocol: "socks5-udp",
+		Host:     "127.0.0.1",
+		Port:     53000,
+		Target:   "127.0.0.1:53000",
+	}, bindAddr)
+	defer unregister()
+
+	if !srv.hasProxyUDPAssociation(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53000}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}) {
+		t.Fatalf("association missing for requested UDP endpoint")
+	}
+	if srv.hasProxyUDPAssociation(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53001}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}) {
+		t.Fatalf("association authorized different same-IP UDP port")
+	}
+}
+
+func TestProxyUDPAssociationAllZeroEndpointLocksToFirstPeer(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	srv := &Server{
+		udpAssociations: make(map[string]udpProxyAssociation),
+	}
+	rule := model.L4Rule{ID: 1, ListenPort: 1080}
+	wrapped := &addrOverrideConn{
+		Conn:       server,
+		localAddr:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080},
+		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40001},
+	}
+
+	unregister := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+		Protocol: "socks5-udp",
+		Host:     "0.0.0.0",
+		Port:     0,
+		Target:   "0.0.0.0:0",
+	}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080})
+	defer unregister()
+
+	listener := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}
+	firstPeer := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53000}
+	otherPeer := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53001}
+	if !srv.hasProxyUDPAssociation(firstPeer, listener) {
+		t.Fatalf("association did not authorize first observed UDP peer")
+	}
+	if srv.hasProxyUDPAssociation(otherPeer, listener) {
+		t.Fatalf("association authorized different same-IP UDP peer after first observation")
 	}
 }
 
@@ -574,7 +648,7 @@ func TestSOCKS5UDPAssociateReplyBindsUDPListenEndpoint(t *testing.T) {
 		t.Fatalf("read method selection: %v", err)
 	}
 	if _, err := controlConn.Write([]byte{
-		0x05, 0x03, 0x00, 0x01, 127, 0, 0, 1, byte(listenPort >> 8), byte(listenPort),
+		0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0x00, 0x00,
 	}); err != nil {
 		t.Fatalf("write udp associate: %v", err)
 	}
@@ -585,9 +659,6 @@ func TestSOCKS5UDPAssociateReplyBindsUDPListenEndpoint(t *testing.T) {
 	udpEndpoint := parseSOCKS5IPv4ReplyEndpoint(t, replyHeader)
 	if udpEndpoint.Port != listenPort {
 		t.Fatalf("UDP associate bind port = %d, want %d", udpEndpoint.Port, listenPort)
-	}
-	if !srv.hasProxyUDPAssociation("127.0.0.1", listenPort) {
-		t.Fatalf("UDP association not registered after successful control reply")
 	}
 
 	udpConn, err := net.DialUDP("udp", nil, udpEndpoint)
@@ -683,6 +754,151 @@ func TestSOCKS5UDPEntryTargetUsesWireGuardEgress(t *testing.T) {
 	}
 	if string(buf) != "dns-query" {
 		t.Fatalf("runtime payload = %q, want dns-query", string(buf))
+	}
+}
+
+func TestProxyUDPUpstreamRejectsUnexpectedReplyTarget(t *testing.T) {
+	unexpectedConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen unexpected udp upstream: %v", err)
+	}
+	defer unexpectedConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := unexpectedConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = unexpectedConn.WriteToUDP([]byte("reply:"+string(buf[:n])), addr)
+		}
+	}()
+
+	upstreamProxyURL := startL4SOCKS5UDPProxyWithRewrite(t, unexpectedConn.LocalAddr().String())
+	association, err := proxyproto.DialUDP(context.Background(), upstreamProxyURL)
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer association.Close()
+
+	upstream := &proxyUDPUpstream{
+		association: association,
+		target:      "127.0.0.1:53001",
+	}
+	if err := upstream.WritePacket([]byte("payload")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+	if err := upstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	if _, err := upstream.ReadPacket(); err == nil || !strings.Contains(err.Error(), "does not match target") {
+		t.Fatalf("ReadPacket() error = %v, want unexpected target rejection", err)
+	}
+}
+
+func TestProxySOCKS5UDPEntryWrapsActualProxyReplyTarget(t *testing.T) {
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = upstreamConn.WriteToUDP([]byte("reply:"+string(buf[:n])), addr)
+		}
+	}()
+
+	rewrittenTarget := net.JoinHostPort("127.0.0.1", strconv.Itoa(upstreamConn.LocalAddr().(*net.UDPAddr).Port))
+	upstreamProxyURL := startL4SOCKS5UDPProxyWithRewrite(t, rewrittenTarget)
+	listenPort := pickFreeTCPUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{
+		{
+			ID:              1,
+			Protocol:        "tcp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      listenPort,
+			ListenMode:      "proxy",
+			ProxyEgressMode: "proxy",
+			ProxyEgressURL:  upstreamProxyURL,
+		},
+		{
+			ID:              2,
+			Protocol:        "udp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      listenPort,
+			ListenMode:      "proxy",
+			ProxyEgressMode: "proxy",
+			ProxyEgressURL:  upstreamProxyURL,
+			Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	controlConn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)))
+	if err != nil {
+		t.Fatalf("Dial() control error = %v", err)
+	}
+	defer controlConn.Close()
+	if err := controlConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() control error = %v", err)
+	}
+	if _, err := controlConn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf("write method negotiation: %v", err)
+	}
+	methodReply := make([]byte, 2)
+	if _, err := io.ReadFull(controlConn, methodReply); err != nil {
+		t.Fatalf("read method selection: %v", err)
+	}
+	if _, err := controlConn.Write([]byte{
+		0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0x00, 0x00,
+	}); err != nil {
+		t.Fatalf("write udp associate: %v", err)
+	}
+	replyHeader := make([]byte, 10)
+	if _, err := io.ReadFull(controlConn, replyHeader); err != nil {
+		t.Fatalf("read udp associate reply: %v", err)
+	}
+	udpEndpoint := parseSOCKS5IPv4ReplyEndpoint(t, replyHeader)
+
+	udpConn, err := net.DialUDP("udp", nil, udpEndpoint)
+	if err != nil {
+		t.Fatalf("DialUDP() to returned bind endpoint error = %v", err)
+	}
+	defer udpConn.Close()
+
+	originalTarget := net.JoinHostPort("target.test", strconv.Itoa(upstreamConn.LocalAddr().(*net.UDPAddr).Port))
+	packet, err := proxyproto.BuildSOCKS5UDPPacket(originalTarget, []byte("payload"))
+	if err != nil {
+		t.Fatalf("BuildSOCKS5UDPPacket() error = %v", err)
+	}
+	if _, err := udpConn.Write(packet); err != nil {
+		t.Fatalf("udp write to returned bind endpoint: %v", err)
+	}
+	if err := udpConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	reply := make([]byte, 128)
+	n, err := udpConn.Read(reply)
+	if err != nil {
+		t.Fatalf("read udp reply through returned bind endpoint: %v", err)
+	}
+	parsed, err := proxyproto.ParseSOCKS5UDPPacket(reply[:n])
+	if err != nil {
+		t.Fatalf("ParseSOCKS5UDPPacket() reply error = %v", err)
+	}
+	if parsed.Target != rewrittenTarget {
+		t.Fatalf("reply target = %q, want %q", parsed.Target, rewrittenTarget)
+	}
+	if string(parsed.Payload) != "reply:payload" {
+		t.Fatalf("reply payload = %q, want reply:payload", parsed.Payload)
 	}
 }
 
@@ -4509,8 +4725,9 @@ func TestProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *testing.T) 
 	if _, err := io.ReadFull(controlConn, buf); err != nil {
 		t.Fatalf("read auth reply: %v", err)
 	}
+	requestedPort := udpConn.LocalAddr().(*net.UDPAddr).Port
 	if _, err := controlConn.Write([]byte{
-		0x05, 0x03, 0x00, 0x01, 127, 0, 0, 1, byte(listenPort >> 8), byte(listenPort),
+		0x05, 0x03, 0x00, 0x01, 127, 0, 0, 1, byte(requestedPort >> 8), byte(requestedPort),
 	}); err != nil {
 		t.Fatalf("write udp associate: %v", err)
 	}
@@ -5343,7 +5560,33 @@ func startL4SOCKS5UDPProxy(t *testing.T) string {
 	return "socks5://" + ln.Addr().String()
 }
 
+func startL4SOCKS5UDPProxyWithRewrite(t *testing.T, replyTarget string) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen socks5 udp proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveL4SOCKS5UDPProxyControlWithRewrite(t, conn, replyTarget)
+		}
+	}()
+
+	return "socks5://" + ln.Addr().String()
+}
+
 func serveL4SOCKS5UDPProxyControl(t *testing.T, conn net.Conn) {
+	serveL4SOCKS5UDPProxyControlWithRewrite(t, conn, "")
+}
+
+func serveL4SOCKS5UDPProxyControlWithRewrite(t *testing.T, conn net.Conn, replyTarget string) {
 	defer conn.Close()
 	req, err := proxyproto.ReadClientRequest(context.Background(), conn, proxyproto.EntryAuth{})
 	if err != nil || req.Protocol != "socks5-udp" {
@@ -5358,11 +5601,11 @@ func serveL4SOCKS5UDPProxyControl(t *testing.T, conn net.Conn) {
 	if err := proxyproto.WriteClientRequestSuccessWithBind(conn, req, udpConn.LocalAddr()); err != nil {
 		return
 	}
-	go serveL4SOCKS5UDPProxyRelay(udpConn)
+	go serveL4SOCKS5UDPProxyRelay(udpConn, replyTarget)
 	_, _ = io.Copy(io.Discard, conn)
 }
 
-func serveL4SOCKS5UDPProxyRelay(udpConn *net.UDPConn) {
+func serveL4SOCKS5UDPProxyRelay(udpConn *net.UDPConn, replyTarget string) {
 	buf := make([]byte, 64*1024)
 	for {
 		n, clientAddr, err := udpConn.ReadFromUDP(buf)
@@ -5373,7 +5616,11 @@ func serveL4SOCKS5UDPProxyRelay(udpConn *net.UDPConn) {
 		if err != nil {
 			continue
 		}
-		targetAddr, err := net.ResolveUDPAddr("udp", packet.Target)
+		dialTarget := packet.Target
+		if replyTarget != "" {
+			dialTarget = replyTarget
+		}
+		targetAddr, err := net.ResolveUDPAddr("udp", dialTarget)
 		if err != nil {
 			continue
 		}
@@ -5389,7 +5636,11 @@ func serveL4SOCKS5UDPProxyRelay(udpConn *net.UDPConn) {
 		if err != nil {
 			continue
 		}
-		response, err := proxyproto.BuildSOCKS5UDPPacket(packet.Target, reply[:replyN])
+		responseTarget := packet.Target
+		if replyTarget != "" {
+			responseTarget = replyTarget
+		}
+		response, err := proxyproto.BuildSOCKS5UDPPacket(responseTarget, reply[:replyN])
 		if err != nil {
 			continue
 		}

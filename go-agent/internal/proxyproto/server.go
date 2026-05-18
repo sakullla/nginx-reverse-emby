@@ -152,7 +152,12 @@ func readSOCKS5Request(reader io.Reader, conn net.Conn, auth EntryAuth) (ClientR
 		if header[1] == 0x03 {
 			protocol = "socks5-udp"
 		}
-		req, err := newClientRequest(protocol, host, port)
+		var req ClientRequest
+		if protocol == "socks5-udp" {
+			req, err = newUDPAssociateClientRequest(host, port)
+		} else {
+			req, err = newClientRequest(protocol, host, port)
+		}
 		if err != nil {
 			writeSOCKS5Reply(conn, 0x01)
 			return ClientRequest{}, err
@@ -516,6 +521,22 @@ func newClientRequest(protocol string, host string, port int) (ClientRequest, er
 	}
 	return ClientRequest{
 		Protocol: protocol,
+		Target:   net.JoinHostPort(host, strconv.Itoa(port)),
+		Host:     host,
+		Port:     port,
+	}, nil
+}
+
+func newUDPAssociateClientRequest(host string, port int) (ClientRequest, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	if port < 0 || port > 65535 {
+		return ClientRequest{}, fmt.Errorf("proxy target port out of range")
+	}
+	return ClientRequest{
+		Protocol: "socks5-udp",
 		Target:   net.JoinHostPort(host, strconv.Itoa(port)),
 		Host:     host,
 		Port:     port,

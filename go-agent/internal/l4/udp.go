@@ -39,8 +39,13 @@ type udpUpstream interface {
 	Close() error
 	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
-	ReadPacket() ([]byte, error)
+	ReadPacket() (udpUpstreamPacket, error)
 	WritePacket([]byte) error
+}
+
+type udpUpstreamPacket struct {
+	payload []byte
+	source  string
 }
 
 type udpListener interface {
@@ -111,13 +116,13 @@ type directUDPUpstream struct {
 func (u *directUDPUpstream) Close() error                       { return u.conn.Close() }
 func (u *directUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
 func (u *directUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
-func (u *directUDPUpstream) ReadPacket() ([]byte, error) {
+func (u *directUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
 	buf := make([]byte, 64*1024)
 	n, err := u.conn.Read(buf)
 	if err != nil {
-		return nil, err
+		return udpUpstreamPacket{}, err
 	}
-	return append([]byte(nil), buf[:n]...), nil
+	return udpUpstreamPacket{payload: append([]byte(nil), buf[:n]...)}, nil
 }
 func (u *directUDPUpstream) WritePacket(payload []byte) error {
 	_, err := u.conn.Write(payload)
@@ -131,7 +136,13 @@ type relayUDPUpstream struct {
 func (u *relayUDPUpstream) Close() error                       { return u.conn.Close() }
 func (u *relayUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
 func (u *relayUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
-func (u *relayUDPUpstream) ReadPacket() ([]byte, error)        { return relay.ReadUOTPacket(u.conn) }
+func (u *relayUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
+	payload, err := relay.ReadUOTPacket(u.conn)
+	if err != nil {
+		return udpUpstreamPacket{}, err
+	}
+	return udpUpstreamPacket{payload: payload}, nil
+}
 func (u *relayUDPUpstream) WritePacket(payload []byte) error {
 	return relay.WriteUOTPacket(u.conn, payload)
 }
@@ -143,13 +154,13 @@ type connUDPUpstream struct {
 func (u *connUDPUpstream) Close() error                       { return u.conn.Close() }
 func (u *connUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
 func (u *connUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
-func (u *connUDPUpstream) ReadPacket() ([]byte, error) {
+func (u *connUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
 	buf := make([]byte, 64*1024)
 	n, err := u.conn.Read(buf)
 	if err != nil {
-		return nil, err
+		return udpUpstreamPacket{}, err
 	}
-	return append([]byte(nil), buf[:n]...), nil
+	return udpUpstreamPacket{payload: append([]byte(nil), buf[:n]...)}, nil
 }
 func (u *connUDPUpstream) WritePacket(payload []byte) error {
 	_, err := u.conn.Write(payload)
@@ -168,15 +179,38 @@ func (u *proxyUDPUpstream) SetReadDeadline(t time.Time) error {
 func (u *proxyUDPUpstream) SetWriteDeadline(t time.Time) error {
 	return u.association.SetWriteDeadline(t)
 }
-func (u *proxyUDPUpstream) ReadPacket() ([]byte, error) {
-	_, payload, err := u.association.ReadPacket()
+func (u *proxyUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
+	source, payload, err := u.association.ReadPacket()
 	if err != nil {
-		return nil, err
+		return udpUpstreamPacket{}, err
 	}
-	return payload, nil
+	if !proxyUDPReplySourceMatches(u.target, source) {
+		return udpUpstreamPacket{}, fmt.Errorf("SOCKS5 UDP reply source %q does not match target %q", source, u.target)
+	}
+	return udpUpstreamPacket{payload: payload, source: source}, nil
 }
 func (u *proxyUDPUpstream) WritePacket(payload []byte) error {
 	return u.association.WritePacket(u.target, payload)
+}
+
+func proxyUDPReplySourceMatches(expected string, source string) bool {
+	expectedHost, expectedPort, expectedErr := net.SplitHostPort(strings.TrimSpace(expected))
+	sourceHost, sourcePort, sourceErr := net.SplitHostPort(strings.TrimSpace(source))
+	if expectedErr != nil || sourceErr != nil {
+		return strings.EqualFold(strings.TrimSpace(expected), strings.TrimSpace(source))
+	}
+	if expectedPort != sourcePort {
+		return false
+	}
+	expectedIP := net.ParseIP(expectedHost)
+	sourceIP := net.ParseIP(sourceHost)
+	if expectedIP != nil {
+		return sourceIP != nil && expectedIP.Equal(sourceIP)
+	}
+	if sourceIP != nil {
+		return true
+	}
+	return strings.EqualFold(expectedHost, sourceHost)
 }
 
 func (s *Server) startUDPListener(rule model.L4Rule) error {
@@ -309,7 +343,7 @@ func (s *Server) proxySOCKS5UDPPacket(listener udpListener, rule model.L4Rule, p
 	if err != nil {
 		return
 	}
-	if peer == nil || peer.IP == nil || !s.hasProxyUDPAssociation(peer.IP.String(), rule.ListenPort) {
+	if peer == nil || peer.IP == nil || !s.hasProxyUDPAssociation(peer, listener.LocalAddr()) {
 		return
 	}
 	session, err := s.sessionForUDPFlow(rule, listener, peer, packet.Target)
@@ -575,7 +609,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if err := session.upstream.SetReadDeadline(s.now().Add(250 * time.Millisecond)); err != nil {
 			return
 		}
-		payload, err := session.upstream.ReadPacket()
+		reply, err := session.upstream.ReadPacket()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				if s.shouldFailUDPSession(session.key) {
@@ -603,6 +637,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			}
 			return
 		}
+		payload := reply.payload
 		replyDuration := s.udpReplyDuration(session.key)
 		s.markUDPSessionReply(session.key)
 		if _, ok := session.upstream.(*directUDPUpstream); ok && s.upstreamScore != nil {
@@ -620,16 +655,24 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			backendObservationKey: session.backendObservationKey,
 		}, replyDuration)
 		if session.proxyUDPEntry {
-			payload, err = proxyproto.BuildSOCKS5UDPPacket(session.targetAddr, payload)
+			replyTarget := session.targetAddr
+			if strings.TrimSpace(reply.source) != "" {
+				replyTarget = reply.source
+			}
+			payload, err = proxyproto.BuildSOCKS5UDPPacket(replyTarget, payload)
 			if err != nil {
 				return
 			}
 		}
-		if session.replySource != "" {
+		replySource := session.replySource
+		if strings.TrimSpace(reply.source) != "" {
+			replySource = reply.source
+		}
+		if replySource != "" {
 			if sourceWriter, ok := session.listener.(interface {
 				WriteToUDPFrom([]byte, *net.UDPAddr, string) (int, error)
 			}); ok {
-				if _, err := sourceWriter.WriteToUDPFrom(payload, session.peer, session.replySource); err != nil {
+				if _, err := sourceWriter.WriteToUDPFrom(payload, session.peer, replySource); err != nil {
 					return
 				}
 			} else if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
