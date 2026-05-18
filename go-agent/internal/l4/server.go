@@ -227,13 +227,13 @@ func udpAssociationKey(parts ...string) string {
 	return strings.Join(parts, "|")
 }
 
-func (s *Server) registerProxyUDPAssociation(client net.Conn, rule model.L4Rule, req proxyproto.ClientRequest, bindAddr net.Addr) func() {
+func (s *Server) registerProxyUDPAssociation(client net.Conn, rule model.L4Rule, req proxyproto.ClientRequest, bindAddr net.Addr) (func(), error) {
 	if client == nil {
-		return func() {}
+		return func() {}, nil
 	}
 	remoteAddr, ok := client.RemoteAddr().(*net.TCPAddr)
 	if !ok || remoteAddr.IP == nil {
-		return func() {}
+		return func() {}, nil
 	}
 	listenAddr := udpAssociationListenScope(bindAddr)
 	association := udpProxyAssociation{
@@ -248,7 +248,7 @@ func (s *Server) registerProxyUDPAssociation(client net.Conn, rule model.L4Rule,
 		if ip := net.ParseIP(association.requestedHost); ip != nil && !ip.IsUnspecified() {
 			association.peerIP = ip.String()
 		} else if association.requestedHost != "" && net.ParseIP(association.requestedHost) == nil {
-			association.peerIP = association.requestedHost
+			return func() {}, fmt.Errorf("domain-form SOCKS5 UDP association source hints with port are not supported")
 		}
 		association.peerPort = req.Port
 	}
@@ -281,7 +281,7 @@ func (s *Server) registerProxyUDPAssociation(client net.Conn, rule model.L4Rule,
 			}
 			s.udpMu.Unlock()
 		})
-	}
+	}, nil
 }
 
 func udpAssociationStorageKey(association udpProxyAssociation, controlPort int) string {

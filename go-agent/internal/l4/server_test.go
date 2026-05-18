@@ -485,8 +485,14 @@ func TestProxyUDPAssociationKeepsSameSourceKeyUntilLastControlSessionCloses(t *t
 	}
 	peer := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53000}
 
-	unregisterA := srv.registerProxyUDPAssociation(wrappedA, rule, req, bindAddr)
-	unregisterB := srv.registerProxyUDPAssociation(wrappedB, rule, req, bindAddr)
+	unregisterA, err := srv.registerProxyUDPAssociation(wrappedA, rule, req, bindAddr)
+	if err != nil {
+		t.Fatalf("registerProxyUDPAssociation() error A = %v", err)
+	}
+	unregisterB, err := srv.registerProxyUDPAssociation(wrappedB, rule, req, bindAddr)
+	if err != nil {
+		t.Fatalf("registerProxyUDPAssociation() error B = %v", err)
+	}
 	if !srv.hasProxyUDPAssociation(peer, bindAddr) {
 		t.Fatalf("association missing after two registrations")
 	}
@@ -518,12 +524,15 @@ func TestProxyUDPAssociationHonorsRequestedEndpoint(t *testing.T) {
 	}
 
 	bindAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}
-	unregister := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
 		Protocol: "socks5-udp",
 		Host:     "127.0.0.1",
 		Port:     53000,
 		Target:   "127.0.0.1:53000",
 	}, bindAddr)
+	if err != nil {
+		t.Fatalf("registerProxyUDPAssociation() error = %v", err)
+	}
 	defer unregister()
 
 	if !srv.hasProxyUDPAssociation(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53000}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}) {
@@ -531,6 +540,36 @@ func TestProxyUDPAssociationHonorsRequestedEndpoint(t *testing.T) {
 	}
 	if srv.hasProxyUDPAssociation(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53001}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}) {
 		t.Fatalf("association authorized different same-IP UDP port")
+	}
+}
+
+func TestProxyUDPAssociationRejectsDomainSourceHintWithPort(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	srv := &Server{
+		udpAssociations: make(map[string]udpProxyAssociation),
+	}
+	rule := model.L4Rule{ID: 1, ListenPort: 1080}
+	wrapped := &addrOverrideConn{
+		Conn:       server,
+		localAddr:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080},
+		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40001},
+	}
+
+	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+		Protocol: "socks5-udp",
+		Host:     "example.internal",
+		Port:     53000,
+		Target:   "example.internal:53000",
+	}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080})
+	if err == nil {
+		unregister()
+		t.Fatalf("registerProxyUDPAssociation() error = nil, want rejection for domain source hint with port")
+	}
+	if len(srv.udpAssociations) != 0 {
+		t.Fatalf("udpAssociations = %d, want no stored association after rejection", len(srv.udpAssociations))
 	}
 }
 
@@ -549,12 +588,15 @@ func TestProxyUDPAssociationAllZeroEndpointLocksToFirstPeer(t *testing.T) {
 		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40001},
 	}
 
-	unregister := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
 		Protocol: "socks5-udp",
 		Host:     "0.0.0.0",
 		Port:     0,
 		Target:   "0.0.0.0:0",
 	}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080})
+	if err != nil {
+		t.Fatalf("registerProxyUDPAssociation() error = %v", err)
+	}
 	defer unregister()
 
 	listener := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}
@@ -4755,6 +4797,106 @@ func TestProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *testing.T) 
 	}
 	if string(parsed.Payload) != "pong" {
 		t.Fatalf("reply payload = %q, want pong", parsed.Payload)
+	}
+}
+
+func TestProxyUDPEntryRejectsDomainAssociateSourceHintWithPort(t *testing.T) {
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			reply := []byte("bad")
+			if string(buf[:n]) == "ping" {
+				reply = []byte("pong")
+			}
+			_, _ = upstreamConn.WriteToUDP(reply, addr)
+		}
+	}()
+
+	upstreamProxyURL := startL4SOCKS5UDPProxy(t)
+	listenPort := pickFreeTCPUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{
+		{
+			ID:              1,
+			Protocol:        "tcp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      listenPort,
+			ListenMode:      "proxy",
+			ProxyEgressMode: "proxy",
+			ProxyEgressURL:  upstreamProxyURL,
+			ProxyEntryAuth: model.L4ProxyEntryAuth{
+				Enabled:  true,
+				Username: "u",
+				Password: "p",
+			},
+		},
+		{
+			ID:              2,
+			Protocol:        "udp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      listenPort,
+			ListenMode:      "proxy",
+			ProxyEgressMode: "proxy",
+			ProxyEgressURL:  upstreamProxyURL,
+			Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	udpConn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer udpConn.Close()
+
+	controlConn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)))
+	if err != nil {
+		t.Fatalf("Dial() control error = %v", err)
+	}
+	defer controlConn.Close()
+	if err := controlConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() control error = %v", err)
+	}
+	if _, err := controlConn.Write([]byte{0x05, 0x01, 0x02}); err != nil {
+		t.Fatalf("write method negotiation: %v", err)
+	}
+	buf := make([]byte, 2)
+	if _, err := io.ReadFull(controlConn, buf); err != nil {
+		t.Fatalf("read method selection: %v", err)
+	}
+	if _, err := controlConn.Write([]byte{0x01, 0x01, 'u', 0x01, 'p'}); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	if _, err := io.ReadFull(controlConn, buf); err != nil {
+		t.Fatalf("read auth reply: %v", err)
+	}
+
+	requestedPort := udpConn.LocalAddr().(*net.UDPAddr).Port
+	host := "example.internal"
+	request := append([]byte{0x05, 0x03, 0x00, 0x03, byte(len(host))}, []byte(host)...)
+	request = append(request, byte(requestedPort>>8), byte(requestedPort))
+	if _, err := controlConn.Write(request); err != nil {
+		t.Fatalf("write udp associate: %v", err)
+	}
+
+	replyHeader := make([]byte, 10)
+	if _, err := io.ReadFull(controlConn, replyHeader); err != nil {
+		t.Fatalf("read udp associate reply: %v", err)
+	}
+	if replyHeader[1] == 0x00 {
+		t.Fatalf("udp associate reply status = %d, want failure for domain source hint with port", replyHeader[1])
 	}
 }
 
