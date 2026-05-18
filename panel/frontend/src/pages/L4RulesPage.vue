@@ -93,7 +93,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <L4RuleForm :initial-data="editingRule" :agent-id="agentId" @success="closeForm" />
+      <L4RuleForm :initial-data="editingRule" :agent-id="agentId" :l4-rules="rules" @success="closeForm" />
     </BaseModal>
 
     <!-- Copy Modal -->
@@ -104,7 +104,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeCopy"
     >
-      <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" @success="closeCopy" />
+      <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" :l4-rules="rules" @success="closeCopy" />
     </BaseModal>
 
     <!-- Delete Modal -->
