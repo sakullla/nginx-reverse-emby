@@ -40,6 +40,10 @@ func ValidateRule(rule Rule) error {
 	if listenMode == "wireguard" && wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
 		return fmt.Errorf("wireguard_inbound_mode must be address or transparent")
 	}
+	if listenMode == "wireguard" && wireGuardInboundMode == "transparent" && protocol == "udp" &&
+		(len(rule.Backends) > 0 || strings.TrimSpace(rule.WireGuardListenHost) != "") {
+		return fmt.Errorf("wireguard transparent inbound does not support udp dynamic destination routing")
+	}
 	if listenMode == "wireguard" && !hasWireGuardProfile(rule) {
 		return fmt.Errorf("wireguard_profile_id is required for wireguard listen mode")
 	}
@@ -78,25 +82,7 @@ func isWireGuardTransparentForwardRule(rule Rule) bool {
 
 func validateProxyEntryRule(rule Rule) error {
 	mode := strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode))
-	if strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
-		switch mode {
-		case "relay", "wireguard":
-			return nil
-		case "proxy":
-			parsed, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
-			if err != nil {
-				return fmt.Errorf("invalid proxy_egress_url: %w", err)
-			}
-			switch parsed.Scheme {
-			case "socks", "socks5", "socks5h":
-				return nil
-			default:
-				return fmt.Errorf("udp proxy entry requires a SOCKS5-family proxy")
-			}
-		default:
-			return fmt.Errorf("proxy_egress_mode must be relay, proxy, or wireguard")
-		}
-	}
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
 	switch mode {
 	case "relay":
 		if !ruleUsesRelay(rule) {
@@ -110,8 +96,16 @@ func validateProxyEntryRule(rule Rule) error {
 		if strings.TrimSpace(rule.ProxyEgressURL) == "" {
 			return fmt.Errorf("proxy_egress_url is required for proxy egress")
 		}
-		if _, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL); err != nil {
+		parsed, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
+		if err != nil {
 			return fmt.Errorf("invalid proxy_egress_url: %w", err)
+		}
+		if protocol == "udp" {
+			switch parsed.Scheme {
+			case "socks", "socks5", "socks5h":
+			default:
+				return fmt.Errorf("udp proxy entry requires a SOCKS5-family proxy")
+			}
 		}
 	default:
 		return fmt.Errorf("proxy_egress_mode must be relay, proxy, or wireguard")
