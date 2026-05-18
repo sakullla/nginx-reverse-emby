@@ -61,6 +61,7 @@ type udpProxyAssociation struct {
 	udpRuleID  int
 	clientIP   string
 	listenPort int
+	refCount   int
 }
 
 func NewServer(
@@ -234,19 +235,39 @@ func (s *Server) registerProxyUDPAssociation(client net.Conn, rule model.L4Rule)
 		clientIP:   remoteAddr.IP.String(),
 		listenPort: rule.ListenPort,
 	}
+	// SOCKS5 UDP ASSOCIATE requests carry the client's preferred UDP endpoint,
+	// but many clients send 0.0.0.0:0 before their first datagram. Until the
+	// UDP packet arrives, the stable authorization key is the TCP peer IP plus
+	// the local UDP listen port, so same-IP control sessions are ref-counted.
 	key := udpAssociationKey(association.clientIP, association.listenPort)
 
 	s.udpMu.Lock()
 	if s.udpAssociations == nil {
 		s.udpAssociations = make(map[string]udpProxyAssociation)
 	}
-	s.udpAssociations[key] = association
+	if existing, ok := s.udpAssociations[key]; ok {
+		existing.refCount++
+		s.udpAssociations[key] = existing
+	} else {
+		association.refCount = 1
+		s.udpAssociations[key] = association
+	}
 	s.udpMu.Unlock()
 
+	var once sync.Once
 	return func() {
-		s.udpMu.Lock()
-		delete(s.udpAssociations, key)
-		s.udpMu.Unlock()
+		once.Do(func() {
+			s.udpMu.Lock()
+			if existing, ok := s.udpAssociations[key]; ok {
+				existing.refCount--
+				if existing.refCount <= 0 {
+					delete(s.udpAssociations, key)
+				} else {
+					s.udpAssociations[key] = existing
+				}
+			}
+			s.udpMu.Unlock()
+		})
 	}
 }
 
@@ -255,6 +276,42 @@ func (s *Server) hasProxyUDPAssociation(clientIP string, listenPort int) bool {
 	defer s.udpMu.Unlock()
 	_, ok := s.udpAssociations[udpAssociationKey(clientIP, listenPort)]
 	return ok
+}
+
+func (s *Server) proxyUDPBindAddr(client net.Conn, rule model.L4Rule) net.Addr {
+	var bind *net.UDPAddr
+	s.udpMu.Lock()
+	for _, conn := range s.udpConns {
+		addr, ok := conn.LocalAddr().(*net.UDPAddr)
+		if !ok || addr == nil {
+			continue
+		}
+		if rule.ListenPort != 0 && addr.Port != rule.ListenPort {
+			continue
+		}
+		if host := strings.TrimSpace(rule.ListenHost); host != "" {
+			want := net.ParseIP(host)
+			if want != nil && !want.IsUnspecified() && !addr.IP.Equal(want) {
+				continue
+			}
+		}
+		bind = cloneUDPAddr(addr)
+		break
+	}
+	s.udpMu.Unlock()
+	if bind == nil {
+		addr, err := net.ResolveUDPAddr("udp", l4ListenAddress(rule))
+		if err != nil {
+			return nil
+		}
+		bind = addr
+	}
+	if bind.IP == nil || bind.IP.IsUnspecified() {
+		if local, ok := client.LocalAddr().(*net.TCPAddr); ok && local.IP != nil && !local.IP.IsUnspecified() {
+			bind.IP = append(net.IP(nil), local.IP...)
+		}
+	}
+	return bind
 }
 
 func (s *Server) trackTCPConn(conn net.Conn) {

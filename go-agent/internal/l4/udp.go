@@ -136,6 +136,49 @@ func (u *relayUDPUpstream) WritePacket(payload []byte) error {
 	return relay.WriteUOTPacket(u.conn, payload)
 }
 
+type connUDPUpstream struct {
+	conn net.Conn
+}
+
+func (u *connUDPUpstream) Close() error                       { return u.conn.Close() }
+func (u *connUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
+func (u *connUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
+func (u *connUDPUpstream) ReadPacket() ([]byte, error) {
+	buf := make([]byte, 64*1024)
+	n, err := u.conn.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), buf[:n]...), nil
+}
+func (u *connUDPUpstream) WritePacket(payload []byte) error {
+	_, err := u.conn.Write(payload)
+	return err
+}
+
+type proxyUDPUpstream struct {
+	association *proxyproto.UDPAssociation
+	target      string
+}
+
+func (u *proxyUDPUpstream) Close() error { return u.association.Close() }
+func (u *proxyUDPUpstream) SetReadDeadline(t time.Time) error {
+	return u.association.SetReadDeadline(t)
+}
+func (u *proxyUDPUpstream) SetWriteDeadline(t time.Time) error {
+	return u.association.SetWriteDeadline(t)
+}
+func (u *proxyUDPUpstream) ReadPacket() ([]byte, error) {
+	_, payload, err := u.association.ReadPacket()
+	if err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+func (u *proxyUDPUpstream) WritePacket(payload []byte) error {
+	return u.association.WritePacket(u.target, payload)
+}
+
 func (s *Server) startUDPListener(rule model.L4Rule) error {
 	addrStr := l4ListenAddress(rule)
 	conn, err := s.listenUDP(rule, addrStr)
@@ -420,9 +463,9 @@ func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udp
 	if target = strings.TrimSpace(target); target != "" {
 		candidate := l4Candidate{
 			address:       target,
-			directUDPPath: !ruleUsesRelay(rule),
+			directUDPPath: !ruleUsesRelay(rule) && strings.TrimSpace(rule.ProxyEgressMode) == "",
 		}
-		upstream, err := s.dialUDPUpstreamCandidate(rule, candidate)
+		upstream, err := s.dialTargetUDPUpstream(rule, candidate)
 		if err != nil {
 			return nil, l4Candidate{}, err
 		}
@@ -448,6 +491,39 @@ func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udp
 		return nil, l4Candidate{}, lastErr
 	}
 	return nil, l4Candidate{}, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
+}
+
+func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {
+	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
+	case "":
+		return s.dialUDPUpstreamCandidate(rule, candidate)
+	case "relay":
+		conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
+			TrafficClass: upstream.TrafficClassBulk,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &relayUDPUpstream{conn: conn}, nil
+	case "wireguard":
+		runtime, err := s.wireGuardRuntime(rule)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := runtime.DialContext(s.ctx, "udp", candidate.address)
+		if err != nil {
+			return nil, err
+		}
+		return &connUDPUpstream{conn: conn}, nil
+	case "proxy":
+		association, err := proxyproto.DialUDP(s.ctx, rule.ProxyEgressURL)
+		if err != nil {
+			return nil, err
+		}
+		return &proxyUDPUpstream{association: association, target: candidate.address}, nil
+	default:
+		return nil, fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
+	}
 }
 
 func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {

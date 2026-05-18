@@ -118,6 +118,33 @@ func TestReadClientRequestSOCKS5UDPAssociate(t *testing.T) {
 	}
 }
 
+func TestWriteClientRequestSuccessWithBindSOCKS5UDPAssociate(t *testing.T) {
+	client, server := newPipe(t)
+	defer client.Close()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		req := ClientRequest{Protocol: "socks5-udp"}
+		errCh <- WriteClientRequestSuccessWithBind(server, req, &net.UDPAddr{
+			IP:   net.ParseIP("127.0.0.1"),
+			Port: 5300,
+		})
+	}()
+
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read SOCKS5 UDP associate reply: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("WriteClientRequestSuccessWithBind() error = %v", err)
+	}
+	want := []byte{0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x14, 0xb4}
+	if !bytes.Equal(reply, want) {
+		t.Fatalf("reply = %v, want %v", reply, want)
+	}
+}
+
 func TestParseSOCKS5UDPPacketRoundTrip(t *testing.T) {
 	packet, err := BuildSOCKS5UDPPacket("127.0.0.1:5300", []byte("ping"))
 	if err != nil {

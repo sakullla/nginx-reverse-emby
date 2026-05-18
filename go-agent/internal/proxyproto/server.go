@@ -225,6 +225,10 @@ func readHTTPProxyRequest(first byte, conn net.Conn, auth EntryAuth) (ClientRequ
 }
 
 func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
+	return WriteClientRequestSuccessWithBind(conn, req, nil)
+}
+
+func WriteClientRequestSuccessWithBind(conn net.Conn, req ClientRequest, bindAddr net.Addr) error {
 	switch req.Protocol {
 	case "http":
 		_, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -235,8 +239,7 @@ func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
 		writeSOCKS4Reply(conn, true, req.Port, net.ParseIP(req.Host))
 		return nil
 	case "socks5", "socks5-udp":
-		writeSOCKS5Reply(conn, 0x00)
-		return nil
+		return writeSOCKS5ReplyWithBind(conn, 0x00, bindAddr)
 	default:
 		return nil
 	}
@@ -588,7 +591,40 @@ func writeSOCKS4Reply(conn net.Conn, ok bool, port int, ip net.IP) {
 }
 
 func writeSOCKS5Reply(conn net.Conn, status byte) {
-	_, _ = conn.Write([]byte{0x05, status, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+	_ = writeSOCKS5ReplyWithBind(conn, status, nil)
+}
+
+func writeSOCKS5ReplyWithBind(conn net.Conn, status byte, bindAddr net.Addr) error {
+	ip := net.IPv4(0, 0, 0, 0)
+	port := 0
+	switch addr := bindAddr.(type) {
+	case *net.TCPAddr:
+		if addr != nil {
+			ip = addr.IP
+			port = addr.Port
+		}
+	case *net.UDPAddr:
+		if addr != nil {
+			ip = addr.IP
+			port = addr.Port
+		}
+	}
+	if port < 0 || port > 65535 {
+		return fmt.Errorf("SOCKS5 bind port out of range: %d", port)
+	}
+	reply := []byte{0x05, status, 0x00}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		reply = append(reply, 0x01)
+		reply = append(reply, ipv4...)
+	} else if ipv6 := ip.To16(); ipv6 != nil {
+		reply = append(reply, 0x04)
+		reply = append(reply, ipv6...)
+	} else {
+		reply = append(reply, 0x01, 0, 0, 0, 0)
+	}
+	reply = append(reply, byte(port>>8), byte(port))
+	_, err := conn.Write(reply)
+	return err
 }
 
 func writeHTTPProxyError(conn net.Conn, status int) {
