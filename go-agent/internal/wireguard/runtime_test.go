@@ -135,6 +135,60 @@ func TestNetstackRuntimeReadTransparentUDPPacketReportsOriginalDestination(t *te
 	}
 }
 
+func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(t *testing.T) {
+	runtime, cleanup := newRuntimeTestHarness(t)
+	defer cleanup()
+
+	listenPort := 18446
+	wildcardConn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP(wildcard) error = %v", err)
+	}
+	defer wildcardConn.Close()
+
+	targetAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: listenPort}
+
+	client, err := runtime.net.DialUDP(nil, targetAddr)
+	if err != nil {
+		t.Fatalf("DialUDP(client) error = %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatalf("client Write() error = %v", err)
+	}
+
+	packet, err := wildcardConn.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+	if packet.OriginalDst != targetAddr.String() {
+		t.Fatalf("OriginalDst = %q, want %q", packet.OriginalDst, targetAddr.String())
+	}
+
+	if err := wildcardConn.WritePacket([]byte("pong"), packet.Peer, packet.OriginalDst); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+
+	buf := make([]byte, 64)
+	n, err := client.Read(buf)
+	if err != nil {
+		t.Fatalf("client Read() error = %v", err)
+	}
+	if got := string(buf[:n]); got != "pong" {
+		t.Fatalf("reply payload = %q, want pong", got)
+	}
+}
+
+func TestStackFromNetstackNetRejectsUnexpectedLayout(t *testing.T) {
+	var wrong struct {
+		ep int
+	}
+	if _, err := extractNetstackStack(&wrong); err == nil {
+		t.Fatal("extractNetstackStack() succeeded for unexpected layout")
+	}
+}
+
 func TestManagerKeepsSameProfileIDForDifferentAgents(t *testing.T) {
 	t.Parallel()
 
@@ -713,7 +767,10 @@ func TestNetstackRuntimeCloseIsIdempotent(t *testing.T) {
 func newTestNetstackRuntime(t *testing.T) *netstackRuntime {
 	t.Helper()
 
-	tunDevice, tnet, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.99.0.1")}, nil, 1420)
+	tunDevice, tnet, err := netstack.CreateNetTUN([]netip.Addr{
+		netip.MustParseAddr("10.99.0.1"),
+		netip.MustParseAddr("10.99.0.2"),
+	}, nil, 1420)
 	if err != nil {
 		t.Fatalf("CreateNetTUN() error = %v", err)
 	}

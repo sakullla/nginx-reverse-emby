@@ -860,6 +860,78 @@ func TestWireGuardTransparentUDPInboundUsesOriginalDestinationAsTarget(t *testin
 	}
 }
 
+func TestWireGuardTransparentUDPRepliesPreserveOriginalDestinationSource(t *testing.T) {
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	profileID := 9
+	listenPort := pickFreeUDPPort(t)
+	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: listenPort})
+	runtime := &fakeL4WireGuardRuntime{
+		listenTransparentUDP: func(_ context.Context, address string) (wireguard.TransparentUDPConn, error) {
+			return transparentConn, nil
+		},
+	}
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           listenPort,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+	}}, nil, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+
+	replyWritten := make(chan struct{}, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, addr, err := upstreamConn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		_, _ = upstreamConn.WriteToUDP(append([]byte("echo:"), buf[:n]...), addr)
+		replyWritten <- struct{}{}
+	}()
+
+	peer := &net.UDPAddr{IP: net.ParseIP("10.64.0.9"), Port: 53000}
+	originalDst := upstreamConn.LocalAddr().String()
+	transparentConn.inject(wireguard.TransparentUDPPacket{
+		Peer:        peer,
+		OriginalDst: originalDst,
+		Payload:     []byte("ping"),
+	})
+
+	select {
+	case <-replyWritten:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream echo")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		writes := transparentConn.writeCalls()
+		if len(writes) > 0 {
+			if writes[0].peer.String() != peer.String() {
+				t.Fatalf("reply peer = %q, want %q", writes[0].peer.String(), peer.String())
+			}
+			if writes[0].source != originalDst {
+				t.Fatalf("reply source = %q, want %q", writes[0].source, originalDst)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for transparent reply write")
+}
+
 func TestWireGuardListenMissingProviderReturnsError(t *testing.T) {
 	profileID := 9
 	_, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
@@ -4272,8 +4344,16 @@ func (r *fakeL4WireGuardRuntime) listenTransparentUDPCalls() []string {
 type fakeTransparentUDPConn struct {
 	localAddr *net.UDPAddr
 	packets   chan wireguard.TransparentUDPPacket
+	writes    []transparentUDPWrite
 	closed    chan struct{}
+	mu        sync.Mutex
 	closeOnce sync.Once
+}
+
+type transparentUDPWrite struct {
+	payload []byte
+	peer    *net.UDPAddr
+	source  string
 }
 
 func newFakeTransparentUDPConn(localAddr *net.UDPAddr) *fakeTransparentUDPConn {
@@ -4302,7 +4382,14 @@ func (c *fakeTransparentUDPConn) ReadPacket() (wireguard.TransparentUDPPacket, e
 	}
 }
 
-func (c *fakeTransparentUDPConn) WritePacket([]byte, *net.UDPAddr) error {
+func (c *fakeTransparentUDPConn) WritePacket(payload []byte, peer *net.UDPAddr, source string) error {
+	c.mu.Lock()
+	c.writes = append(c.writes, transparentUDPWrite{
+		payload: append([]byte(nil), payload...),
+		peer:    cloneUDPAddr(peer),
+		source:  source,
+	})
+	c.mu.Unlock()
 	return nil
 }
 
@@ -4311,6 +4398,14 @@ func (c *fakeTransparentUDPConn) inject(packet wireguard.TransparentUDPPacket) {
 	case c.packets <- packet:
 	case <-c.closed:
 	}
+}
+
+func (c *fakeTransparentUDPConn) writeCalls() []transparentUDPWrite {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]transparentUDPWrite, len(c.writes))
+	copy(out, c.writes)
+	return out
 }
 
 type l4RelayTestRequest struct {

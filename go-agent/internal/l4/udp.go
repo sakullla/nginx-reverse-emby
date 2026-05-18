@@ -24,6 +24,7 @@ type udpSession struct {
 	backoffKey            string
 	markBackoffOnFailure  bool
 	backendObservationKey string
+	replySource           string
 	pendingReplies        int
 	awaitingSince         time.Time
 	pendingReplyTimes     []time.Time
@@ -87,7 +88,11 @@ func (l wireGuardTransparentUDPListener) WriteTo(buf []byte, addr net.Addr) (int
 }
 
 func (l wireGuardTransparentUDPListener) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error) {
-	if err := l.WritePacket(buf, addr); err != nil {
+	return l.WriteToUDPFrom(buf, addr, "")
+}
+
+func (l wireGuardTransparentUDPListener) WriteToUDPFrom(buf []byte, addr *net.UDPAddr, source string) (int, error) {
+	if err := l.WritePacket(buf, addr, source); err != nil {
 		return 0, err
 	}
 	return len(buf), nil
@@ -280,6 +285,7 @@ func (s *Server) proxyWireGuardTransparentUDPPacket(listener udpListener, rule m
 
 func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer *net.UDPAddr, target string) (*udpSession, error) {
 	target = strings.TrimSpace(target)
+	hasTransparentTarget := target != ""
 	reservationKey := udpSessionKey(listener, peer, target)
 
 	s.udpMu.Lock()
@@ -355,6 +361,9 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 	session.backoffKey = candidate.backoffKey
 	session.markBackoffOnFailure = candidate.markBackoffOnFailure
 	session.backendObservationKey = candidate.backendObservationKey
+	if hasTransparentTarget {
+		session.replySource = candidate.address
+	}
 	close(session.ready)
 	session.ready = nil
 	s.udpSessions[key] = session
@@ -496,7 +505,17 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			markBackoffOnFailure:  session.markBackoffOnFailure,
 			backendObservationKey: session.backendObservationKey,
 		}, replyDuration)
-		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
+		if session.replySource != "" {
+			if sourceWriter, ok := session.listener.(interface {
+				WriteToUDPFrom([]byte, *net.UDPAddr, string) (int, error)
+			}); ok {
+				if _, err := sourceWriter.WriteToUDPFrom(payload, session.peer, session.replySource); err != nil {
+					return
+				}
+			} else if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
+				return
+			}
+		} else if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
 		session.trafficRecorder.Add(0, int64(len(payload)))

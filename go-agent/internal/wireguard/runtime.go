@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,7 +41,7 @@ type TransparentUDPConn interface {
 	io.Closer
 	LocalAddr() net.Addr
 	ReadPacket() (TransparentUDPPacket, error)
-	WritePacket(payload []byte, peer *net.UDPAddr) error
+	WritePacket(payload []byte, peer *net.UDPAddr, source string) error
 }
 
 type Runtime interface {
@@ -704,9 +705,9 @@ func (r *netstackRuntime) ListenTransparentUDP(ctx context.Context, address stri
 	if err != nil {
 		return nil, err
 	}
-	netstackStack := stackFromNetstackNet(r.net)
-	if netstackStack == nil {
-		return nil, fmt.Errorf("wireguard netstack is unavailable")
+	netstackStack, err := extractNetstackStack(r.net)
+	if err != nil {
+		return nil, err
 	}
 
 	var wq waiter.Queue
@@ -714,6 +715,7 @@ func (r *netstackRuntime) ListenTransparentUDP(ctx context.Context, address stri
 	if tcpipErr != nil {
 		return nil, errors.New(tcpipErr.String())
 	}
+	ep.SocketOptions().SetReuseAddress(true)
 	ep.SocketOptions().SetReceiveOriginalDstAddress(true)
 	if tcpipErr := ep.Bind(fullAddr); tcpipErr != nil {
 		ep.Close()
@@ -724,7 +726,7 @@ func (r *netstackRuntime) ListenTransparentUDP(ctx context.Context, address stri
 			Err:  errors.New(tcpipErr.String()),
 		}
 	}
-	return &netstackTransparentUDPConn{ep: ep, wq: &wq}, nil
+	return &netstackTransparentUDPConn{stack: netstackStack, ep: ep, wq: &wq}, nil
 }
 
 func (r *netstackRuntime) Close() error {
@@ -755,16 +757,35 @@ type netstackNetLayout struct {
 	stack *stack.Stack
 }
 
-func stackFromNetstackNet(net *netstack.Net) *stack.Stack {
+func extractNetstackStack(net any) (*stack.Stack, error) {
 	if net == nil {
-		return nil
+		return nil, fmt.Errorf("wireguard netstack is unavailable")
 	}
-	return (*netstackNetLayout)(unsafe.Pointer(net)).stack
+	netValue := reflect.TypeOf(net)
+	if netValue.Kind() != reflect.Pointer {
+		return nil, fmt.Errorf("wireguard netstack layout mismatch: got %T", net)
+	}
+	netLayout := netValue.Elem()
+	expectedLayout := reflect.TypeOf(netstackNetLayout{})
+	if netLayout.Kind() != reflect.Struct ||
+		netLayout.NumField() < expectedLayout.NumField() ||
+		netLayout.Field(0).Type != expectedLayout.Field(0).Type ||
+		netLayout.Field(0).Offset != expectedLayout.Field(0).Offset ||
+		netLayout.Field(1).Type != expectedLayout.Field(1).Type ||
+		netLayout.Field(1).Offset != expectedLayout.Field(1).Offset {
+		return nil, fmt.Errorf("wireguard netstack layout mismatch: got %T", net)
+	}
+	netstackStack := (*netstackNetLayout)(unsafe.Pointer(reflect.ValueOf(net).Pointer())).stack
+	if netstackStack == nil {
+		return nil, fmt.Errorf("wireguard netstack is unavailable")
+	}
+	return netstackStack, nil
 }
 
 type netstackTransparentUDPConn struct {
-	ep tcpip.Endpoint
-	wq *waiter.Queue
+	stack *stack.Stack
+	ep    tcpip.Endpoint
+	wq    *waiter.Queue
 }
 
 func (c *netstackTransparentUDPConn) Close() error {
@@ -798,7 +819,7 @@ func (c *netstackTransparentUDPConn) ReadPacket() (TransparentUDPPacket, error) 
 	}, nil
 }
 
-func (c *netstackTransparentUDPConn) WritePacket(payload []byte, peer *net.UDPAddr) error {
+func (c *netstackTransparentUDPConn) WritePacket(payload []byte, peer *net.UDPAddr, source string) error {
 	var opts tcpip.WriteOptions
 	if peer != nil {
 		addr, _, err := udpFullAddress(peer)
@@ -807,6 +828,50 @@ func (c *netstackTransparentUDPConn) WritePacket(payload []byte, peer *net.UDPAd
 		}
 		opts.To = &addr
 	}
+	if strings.TrimSpace(source) != "" {
+		sourceAddr, err := net.ResolveUDPAddr("udp", source)
+		if err != nil {
+			return err
+		}
+		if opts.To != nil && sourceAddr.Port > 0 {
+			localConn, err := c.sourceBoundConn(sourceAddr)
+			if err != nil {
+				return err
+			}
+			defer localConn.Close()
+			return localConn.writePacket(payload, opts)
+		}
+	}
+	return c.writePacket(payload, opts)
+}
+
+func (c *netstackTransparentUDPConn) sourceBoundConn(source *net.UDPAddr) (*netstackTransparentUDPConn, error) {
+	if c.stack == nil {
+		return nil, fmt.Errorf("wireguard netstack is unavailable")
+	}
+	localAddr, netProto, err := udpFullAddress(source)
+	if err != nil {
+		return nil, err
+	}
+	var wq waiter.Queue
+	ep, tcpipErr := c.stack.NewEndpoint(udp.ProtocolNumber, netProto, &wq)
+	if tcpipErr != nil {
+		return nil, errors.New(tcpipErr.String())
+	}
+	ep.SocketOptions().SetReuseAddress(true)
+	if tcpipErr := ep.Bind(localAddr); tcpipErr != nil {
+		ep.Close()
+		return nil, &net.OpError{
+			Op:   "bind",
+			Net:  "udp",
+			Addr: source,
+			Err:  errors.New(tcpipErr.String()),
+		}
+	}
+	return &netstackTransparentUDPConn{stack: c.stack, ep: ep, wq: &wq}, nil
+}
+
+func (c *netstackTransparentUDPConn) writePacket(payload []byte, opts tcpip.WriteOptions) error {
 	reader := bytes.NewReader(payload)
 	for {
 		_, tcpipErr := c.ep.Write(reader, opts)
