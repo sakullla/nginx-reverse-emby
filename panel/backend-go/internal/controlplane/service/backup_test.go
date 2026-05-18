@@ -3509,30 +3509,31 @@ func TestBackupServiceImportSkipsWireGuardL4TunnelListenConflictsWhenUDPDefaults
 	}
 
 	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore)
-	wantInvalidReason := "invalid argument: wireguard transparent inbound does not support udp dynamic destination routing"
 	preview, err := svc.Preview(ctx, archive)
 	if err != nil {
 		t.Fatalf("Preview() error = %v", err)
 	}
-	if preview.Summary.Imported.L4Rules != 0 || preview.Summary.SkippedConflict.L4Rules != 0 || preview.Summary.SkippedInvalid.L4Rules != 2 {
+	if preview.Summary.Imported.L4Rules != 1 || preview.Summary.SkippedConflict.L4Rules != 1 || preview.Summary.SkippedInvalid.L4Rules != 0 {
 		t.Fatalf("preview summary = %+v", preview.Summary)
 	}
-	assertBackupSkippedInvalidReasonCount(t, preview, "l4_rule", wantInvalidReason, 2)
 
 	result, err := svc.Import(ctx, archive)
 	if err != nil {
 		t.Fatalf("Import() error = %v", err)
 	}
-	if result.Summary.Imported.L4Rules != 0 || result.Summary.SkippedConflict.L4Rules != 0 || result.Summary.SkippedInvalid.L4Rules != 2 {
+	if result.Summary.Imported.L4Rules != 1 || result.Summary.SkippedConflict.L4Rules != 1 || result.Summary.SkippedInvalid.L4Rules != 0 {
 		t.Fatalf("import summary = %+v", result.Summary)
 	}
-	assertBackupSkippedInvalidReasonCount(t, result, "l4_rule", wantInvalidReason, 2)
 	l4Rules, err := targetStore.ListL4Rules(ctx, "edge-wg")
 	if err != nil {
 		t.Fatalf("ListL4Rules(edge-wg) error = %v", err)
 	}
-	if len(l4Rules) != 0 {
-		t.Fatalf("imported l4 rules = %+v, want none", l4Rules)
+	if len(l4Rules) != 1 {
+		t.Fatalf("imported l4 rules = %+v, want exactly one", l4Rules)
+	}
+	got := l4RuleFromRow(l4Rules[0])
+	if got.ListenMode != "wireguard" || got.Protocol != "udp" || got.WireGuardInboundMode != "transparent" {
+		t.Fatalf("restored rule = %+v, want udp wireguard transparent", got)
 	}
 }
 
@@ -3621,15 +3622,13 @@ func TestBackupServicePreviewAndImportDefaultWireGuardL4ListenHostBeforeConflict
 	}
 
 	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore)
-	wantInvalidReason := "invalid argument: wireguard transparent inbound does not support udp dynamic destination routing"
 	preview, err := svc.Preview(ctx, archive)
 	if err != nil {
 		t.Fatalf("Preview() error = %v", err)
 	}
-	if preview.Summary.Imported.L4Rules != 0 || preview.Summary.SkippedConflict.L4Rules != 0 || preview.Summary.SkippedInvalid.L4Rules != 3 {
+	if preview.Summary.Imported.L4Rules != 1 || preview.Summary.SkippedConflict.L4Rules != 2 || preview.Summary.SkippedInvalid.L4Rules != 0 {
 		t.Fatalf("preview summary = %+v", preview.Summary)
 	}
-	assertBackupSkippedInvalidReasonCount(t, preview, "l4_rule", wantInvalidReason, 3)
 
 	result, err := svc.Import(ctx, archive)
 	if err != nil {
@@ -3638,13 +3637,16 @@ func TestBackupServicePreviewAndImportDefaultWireGuardL4ListenHostBeforeConflict
 	if result.Summary.Imported.L4Rules != preview.Summary.Imported.L4Rules || result.Summary.SkippedConflict.L4Rules != preview.Summary.SkippedConflict.L4Rules || result.Summary.SkippedInvalid.L4Rules != preview.Summary.SkippedInvalid.L4Rules {
 		t.Fatalf("import summary = %+v, want preview counts %+v", result.Summary, preview.Summary)
 	}
-	assertBackupSkippedInvalidReasonCount(t, result, "l4_rule", wantInvalidReason, 3)
 	l4Rows, err := targetStore.ListL4Rules(ctx, "edge-wg")
 	if err != nil {
 		t.Fatalf("ListL4Rules(edge-wg) error = %v", err)
 	}
-	if len(l4Rows) != 0 {
-		t.Fatalf("imported l4 rules = %+v, want none", l4Rows)
+	if len(l4Rows) != 1 {
+		t.Fatalf("imported l4 rules = %+v, want exactly one", l4Rows)
+	}
+	got := l4RuleFromRow(l4Rows[0])
+	if got.ListenMode != "wireguard" || got.Protocol != "udp" || got.WireGuardInboundMode != "transparent" {
+		t.Fatalf("restored rule = %+v, want udp wireguard transparent", got)
 	}
 }
 
@@ -4216,30 +4218,33 @@ func TestBackupServiceImportAllowsWireGuardL4TunnelListenReuseAcrossProfilesWhen
 	}
 
 	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore)
-	wantInvalidReason := "invalid argument: wireguard transparent inbound does not support udp dynamic destination routing"
 	preview, err := svc.Preview(ctx, archive)
 	if err != nil {
 		t.Fatalf("Preview() error = %v", err)
 	}
-	if preview.Summary.Imported.L4Rules != 0 || preview.Summary.SkippedConflict.L4Rules != 0 || preview.Summary.SkippedInvalid.L4Rules != 2 {
+	if preview.Summary.Imported.L4Rules != 2 || preview.Summary.SkippedConflict.L4Rules != 0 || preview.Summary.SkippedInvalid.L4Rules != 0 {
 		t.Fatalf("preview summary = %+v", preview.Summary)
 	}
-	assertBackupSkippedInvalidReasonCount(t, preview, "l4_rule", wantInvalidReason, 2)
 
 	result, err := svc.Import(ctx, archive)
 	if err != nil {
 		t.Fatalf("Import() error = %v", err)
 	}
-	if result.Summary.Imported.L4Rules != 0 || result.Summary.SkippedConflict.L4Rules != 0 || result.Summary.SkippedInvalid.L4Rules != 2 {
+	if result.Summary.Imported.L4Rules != 2 || result.Summary.SkippedConflict.L4Rules != 0 || result.Summary.SkippedInvalid.L4Rules != 0 {
 		t.Fatalf("import summary = %+v", result.Summary)
 	}
-	assertBackupSkippedInvalidReasonCount(t, result, "l4_rule", wantInvalidReason, 2)
 	l4Rules, err := targetStore.ListL4Rules(ctx, "edge-wg")
 	if err != nil {
 		t.Fatalf("ListL4Rules(edge-wg) error = %v", err)
 	}
-	if len(l4Rules) != 0 {
-		t.Fatalf("imported l4 rules = %+v, want none", l4Rules)
+	if len(l4Rules) != 2 {
+		t.Fatalf("imported l4 rules = %+v, want exactly two", l4Rules)
+	}
+	for _, row := range l4Rules {
+		got := l4RuleFromRow(row)
+		if got.ListenMode != "wireguard" || got.Protocol != "udp" || got.WireGuardInboundMode != "transparent" {
+			t.Fatalf("restored rule = %+v, want udp wireguard transparent", got)
+		}
 	}
 }
 

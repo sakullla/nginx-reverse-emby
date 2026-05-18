@@ -512,7 +512,7 @@ func TestNormalizeL4RuleInputClearsProxyEntryAuthForWireGuardListen(t *testing.T
 	}
 }
 
-func TestNormalizeL4RuleInputRejectsProxyEntryUDP(t *testing.T) {
+func TestNormalizeL4RuleInputAllowsProxyEntryUDPRelayEgress(t *testing.T) {
 	protocol := "udp"
 	listenMode := "proxy"
 	egressMode := "relay"
@@ -525,9 +525,71 @@ func TestNormalizeL4RuleInputRejectsProxyEntryUDP(t *testing.T) {
 		ProxyEgressMode: &egressMode,
 		RelayLayers:     &relayLayers,
 	}
-	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
-	if err == nil || !strings.Contains(err.Error(), "listen_mode=proxy requires protocol tcp") {
-		t.Fatalf("error = %v, want proxy udp validation", err)
+	rule, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.Protocol != "udp" || rule.ListenMode != "proxy" || rule.ProxyEgressMode != "relay" {
+		t.Fatalf("rule = %+v, want udp proxy relay entry", rule)
+	}
+}
+
+func TestNormalizeL4RuleInputAllowsWireGuardTransparentUDP(t *testing.T) {
+	rule, err := normalizeL4RuleInput(L4RuleInput{
+		Name:                 stringPtrL4("wg udp"),
+		Protocol:             stringPtrL4("udp"),
+		ListenMode:           stringPtrL4("wireguard"),
+		ListenPort:           intPtrL4(5300),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+	}, L4Rule{}, 7)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.Protocol != "udp" || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" {
+		t.Fatalf("rule = %+v, want udp wireguard transparent", rule)
+	}
+}
+
+func TestNormalizeL4RuleInputAllowsProxyUDPForSOCKS5(t *testing.T) {
+	rule, err := normalizeL4RuleInput(L4RuleInput{
+		Name:            stringPtrL4("socks5 udp"),
+		Protocol:        stringPtrL4("udp"),
+		ListenMode:      stringPtrL4("proxy"),
+		ListenPort:      intPtrL4(1080),
+		ProxyEgressMode: stringPtrL4("proxy"),
+		ProxyEgressURL:  stringPtrL4("socks5://127.0.0.1:2080"),
+	}, L4Rule{}, 8)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.Protocol != "udp" || rule.ListenMode != "proxy" {
+		t.Fatalf("rule = %+v, want udp proxy entry", rule)
+	}
+}
+
+func TestEnsureUniqueL4ListenRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
+	next := L4Rule{
+		ID:              2,
+		Name:            "udp",
+		Protocol:        "udp",
+		ListenMode:      "proxy",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      1080,
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks5://127.0.0.1:2080",
+		Enabled:         true,
+	}
+	err := ensureUniqueL4Listen([]L4Rule{{
+		ID:         1,
+		Name:       "unrelated tcp",
+		Protocol:   "tcp",
+		ListenMode: "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 8080,
+		Enabled:    true,
+	}}, next, 0)
+	if err == nil || !strings.Contains(err.Error(), "same-port TCP SOCKS5 proxy entry") {
+		t.Fatalf("ensureUniqueL4Listen() error = %v, want same-port TCP SOCKS5 proxy entry rejection", err)
 	}
 }
 
@@ -608,13 +670,12 @@ func TestNormalizeL4RuleInputRejectsProxyEntryInvalidEgressMode(t *testing.T) {
 	}
 }
 
-func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDPRejectsUDP(t *testing.T) {
+func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDP(t *testing.T) {
 	tests := []struct {
 		protocol string
-		wantErr  string
 	}{
 		{protocol: "tcp"},
-		{protocol: "udp", wantErr: "transparent inbound does not support udp"},
+		{protocol: "udp"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.protocol, func(t *testing.T) {
@@ -640,15 +701,6 @@ func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDPRejectsUDP(t *te
 				ListenPort: intPtrL4(443),
 				Backends:   &[]L4Backend{{Host: "backend", Port: 8443}},
 			})
-			if tt.wantErr != "" {
-				if !errors.Is(err, ErrInvalidArgument) {
-					t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
-				}
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("Create() error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("Create() error = %v", err)
 			}
@@ -1806,7 +1858,7 @@ func TestL4RuleServiceWireGuardTransparentTCPClearsSubmittedBackends(t *testing.
 	}
 }
 
-func TestL4RuleServiceWireGuardTransparentUDPRejected(t *testing.T) {
+func TestL4RuleServiceWireGuardTransparentUDPAccepted(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -1815,7 +1867,7 @@ func TestL4RuleServiceWireGuardTransparentUDPRejected(t *testing.T) {
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
 		Protocol:             stringPtrL4("udp"),
 		ListenHost:           stringPtrL4("0.0.0.0"),
 		ListenPort:           intPtrL4(51820),
@@ -1824,8 +1876,14 @@ func TestL4RuleServiceWireGuardTransparentUDPRejected(t *testing.T) {
 		WireGuardInboundMode: stringPtrL4("transparent"),
 		Backends:             &[]L4Backend{{Host: "upstream", Port: 9001}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "transparent") || !strings.Contains(err.Error(), "udp") {
-		t.Fatalf("Create() error = %v, want transparent udp validation", err)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.Protocol != "udp" || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" {
+		t.Fatalf("rule = %+v, want udp wireguard transparent", rule)
+	}
+	if len(rule.Backends) != 0 {
+		t.Fatalf("Backends = %#v, want empty for transparent forwarding", rule.Backends)
 	}
 }
 
