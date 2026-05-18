@@ -533,8 +533,7 @@ const isProxyEntry = computed(() => form.value.listen_mode === 'proxy' || (form.
 const isProxyEntryAuthAvailable = computed(() => form.value.listen_mode === 'proxy')
 const isWireGuardInbound = computed(() => form.value.listen_mode === 'wireguard')
 const isWireGuardEgress = computed(() => isProxyEntry.value && form.value.proxy_egress_mode === 'wireguard')
-const isWireGuardTransparentForward = computed(() => form.value.protocol === 'tcp'
-  && isWireGuardInbound.value
+const isWireGuardTransparentForward = computed(() => isWireGuardInbound.value
   && form.value.wireguard_inbound_mode === 'transparent'
   && !isProxyEntry.value)
 const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)

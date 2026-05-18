@@ -52,6 +52,17 @@ function mountFormWithRules(l4Rules = []) {
   })
 }
 
+function mountEditForm(initialData, l4Rules = []) {
+  return mount(L4RuleForm, {
+    props: { agentId: 'local', initialData, l4Rules },
+    global: {
+      stubs: {
+        RouterLink: true
+      }
+    }
+  })
+}
+
 function selectByLabel(wrapper, labelText) {
   const group = wrapper
     .findAll('.form-group')
@@ -192,6 +203,37 @@ describe('L4RuleForm WireGuard egress', () => {
       listen_mode: 'proxy',
       listen_host: '0.0.0.0',
       listen_port: 1080
+    })
+  })
+
+  it('allows saving an existing UDP transparent WireGuard rule without backends', async () => {
+    const wrapper = mountEditForm({
+      id: 7,
+      protocol: 'udp',
+      listen_host: '0.0.0.0',
+      listen_port: 51820,
+      listen_mode: 'wireguard',
+      proxy_egress_mode: '',
+      wireguard_inbound_mode: 'transparent',
+      wireguard_profile_id: 21,
+      backends: []
+    })
+
+    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    await flushPromises()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('至少需要一个有效的后端服务器')
+    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
+      id: 7,
+      protocol: 'udp',
+      listen_mode: 'wireguard',
+      proxy_egress_mode: '',
+      wireguard_inbound_mode: 'transparent',
+      wireguard_profile_id: 21,
+      backends: []
     })
   })
 })
