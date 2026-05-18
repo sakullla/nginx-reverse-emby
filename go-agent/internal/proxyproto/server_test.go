@@ -95,6 +95,56 @@ func TestReadClientRequestSOCKS5PasswordAuth(t *testing.T) {
 	}
 }
 
+func TestReadClientRequestSOCKS5UDPAssociate(t *testing.T) {
+	client, server := newPipe(t)
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		_, _ = client.Write([]byte{0x05, 0x01, 0x00})
+		buf := make([]byte, 2)
+		_, _ = io.ReadFull(client, buf)
+		_, _ = client.Write([]byte{
+			0x05, 0x03, 0x00, 0x01, 127, 0, 0, 1, 0x04, 0x38,
+		})
+	}()
+
+	req, err := ReadClientRequest(context.Background(), server, EntryAuth{})
+	if err != nil {
+		t.Fatalf("ReadClientRequest() error = %v", err)
+	}
+	if req.Protocol != "socks5-udp" || req.Target != "127.0.0.1:1080" {
+		t.Fatalf("req = %+v, want socks5-udp 127.0.0.1:1080", req)
+	}
+}
+
+func TestParseSOCKS5UDPPacketRoundTrip(t *testing.T) {
+	packet, err := BuildSOCKS5UDPPacket("127.0.0.1:5300", []byte("ping"))
+	if err != nil {
+		t.Fatalf("BuildSOCKS5UDPPacket() error = %v", err)
+	}
+
+	parsed, err := ParseSOCKS5UDPPacket(packet)
+	if err != nil {
+		t.Fatalf("ParseSOCKS5UDPPacket() error = %v", err)
+	}
+	if parsed.Target != "127.0.0.1:5300" {
+		t.Fatalf("Target = %q, want 127.0.0.1:5300", parsed.Target)
+	}
+	if string(parsed.Payload) != "ping" {
+		t.Fatalf("Payload = %q, want ping", parsed.Payload)
+	}
+}
+
+func TestParseSOCKS5UDPPacketRejectsFragments(t *testing.T) {
+	_, err := ParseSOCKS5UDPPacket([]byte{
+		0x00, 0x00, 0x01, 0x01, 127, 0, 0, 1, 0x14, 0xb4, 'p',
+	})
+	if err == nil {
+		t.Fatalf("ParseSOCKS5UDPPacket() error = nil, want fragment rejection")
+	}
+}
+
 func TestReadClientRequestHTTPConnect(t *testing.T) {
 	client, server := newPipe(t)
 	defer client.Close()

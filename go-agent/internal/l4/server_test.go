@@ -4182,6 +4182,134 @@ func TestUDPProxyExpiresIdleSessions(t *testing.T) {
 	t.Fatalf("expected idle udp session to expire, still have %d sessions", len(srv.udpSessions))
 }
 
+func TestProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *testing.T) {
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			reply := []byte("bad")
+			if string(buf[:n]) == "ping" {
+				reply = []byte("pong")
+			}
+			_, _ = upstreamConn.WriteToUDP(reply, addr)
+		}
+	}()
+
+	listenPort := pickFreeTCPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{
+		{
+			ID:              1,
+			Protocol:        "tcp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      listenPort,
+			ListenMode:      "proxy",
+			ProxyEgressMode: "proxy",
+			ProxyEgressURL:  "socks5://127.0.0.1:2080",
+			ProxyEntryAuth: model.L4ProxyEntryAuth{
+				Enabled:  true,
+				Username: "u",
+				Password: "p",
+			},
+		},
+		{
+			ID:              2,
+			Protocol:        "udp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      listenPort,
+			ListenMode:      "proxy",
+			ProxyEgressMode: "proxy",
+			ProxyEgressURL:  "socks5://127.0.0.1:2080",
+			Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	udpConn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer udpConn.Close()
+
+	packet, err := proxyproto.BuildSOCKS5UDPPacket(upstreamConn.LocalAddr().String(), []byte("ping"))
+	if err != nil {
+		t.Fatalf("BuildSOCKS5UDPPacket() error = %v", err)
+	}
+	if _, err := udpConn.Write(packet); err != nil {
+		t.Fatalf("udp write without association: %v", err)
+	}
+	if err := udpConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	reply := make([]byte, 128)
+	if _, err := udpConn.Read(reply); err == nil {
+		t.Fatalf("expected unauthenticated udp associate packet to be dropped")
+	}
+
+	controlConn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)))
+	if err != nil {
+		t.Fatalf("Dial() control error = %v", err)
+	}
+	defer controlConn.Close()
+	if err := controlConn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() control error = %v", err)
+	}
+	if _, err := controlConn.Write([]byte{0x05, 0x01, 0x02}); err != nil {
+		t.Fatalf("write method negotiation: %v", err)
+	}
+	buf := make([]byte, 2)
+	if _, err := io.ReadFull(controlConn, buf); err != nil {
+		t.Fatalf("read method selection: %v", err)
+	}
+	if _, err := controlConn.Write([]byte{0x01, 0x01, 'u', 0x01, 'p'}); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	if _, err := io.ReadFull(controlConn, buf); err != nil {
+		t.Fatalf("read auth reply: %v", err)
+	}
+	if _, err := controlConn.Write([]byte{
+		0x05, 0x03, 0x00, 0x01, 127, 0, 0, 1, byte(listenPort >> 8), byte(listenPort),
+	}); err != nil {
+		t.Fatalf("write udp associate: %v", err)
+	}
+	replyHeader := make([]byte, 10)
+	if _, err := io.ReadFull(controlConn, replyHeader); err != nil {
+		t.Fatalf("read udp associate reply: %v", err)
+	}
+	if replyHeader[1] != 0x00 {
+		t.Fatalf("udp associate reply status = %d, want success", replyHeader[1])
+	}
+
+	if _, err := udpConn.Write(packet); err != nil {
+		t.Fatalf("udp write with association: %v", err)
+	}
+	if err := udpConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	n, err := udpConn.Read(reply)
+	if err != nil {
+		t.Fatalf("read udp reply with association: %v", err)
+	}
+	parsed, err := proxyproto.ParseSOCKS5UDPPacket(reply[:n])
+	if err != nil {
+		t.Fatalf("ParseSOCKS5UDPPacket() reply error = %v", err)
+	}
+	if string(parsed.Payload) != "pong" {
+		t.Fatalf("reply payload = %q, want pong", parsed.Payload)
+	}
+}
+
 func pickFreeTCPPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
@@ -135,6 +136,34 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 	}
 	req, err := proxyproto.ReadClientRequest(s.ctx, client, auth)
 	if err != nil {
+		return
+	}
+	if req.Protocol == "socks5-udp" {
+		unregister := s.registerProxyUDPAssociation(client, rule)
+		defer unregister()
+		if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+			return
+		}
+		done := make(chan struct{}, 1)
+		go func() {
+			defer func() { done <- struct{}{} }()
+			buf := make([]byte, 1)
+			for {
+				_ = client.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+				_, err := client.Read(buf)
+				if err == nil {
+					continue
+				}
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					if s.ctx.Err() != nil {
+						return
+					}
+					continue
+				}
+				return
+			}
+		}()
+		<-done
 		return
 	}
 	upstream, err := s.dialProxyEntryUpstream(rule, req.Target)

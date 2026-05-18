@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,7 @@ type Server struct {
 	bindingKeys           []string
 	udpMu                 sync.Mutex
 	udpSessions           map[string]*udpSession
+	udpAssociations       map[string]udpProxyAssociation
 	udpReplyTimeout       time.Duration
 	udpSessionIdleTimeout time.Duration
 	upstreamScore         *upstream.ScoreStore
@@ -53,6 +55,12 @@ type Server struct {
 	closing  bool
 
 	trafficBlockState trafficBlockStateValue
+}
+
+type udpProxyAssociation struct {
+	udpRuleID  int
+	clientIP   string
+	listenPort int
 }
 
 func NewServer(
@@ -119,6 +127,7 @@ func newServerWithOptions(
 		tcpConns:              make(map[net.Conn]struct{}),
 		udpConns:              nil,
 		udpSessions:           make(map[string]*udpSession),
+		udpAssociations:       make(map[string]udpProxyAssociation),
 		udpReplyTimeout:       defaultUDPReplyTimeout,
 		udpSessionIdleTimeout: 30 * time.Second,
 		upstreamScore:         upstream.NewScoreStore(time.Now),
@@ -206,6 +215,46 @@ func (s *Server) Close() error {
 	}
 	s.wg.Wait()
 	return nil
+}
+
+func udpAssociationKey(clientIP string, listenPort int) string {
+	return clientIP + "|" + strconv.Itoa(listenPort)
+}
+
+func (s *Server) registerProxyUDPAssociation(client net.Conn, rule model.L4Rule) func() {
+	if client == nil {
+		return func() {}
+	}
+	remoteAddr, ok := client.RemoteAddr().(*net.TCPAddr)
+	if !ok || remoteAddr.IP == nil {
+		return func() {}
+	}
+	association := udpProxyAssociation{
+		udpRuleID:  rule.ID,
+		clientIP:   remoteAddr.IP.String(),
+		listenPort: rule.ListenPort,
+	}
+	key := udpAssociationKey(association.clientIP, association.listenPort)
+
+	s.udpMu.Lock()
+	if s.udpAssociations == nil {
+		s.udpAssociations = make(map[string]udpProxyAssociation)
+	}
+	s.udpAssociations[key] = association
+	s.udpMu.Unlock()
+
+	return func() {
+		s.udpMu.Lock()
+		delete(s.udpAssociations, key)
+		s.udpMu.Unlock()
+	}
+}
+
+func (s *Server) hasProxyUDPAssociation(clientIP string, listenPort int) bool {
+	s.udpMu.Lock()
+	defer s.udpMu.Unlock()
+	_, ok := s.udpAssociations[udpAssociationKey(clientIP, listenPort)]
+	return ok
 }
 
 func (s *Server) trackTCPConn(conn net.Conn) {

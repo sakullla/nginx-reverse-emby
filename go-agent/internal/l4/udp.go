@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
@@ -25,6 +26,7 @@ type udpSession struct {
 	markBackoffOnFailure  bool
 	backendObservationKey string
 	replySource           string
+	proxyUDPEntry         bool
 	pendingReplies        int
 	awaitingSince         time.Time
 	pendingReplyTimes     []time.Time
@@ -232,6 +234,10 @@ func (s *Server) wireGuardTransparentUDPReadLoop(conn wireGuardTransparentUDPLis
 }
 
 func (s *Server) proxyUDPPacket(listener udpListener, rule model.L4Rule, payload []byte, peer *net.UDPAddr) {
+	if isProxyEntryRule(rule) && strings.EqualFold(rule.Protocol, "udp") {
+		s.proxySOCKS5UDPPacket(listener, rule, payload, peer)
+		return
+	}
 	session, err := s.sessionForUDPFlow(rule, listener, peer, "")
 	if err != nil || session == nil {
 		return
@@ -251,6 +257,37 @@ func (s *Server) proxyUDPPacket(listener udpListener, rule model.L4Rule, payload
 		return
 	}
 	session.trafficRecorder.Add(int64(len(payload)), 0)
+	session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
+	s.markUDPSessionWrite(session.key)
+}
+
+func (s *Server) proxySOCKS5UDPPacket(listener udpListener, rule model.L4Rule, payload []byte, peer *net.UDPAddr) {
+	packet, err := proxyproto.ParseSOCKS5UDPPacket(payload)
+	if err != nil {
+		return
+	}
+	if peer == nil || peer.IP == nil || !s.hasProxyUDPAssociation(peer.IP.String(), rule.ListenPort) {
+		return
+	}
+	session, err := s.sessionForUDPFlow(rule, listener, peer, packet.Target)
+	if err != nil || session == nil {
+		return
+	}
+	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       session.targetAddr,
+		directUDPPath: session.directUDPPath,
+	})))
+	if err := session.upstream.WritePacket(packet.Payload); err != nil {
+		s.observeCandidateFailure(l4Candidate{
+			address:               session.targetAddr,
+			backoffKey:            session.backoffKey,
+			markBackoffOnFailure:  session.markBackoffOnFailure,
+			backendObservationKey: session.backendObservationKey,
+		})
+		s.closeUDPSession(session.key)
+		return
+	}
+	session.trafficRecorder.Add(int64(len(packet.Payload)), 0)
 	session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
 	s.markUDPSessionWrite(session.key)
 }
@@ -323,6 +360,7 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 		lastActive:      s.now(),
 		ready:           make(chan struct{}),
 		trafficRecorder: traffic.NewL4RuleRecorder(rule.ID),
+		proxyUDPEntry:   isProxyEntryRule(rule) && strings.EqualFold(rule.Protocol, "udp"),
 	}
 	s.udpSessions[reservationKey] = session
 	s.udpMu.Unlock()
@@ -505,6 +543,12 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			markBackoffOnFailure:  session.markBackoffOnFailure,
 			backendObservationKey: session.backendObservationKey,
 		}, replyDuration)
+		if session.proxyUDPEntry {
+			payload, err = proxyproto.BuildSOCKS5UDPPacket(session.targetAddr, payload)
+			if err != nil {
+				return
+			}
+		}
 		if session.replySource != "" {
 			if sourceWriter, ok := session.listener.(interface {
 				WriteToUDPFrom([]byte, *net.UDPAddr, string) (int, error)

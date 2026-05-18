@@ -30,6 +30,11 @@ type ClientRequest struct {
 	InitialPayload []byte
 }
 
+type SOCKS5UDPPacket struct {
+	Target  string
+	Payload []byte
+}
+
 func ReadClientRequest(ctx context.Context, conn net.Conn, auth EntryAuth) (ClientRequest, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -130,28 +135,33 @@ func readSOCKS5Request(reader io.Reader, conn net.Conn, auth EntryAuth) (ClientR
 		writeSOCKS5Reply(conn, 0x01)
 		return ClientRequest{}, fmt.Errorf("invalid SOCKS5 request version %d", header[0])
 	}
-	if header[1] != 0x01 {
+	switch header[1] {
+	case 0x01, 0x03:
+		host, err := readSOCKS5Host(reader, header[3])
+		if err != nil {
+			writeSOCKS5Reply(conn, 0x08)
+			return ClientRequest{}, err
+		}
+		var portBytes [2]byte
+		if _, err := io.ReadFull(reader, portBytes[:]); err != nil {
+			writeSOCKS5Reply(conn, 0x01)
+			return ClientRequest{}, err
+		}
+		port := int(portBytes[0])<<8 | int(portBytes[1])
+		protocol := "socks5"
+		if header[1] == 0x03 {
+			protocol = "socks5-udp"
+		}
+		req, err := newClientRequest(protocol, host, port)
+		if err != nil {
+			writeSOCKS5Reply(conn, 0x01)
+			return ClientRequest{}, err
+		}
+		return req, nil
+	default:
 		writeSOCKS5Reply(conn, 0x07)
 		return ClientRequest{}, fmt.Errorf("unsupported SOCKS5 command %d", header[1])
 	}
-
-	host, err := readSOCKS5Host(reader, header[3])
-	if err != nil {
-		writeSOCKS5Reply(conn, 0x08)
-		return ClientRequest{}, err
-	}
-	var portBytes [2]byte
-	if _, err := io.ReadFull(reader, portBytes[:]); err != nil {
-		writeSOCKS5Reply(conn, 0x01)
-		return ClientRequest{}, err
-	}
-	port := int(portBytes[0])<<8 | int(portBytes[1])
-	req, err := newClientRequest("socks5", host, port)
-	if err != nil {
-		writeSOCKS5Reply(conn, 0x01)
-		return ClientRequest{}, err
-	}
-	return req, nil
 }
 
 func readHTTPProxyRequest(first byte, conn net.Conn, auth EntryAuth) (ClientRequest, error) {
@@ -224,7 +234,7 @@ func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
 	case "socks4", "socks4a":
 		writeSOCKS4Reply(conn, true, req.Port, net.ParseIP(req.Host))
 		return nil
-	case "socks5":
+	case "socks5", "socks5-udp":
 		writeSOCKS5Reply(conn, 0x00)
 		return nil
 	default:
@@ -243,12 +253,74 @@ func WriteClientRequestFailure(conn net.Conn, req ClientRequest, status int) err
 	case "socks4", "socks4a":
 		writeSOCKS4Reply(conn, false, req.Port, net.ParseIP(req.Host))
 		return nil
-	case "socks5":
+	case "socks5", "socks5-udp":
 		writeSOCKS5Reply(conn, 0x01)
 		return nil
 	default:
 		return nil
 	}
+}
+
+func ParseSOCKS5UDPPacket(buf []byte) (SOCKS5UDPPacket, error) {
+	if len(buf) < 4 {
+		return SOCKS5UDPPacket{}, fmt.Errorf("SOCKS5 UDP packet too short")
+	}
+	if buf[0] != 0x00 || buf[1] != 0x00 {
+		return SOCKS5UDPPacket{}, fmt.Errorf("SOCKS5 UDP packet has invalid reserved field")
+	}
+	if buf[2] != 0x00 {
+		return SOCKS5UDPPacket{}, fmt.Errorf("SOCKS5 UDP fragmentation is not supported")
+	}
+
+	reader := bytes.NewReader(buf[4:])
+	host, err := readSOCKS5Host(reader, buf[3])
+	if err != nil {
+		return SOCKS5UDPPacket{}, err
+	}
+	var portBytes [2]byte
+	if _, err := io.ReadFull(reader, portBytes[:]); err != nil {
+		return SOCKS5UDPPacket{}, err
+	}
+	port := int(portBytes[0])<<8 | int(portBytes[1])
+	req, err := newClientRequest("socks5-udp", host, port)
+	if err != nil {
+		return SOCKS5UDPPacket{}, err
+	}
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		return SOCKS5UDPPacket{}, err
+	}
+	return SOCKS5UDPPacket{
+		Target:  req.Target,
+		Payload: append([]byte(nil), payload...),
+	}, nil
+}
+
+func BuildSOCKS5UDPPacket(target string, payload []byte) ([]byte, error) {
+	host, port, err := splitTarget(target)
+	if err != nil {
+		return nil, err
+	}
+
+	packet := []byte{0x00, 0x00, 0x00}
+	if ip := net.ParseIP(host); ip != nil {
+		if ipv4 := ip.To4(); ipv4 != nil {
+			packet = append(packet, 0x01)
+			packet = append(packet, ipv4...)
+		} else {
+			packet = append(packet, 0x04)
+			packet = append(packet, ip.To16()...)
+		}
+	} else {
+		if len(host) == 0 || len(host) > 255 {
+			return nil, fmt.Errorf("SOCKS5 domain target is invalid")
+		}
+		packet = append(packet, 0x03, byte(len(host)))
+		packet = append(packet, []byte(host)...)
+	}
+	packet = append(packet, byte(port>>8), byte(port))
+	packet = append(packet, payload...)
+	return packet, nil
 }
 
 func isHTTPProxyRequestStart(first byte) bool {
