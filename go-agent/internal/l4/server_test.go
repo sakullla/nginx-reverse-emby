@@ -874,7 +874,7 @@ func TestProxySOCKS5UDPEntryWrapsActualProxyReplyTarget(t *testing.T) {
 	}
 	defer udpConn.Close()
 
-	originalTarget := net.JoinHostPort("target.test", strconv.Itoa(upstreamConn.LocalAddr().(*net.UDPAddr).Port))
+	originalTarget := net.JoinHostPort("localhost", strconv.Itoa(upstreamConn.LocalAddr().(*net.UDPAddr).Port))
 	packet, err := proxyproto.BuildSOCKS5UDPPacket(originalTarget, []byte("payload"))
 	if err != nil {
 		t.Fatalf("BuildSOCKS5UDPPacket() error = %v", err)

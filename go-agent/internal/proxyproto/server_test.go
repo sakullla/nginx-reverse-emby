@@ -208,12 +208,141 @@ func TestParseSOCKS5UDPPacketRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDialUDPViaSOCKS5ProxyResolvesLocalDNS(t *testing.T) {
+	proxyAddr, packetCh := startObservingSOCKS5UDPProxy(t)
+
+	assoc, err := DialUDP(context.Background(), "socks5://"+proxyAddr)
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer assoc.Close()
+
+	if err := assoc.WritePacket("localhost:5300", []byte("ping")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+
+	packet := waitForSOCKS5UDPPacket(t, packetCh)
+	host, _, err := net.SplitHostPort(packet.Target)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q) error = %v", packet.Target, err)
+	}
+	if net.ParseIP(host) == nil {
+		t.Fatalf("Target host = %q, want locally resolved IP", host)
+	}
+}
+
+func TestDialUDPViaSOCKS5hProxyPreservesRemoteDNS(t *testing.T) {
+	proxyAddr, packetCh := startObservingSOCKS5UDPProxy(t)
+
+	assoc, err := DialUDP(context.Background(), "socks5h://"+proxyAddr)
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer assoc.Close()
+
+	if err := assoc.WritePacket("localhost:5300", []byte("ping")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+
+	packet := waitForSOCKS5UDPPacket(t, packetCh)
+	if packet.Target != "localhost:5300" {
+		t.Fatalf("Target = %q, want localhost:5300", packet.Target)
+	}
+}
+
 func TestParseSOCKS5UDPPacketRejectsFragments(t *testing.T) {
 	_, err := ParseSOCKS5UDPPacket([]byte{
 		0x00, 0x00, 0x01, 0x01, 127, 0, 0, 1, 0x14, 0xb4, 'p',
 	})
 	if err == nil {
 		t.Fatalf("ParseSOCKS5UDPPacket() error = nil, want fragment rejection")
+	}
+}
+
+func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan SOCKS5UDPPacket) {
+	t.Helper()
+
+	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp proxy: %v", err)
+	}
+	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		_ = tcpLn.Close()
+		t.Fatalf("listen udp proxy: %v", err)
+	}
+
+	packetCh := make(chan SOCKS5UDPPacket, 1)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		defer close(packetCh)
+
+		client, err := tcpLn.Accept()
+		if err != nil {
+			t.Errorf("accept tcp proxy: %v", err)
+			return
+		}
+		defer client.Close()
+		if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Errorf("set tcp deadline: %v", err)
+			return
+		}
+
+		req, err := ReadClientRequest(context.Background(), client, EntryAuth{})
+		if err != nil {
+			t.Errorf("ReadClientRequest() error = %v", err)
+			return
+		}
+		if req.Protocol != "socks5-udp" {
+			t.Errorf("req.Protocol = %q, want socks5-udp", req.Protocol)
+			return
+		}
+		if err := WriteClientRequestSuccessWithBind(client, req, udpLn.LocalAddr()); err != nil {
+			t.Errorf("WriteClientRequestSuccessWithBind() error = %v", err)
+			return
+		}
+
+		buf := make([]byte, 64*1024)
+		n, _, err := udpLn.ReadFromUDP(buf)
+		if err != nil {
+			t.Errorf("read udp packet: %v", err)
+			return
+		}
+		packet, err := ParseSOCKS5UDPPacket(buf[:n])
+		if err != nil {
+			t.Errorf("ParseSOCKS5UDPPacket() error = %v", err)
+			return
+		}
+		packetCh <- packet
+	}()
+
+	t.Cleanup(func() {
+		_ = tcpLn.Close()
+		_ = udpLn.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for SOCKS5 UDP proxy observation")
+		}
+	})
+
+	return tcpLn.Addr().String(), packetCh
+}
+
+func waitForSOCKS5UDPPacket(t *testing.T, packetCh <-chan SOCKS5UDPPacket) SOCKS5UDPPacket {
+	t.Helper()
+
+	select {
+	case packet, ok := <-packetCh:
+		if !ok {
+			t.Fatal("SOCKS5 UDP packet channel closed without observation")
+		}
+		return packet
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for SOCKS5 UDP packet")
+		return SOCKS5UDPPacket{}
 	}
 }
 

@@ -41,9 +41,10 @@ func Dial(ctx context.Context, proxyURL string, target string) (net.Conn, error)
 }
 
 type UDPAssociation struct {
-	control net.Conn
-	packet  *net.UDPConn
-	relay   *net.UDPAddr
+	control   net.Conn
+	packet    *net.UDPConn
+	relay     *net.UDPAddr
+	remoteDNS bool
 }
 
 func DialUDP(ctx context.Context, proxyURL string) (*UDPAssociation, error) {
@@ -100,9 +101,10 @@ func DialUDP(ctx context.Context, proxyURL string) (*UDPAssociation, error) {
 		bindAddr.IP = ips[0]
 	}
 	return &UDPAssociation{
-		control: control,
-		packet:  packet,
-		relay:   bindAddr,
+		control:   control,
+		packet:    packet,
+		relay:     bindAddr,
+		remoteDNS: cfg.RemoteDNS,
 	}, nil
 }
 
@@ -161,7 +163,7 @@ func (a *UDPAssociation) WritePacket(target string, payload []byte) error {
 	if a == nil || a.packet == nil {
 		return fmt.Errorf("SOCKS5 UDP association is closed")
 	}
-	packet, err := BuildSOCKS5UDPPacket(target, payload)
+	packet, err := buildSOCKS5UDPPacketForProxy(target, payload, a.remoteDNS)
 	if err != nil {
 		return err
 	}
@@ -424,6 +426,21 @@ func socks5Request(command byte, host string, port int) ([]byte, error) {
 	}
 	req = append(req, byte(port>>8), byte(port))
 	return req, nil
+}
+
+func buildSOCKS5UDPPacketForProxy(target string, payload []byte, remoteDNS bool) ([]byte, error) {
+	host, port, err := splitTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	if !remoteDNS {
+		resolvedHost, err := resolveLocalIP(host)
+		if err != nil {
+			return nil, err
+		}
+		host = resolvedHost
+	}
+	return BuildSOCKS5UDPPacket(net.JoinHostPort(host, fmt.Sprintf("%d", port)), payload)
 }
 
 func readSOCKS5ReplyBindAddress(conn net.Conn) (*net.UDPAddr, error) {
