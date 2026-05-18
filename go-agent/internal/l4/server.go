@@ -147,7 +147,13 @@ func newServerWithOptions(
 			}
 			s.bindingKeys = append(s.bindingKeys, l4BindingKey(rule))
 		case "udp":
-			if err := s.startUDPListener(rule); err != nil {
+			var err error
+			if isWireGuardTransparentForwardRule(rule) {
+				err = s.startWireGuardTransparentUDPListener(rule)
+			} else {
+				err = s.startUDPListener(rule)
+			}
+			if err != nil {
 				s.Close()
 				return nil, err
 			}

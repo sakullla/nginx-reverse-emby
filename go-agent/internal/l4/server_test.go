@@ -754,9 +754,10 @@ func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 	profileID := 9
 	listenPort := pickFreeUDPPort(t)
+	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: listenPort})
 	runtime := &fakeL4WireGuardRuntime{
-		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {
-			return net.ListenPacket("udp", "127.0.0.1:0")
+		listenTransparentUDP: func(_ context.Context, address string) (wireguard.TransparentUDPConn, error) {
+			return transparentConn, nil
 		},
 	}
 	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
@@ -776,13 +777,86 @@ func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 	}
 	defer srv.Close()
 
-	calls := runtime.listenUDPCalls()
+	calls := runtime.listenTransparentUDPCalls()
 	if len(calls) != 1 {
-		t.Fatalf("ListenUDP calls = %d, want 1", len(calls))
+		t.Fatalf("ListenTransparentUDP calls = %d, want 1", len(calls))
 	}
 	want := net.JoinHostPort("", strconv.Itoa(listenPort))
 	if calls[0] != want {
-		t.Fatalf("ListenUDP address = %q, want %q", calls[0], want)
+		t.Fatalf("ListenTransparentUDP address = %q, want %q", calls[0], want)
+	}
+	if calls := runtime.listenUDPCalls(); len(calls) != 0 {
+		t.Fatalf("ListenUDP calls = %+v, want none for transparent UDP", calls)
+	}
+}
+
+func TestWireGuardTransparentUDPInboundUsesOriginalDestinationAsTarget(t *testing.T) {
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+	upstreamTarget := upstreamConn.LocalAddr().String()
+
+	observedPayload := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, _, err := upstreamConn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		observedPayload <- append([]byte(nil), buf[:n]...)
+	}()
+
+	profileID := 9
+	listenPort := pickFreeUDPPort(t)
+	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: listenPort})
+	runtime := &fakeL4WireGuardRuntime{
+		listenTransparentUDP: func(_ context.Context, address string) (wireguard.TransparentUDPConn, error) {
+			return transparentConn, nil
+		},
+	}
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           listenPort,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+	}}, nil, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+
+	peer := &net.UDPAddr{IP: net.ParseIP("10.64.0.9"), Port: 53000}
+	payload := []byte("transparent udp target")
+	transparentConn.inject(wireguard.TransparentUDPPacket{
+		Peer:        peer,
+		OriginalDst: upstreamTarget,
+		Payload:     payload,
+	})
+
+	select {
+	case got := <-observedPayload:
+		if !bytes.Equal(got, payload) {
+			t.Fatalf("upstream payload = %q, want %q", got, payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for transparent udp upstream packet to %s", upstreamTarget)
+	}
+
+	if len(srv.udpConns) != 1 {
+		t.Fatalf("udp listeners = %d, want 1", len(srv.udpConns))
+	}
+	key := udpSessionKey(srv.udpConns[0], peer, upstreamTarget)
+	srv.udpMu.Lock()
+	_, ok := srv.udpSessions[key]
+	srv.udpMu.Unlock()
+	if !ok {
+		t.Fatalf("transparent udp session key for target %q was not created", upstreamTarget)
 	}
 }
 
@@ -4120,13 +4194,15 @@ type fakeL4WireGuardDialCall struct {
 }
 
 type fakeL4WireGuardRuntime struct {
-	mu          sync.Mutex
-	dialCalls   []fakeL4WireGuardDialCall
-	listenTCPOn []string
-	listenUDPOn []string
-	dialContext func(context.Context, string, string) (net.Conn, error)
-	listenTCP   func(context.Context, string) (net.Listener, error)
-	listenUDP   func(context.Context, string) (wireguard.PacketConn, error)
+	mu                     sync.Mutex
+	dialCalls              []fakeL4WireGuardDialCall
+	listenTCPOn            []string
+	listenUDPOn            []string
+	listenTransparentUDPOn []string
+	dialContext            func(context.Context, string, string) (net.Conn, error)
+	listenTCP              func(context.Context, string) (net.Listener, error)
+	listenUDP              func(context.Context, string) (wireguard.PacketConn, error)
+	listenTransparentUDP   func(context.Context, string) (wireguard.TransparentUDPConn, error)
 }
 
 func (r *fakeL4WireGuardRuntime) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -4159,6 +4235,16 @@ func (r *fakeL4WireGuardRuntime) ListenUDP(ctx context.Context, address string) 
 	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
 }
 
+func (r *fakeL4WireGuardRuntime) ListenTransparentUDP(ctx context.Context, address string) (wireguard.TransparentUDPConn, error) {
+	r.mu.Lock()
+	r.listenTransparentUDPOn = append(r.listenTransparentUDPOn, address)
+	r.mu.Unlock()
+	if r.listenTransparentUDP != nil {
+		return r.listenTransparentUDP(ctx, address)
+	}
+	return nil, fmt.Errorf("unexpected wireguard ListenTransparentUDP call")
+}
+
 func (r *fakeL4WireGuardRuntime) dialContextCalls() []fakeL4WireGuardDialCall {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -4175,6 +4261,56 @@ func (r *fakeL4WireGuardRuntime) listenUDPCalls() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.listenUDPOn...)
+}
+
+func (r *fakeL4WireGuardRuntime) listenTransparentUDPCalls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.listenTransparentUDPOn...)
+}
+
+type fakeTransparentUDPConn struct {
+	localAddr *net.UDPAddr
+	packets   chan wireguard.TransparentUDPPacket
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newFakeTransparentUDPConn(localAddr *net.UDPAddr) *fakeTransparentUDPConn {
+	return &fakeTransparentUDPConn{
+		localAddr: localAddr,
+		packets:   make(chan wireguard.TransparentUDPPacket, 8),
+		closed:    make(chan struct{}),
+	}
+}
+
+func (c *fakeTransparentUDPConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return nil
+}
+
+func (c *fakeTransparentUDPConn) LocalAddr() net.Addr {
+	return c.localAddr
+}
+
+func (c *fakeTransparentUDPConn) ReadPacket() (wireguard.TransparentUDPPacket, error) {
+	select {
+	case packet := <-c.packets:
+		return packet, nil
+	case <-c.closed:
+		return wireguard.TransparentUDPPacket{}, io.EOF
+	}
+}
+
+func (c *fakeTransparentUDPConn) WritePacket([]byte, *net.UDPAddr) error {
+	return nil
+}
+
+func (c *fakeTransparentUDPConn) inject(packet wireguard.TransparentUDPPacket) {
+	select {
+	case c.packets <- packet:
+	case <-c.closed:
+	}
 }
 
 type l4RelayTestRequest struct {

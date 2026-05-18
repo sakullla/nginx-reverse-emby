@@ -26,6 +26,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 func TestValidateListener(t *testing.T) {
@@ -3108,6 +3109,10 @@ func (r *fakeWireGuardRuntime) ListenUDP(ctx context.Context, address string) (n
 		return r.listenUDP(ctx, address)
 	}
 	return nil, fmt.Errorf("wireguard udp listen not configured")
+}
+
+func (r *fakeWireGuardRuntime) ListenTransparentUDP(context.Context, string) (wireguard.TransparentUDPConn, error) {
+	return nil, fmt.Errorf("wireguard transparent udp listen not configured")
 }
 
 func (r *fakeWireGuardRuntime) dialContextCalls() []fakeWireGuardDialCall {

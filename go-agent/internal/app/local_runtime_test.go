@@ -2268,6 +2268,10 @@ func (r *testAppWireGuardRuntime) ListenUDP(ctx context.Context, address string)
 	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
 }
 
+func (r *testAppWireGuardRuntime) ListenTransparentUDP(context.Context, string) (wireguard.TransparentUDPConn, error) {
+	return nil, fmt.Errorf("unexpected wireguard ListenTransparentUDP call")
+}
+
 func (r *testAppWireGuardRuntime) Close() error {
 	if r.closed {
 		return nil
@@ -2319,6 +2323,10 @@ func (r *transientPortInUseWireGuardRuntime) ListenTCP(_ context.Context, addres
 
 func (r *transientPortInUseWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
 	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
+}
+
+func (r *transientPortInUseWireGuardRuntime) ListenTransparentUDP(context.Context, string) (wireguard.TransparentUDPConn, error) {
+	return nil, fmt.Errorf("unexpected wireguard ListenTransparentUDP call")
 }
 
 func (r *transientPortInUseWireGuardRuntime) Close() error {
@@ -2392,6 +2400,10 @@ func (r *stickyPortInUseWireGuardRuntime) ListenTCP(_ context.Context, address s
 
 func (r *stickyPortInUseWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
 	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
+}
+
+func (r *stickyPortInUseWireGuardRuntime) ListenTransparentUDP(context.Context, string) (wireguard.TransparentUDPConn, error) {
+	return nil, fmt.Errorf("unexpected wireguard ListenTransparentUDP call")
 }
 
 func (r *stickyPortInUseWireGuardRuntime) Close() error {

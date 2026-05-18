@@ -1,28 +1,53 @@
 package wireguard
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+	"gvisor.dev/gvisor/pkg/waiter"
 )
 
 type PacketConn = net.PacketConn
+
+type TransparentUDPPacket struct {
+	Peer        *net.UDPAddr
+	OriginalDst string
+	Payload     []byte
+}
+
+type TransparentUDPConn interface {
+	io.Closer
+	LocalAddr() net.Addr
+	ReadPacket() (TransparentUDPPacket, error)
+	WritePacket(payload []byte, peer *net.UDPAddr) error
+}
 
 type Runtime interface {
 	DialContext(ctx context.Context, network string, address string) (net.Conn, error)
 	ListenTCP(ctx context.Context, address string) (net.Listener, error)
 	ListenUDP(ctx context.Context, address string) (PacketConn, error)
+	ListenTransparentUDP(ctx context.Context, address string) (TransparentUDPConn, error)
 	Close() error
 }
 
@@ -668,6 +693,40 @@ func (r *netstackRuntime) ListenUDP(ctx context.Context, address string) (Packet
 	return r.net.ListenUDP(addr)
 }
 
+func (r *netstackRuntime) ListenTransparentUDP(ctx context.Context, address string) (TransparentUDPConn, error) {
+	_ = ctx
+
+	addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return nil, err
+	}
+	fullAddr, netProto, err := udpFullAddress(addr)
+	if err != nil {
+		return nil, err
+	}
+	netstackStack := stackFromNetstackNet(r.net)
+	if netstackStack == nil {
+		return nil, fmt.Errorf("wireguard netstack is unavailable")
+	}
+
+	var wq waiter.Queue
+	ep, tcpipErr := netstackStack.NewEndpoint(udp.ProtocolNumber, netProto, &wq)
+	if tcpipErr != nil {
+		return nil, errors.New(tcpipErr.String())
+	}
+	ep.SocketOptions().SetReceiveOriginalDstAddress(true)
+	if tcpipErr := ep.Bind(fullAddr); tcpipErr != nil {
+		ep.Close()
+		return nil, &net.OpError{
+			Op:   "bind",
+			Net:  "udp",
+			Addr: udpAddrFromFullAddress(fullAddr),
+			Err:  errors.New(tcpipErr.String()),
+		}
+	}
+	return &netstackTransparentUDPConn{ep: ep, wq: &wq}, nil
+}
+
 func (r *netstackRuntime) Close() error {
 	r.mu.Lock()
 	if r.closed {
@@ -689,6 +748,132 @@ func (r *netstackRuntime) Close() error {
 		return nil
 	}
 	return tunDevice.Close()
+}
+
+type netstackNetLayout struct {
+	ep    *channel.Endpoint
+	stack *stack.Stack
+}
+
+func stackFromNetstackNet(net *netstack.Net) *stack.Stack {
+	if net == nil {
+		return nil
+	}
+	return (*netstackNetLayout)(unsafe.Pointer(net)).stack
+}
+
+type netstackTransparentUDPConn struct {
+	ep tcpip.Endpoint
+	wq *waiter.Queue
+}
+
+func (c *netstackTransparentUDPConn) Close() error {
+	c.ep.Close()
+	return nil
+}
+
+func (c *netstackTransparentUDPConn) LocalAddr() net.Addr {
+	addr, err := c.ep.GetLocalAddress()
+	if err != nil {
+		return nil
+	}
+	return udpAddrFromFullAddress(addr)
+}
+
+func (c *netstackTransparentUDPConn) ReadPacket() (TransparentUDPPacket, error) {
+	payload := make([]byte, 64*1024)
+	writer := tcpip.SliceWriter(payload)
+	res, err := c.read(&writer, tcpip.ReadOptions{NeedRemoteAddr: true})
+	if err != nil {
+		return TransparentUDPPacket{}, err
+	}
+	originalDst := ""
+	if res.ControlMessages.HasOriginalDstAddress {
+		originalDst = udpAddrFromFullAddress(res.ControlMessages.OriginalDstAddress).String()
+	}
+	return TransparentUDPPacket{
+		Peer:        udpAddrFromFullAddress(res.RemoteAddr),
+		OriginalDst: originalDst,
+		Payload:     append([]byte(nil), payload[:res.Count]...),
+	}, nil
+}
+
+func (c *netstackTransparentUDPConn) WritePacket(payload []byte, peer *net.UDPAddr) error {
+	var opts tcpip.WriteOptions
+	if peer != nil {
+		addr, _, err := udpFullAddress(peer)
+		if err != nil {
+			return err
+		}
+		opts.To = &addr
+	}
+	reader := bytes.NewReader(payload)
+	for {
+		_, tcpipErr := c.ep.Write(reader, opts)
+		if tcpipErr == nil {
+			return nil
+		}
+		if _, ok := tcpipErr.(*tcpip.ErrWouldBlock); !ok {
+			return errors.New(tcpipErr.String())
+		}
+		entry, notifyCh := waiter.NewChannelEntry(waiter.WritableEvents)
+		c.wq.EventRegister(&entry)
+		select {
+		case <-notifyCh:
+		}
+		c.wq.EventUnregister(&entry)
+	}
+}
+
+func (c *netstackTransparentUDPConn) read(dst io.Writer, opts tcpip.ReadOptions) (tcpip.ReadResult, error) {
+	for {
+		res, tcpipErr := c.ep.Read(dst, opts)
+		if tcpipErr == nil {
+			return res, nil
+		}
+		if _, ok := tcpipErr.(*tcpip.ErrClosedForReceive); ok {
+			return tcpip.ReadResult{}, io.EOF
+		}
+		if _, ok := tcpipErr.(*tcpip.ErrWouldBlock); !ok {
+			return tcpip.ReadResult{}, errors.New(tcpipErr.String())
+		}
+		entry, notifyCh := waiter.NewChannelEntry(waiter.ReadableEvents)
+		c.wq.EventRegister(&entry)
+		select {
+		case <-notifyCh:
+		}
+		c.wq.EventUnregister(&entry)
+	}
+}
+
+func udpFullAddress(addr *net.UDPAddr) (tcpip.FullAddress, tcpip.NetworkProtocolNumber, error) {
+	if addr == nil {
+		return tcpip.FullAddress{}, ipv4.ProtocolNumber, nil
+	}
+	if addr.Port < 0 || addr.Port > 65535 {
+		return tcpip.FullAddress{}, 0, fmt.Errorf("udp port out of range: %d", addr.Port)
+	}
+	out := tcpip.FullAddress{Port: uint16(addr.Port)}
+	if len(addr.IP) == 0 || addr.IP.IsUnspecified() {
+		if addr.IP != nil && addr.IP.To4() == nil && addr.IP.To16() != nil {
+			return out, ipv6.ProtocolNumber, nil
+		}
+		return out, ipv4.ProtocolNumber, nil
+	}
+	ip, ok := netip.AddrFromSlice(addr.IP)
+	if !ok || !ip.IsValid() {
+		return tcpip.FullAddress{}, 0, fmt.Errorf("invalid udp address %q", addr.IP.String())
+	}
+	ip = ip.Unmap()
+	out.Addr = tcpip.AddrFromSlice(ip.AsSlice())
+	if ip.Is4() {
+		return out, ipv4.ProtocolNumber, nil
+	}
+	return out, ipv6.ProtocolNumber, nil
+}
+
+func udpAddrFromFullAddress(addr tcpip.FullAddress) *net.UDPAddr {
+	return &net.UDPAddr{IP: net.IP(addr.Addr.AsSlice()), Port: int(addr.Port)}
 }
 
 func ipcConfig(ctx context.Context, cfg Config, resolve endpointResolver) (string, error) {

@@ -98,6 +98,43 @@ func TestNetstackRuntimeListenUDPAcceptsWildcardAddress(t *testing.T) {
 	}
 }
 
+func TestNetstackRuntimeReadTransparentUDPPacketReportsOriginalDestination(t *testing.T) {
+	runtime, cleanup := newRuntimeTestHarness(t)
+	defer cleanup()
+
+	listenAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.1"), Port: 18445}
+	conn, err := runtime.ListenTransparentUDP(context.Background(), listenAddr.String())
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP() error = %v", err)
+	}
+	defer conn.Close()
+
+	client, err := runtime.net.DialUDP(nil, listenAddr)
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer client.Close()
+	clientAddr := client.LocalAddr().(*net.UDPAddr)
+
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	packet, err := conn.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+	if string(packet.Payload) != "ping" {
+		t.Fatalf("Payload = %q, want ping", packet.Payload)
+	}
+	if packet.OriginalDst != listenAddr.String() {
+		t.Fatalf("OriginalDst = %q, want %q", packet.OriginalDst, listenAddr.String())
+	}
+	if packet.Peer.String() != clientAddr.String() {
+		t.Fatalf("Peer = %q, want %q", packet.Peer.String(), clientAddr.String())
+	}
+}
+
 func TestManagerKeepsSameProfileIDForDifferentAgents(t *testing.T) {
 	t.Parallel()
 
@@ -683,6 +720,13 @@ func newTestNetstackRuntime(t *testing.T) *netstackRuntime {
 	return &netstackRuntime{net: tnet, tun: tunDevice}
 }
 
+func newRuntimeTestHarness(t *testing.T) (*netstackRuntime, func()) {
+	t.Helper()
+
+	runtime := newTestNetstackRuntime(t)
+	return runtime, func() { _ = runtime.Close() }
+}
+
 type recordingFactory struct {
 	created            []*fakeRuntime
 	runtimeByProfileID map[int]*fakeRuntime
@@ -734,6 +778,10 @@ func (r *fakeRuntime) ListenTCP(context.Context, string) (net.Listener, error) {
 }
 
 func (r *fakeRuntime) ListenUDP(context.Context, string) (PacketConn, error) {
+	return nil, errFakeRuntime
+}
+
+func (r *fakeRuntime) ListenTransparentUDP(context.Context, string) (TransparentUDPConn, error) {
 	return nil, errFakeRuntime
 }
 
