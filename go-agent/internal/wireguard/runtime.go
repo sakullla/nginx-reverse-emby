@@ -9,19 +9,16 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
-	"unsafe"
-
-	"golang.zx2c4.com/wireguard/conn"
-	"golang.zx2c4.com/wireguard/device"
-	"golang.zx2c4.com/wireguard/tun/netstack"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard/wgnetstack"
+	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/device"
+
 	"gvisor.dev/gvisor/pkg/tcpip"
-	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -640,20 +637,21 @@ func (m *Manager) Close() error {
 
 type netstackRuntime struct {
 	mu     sync.Mutex
-	net    *netstack.Net
+	net    wgnetstack.RuntimeNet
+	stack  *stack.Stack
 	device *device.Device
 	tun    interface{ Close() error }
 	closed bool
 }
 
 func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
-	tunDevice, tnet, err := netstack.CreateNetTUN(cfg.AddressAddrs, cfg.DNSAddrs, cfg.MTU)
+	tunDevice, tnet, gstack, err := wgnetstack.CreateNetTUN(cfg.AddressAddrs, cfg.DNSAddrs, cfg.MTU)
 	if err != nil {
 		return nil, err
 	}
 
 	dev := device.NewDevice(tunDevice, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, "wireguard: "))
-	runtime := &netstackRuntime{net: tnet, device: dev, tun: tunDevice}
+	runtime := &netstackRuntime{net: tnet, stack: gstack, device: dev, tun: tunDevice}
 	ipc, err := ipcConfig(ctx, cfg, lookupEndpointIP)
 	if err != nil {
 		runtime.Close()
@@ -705,13 +703,12 @@ func (r *netstackRuntime) ListenTransparentUDP(ctx context.Context, address stri
 	if err != nil {
 		return nil, err
 	}
-	netstackStack, err := extractNetstackStack(r.net)
-	if err != nil {
-		return nil, err
+	if r.stack == nil {
+		return nil, fmt.Errorf("wireguard netstack is unavailable")
 	}
 
 	var wq waiter.Queue
-	ep, tcpipErr := netstackStack.NewEndpoint(udp.ProtocolNumber, netProto, &wq)
+	ep, tcpipErr := r.stack.NewEndpoint(udp.ProtocolNumber, netProto, &wq)
 	if tcpipErr != nil {
 		return nil, errors.New(tcpipErr.String())
 	}
@@ -726,7 +723,7 @@ func (r *netstackRuntime) ListenTransparentUDP(ctx context.Context, address stri
 			Err:  errors.New(tcpipErr.String()),
 		}
 	}
-	return &netstackTransparentUDPConn{stack: netstackStack, ep: ep, wq: &wq}, nil
+	return &netstackTransparentUDPConn{stack: r.stack, ep: ep, wq: &wq}, nil
 }
 
 func (r *netstackRuntime) Close() error {
@@ -740,6 +737,7 @@ func (r *netstackRuntime) Close() error {
 	tunDevice := r.tun
 	r.device = nil
 	r.tun = nil
+	r.stack = nil
 	r.mu.Unlock()
 
 	if dev != nil {
@@ -750,36 +748,6 @@ func (r *netstackRuntime) Close() error {
 		return nil
 	}
 	return tunDevice.Close()
-}
-
-type netstackNetLayout struct {
-	ep    *channel.Endpoint
-	stack *stack.Stack
-}
-
-func extractNetstackStack(net any) (*stack.Stack, error) {
-	if net == nil {
-		return nil, fmt.Errorf("wireguard netstack is unavailable")
-	}
-	netValue := reflect.TypeOf(net)
-	if netValue.Kind() != reflect.Pointer {
-		return nil, fmt.Errorf("wireguard netstack layout mismatch: got %T", net)
-	}
-	netLayout := netValue.Elem()
-	expectedLayout := reflect.TypeOf(netstackNetLayout{})
-	if netLayout.Kind() != reflect.Struct ||
-		netLayout.NumField() < expectedLayout.NumField() ||
-		netLayout.Field(0).Type != expectedLayout.Field(0).Type ||
-		netLayout.Field(0).Offset != expectedLayout.Field(0).Offset ||
-		netLayout.Field(1).Type != expectedLayout.Field(1).Type ||
-		netLayout.Field(1).Offset != expectedLayout.Field(1).Offset {
-		return nil, fmt.Errorf("wireguard netstack layout mismatch: got %T", net)
-	}
-	netstackStack := (*netstackNetLayout)(unsafe.Pointer(reflect.ValueOf(net).Pointer())).stack
-	if netstackStack == nil {
-		return nil, fmt.Errorf("wireguard netstack is unavailable")
-	}
-	return netstackStack, nil
 }
 
 type netstackTransparentUDPConn struct {

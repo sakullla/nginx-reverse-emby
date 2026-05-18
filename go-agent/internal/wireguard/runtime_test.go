@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"golang.zx2c4.com/wireguard/tun/netstack"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard/wgnetstack"
 )
 
 func TestManagerReusesSameFingerprintRuntime(t *testing.T) {
@@ -180,12 +180,27 @@ func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(
 	}
 }
 
-func TestStackFromNetstackNetRejectsUnexpectedLayout(t *testing.T) {
-	var wrong struct {
-		ep int
+func TestNewTestNetstackRuntimeProvidesExplicitStack(t *testing.T) {
+	runtime := newTestNetstackRuntime(t)
+	defer runtime.Close()
+
+	if runtime.stack == nil {
+		t.Fatal("runtime stack is nil")
 	}
-	if _, err := extractNetstackStack(&wrong); err == nil {
-		t.Fatal("extractNetstackStack() succeeded for unexpected layout")
+	if runtime.net == nil {
+		t.Fatal("runtime net is nil")
+	}
+}
+
+func TestNetstackRuntimeListenTransparentUDPRejectsMissingStack(t *testing.T) {
+	runtime := &netstackRuntime{}
+
+	_, err := runtime.ListenTransparentUDP(context.Background(), "127.0.0.1:18080")
+	if err == nil {
+		t.Fatal("ListenTransparentUDP() error = nil, want missing stack error")
+	}
+	if !strings.Contains(err.Error(), "wireguard netstack is unavailable") {
+		t.Fatalf("ListenTransparentUDP() error = %v, want missing stack error", err)
 	}
 }
 
@@ -767,14 +782,14 @@ func TestNetstackRuntimeCloseIsIdempotent(t *testing.T) {
 func newTestNetstackRuntime(t *testing.T) *netstackRuntime {
 	t.Helper()
 
-	tunDevice, tnet, err := netstack.CreateNetTUN([]netip.Addr{
+	tunDevice, tnet, gstack, err := wgnetstack.CreateNetTUN([]netip.Addr{
 		netip.MustParseAddr("10.99.0.1"),
 		netip.MustParseAddr("10.99.0.2"),
 	}, nil, 1420)
 	if err != nil {
 		t.Fatalf("CreateNetTUN() error = %v", err)
 	}
-	return &netstackRuntime{net: tnet, tun: tunDevice}
+	return &netstackRuntime{net: tnet, stack: gstack, tun: tunDevice}
 }
 
 func newRuntimeTestHarness(t *testing.T) (*netstackRuntime, func()) {
