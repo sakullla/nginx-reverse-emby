@@ -1827,7 +1827,7 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 
 	listenMode := strings.ToLower(strings.TrimSpace(row.ListenMode))
 	if listenMode == "proxy" {
-		return protocol == "tcp"
+		return true
 	}
 	if listenMode == "wireguard" {
 		if row.WireGuardProfileID == nil {
@@ -1837,7 +1837,7 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 			return protocol == "tcp"
 		}
 		if normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode) == "transparent" {
-			return protocol == "tcp"
+			return true
 		}
 	}
 

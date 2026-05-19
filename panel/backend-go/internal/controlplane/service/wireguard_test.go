@@ -924,6 +924,129 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileUpdateRejectsRemovingAddressUsedByDependentListener(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		wantMessage string
+		seed        func(*testing.T, *storage.SQLiteStore, int)
+	}{
+		{
+			name:        "relay listener",
+			wantMessage: "relay listener 200",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveRelayListeners(ctx, "local", []storage.RelayListenerRow{{
+					ID:                 200,
+					AgentID:            "local",
+					Name:               "wg relay",
+					ListenHost:         "10.0.0.1",
+					BindHostsJSON:      `["10.0.0.1"]`,
+					ListenPort:         7443,
+					PublicHost:         "",
+					PublicPort:         0,
+					Enabled:            true,
+					TLSMode:            "none",
+					TransportMode:      "wireguard",
+					WireGuardProfileID: &profileID,
+					ObfsMode:           "off",
+					PinSetJSON:         `[]`,
+					TagsJSON:           `[]`,
+					Revision:           1,
+				}}); err != nil {
+					t.Fatalf("SaveRelayListeners() error = %v", err)
+				}
+			},
+		},
+		{
+			name:        "l4 listen",
+			wantMessage: "l4 rule 201",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
+					ID:                   201,
+					AgentID:              "local",
+					Name:                 "wg listen",
+					Protocol:             "tcp",
+					ListenHost:           "0.0.0.0",
+					ListenPort:           9443,
+					BackendsJSON:         `[{"host":"127.0.0.1","port":9444}]`,
+					LoadBalancingJSON:    `{"strategy":"adaptive"}`,
+					TuningJSON:           `{"proxy_protocol":{"decode":false,"send":false}}`,
+					RelayLayersJSON:      `[]`,
+					ListenMode:           "wireguard",
+					WireGuardProfileID:   &profileID,
+					WireGuardInboundMode: "address",
+					WireGuardListenHost:  "10.0.0.1",
+					Enabled:              true,
+					TagsJSON:             `[]`,
+					Revision:             1,
+				}}); err != nil {
+					t.Fatalf("SaveL4Rules() error = %v", err)
+				}
+			},
+		},
+		{
+			name:        "http wireguard entry",
+			wantMessage: "HTTP rule 202",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+					ID:                       202,
+					AgentID:                  "local",
+					FrontendURL:              "http://app.example.com",
+					BackendsJSON:             `[{"url":"http://127.0.0.1:8096"}]`,
+					LoadBalancingJSON:        `{"strategy":"adaptive"}`,
+					Enabled:                  true,
+					TagsJSON:                 `[]`,
+					RelayChainJSON:           `[]`,
+					RelayLayersJSON:          `[]`,
+					CustomHeadersJSON:        `[]`,
+					WireGuardEntryEnabled:    true,
+					WireGuardProfileID:       &profileID,
+					WireGuardEntryListenHost: "10.0.0.1",
+					WireGuardEntryListenPort: 80,
+					Revision:                 1,
+				}}); err != nil {
+					t.Fatalf("SaveHTTPRules() error = %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, svc := newTestWireGuardProfileService(t)
+			created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			tt.seed(t, store, created.ID)
+
+			update := testWireGuardProfileInput()
+			update.PrivateKey = redactedProxyPassword
+			update.Peers[0].PresharedKey = redactedProxyPassword
+			update.Addresses = []string{"10.0.0.2/24"}
+			_, err = svc.Update(ctx, "local", created.ID, update)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "wireguard profile address is referenced") || !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("Update() error = %v, want address referenced message containing %q", err, tt.wantMessage)
+			}
+
+			rows, err := store.ListWireGuardProfiles(ctx, "local")
+			if err != nil {
+				t.Fatalf("ListWireGuardProfiles() error = %v", err)
+			}
+			if len(rows) != 1 || rows[0].AddressesJSON != `["10.0.0.1/24"]` {
+				t.Fatalf("profile rows after rejected update = %+v", rows)
+			}
+		})
+	}
+}
+
 func TestWireGuardProfileDefaultsModeToGenericWireGuard(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)

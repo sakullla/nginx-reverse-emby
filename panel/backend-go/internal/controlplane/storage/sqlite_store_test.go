@@ -3294,6 +3294,73 @@ func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesUDPProxyEntryL4RuleWithoutBackend(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "udp-proxy-entry-agent",
+		Name:            "udp-proxy-entry-agent",
+		AgentToken:      "token-udp-proxy-entry-agent",
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.SaveL4Rules(t.Context(), "udp-proxy-entry-agent", []L4RuleRow{{
+		ID:                 75,
+		AgentID:            "udp-proxy-entry-agent",
+		Name:               "udp-proxy-entry",
+		Protocol:           "udp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         1082,
+		BackendsJSON:       `[]`,
+		LoadBalancingJSON:  `{}`,
+		TuningJSON:         `{}`,
+		RelayChainJSON:     `[]`,
+		RelayLayersJSON:    `[]`,
+		ListenMode:         "proxy",
+		ProxyEntryAuthJSON: `{"enabled":true,"username":"client","password":"secret"}`,
+		ProxyEgressMode:    "proxy",
+		ProxyEgressURL:     "socks5://egress.example.test:1080",
+		Enabled:            true,
+		Revision:           23,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "udp-proxy-entry-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+
+	if snapshot.Revision != 23 {
+		t.Fatalf("Revision = %d", snapshot.Revision)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	rule := snapshot.L4Rules[0]
+	if rule.ID != 75 || rule.Protocol != "udp" || rule.ListenMode != "proxy" || rule.ProxyEgressMode != "proxy" {
+		t.Fatalf("L4Rules[0] = %+v", rule)
+	}
+	if len(rule.Backends) != 0 || rule.UpstreamHost != "" || rule.UpstreamPort != 0 {
+		t.Fatalf("udp proxy entry targets = backends=%+v upstream=%s:%d", rule.Backends, rule.UpstreamHost, rule.UpstreamPort)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesWireGuardProxyEntryL4RuleWithoutBackend(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3501,6 +3568,84 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentL4RuleWithoutBackends
 	}
 	rule := snapshot.L4Rules[0]
 	if rule.ID != 74 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" {
+		t.Fatalf("L4Rules[0] = %+v", rule)
+	}
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != profileID {
+		t.Fatalf("WireGuardProfileID = %v, want %d", rule.WireGuardProfileID, profileID)
+	}
+	if len(rule.Backends) != 0 {
+		t.Fatalf("Backends = %+v, want empty transparent target list", rule.Backends)
+	}
+}
+
+func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentUDPL4RuleWithoutBackends(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "wg-transparent-udp-agent",
+		Name:             "wg-transparent-udp-agent",
+		AgentToken:       "token-wg-transparent-udp-agent",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	profileID := 94
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-transparent-udp-agent", []WireGuardProfileRow{{
+		ID:            profileID,
+		AgentID:       "wg-transparent-udp-agent",
+		Name:          "transparent-udp-local-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "transparent-udp-local-private-key",
+		ListenPort:    51820,
+		AddressesJSON: `["10.94.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      24,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "wg-transparent-udp-agent", []L4RuleRow{{
+		ID:                   76,
+		AgentID:              "wg-transparent-udp-agent",
+		Name:                 "wg-transparent-udp",
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           18081,
+		BackendsJSON:         `[]`,
+		LoadBalancingJSON:    `{}`,
+		TuningJSON:           `{}`,
+		RelayChainJSON:       `[]`,
+		RelayLayersJSON:      `[]`,
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		Enabled:              true,
+		Revision:             25,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-transparent-udp-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	rule := snapshot.L4Rules[0]
+	if rule.ID != 76 || rule.Protocol != "udp" || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" {
 		t.Fatalf("L4Rules[0] = %+v", rule)
 	}
 	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != profileID {

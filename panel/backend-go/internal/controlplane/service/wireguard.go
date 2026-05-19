@@ -270,6 +270,11 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 				return state, err
 			}
 		}
+		if current.Enabled && normalized.Enabled && input.hasAddressesField() {
+			if err := s.ensureReferencedProfileAddressesPreserved(ctx, resolvedID, current, normalized); err != nil {
+				return state, err
+			}
+		}
 		normalized.AgentID = resolvedID
 		allocatorState.WireGuard = state.Profiles
 		allocator := newConfigIdentityAllocator(allocatorState)
@@ -385,6 +390,104 @@ func (s *wireGuardProfileService) ensureProfileNotReferenced(ctx context.Context
 		}
 	}
 	return nil
+}
+
+func (s *wireGuardProfileService) ensureReferencedProfileAddressesPreserved(ctx context.Context, agentID string, current WireGuardProfile, next WireGuardProfile) error {
+	removedHosts := removedWireGuardAddressHosts(current.Addresses, next.Addresses)
+	if len(removedHosts) == 0 {
+		return nil
+	}
+
+	relayRows, err := s.store.ListRelayListeners(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, row := range relayRows {
+		if !strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") ||
+			row.WireGuardProfileID == nil ||
+			*row.WireGuardProfileID != current.ID {
+			continue
+		}
+		if wireGuardHostRemoved(row.ListenHost, removedHosts) || wireGuardHostsRemoved(parseStringArray(row.BindHostsJSON), removedHosts) {
+			return fmt.Errorf("%w: wireguard profile address is referenced by relay listener %d", ErrInvalidArgument, row.ID)
+		}
+	}
+
+	l4Rows, err := s.store.ListL4Rules(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, row := range l4Rows {
+		if row.WireGuardProfileID == nil || *row.WireGuardProfileID != current.ID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(row.ListenMode), "wireguard") ||
+			strings.EqualFold(strings.TrimSpace(row.WireGuardInboundMode), "transparent") {
+			continue
+		}
+		if wireGuardHostRemoved(row.WireGuardListenHost, removedHosts) {
+			return fmt.Errorf("%w: wireguard profile address is referenced by l4 rule %d", ErrInvalidArgument, row.ID)
+		}
+	}
+
+	httpRows, err := s.store.ListHTTPRules(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	for _, row := range httpRows {
+		if !row.WireGuardEntryEnabled ||
+			row.WireGuardProfileID == nil ||
+			*row.WireGuardProfileID != current.ID {
+			continue
+		}
+		if wireGuardHostRemoved(row.WireGuardEntryListenHost, removedHosts) {
+			return fmt.Errorf("%w: wireguard profile address is referenced by HTTP rule %d", ErrInvalidArgument, row.ID)
+		}
+	}
+	return nil
+}
+
+func removedWireGuardAddressHosts(current []string, next []string) map[string]struct{} {
+	nextHosts := make(map[string]struct{}, len(next))
+	for _, address := range next {
+		if host := wireGuardAddressHost(address); host != "" {
+			nextHosts[host] = struct{}{}
+		}
+	}
+
+	removed := make(map[string]struct{})
+	for _, address := range current {
+		host := wireGuardAddressHost(address)
+		if host == "" {
+			continue
+		}
+		if _, ok := nextHosts[host]; !ok {
+			removed[host] = struct{}{}
+		}
+	}
+	return removed
+}
+
+func wireGuardAddressHost(raw string) string {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(prefix.Addr().String())
+}
+
+func wireGuardHostRemoved(host string, removedHosts map[string]struct{}) bool {
+	_, ok := removedHosts[strings.ToLower(strings.TrimSpace(host))]
+	return ok
+}
+
+func wireGuardHostsRemoved(hosts []string, removedHosts map[string]struct{}) bool {
+	for _, host := range hosts {
+		if wireGuardHostRemoved(host, removedHosts) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *wireGuardProfileService) ensureAgentExists(ctx context.Context, agentID string) (string, error) {
