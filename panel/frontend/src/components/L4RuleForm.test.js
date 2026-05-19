@@ -71,6 +71,13 @@ function selectByLabel(wrapper, labelText) {
   return group.find('select').exists() ? group.get('select') : group.get('input')
 }
 
+async function switchTab(wrapper, name) {
+  const tab = wrapper.findAll('.form-tabs__btn').find((btn) => btn.text().trim() === name)
+  if (!tab) throw new Error(`Missing tab: ${name}`)
+  await tab.trigger('click')
+  await flushPromises()
+}
+
 describe('L4RuleForm WireGuard egress', () => {
   beforeEach(() => {
     mocks.createMutateAsync.mockReset()
@@ -82,7 +89,7 @@ describe('L4RuleForm WireGuard egress', () => {
   it('allows WireGuard inbound rules to egress through a WireGuard URI', async () => {
     const wrapper = mountForm()
 
-    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    await switchTab(wrapper, '协议与监听')
     await selectByLabel(wrapper, '监听模式').setValue('wireguard')
     await selectByLabel(wrapper, '出口模式').setValue('wireguard')
     await flushPromises()
@@ -106,7 +113,7 @@ describe('L4RuleForm WireGuard egress', () => {
   it('derives WireGuard address-mode listen host from the selected profile', async () => {
     const wrapper = mountForm()
 
-    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    await switchTab(wrapper, '协议与监听')
     await selectByLabel(wrapper, '监听模式').setValue('wireguard')
     await selectByLabel(wrapper, 'WireGuard 入站模式').setValue('address')
     await flushPromises()
@@ -128,7 +135,7 @@ describe('L4RuleForm WireGuard egress', () => {
   it('requires a selected profile for WireGuard transparent inbound rules', async () => {
     const wrapper = mountForm()
 
-    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    await switchTab(wrapper, '协议与监听')
     await selectByLabel(wrapper, '监听模式').setValue('wireguard')
     await flushPromises()
 
@@ -148,7 +155,7 @@ describe('L4RuleForm WireGuard egress', () => {
   it('does not offer entry authentication for WireGuard proxy egress', async () => {
     const wrapper = mountForm()
 
-    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    await switchTab(wrapper, '协议与监听')
     await selectByLabel(wrapper, '监听模式').setValue('wireguard')
     await selectByLabel(wrapper, '出口模式').setValue('proxy')
     await flushPromises()
@@ -169,7 +176,7 @@ describe('L4RuleForm WireGuard egress', () => {
 
     await selectByLabel(wrapper, '协议').setValue('udp')
     await selectByLabel(wrapper, '监听端口').setValue('1080')
-    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    await switchTab(wrapper, '协议与监听')
     await selectByLabel(wrapper, '监听模式').setValue('proxy')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -191,7 +198,7 @@ describe('L4RuleForm WireGuard egress', () => {
 
     await selectByLabel(wrapper, '协议').setValue('udp')
     await selectByLabel(wrapper, '监听端口').setValue('1080')
-    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    await switchTab(wrapper, '协议与监听')
     await selectByLabel(wrapper, '监听模式').setValue('proxy')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -219,7 +226,6 @@ describe('L4RuleForm WireGuard egress', () => {
       backends: []
     })
 
-    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
     await flushPromises()
     await wrapper.get('form').trigger('submit')
     await flushPromises()

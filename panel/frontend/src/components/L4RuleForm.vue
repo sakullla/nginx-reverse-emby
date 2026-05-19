@@ -1,12 +1,5 @@
 <template>
   <form class="rule-form" @submit.prevent="handleSubmit">
-    <!-- Tab Bar -->
-    <div class="form-tabs">
-      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'basic' }" @click="activeTab = 'basic'">基础配置</button>
-      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }" @click="activeTab = 'protocol'">协议与监听 <span v-if="hasProtocolTuning" class="form-tabs__dot" title="已配置"></span></button>
-      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'relay' }" @click="activeTab = 'relay'">Relay 配置 <span v-if="hasRelayConfig" class="form-tabs__dot" title="已配置"></span></button>
-    </div>
-
     <div v-if="error" class="form-error">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="12" cy="12" r="10"/>
@@ -16,45 +9,63 @@
       {{ error }}
     </div>
 
-    <!-- Tab 1: Basic -->
-    <div v-if="activeTab === 'basic'" class="form-tab-panel">
-      <!-- Protocol -->
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label form-label--required">协议</label>
-          <select v-model="form.protocol" class="input" @change="handleProtocolChange">
-            <option value="tcp">TCP</option>
-            <option value="udp">UDP</option>
-          </select>
+    <!-- Tab Bar -->
+    <div class="form-tabs">
+      <button
+        type="button"
+        class="form-tabs__btn"
+        :class="{ active: activeTab === 'basic' }"
+        @click="activeTab = 'basic'"
+      >
+        基础配置
+      </button>
+      <button
+        type="button"
+        class="form-tabs__btn"
+        :class="{ active: activeTab === 'protocol' }"
+        @click="activeTab = 'protocol'"
+      >
+        协议与监听
+      </button>
+      <button
+        type="button"
+        class="form-tabs__btn"
+        :class="{ active: activeTab === 'relay' }"
+        @click="activeTab = 'relay'"
+      >
+        Relay 配置
+      </button>
+    </div>
+
+    <!-- Tab 1: 基础配置 -->
+    <div v-show="activeTab === 'basic'" class="form-tab-panel">
+      <!-- Protocol + Listen Address/Port -->
+      <div class="form-section">
+        <h3 class="form-section__title">协议与监听地址</h3>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label form-label--required">协议</label>
+            <select v-model="form.protocol" class="input" @change="handleProtocolChange">
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label form-label--required">监听地址</label>
+            <input v-model="form.listen_host" class="input" placeholder="0.0.0.0">
+          </div>
+          <div class="form-group">
+            <label class="form-label form-label--required">监听端口</label>
+            <input v-model.number="form.listen_port" class="input" type="number" min="1" max="65535" placeholder="25565" @input="updateAutoTags">
+          </div>
         </div>
       </div>
 
-      <!-- Listen Address -->
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label form-label--required">监听地址</label>
-          <input v-model="form.listen_host" class="input" placeholder="0.0.0.0">
-        </div>
-        <div class="form-group">
-          <label class="form-label form-label--required">监听端口</label>
-          <input v-model.number="form.listen_port" class="input" type="number" min="1" max="65535" placeholder="25565" @input="updateAutoTags">
-        </div>
-      </div>
-
-      <!-- Load Balancing Strategy -->
-      <div class="form-group">
-        <label class="form-label">负载均衡策略</label>
-        <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
-          <option value="adaptive">自适应 (Adaptive)</option>
-          <option value="round_robin">轮询 (Round Robin)</option>
-          <option value="random">随机 (Random)</option>
-        </select>
-      </div>
-
-      <!-- Backends List -->
-      <div v-if="requiresBackends" class="form-group">
+      <!-- Backends -->
+      <div v-if="requiresBackends" class="form-section">
         <div class="backends-header">
-          <label class="form-label form-label--required">后端服务器</label>
+          <h3 class="form-section__title">后端服务器</h3>
           <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19"/>
@@ -115,90 +126,85 @@
         </div>
       </div>
 
-      <!-- Tags -->
-      <div class="form-group">
-        <label class="form-label">分类标签</label>
-        <div class="tag-input">
-          <div class="tag-input__container">
-            <span
-              v-for="(tag, index) in form.tags"
-              :key="tag"
-              class="tag"
-            >
-              {{ tag }}
-              <button
-                type="button"
-                class="tag__remove"
-                @click="removeTag(index)"
+      <!-- Load Balancing + Tags + Enabled + Submit -->
+      <div class="form-section">
+        <h3 class="form-section__title">其他设置</h3>
+
+        <div class="form-group">
+          <label class="form-label">负载均衡策略</label>
+          <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
+            <option value="adaptive">自适应 (Adaptive)</option>
+            <option value="round_robin">轮询 (Round Robin)</option>
+            <option value="random">随机 (Random)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">分类标签</label>
+          <div class="tag-input">
+            <div class="tag-input__container">
+              <span
+                v-for="(tag, index) in form.tags"
+                :key="tag"
+                class="tag"
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"/>
-                  <line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
-            </span>
-            <input
-              v-model="tagInput"
-              type="text"
-              class="tag-input__field"
-              placeholder="输入标签按回车..."
-              @keydown.enter.prevent="addTag"
-            >
+                {{ tag }}
+                <button
+                  type="button"
+                  class="tag__remove"
+                  @click="removeTag(index)"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </span>
+              <input
+                v-model="tagInput"
+                type="text"
+                class="tag-input__field"
+                placeholder="输入标签按回车..."
+                @keydown.enter.prevent="addTag"
+              >
+            </div>
           </div>
         </div>
+
+        <label class="toggle-row">
+          <input v-model="form.enabled" type="checkbox" class="toggle__input">
+          <span class="toggle__slider"></span>
+          <span class="toggle__label">启用规则</span>
+        </label>
+
+        <button type="submit" class="btn btn--primary btn--full" :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value">
+          {{ isEdit ? '保存修改' : '创建规则' }}
+        </button>
       </div>
-
-      <!-- Enabled Toggle -->
-      <label class="toggle-row">
-        <input v-model="form.enabled" type="checkbox" class="toggle__input">
-        <span class="toggle__slider"></span>
-        <span class="toggle__label">启用规则</span>
-      </label>
-
-      <!-- Submit -->
-      <button type="submit" class="btn btn--primary btn--full" :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value">
-        {{ isEdit ? '保存修改' : '创建规则' }}
-      </button>
     </div>
 
-    <!-- Tab 3: Protocol & Listen -->
-    <div v-if="activeTab === 'protocol'" class="form-tab-panel">
-      <!-- Listen Mode / Proxy Entry -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">监听模式</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">监听模式</label>
-            <select v-model="form.listen_mode" class="input">
-              <option value="tcp">{{ form.protocol === 'udp' ? 'UDP 转发' : 'TCP 转发' }}</option>
-              <option value="proxy">SOCKS / HTTP 代理</option>
-              <option value="wireguard">WireGuard</option>
-            </select>
-          </div>
-          <div v-if="supportsProxyEgress" class="form-group">
-            <label class="form-label">出口模式</label>
-            <select v-model="form.proxy_egress_mode" class="input">
-              <option v-if="form.listen_mode === 'wireguard'" value="">后端转发</option>
-              <option value="relay">Relay</option>
-              <option value="proxy">SOCKS / HTTP 代理</option>
-              <option value="wireguard">WireGuard</option>
-            </select>
-          </div>
+    <!-- Tab 2: 协议与监听 -->
+    <div v-show="activeTab === 'protocol'" class="form-tab-panel">
+      <!-- Listen Mode -->
+      <div class="form-section">
+        <h3 class="form-section__title">监听模式</h3>
+
+        <div class="form-group">
+          <label class="form-label form-label--required">监听模式</label>
+          <select v-model="form.listen_mode" class="input">
+            <option value="tcp">{{ form.protocol === 'udp' ? 'UDP 转发' : 'TCP 转发' }}</option>
+            <option value="proxy">SOCKS / HTTP 代理</option>
+            <option value="wireguard">WireGuard</option>
+          </select>
         </div>
-        <div v-if="form.protocol === 'udp' && form.listen_mode === 'proxy'" class="form-help">
+
+        <div v-if="form.protocol === 'udp' && form.listen_mode === 'proxy'" class="form-help form-help--warning">
           UDP SOCKS5 入口依赖同监听地址、同端口的 TCP SOCKS5 入口规则完成认证与 UDP ASSOCIATE。
         </div>
 
-        <div v-if="usesWireGuard" class="form-row">
-          <div v-if="isWireGuardEgress && canSelectWireGuardEgressProfile" class="form-group">
-            <label class="form-label form-label--required">WireGuard 出口来源</label>
-            <select v-model="form.wireguard_egress_source" class="input">
-              <option value="uri">WireGuard URI</option>
-              <option v-if="canSelectWireGuardEgressProfile" value="profile">WireGuard 配置</option>
-            </select>
-          </div>
-
-          <div v-if="requiresWireGuardProfile" class="form-group">
+        <!-- WireGuard inbound config -->
+        <div v-if="isWireGuardInbound" class="form-row">
+          <div class="form-group">
             <label class="form-label form-label--required">WireGuard 配置</label>
             <select v-model.number="form.wireguard_profile_id" class="input">
               <option value="">请选择配置</option>
@@ -208,23 +214,22 @@
             </select>
           </div>
 
-          <div v-if="isWireGuardEgressUriSource" class="form-group">
-            <label class="form-label form-label--required">WireGuard 连接 URI</label>
-            <input v-model="form.wireguard_egress_uri" class="input" placeholder="wireguard://user:pass@host:51820" autocomplete="off">
-          </div>
-
-          <div v-if="isWireGuardInbound" class="form-group">
+          <div class="form-group">
             <label class="form-label">WireGuard 入站模式</label>
             <select v-model="form.wireguard_inbound_mode" class="input">
               <option v-if="form.protocol === 'tcp'" value="transparent">透明</option>
               <option value="address">地址</option>
             </select>
           </div>
-          <p v-if="isWireGuardInbound && form.wireguard_inbound_mode === 'address'" class="form-help form-help--inline">
-            监听 Host 自动使用所选 WireGuard 配置的第一个地址。
-          </p>
+        </div>
+        <p v-if="isWireGuardInbound && form.wireguard_inbound_mode === 'address'" class="form-help">
+          监听 Host 自动使用所选 WireGuard 配置的第一个地址。
+        </p>
+        <div v-if="isWireGuardInbound" class="form-help">
+          WireGuard 透明入口会匹配已接入所选 Profile 的客户端流量；地址入口监听 Host 自动使用所选 Profile 的第一个地址。
         </div>
 
+        <!-- Proxy entry auth -->
         <div v-if="isProxyEntryAuthAvailable" class="advanced-checks">
           <label class="backend-checkbox">
             <input v-model="form.proxy_entry_auth.enabled" type="checkbox">
@@ -241,24 +246,65 @@
             <input v-model="form.proxy_entry_auth.password" class="input" type="password" autocomplete="new-password">
           </div>
         </div>
+      </div>
+
+      <!-- Egress Mode -->
+      <div v-if="supportsProxyEgress" class="form-section">
+        <h3 class="form-section__title">出口模式</h3>
+
+        <div class="form-group">
+          <label class="form-label">出口模式</label>
+          <select v-model="form.proxy_egress_mode" class="input">
+            <option v-if="form.listen_mode === 'wireguard'" value="">后端转发</option>
+            <option value="relay">Relay</option>
+            <option value="proxy">SOCKS / HTTP 代理</option>
+            <option value="wireguard">WireGuard</option>
+          </select>
+        </div>
+
+        <!-- Proxy egress URL -->
+        <div v-if="isProxyEntry && form.proxy_egress_mode === 'proxy'" class="form-group">
+          <label class="form-label">出口代理 URL</label>
+          <input v-model="form.proxy_egress_url" class="input" placeholder="socks://user:pass@127.0.0.1:1080">
+        </div>
+
+        <!-- WireGuard egress config -->
+        <div v-if="isWireGuardEgress" class="form-row">
+          <div v-if="canSelectWireGuardEgressProfile" class="form-group">
+            <label class="form-label form-label--required">WireGuard 出口来源</label>
+            <select v-model="form.wireguard_egress_source" class="input">
+              <option value="uri">WireGuard URI</option>
+              <option value="profile">WireGuard 配置</option>
+            </select>
+          </div>
+
+          <div v-if="isWireGuardEgressProfileSource" class="form-group">
+            <label class="form-label form-label--required">WireGuard 配置</label>
+            <select v-model.number="form.wireguard_profile_id" class="input">
+              <option value="">请选择配置</option>
+              <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
+                {{ profile.name || profile.id }}
+              </option>
+            </select>
+          </div>
+
+          <div v-if="isWireGuardEgressUriSource" class="form-group">
+            <label class="form-label form-label--required">WireGuard 连接 URI</label>
+            <input v-model="form.wireguard_egress_uri" class="input" placeholder="wireguard://user:pass@host:51820" autocomplete="off">
+          </div>
+        </div>
+
         <div v-if="isWireGuardEgressProfileSource" class="form-help">
           代理出口将通过所选 WireGuard 配置转发。
         </div>
         <div v-if="isWireGuardEgressUriSource" class="form-help">
           代理出口将通过 WireGuard URI 自动生成出口 Profile。
         </div>
-        <div v-if="isWireGuardInbound" class="form-help">
-          WireGuard 透明入口会匹配已接入所选 Profile 的客户端流量；地址入口监听 Host 自动使用所选 Profile 的第一个地址。
-        </div>
-        <div v-if="isProxyEntry && form.proxy_egress_mode === 'proxy'" class="form-group">
-          <label class="form-label">出口代理 URL</label>
-          <input v-model="form.proxy_egress_url" class="input" placeholder="socks://user:pass@127.0.0.1:1080">
-        </div>
       </div>
 
-      <!-- Proxy Protocol -->
-      <div v-if="form.protocol === 'tcp'" class="advanced-group">
-        <div class="advanced-group__title">代理协议 (PROXY Protocol)</div>
+      <!-- PROXY Protocol -->
+      <div v-if="form.protocol === 'tcp'" class="form-section">
+        <h3 class="form-section__title">代理协议</h3>
         <div class="advanced-checks">
           <label class="backend-checkbox">
             <input v-model="form.tuning.proxy_protocol.decode" type="checkbox">
@@ -273,94 +319,95 @@
       </div>
     </div>
 
-    <!-- Tab: Relay -->
-    <div v-else-if="activeTab === 'relay'" class="form-tab-panel">
-      <!-- 提示信息 -->
-      <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-          <line x1="12" y1="9" x2="12" y2="13"/>
-          <line x1="12" y1="17" x2="12.01" y2="17"/>
-        </svg>
-        <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
-      </div>
+    <!-- Tab 3: Relay 配置 -->
+    <div v-show="activeTab === 'relay'" class="form-tab-panel">
+      <div class="form-section">
+        <h3 class="form-section__title">Relay 配置</h3>
 
-      <div v-else-if="!hasRelayConfig" class="relay-alert relay-alert--info">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="16" x2="12" y2="12"/>
-          <line x1="12" y1="8" x2="12.01" y2="8"/>
-        </svg>
-        <span>当前为直连模式，{{ form.protocol === 'udp' ? 'UDP' : 'TCP' }} 流量将直接转发到后端服务，不经过 Relay 中转</span>
-      </div>
-
-      <!-- Relay 链路配置 -->
-      <div class="settings-card">
-        <div class="section-header section-header--split">
-          <div>
-            <h3 class="section-title">链路配置</h3>
-            <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
-          </div>
-          <router-link
-            v-if="relayListeners.length"
-            to="/relay-listeners"
-            class="relay-link"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-              <polyline points="15 3 21 3 21 9"/>
-              <line x1="10" y1="14" x2="21" y2="3"/>
-            </svg>
-            管理监听器
-          </router-link>
+        <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
         </div>
 
-        <RelayChainInput
-          v-model="form.relay_layers"
-          :listeners="relayListeners"
-        />
-      </div>
-
-      <div class="settings-card">
-        <div class="section-header">
-          <div>
-            <h3 class="section-title">隐私增强</h3>
-            <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 SS/TLS 握手特征</p>
-          </div>
-        </div>
-        <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
-          <input
-            v-model="form.relay_obfs"
-            type="checkbox"
-            class="toggle__input"
-            :disabled="relayObfsDisabled"
-          >
-          <span class="toggle__slider"></span>
-          <span class="toggle__content">
-            <span class="toggle__label">启用 Relay 隐私增强</span>
-            <span class="toggle__desc">仅对首跳为 TLS/TCP 的 TCP Relay 链路生效</span>
-          </span>
-        </label>
-        <p v-if="relayObfsDisabled" class="form-help">{{ relayObfsUnsupportedReason }}</p>
-      </div>
-
-      <!-- 使用说明 -->
-      <div class="relay-help">
-        <div class="relay-help__title">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <div v-else-if="!hasRelayConfig" class="relay-alert relay-alert--info">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"/>
             <line x1="12" y1="16" x2="12" y2="12"/>
             <line x1="12" y1="8" x2="12.01" y2="8"/>
           </svg>
-          使用说明
+          <span>当前为直连模式，{{ form.protocol === 'udp' ? 'UDP' : 'TCP' }} 流量将直接转发到后端服务，不经过 Relay 中转</span>
         </div>
-        <ul class="relay-help__list">
-          <li>Relay 链路支持 TCP 和 UDP；UDP 会通过 UOT 或 QUIC Relay 进行中继</li>
-          <li>链路按层顺序转发：客户端 → 第 1 层 → 第 2 层 → ... → 后端服务，每层可配置多个并行节点</li>
-          <li>每个中继节点需要配置对应的 Relay 监听器</li>
-          <li>可通过上下按钮调整链路顺序</li>
-          <li>隐私增强仅对首跳为 TLS/TCP 的 TCP 中继生效，UDP 会自动关闭</li>
-        </ul>
+
+        <div class="settings-card">
+          <div class="section-header section-header--split">
+            <div>
+              <h3 class="section-title">链路配置</h3>
+              <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
+            </div>
+            <router-link
+              v-if="relayListeners.length"
+              to="/relay-listeners"
+              class="relay-link"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                <polyline points="15 3 21 3 21 9"/>
+                <line x1="10" y1="14" x2="21" y2="3"/>
+              </svg>
+              管理监听器
+            </router-link>
+          </div>
+
+          <RelayChainInput
+            v-model="form.relay_layers"
+            :listeners="relayListeners"
+          />
+        </div>
+
+        <div class="settings-card">
+          <div class="section-header">
+            <div>
+              <h3 class="section-title">隐私增强</h3>
+              <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 SS/TLS 握手特征</p>
+            </div>
+          </div>
+          <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
+            <input
+              v-model="form.relay_obfs"
+              type="checkbox"
+              class="toggle__input"
+              :disabled="relayObfsDisabled"
+            >
+            <span class="toggle__slider"></span>
+            <span class="toggle__content">
+              <span class="toggle__label">启用 Relay 隐私增强</span>
+              <span class="toggle__desc">仅对首跳为 TLS/TCP 的 TCP Relay 链路生效</span>
+            </span>
+          </label>
+          <p v-if="relayObfsDisabled" class="form-help">{{ relayObfsUnsupportedReason }}</p>
+        </div>
+
+        <div class="relay-help">
+          <div class="relay-help__title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            使用说明
+          </div>
+          <ul class="relay-help__list">
+            <li>Relay 链路支持 TCP 和 UDP；UDP 会通过 UOT 或 QUIC Relay 进行中继</li>
+            <li>链路按层顺序转发：客户端 → 第 1 层 → 第 2 层 → ... → 后端服务，每层可配置多个并行节点</li>
+            <li>每个中继节点需要配置对应的 Relay 监听器</li>
+            <li>可通过上下按钮调整链路顺序</li>
+            <li>隐私增强仅对首跳为 TLS/TCP 的 TCP 中继生效，UDP 会自动关闭</li>
+          </ul>
+        </div>
       </div>
     </div>
   </form>
@@ -383,7 +430,6 @@ const props = defineProps({
 })
 const emit = defineEmits(['success'])
 
-// Pass agentId directly - hooks use unref() to handle both strings and refs
 const createL4Rule = useCreateL4Rule(props.agentId)
 const updateL4Rule = useUpdateL4Rule(props.agentId)
 const { data: relayListenersData } = useAllRelayListeners()
@@ -476,6 +522,7 @@ function createFormState(initialData) {
 
 const form = ref(createFormState(props.initialData))
 
+const activeTab = ref('basic')
 const tagInput = ref('')
 const error = ref('')
 const dragState = ref({ from: -1, to: -1 })
@@ -504,7 +551,6 @@ function onDragEnd() {
   dragState.value = { from: -1, to: -1 }
 }
 
-// Detect if tuning has non-default values (including backend extensions)
 const hasTuningChanges = computed(() => {
   const defaults = getDefaultTuning(form.value.protocol)
   const t = form.value.tuning
@@ -527,7 +573,6 @@ const hasTuningChanges = computed(() => {
   )
 })
 
-const activeTab = ref('basic')
 const supportsProxyEgress = computed(() => form.value.listen_mode === 'proxy' || form.value.listen_mode === 'wireguard')
 const isProxyEntry = computed(() => form.value.listen_mode === 'proxy' || (form.value.listen_mode === 'wireguard' && form.value.proxy_egress_mode !== ''))
 const isProxyEntryAuthAvailable = computed(() => form.value.listen_mode === 'proxy')
@@ -635,7 +680,6 @@ watch(() => props.initialData, (value) => {
   tagInput.value = ''
   dragState.value = { from: -1, to: -1 }
   error.value = ''
-  activeTab.value = 'basic'
 }, { immediate: true })
 
 watch(() => form.value.protocol, (newProto) => {
@@ -835,7 +879,6 @@ function buildPayload() {
   if (isWireGuardInbound.value) {
     payload.wireguard_inbound_mode = form.value.wireguard_inbound_mode
   }
-  // Only send tuning if advanced panel has non-default values or editing existing rule with tuning
   if (hasTuningChanges.value || isEdit.value) {
     const t = form.value.tuning
     const tuning = {
@@ -916,6 +959,23 @@ async function handleSubmit() {
   gap: var(--space-4);
 }
 
+.form-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+.form-section__title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+}
+
 .form-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -943,6 +1003,13 @@ async function handleSubmit() {
 .form-help {
   font-size: var(--text-xs);
   color: var(--color-text-muted);
+}
+
+.form-help--warning {
+  color: var(--color-warning);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-warning-50);
+  border-radius: var(--radius-md);
 }
 
 .input {
@@ -1035,25 +1102,6 @@ async function handleSubmit() {
   min-width: 120px;
 }
 
-.backend-weight-wrapper {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  flex-shrink: 0;
-}
-
-.backend-weight-label {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.backend-weight-input {
-  width: 56px;
-  text-align: center;
-  padding: var(--space-2) var(--space-1);
-}
-
 .backend-checkbox {
   display: flex;
   align-items: center;
@@ -1068,83 +1116,6 @@ async function handleSubmit() {
   width: 16px;
   height: 16px;
   accent-color: var(--color-primary);
-}
-
-/* Tab Bar */
-.form-tabs {
-  display: flex;
-  gap: 2px;
-  margin-bottom: var(--space-3);
-  flex-shrink: 0;
-  padding: 3px;
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-}
-
-.form-tabs__btn {
-  padding: 6px var(--space-4);
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--color-text-muted);
-  border-radius: var(--radius-md);
-  transition: all var(--duration-fast);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex: 1;
-  justify-content: center;
-  white-space: nowrap;
-}
-
-.form-tabs__btn:hover {
-  color: var(--color-text-secondary);
-}
-
-.form-tabs__btn--active {
-  color: var(--color-primary);
-  background: var(--color-bg-surface);
-  font-weight: var(--font-semibold);
-  box-shadow: var(--shadow-sm);
-}
-
-.form-tabs__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-success);
-  flex-shrink: 0;
-}
-
-/* Tab Panel */
-.form-tab-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding-top: var(--space-1);
-}
-
-.advanced-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.advanced-group__title {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.advanced-checks {
-  display: flex;
-  gap: var(--space-4);
-  flex-wrap: wrap;
 }
 
 /* Buttons */
@@ -1348,6 +1319,14 @@ async function handleSubmit() {
   color: var(--color-text-secondary);
 }
 
+/* Advanced checks */
+.advanced-checks {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+/* Relay alerts */
 .relay-alert {
   display: flex;
   align-items: center;
@@ -1422,7 +1401,7 @@ async function handleSubmit() {
   margin-bottom: var(--space-1);
 }
 
-/* Settings card (Relay tab) */
+/* Settings card (Relay section) */
 .settings-card {
   display: flex;
   flex-direction: column;
@@ -1434,26 +1413,7 @@ async function handleSubmit() {
   box-shadow: var(--shadow-sm);
 }
 
-.form-tab-panel > .settings-card {
-  gap: var(--space-2);
-  padding: var(--space-3);
-}
-
-.form-tab-panel > .settings-card .section-header {
-  margin-bottom: 0;
-}
-
-.form-tab-panel > .settings-card .section-title {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-}
-
-.form-tab-panel > .settings-card .section-description {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-}
-
-/* Section header (Relay tab) */
+/* Section header (Relay section) */
 .section-header {
   display: flex;
   flex-direction: column;
@@ -1482,7 +1442,7 @@ async function handleSubmit() {
   line-height: 1.4;
 }
 
-/* Toggle card variant (Relay tab) */
+/* Toggle card variant (Relay section) */
 .toggle {
   display: flex;
   align-items: flex-start;
@@ -1500,20 +1460,20 @@ async function handleSubmit() {
   gap: var(--space-1);
 }
 
-.form-tab-panel .toggle--card {
+.toggle--card {
   padding: 10px var(--space-3);
   background: var(--color-bg-surface);
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border-default);
 }
 
-.form-tab-panel .toggle--card .toggle__label {
+.toggle--card .toggle__label {
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
   color: var(--color-text-primary);
 }
 
-.form-tab-panel .toggle--card .toggle__desc {
+.toggle--card .toggle__desc {
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
   line-height: 1.5;
@@ -1525,5 +1485,47 @@ async function handleSubmit() {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
   line-height: 1.5;
+}
+
+/* Tabs */
+.form-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-default);
+}
+
+.form-tabs__btn {
+  flex: 1;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  text-align: center;
+}
+
+.form-tabs__btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.form-tabs__btn.active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+  font-weight: var(--font-semibold);
+}
+
+.form-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 </style>
