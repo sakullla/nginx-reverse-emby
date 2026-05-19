@@ -744,6 +744,96 @@ func TestWireGuardClientUpdateRejectsMissingEnabledWithoutMutation(t *testing.T)
 	}
 }
 
+func TestWireGuardClientUpdateEditsNameAllowedIPsAndDNS(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{
+		Name:       "phone",
+		AllowedIPs: []string{"0.0.0.0/0"},
+		DNS:        []string{"9.9.9.9"},
+	})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	updated, err := clientSvc.UpdateClient(ctx, "local", profile.ID, client.ID, WireGuardClientInput{
+		Name:       "tablet",
+		AllowedIPs: []string{"10.8.0.0/24"},
+		DNS:        []string{"1.1.1.1", "8.8.8.8"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateClient(edit fields) error = %v", err)
+	}
+	if updated.Name != "tablet" {
+		t.Fatalf("UpdateClient() Name = %q, want tablet", updated.Name)
+	}
+	if strings.Join(updated.AllowedIPs, ",") != "10.8.0.0/24" {
+		t.Fatalf("UpdateClient() AllowedIPs = %v, want [10.8.0.0/24]", updated.AllowedIPs)
+	}
+	if strings.Join(updated.DNS, ",") != "1.1.1.1,8.8.8.8" {
+		t.Fatalf("UpdateClient() DNS = %v, want [1.1.1.1 8.8.8.8]", updated.DNS)
+	}
+
+	profiles, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	storedProfile := wireGuardProfileFromRow(profiles[0])
+	foundPeer := false
+	for _, peer := range storedProfile.Peers {
+		if peer.PublicKey == client.PublicKey {
+			foundPeer = true
+			if peer.Name != "tablet" {
+				t.Fatalf("peer Name = %q, want tablet", peer.Name)
+			}
+		}
+	}
+	if !foundPeer {
+		t.Fatalf("updated client peer not present: %+v", storedProfile.Peers)
+	}
+}
+
+func TestWireGuardClientUpdateAllowedIPsDefaultsToFullTunnelWhenEmpty(t *testing.T) {
+	ctx := context.Background()
+	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.8.0.1/24"}
+	input.PublicEndpoint = "wg.example.com:51820"
+	input.Peers[0].Endpoint = ""
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{
+		Name:       "phone",
+		AllowedIPs: []string{"10.8.0.0/24"},
+	})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	updated, err := clientSvc.UpdateClient(ctx, "local", profile.ID, client.ID, WireGuardClientInput{
+		AllowedIPs: []string{""},
+	})
+	if err != nil {
+		t.Fatalf("UpdateClient(empty allowed_ips) error = %v", err)
+	}
+	want := "0.0.0.0/0, ::/0"
+	if strings.Join(updated.AllowedIPs, ", ") != want {
+		t.Fatalf("UpdateClient() AllowedIPs = %v, want %q", updated.AllowedIPs, want)
+	}
+}
+
 func TestWireGuardClientUpdateMissingClientReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)

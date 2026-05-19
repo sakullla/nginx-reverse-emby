@@ -242,9 +242,6 @@ func (s *wireGuardClientService) DeleteClient(ctx context.Context, agentID strin
 }
 
 func (s *wireGuardClientService) UpdateClient(ctx context.Context, agentID string, profileID int, clientID int, input WireGuardClientInput) (WireGuardClient, error) {
-	if input.Enabled == nil {
-		return WireGuardClient{}, fmt.Errorf("%w: enabled is required", ErrInvalidArgument)
-	}
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardClient{}, err
@@ -273,7 +270,40 @@ func (s *wireGuardClientService) UpdateClient(ctx context.Context, agentID strin
 		if targetIndex < 0 {
 			return state, ErrWireGuardClientNotFound
 		}
-		updated.Enabled = *input.Enabled
+
+		hasChange := false
+		if input.Enabled != nil && updated.Enabled != *input.Enabled {
+			updated.Enabled = *input.Enabled
+			hasChange = true
+		}
+		name := strings.TrimSpace(input.Name)
+		if name != "" && updated.Name != name {
+			updated.Name = name
+			hasChange = true
+		}
+		if input.AllowedIPs != nil {
+			allowedIPs := normalizeStringList(input.AllowedIPs)
+			if len(allowedIPs) == 0 {
+				allowedIPs = []string{"0.0.0.0/0", "::/0"}
+			}
+			if err := validateWireGuardPrefixes(allowedIPs, "allowed_ips"); err != nil {
+				return state, err
+			}
+			updated.AllowedIPsJSON = marshalJSON(allowedIPs, "[]")
+			hasChange = true
+		}
+		if input.DNS != nil {
+			dns := normalizeStringList(input.DNS)
+			if err := validateWireGuardDNSAddrs(dns); err != nil {
+				return state, err
+			}
+			updated.DNSJSON = marshalJSON(dns, "[]")
+			hasChange = true
+		}
+		if !hasChange {
+			return state, fmt.Errorf("%w: no fields to update", ErrInvalidArgument)
+		}
+
 		updated.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		state.Clients[targetIndex] = updated
 
