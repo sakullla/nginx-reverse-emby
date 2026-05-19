@@ -735,7 +735,7 @@ describe('runtime canonical rule payloads', () => {
     expect(hooks.default).toContain('useDeleteWireGuardClient')
   })
 
-  it('WireGuard Profiles page exposes clients workflow and client sharing actions without mihomo YAML', async () => {
+  it('WireGuard 配置 page exposes clients workflow and client sharing actions without mihomo YAML', async () => {
     const page = await import('../pages/WireGuardProfilesPage.vue?raw')
     const clientList = await import('../components/wireguard/WireGuardClientList.vue?raw')
     const clientForm = await import('../components/wireguard/WireGuardClientForm.vue?raw')
@@ -1110,8 +1110,7 @@ describe('runtime canonical rule payloads', () => {
     const ordinaryStart = source.indexOf('Relay Transport')
     const advancedStart = source.indexOf('advanced-panel')
     expect(source.slice(ordinaryStart, advancedStart)).not.toContain("v-model.number='form.wireguard_profile_id'")
-    expect(source.slice(ordinaryStart, advancedStart)).not.toContain('form-label form-label--required\'>WireGuard Profile')
-    expect(source).toContain('自动复用或创建默认 WireGuard Profile')
+    expect(source.slice(ordinaryStart, advancedStart)).not.toContain('form-label form-label--required\'>WireGuard 配置')
     expect(source).toContain("form.value.transport_mode === 'wireguard' && selectedWireGuardProfileID.value != null")
   })
 
@@ -1129,7 +1128,7 @@ describe('runtime canonical rule payloads', () => {
 
     expect(l4Form.default).toContain("wireguard_inbound_mode: initialData?.wireguard_inbound_mode || 'transparent'")
     expect(l4Form.default).toContain('payload.wireguard_inbound_mode = form.value.wireguard_inbound_mode')
-    expect(l4Form.default).toContain('监听 Host 自动使用所选 WireGuard Profile 的第一个地址')
+    expect(l4Form.default).toContain('监听 Host 自动使用所选 WireGuard 配置的第一个地址')
     expect(l4Form.default).not.toContain('payload.wireguard_listen_host')
     expect(l4Form.default).not.toContain('<option value="transparent">Transparent</option>')
   })

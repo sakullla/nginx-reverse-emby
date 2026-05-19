@@ -132,7 +132,7 @@ describe('L4RuleForm WireGuard egress', () => {
     await selectByLabel(wrapper, '监听模式').setValue('wireguard')
     await flushPromises()
 
-    expect(selectByLabel(wrapper, 'WireGuard Profile').element.value).toBe('21')
+    expect(selectByLabel(wrapper, 'WireGuard 配置').element.value).toBe('21')
 
     await wrapper.get('form').trigger('submit')
     await flushPromises()

@@ -3,7 +3,7 @@
     <section class="form-section">
       <div class="section-heading">
         <h3>基础配置</h3>
-        <p>WireGuard Profile 的核心参数</p>
+        <p>WireGuard 配置的核心参数</p>
       </div>
 
       <div class="form-row">

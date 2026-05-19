@@ -2,7 +2,7 @@
   <div class="wg-page">
     <div class="wg-page__header">
       <div>
-        <h1 class="wg-page__title">WireGuard Profile</h1>
+        <h1 class="wg-page__title">WireGuard 配置</h1>
         <p v-if="agentId" class="wg-page__subtitle">
           {{ profiles.length }} 个配置 · {{ enabledCount }} 个启用
         </p>
@@ -21,7 +21,7 @@
     />
 
     <div v-if="!agentId" class="wg-page__empty">
-      <p>请从上方选择一个节点来管理 WireGuard Profile</p>
+      <p>请从上方选择一个节点来管理 WireGuard 配置</p>
       <RouterLink to="/agents" class="btn btn--primary">加入节点</RouterLink>
     </div>
 
@@ -32,7 +32,7 @@
     <!-- Profile List View -->
     <template v-else-if="!selectedProfileId">
       <div v-if="!profiles.length" class="wg-page__empty">
-        <p>暂无 WireGuard Profile</p>
+        <p>暂无 WireGuard 配置</p>
         <button class="btn btn--primary" @click="startCreateProfile">创建第一个 Profile</button>
       </div>
 
@@ -106,7 +106,7 @@
     <!-- Profile Form Modal -->
     <BaseModal
       v-model="showProfileForm"
-      :title="editingProfile ? '编辑 WireGuard Profile' : '新建 WireGuard Profile'"
+      :title="editingProfile ? '编辑 WireGuard 配置' : '新建 WireGuard 配置'"
       size="xl"
       :close-on-click-modal="false"
     >
@@ -144,7 +144,7 @@
     <!-- Delete Confirm -->
     <DeleteConfirmDialog
       :show="!!deletingProfile"
-      title="确认删除 WireGuard Profile"
+      title="确认删除 WireGuard 配置"
       message="如果该 Profile 已被 Relay 或 L4 规则引用，删除可能会被后端阻止。"
       :name="deletingProfile?.name"
       confirm-text="确认删除"

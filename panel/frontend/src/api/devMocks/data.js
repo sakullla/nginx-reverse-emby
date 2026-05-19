@@ -2360,7 +2360,7 @@ export async function fetchWireGuardClients(agentId, profileId) {
   if (isDev) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
-    if (!findMockWireGuardProfile(agentId, profileId)) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    if (!findMockWireGuardProfile(agentId, profileId)) throw new Error(`WireGuard 配置 not found: ${profileId}`)
     const clients = mockWireGuardClientsByProfile[agentId]?.[profileId] || []
     return clients.map((client) => publicMockWireGuardClient(normalizeMockWireGuardClient(agentId, profileId, client)))
   }
@@ -2375,7 +2375,7 @@ export async function createWireGuardClient(agentId, profileId, payload) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
     const profile = findMockWireGuardProfile(agentId, profileId)
-    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    if (!profile) throw new Error(`WireGuard 配置 not found: ${profileId}`)
     const input = normalizeMockWireGuardClientInput(payload, profile)
     const client = normalizeMockWireGuardClient(agentId, profileId, {
       ...input,
@@ -2401,7 +2401,7 @@ export async function deleteWireGuardClient(agentId, profileId, clientId) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
     const profile = findMockWireGuardProfile(agentId, profileId)
-    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    if (!profile) throw new Error(`WireGuard 配置 not found: ${profileId}`)
     const clients = mockWireGuardClientsByProfile[agentId]?.[profileId] || []
     const idx = clients.findIndex((client) => String(client.id) === String(clientId))
     if (idx === -1) return null
@@ -2424,7 +2424,7 @@ export async function updateWireGuardClient(agentId, profileId, clientId, payloa
       throw new Error('enabled must be a boolean')
     }
     const profile = findMockWireGuardProfile(agentId, profileId)
-    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    if (!profile) throw new Error(`WireGuard 配置 not found: ${profileId}`)
     const clients = mockWireGuardClientsByProfile[agentId]?.[profileId] || []
     const idx = clients.findIndex((client) => String(client.id) === String(clientId))
     if (idx === -1) throw new Error(`WireGuard Client not found: ${clientId}`)
@@ -2449,7 +2449,7 @@ export async function fetchWireGuardClientConfig(agentId, profileId, clientId) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
     const profile = findMockWireGuardProfile(agentId, profileId)
-    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    if (!profile) throw new Error(`WireGuard 配置 not found: ${profileId}`)
     if (!String(profile.public_endpoint || '').trim()) {
       throw new Error('public_endpoint is required to generate client config')
     }
@@ -2485,7 +2485,7 @@ export async function fetchWireGuardClientURI(agentId, profileId, clientId, rese
     await sleep()
     ensureDevRelayAgentExists(agentId)
     const profile = findMockWireGuardProfile(agentId, profileId)
-    if (!profile) throw new Error(`WireGuard Profile not found: ${profileId}`)
+    if (!profile) throw new Error(`WireGuard 配置 not found: ${profileId}`)
     if (!String(profile.public_endpoint || '').trim()) {
       throw new Error('public_endpoint is required to generate client URI')
     }

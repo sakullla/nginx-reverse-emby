@@ -34,10 +34,10 @@ export function useCreateWireGuardProfile(agentId) {
     mutationFn: (payload) => api.createWireGuardProfile(unref(agentId), payload),
     onSuccess: () => {
       invalidateWireGuardReferences(qc, agentId)
-      messageStore.success('WireGuard Profile 创建成功')
+      messageStore.success('WireGuard 配置 创建成功')
     },
     onError: (error) => {
-      messageStore.error(error, '创建 WireGuard Profile 失败')
+      messageStore.error(error, '创建 WireGuard 配置 失败')
     }
   })
 }
@@ -48,10 +48,10 @@ export function useUpdateWireGuardProfile(agentId) {
     mutationFn: ({ id, ...payload }) => api.updateWireGuardProfile(unref(agentId), id, payload),
     onSuccess: () => {
       invalidateWireGuardReferences(qc, agentId)
-      messageStore.success('WireGuard Profile 更新成功')
+      messageStore.success('WireGuard 配置 更新成功')
     },
     onError: (error) => {
-      messageStore.error(error, '更新 WireGuard Profile 失败')
+      messageStore.error(error, '更新 WireGuard 配置 失败')
     }
   })
 }
@@ -62,10 +62,10 @@ export function useDeleteWireGuardProfile(agentId) {
     mutationFn: (id) => api.deleteWireGuardProfile(unref(agentId), id),
     onSuccess: () => {
       invalidateWireGuardReferences(qc, agentId)
-      messageStore.success('WireGuard Profile 已删除')
+      messageStore.success('WireGuard 配置 已删除')
     },
     onError: (error) => {
-      messageStore.error(error, '删除 WireGuard Profile 失败')
+      messageStore.error(error, '删除 WireGuard 配置 失败')
     }
   })
 }

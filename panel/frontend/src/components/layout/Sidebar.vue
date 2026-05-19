@@ -116,7 +116,7 @@ const navItems = [
     children: [
       { label: '证书管理', to: '/certs', icon: icons.lock },
       { label: 'Relay 监听器', to: '/relay-listeners', icon: icons.relay },
-      { label: 'WireGuard Profile', to: '/wireguard-profiles', icon: icons.wireguard },
+      { label: 'WireGuard 配置', to: '/wireguard-profiles', icon: icons.wireguard },
       { label: '节点管理', to: '/agents', icon: icons.monitor, activeMatch: (name) => name === 'agents' || name === 'agent-detail' },
     ],
   },

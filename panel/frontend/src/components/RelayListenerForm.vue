@@ -110,11 +110,6 @@
       </div>
     </div>
 
-    <div v-if='form.transport_mode === "wireguard"' class='form-group'>
-      <label class='form-label'>WireGuard 公网入口</label>
-      <p class='form-hint'>系统会自动复用或创建默认 WireGuard Profile，并使用该 Profile 的 Endpoint 作为公网 UDP 入口。</p>
-    </div>
-
     <div class='form-group'>
       <label class='form-label'>信任策略</label>
       <select v-model='form.trust_mode_source' class='input'>
@@ -191,14 +186,14 @@
       </p>
 
       <div v-if='form.transport_mode === "wireguard"' class='form-group'>
-        <label class='form-label'>WireGuard Profile</label>
+        <label class='form-label'>WireGuard 配置</label>
         <select v-model.number='form.wireguard_profile_id' class='input' :class="{ 'input--error': errors.wireguard_profile_id }">
-          <option value=''>自动默认 Profile</option>
+          <option value=''>自动默认配置</option>
           <option v-for='profile in enabledWireGuardProfiles' :key='profile.id' :value='Number(profile.id)'>
             {{ profile.name || profile.id }}
           </option>
         </select>
-        <p class='form-hint'>仅在需要覆盖默认 Profile 时选择；留空时由系统自动复用或创建默认 Profile。</p>
+        <p class='form-hint'>仅在需要覆盖默认配置时选择；留空时由系统自动复用或创建默认配置。</p>
         <p v-if='errors.wireguard_profile_id' class='form-error'>{{ errors.wireguard_profile_id }}</p>
       </div>
 
@@ -288,7 +283,7 @@ const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRelayListener.isPending.value || updateRelayListener.isPending.value)
 const publicEndpointLabel = computed(() => (
   form.value.transport_mode === 'wireguard'
-    ? 'WireGuard Profile Endpoint（可选）'
+    ? 'WireGuard 配置 Endpoint（可选）'
     : '公网入口（可选）'
 ))
 const publicEndpointPlaceholder = computed(() => (
@@ -298,12 +293,12 @@ const publicEndpointPlaceholder = computed(() => (
 ))
 const publicEndpointHint = computed(() => (
   form.value.transport_mode === 'wireguard'
-    ? '填写所选 Profile 的公网 UDP endpoint；留空时由默认 WireGuard Profile 提供。'
+    ? '填写所选配置的公网 UDP endpoint；留空时由默认 WireGuard 配置提供。'
     : '支持空值、host、host:port。留空时由后端使用 bind/listen 默认值。'
 ))
 const transportModeHint = computed(() => {
   if (form.value.transport_mode === 'wireguard') {
-    return 'WireGuard 使用所选 Profile 的 Endpoint 作为公网 UDP 入口，Relay 监听地址自动使用该 Profile 的隧道地址。'
+    return '使用 WireGuard 隧道进行中继；需先配置可用的服务端。'
   }
   if (form.value.transport_mode === 'quic') {
     return 'QUIC 可降低握手耗时；需要兼容 TLS/TCP 时可启用回退。'
@@ -580,7 +575,7 @@ function validate() {
     && form.value.wireguard_profile_id !== ''
     && selectedWireGuardProfileID.value == null
   ) {
-    errors.value.wireguard_profile_id = '请选择当前 Agent 已启用的 WireGuard Profile'
+    errors.value.wireguard_profile_id = '请选择当前 Agent 已启用的 WireGuard 配置'
   }
 
   const pinSet = parsePinSetRows()

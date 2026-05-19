@@ -2,7 +2,6 @@
   <BaseListCard
     :status="listener.enabled ? 'success' : 'neutral'"
     :disabled="!listener.enabled"
-    @click="$emit('edit', listener)"
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ listener.id }}</BaseBadge>

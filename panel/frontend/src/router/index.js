@@ -63,13 +63,13 @@ const routes = [
         path: 'wireguard-profiles',
         name: 'wireguard-profiles',
         component: () => import('../pages/WireGuardProfilesPage.vue'),
-        meta: { title: 'WireGuard Profile' }
+        meta: { title: 'WireGuard 配置' }
       },
       {
         path: 'wireguard-profiles/:id',
         name: 'wireguard-profile-clients',
         component: () => import('../pages/WireGuardProfilesPage.vue'),
-        meta: { title: 'WireGuard Profile' }
+        meta: { title: 'WireGuard 配置' }
       },
       {
         path: 'versions',

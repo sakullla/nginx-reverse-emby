@@ -106,9 +106,9 @@ describe('RelayListenerForm WireGuard profile override', () => {
 
     await fillValidWireGuardForm(wrapper)
 
-    expect(wrapper.text()).not.toContain('WireGuard Profile Endpoint（可选）')
+    expect(wrapper.text()).not.toContain('WireGuard 配置 Endpoint（可选）')
     expect(wrapper.text()).not.toContain('绑定地址（每行一个）')
-    expect(wrapper.text()).toContain('作为公网 UDP 入口')
+    expect(wrapper.text()).not.toContain('作为公网 UDP 入口')
     expect(wrapper.text()).not.toContain('默认使用 TLS/TCP；如需更低握手耗时')
   })
 
@@ -131,7 +131,7 @@ describe('RelayListenerForm WireGuard profile override', () => {
 
     await fillValidWireGuardForm(wrapper)
     await wrapper.get('.advanced-toggle').trigger('click')
-    await selectByLabel(wrapper, 'WireGuard Profile').setValue('22')
+    await selectByLabel(wrapper, 'WireGuard 配置').setValue('22')
     await submit(wrapper)
 
     expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
@@ -147,7 +147,7 @@ describe('RelayListenerForm WireGuard profile override', () => {
     })
 
     expect(wrapper.find('.advanced-panel').exists()).toBe(true)
-    expect(selectByLabel(wrapper, 'WireGuard Profile').element.value).toBe('22')
+    expect(selectByLabel(wrapper, 'WireGuard 配置').element.value).toBe('22')
   })
 
   it('keeps blank existing WireGuard profile IDs on the ordinary automatic profile path while editing', () => {
@@ -158,7 +158,7 @@ describe('RelayListenerForm WireGuard profile override', () => {
     expect(wrapper.find('.advanced-panel').exists()).toBe(false)
 
     return wrapper.get('.advanced-toggle').trigger('click').then(() => {
-      expect(selectByLabel(wrapper, 'WireGuard Profile').element.value).toBe('')
+      expect(selectByLabel(wrapper, 'WireGuard 配置').element.value).toBe('')
     })
   })
 })

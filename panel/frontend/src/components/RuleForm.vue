@@ -305,14 +305,14 @@
             <span class="toggle__slider"></span>
             <span class="toggle__content">
               <span class="toggle__label">启用内网 IP 访问入口</span>
-              <span class="toggle__desc">启用后，客户端可通过所选 WireGuard Profile 的内网地址访问此 HTTP 规则</span>
+              <span class="toggle__desc">启用后，客户端可通过所选 WireGuard 配置的内网地址访问此 HTTP 规则</span>
             </span>
           </label>
         </div>
 
         <div v-if="form.wireguard_entry_enabled" class="form-row">
           <div class="form-group">
-            <label class="form-label form-label--required">WireGuard Profile</label>
+            <label class="form-label form-label--required">WireGuard 配置</label>
             <div class="select-wrapper">
               <select
                 v-model.number="form.wireguard_profile_id"
@@ -320,7 +320,7 @@
                 :class="{ 'input--error': errors.wireguard_profile_id }"
                 @change="errors.wireguard_profile_id = ''; errors.submit = ''"
               >
-                <option value="">请选择 Profile</option>
+                <option value="">请选择配置</option>
                 <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
                   {{ profile.name || profile.id }}
                 </option>
@@ -329,7 +329,7 @@
             <p v-if="errors.wireguard_profile_id" class="field-error">{{ errors.wireguard_profile_id }}</p>
           </div>
 
-          <p class="form-help form-help--inline">监听地址自动使用所选 WireGuard Profile 的第一个地址，监听端口跟随前端访问地址。</p>
+          <p class="form-help form-help--inline">监听地址自动使用所选 WireGuard 配置的第一个地址，监听端口跟随前端访问地址。</p>
         </div>
       </div>
 
@@ -1009,7 +1009,7 @@ function validateWireGuardEntry() {
   if (!form.value.wireguard_entry_enabled) return true
 
   if (selectedWireGuardProfileID.value == null) {
-    errors.value.wireguard_profile_id = '请选择当前 Agent 已启用的 WireGuard Profile'
+    errors.value.wireguard_profile_id = '请选择当前 Agent 已启用的 WireGuard 配置'
   }
 
   return !errors.value.wireguard_profile_id

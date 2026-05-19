@@ -194,14 +194,14 @@
             <label class="form-label form-label--required">WireGuard 出口来源</label>
             <select v-model="form.wireguard_egress_source" class="input">
               <option value="uri">WireGuard URI</option>
-              <option v-if="canSelectWireGuardEgressProfile" value="profile">WireGuard Profile</option>
+              <option v-if="canSelectWireGuardEgressProfile" value="profile">WireGuard 配置</option>
             </select>
           </div>
 
           <div v-if="requiresWireGuardProfile" class="form-group">
-            <label class="form-label form-label--required">WireGuard Profile</label>
+            <label class="form-label form-label--required">WireGuard 配置</label>
             <select v-model.number="form.wireguard_profile_id" class="input">
-              <option value="">请选择 Profile</option>
+              <option value="">请选择配置</option>
               <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
                 {{ profile.name || profile.id }}
               </option>
@@ -221,7 +221,7 @@
             </select>
           </div>
           <p v-if="isWireGuardInbound && form.wireguard_inbound_mode === 'address'" class="form-help form-help--inline">
-            监听 Host 自动使用所选 WireGuard Profile 的第一个地址。
+            监听 Host 自动使用所选 WireGuard 配置的第一个地址。
           </p>
         </div>
 
@@ -242,7 +242,7 @@
           </div>
         </div>
         <div v-if="isWireGuardEgressProfileSource" class="form-help">
-          代理出口将通过所选 WireGuard Profile 转发。
+          代理出口将通过所选 WireGuard 配置转发。
         </div>
         <div v-if="isWireGuardEgressUriSource" class="form-help">
           代理出口将通过 WireGuard URI 自动生成出口 Profile。
