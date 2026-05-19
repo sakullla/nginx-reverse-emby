@@ -310,26 +310,41 @@
           </label>
         </div>
 
-        <div v-if="form.wireguard_entry_enabled" class="form-row">
-          <div class="form-group">
-            <label class="form-label form-label--required">WireGuard 配置</label>
-            <div class="select-wrapper">
-              <select
-                v-model.number="form.wireguard_profile_id"
-                class="input"
-                :class="{ 'input--error': errors.wireguard_profile_id }"
-                @change="errors.wireguard_profile_id = ''; errors.submit = ''"
-              >
-                <option value="">请选择配置</option>
-                <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
-                  {{ profile.name || profile.id }}
-                </option>
-              </select>
-            </div>
-            <p v-if="errors.wireguard_profile_id" class="field-error">{{ errors.wireguard_profile_id }}</p>
+        <div v-if="form.wireguard_entry_enabled" class="form-group">
+          <label class="form-label form-label--required">WireGuard 配置</label>
+          <div class="select-wrapper">
+            <select
+              v-model.number="form.wireguard_profile_id"
+              class="input"
+              :class="{ 'input--error': errors.wireguard_profile_id }"
+              @change="errors.wireguard_profile_id = ''; errors.submit = ''"
+            >
+              <option value="">请选择配置</option>
+              <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
+                {{ profile.name || profile.id }}
+              </option>
+            </select>
           </div>
+          <p v-if="errors.wireguard_profile_id" class="field-error">{{ errors.wireguard_profile_id }}</p>
+        </div>
 
-          <p class="form-help form-help--inline">监听地址自动使用所选 WireGuard 配置的第一个地址，监听端口跟随前端访问地址。</p>
+        <div v-if="form.wireguard_entry_enabled" class="wg-auto-info">
+          <div class="wg-auto-info__item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            <span class="wg-auto-info__text">监听地址自动使用所选 WireGuard 配置的第一个地址</span>
+          </div>
+          <div class="wg-auto-info__item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            <span class="wg-auto-info__text">监听端口跟随前端访问地址</span>
+          </div>
         </div>
       </div>
 
@@ -596,6 +611,10 @@ const selectedWireGuardProfileID = computed(() => {
   const id = Number(form.value.wireguard_profile_id)
   if (!Number.isInteger(id) || id <= 0) return null
   return enabledWireGuardProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
+})
+const selectedWireGuardProfile = computed(() => {
+  if (selectedWireGuardProfileID.value == null) return null
+  return enabledWireGuardProfiles.value.find((p) => Number(p.id) === selectedWireGuardProfileID.value) || null
 })
 const SUPPORTED_HTTP_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
 let backendIdCounter = 0
@@ -2166,5 +2185,32 @@ async function handleSubmit() {
   .input-wrapper .input {
     padding-left: var(--space-8);
   }
+}
+.wg-auto-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  margin-top: var(--space-2);
+}
+
+.wg-auto-info__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.wg-auto-info__item svg {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
+.wg-auto-info__text {
+  line-height: 1.5;
 }
 </style>

@@ -218,7 +218,7 @@
             <label class="form-label">WireGuard 入站模式</label>
             <select v-model="form.wireguard_inbound_mode" class="input">
               <option v-if="form.protocol === 'tcp'" value="transparent">透明</option>
-              <option value="address">地址</option>
+              <option value="address">内网入口</option>
             </select>
           </div>
         </div>
