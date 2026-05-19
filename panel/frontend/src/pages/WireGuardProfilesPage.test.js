@@ -124,16 +124,17 @@ function deferred() {
 }
 
 async function openClients(wrapper) {
-  await wrapper.get('.profile-card__actions .btn').trigger('click')
+  const buttons = wrapper.findAll('.base-icon-button[title="管理客户端"]')
+  await buttons[0].trigger('click')
 }
 
 function clientActionButtons(wrapper, rowIndex = 0) {
-  return wrapper.findAll('.client-row').at(rowIndex).findAll('.client-row__actions .btn')
+  return wrapper.findAll('.client-row').at(rowIndex).findAll('.client-row__actions .base-icon-button')
 }
 
-function clientActionButton(wrapper, label, rowIndex = 0) {
-  const button = clientActionButtons(wrapper, rowIndex).find((item) => item.text() === label)
-  if (!button) throw new Error(`Missing client action button: ${label}`)
+function clientActionButton(wrapper, title, rowIndex = 0) {
+  const button = clientActionButtons(wrapper, rowIndex).find((item) => item.attributes('title') === title)
+  if (!button) throw new Error(`Missing client action button: ${title}`)
   return button
 }
 
@@ -153,10 +154,12 @@ describe('WireGuardProfilesPage client row actions', () => {
 
     await openClients(wrapper)
     const buttons = clientActionButtons(wrapper)
-    expect(buttons.map((button) => button.text())).toEqual(['停用', '下载配置', '二维码', '复制 URI', '删除'])
+    expect(buttons.map((button) => button.attributes('title'))).toEqual([
+      '编辑', '停用', '下载配置', '二维码', '复制 URI', '删除'
+    ])
     expect(buttons.every((button) => button.attributes('disabled') === undefined)).toBe(true)
 
-    await buttons[0].trigger('click')
+    await clientActionButton(wrapper, '停用').trigger('click')
 
     expect(mocks.updateMutate.mock.calls[0][0]).toEqual({ clientId: 1, enabled: false })
     expect(clientActionButtons(wrapper).every((button) => button.attributes('disabled') !== undefined)).toBe(true)
@@ -167,15 +170,17 @@ describe('WireGuardProfilesPage client row actions', () => {
     mocks.updateMutate.mockReturnValue(new Promise(() => {}))
     const wrapper = mountPage()
 
-    const profileButtons = wrapper.findAll('.profile-card__actions .btn')
+    const profileButtons = wrapper.findAll('.base-icon-button[title="管理客户端"]')
     await profileButtons[0].trigger('click')
-    await clientActionButtons(wrapper)[0].trigger('click')
+    await clientActionButton(wrapper, '停用').trigger('click')
     expect(clientActionButtons(wrapper).every((button) => button.attributes('disabled') !== undefined)).toBe(true)
 
-    await profileButtons[3].trigger('click')
+    // Switch to second profile
+    await wrapper.find('.back-btn').trigger('click')
+    await profileButtons[1].trigger('click')
 
-    expect(wrapper.text()).toContain('wg-backup Clients')
-    expect(wrapper.findAll('.client-row__actions .btn').every((button) => button.attributes('disabled') === undefined)).toBe(true)
+    expect(wrapper.text()).toContain('wg-backup')
+    expect(wrapper.findAll('.client-row__actions .base-icon-button').every((button) => button.attributes('disabled') === undefined)).toBe(true)
   })
 
   it('disables client row actions while a client delete is pending', async () => {
@@ -203,8 +208,8 @@ describe('WireGuardProfilesPage client row actions', () => {
     const wrapper = mountPage()
 
     await openClients(wrapper)
-    await clientActionButtons(wrapper)[0].trigger('click')
-    await clientActionButtons(wrapper, 1)[0].trigger('click')
+    await clientActionButton(wrapper, '停用').trigger('click')
+    await clientActionButton(wrapper, '停用', 1).trigger('click')
 
     expect(mocks.updateMutate.mock.calls[0][0]).toEqual({ clientId: 1, enabled: false })
     expect(mocks.updateMutate.mock.calls[1][0]).toEqual({ clientId: 2, enabled: false })

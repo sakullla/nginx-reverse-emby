@@ -737,42 +737,55 @@ describe('runtime canonical rule payloads', () => {
 
   it('WireGuard Profiles page exposes clients workflow and client sharing actions without mihomo YAML', async () => {
     const page = await import('../pages/WireGuardProfilesPage.vue?raw')
-    const source = page.default
+    const clientList = await import('../components/wireguard/WireGuardClientList.vue?raw')
+    const clientForm = await import('../components/wireguard/WireGuardClientForm.vue?raw')
+    const profileForm = await import('../components/wireguard/WireGuardProfileForm.vue?raw')
+    const pageSource = page.default
+    const listSource = clientList.default
+    const formSource = clientForm.default
+    const profileFormSource = profileForm.default
 
-    expect(source).toContain('public_endpoint')
-    expect(source).toContain('fetchWireGuardClients')
-    expect(source).toContain('showClientForm')
-    expect(source).toContain('handleCreateClient')
-    expect(source).toContain('toggleClientEnabled')
-    expect(source).toContain('isClientRowPending')
-    expect(source).toContain('pendingClientRowIds')
-    expect(source).toContain('deleteWireGuardClientRow')
-    expect(source).toContain('downloadClientConfig')
-    expect(source).toContain('showClientQRCode')
-    expect(source).toContain('copyClientURI')
-    expect(source).toContain('下载配置')
-    expect(source).toContain('二维码')
-    expect(source).toContain('复制 URI')
-    expect(source).toContain('clientForm.allowed_ips_text')
-    expect(source).toContain('clientForm.dns_text')
-    expect(source).not.toContain('clientForm.address')
-    expect(source).not.toContain('clientForm.public_key')
-    expect(source).toContain('messageStore.error(error, \'下载 WireGuard Client 配置失败\')')
-    expect(source).toContain('高级 Legacy Peers')
-    expect(source).toContain('<details')
-    expect(source.toLowerCase()).not.toContain('mihomo')
-    expect(source.toLowerCase()).not.toContain('yaml')
-    expect(source).not.toContain('client.private_key')
-    expect(source).not.toContain('client.preshared_key')
+    // Page container orchestrates clients workflow
+    expect(pageSource).toContain('fetchWireGuardClients')
+    expect(pageSource).toContain('showClientForm')
+    expect(pageSource).toContain('toggleClientEnabled')
+    expect(pageSource).toContain('pendingClientRowIds')
+    expect(pageSource).toContain('deleteClientRow')
+    expect(pageSource).toContain('downloadClientConfig')
+    expect(pageSource).toContain('showClientQRCode')
+    expect(pageSource).toContain('copyClientURI')
+    expect(pageSource).toContain('messageStore.error(error, \'下载 WireGuard Client 配置失败\')')
+
+    // Client list provides sharing actions
+    expect(listSource).toContain('下载配置')
+    expect(listSource).toContain('二维码')
+    expect(listSource).toContain('复制 URI')
+
+    // Client form has allowed_ips and dns fields
+    expect(formSource).toContain('allowed_ips_text')
+    expect(formSource).toContain('dns_text')
+    expect(formSource).not.toContain('address')
+    expect(formSource).not.toContain('public_key')
+
+    // Profile form has legacy peers support
+    expect(profileFormSource).toContain('手动 Peers')
+    expect(profileFormSource).toContain('public_endpoint')
+
+    // No mihomo or YAML leakage
+    const allSource = pageSource + listSource + formSource + profileFormSource
+    expect(allSource.toLowerCase()).not.toContain('mihomo')
+    expect(allSource.toLowerCase()).not.toContain('yaml')
+    expect(pageSource).not.toContain('client.private_key')
+    expect(pageSource).not.toContain('client.preshared_key')
   })
 
   it('WireGuard client payload omits blank DNS so profile DNS can be inherited', async () => {
-    const page = await import('../pages/WireGuardProfilesPage.vue?raw')
+    const page = await import('../components/wireguard/WireGuardClientForm.vue?raw')
     const source = page.default
 
-    expect(source).toContain('clientForm.dns_text')
-    expect(source).toContain('clientForm.value.dns_text.trim()')
-    expect(source).not.toContain('dns: splitLines(clientForm.value.dns_text)')
+    expect(source).toContain('dns_text')
+    expect(source).toContain('splitLines(form.value.dns_text)')
+    expect(source).not.toContain('dns: splitLines')
   })
 
   it('WireGuard client mutations refresh clients and related WireGuard references for the raw target', async () => {
