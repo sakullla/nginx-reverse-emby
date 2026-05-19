@@ -203,6 +203,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err := s.validateRelayChain(ctx, resolvedID, flattenRelayLayers(rule.RelayLayers)); err != nil {
 		return L4Rule{}, err
 	}
+	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
 		return L4Rule{}, err
 	}
@@ -292,6 +295,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		return L4Rule{}, err
 	}
 	if err := s.validateRelayChain(ctx, resolvedID, flattenRelayLayers(rule.RelayLayers)); err != nil {
+		return L4Rule{}, err
+	}
+	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
 		return L4Rule{}, err
 	}
 	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
@@ -1363,7 +1369,9 @@ func l4TransparentWireGuardProfileConflicts(rule L4Rule, next L4Rule) bool {
 	if rule.WireGuardProfileID == nil || next.WireGuardProfileID == nil {
 		return false
 	}
-	return *rule.WireGuardProfileID > 0 && *rule.WireGuardProfileID == *next.WireGuardProfileID
+	return *rule.WireGuardProfileID > 0 &&
+		*rule.WireGuardProfileID == *next.WireGuardProfileID &&
+		strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol))
 }
 
 func effectiveL4ListenHost(rule L4Rule) string {

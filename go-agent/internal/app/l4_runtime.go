@@ -125,7 +125,7 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
 			if transaction != nil {
-				transaction.Commit()
+				m.wireGuardRuntime.Commit(transaction, wireGuardProfiles)
 				transaction = nil
 			}
 			_ = previous.Close()
@@ -170,7 +170,7 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	}
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
 	if transaction != nil {
-		transaction.Commit()
+		m.wireGuardRuntime.Commit(transaction, wireGuardProfiles)
 		transaction = nil
 	}
 	m.server = server
@@ -294,7 +294,7 @@ func (m *l4RuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, p
 	if transaction == nil {
 		return nil, m.wireGuardProvider, nil
 	}
-	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID}, nil
+	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID, profiles: cloneWireGuardProfiles(profiles)}, nil
 }
 
 func (m *l4RuntimeManager) validateWireGuardReferencesLocked(rules []model.L4Rule, provider relay.WireGuardRuntimeProvider) error {

@@ -140,7 +140,7 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 		}
 		runtime.SetTrafficBlockState(m.currentTrafficBlockState())
 		if transaction != nil {
-			transaction.Commit()
+			m.wireGuardRuntime.Commit(transaction, wireGuardProfiles)
 			transaction = nil
 		}
 		_ = previous.Close()
@@ -164,7 +164,7 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 	}
 	runtime.SetTrafficBlockState(m.currentTrafficBlockState())
 	if transaction != nil {
-		transaction.Commit()
+		m.wireGuardRuntime.Commit(transaction, wireGuardProfiles)
 		transaction = nil
 	}
 	m.runtime = runtime
@@ -260,7 +260,7 @@ func (m *httpRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context,
 	if transaction == nil {
 		return nil, m.wireGuardProvider, nil
 	}
-	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID}, nil
+	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID, profiles: cloneWireGuardProfiles(profiles)}, nil
 }
 
 func (m *httpRuntimeManager) UpdateTrafficBlockState(state proxy.TrafficBlockState) {

@@ -2527,6 +2527,191 @@ func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForCrossAgentRelay(t *testi
 	}
 }
 
+func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForTransitRelayHop(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	for _, agentID := range []string{"edge-a", "relay-a", "relay-b", "relay-c"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{
+			ID:               agentID,
+			Name:             agentID,
+			AgentToken:       "token-" + agentID,
+			CapabilitiesJSON: `["wireguard","l4","relay"]`,
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+
+	relayAProfileID := 61
+	relayAPrivateKey := "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	if err := store.SaveWireGuardProfiles(t.Context(), "relay-a", []WireGuardProfileRow{{
+		ID:             relayAProfileID,
+		AgentID:        "relay-a",
+		Name:           "relay-a-wg",
+		Mode:           "generic_wireguard",
+		PrivateKey:     relayAPrivateKey,
+		ListenPort:     51821,
+		PublicEndpoint: "relay-a.example.com:51821",
+		AddressesJSON:  `["10.72.0.1/32"]`,
+		PeersJSON:      `[]`,
+		DNSJSON:        `[]`,
+		MTU:            1280,
+		Enabled:        true,
+		TagsJSON:       `["system:default-wireguard"]`,
+		Revision:       12,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(relay-a) error = %v", err)
+	}
+
+	relayBProfileID := 71
+	relayBPrivateKey := "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	if err := store.SaveWireGuardProfiles(t.Context(), "relay-b", []WireGuardProfileRow{{
+		ID:             relayBProfileID,
+		AgentID:        "relay-b",
+		Name:           "relay-b-wg",
+		Mode:           "generic_wireguard",
+		PrivateKey:     relayBPrivateKey,
+		ListenPort:     51820,
+		PublicEndpoint: "relay-b.example.com:51820",
+		AddressesJSON:  `["10.71.0.254/32"]`,
+		PeersJSON:      `[]`,
+		DNSJSON:        `[]`,
+		MTU:            1280,
+		Enabled:        true,
+		TagsJSON:       `["system:default-wireguard"]`,
+		Revision:       13,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(relay-b) error = %v", err)
+	}
+
+	if err := store.SaveRelayListeners(t.Context(), "relay-a", []RelayListenerRow{{
+		ID:            601,
+		AgentID:       "relay-a",
+		Name:          "relay-a-tls",
+		ListenHost:    "0.0.0.0",
+		BindHostsJSON: `["0.0.0.0"]`,
+		ListenPort:    19001,
+		PublicHost:    "relay-a.example.com",
+		PublicPort:    19001,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+		Revision:      14,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-a) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-b", []RelayListenerRow{{
+		ID:                 711,
+		AgentID:            "relay-b",
+		Name:               "relay-b-wg",
+		ListenHost:         "10.71.0.1",
+		BindHostsJSON:      `["10.71.0.1"]`,
+		ListenPort:         19002,
+		PublicHost:         "relay-b.example.com",
+		PublicPort:         51820,
+		Enabled:            true,
+		TransportMode:      "wireguard",
+		WireGuardProfileID: &relayBProfileID,
+		Revision:           15,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-b) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-c", []RelayListenerRow{{
+		ID:            801,
+		AgentID:       "relay-c",
+		Name:          "relay-c-quic",
+		ListenHost:    "0.0.0.0",
+		BindHostsJSON: `["0.0.0.0"]`,
+		ListenPort:    19003,
+		PublicHost:    "relay-c.example.com",
+		PublicPort:    19003,
+		Enabled:       true,
+		TransportMode: "quic",
+		Revision:      16,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-c) error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "edge-a", []L4RuleRow{{
+		ID:                901,
+		AgentID:           "edge-a",
+		Name:              "edge-through-transit-wg-relay",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9443,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":9444}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{}`,
+		RelayLayersJSON:   `[[601],[711],[801]]`,
+		ListenMode:        "tcp",
+		Enabled:           true,
+		Revision:          17,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules(edge-a) error = %v", err)
+	}
+
+	relayASnapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-a", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(relay-a) error = %v", err)
+	}
+	if len(relayASnapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("relay-a WireGuardProfiles = %+v, want transit caller profile", relayASnapshot.WireGuardProfiles)
+	}
+	relayAProfile := relayASnapshot.WireGuardProfiles[0]
+	if relayAProfile.ID != relayAProfileID || relayAProfile.AgentID != "relay-a" || relayAProfile.PrivateKey != relayAPrivateKey {
+		t.Fatalf("relay-a profile = %+v, want local caller profile without remote private key", relayAProfile)
+	}
+	if relayAProfile.PrivateKey == relayBPrivateKey {
+		t.Fatalf("leaked relay-b private key in relay-a profile %+v", relayAProfile)
+	}
+	if len(relayAProfile.Peers) != 1 {
+		t.Fatalf("relay-a generated peers = %+v, want relay-b peer", relayAProfile.Peers)
+	}
+	relayAPeer := relayAProfile.Peers[0]
+	if relayAPeer.PublicKey != testWireGuardPublicKeyFromPrivate(t, relayBPrivateKey) {
+		t.Fatalf("relay-a peer public_key = %q, want relay-b public key", relayAPeer.PublicKey)
+	}
+	if relayAPeer.Endpoint != "relay-b.example.com:51820" {
+		t.Fatalf("relay-a peer endpoint = %q, want relay-b endpoint", relayAPeer.Endpoint)
+	}
+	if !stringSliceContains(relayAPeer.AllowedIPs, "10.71.0.1/32") {
+		t.Fatalf("relay-a peer allowed_ips = %+v, want relay-b listener tunnel address", relayAPeer.AllowedIPs)
+	}
+
+	relayBSnapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-b", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(relay-b) error = %v", err)
+	}
+	if len(relayBSnapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("relay-b WireGuardProfiles = %+v, want owner profile", relayBSnapshot.WireGuardProfiles)
+	}
+	relayBProfile := relayBSnapshot.WireGuardProfiles[0]
+	if relayBProfile.ID != relayBProfileID || relayBProfile.AgentID != "relay-b" || relayBProfile.PrivateKey != relayBPrivateKey {
+		t.Fatalf("relay-b profile = %+v, want local owner profile", relayBProfile)
+	}
+	if len(relayBProfile.Peers) != 1 {
+		t.Fatalf("relay-b generated peers = %+v, want relay-a caller peer", relayBProfile.Peers)
+	}
+	relayBPeer := relayBProfile.Peers[0]
+	if relayBPeer.PublicKey != testWireGuardPublicKeyFromPrivate(t, relayAPrivateKey) {
+		t.Fatalf("relay-b peer public_key = %q, want relay-a public key", relayBPeer.PublicKey)
+	}
+	if relayBPeer.Endpoint != "relay-a.example.com:51821" {
+		t.Fatalf("relay-b peer endpoint = %q, want relay-a endpoint", relayBPeer.Endpoint)
+	}
+	if len(relayBPeer.AllowedIPs) != 1 || relayBPeer.AllowedIPs[0] != "10.72.0.1/32" {
+		t.Fatalf("relay-b peer allowed_ips = %+v, want relay-a WireGuard address", relayBPeer.AllowedIPs)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

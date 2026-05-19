@@ -1070,6 +1070,11 @@ func (s *GormStore) loadRelayListenersForSync(
 
 	syncRows := append([]RelayListenerRow(nil), localRows...)
 	referencedIDs := referencedRelayListenerIDs(httpRows, l4Rows)
+	transitIDs, err := s.transitDownstreamWireGuardRelayListenerIDs(ctx, agentID, localRows)
+	if err != nil {
+		return nil, err
+	}
+	referencedIDs = append(referencedIDs, transitIDs...)
 	if len(referencedIDs) == 0 {
 		return syncRows, nil
 	}
@@ -1113,6 +1118,74 @@ func (s *GormStore) loadRelayListenersForSync(
 		}
 	}
 	return syncRows, nil
+}
+
+func (s *GormStore) transitDownstreamWireGuardRelayListenerIDs(ctx context.Context, agentID string, localRows []RelayListenerRow) ([]int, error) {
+	localRelayIDs := make(map[int]struct{})
+	for _, row := range localRows {
+		if row.ID <= 0 || !row.Enabled {
+			continue
+		}
+		localRelayIDs[row.ID] = struct{}{}
+	}
+	if len(localRelayIDs) == 0 {
+		return nil, nil
+	}
+
+	allRelayRows, err := s.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	relayRowsByID := make(map[int]RelayListenerRow, len(allRelayRows))
+	for _, row := range allRelayRows {
+		if row.ID > 0 {
+			relayRowsByID[row.ID] = row
+		}
+	}
+
+	downstreamSet := make(map[int]struct{})
+	addFromLayers := func(layersJSON string) {
+		layers := parseIntLayers(layersJSON)
+		for i := 0; i+1 < len(layers); i++ {
+			if !intLayerIntersects(layers[i], localRelayIDs) {
+				continue
+			}
+			for _, listenerID := range layers[i+1] {
+				row, ok := relayRowsByID[listenerID]
+				if !ok || row.AgentID == agentID || !row.Enabled ||
+					!strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") {
+					continue
+				}
+				downstreamSet[listenerID] = struct{}{}
+			}
+		}
+	}
+
+	allHTTPRows, err := s.loadAllHTTPRulesForSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range allHTTPRows {
+		if row.Enabled {
+			addFromLayers(row.RelayLayersJSON)
+		}
+	}
+	allL4Rows, err := s.loadAllL4RulesForSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range filterSyncL4RuleRows(allL4Rows) {
+		if row.Enabled {
+			addFromLayers(row.RelayLayersJSON)
+		}
+	}
+
+	ids := make([]int, 0, len(downstreamSet))
+	for listenerID := range downstreamSet {
+		ids = append(ids, listenerID)
+	}
+	sort.Ints(ids)
+	return ids, nil
 }
 
 func (s *GormStore) loadWireGuardProfilesForSync(ctx context.Context, agentID string) ([]WireGuardProfileRow, error) {
@@ -1298,15 +1371,35 @@ func (s *GormStore) wireGuardRelayCallerAgentIDs(
 	l4Rows []L4RuleRow,
 ) ([]string, error) {
 	callerSet := make(map[string]struct{})
-	addIfReferences := func(rowAgentID string, relayLayersJSON string) {
+	addCaller := func(rowAgentID string) {
 		rowAgentID = strings.TrimSpace(rowAgentID)
 		if rowAgentID == "" || rowAgentID == agentID {
 			return
 		}
-		for _, listenerID := range flattenIntLayers(parseIntLayers(relayLayersJSON)) {
-			if _, ok := localRelayIDs[listenerID]; ok {
-				callerSet[rowAgentID] = struct{}{}
-				return
+		callerSet[rowAgentID] = struct{}{}
+	}
+	allRelayRows, err := s.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	relayAgentByID := make(map[int]string, len(allRelayRows))
+	for _, row := range allRelayRows {
+		if row.ID > 0 {
+			relayAgentByID[row.ID] = strings.TrimSpace(row.AgentID)
+		}
+	}
+	addIfReferences := func(rowAgentID string, relayLayersJSON string) {
+		layers := parseIntLayers(relayLayersJSON)
+		for i, layer := range layers {
+			if !intLayerIntersects(layer, localRelayIDs) {
+				continue
+			}
+			if i == 0 {
+				addCaller(rowAgentID)
+				continue
+			}
+			for _, previousListenerID := range layers[i-1] {
+				addCaller(relayAgentByID[previousListenerID])
 			}
 		}
 	}
@@ -1347,6 +1440,18 @@ func (s *GormStore) wireGuardRelayCallerAgentIDs(
 	}
 	sort.Strings(agentIDs)
 	return agentIDs, nil
+}
+
+func intLayerIntersects(layer []int, ids map[int]struct{}) bool {
+	if len(layer) == 0 || len(ids) == 0 {
+		return false
+	}
+	for _, value := range layer {
+		if _, ok := ids[value]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *GormStore) loadAllHTTPRulesForSnapshot(ctx context.Context) ([]HTTPRuleRow, error) {

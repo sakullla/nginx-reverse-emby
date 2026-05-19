@@ -523,6 +523,67 @@ func TestSnapshotActivatorSharedWireGuardRuntimeAppliesRelayAndL4ProfileOnce(t *
 	}
 }
 
+func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing.T) {
+	localRuntime := &testAppWireGuardRuntime{}
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		return localRuntime, nil
+	})
+	defer shared.Close()
+
+	profile := validAppWireGuardProfile(72)
+	profile.AgentID = "wg-relay-caller"
+	profile.Name = "caller-default-wg"
+	profile.Addresses = []string{"10.72.0.1/32"}
+	profile.Peers = []model.WireGuardPeer{{
+		Name:                       "remote-relay-peer",
+		PublicKey:                  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+		Endpoint:                   "relay-owner.example.com:51820",
+		AllowedIPs:                 []string{"10.71.0.1/32"},
+		PersistentKeepaliveSeconds: 25,
+	}}
+
+	if err := shared.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	remoteProfileID := 71
+	hop := relay.Hop{
+		Address: "10.71.0.1:7443",
+		Listener: model.RelayListener{
+			ID:                 711,
+			AgentID:            "wg-relay-owner",
+			TransportMode:      relay.ListenerTransportModeWireGuard,
+			WireGuardProfileID: &remoteProfileID,
+		},
+	}
+	provider := shared.providerForAgent("wg-relay-caller")
+	runtime, ok := relay.ResolveWireGuardRuntimeForHop(provider, hop)
+	if !ok {
+		t.Fatal("ResolveWireGuardRuntimeForHop() ok = false, want local caller runtime")
+	}
+	if runtime != localRuntime {
+		t.Fatalf("ResolveWireGuardRuntimeForHop() runtime = %p, want local runtime %p", runtime, localRuntime)
+	}
+
+	transaction, err := shared.Prepare(context.Background(), []model.WireGuardProfile{profile})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	defer transaction.Rollback()
+	transactionProvider := wireGuardTransactionProvider{
+		transaction: transaction,
+		agentID:     "wg-relay-caller",
+		profiles:    []model.WireGuardProfile{profile},
+	}
+	runtime, ok = relay.ResolveWireGuardRuntimeForHop(transactionProvider, hop)
+	if !ok {
+		t.Fatal("ResolveWireGuardRuntimeForHop(transaction) ok = false, want local caller runtime")
+	}
+	if runtime != localRuntime {
+		t.Fatalf("ResolveWireGuardRuntimeForHop(transaction) runtime = %p, want local runtime %p", runtime, localRuntime)
+	}
+}
+
 func TestL4RuntimeManagerPreservesRunningServerOnMissingWireGuardProfileReconfigure(t *testing.T) {
 	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
 		return &testAppWireGuardRuntime{

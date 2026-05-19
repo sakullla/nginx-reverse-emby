@@ -153,6 +153,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+		return HTTPRule{}, err
+	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 	if err := validateUniqueHTTPFrontendBinding(append(rows, httpRuleToRow(rule))); err != nil {
 		return HTTPRule{}, err
@@ -260,6 +263,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+		return HTTPRule{}, err
+	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows...)

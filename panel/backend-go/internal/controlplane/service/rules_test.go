@@ -1134,6 +1134,73 @@ func TestRuleServiceCreateAllowsCrossAgentWireGuardRelayListener(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateEnsuresTransitCallerWireGuardProfile(t *testing.T) {
+	relayBProfileID := 41
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{
+			{ID: "relay-a", Name: "relay-a", CapabilitiesJSON: `["wireguard"]`},
+			{ID: "relay-b", Name: "relay-b", CapabilitiesJSON: `["wireguard"]`},
+			{ID: "relay-c", Name: "relay-c", CapabilitiesJSON: `[]`},
+		},
+		listeners: []storage.RelayListenerRow{
+			{
+				ID:            7,
+				AgentID:       "relay-a",
+				Enabled:       true,
+				TransportMode: "tls_tcp",
+			},
+			{
+				ID:                 8,
+				AgentID:            "relay-b",
+				Enabled:            true,
+				TransportMode:      "wireguard",
+				WireGuardProfileID: &relayBProfileID,
+			},
+			{
+				ID:            9,
+				AgentID:       "relay-c",
+				Enabled:       true,
+				TransportMode: "quic",
+			},
+		},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"relay-b": {{
+				ID:            relayBProfileID,
+				AgentID:       "relay-b",
+				Name:          "relay-b-default",
+				Mode:          "generic_wireguard",
+				PrivateKey:    "relay-b-private",
+				ListenPort:    51820,
+				AddressesJSON: `["10.44.0.1/32"]`,
+				Enabled:       true,
+				TagsJSON:      `["system:default-wireguard"]`,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	if _, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://transit-wg.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://upstream:8096"}},
+		RelayLayers: &[][]int{{7}, {8}, {9}},
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	profiles := store.wireGuardByAgentID["relay-a"]
+	if len(profiles) != 1 {
+		t.Fatalf("relay-a WireGuardProfiles = %+v, want default profile", profiles)
+	}
+	profile := wireGuardProfileFromRow(profiles[0])
+	if !profile.Enabled || !hasTag(profile.Tags, "system:default-wireguard") {
+		t.Fatalf("relay-a default WireGuardProfile = %+v", profile)
+	}
+}
+
 func TestRuleServiceCreateAllowsSameAgentWireGuardRelayListener(t *testing.T) {
 	profileID := 41
 	store := &fakeRuleStore{
