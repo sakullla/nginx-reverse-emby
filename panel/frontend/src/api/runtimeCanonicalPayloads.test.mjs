@@ -739,10 +739,12 @@ describe('runtime canonical rule payloads', () => {
     const page = await import('../pages/WireGuardProfilesPage.vue?raw')
     const clientList = await import('../components/wireguard/WireGuardClientList.vue?raw')
     const clientForm = await import('../components/wireguard/WireGuardClientForm.vue?raw')
+    const peerList = await import('../components/wireguard/WireGuardPeerList.vue?raw')
     const profileForm = await import('../components/wireguard/WireGuardProfileForm.vue?raw')
     const pageSource = page.default
     const listSource = clientList.default
     const formSource = clientForm.default
+    const peerListSource = peerList.default
     const profileFormSource = profileForm.default
 
     // Page container orchestrates clients workflow
@@ -767,9 +769,9 @@ describe('runtime canonical rule payloads', () => {
     expect(formSource).not.toContain('address')
     expect(formSource).not.toContain('public_key')
 
-    // Profile form has legacy peers support
-    expect(profileFormSource).toContain('手动 Peers')
-    expect(profileFormSource).toContain('public_endpoint')
+    // Peer list manages manual peers in client view
+    expect(peerListSource).toContain('手动 Peers')
+    expect(peerListSource).toContain('public_key')
 
     // No mihomo or YAML leakage
     const allSource = pageSource + listSource + formSource + profileFormSource

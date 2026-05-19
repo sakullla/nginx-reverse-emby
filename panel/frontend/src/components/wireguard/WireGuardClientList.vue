@@ -149,7 +149,7 @@ function isPending(client) {
   grid-template-columns: minmax(80px, 0.4fr) minmax(0, 1fr);
   gap: var(--space-3);
   font-size: var(--text-xs);
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   min-width: 0;
 }
 

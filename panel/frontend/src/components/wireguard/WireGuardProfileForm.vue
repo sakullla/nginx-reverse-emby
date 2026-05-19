@@ -74,62 +74,6 @@
       </div>
     </section>
 
-    <section class="form-section">
-      <button type="button" class="advanced-toggle" @click="showPeers = !showPeers">
-        {{ showPeers ? '收起' : '展开' }} 手动 Peers（用于兼容非本系统生成的客户端）
-      </button>
-
-      <div v-if="showPeers" class="advanced-panel">
-        <div class="section-title-row">
-          <label class="form-label">Peers</label>
-          <button type="button" class="btn btn--secondary btn--sm" @click="addPeer">添加 Peer</button>
-        </div>
-        <div v-if="!form.peers.length" class="empty-inline">暂无 Peer</div>
-        <div v-for="(peer, index) in form.peers" :key="peer.local_id" class="peer-panel">
-          <div class="peer-panel__header">
-            <strong>Peer {{ index + 1 }}</strong>
-            <button type="button" class="btn btn--danger btn--sm" @click="removePeer(index)">删除</button>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">名称</label>
-              <input v-model="peer.name" class="input" placeholder="client-a">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Endpoint</label>
-              <input v-model="peer.endpoint" class="input" placeholder="vpn.example.com:51820">
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Public Key</label>
-              <input v-model="peer.public_key" class="input">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Preshared Key</label>
-              <input v-model="peer.preshared_key" class="input" type="password" autocomplete="new-password" placeholder="xxxxx">
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Allowed IPs（每行一个）</label>
-              <textarea v-model="peer.allowed_ips_text" class="input textarea textarea--sm" placeholder="10.8.0.2/32"></textarea>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Keepalive 秒</label>
-              <input
-                v-model.number="peer.persistent_keepalive_seconds"
-                class="input"
-                type="number"
-                min="0"
-                placeholder="25"
-              >
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
     <section class="form-section form-section--compact">
       <div class="form-group">
         <label class="form-label">标签</label>
@@ -176,22 +120,7 @@ const props = defineProps({
 const emit = defineEmits(['submit', 'cancel'])
 
 const isEdit = computed(() => !!props.initialData?.id)
-const showPeers = ref(false)
 const tagInput = ref('')
-
-let peerIdCounter = 0
-
-function createPeerState(peer = {}) {
-  return {
-    local_id: `peer-${++peerIdCounter}`,
-    name: peer.name || '',
-    public_key: peer.public_key || '',
-    preshared_key: peer.preshared_key || '',
-    endpoint: peer.endpoint || '',
-    allowed_ips_text: lines(peer.allowed_ips),
-    persistent_keepalive_seconds: peer.persistent_keepalive_seconds ?? null
-  }
-}
 
 function createFormState(profile = null) {
   return {
@@ -200,7 +129,6 @@ function createFormState(profile = null) {
     listen_port: profile?.listen_port ?? null,
     public_endpoint: profile?.public_endpoint || '',
     addresses_text: lines(profile?.addresses),
-    peers: Array.isArray(profile?.peers) ? profile.peers.map((p) => createPeerState(p)) : [],
     dns_text: lines(profile?.dns),
     mtu: profile?.mtu ?? null,
     enabled: profile?.enabled !== false,
@@ -211,10 +139,6 @@ function createFormState(profile = null) {
 const form = ref(createFormState(props.initialData))
 const errors = ref({ name: '', submit: '' })
 
-if (isEdit.value && form.value.peers.length > 0) {
-  showPeers.value = true
-}
-
 function lines(items) {
   return Array.isArray(items) ? items.join('\n') : ''
 }
@@ -224,15 +148,6 @@ function splitLines(value) {
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean)
-}
-
-function addPeer() {
-  form.value.peers.push(createPeerState())
-  showPeers.value = true
-}
-
-function removePeer(index) {
-  form.value.peers.splice(index, 1)
 }
 
 function addTag() {
@@ -259,16 +174,14 @@ function buildPayload() {
     listen_port: form.value.listen_port == null || form.value.listen_port === '' ? null : Number(form.value.listen_port),
     public_endpoint: form.value.public_endpoint.trim(),
     addresses: splitLines(form.value.addresses_text),
-    peers: form.value.peers.map((peer) => ({
-      name: peer.name.trim(),
-      public_key: peer.public_key.trim(),
-      preshared_key: peer.preshared_key,
-      endpoint: peer.endpoint.trim(),
-      allowed_ips: splitLines(peer.allowed_ips_text),
-      persistent_keepalive_seconds: peer.persistent_keepalive_seconds == null || peer.persistent_keepalive_seconds === ''
-        ? null
-        : Number(peer.persistent_keepalive_seconds)
-    })),
+    peers: Array.isArray(props.initialData?.peers) ? props.initialData.peers.map((peer) => ({
+      name: String(peer.name || '').trim(),
+      public_key: String(peer.public_key || '').trim(),
+      preshared_key: peer.preshared_key || '',
+      endpoint: String(peer.endpoint || '').trim(),
+      allowed_ips: Array.isArray(peer.allowed_ips) ? peer.allowed_ips : [],
+      persistent_keepalive_seconds: peer.persistent_keepalive_seconds ?? null
+    })) : [],
     dns: splitLines(form.value.dns_text),
     mtu: form.value.mtu == null || form.value.mtu === '' ? null : Number(form.value.mtu),
     enabled: form.value.enabled,
@@ -388,41 +301,6 @@ function handleSubmit() {
 
 .textarea--sm {
   min-height: 64px;
-}
-
-.advanced-toggle {
-  align-self: flex-start;
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-surface);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  color: var(--color-text-secondary);
-}
-
-.advanced-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding-top: var(--space-2);
-}
-
-.peer-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-surface);
-}
-
-.peer-panel__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
 }
 
 .tag-input {

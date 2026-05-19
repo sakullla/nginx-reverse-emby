@@ -41,7 +41,6 @@
           v-for="profile in profiles"
           :key="profile.id"
           :profile="profile"
-          @manage-clients="openClientView"
           @edit="startEditProfile"
           @delete="deletingProfile = profile"
         />
@@ -95,6 +94,12 @@
             @delete="deleteClientRow"
           />
         </section>
+
+        <WireGuardPeerList
+          :peers="selectedProfile?.peers || []"
+          :is-saving="updateProfile.isPending.value"
+          @save="handlePeersSave"
+        />
       </div>
     </template>
 
@@ -177,6 +182,7 @@ import WireGuardProfileForm from '../components/wireguard/WireGuardProfileForm.v
 import WireGuardClientList from '../components/wireguard/WireGuardClientList.vue'
 import WireGuardClientForm from '../components/wireguard/WireGuardClientForm.vue'
 import WireGuardClientQRModal from '../components/wireguard/WireGuardClientQRModal.vue'
+import WireGuardPeerList from '../components/wireguard/WireGuardPeerList.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -200,7 +206,11 @@ const profiles = computed(() => profilesData.value ?? [])
 const enabledCount = computed(() => profiles.value.filter((p) => p.enabled !== false).length)
 const isProfileSaving = computed(() => createProfile.isPending.value || updateProfile.isPending.value)
 
-const selectedProfileId = ref(null)
+const selectedProfileId = ref(route.params?.id || null)
+
+watch(() => route.params?.id, (id) => {
+  selectedProfileId.value = id || null
+})
 const selectedProfile = computed(() =>
   profiles.value.find((p) => String(p.id) === String(selectedProfileId.value)) || null
 )
@@ -239,7 +249,9 @@ const qrLoading = ref(false)
 let qrRequestGeneration = 0
 
 watch(agentId, () => {
-  selectedProfileId.value = null
+  if (route.params.id) {
+    router.replace('/wireguard-profiles')
+  }
   closeProfileForm()
   closeClientForm()
   closeQRCode()
@@ -289,12 +301,8 @@ async function handleProfileSubmit(payload) {
   }
 }
 
-function openClientView(profile) {
-  selectedProfileId.value = profile?.id || null
-}
-
 function closeClientView() {
-  selectedProfileId.value = null
+  router.push('/wireguard-profiles')
 }
 
 function startCreateClient() {
@@ -320,6 +328,29 @@ async function handleClientSubmit(payload) {
       await createClient.mutateAsync(payload)
     }
     closeClientForm()
+  } catch (error) {
+    // Error handled by hook
+  }
+}
+
+async function handlePeersSave(nextPeers) {
+  if (!selectedProfile.value || !agentId.value) return
+  const profile = selectedProfile.value
+  try {
+    await updateProfile.mutateAsync({
+      id: profile.id,
+      name: profile.name,
+      mode: profile.mode || 'generic_wireguard',
+      private_key: profile.private_key || '',
+      listen_port: profile.listen_port,
+      public_endpoint: profile.public_endpoint || '',
+      addresses: Array.isArray(profile.addresses) ? [...profile.addresses] : [],
+      peers: nextPeers,
+      dns: Array.isArray(profile.dns) ? [...profile.dns] : [],
+      mtu: profile.mtu,
+      enabled: profile.enabled !== false,
+      tags: Array.isArray(profile.tags) ? [...profile.tags] : []
+    })
   } catch (error) {
     // Error handled by hook
   }
@@ -459,6 +490,8 @@ function confirmDeleteProfile() {
     }
   })
 }
+
+defineExpose({ selectedProfileId })
 </script>
 
 <style scoped>
@@ -565,7 +598,7 @@ function confirmDeleteProfile() {
 
 .section-subtitle {
   margin: var(--space-1) 0 0;
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: var(--text-sm);
 }
 

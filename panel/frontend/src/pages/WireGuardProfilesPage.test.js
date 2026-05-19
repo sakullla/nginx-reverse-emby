@@ -7,12 +7,15 @@ import * as api from '../api'
 const mocks = vi.hoisted(() => ({
   updateMutate: vi.fn(),
   deleteClientMutate: vi.fn(),
-  qrCodeToDataURL: vi.fn()
+  qrCodeToDataURL: vi.fn(),
+  routeMock: { query: { agentId: 'local' }, params: {} },
+  routerReplace: vi.fn(),
+  routerPush: vi.fn()
 }))
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: { agentId: 'local' } }),
-  useRouter: () => ({ replace: vi.fn() })
+  useRoute: () => mocks.routeMock,
+  useRouter: () => ({ replace: mocks.routerReplace, push: mocks.routerPush })
 }))
 
 vi.mock('@tanstack/vue-query', () => ({
@@ -124,8 +127,9 @@ function deferred() {
 }
 
 async function openClients(wrapper) {
-  const buttons = wrapper.findAll('.base-icon-button[title="管理客户端"]')
-  await buttons[0].trigger('click')
+  wrapper.vm.selectedProfileId = 7
+  await wrapper.vm.$nextTick()
+  await flushPromises()
 }
 
 function clientActionButtons(wrapper, rowIndex = 0) {
@@ -146,6 +150,9 @@ describe('WireGuardProfilesPage client row actions', () => {
     mocks.qrCodeToDataURL.mockResolvedValue('data:image/png;base64,qr')
     api.fetchWireGuardClientConfig.mockReset()
     api.fetchWireGuardClientURI.mockReset()
+    mocks.routeMock.params = {}
+    mocks.routerReplace.mockReset()
+    mocks.routerPush.mockReset()
   })
 
   it('disables client row actions while a client toggle is pending', async () => {
@@ -170,14 +177,14 @@ describe('WireGuardProfilesPage client row actions', () => {
     mocks.updateMutate.mockReturnValue(new Promise(() => {}))
     const wrapper = mountPage()
 
-    const profileButtons = wrapper.findAll('.base-icon-button[title="管理客户端"]')
-    await profileButtons[0].trigger('click')
+    await openClients(wrapper)
     await clientActionButton(wrapper, '停用').trigger('click')
     expect(clientActionButtons(wrapper).every((button) => button.attributes('disabled') !== undefined)).toBe(true)
 
     // Switch to second profile
-    await wrapper.find('.back-btn').trigger('click')
-    await profileButtons[1].trigger('click')
+    wrapper.vm.selectedProfileId = 8
+    await wrapper.vm.$nextTick()
+    await flushPromises()
 
     expect(wrapper.text()).toContain('wg-backup')
     expect(wrapper.findAll('.client-row__actions .base-icon-button').every((button) => button.attributes('disabled') === undefined)).toBe(true)
