@@ -270,7 +270,7 @@
 
         <!-- WireGuard egress config -->
         <div v-if="isWireGuardEgress" class="form-row">
-          <div v-if="canSelectWireGuardEgressProfile" class="form-group">
+          <div v-if="canSelectWireGuardEgressSource" class="form-group">
             <label class="form-label form-label--required">WireGuard 出口来源</label>
             <select v-model="form.wireguard_egress_source" class="input">
               <option value="uri">WireGuard URI</option>
@@ -582,13 +582,14 @@ const isWireGuardTransparentForward = computed(() => isWireGuardInbound.value
   && form.value.wireguard_inbound_mode === 'transparent'
   && !isProxyEntry.value)
 const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)
+const canUseWireGuardEgressURI = computed(() => !isWireGuardInbound.value)
 const isWireGuardEgressProfileSource = computed(() => isWireGuardEgress.value && form.value.wireguard_egress_source === 'profile')
 const isWireGuardEgressUriSource = computed(() => isWireGuardEgress.value && form.value.wireguard_egress_source === 'uri')
 const usesWireGuard = computed(() => isWireGuardInbound.value || isWireGuardEgress.value)
-const canSelectWireGuardEgressProfile = computed(() => isEdit.value
+const canSelectWireGuardEgressSource = computed(() => canUseWireGuardEgressURI.value && (isEdit.value
   && props.initialData?.proxy_egress_mode === 'wireguard'
   && props.initialData?.wireguard_profile_id != null
-  && !String(props.initialData?.wireguard_egress_uri || '').trim())
+  && !String(props.initialData?.wireguard_egress_uri || '').trim()))
 const isWireGuardAdvancedProfileOverride = computed(() => (isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'address') || isWireGuardEgressProfileSource.value)
 const requiresWireGuardProfile = computed(() => isWireGuardInbound.value || isWireGuardEgressProfileSource.value)
 const selectedWireGuardProfileID = computed(() => {
@@ -691,6 +692,15 @@ watch(() => form.value.protocol, (newProto) => {
     }
   }
 })
+
+watch([isWireGuardEgress, canUseWireGuardEgressURI], ([egressEnabled, uriAllowed]) => {
+  if (!egressEnabled) return
+  if (uriAllowed) return
+  if (form.value.wireguard_egress_source !== 'profile') {
+    form.value.wireguard_egress_source = 'profile'
+  }
+  form.value.wireguard_egress_uri = ''
+}, { immediate: true })
 
 watch([isWireGuardInbound, isWireGuardEgress], ([inbound, egress]) => {
   if (inbound && form.value.protocol === 'udp' && form.value.wireguard_inbound_mode === 'transparent') {

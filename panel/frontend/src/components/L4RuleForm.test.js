@@ -86,7 +86,7 @@ describe('L4RuleForm WireGuard egress', () => {
     mocks.updateMutateAsync.mockResolvedValue({})
   })
 
-  it('allows WireGuard inbound rules to egress through a WireGuard URI', async () => {
+  it('disables WireGuard URI egress for WireGuard inbound rules', async () => {
     const wrapper = mountForm()
 
     await switchTab(wrapper, '协议与监听')
@@ -94,8 +94,10 @@ describe('L4RuleForm WireGuard egress', () => {
     await selectByLabel(wrapper, '出口模式').setValue('wireguard')
     await flushPromises()
 
-    const uriInput = wrapper.get('input[placeholder="wireguard://user:pass@host:51820"]')
-    await uriInput.setValue('wireguard://endpoint.example.test?profile=egress')
+    expect(wrapper.text()).toContain('WireGuard 配置')
+    expect(wrapper.text()).not.toContain('WireGuard 出口来源')
+    expect(wrapper.find('input[placeholder="wireguard://user:pass@host:51820"]').exists()).toBe(false)
+
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -105,9 +107,9 @@ describe('L4RuleForm WireGuard egress', () => {
       listen_mode: 'wireguard',
       proxy_egress_mode: 'wireguard',
       wireguard_inbound_mode: 'transparent',
-      wireguard_profile_id: 21,
-      wireguard_egress_uri: 'wireguard://endpoint.example.test?profile=egress'
+      wireguard_profile_id: 21
     })
+    expect(mocks.createMutateAsync.mock.calls[0][0]).not.toHaveProperty('wireguard_egress_uri')
   })
 
   it('derives WireGuard address-mode listen host from the selected profile', async () => {
