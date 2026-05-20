@@ -656,7 +656,7 @@ func TestTLSTCPSessionPoolAllowsUnknownWhenCappedTunnelsAreCongested(t *testing.
 	}
 }
 
-func TestWireGuardSessionPoolKeyIgnoresTLSMaterial(t *testing.T) {
+func TestWireGuardSessionPoolKeyIncludesTLSMaterial(t *testing.T) {
 	profileID := 9
 	certID := 10
 	base := Hop{
@@ -695,8 +695,8 @@ func TestWireGuardSessionPoolKeyIgnoresTLSMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tlsTCPSessionPoolKey(changedTLSMaterial) error = %v", err)
 	}
-	if keyA != keyB {
-		t.Fatalf("WireGuard session key changed for TLS-only material:\n%s\n%s", keyA, keyB)
+	if keyA == keyB {
+		t.Fatalf("WireGuard session key did not change for TLS material:\n%s", keyA)
 	}
 
 	changedAddress := base

@@ -854,7 +854,7 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		tags = normalizeTags(*input.Tags)
 	}
 
-	if enabled && transportMode != "wireguard" {
+	if enabled {
 		if certID == nil && !options.AllowMissingCertificate {
 			return RelayListener{}, fmt.Errorf("%w: certificate_id is required when relay listener is enabled", ErrInvalidArgument)
 		}

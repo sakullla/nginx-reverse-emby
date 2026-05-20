@@ -112,6 +112,15 @@ describe('RelayListenerForm WireGuard profile override', () => {
     expect(wrapper.text()).not.toContain('默认使用 TLS/TCP；如需更低握手耗时')
   })
 
+  it('states that WireGuard relay still uses Relay TLS authentication', async () => {
+    const wrapper = mountForm()
+
+    await fillValidWireGuardForm(wrapper)
+
+    expect(wrapper.text()).toContain('Relay TLS')
+    expect(wrapper.text()).toContain('证书 / Pin')
+  })
+
   it('omits WireGuard bind hosts and relay public endpoint fields from submissions', async () => {
     const wrapper = mountForm()
 

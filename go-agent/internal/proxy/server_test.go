@@ -3752,17 +3752,17 @@ func pickFreeTCPUDPPort(t *testing.T) int {
 
 	var lastErr error
 	for attempt := 0; attempt < 100; attempt++ {
-		packet, err := net.ListenPacket("udp", "0.0.0.0:0")
+		ln, err := net.Listen("tcp", "0.0.0.0:0")
 		if err != nil {
 			lastErr = err
 			continue
 		}
 
-		port := packet.LocalAddr().(*net.UDPAddr).Port
-		ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
+		port := ln.Addr().(*net.TCPAddr).Port
+		packet, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%d", port))
 		if err != nil {
 			lastErr = err
-			_ = packet.Close()
+			_ = ln.Close()
 			continue
 		}
 

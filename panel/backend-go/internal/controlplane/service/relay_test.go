@@ -518,7 +518,7 @@ func TestRelayListenerCreateWireGuardUsesDefaultProfile(t *testing.T) {
 		Name:          stringPtr("wg-relay"),
 		TransportMode: stringPtr("wireguard"),
 		ListenPort:    intPtrService(19001),
-		Enabled:       boolPtr(true),
+		Enabled:       boolPtr(false),
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -564,7 +564,7 @@ func TestRelayListenerCreateWireGuardDerivesBindAndPublicEndpointFromProfile(t *
 		BindHosts:          &[]string{"0.0.0.0"},
 		PublicHost:         stringPtr("relay.example.com"),
 		PublicPort:         intPtrService(7443),
-		Enabled:            boolPtr(true),
+		Enabled:            boolPtr(false),
 		CertificateSource:  stringPtr("existing_certificate"),
 	})
 	if err != nil {
@@ -1001,7 +1001,7 @@ func TestRelayServiceCreateWireGuardAutoRelayCAIssuesCertificateAndDerivesTrust(
 	}
 }
 
-func TestRelayServiceCreateWireGuardAllowsEnabledListenerWithoutCertificate(t *testing.T) {
+func TestRelayServiceCreateWireGuardRequiresCertificateWhenEnabled(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
 		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
@@ -1010,7 +1010,7 @@ func TestRelayServiceCreateWireGuardAllowsEnabledListenerWithoutCertificate(t *t
 	}
 	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+	_, err := svc.Create(context.Background(), "local", RelayListenerInput{
 		Name:               stringPtr("wg-relay"),
 		ListenPort:         intPtrService(7443),
 		Enabled:            boolPtr(true),
@@ -1018,14 +1018,14 @@ func TestRelayServiceCreateWireGuardAllowsEnabledListenerWithoutCertificate(t *t
 		WireGuardProfileID: intPtrService(7),
 		CertificateSource:  stringPtr("existing_certificate"),
 	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 	}
-	if listener.CertificateID != nil {
-		t.Fatalf("CertificateID = %v, want nil for wireguard transport", listener.CertificateID)
+	if err == nil || !strings.Contains(err.Error(), "certificate_id is required when relay listener is enabled") {
+		t.Fatalf("Create() error = %v, want certificate requirement", err)
 	}
-	if len(store.relayByAgentID["local"]) != 1 {
-		t.Fatalf("persisted relay listeners = %+v, want one listener", store.relayByAgentID["local"])
+	if len(store.relayByAgentID["local"]) != 0 {
+		t.Fatalf("persisted relay listeners = %+v, want none", store.relayByAgentID["local"])
 	}
 }
 

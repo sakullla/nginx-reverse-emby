@@ -68,8 +68,6 @@ func TestResolvePathsUsesWireGuardListenerAddressInsideTunnel(t *testing.T) {
 	listener.PublicPort = 51820
 	listener.TransportMode = relay.ListenerTransportModeWireGuard
 	listener.WireGuardProfileID = &profileID
-	listener.TLSMode = ""
-	listener.PinSet = nil
 
 	paths, err := ResolvePaths("l4 rule 0.0.0.0:9443", nil, [][]int{{1}}, []model.RelayListener{listener}, "backend.example:443")
 	if err != nil {

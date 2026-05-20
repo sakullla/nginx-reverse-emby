@@ -298,7 +298,7 @@ const publicEndpointHint = computed(() => (
 ))
 const transportModeHint = computed(() => {
   if (form.value.transport_mode === 'wireguard') {
-    return '使用 WireGuard 隧道进行中继；需先配置可用的服务端。'
+    return '使用 WireGuard 隧道承载中继连接；Relay TLS 证书 / Pin 校验仍会在隧道内生效。'
   }
   if (form.value.transport_mode === 'quic') {
     return 'QUIC 可降低握手耗时；需要兼容 TLS/TCP 时可启用回退。'

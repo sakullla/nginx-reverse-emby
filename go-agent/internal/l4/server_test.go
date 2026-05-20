@@ -3077,7 +3077,7 @@ func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
 	}
 	relayPublicPort := pickFreeTCPPort(t)
 	relayRequests := make(chan l4RelayTestRequest, 1)
-	stopRelay := startL4RawMuxRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayRequests)
+	stopRelay := startL4RelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayRequests, relay.RelayObfsModeOff)
 	defer stopRelay()
 
 	profileID := 9

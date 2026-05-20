@@ -36,10 +36,6 @@ func ValidateListener(listener Listener) error {
 	if normalized.PublicPort < 1 || normalized.PublicPort > 65535 {
 		return fmt.Errorf("public_port must be between 1 and 65535")
 	}
-	if normalized.TransportMode == ListenerTransportModeWireGuard {
-		return nil
-	}
-
 	mode, err := normalizeTLSMode(normalized.TLSMode)
 	if err != nil {
 		return err
