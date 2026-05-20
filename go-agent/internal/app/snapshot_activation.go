@@ -116,17 +116,6 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 		localNext := next
 		localNext.RelayListeners = localRelayListeners(next.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
 
-		if (relay.ListenersChanged(localPrevious.RelayListeners, localNext.RelayListeners) ||
-			!reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles)) &&
-			handlers.ActivateRelayListeners != nil {
-			if err := a.applyRelayListeners(ctx, Snapshot{
-				RelayListeners:    localNext.RelayListeners,
-				WireGuardProfiles: next.WireGuardProfiles,
-			}); err != nil {
-				return err
-			}
-		}
-
 		if !reflect.DeepEqual(previous.Rules, next.Rules) ||
 			httpRelayInputsChanged(next.Rules, previous.RelayListeners, next.RelayListeners) ||
 			httpWireGuardInputsChanged(next.Rules, previous.WireGuardProfiles, next.WireGuardProfiles) {
@@ -143,11 +132,24 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 			l4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners) ||
 			l4WireGuardInputsChanged(next.L4Rules, previous.WireGuardProfiles, next.WireGuardProfiles)) &&
 			handlers.ActivateL4Rules != nil {
-			return a.applyL4Rules(ctx, Snapshot{
+			if err := a.applyL4Rules(ctx, Snapshot{
 				L4Rules:           next.L4Rules,
 				RelayListeners:    next.RelayListeners,
 				WireGuardProfiles: next.WireGuardProfiles,
-			})
+			}); err != nil {
+				return err
+			}
+		}
+
+		if (relay.ListenersChanged(localPrevious.RelayListeners, localNext.RelayListeners) ||
+			!reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles)) &&
+			handlers.ActivateRelayListeners != nil {
+			if err := a.applyRelayListeners(ctx, Snapshot{
+				RelayListeners:    localNext.RelayListeners,
+				WireGuardProfiles: next.WireGuardProfiles,
+			}); err != nil {
+				return err
+			}
 		}
 
 		return nil

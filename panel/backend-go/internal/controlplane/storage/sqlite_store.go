@@ -1344,7 +1344,7 @@ func (s *GormStore) attachWireGuardRelayOwnerPeersForSnapshot(
 		peers := parseWireGuardPeers(next[i].PeersJSON)
 		profileChanged := false
 		for _, callerProfile := range callerProfiles {
-			peer, ok := snapshotWireGuardProfilePeer("system:relay-caller:"+strings.TrimSpace(callerProfile.AgentID), callerProfile)
+			peer, ok := snapshotWireGuardProfilePeerAllowEmptyEndpoint("system:relay-caller:"+strings.TrimSpace(callerProfile.AgentID), callerProfile)
 			if !ok || wireGuardPeersContainPublicKey(peers, peer.PublicKey) {
 				continue
 			}
@@ -1505,13 +1505,21 @@ func snapshotWireGuardRelayPeer(relayRow RelayListenerRow, remoteProfile WireGua
 }
 
 func snapshotWireGuardProfilePeer(name string, profile WireGuardProfileRow) (WireGuardPeer, bool) {
+	return snapshotWireGuardProfilePeerWithEndpointPolicy(name, profile, true)
+}
+
+func snapshotWireGuardProfilePeerAllowEmptyEndpoint(name string, profile WireGuardProfileRow) (WireGuardPeer, bool) {
+	return snapshotWireGuardProfilePeerWithEndpointPolicy(name, profile, false)
+}
+
+func snapshotWireGuardProfilePeerWithEndpointPolicy(name string, profile WireGuardProfileRow, requireEndpoint bool) (WireGuardPeer, bool) {
 	publicKey, err := wireGuardPublicKeyFromPrivateKey(profile.PrivateKey)
 	if err != nil {
 		return WireGuardPeer{}, false
 	}
 	endpoint := strings.TrimSpace(profile.PublicEndpoint)
 	allowedIPs := wireGuardProfileHostAllowedIPs(parseStringSlice(profile.AddressesJSON))
-	if endpoint == "" || len(allowedIPs) == 0 {
+	if len(allowedIPs) == 0 || (requireEndpoint && endpoint == "") {
 		return WireGuardPeer{}, false
 	}
 	return WireGuardPeer{

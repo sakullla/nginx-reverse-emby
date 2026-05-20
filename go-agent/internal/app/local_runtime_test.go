@@ -538,7 +538,7 @@ func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing
 		Name:                       "remote-relay-peer",
 		PublicKey:                  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
 		Endpoint:                   "relay-owner.example.com:51820",
-		AllowedIPs:                 []string{"10.71.0.1/32"},
+		AllowedIPs:                 []string{"10.0.0.0/8"},
 		PersistentKeepaliveSeconds: 25,
 	}}
 

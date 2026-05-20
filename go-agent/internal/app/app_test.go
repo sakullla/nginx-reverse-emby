@@ -2016,6 +2016,19 @@ func (a *orderedL4Applier) Close() error {
 	return nil
 }
 
+type orderedHTTPApplier struct {
+	recorder *orderedApplyRecorder
+}
+
+func (a *orderedHTTPApplier) Apply(_ context.Context, _ []model.HTTPRule) error {
+	a.recorder.add("http")
+	return nil
+}
+
+func (a *orderedHTTPApplier) Close() error {
+	return nil
+}
+
 type orderedRelayApplier struct {
 	recorder *orderedApplyRecorder
 }
@@ -3847,17 +3860,33 @@ func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChange
 	}
 }
 
-func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
+func TestSnapshotActivatorAppliesRulesBeforeRelayListeners(t *testing.T) {
 	recorder := &orderedApplyRecorder{}
-	app := newAppWithDeps(
+	app := newAppWithHTTPDeps(
 		Config{AgentID: "local-agent"},
 		store.NewInMemory(),
 		newTestSyncClient(nil, syncResponse{}),
+		&orderedHTTPApplier{recorder: recorder},
 		&orderedCertificateApplier{recorder: recorder},
 		&orderedL4Applier{recorder: recorder},
 		&orderedRelayApplier{recorder: recorder},
 	)
 
+	previous := Snapshot{
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://handoff.internal",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			Enabled:     true,
+			Revision:    1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9444,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9445}},
+			Revision:   1,
+		}},
+	}
 	next := Snapshot{
 		Certificates: []model.ManagedCertificateBundle{{
 			ID:       10,
@@ -3880,6 +3909,7 @@ func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
 			}},
 			Revision: 1,
 		}},
+		Rules: []model.HTTPRule{},
 		L4Rules: []model.L4Rule{{
 			Protocol:    "udp",
 			ListenHost:  "127.0.0.1",
@@ -3890,12 +3920,12 @@ func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
 		}},
 	}
 
-	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
 		t.Fatalf("snapshotActivator returned error: %v", err)
 	}
 
-	if got := recorder.snapshot(); !reflect.DeepEqual(got, []string{"cert", "relay", "l4"}) {
-		t.Fatalf("apply order = %v, want [cert relay l4]", got)
+	if got := recorder.snapshot(); !reflect.DeepEqual(got, []string{"cert", "http", "l4", "relay"}) {
+		t.Fatalf("apply order = %v, want [cert http l4 relay]", got)
 	}
 }
 

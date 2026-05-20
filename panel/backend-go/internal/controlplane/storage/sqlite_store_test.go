@@ -2410,20 +2410,19 @@ func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForCrossAgentRelay(t *testi
 	localProfileID := 72
 	localPrivateKey := "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 	if err := store.SaveWireGuardProfiles(t.Context(), "wg-relay-caller", []WireGuardProfileRow{{
-		ID:             localProfileID,
-		AgentID:        "wg-relay-caller",
-		Name:           "caller-wg",
-		Mode:           "generic_wireguard",
-		PrivateKey:     localPrivateKey,
-		ListenPort:     51821,
-		PublicEndpoint: "caller.example.com:51821",
-		AddressesJSON:  `["10.72.0.1/32"]`,
-		PeersJSON:      `[]`,
-		DNSJSON:        `[]`,
-		MTU:            1280,
-		Enabled:        true,
-		TagsJSON:       `["system:default-wireguard"]`,
-		Revision:       13,
+		ID:            localProfileID,
+		AgentID:       "wg-relay-caller",
+		Name:          "caller-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    localPrivateKey,
+		ListenPort:    51821,
+		AddressesJSON: `["10.72.0.1/32"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		MTU:           1280,
+		Enabled:       true,
+		TagsJSON:      `["system:default-wireguard"]`,
+		Revision:      13,
 	}}); err != nil {
 		t.Fatalf("SaveWireGuardProfiles(caller) error = %v", err)
 	}
@@ -2511,8 +2510,8 @@ func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForCrossAgentRelay(t *testi
 	if ownerPeer.PublicKey != testWireGuardPublicKeyFromPrivate(t, localPrivateKey) {
 		t.Fatalf("owner peer public_key = %q, want caller profile public key", ownerPeer.PublicKey)
 	}
-	if ownerPeer.Endpoint != "caller.example.com:51821" {
-		t.Fatalf("owner peer endpoint = %q, want caller public endpoint", ownerPeer.Endpoint)
+	if ownerPeer.Endpoint != "" {
+		t.Fatalf("owner peer endpoint = %q, want empty endpoint for behind-NAT caller", ownerPeer.Endpoint)
 	}
 	if len(ownerPeer.AllowedIPs) != 1 || ownerPeer.AllowedIPs[0] != "10.72.0.1/32" {
 		t.Fatalf("owner peer allowed_ips = %+v, want caller WireGuard address", ownerPeer.AllowedIPs)

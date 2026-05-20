@@ -686,7 +686,7 @@ func wireGuardProfileRoutesRelayHop(profile model.WireGuardProfile, addr netip.A
 			if err != nil {
 				continue
 			}
-			if prefix.Bits() != addr.BitLen() {
+			if prefix.Addr().BitLen() != addr.BitLen() {
 				continue
 			}
 			if prefix.Contains(addr) {
