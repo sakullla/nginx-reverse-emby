@@ -1678,16 +1678,23 @@ func filterWireGuardProfilesForSnapshotGraph(
 	referenced := referencedWireGuardProfileIDs(agentID, httpRows, l4Rows, relayRows, wireGuardClientRows)
 	filtered := make([]WireGuardProfileRow, 0, len(profiles))
 	for _, row := range profiles {
-		if _, ok := referenced[row.ID]; ok || wireGuardProfileHasSystemRelayPeer(row) {
+		if _, ok := referenced[row.ID]; ok || wireGuardProfileHasRuntimePeer(row) {
 			filtered = append(filtered, row)
 		}
 	}
 	return filtered
 }
 
-func wireGuardProfileHasSystemRelayPeer(row WireGuardProfileRow) bool {
+func wireGuardProfileHasRuntimePeer(row WireGuardProfileRow) bool {
 	if row.AgentID == "" || !row.Enabled {
 		return false
+	}
+	for _, peer := range parseWireGuardPeers(row.PeersJSON) {
+		name := strings.TrimSpace(peer.Name)
+		if name == "" || strings.HasPrefix(name, "system:") {
+			continue
+		}
+		return true
 	}
 	for _, peer := range parseWireGuardPeers(row.PeersJSON) {
 		if strings.HasPrefix(strings.TrimSpace(peer.Name), "system:relay-listener:") {

@@ -3499,6 +3499,68 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByL4Rules(t *t
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesWithManualPeers(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "wg-manual-agent",
+		Name:             "wg-manual-agent",
+		AgentToken:       "token-wg-manual-agent",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	profileID := 92
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-manual-agent", []WireGuardProfileRow{{
+		ID:            profileID,
+		AgentID:       "wg-manual-agent",
+		Name:          "manual-peer-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "manual-profile-private-key",
+		ListenPort:    51820,
+		AddressesJSON: `["10.92.0.1/24"]`,
+		PeersJSON: `[{
+			"name":"manual-phone",
+			"public_key":"manual-peer-public-key",
+			"preshared_key":"manual-peer-psk",
+			"endpoint":"198.51.100.10:51820",
+			"allowed_ips":["10.92.0.2/32"],
+			"persistent_keepalive_seconds":25
+		}]`,
+		DNSJSON:  `[]`,
+		Enabled:  true,
+		Revision: 21,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-manual-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles = %+v, want manual-peer profile", snapshot.WireGuardProfiles)
+	}
+	profile := snapshot.WireGuardProfiles[0]
+	if profile.ID != profileID || profile.AgentID != "wg-manual-agent" || len(profile.Peers) != 1 {
+		t.Fatalf("WireGuardProfiles[0] = %+v, want profile with manual peer", profile)
+	}
+	if peer := profile.Peers[0]; peer.Name != "manual-phone" || peer.PublicKey != "manual-peer-public-key" {
+		t.Fatalf("WireGuardProfiles[0].Peers[0] = %+v, want manual peer", peer)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentL4RuleWithoutBackends(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3729,7 +3791,7 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByHTTPRules(t 
 	}
 }
 
-func TestStoreLoadAgentSnapshotExcludesUnreferencedWireGuardProfiles(t *testing.T) {
+func TestStoreLoadAgentSnapshotExcludesIdleWireGuardProfiles(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
@@ -3752,7 +3814,8 @@ func TestStoreLoadAgentSnapshotExcludesUnreferencedWireGuardProfiles(t *testing.
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
 	referencedProfileID := 111
-	unreferencedProfileID := 112
+	manualProfileID := 112
+	idleProfileID := 113
 	if err := store.SaveWireGuardProfiles(t.Context(), "wg-filter-agent", []WireGuardProfileRow{
 		{
 			ID:            referencedProfileID,
@@ -3768,17 +3831,30 @@ func TestStoreLoadAgentSnapshotExcludesUnreferencedWireGuardProfiles(t *testing.
 			Revision:      21,
 		},
 		{
-			ID:            unreferencedProfileID,
+			ID:            manualProfileID,
 			AgentID:       "wg-filter-agent",
-			Name:          "stale-manual-wg",
+			Name:          "manual-wg",
 			Mode:          "generic_wireguard",
-			PrivateKey:    "unreferenced-private-key",
+			PrivateKey:    "manual-private-key",
 			ListenPort:    51821,
 			AddressesJSON: `["10.112.0.1/24"]`,
-			PeersJSON:     `[{"name":"unreferenced-peer","public_key":"unreferenced-public-key","preshared_key":"unreferenced-psk","allowed_ips":["10.112.0.2/32"]}]`,
+			PeersJSON:     `[{"name":"manual-peer","public_key":"manual-public-key","preshared_key":"manual-psk","allowed_ips":["10.112.0.2/32"]}]`,
 			DNSJSON:       `[]`,
 			Enabled:       true,
 			Revision:      22,
+		},
+		{
+			ID:            idleProfileID,
+			AgentID:       "wg-filter-agent",
+			Name:          "idle-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "idle-private-key",
+			ListenPort:    51822,
+			AddressesJSON: `["10.113.0.1/24"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      23,
 		},
 	}); err != nil {
 		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
@@ -3808,20 +3884,26 @@ func TestStoreLoadAgentSnapshotExcludesUnreferencedWireGuardProfiles(t *testing.
 	if err != nil {
 		t.Fatalf("LoadAgentSnapshot() error = %v", err)
 	}
-	if len(snapshot.WireGuardProfiles) != 1 {
-		t.Fatalf("WireGuardProfiles = %+v, want only referenced profile", snapshot.WireGuardProfiles)
+	if len(snapshot.WireGuardProfiles) != 2 {
+		t.Fatalf("WireGuardProfiles = %+v, want referenced and manual-peer profiles", snapshot.WireGuardProfiles)
 	}
-	profile := snapshot.WireGuardProfiles[0]
-	if profile.ID != referencedProfileID || profile.PrivateKey != "referenced-private-key" {
-		t.Fatalf("WireGuardProfiles[0] = %+v, want referenced profile", profile)
+	seen := map[int]WireGuardProfile{}
+	for _, profile := range snapshot.WireGuardProfiles {
+		seen[profile.ID] = profile
+	}
+	if profile := seen[referencedProfileID]; profile.PrivateKey != "referenced-private-key" {
+		t.Fatalf("referenced profile = %+v", profile)
+	}
+	if profile := seen[manualProfileID]; profile.PrivateKey != "manual-private-key" || len(profile.Peers) != 1 || profile.Peers[0].PresharedKey != "manual-psk" {
+		t.Fatalf("manual profile = %+v", profile)
 	}
 	for _, profile := range snapshot.WireGuardProfiles {
-		if profile.PrivateKey == "unreferenced-private-key" || profile.ID == unreferencedProfileID {
-			t.Fatalf("snapshot leaked unreferenced WireGuard profile: %+v", profile)
+		if profile.PrivateKey == "idle-private-key" || profile.ID == idleProfileID {
+			t.Fatalf("snapshot leaked idle WireGuard profile: %+v", profile)
 		}
 		for _, peer := range profile.Peers {
-			if peer.PresharedKey == "unreferenced-psk" {
-				t.Fatalf("snapshot leaked unreferenced WireGuard peer secret: %+v", profile)
+			if peer.PresharedKey == "idle-psk" {
+				t.Fatalf("snapshot leaked idle WireGuard peer secret: %+v", profile)
 			}
 		}
 	}
