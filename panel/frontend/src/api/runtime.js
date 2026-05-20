@@ -111,9 +111,10 @@ function normalizeRelayListenerPayload(payload = {}) {
 
 function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
-  const { backend_url, relay_chain, wireguard_entry_listen_host, wireguard_entry_listen_port, ...rest } = payload
+  const { backend_url, relay_chain, ...rest } = payload
   const wireGuardEntryEnabled = payload.wireguard_entry_enabled === true
   const wireGuardProfileID = Number(payload.wireguard_profile_id)
+  const wireGuardEntryListenPort = Number(payload.wireguard_entry_listen_port)
   const normalizedPayload = {
     ...rest,
     frontend_url: String(payload.frontend_url || '').trim(),
@@ -133,6 +134,13 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     normalizedPayload.wireguard_profile_id = Number.isInteger(wireGuardProfileID) && wireGuardProfileID > 0
       ? wireGuardProfileID
       : undefined
+    const wireGuardEntryListenHost = String(payload.wireguard_entry_listen_host || '').trim()
+    if (wireGuardEntryListenHost) {
+      normalizedPayload.wireguard_entry_listen_host = wireGuardEntryListenHost
+    }
+    if (Number.isInteger(wireGuardEntryListenPort) && wireGuardEntryListenPort > 0) {
+      normalizedPayload.wireguard_entry_listen_port = wireGuardEntryListenPort
+    }
   } else {
     delete normalizedPayload.wireguard_profile_id
     delete normalizedPayload.wireguard_entry_listen_host
