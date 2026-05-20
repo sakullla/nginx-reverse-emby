@@ -207,6 +207,13 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	if len(normalizeStringList(input.Addresses)) == 0 {
 		input.Addresses = []string{allocateWireGuardProfileAddress(allRows)}
 	}
+	if strings.TrimSpace(input.PrivateKey) == "" {
+		privateKey, _, err := generateWireGuardKeyPair()
+		if err != nil {
+			return WireGuardProfile{}, err
+		}
+		input.PrivateKey = privateKey
+	}
 	profile, err := normalizeWireGuardProfileInput(input, WireGuardProfile{}, allocatedID)
 	if err != nil {
 		return WireGuardProfile{}, err

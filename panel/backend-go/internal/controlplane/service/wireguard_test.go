@@ -58,6 +58,35 @@ func TestWireGuardProfileCreateRedactsSecretsOnRead(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCreateGeneratesBlankPrivateKey(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.PrivateKey = ""
+	profile, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if profile.PrivateKey != redactedProxyPassword {
+		t.Fatalf("Create() private_key = %q, want redacted", profile.PrivateKey)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rawRows) != 1 {
+		t.Fatalf("raw row length = %d, want 1", len(rawRows))
+	}
+	if rawRows[0].PrivateKey == "" || rawRows[0].PrivateKey == testWireGuardPrivateKey {
+		t.Fatalf("raw private_key = %q, want generated key", rawRows[0].PrivateKey)
+	}
+	if err := validateWireGuardKey(rawRows[0].PrivateKey, true); err != nil {
+		t.Fatalf("raw private_key validation error = %v", err)
+	}
+}
+
 func TestWireGuardProfileServiceEnsureDefaultCreatesProfile(t *testing.T) {
 	store, svc := newTestWireGuardProfileService(t)
 	agentID := "local"
