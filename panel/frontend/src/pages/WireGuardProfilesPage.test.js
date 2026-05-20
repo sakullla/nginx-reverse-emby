@@ -5,6 +5,9 @@ import WireGuardProfilesPage from './WireGuardProfilesPage.vue'
 import * as api from '../api'
 
 const mocks = vi.hoisted(() => ({
+  clientsData: [],
+  profilesData: [],
+  profileUpdateMutate: vi.fn(),
   updateMutate: vi.fn(),
   deleteClientMutate: vi.fn(),
   qrCodeToDataURL: vi.fn(),
@@ -20,22 +23,7 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@tanstack/vue-query', () => ({
   useQuery: () => ({
-    data: ref([
-      {
-        id: 1,
-        name: 'phone',
-        address: '10.8.0.2/32',
-        public_key: 'client-public-key',
-        enabled: true
-      },
-      {
-        id: 2,
-        name: 'tablet',
-        address: '10.8.0.3/32',
-        public_key: 'second-client-public-key',
-        enabled: true
-      }
-    ]),
+    data: ref(mocks.clientsData),
     isLoading: ref(false)
   })
 }))
@@ -64,30 +52,11 @@ vi.mock('qrcode', () => ({
 
 vi.mock('../hooks/useWireGuardProfiles', () => ({
   useWireGuardProfiles: () => ({
-    data: ref([
-      {
-        id: 7,
-        name: 'wg-main',
-        enabled: true,
-        listen_port: 51820,
-        addresses: ['10.8.0.1/24'],
-        peers: [],
-        public_endpoint: 'wg.example.com:51820'
-      },
-      {
-        id: 8,
-        name: 'wg-backup',
-        enabled: true,
-        listen_port: 51821,
-        addresses: ['10.9.0.1/24'],
-        peers: [],
-        public_endpoint: 'wg-backup.example.com:51821'
-      }
-    ]),
+    data: ref(mocks.profilesData),
     isLoading: ref(false)
   }),
   useCreateWireGuardProfile: () => ({ isPending: ref(false), mutateAsync: vi.fn() }),
-  useUpdateWireGuardProfile: () => ({ isPending: ref(false), mutateAsync: vi.fn() }),
+  useUpdateWireGuardProfile: () => ({ isPending: ref(false), mutateAsync: mocks.profileUpdateMutate }),
   useDeleteWireGuardProfile: () => ({ isPending: ref(false), mutate: vi.fn() }),
   useCreateWireGuardClient: () => ({ isPending: ref(false), mutateAsync: vi.fn() }),
   useUpdateWireGuardClient: () => ({ isPending: ref(false), mutate: mocks.updateMutate, mutateAsync: mocks.updateMutate }),
@@ -116,6 +85,53 @@ function mountPage() {
   })
 }
 
+function defaultProfilesData() {
+  return [
+    {
+      id: 7,
+      name: 'wg-main',
+      enabled: true,
+      private_key: 'xxxxx',
+      listen_port: 51820,
+      addresses: ['10.8.0.1/24'],
+      peers: [],
+      public_endpoint: 'wg.example.com:51820',
+      dns: ['1.1.1.1'],
+      mtu: 1420,
+      tags: ['manual']
+    },
+    {
+      id: 8,
+      name: 'wg-backup',
+      enabled: true,
+      private_key: 'xxxxx',
+      listen_port: 51821,
+      addresses: ['10.9.0.1/24'],
+      peers: [],
+      public_endpoint: 'wg-backup.example.com:51821'
+    }
+  ]
+}
+
+function defaultClientsData() {
+  return [
+    {
+      id: 1,
+      name: 'phone',
+      address: '10.8.0.2/32',
+      public_key: 'client-public-key',
+      enabled: true
+    },
+    {
+      id: 2,
+      name: 'tablet',
+      address: '10.8.0.3/32',
+      public_key: 'second-client-public-key',
+      enabled: true
+    }
+  ]
+}
+
 function deferred() {
   let resolve
   let reject
@@ -142,8 +158,18 @@ function clientActionButton(wrapper, title, rowIndex = 0) {
   return button
 }
 
+function profileActionButton(wrapper, title, rowIndex = 0) {
+  const cards = wrapper.findAllComponents({ name: 'WireGuardProfileCard' })
+  const button = cards.at(rowIndex).findAll('.base-icon-button').find((item) => item.attributes('title') === title)
+  if (!button) throw new Error(`Missing profile action button: ${title}`)
+  return button
+}
+
 describe('WireGuardProfilesPage client row actions', () => {
   beforeEach(() => {
+    mocks.clientsData = defaultClientsData()
+    mocks.profilesData = defaultProfilesData()
+    mocks.profileUpdateMutate.mockReset()
     mocks.updateMutate.mockReset()
     mocks.deleteClientMutate.mockReset()
     mocks.qrCodeToDataURL.mockReset()
@@ -153,6 +179,52 @@ describe('WireGuardProfilesPage client row actions', () => {
     mocks.routeMock.params = {}
     mocks.routerReplace.mockReset()
     mocks.routerPush.mockReset()
+  })
+
+  it('updates a profile with the inverted enabled state when toggled from the card', async () => {
+    mocks.profileUpdateMutate.mockResolvedValue({})
+    const wrapper = mountPage()
+
+    await profileActionButton(wrapper, '停用').trigger('click')
+
+    expect(mocks.profileUpdateMutate).toHaveBeenCalledWith({
+      id: 7,
+      name: 'wg-main',
+      mode: 'generic_wireguard',
+      private_key: 'xxxxx',
+      listen_port: 51820,
+      public_endpoint: 'wg.example.com:51820',
+      addresses: ['10.8.0.1/24'],
+      peers: [],
+      dns: ['1.1.1.1'],
+      mtu: 1420,
+      enabled: false,
+      tags: ['manual']
+    })
+  })
+
+  it('excludes generated client peers from the manual peer editor', async () => {
+    mocks.profilesData = defaultProfilesData()
+    mocks.profilesData[0].peers = [
+      {
+        name: 'phone generated peer',
+        public_key: 'client-public-key',
+        allowed_ips: ['10.8.0.2/32']
+      },
+      {
+        name: 'manual peer',
+        public_key: 'manual-public-key',
+        allowed_ips: ['10.8.20.2/32']
+      }
+    ]
+    const wrapper = mountPage()
+
+    await openClients(wrapper)
+
+    const peerItems = wrapper.findAll('.peer-item')
+    expect(peerItems).toHaveLength(1)
+    expect(peerItems[0].text()).toContain('manual peer')
+    expect(peerItems[0].text()).not.toContain('phone generated peer')
   })
 
   it('disables client row actions while a client toggle is pending', async () => {

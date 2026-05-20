@@ -41,6 +41,7 @@
           v-for="profile in profiles"
           :key="profile.id"
           :profile="profile"
+          @toggle="toggleProfileEnabled"
           @edit="startEditProfile"
           @delete="deletingProfile = profile"
         />
@@ -96,7 +97,7 @@
         </section>
 
         <WireGuardPeerList
-          :peers="selectedProfile?.peers || []"
+          :peers="manualPeers"
           :is-saving="updateProfile.isPending.value"
           @save="handlePeersSave"
         />
@@ -228,6 +229,16 @@ const {
 })
 
 const clients = computed(() => clientsData.value ?? [])
+const clientPublicKeys = computed(() => new Set(
+  clients.value
+    .map((client) => String(client.public_key || '').trim())
+    .filter(Boolean)
+))
+const manualPeers = computed(() => {
+  const peers = Array.isArray(selectedProfile.value?.peers) ? selectedProfile.value.peers : []
+  if (!clientPublicKeys.value.size) return peers
+  return peers.filter((peer) => !clientPublicKeys.value.has(String(peer.public_key || '').trim()))
+})
 const createClient = useCreateWireGuardClient(agentId, selectedProfileId)
 const updateClient = useUpdateWireGuardClient(agentId, selectedProfileId)
 const deleteClient = useDeleteWireGuardClient(agentId, selectedProfileId)
@@ -301,6 +312,35 @@ async function handleProfileSubmit(payload) {
   }
 }
 
+function wireGuardProfileUpdatePayload(profile, overrides = {}) {
+  return {
+    id: profile.id,
+    name: profile.name,
+    mode: profile.mode || 'generic_wireguard',
+    private_key: profile.private_key || 'xxxxx',
+    listen_port: profile.listen_port,
+    public_endpoint: profile.public_endpoint || '',
+    addresses: Array.isArray(profile.addresses) ? [...profile.addresses] : [],
+    peers: Array.isArray(profile.peers) ? [...profile.peers] : [],
+    dns: Array.isArray(profile.dns) ? [...profile.dns] : [],
+    mtu: profile.mtu,
+    enabled: profile.enabled !== false,
+    tags: Array.isArray(profile.tags) ? [...profile.tags] : [],
+    ...overrides
+  }
+}
+
+async function toggleProfileEnabled(profile) {
+  if (!profile?.id) return
+  try {
+    await updateProfile.mutateAsync(wireGuardProfileUpdatePayload(profile, {
+      enabled: profile.enabled === false
+    }))
+  } catch (error) {
+    // Error handled by hook
+  }
+}
+
 function closeClientView() {
   router.push('/wireguard-profiles')
 }
@@ -337,20 +377,7 @@ async function handlePeersSave(nextPeers) {
   if (!selectedProfile.value || !agentId.value) return
   const profile = selectedProfile.value
   try {
-    await updateProfile.mutateAsync({
-      id: profile.id,
-      name: profile.name,
-      mode: profile.mode || 'generic_wireguard',
-      private_key: profile.private_key || '',
-      listen_port: profile.listen_port,
-      public_endpoint: profile.public_endpoint || '',
-      addresses: Array.isArray(profile.addresses) ? [...profile.addresses] : [],
-      peers: nextPeers,
-      dns: Array.isArray(profile.dns) ? [...profile.dns] : [],
-      mtu: profile.mtu,
-      enabled: profile.enabled !== false,
-      tags: Array.isArray(profile.tags) ? [...profile.tags] : []
-    })
+    await updateProfile.mutateAsync(wireGuardProfileUpdatePayload(profile, { peers: nextPeers }))
   } catch (error) {
     // Error handled by hook
   }
