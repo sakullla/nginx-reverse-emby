@@ -60,22 +60,19 @@ func TestParseWireGuardURIDefaultsAllowedIPs(t *testing.T) {
 	}
 }
 
-func TestWireGuardProfileInputFromURIAllowsReserved(t *testing.T) {
+func TestWireGuardProfileInputFromURIRejectsReserved(t *testing.T) {
 	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&psk=" + testWireGuardPresharedKey + "&address=10.44.0.2/32&reserved=1,2,3#Edge"
 
 	parsed, err := ParseWireGuardURI(raw)
 	if err != nil {
 		t.Fatalf("ParseWireGuardURI() error = %v", err)
 	}
-	input, err := WireGuardProfileInputFromURI(parsed, "")
-	if err != nil {
-		t.Fatalf("WireGuardProfileInputFromURI() error = %v", err)
+	_, err = WireGuardProfileInputFromURI(parsed, "")
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("WireGuardProfileInputFromURI() error = %v, want ErrInvalidArgument", err)
 	}
-	if len(input.Peers) != 1 {
-		t.Fatalf("Peers = %+v, want one peer", input.Peers)
-	}
-	if got := input.Peers[0].Reserved; len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
-		t.Fatalf("Reserved = %+v, want [1 2 3]", got)
+	if !strings.Contains(err.Error(), "reserved is not supported") {
+		t.Fatalf("WireGuardProfileInputFromURI() error = %v, want reserved unsupported message", err)
 	}
 }
 

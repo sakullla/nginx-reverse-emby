@@ -781,13 +781,13 @@ describe('runtime canonical rule payloads', () => {
     expect(pageSource).not.toContain('client.preshared_key')
   })
 
-  it('WireGuard client payload omits blank DNS so profile DNS can be inherited', async () => {
+  it('WireGuard client payload sends DNS field so existing DNS can be cleared', async () => {
     const page = await import('../components/wireguard/WireGuardClientForm.vue?raw')
     const source = page.default
 
     expect(source).toContain('dns_text')
     expect(source).toContain('splitLines(form.value.dns_text)')
-    expect(source).not.toContain('dns: splitLines')
+    expect(source).toContain('dns: splitLines(form.value.dns_text)')
   })
 
   it('WireGuard client mutations refresh clients and related WireGuard references for the raw target', async () => {

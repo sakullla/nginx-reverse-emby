@@ -154,6 +154,9 @@ func wireGuardURIValueHasUnsupportedReserved(parsed ParsedWireGuardURI) bool {
 }
 
 func WireGuardProfileInputFromURI(parsed ParsedWireGuardURI, name string) (WireGuardProfileInput, error) {
+	if wireGuardURIValueHasUnsupportedReserved(parsed) {
+		return WireGuardProfileInput{}, fmt.Errorf("%w: wireguard URI reserved is not supported for imported profiles yet", ErrInvalidArgument)
+	}
 	return wireGuardProfileInputFromURI(parsed, name), nil
 }
 

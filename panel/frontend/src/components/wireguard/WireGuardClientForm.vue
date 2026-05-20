@@ -81,11 +81,8 @@ function buildPayload() {
   const payload = {
     name: form.value.name.trim(),
     allowed_ips: splitLines(form.value.allowed_ips_text),
+    dns: splitLines(form.value.dns_text),
     enabled: form.value.enabled
-  }
-  const dns = splitLines(form.value.dns_text)
-  if (dns.length > 0) {
-    payload.dns = dns
   }
   return payload
 }
