@@ -1218,6 +1218,53 @@ func TestAgentServiceHeartbeatSendsWireGuardCleanupSnapshotAfterRevisionBump(t *
 	}
 }
 
+func TestAgentServiceHeartbeatSendsWireGuardCleanupWhenCapabilityRemovedWithoutRevisionBump(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                "remote-cleanup",
+			Name:              "remote-cleanup",
+			AgentToken:        "token-remote-cleanup",
+			DesiredVersion:    "3.0.0",
+			DesiredRevision:   8,
+			CurrentRevision:   8,
+			LastApplyRevision: 8,
+			LastApplyStatus:   "success",
+			CapabilitiesJSON:  `["http_rules","wireguard"]`,
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion:    "3.0.0",
+			Revision:          8,
+			RelayListeners:    []storage.RelayListener{{ID: 11, AgentID: "relay-host", Name: "relay-host", ListenHost: "0.0.0.0", ListenPort: 7443}},
+			WireGuardProfiles: []storage.WireGuardProfile{},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 8,
+		LastApplyStatus: "success",
+		Capabilities:    []string{"http_rules"},
+		HasCapabilities: true,
+		Platform:        "linux-amd64",
+	}, "token-remote-cleanup")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if !reply.HasUpdate {
+		t.Fatalf("HasUpdate = false, want true")
+	}
+	if reply.WireGuardProfiles == nil || len(reply.WireGuardProfiles) != 0 {
+		t.Fatalf("WireGuardProfiles = %+v, want explicit empty slice", reply.WireGuardProfiles)
+	}
+	if len(reply.RelayListeners) != 1 || reply.RelayListeners[0].ID != 11 {
+		t.Fatalf("RelayListeners = %+v", reply.RelayListeners)
+	}
+	if store.savedAgent.CapabilitiesJSON != `["http_rules"]` {
+		t.Fatalf("saved capabilities = %q", store.savedAgent.CapabilitiesJSON)
+	}
+}
+
 func TestAgentServiceHeartbeatReturnsProfileOnlyUpdate(t *testing.T) {
 	store := &fakeStore{
 		agents: []storage.AgentRow{{

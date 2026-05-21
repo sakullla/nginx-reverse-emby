@@ -743,8 +743,12 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		row.TagsJSON = marshalStringArray(normalizeAgentTags(request.Tags))
 	}
 	hasCapabilities := request.HasCapabilities || len(request.Capabilities) > 0
+	wireGuardCapabilityRemoved := false
 	if hasCapabilities {
-		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(request.Capabilities))
+		previousCapabilities := parseStringArray(row.CapabilitiesJSON)
+		nextCapabilities := normalizeCapabilities(request.Capabilities)
+		wireGuardCapabilityRemoved = containsString(previousCapabilities, "wireguard") && !containsString(nextCapabilities, "wireguard")
+		row.CapabilitiesJSON = marshalStringArray(nextCapabilities)
 	}
 	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
 	if request.Stats != nil {
@@ -791,8 +795,9 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err := s.persistHeartbeatTrafficBlockState(ctx, &row, trafficBlocked, trafficBlockReason); err != nil {
 		return HeartbeatReply{}, err
 	}
+	needsWireGuardCleanup := wireGuardCapabilityRemoved && snapshot.WireGuardProfiles != nil && len(snapshot.WireGuardProfiles) == 0
 	reply := HeartbeatReply{
-		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
+		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success") || needsWireGuardCleanup,
 		DesiredVersion:       snapshot.DesiredVersion,
 		DesiredRevision:      snapshot.Revision,
 		CurrentRevision:      int64(row.CurrentRevision),
