@@ -484,6 +484,10 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	if inputTransportMode == "" {
 		inputTransportMode = fallback.TransportMode
 	}
+	inputTransportMode = strings.ToLower(strings.TrimSpace(inputTransportMode))
+	if inputTransportMode != "" {
+		workingInput.TransportMode = &inputTransportMode
+	}
 	if inputTransportMode == "wireguard" && input.WireGuardProfileID == nil && fallback.WireGuardProfileID == nil {
 		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, agentID); err != nil {
 			return relayPreparation{}, err

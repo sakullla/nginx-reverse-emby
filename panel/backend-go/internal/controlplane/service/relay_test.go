@@ -538,6 +538,39 @@ func TestRelayListenerCreateWireGuardUsesDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestRelayListenerCreateMixedCaseWireGuardUsesDefaultProfile(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID:     map[string][]storage.RelayListenerRow{},
+		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:        map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:          stringPtr("wg-relay"),
+		TransportMode: stringPtr("WireGuard"),
+		ListenPort:    intPtrService(19001),
+		Enabled:       boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.TransportMode != "wireguard" {
+		t.Fatalf("TransportMode = %q, want normalized wireguard", listener.TransportMode)
+	}
+	if listener.WireGuardProfileID == nil || *listener.WireGuardProfileID <= 0 {
+		t.Fatalf("WireGuardProfileID = %v, want default profile", listener.WireGuardProfileID)
+	}
+	rows, err := store.ListWireGuardProfiles(context.Background(), "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("profiles = %+v, want generated default profile", rows)
+	}
+}
+
 func TestRelayListenerCreateWireGuardDerivesBindAndPublicEndpointFromProfile(t *testing.T) {
 	profileID := 7
 	store := &relayCertStore{
