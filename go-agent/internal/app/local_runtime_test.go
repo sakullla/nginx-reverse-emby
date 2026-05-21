@@ -1076,6 +1076,44 @@ func TestHTTPRuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing
 	}
 }
 
+func TestHTTPRuntimeManagerCloseClosesOwnedWireGuardRuntime(t *testing.T) {
+	var created []*testAppWireGuardRuntime
+	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		runtime := newListeningTestAppWireGuardRuntime(nil, nil)
+		created = append(created, runtime)
+		return runtime, nil
+	}), true)
+
+	ctx := context.Background()
+	publicPort := pickFreeTCPPort(t)
+	wireGuardEntryPort := pickFreeTCPPort(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	profileID := 141
+	profile := validAppWireGuardProfile(profileID)
+	rule := runtimeTestHTTPRule(publicPort, backend.URL)
+	rule.WireGuardEntryEnabled = true
+	rule.WireGuardProfileID = &profileID
+	rule.WireGuardEntryListenHost = "127.0.0.1"
+	rule.WireGuardEntryListenPort = wireGuardEntryPort
+	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.HTTPRule{rule}, nil, []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("failed to apply http wireguard runtime: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("wireguard runtimes created = %d, want 1", len(created))
+	}
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !created[0].closed {
+		t.Fatal("expected owned wireguard runtime to be closed")
+	}
+}
+
 func TestHTTPRuntimeManagerSkipsPublicHTTPSBindingForWireGuardEntry(t *testing.T) {
 	var runtimes []*testAppWireGuardRuntime
 	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
@@ -1545,6 +1583,30 @@ func TestRelayRuntimeManagerPreservesRunningServerOnInvalidListenerReconfigure(t
 		t.Fatalf("failed to close relay manager: %v", err)
 	}
 	waitForPortState(t, listenPort, false)
+}
+
+func TestRelayRuntimeManagerCloseKeepsNewerDefaultWireGuardProvider(t *testing.T) {
+	oldDefaultProvider := relay.DefaultWireGuardRuntimeProvider()
+	defer relay.SetDefaultWireGuardRuntimeProvider(oldDefaultProvider)
+
+	provider := &testRelayTLSProvider{}
+	first := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntime(), true)
+	second := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntime(), true)
+	secondProvider := relay.DefaultWireGuardRuntimeProvider()
+	if secondProvider == nil {
+		t.Fatal("expected second relay manager to install default wireguard provider")
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	if got := relay.DefaultWireGuardRuntimeProvider(); got != secondProvider {
+		t.Fatalf("default wireguard provider changed after closing first manager: got %T want second provider", got)
+	}
+
+	if err := second.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
 }
 
 func TestRelayRuntimeManagerPreservesRunningServerOnMissingCertificateReconfigure(t *testing.T) {

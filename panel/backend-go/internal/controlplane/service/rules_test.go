@@ -305,6 +305,44 @@ func TestRuleServiceCreateWireGuardEntryDefaultsToNewDefaultProfile(t *testing.T
 	}
 }
 
+func TestRuleServiceCreateRemoteWireGuardEntryDefaultsToRemoteProfile(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "edge-1",
+			CapabilitiesJSON: `["http_rules","wireguard"]`,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
+		FrontendURL:           stringPtrRule("http://edge-app.internal"),
+		Backends:              &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		WireGuardEntryEnabled: boolPtrRule(true),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 1 {
+		t.Fatalf("Create() WireGuard profile = %+v", rule)
+	}
+	if rule.WireGuardEntryListenHost != "10.8.0.1" {
+		t.Fatalf("Create() listen host = %q", rule.WireGuardEntryListenHost)
+	}
+	if len(store.wireGuardByAgentID["edge-1"]) != 1 {
+		t.Fatalf("edge-1 default WireGuard profiles = %+v", store.wireGuardByAgentID["edge-1"])
+	}
+	if len(store.wireGuardByAgentID["local"]) != 0 {
+		t.Fatalf("local WireGuard profiles = %+v, want none", store.wireGuardByAgentID["local"])
+	}
+	row := store.rulesByAgent["edge-1"][0]
+	if row.WireGuardProfileID == nil || *row.WireGuardProfileID != 1 || row.WireGuardEntryListenHost != "10.8.0.1" {
+		t.Fatalf("persisted remote WireGuard entry = %+v", row)
+	}
+}
+
 func TestRuleServiceUpdateWireGuardEntryDefaultsToExistingDefaultProfile(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "local", Name: "local"}},

@@ -438,7 +438,9 @@ func (m *relayRuntimeManager) Close() error {
 			firstErr = err
 		}
 	}
-	relay.SetDefaultWireGuardRuntimeProvider(nil)
+	if relay.DefaultWireGuardRuntimeProvider() == m.wireGuardProvider {
+		relay.SetDefaultWireGuardRuntimeProvider(nil)
+	}
 	return firstErr
 }
 

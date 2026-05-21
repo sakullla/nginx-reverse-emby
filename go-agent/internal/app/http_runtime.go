@@ -20,6 +20,7 @@ type httpRuntimeManager struct {
 	provider           proxy.TLSMaterialProvider
 	wireGuardRuntime   *sharedWireGuardRuntime
 	wireGuardProvider  relay.WireGuardRuntimeProvider
+	ownsWireGuard      bool
 	cache              *backends.Cache
 	transport          *http.Transport
 	options            proxy.StreamResilienceOptions
@@ -47,10 +48,10 @@ func newHTTPRuntimeManagerWithConfig(cfg Config) *httpRuntimeManager {
 }
 
 func newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(provider proxy.TLSMaterialProvider, http3Enabled bool, cfg Config) *httpRuntimeManager {
-	return newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider, http3Enabled, cfg, newSharedWireGuardRuntime())
+	return newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider, http3Enabled, cfg, newSharedWireGuardRuntime(), true)
 }
 
-func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMaterialProvider, http3Enabled bool, cfg Config, wireGuardRuntime *sharedWireGuardRuntime) *httpRuntimeManager {
+func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMaterialProvider, http3Enabled bool, cfg Config, wireGuardRuntime *sharedWireGuardRuntime, ownsWireGuard ...bool) *httpRuntimeManager {
 	transport := proxy.NewSharedTransport()
 	proxy.ApplyTransportOptions(transport, proxy.TransportOptions{
 		DialTimeout:           cfg.HTTPTransport.DialTimeout,
@@ -63,10 +64,12 @@ func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMater
 	if wireGuardRuntime == nil {
 		wireGuardRuntime = newSharedWireGuardRuntime()
 	}
+	owns := len(ownsWireGuard) > 0 && ownsWireGuard[0]
 	return &httpRuntimeManager{
 		provider:          provider,
 		wireGuardRuntime:  wireGuardRuntime,
 		wireGuardProvider: wireGuardRuntime.providerForAgent(cfg.AgentID),
+		ownsWireGuard:     owns,
 		cache:             backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
 		transport:         transport,
 		options: proxy.StreamResilienceOptions{
@@ -281,10 +284,17 @@ func (m *httpRuntimeManager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.runtime == nil {
-		return nil
+	var firstErr error
+	if m.runtime != nil {
+		if err := m.runtime.Close(); err != nil {
+			firstErr = err
+		}
+		m.runtime = nil
 	}
-	err := m.runtime.Close()
-	m.runtime = nil
-	return err
+	if m.ownsWireGuard && m.wireGuardRuntime != nil {
+		if err := m.wireGuardRuntime.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
