@@ -367,18 +367,21 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.BackupService = unavailableBackupService{}
 	}
 
-	if d.WireGuardProfileService == nil && d.hasCoreServices() {
-		d.WireGuardProfileService = unavailableWireGuardProfileService{}
-	}
-	if d.WireGuardClientService == nil && d.hasCoreServices() {
-		d.WireGuardClientService = unavailableWireGuardClientService{}
+	canOpenOwnedStore := d.canOpenConfiguredStore()
+	if !canOpenOwnedStore {
+		if d.WireGuardProfileService == nil && d.hasCoreServices() {
+			d.WireGuardProfileService = unavailableWireGuardProfileService{}
+		}
+		if d.WireGuardClientService == nil && d.hasCoreServices() {
+			d.WireGuardClientService = unavailableWireGuardClientService{}
+		}
 	}
 
-	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil
-	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil {
+	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || (canOpenOwnedStore && (d.WireGuardProfileService == nil || d.WireGuardClientService == nil))
+	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil && d.WireGuardProfileService != nil {
 		return d, nil
 	}
-	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
+	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil && d.WireGuardProfileService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
 		d.TrafficService = unavailableTrafficService{}
 		return d, nil
 	}
@@ -441,6 +444,17 @@ func (d Dependencies) hasCoreServices() bool {
 		d.VersionPolicyService != nil &&
 		d.RelayListenerService != nil &&
 		d.CertificateService != nil
+}
+
+func (d Dependencies) canOpenConfiguredStore() bool {
+	driver := d.Config.DatabaseDriver
+	if driver == "" {
+		driver = "sqlite"
+	}
+	if d.Config.DatabaseDSN != "" {
+		return true
+	}
+	return driver == "sqlite" && d.Config.DataDir != ""
 }
 
 func mapServiceError(err error) (int, map[string]any) {

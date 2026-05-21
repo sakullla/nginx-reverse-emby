@@ -236,3 +236,65 @@ func TestNewRouterInjectedCoreServicesWithoutWireGuardDoesNotOpenConfiguredStore
 		t.Fatalf("GET /panel-api/agents/local/rules = %d, body=%s", rulesResp.Code, rulesResp.Body.String())
 	}
 }
+
+func TestNewRouterInjectedCoreServicesBuildsWireGuardServicesFromOwnedStore(t *testing.T) {
+	cfg := config.Default()
+	cfg.PanelToken = "secret"
+	cfg.DataDir = t.TempDir()
+	cfg.LocalAgentID = "local"
+	cfg.EnableLocalAgent = true
+
+	previousOpenConfiguredStore := openConfiguredStore
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+	})
+
+	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	openConfiguredStore = func(config.Config) (*storage.GormStore, error) {
+		return store, nil
+	}
+
+	router, err := NewRouter(Dependencies{
+		Config:               cfg,
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if closeable, ok := router.(interface{ Close() error }); ok {
+			_ = closeable.Close()
+		}
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/wireguard-profiles", strings.NewReader(validWireGuardHTTPClientProfilePayload(51820)))
+	createReq.Header.Set("X-Panel-Token", "secret")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/agents/local/wireguard-profiles = %d, body=%s", createResp.Code, createResp.Body.String())
+	}
+	profile := decodeWireGuardHTTPProfileResponse(t, createResp.Body.Bytes(), "profile")
+
+	listReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/local/wireguard-profiles", nil)
+	listReq.Header.Set("X-Panel-Token", "secret")
+	listResp := httptest.NewRecorder()
+	router.ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/agents/local/wireguard-profiles = %d, body=%s", listResp.Code, listResp.Body.String())
+	}
+	profiles := decodeWireGuardHTTPProfilesResponse(t, listResp.Body.Bytes())
+	if len(profiles) != 1 || profiles[0].ID != profile.ID {
+		t.Fatalf("profiles = %+v, want created profile id %d", profiles, profile.ID)
+	}
+}

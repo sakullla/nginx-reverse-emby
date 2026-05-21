@@ -96,7 +96,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
@@ -108,6 +108,7 @@ const props = defineProps({
 
 const emit = defineEmits(['toggle', 'edit', 'delete'])
 
+const route = useRoute()
 const router = useRouter()
 
 const hasTags = computed(() => Array.isArray(props.profile.tags) && props.profile.tags.length > 0)
@@ -118,7 +119,14 @@ function formatList(items) {
 }
 
 function navigateToClients() {
-  router.push(`/wireguard-profiles/${props.profile.id}`)
+  const agentId = typeof route.query.agentId === 'string' ? route.query.agentId : ''
+  const target = {
+    path: `/wireguard-profiles/${props.profile.id}`
+  }
+  if (agentId) {
+    target.query = { agentId }
+  }
+  router.push(target)
 }
 </script>
 
