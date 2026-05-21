@@ -1496,6 +1496,81 @@ func TestL4RuleServiceDeleteWireGuardURIEgressRestoresL4RowsWhenMissingProfileAn
 	}
 }
 
+func TestL4RuleServiceDeleteWireGuardURIEgressRestoresClientsWhenLocalApplyFails(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	profileID := 8
+	ruleID := 11
+	uri := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32#URI%20egress"
+	profileRow := materializedWireGuardURIProfileRowForRule(t, "local", profileID, ruleID, uri)
+	if err := store.SaveWireGuardProfiles(ctx, "local", []storage.WireGuardProfileRow{profileRow}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	client := storage.WireGuardClientRow{
+		AgentID:        "local",
+		ProfileID:      profileID,
+		ID:             21,
+		Name:           "phone",
+		PrivateKey:     testWireGuardPrivateKey,
+		PublicKey:      testWireGuardPublicKeyB,
+		Address:        "10.44.0.3/32",
+		AllowedIPsJSON: `["10.44.0.0/24"]`,
+		DNSJSON:        `["1.1.1.1"]`,
+		Enabled:        true,
+		CreatedAt:      "2026-01-01T00:00:00Z",
+		UpdatedAt:      "2026-01-01T00:00:00Z",
+	}
+	if err := store.SaveWireGuardClients(ctx, "local", profileID, []storage.WireGuardClientRow{client}); err != nil {
+		t.Fatalf("SaveWireGuardClients() error = %v", err)
+	}
+	if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
+		ID:                 ruleID,
+		AgentID:            "local",
+		Name:               "entry",
+		Protocol:           "tcp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         1080,
+		BackendsJSON:       `[]`,
+		ListenMode:         "proxy",
+		ProxyEgressMode:    "wireguard",
+		WireGuardProfileID: &profileID,
+		WireGuardEgressURI: uri,
+		Enabled:            true,
+		Revision:           3,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		return errors.New("apply failed")
+	})
+
+	_, err = svc.Delete(ctx, "local", ruleID)
+	if err == nil {
+		t.Fatal("Delete() error = nil, want apply error")
+	}
+	clients, err := store.ListWireGuardClients(ctx, "local", profileID)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients() error = %v", err)
+	}
+	if len(clients) != 1 {
+		t.Fatalf("wireguard clients after failed delete = %+v, want restored client", clients)
+	}
+	if clients[0].ID != client.ID || clients[0].AllowedIPsJSON != client.AllowedIPsJSON || clients[0].DNSJSON != client.DNSJSON {
+		t.Fatalf("wireguard client after rollback = %+v, want %+v", clients[0], client)
+	}
+}
+
 func TestL4RuleServiceCreateRejectsWireGuardInboundWithURIEgress(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID:      map[string][]storage.L4RuleRow{},

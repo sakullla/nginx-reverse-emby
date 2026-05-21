@@ -456,6 +456,10 @@ sh scripts/verify-pure-go-master.sh /path/to/copied-panel-data
 
 </details>
 
+## 许可证
+
+本项目基于 GNU General Public License v3.0 授权发布，详见 [LICENSE](./LICENSE)。
+
 ---
 
 如果这个项目对你有帮助，请给一个 Star！

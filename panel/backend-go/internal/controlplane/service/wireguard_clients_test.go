@@ -802,7 +802,7 @@ func TestWireGuardClientUpdateEditsNameAllowedIPsAndDNS(t *testing.T) {
 	}
 }
 
-func TestWireGuardClientUpdateAllowedIPsDefaultsToFullTunnelWhenEmpty(t *testing.T) {
+func TestWireGuardClientUpdateAllowedIPsPreservesExplicitEmptyList(t *testing.T) {
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -823,14 +823,13 @@ func TestWireGuardClientUpdateAllowedIPsDefaultsToFullTunnelWhenEmpty(t *testing
 	}
 
 	updated, err := clientSvc.UpdateClient(ctx, "local", profile.ID, client.ID, WireGuardClientInput{
-		AllowedIPs: []string{""},
+		AllowedIPs: []string{},
 	})
 	if err != nil {
 		t.Fatalf("UpdateClient(empty allowed_ips) error = %v", err)
 	}
-	want := "0.0.0.0/0, ::/0"
-	if strings.Join(updated.AllowedIPs, ", ") != want {
-		t.Fatalf("UpdateClient() AllowedIPs = %v, want %q", updated.AllowedIPs, want)
+	if len(updated.AllowedIPs) != 0 {
+		t.Fatalf("UpdateClient() AllowedIPs = %v, want empty list", updated.AllowedIPs)
 	}
 }
 

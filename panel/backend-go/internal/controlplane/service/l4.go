@@ -105,6 +105,16 @@ type l4Service struct {
 	localApplyTrigger func(context.Context) error
 }
 
+type wireGuardClientRowStore interface {
+	ListWireGuardClients(context.Context, string, int) ([]storage.WireGuardClientRow, error)
+	SaveWireGuardClients(context.Context, string, int, []storage.WireGuardClientRow) error
+}
+
+type wireGuardProfileRollback struct {
+	rows               []storage.WireGuardProfileRow
+	clientsByProfileID map[int][]storage.WireGuardClientRow
+}
+
 func NewL4RuleService(cfg config.Config, store storage.Store) *l4Service {
 	return &l4Service{cfg: cfg, store: store}
 }
@@ -218,9 +228,7 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		return L4Rule{}, err
 	}
 	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
-		if rollbackWireGuardProfiles != nil {
-			_ = s.store.SaveWireGuardProfiles(ctx, resolvedID, rollbackWireGuardProfiles)
-		}
+		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
 		return L4Rule{}, err
 	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
@@ -228,9 +236,7 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	rollbackL4Rows := append([]storage.L4RuleRow(nil), rows...)
 	rows = append(rows, l4RuleToRow(rule))
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
-		if rollbackWireGuardProfiles != nil {
-			_ = s.store.SaveWireGuardProfiles(ctx, resolvedID, rollbackWireGuardProfiles)
-		}
+		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
 		return L4Rule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
@@ -312,17 +318,13 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		return L4Rule{}, err
 	}
 	if cleanupRollback, err := s.cleanupUnusedWireGuardURIEgressProfile(ctx, resolvedID, current, rule, rollbackWireGuardProfiles); err != nil {
-		if rollbackWireGuardProfiles != nil {
-			_ = s.store.SaveWireGuardProfiles(ctx, resolvedID, rollbackWireGuardProfiles)
-		}
+		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
 		return L4Rule{}, err
 	} else {
 		rollbackWireGuardProfiles = cleanupRollback
 	}
 	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
-		if rollbackWireGuardProfiles != nil {
-			_ = s.store.SaveWireGuardProfiles(ctx, resolvedID, rollbackWireGuardProfiles)
-		}
+		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
 		return L4Rule{}, err
 	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
@@ -330,9 +332,7 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	rollbackL4Rows := append([]storage.L4RuleRow(nil), rows...)
 	rows[targetIndex] = l4RuleToRow(rule)
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
-		if rollbackWireGuardProfiles != nil {
-			_ = s.store.SaveWireGuardProfiles(ctx, resolvedID, rollbackWireGuardProfiles)
-		}
+		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
 		return L4Rule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
@@ -376,7 +376,7 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {
 		return L4Rule{}, err
 	}
-	var rollbackWireGuardProfiles []storage.WireGuardProfileRow
+	var rollbackWireGuardProfiles *wireGuardProfileRollback
 	if profileID, ok, err := s.confirmOwnedWireGuardURIEgressProfile(ctx, resolvedID, deleted); err != nil {
 		_ = s.store.SaveL4Rules(ctx, resolvedID, rows)
 		return L4Rule{}, err
@@ -793,7 +793,7 @@ func (s *l4Service) ensureDefaultWireGuardProfile(ctx context.Context, agentID s
 	return nil
 }
 
-func (s *l4Service) materializeWireGuardURIEgressProfile(ctx context.Context, agentID string, input L4RuleInput, rule *L4Rule, allocator *configIdentityAllocator) ([]storage.WireGuardProfileRow, error) {
+func (s *l4Service) materializeWireGuardURIEgressProfile(ctx context.Context, agentID string, input L4RuleInput, rule *L4Rule, allocator *configIdentityAllocator) (*wireGuardProfileRollback, error) {
 	if rule == nil || rule.ProxyEgressMode != "wireguard" {
 		return nil, nil
 	}
@@ -815,8 +815,7 @@ func (s *l4Service) materializeWireGuardURIEgressProfile(ctx context.Context, ag
 	if err != nil {
 		return nil, err
 	}
-	rollbackRows := make([]storage.WireGuardProfileRow, len(rows))
-	copy(rollbackRows, rows)
+	rollbackRows := newWireGuardProfileRollback(rows)
 	profileName := fmt.Sprintf("l4-rule-%d-wireguard-egress", rule.ID)
 	profileInput := wireGuardProfileInputFromURI(parsed, profileName)
 	profileInput.ID = allocator.AllocateRuleID(0)
@@ -840,10 +839,50 @@ func (s *l4Service) materializeWireGuardURIEgressProfile(ctx context.Context, ag
 	return rollbackRows, nil
 }
 
-func (s *l4Service) rollbackWireGuardURIEgressMaterialization(ctx context.Context, agentID string, l4Rows []storage.L4RuleRow, wireGuardRows []storage.WireGuardProfileRow) {
+func (s *l4Service) rollbackWireGuardURIEgressMaterialization(ctx context.Context, agentID string, l4Rows []storage.L4RuleRow, wireGuardRows *wireGuardProfileRollback) {
 	_ = s.store.SaveL4Rules(ctx, agentID, append([]storage.L4RuleRow(nil), l4Rows...))
-	if wireGuardRows != nil {
-		_ = s.store.SaveWireGuardProfiles(ctx, agentID, append([]storage.WireGuardProfileRow(nil), wireGuardRows...))
+	s.restoreWireGuardProfileRollback(ctx, agentID, wireGuardRows)
+}
+
+func newWireGuardProfileRollback(rows []storage.WireGuardProfileRow) *wireGuardProfileRollback {
+	return &wireGuardProfileRollback{
+		rows: append([]storage.WireGuardProfileRow(nil), rows...),
+	}
+}
+
+func (s *l4Service) captureWireGuardProfileClients(ctx context.Context, agentID string, profileID int, rollback *wireGuardProfileRollback) error {
+	if rollback == nil {
+		return nil
+	}
+	clientStore, ok := s.store.(wireGuardClientRowStore)
+	if !ok {
+		return nil
+	}
+	if rollback.clientsByProfileID == nil {
+		rollback.clientsByProfileID = map[int][]storage.WireGuardClientRow{}
+	}
+	if _, ok := rollback.clientsByProfileID[profileID]; ok {
+		return nil
+	}
+	rows, err := clientStore.ListWireGuardClients(ctx, agentID, profileID)
+	if err != nil {
+		return err
+	}
+	rollback.clientsByProfileID[profileID] = append([]storage.WireGuardClientRow(nil), rows...)
+	return nil
+}
+
+func (s *l4Service) restoreWireGuardProfileRollback(ctx context.Context, agentID string, rollback *wireGuardProfileRollback) {
+	if rollback == nil {
+		return
+	}
+	_ = s.store.SaveWireGuardProfiles(ctx, agentID, append([]storage.WireGuardProfileRow(nil), rollback.rows...))
+	clientStore, ok := s.store.(wireGuardClientRowStore)
+	if !ok {
+		return
+	}
+	for profileID, rows := range rollback.clientsByProfileID {
+		_ = clientStore.SaveWireGuardClients(ctx, agentID, profileID, append([]storage.WireGuardClientRow(nil), rows...))
 	}
 }
 
@@ -940,11 +979,11 @@ func stringSlicesEqual(a []string, b []string) bool {
 	return true
 }
 
-func (s *l4Service) deleteWireGuardProfileRow(ctx context.Context, agentID string, profileID int) ([]storage.WireGuardProfileRow, error) {
+func (s *l4Service) deleteWireGuardProfileRow(ctx context.Context, agentID string, profileID int) (*wireGuardProfileRollback, error) {
 	return s.deleteWireGuardProfileRowWithRollback(ctx, agentID, profileID, nil)
 }
 
-func (s *l4Service) deleteWireGuardProfileRowWithRollback(ctx context.Context, agentID string, profileID int, rollbackRows []storage.WireGuardProfileRow) ([]storage.WireGuardProfileRow, error) {
+func (s *l4Service) deleteWireGuardProfileRowWithRollback(ctx context.Context, agentID string, profileID int, rollbackRows *wireGuardProfileRollback) (*wireGuardProfileRollback, error) {
 	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -962,7 +1001,10 @@ func (s *l4Service) deleteWireGuardProfileRowWithRollback(ctx context.Context, a
 		return rollbackRows, nil
 	}
 	if rollbackRows == nil {
-		rollbackRows = append([]storage.WireGuardProfileRow(nil), rows...)
+		rollbackRows = newWireGuardProfileRollback(rows)
+	}
+	if err := s.captureWireGuardProfileClients(ctx, agentID, profileID, rollbackRows); err != nil {
+		return rollbackRows, err
 	}
 	if err := s.store.SaveWireGuardProfiles(ctx, agentID, nextRows); err != nil {
 		return rollbackRows, err
@@ -970,7 +1012,7 @@ func (s *l4Service) deleteWireGuardProfileRowWithRollback(ctx context.Context, a
 	return rollbackRows, nil
 }
 
-func (s *l4Service) cleanupUnusedWireGuardURIEgressProfile(ctx context.Context, agentID string, oldRule L4Rule, newRule L4Rule, rollbackRows []storage.WireGuardProfileRow) ([]storage.WireGuardProfileRow, error) {
+func (s *l4Service) cleanupUnusedWireGuardURIEgressProfile(ctx context.Context, agentID string, oldRule L4Rule, newRule L4Rule, rollbackRows *wireGuardProfileRollback) (*wireGuardProfileRollback, error) {
 	profileID, ok, err := s.confirmOwnedWireGuardURIEgressProfile(ctx, agentID, oldRule)
 	if err != nil {
 		return rollbackRows, err

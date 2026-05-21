@@ -283,9 +283,6 @@ func (s *wireGuardClientService) UpdateClient(ctx context.Context, agentID strin
 		}
 		if input.AllowedIPs != nil {
 			allowedIPs := normalizeStringList(input.AllowedIPs)
-			if len(allowedIPs) == 0 {
-				allowedIPs = []string{"0.0.0.0/0", "::/0"}
-			}
 			if err := validateWireGuardPrefixes(allowedIPs, "allowed_ips"); err != nil {
 				return state, err
 			}
