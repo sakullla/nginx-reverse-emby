@@ -2526,6 +2526,247 @@ func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForCrossAgentRelay(t *testi
 	}
 }
 
+func TestStoreLoadAgentSnapshotBumpsCallerRevisionForRelayOwnerWireGuardProfileRevision(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	for _, agentID := range []string{"wg-rev-caller", "wg-rev-owner"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{
+			ID:               agentID,
+			Name:             agentID,
+			AgentToken:       "token-" + agentID,
+			CapabilitiesJSON: `["wireguard","l4","relay"]`,
+			DesiredRevision:  20,
+			CurrentRevision:  20,
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+
+	ownerProfileID := 171
+	ownerPrivateKey := "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-rev-owner", []WireGuardProfileRow{{
+		ID:             ownerProfileID,
+		AgentID:        "wg-rev-owner",
+		Name:           "owner-wg",
+		Mode:           "generic_wireguard",
+		PrivateKey:     ownerPrivateKey,
+		ListenPort:     51820,
+		PublicEndpoint: "rotated-owner.example.com:51820",
+		AddressesJSON:  `["10.171.0.254/32"]`,
+		PeersJSON:      `[]`,
+		DNSJSON:        `[]`,
+		MTU:            1280,
+		Enabled:        true,
+		TagsJSON:       `["system:default-wireguard"]`,
+		Revision:       31,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(owner) error = %v", err)
+	}
+
+	callerProfileID := 172
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-rev-caller", []WireGuardProfileRow{{
+		ID:            callerProfileID,
+		AgentID:       "wg-rev-caller",
+		Name:          "caller-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		ListenPort:    51821,
+		AddressesJSON: `["10.172.0.1/32"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		MTU:           1280,
+		Enabled:       true,
+		TagsJSON:      `["system:default-wireguard"]`,
+		Revision:      20,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(caller) error = %v", err)
+	}
+
+	if err := store.SaveRelayListeners(t.Context(), "wg-rev-owner", []RelayListenerRow{{
+		ID:                 1711,
+		AgentID:            "wg-rev-owner",
+		Name:               "owner-relay-wg",
+		ListenHost:         "10.171.0.1",
+		BindHostsJSON:      `["10.171.0.1"]`,
+		ListenPort:         7443,
+		PublicHost:         "owner-listener.example.com",
+		PublicPort:         51820,
+		Enabled:            true,
+		TransportMode:      "wireguard",
+		WireGuardProfileID: &ownerProfileID,
+		Revision:           14,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(owner) error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "wg-rev-caller", []L4RuleRow{{
+		ID:                1712,
+		AgentID:           "wg-rev-caller",
+		Name:              "caller-through-wg-relay",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9443,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":9444}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{}`,
+		RelayLayersJSON:   `[[1711]]`,
+		ListenMode:        "tcp",
+		Enabled:           true,
+		Revision:          15,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-rev-caller", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.Revision != 31 {
+		t.Fatalf("snapshot revision = %d, want owner WireGuard profile revision 31", snapshot.Revision)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 || len(snapshot.WireGuardProfiles[0].Peers) != 1 {
+		t.Fatalf("WireGuardProfiles = %+v, want generated owner peer", snapshot.WireGuardProfiles)
+	}
+	peer := snapshot.WireGuardProfiles[0].Peers[0]
+	if peer.PublicKey != testWireGuardPublicKeyFromPrivate(t, ownerPrivateKey) {
+		t.Fatalf("peer public_key = %q, want owner public key", peer.PublicKey)
+	}
+	if peer.Endpoint != "rotated-owner.example.com:51820" {
+		t.Fatalf("peer endpoint = %q, want owner profile public endpoint", peer.Endpoint)
+	}
+}
+
+func TestStoreLoadAgentSnapshotBumpsOwnerRevisionForRelayCallerWireGuardProfileRevision(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	for _, agentID := range []string{"wg-owner-rev-caller", "wg-owner-rev-owner"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{
+			ID:               agentID,
+			Name:             agentID,
+			AgentToken:       "token-" + agentID,
+			CapabilitiesJSON: `["wireguard","l4","relay"]`,
+			DesiredRevision:  20,
+			CurrentRevision:  20,
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+
+	ownerProfileID := 271
+	ownerPrivateKey := "AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-owner-rev-owner", []WireGuardProfileRow{{
+		ID:             ownerProfileID,
+		AgentID:        "wg-owner-rev-owner",
+		Name:           "owner-wg",
+		Mode:           "generic_wireguard",
+		PrivateKey:     ownerPrivateKey,
+		ListenPort:     51820,
+		PublicEndpoint: "owner.example.com:51820",
+		AddressesJSON:  `["10.27.1.254/32"]`,
+		PeersJSON:      `[]`,
+		DNSJSON:        `[]`,
+		MTU:            1280,
+		Enabled:        true,
+		TagsJSON:       `["system:default-wireguard"]`,
+		Revision:       20,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(owner) error = %v", err)
+	}
+
+	callerProfileID := 272
+	callerPrivateKey := "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-owner-rev-caller", []WireGuardProfileRow{{
+		ID:            callerProfileID,
+		AgentID:       "wg-owner-rev-caller",
+		Name:          "caller-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    callerPrivateKey,
+		ListenPort:    51821,
+		AddressesJSON: `["10.72.0.9/32"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		MTU:           1280,
+		Enabled:       true,
+		TagsJSON:      `["system:default-wireguard"]`,
+		Revision:      34,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(caller) error = %v", err)
+	}
+
+	if err := store.SaveRelayListeners(t.Context(), "wg-owner-rev-owner", []RelayListenerRow{{
+		ID:                 2711,
+		AgentID:            "wg-owner-rev-owner",
+		Name:               "owner-relay-wg",
+		ListenHost:         "10.27.1.1",
+		BindHostsJSON:      `["10.27.1.1"]`,
+		ListenPort:         7443,
+		PublicHost:         "owner.example.com",
+		PublicPort:         51820,
+		Enabled:            true,
+		TransportMode:      "wireguard",
+		WireGuardProfileID: &ownerProfileID,
+		Revision:           14,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(owner) error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "wg-owner-rev-caller", []L4RuleRow{{
+		ID:                2712,
+		AgentID:           "wg-owner-rev-caller",
+		Name:              "caller-through-wg-relay",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9443,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":9444}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{}`,
+		RelayLayersJSON:   `[[2711]]`,
+		ListenMode:        "tcp",
+		Enabled:           true,
+		Revision:          15,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-owner-rev-owner", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.Revision != 34 {
+		t.Fatalf("snapshot revision = %d, want caller WireGuard profile revision 34", snapshot.Revision)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 || len(snapshot.WireGuardProfiles[0].Peers) != 1 {
+		t.Fatalf("WireGuardProfiles = %+v, want generated caller peer", snapshot.WireGuardProfiles)
+	}
+	peer := snapshot.WireGuardProfiles[0].Peers[0]
+	if peer.PublicKey != testWireGuardPublicKeyFromPrivate(t, callerPrivateKey) {
+		t.Fatalf("peer public_key = %q, want caller public key", peer.PublicKey)
+	}
+	if len(peer.AllowedIPs) != 1 || peer.AllowedIPs[0] != "10.72.0.9/32" {
+		t.Fatalf("peer allowed_ips = %+v, want caller WireGuard address", peer.AllowedIPs)
+	}
+}
+
 func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForTransitRelayHop(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

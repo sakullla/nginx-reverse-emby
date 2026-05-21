@@ -1254,6 +1254,7 @@ func (s *GormStore) attachWireGuardRelayPeersForSnapshot(
 	localProfile := next[localIndex]
 	peers := parseWireGuardPeers(localProfile.PeersJSON)
 	changed := false
+	syntheticPeerRevision := highestRelayListenerRevision(relayRows)
 	for _, relayRow := range relayRows {
 		if relayRow.AgentID == agentID ||
 			!relayRow.Enabled ||
@@ -1275,12 +1276,13 @@ func (s *GormStore) attachWireGuardRelayPeersForSnapshot(
 		}
 		peers = append(peers, peer)
 		changed = true
+		syntheticPeerRevision = maxInt(syntheticPeerRevision, remoteProfile.Revision)
 	}
 	if !changed {
 		return s.attachWireGuardRelayOwnerPeersForSnapshot(ctx, agentID, profiles, httpRows, l4Rows, relayRows)
 	}
 	next[localIndex].PeersJSON = marshalSnapshotWireGuardPeers(peers)
-	next[localIndex].Revision = maxInt(next[localIndex].Revision, highestRelayListenerRevision(relayRows))
+	next[localIndex].Revision = maxInt(next[localIndex].Revision, syntheticPeerRevision)
 	return s.attachWireGuardRelayOwnerPeersForSnapshot(ctx, agentID, next, httpRows, l4Rows, relayRows)
 }
 
@@ -1337,6 +1339,7 @@ func (s *GormStore) attachWireGuardRelayOwnerPeersForSnapshot(
 
 	next := append([]WireGuardProfileRow(nil), profiles...)
 	changed := false
+	syntheticPeerRevision := highestRelayListenerRevision(relayRows)
 	for i := range next {
 		if _, ok := localWireGuardRelayProfileIDs[next[i].ID]; !ok || !next[i].Enabled {
 			continue
@@ -1350,10 +1353,11 @@ func (s *GormStore) attachWireGuardRelayOwnerPeersForSnapshot(
 			}
 			peers = append(peers, peer)
 			profileChanged = true
+			syntheticPeerRevision = maxInt(syntheticPeerRevision, callerProfile.Revision)
 		}
 		if profileChanged {
 			next[i].PeersJSON = marshalSnapshotWireGuardPeers(peers)
-			next[i].Revision = maxInt(next[i].Revision, highestRelayListenerRevision(relayRows))
+			next[i].Revision = maxInt(next[i].Revision, syntheticPeerRevision)
 			changed = true
 		}
 	}
