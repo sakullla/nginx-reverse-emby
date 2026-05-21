@@ -176,6 +176,12 @@ describe('WireGuardProfilesPage client row actions', () => {
     mocks.qrCodeToDataURL.mockResolvedValue('data:image/png;base64,qr')
     api.fetchWireGuardClientConfig.mockReset()
     api.fetchWireGuardClientURI.mockReset()
+    document.execCommand = vi.fn()
+    Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true })
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true
+    })
     mocks.routeMock.params = {}
     mocks.routerReplace.mockReset()
     mocks.routerPush.mockReset()
@@ -366,5 +372,21 @@ describe('WireGuardProfilesPage client row actions', () => {
     expect(wrapper.get('.base-modal-stub[data-title="tablet QR"]').exists()).toBe(true)
     expect(wrapper.get('.client-qr__config').element.value).toBe('[Interface]\nAddress = 10.8.0.3/32\n')
     expect(wrapper.get('.client-qr__image').attributes('src')).toBe('data:image/png;base64,tablet-qr')
+  })
+
+  it('copies client URI through execCommand fallback in insecure clipboard contexts', async () => {
+    api.fetchWireGuardClientURI.mockResolvedValue('wireguard://client-uri')
+    document.execCommand = vi.fn().mockReturnValue(true)
+    Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true })
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    const wrapper = mountPage()
+
+    await openClients(wrapper)
+    await clientActionButton(wrapper, '复制 URI').trigger('click')
+    await flushPromises()
+
+    expect(api.fetchWireGuardClientURI).toHaveBeenCalledWith('local', 7, 1)
+    expect(document.execCommand).toHaveBeenCalledWith('copy')
+    expect(Array.from(document.querySelectorAll('textarea')).some((textarea) => textarea.value === 'wireguard://client-uri')).toBe(false)
   })
 })

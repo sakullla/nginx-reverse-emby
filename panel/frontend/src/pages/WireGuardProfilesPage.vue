@@ -485,12 +485,36 @@ function closeQRCode() {
   qrLoading.value = false
 }
 
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // Fall back below for browsers that expose Clipboard API but reject writes.
+    }
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-999999px'
+  document.body.appendChild(textarea)
+  try {
+    textarea.select()
+    const success = document.execCommand('copy')
+    if (!success) throw new Error('execCommand failed')
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
 async function copyClientURI(client) {
   if (!agentId.value || !selectedProfileId.value || !client?.id) return
   if (isClientRowPending(client)) return
   try {
     const uri = await fetchWireGuardClientURI(agentId.value, selectedProfileId.value, client.id)
-    await navigator.clipboard.writeText(uri)
+    await copyTextToClipboard(uri)
     messageStore.success('WireGuard URI 已复制')
   } catch (error) {
     messageStore.error(error, '复制 WireGuard URI 失败')
