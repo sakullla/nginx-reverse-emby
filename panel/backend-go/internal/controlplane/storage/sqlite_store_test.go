@@ -802,6 +802,82 @@ func TestStoreSaveWireGuardClientsRequiresProfileID(t *testing.T) {
 	}
 }
 
+func TestDeleteAgentRemovesWireGuardSecrets(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	profileIDs := map[string]int{"edge-1": 7, "edge-2": 8}
+	clientIDs := map[string]int{"edge-1": 1, "edge-2": 2}
+	for _, agentID := range []string{"edge-1", "edge-2"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{ID: agentID}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+		if err := store.SaveWireGuardProfiles(t.Context(), agentID, []WireGuardProfileRow{{
+			ID:            profileIDs[agentID],
+			Name:          "wg",
+			PrivateKey:    "profile-private-" + agentID,
+			AddressesJSON: `["10.8.0.1/24"]`,
+			PeersJSON:     `[]`,
+			DNSJSON:       `[]`,
+			TagsJSON:      `[]`,
+			Enabled:       true,
+		}}); err != nil {
+			t.Fatalf("SaveWireGuardProfiles(%s) error = %v", agentID, err)
+		}
+		if err := store.SaveWireGuardClients(t.Context(), agentID, profileIDs[agentID], []WireGuardClientRow{{
+			ID:             clientIDs[agentID],
+			Name:           "phone",
+			PrivateKey:     "client-private-" + agentID,
+			PublicKey:      "public-" + agentID,
+			PresharedKey:   "psk-" + agentID,
+			Address:        "10.8.0.2/32",
+			AllowedIPsJSON: `["10.8.0.2/32"]`,
+			DNSJSON:        `[]`,
+			Enabled:        true,
+		}}); err != nil {
+			t.Fatalf("SaveWireGuardClients(%s) error = %v", agentID, err)
+		}
+	}
+
+	if err := store.DeleteAgent(t.Context(), "edge-1"); err != nil {
+		t.Fatalf("DeleteAgent() error = %v", err)
+	}
+
+	profiles, err := store.ListWireGuardProfiles(t.Context(), "edge-1")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(edge-1) error = %v", err)
+	}
+	if len(profiles) != 0 {
+		t.Fatalf("deleted agent profiles = %+v, want none", profiles)
+	}
+	clients, err := store.ListWireGuardClients(t.Context(), "edge-1", 0)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(edge-1) error = %v", err)
+	}
+	if len(clients) != 0 {
+		t.Fatalf("deleted agent clients = %+v, want none", clients)
+	}
+
+	profiles, err = store.ListWireGuardProfiles(t.Context(), "edge-2")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles(edge-2) error = %v", err)
+	}
+	clients, err = store.ListWireGuardClients(t.Context(), "edge-2", 0)
+	if err != nil {
+		t.Fatalf("ListWireGuardClients(edge-2) error = %v", err)
+	}
+	if len(profiles) != 1 || len(clients) != 1 {
+		t.Fatalf("other agent profiles=%+v clients=%+v, want preserved rows", profiles, clients)
+	}
+}
+
 func TestStoreSaveWireGuardClientProfileMutationRollsBackClientsWhenProfilesFail(t *testing.T) {
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {

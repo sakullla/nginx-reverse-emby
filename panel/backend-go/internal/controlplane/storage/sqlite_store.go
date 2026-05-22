@@ -519,6 +519,12 @@ func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
 		if _, err := s.deleteTrafficByAgentTx(tx, agentID); err != nil {
 			return err
 		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&WireGuardClientRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&WireGuardProfileRow{}).Error; err != nil {
+			return err
+		}
 		return tx.Where("id = ?", agentID).Delete(&AgentRow{}).Error
 	})
 }
