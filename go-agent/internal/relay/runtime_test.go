@@ -16,6 +16,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -318,6 +319,28 @@ func TestValidateListenerWireGuardTransportRequiresProfileID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "wireguard_profile_id is required") {
 		t.Fatalf("ValidateListener() error = %v, want wireguard_profile_id requirement", err)
+	}
+}
+
+func TestListenerBindingKeysNamespaceWireGuardTransport(t *testing.T) {
+	t.Parallel()
+
+	profileID := 7
+	listener := Listener{
+		ID:                 1,
+		AgentID:            "agent-a",
+		Name:               "relay-wg",
+		BindHosts:          []string{"10.8.0.1"},
+		ListenPort:         18443,
+		Enabled:            true,
+		TransportMode:      ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+	}
+
+	got := listenerBindingKeys(listener)
+	want := []string{"wireguard:7:tcp:" + net.JoinHostPort("10.8.0.1", "18443")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("listenerBindingKeys() = %+v, want %+v", got, want)
 	}
 }
 

@@ -2039,6 +2039,29 @@ func TestRelayBindingKeysOverlapWildcardToSpecificHost(t *testing.T) {
 	}
 }
 
+func TestRelayBindingKeysNamespaceWireGuardTransport(t *testing.T) {
+	port := pickFreeTCPPort(t)
+	profileID := 9
+	wireGuard := relayListenerBindingKeys([]model.RelayListener{{
+		Enabled:            true,
+		ListenHost:         "10.8.0.1",
+		BindHosts:          []string{"10.8.0.1"},
+		ListenPort:         port,
+		TransportMode:      relay.ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+	}})
+	want := []string{"wireguard:9:tcp:" + net.JoinHostPort("10.8.0.1", strconv.Itoa(port))}
+	if !reflect.DeepEqual(wireGuard, want) {
+		t.Fatalf("relayListenerBindingKeys() = %+v, want %+v", wireGuard, want)
+	}
+	if bindingKeysOverlap([]string{"tcp:" + net.JoinHostPort("10.8.0.1", strconv.Itoa(port))}, wireGuard) {
+		t.Fatalf("did not expect host tcp binding to overlap wireguard relay binding %v", wireGuard)
+	}
+	if bindingKeysOverlap([]string{"wireguard:10:tcp:" + net.JoinHostPort("10.8.0.1", strconv.Itoa(port))}, wireGuard) {
+		t.Fatalf("did not expect different WireGuard profile binding to overlap %v", wireGuard)
+	}
+}
+
 func TestRelayRuntimeManagerReappliesQUICListenerOnSameUDPPort(t *testing.T) {
 	provider := &testRelayTLSProvider{
 		certificates: map[int]tls.Certificate{

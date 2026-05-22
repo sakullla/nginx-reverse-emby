@@ -313,7 +313,12 @@ func relayListenerBindingKeys(listeners []model.RelayListener) []string {
 		bindHosts := relayListenerBindHosts(listener)
 		protocol := relayListenerBindingProtocol(listener.TransportMode)
 		for _, bindHost := range bindHosts {
-			keys = append(keys, protocol+":"+net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort)))
+			address := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
+			if strings.EqualFold(strings.TrimSpace(listener.TransportMode), relay.ListenerTransportModeWireGuard) {
+				keys = append(keys, "wireguard:"+strconv.Itoa(valueOrZeroWireGuardProfileID(listener.WireGuardProfileID))+":"+protocol+":"+address)
+				continue
+			}
+			keys = append(keys, protocol+":"+address)
 		}
 	}
 	return keys

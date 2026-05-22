@@ -224,7 +224,12 @@ func listenerBindingKeys(listener Listener) []string {
 	}
 	keys := make([]string, 0, len(listener.BindHosts))
 	for _, bindHost := range listener.BindHosts {
-		keys = append(keys, protocol+":"+net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort)))
+		address := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
+		if transportMode == ListenerTransportModeWireGuard {
+			keys = append(keys, "wireguard:"+strconv.Itoa(valueOrZero(listener.WireGuardProfileID))+":"+protocol+":"+address)
+			continue
+		}
+		keys = append(keys, protocol+":"+address)
 	}
 	return keys
 }
