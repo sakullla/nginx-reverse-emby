@@ -125,7 +125,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 			input.WireGuardProfileID = &profile.ID
 		}
 	}
+	var relayLayerWireGuardRollbacks []wireGuardProfileRollbackTarget
 	rollbackDefaultWireGuard := func() {
+		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardRollbacks)
 		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, defaultWireGuardRollback)
 	}
 
@@ -163,7 +165,8 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+	relayLayerWireGuardRollbacks, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
+	if err != nil {
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
@@ -271,7 +274,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 			input.WireGuardProfileID = &profile.ID
 		}
 	}
+	var relayLayerWireGuardRollbacks []wireGuardProfileRollbackTarget
 	rollbackDefaultWireGuard := func() {
+		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardRollbacks)
 		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, defaultWireGuardRollback)
 	}
 
@@ -287,7 +292,8 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+	relayLayerWireGuardRollbacks, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
+	if err != nil {
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}

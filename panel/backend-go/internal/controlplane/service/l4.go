@@ -116,6 +116,11 @@ type wireGuardProfileRollback struct {
 	clientsByProfileID map[int][]storage.WireGuardClientRow
 }
 
+type wireGuardProfileRollbackTarget struct {
+	AgentID  string
+	Rollback *wireGuardProfileRollback
+}
+
 func NewL4RuleService(cfg config.Config, store storage.Store) *l4Service {
 	return &l4Service{cfg: cfg, store: store}
 }
@@ -209,7 +214,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err != nil {
 		return L4Rule{}, err
 	}
+	var relayLayerWireGuardRollbacks []wireGuardProfileRollbackTarget
 	rollbackDefaultWireGuard := func() {
+		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardRollbacks)
 		s.restoreWireGuardProfileRollback(ctx, resolvedID, defaultWireGuardRollback)
 	}
 	if err := s.validateRelayChain(ctx, resolvedID, rule.RelayChain); err != nil {
@@ -220,7 +227,8 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
-	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+	relayLayerWireGuardRollbacks, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
+	if err != nil {
 		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
@@ -311,7 +319,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	if err != nil {
 		return L4Rule{}, err
 	}
+	var relayLayerWireGuardRollbacks []wireGuardProfileRollbackTarget
 	rollbackDefaultWireGuard := func() {
+		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardRollbacks)
 		s.restoreWireGuardProfileRollback(ctx, resolvedID, defaultWireGuardRollback)
 	}
 	if err := s.validateRelayChain(ctx, resolvedID, rule.RelayChain); err != nil {
@@ -322,7 +332,8 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
-	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+	relayLayerWireGuardRollbacks, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
+	if err != nil {
 		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
@@ -946,6 +957,14 @@ func restoreWireGuardProfileRollback(ctx context.Context, store interface {
 	}
 	for _, row := range rollback.agents {
 		_ = agentStore.SaveAgent(ctx, row)
+	}
+}
+
+func restoreWireGuardProfileRollbacks(ctx context.Context, store interface {
+	SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error
+}, rollbacks []wireGuardProfileRollbackTarget) {
+	for i := len(rollbacks) - 1; i >= 0; i-- {
+		restoreWireGuardProfileRollback(ctx, store, rollbacks[i].AgentID, rollbacks[i].Rollback)
 	}
 }
 

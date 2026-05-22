@@ -189,6 +189,17 @@ func (f *fakeL4Store) DeleteTrafficByScope(_ context.Context, agentID, scopeType
 	return 0, nil
 }
 
+func l4StoreAgentByID(t *testing.T, store *fakeL4Store, agentID string) storage.AgentRow {
+	t.Helper()
+	for _, row := range store.agents {
+		if row.ID == agentID {
+			return row
+		}
+	}
+	t.Fatalf("agent %q not found", agentID)
+	return storage.AgentRow{}
+}
+
 func TestL4RuleServiceCreateAllowsRelayLayersForUDP(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
@@ -4083,6 +4094,85 @@ func TestL4RuleServiceCreateEnsuresTransitCallerWireGuardProfile(t *testing.T) {
 	profile := wireGuardProfileFromRow(profiles[0])
 	if !profile.Enabled || !hasTag(profile.Tags, "system:default-wireguard") {
 		t.Fatalf("relay-a default WireGuardProfile = %+v", profile)
+	}
+}
+
+func TestL4RuleServiceCreateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
+	relayBProfileID := 41
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{
+			{ID: "local", Name: "local"},
+			{ID: "relay-a", Name: "relay-a", CapabilitiesJSON: `["wireguard"]`, DesiredRevision: 5, CurrentRevision: 5},
+			{ID: "relay-b", Name: "relay-b", CapabilitiesJSON: `["wireguard"]`},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"relay-a": {{ID: 7, AgentID: "relay-a", Enabled: true, TransportMode: "tls_tcp"}},
+			"relay-b": {{ID: 8, AgentID: "relay-b", Enabled: true, TransportMode: "wireguard", WireGuardProfileID: &relayBProfileID}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{},
+		saveL4RulesErr:   errors.New("save l4 failed"),
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7}, {8}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "save l4 failed") {
+		t.Fatalf("Create() error = %v, want save failure", err)
+	}
+	if got := len(store.wireGuardByAgent["relay-a"]); got != 0 {
+		t.Fatalf("relay-a WireGuardProfiles after failed create = %+v, want none", store.wireGuardByAgent["relay-a"])
+	}
+	if got := l4StoreAgentByID(t, store, "relay-a").DesiredRevision; got != 5 {
+		t.Fatalf("relay-a DesiredRevision after failed create = %d, want 5", got)
+	}
+}
+
+func TestL4RuleServiceUpdateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
+	relayBProfileID := 41
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{
+			{ID: "local", Name: "local"},
+			{ID: "relay-a", Name: "relay-a", CapabilitiesJSON: `["wireguard"]`, DesiredRevision: 5, CurrentRevision: 5},
+			{ID: "relay-b", Name: "relay-b", CapabilitiesJSON: `["wireguard"]`},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                1,
+				AgentID:           "local",
+				Name:              "existing",
+				Protocol:          "tcp",
+				ListenHost:        "0.0.0.0",
+				ListenPort:        9000,
+				BackendsJSON:      `[{"host":"upstream","port":9001}]`,
+				LoadBalancingJSON: `{"strategy":"adaptive"}`,
+				Enabled:           true,
+				Revision:          3,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"relay-a": {{ID: 7, AgentID: "relay-a", Enabled: true, TransportMode: "tls_tcp"}},
+			"relay-b": {{ID: 8, AgentID: "relay-b", Enabled: true, TransportMode: "wireguard", WireGuardProfileID: &relayBProfileID}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{},
+		saveL4RulesErr:   errors.New("save l4 failed"),
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		RelayLayers: &[][]int{{7}, {8}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "save l4 failed") {
+		t.Fatalf("Update() error = %v, want save failure", err)
+	}
+	if got := len(store.wireGuardByAgent["relay-a"]); got != 0 {
+		t.Fatalf("relay-a WireGuardProfiles after failed update = %+v, want none", store.wireGuardByAgent["relay-a"])
+	}
+	if got := l4StoreAgentByID(t, store, "relay-a").DesiredRevision; got != 5 {
+		t.Fatalf("relay-a DesiredRevision after failed update = %d, want 5", got)
 	}
 }
 

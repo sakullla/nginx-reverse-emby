@@ -10,13 +10,13 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func ensureDefaultWireGuardProfilesForRelayLayers(ctx context.Context, cfg config.Config, store relayChainLookupStore, ruleAgentID string, layers [][]int) error {
+func ensureDefaultWireGuardProfilesForRelayLayers(ctx context.Context, cfg config.Config, store relayChainLookupStore, ruleAgentID string, layers [][]int) ([]wireGuardProfileRollbackTarget, error) {
 	if len(layers) == 0 {
-		return nil
+		return nil, nil
 	}
 	listeners, err := store.ListRelayListeners(ctx, "")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	listenersByID := make(map[int]storage.RelayListenerRow, len(listeners))
 	for _, listener := range listeners {
@@ -26,19 +26,25 @@ func ensureDefaultWireGuardProfilesForRelayLayers(ctx context.Context, cfg confi
 	}
 	callerAgentIDs := wireGuardRelayLayerCallerAgentIDs(ruleAgentID, layers, listenersByID)
 	if len(callerAgentIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	profileStore, ok := any(store).(wireGuardProfileStore)
 	if !ok {
-		return fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
 	}
-	profileSvc := NewWireGuardProfileService(cfg, profileStore)
+	rollbacks := make([]wireGuardProfileRollbackTarget, 0, len(callerAgentIDs))
 	for _, callerAgentID := range callerAgentIDs {
-		if _, err := profileSvc.EnsureDefault(ctx, callerAgentID); err != nil {
-			return err
+		if _, rollback, err := ensureDefaultWireGuardProfileWithRollback(ctx, cfg, profileStore, callerAgentID); err != nil {
+			restoreWireGuardProfileRollbacks(ctx, profileStore, rollbacks)
+			return nil, err
+		} else if rollback != nil {
+			rollbacks = append(rollbacks, wireGuardProfileRollbackTarget{
+				AgentID:  callerAgentID,
+				Rollback: rollback,
+			})
 		}
 	}
-	return nil
+	return rollbacks, nil
 }
 
 func wireGuardRelayLayerCallerAgentIDs(ruleAgentID string, layers [][]int, listenersByID map[int]storage.RelayListenerRow) []string {
