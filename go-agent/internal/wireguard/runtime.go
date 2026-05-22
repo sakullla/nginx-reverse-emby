@@ -409,8 +409,8 @@ func (t *Transaction) Commit() {
 	t.manager.mu.Lock()
 	defer t.manager.mu.Unlock()
 
-	for profileID, existing := range t.manager.runtimes {
-		candidate, ok := candidates[profileID]
+	for key, existing := range t.manager.runtimes {
+		candidate, ok := candidates[key]
 		if ok && candidate.runtime == existing.runtime {
 			continue
 		}

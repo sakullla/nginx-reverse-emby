@@ -282,6 +282,78 @@ func TestManagerPrepareKeepsSameProfileIDForDifferentAgents(t *testing.T) {
 	}
 }
 
+func TestManagerPrepareCommitPreservesExistingSameProfileIDForDifferentAgents(t *testing.T) {
+	t.Parallel()
+
+	factory := &recordingFactory{}
+	manager := NewManager(ManagerOptions{Factory: factory.Create})
+	defer manager.Close()
+
+	localProfile := validProfile()
+	localProfile.AgentID = "local"
+	remoteProfile := validProfile()
+	remoteProfile.AgentID = "remote"
+	remoteProfile.Addresses = []string{"10.71.0.2/32"}
+	remoteProfile.Peers[0].Endpoint = "remote.example.com:51820"
+
+	if err := manager.Apply(context.Background(), []model.WireGuardProfile{localProfile, remoteProfile}); err != nil {
+		t.Fatalf("Apply(initial) error = %v", err)
+	}
+	initialLocalRuntime, ok := manager.RuntimeForAgent("local", localProfile.ID)
+	if !ok {
+		t.Fatal("initial local runtime not found")
+	}
+	initialRemoteRuntime, ok := manager.RuntimeForAgent("remote", remoteProfile.ID)
+	if !ok {
+		t.Fatal("initial remote runtime not found")
+	}
+
+	localProfile.Peers[0].Endpoint = "local.example.com:51821"
+	transaction, err := manager.Prepare(context.Background(), []model.WireGuardProfile{localProfile, remoteProfile})
+	if err != nil {
+		t.Fatalf("Prepare(changed) error = %v", err)
+	}
+	defer transaction.Rollback()
+
+	preparedLocalRuntime, ok := transaction.RuntimeForAgent("local", localProfile.ID)
+	if !ok {
+		t.Fatal("prepared local runtime not found")
+	}
+	preparedRemoteRuntime, ok := transaction.RuntimeForAgent("remote", remoteProfile.ID)
+	if !ok {
+		t.Fatal("prepared remote runtime not found")
+	}
+	if preparedLocalRuntime == initialLocalRuntime {
+		t.Fatal("prepared local runtime reused stale runtime after config change")
+	}
+	if preparedRemoteRuntime != initialRemoteRuntime {
+		t.Fatal("prepared remote runtime did not reuse unchanged remote runtime")
+	}
+
+	transaction.Commit()
+
+	committedLocalRuntime, ok := manager.RuntimeForAgent("local", localProfile.ID)
+	if !ok {
+		t.Fatal("committed local runtime not found")
+	}
+	committedRemoteRuntime, ok := manager.RuntimeForAgent("remote", remoteProfile.ID)
+	if !ok {
+		t.Fatal("committed remote runtime not found")
+	}
+	if committedLocalRuntime != preparedLocalRuntime {
+		t.Fatal("commit did not keep prepared local runtime")
+	}
+	if committedRemoteRuntime != initialRemoteRuntime {
+		t.Fatal("commit dropped unchanged remote runtime with colliding profile ID")
+	}
+	if !initialLocalRuntime.(*fakeRuntime).closed {
+		t.Fatal("stale local runtime was not closed")
+	}
+	if initialRemoteRuntime.(*fakeRuntime).closed {
+		t.Fatal("unchanged remote runtime with colliding profile ID was closed")
+	}
+}
+
 func TestManagerReplacesChangedConfigRuntime(t *testing.T) {
 	t.Parallel()
 
