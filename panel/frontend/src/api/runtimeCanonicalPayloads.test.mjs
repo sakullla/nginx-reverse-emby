@@ -985,14 +985,13 @@ describe('runtime canonical rule payloads', () => {
     expect(l4Form.default).toContain('payload.wireguard_profile_id = selectedWireGuardProfileID.value')
   })
 
-  it('does not present L4 transparent UDP as supported', async () => {
+  it('presents L4 transparent UDP as supported', async () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
     const source = l4Form.default
 
-    expect(source).toContain('<option v-if="form.protocol === \'tcp\'" value="transparent">透明</option>')
-    expect(source).toContain("form.value.wireguard_inbound_mode = 'address'")
-    expect(source).not.toContain('transparent UDP')
-    expect(source).not.toContain('透明 UDP')
+    expect(source).toContain('<option value="transparent">透明</option>')
+    expect(source).not.toContain('<option v-if="form.protocol === \'tcp\'" value="transparent">透明</option>')
+    expect(source).not.toContain("form.value.wireguard_inbound_mode = 'address'")
   })
 
   it('does not synthesize canonical backends from legacy runtime fields', async () => {

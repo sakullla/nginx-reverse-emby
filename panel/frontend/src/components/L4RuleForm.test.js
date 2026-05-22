@@ -119,6 +119,9 @@ describe('L4RuleForm WireGuard egress', () => {
     await selectByLabel(wrapper, '监听模式').setValue('wireguard')
     await selectByLabel(wrapper, 'WireGuard 入站模式').setValue('address')
     await flushPromises()
+    await switchTab(wrapper, '基础配置')
+    const backend = wrapper.get('input[placeholder="IP:端口 或 域名:端口"]')
+    await backend.setValue('upstream.local:9000')
 
     expect(wrapper.text()).not.toContain('WireGuard Listen Host')
 
@@ -236,6 +239,29 @@ describe('L4RuleForm WireGuard egress', () => {
     expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
     expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
       id: 7,
+      protocol: 'udp',
+      listen_mode: 'wireguard',
+      proxy_egress_mode: '',
+      wireguard_inbound_mode: 'transparent',
+      wireguard_profile_id: 21,
+      backends: []
+    })
+  })
+
+  it('allows selecting transparent mode for new UDP WireGuard rules', async () => {
+    const wrapper = mountForm()
+
+    await selectByLabel(wrapper, '协议').setValue('udp')
+    await switchTab(wrapper, '协议与监听')
+    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
+    await selectByLabel(wrapper, 'WireGuard 入站模式').setValue('address')
+    await selectByLabel(wrapper, 'WireGuard 入站模式').setValue('transparent')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('至少需要一个有效的后端服务器')
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
       protocol: 'udp',
       listen_mode: 'wireguard',
       proxy_egress_mode: '',

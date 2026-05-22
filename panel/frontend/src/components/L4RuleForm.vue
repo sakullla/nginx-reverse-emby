@@ -217,7 +217,7 @@
           <div class="form-group">
             <label class="form-label">WireGuard 入站模式</label>
             <select v-model="form.wireguard_inbound_mode" class="input">
-              <option v-if="form.protocol === 'tcp'" value="transparent">透明</option>
+              <option value="transparent">透明</option>
               <option value="address">内网入口</option>
             </select>
           </div>
@@ -687,9 +687,15 @@ watch(() => form.value.protocol, (newProto) => {
   form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
   if (newProto === 'udp') {
     form.value.relay_obfs = false
-    if (form.value.listen_mode === 'wireguard' && form.value.wireguard_inbound_mode !== 'transparent') {
-      form.value.wireguard_inbound_mode = 'address'
-    }
+  }
+})
+
+watch(() => form.value.listen_mode, (mode, previousMode) => {
+  if (mode === 'wireguard' && previousMode !== 'wireguard' && form.value.proxy_egress_mode === 'relay') {
+    form.value.proxy_egress_mode = ''
+  }
+  if (mode === 'proxy' && form.value.proxy_egress_mode === '') {
+    form.value.proxy_egress_mode = 'relay'
   }
 })
 
