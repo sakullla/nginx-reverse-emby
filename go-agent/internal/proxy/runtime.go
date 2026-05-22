@@ -248,7 +248,6 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 			if runtime, ok := providers.WireGuard.WireGuardRuntime(*rule.WireGuardProfileID); !ok || runtime == nil {
 				return nil, fmt.Errorf("http rule %q: wireguard profile %d runtime not found", rule.FrontendURL, *rule.WireGuardProfileID)
 			}
-			wireGuardRule := wireGuardEntryRule(rule)
 			if _, ok := groups[wgSpec.key]; !ok {
 				order = append(order, wgSpec.key)
 				addresses[wgSpec.key] = wgSpec.address
@@ -256,7 +255,7 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 				hosts[wgSpec.key] = make(map[string]struct{})
 				wireGuardProfileIDs[wgSpec.key] = rule.WireGuardProfileID
 			}
-			groups[wgSpec.key] = append(groups[wgSpec.key], wireGuardRule)
+			groups[wgSpec.key] = append(groups[wgSpec.key], rule)
 		}
 	}
 
@@ -382,16 +381,6 @@ func runtimeRuleWireGuardEntrySpec(rule model.HTTPRule) (runtimeRuleBinding, err
 		address: address,
 		scheme:  "http",
 	}, nil
-}
-
-func wireGuardEntryRule(rule model.HTTPRule) model.HTTPRule {
-	entry := rule
-	entry.FrontendURL = (&url.URL{
-		Scheme: "http",
-		Host:   net.JoinHostPort(strings.TrimSpace(rule.WireGuardEntryListenHost), strconv.Itoa(rule.WireGuardEntryListenPort)),
-		Path:   FrontendPathFromRule(rule),
-	}).String()
-	return entry
 }
 
 func valueOrZeroInt(value *int) int {

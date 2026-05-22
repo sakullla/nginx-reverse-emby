@@ -1141,7 +1141,7 @@ func TestHTTPRuntimeManagerSkipsPublicHTTPSBindingForWireGuardEntry(t *testing.T
 	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.HTTPRule{initial}, nil, []model.WireGuardProfile{profile}); err != nil {
 		t.Fatalf("failed to apply initial http wireguard runtime: %v", err)
 	}
-	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
+	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("edge.example.test:%d", publicPort), "ok")
 
 	nextProfile := profile
 	nextProfile.Revision++
@@ -1155,7 +1155,7 @@ func TestHTTPRuntimeManagerSkipsPublicHTTPSBindingForWireGuardEntry(t *testing.T
 	if !ok {
 		t.Fatal("expected original wireguard profile runtime to remain registered")
 	}
-	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
+	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("edge.example.test:%d", publicPort), "ok")
 	if got == nil {
 		t.Fatal("expected active wireguard runtime after reconfigure")
 	}
@@ -1219,7 +1219,7 @@ func TestHTTPRuntimeManagerKeepsWireGuardEntryActiveWhenFrontendURLIsHTTPS(t *te
 	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.HTTPRule{initial}, nil, []model.WireGuardProfile{profile}); err != nil {
 		t.Fatalf("failed to apply initial http wireguard runtime: %v", err)
 	}
-	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
+	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("edge.example.test:%d", publicPort), "ok")
 
 	nextProfile := profile
 	nextProfile.Revision++
@@ -1236,7 +1236,7 @@ func TestHTTPRuntimeManagerKeepsWireGuardEntryActiveWhenFrontendURLIsHTTPS(t *te
 	if got == nil {
 		t.Fatal("expected active wireguard profile runtime after reconfigure")
 	}
-	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("127.0.0.1:%d", wireGuardEntryPort), "ok")
+	assertHTTPRuntimeHostBody(t, wireGuardEntryPort, fmt.Sprintf("edge.example.test:%d", publicPort), "ok")
 }
 
 func TestHTTPRuntimeManagerServesHTTPSRulesWithTLSProvider(t *testing.T) {

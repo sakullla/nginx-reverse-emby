@@ -175,6 +175,20 @@ func TestHTTPRuntimeUsesWireGuardListenerForInnerEntry(t *testing.T) {
 	if len(wgRuntime.listenTCPCalls()) != 1 {
 		t.Fatalf("ListenTCP calls = %+v", wgRuntime.listenTCPCalls())
 	}
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", wireGuardPort), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("app.internal:%d", frontendPort)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("wireguard entry request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("wireguard entry status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
 }
 
 func startHTTPRuntimeWithRetry(t *testing.T, backendOneURL, backendTwoURL string) (*Runtime, int) {
