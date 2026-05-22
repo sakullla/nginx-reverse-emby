@@ -571,6 +571,29 @@ func TestRelayListenerCreateMixedCaseWireGuardUsesDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestRelayListenerCreateWireGuardRollsBackDefaultProfileOnValidationError(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID:     map[string][]storage.RelayListenerRow{},
+		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:        map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:          stringPtr("wg-relay"),
+		TransportMode: stringPtr("wireguard"),
+		ListenPort:    intPtrService(0),
+		Enabled:       boolPtr(false),
+	})
+	if err == nil || !strings.Contains(err.Error(), "listen_port must be an integer between 1 and 65535") {
+		t.Fatalf("Create() error = %v, want listen_port validation", err)
+	}
+	if got := len(store.wireGuardByAgentID["local"]); got != 0 {
+		t.Fatalf("default WireGuard profiles after failed create = %+v, want none", store.wireGuardByAgentID["local"])
+	}
+}
+
 func TestRelayListenerCreateWireGuardDerivesBindAndPublicEndpointFromProfile(t *testing.T) {
 	profileID := 7
 	store := &relayCertStore{

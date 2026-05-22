@@ -717,6 +717,28 @@ func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDP(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceCreateWireGuardListenRollsBackDefaultProfileOnValidationError(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID:      map[string][]storage.L4RuleRow{},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:    stringPtrL4("tcp"),
+		ListenMode:  stringPtrL4("wireguard"),
+		ListenPort:  intPtrL4(443),
+		Backends:    &[]L4Backend{{Host: "backend", Port: 9443}},
+		RelayLayers: &[][]int{{999}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "relay listener not found: 999") {
+		t.Fatalf("Create() error = %v, want relay chain validation", err)
+	}
+	if got := len(store.wireGuardByAgent["local"]); got != 0 {
+		t.Fatalf("default WireGuard profiles after failed create = %+v, want none", store.wireGuardByAgent["local"])
+	}
+}
+
 func TestL4WireGuardProxyEgressRequiresProfile(t *testing.T) {
 	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)

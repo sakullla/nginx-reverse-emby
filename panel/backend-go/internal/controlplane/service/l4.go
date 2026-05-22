@@ -112,6 +112,7 @@ type wireGuardClientRowStore interface {
 
 type wireGuardProfileRollback struct {
 	rows               []storage.WireGuardProfileRow
+	agents             []storage.AgentRow
 	clientsByProfileID map[int][]storage.WireGuardClientRow
 }
 
@@ -204,31 +205,42 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 			return L4Rule{}, err
 		}
 	}
-	if err := s.ensureDefaultWireGuardProfile(ctx, resolvedID, &rule); err != nil {
+	defaultWireGuardRollback, err := s.ensureDefaultWireGuardProfile(ctx, resolvedID, &rule)
+	if err != nil {
 		return L4Rule{}, err
 	}
+	rollbackDefaultWireGuard := func() {
+		s.restoreWireGuardProfileRollback(ctx, resolvedID, defaultWireGuardRollback)
+	}
 	if err := s.validateRelayChain(ctx, resolvedID, rule.RelayChain); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.validateRelayChain(ctx, resolvedID, flattenRelayLayers(rule.RelayLayers)); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 
 	if err := ensureUniqueL4Listen(existing, rule, 0); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	rollbackWireGuardProfiles, err := s.materializeWireGuardURIEgressProfile(ctx, resolvedID, input, &rule, allocator)
 	if err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
 		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
@@ -237,6 +249,7 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	rows = append(rows, l4RuleToRow(rule))
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
 		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
@@ -294,37 +307,49 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 			return L4Rule{}, err
 		}
 	}
-	if err := s.ensureDefaultWireGuardProfile(ctx, resolvedID, &rule); err != nil {
+	defaultWireGuardRollback, err := s.ensureDefaultWireGuardProfile(ctx, resolvedID, &rule)
+	if err != nil {
 		return L4Rule{}, err
 	}
+	rollbackDefaultWireGuard := func() {
+		s.restoreWireGuardProfileRollback(ctx, resolvedID, defaultWireGuardRollback)
+	}
 	if err := s.validateRelayChain(ctx, resolvedID, rule.RelayChain); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.validateRelayChain(ctx, resolvedID, flattenRelayLayers(rule.RelayLayers)); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 
 	if err := ensureUniqueL4Listen(existing, rule, id); err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	rollbackWireGuardProfiles, err := s.materializeWireGuardURIEgressProfile(ctx, resolvedID, input, &rule, allocator)
 	if err != nil {
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if cleanupRollback, err := s.cleanupUnusedWireGuardURIEgressProfile(ctx, resolvedID, current, rule, rollbackWireGuardProfiles); err != nil {
 		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	} else {
 		rollbackWireGuardProfiles = cleanupRollback
 	}
 	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
 		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
@@ -333,6 +358,7 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	rows[targetIndex] = l4RuleToRow(rule)
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
 		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
+		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
@@ -776,21 +802,20 @@ func (s *l4Service) validateWireGuardProfileReference(ctx context.Context, agent
 	return validateEnabledWireGuardProfileReference(ctx, s.store, agentID, rule.WireGuardProfileID)
 }
 
-func (s *l4Service) ensureDefaultWireGuardProfile(ctx context.Context, agentID string, rule *L4Rule) error {
+func (s *l4Service) ensureDefaultWireGuardProfile(ctx context.Context, agentID string, rule *L4Rule) (*wireGuardProfileRollback, error) {
 	if rule == nil || rule.ListenMode != "wireguard" || rule.WireGuardProfileID != nil {
-		return nil
+		return nil, nil
 	}
 	profileStore, ok := s.store.(wireGuardProfileStore)
 	if !ok {
-		return fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
 	}
-	profileSvc := NewWireGuardProfileService(s.cfg, profileStore)
-	profile, err := profileSvc.EnsureDefault(ctx, agentID)
+	profile, rollback, err := ensureDefaultWireGuardProfileWithRollback(ctx, s.cfg, profileStore, agentID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rule.WireGuardProfileID = &profile.ID
-	return nil
+	return rollback, nil
 }
 
 func (s *l4Service) materializeWireGuardURIEgressProfile(ctx context.Context, agentID string, input L4RuleInput, rule *L4Rule, allocator *configIdentityAllocator) (*wireGuardProfileRollback, error) {
@@ -844,6 +869,30 @@ func (s *l4Service) rollbackWireGuardURIEgressMaterialization(ctx context.Contex
 	s.restoreWireGuardProfileRollback(ctx, agentID, wireGuardRows)
 }
 
+func ensureDefaultWireGuardProfileWithRollback(ctx context.Context, cfg config.Config, store wireGuardProfileStore, agentID string) (WireGuardProfile, *wireGuardProfileRollback, error) {
+	rows, err := store.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, nil, err
+	}
+	for _, row := range rows {
+		profile := wireGuardProfileFromRow(row)
+		if profile.Enabled && hasTag(profile.Tags, "system:default-wireguard") {
+			return redactWireGuardProfile(profile), nil, nil
+		}
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		return WireGuardProfile{}, nil, err
+	}
+	profile, err := NewWireGuardProfileService(cfg, store).EnsureDefault(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, nil, err
+	}
+	rollback := newWireGuardProfileRollback(rows)
+	rollback.agents = append([]storage.AgentRow(nil), agents...)
+	return profile, rollback, nil
+}
+
 func newWireGuardProfileRollback(rows []storage.WireGuardProfileRow) *wireGuardProfileRollback {
 	return &wireGuardProfileRollback{
 		rows: append([]storage.WireGuardProfileRow(nil), rows...),
@@ -873,16 +922,30 @@ func (s *l4Service) captureWireGuardProfileClients(ctx context.Context, agentID 
 }
 
 func (s *l4Service) restoreWireGuardProfileRollback(ctx context.Context, agentID string, rollback *wireGuardProfileRollback) {
+	restoreWireGuardProfileRollback(ctx, s.store, agentID, rollback)
+}
+
+func restoreWireGuardProfileRollback(ctx context.Context, store interface {
+	SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error
+}, agentID string, rollback *wireGuardProfileRollback) {
 	if rollback == nil {
 		return
 	}
-	_ = s.store.SaveWireGuardProfiles(ctx, agentID, append([]storage.WireGuardProfileRow(nil), rollback.rows...))
-	clientStore, ok := s.store.(wireGuardClientRowStore)
+	_ = store.SaveWireGuardProfiles(ctx, agentID, append([]storage.WireGuardProfileRow(nil), rollback.rows...))
+	clientStore, ok := store.(wireGuardClientRowStore)
+	if ok {
+		for profileID, rows := range rollback.clientsByProfileID {
+			_ = clientStore.SaveWireGuardClients(ctx, agentID, profileID, append([]storage.WireGuardClientRow(nil), rows...))
+		}
+	}
+	agentStore, ok := store.(interface {
+		SaveAgent(context.Context, storage.AgentRow) error
+	})
 	if !ok {
 		return
 	}
-	for profileID, rows := range rollback.clientsByProfileID {
-		_ = clientStore.SaveWireGuardClients(ctx, agentID, profileID, append([]storage.WireGuardClientRow(nil), rows...))
+	for _, row := range rollback.agents {
+		_ = agentStore.SaveAgent(ctx, row)
 	}
 }
 

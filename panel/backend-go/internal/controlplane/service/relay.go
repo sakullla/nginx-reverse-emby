@@ -88,11 +88,12 @@ type relayNormalizeOptions struct {
 }
 
 type relayPreparation struct {
-	Listener            RelayListener
-	OriginalCertRows    []storage.ManagedCertificateRow
-	NextCertRows        []storage.ManagedCertificateRow
-	MaterialBundles     []storage.ManagedCertificateBundle
-	PersistCertificates bool
+	Listener                 RelayListener
+	OriginalCertRows         []storage.ManagedCertificateRow
+	NextCertRows             []storage.ManagedCertificateRow
+	MaterialBundles          []storage.ManagedCertificateBundle
+	PersistCertificates      bool
+	WireGuardProfileRollback *wireGuardProfileRollback
 }
 
 type relayService struct {
@@ -206,21 +207,28 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 	if err != nil {
 		return RelayListener{}, err
 	}
+	rollbackDefaultWireGuard := func() {
+		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, prepared.WireGuardProfileRollback)
+	}
 	listener := prepared.Listener
 	listener.AgentID = resolvedID
 	listener.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 	if err := ensureUniqueRelayListen(existing, listener, 0); err != nil {
+		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
+			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 		if err := s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
+			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 	}
@@ -228,10 +236,12 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
 		if prepared.PersistCertificates {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
 			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
 		}
+		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, listener.Revision); err != nil {
@@ -284,13 +294,18 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 	if err != nil {
 		return RelayListener{}, err
 	}
+	rollbackDefaultWireGuard := func() {
+		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, prepared.WireGuardProfileRollback)
+	}
 	listener := prepared.Listener
 	if current.Enabled && !listener.Enabled {
 		reference, err := s.findRelayListenerReference(ctx, listener.ID)
 		if err != nil {
+			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 		if reference != nil {
+			rollbackDefaultWireGuard()
 			return RelayListener{}, fmt.Errorf(
 				"%w: relay listener %d is referenced by %s rule #%d on agent %s; disable is not allowed",
 				ErrInvalidArgument,
@@ -304,17 +319,21 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 	listener.AgentID = resolvedID
 	listener.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 	if err := ensureUniqueRelayListen(existing, listener, id); err != nil {
+		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
+			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 		if err := s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
+			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 	}
@@ -322,10 +341,12 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
 		if prepared.PersistCertificates {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
 			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
 		}
+		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, listener.Revision); err != nil {
@@ -478,6 +499,13 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		return relayPreparation{}, err
 	}
 	originalCertRows := append([]storage.ManagedCertificateRow(nil), certRows...)
+	var wireGuardProfileRollback *wireGuardProfileRollback
+	prepared := false
+	defer func() {
+		if !prepared {
+			restoreWireGuardProfileRollback(ctx, s.store, agentID, wireGuardProfileRollback)
+		}
+	}()
 
 	workingInput := input
 	inputTransportMode := strings.TrimSpace(pointerString(input.TransportMode))
@@ -496,11 +524,11 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		if !ok {
 			return relayPreparation{}, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
 		}
-		profileSvc := NewWireGuardProfileService(s.cfg, profileStore)
-		profile, err := profileSvc.EnsureDefault(ctx, agentID)
+		profile, rollback, err := ensureDefaultWireGuardProfileWithRollback(ctx, s.cfg, profileStore, agentID)
 		if err != nil {
 			return relayPreparation{}, err
 		}
+		wireGuardProfileRollback = rollback
 		id := profile.ID
 		workingInput.WireGuardProfileID = &id
 	}
@@ -587,12 +615,14 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	if err := validateEnabledWireGuardProfileReference(ctx, s.store, agentID, listener.WireGuardProfileID); err != nil {
 		return relayPreparation{}, err
 	}
+	prepared = true
 	return relayPreparation{
-		Listener:            listener,
-		OriginalCertRows:    originalCertRows,
-		NextCertRows:        certRows,
-		MaterialBundles:     materialBundles,
-		PersistCertificates: persistCertificates,
+		Listener:                 listener,
+		OriginalCertRows:         originalCertRows,
+		NextCertRows:             certRows,
+		MaterialBundles:          materialBundles,
+		PersistCertificates:      persistCertificates,
+		WireGuardProfileRollback: wireGuardProfileRollback,
 	}, nil
 }
 

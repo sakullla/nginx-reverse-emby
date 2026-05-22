@@ -47,6 +47,7 @@ type ruleStore interface {
 	SaveAgent(context.Context, storage.AgentRow) error
 	SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error
 	SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error
+	SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error
 	CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error
 }
 
@@ -110,29 +111,37 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	var defaultWireGuardRollback *wireGuardProfileRollback
 	if httpRuleInputEnablesWireGuard(input, HTTPRule{}) {
 		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
 			return HTTPRule{}, err
 		}
 		if input.WireGuardProfileID == nil {
-			profile, err := s.ensureDefaultHTTPWireGuardProfile(ctx, resolvedID)
+			profile, rollback, err := s.ensureDefaultHTTPWireGuardProfileWithRollback(ctx, resolvedID)
 			if err != nil {
 				return HTTPRule{}, err
 			}
+			defaultWireGuardRollback = rollback
 			input.WireGuardProfileID = &profile.ID
 		}
+	}
+	rollbackDefaultWireGuard := func() {
+		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, defaultWireGuardRollback)
 	}
 
 	rows, err := s.store.ListHTTPRules(ctx, resolvedID)
 	if err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	allRows, err := s.listRulesAcrossAllAgents(ctx)
 	if err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 
@@ -150,17 +159,21 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	normalizedInput.ID = nil
 	rule, err := s.normalizeHTTPRuleInput(ctx, normalizedInput, HTTPRule{AgentID: resolvedID}, allocatedID)
 	if err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
 	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 	if err := validateUniqueHTTPFrontendBinding(append(rows, httpRuleToRow(rule))); err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	if err := validateUniqueHTTPWireGuardEntryRoutes(append(rows, httpRuleToRow(rule))); err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 
@@ -177,10 +190,12 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 			false,
 		)
 		if err != nil {
+			rollbackDefaultWireGuard()
 			return HTTPRule{}, err
 		}
 		if certRowsChanged {
 			if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
+				rollbackDefaultWireGuard()
 				return HTTPRule{}, err
 			}
 		}
@@ -188,9 +203,11 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
 		if certRowsChanged {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
 				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
 		}
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
@@ -240,30 +257,38 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if targetIndex < 0 {
 		return HTTPRule{}, ErrRuleNotFound
 	}
+	var defaultWireGuardRollback *wireGuardProfileRollback
 	if httpRuleInputEnablesWireGuard(input, current) {
 		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
 			return HTTPRule{}, err
 		}
 		if input.WireGuardProfileID == nil && current.WireGuardProfileID == nil {
-			profile, err := s.ensureDefaultHTTPWireGuardProfile(ctx, resolvedID)
+			profile, rollback, err := s.ensureDefaultHTTPWireGuardProfileWithRollback(ctx, resolvedID)
 			if err != nil {
 				return HTTPRule{}, err
 			}
+			defaultWireGuardRollback = rollback
 			input.WireGuardProfileID = &profile.ID
 		}
+	}
+	rollbackDefaultWireGuard := func() {
+		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, defaultWireGuardRollback)
 	}
 
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 
 	rule, err := s.normalizeHTTPRuleInput(ctx, input, current, id)
 	if err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
 	if err := ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers); err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
@@ -271,9 +296,11 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows...)
 	nextRows[targetIndex] = httpRuleToRow(rule)
 	if err := validateUniqueHTTPFrontendBinding(nextRows); err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	if err := validateUniqueHTTPWireGuardEntryRoutes(nextRows); err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	originalCertRows, nextCertRows, certRowsChanged, err := s.prepareManagedCertificatesForRuleMutation(
@@ -284,19 +311,23 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		true,
 	)
 	if err != nil {
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	if certRowsChanged {
 		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
+			rollbackDefaultWireGuard()
 			return HTTPRule{}, err
 		}
 	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
 		if certRowsChanged {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
 				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
 		}
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
@@ -1059,11 +1090,16 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 }
 
 func (s *ruleService) ensureDefaultHTTPWireGuardProfile(ctx context.Context, agentID string) (WireGuardProfile, error) {
+	profile, _, err := s.ensureDefaultHTTPWireGuardProfileWithRollback(ctx, agentID)
+	return profile, err
+}
+
+func (s *ruleService) ensureDefaultHTTPWireGuardProfileWithRollback(ctx context.Context, agentID string) (WireGuardProfile, *wireGuardProfileRollback, error) {
 	store, ok := s.store.(wireGuardProfileStore)
 	if !ok {
-		return WireGuardProfile{}, fmt.Errorf("%w: wireguard default profile store is unavailable", ErrInvalidArgument)
+		return WireGuardProfile{}, nil, fmt.Errorf("%w: wireguard default profile store is unavailable", ErrInvalidArgument)
 	}
-	return NewWireGuardProfileService(s.cfg, store).EnsureDefault(ctx, agentID)
+	return ensureDefaultWireGuardProfileWithRollback(ctx, s.cfg, store, agentID)
 }
 
 func (s *ruleService) validateRelayChain(ctx context.Context, agentID string, relayChain []int) error {
