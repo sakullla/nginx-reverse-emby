@@ -15,6 +15,7 @@ type LoadBalancing struct {
 
 type HTTPRule struct {
 	ID          int    `json:"id,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
 	FrontendURL string `json:"frontend_url"`
 	// BackendURL is retained only to ignore legacy payloads; runtime uses Backends.
 	BackendURL               string        `json:"backend_url"`

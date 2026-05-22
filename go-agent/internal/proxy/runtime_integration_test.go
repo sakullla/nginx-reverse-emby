@@ -191,6 +191,99 @@ func TestHTTPRuntimeUsesWireGuardListenerForInnerEntry(t *testing.T) {
 	}
 }
 
+func TestHTTPRuntimeUsesRuleAgentForWireGuardEntryRuntime(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	profileID := 7
+	frontendPort := pickFreePort(t)
+	wireGuardPort := pickFreePort(t)
+	wireGuardAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(wireGuardPort))
+	localRuntime := &fakeHTTPWireGuardRuntime{}
+	remoteRuntime := &fakeHTTPWireGuardRuntime{
+		listenTCP: func(_ context.Context, address string) (net.Listener, error) {
+			if address != wireGuardAddress {
+				t.Fatalf("ListenTCP address = %q, want %s", address, wireGuardAddress)
+			}
+			return net.Listen("tcp", address)
+		},
+	}
+	provider := &fakeAgentHTTPWireGuardProvider{
+		runtimes: map[string]map[int]*fakeHTTPWireGuardRuntime{
+			"local":  {profileID: localRuntime},
+			"remote": {profileID: remoteRuntime},
+		},
+	}
+
+	runtime, err := Start(context.Background(), []model.HTTPRule{{
+		ID:                       11,
+		AgentID:                  "remote",
+		FrontendURL:              fmt.Sprintf("http://app.internal:%d", frontendPort),
+		Backends:                 []model.HTTPBackend{{URL: backend.URL}},
+		WireGuardEntryEnabled:    true,
+		WireGuardProfileID:       &profileID,
+		WireGuardEntryListenHost: "127.0.0.1",
+		WireGuardEntryListenPort: wireGuardPort,
+	}}, nil, Providers{WireGuard: provider})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer runtime.Close()
+
+	if provider.agentCalls != 2 || provider.lastAgentID != "remote" || provider.lastProfileID != profileID {
+		t.Fatalf("agent runtime lookup = calls %d agent %q profile %d", provider.agentCalls, provider.lastAgentID, provider.lastProfileID)
+	}
+	if len(remoteRuntime.listenTCPCalls()) != 1 {
+		t.Fatalf("remote ListenTCP calls = %+v", remoteRuntime.listenTCPCalls())
+	}
+	if len(localRuntime.listenTCPCalls()) != 0 {
+		t.Fatalf("local ListenTCP calls = %+v, want none", localRuntime.listenTCPCalls())
+	}
+}
+
+func TestHTTPRuntimeWireGuardEntryBindingKeysIncludeRuleAgent(t *testing.T) {
+	profileID := 7
+	provider := &fakeAgentHTTPWireGuardProvider{
+		runtimes: map[string]map[int]*fakeHTTPWireGuardRuntime{
+			"local":  {profileID: {}},
+			"remote": {profileID: {}},
+		},
+	}
+	rules := []model.HTTPRule{
+		{
+			AgentID:                  "local",
+			FrontendURL:              "http://local.internal:8080",
+			Backends:                 []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			WireGuardEntryEnabled:    true,
+			WireGuardProfileID:       &profileID,
+			WireGuardEntryListenHost: "10.8.0.1",
+			WireGuardEntryListenPort: 8080,
+		},
+		{
+			AgentID:                  "remote",
+			FrontendURL:              "http://remote.internal:8080",
+			Backends:                 []model.HTTPBackend{{URL: "http://127.0.0.1:8097"}},
+			WireGuardEntryEnabled:    true,
+			WireGuardProfileID:       &profileID,
+			WireGuardEntryListenHost: "10.8.0.1",
+			WireGuardEntryListenPort: 8080,
+		},
+	}
+
+	keys, err := BindingKeys(context.Background(), rules, nil, Providers{WireGuard: provider})
+	if err != nil {
+		t.Fatalf("BindingKeys() error = %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("BindingKeys() = %+v, want separate keys per agent", keys)
+	}
+	if keys[0] == keys[1] {
+		t.Fatalf("BindingKeys() returned duplicate key %q for different agents", keys[0])
+	}
+}
+
 func startHTTPRuntimeWithRetry(t *testing.T, backendOneURL, backendTwoURL string) (*Runtime, int) {
 	t.Helper()
 
@@ -239,6 +332,28 @@ type fakeHTTPWireGuardProvider struct {
 
 func (p fakeHTTPWireGuardProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
 	runtime, ok := p.runtimes[profileID]
+	return runtime, ok
+}
+
+type fakeAgentHTTPWireGuardProvider struct {
+	runtimes      map[string]map[int]*fakeHTTPWireGuardRuntime
+	legacyCalls   int
+	agentCalls    int
+	lastAgentID   string
+	lastProfileID int
+}
+
+func (p *fakeAgentHTTPWireGuardProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+	p.legacyCalls++
+	runtime, ok := p.runtimes["local"][profileID]
+	return runtime, ok
+}
+
+func (p *fakeAgentHTTPWireGuardProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
+	p.agentCalls++
+	p.lastAgentID = agentID
+	p.lastProfileID = profileID
+	runtime, ok := p.runtimes[agentID][profileID]
 	return runtime, ok
 }
 

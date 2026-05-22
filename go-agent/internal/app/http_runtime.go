@@ -232,6 +232,7 @@ func cloneHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
 	cloned := make([]model.HTTPRule, len(rules))
 	for i, rule := range rules {
 		cloned[i] = rule
+		cloned[i].AgentID = strings.TrimSpace(rule.AgentID)
 		cloned[i].Backends = append([]model.HTTPBackend(nil), rule.Backends...)
 		cloned[i].CustomHeaders = append([]model.HTTPHeader(nil), rule.CustomHeaders...)
 		cloned[i].RelayChain = append([]int(nil), rule.RelayChain...)

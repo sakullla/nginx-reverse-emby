@@ -105,6 +105,7 @@ func TestSnapshotDecodePreservesHTTPWireGuardEntry(t *testing.T) {
 	raw := []byte(`{
 		"rules":[
 			{
+				"agent_id":"remote-http",
 				"frontend_url":"http://app.internal",
 				"backends":[{"url":"http://127.0.0.1:8096"}],
 				"wireguard_entry_enabled":true,
@@ -126,6 +127,9 @@ func TestSnapshotDecodePreservesHTTPWireGuardEntry(t *testing.T) {
 	rule := snapshot.Rules[0]
 	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 || rule.WireGuardEntryListenHost != "10.8.0.1" || rule.WireGuardEntryListenPort != 8080 {
 		t.Fatalf("HTTP WireGuard entry = %+v", rule)
+	}
+	if rule.AgentID != "remote-http" {
+		t.Fatalf("HTTP rule AgentID = %q, want remote-http", rule.AgentID)
 	}
 }
 
