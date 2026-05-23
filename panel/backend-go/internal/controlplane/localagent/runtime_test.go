@@ -477,13 +477,14 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 func TestToEmbeddedSnapshotPreservesWireGuardProfilesWithRawSecrets(t *testing.T) {
 	snapshot := Snapshot{
 		WireGuardProfiles: []storage.WireGuardProfile{{
-			ID:         17,
-			AgentID:    "local",
-			Name:       "wg-egress",
-			Mode:       "generic_wireguard",
-			PrivateKey: "raw-private-key",
-			ListenPort: 51820,
-			Addresses:  []string{"10.50.0.2/32", "fd50::2/128"},
+			ID:             17,
+			AgentID:        "local",
+			Name:           "wg-egress",
+			Mode:           "generic_wireguard",
+			PrivateKey:     "raw-private-key",
+			ListenPort:     51820,
+			PublicEndpoint: "wg.example.com:51820",
+			Addresses:      []string{"10.50.0.2/32", "fd50::2/128"},
 			Peers: []storage.WireGuardPeer{{
 				Name:                       "hub",
 				PublicKey:                  "peer-public-key",
@@ -512,7 +513,7 @@ func TestToEmbeddedSnapshotPreservesWireGuardProfilesWithRawSecrets(t *testing.T
 	if profile.PrivateKey != "raw-private-key" {
 		t.Fatalf("embedded WireGuard profile PrivateKey = %q, want raw private key", profile.PrivateKey)
 	}
-	if profile.ListenPort != 51820 || profile.MTU != 1420 || !profile.Enabled || profile.Revision != 44 {
+	if profile.ListenPort != 51820 || profile.PublicEndpoint != "wg.example.com:51820" || profile.MTU != 1420 || !profile.Enabled || profile.Revision != 44 {
 		t.Fatalf("embedded WireGuard profile scalar fields = %+v", profile)
 	}
 	if !reflect.DeepEqual(profile.Addresses, []string{"10.50.0.2/32", "fd50::2/128"}) {

@@ -184,6 +184,7 @@ func TestSnapshotDecodePreservesWireGuardProfiles(t *testing.T) {
 				"mode":"generic_wireguard",
 				"private_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 				"listen_port":51820,
+				"public_endpoint":"wg.example.com:51820",
 				"addresses":["10.10.0.1/24"],
 				"peers":[{"name":"peer-a","public_key":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=","preshared_key":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=","endpoint":"peer.example.com:51820","allowed_ips":["10.10.0.2/32"],"persistent_keepalive_seconds":25}],
 				"dns":["1.1.1.1"],
@@ -206,6 +207,9 @@ func TestSnapshotDecodePreservesWireGuardProfiles(t *testing.T) {
 	profile := snapshot.WireGuardProfiles[0]
 	if profile.PrivateKey != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
 		t.Fatalf("private_key = %q", profile.PrivateKey)
+	}
+	if profile.PublicEndpoint != "wg.example.com:51820" {
+		t.Fatalf("public_endpoint = %q", profile.PublicEndpoint)
 	}
 	if !reflect.DeepEqual(profile.Addresses, []string{"10.10.0.1/24"}) {
 		t.Fatalf("addresses = %+v", profile.Addresses)

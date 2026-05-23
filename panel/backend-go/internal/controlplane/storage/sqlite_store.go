@@ -1961,19 +1961,20 @@ func SnapshotWireGuardProfiles(rows []WireGuardProfileRow) []WireGuardProfile {
 			continue
 		}
 		profiles = append(profiles, WireGuardProfile{
-			ID:         row.ID,
-			AgentID:    row.AgentID,
-			Name:       row.Name,
-			Mode:       defaultString(row.Mode, "generic_wireguard"),
-			PrivateKey: row.PrivateKey,
-			ListenPort: row.ListenPort,
-			Addresses:  parseStringSlice(row.AddressesJSON),
-			Peers:      parseWireGuardPeers(row.PeersJSON),
-			DNS:        parseStringSlice(row.DNSJSON),
-			MTU:        row.MTU,
-			Enabled:    row.Enabled,
-			Tags:       parseStringSlice(row.TagsJSON),
-			Revision:   int64(row.Revision),
+			ID:             row.ID,
+			AgentID:        row.AgentID,
+			Name:           row.Name,
+			Mode:           defaultString(row.Mode, "generic_wireguard"),
+			PrivateKey:     row.PrivateKey,
+			ListenPort:     row.ListenPort,
+			PublicEndpoint: row.PublicEndpoint,
+			Addresses:      parseStringSlice(row.AddressesJSON),
+			Peers:          parseWireGuardPeers(row.PeersJSON),
+			DNS:            parseStringSlice(row.DNSJSON),
+			MTU:            row.MTU,
+			Enabled:        row.Enabled,
+			Tags:           parseStringSlice(row.TagsJSON),
+			Revision:       int64(row.Revision),
 		})
 	}
 	return profiles

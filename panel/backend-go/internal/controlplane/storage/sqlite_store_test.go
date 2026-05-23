@@ -4618,19 +4618,20 @@ func TestStoreLoadAgentSnapshotUsesWireGuardProfileRevision(t *testing.T) {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
 	if err := store.SaveWireGuardProfiles(t.Context(), "remote-wg", []WireGuardProfileRow{{
-		ID:            7,
-		AgentID:       "remote-wg",
-		Name:          "wg remote",
-		Mode:          "generic_wireguard",
-		PrivateKey:    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		ListenPort:    51820,
-		AddressesJSON: `["10.10.0.1/24"]`,
-		PeersJSON:     `[]`,
-		DNSJSON:       `[]`,
-		MTU:           1420,
-		Enabled:       true,
-		TagsJSON:      `[]`,
-		Revision:      9,
+		ID:             7,
+		AgentID:        "remote-wg",
+		Name:           "wg remote",
+		Mode:           "generic_wireguard",
+		PrivateKey:     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		ListenPort:     51820,
+		PublicEndpoint: "wg.example.com:51820",
+		AddressesJSON:  `["10.10.0.1/24"]`,
+		PeersJSON:      `[]`,
+		DNSJSON:        `[]`,
+		MTU:            1420,
+		Enabled:        true,
+		TagsJSON:       `[]`,
+		Revision:       9,
 	}}); err != nil {
 		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
 	}
@@ -4665,6 +4666,9 @@ func TestStoreLoadAgentSnapshotUsesWireGuardProfileRevision(t *testing.T) {
 	}
 	if snapshot.Revision != 9 {
 		t.Fatalf("snapshot revision = %d, want WireGuard profile revision 9", snapshot.Revision)
+	}
+	if len(snapshot.WireGuardProfiles) != 1 || snapshot.WireGuardProfiles[0].PublicEndpoint != "wg.example.com:51820" {
+		t.Fatalf("snapshot WireGuardProfiles = %+v, want public endpoint", snapshot.WireGuardProfiles)
 	}
 }
 

@@ -604,6 +604,23 @@ func TestEnsureUniqueL4ListenRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T
 	}
 }
 
+func TestValidateL4RuleSetRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
+	err := validateL4RuleSet([]L4Rule{{
+		ID:              2,
+		Name:            "udp",
+		Protocol:        "udp",
+		ListenMode:      "proxy",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      1080,
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks5://127.0.0.1:2080",
+		Enabled:         true,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "same-port TCP SOCKS5 proxy entry") {
+		t.Fatalf("validateL4RuleSet() error = %v, want same-port TCP SOCKS5 proxy entry rejection", err)
+	}
+}
+
 func TestNormalizeL4RuleInputRejectsProxyEntryWithoutEgress(t *testing.T) {
 	protocol := "tcp"
 	listenMode := "proxy"
@@ -4386,6 +4403,63 @@ func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	}
 	if store.loadSnapshotCalls != 0 {
 		t.Fatalf("LoadAgentSnapshot() calls = %d", store.loadSnapshotCalls)
+	}
+}
+
+func TestL4RuleServiceDeleteRejectsTCPProxyControlWhenUDPDependsOnIt(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["l4"]`,
+			DesiredRevision:  4,
+			CurrentRevision:  4,
+		}},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:                 1,
+				AgentID:            "edge-1",
+				Name:               "tcp control",
+				Protocol:           "tcp",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         1080,
+				BackendsJSON:       `[]`,
+				ListenMode:         "proxy",
+				ProxyEgressMode:    "proxy",
+				ProxyEgressURL:     "socks5://127.0.0.1:2080",
+				ProxyEntryAuthJSON: `{"enabled":true,"username":"u","password":"p"}`,
+				Enabled:            true,
+				Revision:           4,
+			}, {
+				ID:              2,
+				AgentID:         "edge-1",
+				Name:            "udp data",
+				Protocol:        "udp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      1080,
+				BackendsJSON:    `[]`,
+				ListenMode:      "proxy",
+				ProxyEgressMode: "proxy",
+				ProxyEgressURL:  "socks5://127.0.0.1:2080",
+				Enabled:         true,
+				Revision:        4,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Delete(context.Background(), "edge-1", 1)
+	if err == nil || !strings.Contains(err.Error(), "same-port TCP SOCKS5 proxy entry") {
+		t.Fatalf("Delete() error = %v, want same-port TCP SOCKS5 proxy entry rejection", err)
+	}
+	if len(store.l4RulesByID["edge-1"]) != 2 {
+		t.Fatalf("l4 rules after rejected delete = %+v, want unchanged pair", store.l4RulesByID["edge-1"])
+	}
+	if store.agents[0].DesiredRevision != 4 {
+		t.Fatalf("remote desired_revision = %d, want unchanged 4", store.agents[0].DesiredRevision)
 	}
 }
 

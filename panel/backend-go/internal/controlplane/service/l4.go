@@ -418,6 +418,9 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 
 	nextRows := append([]storage.L4RuleRow(nil), rows[:targetIndex]...)
 	nextRows = append(nextRows, rows[targetIndex+1:]...)
+	if err := validateL4RuleSet(l4RulesFromRows(nextRows)); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {
 		return L4Rule{}, err
 	}
@@ -1450,6 +1453,18 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 				next.ListenPort,
 				rule.ID,
 			)
+		}
+	}
+	return nil
+}
+
+func validateL4RuleSet(rules []L4Rule) error {
+	for _, rule := range rules {
+		if !isUDPProxyEntryRule(rule) {
+			continue
+		}
+		if !hasSamePortTCPProxyEntry(rules, rule, rule.ID) {
+			return fmt.Errorf("%w: udp proxy entry requires a same-port TCP SOCKS5 proxy entry on the same agent", ErrInvalidArgument)
 		}
 	}
 	return nil
