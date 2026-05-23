@@ -4097,6 +4097,66 @@ func TestL4RuleServiceCreateEnsuresTransitCallerWireGuardProfile(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceCreateBumpsTransitCallerWithExistingWireGuardProfile(t *testing.T) {
+	relayBProfileID := 41
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{
+			{ID: "relay-a", Name: "relay-a", CapabilitiesJSON: `["wireguard"]`, DesiredRevision: 5, CurrentRevision: 5},
+			{ID: "relay-b", Name: "relay-b", CapabilitiesJSON: `["wireguard"]`},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"relay-a": {{ID: 7, AgentID: "relay-a", Enabled: true, TransportMode: "tls_tcp"}},
+			"relay-b": {{ID: 8, AgentID: "relay-b", Enabled: true, TransportMode: "wireguard", WireGuardProfileID: &relayBProfileID}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"relay-a": {{
+				ID:            31,
+				AgentID:       "relay-a",
+				Name:          "relay-a-default",
+				Mode:          "generic_wireguard",
+				PrivateKey:    "relay-a-private",
+				ListenPort:    51820,
+				AddressesJSON: `["10.43.0.1/32"]`,
+				Enabled:       true,
+				TagsJSON:      `["system:default-wireguard"]`,
+				Revision:      4,
+			}},
+			"relay-b": {{
+				ID:            relayBProfileID,
+				AgentID:       "relay-b",
+				Name:          "relay-b-default",
+				Mode:          "generic_wireguard",
+				PrivateKey:    "relay-b-private",
+				ListenPort:    51821,
+				AddressesJSON: `["10.44.0.1/32"]`,
+				Enabled:       true,
+				TagsJSON:      `["system:default-wireguard"]`,
+				Revision:      4,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		ListenPort:  intPtrL4(9000),
+		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
+		RelayLayers: &[][]int{{7}, {8}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	relayA := l4StoreAgentByID(t, store, "relay-a")
+	if relayA.DesiredRevision <= relayA.CurrentRevision {
+		t.Fatalf("relay-a revisions = desired %d current %d, want desired bumped", relayA.DesiredRevision, relayA.CurrentRevision)
+	}
+	assertRevisionNotBehind(t, "relay-a DesiredRevision", relayA.DesiredRevision, rule.Revision)
+	if len(store.wireGuardByAgent["relay-a"]) != 1 {
+		t.Fatalf("relay-a WireGuardProfiles = %+v, want existing profile only", store.wireGuardByAgent["relay-a"])
+	}
+}
+
 func TestL4RuleServiceCreateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
 	relayBProfileID := 41
 	store := &fakeL4Store{

@@ -125,9 +125,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 			input.WireGuardProfileID = &profile.ID
 		}
 	}
-	var relayLayerWireGuardRollbacks []wireGuardProfileRollbackTarget
+	var relayLayerWireGuardEnsure relayLayerWireGuardProfileEnsureResult
 	rollbackDefaultWireGuard := func() {
-		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardRollbacks)
+		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardEnsure.Rollbacks)
 		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, defaultWireGuardRollback)
 	}
 
@@ -165,7 +165,7 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	relayLayerWireGuardRollbacks, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
+	relayLayerWireGuardEnsure, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
 	if err != nil {
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
@@ -214,6 +214,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		return HTTPRule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+		return HTTPRule{}, err
+	}
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
 		return HTTPRule{}, err
 	}
 	if certRowsChanged {
@@ -274,9 +277,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 			input.WireGuardProfileID = &profile.ID
 		}
 	}
-	var relayLayerWireGuardRollbacks []wireGuardProfileRollbackTarget
+	var relayLayerWireGuardEnsure relayLayerWireGuardProfileEnsureResult
 	rollbackDefaultWireGuard := func() {
-		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardRollbacks)
+		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardEnsure.Rollbacks)
 		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, defaultWireGuardRollback)
 	}
 
@@ -292,7 +295,7 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	relayLayerWireGuardRollbacks, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
+	relayLayerWireGuardEnsure, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
 	if err != nil {
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
@@ -337,6 +340,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		return HTTPRule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+		return HTTPRule{}, err
+	}
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
 		return HTTPRule{}, err
 	}
 	if certRowsChanged {
@@ -450,19 +456,25 @@ func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID str
 		if row.ID != agentID {
 			continue
 		}
-		nextRevision := revision
-		if row.DesiredRevision > nextRevision {
-			nextRevision = row.DesiredRevision
-		}
-		if row.CurrentRevision > nextRevision {
-			nextRevision = row.CurrentRevision
-		}
+		nextRevision := maxInt(revision, row.DesiredRevision, row.CurrentRevision+1)
 		if row.DesiredRevision < nextRevision {
 			row.DesiredRevision = nextRevision
 		}
 		return s.store.SaveAgent(ctx, row)
 	}
 	return ErrAgentNotFound
+}
+
+func (s *ruleService) bumpRelayLayerWireGuardCallers(ctx context.Context, agentIDs []string, revision int) error {
+	for _, agentID := range agentIDs {
+		if err := s.bumpRemoteDesiredRevision(ctx, agentID, revision); err != nil {
+			return err
+		}
+		if err := s.triggerLocalApply(ctx, agentID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *ruleService) listRulesAcrossAllAgents(ctx context.Context) ([]storage.HTTPRuleRow, error) {

@@ -10,13 +10,18 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func ensureDefaultWireGuardProfilesForRelayLayers(ctx context.Context, cfg config.Config, store relayChainLookupStore, ruleAgentID string, layers [][]int) ([]wireGuardProfileRollbackTarget, error) {
+type relayLayerWireGuardProfileEnsureResult struct {
+	CallerAgentIDs []string
+	Rollbacks      []wireGuardProfileRollbackTarget
+}
+
+func ensureDefaultWireGuardProfilesForRelayLayers(ctx context.Context, cfg config.Config, store relayChainLookupStore, ruleAgentID string, layers [][]int) (relayLayerWireGuardProfileEnsureResult, error) {
 	if len(layers) == 0 {
-		return nil, nil
+		return relayLayerWireGuardProfileEnsureResult{}, nil
 	}
 	listeners, err := store.ListRelayListeners(ctx, "")
 	if err != nil {
-		return nil, err
+		return relayLayerWireGuardProfileEnsureResult{}, err
 	}
 	listenersByID := make(map[int]storage.RelayListenerRow, len(listeners))
 	for _, listener := range listeners {
@@ -26,17 +31,17 @@ func ensureDefaultWireGuardProfilesForRelayLayers(ctx context.Context, cfg confi
 	}
 	callerAgentIDs := wireGuardRelayLayerCallerAgentIDs(ruleAgentID, layers, listenersByID)
 	if len(callerAgentIDs) == 0 {
-		return nil, nil
+		return relayLayerWireGuardProfileEnsureResult{}, nil
 	}
 	profileStore, ok := any(store).(wireGuardProfileStore)
 	if !ok {
-		return nil, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
+		return relayLayerWireGuardProfileEnsureResult{}, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
 	}
 	rollbacks := make([]wireGuardProfileRollbackTarget, 0, len(callerAgentIDs))
 	for _, callerAgentID := range callerAgentIDs {
 		if _, rollback, err := ensureDefaultWireGuardProfileWithRollback(ctx, cfg, profileStore, callerAgentID); err != nil {
 			restoreWireGuardProfileRollbacks(ctx, profileStore, rollbacks)
-			return nil, err
+			return relayLayerWireGuardProfileEnsureResult{}, err
 		} else if rollback != nil {
 			rollbacks = append(rollbacks, wireGuardProfileRollbackTarget{
 				AgentID:  callerAgentID,
@@ -44,7 +49,10 @@ func ensureDefaultWireGuardProfilesForRelayLayers(ctx context.Context, cfg confi
 			})
 		}
 	}
-	return rollbacks, nil
+	return relayLayerWireGuardProfileEnsureResult{
+		CallerAgentIDs: callerAgentIDs,
+		Rollbacks:      rollbacks,
+	}, nil
 }
 
 func wireGuardRelayLayerCallerAgentIDs(ruleAgentID string, layers [][]int, listenersByID map[int]storage.RelayListenerRow) []string {

@@ -1279,6 +1279,66 @@ func TestRuleServiceCreateEnsuresTransitCallerWireGuardProfile(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateBumpsTransitCallerWithExistingWireGuardProfile(t *testing.T) {
+	relayBProfileID := 41
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{
+			{ID: "relay-a", Name: "relay-a", CapabilitiesJSON: `["wireguard"]`, DesiredRevision: 5, CurrentRevision: 5},
+			{ID: "relay-b", Name: "relay-b", CapabilitiesJSON: `["wireguard"]`},
+		},
+		listeners: []storage.RelayListenerRow{
+			{ID: 7, AgentID: "relay-a", Enabled: true, TransportMode: "tls_tcp"},
+			{ID: 8, AgentID: "relay-b", Enabled: true, TransportMode: "wireguard", WireGuardProfileID: &relayBProfileID},
+		},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"relay-a": {{
+				ID:            31,
+				AgentID:       "relay-a",
+				Name:          "relay-a-default",
+				Mode:          "generic_wireguard",
+				PrivateKey:    "relay-a-private",
+				ListenPort:    51820,
+				AddressesJSON: `["10.43.0.1/32"]`,
+				Enabled:       true,
+				TagsJSON:      `["system:default-wireguard"]`,
+				Revision:      4,
+			}},
+			"relay-b": {{
+				ID:            relayBProfileID,
+				AgentID:       "relay-b",
+				Name:          "relay-b-default",
+				Mode:          "generic_wireguard",
+				PrivateKey:    "relay-b-private",
+				ListenPort:    51821,
+				AddressesJSON: `["10.44.0.1/32"]`,
+				Enabled:       true,
+				TagsJSON:      `["system:default-wireguard"]`,
+				Revision:      4,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://transit-existing-wg.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://upstream:8096"}},
+		RelayLayers: &[][]int{{7}, {8}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	relayA := ruleStoreAgentByID(t, store, "relay-a")
+	if relayA.DesiredRevision <= relayA.CurrentRevision {
+		t.Fatalf("relay-a revisions = desired %d current %d, want desired bumped", relayA.DesiredRevision, relayA.CurrentRevision)
+	}
+	assertRevisionNotBehind(t, "relay-a DesiredRevision", relayA.DesiredRevision, rule.Revision)
+	if len(store.wireGuardByAgentID["relay-a"]) != 1 {
+		t.Fatalf("relay-a WireGuardProfiles = %+v, want existing profile only", store.wireGuardByAgentID["relay-a"])
+	}
+}
+
 func TestRuleServiceCreateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
 	relayProfileID := 41
 	store := &fakeRuleStore{
