@@ -573,8 +573,9 @@ func TestProxyUDPAssociationUsesClientSourcePortNotRequestedTargetPort(t *testin
 	if !srv.hasProxyUDPAssociation(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40001}, bindAddr) {
 		t.Fatalf("association did not authorize client UDP source port")
 	}
-	// A wildcard source hint with a nonzero port must not authorize only a
-	// packet whose source port happens to equal a requested upstream target port.
+	if srv.hasProxyUDPAssociation(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40002}, bindAddr) {
+		t.Fatalf("association authorized different source port for wildcard host")
+	}
 	if srv.hasProxyUDPAssociation(&net.UDPAddr{IP: net.ParseIP("127.0.0.2"), Port: 40001}, bindAddr) {
 		t.Fatalf("association authorized different client source IP")
 	}

@@ -250,7 +250,7 @@ func (s *Server) registerProxyUDPAssociation(client net.Conn, rule model.L4Rule,
 		if ip := net.ParseIP(association.requestedHost); ip != nil && !ip.IsUnspecified() {
 			peerIP = ip.String()
 		} else if ip != nil && ip.IsUnspecified() {
-			locked = false
+			peerIP = association.clientIP
 		} else if association.requestedHost != "" && net.ParseIP(association.requestedHost) == nil {
 			return func() {}, fmt.Errorf("domain-form SOCKS5 UDP association source hints with port are not supported")
 		}
