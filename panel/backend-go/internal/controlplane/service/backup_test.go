@@ -2721,7 +2721,7 @@ func TestBackupServiceImportReplacingWireGuardClientsRemovesStaleGeneratedPeersA
 	if _, ok := peerByName["manual-peer"]; !ok {
 		t.Fatalf("profile peers = %+v, want manual peer preserved", profile.Peers)
 	}
-	if peer, ok := peerByName["new-phone"]; !ok || peer.PublicKey != testWireGuardPublicKeyB || strings.Join(peer.AllowedIPs, ",") != "0.0.0.0/0" {
+	if peer, ok := peerByName["new-phone"]; !ok || peer.PublicKey != testWireGuardPublicKeyB || strings.Join(peer.AllowedIPs, ",") != "10.92.0.2/32" {
 		t.Fatalf("profile peers = %+v, want enabled imported client peer", profile.Peers)
 	}
 	if _, ok := peerByName["disabled-tablet"]; ok {
@@ -3089,7 +3089,7 @@ func TestBackupServiceImportRemovesInvalidWireGuardClientPeerFromImportedProfile
 			t.Fatalf("profile peers = %+v, want invalid generated client peer removed", profile.Peers)
 		}
 	}
-	if peer, ok := peerByName["valid-phone"]; !ok || peer.PublicKey != testWireGuardPublicKey || strings.Join(peer.AllowedIPs, ",") != "0.0.0.0/0" {
+	if peer, ok := peerByName["valid-phone"]; !ok || peer.PublicKey != testWireGuardPublicKey || strings.Join(peer.AllowedIPs, ",") != "10.96.0.2/32" {
 		t.Fatalf("profile peers = %+v, want valid enabled client peer", profile.Peers)
 	}
 	if _, ok := peerByName["disabled-tablet"]; ok {

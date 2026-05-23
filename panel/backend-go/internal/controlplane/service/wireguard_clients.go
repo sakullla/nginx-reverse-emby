@@ -600,15 +600,11 @@ func upsertWireGuardClientPeer(peers []WireGuardPeer, row storage.WireGuardClien
 	if !row.Enabled {
 		return next
 	}
-	allowedIPs := parseStringArray(row.AllowedIPsJSON)
-	if len(allowedIPs) == 0 {
-		allowedIPs = []string{row.Address}
-	}
 	return append(next, WireGuardPeer{
 		Name:         row.Name,
 		PublicKey:    row.PublicKey,
 		PresharedKey: row.PresharedKey,
-		AllowedIPs:   allowedIPs,
+		AllowedIPs:   []string{row.Address},
 	})
 }
 

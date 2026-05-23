@@ -100,8 +100,8 @@ func TestWireGuardClientCreateHonorsExplicitAllowedIPs(t *testing.T) {
 	if !ok {
 		t.Fatalf("generated client peer not present: %+v", storedProfile.Peers)
 	}
-	if strings.Join(peer.AllowedIPs, ",") != "0.0.0.0/0,::/0" {
-		t.Fatalf("generated peer AllowedIPs = %v, want full-tunnel client routes", peer.AllowedIPs)
+	if strings.Join(peer.AllowedIPs, ",") != client.Address {
+		t.Fatalf("generated peer AllowedIPs = %v, want client address %s", peer.AllowedIPs, client.Address)
 	}
 }
 
@@ -446,8 +446,8 @@ func TestWireGuardClientUpdateEnablesDisabledClient(t *testing.T) {
 	for _, peer := range storedProfile.Peers {
 		if peer.PublicKey == client.PublicKey {
 			foundPeer = true
-			if peer.Name != client.Name || strings.Join(peer.AllowedIPs, ",") != strings.Join(client.AllowedIPs, ",") {
-				t.Fatalf("enabled client peer = %+v, want name/client routes from client %+v", peer, client)
+			if peer.Name != client.Name || strings.Join(peer.AllowedIPs, ",") != client.Address {
+				t.Fatalf("enabled client peer = %+v, want name/client address from client %+v", peer, client)
 			}
 		}
 	}
@@ -493,7 +493,7 @@ func TestWireGuardProfileUpdatePreservesEnabledGeneratedClientPeer(t *testing.T)
 		t.Fatalf("stored profile peers = %+v, want enabled generated client peer", storedProfile.Peers)
 	}
 	peer := storedProfile.Peers[0]
-	if peer.PublicKey != client.PublicKey || peer.PresharedKey == "" || strings.Join(peer.AllowedIPs, ",") != strings.Join(client.AllowedIPs, ",") {
+	if peer.PublicKey != client.PublicKey || peer.PresharedKey == "" || strings.Join(peer.AllowedIPs, ",") != client.Address {
 		t.Fatalf("stored generated peer = %+v, want generated client %v", peer, client)
 	}
 
@@ -710,8 +710,8 @@ func TestWireGuardProfileUpdatePreservesManualPeersWhenGeneratedClientExists(t *
 			}
 		case client.PublicKey:
 			foundGenerated = true
-			if strings.Join(peer.AllowedIPs, ",") != strings.Join(client.AllowedIPs, ",") {
-				t.Fatalf("generated peer = %+v, want generated client routes %+v", peer, client.AllowedIPs)
+			if strings.Join(peer.AllowedIPs, ",") != client.Address {
+				t.Fatalf("generated peer = %+v, want generated client address %s", peer, client.Address)
 			}
 		}
 	}
@@ -817,8 +817,8 @@ func TestWireGuardClientUpdateEditsNameAllowedIPsAndDNS(t *testing.T) {
 			if peer.Name != "tablet" {
 				t.Fatalf("peer Name = %q, want tablet", peer.Name)
 			}
-			if strings.Join(peer.AllowedIPs, ",") != "10.8.0.0/24" {
-				t.Fatalf("peer AllowedIPs = %v, want updated client routes", peer.AllowedIPs)
+			if strings.Join(peer.AllowedIPs, ",") != updated.Address {
+				t.Fatalf("peer AllowedIPs = %v, want updated client address %s", peer.AllowedIPs, updated.Address)
 			}
 		}
 	}
