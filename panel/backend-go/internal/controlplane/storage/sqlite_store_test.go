@@ -2144,7 +2144,7 @@ func TestStoreLoadAgentSnapshotDoesNotIncludeWireGuardProfilesForRemoteRelayList
 	})
 
 	for _, agentID := range []string{"relay-wg-client", "relay-wg-peer"} {
-		capabilities := `[]`
+		capabilities := `["wireguard"]`
 		if agentID == "relay-wg-peer" {
 			capabilities = `["wireguard"]`
 		}
@@ -2265,9 +2265,10 @@ func TestStoreLoadAgentSnapshotDoesNotRecoverRemoteWireGuardProfilesByNumericID(
 
 	for _, agentID := range []string{"wg-id-client", "wg-id-peer"} {
 		if err := store.SaveAgent(t.Context(), AgentRow{
-			ID:         agentID,
-			Name:       agentID,
-			AgentToken: "token-" + agentID,
+			ID:               agentID,
+			Name:             agentID,
+			AgentToken:       "token-" + agentID,
+			CapabilitiesJSON: `["wireguard"]`,
 		}); err != nil {
 			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
 		}
@@ -3692,12 +3693,13 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProxyEntryL4RuleWithoutBackend(t
 	})
 
 	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "wg-proxy-entry-agent",
-		Name:            "wg-proxy-entry-agent",
-		AgentToken:      "token-wg-proxy-entry-agent",
-		DesiredRevision: 0,
-		CurrentRevision: 0,
-		LastApplyStatus: "success",
+		ID:               "wg-proxy-entry-agent",
+		Name:             "wg-proxy-entry-agent",
+		AgentToken:       "token-wg-proxy-entry-agent",
+		CapabilitiesJSON: `["wireguard"]`,
+		DesiredRevision:  0,
+		CurrentRevision:  0,
+		LastApplyStatus:  "success",
 	}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
@@ -4991,6 +4993,129 @@ func TestStoreLoadAgentSnapshotOmitsWireGuardProfilesWhenAgentLacksCapability(t 
 	}); err != nil {
 		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
 	}
+	if err := store.SaveHTTPRules(t.Context(), "remote-no-wg", []HTTPRuleRow{
+		{
+			ID:                21,
+			AgentID:           "remote-no-wg",
+			FrontendURL:       "http://plain.example.test:8080",
+			BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+			Enabled:           true,
+			LoadBalancingJSON: `{"strategy":"round_robin"}`,
+			Revision:          3,
+		},
+		{
+			ID:                       22,
+			AgentID:                  "remote-no-wg",
+			FrontendURL:              "http://wg.example.test:8081",
+			BackendsJSON:             `[{"url":"http://127.0.0.1:8097"}]`,
+			Enabled:                  true,
+			WireGuardEntryEnabled:    true,
+			WireGuardProfileID:       intPointer(7),
+			WireGuardEntryListenHost: "10.10.0.1",
+			WireGuardEntryListenPort: 8081,
+			LoadBalancingJSON:        `{"strategy":"round_robin"}`,
+			Revision:                 4,
+		},
+		{
+			ID:                23,
+			AgentID:           "remote-no-wg",
+			FrontendURL:       "http://wg-relay.example.test:8082",
+			BackendsJSON:      `[{"url":"http://127.0.0.1:8098"}]`,
+			Enabled:           true,
+			RelayLayersJSON:   `[[42]]`,
+			LoadBalancingJSON: `{"strategy":"round_robin"}`,
+			Revision:          10,
+		},
+	}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "remote-no-wg", []L4RuleRow{
+		{
+			ID:           31,
+			AgentID:      "remote-no-wg",
+			Name:         "plain",
+			Protocol:     "tcp",
+			ListenHost:   "0.0.0.0",
+			ListenPort:   9000,
+			ListenMode:   "tcp",
+			BackendsJSON: `[{"host":"127.0.0.1","port":9001}]`,
+			Enabled:      true,
+			Revision:     5,
+		},
+		{
+			ID:                 32,
+			AgentID:            "remote-no-wg",
+			Name:               "wg-listen",
+			Protocol:           "tcp",
+			ListenHost:         "0.0.0.0",
+			ListenPort:         9002,
+			ListenMode:         "wireguard",
+			WireGuardProfileID: intPointer(7),
+			BackendsJSON:       `[{"host":"127.0.0.1","port":9003}]`,
+			Enabled:            true,
+			Revision:           6,
+		},
+		{
+			ID:                 33,
+			AgentID:            "remote-no-wg",
+			Name:               "wg-egress",
+			Protocol:           "tcp",
+			ListenHost:         "0.0.0.0",
+			ListenPort:         9004,
+			ListenMode:         "tcp",
+			ProxyEgressMode:    "wireguard",
+			WireGuardProfileID: intPointer(7),
+			BackendsJSON:       `[{"host":"127.0.0.1","port":9005}]`,
+			Enabled:            true,
+			Revision:           7,
+		},
+		{
+			ID:              34,
+			AgentID:         "remote-no-wg",
+			Name:            "wg-relay-egress",
+			Protocol:        "tcp",
+			ListenHost:      "0.0.0.0",
+			ListenPort:      9006,
+			ListenMode:      "tcp",
+			RelayLayersJSON: `[[42]]`,
+			BackendsJSON:    `[{"host":"127.0.0.1","port":9007}]`,
+			Enabled:         true,
+			Revision:        11,
+		},
+	}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "remote-no-wg", []RelayListenerRow{
+		{
+			ID:            41,
+			AgentID:       "remote-no-wg",
+			Name:          "plain-relay",
+			ListenHost:    "0.0.0.0",
+			ListenPort:    9443,
+			PublicHost:    "relay.example.test",
+			PublicPort:    9443,
+			Enabled:       true,
+			TransportMode: "tls_tcp",
+			TLSMode:       "pin_only",
+			Revision:      8,
+		},
+		{
+			ID:                 42,
+			AgentID:            "remote-no-wg",
+			Name:               "wg-relay",
+			ListenHost:         "10.10.0.1",
+			ListenPort:         9444,
+			PublicHost:         "10.10.0.1",
+			PublicPort:         9444,
+			Enabled:            true,
+			TransportMode:      "wireguard",
+			WireGuardProfileID: intPointer(7),
+			TLSMode:            "pin_only",
+			Revision:           9,
+		},
+	}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
 
 	snapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-no-wg", AgentSnapshotInput{})
 	if err != nil {
@@ -5003,6 +5128,15 @@ func TestStoreLoadAgentSnapshotOmitsWireGuardProfilesWhenAgentLacksCapability(t 
 		if profile.PrivateKey == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" || profile.PrivateKey == "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=" {
 			t.Fatalf("unsupported agent snapshot leaked wireguard private material: %+v", profile)
 		}
+	}
+	if len(snapshot.Rules) != 1 || snapshot.Rules[0].ID != 21 {
+		t.Fatalf("Rules = %+v, want only non-wireguard rule", snapshot.Rules)
+	}
+	if len(snapshot.L4Rules) != 1 || snapshot.L4Rules[0].ID != 31 {
+		t.Fatalf("L4Rules = %+v, want only non-wireguard rule", snapshot.L4Rules)
+	}
+	if len(snapshot.RelayListeners) != 1 || snapshot.RelayListeners[0].ID != 41 {
+		t.Fatalf("RelayListeners = %+v, want only non-wireguard listener", snapshot.RelayListeners)
 	}
 }
 

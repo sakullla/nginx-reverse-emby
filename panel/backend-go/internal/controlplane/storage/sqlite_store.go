@@ -260,6 +260,9 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		return Snapshot{}, err
 	}
 	if !supportsWireGuard {
+		relayRows = filterRelayListenerRowsWithoutWireGuard(relayRows)
+		httpRows = filterHTTPRuleRowsWithoutWireGuard(httpRows, relayRows)
+		l4Rows = filterL4RuleRowsWithoutWireGuard(l4Rows, relayRows)
 		wireGuardRows = nil
 	}
 
@@ -1867,6 +1870,75 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 	}
 
 	return len(parseL4Backends(row.BackendsJSON)) > 0
+}
+
+func filterHTTPRuleRowsWithoutWireGuard(rows []HTTPRuleRow, relayRows []RelayListenerRow) []HTTPRuleRow {
+	relayIDs := relayListenerIDSet(relayRows)
+	filtered := make([]HTTPRuleRow, 0, len(rows))
+	for _, row := range rows {
+		if row.WireGuardEntryEnabled ||
+			positiveOptionalInt(row.WireGuardProfileID) ||
+			relayLayersReferenceMissingListener(row.RelayLayersJSON, relayIDs) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func filterL4RuleRowsWithoutWireGuard(rows []L4RuleRow, relayRows []RelayListenerRow) []L4RuleRow {
+	relayIDs := relayListenerIDSet(relayRows)
+	filtered := make([]L4RuleRow, 0, len(rows))
+	for _, row := range rows {
+		if strings.EqualFold(strings.TrimSpace(row.ListenMode), "wireguard") ||
+			strings.EqualFold(strings.TrimSpace(row.ProxyEgressMode), "wireguard") ||
+			positiveOptionalInt(row.WireGuardProfileID) ||
+			relayLayersReferenceMissingListener(row.RelayLayersJSON, relayIDs) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func filterRelayListenerRowsWithoutWireGuard(rows []RelayListenerRow) []RelayListenerRow {
+	filtered := make([]RelayListenerRow, 0, len(rows))
+	for _, row := range rows {
+		if strings.EqualFold(strings.TrimSpace(row.TransportMode), "wireguard") ||
+			positiveOptionalInt(row.WireGuardProfileID) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func positiveOptionalInt(value *int) bool {
+	return value != nil && *value > 0
+}
+
+func relayListenerIDSet(rows []RelayListenerRow) map[int]struct{} {
+	ids := make(map[int]struct{}, len(rows))
+	for _, row := range rows {
+		if row.ID > 0 {
+			ids[row.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
+func relayLayersReferenceMissingListener(layersJSON string, available map[int]struct{}) bool {
+	for _, layer := range parseIntLayers(layersJSON) {
+		for _, listenerID := range layer {
+			if listenerID <= 0 {
+				continue
+			}
+			if _, ok := available[listenerID]; !ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
