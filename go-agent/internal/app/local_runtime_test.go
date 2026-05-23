@@ -1681,6 +1681,48 @@ func TestRelayRuntimeManagerPreservesRunningServerOnWireGuardApplyFailure(t *tes
 	waitForPortState(t, listenPort, true)
 }
 
+func TestRelayRuntimeManagerSkipsWireGuardApplyWithoutLocalListeners(t *testing.T) {
+	created := 0
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		created++
+		return &testAppWireGuardRuntime{}, nil
+	})
+	defer shared.Close()
+
+	profileID := 9
+	profile := validAppWireGuardProfile(profileID)
+	if err := shared.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("failed to seed shared wireguard runtime: %v", err)
+	}
+	runtime, ok := shared.Runtime(profileID)
+	if !ok {
+		t.Fatal("expected seeded wireguard runtime")
+	}
+	if created != 1 {
+		t.Fatalf("wireguard runtime creations after seed = %d, want 1", created)
+	}
+
+	manager := newRelayRuntimeManagerWithWireGuard(&testRelayTLSProvider{}, shared, false)
+	defer manager.Close()
+
+	nextProfile := profile
+	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
+	if err := manager.ApplyWithWireGuardProfiles(context.Background(), nil, []model.WireGuardProfile{nextProfile}); err != nil {
+		t.Fatalf("ApplyWithWireGuardProfiles() error = %v", err)
+	}
+
+	got, ok := shared.Runtime(profileID)
+	if !ok {
+		t.Fatal("expected wireguard runtime to remain registered")
+	}
+	if got != runtime {
+		t.Fatal("relay apply without local listeners replaced the shared wireguard runtime")
+	}
+	if created != 1 {
+		t.Fatalf("wireguard runtime creations after relay apply = %d, want 1", created)
+	}
+}
+
 func TestRelayRuntimeManagerPreservesRunningServerOnReplacementWireGuardListenFailure(t *testing.T) {
 	provider := &testRelayTLSProvider{
 		certificates: map[int]tls.Certificate{

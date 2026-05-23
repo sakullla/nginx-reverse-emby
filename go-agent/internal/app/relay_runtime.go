@@ -53,9 +53,6 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 	defer m.mu.Unlock()
 
 	if len(listeners) == 0 {
-		if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
-			return err
-		}
 		if m.server != nil {
 			_ = m.server.Close()
 			m.server = nil
@@ -390,13 +387,6 @@ func cloneIntLayers(layers [][]int) [][]int {
 		cloned[i] = append([]int(nil), layer...)
 	}
 	return cloned
-}
-
-func (m *relayRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
-	if m.wireGuardRuntime == nil || profiles == nil {
-		return nil
-	}
-	return m.wireGuardRuntime.Apply(ctx, profiles)
 }
 
 func (m *relayRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
