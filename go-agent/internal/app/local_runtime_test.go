@@ -584,6 +584,39 @@ func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing
 	}
 }
 
+func TestWireGuardProviderDoesNotFallbackAcrossAgentsForScopedLookup(t *testing.T) {
+	otherRuntime := &testAppWireGuardRuntime{}
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		return otherRuntime, nil
+	})
+	defer shared.Close()
+
+	profile := validAppWireGuardProfile(72)
+	profile.AgentID = "other-agent"
+	if err := shared.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	provider := shared.providerForAgent("local-agent")
+	if runtime, ok := provider.WireGuardRuntime(profile.ID); ok {
+		t.Fatalf("WireGuardRuntime() returned %p from another agent, want missing scoped runtime", runtime)
+	}
+
+	transaction, err := shared.Prepare(context.Background(), []model.WireGuardProfile{profile})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	defer transaction.Rollback()
+	transactionProvider := wireGuardTransactionProvider{
+		transaction: transaction,
+		agentID:     "local-agent",
+		profiles:    []model.WireGuardProfile{profile},
+	}
+	if runtime, ok := transactionProvider.WireGuardRuntime(profile.ID); ok {
+		t.Fatalf("WireGuardRuntime(transaction) returned %p from another agent, want missing scoped runtime", runtime)
+	}
+}
+
 func TestL4RuntimeManagerPreservesRunningServerOnMissingWireGuardProfileReconfigure(t *testing.T) {
 	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
 		return &testAppWireGuardRuntime{
@@ -783,7 +816,7 @@ func TestL4RuntimeManagerUsesLocalAgentWireGuardProfileWhenIDsOverlap(t *testing
 	}
 }
 
-func TestL4RuntimeManagerAllowsCrossAgentWireGuardRuntimeWhenIDIsUnambiguous(t *testing.T) {
+func TestL4RuntimeManagerRejectsCrossAgentWireGuardRuntimeForScopedLookup(t *testing.T) {
 	localAgentID := "local-agent"
 	var listenCalls int
 	manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(nil, Config{AgentID: localAgentID}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
@@ -812,11 +845,11 @@ func TestL4RuntimeManagerAllowsCrossAgentWireGuardRuntimeWhenIDIsUnambiguous(t *
 		WireGuardProfileID: &profileID,
 		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
 	}}, nil, []model.WireGuardProfile{profile})
-	if err != nil {
-		t.Fatalf("ApplyWithRelayAndWireGuardProfiles() error = %v", err)
+	if err == nil || err.Error() != "wireguard profile 32 runtime not found" {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles() error = %v, want missing scoped runtime", err)
 	}
-	if listenCalls != 1 {
-		t.Fatalf("ListenTCP calls = %d, want 1", listenCalls)
+	if listenCalls != 0 {
+		t.Fatalf("ListenTCP calls = %d, want no cross-agent listener", listenCalls)
 	}
 }
 

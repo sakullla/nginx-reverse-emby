@@ -563,6 +563,7 @@ func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGua
 		if ok {
 			return runtime, true
 		}
+		return nil, false
 	}
 	runtime, ok := p.runtime.Runtime(profileID)
 	if !ok {
@@ -617,6 +618,7 @@ func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (relay.Wir
 		if ok {
 			return runtime, true
 		}
+		return nil, false
 	}
 	runtime, ok := p.transaction.Runtime(profileID)
 	if !ok {

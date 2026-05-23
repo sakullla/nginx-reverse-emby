@@ -208,7 +208,16 @@ func proxyUDPReplySourceMatches(expected string, source string) bool {
 		return sourceIP != nil && expectedIP.Equal(sourceIP)
 	}
 	if sourceIP != nil {
-		return true
+		ips, err := net.LookupIP(expectedHost)
+		if err != nil {
+			return false
+		}
+		for _, ip := range ips {
+			if ip.Equal(sourceIP) {
+				return true
+			}
+		}
+		return false
 	}
 	return strings.EqualFold(expectedHost, sourceHost)
 }

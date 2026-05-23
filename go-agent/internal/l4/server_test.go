@@ -543,6 +543,43 @@ func TestProxyUDPAssociationHonorsRequestedEndpoint(t *testing.T) {
 	}
 }
 
+func TestProxyUDPAssociationUsesClientSourcePortNotRequestedTargetPort(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	srv := &Server{
+		udpAssociations: make(map[string]udpProxyAssociation),
+	}
+	rule := model.L4Rule{ID: 1, ListenPort: 1080}
+	wrapped := &addrOverrideConn{
+		Conn:       server,
+		localAddr:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080},
+		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40001},
+	}
+
+	bindAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}
+	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+		Protocol: "socks5-udp",
+		Host:     "0.0.0.0",
+		Port:     40001,
+		Target:   "0.0.0.0:40001",
+	}, bindAddr)
+	if err != nil {
+		t.Fatalf("registerProxyUDPAssociation() error = %v", err)
+	}
+	defer unregister()
+
+	if !srv.hasProxyUDPAssociation(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40001}, bindAddr) {
+		t.Fatalf("association did not authorize client UDP source port")
+	}
+	// A wildcard source hint with a nonzero port must not authorize only a
+	// packet whose source port happens to equal a requested upstream target port.
+	if srv.hasProxyUDPAssociation(&net.UDPAddr{IP: net.ParseIP("127.0.0.2"), Port: 40001}, bindAddr) {
+		t.Fatalf("association authorized different client source IP")
+	}
+}
+
 func TestProxyUDPAssociationRejectsDomainSourceHintWithPort(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
@@ -607,6 +644,18 @@ func TestProxyUDPAssociationAllZeroEndpointLocksToFirstPeer(t *testing.T) {
 	}
 	if srv.hasProxyUDPAssociation(otherPeer, listener) {
 		t.Fatalf("association authorized different same-IP UDP peer after first observation")
+	}
+}
+
+func TestProxyUDPReplySourceMatchesHostnameResolution(t *testing.T) {
+	if !proxyUDPReplySourceMatches("localhost:53", "127.0.0.1:53") {
+		t.Fatalf("expected localhost reply from loopback to match")
+	}
+	if proxyUDPReplySourceMatches("localhost:53", "203.0.113.10:53") {
+		t.Fatalf("hostname target accepted unrelated reply source")
+	}
+	if proxyUDPReplySourceMatches("localhost:53", "127.0.0.1:54") {
+		t.Fatalf("hostname target accepted wrong reply port")
 	}
 }
 
