@@ -180,7 +180,6 @@ func TestHTTPRuntimeUsesWireGuardListenerForInnerEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
-	req.Host = fmt.Sprintf("app.internal:%d", frontendPort)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("wireguard entry request failed: %v", err)

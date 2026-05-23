@@ -259,7 +259,7 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 				wireGuardAgentIDs[wgSpec.key] = strings.TrimSpace(rule.AgentID)
 				wireGuardProfileIDs[wgSpec.key] = rule.WireGuardProfileID
 			}
-			groups[wgSpec.key] = append(groups[wgSpec.key], rule)
+			groups[wgSpec.key] = append(groups[wgSpec.key], rule, ruleForWireGuardEntryHost(rule))
 		}
 	}
 
@@ -282,6 +282,17 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 		})
 	}
 	return specs, nil
+}
+
+func ruleForWireGuardEntryHost(rule model.HTTPRule) model.HTTPRule {
+	frontend, err := url.Parse(rule.FrontendURL)
+	if err != nil {
+		return rule
+	}
+	frontend.Scheme = "http"
+	frontend.Host = net.JoinHostPort(strings.TrimSpace(rule.WireGuardEntryListenHost), strconv.Itoa(rule.WireGuardEntryListenPort))
+	rule.FrontendURL = frontend.String()
+	return rule
 }
 
 func listenRuntimeSpecTCP(ctx context.Context, spec runtimeListenerSpec, providers Providers) (net.Listener, error) {
