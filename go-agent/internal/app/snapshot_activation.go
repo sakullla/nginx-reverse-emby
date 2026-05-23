@@ -27,6 +27,9 @@ func (a *App) applyHTTPRules(ctx context.Context, snapshot Snapshot) error {
 	if a.httpApplier == nil || snapshot.Rules == nil {
 		return nil
 	}
+	if wireGuardAware, ok := a.httpApplier.(HTTPWireGuardAwareApplier); ok {
+		return wireGuardAware.ApplyWithRelayAndWireGuardProfiles(ctx, snapshot.Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles)
+	}
 	if relayAware, ok := a.httpApplier.(HTTPRelayAwareApplier); ok {
 		return relayAware.ApplyWithRelay(ctx, snapshot.Rules, snapshot.RelayListeners)
 	}
@@ -50,6 +53,9 @@ func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	if next.RelayListeners == nil {
 		merged.RelayListeners = previous.RelayListeners
 	}
+	if next.WireGuardProfiles == nil {
+		merged.WireGuardProfiles = previous.WireGuardProfiles
+	}
 	if next.Certificates == nil {
 		merged.Certificates = previous.Certificates
 	}
@@ -70,6 +76,9 @@ func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
 	if a.l4Applier == nil || snapshot.L4Rules == nil {
 		return nil
 	}
+	if wireGuardAware, ok := a.l4Applier.(L4WireGuardAwareApplier); ok {
+		return wireGuardAware.ApplyWithRelayAndWireGuardProfiles(ctx, snapshot.L4Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles)
+	}
 	if relayAware, ok := a.l4Applier.(L4RelayAwareApplier); ok {
 		return relayAware.ApplyWithRelay(ctx, snapshot.L4Rules, snapshot.RelayListeners)
 	}
@@ -77,8 +86,11 @@ func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
 }
 
 func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error {
-	if a.relayApplier == nil || snapshot.RelayListeners == nil {
+	if a.relayApplier == nil || (snapshot.RelayListeners == nil && snapshot.WireGuardProfiles == nil) {
 		return nil
+	}
+	if relayWireGuardApplier, ok := a.relayApplier.(RelayWireGuardApplier); ok {
+		return relayWireGuardApplier.ApplyWithWireGuardProfiles(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName), snapshot.WireGuardProfiles)
 	}
 	return a.relayApplier.Apply(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName))
 }
@@ -91,14 +103,6 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 	configActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
 		ActivateAgentConfig: handlers.ActivateAgentConfig,
 	})
-	rulesActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
-		ActivateHTTPRules: handlers.ActivateHTTPRules,
-		ActivateL4Rules:   handlers.ActivateL4Rules,
-	})
-	relayActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
-		ActivateRelayListeners: handlers.ActivateRelayListeners,
-	})
-
 	return func(ctx context.Context, previous, next model.Snapshot) error {
 		if err := certActivator(ctx, previous, next); err != nil {
 			return err
@@ -112,11 +116,43 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 		localNext := next
 		localNext.RelayListeners = localRelayListeners(next.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
 
-		if err := relayActivator(ctx, localPrevious, localNext); err != nil {
-			return err
+		if !reflect.DeepEqual(previous.Rules, next.Rules) ||
+			httpRelayInputsChanged(next.Rules, previous.RelayListeners, next.RelayListeners) ||
+			httpWireGuardInputsChanged(next.Rules, previous.WireGuardProfiles, next.WireGuardProfiles) {
+			if err := a.applyHTTPRules(ctx, Snapshot{
+				Rules:             next.Rules,
+				RelayListeners:    next.RelayListeners,
+				WireGuardProfiles: next.WireGuardProfiles,
+			}); err != nil {
+				return err
+			}
 		}
 
-		return rulesActivator(ctx, previous, next)
+		if (!reflect.DeepEqual(previous.L4Rules, next.L4Rules) ||
+			l4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners) ||
+			l4WireGuardInputsChanged(next.L4Rules, previous.WireGuardProfiles, next.WireGuardProfiles)) &&
+			handlers.ActivateL4Rules != nil {
+			if err := a.applyL4Rules(ctx, Snapshot{
+				L4Rules:           next.L4Rules,
+				RelayListeners:    next.RelayListeners,
+				WireGuardProfiles: next.WireGuardProfiles,
+			}); err != nil {
+				return err
+			}
+		}
+
+		if (relay.ListenersChanged(localPrevious.RelayListeners, localNext.RelayListeners) ||
+			!reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles)) &&
+			handlers.ActivateRelayListeners != nil {
+			if err := a.applyRelayListeners(ctx, Snapshot{
+				RelayListeners:    localNext.RelayListeners,
+				WireGuardProfiles: next.WireGuardProfiles,
+			}); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 }
 
@@ -157,6 +193,64 @@ func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandle
 			})
 		},
 	}
+}
+
+func l4WireGuardInputsChanged(rules []model.L4Rule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
+	for _, rule := range rules {
+		if !l4RuleUsesWireGuard(rule) {
+			continue
+		}
+		return !reflect.DeepEqual(previousProfiles, nextProfiles)
+	}
+	return false
+}
+
+func httpWireGuardInputsChanged(rules []model.HTTPRule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
+	for _, rule := range rules {
+		if rule.WireGuardEntryEnabled {
+			return !reflect.DeepEqual(previousProfiles, nextProfiles)
+		}
+	}
+	return false
+}
+
+func httpRelayInputsChanged(rules []model.HTTPRule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {
+	for _, rule := range rules {
+		for _, layer := range rule.RelayLayers {
+			for _, listenerID := range layer {
+				if relayListenerChangedByID(listenerID, previousRelayListeners, nextRelayListeners) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func relayListenerChangedByID(listenerID int, previous, next []model.RelayListener) bool {
+	previousListener, previousOK := relayListenerByID(listenerID, previous)
+	nextListener, nextOK := relayListenerByID(listenerID, next)
+	if previousOK != nextOK {
+		return true
+	}
+	if !previousOK {
+		return false
+	}
+	return !reflect.DeepEqual(previousListener, nextListener)
+}
+
+func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.RelayListener, bool) {
+	for _, listener := range listeners {
+		if listener.ID == listenerID {
+			return listener, true
+		}
+	}
+	return model.RelayListener{}, false
+}
+
+func l4RuleUsesWireGuard(rule model.L4Rule) bool {
+	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") ||
+		strings.EqualFold(strings.TrimSpace(rule.ProxyEgressMode), "wireguard")
 }
 
 func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {

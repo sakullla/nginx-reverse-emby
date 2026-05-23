@@ -303,6 +303,28 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 			CertificateType: "uploaded",
 			Tags:            []string{"one"},
 		}},
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:         11,
+			AgentID:    "agent-a",
+			Name:       "wg-a",
+			Mode:       "generic_wireguard",
+			PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			ListenPort: 51820,
+			Addresses:  []string{"10.20.0.1/24"},
+			Peers: []model.WireGuardPeer{{
+				Name:         "peer-a",
+				PublicKey:    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+				PresharedKey: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
+				Endpoint:     "peer.example.com:51820",
+				AllowedIPs:   []string{"10.20.0.2/32"},
+				Reserved:     []byte{1, 2, 3},
+			}},
+			DNS:      []string{"1.1.1.1"},
+			MTU:      1420,
+			Enabled:  true,
+			Tags:     []string{"edge"},
+			Revision: 1,
+		}},
 	}
 	if err := r.Apply(ctx, model.Snapshot{}, initial); err != nil {
 		t.Fatalf("priming apply failed: %v", err)
@@ -321,6 +343,8 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	snap.RelayListeners[0].Tags[0] = "mutated"
 	snap.Certificates[0].Domain = "mutated.example.com"
 	snap.CertificatePolicies[0].Tags[0] = "mutated"
+	snap.WireGuardProfiles[0].Peers[0].AllowedIPs[0] = "10.20.0.99/32"
+	snap.WireGuardProfiles[0].Peers[0].Reserved[0] = 9
 
 	current := r.ActiveSnapshot()
 	if current.Rules[0].CustomHeaders[0].Value != "one" {
@@ -358,6 +382,12 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	}
 	if current.CertificatePolicies[0].Tags[0] != "one" {
 		t.Fatalf("policy tags leaked mutation: %+v", current.CertificatePolicies)
+	}
+	if current.WireGuardProfiles[0].Peers[0].AllowedIPs[0] != "10.20.0.2/32" {
+		t.Fatalf("wireguard allowed_ips leaked mutation: %+v", current.WireGuardProfiles[0].Peers)
+	}
+	if current.WireGuardProfiles[0].Peers[0].Reserved[0] != 1 {
+		t.Fatalf("wireguard reserved leaked mutation: %+v", current.WireGuardProfiles[0].Peers)
 	}
 }
 

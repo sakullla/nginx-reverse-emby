@@ -14,6 +14,10 @@ type relayChainLookupStore interface {
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 }
 
+type relayChainValidationOptions struct {
+	RuleAgentID string
+}
+
 func normalizeRelayChainInput(values []int, protocol string) ([]int, error) {
 	normalized := make([]int, 0, len(values))
 	seen := make(map[int]struct{}, len(values))
@@ -110,7 +114,7 @@ func cloneIntLayers(layers [][]int) [][]int {
 	return cloned
 }
 
-func validateRelayChainReferences(ctx context.Context, store relayChainLookupStore, knownAgentIDs []string, relayChain []int) error {
+func validateRelayChainReferences(ctx context.Context, store relayChainLookupStore, knownAgentIDs []string, relayChain []int, opts relayChainValidationOptions) error {
 	if len(relayChain) == 0 {
 		return nil
 	}
@@ -123,7 +127,13 @@ func validateRelayChainReferences(ctx context.Context, store relayChainLookupSto
 	for _, listener := range listeners {
 		listenersByID[listener.ID] = listener
 	}
+	return validateRelayChainReferencesFromRows(knownAgentIDs, listenersByID, relayChain, opts)
+}
 
+func validateRelayChainReferencesFromRows(knownAgentIDs []string, listenersByID map[int]storage.RelayListenerRow, relayChain []int, opts relayChainValidationOptions) error {
+	if len(relayChain) == 0 {
+		return nil
+	}
 	knownAgents := make(map[string]struct{}, len(knownAgentIDs))
 	for _, agentID := range knownAgentIDs {
 		knownAgents[strings.TrimSpace(agentID)] = struct{}{}

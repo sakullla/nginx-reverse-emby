@@ -1632,9 +1632,10 @@ func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
 			Username: "client",
 			Password: "entry-secret",
 		},
-		ProxyEgressMode: "proxy",
-		ProxyEgressURL:  "socks://egress:egress-secret@127.0.0.1:1080",
-		Enabled:         true,
+		ProxyEgressMode:    "proxy",
+		ProxyEgressURL:     "socks://egress:egress-secret@127.0.0.1:1080",
+		WireGuardEgressURI: "wireguard://AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=@edge.example.com:51820?publickey=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=&psk=CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=&address=10.44.0.2/32#Edge",
+		Enabled:            true,
 	}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1681,11 +1682,14 @@ func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
 				t.Fatalf("%s %s = %d body=%s", tt.method, tt.path, resp.Code, resp.Body.String())
 			}
 			body := resp.Body.String()
-			if strings.Contains(body, "entry-secret") || strings.Contains(body, "egress-secret") {
+			if strings.Contains(body, "entry-secret") || strings.Contains(body, "egress-secret") || strings.Contains(body, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=") || strings.Contains(body, "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=") {
 				t.Fatalf("response leaked secret: %s", body)
 			}
 			if !strings.Contains(body, `"proxy_egress_url":"socks://egress:xxxxx@127.0.0.1:1080"`) {
 				t.Fatalf("response did not redact egress URL: %s", body)
+			}
+			if !strings.Contains(body, `"wireguard_egress_uri":"wireguard://xxxxx@edge.example.com:51820`) || !strings.Contains(body, `psk=xxxxx`) {
+				t.Fatalf("response did not redact WireGuard URI: %s", body)
 			}
 			if strings.Contains(body, `"password"`) {
 				t.Fatalf("response included proxy auth password field: %s", body)

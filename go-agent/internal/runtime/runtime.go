@@ -172,6 +172,7 @@ func isZeroSnapshot(s model.Snapshot) bool {
 		len(s.Rules) == 0 &&
 		len(s.L4Rules) == 0 &&
 		len(s.RelayListeners) == 0 &&
+		len(s.WireGuardProfiles) == 0 &&
 		len(s.Certificates) == 0 &&
 		len(s.CertificatePolicies) == 0
 }
@@ -231,6 +232,33 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			if listener.Tags != nil {
 				cloned.RelayListeners[i].Tags = make([]string, len(listener.Tags))
 				copy(cloned.RelayListeners[i].Tags, listener.Tags)
+			}
+		}
+	}
+	if snapshot.WireGuardProfiles != nil {
+		cloned.WireGuardProfiles = make([]model.WireGuardProfile, len(snapshot.WireGuardProfiles))
+		copy(cloned.WireGuardProfiles, snapshot.WireGuardProfiles)
+		for i, profile := range snapshot.WireGuardProfiles {
+			if profile.Addresses != nil {
+				cloned.WireGuardProfiles[i].Addresses = append([]string(nil), profile.Addresses...)
+			}
+			if profile.DNS != nil {
+				cloned.WireGuardProfiles[i].DNS = append([]string(nil), profile.DNS...)
+			}
+			if profile.Tags != nil {
+				cloned.WireGuardProfiles[i].Tags = append([]string(nil), profile.Tags...)
+			}
+			if profile.Peers != nil {
+				cloned.WireGuardProfiles[i].Peers = make([]model.WireGuardPeer, len(profile.Peers))
+				copy(cloned.WireGuardProfiles[i].Peers, profile.Peers)
+				for j, peer := range profile.Peers {
+					if peer.AllowedIPs != nil {
+						cloned.WireGuardProfiles[i].Peers[j].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
+					}
+					if peer.Reserved != nil {
+						cloned.WireGuardProfiles[i].Peers[j].Reserved = append([]byte(nil), peer.Reserved...)
+					}
+				}
 			}
 		}
 	}

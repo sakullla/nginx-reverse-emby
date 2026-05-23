@@ -23,7 +23,7 @@ import (
 var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
-var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic"}
+var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard"}
 
 type agentStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
@@ -93,22 +93,26 @@ type HTTPCustomHeader struct {
 }
 
 type HTTPRule struct {
-	ID               int                `json:"id"`
-	AgentID          string             `json:"agent_id"`
-	FrontendURL      string             `json:"frontend_url"`
-	BackendURL       string             `json:"-"`
-	Backends         []HTTPRuleBackend  `json:"backends"`
-	LoadBalancing    HTTPLoadBalancing  `json:"load_balancing"`
-	Enabled          bool               `json:"enabled"`
-	Tags             []string           `json:"tags"`
-	ProxyRedirect    bool               `json:"proxy_redirect"`
-	RelayChain       []int              `json:"-"`
-	RelayLayers      [][]int            `json:"relay_layers"`
-	RelayObfs        bool               `json:"relay_obfs"`
-	PassProxyHeaders bool               `json:"pass_proxy_headers"`
-	UserAgent        string             `json:"user_agent"`
-	CustomHeaders    []HTTPCustomHeader `json:"custom_headers"`
-	Revision         int                `json:"revision"`
+	ID                       int                `json:"id"`
+	AgentID                  string             `json:"agent_id"`
+	FrontendURL              string             `json:"frontend_url"`
+	BackendURL               string             `json:"-"`
+	Backends                 []HTTPRuleBackend  `json:"backends"`
+	LoadBalancing            HTTPLoadBalancing  `json:"load_balancing"`
+	Enabled                  bool               `json:"enabled"`
+	Tags                     []string           `json:"tags"`
+	ProxyRedirect            bool               `json:"proxy_redirect"`
+	RelayChain               []int              `json:"-"`
+	RelayLayers              [][]int            `json:"relay_layers"`
+	RelayObfs                bool               `json:"relay_obfs"`
+	PassProxyHeaders         bool               `json:"pass_proxy_headers"`
+	UserAgent                string             `json:"user_agent"`
+	CustomHeaders            []HTTPCustomHeader `json:"custom_headers"`
+	WireGuardEntryEnabled    bool               `json:"wireguard_entry_enabled"`
+	WireGuardProfileID       *int               `json:"wireguard_profile_id,omitempty"`
+	WireGuardEntryListenHost string             `json:"wireguard_entry_listen_host,omitempty"`
+	WireGuardEntryListenPort int                `json:"wireguard_entry_listen_port,omitempty"`
+	Revision                 int                `json:"revision"`
 }
 
 type HeartbeatRequest struct {
@@ -143,6 +147,7 @@ type HeartbeatReply struct {
 	Rules                []storage.HTTPRule                 `json:"rules"`
 	L4Rules              []storage.L4Rule                   `json:"l4_rules"`
 	RelayListeners       []storage.RelayListener            `json:"relay_listeners"`
+	WireGuardProfiles    []storage.WireGuardProfile         `json:"wireguard_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
 	OutboundProxyURL     string                             `json:"-"`
@@ -738,8 +743,12 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		row.TagsJSON = marshalStringArray(normalizeAgentTags(request.Tags))
 	}
 	hasCapabilities := request.HasCapabilities || len(request.Capabilities) > 0
+	wireGuardCapabilityRemoved := false
 	if hasCapabilities {
-		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(request.Capabilities))
+		previousCapabilities := parseStringArray(row.CapabilitiesJSON)
+		nextCapabilities := normalizeCapabilities(request.Capabilities)
+		wireGuardCapabilityRemoved = containsString(previousCapabilities, "wireguard") && !containsString(nextCapabilities, "wireguard")
+		row.CapabilitiesJSON = marshalStringArray(nextCapabilities)
 	}
 	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
 	if request.Stats != nil {
@@ -786,14 +795,16 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err := s.persistHeartbeatTrafficBlockState(ctx, &row, trafficBlocked, trafficBlockReason); err != nil {
 		return HeartbeatReply{}, err
 	}
+	needsWireGuardCleanup := wireGuardCapabilityRemoved && snapshot.WireGuardProfiles != nil && len(snapshot.WireGuardProfiles) == 0
 	reply := HeartbeatReply{
-		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
+		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success") || needsWireGuardCleanup,
 		DesiredVersion:       snapshot.DesiredVersion,
 		DesiredRevision:      snapshot.Revision,
 		CurrentRevision:      int64(row.CurrentRevision),
 		Rules:                snapshot.Rules,
 		L4Rules:              snapshot.L4Rules,
 		RelayListeners:       snapshot.RelayListeners,
+		WireGuardProfiles:    snapshot.WireGuardProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
 		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
@@ -811,6 +822,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if !reply.HasUpdate {
 		reply.Rules = nil
 		reply.L4Rules = nil
+		reply.WireGuardProfiles = nil
 		reply.Certificates = nil
 		reply.CertificatePolicies = nil
 	}
@@ -1327,6 +1339,7 @@ func normalizeCapabilities(values []string) []string {
 		"cert_install":  {},
 		"l4":            {},
 		"relay_quic":    {},
+		"wireguard":     {},
 		"http3_ingress": {},
 	}
 	seen := map[string]struct{}{}

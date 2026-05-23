@@ -56,3 +56,35 @@ func TestSnapshotRuleJSONOmitsLegacyFields(t *testing.T) {
 		}
 	}
 }
+
+func TestSnapshotWireGuardProfileJSONPreservesPublicEndpoint(t *testing.T) {
+	raw, err := json.Marshal(Snapshot{
+		WireGuardProfiles: []WireGuardProfile{{
+			ID:             7,
+			AgentID:        "remote-wg",
+			Name:           "wg",
+			Mode:           "generic_wireguard",
+			ListenPort:     51820,
+			PublicEndpoint: "wg.example.com:51820",
+			Addresses:      []string{"10.10.0.1/24"},
+			Enabled:        true,
+			Revision:       9,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(Snapshot) error = %v", err)
+	}
+
+	var payload struct {
+		WireGuardProfiles []map[string]any `json:"wireguard_profiles"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(Snapshot) error = %v", err)
+	}
+	if len(payload.WireGuardProfiles) != 1 {
+		t.Fatalf("wireguard profile count = %d, want 1", len(payload.WireGuardProfiles))
+	}
+	if got := payload.WireGuardProfiles[0]["public_endpoint"]; got != "wg.example.com:51820" {
+		t.Fatalf("public_endpoint = %#v, want wg.example.com:51820; raw=%s", got, raw)
+	}
+}

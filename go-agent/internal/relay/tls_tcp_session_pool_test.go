@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -652,6 +653,81 @@ func TestTLSTCPSessionPoolAllowsUnknownWhenCappedTunnelsAreCongested(t *testing.
 	}
 	if release != nil {
 		release()
+	}
+}
+
+func TestWireGuardSessionPoolKeyIncludesTLSMaterial(t *testing.T) {
+	profileID := 9
+	certID := 10
+	base := Hop{
+		Address:    "10.0.0.2:7443",
+		ServerName: "relay-a.example.com",
+		Listener: Listener{
+			ID:                 1,
+			AgentID:            "agent-a",
+			Revision:           3,
+			TransportMode:      ListenerTransportModeWireGuard,
+			WireGuardProfileID: &profileID,
+			CertificateID:      &certID,
+			TLSMode:            "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "spki_sha256",
+				Value: "pin-a",
+			}},
+			TrustedCACertificateIDs: []int{100},
+		},
+	}
+	changedTLSMaterial := base
+	changedTLSMaterial.ServerName = "relay-b.example.com"
+	changedTLSMaterial.Listener.CertificateID = nil
+	changedTLSMaterial.Listener.TLSMode = "ca_only"
+	changedTLSMaterial.Listener.PinSet = []model.RelayPin{{
+		Type:  "spki_sha256",
+		Value: "pin-b",
+	}}
+	changedTLSMaterial.Listener.TrustedCACertificateIDs = []int{200, 300}
+
+	keyA, err := tlsTCPSessionPoolKey(base, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(base) error = %v", err)
+	}
+	keyB, err := tlsTCPSessionPoolKey(changedTLSMaterial, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(changedTLSMaterial) error = %v", err)
+	}
+	if keyA == keyB {
+		t.Fatalf("WireGuard session key did not change for TLS material:\n%s", keyA)
+	}
+
+	changedAddress := base
+	changedAddress.Address = "10.0.0.3:7443"
+	keyC, err := tlsTCPSessionPoolKey(changedAddress, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(changedAddress) error = %v", err)
+	}
+	if keyA == keyC {
+		t.Fatal("WireGuard session key did not change when address changed")
+	}
+
+	changedProfile := base
+	nextProfileID := 10
+	changedProfile.Listener.WireGuardProfileID = &nextProfileID
+	keyD, err := tlsTCPSessionPoolKey(changedProfile, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(changedProfile) error = %v", err)
+	}
+	if keyA == keyD {
+		t.Fatal("WireGuard session key did not change when profile changed")
+	}
+
+	changedAgent := base
+	changedAgent.Listener.AgentID = "agent-b"
+	keyE, err := tlsTCPSessionPoolKey(changedAgent, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(changedAgent) error = %v", err)
+	}
+	if keyA == keyE {
+		t.Fatal("WireGuard session key did not change when agent changed")
 	}
 }
 

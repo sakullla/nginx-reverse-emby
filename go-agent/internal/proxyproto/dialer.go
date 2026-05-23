@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"time"
 )
 
 func Dial(ctx context.Context, proxyURL string, target string) (net.Conn, error) {
@@ -37,6 +38,125 @@ func Dial(ctx context.Context, proxyURL string, target string) (net.Conn, error)
 		return nil, err
 	}
 	return conn, nil
+}
+
+type UDPAssociation struct {
+	control   net.Conn
+	packet    *net.UDPConn
+	relay     *net.UDPAddr
+	remoteDNS bool
+}
+
+func DialUDP(ctx context.Context, proxyURL string) (*UDPAssociation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfg, err := ParseProxyURL(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.HTTPConnect || cfg.SOCKSVersion != 5 {
+		return nil, fmt.Errorf("UDP proxy egress requires a SOCKS5-family proxy")
+	}
+	packet, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var dialer net.Dialer
+	control, err := dialer.DialContext(ctx, "tcp", cfg.Address)
+	if err != nil {
+		_ = packet.Close()
+		return nil, err
+	}
+	resetDeadline := applyContextDeadline(ctx, control)
+	defer resetDeadline()
+	if err := handshakeSOCKS5UDPAssociate(control, cfg, packet.LocalAddr().(*net.UDPAddr)); err != nil {
+		_ = packet.Close()
+		_ = control.Close()
+		return nil, err
+	}
+	bindAddr, err := readSOCKS5ReplyBindAddress(control)
+	if err != nil {
+		_ = packet.Close()
+		_ = control.Close()
+		return nil, err
+	}
+	bindAddr, err = socks5UDPRelayAddr(bindAddr, control.RemoteAddr())
+	if err != nil {
+		_ = packet.Close()
+		_ = control.Close()
+		return nil, err
+	}
+	return &UDPAssociation{
+		control:   control,
+		packet:    packet,
+		relay:     bindAddr,
+		remoteDNS: cfg.RemoteDNS,
+	}, nil
+}
+
+func (a *UDPAssociation) Close() error {
+	if a == nil {
+		return nil
+	}
+	var err error
+	if a.packet != nil {
+		err = a.packet.Close()
+	}
+	if a.control != nil {
+		if closeErr := a.control.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	return err
+}
+
+func (a *UDPAssociation) SetReadDeadline(t time.Time) error {
+	if a == nil || a.packet == nil {
+		return nil
+	}
+	return a.packet.SetReadDeadline(t)
+}
+
+func (a *UDPAssociation) SetWriteDeadline(t time.Time) error {
+	if a == nil || a.packet == nil {
+		return nil
+	}
+	return a.packet.SetWriteDeadline(t)
+}
+
+func (a *UDPAssociation) ReadPacket() (string, []byte, error) {
+	if a == nil || a.packet == nil {
+		return "", nil, fmt.Errorf("SOCKS5 UDP association is closed")
+	}
+	buf := make([]byte, 64*1024)
+	for {
+		n, addr, err := a.packet.ReadFromUDP(buf)
+		if err != nil {
+			return "", nil, err
+		}
+		if a.relay != nil && addr != nil && (!addr.IP.Equal(a.relay.IP) || addr.Port != a.relay.Port) {
+			continue
+		}
+		packet, err := ParseSOCKS5UDPPacket(buf[:n])
+		if err != nil {
+			return "", nil, err
+		}
+		return packet.Target, packet.Payload, nil
+	}
+}
+
+func (a *UDPAssociation) WritePacket(target string, payload []byte) error {
+	if a == nil || a.packet == nil {
+		return fmt.Errorf("SOCKS5 UDP association is closed")
+	}
+	packet, err := buildSOCKS5UDPPacketForProxy(target, payload, a.remoteDNS)
+	if err != nil {
+		return err
+	}
+	_, err = a.packet.WriteToUDP(packet, a.relay)
+	return err
 }
 
 func handshakeProxy(ctx context.Context, conn net.Conn, cfg ProxyURL, host string, port int, target string) error {
@@ -85,6 +205,50 @@ func handshakeHTTPConnect(conn net.Conn, cfg ProxyURL, target string) error {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP proxy CONNECT failed: %s", resp.Status)
+	}
+	return nil
+}
+
+func handshakeSOCKS5UDPAssociate(conn net.Conn, cfg ProxyURL, localAddr *net.UDPAddr) error {
+	method := byte(0x00)
+	if cfg.Username != "" || cfg.Password != "" {
+		method = 0x02
+	}
+	if _, err := conn.Write([]byte{0x05, 0x01, method}); err != nil {
+		return err
+	}
+	var selection [2]byte
+	if _, err := io.ReadFull(conn, selection[:]); err != nil {
+		return err
+	}
+	if selection[0] != 0x05 {
+		return fmt.Errorf("invalid SOCKS5 method response version %d", selection[0])
+	}
+	if selection[1] == 0xff {
+		return fmt.Errorf("SOCKS5 proxy rejected authentication methods")
+	}
+	if selection[1] != method {
+		return fmt.Errorf("SOCKS5 proxy selected unexpected method %d", selection[1])
+	}
+	if method == 0x02 {
+		if err := writeSOCKS5PasswordAuth(conn, cfg.Username, cfg.Password); err != nil {
+			return err
+		}
+	}
+	host := "0.0.0.0"
+	port := 1
+	if localAddr != nil {
+		port = localAddr.Port
+		if localAddr.IP != nil && !localAddr.IP.IsUnspecified() {
+			host = localAddr.IP.String()
+		}
+	}
+	req, err := socks5Request(0x03, host, port)
+	if err != nil {
+		return err
+	}
+	if _, err := conn.Write(req); err != nil {
+		return err
 	}
 	return nil
 }
@@ -228,7 +392,11 @@ func writeSOCKS5PasswordAuth(conn net.Conn, username string, password string) er
 }
 
 func socks5ConnectRequest(host string, port int) ([]byte, error) {
-	req := []byte{0x05, 0x01, 0x00}
+	return socks5Request(0x01, host, port)
+}
+
+func socks5Request(command byte, host string, port int) ([]byte, error) {
+	req := []byte{0x05, command, 0x00}
 	if ip := net.ParseIP(host); ip != nil {
 		if ipv4 := ip.To4(); ipv4 != nil {
 			req = append(req, 0x01)
@@ -246,6 +414,64 @@ func socks5ConnectRequest(host string, port int) ([]byte, error) {
 	}
 	req = append(req, byte(port>>8), byte(port))
 	return req, nil
+}
+
+func buildSOCKS5UDPPacketForProxy(target string, payload []byte, remoteDNS bool) ([]byte, error) {
+	host, port, err := splitTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	if !remoteDNS {
+		resolvedHost, err := resolveLocalIP(host)
+		if err != nil {
+			return nil, err
+		}
+		host = resolvedHost
+	}
+	return BuildSOCKS5UDPPacket(net.JoinHostPort(host, fmt.Sprintf("%d", port)), payload)
+}
+
+func socks5UDPRelayAddr(bindAddr *net.UDPAddr, controlRemoteAddr net.Addr) (*net.UDPAddr, error) {
+	if bindAddr == nil {
+		return nil, fmt.Errorf("SOCKS5 UDP relay address is missing")
+	}
+	if bindAddr.IP != nil && !bindAddr.IP.IsUnspecified() {
+		return bindAddr, nil
+	}
+	if controlRemoteAddr == nil {
+		return nil, fmt.Errorf("SOCKS5 UDP relay host is unspecified and control peer is missing")
+	}
+	host, _, err := net.SplitHostPort(controlRemoteAddr.String())
+	if err != nil {
+		return nil, fmt.Errorf("parse SOCKS5 control peer %q: %w", controlRemoteAddr.String(), err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil, fmt.Errorf("parse SOCKS5 control peer host %q", host)
+	}
+	return &net.UDPAddr{IP: ip, Port: bindAddr.Port, Zone: bindAddr.Zone}, nil
+}
+
+func readSOCKS5ReplyBindAddress(conn net.Conn) (*net.UDPAddr, error) {
+	var reply [4]byte
+	if _, err := io.ReadFull(conn, reply[:]); err != nil {
+		return nil, err
+	}
+	if reply[0] != 0x05 {
+		return nil, fmt.Errorf("invalid SOCKS5 reply version %d", reply[0])
+	}
+	if reply[1] != 0x00 {
+		return nil, fmt.Errorf("SOCKS5 UDP ASSOCIATE failed with status %d", reply[1])
+	}
+	host, err := readSOCKS5Host(conn, reply[3])
+	if err != nil {
+		return nil, err
+	}
+	var portBytes [2]byte
+	if _, err := io.ReadFull(conn, portBytes[:]); err != nil {
+		return nil, err
+	}
+	return net.ResolveUDPAddr("udp", net.JoinHostPort(host, fmt.Sprintf("%d", int(portBytes[0])<<8|int(portBytes[1]))))
 }
 
 func drainSOCKS5BindAddress(conn net.Conn, atyp byte) error {

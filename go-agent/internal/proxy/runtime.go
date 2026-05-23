@@ -15,6 +15,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 type Runtime struct {
@@ -26,11 +27,13 @@ type Runtime struct {
 }
 
 type runtimeListenerSpec struct {
-	address    string
-	bindingKey string
-	scheme     string
-	hostnames  []string
-	listener   model.HTTPListener
+	address            string
+	bindingKey         string
+	scheme             string
+	hostnames          []string
+	listener           model.HTTPListener
+	wireGuardAgentID   string
+	wireGuardProfileID *int
 }
 
 func ValidateRules(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener, providers Providers) error {
@@ -100,7 +103,7 @@ func StartWithResourcesAndOptions(
 		bindings: make([]string, 0, len(specs)),
 	}
 	for idx, spec := range specs {
-		baseListener, err := net.Listen("tcp", spec.address)
+		baseListener, err := listenRuntimeSpecTCP(ctx, spec, providers)
 		if err != nil {
 			_ = runtime.Close()
 			return nil, err
@@ -201,6 +204,8 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 	addresses := make(map[string]string)
 	schemes := make(map[string]string)
 	hosts := make(map[string]map[string]struct{})
+	wireGuardAgentIDs := make(map[string]string)
+	wireGuardProfileIDs := make(map[string]*int)
 	order := make([]string, 0)
 
 	for _, rule := range rules {
@@ -211,25 +216,50 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 		if err := validateRelayChain(rule, relayListeners, providers.Relay); err != nil {
 			return nil, err
 		}
-		if _, ok := groups[spec.key]; !ok {
-			order = append(order, spec.key)
-			addresses[spec.key] = spec.address
-			schemes[spec.key] = spec.scheme
-			hosts[spec.key] = make(map[string]struct{})
-		}
-		groups[spec.key] = append(groups[spec.key], rule)
-		if spec.scheme == "https" {
-			if providers.TLS == nil {
-				return nil, fmt.Errorf("http rule %q: https frontend is not supported without certificate bindings", rule.FrontendURL)
+		if !rule.WireGuardEntryEnabled {
+			if _, ok := groups[spec.key]; !ok {
+				order = append(order, spec.key)
+				addresses[spec.key] = spec.address
+				schemes[spec.key] = spec.scheme
+				hosts[spec.key] = make(map[string]struct{})
 			}
-			host := HostFromRule(rule)
-			if host == "" {
-				return nil, fmt.Errorf("http rule %q: frontend_url must include a host", rule.FrontendURL)
+			groups[spec.key] = append(groups[spec.key], rule)
+			if spec.scheme == "https" {
+				if providers.TLS == nil {
+					return nil, fmt.Errorf("http rule %q: https frontend is not supported without certificate bindings", rule.FrontendURL)
+				}
+				host := HostFromRule(rule)
+				if host == "" {
+					return nil, fmt.Errorf("http rule %q: frontend_url must include a host", rule.FrontendURL)
+				}
+				if _, err := providers.TLS.ServerCertificateForHost(ctx, host); err != nil {
+					return nil, fmt.Errorf("http rule %q: %w", rule.FrontendURL, err)
+				}
+				hosts[spec.key][host] = struct{}{}
 			}
-			if _, err := providers.TLS.ServerCertificateForHost(ctx, host); err != nil {
-				return nil, fmt.Errorf("http rule %q: %w", rule.FrontendURL, err)
+		} else {
+			wgSpec, err := runtimeRuleWireGuardEntrySpec(rule)
+			if err != nil {
+				return nil, err
 			}
-			hosts[spec.key][host] = struct{}{}
+			if providers.WireGuard == nil {
+				return nil, fmt.Errorf("http rule %q: wireguard runtime provider is required", rule.FrontendURL)
+			}
+			if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
+				return nil, fmt.Errorf("http rule %q: wireguard_profile_id is required", rule.FrontendURL)
+			}
+			if runtime, ok := relay.ResolveWireGuardRuntime(providers.WireGuard, rule.AgentID, *rule.WireGuardProfileID); !ok || runtime == nil {
+				return nil, fmt.Errorf("http rule %q: wireguard profile %d runtime not found", rule.FrontendURL, *rule.WireGuardProfileID)
+			}
+			if _, ok := groups[wgSpec.key]; !ok {
+				order = append(order, wgSpec.key)
+				addresses[wgSpec.key] = wgSpec.address
+				schemes[wgSpec.key] = wgSpec.scheme
+				hosts[wgSpec.key] = make(map[string]struct{})
+				wireGuardAgentIDs[wgSpec.key] = strings.TrimSpace(rule.AgentID)
+				wireGuardProfileIDs[wgSpec.key] = rule.WireGuardProfileID
+			}
+			groups[wgSpec.key] = append(groups[wgSpec.key], rule, ruleForWireGuardEntryHost(rule))
 		}
 	}
 
@@ -247,9 +277,36 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 			listener: model.HTTPListener{
 				Rules: groups[key],
 			},
+			wireGuardAgentID:   wireGuardAgentIDs[key],
+			wireGuardProfileID: wireGuardProfileIDs[key],
 		})
 	}
 	return specs, nil
+}
+
+func ruleForWireGuardEntryHost(rule model.HTTPRule) model.HTTPRule {
+	frontend, err := url.Parse(rule.FrontendURL)
+	if err != nil {
+		return rule
+	}
+	frontend.Scheme = "http"
+	frontend.Host = net.JoinHostPort(strings.TrimSpace(rule.WireGuardEntryListenHost), strconv.Itoa(rule.WireGuardEntryListenPort))
+	rule.FrontendURL = frontend.String()
+	return rule
+}
+
+func listenRuntimeSpecTCP(ctx context.Context, spec runtimeListenerSpec, providers Providers) (net.Listener, error) {
+	if spec.wireGuardProfileID == nil {
+		return net.Listen("tcp", spec.address)
+	}
+	if providers.WireGuard == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required")
+	}
+	runtime, ok := relay.ResolveWireGuardRuntime(providers.WireGuard, spec.wireGuardAgentID, *spec.wireGuardProfileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard profile %d runtime not found", *spec.wireGuardProfileID)
+	}
+	return runtime.ListenTCP(ctx, spec.address)
 }
 
 func validateRelayChain(rule model.HTTPRule, relayListeners []model.RelayListener, provider RelayMaterialProvider) error {
@@ -321,6 +378,36 @@ func runtimeRuleSpec(rule model.HTTPRule) (runtimeRuleBinding, error) {
 		address: "0.0.0.0:" + port,
 		scheme:  frontend.Scheme,
 	}, nil
+}
+
+func runtimeRuleWireGuardEntrySpec(rule model.HTTPRule) (runtimeRuleBinding, error) {
+	if !rule.WireGuardEntryEnabled {
+		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: wireguard entry is not enabled", rule.FrontendURL)
+	}
+	host := strings.TrimSpace(rule.WireGuardEntryListenHost)
+	if host == "" {
+		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: wireguard_entry_listen_host is required", rule.FrontendURL)
+	}
+	if rule.WireGuardEntryListenPort < 1 || rule.WireGuardEntryListenPort > 65535 {
+		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: wireguard_entry_listen_port must be a valid port", rule.FrontendURL)
+	}
+	address := net.JoinHostPort(host, strconv.Itoa(rule.WireGuardEntryListenPort))
+	keyPrefix := "wireguard:"
+	if agentID := strings.TrimSpace(rule.AgentID); agentID != "" {
+		keyPrefix += "agent:" + agentID + ":"
+	}
+	return runtimeRuleBinding{
+		key:     keyPrefix + strconv.Itoa(valueOrZeroInt(rule.WireGuardProfileID)) + ":http:" + address,
+		address: address,
+		scheme:  "http",
+	}, nil
+}
+
+func valueOrZeroInt(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func newInboundTLSConfig(ctx context.Context, spec runtimeListenerSpec, provider TLSMaterialProvider) (*tls.Config, error) {

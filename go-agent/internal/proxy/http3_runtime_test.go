@@ -21,7 +21,7 @@ func TestStartWithResourcesStartsHTTP3ForHTTPSBinding(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	port := pickFreePort(t)
+	port := pickFreeTCPUDPPort(t)
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{
 			"edge.example.test": mustIssueProxyTLSCertificate(t, "edge.example.test"),

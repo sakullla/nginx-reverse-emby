@@ -83,6 +83,14 @@ type RelayApplier interface {
 	Close() error
 }
 
+type RelayWireGuardApplier interface {
+	ApplyWithWireGuardProfiles(context.Context, []model.RelayListener, []model.WireGuardProfile) error
+}
+
+type L4WireGuardAwareApplier interface {
+	ApplyWithRelayAndWireGuardProfiles(context.Context, []model.L4Rule, []model.RelayListener, []model.WireGuardProfile) error
+}
+
 func validateL4Rules(rules []model.L4Rule, relayListeners []model.RelayListener, provider relay.TLSMaterialProvider) error {
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
 	for _, listener := range relayListeners {

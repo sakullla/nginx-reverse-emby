@@ -11,7 +11,7 @@
 - **可视化面板**：轻量管理界面，支持 HTTP/L4 规则增删改查、证书统一管理、Agent 状态监控
 - **自动化 SSL**：集成 ACME (lego)，支持 HTTP/DNS API 自动申请并续期证书
 - **Master/Agent 架构**：集中管理多个代理节点，Agent 通过心跳拉取配置，NAT 环境无需入站端口
-- **全栈协议支持**：HTTP/HTTPS 代理、L4 TCP 代理、Relay 隧道 (tls_tcp/quic)、HTTP/3、IPv4/IPv6 双栈
+- **全栈协议支持**：HTTP/HTTPS 代理、L4 TCP 代理、Relay 隧道 (tls_tcp/quic/wireguard)、HTTP/3、IPv4/IPv6 双栈
 - **流式恢复**：内置中断流恢复与 backend 重试机制，保障大文件传输稳定性
 - **版本管理**：支持通过 `desired_version` 从控制面向 Agent 推送版本升级
 
@@ -337,11 +337,26 @@ nre-control-plane migrate-storage \
 
 ### Relay 隧道
 
-- 支持 `transport_mode=tls_tcp|quic`，默认 `tls_tcp`
+- 支持 `transport_mode=tls_tcp|quic|wireguard`，默认 `tls_tcp`
 - `tls_tcp` 为单外层 TLS 连接承载多逻辑流的复用隧道，支持长连接复用和多路复用
+- `wireguard` 使用所选 WireGuard Profile 作为传输路径，Relay 原有 TLS、mux、认证仍在 WireGuard 链路上生效，不是认证绕过
 - 支持 `obfs_mode=off|early_window_v2`（仅对 `tls_tcp` 生效）
-- UDP relay：`quic` 走流内包帧，`tls_tcp` 走 UoT
+- UDP relay：`quic` 走流内包帧，`tls_tcp` 走 UoT，`wireguard` 复用所选 Profile 的隧道路径
 - 真实 TLS 0-RTT 仅在 `quic` 路径可用（Go `crypto/tls` 限制）
+
+### WireGuard Profile
+
+控制面提供 WireGuard Profiles 页面，可按 Agent 管理标准 WireGuard 配置。Profile 包含 private key、listen port、addresses、peers、DNS、MTU、enabled 和 tags，可用于 Relay transport 或 L4 规则。密钥等敏感字段在接口和面板中会显示为 `xxxxx`；编辑时保持 redacted 值不变即可保留已存储密钥。
+
+创建通用 WireGuard Profile 时，按常规 WireGuard 配置填写本端私钥、监听 UDP 端口、本端隧道地址，以及 peer 的 public key、allowed IPs、endpoint 和 persistent keepalive 等参数。该功能只管理标准 WireGuard profile，不内置 Cloudflare WARP 注册、MASQUE 或密钥轮换。
+
+### L4 与 WireGuard
+
+L4 规则设置 `listen_mode=wireguard` 时，客户端先连接目标 Agent 的 WireGuard UDP endpoint，进入隧道后再访问规则配置的虚拟服务 IP/端口。未使用 WireGuard 的普通客户端仍访问常规公开 L4 监听端口。
+
+L4 规则设置 `proxy_egress_mode=wireguard` 时，TCP 代理入口的出站连接会通过所选 WireGuard Profile 发起，语义类似现有代理出站模式，只是 egress 路径改为 WireGuard。
+
+如需配合 Cloudflare WARP，可使用可导出的标准 WireGuard profile（如果账号/客户端支持），或在 Agent 主机外部运行 Cloudflare WARP 客户端并自行配置路由；内置 WireGuard 功能不负责 WARP 的注册和自动轮换。
 
 ### HTTP/3
 
@@ -440,6 +455,10 @@ sh scripts/verify-pure-go-master.sh /path/to/copied-panel-data
 - `join-agent.sh` 正常下载 agent 二进制
 
 </details>
+
+## 许可证
+
+本项目基于 GNU General Public License v3.0 授权发布，详见 [LICENSE](./LICENSE)。
 
 ---
 

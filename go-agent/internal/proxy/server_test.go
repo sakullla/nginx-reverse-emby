@@ -3747,6 +3747,34 @@ func pickFreePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+func pickFreeTCPUDPPort(t *testing.T) int {
+	t.Helper()
+
+	var lastErr error
+	for attempt := 0; attempt < 100; attempt++ {
+		ln, err := net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		port := ln.Addr().(*net.TCPAddr).Port
+		packet, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%d", port))
+		if err != nil {
+			lastErr = err
+			_ = ln.Close()
+			continue
+		}
+
+		_ = ln.Close()
+		_ = packet.Close()
+		return port
+	}
+
+	t.Fatalf("failed to pick free TCP/UDP port after 100 attempts: %v", lastErr)
+	return 0
+}
+
 func requireIPv6LoopbackProxy(t *testing.T) {
 	t.Helper()
 

@@ -34,14 +34,18 @@ type L4Rule struct {
 	LoadBalancing LoadBalancing `json:"load_balancing,omitempty"`
 	Tuning        L4Tuning      `json:"tuning,omitempty"`
 	// RelayChain is retained only to ignore legacy payloads; runtime uses RelayLayers.
-	RelayChain      []int            `json:"relay_chain,omitempty"`
-	RelayLayers     [][]int          `json:"relay_layers,omitempty"`
-	RelayObfs       bool             `json:"relay_obfs,omitempty"`
-	ListenMode      string           `json:"listen_mode,omitempty"`
-	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
-	ProxyEgressMode string           `json:"proxy_egress_mode,omitempty"`
-	ProxyEgressURL  string           `json:"proxy_egress_url,omitempty"`
-	Enabled         bool             `json:"enabled,omitempty"`
-	Tags            []string         `json:"tags,omitempty"`
-	Revision        int64            `json:"revision,omitempty"`
+	RelayChain           []int            `json:"relay_chain,omitempty"`
+	RelayLayers          [][]int          `json:"relay_layers,omitempty"`
+	RelayObfs            bool             `json:"relay_obfs,omitempty"`
+	ListenMode           string           `json:"listen_mode,omitempty"`
+	WireGuardProfileID   *int             `json:"wireguard_profile_id,omitempty"`
+	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
+	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
+	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	ProxyEgressMode      string           `json:"proxy_egress_mode,omitempty"`
+	ProxyEgressURL       string           `json:"proxy_egress_url,omitempty"`
+	WireGuardEgressURI   string           `json:"-"`
+	Enabled              bool             `json:"enabled,omitempty"`
+	Tags                 []string         `json:"tags,omitempty"`
+	Revision             int64            `json:"revision,omitempty"`
 }

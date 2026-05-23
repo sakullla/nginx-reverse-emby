@@ -75,6 +75,22 @@ type RelayListenerService interface {
 	Delete(context.Context, string, int) (service.RelayListener, error)
 }
 
+type WireGuardProfileService interface {
+	List(context.Context, string) ([]service.WireGuardProfile, error)
+	Create(context.Context, string, service.WireGuardProfileInput) (service.WireGuardProfile, error)
+	Update(context.Context, string, int, service.WireGuardProfileInput) (service.WireGuardProfile, error)
+	Delete(context.Context, string, int) (service.WireGuardProfile, error)
+}
+
+type WireGuardClientService interface {
+	ListClients(context.Context, string, int) ([]service.WireGuardClient, error)
+	CreateClient(context.Context, string, int, service.WireGuardClientInput) (service.WireGuardClient, error)
+	UpdateClient(context.Context, string, int, int, service.WireGuardClientInput) (service.WireGuardClient, error)
+	DeleteClient(context.Context, string, int, int) (service.WireGuardClient, error)
+	ClientConfig(context.Context, string, int, int) (string, error)
+	ClientURI(context.Context, string, int, int, []byte) (string, error)
+}
+
 type CertificateService interface {
 	List(context.Context, string) ([]service.ManagedCertificate, error)
 	Create(context.Context, string, service.ManagedCertificateInput) (service.ManagedCertificate, error)
@@ -92,18 +108,20 @@ type BackupService interface {
 }
 
 type Dependencies struct {
-	Config               config.Config
-	SystemService        SystemService
-	AgentService         AgentService
-	RuleService          RuleService
-	L4RuleService        L4RuleService
-	VersionPolicyService VersionPolicyService
-	RelayListenerService RelayListenerService
-	CertificateService   CertificateService
-	TaskService          TaskService
-	BackupService        BackupService
-	TrafficService       TrafficService
-	cleanup              func() error
+	Config                  config.Config
+	SystemService           SystemService
+	AgentService            AgentService
+	RuleService             RuleService
+	L4RuleService           L4RuleService
+	VersionPolicyService    VersionPolicyService
+	RelayListenerService    RelayListenerService
+	WireGuardProfileService WireGuardProfileService
+	WireGuardClientService  WireGuardClientService
+	CertificateService      CertificateService
+	TaskService             TaskService
+	BackupService           BackupService
+	TrafficService          TrafficService
+	cleanup                 func() error
 }
 
 var openConfiguredStore = storage.NewConfiguredStore
@@ -119,6 +137,10 @@ type agentRuleServiceAdapter struct {
 type unavailableBackupService struct{}
 
 type unavailableTrafficService struct{}
+
+type unavailableWireGuardProfileService struct{}
+
+type unavailableWireGuardClientService struct{}
 
 func (unavailableBackupService) Export(context.Context) ([]byte, string, error) {
 	return nil, "", fmt.Errorf("backup service unavailable")
@@ -174,6 +196,46 @@ func (unavailableTrafficService) Aggregate(context.Context, string, string, map[
 
 func trafficStatsDisabledError() error {
 	return service.TrafficServiceError{Code: service.ErrCodeTrafficStatsDisabled, Err: service.ErrTrafficStatsDisabled}
+}
+
+func (unavailableWireGuardProfileService) List(context.Context, string) ([]service.WireGuardProfile, error) {
+	return nil, fmt.Errorf("wireguard profile service unavailable")
+}
+
+func (unavailableWireGuardProfileService) Create(context.Context, string, service.WireGuardProfileInput) (service.WireGuardProfile, error) {
+	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
+}
+
+func (unavailableWireGuardProfileService) Update(context.Context, string, int, service.WireGuardProfileInput) (service.WireGuardProfile, error) {
+	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
+}
+
+func (unavailableWireGuardProfileService) Delete(context.Context, string, int) (service.WireGuardProfile, error) {
+	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
+}
+
+func (unavailableWireGuardClientService) ListClients(context.Context, string, int) ([]service.WireGuardClient, error) {
+	return nil, fmt.Errorf("wireguard client service unavailable")
+}
+
+func (unavailableWireGuardClientService) CreateClient(context.Context, string, int, service.WireGuardClientInput) (service.WireGuardClient, error) {
+	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
+}
+
+func (unavailableWireGuardClientService) UpdateClient(context.Context, string, int, int, service.WireGuardClientInput) (service.WireGuardClient, error) {
+	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
+}
+
+func (unavailableWireGuardClientService) DeleteClient(context.Context, string, int, int) (service.WireGuardClient, error) {
+	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
+}
+
+func (unavailableWireGuardClientService) ClientConfig(context.Context, string, int, int) (string, error) {
+	return "", fmt.Errorf("wireguard client service unavailable")
+}
+
+func (unavailableWireGuardClientService) ClientURI(context.Context, string, int, int, []byte) (string, error) {
+	return "", fmt.Errorf("wireguard client service unavailable")
 }
 
 func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
@@ -249,6 +311,14 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/tasks/{taskID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTask)))
 		mux.Handle(prefix+"/agents/{agentID}/relay-listeners", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRelayListeners)))
 		mux.Handle(prefix+"/agents/{agentID}/relay-listeners/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRelayListener)))
+		mux.Handle(prefix+"/wireguard/parse-uri", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardURIParse)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfiles)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/import-uri", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileImportURI)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClients)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}/config", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClientConfig)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}/uri", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClientURI)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{profileID}/clients/{clientID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfileClient)))
+		mux.Handle(prefix+"/agents/{agentID}/wireguard-profiles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfile)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificates)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificate)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}/issue", resolved.requirePanelToken(http.HandlerFunc(resolved.handleIssueCertificate)))
@@ -297,11 +367,21 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.BackupService = unavailableBackupService{}
 	}
 
-	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil
-	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil {
+	canOpenOwnedStore := d.canOpenConfiguredStore()
+	if !canOpenOwnedStore {
+		if d.WireGuardProfileService == nil && d.hasCoreServices() {
+			d.WireGuardProfileService = unavailableWireGuardProfileService{}
+		}
+		if d.WireGuardClientService == nil && d.hasCoreServices() {
+			d.WireGuardClientService = unavailableWireGuardClientService{}
+		}
+	}
+
+	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || (canOpenOwnedStore && (d.WireGuardProfileService == nil || d.WireGuardClientService == nil))
+	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil && d.WireGuardProfileService != nil {
 		return d, nil
 	}
-	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
+	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil && d.WireGuardProfileService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
 		d.TrafficService = unavailableTrafficService{}
 		return d, nil
 	}
@@ -329,6 +409,12 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	}
 	if d.RelayListenerService == nil {
 		d.RelayListenerService = service.NewRelayListenerService(d.Config, store)
+	}
+	if d.WireGuardProfileService == nil {
+		d.WireGuardProfileService = service.NewWireGuardProfileService(d.Config, store)
+	}
+	if d.WireGuardClientService == nil {
+		d.WireGuardClientService = service.NewWireGuardClientService(d.Config, store)
 	}
 	if d.CertificateService == nil {
 		d.CertificateService = service.NewCertificateService(d.Config, store)
@@ -360,6 +446,17 @@ func (d Dependencies) hasCoreServices() bool {
 		d.CertificateService != nil
 }
 
+func (d Dependencies) canOpenConfiguredStore() bool {
+	driver := d.Config.DatabaseDriver
+	if driver == "" {
+		driver = "sqlite"
+	}
+	if d.Config.DatabaseDSN != "" {
+		return true
+	}
+	return driver == "sqlite" && d.Config.DataDir != ""
+}
+
 func mapServiceError(err error) (int, map[string]any) {
 	var trafficErr service.TrafficServiceError
 	switch {
@@ -371,6 +468,10 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
 	case errors.Is(err, service.ErrAgentNotFound):
 		return http.StatusNotFound, errorPayload("agent not found")
+	case errors.Is(err, service.ErrWireGuardProfileNotFound):
+		return http.StatusNotFound, errorPayload("wireguard profile not found")
+	case errors.Is(err, service.ErrWireGuardClientNotFound):
+		return http.StatusNotFound, errorPayload("wireguard client not found")
 	case errors.Is(err, service.ErrRuleNotFound):
 		return http.StatusNotFound, errorPayload("rule id not found")
 	case errors.Is(err, service.ErrVersionPolicyNotFound):

@@ -3,19 +3,21 @@ package l4
 import (
 	"fmt"
 	"net"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 type udpSession struct {
 	key                   string
 	peer                  *net.UDPAddr
-	listener              *net.UDPConn
+	listener              udpListener
 	upstream              udpUpstream
 	lastActive            time.Time
 	targetAddr            string
@@ -23,6 +25,8 @@ type udpSession struct {
 	backoffKey            string
 	markBackoffOnFailure  bool
 	backendObservationKey string
+	replySource           string
+	proxyUDPEntry         bool
 	pendingReplies        int
 	awaitingSince         time.Time
 	pendingReplyTimes     []time.Time
@@ -35,9 +39,75 @@ type udpUpstream interface {
 	Close() error
 	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
-	ReadPacket() ([]byte, error)
+	ReadPacket() (udpUpstreamPacket, error)
 	WritePacket([]byte) error
 }
+
+type udpUpstreamPacket struct {
+	payload []byte
+	source  string
+}
+
+type udpListener interface {
+	net.PacketConn
+	ReadFromUDP([]byte) (int, *net.UDPAddr, error)
+	WriteToUDP([]byte, *net.UDPAddr) (int, error)
+}
+
+type packetUDPListener struct {
+	net.PacketConn
+}
+
+func (l packetUDPListener) ReadFromUDP(buf []byte) (int, *net.UDPAddr, error) {
+	n, addr, err := l.ReadFrom(buf)
+	if err != nil {
+		return n, nil, err
+	}
+	udpAddr, ok := addr.(*net.UDPAddr)
+	if !ok {
+		return n, nil, fmt.Errorf("unexpected udp peer address type %T", addr)
+	}
+	return n, udpAddr, nil
+}
+
+func (l packetUDPListener) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error) {
+	return l.WriteTo(buf, addr)
+}
+
+type wireGuardTransparentUDPListener struct {
+	wireguard.TransparentUDPConn
+}
+
+func (l wireGuardTransparentUDPListener) ReadFrom([]byte) (int, net.Addr, error) {
+	return 0, nil, fmt.Errorf("transparent udp listener requires ReadPacket")
+}
+
+func (l wireGuardTransparentUDPListener) ReadFromUDP([]byte) (int, *net.UDPAddr, error) {
+	return 0, nil, fmt.Errorf("transparent udp listener requires ReadPacket")
+}
+
+func (l wireGuardTransparentUDPListener) WriteTo(buf []byte, addr net.Addr) (int, error) {
+	udpAddr, ok := addr.(*net.UDPAddr)
+	if !ok {
+		return 0, fmt.Errorf("unexpected udp peer address type %T", addr)
+	}
+	return l.WriteToUDP(buf, udpAddr)
+}
+
+func (l wireGuardTransparentUDPListener) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error) {
+	return l.WriteToUDPFrom(buf, addr, "")
+}
+
+func (l wireGuardTransparentUDPListener) WriteToUDPFrom(buf []byte, addr *net.UDPAddr, source string) (int, error) {
+	if err := l.WritePacket(buf, addr, source); err != nil {
+		return 0, err
+	}
+	return len(buf), nil
+}
+
+func (l wireGuardTransparentUDPListener) SetDeadline(time.Time) error      { return nil }
+func (l wireGuardTransparentUDPListener) SetReadDeadline(time.Time) error  { return nil }
+func (l wireGuardTransparentUDPListener) SetWriteDeadline(time.Time) error { return nil }
 
 type directUDPUpstream struct {
 	conn *net.UDPConn
@@ -46,13 +116,13 @@ type directUDPUpstream struct {
 func (u *directUDPUpstream) Close() error                       { return u.conn.Close() }
 func (u *directUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
 func (u *directUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
-func (u *directUDPUpstream) ReadPacket() ([]byte, error) {
+func (u *directUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
 	buf := make([]byte, 64*1024)
 	n, err := u.conn.Read(buf)
 	if err != nil {
-		return nil, err
+		return udpUpstreamPacket{}, err
 	}
-	return append([]byte(nil), buf[:n]...), nil
+	return udpUpstreamPacket{payload: append([]byte(nil), buf[:n]...)}, nil
 }
 func (u *directUDPUpstream) WritePacket(payload []byte) error {
 	_, err := u.conn.Write(payload)
@@ -66,19 +136,95 @@ type relayUDPUpstream struct {
 func (u *relayUDPUpstream) Close() error                       { return u.conn.Close() }
 func (u *relayUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
 func (u *relayUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
-func (u *relayUDPUpstream) ReadPacket() ([]byte, error)        { return relay.ReadUOTPacket(u.conn) }
+func (u *relayUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
+	payload, err := relay.ReadUOTPacket(u.conn)
+	if err != nil {
+		return udpUpstreamPacket{}, err
+	}
+	return udpUpstreamPacket{payload: payload}, nil
+}
 func (u *relayUDPUpstream) WritePacket(payload []byte) error {
 	return relay.WriteUOTPacket(u.conn, payload)
 }
 
-func (s *Server) startUDPListener(rule model.L4Rule) error {
-	addrStr := net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
-	addr, err := net.ResolveUDPAddr("udp", addrStr)
-	if err != nil {
-		return err
-	}
+type connUDPUpstream struct {
+	conn net.Conn
+}
 
-	conn, err := net.ListenUDP("udp", addr)
+func (u *connUDPUpstream) Close() error                       { return u.conn.Close() }
+func (u *connUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
+func (u *connUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
+func (u *connUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
+	buf := make([]byte, 64*1024)
+	n, err := u.conn.Read(buf)
+	if err != nil {
+		return udpUpstreamPacket{}, err
+	}
+	return udpUpstreamPacket{payload: append([]byte(nil), buf[:n]...)}, nil
+}
+func (u *connUDPUpstream) WritePacket(payload []byte) error {
+	_, err := u.conn.Write(payload)
+	return err
+}
+
+type proxyUDPUpstream struct {
+	association *proxyproto.UDPAssociation
+	target      string
+}
+
+func (u *proxyUDPUpstream) Close() error { return u.association.Close() }
+func (u *proxyUDPUpstream) SetReadDeadline(t time.Time) error {
+	return u.association.SetReadDeadline(t)
+}
+func (u *proxyUDPUpstream) SetWriteDeadline(t time.Time) error {
+	return u.association.SetWriteDeadline(t)
+}
+func (u *proxyUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
+	source, payload, err := u.association.ReadPacket()
+	if err != nil {
+		return udpUpstreamPacket{}, err
+	}
+	if !proxyUDPReplySourceMatches(u.target, source) {
+		return udpUpstreamPacket{}, fmt.Errorf("SOCKS5 UDP reply source %q does not match target %q", source, u.target)
+	}
+	return udpUpstreamPacket{payload: payload, source: source}, nil
+}
+func (u *proxyUDPUpstream) WritePacket(payload []byte) error {
+	return u.association.WritePacket(u.target, payload)
+}
+
+func proxyUDPReplySourceMatches(expected string, source string) bool {
+	expectedHost, expectedPort, expectedErr := net.SplitHostPort(strings.TrimSpace(expected))
+	sourceHost, sourcePort, sourceErr := net.SplitHostPort(strings.TrimSpace(source))
+	if expectedErr != nil || sourceErr != nil {
+		return strings.EqualFold(strings.TrimSpace(expected), strings.TrimSpace(source))
+	}
+	if expectedPort != sourcePort {
+		return false
+	}
+	expectedIP := net.ParseIP(expectedHost)
+	sourceIP := net.ParseIP(sourceHost)
+	if expectedIP != nil {
+		return sourceIP != nil && expectedIP.Equal(sourceIP)
+	}
+	if sourceIP != nil {
+		ips, err := net.LookupIP(expectedHost)
+		if err != nil {
+			return false
+		}
+		for _, ip := range ips {
+			if ip.Equal(sourceIP) {
+				return true
+			}
+		}
+		return false
+	}
+	return strings.EqualFold(expectedHost, sourceHost)
+}
+
+func (s *Server) startUDPListener(rule model.L4Rule) error {
+	addrStr := l4ListenAddress(rule)
+	conn, err := s.listenUDP(rule, addrStr)
 	if err != nil {
 		return err
 	}
@@ -89,7 +235,47 @@ func (s *Server) startUDPListener(rule model.L4Rule) error {
 	return nil
 }
 
-func (s *Server) udpReadLoop(conn *net.UDPConn, rule model.L4Rule) {
+func (s *Server) startWireGuardTransparentUDPListener(rule model.L4Rule) error {
+	runtime, err := s.wireGuardRuntime(rule)
+	if err != nil {
+		return err
+	}
+	conn, err := runtime.ListenTransparentUDP(s.ctx, l4ListenAddress(rule))
+	if err != nil {
+		return err
+	}
+	listener := wireGuardTransparentUDPListener{TransparentUDPConn: conn}
+	s.udpConns = append(s.udpConns, listener)
+
+	s.wg.Add(1)
+	go s.wireGuardTransparentUDPReadLoop(listener, rule)
+	return nil
+}
+
+func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, error) {
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		runtime, err := s.wireGuardRuntime(rule)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := runtime.ListenUDP(s.ctx, addrStr)
+		if err != nil {
+			return nil, err
+		}
+		if listener, ok := conn.(udpListener); ok {
+			return listener, nil
+		}
+		return packetUDPListener{PacketConn: conn}, nil
+	}
+
+	addr, err := net.ResolveUDPAddr("udp", addrStr)
+	if err != nil {
+		return nil, err
+	}
+	return net.ListenUDP("udp", addr)
+}
+
+func (s *Server) udpReadLoop(conn udpListener, rule model.L4Rule) {
 	defer s.wg.Done()
 	buf := make([]byte, 64*1024)
 
@@ -117,8 +303,28 @@ func (s *Server) udpReadLoop(conn *net.UDPConn, rule model.L4Rule) {
 	}
 }
 
-func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payload []byte, peer *net.UDPAddr) {
-	session, err := s.sessionForPeer(rule, listener, peer)
+func (s *Server) wireGuardTransparentUDPReadLoop(conn wireGuardTransparentUDPListener, rule model.L4Rule) {
+	defer s.wg.Done()
+
+	for {
+		packet, err := conn.ReadPacket()
+		if err != nil {
+			return
+		}
+		s.wg.Add(1)
+		go func(packet wireguard.TransparentUDPPacket) {
+			defer s.wg.Done()
+			s.proxyWireGuardTransparentUDPPacket(conn, rule, packet)
+		}(packet)
+	}
+}
+
+func (s *Server) proxyUDPPacket(listener udpListener, rule model.L4Rule, payload []byte, peer *net.UDPAddr) {
+	if isProxyEntryRule(rule) && strings.EqualFold(rule.Protocol, "udp") {
+		s.proxySOCKS5UDPPacket(listener, rule, payload, peer)
+		return
+	}
+	session, err := s.sessionForUDPFlow(rule, listener, peer, "")
 	if err != nil || session == nil {
 		return
 	}
@@ -141,13 +347,75 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 	s.markUDPSessionWrite(session.key)
 }
 
-func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *net.UDPAddr) (*udpSession, error) {
-	key := listener.LocalAddr().String() + "|" + peer.String()
+func (s *Server) proxySOCKS5UDPPacket(listener udpListener, rule model.L4Rule, payload []byte, peer *net.UDPAddr) {
+	packet, err := proxyproto.ParseSOCKS5UDPPacket(payload)
+	if err != nil {
+		return
+	}
+	if peer == nil || peer.IP == nil || !s.hasProxyUDPAssociation(peer, listener.LocalAddr()) {
+		return
+	}
+	session, err := s.sessionForUDPFlow(rule, listener, peer, packet.Target)
+	if err != nil || session == nil {
+		return
+	}
+	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       session.targetAddr,
+		directUDPPath: session.directUDPPath,
+	})))
+	if err := session.upstream.WritePacket(packet.Payload); err != nil {
+		s.observeCandidateFailure(l4Candidate{
+			address:               session.targetAddr,
+			backoffKey:            session.backoffKey,
+			markBackoffOnFailure:  session.markBackoffOnFailure,
+			backendObservationKey: session.backendObservationKey,
+		})
+		s.closeUDPSession(session.key)
+		return
+	}
+	session.trafficRecorder.Add(int64(len(packet.Payload)), 0)
+	session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
+	s.markUDPSessionWrite(session.key)
+}
+
+func (s *Server) proxyWireGuardTransparentUDPPacket(listener udpListener, rule model.L4Rule, packet wireguard.TransparentUDPPacket) {
+	target := strings.TrimSpace(packet.OriginalDst)
+	if target == "" {
+		return
+	}
+	session, err := s.sessionForUDPFlow(rule, listener, packet.Peer, target)
+	if err != nil || session == nil {
+		return
+	}
+	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       session.targetAddr,
+		directUDPPath: session.directUDPPath,
+	})))
+	if err := session.upstream.WritePacket(packet.Payload); err != nil {
+		s.observeCandidateFailure(l4Candidate{
+			address:               session.targetAddr,
+			backoffKey:            session.backoffKey,
+			markBackoffOnFailure:  session.markBackoffOnFailure,
+			backendObservationKey: session.backendObservationKey,
+		})
+		s.closeUDPSession(session.key)
+		return
+	}
+	session.trafficRecorder.Add(int64(len(packet.Payload)), 0)
+	session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
+	s.markUDPSessionWrite(session.key)
+}
+
+func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer *net.UDPAddr, target string) (*udpSession, error) {
+	target = strings.TrimSpace(target)
+	hasTransparentTarget := target != ""
+	reservationKey := udpSessionKey(listener, peer, target)
 
 	s.udpMu.Lock()
-	if existing := s.udpSessions[key]; existing != nil {
-		if state := s.currentTrafficBlockState(); state.Blocked {
-			delete(s.udpSessions, key)
+	blocked := s.currentTrafficBlockState().Blocked
+	if existing := s.existingUDPSessionLocked(listener, peer, target); existing != nil {
+		if blocked {
+			delete(s.udpSessions, existing.key)
 			s.udpMu.Unlock()
 			if existing.upstream != nil {
 				_ = existing.upstream.Close()
@@ -167,41 +435,62 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 		}
 		return existing, nil
 	}
-	if state := s.currentTrafficBlockState(); state.Blocked {
+	if blocked {
 		s.udpMu.Unlock()
 		return nil, nil
 	}
-
 	session := &udpSession{
-		key:             key,
+		key:             reservationKey,
 		peer:            cloneUDPAddr(peer),
 		listener:        listener,
 		lastActive:      s.now(),
 		ready:           make(chan struct{}),
 		trafficRecorder: traffic.NewL4RuleRecorder(rule.ID),
+		proxyUDPEntry:   isProxyEntryRule(rule) && strings.EqualFold(rule.Protocol, "udp"),
 	}
-	s.udpSessions[key] = session
+	s.udpSessions[reservationKey] = session
 	s.udpMu.Unlock()
 
-	upstream, candidate, err := s.dialUDPUpstream(rule)
+	upstream, candidate, err := s.dialUDPUpstreamForTarget(rule, target)
 	if err != nil {
 		s.udpMu.Lock()
 		session.initErr = err
-		delete(s.udpSessions, key)
+		delete(s.udpSessions, reservationKey)
 		close(session.ready)
 		s.udpMu.Unlock()
 		return nil, err
 	}
+	target = candidate.address
+	key := udpSessionKey(listener, peer, target)
 
 	s.udpMu.Lock()
+	delete(s.udpSessions, reservationKey)
+	if existing := s.udpSessions[key]; existing != nil {
+		s.udpMu.Unlock()
+		_ = upstream.Close()
+		session.initErr = existing.initErr
+		close(session.ready)
+		if existing.ready != nil {
+			<-existing.ready
+		}
+		if existing.initErr != nil {
+			return nil, existing.initErr
+		}
+		return existing, nil
+	}
+	session.key = key
 	session.upstream = upstream
 	session.targetAddr = candidate.address
 	session.directUDPPath = candidate.directUDPPath
 	session.backoffKey = candidate.backoffKey
 	session.markBackoffOnFailure = candidate.markBackoffOnFailure
 	session.backendObservationKey = candidate.backendObservationKey
+	if hasTransparentTarget {
+		session.replySource = candidate.address
+	}
 	close(session.ready)
 	session.ready = nil
+	s.udpSessions[key] = session
 	s.udpMu.Unlock()
 
 	s.wg.Add(1)
@@ -210,6 +499,22 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 }
 
 func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, error) {
+	return s.dialUDPUpstreamForTarget(rule, "")
+}
+
+func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udpUpstream, l4Candidate, error) {
+	if target = strings.TrimSpace(target); target != "" {
+		candidate := l4Candidate{
+			address:       target,
+			directUDPPath: !ruleUsesRelay(rule) && strings.TrimSpace(rule.ProxyEgressMode) == "",
+		}
+		upstream, err := s.dialTargetUDPUpstream(rule, candidate)
+		if err != nil {
+			return nil, l4Candidate{}, err
+		}
+		return upstream, candidate, nil
+	}
+
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
 		return nil, l4Candidate{}, err
@@ -217,36 +522,91 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, e
 
 	var lastErr error
 	for _, candidate := range candidates {
-		targetAddress := candidate.address
-		if !ruleUsesRelay(rule) {
-			addr, err := net.ResolveUDPAddr("udp", targetAddress)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			upstream, err := net.DialUDP("udp", nil, addr)
-			if err != nil {
-				s.observeCandidateFailure(candidate)
-				lastErr = err
-				continue
-			}
-			return &directUDPUpstream{conn: upstream}, candidate, nil
-		}
-
-		upstream, err := s.dialRelayPath("udp", targetAddress, rule, relay.DialOptions{
-			TrafficClass: upstream.TrafficClassBulk,
-		})
+		upstream, err := s.dialUDPUpstreamCandidate(rule, candidate)
 		if err != nil {
 			s.observeCandidateFailure(candidate)
 			lastErr = err
 			continue
 		}
-		return &relayUDPUpstream{conn: upstream}, candidate, nil
+		return upstream, candidate, nil
 	}
 	if lastErr != nil {
 		return nil, l4Candidate{}, lastErr
 	}
 	return nil, l4Candidate{}, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
+}
+
+func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {
+	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
+	case "":
+		return s.dialUDPUpstreamCandidate(rule, candidate)
+	case "relay":
+		conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
+			TrafficClass: upstream.TrafficClassBulk,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &relayUDPUpstream{conn: conn}, nil
+	case "wireguard":
+		runtime, err := s.wireGuardRuntime(rule)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := runtime.DialContext(s.ctx, "udp", candidate.address)
+		if err != nil {
+			return nil, err
+		}
+		return &connUDPUpstream{conn: conn}, nil
+	case "proxy":
+		association, err := proxyproto.DialUDP(s.ctx, rule.ProxyEgressURL)
+		if err != nil {
+			return nil, err
+		}
+		return &proxyUDPUpstream{association: association, target: candidate.address}, nil
+	default:
+		return nil, fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
+	}
+}
+
+func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {
+	targetAddress := candidate.address
+	if !ruleUsesRelay(rule) {
+		addr, err := net.ResolveUDPAddr("udp", targetAddress)
+		if err != nil {
+			return nil, err
+		}
+		upstream, err := net.DialUDP("udp", nil, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &directUDPUpstream{conn: upstream}, nil
+	}
+
+	upstream, err := s.dialRelayPath("udp", targetAddress, rule, relay.DialOptions{
+		TrafficClass: upstream.TrafficClassBulk,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &relayUDPUpstream{conn: upstream}, nil
+}
+
+func (s *Server) existingUDPSessionLocked(listener udpListener, peer *net.UDPAddr, target string) *udpSession {
+	if strings.TrimSpace(target) != "" {
+		return s.udpSessions[udpSessionKey(listener, peer, target)]
+	}
+	prefix := listener.LocalAddr().String() + "|" + peer.String() + "|"
+	for key, session := range s.udpSessions {
+		if strings.HasPrefix(key, prefix) {
+			return session
+		}
+	}
+	return nil
+}
+
+func udpSessionKey(listener udpListener, peer *net.UDPAddr, target string) string {
+	return listener.LocalAddr().String() + "|" + peer.String() + "|" + target
 }
 
 func (s *Server) pipeUDPReplies(session *udpSession) {
@@ -258,7 +618,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if err := session.upstream.SetReadDeadline(s.now().Add(250 * time.Millisecond)); err != nil {
 			return
 		}
-		payload, err := session.upstream.ReadPacket()
+		reply, err := session.upstream.ReadPacket()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				if s.shouldFailUDPSession(session.key) {
@@ -286,6 +646,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			}
 			return
 		}
+		payload := reply.payload
 		replyDuration := s.udpReplyDuration(session.key)
 		s.markUDPSessionReply(session.key)
 		if _, ok := session.upstream.(*directUDPUpstream); ok && s.upstreamScore != nil {
@@ -302,7 +663,31 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			markBackoffOnFailure:  session.markBackoffOnFailure,
 			backendObservationKey: session.backendObservationKey,
 		}, replyDuration)
-		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
+		if session.proxyUDPEntry {
+			replyTarget := session.targetAddr
+			if strings.TrimSpace(reply.source) != "" {
+				replyTarget = reply.source
+			}
+			payload, err = proxyproto.BuildSOCKS5UDPPacket(replyTarget, payload)
+			if err != nil {
+				return
+			}
+		}
+		replySource := session.replySource
+		if strings.TrimSpace(reply.source) != "" {
+			replySource = reply.source
+		}
+		if replySource != "" {
+			if sourceWriter, ok := session.listener.(interface {
+				WriteToUDPFrom([]byte, *net.UDPAddr, string) (int, error)
+			}); ok {
+				if _, err := sourceWriter.WriteToUDPFrom(payload, session.peer, replySource); err != nil {
+					return
+				}
+			} else if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
+				return
+			}
+		} else if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
 		session.trafficRecorder.Add(0, int64(len(payload)))

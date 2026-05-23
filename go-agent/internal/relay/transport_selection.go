@@ -87,13 +87,17 @@ func selectRelayRuntimeTransport(firstHop Hop) string {
 }
 
 func chooseRelayTransport(firstHop Hop) string {
+	baseMode := normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+	if baseMode != ListenerTransportModeQUIC {
+		return baseMode
+	}
 	planner := relayPlanner
 	if planner == nil {
 		planner = upstream.NewPlanner()
 	}
 	candidates := relayTransportCandidates(firstHop)
 	if len(candidates) == 0 {
-		return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+		return baseMode
 	}
 	result := planner.Plan(upstream.PlanInput{
 		Paths:            candidates,
@@ -101,7 +105,7 @@ func chooseRelayTransport(firstHop Hop) string {
 		ResourcePressure: upstream.ResourcePressureLow,
 	})
 	if len(result.Ordered) == 0 {
-		return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+		return baseMode
 	}
 	switch result.Ordered[0].Key.Family {
 	case upstream.PathFamilyRelayQUIC:
@@ -109,7 +113,7 @@ func chooseRelayTransport(firstHop Hop) string {
 	case upstream.PathFamilyRelayTLSTCP:
 		return ListenerTransportModeTLSTCP
 	}
-	return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+	return baseMode
 }
 
 func relayTransportCandidates(firstHop Hop) []upstream.PathSnapshot {

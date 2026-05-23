@@ -31,8 +31,9 @@ type RelayMaterialProvider interface {
 }
 
 type Providers struct {
-	TLS   TLSMaterialProvider
-	Relay RelayMaterialProvider
+	TLS       TLSMaterialProvider
+	Relay     RelayMaterialProvider
+	WireGuard relay.WireGuardRuntimeProvider
 }
 
 type routeEntry struct {

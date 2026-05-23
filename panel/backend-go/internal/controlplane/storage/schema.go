@@ -9,6 +9,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const wireGuardAgentLocalSnapshotMarkerKey = "migration.wireguard_snapshots_agent_local.v1"
+
 type SchemaOptions struct {
 	TrafficStatsEnabled    bool
 	SQLiteLegacyMigrations bool
@@ -36,6 +38,8 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&HTTPRuleRow{},
 		&L4RuleRow{},
 		&RelayListenerRow{},
+		&WireGuardProfileRow{},
+		&WireGuardClientRow{},
 		&ManagedCertificateRow{},
 		&LocalAgentStateRow{},
 		&VersionPolicyRow{},
@@ -68,12 +72,58 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		return err
 	}
 
+	if err := markWireGuardSnapshotsAgentLocal(ctx, db); err != nil {
+		return err
+	}
+
 	return tx.
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(&LocalAgentStateRow{
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func markWireGuardSnapshotsAgentLocal(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if !tx.Migrator().HasTable(&MetaRow{}) || !tx.Migrator().HasTable(&AgentRow{}) {
+		return nil
+	}
+
+	return tx.Transaction(func(tx *gorm.DB) error {
+		marker := MetaRow{
+			Key:   wireGuardAgentLocalSnapshotMarkerKey,
+			Value: "applied",
+		}
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&marker)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+
+		var agents []AgentRow
+		if err := tx.Find(&agents).Error; err != nil {
+			return err
+		}
+		for _, row := range agents {
+			normalizeAgentRow(&row)
+			if strings.TrimSpace(row.ID) == "" {
+				continue
+			}
+			nextRevision := maxInt(row.DesiredRevision, row.CurrentRevision) + 1
+			if row.DesiredRevision >= nextRevision {
+				continue
+			}
+			if err := tx.Model(&AgentRow{}).
+				Where("id = ?", row.ID).
+				Update("desired_revision", nextRevision).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func cleanupSQLiteLegacyLocalAgentState(ctx context.Context, db *gorm.DB) error {
@@ -96,6 +146,8 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		{model: &HTTPRuleRow{}, name: "idx_rules_agent"},
 		{model: &L4RuleRow{}, name: "idx_l4_rules_agent"},
 		{model: &RelayListenerRow{}, name: "idx_relay_listeners_agent"},
+		{model: &WireGuardProfileRow{}, name: "idx_wireguard_profiles_agent"},
+		{model: &WireGuardClientRow{}, name: "idx_wireguard_clients_agent_profile"},
 	}
 	for _, index := range requiredIndexes {
 		if tx.Migrator().HasIndex(index.model, index.name) {
@@ -111,6 +163,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		sql    string
 	}{
 		{column: "transport_mode", sql: `ALTER TABLE relay_listeners ADD COLUMN transport_mode TEXT NOT NULL DEFAULT 'tls_tcp'`},
+		{column: "wireguard_profile_id", sql: `ALTER TABLE relay_listeners ADD COLUMN wireguard_profile_id INTEGER`},
 		{column: "allow_transport_fallback", sql: `ALTER TABLE relay_listeners ADD COLUMN allow_transport_fallback INTEGER NOT NULL DEFAULT 1`},
 		{column: "obfs_mode", sql: `ALTER TABLE relay_listeners ADD COLUMN obfs_mode TEXT NOT NULL DEFAULT 'off'`},
 	}
@@ -146,12 +199,31 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		sql    string
 	}{
 		{column: "listen_mode", sql: `ALTER TABLE l4_rules ADD COLUMN listen_mode TEXT NOT NULL DEFAULT 'tcp'`},
+		{column: "wireguard_profile_id", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_profile_id INTEGER`},
+		{column: "wireguard_inbound_mode", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_inbound_mode TEXT NOT NULL DEFAULT 'address'`},
+		{column: "wireguard_listen_host", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_listen_host TEXT NOT NULL DEFAULT ''`},
 		{column: "proxy_entry_auth", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_entry_auth TEXT NOT NULL DEFAULT '{}'`},
 		{column: "proxy_egress_mode", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_egress_mode TEXT NOT NULL DEFAULT ''`},
 		{column: "proxy_egress_url", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_egress_url TEXT NOT NULL DEFAULT ''`},
+		{column: "wireguard_egress_uri", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_egress_uri TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, migration := range l4ColumnMigrations {
 		if tx.Migrator().HasColumn(&L4RuleRow{}, migration.column) {
+			continue
+		}
+		if err := tx.Exec(migration.sql).Error; err != nil {
+			return err
+		}
+	}
+
+	wireGuardProfileColumnMigrations := []struct {
+		column string
+		sql    string
+	}{
+		{column: "public_endpoint", sql: `ALTER TABLE wireguard_profiles ADD COLUMN public_endpoint TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, migration := range wireGuardProfileColumnMigrations {
+		if tx.Migrator().HasColumn(&WireGuardProfileRow{}, migration.column) {
 			continue
 		}
 		if err := tx.Exec(migration.sql).Error; err != nil {
@@ -165,6 +237,10 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		sql    string
 	}{
 		{model: &HTTPRuleRow{}, column: "relay_layers", sql: `ALTER TABLE rules ADD COLUMN relay_layers TEXT NOT NULL DEFAULT '[]'`},
+		{model: &HTTPRuleRow{}, column: "wireguard_entry_enabled", sql: `ALTER TABLE rules ADD COLUMN wireguard_entry_enabled INTEGER NOT NULL DEFAULT 0`},
+		{model: &HTTPRuleRow{}, column: "wireguard_profile_id", sql: `ALTER TABLE rules ADD COLUMN wireguard_profile_id INTEGER`},
+		{model: &HTTPRuleRow{}, column: "wireguard_entry_listen_host", sql: `ALTER TABLE rules ADD COLUMN wireguard_entry_listen_host TEXT NOT NULL DEFAULT ''`},
+		{model: &HTTPRuleRow{}, column: "wireguard_entry_listen_port", sql: `ALTER TABLE rules ADD COLUMN wireguard_entry_listen_port INTEGER NOT NULL DEFAULT 0`},
 		{model: &L4RuleRow{}, column: "relay_layers", sql: `ALTER TABLE l4_rules ADD COLUMN relay_layers TEXT NOT NULL DEFAULT '[]'`},
 	}
 	for _, migration := range ruleColumnMigrations {
@@ -183,12 +259,18 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE rules SET relay_chain = '[]' WHERE relay_chain IS NULL OR trim(relay_chain) = ''`,
 		`UPDATE rules SET relay_layers = '[]' WHERE relay_layers IS NULL OR trim(relay_layers) = ''`,
 		`UPDATE rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
+		`UPDATE rules SET wireguard_entry_enabled = 0 WHERE wireguard_entry_enabled IS NULL`,
+		`UPDATE rules SET wireguard_entry_listen_host = '' WHERE wireguard_entry_listen_host IS NULL`,
+		`UPDATE rules SET wireguard_entry_listen_port = 0 WHERE wireguard_entry_listen_port IS NULL`,
 		`UPDATE l4_rules SET relay_layers = '[]' WHERE relay_layers IS NULL OR trim(relay_layers) = ''`,
 		`UPDATE l4_rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
 		`UPDATE l4_rules SET listen_mode = 'tcp' WHERE listen_mode IS NULL OR trim(listen_mode) = ''`,
+		`UPDATE l4_rules SET wireguard_inbound_mode = 'address' WHERE wireguard_inbound_mode IS NULL OR trim(wireguard_inbound_mode) = ''`,
+		`UPDATE l4_rules SET wireguard_listen_host = '' WHERE wireguard_listen_host IS NULL`,
 		`UPDATE l4_rules SET proxy_entry_auth = '{}' WHERE proxy_entry_auth IS NULL OR trim(proxy_entry_auth) = ''`,
 		`UPDATE l4_rules SET proxy_egress_mode = '' WHERE proxy_egress_mode IS NULL`,
 		`UPDATE l4_rules SET proxy_egress_url = '' WHERE proxy_egress_url IS NULL`,
+		`UPDATE l4_rules SET wireguard_egress_uri = '' WHERE wireguard_egress_uri IS NULL`,
 		`UPDATE agents SET desired_version = '' WHERE desired_version IS NULL`,
 		`UPDATE agents SET platform = '' WHERE platform IS NULL`,
 		`UPDATE agents SET runtime_package_version = '' WHERE runtime_package_version IS NULL`,
@@ -227,6 +309,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE relay_listeners SET transport_mode = 'tls_tcp' WHERE transport_mode IS NULL OR trim(transport_mode) = ''`,
 		`UPDATE relay_listeners SET allow_transport_fallback = 1 WHERE allow_transport_fallback IS NULL`,
 		`UPDATE relay_listeners SET obfs_mode = 'off' WHERE obfs_mode IS NULL OR trim(obfs_mode) = ''`,
+		`UPDATE wireguard_profiles SET public_endpoint = '' WHERE public_endpoint IS NULL`,
 	}
 	for _, stmt := range normalizationStatements {
 		if err := tx.Exec(stmt).Error; err != nil {

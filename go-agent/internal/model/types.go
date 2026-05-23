@@ -18,6 +18,7 @@ type Snapshot struct {
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
+	WireGuardProfiles   []WireGuardProfile         `json:"wireguard_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 	agentConfigPresent  bool

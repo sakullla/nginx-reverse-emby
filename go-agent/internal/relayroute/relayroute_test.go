@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 )
 
@@ -54,6 +55,33 @@ func TestResolvePathsBuildsHopsAndKeys(t *testing.T) {
 	wantKey := relayplan.PathKey("relay_path", []int{1}, "backend.example:443")
 	if paths[0].Key != wantKey {
 		t.Fatalf("path key = %q, want %q", paths[0].Key, wantKey)
+	}
+}
+
+func TestResolvePathsUsesWireGuardListenerAddressInsideTunnel(t *testing.T) {
+	profileID := 7
+	listener := testListener(1)
+	listener.ListenHost = "10.71.0.1"
+	listener.BindHosts = []string{"10.71.0.1"}
+	listener.ListenPort = 7443
+	listener.PublicHost = "relay.example.com"
+	listener.PublicPort = 51820
+	listener.TransportMode = relay.ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+
+	paths, err := ResolvePaths("l4 rule 0.0.0.0:9443", nil, [][]int{{1}}, []model.RelayListener{listener}, "backend.example:443")
+	if err != nil {
+		t.Fatalf("ResolvePaths() error = %v", err)
+	}
+	if len(paths) != 1 || len(paths[0].Hops) != 1 {
+		t.Fatalf("paths = %+v, want one path with one hop", paths)
+	}
+	hop := paths[0].Hops[0]
+	if hop.Address != "10.71.0.1:7443" {
+		t.Fatalf("hop address = %q, want WireGuard tunnel listener address", hop.Address)
+	}
+	if hop.ServerName != "relay.example.com" {
+		t.Fatalf("hop server name = %q, want public host for identity", hop.ServerName)
 	}
 }
 

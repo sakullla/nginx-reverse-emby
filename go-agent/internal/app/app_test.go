@@ -221,12 +221,12 @@ func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing
 		{
 			name:         "http3 disabled",
 			http3Enabled: false,
-			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"},
+			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard"},
 		},
 		{
 			name:         "http3 enabled",
 			http3Enabled: true,
-			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "http3_ingress"},
+			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "http3_ingress"},
 		},
 	}
 
@@ -652,6 +652,93 @@ func TestMergeSnapshotPayloadAppliesExplicitEmptyAgentConfig(t *testing.T) {
 
 	if merged.AgentConfig.OutboundProxyURL != "" {
 		t.Fatalf("AgentConfig.OutboundProxyURL = %q, want cleared", merged.AgentConfig.OutboundProxyURL)
+	}
+}
+
+func TestMergeSnapshotPayloadAppliesExplicitEmptyWireGuardProfiles(t *testing.T) {
+	previous := Snapshot{
+		DesiredVersion: "previous",
+		Revision:       7,
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:         41,
+			AgentID:    "remote-leaked",
+			Name:       "leaked",
+			PrivateKey: "leaked-private-key",
+			Enabled:    true,
+			Revision:   7,
+		}},
+	}
+	var next Snapshot
+	if err := json.Unmarshal([]byte(`{"desired_version":"cleanup","desired_revision":8,"wireguard_profiles":[]}`), &next); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	merged := mergeSnapshotPayload(next, previous)
+
+	if merged.WireGuardProfiles == nil {
+		t.Fatal("WireGuardProfiles = nil, want explicit empty slice")
+	}
+	if len(merged.WireGuardProfiles) != 0 {
+		t.Fatalf("WireGuardProfiles = %+v, want cleared", merged.WireGuardProfiles)
+	}
+}
+
+func TestRunAppliesExplicitEmptyWireGuardProfilesToClearStaleProfiles(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+	previous := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       7,
+		RelayListeners: []model.RelayListener{},
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:         41,
+			AgentID:    "remote-leaked",
+			Name:       "leaked",
+			PrivateKey: "leaked-private-key",
+			Enabled:    true,
+			Revision:   7,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion:    "cleanup",
+		Revision:          8,
+		RelayListeners:    []model.RelayListener{},
+		WireGuardProfiles: []model.WireGuardProfile{},
+	}})
+	relayApplier := &testWireGuardRelayApplier{}
+	app := newAppWithDeps(cfg, mem, client, nil, nil, relayApplier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if applied.WireGuardProfiles == nil || len(applied.WireGuardProfiles) != 0 {
+		t.Fatalf("applied WireGuardProfiles = %+v, want explicit empty slice", applied.WireGuardProfiles)
+	}
+	calls := relayApplier.wireGuardCalls()
+	if len(calls) == 0 {
+		t.Fatal("ApplyWithWireGuardProfiles was not called")
+	}
+	lastCall := calls[len(calls)-1]
+	if lastCall.profiles == nil || len(lastCall.profiles) != 0 {
+		t.Fatalf("applied relay WireGuard profiles = %+v, want explicit empty slice", lastCall.profiles)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
 	}
 }
 
@@ -1549,6 +1636,17 @@ type relayApplyCall struct {
 	listeners []model.RelayListener
 }
 
+type relayWireGuardApplyCall struct {
+	listeners []model.RelayListener
+	profiles  []model.WireGuardProfile
+}
+
+type l4WireGuardApplyCall struct {
+	rules     []model.L4Rule
+	listeners []model.RelayListener
+	profiles  []model.WireGuardProfile
+}
+
 type updateCall struct {
 	desiredVersion string
 	pkg            model.VersionPackage
@@ -1641,6 +1739,46 @@ func (a *testL4Applier) Close() error {
 	return nil
 }
 
+type testWireGuardL4Applier struct {
+	testL4Applier
+	wgMu    sync.Mutex
+	wgCalls []l4WireGuardApplyCall
+}
+
+func (a *testWireGuardL4Applier) ApplyWithRelayAndWireGuardProfiles(_ context.Context, rules []model.L4Rule, listeners []model.RelayListener, profiles []model.WireGuardProfile) error {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	var copiedRules []model.L4Rule
+	if rules != nil {
+		copiedRules = make([]model.L4Rule, len(rules))
+		copy(copiedRules, rules)
+	}
+	var copiedListeners []model.RelayListener
+	if listeners != nil {
+		copiedListeners = make([]model.RelayListener, len(listeners))
+		copy(copiedListeners, listeners)
+	}
+	var copiedProfiles []model.WireGuardProfile
+	if profiles != nil {
+		copiedProfiles = make([]model.WireGuardProfile, len(profiles))
+		copy(copiedProfiles, profiles)
+	}
+	a.wgCalls = append(a.wgCalls, l4WireGuardApplyCall{
+		rules:     copiedRules,
+		listeners: copiedListeners,
+		profiles:  copiedProfiles,
+	})
+	return a.applyErr
+}
+
+func (a *testWireGuardL4Applier) wireGuardCalls() []l4WireGuardApplyCall {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	out := make([]l4WireGuardApplyCall, len(a.wgCalls))
+	copy(out, a.wgCalls)
+	return out
+}
+
 type testRelayApplier struct {
 	mu       sync.Mutex
 	calls    []relayApplyCall
@@ -1671,6 +1809,40 @@ func (a *testRelayApplier) snapshotCalls() []relayApplyCall {
 
 func (a *testRelayApplier) Close() error {
 	return nil
+}
+
+type testWireGuardRelayApplier struct {
+	testRelayApplier
+	wgMu    sync.Mutex
+	wgCalls []relayWireGuardApplyCall
+}
+
+func (a *testWireGuardRelayApplier) ApplyWithWireGuardProfiles(_ context.Context, listeners []model.RelayListener, profiles []model.WireGuardProfile) error {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	var copiedListeners []model.RelayListener
+	if listeners != nil {
+		copiedListeners = make([]model.RelayListener, len(listeners))
+		copy(copiedListeners, listeners)
+	}
+	var copiedProfiles []model.WireGuardProfile
+	if profiles != nil {
+		copiedProfiles = make([]model.WireGuardProfile, len(profiles))
+		copy(copiedProfiles, profiles)
+	}
+	a.wgCalls = append(a.wgCalls, relayWireGuardApplyCall{
+		listeners: copiedListeners,
+		profiles:  copiedProfiles,
+	})
+	return a.applyErr
+}
+
+func (a *testWireGuardRelayApplier) wireGuardCalls() []relayWireGuardApplyCall {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	out := make([]relayWireGuardApplyCall, len(a.wgCalls))
+	copy(out, a.wgCalls)
+	return out
 }
 
 type testHTTPApplier struct {
@@ -1841,6 +2013,19 @@ func (a *orderedL4Applier) Apply(_ context.Context, _ []model.L4Rule) error {
 }
 
 func (a *orderedL4Applier) Close() error {
+	return nil
+}
+
+type orderedHTTPApplier struct {
+	recorder *orderedApplyRecorder
+}
+
+func (a *orderedHTTPApplier) Apply(_ context.Context, _ []model.HTTPRule) error {
+	a.recorder.add("http")
+	return nil
+}
+
+func (a *orderedHTTPApplier) Close() error {
 	return nil
 }
 
@@ -3675,17 +3860,33 @@ func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChange
 	}
 }
 
-func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
+func TestSnapshotActivatorAppliesRulesBeforeRelayListeners(t *testing.T) {
 	recorder := &orderedApplyRecorder{}
-	app := newAppWithDeps(
+	app := newAppWithHTTPDeps(
 		Config{AgentID: "local-agent"},
 		store.NewInMemory(),
 		newTestSyncClient(nil, syncResponse{}),
+		&orderedHTTPApplier{recorder: recorder},
 		&orderedCertificateApplier{recorder: recorder},
 		&orderedL4Applier{recorder: recorder},
 		&orderedRelayApplier{recorder: recorder},
 	)
 
+	previous := Snapshot{
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://handoff.internal",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			Enabled:     true,
+			Revision:    1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9444,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9445}},
+			Revision:   1,
+		}},
+	}
 	next := Snapshot{
 		Certificates: []model.ManagedCertificateBundle{{
 			ID:       10,
@@ -3708,6 +3909,7 @@ func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
 			}},
 			Revision: 1,
 		}},
+		Rules: []model.HTTPRule{},
 		L4Rules: []model.L4Rule{{
 			Protocol:    "udp",
 			ListenHost:  "127.0.0.1",
@@ -3718,12 +3920,202 @@ func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
 		}},
 	}
 
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	if got := recorder.snapshot(); !reflect.DeepEqual(got, []string{"cert", "http", "l4", "relay"}) {
+		t.Fatalf("apply order = %v, want [cert http l4 relay]", got)
+	}
+}
+
+func TestSnapshotActivatorPassesWireGuardProfilesToRelayApplier(t *testing.T) {
+	relayApplier := &testWireGuardRelayApplier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		nil,
+		relayApplier,
+	)
+
+	profileID := 9
+	next := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:      profileID,
+			Enabled: true,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:                 51,
+			AgentID:            "local-agent",
+			Name:               "relay-hop",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         9443,
+			Enabled:            true,
+			TLSMode:            "pin_only",
+			TransportMode:      relay.ListenerTransportModeWireGuard,
+			WireGuardProfileID: &profileID,
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin",
+			}},
+			Revision: 1,
+		}},
+	}
+
 	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
 		t.Fatalf("snapshotActivator returned error: %v", err)
 	}
 
-	if got := recorder.snapshot(); !reflect.DeepEqual(got, []string{"cert", "relay", "l4"}) {
-		t.Fatalf("apply order = %v, want [cert relay l4]", got)
+	calls := relayApplier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithWireGuardProfiles calls = %d, want 1", len(calls))
+	}
+	if len(calls[0].profiles) != 1 || calls[0].profiles[0].ID != profileID {
+		t.Fatalf("wireguard profiles passed to relay applier = %+v", calls[0].profiles)
+	}
+	if len(calls[0].listeners) != 1 || calls[0].listeners[0].ID != 51 {
+		t.Fatalf("relay listeners passed to relay applier = %+v", calls[0].listeners)
+	}
+}
+
+func TestSnapshotActivatorRefreshesRelayWireGuardProfilesWhenListenersUnchanged(t *testing.T) {
+	relayApplier := &testWireGuardRelayApplier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		nil,
+		relayApplier,
+	)
+
+	profileID := 9
+	previous := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:       profileID,
+			Enabled:  true,
+			Revision: 1,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:                 51,
+			AgentID:            "local-agent",
+			Name:               "relay-hop",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         9443,
+			Enabled:            true,
+			TLSMode:            "pin_only",
+			TransportMode:      relay.ListenerTransportModeWireGuard,
+			WireGuardProfileID: &profileID,
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin",
+			}},
+			Revision: 1,
+		}},
+	}
+	next := previous
+	next.WireGuardProfiles = append([]model.WireGuardProfile(nil), previous.WireGuardProfiles...)
+	next.WireGuardProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := relayApplier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithWireGuardProfiles calls = %d, want 1 after profile-only change", len(calls))
+	}
+	if calls[0].profiles[0].Revision != 2 {
+		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)
+	}
+}
+
+func TestSnapshotActivatorPassesWireGuardProfilesToL4Applier(t *testing.T) {
+	l4Applier := &testWireGuardL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 9
+	next := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:       profileID,
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:           "tcp",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         8443,
+			ListenMode:         "wireguard",
+			WireGuardProfileID: &profileID,
+			Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			Revision:           1,
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles calls = %d, want 1", len(calls))
+	}
+	if len(calls[0].profiles) != 1 || calls[0].profiles[0].ID != profileID {
+		t.Fatalf("wireguard profiles passed to l4 applier = %+v", calls[0].profiles)
+	}
+}
+
+func TestSnapshotActivatorRefreshesL4WireGuardProfilesWhenRulesUnchanged(t *testing.T) {
+	l4Applier := &testWireGuardL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 9
+	previous := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:       profileID,
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:           "tcp",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         8443,
+			ListenMode:         "wireguard",
+			WireGuardProfileID: &profileID,
+			Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			Revision:           1,
+		}},
+	}
+	next := previous
+	next.WireGuardProfiles = append([]model.WireGuardProfile(nil), previous.WireGuardProfiles...)
+	next.WireGuardProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles calls = %d, want 1 after profile-only change", len(calls))
+	}
+	if calls[0].profiles[0].Revision != 2 {
+		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)
 	}
 }
 

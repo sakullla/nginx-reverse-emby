@@ -7,8 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
@@ -19,8 +19,8 @@ import (
 )
 
 func (s *Server) startTCPListener(rule model.L4Rule) error {
-	addr := net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
-	ln, err := net.Listen("tcp", addr)
+	addr := l4ListenAddress(rule)
+	ln, err := s.listenTCP(rule, addr)
 	if err != nil {
 		return err
 	}
@@ -29,6 +29,17 @@ func (s *Server) startTCPListener(rule model.L4Rule) error {
 	s.wg.Add(1)
 	go s.tcpAcceptLoop(ln, rule)
 	return nil
+}
+
+func (s *Server) listenTCP(rule model.L4Rule, addr string) (net.Listener, error) {
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		runtime, err := s.wireGuardRuntime(rule)
+		if err != nil {
+			return nil, err
+		}
+		return runtime.ListenTCP(s.ctx, addr)
+	}
+	return net.Listen("tcp", addr)
 }
 
 func (s *Server) tcpAcceptLoop(ln net.Listener, rule model.L4Rule) {
@@ -60,7 +71,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}
 
 	recorder := traffic.NewL4RuleRecorder(rule.ID)
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "proxy") {
+	if isProxyEntryRule(rule) {
 		s.handleProxyEntryConnection(client, rule, recorder)
 		return
 	}
@@ -78,7 +89,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		}
 	}
 
-	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule, relay.DialOptions{
+	upstream, candidate, connectDuration, err := s.dialTCPUpstreamForClient(rule, client, relay.DialOptions{
 		InitialPayload: initialPayload,
 		TrafficClass:   relayTCPDialTrafficClass(initialPayload),
 	})
@@ -127,6 +138,40 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 	if err != nil {
 		return
 	}
+	if req.Protocol == "socks5-udp" {
+		bindAddr := s.proxyUDPBindAddr(client, rule)
+		associationAddr := s.proxyUDPAssociationListenAddr(rule, bindAddr)
+		unregister, err := s.registerProxyUDPAssociation(client, rule, req, associationAddr)
+		if err != nil {
+			_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+			return
+		}
+		defer unregister()
+		if err := proxyproto.WriteClientRequestSuccessWithBind(client, req, bindAddr); err != nil {
+			return
+		}
+		done := make(chan struct{}, 1)
+		go func() {
+			defer func() { done <- struct{}{} }()
+			buf := make([]byte, 1)
+			for {
+				_ = client.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+				_, err := client.Read(buf)
+				if err == nil {
+					continue
+				}
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					if s.ctx.Err() != nil {
+						return
+					}
+					continue
+				}
+				return
+			}
+		}()
+		<-done
+		return
+	}
 	upstream, err := s.dialProxyEntryUpstream(rule, req.Target)
 	if err != nil {
 		_ = proxyproto.WriteClientRequestFailure(client, req, http.StatusBadGateway)
@@ -138,6 +183,14 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
 		return
 	}
+	if len(req.InitialPayload) > 0 {
+		if _, err := upstream.Write(req.InitialPayload); err != nil {
+			return
+		}
+		recorder = l4RecorderOrAggregate(recorder)
+		recorder.Add(int64(len(req.InitialPayload)), 0)
+		recorder.FlushIfPendingBelow(32 * 1024)
+	}
 
 	copyBidirectionalTCP(client, upstream, recorder)
 }
@@ -146,6 +199,12 @@ func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.C
 	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
 	case "relay":
 		return s.dialRelayPath("tcp", target, rule, relay.DialOptions{})
+	case "wireguard":
+		runtime, err := s.wireGuardRuntime(rule)
+		if err != nil {
+			return nil, err
+		}
+		return runtime.DialContext(s.ctx, "tcp", target)
 	case "proxy":
 		return proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
 	default:

@@ -16,6 +16,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 func TestValidateListener(t *testing.T) {
@@ -284,6 +286,435 @@ func TestValidateListenerRejectsBracketedIPv6PublicHost(t *testing.T) {
 	}
 	if got := err.Error(); got != "public_host must be a valid IP address or hostname" {
 		t.Fatalf("unexpected error: %q", got)
+	}
+}
+
+func TestValidateListenerWireGuardTransportRequiresProfileID(t *testing.T) {
+	t.Parallel()
+
+	profileID := 7
+	listener := Listener{
+		ID:                 1,
+		AgentID:            "agent-a",
+		Name:               "relay-wg",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         18443,
+		Enabled:            true,
+		TLSMode:            "pin_only",
+		TransportMode:      ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+		PinSet: []model.RelayPin{{
+			Type:  "spki_sha256",
+			Value: "cGlubmVk",
+		}},
+	}
+	if err := ValidateListener(listener); err != nil {
+		t.Fatalf("ValidateListener() error = %v", err)
+	}
+
+	listener.WireGuardProfileID = nil
+	err := ValidateListener(listener)
+	if err == nil {
+		t.Fatal("ValidateListener() error = nil, want missing profile error")
+	}
+	if !strings.Contains(err.Error(), "wireguard_profile_id is required") {
+		t.Fatalf("ValidateListener() error = %v, want wireguard_profile_id requirement", err)
+	}
+}
+
+func TestListenerBindingKeysNamespaceWireGuardTransport(t *testing.T) {
+	t.Parallel()
+
+	profileID := 7
+	listener := Listener{
+		ID:                 1,
+		AgentID:            "agent-a",
+		Name:               "relay-wg",
+		BindHosts:          []string{"10.8.0.1"},
+		ListenPort:         18443,
+		Enabled:            true,
+		TransportMode:      ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+	}
+
+	got := listenerBindingKeys(listener)
+	want := []string{"wireguard:7:tcp:" + net.JoinHostPort("10.8.0.1", "18443")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("listenerBindingKeys() = %+v, want %+v", got, want)
+	}
+}
+
+func TestValidateListenerWireGuardTransportRequiresTLSMaterial(t *testing.T) {
+	t.Parallel()
+
+	profileID := 7
+	listener := Listener{
+		ID:                 1,
+		AgentID:            "agent-a",
+		Name:               "relay-wg",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         18443,
+		PublicHost:         "relay-wg.example.com",
+		PublicPort:         28443,
+		Enabled:            true,
+		TLSMode:            "pin_only",
+		TransportMode:      ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+	}
+
+	if err := ValidateListener(listener); err == nil || !strings.Contains(err.Error(), "pin_only requires pin_set") {
+		t.Fatalf("ValidateListener() error = %v, want pin_only trust material requirement", err)
+	}
+
+	listener.PinSet = []model.RelayPin{{
+		Type:  "spki_sha256",
+		Value: "cGlubmVk",
+	}}
+	if err := ValidateListener(listener); err != nil {
+		t.Fatalf("ValidateListener() with pin error = %v", err)
+	}
+}
+
+func TestValidateListenerRejectsWireGuardObfsAndFallback(t *testing.T) {
+	t.Parallel()
+
+	profileID := 7
+	base := Listener{
+		ID:                 1,
+		AgentID:            "agent-a",
+		Name:               "relay-wg",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         18443,
+		Enabled:            true,
+		TLSMode:            "pin_only",
+		TransportMode:      ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+		PinSet: []model.RelayPin{{
+			Type:  "spki_sha256",
+			Value: "cGlubmVk",
+		}},
+	}
+
+	withObfs := base
+	withObfs.ObfsMode = RelayObfsModeEarlyWindowV2
+	if err := ValidateListener(withObfs); err == nil || !strings.Contains(err.Error(), "obfs_mode is not supported with wireguard transport") {
+		t.Fatalf("ValidateListener(withObfs) error = %v, want obfs rejection", err)
+	}
+
+	withFallback := base
+	withFallback.AllowTransportFallback = true
+	if err := ValidateListener(withFallback); err == nil || !strings.Contains(err.Error(), "allow_transport_fallback is not supported with wireguard transport") {
+		t.Fatalf("ValidateListener(withFallback) error = %v, want fallback rejection", err)
+	}
+}
+
+func TestStartWireGuardRelayRequiresCertificateAndTLSProvider(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+		listenConfig := newRelayTCPListenConfig()
+		return listenConfig.Listen(ctx, "tcp", address)
+	}}
+	wgProvider := fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{9: wgRuntime}}
+	profileID := 9
+	listener := Listener{
+		ID:         905,
+		AgentID:    "agent-wg",
+		Name:       "relay-wg-no-tls-material",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "spki_sha256",
+			Value: "cGlubmVk",
+		}},
+		TransportMode:      ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+		Revision:           1,
+	}
+
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, nil, StartOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err == nil {
+		server.Close()
+		t.Fatal("StartWithOptions() error = nil, want missing TLS provider error")
+	}
+	if !strings.Contains(err.Error(), "tls material provider is required") {
+		t.Fatalf("StartWithOptions() error = %v, want missing TLS provider error", err)
+	}
+
+	server, err = StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err == nil {
+		server.Close()
+		t.Fatal("StartWithOptions() error = nil, want missing certificate_id error")
+	}
+	if !strings.Contains(err.Error(), "certificate_id is required") {
+		t.Fatalf("StartWithOptions() error = %v, want missing certificate_id error", err)
+	}
+}
+
+func TestStartWireGuardRelayUsesRuntimeListenTCP(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+		listenConfig := newRelayTCPListenConfig()
+		return listenConfig.Listen(ctx, "tcp", address)
+	}}
+	wgProvider := fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{9: wgRuntime}}
+	profileID := 9
+	listener, _ := newRelayEndpoint(t, provider, 901, "relay-wg-listen", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	listener.AllowTransportFallback = false
+	listener.ListenPort = pickFreeTCPPort(t)
+
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions() error = %v", err)
+	}
+	defer server.Close()
+
+	calls := wgRuntime.listenTCPCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ListenTCP calls = %d, want 1", len(calls))
+	}
+	wantAddr := net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
+	if calls[0] != wantAddr {
+		t.Fatalf("ListenTCP address = %q, want %q", calls[0], wantAddr)
+	}
+}
+
+func TestStartWireGuardRelayLooksUpRuntimeByListenerAgent(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+		listenConfig := newRelayTCPListenConfig()
+		return listenConfig.Listen(ctx, "tcp", address)
+	}}
+	profileID := 9
+	listener, _ := newRelayEndpoint(t, provider, 903, "relay-wg-agent", "pin_only", true, false)
+	listener.AgentID = "remote-relay"
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	listener.AllowTransportFallback = false
+	listener.ListenPort = pickFreeTCPPort(t)
+	wgProvider := &fakeAgentWireGuardRuntimeProvider{
+		runtimes: map[string]map[int]*fakeWireGuardRuntime{
+			"remote-relay": {profileID: wgRuntime},
+		},
+	}
+
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions() error = %v", err)
+	}
+	defer server.Close()
+
+	if wgProvider.idOnlyCalls != 0 {
+		t.Fatalf("id-only runtime lookups = %d, want agent-qualified lookup", wgProvider.idOnlyCalls)
+	}
+	if wgProvider.agentCalls != 1 || wgProvider.lastAgentID != "remote-relay" || wgProvider.lastProfileID != profileID {
+		t.Fatalf("agent runtime lookup = calls %d agent %q profile %d", wgProvider.agentCalls, wgProvider.lastAgentID, wgProvider.lastProfileID)
+	}
+}
+
+func TestDialWireGuardRelayUsesRuntimeDialContext(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{
+		dialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		},
+		listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+			listenConfig := newRelayTCPListenConfig()
+			return listenConfig.Listen(ctx, "tcp", address)
+		},
+	}
+	wgProvider := fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{9: wgRuntime}}
+	profileID := 9
+	listener, hop := newRelayEndpoint(t, provider, 902, "relay-wg-dial", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	listener.AllowTransportFallback = false
+	listener.ListenPort = pickFreeTCPPort(t)
+	hop.Listener = listener
+	hop.Address = net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
+
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions() error = %v", err)
+	}
+	defer server.Close()
+
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+
+	if result.TransportMode != ListenerTransportModeWireGuard {
+		t.Fatalf("TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeWireGuard)
+	}
+	assertRoundTrip(t, conn, []byte("wireguard-relay"))
+
+	calls := wgRuntime.dialContextCalls()
+	if len(calls) != 1 {
+		t.Fatalf("DialContext calls = %d, want 1", len(calls))
+	}
+	if calls[0].network != "tcp" || calls[0].address != hop.Address {
+		t.Fatalf("DialContext call = %+v, want tcp %s", calls[0], hop.Address)
+	}
+}
+
+func TestDialWireGuardRelayEnforcesTLSPinVerification(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{
+		dialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		},
+		listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+			listenConfig := newRelayTCPListenConfig()
+			return listenConfig.Listen(ctx, "tcp", address)
+		},
+	}
+	wgProvider := fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{9: wgRuntime}}
+	profileID := 9
+	listener, hop := newRelayEndpoint(t, provider, 906, "relay-wg-pin", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	listener.AllowTransportFallback = false
+	listener.ListenPort = pickFreeTCPPort(t)
+	hop.Listener = listener
+	hop.Address = net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
+
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions() error = %v", err)
+	}
+	defer server.Close()
+
+	badHop := hop
+	badHop.Listener.PinSet = []model.RelayPin{{Type: "spki_sha256", Value: base64.StdEncoding.EncodeToString([]byte("wrong"))}}
+	if conn, _, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{badHop}, provider, DialOptions{
+		WireGuardProvider: wgProvider,
+	}); err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want WireGuard relay TLS pin failure")
+	}
+
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+
+	if result.TransportMode != ListenerTransportModeWireGuard {
+		t.Fatalf("TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeWireGuard)
+	}
+	assertRoundTrip(t, conn, []byte("wireguard-tls-relay"))
+}
+
+func TestDialWireGuardRelayRawTCPUsesDefaultProvider(t *testing.T) {
+	oldDefaultProvider := DefaultWireGuardRuntimeProvider()
+	defer SetDefaultWireGuardRuntimeProvider(oldDefaultProvider)
+
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{
+		dialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			client, server := net.Pipe()
+			t.Cleanup(func() {
+				_ = server.Close()
+			})
+			return client, nil
+		},
+	}
+	wgProvider := fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{9: wgRuntime}}
+	SetDefaultWireGuardRuntimeProvider(wgProvider)
+
+	profileID := 9
+	listener, hop := newRelayEndpoint(t, provider, 904, "relay-wg-default-provider", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	listener.AllowTransportFallback = false
+	hop.Listener = listener
+	hop.Address = "10.0.0.2:7443"
+
+	conn, err := dialRelayRawTCP(context.Background(), hop, DialOptions{})
+	if err != nil {
+		t.Fatalf("dialRelayRawTCP() error = %v", err)
+	}
+	defer conn.Close()
+
+	calls := wgRuntime.dialContextCalls()
+	if len(calls) != 1 {
+		t.Fatalf("DialContext calls = %d, want 1", len(calls))
+	}
+	if calls[0].network != "tcp" || calls[0].address != hop.Address {
+		t.Fatalf("DialContext call = %+v, want tcp %s", calls[0], hop.Address)
+	}
+}
+
+func TestDialWireGuardRelayErrorsWhenProviderOrProfileMissing(t *testing.T) {
+	t.Parallel()
+
+	provider := newFakeTLSMaterialProvider()
+	profileID := 9
+	listener, hop := newRelayEndpoint(t, provider, 903, "relay-wg-missing", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	listener.AllowTransportFallback = false
+	hop.Listener = listener
+
+	if conn, _, err := DialWithResult(context.Background(), "tcp", "127.0.0.1:80", []Hop{hop}, provider); err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want missing WireGuard provider error")
+	} else if !strings.Contains(err.Error(), "wireguard runtime provider is required") {
+		t.Fatalf("DialWithResult() error = %v, want missing WireGuard provider error", err)
+	}
+
+	if conn, _, err := DialWithResult(context.Background(), "tcp", "127.0.0.1:80", []Hop{hop}, provider, DialOptions{
+		WireGuardProvider: fakeWireGuardRuntimeProvider{},
+	}); err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want missing WireGuard profile error")
+	} else if !strings.Contains(err.Error(), "wireguard profile 9 runtime not found") {
+		t.Fatalf("DialWithResult() error = %v, want missing WireGuard profile error", err)
+	}
+}
+
+func TestDialTLSTCPRelayRequiresTLSMaterialProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := newFakeTLSMaterialProvider()
+	_, hop := newRelayEndpoint(t, provider, 907, "relay-tls-provider-required", "pin_only", true, false)
+
+	if conn, _, err := DialWithResult(context.Background(), "tcp", "127.0.0.1:80", []Hop{hop}, nil); err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want missing TLS material provider error")
+	} else if !strings.Contains(err.Error(), "tls material provider is required") {
+		t.Fatalf("DialWithResult() error = %v, want missing TLS material provider error", err)
 	}
 }
 
@@ -2291,10 +2722,62 @@ func TestResolveCandidatesUsesLastHopResolution(t *testing.T) {
 	}
 }
 
+func TestResolveCandidatesWireGuardRelayRequiresTLSMaterialProvider(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	provider := newFakeTLSMaterialProvider()
+	wgRuntime := &fakeWireGuardRuntime{
+		dialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		},
+		listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+			listenConfig := newRelayTCPListenConfig()
+			return listenConfig.Listen(ctx, "tcp", address)
+		},
+	}
+	wgProvider := fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{9: wgRuntime}}
+	profileID := 9
+	listener, hop := newRelayEndpoint(t, provider, 908, "relay-wg-resolve", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	listener.AllowTransportFallback = false
+	listener.ListenPort = pickFreeTCPPort(t)
+	hop.Listener = listener
+	hop.Address = net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
+
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions() error = %v", err)
+	}
+	defer server.Close()
+
+	if _, err := ResolveCandidatesWithOptions(context.Background(), "localhost:8096", []Hop{hop}, nil, DialOptions{
+		WireGuardProvider: wgProvider,
+	}); err == nil {
+		t.Fatal("ResolveCandidatesWithOptions() error = nil, want missing TLS material provider")
+	} else if !strings.Contains(err.Error(), "tls material provider is required") {
+		t.Fatalf("ResolveCandidatesWithOptions() error = %v, want missing TLS material provider", err)
+	}
+
+	addresses, err := ResolveCandidatesWithOptions(context.Background(), "localhost:8096", []Hop{hop}, provider, DialOptions{
+		WireGuardProvider: wgProvider,
+	})
+	if err != nil {
+		t.Fatalf("ResolveCandidatesWithOptions() error = %v", err)
+	}
+	if len(addresses) == 0 {
+		t.Fatal("ResolveCandidatesWithOptions() returned no addresses")
+	}
+}
+
 type fakeTLSMaterialProvider struct {
-	mu          sync.RWMutex
-	serverCerts map[int]tls.Certificate
-	caCerts     map[int][]*x509.Certificate
+	mu              sync.RWMutex
+	serverCerts     map[int]tls.Certificate
+	caCerts         map[int][]*x509.Certificate
+	serverCertCalls int
+	trustedCACalls  int
 }
 
 func newFakeTLSMaterialProvider() *fakeTLSMaterialProvider {
@@ -2305,8 +2788,9 @@ func newFakeTLSMaterialProvider() *fakeTLSMaterialProvider {
 }
 
 func (p *fakeTLSMaterialProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.serverCertCalls++
 
 	cert, ok := p.serverCerts[certificateID]
 	if !ok {
@@ -2317,8 +2801,9 @@ func (p *fakeTLSMaterialProvider) ServerCertificate(_ context.Context, certifica
 }
 
 func (p *fakeTLSMaterialProvider) TrustedCAPool(_ context.Context, certificateIDs []int) (*x509.CertPool, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.trustedCACalls++
 
 	if len(certificateIDs) == 0 {
 		return nil, nil
@@ -2338,6 +2823,18 @@ func (p *fakeTLSMaterialProvider) TrustedCAPool(_ context.Context, certificateID
 		return nil, nil
 	}
 	return pool, nil
+}
+
+func (p *fakeTLSMaterialProvider) serverCertificateCallCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.serverCertCalls
+}
+
+func (p *fakeTLSMaterialProvider) trustedCAPoolCallCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.trustedCACalls
 }
 
 func newRelayEndpoint(t *testing.T, provider *fakeTLSMaterialProvider, id int, name, tlsMode string, includePin, includeCA bool) (Listener, Hop) {
@@ -2560,6 +3057,94 @@ func assertUDPRelayRoundTrip(t *testing.T, conn net.Conn, payload []byte) {
 	if !bytes.Equal(reply, payload) {
 		t.Fatalf("udp payload mismatch: got %q want %q", reply, payload)
 	}
+}
+
+type fakeWireGuardRuntimeProvider struct {
+	runtimes map[int]*fakeWireGuardRuntime
+}
+
+func (p fakeWireGuardRuntimeProvider) WireGuardRuntime(profileID int) (WireGuardRuntime, bool) {
+	runtime, ok := p.runtimes[profileID]
+	return runtime, ok
+}
+
+type fakeAgentWireGuardRuntimeProvider struct {
+	runtimes      map[string]map[int]*fakeWireGuardRuntime
+	idOnlyCalls   int
+	agentCalls    int
+	lastAgentID   string
+	lastProfileID int
+}
+
+func (p *fakeAgentWireGuardRuntimeProvider) WireGuardRuntime(profileID int) (WireGuardRuntime, bool) {
+	p.idOnlyCalls++
+	return nil, false
+}
+
+func (p *fakeAgentWireGuardRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (WireGuardRuntime, bool) {
+	p.agentCalls++
+	p.lastAgentID = agentID
+	p.lastProfileID = profileID
+	runtime, ok := p.runtimes[agentID][profileID]
+	return runtime, ok
+}
+
+type fakeWireGuardRuntime struct {
+	mu          sync.Mutex
+	dialCalls   []fakeWireGuardDialCall
+	listenCalls []string
+
+	dialContext func(context.Context, string, string) (net.Conn, error)
+	listenTCP   func(context.Context, string) (net.Listener, error)
+	listenUDP   func(context.Context, string) (net.PacketConn, error)
+}
+
+type fakeWireGuardDialCall struct {
+	network string
+	address string
+}
+
+func (r *fakeWireGuardRuntime) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {
+	r.mu.Lock()
+	r.dialCalls = append(r.dialCalls, fakeWireGuardDialCall{network: network, address: address})
+	r.mu.Unlock()
+	if r.dialContext != nil {
+		return r.dialContext(ctx, network, address)
+	}
+	return nil, fmt.Errorf("wireguard dial not configured")
+}
+
+func (r *fakeWireGuardRuntime) ListenTCP(ctx context.Context, address string) (net.Listener, error) {
+	r.mu.Lock()
+	r.listenCalls = append(r.listenCalls, address)
+	r.mu.Unlock()
+	if r.listenTCP != nil {
+		return r.listenTCP(ctx, address)
+	}
+	return nil, fmt.Errorf("wireguard listen not configured")
+}
+
+func (r *fakeWireGuardRuntime) ListenUDP(ctx context.Context, address string) (net.PacketConn, error) {
+	if r.listenUDP != nil {
+		return r.listenUDP(ctx, address)
+	}
+	return nil, fmt.Errorf("wireguard udp listen not configured")
+}
+
+func (r *fakeWireGuardRuntime) ListenTransparentUDP(context.Context, string) (wireguard.TransparentUDPConn, error) {
+	return nil, fmt.Errorf("wireguard transparent udp listen not configured")
+}
+
+func (r *fakeWireGuardRuntime) dialContextCalls() []fakeWireGuardDialCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]fakeWireGuardDialCall(nil), r.dialCalls...)
+}
+
+func (r *fakeWireGuardRuntime) listenTCPCalls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.listenCalls...)
 }
 
 func pickFreeTCPPort(t *testing.T) int {

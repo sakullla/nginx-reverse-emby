@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -22,10 +23,16 @@ type EntryAuth struct {
 }
 
 type ClientRequest struct {
-	Protocol string
-	Target   string
-	Host     string
-	Port     int
+	Protocol       string
+	Target         string
+	Host           string
+	Port           int
+	InitialPayload []byte
+}
+
+type SOCKS5UDPPacket struct {
+	Target  string
+	Payload []byte
 }
 
 func ReadClientRequest(ctx context.Context, conn net.Conn, auth EntryAuth) (ClientRequest, error) {
@@ -52,9 +59,10 @@ func ReadClientRequest(ctx context.Context, conn net.Conn, auth EntryAuth) (Clie
 		return readSOCKS4Request(conn, conn)
 	case 0x05:
 		return readSOCKS5Request(conn, conn, auth)
-	case 'C':
-		return readHTTPConnectRequest(first[0], conn, auth)
 	default:
+		if isHTTPProxyRequestStart(first[0]) {
+			return readHTTPProxyRequest(first[0], conn, auth)
+		}
 		return ClientRequest{}, fmt.Errorf("unsupported proxy entry protocol 0x%02x", first[0])
 	}
 }
@@ -127,31 +135,41 @@ func readSOCKS5Request(reader io.Reader, conn net.Conn, auth EntryAuth) (ClientR
 		writeSOCKS5Reply(conn, 0x01)
 		return ClientRequest{}, fmt.Errorf("invalid SOCKS5 request version %d", header[0])
 	}
-	if header[1] != 0x01 {
+	switch header[1] {
+	case 0x01, 0x03:
+		host, err := readSOCKS5Host(reader, header[3])
+		if err != nil {
+			writeSOCKS5Reply(conn, 0x08)
+			return ClientRequest{}, err
+		}
+		var portBytes [2]byte
+		if _, err := io.ReadFull(reader, portBytes[:]); err != nil {
+			writeSOCKS5Reply(conn, 0x01)
+			return ClientRequest{}, err
+		}
+		port := int(portBytes[0])<<8 | int(portBytes[1])
+		protocol := "socks5"
+		if header[1] == 0x03 {
+			protocol = "socks5-udp"
+		}
+		var req ClientRequest
+		if protocol == "socks5-udp" {
+			req, err = newUDPAssociateClientRequest(host, port)
+		} else {
+			req, err = newClientRequest(protocol, host, port)
+		}
+		if err != nil {
+			writeSOCKS5Reply(conn, 0x01)
+			return ClientRequest{}, err
+		}
+		return req, nil
+	default:
 		writeSOCKS5Reply(conn, 0x07)
 		return ClientRequest{}, fmt.Errorf("unsupported SOCKS5 command %d", header[1])
 	}
-
-	host, err := readSOCKS5Host(reader, header[3])
-	if err != nil {
-		writeSOCKS5Reply(conn, 0x08)
-		return ClientRequest{}, err
-	}
-	var portBytes [2]byte
-	if _, err := io.ReadFull(reader, portBytes[:]); err != nil {
-		writeSOCKS5Reply(conn, 0x01)
-		return ClientRequest{}, err
-	}
-	port := int(portBytes[0])<<8 | int(portBytes[1])
-	req, err := newClientRequest("socks5", host, port)
-	if err != nil {
-		writeSOCKS5Reply(conn, 0x01)
-		return ClientRequest{}, err
-	}
-	return req, nil
 }
 
-func readHTTPConnectRequest(first byte, conn net.Conn, auth EntryAuth) (ClientRequest, error) {
+func readHTTPProxyRequest(first byte, conn net.Conn, auth EntryAuth) (ClientRequest, error) {
 	header, err := readHTTPHeader(first, conn)
 	if err != nil {
 		writeHTTPProxyError(conn, http.StatusBadRequest)
@@ -164,41 +182,69 @@ func readHTTPConnectRequest(first byte, conn net.Conn, auth EntryAuth) (ClientRe
 		return ClientRequest{}, err
 	}
 	defer req.Body.Close()
-	if req.Method != http.MethodConnect {
-		writeHTTPProxyError(conn, http.StatusMethodNotAllowed)
-		return ClientRequest{}, fmt.Errorf("unsupported HTTP proxy method %s", req.Method)
-	}
 	if auth.Enabled && !validHTTPBasicAuth(req.Header.Get("Proxy-Authorization"), auth) {
 		_, _ = io.WriteString(conn, "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\n\r\n")
 		return ClientRequest{}, fmt.Errorf("HTTP proxy authentication failed")
 	}
+	if req.Method == http.MethodConnect {
+		target := strings.TrimSpace(req.Host)
+		if target == "" && req.URL != nil {
+			target = strings.TrimSpace(req.URL.Host)
+		}
+		if target == "" {
+			target = strings.TrimSpace(req.RequestURI)
+		}
+		host, port, err := splitTarget(target)
+		if err != nil {
+			writeHTTPProxyError(conn, http.StatusBadRequest)
+			return ClientRequest{}, err
+		}
+		return newClientRequest("http", host, port)
+	}
 
-	target := strings.TrimSpace(req.Host)
-	if target == "" && req.URL != nil {
+	target := ""
+	if req.URL != nil {
 		target = strings.TrimSpace(req.URL.Host)
 	}
 	if target == "" {
-		target = strings.TrimSpace(req.RequestURI)
+		target = strings.TrimSpace(req.Host)
 	}
+	target = withDefaultHTTPPort(target, req.URL)
 	host, port, err := splitTarget(target)
 	if err != nil {
 		writeHTTPProxyError(conn, http.StatusBadRequest)
 		return ClientRequest{}, err
 	}
-	return newClientRequest("http", host, port)
+	clientReq, err := newClientRequest("http_forward", host, port)
+	if err != nil {
+		writeHTTPProxyError(conn, http.StatusBadRequest)
+		return ClientRequest{}, err
+	}
+	initial, err := buildHTTPForwardInitialPayload(req)
+	if err != nil {
+		writeHTTPProxyError(conn, http.StatusBadRequest)
+		return ClientRequest{}, err
+	}
+	clientReq.InitialPayload = initial
+	return clientReq, nil
 }
 
 func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
+	return WriteClientRequestSuccessWithBind(conn, req, nil)
+}
+
+func WriteClientRequestSuccessWithBind(conn net.Conn, req ClientRequest, bindAddr net.Addr) error {
 	switch req.Protocol {
 	case "http":
 		_, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 		return err
+	case "http_forward":
+		return nil
 	case "socks4", "socks4a":
 		writeSOCKS4Reply(conn, true, req.Port, net.ParseIP(req.Host))
 		return nil
-	case "socks5":
-		writeSOCKS5Reply(conn, 0x00)
-		return nil
+	case "socks5", "socks5-udp":
+		return writeSOCKS5ReplyWithBind(conn, 0x00, bindAddr)
 	default:
 		return nil
 	}
@@ -206,7 +252,7 @@ func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
 
 func WriteClientRequestFailure(conn net.Conn, req ClientRequest, status int) error {
 	switch req.Protocol {
-	case "http":
+	case "http", "http_forward":
 		if status <= 0 {
 			status = http.StatusBadGateway
 		}
@@ -215,11 +261,153 @@ func WriteClientRequestFailure(conn net.Conn, req ClientRequest, status int) err
 	case "socks4", "socks4a":
 		writeSOCKS4Reply(conn, false, req.Port, net.ParseIP(req.Host))
 		return nil
-	case "socks5":
+	case "socks5", "socks5-udp":
 		writeSOCKS5Reply(conn, 0x01)
 		return nil
 	default:
 		return nil
+	}
+}
+
+func ParseSOCKS5UDPPacket(buf []byte) (SOCKS5UDPPacket, error) {
+	if len(buf) < 4 {
+		return SOCKS5UDPPacket{}, fmt.Errorf("SOCKS5 UDP packet too short")
+	}
+	if buf[0] != 0x00 || buf[1] != 0x00 {
+		return SOCKS5UDPPacket{}, fmt.Errorf("SOCKS5 UDP packet has invalid reserved field")
+	}
+	if buf[2] != 0x00 {
+		return SOCKS5UDPPacket{}, fmt.Errorf("SOCKS5 UDP fragmentation is not supported")
+	}
+
+	reader := bytes.NewReader(buf[4:])
+	host, err := readSOCKS5Host(reader, buf[3])
+	if err != nil {
+		return SOCKS5UDPPacket{}, err
+	}
+	var portBytes [2]byte
+	if _, err := io.ReadFull(reader, portBytes[:]); err != nil {
+		return SOCKS5UDPPacket{}, err
+	}
+	port := int(portBytes[0])<<8 | int(portBytes[1])
+	req, err := newClientRequest("socks5-udp", host, port)
+	if err != nil {
+		return SOCKS5UDPPacket{}, err
+	}
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		return SOCKS5UDPPacket{}, err
+	}
+	return SOCKS5UDPPacket{
+		Target:  req.Target,
+		Payload: append([]byte(nil), payload...),
+	}, nil
+}
+
+func BuildSOCKS5UDPPacket(target string, payload []byte) ([]byte, error) {
+	host, port, err := splitTarget(target)
+	if err != nil {
+		return nil, err
+	}
+
+	packet := []byte{0x00, 0x00, 0x00}
+	if ip := net.ParseIP(host); ip != nil {
+		if ipv4 := ip.To4(); ipv4 != nil {
+			packet = append(packet, 0x01)
+			packet = append(packet, ipv4...)
+		} else {
+			packet = append(packet, 0x04)
+			packet = append(packet, ip.To16()...)
+		}
+	} else {
+		if len(host) == 0 || len(host) > 255 {
+			return nil, fmt.Errorf("SOCKS5 domain target is invalid")
+		}
+		packet = append(packet, 0x03, byte(len(host)))
+		packet = append(packet, []byte(host)...)
+	}
+	packet = append(packet, byte(port>>8), byte(port))
+	packet = append(packet, payload...)
+	return packet, nil
+}
+
+func isHTTPProxyRequestStart(first byte) bool {
+	switch first {
+	case 'C', 'D', 'G', 'H', 'O', 'P', 'T':
+		return true
+	default:
+		return false
+	}
+}
+
+func withDefaultHTTPPort(target string, u *url.URL) string {
+	if target == "" {
+		return target
+	}
+	if _, _, err := net.SplitHostPort(target); err == nil {
+		return target
+	}
+	scheme := ""
+	if u != nil {
+		scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
+	}
+	host := strings.TrimSpace(target)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	}
+	switch scheme {
+	case "https":
+		return net.JoinHostPort(host, "443")
+	default:
+		return net.JoinHostPort(host, "80")
+	}
+}
+
+func buildHTTPForwardInitialPayload(req *http.Request) ([]byte, error) {
+	if req == nil {
+		return nil, fmt.Errorf("missing HTTP request")
+	}
+	uri := "/"
+	if req.URL != nil && req.URL.RequestURI() != "" {
+		uri = req.URL.RequestURI()
+	}
+	proto := req.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	host := strings.TrimSpace(req.Host)
+	if host == "" && req.URL != nil {
+		host = strings.TrimSpace(req.URL.Host)
+	}
+	var payload bytes.Buffer
+	if _, err := fmt.Fprintf(&payload, "%s %s %s\r\n", req.Method, uri, proto); err != nil {
+		return nil, err
+	}
+	if host != "" {
+		if _, err := fmt.Fprintf(&payload, "Host: %s\r\n", host); err != nil {
+			return nil, err
+		}
+	}
+	for key, values := range req.Header {
+		if skipForwardProxyHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			if _, err := fmt.Fprintf(&payload, "%s: %s\r\n", key, value); err != nil {
+				return nil, err
+			}
+		}
+	}
+	payload.WriteString("\r\n")
+	return payload.Bytes(), nil
+}
+
+func skipForwardProxyHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "proxy-authorization", "proxy-authenticate", "proxy-connection":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -339,6 +527,22 @@ func newClientRequest(protocol string, host string, port int) (ClientRequest, er
 	}, nil
 }
 
+func newUDPAssociateClientRequest(host string, port int) (ClientRequest, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	if port < 0 || port > 65535 {
+		return ClientRequest{}, fmt.Errorf("proxy target port out of range")
+	}
+	return ClientRequest{
+		Protocol: "socks5-udp",
+		Target:   net.JoinHostPort(host, strconv.Itoa(port)),
+		Host:     host,
+		Port:     port,
+	}, nil
+}
+
 func splitTarget(target string) (string, int, error) {
 	host, portText, err := net.SplitHostPort(strings.TrimSpace(target))
 	if err != nil {
@@ -408,7 +612,40 @@ func writeSOCKS4Reply(conn net.Conn, ok bool, port int, ip net.IP) {
 }
 
 func writeSOCKS5Reply(conn net.Conn, status byte) {
-	_, _ = conn.Write([]byte{0x05, status, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+	_ = writeSOCKS5ReplyWithBind(conn, status, nil)
+}
+
+func writeSOCKS5ReplyWithBind(conn net.Conn, status byte, bindAddr net.Addr) error {
+	ip := net.IPv4(0, 0, 0, 0)
+	port := 0
+	switch addr := bindAddr.(type) {
+	case *net.TCPAddr:
+		if addr != nil {
+			ip = addr.IP
+			port = addr.Port
+		}
+	case *net.UDPAddr:
+		if addr != nil {
+			ip = addr.IP
+			port = addr.Port
+		}
+	}
+	if port < 0 || port > 65535 {
+		return fmt.Errorf("SOCKS5 bind port out of range: %d", port)
+	}
+	reply := []byte{0x05, status, 0x00}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		reply = append(reply, 0x01)
+		reply = append(reply, ipv4...)
+	} else if ipv6 := ip.To16(); ipv6 != nil {
+		reply = append(reply, 0x04)
+		reply = append(reply, ipv6...)
+	} else {
+		reply = append(reply, 0x01, 0, 0, 0, 0)
+	}
+	reply = append(reply, byte(port>>8), byte(port))
+	_, err := conn.Write(reply)
+	return err
 }
 
 func writeHTTPProxyError(conn net.Conn, status int) {

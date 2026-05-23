@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+type stubAddr string
+
+func (a stubAddr) Network() string { return "tcp" }
+func (a stubAddr) String() string  { return string(a) }
+
 func TestDialViaHTTPConnectProxy(t *testing.T) {
 	target := startTCPGreetingServer(t, "ok")
 	proxyURL := "http://" + startProxyEntryProxy(t)
@@ -70,6 +75,18 @@ func TestDialViaSOCKS5hProxyUsesRemoteDNS(t *testing.T) {
 		t.Fatalf("Dial() error = %v", err)
 	}
 	defer conn.Close()
+}
+
+func TestSOCKS5UDPRelayAddrUsesControlPeerWhenBindIPIsUnspecified(t *testing.T) {
+	bindAddr := &net.UDPAddr{IP: net.IPv4zero, Port: 5300}
+
+	relayAddr, err := socks5UDPRelayAddr(bindAddr, stubAddr("198.51.100.44:1080"))
+	if err != nil {
+		t.Fatalf("socks5UDPRelayAddr() error = %v", err)
+	}
+	if got, want := relayAddr.String(), "198.51.100.44:5300"; got != want {
+		t.Fatalf("relayAddr = %q, want %q", got, want)
+	}
 }
 
 func TestDialViaSOCKS4aProxy(t *testing.T) {

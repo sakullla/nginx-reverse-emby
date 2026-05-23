@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -14,7 +16,8 @@ import (
 )
 
 type relayPathDialer struct {
-	provider RelayMaterialProvider
+	provider          RelayMaterialProvider
+	wireGuardProvider relay.WireGuardRuntimeProvider
 }
 
 func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
@@ -22,10 +25,28 @@ func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, pa
 	if len(req.Options) > 0 {
 		options = req.Options[0]
 	}
+	if options.WireGuardProvider == nil {
+		options.WireGuardProvider = d.wireGuardProvider
+	}
 	return relay.DialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, options)
 }
 
 func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
+	return s.dialTCPUpstreamCandidates(rule, dialOptions)
+}
+
+func (s *Server) dialTCPUpstreamForClient(rule model.L4Rule, client net.Conn, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
+	if isWireGuardTransparentForwardRule(rule) {
+		target, err := transparentTCPTargetFromConn(client)
+		if err != nil {
+			return nil, l4Candidate{}, 0, err
+		}
+		return s.dialTransparentTCPUpstream(rule, target, dialOptions)
+	}
+	return s.dialTCPUpstreamCandidates(rule, dialOptions)
+}
+
+func (s *Server) dialTCPUpstreamCandidates(rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
 		return nil, l4Candidate{}, 0, err
@@ -40,7 +61,7 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOption
 		start := s.now()
 		var upstream net.Conn
 		if !ruleUsesRelay(rule) {
-			upstream, err = (&net.Dialer{}).DialContext(s.ctx, "tcp", target)
+			upstream, err = s.dialTCPDirect(target)
 		} else {
 			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 		}
@@ -61,6 +82,47 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOption
 	return nil, l4Candidate{}, 0, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
 }
 
+func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
+	candidate := l4Candidate{address: target}
+	start := s.now()
+	var (
+		upstream net.Conn
+		err      error
+	)
+	if !ruleUsesRelay(rule) {
+		upstream, err = s.dialTCPDirect(target)
+	} else {
+		upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
+	}
+	if err != nil {
+		return nil, candidate, 0, err
+	}
+	return upstream, candidate, s.now().Sub(start), nil
+}
+
+func (s *Server) dialTCPDirect(target string) (net.Conn, error) {
+	dialer := s.tcpDialer
+	if dialer == nil {
+		dialer = (&net.Dialer{}).DialContext
+	}
+	return dialer(s.ctx, "tcp", target)
+}
+
+func transparentTCPTargetFromConn(client net.Conn) (string, error) {
+	if client == nil {
+		return "", fmt.Errorf("transparent tcp downstream connection is nil")
+	}
+	addr := client.LocalAddr()
+	if addr == nil {
+		return "", fmt.Errorf("transparent tcp downstream destination is unavailable")
+	}
+	target := strings.TrimSpace(addr.String())
+	if target == "" {
+		return "", fmt.Errorf("transparent tcp downstream destination is empty")
+	}
+	return target, nil
+}
+
 func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, error) {
 	paths, err := s.resolveRelayPaths(rule)
 	if err != nil {
@@ -72,7 +134,7 @@ func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOp
 	}
 	dialer := s.relayPathDialer
 	if dialer == nil {
-		dialer = relayPathDialer{provider: s.relayProvider}
+		dialer = relayPathDialer{provider: s.relayProvider, wireGuardProvider: s.wireGuardProvider}
 	}
 	racer := relayplan.Racer{Dialer: dialer, Cache: s.cache, Concurrency: 3, MaxPaths: 32}
 	result, err := racer.Race(s.ctx, relayplan.Request{
@@ -123,6 +185,50 @@ func (s *Server) resolveRelayPaths(rule model.L4Rule) ([]relayplan.Path, error) 
 
 func ruleUsesRelay(rule model.L4Rule) bool {
 	return relayroute.UsesRelay(nil, rule.RelayLayers)
+}
+
+func (s *Server) wireGuardRuntime(rule model.L4Rule) (relay.WireGuardRuntime, error) {
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
+		return nil, fmt.Errorf("wireguard_profile_id is required")
+	}
+	if s.wireGuardProvider == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required")
+	}
+	runtime, ok := s.wireGuardProvider.WireGuardRuntime(*rule.WireGuardProfileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard profile %d runtime not found", *rule.WireGuardProfileID)
+	}
+	return runtime, nil
+}
+
+func l4ListenAddress(rule model.L4Rule) string {
+	host := rule.ListenHost
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		switch wireGuardInboundMode(rule) {
+		case "transparent":
+			host = ""
+		case "address":
+			if strings.TrimSpace(rule.WireGuardListenHost) != "" {
+				host = rule.WireGuardListenHost
+			}
+		}
+	}
+	return net.JoinHostPort(host, strconv.Itoa(rule.ListenPort))
+}
+
+func l4BindingKey(rule model.L4Rule) string {
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		return "wireguard:" + strconv.Itoa(valueOrZeroIntPtr(rule.WireGuardProfileID)) + ":" + protocol + ":" + l4ListenAddress(rule)
+	}
+	return protocol + ":" + l4ListenAddress(rule)
+}
+
+func valueOrZeroIntPtr(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func RelayInputsChanged(rules []model.L4Rule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {

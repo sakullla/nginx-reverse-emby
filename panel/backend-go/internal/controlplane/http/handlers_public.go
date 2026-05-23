@@ -58,11 +58,12 @@ func remoteIPFromRequest(r *http.Request) string {
 
 func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[string]any {
 	payload := map[string]any{
-		"has_update":       reply.HasUpdate,
-		"desired_version":  reply.DesiredVersion,
-		"desired_revision": reply.DesiredRevision,
-		"current_revision": reply.CurrentRevision,
-		"relay_listeners":  reply.RelayListeners,
+		"has_update":         reply.HasUpdate,
+		"desired_version":    reply.DesiredVersion,
+		"desired_revision":   reply.DesiredRevision,
+		"current_revision":   reply.CurrentRevision,
+		"relay_listeners":    reply.RelayListeners,
+		"wireguard_profiles": reply.WireGuardProfiles,
 	}
 	payload["agent_config"] = service.AgentRuntimeConfig{
 		OutboundProxyURL:     reply.OutboundProxyURL,

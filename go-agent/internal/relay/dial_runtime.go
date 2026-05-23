@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
@@ -14,6 +15,24 @@ import (
 )
 
 var relayOutboundProxyURL atomic.Value
+var relayWireGuardProvider defaultWireGuardProviderValue
+
+type defaultWireGuardProviderValue struct {
+	mu       sync.RWMutex
+	provider WireGuardRuntimeProvider
+}
+
+func (v *defaultWireGuardProviderValue) Store(provider WireGuardRuntimeProvider) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.provider = provider
+}
+
+func (v *defaultWireGuardProviderValue) Load() WireGuardRuntimeProvider {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.provider
+}
 
 func (s *Server) openUpstream(network, target string, chain []Hop, options DialOptions) (net.Conn, error) {
 	conn, _, err := s.openUpstreamWithResult(network, target, chain, options)
@@ -22,6 +41,9 @@ func (s *Server) openUpstream(network, target string, chain []Hop, options DialO
 
 func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, options DialOptions) (net.Conn, DialResult, error) {
 	if len(chain) > 0 {
+		if options.WireGuardProvider == nil {
+			options.WireGuardProvider = s.wireGuardProvider
+		}
 		conn, result, err := DialWithResult(s.ctx, network, target, chain, s.provider, options)
 		if err != nil {
 			return nil, result, err
@@ -53,6 +75,9 @@ func (s *Server) openUDPPeerWithResult(target string, chain []Hop) (udpPacketPee
 
 func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, options DialOptions) (udpPacketPeer, string, error) {
 	if len(chain) > 0 {
+		if options.WireGuardProvider == nil {
+			options.WireGuardProvider = s.wireGuardProvider
+		}
 		conn, result, err := DialWithResult(s.ctx, "udp", target, chain, s.provider, options)
 		if err != nil {
 			return nil, "", err
@@ -71,7 +96,7 @@ func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, option
 
 func (s *Server) resolveTargetCandidates(target string, chain []Hop) ([]string, error) {
 	if len(chain) > 0 {
-		return ResolveCandidates(s.ctx, target, chain, s.provider)
+		return ResolveCandidatesWithOptions(s.ctx, target, chain, s.provider, DialOptions{WireGuardProvider: s.wireGuardProvider})
 	}
 
 	selector := s.finalHopSelector
@@ -102,11 +127,11 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	if len(opts) > 0 {
 		options = opts[0].clone()
 	}
+	if options.WireGuardProvider == nil {
+		options.WireGuardProvider = DefaultWireGuardRuntimeProvider()
+	}
 	if strings.TrimSpace(options.OutboundProxyURL) == "" {
 		options.OutboundProxyURL = OutboundProxyURL()
-	}
-	if provider == nil {
-		return nil, DialResult{}, fmt.Errorf("tls material provider is required")
 	}
 	if !strings.EqualFold(network, "tcp") && !strings.EqualFold(network, "udp") {
 		return nil, DialResult{}, fmt.Errorf("unsupported network %q", network)
@@ -143,6 +168,9 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 				goto tlsTCPDial
 			}
 		}
+		if err := requireTLSMaterialProvider(provider); err != nil {
+			return nil, DialResult{}, err
+		}
 		conn, result, err := dialQUICWithResult(ctx, network, target, chain, provider, options)
 		if err == nil {
 			result.TransportMode = transportMode
@@ -156,6 +184,9 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 			return nil, DialResult{}, err
 		}
 
+		if err := requireTLSMaterialProvider(provider); err != nil {
+			return nil, DialResult{}, err
+		}
 		fallbackConn, fallbackResult, fallbackErr := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
 		if fallbackErr != nil {
 			if !isRelayApplicationError(fallbackErr) {
@@ -169,6 +200,11 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	}
 
 tlsTCPDial:
+	if transportMode != ListenerTransportModeWireGuard {
+		if err := requireTLSMaterialProvider(provider); err != nil {
+			return nil, DialResult{}, err
+		}
+	}
 	conn, result, err := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
 	if err != nil {
 		if !isRelayApplicationError(err) {
@@ -190,9 +226,22 @@ func OutboundProxyURL() string {
 	return strings.TrimSpace(value)
 }
 
+func SetDefaultWireGuardRuntimeProvider(provider WireGuardRuntimeProvider) {
+	relayWireGuardProvider.Store(provider)
+}
+
+func DefaultWireGuardRuntimeProvider() WireGuardRuntimeProvider {
+	return relayWireGuardProvider.Load()
+}
+
 func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
-	if provider == nil {
-		return nil, fmt.Errorf("tls material provider is required")
+	return ResolveCandidatesWithOptions(ctx, target, chain, provider, DialOptions{})
+}
+
+func ResolveCandidatesWithOptions(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) ([]string, error) {
+	options = options.clone()
+	if options.WireGuardProvider == nil {
+		options.WireGuardProvider = DefaultWireGuardRuntimeProvider()
 	}
 	if len(chain) == 0 {
 		return nil, fmt.Errorf("relay chain is required")
@@ -209,8 +258,14 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 	}
 
 	transportMode := selectRelayRuntimeTransport(firstHop)
+	if transportMode == ListenerTransportModeWireGuard {
+		return resolveCandidatesTLSTCPMux(ctx, target, chain, provider, options)
+	}
 
 	if transportMode == ListenerTransportModeQUIC {
+		if err := requireTLSMaterialProvider(provider); err != nil {
+			return nil, err
+		}
 		addresses, err := resolveCandidatesQUIC(ctx, target, chain, provider)
 		if err == nil {
 			return addresses, nil
@@ -221,7 +276,17 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 		return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
 	}
 
+	if err := requireTLSMaterialProvider(provider); err != nil {
+		return nil, err
+	}
 	return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
+}
+
+func requireTLSMaterialProvider(provider TLSMaterialProvider) error {
+	if provider == nil {
+		return fmt.Errorf("tls material provider is required")
+	}
+	return nil
 }
 
 func relayDialTrafficClass(network string, options DialOptions) upstream.TrafficClass {
