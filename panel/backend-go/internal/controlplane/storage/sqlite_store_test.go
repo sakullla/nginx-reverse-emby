@@ -4135,6 +4135,7 @@ func TestStoreLoadAgentSnapshotExcludesIdleWireGuardProfiles(t *testing.T) {
 	referencedProfileID := 111
 	manualProfileID := 112
 	idleProfileID := 113
+	importedProfileID := 114
 	if err := store.SaveWireGuardProfiles(t.Context(), "wg-filter-agent", []WireGuardProfileRow{
 		{
 			ID:            referencedProfileID,
@@ -4175,6 +4176,19 @@ func TestStoreLoadAgentSnapshotExcludesIdleWireGuardProfiles(t *testing.T) {
 			Enabled:       true,
 			Revision:      23,
 		},
+		{
+			ID:            importedProfileID,
+			AgentID:       "wg-filter-agent",
+			Name:          "imported-wg",
+			Mode:          "generic_wireguard",
+			PrivateKey:    "imported-private-key",
+			ListenPort:    51823,
+			AddressesJSON: `["10.114.0.1/24"]`,
+			PeersJSON:     `[{"public_key":"imported-public-key","preshared_key":"imported-psk","endpoint":"peer.example.com:51820","allowed_ips":["10.114.0.2/32"]}]`,
+			DNSJSON:       `[]`,
+			Enabled:       true,
+			Revision:      24,
+		},
 	}); err != nil {
 		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
 	}
@@ -4203,8 +4217,8 @@ func TestStoreLoadAgentSnapshotExcludesIdleWireGuardProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgentSnapshot() error = %v", err)
 	}
-	if len(snapshot.WireGuardProfiles) != 2 {
-		t.Fatalf("WireGuardProfiles = %+v, want referenced and manual-peer profiles", snapshot.WireGuardProfiles)
+	if len(snapshot.WireGuardProfiles) != 3 {
+		t.Fatalf("WireGuardProfiles = %+v, want referenced, manual-peer, and imported profiles", snapshot.WireGuardProfiles)
 	}
 	seen := map[int]WireGuardProfile{}
 	for _, profile := range snapshot.WireGuardProfiles {
@@ -4215,6 +4229,9 @@ func TestStoreLoadAgentSnapshotExcludesIdleWireGuardProfiles(t *testing.T) {
 	}
 	if profile := seen[manualProfileID]; profile.PrivateKey != "manual-private-key" || len(profile.Peers) != 1 || profile.Peers[0].PresharedKey != "manual-psk" {
 		t.Fatalf("manual profile = %+v", profile)
+	}
+	if profile := seen[importedProfileID]; profile.PrivateKey != "imported-private-key" || len(profile.Peers) != 1 || profile.Peers[0].PublicKey != "imported-public-key" {
+		t.Fatalf("imported profile = %+v", profile)
 	}
 	for _, profile := range snapshot.WireGuardProfiles {
 		if profile.PrivateKey == "idle-private-key" || profile.ID == idleProfileID {
