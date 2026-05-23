@@ -65,6 +65,12 @@ func (f *fakeRuleStore) ListWireGuardProfiles(_ context.Context, agentID string)
 	return append([]storage.WireGuardProfileRow(nil), f.wireGuardByAgentID[agentID]...), nil
 }
 
+func (f *fakeRuleStore) ListWireGuardClients(_ context.Context, agentID string, profileID int) ([]storage.WireGuardClientRow, error) {
+	_ = agentID
+	_ = profileID
+	return nil, nil
+}
+
 func (f *fakeRuleStore) SaveWireGuardProfiles(_ context.Context, agentID string, rows []storage.WireGuardProfileRow) error {
 	if f.wireGuardByAgentID == nil {
 		f.wireGuardByAgentID = map[string][]storage.WireGuardProfileRow{}

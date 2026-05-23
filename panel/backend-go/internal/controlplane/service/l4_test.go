@@ -82,6 +82,12 @@ func (f *fakeL4Store) ListWireGuardProfiles(_ context.Context, agentID string) (
 	return append([]storage.WireGuardProfileRow(nil), f.wireGuardByAgent[agentID]...), nil
 }
 
+func (f *fakeL4Store) ListWireGuardClients(_ context.Context, agentID string, profileID int) ([]storage.WireGuardClientRow, error) {
+	_ = agentID
+	_ = profileID
+	return nil, nil
+}
+
 func (f *fakeL4Store) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
 	return storage.LocalAgentStateRow{}, nil
 }
@@ -1618,6 +1624,70 @@ func TestL4RuleServiceDeleteWireGuardURIEgressRestoresClientsWhenLocalApplyFails
 	}
 	if clients[0].ID != client.ID || clients[0].AllowedIPsJSON != client.AllowedIPsJSON || clients[0].DNSJSON != client.DNSJSON {
 		t.Fatalf("wireguard client after rollback = %+v, want %+v", clients[0], client)
+	}
+}
+
+func TestL4RuleServiceUpdateRejectsDisablingTCPProxyControlWhenUDPDependsOnIt(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			CapabilitiesJSON: `["l4"]`,
+			DesiredRevision:  4,
+			CurrentRevision:  4,
+		}},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:                 1,
+				AgentID:            "edge-1",
+				Name:               "tcp control",
+				Protocol:           "tcp",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         1080,
+				BackendsJSON:       `[]`,
+				ListenMode:         "proxy",
+				ProxyEgressMode:    "proxy",
+				ProxyEgressURL:     "socks5://127.0.0.1:2080",
+				ProxyEntryAuthJSON: `{"enabled":true,"username":"u","password":"p"}`,
+				Enabled:            true,
+				Revision:           4,
+			}, {
+				ID:              2,
+				AgentID:         "edge-1",
+				Name:            "udp data",
+				Protocol:        "udp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      1080,
+				BackendsJSON:    `[]`,
+				ListenMode:      "proxy",
+				ProxyEgressMode: "proxy",
+				ProxyEgressURL:  "socks5://127.0.0.1:2080",
+				Enabled:         true,
+				Revision:        4,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "edge-1", 1, L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenPort:      intPtrL4(1080),
+		ListenHost:      stringPtrL4("0.0.0.0"),
+		ListenMode:      stringPtrL4("proxy"),
+		ProxyEgressMode: stringPtrL4("proxy"),
+		ProxyEgressURL:  stringPtrL4("socks5://127.0.0.1:2080"),
+		Enabled:         boolPtrL4(false),
+	})
+	if err == nil || !strings.Contains(err.Error(), "same-port TCP SOCKS5 proxy entry") {
+		t.Fatalf("Update() error = %v, want same-port TCP SOCKS5 proxy entry rejection", err)
+	}
+	if len(store.l4RulesByID["edge-1"]) != 2 {
+		t.Fatalf("l4 rules after rejected update = %+v, want unchanged pair", store.l4RulesByID["edge-1"])
+	}
+	if store.agents[0].DesiredRevision != 4 {
+		t.Fatalf("remote desired_revision = %d, want unchanged 4", store.agents[0].DesiredRevision)
 	}
 }
 

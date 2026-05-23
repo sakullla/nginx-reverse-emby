@@ -251,6 +251,11 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
+	if err := validateL4RuleSet(l4RulesFromRows(rows)); err != nil {
+		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
+		rollbackDefaultWireGuard()
+		return L4Rule{}, err
+	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 
 	rollbackL4Rows := append([]storage.L4RuleRow(nil), rows...)
@@ -363,6 +368,13 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		rollbackWireGuardProfiles = cleanupRollback
 	}
 	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
+		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
+		rollbackDefaultWireGuard()
+		return L4Rule{}, err
+	}
+	nextRows := append([]storage.L4RuleRow(nil), rows...)
+	nextRows[targetIndex] = l4RuleToRow(rule)
+	if err := validateL4RuleSet(l4RulesFromRows(nextRows)); err != nil {
 		s.restoreWireGuardProfileRollback(ctx, resolvedID, rollbackWireGuardProfiles)
 		rollbackDefaultWireGuard()
 		return L4Rule{}, err

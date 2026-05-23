@@ -100,6 +100,12 @@ func (s *relayCertStore) ListWireGuardProfiles(_ context.Context, agentID string
 	return append([]storage.WireGuardProfileRow(nil), s.wireGuardByAgentID[agentID]...), nil
 }
 
+func (s *relayCertStore) ListWireGuardClients(_ context.Context, agentID string, profileID int) ([]storage.WireGuardClientRow, error) {
+	_ = agentID
+	_ = profileID
+	return nil, nil
+}
+
 func (s *relayCertStore) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
 	return s.localState, nil
 }

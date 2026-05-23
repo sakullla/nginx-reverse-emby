@@ -97,6 +97,7 @@ type wireGuardProfileStore interface {
 	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
+	ListWireGuardClients(context.Context, string, int) ([]storage.WireGuardClientRow, error)
 	ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error)
 	SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error
 	MutateWireGuardClientProfile(context.Context, string, int, func(storage.WireGuardClientProfileMutation) (storage.WireGuardClientProfileMutation, error)) error
@@ -434,6 +435,31 @@ func (s *wireGuardProfileService) ensureReferencedProfileAddressesPreserved(ctx 
 		}
 		if wireGuardHostRemoved(row.WireGuardListenHost, removedHosts) {
 			return fmt.Errorf("%w: wireguard profile address is referenced by l4 rule %d", ErrInvalidArgument, row.ID)
+		}
+	}
+
+	nextPrefixes := make([]netip.Prefix, 0, len(next.Addresses))
+	for _, address := range next.Addresses {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(address))
+		if err != nil {
+			continue
+		}
+		nextPrefixes = append(nextPrefixes, prefix)
+	}
+	clients, err := s.store.ListWireGuardClients(ctx, agentID, current.ID)
+	if err != nil {
+		return err
+	}
+	for _, row := range clients {
+		if row.ProfileID != current.ID {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(row.Address))
+		if err != nil {
+			continue
+		}
+		if !wireGuardAddrInAnyPrefix(prefix.Addr(), nextPrefixes) {
+			return fmt.Errorf("%w: wireguard profile address is referenced by wireguard client %d", ErrInvalidArgument, row.ID)
 		}
 	}
 

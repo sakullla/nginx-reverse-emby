@@ -1076,6 +1076,44 @@ func TestWireGuardProfileUpdateRejectsRemovingAddressUsedByDependentListener(t *
 	}
 }
 
+func TestWireGuardProfileUpdateRejectsShrinkingAddressesWithExistingClients(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"10.0.0.1/24"}
+	created, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	clientSvc := NewWireGuardClientService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	if _, err := clientSvc.CreateClient(ctx, "local", created.ID, WireGuardClientInput{Name: "phone"}); err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	update := input
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	update.Addresses = []string{"10.0.1.1/24"}
+
+	_, err = svc.Update(ctx, "local", created.ID, update)
+	if err == nil || !strings.Contains(err.Error(), "wireguard client") {
+		t.Fatalf("Update() error = %v, want client-based rejection", err)
+	}
+
+	rows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].AddressesJSON != `["10.0.0.1/24"]` {
+		t.Fatalf("profile rows after rejected update = %+v", rows)
+	}
+}
+
 func TestWireGuardProfileDefaultsModeToGenericWireGuard(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
