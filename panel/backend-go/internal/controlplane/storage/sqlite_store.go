@@ -1703,8 +1703,10 @@ func wireGuardProfileHasRuntimePeer(row WireGuardProfileRow) bool {
 		return false
 	}
 	for _, peer := range parseWireGuardPeers(row.PeersJSON) {
-		name := strings.TrimSpace(peer.Name)
-		if name == "" || strings.HasPrefix(name, "system:") {
+		if !wireGuardPeerHasRuntimeConfig(peer) {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(peer.Name), "system:") {
 			continue
 		}
 		return true
@@ -1715,6 +1717,15 @@ func wireGuardProfileHasRuntimePeer(row WireGuardProfileRow) bool {
 		}
 	}
 	return false
+}
+
+func wireGuardPeerHasRuntimeConfig(peer WireGuardPeer) bool {
+	return strings.TrimSpace(peer.PublicKey) != "" ||
+		strings.TrimSpace(peer.Endpoint) != "" ||
+		len(peer.AllowedIPs) > 0 ||
+		strings.TrimSpace(peer.PresharedKey) != "" ||
+		len(peer.Reserved) > 0 ||
+		peer.PersistentKeepaliveSeconds > 0
 }
 
 func referencedWireGuardProfileIDs(
