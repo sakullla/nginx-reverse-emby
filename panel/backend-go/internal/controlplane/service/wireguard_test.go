@@ -1460,6 +1460,42 @@ func TestWireGuardProfileUpdateKeepsRedactedPeerSecretWhenPublicKeyChanges(t *te
 	}
 }
 
+func TestWireGuardProfileImportURIPreservesPublicEndpointForClientConfig(t *testing.T) {
+	ctx := context.Background()
+	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	parsed, err := ParseWireGuardURI("wireguard://" + testWireGuardPrivateKey + "@peer.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.1/24&allowedips=192.168.0.0/16")
+	if err != nil {
+		t.Fatalf("ParseWireGuardURI() error = %v", err)
+	}
+	input, err := WireGuardProfileInputFromURI(parsed, "imported")
+	if err != nil {
+		t.Fatalf("WireGuardProfileInputFromURI() error = %v", err)
+	}
+	profile, err := profileSvc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if profile.PublicEndpoint != "peer.example.com:51820" {
+		t.Fatalf("Create() PublicEndpoint = %q, want imported endpoint", profile.PublicEndpoint)
+	}
+	if len(profile.Addresses) != 1 || profile.Addresses[0] != "10.44.0.1/24" {
+		t.Fatalf("Create() Addresses = %+v, want imported pool", profile.Addresses)
+	}
+
+	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+	configText, err := clientSvc.ClientConfig(ctx, "local", profile.ID, client.ID)
+	if err != nil {
+		t.Fatalf("ClientConfig() error = %v", err)
+	}
+	if !strings.Contains(configText, "Endpoint = peer.example.com:51820") {
+		t.Fatalf("ClientConfig() missing imported endpoint:\n%s", configText)
+	}
+}
+
 func TestWireGuardProfileUpdateRejectsUnknownRedactedPeerSecret(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
