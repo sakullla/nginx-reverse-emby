@@ -2213,11 +2213,11 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
-		t.Fatalf("Create() error = %v, want single transparent entry per profile conflict", err)
+	if err == nil || !strings.Contains(err.Error(), "51820 conflicts") {
+		t.Fatalf("Create() error = %v, want same-port transparent conflict", err)
 	}
 
-	_, err = svc.Create(context.Background(), "local", L4RuleInput{
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
 		Protocol:             stringPtrL4("tcp"),
 		ListenHost:           stringPtrL4("10.8.0.11"),
 		ListenPort:           intPtrL4(51821),
@@ -2226,11 +2226,11 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 		WireGuardInboundMode: stringPtrL4("transparent"),
 		Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
 	})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Create() different port error = %v, want ErrInvalidArgument", err)
+	if err != nil {
+		t.Fatalf("Create() different port error = %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
-		t.Fatalf("Create() different port error = %v, want single transparent entry per profile conflict", err)
+	if rule.ListenPort != 51821 || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != profileID {
+		t.Fatalf("Create() different port rule = %+v", rule)
 	}
 }
 
@@ -2427,8 +2427,8 @@ func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnCreate
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
-				t.Fatalf("Create() error = %v, want single transparent entry per profile conflict", err)
+			if err == nil || !strings.Contains(err.Error(), "8443 conflicts") {
+				t.Fatalf("Create() error = %v, want same-port transparent conflict", err)
 			}
 		})
 	}
@@ -2478,8 +2478,8 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testin
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
-		t.Fatalf("Update() error = %v, want single transparent entry per profile conflict", err)
+	if err == nil || !strings.Contains(err.Error(), "51820 conflicts") {
+		t.Fatalf("Update() error = %v, want same-port transparent conflict", err)
 	}
 }
 
@@ -2674,8 +2674,8 @@ func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnUpdate
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
-		t.Fatalf("Update() error = %v, want single transparent entry per profile conflict", err)
+	if err == nil || !strings.Contains(err.Error(), "8443 conflicts") {
+		t.Fatalf("Update() error = %v, want same-port transparent conflict", err)
 	}
 }
 
