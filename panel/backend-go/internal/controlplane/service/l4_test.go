@@ -627,6 +627,23 @@ func TestValidateL4RuleSetRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
 	}
 }
 
+func TestValidateL4RuleSetIgnoresDisabledUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
+	err := validateL4RuleSet([]L4Rule{{
+		ID:              2,
+		Name:            "udp",
+		Protocol:        "udp",
+		ListenMode:      "proxy",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      1080,
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks5://127.0.0.1:2080",
+		Enabled:         false,
+	}})
+	if err != nil {
+		t.Fatalf("validateL4RuleSet() error = %v, want disabled UDP proxy entry to be ignored", err)
+	}
+}
+
 func TestNormalizeL4RuleInputRejectsProxyEntryWithoutEgress(t *testing.T) {
 	protocol := "tcp"
 	listenMode := "proxy"

@@ -1472,6 +1472,9 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 
 func validateL4RuleSet(rules []L4Rule) error {
 	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
 		if !isUDPProxyEntryRule(rule) {
 			continue
 		}
