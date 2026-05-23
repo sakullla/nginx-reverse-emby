@@ -789,7 +789,7 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer, ha
 	}
 	peers := make([]WireGuardPeer, 0, len(source))
 	seenPublicKeys := map[string]struct{}{}
-	for _, peer := range source {
+	for i, peer := range source {
 		normalized := WireGuardPeer{
 			Name:                       strings.TrimSpace(peer.Name),
 			PublicKey:                  strings.TrimSpace(peer.PublicKey),
@@ -801,6 +801,10 @@ func normalizeWireGuardPeers(input []WireGuardPeer, fallback []WireGuardPeer, ha
 		}
 		if normalized.PresharedKey == redactedProxyPassword {
 			fallbackPeer, ok := fallbackByPublicKey[normalized.PublicKey]
+			if !ok && i < len(fallback) {
+				fallbackPeer = fallback[i]
+				ok = true
+			}
 			if !ok {
 				return nil, fmt.Errorf("%w: peers preshared_key redaction requires matching public_key", ErrInvalidArgument)
 			}

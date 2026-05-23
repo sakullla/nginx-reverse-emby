@@ -1421,6 +1421,45 @@ func TestWireGuardProfileUpdateKeepsReorderedRedactedPeerSecretsByPublicKey(t *t
 	}
 }
 
+func TestWireGuardProfileUpdateKeepsRedactedPeerSecretWhenPublicKeyChanges(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	update := testWireGuardProfileInput()
+	update.PrivateKey = redactedProxyPassword
+	update.Peers = []WireGuardPeer{{
+		Name:         "peer-a renamed",
+		PublicKey:    testWireGuardPublicKeyB,
+		PresharedKey: redactedProxyPassword,
+		Endpoint:     "example.com:51820",
+		AllowedIPs:   []string{"10.0.0.2/32"},
+	}}
+	if _, err := svc.Update(ctx, "local", created.ID, update); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	rawProfile := wireGuardProfileFromRow(rawRows[0])
+	if len(rawProfile.Peers) != 1 {
+		t.Fatalf("raw peer length = %d, want 1", len(rawProfile.Peers))
+	}
+	peer := rawProfile.Peers[0]
+	if peer.PublicKey != testWireGuardPublicKeyB {
+		t.Fatalf("peer public_key = %q, want updated public key", peer.PublicKey)
+	}
+	if peer.PresharedKey != testWireGuardPresharedKey {
+		t.Fatalf("peer preshared_key = %q, want preserved original secret", peer.PresharedKey)
+	}
+}
+
 func TestWireGuardProfileUpdateRejectsUnknownRedactedPeerSecret(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
