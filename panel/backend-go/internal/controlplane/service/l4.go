@@ -1439,7 +1439,7 @@ func normalizeTags(values []string) []string {
 }
 
 func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
-	if isUDPProxyEntryRule(next) && !hasSamePortTCPProxyEntry(rules, next, excludeID) {
+	if next.Enabled && isUDPProxyEntryRule(next) && !hasSamePortTCPProxyEntry(rules, next, excludeID) {
 		return fmt.Errorf("%w: udp proxy entry requires a same-port TCP SOCKS5 proxy entry on the same agent", ErrInvalidArgument)
 	}
 

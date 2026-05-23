@@ -610,6 +610,32 @@ func TestEnsureUniqueL4ListenRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T
 	}
 }
 
+func TestEnsureUniqueL4ListenIgnoresDisabledUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
+	next := L4Rule{
+		ID:              2,
+		Name:            "udp",
+		Protocol:        "udp",
+		ListenMode:      "proxy",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      1080,
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks5://127.0.0.1:2080",
+		Enabled:         false,
+	}
+	err := ensureUniqueL4Listen([]L4Rule{{
+		ID:         1,
+		Name:       "unrelated tcp",
+		Protocol:   "tcp",
+		ListenMode: "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 8080,
+		Enabled:    true,
+	}}, next, 0)
+	if err != nil {
+		t.Fatalf("ensureUniqueL4Listen() error = %v, want disabled UDP proxy entry to be ignored", err)
+	}
+}
+
 func TestValidateL4RuleSetRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
 	err := validateL4RuleSet([]L4Rule{{
 		ID:              2,
