@@ -53,6 +53,9 @@ func (m *relayRuntimeManager) ApplyWithWireGuardProfiles(ctx context.Context, li
 	defer m.mu.Unlock()
 
 	if len(listeners) == 0 {
+		if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
+			return err
+		}
 		if m.server != nil {
 			_ = m.server.Close()
 			m.server = nil
@@ -188,6 +191,13 @@ func (m *relayRuntimeManager) restorePreviousServerLocked(ctx context.Context) e
 
 func (m *relayRuntimeManager) storeLastAppliedInputsLocked(listeners []model.RelayListener) {
 	m.lastListeners = cloneRelayListeners(listeners)
+}
+
+func (m *relayRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
+	if m.wireGuardRuntime == nil || profiles == nil {
+		return nil
+	}
+	return m.wireGuardRuntime.Apply(ctx, profiles)
 }
 
 func relayServerBindingKeys(server *relay.Server) []string {

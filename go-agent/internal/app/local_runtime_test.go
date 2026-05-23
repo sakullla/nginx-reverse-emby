@@ -1681,7 +1681,7 @@ func TestRelayRuntimeManagerPreservesRunningServerOnWireGuardApplyFailure(t *tes
 	waitForPortState(t, listenPort, true)
 }
 
-func TestRelayRuntimeManagerSkipsWireGuardApplyWithoutLocalListeners(t *testing.T) {
+func TestRelayRuntimeManagerDoesNotReplaceUnchangedWireGuardProfilesWithoutLocalListeners(t *testing.T) {
 	created := 0
 	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
 		created++
@@ -1705,9 +1705,7 @@ func TestRelayRuntimeManagerSkipsWireGuardApplyWithoutLocalListeners(t *testing.
 	manager := newRelayRuntimeManagerWithWireGuard(&testRelayTLSProvider{}, shared, false)
 	defer manager.Close()
 
-	nextProfile := profile
-	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
-	if err := manager.ApplyWithWireGuardProfiles(context.Background(), nil, []model.WireGuardProfile{nextProfile}); err != nil {
+	if err := manager.ApplyWithWireGuardProfiles(context.Background(), nil, []model.WireGuardProfile{profile}); err != nil {
 		t.Fatalf("ApplyWithWireGuardProfiles() error = %v", err)
 	}
 
@@ -1720,6 +1718,35 @@ func TestRelayRuntimeManagerSkipsWireGuardApplyWithoutLocalListeners(t *testing.
 	}
 	if created != 1 {
 		t.Fatalf("wireguard runtime creations after relay apply = %d, want 1", created)
+	}
+}
+
+func TestRelayRuntimeManagerAppliesWireGuardProfilesWithoutLocalListeners(t *testing.T) {
+	created := 0
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		created++
+		return &testAppWireGuardRuntime{}, nil
+	})
+	defer shared.Close()
+
+	profileID := 9
+	profile := validAppWireGuardProfile(profileID)
+	manager := newRelayRuntimeManagerWithWireGuard(&testRelayTLSProvider{}, shared, false)
+	defer manager.Close()
+
+	if err := manager.ApplyWithWireGuardProfiles(context.Background(), nil, []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("ApplyWithWireGuardProfiles() error = %v", err)
+	}
+
+	if _, ok := shared.RuntimeForAgent(profile.AgentID, profileID); !ok {
+		t.Fatal("expected wireguard runtime to be registered without local relay listeners")
+	}
+	snapshot := shared.profileSnapshot()
+	if len(snapshot) != 1 || snapshot[0].ID != profileID {
+		t.Fatalf("profileSnapshot() = %+v, want profile %d", snapshot, profileID)
+	}
+	if created != 1 {
+		t.Fatalf("wireguard runtime creations = %d, want 1", created)
 	}
 }
 
