@@ -4036,6 +4036,152 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentUDPL4RuleWithoutBacke
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardTCPL4RuleWithRelayEgress(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "wg-transparent-wildcard-tcp-agent",
+		Name:             "wg-transparent-wildcard-tcp-agent",
+		AgentToken:       "token-wg-transparent-wildcard-tcp-agent",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	profileID := 95
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-transparent-wildcard-tcp-agent", []WireGuardProfileRow{{
+		ID:            profileID,
+		AgentID:       "wg-transparent-wildcard-tcp-agent",
+		Name:          "transparent-wildcard-tcp-local-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "transparent-wildcard-tcp-local-private-key",
+		ListenPort:    51820,
+		AddressesJSON: `["10.95.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      26,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "wg-transparent-wildcard-tcp-agent", []L4RuleRow{{
+		ID:                   77,
+		AgentID:              "wg-transparent-wildcard-tcp-agent",
+		Name:                 "wg-transparent-wildcard-tcp",
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           0,
+		BackendsJSON:         `[]`,
+		LoadBalancingJSON:    `{"strategy":"adaptive"}`,
+		TuningJSON:           `{}`,
+		RelayChainJSON:       `[]`,
+		RelayLayersJSON:      `[[7],[6]]`,
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		ProxyEgressMode:      "relay",
+		Enabled:              true,
+		Revision:             27,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-transparent-wildcard-tcp-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	rule := snapshot.L4Rules[0]
+	if rule.ID != 77 || rule.Protocol != "tcp" || rule.ListenPort != 0 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" || rule.ProxyEgressMode != "relay" {
+		t.Fatalf("L4Rules[0] = %+v", rule)
+	}
+}
+
+func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardUDPL4RuleWithRelayEgress(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "wg-transparent-wildcard-udp-agent",
+		Name:             "wg-transparent-wildcard-udp-agent",
+		AgentToken:       "token-wg-transparent-wildcard-udp-agent",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	profileID := 96
+	if err := store.SaveWireGuardProfiles(t.Context(), "wg-transparent-wildcard-udp-agent", []WireGuardProfileRow{{
+		ID:            profileID,
+		AgentID:       "wg-transparent-wildcard-udp-agent",
+		Name:          "transparent-wildcard-udp-local-wg",
+		Mode:          "generic_wireguard",
+		PrivateKey:    "transparent-wildcard-udp-local-private-key",
+		ListenPort:    51820,
+		AddressesJSON: `["10.96.0.1/24"]`,
+		PeersJSON:     `[]`,
+		DNSJSON:       `[]`,
+		Enabled:       true,
+		Revision:      28,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "wg-transparent-wildcard-udp-agent", []L4RuleRow{{
+		ID:                   78,
+		AgentID:              "wg-transparent-wildcard-udp-agent",
+		Name:                 "wg-transparent-wildcard-udp",
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           0,
+		BackendsJSON:         `[]`,
+		LoadBalancingJSON:    `{"strategy":"adaptive"}`,
+		TuningJSON:           `{}`,
+		RelayChainJSON:       `[]`,
+		RelayLayersJSON:      `[[7],[6]]`,
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		ProxyEgressMode:      "relay",
+		Enabled:              true,
+		Revision:             29,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-transparent-wildcard-udp-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	rule := snapshot.L4Rules[0]
+	if rule.ID != 78 || rule.Protocol != "udp" || rule.ListenPort != 0 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" || rule.ProxyEgressMode != "relay" {
+		t.Fatalf("L4Rules[0] = %+v", rule)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByHTTPRules(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

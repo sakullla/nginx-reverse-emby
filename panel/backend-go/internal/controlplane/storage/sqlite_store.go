@@ -1852,10 +1852,6 @@ func filterSyncL4RuleRows(rows []L4RuleRow) []L4RuleRow {
 }
 
 func isSyncL4RuleRowValid(row L4RuleRow) bool {
-	if row.ListenPort < 1 || row.ListenPort > 65535 {
-		return false
-	}
-
 	protocol := strings.ToLower(strings.TrimSpace(row.Protocol))
 	if protocol == "" {
 		protocol = "tcp"
@@ -1866,20 +1862,33 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 
 	listenMode := strings.ToLower(strings.TrimSpace(row.ListenMode))
 	if listenMode == "proxy" {
+		if row.ListenPort < 1 || row.ListenPort > 65535 {
+			return false
+		}
 		return true
 	}
 	if listenMode == "wireguard" {
 		if row.WireGuardProfileID == nil {
 			return false
 		}
+		inboundMode := normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode)
+		if inboundMode == "transparent" {
+			if row.ListenPort < 0 || row.ListenPort > 65535 {
+				return false
+			}
+			return true
+		}
+		if row.ListenPort < 1 || row.ListenPort > 65535 {
+			return false
+		}
 		if strings.TrimSpace(row.ProxyEgressMode) != "" {
 			return protocol == "tcp"
 		}
-		if normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode) == "transparent" {
-			return true
-		}
 	}
 
+	if row.ListenPort < 1 || row.ListenPort > 65535 {
+		return false
+	}
 	return len(parseL4Backends(row.BackendsJSON)) > 0
 }
 
