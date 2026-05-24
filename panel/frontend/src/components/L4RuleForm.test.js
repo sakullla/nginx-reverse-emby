@@ -228,6 +228,30 @@ describe('L4RuleForm WireGuard egress', () => {
     expect(wrapper.text()).not.toContain('启用入口认证')
   })
 
+  it('shows proxy URL input for WireGuard transparent proxy egress', async () => {
+    const wrapper = mountForm()
+
+    await selectByLabel(wrapper, '监听端口').setValue('0')
+    await switchTab(wrapper, '协议与监听')
+    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
+    await selectByLabel(wrapper, '出口模式').setValue('proxy')
+    await flushPromises()
+
+    const proxyURL = wrapper.get('input[placeholder="socks://user:pass@127.0.0.1:1080"]')
+    await proxyURL.setValue('socks5://127.0.0.1:1080')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
+      listen_mode: 'wireguard',
+      wireguard_inbound_mode: 'transparent',
+      proxy_egress_mode: 'proxy',
+      proxy_egress_url: 'socks5://127.0.0.1:1080',
+      wireguard_profile_id: 21
+    })
+  })
+
   it('rejects UDP proxy entry without same-port TCP SOCKS5 rule', async () => {
     const wrapper = mountFormWithRules([
       {

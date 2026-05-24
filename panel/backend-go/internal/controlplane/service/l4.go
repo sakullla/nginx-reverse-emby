@@ -717,6 +717,11 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 			if err := validateL4ProxyEgressURL(proxyEgressURL); err != nil {
 				return L4Rule{}, fmt.Errorf("%w: invalid proxy_egress_url: %v", ErrInvalidArgument, err)
 			}
+			if protocol == "udp" {
+				if err := validateL4UDPProxyEgressURL(proxyEgressURL, "udp transparent proxy egress"); err != nil {
+					return L4Rule{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+				}
+			}
 			relayChain = []int{}
 			relayLayers = [][]int{}
 		}
@@ -1443,6 +1448,19 @@ func validateL4ProxyEgressURL(raw string) error {
 		return fmt.Errorf("proxy URL port out of range")
 	}
 	return nil
+}
+
+func validateL4UDPProxyEgressURL(raw string, context string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid proxy_egress_url: %v", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "socks", "socks5", "socks5h":
+		return nil
+	default:
+		return fmt.Errorf("%s requires a SOCKS5-family proxy", context)
+	}
 }
 
 func normalizeL4ProxyEntryFields(listenMode string, auth L4ProxyEntryAuth, egressMode string, egressURL string) (L4ProxyEntryAuth, string, string) {

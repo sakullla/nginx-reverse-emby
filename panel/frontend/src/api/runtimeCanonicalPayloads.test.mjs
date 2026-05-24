@@ -973,6 +973,7 @@ describe('runtime canonical rule payloads', () => {
     expect(l4Form.default).toContain('const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)')
     expect(l4Form.default).toContain('backends: requiresBackends.value ? validBackends : []')
     expect(l4Form.default).toContain('proxy_egress_mode: (isProxyEntry.value || hasTransparentEgress.value) ? form.value.proxy_egress_mode : \'\'')
+    expect(l4Form.default).toContain('v-if="(isProxyEntry || hasTransparentEgress) && form.proxy_egress_mode === \'proxy\'"')
     expect(l4Form.default).toContain('if (requiresBackends.value && validBackends.length === 0)')
   })
 

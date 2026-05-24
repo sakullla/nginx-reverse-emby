@@ -264,7 +264,7 @@
         </div>
 
         <!-- Proxy egress URL -->
-        <div v-if="isProxyEntry && form.proxy_egress_mode === 'proxy'" class="form-group">
+        <div v-if="(isProxyEntry || hasTransparentEgress) && form.proxy_egress_mode === 'proxy'" class="form-group">
           <label class="form-label">出口代理 URL</label>
           <input v-model="form.proxy_egress_url" class="input" placeholder="socks://user:pass@127.0.0.1:1080">
         </div>

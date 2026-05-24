@@ -3173,6 +3173,46 @@ func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
 			},
 		},
 		{
+			name: "rejects udp transparent proxy egress with non socks5 url",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("udp"),
+				ListenPort:           intPtrL4(51820),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				ProxyEgressMode:      stringPtrL4("proxy"),
+				ProxyEgressURL:       stringPtrL4("http://127.0.0.1:8080"),
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+			},
+			wantErr: "udp transparent proxy egress requires a SOCKS5-family proxy",
+		},
+		{
+			name: "accepts udp transparent proxy egress with socks5 url",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("udp"),
+				ListenPort:           intPtrL4(51820),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				ProxyEgressMode:      stringPtrL4("proxy"),
+				ProxyEgressURL:       stringPtrL4("socks5://127.0.0.1:1080"),
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+			},
+			assert: func(t *testing.T, rule L4Rule, row storage.L4RuleRow) {
+				t.Helper()
+				if rule.Protocol != "udp" || rule.WireGuardInboundMode != "transparent" || rule.ProxyEgressMode != "proxy" {
+					t.Fatalf("rule = %+v, want udp transparent proxy egress", rule)
+				}
+				if row.ProxyEgressURL != "socks5://127.0.0.1:1080" {
+					t.Fatalf("persisted proxy_egress_url = %q", row.ProxyEgressURL)
+				}
+			},
+		},
+		{
 			name: "rejects disabled profile",
 			input: L4RuleInput{
 				Protocol:           stringPtrL4("tcp"),
