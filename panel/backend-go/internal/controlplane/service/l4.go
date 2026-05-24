@@ -1448,6 +1448,14 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 		if rule.ID == excludeID {
 			continue
 		}
+		if l4TransparentWireGuardProfileConflicts(rule, next) {
+			return fmt.Errorf(
+				"%w: WireGuard transparent inbound profile %d already has rule #%d",
+				ErrInvalidArgument,
+				*next.WireGuardProfileID,
+				rule.ID,
+			)
+		}
 		if l4ListenConflicts(rule, next) {
 			return fmt.Errorf(
 				"%w: listen %s:%s:%d conflicts with rule #%d",
@@ -1503,6 +1511,9 @@ func hasSamePortTCPProxyEntry(rules []L4Rule, next L4Rule, excludeID int) bool {
 }
 
 func l4ListenConflicts(rule L4Rule, next L4Rule) bool {
+	if l4TransparentWireGuardProfileConflicts(rule, next) {
+		return true
+	}
 	if !strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol)) ||
 		effectiveL4ListenStack(rule) != effectiveL4ListenStack(next) ||
 		rule.ListenPort != next.ListenPort {
@@ -1517,6 +1528,18 @@ func l4ListenConflicts(rule L4Rule, next L4Rule) bool {
 	return l4RuleIsWireGuardListen(rule) &&
 		l4RuleIsWireGuardListen(next) &&
 		(isL4TransparentWireGuardListen(rule) || isL4TransparentWireGuardListen(next))
+}
+
+func l4TransparentWireGuardProfileConflicts(rule L4Rule, next L4Rule) bool {
+	if !isL4TransparentWireGuardListen(rule) || !isL4TransparentWireGuardListen(next) {
+		return false
+	}
+	if rule.WireGuardProfileID == nil || next.WireGuardProfileID == nil {
+		return false
+	}
+	return *rule.WireGuardProfileID > 0 &&
+		*rule.WireGuardProfileID == *next.WireGuardProfileID &&
+		strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol))
 }
 
 func effectiveL4ListenHost(rule L4Rule) string {
