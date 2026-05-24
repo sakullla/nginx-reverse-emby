@@ -1295,6 +1295,44 @@ func TestWireGuardTransparentTCPInboundWithRelayEgressUsesRuntimeWildcardListene
 	}
 }
 
+func TestWireGuardTransparentTCPInboundWithPortUsesRuntimeListenTCP(t *testing.T) {
+	profileID := 9
+	runtime := &fakeL4WireGuardRuntime{
+		listenTCP: func(_ context.Context, address string) (net.Listener, error) {
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	listenPort := pickFreeTCPPort(t)
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           listenPort,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+		WireGuardListenHost:  "10.64.0.2",
+		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}}, nil, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+
+	if calls := runtime.listenTransparentTCPCalls(); calls != 0 {
+		t.Fatalf("ListenTransparentTCP calls = %d, want 0 for port-specific transparent listener", calls)
+	}
+	calls := runtime.listenTCPCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ListenTCP calls = %d, want 1", len(calls))
+	}
+	want := net.JoinHostPort("", strconv.Itoa(listenPort))
+	if calls[0] != want {
+		t.Fatalf("ListenTCP address = %q, want %q", calls[0], want)
+	}
+}
+
 func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 	runtime := &fakeL4WireGuardRuntime{
 		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {

@@ -3705,6 +3705,63 @@ func TestRunHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotHydratePartialAppliedSnapshotFromNewerDesiredSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+	}
+	desired := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       6,
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 0,
+			ListenMode: "wireguard",
+			Backends:   []model.L4Backend{},
+			Revision:   6,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
+	l4Applier := &testL4Applier{}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	if calls := l4Applier.snapshotCalls(); len(calls) != 0 {
+		t.Fatalf("expected no l4 hydration from newer desired snapshot, got %+v", calls)
+	}
+
+	persisted, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if persisted.L4Rules != nil {
+		t.Fatalf("expected applied snapshot to stay partial, got %+v", persisted.L4Rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 func TestRunDoesNotHydrateNewerAppliedSnapshotFromOlderDesiredSnapshot(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
