@@ -640,14 +640,16 @@ func (m *Manager) Close() error {
 }
 
 type netstackRuntime struct {
-	mu     sync.Mutex
-	net    wgnetstack.RuntimeNet
-	stack  *stack.Stack
-	device *device.Device
-	tun    interface{ Close() error }
-	tcp    *transparentTCPDispatcher
-	udp    *transparentUDPDispatcher
-	closed bool
+	mu                  sync.Mutex
+	net                 wgnetstack.RuntimeNet
+	stack               *stack.Stack
+	device              *device.Device
+	tun                 interface{ Close() error }
+	tcp                 *transparentTCPDispatcher
+	udp                 *transparentUDPDispatcher
+	tcpHandlerInstalled bool
+	udpHandlerInstalled bool
+	closed              bool
 }
 
 func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
@@ -679,8 +681,6 @@ func newNetstackRuntime(tunDevice interface{ Close() error }, tnet wgnetstack.Ru
 	if gstack != nil {
 		runtime.tcp = newTransparentTCPDispatcher(gstack)
 		runtime.udp = newTransparentUDPDispatcher(gstack)
-		gstack.SetTransportProtocolHandler(tcp.ProtocolNumber, runtime.tcp.HandlePacket)
-		gstack.SetTransportProtocolHandler(udp.ProtocolNumber, runtime.udp.HandlePacket)
 	}
 	return runtime
 }
@@ -704,6 +704,7 @@ func (r *netstackRuntime) ListenTransparentTCP(ctx context.Context) (net.Listene
 	if r.tcp == nil {
 		return nil, fmt.Errorf("wireguard transparent tcp dispatcher is unavailable")
 	}
+	r.installTransparentTCPHandler()
 	return r.tcp.Listen(), nil
 }
 
@@ -735,6 +736,7 @@ func (r *netstackRuntime) ListenTransparentUDP(ctx context.Context, address stri
 		if r.udp == nil {
 			return nil, fmt.Errorf("wireguard transparent udp dispatcher is unavailable")
 		}
+		r.installTransparentUDPHandler()
 		return r.udp.Listen(), nil
 	}
 
@@ -755,6 +757,26 @@ func (r *netstackRuntime) ListenTransparentUDP(ctx context.Context, address stri
 		}
 	}
 	return &netstackTransparentUDPConn{stack: r.stack, ep: ep, wq: &wq}, nil
+}
+
+func (r *netstackRuntime) installTransparentTCPHandler() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tcpHandlerInstalled || r.stack == nil || r.tcp == nil {
+		return
+	}
+	r.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, r.tcp.HandlePacket)
+	r.tcpHandlerInstalled = true
+}
+
+func (r *netstackRuntime) installTransparentUDPHandler() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.udpHandlerInstalled || r.stack == nil || r.udp == nil {
+		return
+	}
+	r.stack.SetTransportProtocolHandler(udp.ProtocolNumber, r.udp.HandlePacket)
+	r.udpHandlerInstalled = true
 }
 
 func (r *netstackRuntime) Close() error {
