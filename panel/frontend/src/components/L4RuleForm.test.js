@@ -181,6 +181,30 @@ describe('L4RuleForm WireGuard egress', () => {
     })
   })
 
+  it('allows relay egress for WireGuard transparent inbound rules', async () => {
+    const wrapper = mountForm()
+
+    await selectByLabel(wrapper, '监听端口').setValue('0')
+    await switchTab(wrapper, '协议与监听')
+    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
+    await selectByLabel(wrapper, '出口模式').setValue('relay')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('监听端口必须在 1-65535 之间')
+    expect(wrapper.text()).not.toContain('至少需要一个有效的后端服务器')
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
+      protocol: 'tcp',
+      listen_port: 0,
+      listen_mode: 'wireguard',
+      proxy_egress_mode: 'relay',
+      wireguard_inbound_mode: 'transparent',
+      wireguard_profile_id: 21,
+      backends: []
+    })
+  })
+
   it('rejects port 0 outside WireGuard transparent inbound rules', async () => {
     const wrapper = mountForm()
 

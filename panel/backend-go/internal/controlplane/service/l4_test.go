@@ -2715,6 +2715,57 @@ func TestL4RuleServiceAllowsTransparentWireGuardPortZero(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceAllowsTransparentWireGuardPortZeroWithEgressMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		input L4RuleInput
+	}{
+		{
+			name: "relay egress",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("tcp"),
+				ListenHost:           stringPtrL4("0.0.0.0"),
+				ListenPort:           intPtrL4(0),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				ProxyEgressMode:      stringPtrL4("relay"),
+				RelayLayers:          &[][]int{{101}},
+			},
+		},
+		{
+			name: "proxy egress",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("udp"),
+				ListenHost:           stringPtrL4("0.0.0.0"),
+				ListenPort:           intPtrL4(0),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				ProxyEgressMode:      stringPtrL4("proxy"),
+				ProxyEgressURL:       stringPtrL4("socks5://127.0.0.1:1080"),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rule, err := normalizeL4RuleInput(tc.input, L4Rule{}, 1)
+			if err != nil {
+				t.Fatalf("normalizeL4RuleInput() error = %v", err)
+			}
+			if rule.ListenPort != 0 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" {
+				t.Fatalf("rule = %+v, want transparent wireguard listen_port 0", rule)
+			}
+			if len(rule.Backends) != 0 {
+				t.Fatalf("Backends = %+v, want empty transparent target list", rule.Backends)
+			}
+			if tc.input.ProxyEgressMode != nil && rule.ProxyEgressMode != *tc.input.ProxyEgressMode {
+				t.Fatalf("ProxyEgressMode = %q, want %q", rule.ProxyEgressMode, *tc.input.ProxyEgressMode)
+			}
+		})
+	}
+}
+
 func TestL4RuleServiceRejectsPortZeroOutsideTransparentWireGuard(t *testing.T) {
 	tests := []struct {
 		name  string

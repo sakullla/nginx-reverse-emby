@@ -575,13 +575,14 @@ const hasTuningChanges = computed(() => {
 })
 
 const supportsProxyEgress = computed(() => form.value.listen_mode === 'proxy' || form.value.listen_mode === 'wireguard')
-const isProxyEntry = computed(() => form.value.listen_mode === 'proxy' || (form.value.listen_mode === 'wireguard' && form.value.proxy_egress_mode !== ''))
-const isProxyEntryAuthAvailable = computed(() => form.value.listen_mode === 'proxy')
 const isWireGuardInbound = computed(() => form.value.listen_mode === 'wireguard')
-const isWireGuardEgress = computed(() => isProxyEntry.value && form.value.proxy_egress_mode === 'wireguard')
+const isProxyEntry = computed(() => form.value.listen_mode === 'proxy' ||
+  (form.value.listen_mode === 'wireguard' && form.value.wireguard_inbound_mode !== 'transparent' && form.value.proxy_egress_mode !== ''))
+const hasTransparentEgress = computed(() => isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'transparent' && form.value.proxy_egress_mode !== '')
+const isProxyEntryAuthAvailable = computed(() => form.value.listen_mode === 'proxy')
+const isWireGuardEgress = computed(() => (isProxyEntry.value || hasTransparentEgress.value) && form.value.proxy_egress_mode === 'wireguard')
 const isWireGuardTransparentForward = computed(() => isWireGuardInbound.value
-  && form.value.wireguard_inbound_mode === 'transparent'
-  && !isProxyEntry.value)
+  && form.value.wireguard_inbound_mode === 'transparent')
 const allowsWildcardListenPort = computed(() => isWireGuardTransparentForward.value)
 const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)
 const canUseWireGuardEgressURI = computed(() => !isWireGuardInbound.value)
@@ -856,7 +857,7 @@ function buildPayload() {
   const proxyEntryAuth = isProxyEntryAuthAvailable.value
     ? buildProxyEntryAuthPayload(props.initialData?.proxy_entry_auth, form.value.proxy_entry_auth)
     : { enabled: false, username: '', password: '' }
-  const proxyEgressURL = isProxyEntry.value && form.value.proxy_egress_mode === 'proxy'
+  const proxyEgressURL = (isProxyEntry.value || hasTransparentEgress.value) && form.value.proxy_egress_mode === 'proxy'
     ? buildProxyEgressURLPayload(props.initialData?.proxy_egress_url, form.value.proxy_egress_url)
     : ''
 
@@ -871,7 +872,7 @@ function buildPayload() {
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
     listen_mode: form.value.listen_mode,
-    proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : '',
+    proxy_egress_mode: (isProxyEntry.value || hasTransparentEgress.value) ? form.value.proxy_egress_mode : '',
     relay_layers: Array.isArray(form.value.relay_layers) ? form.value.relay_layers.map((l) => [...l]) : [],
     relay_obfs: form.value.protocol === 'tcp'
       && firstRelayListener.value?.transport_mode === 'tls_tcp'

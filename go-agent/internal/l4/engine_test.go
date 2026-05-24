@@ -182,6 +182,61 @@ func TestValidateRuleAllowsWireGuardTransparentPortZero(t *testing.T) {
 	}
 }
 
+func TestValidateRuleAllowsWireGuardTransparentPortZeroWithEgressMode(t *testing.T) {
+	profileID := 7
+	tests := []struct {
+		name string
+		rule Rule
+	}{
+		{
+			name: "tcp relay egress",
+			rule: Rule{
+				Protocol:             "tcp",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           0,
+				ListenMode:           "wireguard",
+				WireGuardInboundMode: "transparent",
+				WireGuardProfileID:   &profileID,
+				ProxyEgressMode:      "relay",
+				RelayLayers:          [][]int{{101}},
+			},
+		},
+		{
+			name: "tcp proxy egress",
+			rule: Rule{
+				Protocol:             "tcp",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           0,
+				ListenMode:           "wireguard",
+				WireGuardInboundMode: "transparent",
+				WireGuardProfileID:   &profileID,
+				ProxyEgressMode:      "proxy",
+				ProxyEgressURL:       "socks5://127.0.0.1:1080",
+			},
+		},
+		{
+			name: "udp proxy egress",
+			rule: Rule{
+				Protocol:             "udp",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           0,
+				ListenMode:           "wireguard",
+				WireGuardInboundMode: "transparent",
+				WireGuardProfileID:   &profileID,
+				ProxyEgressMode:      "proxy",
+				ProxyEgressURL:       "socks5://127.0.0.1:1080",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateRule(tc.rule); err != nil {
+				t.Fatalf("ValidateRule() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRuleRejectsPortZeroOutsideWireGuardTransparent(t *testing.T) {
 	profileID := 7
 	tests := []struct {

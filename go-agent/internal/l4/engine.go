@@ -49,6 +49,11 @@ func ValidateRule(rule Rule) error {
 		}
 		return validateProxyEntryRule(rule)
 	}
+	if isWireGuardTransparentForwardRule(rule) {
+		if err := validateTransparentEgressRule(rule); err != nil {
+			return err
+		}
+	}
 
 	backends := rule.Backends
 	if len(backends) == 0 && !isWireGuardTransparentForwardRule(rule) {
@@ -72,8 +77,7 @@ func isWireGuardTransparentForwardRule(rule Rule) bool {
 	}
 	return (protocol == "tcp" || protocol == "udp") &&
 		strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
-		wireGuardInboundMode(rule) == "transparent" &&
-		!isProxyEntryRule(rule)
+		wireGuardInboundMode(rule) == "transparent"
 }
 
 func validateProxyEntryRule(rule Rule) error {
@@ -109,10 +113,45 @@ func validateProxyEntryRule(rule Rule) error {
 	return nil
 }
 
+func validateTransparentEgressRule(rule Rule) error {
+	mode := strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode))
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	switch mode {
+	case "":
+		return nil
+	case "relay":
+		if !ruleUsesRelay(rule) {
+			return fmt.Errorf("transparent relay egress requires relay_layers")
+		}
+	case "wireguard":
+		if !hasWireGuardProfile(rule) {
+			return fmt.Errorf("wireguard_profile_id is required for wireguard transparent egress")
+		}
+	case "proxy":
+		if strings.TrimSpace(rule.ProxyEgressURL) == "" {
+			return fmt.Errorf("proxy_egress_url is required for proxy egress")
+		}
+		parsed, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
+		if err != nil {
+			return fmt.Errorf("invalid proxy_egress_url: %w", err)
+		}
+		if protocol == "udp" {
+			switch parsed.Scheme {
+			case "socks", "socks5", "socks5h":
+			default:
+				return fmt.Errorf("udp transparent proxy egress requires a SOCKS5-family proxy")
+			}
+		}
+	default:
+		return fmt.Errorf("proxy_egress_mode must be relay, proxy, or wireguard")
+	}
+	return nil
+}
+
 func isProxyEntryRule(rule Rule) bool {
 	listenMode := strings.ToLower(strings.TrimSpace(rule.ListenMode))
 	return listenMode == "proxy" ||
-		(listenMode == "wireguard" && strings.TrimSpace(rule.ProxyEgressMode) != "")
+		(listenMode == "wireguard" && wireGuardInboundMode(rule) != "transparent" && strings.TrimSpace(rule.ProxyEgressMode) != "")
 }
 
 func hasWireGuardProfile(rule Rule) bool {

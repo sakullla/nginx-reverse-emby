@@ -965,13 +965,14 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('L4 form treats WireGuard listen mode as a proxy entry when egress is selected', async () => {
+  it('L4 form keeps WireGuard transparent egress separate from proxy entry mode', async () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
 
-    expect(l4Form.default).toContain('const isProxyEntry = computed(() => form.value.listen_mode === \'proxy\' || (form.value.listen_mode === \'wireguard\' && form.value.proxy_egress_mode !== \'\'))')
+    expect(l4Form.default).toContain('form.value.wireguard_inbound_mode !== \'transparent\' && form.value.proxy_egress_mode !== \'\'')
+    expect(l4Form.default).toContain('const hasTransparentEgress = computed(() => isWireGuardInbound.value && form.value.wireguard_inbound_mode === \'transparent\' && form.value.proxy_egress_mode !== \'\')')
     expect(l4Form.default).toContain('const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)')
     expect(l4Form.default).toContain('backends: requiresBackends.value ? validBackends : []')
-    expect(l4Form.default).toContain('proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : \'\'')
+    expect(l4Form.default).toContain('proxy_egress_mode: (isProxyEntry.value || hasTransparentEgress.value) ? form.value.proxy_egress_mode : \'\'')
     expect(l4Form.default).toContain('if (requiresBackends.value && validBackends.length === 0)')
   })
 

@@ -73,7 +73,8 @@ function normalizeL4Rule(rule = {}) {
     : listenMode === 'wireguard'
       ? String(rule.proxy_egress_mode || '')
       : ''
-  const proxyEntryMode = listenMode === 'proxy' || (listenMode === 'wireguard' && proxyEgressMode)
+  const proxyEntryMode = listenMode === 'proxy' || (listenMode === 'wireguard' && wireGuardInboundMode !== 'transparent' && proxyEgressMode)
+  const transparentEgressMode = listenMode === 'wireguard' && wireGuardInboundMode === 'transparent' && proxyEgressMode
   return {
     ...rule,
     backends: normalizeL4Backends(rule),
@@ -90,8 +91,8 @@ function normalizeL4Rule(rule = {}) {
         }
       : { enabled: false, username: '', password: '' },
     proxy_egress_mode: proxyEgressMode,
-    proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : '',
-    wireguard_egress_uri: proxyEntryMode && proxyEgressMode === 'wireguard'
+    proxy_egress_url: (proxyEntryMode || transparentEgressMode) ? String(rule.proxy_egress_url || '') : '',
+    wireguard_egress_uri: (proxyEntryMode || transparentEgressMode) && proxyEgressMode === 'wireguard'
       ? String(rule.wireguard_egress_uri || '')
       : '',
     wireguard_inbound_mode: wireGuardInboundMode

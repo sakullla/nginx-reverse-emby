@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
@@ -89,10 +90,26 @@ func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, di
 		upstream net.Conn
 		err      error
 	)
-	if !ruleUsesRelay(rule) {
-		upstream, err = s.dialTCPDirect(target)
-	} else {
+	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
+	case "":
+		if ruleUsesRelay(rule) {
+			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
+		} else {
+			upstream, err = s.dialTCPDirect(target)
+		}
+	case "relay":
 		upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
+	case "wireguard":
+		runtime, runtimeErr := s.wireGuardRuntime(rule)
+		if runtimeErr != nil {
+			err = runtimeErr
+			break
+		}
+		upstream, err = runtime.DialContext(s.ctx, "tcp", target)
+	case "proxy":
+		upstream, err = proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
+	default:
+		err = fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
 	}
 	if err != nil {
 		return nil, candidate, 0, err

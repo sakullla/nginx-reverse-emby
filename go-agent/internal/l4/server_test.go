@@ -1253,6 +1253,48 @@ func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *tes
 	}
 }
 
+func TestWireGuardTransparentTCPInboundWithRelayEgressUsesRuntimeWildcardListener(t *testing.T) {
+	profileID := 9
+	runtime := &fakeL4WireGuardRuntime{
+		listenTransparentTCP: func(_ context.Context) (net.Listener, error) {
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           0,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+		ProxyEgressMode:      "relay",
+		RelayLayers:          [][]int{{101}},
+	}}, []model.RelayListener{{
+		ID:            101,
+		Name:          "relay",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    pickFreeTCPPort(t),
+		PublicHost:    "127.0.0.1",
+		PublicPort:    pickFreeTCPPort(t),
+		Enabled:       true,
+		TLSMode:       "pin_only",
+		PinSet:        []model.RelayPin{{Type: "sha256", Value: "pin101"}},
+		TransportMode: "tls_tcp",
+	}}, &testL4RelayProvider{}, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+	if calls := runtime.listenTransparentTCPCalls(); calls != 1 {
+		t.Fatalf("ListenTransparentTCP calls = %d, want 1", calls)
+	}
+	if calls := runtime.listenTCPCalls(); len(calls) != 0 {
+		t.Fatalf("ListenTCP calls = %+v, want none", calls)
+	}
+}
+
 func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 	runtime := &fakeL4WireGuardRuntime{
 		listenUDP: func(_ context.Context, address string) (wireguard.PacketConn, error) {
@@ -1322,6 +1364,39 @@ func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 	}
 	if calls := runtime.listenUDPCalls(); len(calls) != 0 {
 		t.Fatalf("ListenUDP calls = %+v, want none for transparent UDP", calls)
+	}
+}
+
+func TestWireGuardTransparentUDPInboundWithProxyEgressAccepted(t *testing.T) {
+	profileID := 9
+	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: 0})
+	runtime := &fakeL4WireGuardRuntime{
+		listenTransparentUDP: func(_ context.Context, address string) (wireguard.TransparentUDPConn, error) {
+			return transparentConn, nil
+		},
+	}
+	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           0,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		WireGuardProfileID:   &profileID,
+		ProxyEgressMode:      "proxy",
+		ProxyEgressURL:       "socks5://127.0.0.1:1080",
+	}}, nil, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+	}
+	defer srv.Close()
+	calls := runtime.listenTransparentUDPCalls()
+	if len(calls) != 1 || calls[0] != net.JoinHostPort("", "0") {
+		t.Fatalf("ListenTransparentUDP calls = %+v, want [:0]", calls)
+	}
+	if calls := runtime.listenUDPCalls(); len(calls) != 0 {
+		t.Fatalf("ListenUDP calls = %+v, want none", calls)
 	}
 }
 
