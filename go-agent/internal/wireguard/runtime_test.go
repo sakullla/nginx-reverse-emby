@@ -9,9 +9,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard/wgnetstack"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/checksum"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
 func TestManagerReusesSameFingerprintRuntime(t *testing.T) {
@@ -78,6 +82,74 @@ func TestNetstackRuntimeListenTCPAcceptsWildcardAddress(t *testing.T) {
 	}
 }
 
+func TestNetstackRuntimeTransparentTCPAcceptsNonLocalDestination(t *testing.T) {
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer runtime.Close()
+
+	const listenPort = 18443
+	ln, err := runtime.ListenTCP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
+	if err != nil {
+		t.Fatalf("ListenTCP wildcard error = %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	clientIP := netip.MustParseAddr("10.99.0.2")
+	originalDstIP := netip.MustParseAddr("203.0.113.36")
+	const clientPort = 40123
+	const clientSeq = 1000
+	injectIPv4TCPPacket(t, runtime, tcpPacket{
+		src:     clientIP,
+		dst:     originalDstIP,
+		srcPort: clientPort,
+		dstPort: listenPort,
+		seq:     clientSeq,
+		flags:   header.TCPFlagSyn,
+	})
+
+	synAck := readOutboundIPv4TCPPacket(t, runtime)
+	if synAck.src != originalDstIP || synAck.dst != clientIP {
+		t.Fatalf("SYN-ACK addresses = %s -> %s, want %s -> %s", synAck.src, synAck.dst, originalDstIP, clientIP)
+	}
+	if synAck.srcPort != listenPort || synAck.dstPort != clientPort {
+		t.Fatalf("SYN-ACK ports = %d -> %d, want %d -> %d", synAck.srcPort, synAck.dstPort, listenPort, clientPort)
+	}
+	if !synAck.flags.Contains(header.TCPFlagSyn | header.TCPFlagAck) {
+		t.Fatalf("SYN-ACK flags = %v, want SYN|ACK", synAck.flags)
+	}
+
+	injectIPv4TCPPacket(t, runtime, tcpPacket{
+		src:     clientIP,
+		dst:     originalDstIP,
+		srcPort: clientPort,
+		dstPort: listenPort,
+		seq:     clientSeq + 1,
+		ack:     synAck.seq + 1,
+		flags:   header.TCPFlagAck,
+	})
+
+	select {
+	case conn := <-accepted:
+		if got := conn.LocalAddr().String(); got != net.JoinHostPort(originalDstIP.String(), strconv.Itoa(listenPort)) {
+			t.Fatalf("accepted LocalAddr = %q, want original destination", got)
+		}
+	case err := <-acceptErr:
+		t.Fatalf("Accept() error = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for transparent TCP accept")
+	}
+}
+
 func TestNetstackRuntimeListenUDPAcceptsWildcardAddress(t *testing.T) {
 	runtime := newTestNetstackRuntime(t)
 	defer runtime.Close()
@@ -109,16 +181,14 @@ func TestNetstackRuntimeReadTransparentUDPPacketReportsOriginalDestination(t *te
 	}
 	defer conn.Close()
 
-	client, err := runtime.net.DialUDP(nil, listenAddr)
-	if err != nil {
-		t.Fatalf("DialUDP() error = %v", err)
-	}
-	defer client.Close()
-	clientAddr := client.LocalAddr().(*net.UDPAddr)
-
-	if _, err := client.Write([]byte("ping")); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40124}
+	injectIPv4UDPPacket(t, runtime, udpPacket{
+		src:     netip.MustParseAddr(clientAddr.IP.String()),
+		dst:     netip.MustParseAddr(listenAddr.IP.String()),
+		srcPort: uint16(clientAddr.Port),
+		dstPort: uint16(listenAddr.Port),
+		payload: []byte("ping"),
+	})
 
 	packet, err := conn.ReadPacket()
 	if err != nil {
@@ -146,17 +216,15 @@ func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(
 	}
 	defer wildcardConn.Close()
 
-	targetAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: listenPort}
-
-	client, err := runtime.net.DialUDP(nil, targetAddr)
-	if err != nil {
-		t.Fatalf("DialUDP(client) error = %v", err)
-	}
-	defer client.Close()
-
-	if _, err := client.Write([]byte("ping")); err != nil {
-		t.Fatalf("client Write() error = %v", err)
-	}
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40125}
+	targetAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.46"), Port: listenPort}
+	injectIPv4UDPPacket(t, runtime, udpPacket{
+		src:     netip.MustParseAddr(clientAddr.IP.String()),
+		dst:     netip.MustParseAddr(targetAddr.IP.String()),
+		srcPort: uint16(clientAddr.Port),
+		dstPort: uint16(targetAddr.Port),
+		payload: []byte("ping"),
+	})
 
 	packet, err := wildcardConn.ReadPacket()
 	if err != nil {
@@ -166,16 +234,22 @@ func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(
 		t.Fatalf("OriginalDst = %q, want %q", packet.OriginalDst, targetAddr.String())
 	}
 
-	if err := wildcardConn.WritePacket([]byte("pong"), packet.Peer, packet.OriginalDst); err != nil {
+	writeErr := make(chan error, 1)
+	go func() {
+		writeErr <- wildcardConn.WritePacket([]byte("pong"), packet.Peer, packet.OriginalDst)
+	}()
+
+	reply := readOutboundIPv4UDPPacket(t, runtime)
+	if err := <-writeErr; err != nil {
 		t.Fatalf("WritePacket() error = %v", err)
 	}
-
-	buf := make([]byte, 64)
-	n, err := client.Read(buf)
-	if err != nil {
-		t.Fatalf("client Read() error = %v", err)
+	if reply.src != netip.MustParseAddr(targetAddr.IP.String()) || reply.dst != netip.MustParseAddr(clientAddr.IP.String()) {
+		t.Fatalf("reply addresses = %s -> %s, want %s -> %s", reply.src, reply.dst, targetAddr.IP, clientAddr.IP)
 	}
-	if got := string(buf[:n]); got != "pong" {
+	if reply.srcPort != uint16(targetAddr.Port) || reply.dstPort != uint16(clientAddr.Port) {
+		t.Fatalf("reply ports = %d -> %d, want %d -> %d", reply.srcPort, reply.dstPort, targetAddr.Port, clientAddr.Port)
+	}
+	if got := string(reply.payload); got != "pong" {
 		t.Fatalf("reply payload = %q, want pong", got)
 	}
 }
@@ -854,14 +928,221 @@ func TestNetstackRuntimeCloseIsIdempotent(t *testing.T) {
 func newTestNetstackRuntime(t *testing.T) *netstackRuntime {
 	t.Helper()
 
-	tunDevice, tnet, gstack, err := wgnetstack.CreateNetTUN([]netip.Addr{
+	return newTestNetstackRuntimeWithAddresses(t, []netip.Addr{
 		netip.MustParseAddr("10.99.0.1"),
 		netip.MustParseAddr("10.99.0.2"),
-	}, nil, 1420)
+	})
+}
+
+func newTestNetstackRuntimeWithAddresses(t *testing.T, addresses []netip.Addr) *netstackRuntime {
+	t.Helper()
+
+	tunDevice, tnet, gstack, err := wgnetstack.CreateNetTUN(addresses, nil, 1420)
 	if err != nil {
 		t.Fatalf("CreateNetTUN() error = %v", err)
 	}
 	return &netstackRuntime{net: tnet, stack: gstack, tun: tunDevice}
+}
+
+type tcpPacket struct {
+	src, dst         netip.Addr
+	srcPort, dstPort uint16
+	seq, ack         uint32
+	flags            header.TCPFlags
+}
+
+type udpPacket struct {
+	src, dst         netip.Addr
+	srcPort, dstPort uint16
+	payload          []byte
+}
+
+func injectIPv4TCPPacket(t *testing.T, runtime *netstackRuntime, pkt tcpPacket) {
+	t.Helper()
+
+	const totalLen = header.IPv4MinimumSize + header.TCPMinimumSize
+	raw := make([]byte, totalLen)
+	srcAddr := tcpip.AddrFromSlice(pkt.src.AsSlice())
+	dstAddr := tcpip.AddrFromSlice(pkt.dst.AsSlice())
+	ip := header.IPv4(raw[:header.IPv4MinimumSize])
+	ip.Encode(&header.IPv4Fields{
+		TotalLength: totalLen,
+		TTL:         64,
+		Protocol:    uint8(header.TCPProtocolNumber),
+		SrcAddr:     srcAddr,
+		DstAddr:     dstAddr,
+	})
+	ip.SetChecksum(^ip.CalculateChecksum())
+
+	tcpHeader := header.TCP(raw[header.IPv4MinimumSize:])
+	tcpHeader.Encode(&header.TCPFields{
+		SrcPort:    pkt.srcPort,
+		DstPort:    pkt.dstPort,
+		SeqNum:     pkt.seq,
+		AckNum:     pkt.ack,
+		DataOffset: header.TCPMinimumSize,
+		Flags:      pkt.flags,
+		WindowSize: 65535,
+	})
+	xsum := header.PseudoHeaderChecksum(header.TCPProtocolNumber, srcAddr, dstAddr, header.TCPMinimumSize)
+	tcpHeader.SetChecksum(^tcpHeader.CalculateChecksum(xsum))
+
+	writer, ok := runtime.tun.(interface {
+		Write([][]byte, int) (int, error)
+	})
+	if !ok {
+		t.Fatalf("runtime tun does not support packet injection: %T", runtime.tun)
+	}
+	if _, err := writer.Write([][]byte{raw}, 0); err != nil {
+		t.Fatalf("inject TCP packet error = %v", err)
+	}
+}
+
+func injectIPv4UDPPacket(t *testing.T, runtime *netstackRuntime, pkt udpPacket) {
+	t.Helper()
+
+	raw := encodeIPv4UDPPacket(t, pkt)
+	writer, ok := runtime.tun.(interface {
+		Write([][]byte, int) (int, error)
+	})
+	if !ok {
+		t.Fatalf("runtime tun does not support packet injection: %T", runtime.tun)
+	}
+	if _, err := writer.Write([][]byte{raw}, 0); err != nil {
+		t.Fatalf("inject UDP packet error = %v", err)
+	}
+}
+
+func encodeIPv4UDPPacket(t *testing.T, pkt udpPacket) []byte {
+	t.Helper()
+
+	udpLen := header.UDPMinimumSize + len(pkt.payload)
+	totalLen := header.IPv4MinimumSize + udpLen
+	raw := make([]byte, totalLen)
+	srcAddr := tcpip.AddrFromSlice(pkt.src.AsSlice())
+	dstAddr := tcpip.AddrFromSlice(pkt.dst.AsSlice())
+	ip := header.IPv4(raw[:header.IPv4MinimumSize])
+	ip.Encode(&header.IPv4Fields{
+		TotalLength: uint16(totalLen),
+		TTL:         64,
+		Protocol:    uint8(header.UDPProtocolNumber),
+		SrcAddr:     srcAddr,
+		DstAddr:     dstAddr,
+	})
+	ip.SetChecksum(^ip.CalculateChecksum())
+
+	udpHeader := header.UDP(raw[header.IPv4MinimumSize:])
+	udpHeader.Encode(&header.UDPFields{
+		SrcPort: pkt.srcPort,
+		DstPort: pkt.dstPort,
+		Length:  uint16(udpLen),
+	})
+	copy(udpHeader.Payload(), pkt.payload)
+	xsum := header.PseudoHeaderChecksum(header.UDPProtocolNumber, srcAddr, dstAddr, uint16(udpLen))
+	udpHeader.SetChecksum(^udpHeader.CalculateChecksum(checksum.Combine(xsum, checksum.Checksum(pkt.payload, 0))))
+	return raw
+}
+
+func readOutboundIPv4TCPPacket(t *testing.T, runtime *netstackRuntime) tcpPacket {
+	t.Helper()
+
+	reader, ok := runtime.tun.(interface {
+		Read([][]byte, []int, int) (int, error)
+	})
+	if !ok {
+		t.Fatalf("runtime tun does not support packet reads: %T", runtime.tun)
+	}
+	type result struct {
+		packet tcpPacket
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		buf := make([]byte, 1500)
+		sizes := make([]int, 1)
+		_, err := reader.Read([][]byte{buf}, sizes, 0)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		raw := buf[:sizes[0]]
+		ip := header.IPv4(raw)
+		if !ip.IsValid(len(raw)) || ip.Protocol() != uint8(header.TCPProtocolNumber) {
+			done <- result{err: fmt.Errorf("outbound packet is not IPv4/TCP")}
+			return
+		}
+		tcpHeader := header.TCP(raw[ip.HeaderLength():])
+		done <- result{packet: tcpPacket{
+			src:     netip.AddrFrom4([4]byte(ip.SourceAddress().As4())),
+			dst:     netip.AddrFrom4([4]byte(ip.DestinationAddress().As4())),
+			srcPort: tcpHeader.SourcePort(),
+			dstPort: tcpHeader.DestinationPort(),
+			seq:     tcpHeader.SequenceNumber(),
+			ack:     tcpHeader.AckNumber(),
+			flags:   tcpHeader.Flags(),
+		}}
+	}()
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("read outbound TCP packet error = %v", res.err)
+		}
+		return res.packet
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for outbound TCP packet")
+	}
+	panic("unreachable")
+}
+
+func readOutboundIPv4UDPPacket(t *testing.T, runtime *netstackRuntime) udpPacket {
+	t.Helper()
+
+	reader, ok := runtime.tun.(interface {
+		Read([][]byte, []int, int) (int, error)
+	})
+	if !ok {
+		t.Fatalf("runtime tun does not support packet reads: %T", runtime.tun)
+	}
+	type result struct {
+		packet udpPacket
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		buf := make([]byte, 1500)
+		sizes := make([]int, 1)
+		_, err := reader.Read([][]byte{buf}, sizes, 0)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		raw := buf[:sizes[0]]
+		ip := header.IPv4(raw)
+		if !ip.IsValid(len(raw)) || ip.Protocol() != uint8(header.UDPProtocolNumber) {
+			done <- result{err: fmt.Errorf("outbound packet is not IPv4/UDP")}
+			return
+		}
+		udpHeader := header.UDP(raw[ip.HeaderLength():])
+		done <- result{packet: udpPacket{
+			src:     netip.AddrFrom4([4]byte(ip.SourceAddress().As4())),
+			dst:     netip.AddrFrom4([4]byte(ip.DestinationAddress().As4())),
+			srcPort: udpHeader.SourcePort(),
+			dstPort: udpHeader.DestinationPort(),
+			payload: append([]byte(nil), udpHeader.Payload()...),
+		}}
+	}()
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("read outbound UDP packet error = %v", res.err)
+		}
+		return res.packet
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for outbound UDP packet")
+	}
+	panic("unreachable")
 }
 
 func newRuntimeTestHarness(t *testing.T) (*netstackRuntime, func()) {
