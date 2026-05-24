@@ -280,6 +280,74 @@ func TestNetstackRuntimeDialContextReachesSameRuntimeTCPListener(t *testing.T) {
 	}
 }
 
+func TestNetstackRuntimeTransparentTCPDoesNotHijackSameRuntimeTCPListener(t *testing.T) {
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer runtime.Close()
+
+	transparentListener, err := runtime.ListenTransparentTCP(context.Background())
+	if err != nil {
+		t.Fatalf("ListenTransparentTCP() error = %v", err)
+	}
+	defer transparentListener.Close()
+
+	const listenPort = 18449
+	listenAddr := net.JoinHostPort("10.99.0.1", strconv.Itoa(listenPort))
+	ln, err := runtime.ListenTCP(context.Background(), listenAddr)
+	if err != nil {
+		t.Fatalf("ListenTCP() error = %v", err)
+	}
+	defer ln.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			serverErr <- err
+			return
+		}
+		buf := make([]byte, len("ping"))
+		if _, err := conn.Read(buf); err != nil {
+			serverErr <- err
+			return
+		}
+		if got := string(buf); got != "ping" {
+			serverErr <- fmt.Errorf("server read payload = %q, want ping", got)
+			return
+		}
+		_, err = conn.Write([]byte("pong"))
+		serverErr <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := runtime.DialContext(ctx, "tcp", listenAddr)
+	if err != nil {
+		t.Fatalf("DialContext() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("client Write() error = %v", err)
+	}
+	buf := make([]byte, len("pong"))
+	if _, err := conn.Read(buf); err != nil {
+		t.Fatalf("client Read() error = %v", err)
+	}
+	if got := string(buf); got != "pong" {
+		t.Fatalf("client read payload = %q, want pong", got)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("server error = %v", err)
+	}
+}
+
 func TestNetstackRuntimeListenUDPAcceptsWildcardAddress(t *testing.T) {
 	runtime := newTestNetstackRuntime(t)
 	defer runtime.Close()
@@ -305,6 +373,61 @@ func TestNetstackRuntimeDialContextReachesSameRuntimeUDPListener(t *testing.T) {
 	defer runtime.Close()
 
 	const listenPort = 18448
+	listenAddr := net.JoinHostPort("10.99.0.1", strconv.Itoa(listenPort))
+	server, err := runtime.ListenUDP(context.Background(), listenAddr)
+	if err != nil {
+		t.Fatalf("ListenUDP() error = %v", err)
+	}
+	defer server.Close()
+	if err := server.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("server SetDeadline() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client, err := runtime.DialContext(ctx, "udp", listenAddr)
+	if err != nil {
+		t.Fatalf("DialContext(udp) error = %v", err)
+	}
+	defer client.Close()
+	if err := client.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("client SetDeadline() error = %v", err)
+	}
+
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatalf("client Write() error = %v", err)
+	}
+	buf := make([]byte, 16)
+	n, peer, err := server.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("server ReadFrom() error = %v", err)
+	}
+	if got := string(buf[:n]); got != "ping" {
+		t.Fatalf("server read payload = %q, want ping", got)
+	}
+	if _, err := server.WriteTo([]byte("pong"), peer); err != nil {
+		t.Fatalf("server WriteTo() error = %v", err)
+	}
+	n, err = client.Read(buf)
+	if err != nil {
+		t.Fatalf("client Read() error = %v", err)
+	}
+	if got := string(buf[:n]); got != "pong" {
+		t.Fatalf("client read payload = %q, want pong", got)
+	}
+}
+
+func TestNetstackRuntimeTransparentUDPDoesNotHijackSameRuntimeUDPListener(t *testing.T) {
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer runtime.Close()
+
+	transparentConn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
+	}
+	defer transparentConn.Close()
+
+	const listenPort = 18450
 	listenAddr := net.JoinHostPort("10.99.0.1", strconv.Itoa(listenPort))
 	server, err := runtime.ListenUDP(context.Background(), listenAddr)
 	if err != nil {
@@ -514,6 +637,53 @@ func TestNewTestNetstackRuntimeProvidesExplicitStack(t *testing.T) {
 	}
 	if runtime.net == nil {
 		t.Fatal("runtime net is nil")
+	}
+}
+
+func TestNetstackRuntimeDoesNotInstallTransparentHandlersUntilTransparentListen(t *testing.T) {
+	runtime := newTestNetstackRuntime(t)
+	defer runtime.Close()
+
+	if runtime.tcpHandlerInstalled {
+		t.Fatal("tcp transparent handler installed before ListenTransparentTCP")
+	}
+	if runtime.udpHandlerInstalled {
+		t.Fatal("udp transparent handler installed before wildcard ListenTransparentUDP")
+	}
+
+	tcpListener, err := runtime.ListenTransparentTCP(context.Background())
+	if err != nil {
+		t.Fatalf("ListenTransparentTCP() error = %v", err)
+	}
+	defer tcpListener.Close()
+	if !runtime.tcpHandlerInstalled {
+		t.Fatal("tcp transparent handler was not installed by ListenTransparentTCP")
+	}
+	if runtime.udpHandlerInstalled {
+		t.Fatal("udp transparent handler installed before wildcard ListenTransparentUDP")
+	}
+
+	udpConn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
+	}
+	defer udpConn.Close()
+	if !runtime.udpHandlerInstalled {
+		t.Fatal("udp transparent handler was not installed by wildcard ListenTransparentUDP")
+	}
+}
+
+func TestNetstackRuntimePortSpecificTransparentUDPDoesNotInstallWildcardHandler(t *testing.T) {
+	runtime := newTestNetstackRuntime(t)
+	defer runtime.Close()
+
+	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("10.99.0.1", "18451"))
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP(port-specific) error = %v", err)
+	}
+	defer conn.Close()
+	if runtime.udpHandlerInstalled {
+		t.Fatal("udp wildcard transparent handler installed for port-specific transparent UDP")
 	}
 }
 
