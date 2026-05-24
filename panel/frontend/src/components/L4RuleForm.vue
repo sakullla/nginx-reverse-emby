@@ -700,6 +700,7 @@ watch(() => form.value.listen_mode, (mode, previousMode) => {
   if (mode === 'proxy' && form.value.proxy_egress_mode === '') {
     form.value.proxy_egress_mode = 'relay'
   }
+  if (!isEdit.value) updateAutoTags()
 })
 
 watch([isWireGuardEgress, canUseWireGuardEgressURI], ([egressEnabled, uriAllowed]) => {
@@ -764,16 +765,29 @@ watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
   ) {
     form.value.relay_obfs = false
   }
+  if (!isEdit.value) updateAutoTags()
 })
 
 const LB_TAG_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
+const LISTEN_MODE_LABELS = { tcp: 'TCP转发', proxy: '代理', wireguard: 'WG' }
+const LISTEN_MODE_LABEL_SET = new Set(Object.values(LISTEN_MODE_LABELS))
 
 function isL4AutoTag(t) {
   return t === 'TCP' || t === 'UDP' || /^:\d+$/.test(t) ||
     /^(TCP|UDP) 监听端口 \d+/.test(t) ||
     t.startsWith('监听端口') || t.startsWith('上游端口') ||
-    LB_TAG_SET.has(t)
+    LB_TAG_SET.has(t) ||
+    LISTEN_MODE_LABEL_SET.has(t) ||
+    t === 'Relay'
+}
+
+function getListenModeTag(mode, protocol) {
+  const m = String(mode || '').toLowerCase()
+  const p = String(protocol || '').toLowerCase()
+  if (m === 'proxy') return '代理'
+  if (m === 'wireguard') return 'WG'
+  return p === 'udp' ? 'UDP转发' : 'TCP转发'
 }
 
 function updateAutoTags() {
@@ -781,8 +795,16 @@ function updateAutoTags() {
   const protocol = form.value.protocol.toUpperCase()
   const listenPort = form.value.listen_port
   const lbTag = LB_TAG_MAP[form.value.load_balancing.strategy]
+  const modeTag = getListenModeTag(form.value.listen_mode, form.value.protocol)
+  const relayTag = (Array.isArray(form.value.relay_layers) && form.value.relay_layers.length > 0) ? 'Relay' : null
   form.value.tags = form.value.tags.filter(t => !isL4AutoTag(t))
-  const sysTags = [protocol, ...(listenPort ? [`:${listenPort}`] : []), ...(lbTag ? [lbTag] : [])]
+  const sysTags = [
+    protocol,
+    ...(listenPort ? [`:${listenPort}`] : []),
+    ...(lbTag ? [lbTag] : []),
+    modeTag,
+    ...(relayTag ? [relayTag] : []),
+  ]
   form.value.tags = [...sysTags, ...form.value.tags]
 }
 
@@ -844,8 +866,16 @@ function buildPayload() {
   const protocol = form.value.protocol.toUpperCase()
   const listenPort = form.value.listen_port
   const lbTag = LB_TAG_MAP[form.value.load_balancing.strategy]
+  const modeTag = getListenModeTag(form.value.listen_mode, form.value.protocol)
+  const relayTag = (Array.isArray(form.value.relay_layers) && form.value.relay_layers.length > 0) ? 'Relay' : null
   const userTags = form.value.tags.filter(t => !isL4AutoTag(t))
-  const sysTags = [protocol, ...(listenPort ? [`:${listenPort}`] : []), ...(lbTag ? [lbTag] : [])]
+  const sysTags = [
+    protocol,
+    ...(listenPort ? [`:${listenPort}`] : []),
+    ...(lbTag ? [lbTag] : []),
+    modeTag,
+    ...(relayTag ? [relayTag] : []),
+  ]
 
   const validBackends = form.value.backends
     .filter(b => b.host && b.port)
