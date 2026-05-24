@@ -3229,15 +3229,12 @@ func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
 	upstream := newTCPEchoListener(t)
 	defer upstream.Close()
 
-	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
 	provider := &runtimeL4RelayProvider{
-		serverCertificates: map[int]tls.Certificate{
-			510: relayCert,
-		},
+		serverCertificates: map[int]tls.Certificate{},
 	}
 	relayPublicPort := pickFreeTCPPort(t)
 	relayRequests := make(chan l4RelayTestRequest, 1)
-	stopRelay := startL4RelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayRequests, relay.RelayObfsModeOff)
+	stopRelay := startL4RawMuxRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayRequests)
 	defer stopRelay()
 
 	profileID := 9
@@ -3275,7 +3272,7 @@ func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
 		WireGuardProfileID: &profileID,
 		PinSet: []model.RelayPin{{
 			Type:  "sha256",
-			Value: mustL4RelaySPKIPin(t, relayCert),
+			Value: "unused-for-wireguard-direct-mux",
 		}},
 	}
 

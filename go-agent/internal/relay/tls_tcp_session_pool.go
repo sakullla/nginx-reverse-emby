@@ -389,36 +389,42 @@ func dialNewTLSTCPTunnel(ctx context.Context, hop Hop, provider TLSMaterialProvi
 }
 
 func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMaterialProvider, options DialOptions) (*tlsTCPTunnel, error) {
-	tlsConfig, err := clientTLSConfig(ctx, provider, hop.Listener, hop.Address, hop.ServerName)
-	if err != nil {
-		return nil, err
-	}
-
 	rawConn, err := dialRelayRawTCP(ctx, hop, options)
 	if err != nil {
 		return nil, err
 	}
 
-	relayConn := tls.Client(rawConn, tlsConfig)
-	if err := handshakeTLS(ctx, relayConn); err != nil {
-		_ = rawConn.Close()
-		return nil, err
+	transportMode := normalizeListenerTransportModeValue(hop.Listener.TransportMode)
+	conn := rawConn
+	if transportMode != ListenerTransportModeWireGuard {
+		tlsConfig, err := clientTLSConfig(ctx, provider, hop.Listener, hop.Address, hop.ServerName)
+		if err != nil {
+			_ = rawConn.Close()
+			return nil, err
+		}
+
+		relayConn := tls.Client(rawConn, tlsConfig)
+		if err := handshakeTLS(ctx, relayConn); err != nil {
+			_ = rawConn.Close()
+			return nil, err
+		}
+		conn = relayConn
 	}
 
-	reader := io.Reader(relayConn)
-	writer := io.Writer(relayConn)
+	reader := io.Reader(conn)
+	writer := io.Writer(conn)
 	if listenerUsesEarlyWindowMask(hop.Listener) {
-		masked := wrapConnWithEarlyWindowMask(relayConn, defaultEarlyWindowMaskConfig())
+		masked := wrapConnWithEarlyWindowMask(conn, defaultEarlyWindowMaskConfig())
 		reader = masked
 		writer = masked
 	}
 
 	tunnel := &tlsTCPTunnel{
 		key:        hop.Address,
-		rawConn:    relayConn,
+		rawConn:    conn,
 		reader:     reader,
 		writer:     writer,
-		closeOuter: relayConn.Close,
+		closeOuter: conn.Close,
 		streams:    make(map[uint32]*tlsTCPLogicalStream),
 		closed:     make(chan struct{}),
 	}
