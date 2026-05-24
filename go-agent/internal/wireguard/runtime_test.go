@@ -218,6 +218,68 @@ func TestNetstackRuntimeTransparentTCPAcceptsAnyDestinationPort(t *testing.T) {
 	}
 }
 
+func TestNetstackRuntimeDialContextReachesSameRuntimeTCPListener(t *testing.T) {
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer runtime.Close()
+
+	const listenPort = 18447
+	listenAddr := net.JoinHostPort("10.99.0.1", strconv.Itoa(listenPort))
+	ln, err := runtime.ListenTCP(context.Background(), listenAddr)
+	if err != nil {
+		t.Fatalf("ListenTCP() error = %v", err)
+	}
+	defer ln.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			serverErr <- err
+			return
+		}
+		buf := make([]byte, len("ping"))
+		if _, err := conn.Read(buf); err != nil {
+			serverErr <- err
+			return
+		}
+		if got := string(buf); got != "ping" {
+			serverErr <- fmt.Errorf("server read payload = %q, want ping", got)
+			return
+		}
+		_, err = conn.Write([]byte("pong"))
+		serverErr <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := runtime.DialContext(ctx, "tcp", listenAddr)
+	if err != nil {
+		t.Fatalf("DialContext() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("client Write() error = %v", err)
+	}
+	buf := make([]byte, len("pong"))
+	if _, err := conn.Read(buf); err != nil {
+		t.Fatalf("client Read() error = %v", err)
+	}
+	if got := string(buf); got != "pong" {
+		t.Fatalf("client read payload = %q, want pong", got)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("server error = %v", err)
+	}
+}
+
 func TestNetstackRuntimeListenUDPAcceptsWildcardAddress(t *testing.T) {
 	runtime := newTestNetstackRuntime(t)
 	defer runtime.Close()
@@ -235,6 +297,55 @@ func TestNetstackRuntimeListenUDPAcceptsWildcardAddress(t *testing.T) {
 	}
 	if addr.Port != listenPort {
 		t.Fatalf("listener port = %d, want %d", addr.Port, listenPort)
+	}
+}
+
+func TestNetstackRuntimeDialContextReachesSameRuntimeUDPListener(t *testing.T) {
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer runtime.Close()
+
+	const listenPort = 18448
+	listenAddr := net.JoinHostPort("10.99.0.1", strconv.Itoa(listenPort))
+	server, err := runtime.ListenUDP(context.Background(), listenAddr)
+	if err != nil {
+		t.Fatalf("ListenUDP() error = %v", err)
+	}
+	defer server.Close()
+	if err := server.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("server SetDeadline() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client, err := runtime.DialContext(ctx, "udp", listenAddr)
+	if err != nil {
+		t.Fatalf("DialContext(udp) error = %v", err)
+	}
+	defer client.Close()
+	if err := client.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("client SetDeadline() error = %v", err)
+	}
+
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatalf("client Write() error = %v", err)
+	}
+	buf := make([]byte, 16)
+	n, peer, err := server.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("server ReadFrom() error = %v", err)
+	}
+	if got := string(buf[:n]); got != "ping" {
+		t.Fatalf("server read payload = %q, want ping", got)
+	}
+	if _, err := server.WriteTo([]byte("pong"), peer); err != nil {
+		t.Fatalf("server WriteTo() error = %v", err)
+	}
+	n, err = client.Read(buf)
+	if err != nil {
+		t.Fatalf("client Read() error = %v", err)
+	}
+	if got := string(buf[:n]); got != "pong" {
+		t.Fatalf("client read payload = %q, want pong", got)
 	}
 }
 
@@ -1251,7 +1362,7 @@ func readOutboundIPv4UDPPacket(t *testing.T, runtime *netstackRuntime) udpPacket
 func newRuntimeTestHarness(t *testing.T) (*netstackRuntime, func()) {
 	t.Helper()
 
-	runtime := newTestNetstackRuntime(t)
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
 	return runtime, func() { _ = runtime.Close() }
 }
 
