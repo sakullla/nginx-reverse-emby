@@ -636,6 +636,49 @@ func TestEnsureUniqueL4ListenIgnoresDisabledUDPProxyEntryWithoutSamePortTCP(t *t
 	}
 }
 
+func TestL4CreateRejectsDuplicateTransparentWireGuardBeforeDefaultProfileAssignment(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                   1,
+				AgentID:              "local",
+				Protocol:             "tcp",
+				ListenMode:           "wireguard",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           0,
+				WireGuardInboundMode: "transparent",
+				BackendsJSON:         "[]",
+				LoadBalancingJSON:    `{"strategy":"adaptive"}`,
+				RelayChainJSON:       "[]",
+				RelayLayersJSON:      "[]",
+				Enabled:              true,
+				Revision:             1,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:             stringPtrL4("tcp"),
+		ListenMode:           stringPtrL4("wireguard"),
+		ListenHost:           stringPtrL4("0.0.0.0"),
+		ListenPort:           intPtrL4(0),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
+		t.Fatalf("Create() error = %v, want transparent duplicate rejection", err)
+	}
+	if got := len(store.l4RulesByID["local"]); got != 1 {
+		t.Fatalf("stored rules = %d, want original rule only", got)
+	}
+}
+
 func TestValidateL4RuleSetRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
 	err := validateL4RuleSet([]L4Rule{{
 		ID:              2,
@@ -2213,11 +2256,11 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "51820 conflicts") {
-		t.Fatalf("Create() error = %v, want same-port transparent conflict", err)
+	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
+		t.Fatalf("Create() error = %v, want single transparent entry per profile conflict", err)
 	}
 
-	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+	_, err = svc.Create(context.Background(), "local", L4RuleInput{
 		Protocol:             stringPtrL4("tcp"),
 		ListenHost:           stringPtrL4("10.8.0.11"),
 		ListenPort:           intPtrL4(51821),
@@ -2226,11 +2269,11 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 		WireGuardInboundMode: stringPtrL4("transparent"),
 		Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
 	})
-	if err != nil {
-		t.Fatalf("Create() different port error = %v", err)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() different port error = %v, want ErrInvalidArgument", err)
 	}
-	if rule.ListenPort != 51821 || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != profileID {
-		t.Fatalf("Create() different port rule = %+v", rule)
+	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
+		t.Fatalf("Create() different port error = %v, want single transparent entry per profile conflict", err)
 	}
 }
 
@@ -2427,8 +2470,8 @@ func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnCreate
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), "8443 conflicts") {
-				t.Fatalf("Create() error = %v, want same-port transparent conflict", err)
+			if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
+				t.Fatalf("Create() error = %v, want single transparent entry per profile conflict", err)
 			}
 		})
 	}
@@ -2478,8 +2521,8 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testin
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "51820 conflicts") {
-		t.Fatalf("Update() error = %v, want same-port transparent conflict", err)
+	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
+		t.Fatalf("Update() error = %v, want single transparent entry per profile conflict", err)
 	}
 }
 
@@ -2674,8 +2717,8 @@ func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnUpdate
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "8443 conflicts") {
-		t.Fatalf("Update() error = %v, want same-port transparent conflict", err)
+	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
+		t.Fatalf("Update() error = %v, want single transparent entry per profile conflict", err)
 	}
 }
 
@@ -2691,6 +2734,118 @@ func TestL4RuleServiceWireGuardInvalidInboundModeReject(t *testing.T) {
 	}, L4Rule{}, 1)
 	if err == nil || !strings.Contains(err.Error(), "wireguard_inbound_mode") {
 		t.Fatalf("normalizeL4RuleInput() error = %v, want wireguard_inbound_mode validation", err)
+	}
+}
+
+func TestL4RuleServiceAllowsTransparentWireGuardPortZero(t *testing.T) {
+	for _, protocol := range []string{"tcp", "udp"} {
+		t.Run(protocol, func(t *testing.T) {
+			rule, err := normalizeL4RuleInput(L4RuleInput{
+				Protocol:             stringPtrL4(protocol),
+				ListenHost:           stringPtrL4("0.0.0.0"),
+				ListenPort:           intPtrL4(0),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+			}, L4Rule{}, 1)
+			if err != nil {
+				t.Fatalf("normalizeL4RuleInput() error = %v", err)
+			}
+			if rule.ListenPort != 0 || rule.Protocol != protocol {
+				t.Fatalf("rule = %+v, want %s listen_port 0", rule, protocol)
+			}
+		})
+	}
+}
+
+func TestL4RuleServiceAllowsTransparentWireGuardPortZeroWithEgressMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		input L4RuleInput
+	}{
+		{
+			name: "relay egress",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("tcp"),
+				ListenHost:           stringPtrL4("0.0.0.0"),
+				ListenPort:           intPtrL4(0),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				ProxyEgressMode:      stringPtrL4("relay"),
+				RelayLayers:          &[][]int{{101}},
+			},
+		},
+		{
+			name: "proxy egress",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("udp"),
+				ListenHost:           stringPtrL4("0.0.0.0"),
+				ListenPort:           intPtrL4(0),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				ProxyEgressMode:      stringPtrL4("proxy"),
+				ProxyEgressURL:       stringPtrL4("socks5://127.0.0.1:1080"),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rule, err := normalizeL4RuleInput(tc.input, L4Rule{}, 1)
+			if err != nil {
+				t.Fatalf("normalizeL4RuleInput() error = %v", err)
+			}
+			if rule.ListenPort != 0 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" {
+				t.Fatalf("rule = %+v, want transparent wireguard listen_port 0", rule)
+			}
+			if len(rule.Backends) != 0 {
+				t.Fatalf("Backends = %+v, want empty transparent target list", rule.Backends)
+			}
+			if tc.input.ProxyEgressMode != nil && rule.ProxyEgressMode != *tc.input.ProxyEgressMode {
+				t.Fatalf("ProxyEgressMode = %q, want %q", rule.ProxyEgressMode, *tc.input.ProxyEgressMode)
+			}
+		})
+	}
+}
+
+func TestL4RuleServiceRejectsPortZeroOutsideTransparentWireGuard(t *testing.T) {
+	tests := []struct {
+		name  string
+		input L4RuleInput
+	}{
+		{
+			name: "direct",
+			input: L4RuleInput{
+				Protocol:   stringPtrL4("tcp"),
+				ListenHost: stringPtrL4("0.0.0.0"),
+				ListenPort: intPtrL4(0),
+				Backends:   &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+		},
+		{
+			name: "wireguard address",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("tcp"),
+				ListenHost:           stringPtrL4("0.0.0.0"),
+				ListenPort:           intPtrL4(0),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("address"),
+				Backends:             &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := normalizeL4RuleInput(tc.input, L4Rule{}, 1)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("normalizeL4RuleInput() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "listen_port") {
+				t.Fatalf("normalizeL4RuleInput() error = %v, want listen_port validation", err)
+			}
+		})
 	}
 }
 
@@ -3057,6 +3212,46 @@ func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
 				}
 				if row.ProxyEgressMode != "proxy" || row.ProxyEgressURL != "socks://127.0.0.1:1080" || row.BackendsJSON != "[]" {
 					t.Fatalf("persisted row = %+v", row)
+				}
+			},
+		},
+		{
+			name: "rejects udp transparent proxy egress with non socks5 url",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("udp"),
+				ListenPort:           intPtrL4(51820),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				ProxyEgressMode:      stringPtrL4("proxy"),
+				ProxyEgressURL:       stringPtrL4("http://127.0.0.1:8080"),
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+			},
+			wantErr: "udp transparent proxy egress requires a SOCKS5-family proxy",
+		},
+		{
+			name: "accepts udp transparent proxy egress with socks5 url",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("udp"),
+				ListenPort:           intPtrL4(51820),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				ProxyEgressMode:      stringPtrL4("proxy"),
+				ProxyEgressURL:       stringPtrL4("socks5://127.0.0.1:1080"),
+			},
+			profiles: map[string][]storage.WireGuardProfileRow{
+				"local": {{ID: 7, AgentID: "local", AddressesJSON: `["10.8.0.1/24"]`, Enabled: true}},
+			},
+			assert: func(t *testing.T, rule L4Rule, row storage.L4RuleRow) {
+				t.Helper()
+				if rule.Protocol != "udp" || rule.WireGuardInboundMode != "transparent" || rule.ProxyEgressMode != "proxy" {
+					t.Fatalf("rule = %+v, want udp transparent proxy egress", rule)
+				}
+				if row.ProxyEgressURL != "socks5://127.0.0.1:1080" {
+					t.Fatalf("persisted proxy_egress_url = %q", row.ProxyEgressURL)
 				}
 			},
 		},

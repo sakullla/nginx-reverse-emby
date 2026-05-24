@@ -19,9 +19,11 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 )
@@ -44,6 +46,7 @@ type TransparentUDPConn interface {
 type Runtime interface {
 	DialContext(ctx context.Context, network string, address string) (net.Conn, error)
 	ListenTCP(ctx context.Context, address string) (net.Listener, error)
+	ListenTransparentTCP(ctx context.Context) (net.Listener, error)
 	ListenUDP(ctx context.Context, address string) (PacketConn, error)
 	ListenTransparentUDP(ctx context.Context, address string) (TransparentUDPConn, error)
 	Close() error
@@ -641,6 +644,8 @@ type netstackRuntime struct {
 	stack  *stack.Stack
 	device *device.Device
 	tun    interface{ Close() error }
+	tcp    *transparentTCPDispatcher
+	udp    *transparentUDPDispatcher
 	closed bool
 }
 
@@ -651,7 +656,7 @@ func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
 	}
 
 	dev := device.NewDevice(tunDevice, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, "wireguard: "))
-	runtime := &netstackRuntime{net: tnet, stack: gstack, device: dev, tun: tunDevice}
+	runtime := newNetstackRuntime(tunDevice, tnet, gstack, dev)
 	ipc, err := ipcConfig(ctx, cfg, lookupEndpointIP)
 	if err != nil {
 		runtime.Close()
@@ -668,6 +673,17 @@ func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
 	return runtime, nil
 }
 
+func newNetstackRuntime(tunDevice interface{ Close() error }, tnet wgnetstack.RuntimeNet, gstack *stack.Stack, dev *device.Device) *netstackRuntime {
+	runtime := &netstackRuntime{net: tnet, stack: gstack, device: dev, tun: tunDevice}
+	if gstack != nil {
+		runtime.tcp = newTransparentTCPDispatcher(gstack)
+		runtime.udp = newTransparentUDPDispatcher(gstack)
+		gstack.SetTransportProtocolHandler(tcp.ProtocolNumber, runtime.tcp.HandlePacket)
+		gstack.SetTransportProtocolHandler(udp.ProtocolNumber, runtime.udp.HandlePacket)
+	}
+	return runtime
+}
+
 func (r *netstackRuntime) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {
 	return r.net.DialContext(ctx, network, address)
 }
@@ -680,6 +696,14 @@ func (r *netstackRuntime) ListenTCP(ctx context.Context, address string) (net.Li
 		return nil, err
 	}
 	return r.net.ListenTCP(addr)
+}
+
+func (r *netstackRuntime) ListenTransparentTCP(ctx context.Context) (net.Listener, error) {
+	_ = ctx
+	if r.tcp == nil {
+		return nil, fmt.Errorf("wireguard transparent tcp dispatcher is unavailable")
+	}
+	return r.tcp.Listen(), nil
 }
 
 func (r *netstackRuntime) ListenUDP(ctx context.Context, address string) (PacketConn, error) {
@@ -705,6 +729,12 @@ func (r *netstackRuntime) ListenTransparentUDP(ctx context.Context, address stri
 	}
 	if r.stack == nil {
 		return nil, fmt.Errorf("wireguard netstack is unavailable")
+	}
+	if isWildcardUDPPort(addr) {
+		if r.udp == nil {
+			return nil, fmt.Errorf("wireguard transparent udp dispatcher is unavailable")
+		}
+		return r.udp.Listen(), nil
 	}
 
 	var wq waiter.Queue
@@ -738,8 +768,18 @@ func (r *netstackRuntime) Close() error {
 	r.device = nil
 	r.tun = nil
 	r.stack = nil
+	tcpDispatcher := r.tcp
+	udpDispatcher := r.udp
+	r.tcp = nil
+	r.udp = nil
 	r.mu.Unlock()
 
+	if tcpDispatcher != nil {
+		tcpDispatcher.Close()
+	}
+	if udpDispatcher != nil {
+		udpDispatcher.Close()
+	}
 	if dev != nil {
 		dev.Close()
 		return nil
@@ -748,6 +788,269 @@ func (r *netstackRuntime) Close() error {
 		return nil
 	}
 	return tunDevice.Close()
+}
+
+type transparentTCPDispatcher struct {
+	mu       sync.Mutex
+	stack    *stack.Stack
+	listener *transparentTCPListener
+	forward  *tcp.Forwarder
+}
+
+func newTransparentTCPDispatcher(s *stack.Stack) *transparentTCPDispatcher {
+	d := &transparentTCPDispatcher{stack: s}
+	d.forward = tcp.NewForwarder(s, 0, 1024, d.handleRequest)
+	return d
+}
+
+func (d *transparentTCPDispatcher) Listen() net.Listener {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.listener == nil || d.listener.closed {
+		d.listener = newTransparentTCPListener()
+	}
+	return d.listener
+}
+
+func (d *transparentTCPDispatcher) Close() {
+	d.mu.Lock()
+	listener := d.listener
+	d.listener = nil
+	d.mu.Unlock()
+	if listener != nil {
+		_ = listener.Close()
+	}
+}
+
+func (d *transparentTCPDispatcher) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
+	d.mu.Lock()
+	listener := d.listener
+	d.mu.Unlock()
+	if listener == nil || listener.closed {
+		return false
+	}
+	return d.forward.HandlePacket(id, pkt)
+}
+
+func (d *transparentTCPDispatcher) handleRequest(req *tcp.ForwarderRequest) {
+	d.mu.Lock()
+	listener := d.listener
+	d.mu.Unlock()
+	if listener == nil || listener.closed {
+		req.Complete(true)
+		return
+	}
+	var wq waiter.Queue
+	ep, tcpipErr := req.CreateEndpoint(&wq)
+	if tcpipErr != nil {
+		req.Complete(true)
+		return
+	}
+	req.Complete(false)
+	listener.enqueue(gonet.NewTCPConn(&wq, ep))
+}
+
+type transparentTCPListener struct {
+	mu     sync.Mutex
+	conns  chan net.Conn
+	done   chan struct{}
+	closed bool
+}
+
+func newTransparentTCPListener() *transparentTCPListener {
+	return &transparentTCPListener{
+		conns: make(chan net.Conn, 1024),
+		done:  make(chan struct{}),
+	}
+}
+
+func (l *transparentTCPListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conns:
+		return conn, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *transparentTCPListener) Close() error {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return nil
+	}
+	l.closed = true
+	close(l.done)
+	l.mu.Unlock()
+	return nil
+}
+
+func (l *transparentTCPListener) Addr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func (l *transparentTCPListener) enqueue(conn net.Conn) {
+	select {
+	case l.conns <- conn:
+	case <-l.done:
+		_ = conn.Close()
+	}
+}
+
+type transparentUDPDispatcher struct {
+	mu       sync.Mutex
+	stack    *stack.Stack
+	listener *netstackForwardedUDPConn
+	forward  *udp.Forwarder
+}
+
+func newTransparentUDPDispatcher(s *stack.Stack) *transparentUDPDispatcher {
+	d := &transparentUDPDispatcher{stack: s}
+	d.forward = udp.NewForwarder(s, d.handleRequest)
+	return d
+}
+
+func (d *transparentUDPDispatcher) Listen() TransparentUDPConn {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.listener == nil || d.listener.closed {
+		d.listener = newNetstackForwardedUDPConn(d.stack)
+	}
+	return d.listener
+}
+
+func (d *transparentUDPDispatcher) Close() {
+	d.mu.Lock()
+	listener := d.listener
+	d.listener = nil
+	d.mu.Unlock()
+	if listener != nil {
+		_ = listener.Close()
+	}
+}
+
+func (d *transparentUDPDispatcher) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
+	d.mu.Lock()
+	listener := d.listener
+	d.mu.Unlock()
+	if listener == nil || listener.closed {
+		return false
+	}
+	return d.forward.HandlePacket(id, pkt)
+}
+
+func (d *transparentUDPDispatcher) handleRequest(req *udp.ForwarderRequest) {
+	d.mu.Lock()
+	listener := d.listener
+	d.mu.Unlock()
+	if listener == nil || listener.closed {
+		return
+	}
+	id := req.ID()
+	originalDst := udpAddrFromTransportEndpointIDLocal(id).String()
+	var wq waiter.Queue
+	ep, tcpipErr := req.CreateEndpoint(&wq)
+	if tcpipErr != nil {
+		return
+	}
+	conn := &netstackTransparentUDPConn{stack: d.stack, ep: ep, wq: &wq}
+	listener.addConn(conn, originalDst)
+}
+
+type netstackForwardedUDPConn struct {
+	stack  *stack.Stack
+	mu     sync.Mutex
+	closed bool
+	done   chan struct{}
+	conns  map[*netstackTransparentUDPConn]string
+	queue  chan TransparentUDPPacket
+}
+
+func newNetstackForwardedUDPConn(s *stack.Stack) *netstackForwardedUDPConn {
+	return &netstackForwardedUDPConn{
+		stack: s,
+		done:  make(chan struct{}),
+		conns: make(map[*netstackTransparentUDPConn]string),
+		queue: make(chan TransparentUDPPacket, 1024),
+	}
+}
+
+func (c *netstackForwardedUDPConn) addConn(conn *netstackTransparentUDPConn, originalDst string) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
+	c.conns[conn] = originalDst
+	c.mu.Unlock()
+
+	go c.readLoop(conn, originalDst)
+}
+
+func (c *netstackForwardedUDPConn) readLoop(conn *netstackTransparentUDPConn, originalDst string) {
+	defer func() {
+		c.mu.Lock()
+		delete(c.conns, conn)
+		c.mu.Unlock()
+		_ = conn.Close()
+	}()
+
+	for {
+		packet, err := conn.ReadPacket()
+		if err != nil {
+			return
+		}
+		if packet.OriginalDst == "" {
+			packet.OriginalDst = originalDst
+		}
+		select {
+		case c.queue <- packet:
+		case <-c.done:
+			return
+		}
+	}
+}
+
+func (c *netstackForwardedUDPConn) Close() error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	c.closed = true
+	close(c.done)
+	conns := make([]*netstackTransparentUDPConn, 0, len(c.conns))
+	for conn := range c.conns {
+		conns = append(conns, conn)
+	}
+	c.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+	return nil
+}
+
+func (c *netstackForwardedUDPConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{}
+}
+
+func (c *netstackForwardedUDPConn) ReadPacket() (TransparentUDPPacket, error) {
+	select {
+	case packet := <-c.queue:
+		return packet, nil
+	case <-c.done:
+		return TransparentUDPPacket{}, io.EOF
+	}
+}
+
+func (c *netstackForwardedUDPConn) WritePacket(payload []byte, peer *net.UDPAddr, source string) error {
+	conn := &netstackTransparentUDPConn{stack: c.stack}
+	return conn.WritePacket(payload, peer, source)
+}
+
+func udpAddrFromTransportEndpointIDLocal(id stack.TransportEndpointID) *net.UDPAddr {
+	return &net.UDPAddr{IP: net.IP(id.LocalAddress.AsSlice()), Port: int(id.LocalPort)}
 }
 
 type netstackTransparentUDPConn struct {
@@ -903,6 +1206,10 @@ func udpFullAddress(addr *net.UDPAddr) (tcpip.FullAddress, tcpip.NetworkProtocol
 		return out, ipv4.ProtocolNumber, nil
 	}
 	return out, ipv6.ProtocolNumber, nil
+}
+
+func isWildcardUDPPort(addr *net.UDPAddr) bool {
+	return addr != nil && addr.Port == 0
 }
 
 func udpAddrFromFullAddress(addr tcpip.FullAddress) *net.UDPAddr {

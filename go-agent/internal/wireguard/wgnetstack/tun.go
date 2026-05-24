@@ -45,6 +45,7 @@ type netTun struct {
 	notifyHandle   *channel.NotificationHandle
 	incomingPacket chan *buffer.View
 	dnsServers     []netip.Addr
+	localAddresses map[netip.Addr]struct{}
 	mtu            int
 	hasV4          bool
 	hasV6          bool
@@ -64,6 +65,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		events:         make(chan tun.Event, 10),
 		incomingPacket: make(chan *buffer.View),
 		dnsServers:     dnsServers,
+		localAddresses: make(map[netip.Addr]struct{}, len(localAddresses)),
 		mtu:            mtu,
 	}
 	sackEnabledOpt := tcpip.TCPSACKEnabled(true)
@@ -85,6 +87,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		return nil, nil, nil, fmt.Errorf("SetSpoofing: %v", tcpipErr)
 	}
 	for _, ip := range localAddresses {
+		dev.localAddresses[ip] = struct{}{}
 		var protoNumber tcpip.NetworkProtocolNumber
 		if ip.Is4() {
 			protoNumber = ipv4.ProtocolNumber
@@ -170,7 +173,46 @@ func (tun *netTun) WriteNotify() {
 	view := pkt.ToView()
 	pkt.DecRef()
 
+	if tun.isLocalDestination(view.AsSlice()) {
+		tun.injectInbound(view.AsSlice())
+		return
+	}
+
 	tun.incomingPacket <- view
+}
+
+func (tun *netTun) isLocalDestination(packet []byte) bool {
+	if len(packet) == 0 {
+		return false
+	}
+	switch packet[0] >> 4 {
+	case 4:
+		if len(packet) < header.IPv4MinimumSize {
+			return false
+		}
+		addr := header.IPv4(packet).DestinationAddress()
+		_, ok := tun.localAddresses[netip.AddrFrom4(addr.As4())]
+		return ok
+	case 6:
+		if len(packet) < header.IPv6MinimumSize {
+			return false
+		}
+		addr := header.IPv6(packet).DestinationAddress()
+		_, ok := tun.localAddresses[netip.AddrFrom16(addr.As16())]
+		return ok
+	default:
+		return false
+	}
+}
+
+func (tun *netTun) injectInbound(packet []byte) {
+	pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(packet)})
+	switch packet[0] >> 4 {
+	case 4:
+		tun.ep.InjectInbound(header.IPv4ProtocolNumber, pkb)
+	case 6:
+		tun.ep.InjectInbound(header.IPv6ProtocolNumber, pkb)
+	}
 }
 
 func (tun *netTun) Close() error {

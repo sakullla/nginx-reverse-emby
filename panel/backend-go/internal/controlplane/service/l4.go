@@ -568,7 +568,7 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if input.ListenPort != nil {
 		listenPort = *input.ListenPort
 	}
-	if listenPort < 1 || listenPort > 65535 {
+	if listenPort < 0 || listenPort > 65535 {
 		return L4Rule{}, fmt.Errorf("%w: listen_port must be a valid port", ErrInvalidArgument)
 	}
 	wireGuardInboundMode := ""
@@ -660,8 +660,11 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if listenMode == "wireguard" {
 		proxyEntryAuth = L4ProxyEntryAuth{}
 	}
-	proxyEntryMode := isL4ProxyEntryListenMode(listenMode, proxyEgressMode)
-	transparentWireGuardInbound := listenMode == "wireguard" && wireGuardInboundMode == "transparent" && proxyEgressMode == ""
+	transparentWireGuardInbound := listenMode == "wireguard" && wireGuardInboundMode == "transparent"
+	proxyEntryMode := isL4ProxyEntryListenMode(listenMode, wireGuardInboundMode, proxyEgressMode)
+	if listenPort == 0 && !transparentWireGuardInbound {
+		return L4Rule{}, fmt.Errorf("%w: listen_port must be a valid port", ErrInvalidArgument)
+	}
 	backends, upstreamHost, upstreamPort, err = normalizeL4BackendsInput(input, fallback, proxyEntryMode || transparentWireGuardInbound)
 	if err != nil {
 		if !proxyEntryMode {
@@ -671,12 +674,12 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		upstreamHost = ""
 		upstreamPort = 0
 	}
-	if !proxyEntryMode {
+	if !proxyEntryMode && !transparentWireGuardInbound {
 		proxyEntryAuth, proxyEgressMode, proxyEgressURL = normalizeL4ProxyEntryFields(listenMode, proxyEntryAuth, proxyEgressMode, proxyEgressURL)
 		if listenMode == "wireguard" {
 			proxyEntryAuth = L4ProxyEntryAuth{}
 		}
-	} else {
+	} else if proxyEntryMode {
 		if listenMode == "wireguard" && protocol != "tcp" {
 			return L4Rule{}, fmt.Errorf("%w: wireguard proxy entry requires protocol tcp", ErrInvalidArgument)
 		}
@@ -696,6 +699,38 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 				}
 			}
 		}
+	}
+	if transparentWireGuardInbound && proxyEgressMode != "" {
+		if proxyEgressMode != "relay" && proxyEgressMode != "proxy" && proxyEgressMode != "wireguard" {
+			return L4Rule{}, fmt.Errorf("%w: proxy_egress_mode must be relay, proxy, or wireguard", ErrInvalidArgument)
+		}
+		if proxyEgressMode != "proxy" {
+			proxyEgressURL = ""
+		}
+		if proxyEgressMode == "relay" && len(flattenRelayLayers(relayLayers)) == 0 && len(relayChain) == 0 {
+			return L4Rule{}, fmt.Errorf("%w: transparent relay egress requires relay_chain or relay_layers", ErrInvalidArgument)
+		}
+		if proxyEgressMode == "proxy" && proxyEgressURL == "" {
+			return L4Rule{}, fmt.Errorf("%w: proxy_egress_url is required for proxy egress", ErrInvalidArgument)
+		}
+		if proxyEgressMode == "proxy" {
+			if err := validateL4ProxyEgressURL(proxyEgressURL); err != nil {
+				return L4Rule{}, fmt.Errorf("%w: invalid proxy_egress_url: %v", ErrInvalidArgument, err)
+			}
+			if protocol == "udp" {
+				if err := validateL4UDPProxyEgressURL(proxyEgressURL, "udp transparent proxy egress"); err != nil {
+					return L4Rule{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+				}
+			}
+			relayChain = []int{}
+			relayLayers = [][]int{}
+		}
+		if proxyEgressMode == "wireguard" {
+			relayChain = []int{}
+			relayLayers = [][]int{}
+		}
+	}
+	if proxyEntryMode {
 		if proxyEgressMode != "relay" && proxyEgressMode != "proxy" && proxyEgressMode != "wireguard" {
 			return L4Rule{}, fmt.Errorf("%w: proxy_egress_mode must be relay, proxy, or wireguard", ErrInvalidArgument)
 		}
@@ -1228,9 +1263,11 @@ func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {
 	return allKnownAgentIDs(ctx, s.cfg, s.store)
 }
 
-func isL4ProxyEntryListenMode(listenMode string, proxyEgressMode string) bool {
+func isL4ProxyEntryListenMode(listenMode string, wireGuardInboundMode string, proxyEgressMode string) bool {
 	return strings.EqualFold(strings.TrimSpace(listenMode), "proxy") ||
-		(strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") && strings.TrimSpace(proxyEgressMode) != "")
+		(strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") &&
+			!strings.EqualFold(strings.TrimSpace(wireGuardInboundMode), "transparent") &&
+			strings.TrimSpace(proxyEgressMode) != "")
 }
 
 func isL4WireGuardTransparentForwardRule(protocol, listenMode, wireGuardInboundMode, proxyEgressMode string) bool {
@@ -1238,10 +1275,9 @@ func isL4WireGuardTransparentForwardRule(protocol, listenMode, wireGuardInboundM
 	if normalizedProtocol == "" {
 		normalizedProtocol = "tcp"
 	}
-	return normalizedProtocol == "tcp" &&
+	return (normalizedProtocol == "tcp" || normalizedProtocol == "udp") &&
 		strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") &&
-		strings.EqualFold(strings.TrimSpace(wireGuardInboundMode), "transparent") &&
-		strings.TrimSpace(proxyEgressMode) == ""
+		strings.EqualFold(strings.TrimSpace(wireGuardInboundMode), "transparent")
 }
 
 func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule, allowEmpty bool) ([]L4Backend, string, int, error) {
@@ -1414,6 +1450,19 @@ func validateL4ProxyEgressURL(raw string) error {
 	return nil
 }
 
+func validateL4UDPProxyEgressURL(raw string, context string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid proxy_egress_url: %v", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "socks", "socks5", "socks5h":
+		return nil
+	default:
+		return fmt.Errorf("%s requires a SOCKS5-family proxy", context)
+	}
+}
+
 func normalizeL4ProxyEntryFields(listenMode string, auth L4ProxyEntryAuth, egressMode string, egressURL string) (L4ProxyEntryAuth, string, string) {
 	listenMode = strings.ToLower(strings.TrimSpace(listenMode))
 	normalizedEgressMode := strings.ToLower(strings.TrimSpace(egressMode))
@@ -1447,6 +1496,14 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 	for _, rule := range rules {
 		if rule.ID == excludeID {
 			continue
+		}
+		if l4TransparentWireGuardProfileConflicts(rule, next) {
+			return fmt.Errorf(
+				"%w: WireGuard transparent inbound profile %s already has rule #%d",
+				ErrInvalidArgument,
+				l4WireGuardProfileConflictLabel(next),
+				rule.ID,
+			)
 		}
 		if l4ListenConflicts(rule, next) {
 			return fmt.Errorf(
@@ -1503,6 +1560,9 @@ func hasSamePortTCPProxyEntry(rules []L4Rule, next L4Rule, excludeID int) bool {
 }
 
 func l4ListenConflicts(rule L4Rule, next L4Rule) bool {
+	if l4TransparentWireGuardProfileConflicts(rule, next) {
+		return true
+	}
 	if !strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol)) ||
 		effectiveL4ListenStack(rule) != effectiveL4ListenStack(next) ||
 		rule.ListenPort != next.ListenPort {
@@ -1517,6 +1577,26 @@ func l4ListenConflicts(rule L4Rule, next L4Rule) bool {
 	return l4RuleIsWireGuardListen(rule) &&
 		l4RuleIsWireGuardListen(next) &&
 		(isL4TransparentWireGuardListen(rule) || isL4TransparentWireGuardListen(next))
+}
+
+func l4TransparentWireGuardProfileConflicts(rule L4Rule, next L4Rule) bool {
+	if !isL4TransparentWireGuardListen(rule) || !isL4TransparentWireGuardListen(next) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol)) {
+		return false
+	}
+	if rule.WireGuardProfileID == nil || next.WireGuardProfileID == nil {
+		return true
+	}
+	return *rule.WireGuardProfileID > 0 && *rule.WireGuardProfileID == *next.WireGuardProfileID
+}
+
+func l4WireGuardProfileConflictLabel(rule L4Rule) string {
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
+		return "default"
+	}
+	return strconv.Itoa(*rule.WireGuardProfileID)
 }
 
 func effectiveL4ListenHost(rule L4Rule) string {

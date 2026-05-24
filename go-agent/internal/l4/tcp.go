@@ -37,6 +37,9 @@ func (s *Server) listenTCP(rule model.L4Rule, addr string) (net.Listener, error)
 		if err != nil {
 			return nil, err
 		}
+		if isWireGuardTransparentForwardRule(rule) {
+			return runtime.ListenTransparentTCP(s.ctx)
+		}
 		return runtime.ListenTCP(s.ctx, addr)
 	}
 	return net.Listen("tcp", addr)
