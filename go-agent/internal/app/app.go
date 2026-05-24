@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"reflect"
 	stdruntime "runtime"
 	"strings"
 	"sync"
@@ -323,12 +324,21 @@ func (a *App) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := a.runtime.Apply(ctx, Snapshot{}, applied); err != nil {
+	hydratedApplied := a.hydrateAppliedSnapshotFromDesired(applied)
+	if err := a.runtime.Apply(ctx, Snapshot{}, hydratedApplied); err != nil {
 		log.Printf("[agent] startup runtime hydration error at revision %d: %v", applied.Revision, err)
 		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
-	} else if err := a.persistTrafficStatsInterval(applied.AgentConfig.TrafficStatsInterval); err != nil {
-		log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", applied.Revision, err)
-		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
+	} else {
+		if !reflect.DeepEqual(applied, hydratedApplied) {
+			if err := a.store.SaveAppliedSnapshot(hydratedApplied); err != nil {
+				log.Printf("[agent] startup applied snapshot hydration save error at revision %d: %v", hydratedApplied.Revision, err)
+				_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
+			}
+		}
+		if err := a.persistTrafficStatsInterval(hydratedApplied.AgentConfig.TrafficStatsInterval); err != nil {
+			log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", hydratedApplied.Revision, err)
+			_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
+		}
 	}
 
 	if err := a.performSync(ctx); err != nil {
@@ -361,6 +371,39 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func (a *App) hydrateAppliedSnapshotFromDesired(applied Snapshot) Snapshot {
+	if a == nil || a.store == nil || runtimePayloadComplete(applied) {
+		return applied
+	}
+	desired, err := a.store.LoadDesiredSnapshot()
+	if err != nil || !desiredCanHydrateApplied(applied, desired) {
+		return applied
+	}
+	return mergeSnapshotPayload(applied, desired)
+}
+
+func desiredCanHydrateApplied(applied, desired Snapshot) bool {
+	if desired.Revision == 0 && desired.DesiredVersion == "" {
+		return false
+	}
+	if applied.Revision > 0 && desired.Revision > 0 && desired.Revision < applied.Revision {
+		return false
+	}
+	if applied.DesiredVersion != "" && desired.DesiredVersion != "" && applied.DesiredVersion != desired.DesiredVersion {
+		return false
+	}
+	return true
+}
+
+func runtimePayloadComplete(snapshot Snapshot) bool {
+	return snapshot.Rules != nil &&
+		snapshot.L4Rules != nil &&
+		snapshot.RelayListeners != nil &&
+		snapshot.WireGuardProfiles != nil &&
+		snapshot.Certificates != nil &&
+		snapshot.CertificatePolicies != nil
 }
 
 func (a *App) Close() error {

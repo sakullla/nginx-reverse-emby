@@ -3648,6 +3648,167 @@ func TestRunHydratesL4RulesFromStoredAppliedSnapshot(t *testing.T) {
 	}
 }
 
+func TestRunHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+	}
+	desired := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 0,
+			ListenMode: "wireguard",
+			Backends:   []model.L4Backend{},
+			Revision:   218,
+		}},
+		RelayListeners:      []model.RelayListener{},
+		WireGuardProfiles:   []model.WireGuardProfile{},
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	l4Applier := &testL4Applier{}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	calls := l4Applier.snapshotCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected one startup l4 apply call, got %d", len(calls))
+	}
+	if !reflect.DeepEqual(calls[0].rules, desired.L4Rules) {
+		t.Fatalf("unexpected hydrated l4 rules: %+v", calls[0].rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunDoesNotHydrateNewerAppliedSnapshotFromOlderDesiredSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       222,
+	}
+	desired := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   218,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	l4Applier := &testL4Applier{}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+	if calls := l4Applier.snapshotCalls(); len(calls) != 0 {
+		t.Fatalf("expected no l4 hydration from older desired snapshot, got %+v", calls)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunPersistsHydratedAppliedL4RulesFromDesiredSnapshotOnStartup(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+	}
+	desired := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 0,
+			ListenMode: "wireguard",
+			Backends:   []model.L4Backend{},
+			Revision:   218,
+		}},
+		RelayListeners:      []model.RelayListener{},
+		WireGuardProfiles:   []model.WireGuardProfile{},
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
+	l4Applier := &testL4Applier{applyErr: nil}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	appliedAfter, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(appliedAfter.L4Rules, desired.L4Rules) {
+		t.Fatalf("expected hydrated applied l4 rules to be persisted, got %+v", appliedAfter.L4Rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 func TestRunAppliesRelayListenersFromSyncedSnapshot(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
