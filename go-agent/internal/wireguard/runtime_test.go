@@ -468,6 +468,43 @@ func TestNetstackRuntimeTransparentUDPPortZeroCapturesAnyDestinationPort(t *test
 	}
 }
 
+func TestNetstackRuntimeTransparentUDPPortZeroCleansIdleForwardedFlows(t *testing.T) {
+	previousTimeout := forwardedUDPFlowIdleTimeout
+	forwardedUDPFlowIdleTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		forwardedUDPFlowIdleTimeout = previousTimeout
+	})
+
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer runtime.Close()
+
+	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
+	}
+	defer conn.Close()
+	forwarded, ok := conn.(*netstackForwardedUDPConn)
+	if !ok {
+		t.Fatalf("transparent UDP conn type = %T, want *netstackForwardedUDPConn", conn)
+	}
+
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40128}
+	targetAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.48"), Port: 28554}
+	injectIPv4UDPPacket(t, runtime, udpPacket{
+		src:     netip.MustParseAddr(clientAddr.IP.String()),
+		dst:     netip.MustParseAddr(targetAddr.IP.String()),
+		srcPort: uint16(clientAddr.Port),
+		dstPort: uint16(targetAddr.Port),
+		payload: []byte("idle cleanup"),
+	})
+
+	if _, err := conn.ReadPacket(); err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+	waitForForwardedUDPConnCount(t, forwarded, 1)
+	waitForForwardedUDPConnCount(t, forwarded, 0)
+}
+
 func TestNewTestNetstackRuntimeProvidesExplicitStack(t *testing.T) {
 	runtime := newTestNetstackRuntime(t)
 	defer runtime.Close()
@@ -1357,6 +1394,25 @@ func readOutboundIPv4UDPPacket(t *testing.T, runtime *netstackRuntime) udpPacket
 		t.Fatal("timed out waiting for outbound UDP packet")
 	}
 	panic("unreachable")
+}
+
+func waitForForwardedUDPConnCount(t *testing.T, conn *netstackForwardedUDPConn, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		conn.mu.Lock()
+		got := len(conn.conns)
+		conn.mu.Unlock()
+		if got == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	conn.mu.Lock()
+	got := len(conn.conns)
+	conn.mu.Unlock()
+	t.Fatalf("forwarded UDP conn count = %d, want %d", got, want)
 }
 
 func newRuntimeTestHarness(t *testing.T) (*netstackRuntime, func()) {

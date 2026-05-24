@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard/wgnetstack"
@@ -966,6 +967,10 @@ type netstackForwardedUDPConn struct {
 	queue  chan TransparentUDPPacket
 }
 
+var forwardedUDPFlowIdleTimeout = time.Minute
+
+var errForwardedUDPFlowIdleTimeout = errors.New("wireguard transparent udp flow idle timeout")
+
 func newNetstackForwardedUDPConn(s *stack.Stack) *netstackForwardedUDPConn {
 	return &netstackForwardedUDPConn{
 		stack: s,
@@ -997,7 +1002,7 @@ func (c *netstackForwardedUDPConn) readLoop(conn *netstackTransparentUDPConn, or
 	}()
 
 	for {
-		packet, err := conn.ReadPacket()
+		packet, err := conn.ReadPacketWithIdleTimeout(forwardedUDPFlowIdleTimeout)
 		if err != nil {
 			return
 		}
@@ -1073,9 +1078,17 @@ func (c *netstackTransparentUDPConn) LocalAddr() net.Addr {
 }
 
 func (c *netstackTransparentUDPConn) ReadPacket() (TransparentUDPPacket, error) {
+	return c.readPacket(0)
+}
+
+func (c *netstackTransparentUDPConn) ReadPacketWithIdleTimeout(timeout time.Duration) (TransparentUDPPacket, error) {
+	return c.readPacket(timeout)
+}
+
+func (c *netstackTransparentUDPConn) readPacket(timeout time.Duration) (TransparentUDPPacket, error) {
 	payload := make([]byte, 64*1024)
 	writer := tcpip.SliceWriter(payload)
-	res, err := c.read(&writer, tcpip.ReadOptions{NeedRemoteAddr: true})
+	res, err := c.read(&writer, tcpip.ReadOptions{NeedRemoteAddr: true}, timeout)
 	if err != nil {
 		return TransparentUDPPacket{}, err
 	}
@@ -1161,7 +1174,7 @@ func (c *netstackTransparentUDPConn) writePacket(payload []byte, opts tcpip.Writ
 	}
 }
 
-func (c *netstackTransparentUDPConn) read(dst io.Writer, opts tcpip.ReadOptions) (tcpip.ReadResult, error) {
+func (c *netstackTransparentUDPConn) read(dst io.Writer, opts tcpip.ReadOptions, idleTimeout time.Duration) (tcpip.ReadResult, error) {
 	for {
 		res, tcpipErr := c.ep.Read(dst, opts)
 		if tcpipErr == nil {
@@ -1175,8 +1188,25 @@ func (c *netstackTransparentUDPConn) read(dst io.Writer, opts tcpip.ReadOptions)
 		}
 		entry, notifyCh := waiter.NewChannelEntry(waiter.ReadableEvents)
 		c.wq.EventRegister(&entry)
+		if idleTimeout <= 0 {
+			select {
+			case <-notifyCh:
+			}
+			c.wq.EventUnregister(&entry)
+			continue
+		}
+		timer := time.NewTimer(idleTimeout)
 		select {
 		case <-notifyCh:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		case <-timer.C:
+			c.wq.EventUnregister(&entry)
+			return tcpip.ReadResult{}, errForwardedUDPFlowIdleTimeout
 		}
 		c.wq.EventUnregister(&entry)
 	}
