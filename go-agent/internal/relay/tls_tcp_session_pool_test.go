@@ -811,6 +811,83 @@ func TestWrapIdleConnPreservesTLSTCPBulkInterfaces(t *testing.T) {
 	}
 }
 
+func TestWrapIdleConnTLSTCPStreamReadHonorsIdleDeadline(t *testing.T) {
+	withRelayTimeouts(getRelayDialTimeout(), getRelayHandshakeTimeout(), getRelayFrameTimeout(), 20*time.Millisecond, func() {
+		stream := &tlsTCPLogicalStream{
+			tunnel: &tlsTCPTunnel{
+				closed: make(chan struct{}),
+			},
+			readCh:       make(chan struct{}, 1),
+			openResultCh: make(chan muxOpenResult, 1),
+		}
+		wrapped := wrapIdleConn(stream)
+
+		done := make(chan error, 1)
+		go func() {
+			buf := make([]byte, 1)
+			_, err := wrapped.Read(buf)
+			done <- err
+		}()
+
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("Read() error = nil, want timeout")
+			}
+			netErr, ok := err.(net.Error)
+			if !ok || !netErr.Timeout() {
+				t.Fatalf("Read() error = %v, want timeout net.Error", err)
+			}
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("Read() did not honor idle deadline")
+		}
+	})
+}
+
+func TestTLSTCPLogicalStreamWriteHonorsWriteDeadline(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	tunnel := &tlsTCPTunnel{
+		rawConn:    clientConn,
+		writer:     clientConn,
+		closeOuter: clientConn.Close,
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	defer tunnel.close()
+
+	stream := &tlsTCPLogicalStream{
+		tunnel:       tunnel,
+		streamID:     1,
+		readCh:       make(chan struct{}, 1),
+		openResultCh: make(chan muxOpenResult, 1),
+	}
+	if err := stream.SetWriteDeadline(time.Now().Add(20 * time.Millisecond)); err != nil {
+		t.Fatalf("SetWriteDeadline() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := stream.Write([]byte("payload"))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Write() error = nil, want timeout")
+		}
+		netErr, ok := err.(net.Error)
+		if !ok || !netErr.Timeout() {
+			t.Fatalf("Write() error = %v, want timeout net.Error", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Write() did not honor write deadline")
+	}
+}
+
 type noopDeadlineConn struct{ net.Conn }
 
 func (noopDeadlineConn) SetDeadline(time.Time) error      { return nil }
