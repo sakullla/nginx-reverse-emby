@@ -302,6 +302,21 @@ describe('L4RuleForm WireGuard egress', () => {
     })
   })
 
+  it('does not duplicate UDP direct mode auto tags', async () => {
+    const wrapper = mountForm()
+
+    await selectByLabel(wrapper, '协议').setValue('udp')
+    await flushPromises()
+    await selectByLabel(wrapper, '监听端口').setValue('5353')
+    await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:5353')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    const tags = mocks.createMutateAsync.mock.calls[0][0].tags
+    expect(tags.filter((tag) => tag === 'UDP转发')).toHaveLength(1)
+  })
+
   it('allows saving an existing UDP transparent WireGuard rule without backends', async () => {
     const wrapper = mountEditForm({
       id: 7,

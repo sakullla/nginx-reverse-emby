@@ -770,7 +770,7 @@ watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
 
 const LB_TAG_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
-const LISTEN_MODE_LABELS = { tcp: 'TCP转发', proxy: '代理', wireguard: 'WG' }
+const LISTEN_MODE_LABELS = { tcp: 'TCP转发', udp: 'UDP转发', proxy: '代理', wireguard: 'WG' }
 const LISTEN_MODE_LABEL_SET = new Set(Object.values(LISTEN_MODE_LABELS))
 
 function isL4AutoTag(t) {
