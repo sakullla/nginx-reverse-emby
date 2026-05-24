@@ -1583,7 +1583,13 @@ func l4TransparentWireGuardProfileConflicts(rule L4Rule, next L4Rule) bool {
 	if !isL4TransparentWireGuardListen(rule) || !isL4TransparentWireGuardListen(next) {
 		return false
 	}
+	if !rule.Enabled || !next.Enabled {
+		return false
+	}
 	if !strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol)) {
+		return false
+	}
+	if rule.ListenPort != next.ListenPort {
 		return false
 	}
 	if rule.WireGuardProfileID == nil || next.WireGuardProfileID == nil {

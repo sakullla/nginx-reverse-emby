@@ -2269,11 +2269,11 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 		WireGuardInboundMode: stringPtrL4("transparent"),
 		Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
 	})
-	if !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Create() different port error = %v, want ErrInvalidArgument", err)
+	if err != nil {
+		t.Fatalf("Create() different port error = %v, want transparent rules on different ports to be allowed", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
-		t.Fatalf("Create() different port error = %v, want single transparent entry per profile conflict", err)
+	if len(store.l4RulesByID["local"]) != 2 {
+		t.Fatalf("stored rules = %+v, want both transparent rules", store.l4RulesByID["local"])
 	}
 }
 
@@ -2570,6 +2570,99 @@ func TestL4WireGuardTransparentListenUpdateAllowsTCPAndUDPOnSameProfile(t *testi
 	}
 	if rule.Protocol != "udp" || rule.ListenPort != 18081 {
 		t.Fatalf("Update() rule = %+v", rule)
+	}
+}
+
+func TestL4WireGuardTransparentListenAllowsDifferentPortsOnSameProfile(t *testing.T) {
+	profileID := 7
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                   1,
+				AgentID:              "local",
+				Name:                 "wg-a",
+				Protocol:             "tcp",
+				ListenHost:           "10.8.0.10",
+				ListenPort:           8443,
+				BackendsJSON:         `[]`,
+				LoadBalancingJSON:    `{"strategy":"adaptive"}`,
+				TuningJSON:           `{"proxy_protocol":{"decode":false,"send":false}}`,
+				RelayLayersJSON:      `[]`,
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "transparent",
+				Enabled:              true,
+				Revision:             1,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:             stringPtrL4("tcp"),
+		ListenHost:           stringPtrL4("10.8.0.11"),
+		ListenPort:           intPtrL4(9443),
+		ListenMode:           stringPtrL4("wireguard"),
+		WireGuardProfileID:   intPtrL4(profileID),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+		Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.ListenPort != 9443 {
+		t.Fatalf("Create() rule = %+v, want listen_port 9443", rule)
+	}
+	if len(store.l4RulesByID["local"]) != 2 {
+		t.Fatalf("stored rules = %+v", store.l4RulesByID["local"])
+	}
+}
+
+func TestL4WireGuardTransparentListenIgnoresDisabledRulesInProfileConflictCheck(t *testing.T) {
+	profileID := 7
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                   1,
+				AgentID:              "local",
+				Name:                 "wg-disabled",
+				Protocol:             "tcp",
+				ListenHost:           "10.8.0.10",
+				ListenPort:           8443,
+				BackendsJSON:         `[]`,
+				LoadBalancingJSON:    `{"strategy":"adaptive"}`,
+				TuningJSON:           `{"proxy_protocol":{"decode":false,"send":false}}`,
+				RelayLayersJSON:      `[]`,
+				ListenMode:           "wireguard",
+				WireGuardProfileID:   &profileID,
+				WireGuardInboundMode: "transparent",
+				Enabled:              false,
+				Revision:             1,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:             stringPtrL4("tcp"),
+		ListenHost:           stringPtrL4("10.8.0.11"),
+		ListenPort:           intPtrL4(9443),
+		ListenMode:           stringPtrL4("wireguard"),
+		WireGuardProfileID:   intPtrL4(profileID),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+		Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want disabled transparent rule to be ignored", err)
+	}
+	if len(store.l4RulesByID["local"]) != 2 {
+		t.Fatalf("stored rules = %+v", store.l4RulesByID["local"])
 	}
 }
 
