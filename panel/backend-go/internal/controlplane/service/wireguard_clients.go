@@ -444,7 +444,7 @@ func (s *wireGuardClientService) ClientURI(ctx context.Context, agentID string, 
 	}
 	q.Set("address", client.Address)
 	if allowedIPs := parseStringArray(client.AllowedIPsJSON); len(allowedIPs) > 0 {
-		q.Set("allowed-ips", "["+strings.Join(allowedIPs, ", ")+"]")
+		q.Set("allowed-ips", strings.Join(allowedIPs, ","))
 	}
 	if dns := parseStringArray(client.DNSJSON); len(dns) > 0 {
 		q.Set("dns", strings.Join(dns, ","))
