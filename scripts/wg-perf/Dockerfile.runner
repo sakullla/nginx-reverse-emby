@@ -1,0 +1,10 @@
+FROM golang:1.26.3-trixie
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends iproute2 wireguard-tools; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV GOCACHE=/tmp/go-build
+ENV PATH=/usr/local/go/bin:$PATH
+WORKDIR /work
