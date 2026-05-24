@@ -49,6 +49,7 @@ type LocalTaskSession struct {
 
 type diagnosticRuleStore interface {
 	GetHTTPRule(ctx context.Context, agentID string, id int) (storage.HTTPRuleRow, bool, error)
+	GetL4Rule(ctx context.Context, agentID string, id int) (storage.L4RuleRow, bool, error)
 	ListL4Rules(ctx context.Context, agentID string) ([]storage.L4RuleRow, error)
 	LoadLocalSnapshot(ctx context.Context, agentID string) (storage.Snapshot, error)
 }
@@ -174,22 +175,14 @@ func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, envelope servi
 		return nil, err
 	}
 
-	rows, err := s.store.ListL4Rules(ctx, s.agentID)
+	row, ok, err := s.store.GetL4Rule(ctx, s.agentID, ruleID)
 	if err != nil {
 		return nil, err
 	}
-
-	var target *storage.L4RuleRow
-	for i := range rows {
-		if rows[i].ID == ruleID {
-			target = &rows[i]
-			break
-		}
-	}
-	if target == nil {
+	if !ok {
 		return nil, fmt.Errorf("l4 rule %d not found", ruleID)
 	}
-	if !target.Enabled {
+	if !row.Enabled {
 		return nil, fmt.Errorf("l4 rule %d is disabled", ruleID)
 	}
 
@@ -197,7 +190,7 @@ func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, envelope servi
 	if err != nil {
 		return nil, err
 	}
-	snapshot.L4Rules = upsertL4DiagnosticRule(snapshot.L4Rules, *target)
+	snapshot.L4Rules = upsertL4DiagnosticRule(snapshot.L4Rules, row)
 	return s.runDiagnostics(ctx, snapshot, envelope)
 }
 
