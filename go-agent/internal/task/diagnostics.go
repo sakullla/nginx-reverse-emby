@@ -88,7 +88,7 @@ func canMergeSnapshotPayload(snapshot, fallback model.Snapshot) bool {
 	if fallback.Revision == 0 && fallback.DesiredVersion == "" {
 		return false
 	}
-	if snapshot.Revision > 0 && fallback.Revision > 0 && fallback.Revision < snapshot.Revision {
+	if snapshot.Revision > 0 && fallback.Revision > 0 && snapshot.Revision != fallback.Revision {
 		return false
 	}
 	if snapshot.DesiredVersion != "" && fallback.DesiredVersion != "" && snapshot.DesiredVersion != fallback.DesiredVersion {
