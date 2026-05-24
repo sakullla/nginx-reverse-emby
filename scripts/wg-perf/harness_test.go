@@ -104,3 +104,59 @@ func TestWgPerfComposeIncludesWireGuardRelay(t *testing.T) {
 		t.Fatal("docker-compose.yaml does not include relay-wg container")
 	}
 }
+
+func TestWgPerfComposeExposesRelayWgPprof(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yaml")
+	if err != nil {
+		t.Fatalf("read compose: %v", err)
+	}
+	compose := string(data)
+	cases := []struct {
+		service string
+		env     string
+		port    string
+	}{
+		{"relay-wg", "HARNESS_RELAY_WG_PPROF_ADDR", "HARNESS_RELAY_WG_PPROF_PORT:-6060"},
+		{"relay-a1", "HARNESS_RELAY_A1_PPROF_ADDR", "HARNESS_RELAY_A1_PPROF_PORT:-6061"},
+		{"relay-a2", "HARNESS_RELAY_A2_PPROF_ADDR", "HARNESS_RELAY_A2_PPROF_PORT:-6062"},
+		{"relay-b3", "HARNESS_RELAY_B3_PPROF_ADDR", "HARNESS_RELAY_B3_PPROF_PORT:-6063"},
+		{"relay-b4", "HARNESS_RELAY_B4_PPROF_ADDR", "HARNESS_RELAY_B4_PPROF_PORT:-6064"},
+		{"agent-b", "HARNESS_AGENT_B_PPROF_ADDR", "HARNESS_AGENT_B_PPROF_PORT:-6065"},
+	}
+	for i, tc := range cases {
+		block := composeServiceBlock(t, compose, tc.service)
+		for _, want := range []string{
+			"NRE_PPROF_ADDR: ${" + tc.env + ":-:6060}",
+			"${" + tc.port + "}:6060",
+		} {
+			if !strings.Contains(block, want) {
+				t.Fatalf("docker-compose.yaml service %s missing pprof setting %q", tc.service, want)
+			}
+		}
+		if i == 0 && !strings.Contains(block, "container_name: nre-relay-wg") {
+			t.Fatal("relay-wg pprof assertion matched the wrong service block")
+		}
+	}
+}
+
+func composeServiceBlock(t *testing.T, compose, service string) string {
+	t.Helper()
+	lines := strings.Split(compose, "\n")
+	var b strings.Builder
+	inBlock := false
+	for _, line := range lines {
+		if line == "  "+service+":" {
+			inBlock = true
+		} else if inBlock && strings.HasPrefix(line, "  ") && len(line) > 2 && line[2] != ' ' {
+			break
+		}
+		if inBlock {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	if b.Len() == 0 {
+		t.Fatalf("docker-compose.yaml missing %s service", service)
+	}
+	return b.String()
+}

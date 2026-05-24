@@ -70,3 +70,24 @@
 - `wg_to_b_rtt` 是否接近预期 RTT
 - `wg_to_b_c1` 和 `wg_to_b_c8` 的跌幅
 - `nre-relay-wg` 的内存和线程数是否异常增长
+
+## pprof
+
+所有 agent 默认启用 `NRE_PPROF_ADDR=:6060`。宿主机默认端口：
+
+- `relay-wg`: `6060`
+- `relay-a1`: `6061`
+- `relay-a2`: `6062`
+- `relay-b3`: `6063`
+- `relay-b4`: `6064`
+- `agent-b`: `6065`
+
+示例：
+
+```powershell
+go tool pprof -top http://127.0.0.1:6060/debug/pprof/profile?seconds=20
+go tool pprof -top http://127.0.0.1:6060/debug/pprof/heap
+curl http://127.0.0.1:6060/debug/pprof/goroutine?debug=1
+```
+
+端口可通过对应的 `HARNESS_*_PPROF_PORT` 覆盖；监听地址可通过对应的 `HARNESS_*_PPROF_ADDR` 覆盖。设为空值会关闭该 agent 的 pprof。

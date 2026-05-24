@@ -96,6 +96,9 @@ services:
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
       NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
+      NRE_PPROF_ADDR: ${HARNESS_RELAY_A1_PPROF_ADDR:-:6060}
+    ports:
+      - "${HARNESS_RELAY_A1_PPROF_PORT:-6061}:6060"
     depends_on:
       perf:
         condition: service_healthy
@@ -130,6 +133,9 @@ services:
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
       NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
+      NRE_PPROF_ADDR: ${HARNESS_RELAY_A2_PPROF_ADDR:-:6060}
+    ports:
+      - "${HARNESS_RELAY_A2_PPROF_PORT:-6062}:6060"
     depends_on:
       perf:
         condition: service_healthy
@@ -164,6 +170,9 @@ services:
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
       NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
+      NRE_PPROF_ADDR: ${HARNESS_RELAY_B3_PPROF_ADDR:-:6060}
+    ports:
+      - "${HARNESS_RELAY_B3_PPROF_PORT:-6063}:6060"
     depends_on:
       perf:
         condition: service_healthy
@@ -200,6 +209,9 @@ services:
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
       NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
+      NRE_PPROF_ADDR: ${HARNESS_RELAY_B4_PPROF_ADDR:-:6060}
+    ports:
+      - "${HARNESS_RELAY_B4_PPROF_PORT:-6064}:6060"
     depends_on:
       perf:
         condition: service_healthy
@@ -239,6 +251,9 @@ services:
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
       NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
+      NRE_PPROF_ADDR: ${HARNESS_RELAY_WG_PPROF_ADDR:-:6060}
+    ports:
+      - "${HARNESS_RELAY_WG_PPROF_PORT:-6060}:6060"
     depends_on:
       perf:
         condition: service_healthy
@@ -273,6 +288,9 @@ services:
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
       NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
+      NRE_PPROF_ADDR: ${HARNESS_AGENT_B_PPROF_ADDR:-:6060}
+    ports:
+      - "${HARNESS_AGENT_B_PPROF_PORT:-6065}:6060"
     depends_on:
       perf:
         condition: service_healthy
