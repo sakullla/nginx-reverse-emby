@@ -56,7 +56,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol6, icmp.NewProtocol4},
-		HandleLocal:        true,
+		HandleLocal:        false,
 	}
 	dev := &netTun{
 		ep:             channel.New(1024, uint32(mtu), ""),
@@ -75,6 +75,14 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 	tcpipErr = dev.stack.CreateNIC(1, dev.ep)
 	if tcpipErr != nil {
 		return nil, nil, nil, fmt.Errorf("CreateNIC: %v", tcpipErr)
+	}
+	tcpipErr = dev.stack.SetPromiscuousMode(1, true)
+	if tcpipErr != nil {
+		return nil, nil, nil, fmt.Errorf("SetPromiscuousMode: %v", tcpipErr)
+	}
+	tcpipErr = dev.stack.SetSpoofing(1, true)
+	if tcpipErr != nil {
+		return nil, nil, nil, fmt.Errorf("SetSpoofing: %v", tcpipErr)
 	}
 	for _, ip := range localAddresses {
 		var protoNumber tcpip.NetworkProtocolNumber
