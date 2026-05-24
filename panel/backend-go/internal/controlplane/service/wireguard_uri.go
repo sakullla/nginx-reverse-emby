@@ -51,7 +51,7 @@ func ParseWireGuardURI(raw string) (ParsedWireGuardURI, error) {
 		PublicKey:    strings.TrimSpace(query["publickey"]),
 		PresharedKey: firstNonEmptyTrimmed(query["preshared-key"], query["psk"]),
 		Addresses:    splitWireGuardURIList(query["address"]),
-		AllowedIPs:   splitWireGuardURIList(query["allowedips"]),
+		AllowedIPs:   splitWireGuardURIList(firstNonEmptyTrimmed(query["allowedips"], query["allowed-ips"])),
 		DNS:          splitWireGuardURIList(query["dns"]),
 	}
 	if len(result.AllowedIPs) == 0 {
