@@ -388,7 +388,7 @@ func desiredCanHydrateApplied(applied, desired Snapshot) bool {
 	if desired.Revision == 0 && desired.DesiredVersion == "" {
 		return false
 	}
-	if applied.Revision > 0 && desired.Revision > 0 && desired.Revision < applied.Revision {
+	if applied.Revision != desired.Revision {
 		return false
 	}
 	if applied.DesiredVersion != "" && desired.DesiredVersion != "" && applied.DesiredVersion != desired.DesiredVersion {
