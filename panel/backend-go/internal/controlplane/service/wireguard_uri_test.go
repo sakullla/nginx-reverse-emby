@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseWireGuardURIParsesOutboundProfile(t *testing.T) {
-	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&psk=" + testWireGuardPresharedKey + "&address=10.44.0.2/32,fd44::2/128&allowedips=10.0.0.0/8,fd00::/8&dns=1.1.1.1,2606:4700:4700::1111&mtu=1420&reserved=1,2,255#Edge%20WG"
+	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&preshared-key=" + testWireGuardPresharedKey + "&address=10.44.0.2/32,fd44::2/128&allowedips=10.0.0.0/8,fd00::/8&dns=1.1.1.1,2606:4700:4700::1111&mtu=1420&reserved=1,2,255#Edge%20WG"
 
 	parsed, err := ParseWireGuardURI(raw)
 	if err != nil {
@@ -61,7 +61,7 @@ func TestParseWireGuardURIDefaultsAllowedIPs(t *testing.T) {
 }
 
 func TestWireGuardProfileInputFromURIRejectsReserved(t *testing.T) {
-	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&psk=" + testWireGuardPresharedKey + "&address=10.44.0.2/32&reserved=1,2,3#Edge"
+	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&preshared-key=" + testWireGuardPresharedKey + "&address=10.44.0.2/32&reserved=1,2,3#Edge"
 
 	parsed, err := ParseWireGuardURI(raw)
 	if err != nil {
@@ -80,7 +80,7 @@ func TestParseWireGuardURIPreservesPlusSignsInKeys(t *testing.T) {
 	privateKey := "AAcOFRwjKjE4P0ZNVFtiaXB3foWMk5qhqK+2vcTL0tk="
 	publicKey := "BQwTGiEoLzY9REtSWWBnbnV8g4qRmJ+mrbS7wsnQ194="
 	presharedKey := "Bg0UGyIpMDc+RUxTWmFob3Z9hIuSmaCnrrW8w8rR2N8="
-	raw := "wireguard://" + privateKey + "@edge.example.com:51820?publickey=" + publicKey + "&psk=" + presharedKey + "&address=10.44.0.2/32"
+	raw := "wireguard://" + privateKey + "@edge.example.com:51820?publickey=" + publicKey + "&preshared-key=" + presharedKey + "&address=10.44.0.2/32"
 
 	parsed, err := ParseWireGuardURI(raw)
 	if err != nil {
@@ -89,6 +89,18 @@ func TestParseWireGuardURIPreservesPlusSignsInKeys(t *testing.T) {
 
 	if parsed.PrivateKey != privateKey || parsed.PublicKey != publicKey || parsed.PresharedKey != presharedKey {
 		t.Fatalf("keys = private %q public %q psk %q", parsed.PrivateKey, parsed.PublicKey, parsed.PresharedKey)
+	}
+}
+
+func TestParseWireGuardURIAcceptsLegacyPSKField(t *testing.T) {
+	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&psk=" + testWireGuardPresharedKey + "&address=10.44.0.2/32"
+
+	parsed, err := ParseWireGuardURI(raw)
+	if err != nil {
+		t.Fatalf("ParseWireGuardURI() error = %v", err)
+	}
+	if parsed.PresharedKey != testWireGuardPresharedKey {
+		t.Fatalf("PresharedKey = %q", parsed.PresharedKey)
 	}
 }
 
@@ -114,7 +126,7 @@ func TestParseWireGuardURIRejectsMissingRequiredFields(t *testing.T) {
 }
 
 func TestWireGuardURIPreviewRedactsSecrets(t *testing.T) {
-	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&psk=" + testWireGuardPresharedKey + "&address=10.44.0.2/32&dns=1.1.1.1#Edge"
+	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&preshared-key=" + testWireGuardPresharedKey + "&address=10.44.0.2/32&dns=1.1.1.1#Edge"
 
 	preview, err := RedactWireGuardURIPreview(raw)
 	if err != nil {
@@ -124,7 +136,7 @@ func TestWireGuardURIPreviewRedactsSecrets(t *testing.T) {
 	if strings.Contains(preview, testWireGuardPrivateKey) || strings.Contains(preview, testWireGuardPresharedKey) {
 		t.Fatalf("preview leaked secret: %s", preview)
 	}
-	for _, want := range []string{"wireguard://xxxxx@edge.example.com:51820", "publickey=" + url.QueryEscape(testWireGuardPublicKey), "psk=xxxxx", "address=10.44.0.2%2F32", "#Edge"} {
+	for _, want := range []string{"wireguard://xxxxx@edge.example.com:51820", "publickey=" + url.QueryEscape(testWireGuardPublicKey), "preshared-key=xxxxx", "address=10.44.0.2%2F32", "#Edge"} {
 		if !strings.Contains(preview, want) {
 			t.Fatalf("preview = %s, missing %q", preview, want)
 		}

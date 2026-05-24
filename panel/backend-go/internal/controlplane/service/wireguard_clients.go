@@ -440,10 +440,12 @@ func (s *wireGuardClientService) ClientURI(ctx context.Context, agentID string, 
 	q := u.Query()
 	q.Set("publickey", serverPublicKey)
 	if strings.TrimSpace(client.PresharedKey) != "" {
-		q.Set("psk", client.PresharedKey)
+		q.Set("preshared-key", client.PresharedKey)
 	}
 	q.Set("address", client.Address)
-	q.Set("allowedips", strings.Join(parseStringArray(client.AllowedIPsJSON), ","))
+	if allowedIPs := parseStringArray(client.AllowedIPsJSON); len(allowedIPs) > 0 {
+		q.Set("allowed-ips", "["+strings.Join(allowedIPs, ", ")+"]")
+	}
 	if dns := parseStringArray(client.DNSJSON); len(dns) > 0 {
 		q.Set("dns", strings.Join(dns, ","))
 	}

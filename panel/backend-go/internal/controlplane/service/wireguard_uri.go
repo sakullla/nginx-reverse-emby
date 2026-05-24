@@ -49,7 +49,7 @@ func ParseWireGuardURI(raw string) (ParsedWireGuardURI, error) {
 		PrivateKey:   strings.TrimSpace(parsed.User.Username()),
 		Endpoint:     endpoint,
 		PublicKey:    strings.TrimSpace(query["publickey"]),
-		PresharedKey: strings.TrimSpace(query["psk"]),
+		PresharedKey: firstNonEmptyTrimmed(query["preshared-key"], query["psk"]),
 		Addresses:    splitWireGuardURIList(query["address"]),
 		AllowedIPs:   splitWireGuardURIList(query["allowedips"]),
 		DNS:          splitWireGuardURIList(query["dns"]),
@@ -64,7 +64,7 @@ func ParseWireGuardURI(raw string) (ParsedWireGuardURI, error) {
 		return ParsedWireGuardURI{}, fmt.Errorf("%w: publickey must be a WireGuard key", ErrInvalidArgument)
 	}
 	if err := validateWireGuardKey(result.PresharedKey, false); err != nil {
-		return ParsedWireGuardURI{}, fmt.Errorf("%w: psk must be a WireGuard key", ErrInvalidArgument)
+		return ParsedWireGuardURI{}, fmt.Errorf("%w: preshared-key must be a WireGuard key", ErrInvalidArgument)
 	}
 	if len(result.Addresses) == 0 {
 		return ParsedWireGuardURI{}, fmt.Errorf("%w: address is required", ErrInvalidArgument)
@@ -106,6 +106,9 @@ func RedactWireGuardURIPreview(raw string) (string, error) {
 	}
 	parsed.User = url.User(redactedProxyPassword)
 	query := parsed.Query()
+	if strings.TrimSpace(query.Get("preshared-key")) != "" {
+		query.Set("preshared-key", redactedProxyPassword)
+	}
 	if strings.TrimSpace(query.Get("psk")) != "" {
 		query.Set("psk", redactedProxyPassword)
 	}
@@ -169,6 +172,15 @@ func splitWireGuardURIList(raw string) []string {
 		}
 	}
 	return normalized
+}
+
+func firstNonEmptyTrimmed(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func parseWireGuardURIReserved(raw string) ([]byte, error) {
