@@ -636,6 +636,49 @@ func TestEnsureUniqueL4ListenIgnoresDisabledUDPProxyEntryWithoutSamePortTCP(t *t
 	}
 }
 
+func TestL4CreateRejectsDuplicateTransparentWireGuardBeforeDefaultProfileAssignment(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                   1,
+				AgentID:              "local",
+				Protocol:             "tcp",
+				ListenMode:           "wireguard",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           0,
+				WireGuardInboundMode: "transparent",
+				BackendsJSON:         "[]",
+				LoadBalancingJSON:    `{"strategy":"adaptive"}`,
+				RelayChainJSON:       "[]",
+				RelayLayersJSON:      "[]",
+				Enabled:              true,
+				Revision:             1,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{ID: 7, AgentID: "local", Enabled: true}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:             stringPtrL4("tcp"),
+		ListenMode:           stringPtrL4("wireguard"),
+		ListenHost:           stringPtrL4("0.0.0.0"),
+		ListenPort:           intPtrL4(0),
+		WireGuardInboundMode: stringPtrL4("transparent"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
+		t.Fatalf("Create() error = %v, want transparent duplicate rejection", err)
+	}
+	if got := len(store.l4RulesByID["local"]); got != 1 {
+		t.Fatalf("stored rules = %d, want original rule only", got)
+	}
+}
+
 func TestValidateL4RuleSetRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
 	err := validateL4RuleSet([]L4Rule{{
 		ID:              2,

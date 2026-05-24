@@ -1499,9 +1499,9 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 		}
 		if l4TransparentWireGuardProfileConflicts(rule, next) {
 			return fmt.Errorf(
-				"%w: WireGuard transparent inbound profile %d already has rule #%d",
+				"%w: WireGuard transparent inbound profile %s already has rule #%d",
 				ErrInvalidArgument,
-				*next.WireGuardProfileID,
+				l4WireGuardProfileConflictLabel(next),
 				rule.ID,
 			)
 		}
@@ -1583,12 +1583,20 @@ func l4TransparentWireGuardProfileConflicts(rule L4Rule, next L4Rule) bool {
 	if !isL4TransparentWireGuardListen(rule) || !isL4TransparentWireGuardListen(next) {
 		return false
 	}
-	if rule.WireGuardProfileID == nil || next.WireGuardProfileID == nil {
+	if !strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol)) {
 		return false
 	}
-	return *rule.WireGuardProfileID > 0 &&
-		*rule.WireGuardProfileID == *next.WireGuardProfileID &&
-		strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol))
+	if rule.WireGuardProfileID == nil || next.WireGuardProfileID == nil {
+		return true
+	}
+	return *rule.WireGuardProfileID > 0 && *rule.WireGuardProfileID == *next.WireGuardProfileID
+}
+
+func l4WireGuardProfileConflictLabel(rule L4Rule) string {
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
+		return "default"
+	}
+	return strconv.Itoa(*rule.WireGuardProfileID)
 }
 
 func effectiveL4ListenHost(rule L4Rule) string {
