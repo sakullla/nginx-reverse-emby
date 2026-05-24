@@ -60,6 +60,18 @@ func TestParseWireGuardURIDefaultsAllowedIPs(t *testing.T) {
 	}
 }
 
+func TestParseWireGuardURIAcceptsAllowedIPsHyphenatedField(t *testing.T) {
+	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32&allowed-ips=10.0.0.0/8,fd00::/8"
+
+	parsed, err := ParseWireGuardURI(raw)
+	if err != nil {
+		t.Fatalf("ParseWireGuardURI() error = %v", err)
+	}
+	if got := strings.Join(parsed.AllowedIPs, ","); got != "10.0.0.0/8,fd00::/8" {
+		t.Fatalf("AllowedIPs = %q", got)
+	}
+}
+
 func TestWireGuardProfileInputFromURIRejectsReserved(t *testing.T) {
 	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&preshared-key=" + testWireGuardPresharedKey + "&address=10.44.0.2/32&reserved=1,2,3#Edge"
 

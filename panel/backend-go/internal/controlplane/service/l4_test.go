@@ -2666,6 +2666,66 @@ func TestL4WireGuardTransparentListenIgnoresDisabledRulesInProfileConflictCheck(
 	}
 }
 
+func TestL4WireGuardTransparentListenPortZeroConflictsWithSpecificPortOnSameProfile(t *testing.T) {
+	profileID := 7
+	tests := []struct {
+		name         string
+		existingPort int
+		nextPort     int
+	}{
+		{name: "existing wildcard", existingPort: 0, nextPort: 9443},
+		{name: "next wildcard", existingPort: 9443, nextPort: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeL4Store{
+				l4RulesByID: map[string][]storage.L4RuleRow{
+					"local": {{
+						ID:                   1,
+						AgentID:              "local",
+						Name:                 "wg-a",
+						Protocol:             "tcp",
+						ListenHost:           "10.8.0.10",
+						ListenPort:           tt.existingPort,
+						BackendsJSON:         `[]`,
+						LoadBalancingJSON:    `{"strategy":"adaptive"}`,
+						TuningJSON:           `{"proxy_protocol":{"decode":false,"send":false}}`,
+						RelayLayersJSON:      `[]`,
+						ListenMode:           "wireguard",
+						WireGuardProfileID:   &profileID,
+						WireGuardInboundMode: "transparent",
+						Enabled:              true,
+						Revision:             1,
+					}},
+				},
+				wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+					"local": {{ID: profileID, AgentID: "local", Enabled: true}},
+				},
+			}
+			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			_, err := svc.Create(context.Background(), "local", L4RuleInput{
+				Protocol:             stringPtrL4("tcp"),
+				ListenHost:           stringPtrL4("10.8.0.11"),
+				ListenPort:           intPtrL4(tt.nextPort),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(profileID),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+				Backends:             &[]L4Backend{{Host: "upstream-b", Port: 9002}},
+			})
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "WireGuard transparent inbound") {
+				t.Fatalf("Create() error = %v, want transparent wildcard conflict", err)
+			}
+			if len(store.l4RulesByID["local"]) != 1 {
+				t.Fatalf("stored rules = %+v, want only original rule", store.l4RulesByID["local"])
+			}
+		})
+	}
+}
+
 func TestL4WireGuardTransparentListenConflictsWithAddressModeOnUpdate(t *testing.T) {
 	profileID := 7
 	tests := []struct {
