@@ -57,7 +57,8 @@
           </div>
           <div class="form-group">
             <label class="form-label form-label--required">监听端口</label>
-            <input v-model.number="form.listen_port" class="input" type="number" min="1" max="65535" placeholder="25565" @input="updateAutoTags">
+            <input v-model.number="form.listen_port" class="input" type="number" :min="allowsWildcardListenPort ? 0 : 1" max="65535" placeholder="25565" @input="updateAutoTags">
+            <p v-if="allowsWildcardListenPort" class="form-help">0 表示透明代理捕获全部目标端口</p>
           </div>
         </div>
       </div>
@@ -581,6 +582,7 @@ const isWireGuardEgress = computed(() => isProxyEntry.value && form.value.proxy_
 const isWireGuardTransparentForward = computed(() => isWireGuardInbound.value
   && form.value.wireguard_inbound_mode === 'transparent'
   && !isProxyEntry.value)
+const allowsWildcardListenPort = computed(() => isWireGuardTransparentForward.value)
 const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)
 const canUseWireGuardEgressURI = computed(() => !isWireGuardInbound.value)
 const isWireGuardEgressProfileSource = computed(() => isWireGuardEgress.value && form.value.wireguard_egress_source === 'profile')
@@ -952,6 +954,11 @@ async function handleSubmit() {
   }
   if (!samePortTCPProxyRule.value) {
     error.value = '需要先维护同端口 TCP SOCKS5 入口规则'
+    return
+  }
+  const listenPort = Number(form.value.listen_port)
+  if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535 || (listenPort === 0 && !allowsWildcardListenPort.value)) {
+    error.value = allowsWildcardListenPort.value ? '监听端口必须在 0-65535 之间' : '监听端口必须在 1-65535 之间'
     return
   }
   try {

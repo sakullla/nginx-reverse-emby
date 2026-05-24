@@ -267,7 +267,7 @@ describe('runtime canonical rule payloads', () => {
       const created = await runtime.createL4Rule('edge-a', {
         protocol: 'tcp',
         listen_host: '0.0.0.0',
-        listen_port: 51820,
+        listen_port: 0,
         listen_mode: 'wireguard',
         wireguard_inbound_mode: 'transparent',
         wireguard_profile_id: 101,
@@ -276,7 +276,7 @@ describe('runtime canonical rule payloads', () => {
       const updated = await runtime.updateL4Rule('edge-a', 12, {
         protocol: 'tcp',
         listen_host: '0.0.0.0',
-        listen_port: 51820,
+        listen_port: 0,
         listen_mode: 'wireguard',
         wireguard_inbound_mode: 'transparent',
         wireguard_profile_id: 101,
@@ -287,6 +287,7 @@ describe('runtime canonical rule payloads', () => {
       for (const request of requests) {
         const payload = JSON.parse(request.data)
         expect(payload.listen_mode).toBe('wireguard')
+        expect(payload.listen_port).toBe(0)
         expect(payload.wireguard_inbound_mode).toBe('transparent')
         expect(payload.wireguard_profile_id).toBe(101)
         expect(payload).not.toHaveProperty('wireguard_listen_host')

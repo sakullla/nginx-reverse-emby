@@ -376,6 +376,10 @@ func (r *fakeHTTPWireGuardRuntime) ListenTCP(ctx context.Context, address string
 	return nil, fmt.Errorf("unexpected WireGuard ListenTCP call")
 }
 
+func (r *fakeHTTPWireGuardRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
+	return nil, fmt.Errorf("unexpected WireGuard ListenTransparentTCP call")
+}
+
 func (r *fakeHTTPWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
 	return nil, fmt.Errorf("unexpected WireGuard ListenUDP call")
 }

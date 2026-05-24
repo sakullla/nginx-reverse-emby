@@ -568,7 +568,7 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if input.ListenPort != nil {
 		listenPort = *input.ListenPort
 	}
-	if listenPort < 1 || listenPort > 65535 {
+	if listenPort < 0 || listenPort > 65535 {
 		return L4Rule{}, fmt.Errorf("%w: listen_port must be a valid port", ErrInvalidArgument)
 	}
 	wireGuardInboundMode := ""
@@ -662,6 +662,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	}
 	proxyEntryMode := isL4ProxyEntryListenMode(listenMode, proxyEgressMode)
 	transparentWireGuardInbound := listenMode == "wireguard" && wireGuardInboundMode == "transparent" && proxyEgressMode == ""
+	if listenPort == 0 && !transparentWireGuardInbound {
+		return L4Rule{}, fmt.Errorf("%w: listen_port must be a valid port", ErrInvalidArgument)
+	}
 	backends, upstreamHost, upstreamPort, err = normalizeL4BackendsInput(input, fallback, proxyEntryMode || transparentWireGuardInbound)
 	if err != nil {
 		if !proxyEntryMode {
@@ -1238,7 +1241,7 @@ func isL4WireGuardTransparentForwardRule(protocol, listenMode, wireGuardInboundM
 	if normalizedProtocol == "" {
 		normalizedProtocol = "tcp"
 	}
-	return normalizedProtocol == "tcp" &&
+	return (normalizedProtocol == "tcp" || normalizedProtocol == "udp") &&
 		strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") &&
 		strings.EqualFold(strings.TrimSpace(wireGuardInboundMode), "transparent") &&
 		strings.TrimSpace(proxyEgressMode) == ""

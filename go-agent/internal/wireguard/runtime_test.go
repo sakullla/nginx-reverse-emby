@@ -150,6 +150,74 @@ func TestNetstackRuntimeTransparentTCPAcceptsNonLocalDestination(t *testing.T) {
 	}
 }
 
+func TestNetstackRuntimeTransparentTCPAcceptsAnyDestinationPort(t *testing.T) {
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer runtime.Close()
+
+	ln, err := runtime.ListenTransparentTCP(context.Background())
+	if err != nil {
+		t.Fatalf("ListenTransparentTCP() error = %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	clientIP := netip.MustParseAddr("10.99.0.2")
+	originalDstIP := netip.MustParseAddr("203.0.113.37")
+	const originalDstPort = 28443
+	const clientPort = 40126
+	const clientSeq = 1000
+	injectIPv4TCPPacket(t, runtime, tcpPacket{
+		src:     clientIP,
+		dst:     originalDstIP,
+		srcPort: clientPort,
+		dstPort: originalDstPort,
+		seq:     clientSeq,
+		flags:   header.TCPFlagSyn,
+	})
+
+	synAck := readOutboundIPv4TCPPacket(t, runtime)
+	if synAck.src != originalDstIP || synAck.dst != clientIP {
+		t.Fatalf("SYN-ACK addresses = %s -> %s, want %s -> %s", synAck.src, synAck.dst, originalDstIP, clientIP)
+	}
+	if synAck.srcPort != originalDstPort || synAck.dstPort != clientPort {
+		t.Fatalf("SYN-ACK ports = %d -> %d, want %d -> %d", synAck.srcPort, synAck.dstPort, originalDstPort, clientPort)
+	}
+	if !synAck.flags.Contains(header.TCPFlagSyn | header.TCPFlagAck) {
+		t.Fatalf("SYN-ACK flags = %v, want SYN|ACK", synAck.flags)
+	}
+
+	injectIPv4TCPPacket(t, runtime, tcpPacket{
+		src:     clientIP,
+		dst:     originalDstIP,
+		srcPort: clientPort,
+		dstPort: originalDstPort,
+		seq:     clientSeq + 1,
+		ack:     synAck.seq + 1,
+		flags:   header.TCPFlagAck,
+	})
+
+	select {
+	case conn := <-accepted:
+		if got := conn.LocalAddr().String(); got != net.JoinHostPort(originalDstIP.String(), strconv.Itoa(originalDstPort)) {
+			t.Fatalf("accepted LocalAddr = %q, want original destination", got)
+		}
+	case err := <-acceptErr:
+		t.Fatalf("Accept() error = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for transparent TCP accept")
+	}
+}
+
 func TestNetstackRuntimeListenUDPAcceptsWildcardAddress(t *testing.T) {
 	runtime := newTestNetstackRuntime(t)
 	defer runtime.Close()
@@ -251,6 +319,41 @@ func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(
 	}
 	if got := string(reply.payload); got != "pong" {
 		t.Fatalf("reply payload = %q, want pong", got)
+	}
+}
+
+func TestNetstackRuntimeTransparentUDPPortZeroCapturesAnyDestinationPort(t *testing.T) {
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer runtime.Close()
+
+	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
+	}
+	defer conn.Close()
+
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40127}
+	targetAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.47"), Port: 28553}
+	injectIPv4UDPPacket(t, runtime, udpPacket{
+		src:     netip.MustParseAddr(clientAddr.IP.String()),
+		dst:     netip.MustParseAddr(targetAddr.IP.String()),
+		srcPort: uint16(clientAddr.Port),
+		dstPort: uint16(targetAddr.Port),
+		payload: []byte("transparent any udp"),
+	})
+
+	packet, err := conn.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+	if packet.OriginalDst != targetAddr.String() {
+		t.Fatalf("OriginalDst = %q, want %q", packet.OriginalDst, targetAddr.String())
+	}
+	if packet.Peer.String() != clientAddr.String() {
+		t.Fatalf("Peer = %q, want %q", packet.Peer.String(), clientAddr.String())
+	}
+	if got := string(packet.Payload); got != "transparent any udp" {
+		t.Fatalf("Payload = %q, want transparent any udp", got)
 	}
 }
 
@@ -941,7 +1044,7 @@ func newTestNetstackRuntimeWithAddresses(t *testing.T, addresses []netip.Addr) *
 	if err != nil {
 		t.Fatalf("CreateNetTUN() error = %v", err)
 	}
-	return &netstackRuntime{net: tnet, stack: gstack, tun: tunDevice}
+	return newNetstackRuntime(tunDevice, tnet, gstack, nil)
 }
 
 type tcpPacket struct {
@@ -1199,6 +1302,10 @@ func (r *fakeRuntime) DialContext(context.Context, string, string) (net.Conn, er
 }
 
 func (r *fakeRuntime) ListenTCP(context.Context, string) (net.Listener, error) {
+	return nil, errFakeRuntime
+}
+
+func (r *fakeRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
 	return nil, errFakeRuntime
 }
 

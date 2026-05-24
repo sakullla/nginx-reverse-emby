@@ -163,6 +163,63 @@ func TestValidateRuleAcceptsWireGuardTransparentTCPWithoutBackends(t *testing.T)
 	}
 }
 
+func TestValidateRuleAllowsWireGuardTransparentPortZero(t *testing.T) {
+	profileID := 7
+	for _, protocol := range []string{"tcp", "udp"} {
+		t.Run(protocol, func(t *testing.T) {
+			err := ValidateRule(Rule{
+				Protocol:             protocol,
+				ListenHost:           "0.0.0.0",
+				ListenPort:           0,
+				ListenMode:           "wireguard",
+				WireGuardInboundMode: "transparent",
+				WireGuardProfileID:   &profileID,
+			})
+			if err != nil {
+				t.Fatalf("ValidateRule() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRuleRejectsPortZeroOutsideWireGuardTransparent(t *testing.T) {
+	profileID := 7
+	tests := []struct {
+		name string
+		rule Rule
+	}{
+		{
+			name: "direct",
+			rule: Rule{
+				Protocol:   "tcp",
+				ListenHost: "0.0.0.0",
+				ListenPort: 0,
+				Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			},
+		},
+		{
+			name: "wireguard address",
+			rule: Rule{
+				Protocol:             "tcp",
+				ListenHost:           "0.0.0.0",
+				ListenPort:           0,
+				ListenMode:           "wireguard",
+				WireGuardInboundMode: "address",
+				WireGuardProfileID:   &profileID,
+				Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateRule(tc.rule)
+			if err == nil || !strings.Contains(err.Error(), "listen_port") {
+				t.Fatalf("ValidateRule() error = %v, want listen_port validation", err)
+			}
+		})
+	}
+}
+
 func TestValidateRuleAllowsWireGuardTransparentUDP(t *testing.T) {
 	profileID := 4
 	err := ValidateRule(model.L4Rule{

@@ -1176,14 +1176,9 @@ func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *tes
 	defer backend.Close()
 
 	profileID := 9
-	listenPort := pickFreeTCPPort(t)
 	var wireGuardListener net.Listener
 	runtime := &fakeL4WireGuardRuntime{
-		listenTCP: func(_ context.Context, address string) (net.Listener, error) {
-			want := net.JoinHostPort("", strconv.Itoa(listenPort))
-			if address != want {
-				t.Fatalf("ListenTCP address = %q, want %q", address, want)
-			}
+		listenTransparentTCP: func(_ context.Context) (net.Listener, error) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				return nil, err
@@ -1195,7 +1190,7 @@ func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *tes
 	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "tcp",
 		ListenHost:           "0.0.0.0",
-		ListenPort:           listenPort,
+		ListenPort:           0,
 		ListenMode:           "wireguard",
 		WireGuardInboundMode: "transparent",
 		WireGuardProfileID:   &profileID,
@@ -1210,12 +1205,15 @@ func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *tes
 	defer srv.Close()
 
 	if wireGuardListener == nil {
-		t.Fatal("wireguard ListenTCP was not started for transparent inbound")
+		t.Fatal("wireguard ListenTransparentTCP was not started for transparent inbound")
 	}
-	if calls := runtime.listenTCPCalls(); len(calls) != 1 {
-		t.Fatalf("ListenTCP calls = %+v, want one transparent listener", calls)
+	if calls := runtime.listenTCPCalls(); len(calls) != 0 {
+		t.Fatalf("ListenTCP calls = %+v, want none for transparent listener", calls)
 	}
-	wantKey := "wireguard:9:tcp:" + net.JoinHostPort("", strconv.Itoa(listenPort))
+	if calls := runtime.listenTransparentTCPCalls(); calls != 1 {
+		t.Fatalf("ListenTransparentTCP calls = %d, want 1", calls)
+	}
+	wantKey := "wireguard:9:tcp:" + net.JoinHostPort("", "0")
 	if keys := srv.BindingKeys(); len(keys) != 1 || keys[0] != wantKey {
 		t.Fatalf("BindingKeys() = %+v, want [%s]", keys, wantKey)
 	}
@@ -1291,8 +1289,7 @@ func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 
 func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 	profileID := 9
-	listenPort := pickFreeUDPPort(t)
-	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: listenPort})
+	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: 0})
 	runtime := &fakeL4WireGuardRuntime{
 		listenTransparentUDP: func(_ context.Context, address string) (wireguard.TransparentUDPConn, error) {
 			return transparentConn, nil
@@ -1301,7 +1298,7 @@ func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "udp",
 		ListenHost:           "0.0.0.0",
-		ListenPort:           listenPort,
+		ListenPort:           0,
 		ListenMode:           "wireguard",
 		WireGuardInboundMode: "transparent",
 		WireGuardProfileID:   &profileID,
@@ -1319,7 +1316,7 @@ func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("ListenTransparentUDP calls = %d, want 1", len(calls))
 	}
-	want := net.JoinHostPort("", strconv.Itoa(listenPort))
+	want := net.JoinHostPort("", "0")
 	if calls[0] != want {
 		t.Fatalf("ListenTransparentUDP address = %q, want %q", calls[0], want)
 	}
@@ -5095,10 +5092,12 @@ type fakeL4WireGuardRuntime struct {
 	mu                     sync.Mutex
 	dialCalls              []fakeL4WireGuardDialCall
 	listenTCPOn            []string
+	listenTransparentTCPN  int
 	listenUDPOn            []string
 	listenTransparentUDPOn []string
 	dialContext            func(context.Context, string, string) (net.Conn, error)
 	listenTCP              func(context.Context, string) (net.Listener, error)
+	listenTransparentTCP   func(context.Context) (net.Listener, error)
 	listenUDP              func(context.Context, string) (wireguard.PacketConn, error)
 	listenTransparentUDP   func(context.Context, string) (wireguard.TransparentUDPConn, error)
 }
@@ -5121,6 +5120,16 @@ func (r *fakeL4WireGuardRuntime) ListenTCP(ctx context.Context, address string) 
 		return r.listenTCP(ctx, address)
 	}
 	return nil, fmt.Errorf("unexpected wireguard ListenTCP call")
+}
+
+func (r *fakeL4WireGuardRuntime) ListenTransparentTCP(ctx context.Context) (net.Listener, error) {
+	r.mu.Lock()
+	r.listenTransparentTCPN++
+	r.mu.Unlock()
+	if r.listenTransparentTCP != nil {
+		return r.listenTransparentTCP(ctx)
+	}
+	return nil, fmt.Errorf("unexpected wireguard ListenTransparentTCP call")
 }
 
 func (r *fakeL4WireGuardRuntime) ListenUDP(ctx context.Context, address string) (wireguard.PacketConn, error) {
@@ -5153,6 +5162,12 @@ func (r *fakeL4WireGuardRuntime) listenTCPCalls() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.listenTCPOn...)
+}
+
+func (r *fakeL4WireGuardRuntime) listenTransparentTCPCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listenTransparentTCPN
 }
 
 func (r *fakeL4WireGuardRuntime) listenUDPCalls() []string {

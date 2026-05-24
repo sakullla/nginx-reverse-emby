@@ -2694,6 +2694,67 @@ func TestL4RuleServiceWireGuardInvalidInboundModeReject(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceAllowsTransparentWireGuardPortZero(t *testing.T) {
+	for _, protocol := range []string{"tcp", "udp"} {
+		t.Run(protocol, func(t *testing.T) {
+			rule, err := normalizeL4RuleInput(L4RuleInput{
+				Protocol:             stringPtrL4(protocol),
+				ListenHost:           stringPtrL4("0.0.0.0"),
+				ListenPort:           intPtrL4(0),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("transparent"),
+			}, L4Rule{}, 1)
+			if err != nil {
+				t.Fatalf("normalizeL4RuleInput() error = %v", err)
+			}
+			if rule.ListenPort != 0 || rule.Protocol != protocol {
+				t.Fatalf("rule = %+v, want %s listen_port 0", rule, protocol)
+			}
+		})
+	}
+}
+
+func TestL4RuleServiceRejectsPortZeroOutsideTransparentWireGuard(t *testing.T) {
+	tests := []struct {
+		name  string
+		input L4RuleInput
+	}{
+		{
+			name: "direct",
+			input: L4RuleInput{
+				Protocol:   stringPtrL4("tcp"),
+				ListenHost: stringPtrL4("0.0.0.0"),
+				ListenPort: intPtrL4(0),
+				Backends:   &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+		},
+		{
+			name: "wireguard address",
+			input: L4RuleInput{
+				Protocol:             stringPtrL4("tcp"),
+				ListenHost:           stringPtrL4("0.0.0.0"),
+				ListenPort:           intPtrL4(0),
+				ListenMode:           stringPtrL4("wireguard"),
+				WireGuardProfileID:   intPtrL4(7),
+				WireGuardInboundMode: stringPtrL4("address"),
+				Backends:             &[]L4Backend{{Host: "upstream", Port: 9001}},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := normalizeL4RuleInput(tc.input, L4Rule{}, 1)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("normalizeL4RuleInput() error = %v, want ErrInvalidArgument", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "listen_port") {
+				t.Fatalf("normalizeL4RuleInput() error = %v, want listen_port validation", err)
+			}
+		})
+	}
+}
+
 func TestL4WireGuardListenHostConflictsUseTunnelHost(t *testing.T) {
 	profileID := 7
 	existing := L4Rule{

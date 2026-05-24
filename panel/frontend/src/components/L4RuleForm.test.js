@@ -89,6 +89,7 @@ describe('L4RuleForm WireGuard egress', () => {
   it('disables WireGuard URI egress for WireGuard inbound rules', async () => {
     const wrapper = mountForm()
 
+    await selectByLabel(wrapper, '监听端口').setValue('1080')
     await switchTab(wrapper, '协议与监听')
     await selectByLabel(wrapper, '监听模式').setValue('wireguard')
     await selectByLabel(wrapper, '出口模式').setValue('wireguard')
@@ -115,6 +116,7 @@ describe('L4RuleForm WireGuard egress', () => {
   it('derives WireGuard address-mode listen host from the selected profile', async () => {
     const wrapper = mountForm()
 
+    await selectByLabel(wrapper, '监听端口').setValue('8443')
     await switchTab(wrapper, '协议与监听')
     await selectByLabel(wrapper, '监听模式').setValue('wireguard')
     await selectByLabel(wrapper, 'WireGuard 入站模式').setValue('address')
@@ -155,6 +157,40 @@ describe('L4RuleForm WireGuard egress', () => {
       wireguard_inbound_mode: 'transparent',
       wireguard_profile_id: 21
     })
+  })
+
+  it('allows port 0 for WireGuard transparent inbound rules', async () => {
+    const wrapper = mountForm()
+
+    await selectByLabel(wrapper, '监听端口').setValue('0')
+    await switchTab(wrapper, '协议与监听')
+    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('监听端口必须在 1-65535 之间')
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
+      protocol: 'tcp',
+      listen_port: 0,
+      listen_mode: 'wireguard',
+      proxy_egress_mode: '',
+      wireguard_inbound_mode: 'transparent',
+      wireguard_profile_id: 21,
+      backends: []
+    })
+  })
+
+  it('rejects port 0 outside WireGuard transparent inbound rules', async () => {
+    const wrapper = mountForm()
+
+    await selectByLabel(wrapper, '监听端口').setValue('0')
+    await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:9000')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('监听端口必须在 1-65535 之间')
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
   })
 
   it('does not offer entry authentication for WireGuard proxy egress', async () => {

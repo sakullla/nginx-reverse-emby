@@ -3124,6 +3124,10 @@ func (r *fakeWireGuardRuntime) ListenTCP(ctx context.Context, address string) (n
 	return nil, fmt.Errorf("wireguard listen not configured")
 }
 
+func (r *fakeWireGuardRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
+	return nil, fmt.Errorf("wireguard transparent tcp listen not configured")
+}
+
 func (r *fakeWireGuardRuntime) ListenUDP(ctx context.Context, address string) (net.PacketConn, error) {
 	if r.listenUDP != nil {
 		return r.listenUDP(ctx, address)
