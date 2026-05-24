@@ -1634,7 +1634,7 @@ func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
 		},
 		ProxyEgressMode:    "proxy",
 		ProxyEgressURL:     "socks://egress:egress-secret@127.0.0.1:1080",
-		WireGuardEgressURI: "wireguard://AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=@edge.example.com:51820?publickey=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=&psk=CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=&address=10.44.0.2/32#Edge",
+		WireGuardEgressURI: "wireguard://AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=@edge.example.com:51820?publickey=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=&preshared-key=CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=&address=10.44.0.2/32#Edge",
 		Enabled:            true,
 	}
 	router, err := NewRouter(Dependencies{
@@ -1688,7 +1688,7 @@ func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
 			if !strings.Contains(body, `"proxy_egress_url":"socks://egress:xxxxx@127.0.0.1:1080"`) {
 				t.Fatalf("response did not redact egress URL: %s", body)
 			}
-			if !strings.Contains(body, `"wireguard_egress_uri":"wireguard://xxxxx@edge.example.com:51820`) || !strings.Contains(body, `psk=xxxxx`) {
+			if !strings.Contains(body, `"wireguard_egress_uri":"wireguard://xxxxx@edge.example.com:51820`) || !strings.Contains(body, `preshared-key=xxxxx`) {
 				t.Fatalf("response did not redact WireGuard URI: %s", body)
 			}
 			if strings.Contains(body, `"password"`) {

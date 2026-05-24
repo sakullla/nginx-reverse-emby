@@ -155,7 +155,7 @@ func TestWireGuardClientURIIncludesReservedWhenPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClientURI() error = %v", err)
 	}
-	for _, want := range []string{"wireguard://", "publickey=", "address=", "allowedips=0.0.0.0%2F0%2C%3A%3A%2F0", "reserved=1%2C2%2C3"} {
+	for _, want := range []string{"wireguard://", "publickey=", "preshared-key=", "address=", "allowed-ips=%5B0.0.0.0%2F0%2C+%3A%3A%2F0%5D", "reserved=1%2C2%2C3"} {
 		if !strings.Contains(uri, want) {
 			t.Fatalf("uri %q missing %q", uri, want)
 		}

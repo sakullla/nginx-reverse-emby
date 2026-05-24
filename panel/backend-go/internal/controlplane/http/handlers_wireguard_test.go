@@ -438,7 +438,7 @@ func TestWireGuardClientURIEndpointReturnsText(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want text/plain", got)
 	}
 	body := strings.TrimSpace(uriResp.Body.String())
-	for _, want := range []string{"wireguard://", "publickey=", "address=", "allowedips=0.0.0.0%2F0%2C%3A%3A%2F0", "reserved=1%2C2%2C3"} {
+	for _, want := range []string{"wireguard://", "publickey=", "preshared-key=", "address=", "allowed-ips=%5B0.0.0.0%2F0%2C+%3A%3A%2F0%5D", "reserved=1%2C2%2C3"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("uri %q missing %q", body, want)
 		}
@@ -727,7 +727,7 @@ func validWireGuardHTTPClientProfilePayload(listenPort int) string {
 func validWireGuardHTTPURI() string {
 	return "wireguard://" + httpTestWireGuardPrivateKey + "@peer.example.com:51820/?" +
 		"publickey=" + httpTestWireGuardPublicKey +
-		"&psk=" + httpTestWireGuardPresharedKey +
+		"&preshared-key=" + httpTestWireGuardPresharedKey +
 		"&address=10.44.0.2%2F32" +
 		"&allowedips=0.0.0.0%2F0%2C%3A%3A%2F0" +
 		"&dns=1.1.1.1%2C2606%3A4700%3A4700%3A%3A1111" +
@@ -737,7 +737,7 @@ func validWireGuardHTTPURI() string {
 func validWireGuardHTTPURIWithReserved() string {
 	return "wireguard://" + httpTestWireGuardPrivateKey + "@peer.example.com:51820/?" +
 		"publickey=" + httpTestWireGuardPublicKey +
-		"&psk=" + httpTestWireGuardPresharedKey +
+		"&preshared-key=" + httpTestWireGuardPresharedKey +
 		"&address=10.44.0.2%2F32" +
 		"&allowedips=0.0.0.0%2F0%2C%3A%3A%2F0" +
 		"&dns=1.1.1.1%2C2606%3A4700%3A4700%3A%3A1111" +

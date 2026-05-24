@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -87,6 +88,8 @@ type tlsTCPLogicalStream struct {
 	readErr           error
 	readErrSet        bool
 	writeClosed       bool
+	readDeadline      time.Time
+	writeDeadline     time.Time
 
 	openResultCh chan muxOpenResult
 }
@@ -564,7 +567,7 @@ func (t *tlsTCPTunnel) writeFrame(ctx context.Context, frame muxFrame) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 
-	if err := t.refreshWriteDeadlineLocked(); err != nil {
+	if err := t.refreshWriteDeadlineLocked(ctx); err != nil {
 		return err
 	}
 	// This synchronous path owns frame payload lifetime. Queued writers hand
@@ -574,18 +577,44 @@ func (t *tlsTCPTunnel) writeFrame(ctx context.Context, frame muxFrame) error {
 	return err
 }
 
-func (t *tlsTCPTunnel) refreshWriteDeadlineLocked() error {
+func (t *tlsTCPTunnel) refreshWriteDeadlineLocked(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	timeout := getRelayFrameTimeout()
-	if timeout <= 0 || t.rawConn == nil {
+	if timeout <= 0 && t.rawConn == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if t.rawConn == nil {
 		return nil
 	}
 
 	now := time.Now()
-	if !t.writeDeadlineNext.IsZero() && now.Before(t.writeDeadlineNext.Add(-(timeout / 4))) {
+	ctxDeadline, hasCtxDeadline := ctx.Deadline()
+	if hasCtxDeadline && !ctxDeadline.After(now) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return os.ErrDeadlineExceeded
+	}
+
+	if !hasCtxDeadline && timeout > 0 && !t.writeDeadlineNext.IsZero() && now.Before(t.writeDeadlineNext.Add(-(timeout/4))) {
 		return nil
 	}
 
-	next := now.Add(timeout)
+	var next time.Time
+	if timeout > 0 {
+		next = now.Add(timeout)
+	}
+	if hasCtxDeadline && (next.IsZero() || ctxDeadline.Before(next)) {
+		next = ctxDeadline
+	}
+	if next.IsZero() {
+		return nil
+	}
 	if err := t.rawConn.SetWriteDeadline(next); err != nil {
 		return err
 	}
@@ -639,7 +668,7 @@ func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 
-	if err := t.refreshWriteDeadlineLocked(); err != nil {
+	if err := t.refreshWriteDeadlineLocked(context.Background()); err != nil {
 		for _, req := range batch {
 			t.queuedWrites.Add(-1)
 			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
@@ -861,6 +890,7 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 	for {
 		notifyReadSpace := false
 		s.readMu.Lock()
+		readDeadline := s.readDeadline
 		if len(s.readChunks) > 0 {
 			total := 0
 			for total < len(p) && len(s.readChunks) > 0 {
@@ -897,6 +927,27 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 			return 0, err
 		}
 		s.readMu.Unlock()
+		if !readDeadline.IsZero() {
+			until := time.Until(readDeadline)
+			if until <= 0 {
+				return 0, deadlineExceededError{}
+			}
+			timer := time.NewTimer(until)
+			select {
+			case <-s.readCh:
+				if !timer.Stop() {
+					<-timer.C
+				}
+			case <-s.tunnel.closed:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return 0, io.EOF
+			case <-timer.C:
+				return 0, deadlineExceededError{}
+			}
+			continue
+		}
 
 		select {
 		case <-s.readCh:
@@ -909,15 +960,28 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 func (s *tlsTCPLogicalStream) Write(p []byte) (int, error) {
 	s.readMu.Lock()
 	writeClosed := s.writeClosed
+	writeDeadline := s.writeDeadline
 	s.readMu.Unlock()
 	if writeClosed {
 		return 0, io.ErrClosedPipe
 	}
-	if err := s.tunnel.writeFrame(context.Background(), muxFrame{
+	ctx, cancel := context.WithCancel(context.Background())
+	if !writeDeadline.IsZero() {
+		if time.Until(writeDeadline) <= 0 {
+			cancel()
+			return 0, deadlineExceededError{}
+		}
+		ctx, cancel = context.WithDeadline(context.Background(), writeDeadline)
+	}
+	defer cancel()
+	if err := s.tunnel.writeFrame(ctx, muxFrame{
 		Type:     muxFrameTypeData,
 		StreamID: s.streamID,
 		Payload:  append([]byte(nil), p...),
 	}); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+			return 0, deadlineExceededError{}
+		}
 		return 0, err
 	}
 	return len(p), nil
@@ -1104,10 +1168,17 @@ func (s *tlsTCPLogicalStream) SetDeadline(t time.Time) error {
 }
 
 func (s *tlsTCPLogicalStream) SetReadDeadline(t time.Time) error {
+	s.readMu.Lock()
+	s.readDeadline = t
+	s.readMu.Unlock()
+	s.notifyReadable()
 	return nil
 }
 
 func (s *tlsTCPLogicalStream) SetWriteDeadline(t time.Time) error {
+	s.readMu.Lock()
+	s.writeDeadline = t
+	s.readMu.Unlock()
 	return nil
 }
 
@@ -1118,11 +1189,25 @@ func (s *tlsTCPLogicalStream) CloseWrite() error {
 		return nil
 	}
 	s.writeClosed = true
+	writeDeadline := s.writeDeadline
 	s.readMu.Unlock()
-	return s.tunnel.writeFrame(context.Background(), muxFrame{
+	ctx, cancel := context.WithCancel(context.Background())
+	if !writeDeadline.IsZero() {
+		if time.Until(writeDeadline) <= 0 {
+			cancel()
+			return deadlineExceededError{}
+		}
+		ctx, cancel = context.WithDeadline(context.Background(), writeDeadline)
+	}
+	defer cancel()
+	err := s.tunnel.writeFrame(ctx, muxFrame{
 		Type:     muxFrameTypeFin,
 		StreamID: s.streamID,
 	})
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return deadlineExceededError{}
+	}
+	return err
 }
 
 func (s *tlsTCPLogicalStream) CloseRead() error {
@@ -1252,6 +1337,13 @@ func (s *tlsTCPLogicalStream) notifyReadSpace() {
 	default:
 	}
 }
+
+type deadlineExceededError struct{}
+
+func (deadlineExceededError) Error() string   { return "i/o timeout" }
+func (deadlineExceededError) Timeout() bool   { return true }
+func (deadlineExceededError) Temporary() bool { return true }
+func (deadlineExceededError) Unwrap() error   { return os.ErrDeadlineExceeded }
 
 type serverTLSTCPSession struct {
 	tunnel *tlsTCPTunnel
