@@ -713,6 +713,7 @@ func cloneWireGuardProfiles(profiles []model.WireGuardProfile) []model.WireGuard
 	cloned := make([]model.WireGuardProfile, len(profiles))
 	for i, profile := range profiles {
 		cloned[i] = profile
+		cloned[i].BindAddresses = append([]string(nil), profile.BindAddresses...)
 		cloned[i].Addresses = append([]string(nil), profile.Addresses...)
 		cloned[i].DNS = append([]string(nil), profile.DNS...)
 		cloned[i].Tags = append([]string(nil), profile.Tags...)
