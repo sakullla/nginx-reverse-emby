@@ -330,25 +330,53 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 	}
 	trafficClass := relayDialTrafficClass(network, options)
 
-	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, trafficClass, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
-		return dialNewTLSTCPTunnelWithOptions(dialCtx, firstHop, provider, options)
-	})
-	if err != nil {
-		return nil, DialResult{}, err
-	}
-	defer release()
-
-	conn, result, err := tunnel.openStream(ctx, relayOpenFrame{
+	request := relayOpenFrame{
 		Kind:        network,
 		Target:      target,
 		Chain:       append([]Hop(nil), chain[1:]...),
 		Metadata:    relayMetadataForDialOptions(network, options),
 		InitialData: options.InitialPayload,
-	})
-	if err != nil {
-		return nil, DialResult{SelectedAddress: result.SelectedAddress}, err
 	}
-	return conn, DialResult{SelectedAddress: result.SelectedAddress}, nil
+
+	var lastResult muxOpenResult
+	var lastErr error
+	for attempt := 0; attempt < tlsTCPMuxOpenAttempts(options); attempt++ {
+		tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, trafficClass, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+			return dialNewTLSTCPTunnelWithOptions(dialCtx, firstHop, provider, options)
+		})
+		if err != nil {
+			return nil, DialResult{}, err
+		}
+
+		conn, result, err := tunnel.openStream(ctx, request)
+		release()
+		if err == nil {
+			return conn, DialResult{SelectedAddress: result.SelectedAddress}, nil
+		}
+		lastResult = result
+		lastErr = err
+		if !shouldRetryTLSTCPMuxOpen(ctx, err, options) {
+			break
+		}
+	}
+	return nil, DialResult{SelectedAddress: lastResult.SelectedAddress}, lastErr
+}
+
+func tlsTCPMuxOpenAttempts(options DialOptions) int {
+	if len(options.InitialPayload) > 0 {
+		return 1
+	}
+	return 2
+}
+
+func shouldRetryTLSTCPMuxOpen(ctx context.Context, err error, options DialOptions) bool {
+	if err == nil || len(options.InitialPayload) > 0 {
+		return false
+	}
+	if isRelayApplicationError(err) || isCallerDrivenContextError(ctx, err) {
+		return false
+	}
+	return true
 }
 
 func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) ([]string, error) {
@@ -454,12 +482,29 @@ func dialRelayWireGuardTCP(ctx context.Context, hop Hop, provider WireGuardRunti
 	if !ok || runtime == nil {
 		return nil, fmt.Errorf("wireguard profile %d runtime not found", *hop.Listener.WireGuardProfileID)
 	}
-	conn, err := runtime.DialContext(ctx, "tcp", hop.Address)
+	candidates, err := resolveRelayHopCandidates(ctx, hop.Address)
 	if err != nil {
 		return nil, err
 	}
-	tuneBulkRelayConn(conn)
-	return conn, nil
+	candidates = relayHopCandidatesAvailableForDial(candidates)
+
+	var lastErr error
+	for _, candidate := range candidates {
+		start := time.Now()
+		conn, err := runtime.DialContext(ctx, "tcp", candidate.Address)
+		if err != nil {
+			relayHopMarkFailure(candidate.Address)
+			lastErr = err
+			continue
+		}
+		relayHopObserveSuccess(candidate.Address, time.Since(start))
+		tuneBulkRelayConn(conn)
+		return conn, nil
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no healthy relay hop candidates for %s", hop.Address)
 }
 
 func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
@@ -548,8 +593,18 @@ func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.
 		Payload:  payload,
 	}); err != nil {
 		t.removeStream(streamID)
+		if !isCallerDrivenContextError(ctx, err) {
+			_ = t.close()
+		}
 		return nil, muxOpenResult{}, err
 	}
+
+	waitCtx := ctx
+	cancel := func() {}
+	if timeout := getRelayFrameTimeout(); timeout > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
 
 	select {
 	case result := <-stream.openResultCh:
@@ -561,9 +616,13 @@ func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.
 			return nil, result, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", result.Error)}
 		}
 		return stream, result, nil
-	case <-ctx.Done():
+	case <-waitCtx.Done():
 		t.removeStream(streamID)
-		return nil, muxOpenResult{}, ctx.Err()
+		err := waitCtx.Err()
+		if !isCallerDrivenContextError(ctx, err) {
+			_ = t.close()
+		}
+		return nil, muxOpenResult{}, err
 	case <-t.closed:
 		t.removeStream(streamID)
 		return nil, muxOpenResult{}, io.EOF

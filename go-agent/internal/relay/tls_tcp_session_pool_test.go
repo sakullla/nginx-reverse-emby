@@ -776,6 +776,92 @@ func TestWireGuardSessionPoolKeyIncludesTLSMaterial(t *testing.T) {
 	}
 }
 
+func TestTLSTCPTunnelOpenStreamHonorsFrameTimeoutAndClosesTunnel(t *testing.T) {
+	withRelayTimeouts(time.Second, time.Second, 20*time.Millisecond, time.Second, func() {
+		tunnel := &tlsTCPTunnel{
+			rawConn:    noopDeadlineConn{},
+			writer:     &bytes.Buffer{},
+			closeOuter: func() error { return nil },
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := tunnel.openStream(context.Background(), relayOpenFrame{
+				Kind:   "tcp",
+				Target: "127.0.0.1:443",
+			})
+			done <- err
+		}()
+
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("openStream() error = nil, want timeout")
+			}
+			netErr, ok := err.(net.Error)
+			if !ok || !netErr.Timeout() {
+				t.Fatalf("openStream() error = %v, want timeout net.Error", err)
+			}
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("openStream() did not honor relay frame timeout")
+		}
+
+		select {
+		case <-tunnel.closed:
+		default:
+			t.Fatal("openStream() timeout left tunnel pooled instead of closing it")
+		}
+	})
+}
+
+func TestDialTLSTCPMuxRetriesStalePooledTunnelWithoutInitialPayload(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 904, "relay-stale-mux", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	key, err := tlsTCPSessionPoolKey(hop, "")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey() error = %v", err)
+	}
+	stale := &tlsTCPTunnel{
+		key:        key,
+		rawConn:    noopDeadlineConn{},
+		writer:     &bytes.Buffer{},
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	relayTLSTCPSessionPool.mu.Lock()
+	relayTLSTCPSessionPool.sessions[key] = []*tlsTCPTunnel{stale}
+	relayTLSTCPSessionPool.mu.Unlock()
+
+	withRelayTimeouts(time.Second, time.Second, 20*time.Millisecond, time.Second, func() {
+		conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+		if err != nil {
+			t.Fatalf("Dial() error = %v, want retry on fresh tunnel", err)
+		}
+		defer conn.Close()
+		assertRoundTrip(t, conn, []byte("fresh-after-stale"))
+	})
+
+	select {
+	case <-stale.closed:
+	default:
+		t.Fatal("stale pooled tunnel was not closed")
+	}
+}
+
 func TestTLSTCPTunnelKeepsCongestionCountersUntilBlockedWriteFinishes(t *testing.T) {
 	writer := newBlockingFirstWrite()
 	tunnel := &tlsTCPTunnel{

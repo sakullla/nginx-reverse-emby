@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
@@ -570,6 +571,49 @@ func TestDialWireGuardRelayUsesRuntimeDialContext(t *testing.T) {
 	}
 	if calls[0].network != "tcp" || calls[0].address != hop.Address {
 		t.Fatalf("DialContext call = %+v, want tcp %s", calls[0], hop.Address)
+	}
+}
+
+func TestDialWireGuardRelayResolvesRelayHopAddressThroughCache(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	conn := &fakeRelayTCPBufferConn{}
+	wgRuntime := &fakeWireGuardRuntime{
+		dialContext: func(_ context.Context, _ string, _ string) (net.Conn, error) {
+			return conn, nil
+		},
+	}
+	wgProvider := fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{9: wgRuntime}}
+	profileID := 9
+	listener, hop := newRelayEndpoint(t, provider, 907, "relay-wg-domain", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	hop.Listener = listener
+	hop.Address = net.JoinHostPort("relay-wg.example", "9443")
+
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay-wg.example": {{IP: net.ParseIP("10.8.0.9")}},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	got, err := dialRelayRawTCP(context.Background(), hop, DialOptions{WireGuardProvider: wgProvider})
+	if err != nil {
+		t.Fatalf("dialRelayRawTCP() error = %v", err)
+	}
+	if got != conn {
+		t.Fatalf("dialRelayRawTCP() returned unexpected connection")
+	}
+	calls := wgRuntime.dialContextCalls()
+	if len(calls) != 1 {
+		t.Fatalf("DialContext calls = %d, want 1", len(calls))
+	}
+	if calls[0].address != "10.8.0.9:9443" {
+		t.Fatalf("WireGuard relay dial address = %q, want resolved relay hop address", calls[0].address)
 	}
 }
 
@@ -2134,6 +2178,52 @@ func TestDialWithResultReturnsSelectedAddressFromFinalHop(t *testing.T) {
 
 	if result.SelectedAddress != backendAddr {
 		t.Fatalf("SelectedAddress = %q, want %q", result.SelectedAddress, backendAddr)
+	}
+}
+
+func TestDialWithResultResolvesEveryRelayHopAddress(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listenerA, hopA := newRelayEndpoint(t, provider, 101, "relay-domain-a", "pin_only", true, false)
+	listenerB, hopB := newRelayEndpoint(t, provider, 102, "relay-domain-b", "pin_only", true, false)
+
+	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
+	if err != nil {
+		t.Fatalf("Start(A) error = %v", err)
+	}
+	defer serverA.Close()
+	serverB, err := Start(context.Background(), []Listener{listenerB}, provider)
+	if err != nil {
+		t.Fatalf("Start(B) error = %v", err)
+	}
+	defer serverB.Close()
+
+	hopA.Address = net.JoinHostPort("relay-a.example", strconv.Itoa(listenerA.ListenPort))
+	hopB.Address = net.JoinHostPort("relay-b.example", strconv.Itoa(listenerB.ListenPort))
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay-a.example": {{IP: net.ParseIP("127.0.0.1")}},
+			"relay-b.example": {{IP: net.ParseIP("127.0.0.1")}},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hopA, hopB}, provider)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+	assertRoundTrip(t, conn, []byte("relay-hop-domain-chain"))
+
+	if resolver.calls != 2 {
+		t.Fatalf("resolver calls = %d, want relay A and relay B hop lookups", resolver.calls)
 	}
 }
 

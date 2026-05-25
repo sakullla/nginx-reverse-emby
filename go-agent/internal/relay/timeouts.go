@@ -3,10 +3,14 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 )
 
 var (
@@ -52,6 +56,8 @@ var relayDialContext relayDialContextFunc = func(ctx context.Context, network, a
 	dialer := newRelayTCPDialer()
 	return dialer.DialContext(ctx, network, address)
 }
+
+var relayHopCache = backends.NewCache(backends.Config{})
 
 func newRelayTCPDialer() net.Dialer {
 	var dialer net.Dialer
@@ -121,7 +127,15 @@ func dialTCPWithTuning(ctx context.Context, address string, tuneBuffers bool) (n
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 
-	conn, err := relayDialContext(dialCtx, "tcp", address)
+	var (
+		conn net.Conn
+		err  error
+	)
+	if tuneBuffers {
+		conn, err = dialRelayHopTCP(dialCtx, address)
+	} else {
+		conn, err = relayDialContext(dialCtx, "tcp", address)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -129,6 +143,86 @@ func dialTCPWithTuning(ctx context.Context, address string, tuneBuffers bool) (n
 		tuneBulkRelayConn(conn)
 	}
 	return conn, nil
+}
+
+func dialRelayHopTCP(ctx context.Context, address string) (net.Conn, error) {
+	candidates, err := resolveRelayHopCandidates(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	candidates = relayHopCandidatesAvailableForDial(candidates)
+
+	var lastErr error
+	for _, candidate := range candidates {
+		start := time.Now()
+		conn, err := relayDialContext(ctx, "tcp", candidate.Address)
+		if err != nil {
+			relayHopMarkFailure(candidate.Address)
+			lastErr = err
+			continue
+		}
+		relayHopObserveSuccess(candidate.Address, time.Since(start))
+		return conn, nil
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no healthy relay hop candidates for %s", address)
+}
+
+func relayHopCandidatesAvailableForDial(candidates []backends.Candidate) []backends.Candidate {
+	if len(candidates) <= 1 {
+		return candidates
+	}
+	available := make([]backends.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !relayHopCandidateInBackoff(candidate.Address) {
+			available = append(available, candidate)
+		}
+	}
+	if len(available) == 0 {
+		return candidates
+	}
+	return available
+}
+
+func resolveRelayHopCandidates(ctx context.Context, address string) ([]backends.Candidate, error) {
+	cache := relayHopCache
+	if cache == nil {
+		return []backends.Candidate{{Address: address}}, nil
+	}
+
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		return []backends.Candidate{{Address: address}}, nil
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 || port > 65535 {
+		return []backends.Candidate{{Address: address}}, nil
+	}
+
+	candidates, err := cache.Resolve(ctx, backends.Endpoint{Host: host, Port: port})
+	if err != nil {
+		return nil, err
+	}
+	return cache.PreferResolvedCandidatesLatencyOnly(candidates), nil
+}
+
+func relayHopCandidateInBackoff(address string) bool {
+	cache := relayHopCache
+	return cache != nil && cache.IsInBackoff(address)
+}
+
+func relayHopMarkFailure(address string) {
+	if cache := relayHopCache; cache != nil {
+		cache.MarkFailure(address)
+	}
+}
+
+func relayHopObserveSuccess(address string, latency time.Duration) {
+	if cache := relayHopCache; cache != nil {
+		cache.ObserveTransferSuccess(address, latency, 0, 0)
+	}
 }
 
 func handshakeTLS(ctx context.Context, conn *tls.Conn) error {
