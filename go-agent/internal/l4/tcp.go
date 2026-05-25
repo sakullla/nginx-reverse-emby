@@ -86,7 +86,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 
 	var initialPayload []byte
 	if ruleUsesRelay(rule) && !rule.Tuning.ProxyProtocol.Send {
-		initialPayload, downstreamSource, err = s.prefetchRelayInitialPayload(rule, client, downstreamSource)
+		initialPayload, downstreamSource, err = s.prefetchRelayInitialPayload(client, downstreamSource)
 		if err != nil {
 			return
 		}
@@ -252,7 +252,7 @@ func copyL4TCP(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic
 	return copyPreferReaderFrom(wrapped, src)
 }
 
-func (s *Server) prefetchRelayInitialPayload(rule model.L4Rule, client net.Conn, source io.Reader) ([]byte, io.Reader, error) {
+func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]byte, io.Reader, error) {
 	if source == nil {
 		return nil, source, nil
 	}
@@ -269,34 +269,8 @@ func (s *Server) prefetchRelayInitialPayload(rule model.L4Rule, client net.Conn,
 		return buf[:n], source, nil
 	}
 
-	if !isWireGuardRelayRule(rule) || client == nil || source != client {
-		return nil, source, nil
-	}
-	if relayInitialPayloadWait <= 0 {
-		return nil, source, nil
-	}
-
-	buf := make([]byte, relayInitialPayloadMax)
-	if err := client.SetReadDeadline(s.now().Add(relayInitialPayloadWait)); err != nil {
-		return nil, source, err
-	}
-	n, err := client.Read(buf)
-	restoreErr := client.SetReadDeadline(time.Time{})
-	if n > 0 {
-		return buf[:n], source, nil
-	}
-	if restoreErr != nil {
-		return nil, source, restoreErr
-	}
-	if err != nil {
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			return nil, source, nil
-		}
-		if errors.Is(err, io.EOF) {
-			return nil, source, nil
-		}
-		return nil, source, err
-	}
+	// Do not stall relay dials waiting for client bytes. Only buffered downstream
+	// data is folded into OPEN; raw connections fall back to normal relay copy.
 	return nil, source, nil
 }
 

@@ -18,11 +18,8 @@ import (
 )
 
 const (
-	relayInitialPayloadMax  = 32 * 1024
-	relayInitialPayloadWait = 2 * time.Millisecond
-	relayPrewarmMaxPaths    = 32
-	relayPrewarmTimeout     = 5 * time.Second
-	defaultUDPReplyTimeout  = time.Second
+	relayInitialPayloadMax = 32 * 1024
+	defaultUDPReplyTimeout = time.Second
 )
 
 type RelayMaterialProvider interface {
@@ -180,9 +177,6 @@ func newServerWithOptions(
 		default:
 			s.Close()
 			return nil, fmt.Errorf("unsupported protocol %q", rule.Protocol)
-		}
-		if isWireGuardRelayRule(rule) {
-			s.prewarmRelayRule(rule)
 		}
 	}
 	return s, nil

@@ -21,8 +21,6 @@ type relayPathDialer struct {
 	wireGuardProvider relay.WireGuardRuntimeProvider
 }
 
-var relayPrewarmProbePath = relay.ProbePath
-
 func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
 	options := relay.DialOptions{}
 	if len(req.Options) > 0 {
@@ -168,29 +166,6 @@ func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOp
 	return result.Conn, nil
 }
 
-func (s *Server) prewarmRelayRule(rule model.L4Rule) {
-	paths, err := s.resolveRelayPaths(rule)
-	if err != nil {
-		return
-	}
-	if len(paths) > relayPrewarmMaxPaths {
-		paths = paths[:relayPrewarmMaxPaths]
-	}
-	for _, path := range paths {
-		if len(path.Hops) == 0 {
-			continue
-		}
-		path := path
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			ctx, cancel := context.WithTimeout(s.ctx, relayPrewarmTimeout)
-			defer cancel()
-			_, _ = relayPrewarmProbePath(ctx, "tcp", "", path.Hops, s.relayProvider)
-		}()
-	}
-}
-
 func cloneRelayPlanPaths(paths []relayplan.Path) []relayplan.Path {
 	cloned := make([]relayplan.Path, len(paths))
 	for i, path := range paths {
@@ -227,10 +202,6 @@ func (s *Server) resolveRelayPaths(rule model.L4Rule) ([]relayplan.Path, error) 
 
 func ruleUsesRelay(rule model.L4Rule) bool {
 	return relayroute.UsesRelay(nil, rule.RelayLayers)
-}
-
-func isWireGuardRelayRule(rule model.L4Rule) bool {
-	return ruleUsesRelay(rule) && strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
 }
 
 func (s *Server) wireGuardRuntime(rule model.L4Rule) (relay.WireGuardRuntime, error) {
