@@ -1180,7 +1180,7 @@ func wireGuardProfileToRow(profile WireGuardProfile) storage.WireGuardProfileRow
 
 func wireGuardProfileBindAddressesFromRow(row storage.WireGuardProfileRow) []string {
 	addresses := parseStringArray(row.BindAddressesJSON)
-	if len(addresses) == 0 && row.ListenPort > 0 {
+	if len(addresses) == 0 {
 		return []string{"0.0.0.0"}
 	}
 	return addresses

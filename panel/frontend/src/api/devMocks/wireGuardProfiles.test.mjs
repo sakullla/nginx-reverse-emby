@@ -25,7 +25,8 @@ describe('dev WireGuard profile mocks', () => {
       mode: 'generic_wireguard',
       private_key: 'xxxxx',
       listen_port: 51830,
-      addresses: ['10.8.10.1/24'],
+      addresses: ['0.0.0.0'],
+      interface_addresses: ['10.8.10.1/24'],
       peers: [],
       enabled: true
     })
@@ -42,7 +43,8 @@ describe('dev WireGuard profile mocks', () => {
       mode: 'generic_wireguard',
       private_key: 'xxxxx',
       listen_port: 51831,
-      addresses: ['10.8.11.1/24'],
+      addresses: ['0.0.0.0'],
+      interface_addresses: ['10.8.11.1/24'],
       peers: [],
       enabled: true
     })
@@ -52,7 +54,8 @@ describe('dev WireGuard profile mocks', () => {
       name: 'client-owned-renamed',
       private_key: 'xxxxx',
       listen_port: 51831,
-      addresses: ['10.8.11.1/24'],
+      addresses: ['0.0.0.0'],
+      interface_addresses: ['10.8.11.1/24'],
       peers: [],
       enabled: true
     })
