@@ -32,20 +32,29 @@ func TestWgPerfHarnessIncludesWireGuardRelay(t *testing.T) {
 		t.Fatalf("relay-wg L4Rules = %d, want WireGuard entry rule", len(relayWG.L4Rules))
 	}
 	rule := relayWG.L4Rules[0]
-	if rule.ListenPort != 7000 {
-		t.Fatalf("relay-wg listen_port = %d, want 7000", rule.ListenPort)
+	if rule.ListenPort != 0 {
+		t.Fatalf("relay-wg listen_port = %d, want transparent wildcard port 0", rule.ListenPort)
 	}
-	if rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "address" || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 1 {
+	if rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 1 {
 		t.Fatalf("relay-wg WireGuard entry mode/profile = mode=%q inbound=%q profile=%#v", rule.ListenMode, rule.WireGuardInboundMode, rule.WireGuardProfileID)
 	}
-	if rule.WireGuardListenHost != "10.80.0.1" {
-		t.Fatalf("relay-wg wireguard_listen_host = %q, want 10.80.0.1", rule.WireGuardListenHost)
+	if rule.ProxyEgressMode != "relay" {
+		t.Fatalf("relay-wg proxy_egress_mode = %q, want relay", rule.ProxyEgressMode)
 	}
-	if len(rule.Backends) != 1 || rule.Backends[0].Host != cfg.backendHost || rule.Backends[0].Port != cfg.backendPort {
-		t.Fatalf("relay-wg backends = %+v, want backend host/port", rule.Backends)
+	if rule.WireGuardListenHost != "" {
+		t.Fatalf("relay-wg wireguard_listen_host = %q, want empty transparent listener host", rule.WireGuardListenHost)
+	}
+	if len(rule.Backends) != 0 {
+		t.Fatalf("relay-wg backends = %+v, want transparent target from original destination", rule.Backends)
 	}
 	if want := [][]int{{2, 3}, {4, 5}}; !reflect.DeepEqual(rule.RelayLayers, want) {
 		t.Fatalf("relay-wg relay_layers = %#v, want %#v", rule.RelayLayers, want)
+	}
+	if relayWG.RelayListeners[0].PublicHost != "relay-a1.wg-perf.test" {
+		t.Fatalf("relay-a1 public_host = %q, want DNS name", relayWG.RelayListeners[0].PublicHost)
+	}
+	if relayWG.RelayListeners[2].PublicHost != "relay-b3.wg-perf.test" {
+		t.Fatalf("relay-b3 public_host = %q, want DNS name", relayWG.RelayListeners[2].PublicHost)
 	}
 	if len(relayWG.WireGuardProfiles) != 1 {
 		t.Fatalf("relay-wg WireGuardProfiles = %d, want owner profile", len(relayWG.WireGuardProfiles))
@@ -92,8 +101,11 @@ func TestWgPerfComposeUsesL4EntryPort(t *testing.T) {
 		t.Fatalf("read compose: %v", err)
 	}
 	compose := string(data)
-	if !strings.Contains(compose, "HARNESS_ENTRY_ADDRESS: ${HARNESS_ENTRY_ADDRESS:-10.80.0.1:7000}") {
-		t.Fatal("compose does not default perf entry address to WireGuard tunnel L4 10.80.0.1:7000")
+	if !strings.Contains(compose, "HARNESS_ENTRY_ADDRESS: ${HARNESS_ENTRY_ADDRESS:-172.30.3.12:9001}") {
+		t.Fatal("compose does not default perf entry address to final agent-b L4 IP through WireGuard")
+	}
+	if !strings.Contains(compose, "HARNESS_WG_ALLOWED_IPS: ${HARNESS_WG_ALLOWED_IPS:-172.30.3.12/32}") {
+		t.Fatal("compose does not route the final target IP through WireGuard")
 	}
 	if !strings.Contains(compose, "dockerfile: scripts/wg-perf/Dockerfile.agent") {
 		t.Fatal("compose does not use wg-perf agent Dockerfile")
@@ -103,6 +115,11 @@ func TestWgPerfComposeUsesL4EntryPort(t *testing.T) {
 	}
 	if !strings.Contains(compose, "ip link add wg0 type wireguard") {
 		t.Fatal("compose perf runner does not create wg0 client interface")
+	}
+	for _, want := range []string{"relay-a1.wg-perf.test", "relay-a2.wg-perf.test", "relay-b3.wg-perf.test", "relay-b4.wg-perf.test"} {
+		if !strings.Contains(compose, want) {
+			t.Fatalf("compose missing relay DNS alias %q", want)
+		}
 	}
 	for _, name := range []string{"nre-agent-b", "nre-backend-b"} {
 		if !strings.Contains(compose, name) || !strings.Contains(compose, "NET_ADMIN") {

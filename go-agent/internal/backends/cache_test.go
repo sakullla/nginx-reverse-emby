@@ -2,6 +2,7 @@ package backends
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net"
 	"reflect"
@@ -56,6 +57,70 @@ func TestCacheResolveUsesFixedDNSCacheTTL(t *testing.T) {
 	}
 	if resolver.calls != 2 {
 		t.Fatalf("expected resolver to be called exactly twice, got %d", resolver.calls)
+	}
+}
+
+func TestCacheResolveUsesStaleDNSResultWhenRefreshFails(t *testing.T) {
+	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	now := base
+	resolver := &stubResolver{
+		results: [][]net.IPAddr{
+			{{IP: net.ParseIP("10.0.0.1")}},
+		},
+		errs: []error{nil, errors.New("dns refresh failed")},
+	}
+
+	cache := NewCache(Config{
+		Resolver: resolver,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	endpoint := Endpoint{Host: "backend.example.internal", Port: 8096}
+	if _, err := cache.Resolve(context.Background(), endpoint); err != nil {
+		t.Fatalf("resolve #1: %v", err)
+	}
+
+	now = now.Add(dnsCacheTTL + time.Second)
+	stale, err := cache.Resolve(context.Background(), endpoint)
+	if err != nil {
+		t.Fatalf("resolve stale after refresh error: %v", err)
+	}
+	if got := stale[0].Address; got != "10.0.0.1:8096" {
+		t.Fatalf("stale resolved address = %q, want previous IP", got)
+	}
+	if resolver.calls != 2 {
+		t.Fatalf("resolver calls = %d, want refresh attempt", resolver.calls)
+	}
+}
+
+func TestCacheResolveReturnsRefreshErrorAfterStaleDNSWindowExpires(t *testing.T) {
+	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	now := base
+	refreshErr := errors.New("dns refresh failed")
+	resolver := &stubResolver{
+		results: [][]net.IPAddr{
+			{{IP: net.ParseIP("10.0.0.1")}},
+		},
+		errs: []error{nil, refreshErr},
+	}
+
+	cache := NewCache(Config{
+		Resolver: resolver,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	endpoint := Endpoint{Host: "backend.example.internal", Port: 8096}
+	if _, err := cache.Resolve(context.Background(), endpoint); err != nil {
+		t.Fatalf("resolve #1: %v", err)
+	}
+
+	now = now.Add(dnsCacheTTL + dnsCacheStaleIfErrorTTL + time.Second)
+	if _, err := cache.Resolve(context.Background(), endpoint); !errors.Is(err, refreshErr) {
+		t.Fatalf("resolve after stale window error = %v, want %v", err, refreshErr)
 	}
 }
 
@@ -1508,6 +1573,7 @@ func addresses(candidates []Candidate) []string {
 
 type stubResolver struct {
 	results [][]net.IPAddr
+	errs    []error
 	calls   int
 }
 
@@ -1515,10 +1581,14 @@ func (s *stubResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAdd
 	if host == "" {
 		return nil, nil
 	}
-	idx := s.calls
+	call := s.calls
+	s.calls++
+	if call < len(s.errs) && s.errs[call] != nil {
+		return nil, s.errs[call]
+	}
+	idx := call
 	if idx >= len(s.results) {
 		idx = len(s.results) - 1
 	}
-	s.calls++
 	return s.results[idx], nil
 }
