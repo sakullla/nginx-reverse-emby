@@ -128,6 +128,31 @@ func TestWireGuardProfileServiceEnsureDefaultReusesExistingDefault(t *testing.T)
 	}
 }
 
+func TestWireGuardProfileListIncludesClientCount(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc := newTestWireGuardProfileService(t)
+	clientSvc := NewWireGuardClientService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	profile, err := profileSvc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"}); err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+
+	profiles, err := profileSvc.List(ctx, "local")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("List() length = %d, want 1", len(profiles))
+	}
+	if profiles[0].ClientCount != 1 {
+		t.Fatalf("List() client_count = %d, want 1", profiles[0].ClientCount)
+	}
+}
+
 func TestWireGuardProfileCreateAllocatesIDAcrossAgents(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)

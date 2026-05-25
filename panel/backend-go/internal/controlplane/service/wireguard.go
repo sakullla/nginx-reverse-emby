@@ -44,6 +44,7 @@ type WireGuardProfile struct {
 	Enabled            bool            `json:"enabled"`
 	Tags               []string        `json:"tags"`
 	Revision           int             `json:"revision"`
+	ClientCount        int             `json:"client_count"`
 }
 
 type WireGuardProfileInput struct {
@@ -142,7 +143,13 @@ func (s *wireGuardProfileService) List(ctx context.Context, agentID string) ([]W
 	}
 	profiles := make([]WireGuardProfile, 0, len(rows))
 	for _, row := range rows {
-		profiles = append(profiles, redactWireGuardProfile(wireGuardProfileFromRow(row)))
+		profile := wireGuardProfileFromRow(row)
+		clients, err := s.store.ListWireGuardClients(ctx, resolvedID, profile.ID)
+		if err != nil {
+			return nil, err
+		}
+		profile.ClientCount = len(clients)
+		profiles = append(profiles, redactWireGuardProfile(profile))
 	}
 	return profiles, nil
 }

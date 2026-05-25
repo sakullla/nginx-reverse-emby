@@ -41,6 +41,7 @@
           v-for="profile in profiles"
           :key="profile.id"
           :profile="profile"
+          :client-count="Number(profile.client_count || 0)"
           @toggle="toggleProfileEnabled"
           @edit="startEditProfile"
           @delete="deletingProfile = profile"
