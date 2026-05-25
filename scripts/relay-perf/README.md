@@ -48,6 +48,7 @@
 `harness.go` 支持这些环境变量：
 
 - `HARNESS_RTT_ITERATIONS`
+- `HARNESS_BENCHMARKS`：逗号分隔，只跑指定项，例如 `relay_a_to_b_c1,relay_a_to_b_c8`
 - `HARNESS_C1_BYTES`
 - `HARNESS_C1_DURATION_SECONDS`
 - `HARNESS_C8_BYTES_PER_CONN`

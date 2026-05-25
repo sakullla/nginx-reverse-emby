@@ -77,7 +77,8 @@ if ($null -ne $delayCliToA -and $delayCliToA -gt 0) {
 
 if ($null -ne $delayAToRelay -and $delayAToRelay -gt 0) {
     Apply-NetemDelayOnCIDR -Container 'nre-agent-a' -CIDR '172.29.2.10/24' -DelayMs $delayAToRelay
-    Apply-NetemDelayOnCIDR -Container 'nre-relay-b' -CIDR '172.29.2.11/24' -DelayMs $delayAToRelay
+    Apply-NetemDelayOnCIDR -Container 'nre-relay-a1' -CIDR '172.29.2.11/24' -DelayMs $delayAToRelay
+    Apply-NetemDelayOnCIDR -Container 'nre-relay-a2' -CIDR '172.29.2.12/24' -DelayMs $delayAToRelay
 }
 
 $statsRows = [System.Collections.Generic.List[string]]::new()

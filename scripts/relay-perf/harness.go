@@ -22,6 +22,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -37,6 +38,7 @@ type config struct {
 	c8BytesPerConn  int64
 	c8Duration      time.Duration
 	c8Concurrency   int
+	benchmarkFilter string
 	preMeasureWait  time.Duration
 	backendAddr     string
 	backendHost     string
@@ -44,6 +46,11 @@ type config struct {
 	relayTargetHost string
 	relayPublicHost string
 	relayPublicPort int
+}
+
+type benchmarkCase struct {
+	name string
+	run  func() result
 }
 
 type snapshot struct {
@@ -59,17 +66,23 @@ type snapshot struct {
 type httpRule struct{}
 
 type l4Rule struct {
-	ID           int     `json:"id,omitempty"`
-	Name         string  `json:"name,omitempty"`
-	Protocol     string  `json:"protocol"`
-	ListenHost   string  `json:"listen_host"`
-	ListenPort   int     `json:"listen_port"`
-	UpstreamHost string  `json:"upstream_host"`
-	UpstreamPort int     `json:"upstream_port"`
-	RelayChain   []int   `json:"relay_chain,omitempty"`
-	RelayLayers  [][]int `json:"relay_layers,omitempty"`
-	Enabled      bool    `json:"enabled"`
-	Revision     int64   `json:"revision"`
+	ID           int         `json:"id,omitempty"`
+	Name         string      `json:"name,omitempty"`
+	Protocol     string      `json:"protocol"`
+	ListenHost   string      `json:"listen_host"`
+	ListenPort   int         `json:"listen_port"`
+	UpstreamHost string      `json:"upstream_host"`
+	UpstreamPort int         `json:"upstream_port"`
+	Backends     []l4Backend `json:"backends,omitempty"`
+	RelayChain   []int       `json:"relay_chain,omitempty"`
+	RelayLayers  [][]int     `json:"relay_layers,omitempty"`
+	Enabled      bool        `json:"enabled"`
+	Revision     int64       `json:"revision"`
+}
+
+type l4Backend struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }
 
 type relayListener struct {
@@ -176,13 +189,29 @@ func main() {
 		time.Sleep(cfg.preMeasureWait)
 	}
 
-	results := []result{
-		measureRTT("direct_b_rtt", cfg.directAddress, cfg.rttIterations),
-		measureRTT("relay_a_to_b_rtt", cfg.entryAddress, cfg.rttIterations),
-		measureThroughput("direct_b_c1", cfg.directAddress, 1, cfg.c1Bytes, cfg.c1Duration),
-		measureThroughput("relay_a_to_b_c1", cfg.entryAddress, 1, cfg.c1Bytes, cfg.c1Duration),
-		measureThroughput("direct_b_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration),
-		measureThroughput("relay_a_to_b_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration),
+	benchmarks := []benchmarkCase{
+		{name: "direct_b_rtt", run: func() result { return measureRTT("direct_b_rtt", cfg.directAddress, cfg.rttIterations) }},
+		{name: "relay_a_to_b_rtt", run: func() result { return measureRTT("relay_a_to_b_rtt", cfg.entryAddress, cfg.rttIterations) }},
+		{name: "direct_b_c1", run: func() result {
+			return measureThroughput("direct_b_c1", cfg.directAddress, 1, cfg.c1Bytes, cfg.c1Duration)
+		}},
+		{name: "relay_a_to_b_c1", run: func() result {
+			return measureThroughput("relay_a_to_b_c1", cfg.entryAddress, 1, cfg.c1Bytes, cfg.c1Duration)
+		}},
+		{name: "direct_b_c8", run: func() result {
+			return measureThroughput("direct_b_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
+		}},
+		{name: "relay_a_to_b_c8", run: func() result {
+			return measureThroughput("relay_a_to_b_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
+		}},
+	}
+	selected, err := selectBenchmarks(cfg.benchmarkFilter, benchmarks)
+	if err != nil {
+		log.Fatal(err)
+	}
+	results := make([]result, 0, len(selected))
+	for _, bench := range selected {
+		results = append(results, bench.run())
 	}
 	for _, res := range results {
 		emit("RESULT", res)
@@ -205,6 +234,7 @@ func loadConfig() config {
 		c8BytesPerConn:  envBytes("HARNESS_C8_BYTES_PER_CONN", 256<<20),
 		c8Duration:      envSeconds("HARNESS_C8_DURATION_SECONDS", 0),
 		c8Concurrency:   envInt("HARNESS_C8_CONCURRENCY", 8),
+		benchmarkFilter: envString("HARNESS_BENCHMARKS", ""),
 		preMeasureWait:  time.Duration(envInt("HARNESS_PRE_MEASURE_DELAY_MS", 0)) * time.Millisecond,
 		backendAddr:     backendListenAddr,
 		backendHost:     backendHost,
@@ -213,6 +243,35 @@ func loadConfig() config {
 		relayPublicHost: envString("HARNESS_RELAY_PUBLIC_HOST", "172.29.2.11"),
 		relayPublicPort: envInt("HARNESS_RELAY_PUBLIC_PORT", 9443),
 	}
+}
+
+func selectBenchmarks(filter string, benchmarks []benchmarkCase) ([]benchmarkCase, error) {
+	if strings.TrimSpace(filter) == "" {
+		return benchmarks, nil
+	}
+	byName := make(map[string]benchmarkCase, len(benchmarks))
+	for _, bench := range benchmarks {
+		byName[bench.name] = bench
+	}
+	fields := strings.FieldsFunc(filter, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	})
+	selected := make([]benchmarkCase, 0, len(fields))
+	for _, field := range fields {
+		name := strings.TrimSpace(field)
+		if name == "" {
+			continue
+		}
+		bench, ok := byName[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown HARNESS_BENCHMARKS item %q", name)
+		}
+		selected = append(selected, bench)
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("HARNESS_BENCHMARKS did not select any benchmark")
+	}
+	return selected, nil
 }
 
 func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot {
@@ -260,6 +319,7 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 				ListenPort:   7000,
 				UpstreamHost: cfg.backendHost,
 				UpstreamPort: cfg.backendPort,
+				Backends:     []l4Backend{{Host: cfg.backendHost, Port: cfg.backendPort}},
 				RelayLayers:  [][]int{{1, 2}, {3, 4}},
 				Enabled:      true,
 				Revision:     1,
@@ -316,6 +376,7 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 				ListenPort:   9001,
 				UpstreamHost: cfg.backendHost,
 				UpstreamPort: cfg.backendPort,
+				Backends:     []l4Backend{{Host: cfg.backendHost, Port: cfg.backendPort}},
 				Enabled:      true,
 				Revision:     1,
 			}},
