@@ -1783,6 +1783,22 @@ func TestRelayRuntimeManagerAppliesWireGuardProfilesWithoutLocalListeners(t *tes
 	}
 }
 
+func TestCloneWireGuardProfilesDeepCopiesBindAddresses(t *testing.T) {
+	profiles := []model.WireGuardProfile{validAppWireGuardProfile(9)}
+	profiles[0].BindAddresses = []string{"127.0.0.1"}
+
+	cloned := cloneWireGuardProfiles(profiles)
+	profiles[0].BindAddresses[0] = "192.0.2.10"
+	if got := cloned[0].BindAddresses[0]; got != "127.0.0.1" {
+		t.Fatalf("cloned bind address changed after source mutation: %q", got)
+	}
+
+	cloned[0].BindAddresses[0] = "192.0.2.20"
+	if got := profiles[0].BindAddresses[0]; got != "192.0.2.10" {
+		t.Fatalf("source bind address changed after clone mutation: %q", got)
+	}
+}
+
 func TestRelayRuntimeManagerPreservesRunningServerOnReplacementWireGuardListenFailure(t *testing.T) {
 	provider := &testRelayTLSProvider{
 		certificates: map[int]tls.Certificate{

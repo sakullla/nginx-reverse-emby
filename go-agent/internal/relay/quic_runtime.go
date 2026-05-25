@@ -287,7 +287,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	}
 
 	session, stream, err := openQUICStream(ctx, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
-		return quicDialAddr(dialCtx, firstHop.Address, tlsConfig, newRelayQUICConfig())
+		return dialQUICRelayHop(dialCtx, firstHop.Address, tlsConfig)
 	})
 	if err != nil {
 		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
@@ -348,7 +348,7 @@ func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, prov
 	}
 
 	session, stream, err := openQUICStream(ctx, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
-		return quicDialAddr(dialCtx, firstHop.Address, tlsConfig, newRelayQUICConfig())
+		return dialQUICRelayHop(dialCtx, firstHop.Address, tlsConfig)
 	})
 	if err != nil {
 		return nil, err
@@ -409,6 +409,31 @@ func openQUICStream(ctx context.Context, sessionKey string, dial func(context.Co
 		lastErr = errors.New("failed to open relay stream")
 	}
 	return nil, nil, lastErr
+}
+
+func dialQUICRelayHop(ctx context.Context, address string, tlsConfig *tls.Config) (*quic.Conn, error) {
+	candidates, err := resolveRelayHopCandidates(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	candidates = relayHopCandidatesAvailableForDial(candidates)
+
+	var lastErr error
+	for _, candidate := range candidates {
+		start := time.Now()
+		conn, err := quicDialAddr(ctx, candidate.Address, tlsConfig, newRelayQUICConfig())
+		if err != nil {
+			relayHopMarkFailure(candidate.Address)
+			lastErr = err
+			continue
+		}
+		relayHopObserveSuccess(candidate.Address, time.Since(start))
+		return conn, nil
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no healthy relay hop candidates for %s", address)
 }
 
 func newRelayQUICConfig() *quic.Config {
