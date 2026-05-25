@@ -15,6 +15,7 @@ import (
 
 const (
 	dnsCacheTTL                         = 30 * time.Second
+	dnsCacheStaleIfErrorTTL             = 2 * time.Minute
 	failureBackoffBase                  = time.Second
 	failureBackoffLimit                 = 60 * time.Second
 	observationWindow                   = 24 * time.Hour
@@ -67,8 +68,9 @@ type PruneStats struct {
 }
 
 type dnsCacheEntry struct {
-	ips       []string
-	expiresAt time.Time
+	ips        []string
+	expiresAt  time.Time
+	staleUntil time.Time
 }
 
 type failureEntry struct {
@@ -228,8 +230,9 @@ func (c *Cache) Clone() *Cache {
 	}
 	for key, entry := range c.dnsCache {
 		clone.dnsCache[key] = dnsCacheEntry{
-			ips:       append([]string(nil), entry.ips...),
-			expiresAt: entry.expiresAt,
+			ips:        append([]string(nil), entry.ips...),
+			expiresAt:  entry.expiresAt,
+			staleUntil: entry.staleUntil,
 		}
 	}
 	for key, entry := range c.failures {
@@ -278,7 +281,7 @@ func (c *Cache) pruneLocked(now time.Time, force bool) PruneStats {
 
 	stats := PruneStats{}
 	for key, entry := range c.dnsCache {
-		if !now.Before(entry.expiresAt) {
+		if !now.Before(entry.dnsRetainUntil()) {
 			delete(c.dnsCache, key)
 			stats.DNSEntries++
 		}
@@ -555,6 +558,9 @@ func (c *Cache) lookupHost(ctx context.Context, host string) ([]string, error) {
 
 	resolved, err := c.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
+		if entry, ok := c.staleDNSEntry(host, now); ok {
+			return entry, nil
+		}
 		return nil, err
 	}
 	if len(resolved) == 0 {
@@ -580,12 +586,31 @@ func (c *Cache) lookupHost(ctx context.Context, host string) ([]string, error) {
 
 	c.mu.Lock()
 	c.dnsCache[host] = dnsCacheEntry{
-		ips:       append([]string(nil), ips...),
-		expiresAt: now.Add(dnsCacheTTL),
+		ips:        append([]string(nil), ips...),
+		expiresAt:  now.Add(dnsCacheTTL),
+		staleUntil: now.Add(dnsCacheTTL + dnsCacheStaleIfErrorTTL),
 	}
 	c.mu.Unlock()
 
 	return ips, nil
+}
+
+func (c *Cache) staleDNSEntry(host string, now time.Time) ([]string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	entry, ok := c.dnsCache[host]
+	if !ok || len(entry.ips) == 0 || !now.Before(entry.dnsRetainUntil()) {
+		return nil, false
+	}
+	return append([]string(nil), entry.ips...), true
+}
+
+func (e dnsCacheEntry) dnsRetainUntil() time.Time {
+	if e.staleUntil.After(e.expiresAt) {
+		return e.staleUntil
+	}
+	return e.expiresAt
 }
 
 func (c *Cache) roundRobinOffset(scope string, total int) int {

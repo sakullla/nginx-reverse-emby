@@ -275,7 +275,7 @@ func loadConfig() config {
 	return config{
 		mode:            envString("HARNESS_MODE", "bench"),
 		masterAddr:      envString("HARNESS_MASTER_ADDR", ":8080"),
-		entryAddress:    envString("HARNESS_ENTRY_ADDRESS", "10.80.0.1:7000"),
+		entryAddress:    envString("HARNESS_ENTRY_ADDRESS", "172.30.3.12:9001"),
 		directAddress:   envString("HARNESS_DIRECT_ADDRESS", "172.30.0.20:9001"),
 		rttIterations:   envInt("HARNESS_RTT_ITERATIONS", 300),
 		c1Bytes:         envBytes("HARNESS_C1_BYTES", 512<<20),
@@ -330,10 +330,10 @@ func selectBenchmarks(filter string, benchmarks []benchmarkCase) ([]benchmarkCas
 
 func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot {
 	listeners := []relayListener{
-		newHarnessRelayListener(2, "relay-a1", "172.30.2.11", 9443, "0.0.0.0", 9443, certIDForRelay(2), pin, nil),
-		newHarnessRelayListener(3, "relay-a2", "172.30.2.12", 9443, "0.0.0.0", 9443, certIDForRelay(3), pin, nil),
-		newHarnessRelayListener(4, "relay-b3", "172.30.4.13", 9443, "0.0.0.0", 9443, certIDForRelay(4), pin, nil),
-		newHarnessRelayListener(5, "relay-b4", "172.30.4.14", 9443, "0.0.0.0", 9443, certIDForRelay(5), pin, nil),
+		newHarnessRelayListener(2, "relay-a1", "relay-a1.wg-perf.test", 9443, "0.0.0.0", 9443, certIDForRelay(2), pin, nil),
+		newHarnessRelayListener(3, "relay-a2", "relay-a2.wg-perf.test", 9443, "0.0.0.0", 9443, certIDForRelay(3), pin, nil),
+		newHarnessRelayListener(4, "relay-b3", "relay-b3.wg-perf.test", 9443, "0.0.0.0", 9443, certIDForRelay(4), pin, nil),
+		newHarnessRelayListener(5, "relay-b4", "relay-b4.wg-perf.test", 9443, "0.0.0.0", 9443, certIDForRelay(5), pin, nil),
 	}
 	certs := make([]certificateBundle, 0, len(listeners))
 	policies := make([]certificatePolicy, 0, len(listeners))
@@ -394,15 +394,12 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 				Name:                 "wg-entry-layered-relay-to-b",
 				Protocol:             "tcp",
 				ListenHost:           "0.0.0.0",
-				ListenPort:           7000,
-				Backends:             []l4Backend{{Host: cfg.backendHost, Port: cfg.backendPort}},
-				UpstreamHost:         cfg.backendHost,
-				UpstreamPort:         cfg.backendPort,
+				ListenPort:           0,
 				RelayLayers:          cloneIntLayers(cfg.wgRelayLayers),
 				ListenMode:           "wireguard",
 				WireGuardProfileID:   intPtr(1),
-				WireGuardInboundMode: "address",
-				WireGuardListenHost:  cfg.wgTunnelHost,
+				WireGuardInboundMode: "transparent",
+				ProxyEgressMode:      "relay",
 				Enabled:              true,
 				Revision:             1,
 			}},

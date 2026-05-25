@@ -28,7 +28,7 @@ services:
       HARNESS_C8_DURATION_SECONDS: ${HARNESS_C8_DURATION_SECONDS:-}
       HARNESS_C8_CONCURRENCY: ${HARNESS_C8_CONCURRENCY:-}
       HARNESS_MASTER_ADDR: ${HARNESS_MASTER_ADDR:-:8080}
-      HARNESS_ENTRY_ADDRESS: ${HARNESS_ENTRY_ADDRESS:-10.80.0.1:7000}
+      HARNESS_ENTRY_ADDRESS: ${HARNESS_ENTRY_ADDRESS:-172.30.3.12:9001}
       HARNESS_DIRECT_ADDRESS: ${HARNESS_DIRECT_ADDRESS:-172.30.0.20:9001}
       HARNESS_PRE_MEASURE_DELAY_MS: ${HARNESS_PRE_MEASURE_DELAY_MS:-}
       HARNESS_BACKEND_HOST: ${HARNESS_BACKEND_HOST:-172.30.3.13}
@@ -43,7 +43,7 @@ services:
       HARNESS_WG_CLIENT_PRIVATE_KEY: ${HARNESS_WG_CLIENT_PRIVATE_KEY:-AAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEA=}
       HARNESS_WG_SERVER_PUBLIC_KEY: ${HARNESS_WG_SERVER_PUBLIC_KEY:-rTPV4sH+pXCPcgPXWaOCbz33sf5z/H10k76moE+10VQ=}
       HARNESS_WG_ENDPOINT: ${HARNESS_WG_ENDPOINT:-172.30.2.15:51820}
-      HARNESS_WG_ALLOWED_IPS: ${HARNESS_WG_ALLOWED_IPS:-10.80.0.1/32}
+      HARNESS_WG_ALLOWED_IPS: ${HARNESS_WG_ALLOWED_IPS:-172.30.3.12/32}
       HARNESS_WG_CLIENT_ADDRESS: ${HARNESS_WG_CLIENT_ADDRESS:-10.80.0.2/32}
       HARNESS_WG_MTU: ${HARNESS_WG_MTU:-1280}
     healthcheck:
@@ -121,6 +121,8 @@ services:
         ipv4_address: 172.30.0.11
       a_relay:
         ipv4_address: 172.30.2.11
+        aliases:
+          - relay-a1.wg-perf.test
       relay_mid:
         ipv4_address: 172.30.4.11
 
@@ -158,6 +160,8 @@ services:
         ipv4_address: 172.30.0.12
       a_relay:
         ipv4_address: 172.30.2.12
+        aliases:
+          - relay-a2.wg-perf.test
       relay_mid:
         ipv4_address: 172.30.4.12
 
@@ -197,6 +201,8 @@ services:
         ipv4_address: 172.30.0.13
       relay_mid:
         ipv4_address: 172.30.4.13
+        aliases:
+          - relay-b3.wg-perf.test
       b_local:
         ipv4_address: 172.30.3.11
 
@@ -236,6 +242,8 @@ services:
         ipv4_address: 172.30.0.14
       relay_mid:
         ipv4_address: 172.30.4.14
+        aliases:
+          - relay-b4.wg-perf.test
       b_local:
         ipv4_address: 172.30.3.14
 

@@ -10,17 +10,17 @@
 
 - `perf`
   - mock master，给各 agent 下发 heartbeat snapshot
-  - 创建 `wg0`，作为 WireGuard client 访问 `10.80.0.1:7000`
+  - 创建 `wg0`，把最终目标 `172.30.3.12/32` 路由进 WireGuard，并访问 `172.30.3.12:9001`
   - 压测 client
 - `relay-wg`
   - UDP 端点 `172.30.2.15:51820`
   - WireGuard profile 地址 `10.80.0.1/24`
-  - L4 WireGuard 入站 `10.80.0.1:7000`
-  - relay 出站继续走后续 `tls_tcp` hop
+  - L4 WireGuard 透明入站 `listen_port=0`
+  - 捕获 WG 内原始目的地址后，使用 `proxy_egress_mode=relay` 走后续 `tls_tcp` hop
 - `relay-a1` / `relay-a2`
-  - 第二跳 `tls_tcp`
+  - 第二跳 `tls_tcp`，通过 `relay-a*.wg-perf.test` 域名解析
 - `relay-b3` / `relay-b4`
-  - 第三跳 `tls_tcp`
+  - 第三跳 `tls_tcp`，通过 `relay-b*.wg-perf.test` 域名解析
 - `agent-b`
   - L4 入口 `:9001`
   - 转发到 `backend-b-local:9002`
@@ -28,7 +28,7 @@
   - 原始 TCP backend
   - 支持 RTT echo 和下行 bulk download 两种模式
 
-为了避免 Docker 多网络别名解析带来的不确定性，benchmark 默认使用固定容器 IP 作为 relay 和 backend 跳点。
+benchmark 的 WireGuard 路径故意使用 relay 域名作为每跳入口，覆盖真实链路里的 relay hop DNS 解析和缓存行为。最终目标仍使用 `agent-b` 的 `b_local` IP，让客户端路由把目标连接送入 WG 并由 `relay-wg` 透明捕获。
 
 ## 运行
 
