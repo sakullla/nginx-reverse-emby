@@ -49,6 +49,7 @@ type config struct {
 	wgRelayPort     int
 	wgTunnelHost    string
 	wgTunnelPort    int
+	wgBindAddresses []string
 }
 
 type benchmarkCase struct {
@@ -146,6 +147,7 @@ type wireGuardProfile struct {
 	PrivateKey     string          `json:"private_key,omitempty"`
 	ListenPort     int             `json:"listen_port"`
 	PublicEndpoint string          `json:"public_endpoint,omitempty"`
+	BindAddresses  []string        `json:"bind_addresses,omitempty"`
 	Addresses      []string        `json:"addresses"`
 	Peers          []wireGuardPeer `json:"peers"`
 	DNS            []string        `json:"dns"`
@@ -210,9 +212,12 @@ func main() {
 		log.Fatal(err)
 	}
 
+	log.Printf("waiting for direct-b at %s", cfg.directAddress)
 	mustWaitForEcho("direct-b", cfg.directAddress, 40*time.Second)
+	log.Printf("waiting for wg-entry at %s", cfg.entryAddress)
 	mustWaitForEcho("wg-entry", cfg.entryAddress, 40*time.Second)
 	if cfg.preMeasureWait > 0 {
+		log.Printf("waiting %s before measurements", cfg.preMeasureWait)
 		time.Sleep(cfg.preMeasureWait)
 	}
 
@@ -240,6 +245,7 @@ func main() {
 	}
 	results := make([]result, 0, len(selected))
 	for _, bench := range selected {
+		log.Printf("running benchmark %s", bench.name)
 		results = append(results, bench.run())
 	}
 	for _, res := range results {
@@ -258,9 +264,9 @@ func loadConfig() config {
 		directAddress:   envString("HARNESS_DIRECT_ADDRESS", "172.30.0.20:9001"),
 		rttIterations:   envInt("HARNESS_RTT_ITERATIONS", 300),
 		c1Bytes:         envBytes("HARNESS_C1_BYTES", 512<<20),
-		c1Duration:      envSeconds("HARNESS_C1_DURATION_SECONDS", 0),
+		c1Duration:      envSeconds("HARNESS_C1_DURATION_SECONDS", 10),
 		c8BytesPerConn:  envBytes("HARNESS_C8_BYTES_PER_CONN", 256<<20),
-		c8Duration:      envSeconds("HARNESS_C8_DURATION_SECONDS", 0),
+		c8Duration:      envSeconds("HARNESS_C8_DURATION_SECONDS", 10),
 		c8Concurrency:   envInt("HARNESS_C8_CONCURRENCY", 8),
 		benchmarkFilter: envString("HARNESS_BENCHMARKS", ""),
 		preMeasureWait:  time.Duration(envInt("HARNESS_PRE_MEASURE_DELAY_MS", 0)) * time.Millisecond,
@@ -273,6 +279,7 @@ func loadConfig() config {
 		wgRelayPort:     envInt("HARNESS_WG_RELAY_PORT", 51820),
 		wgTunnelHost:    envString("HARNESS_WG_TUNNEL_HOST", "10.80.0.1"),
 		wgTunnelPort:    envInt("HARNESS_WG_TUNNEL_PORT", 9443),
+		wgBindAddresses: envList("HARNESS_WG_BIND_ADDRESSES"),
 	}
 }
 
@@ -349,6 +356,7 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 		PrivateKey:     relayWGPrivate,
 		ListenPort:     cfg.wgRelayPort,
 		PublicEndpoint: fmt.Sprintf("%s:%d", cfg.wgRelayHost, cfg.wgRelayPort),
+		BindAddresses:  append([]string(nil), cfg.wgBindAddresses...),
 		Addresses:      []string{cfg.wgTunnelHost + "/24"},
 		Peers: []wireGuardPeer{{
 			Name:       "perf",
@@ -816,6 +824,23 @@ func envString(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envList(name string) []string {
+	value := os.Getenv(name)
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if trimmed := strings.TrimSpace(field); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func envInt(name string, fallback int) int {

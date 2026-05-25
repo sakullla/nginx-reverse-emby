@@ -50,6 +50,10 @@ function Cleanup {
 $delayCliToWg = Get-OptionalEnvInt 'HARNESS_DELAY_CLI_TO_WG_MS'
 $delayWgToRelay = Get-OptionalEnvInt 'HARNESS_DELAY_WG_TO_RELAY_MS'
 $delayRelayAToRelayB = Get-OptionalEnvInt 'HARNESS_DELAY_RELAY_A_TO_RELAY_B_MS'
+$runTimeoutSeconds = Get-OptionalEnvInt 'HARNESS_RUN_TIMEOUT_SECONDS'
+if ($null -eq $runTimeoutSeconds) {
+    $runTimeoutSeconds = 900
+}
 if ($null -eq $delayWgToRelay) {
     $delayWgToRelay = 20
 }
@@ -85,11 +89,22 @@ $statsRows = [System.Collections.Generic.List[string]]::new()
 if (-not $SkipStats) {
     $statsRows.Add('ts,name,cpu,mem,net')
 }
+$runStartedAt = Get-Date
+$nextProgressAt = $runStartedAt
 try {
     while ($true) {
         $running = docker inspect -f '{{.State.Running}}' nre-perf 2>$null
         if ($LASTEXITCODE -ne 0 -or $running -ne 'true') {
             break
+        }
+
+        $elapsed = ((Get-Date) - $runStartedAt).TotalSeconds
+        if ($elapsed -gt $runTimeoutSeconds) {
+            throw ("wg-perf timed out after {0}s; inspect nre-perf logs for the active stage" -f [int]$elapsed)
+        }
+        if ((Get-Date) -ge $nextProgressAt) {
+            Write-Host ("wg-perf running {0}s..." -f [int]$elapsed)
+            $nextProgressAt = (Get-Date).AddSeconds(10)
         }
 
         if (-not $SkipStats) {
