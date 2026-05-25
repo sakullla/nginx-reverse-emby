@@ -607,7 +607,7 @@ func (t *tlsTCPTunnel) refreshWriteDeadlineLocked(ctx context.Context) error {
 		return os.ErrDeadlineExceeded
 	}
 
-	if !hasCtxDeadline && timeout > 0 && !t.writeDeadlineNext.IsZero() && now.Before(t.writeDeadlineNext.Add(-(timeout/4))) {
+	if !hasCtxDeadline && timeout > 0 && !t.writeDeadlineNext.IsZero() && now.Before(t.writeDeadlineNext.Add(-(timeout / 4))) {
 		return nil
 	}
 

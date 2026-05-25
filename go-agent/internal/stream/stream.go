@@ -2,6 +2,7 @@ package stream
 
 import (
 	"io"
+	"net"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
@@ -31,6 +32,11 @@ var copyBufferPool = sync.Pool{
 }
 
 func CopyPreferReaderFrom(dst io.Writer, src io.Reader) (int64, error) {
+	if _, trafficWriter := dst.(*TrafficWriter); trafficWriter {
+		if wt, ok := src.(io.WriterTo); ok {
+			return wt.WriteTo(dst)
+		}
+	}
 	if rf, ok := dst.(io.ReaderFrom); ok {
 		return rf.ReadFrom(readerWithoutWriterTo{Reader: src})
 	}
@@ -71,14 +77,21 @@ func NewTrafficWriterFlushBelow(dst io.Writer, direction Direction, recorder *tr
 func (w *TrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 && w.recorder != nil {
-		if w.policy == FlushAtOrBelowThreshold {
-			w.record(uint64(n))
-			w.recorder.FlushIfPendingBelow(w.threshold)
-		} else {
-			w.add(uint64(n))
-		}
+		w.recordCopied(int64(n))
 	}
 	return n, err
+}
+
+func (w *TrafficWriter) ReadFrom(r io.Reader) (int64, error) {
+	if _, ok := w.dst.(*net.TCPConn); ok {
+		return CopyGeneric(w, r)
+	}
+	if rf, ok := w.dst.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(r)
+		w.recordCopied(n)
+		return n, err
+	}
+	return CopyGeneric(w, r)
 }
 
 func (w *TrafficWriter) FlushTraffic() {
@@ -95,6 +108,18 @@ func (w *TrafficWriter) FlushTraffic() {
 	w.record(w.pending)
 	w.recorder.Flush()
 	w.pending = 0
+}
+
+func (w *TrafficWriter) recordCopied(n int64) {
+	if n <= 0 || w.recorder == nil {
+		return
+	}
+	if w.policy == FlushAtOrBelowThreshold {
+		w.record(uint64(n))
+		w.recorder.FlushIfPendingBelow(w.threshold)
+		return
+	}
+	w.add(uint64(n))
 }
 
 func (w *TrafficWriter) add(bytes uint64) {

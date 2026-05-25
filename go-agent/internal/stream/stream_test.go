@@ -3,6 +3,7 @@ package stream
 import (
 	"bytes"
 	"io"
+	"net"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
@@ -37,6 +38,19 @@ func (r *writerToReader) WriteTo(w io.Writer) (int64, error) {
 	n, err := w.Write(r.payload)
 	r.payload = r.payload[n:]
 	return int64(n), err
+}
+
+type readOnlyReader struct {
+	payload []byte
+}
+
+func (r *readOnlyReader) Read(p []byte) (int, error) {
+	if len(r.payload) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.payload)
+	r.payload = r.payload[n:]
+	return n, nil
 }
 
 type fixedBufferWriter struct {
@@ -76,6 +90,23 @@ func TestCopyGenericSuppressesWriterTo(t *testing.T) {
 	}
 	if src.used {
 		t.Fatal("CopyGeneric used source WriteTo fast path")
+	}
+}
+
+func TestCopyPreferReaderFromUsesSourceWriterToForTrafficWriter(t *testing.T) {
+	src := &writerToReader{payload: []byte("payload")}
+	dst := &readerFromBuffer{}
+	writer := NewTrafficWriterFlushBelow(dst, DirectionTX, traffic.NewL4Recorder(), 32*1024)
+
+	n, err := CopyPreferReaderFrom(writer, src)
+	if err != nil {
+		t.Fatalf("CopyPreferReaderFrom() error = %v", err)
+	}
+	if n != int64(len("payload")) || dst.String() != "payload" {
+		t.Fatalf("copy result n=%d body=%q", n, dst.String())
+	}
+	if !src.used {
+		t.Fatal("CopyPreferReaderFrom did not preserve source WriteTo fast path")
 	}
 }
 
@@ -152,6 +183,80 @@ func TestTrafficWriterFlushBelowKeepsLargeWritesVisibleToSnapshotNonZero(t *test
 		t.Fatalf("relay counters = %+v, want rx=%d tx=0", total, len("payload"))
 	}
 }
+
+func TestTrafficWriterPreservesDestinationReaderFrom(t *testing.T) {
+	traffic.Reset()
+	t.Cleanup(traffic.Reset)
+	recorder := traffic.NewL4Recorder()
+	dst := &readerFromBuffer{}
+	writer := NewTrafficWriterFlushBelow(dst, DirectionRX, recorder, 32*1024)
+
+	n, err := writer.ReadFrom(&readOnlyReader{payload: []byte("payload")})
+	if err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if n != int64(len("payload")) || dst.String() != "payload" || !dst.usedReaderFrom {
+		t.Fatalf("ReadFrom result n=%d body=%q usedReaderFrom=%v", n, dst.String(), dst.usedReaderFrom)
+	}
+	stats := traffic.Snapshot()
+	total := stats["traffic"].(map[string]any)["l4"].(map[string]uint64)
+	if total["rx_bytes"] != uint64(len("payload")) || total["tx_bytes"] != 0 {
+		t.Fatalf("l4 counters = %+v, want rx=%d tx=0", total, len("payload"))
+	}
+}
+
+func TestTrafficWriterBypassesTCPConnReadFrom(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer client.Close()
+
+	var server net.Conn
+	select {
+	case server = <-accepted:
+	case err := <-acceptErr:
+		t.Fatalf("Accept() error = %v", err)
+	}
+	defer server.Close()
+
+	if _, ok := server.(*net.TCPConn); !ok {
+		t.Fatalf("accepted conn type = %T, want *net.TCPConn", server)
+	}
+	writer := NewTrafficWriter(server, DirectionTX, traffic.NewL4Recorder(), 32*1024)
+	n, err := writer.ReadFrom(&readOnlyReader{payload: []byte("payload")})
+	if err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if n != int64(len("payload")) {
+		t.Fatalf("ReadFrom() = %d, want %d", n, len("payload"))
+	}
+	buf := make([]byte, len("payload"))
+	if _, err := io.ReadFull(client, buf); err != nil {
+		t.Fatalf("ReadFull() error = %v", err)
+	}
+	if string(buf) != "payload" {
+		t.Fatalf("client read %q, want payload", string(buf))
+	}
+}
+
 func TestTrafficReadCloserFlushesOnEOF(t *testing.T) {
 	traffic.Reset()
 	t.Cleanup(traffic.Reset)
