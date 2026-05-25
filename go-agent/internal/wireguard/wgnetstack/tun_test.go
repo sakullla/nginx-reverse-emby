@@ -4,12 +4,43 @@ import (
 	"testing"
 
 	"gvisor.dev/gvisor/pkg/buffer"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 )
 
 func TestNetTunBatchSizeUsesConfiguredBatchSize(t *testing.T) {
 	tun := &netTun{}
 	if got := tun.BatchSize(); got != netTunBatchSize {
 		t.Fatalf("BatchSize() = %d, want %d", got, netTunBatchSize)
+	}
+}
+
+func TestConfigureTCPBuffersRaisesNetstackWindowDefaults(t *testing.T) {
+	s := stack.New(stack.Options{
+		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
+		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol},
+	})
+
+	if err := configureTCPBuffers(s); err != nil {
+		t.Fatalf("configureTCPBuffers() error = %v", err)
+	}
+
+	var recv tcpip.TCPReceiveBufferSizeRangeOption
+	if err := s.TransportProtocolOption(tcp.ProtocolNumber, &recv); err != nil {
+		t.Fatalf("TransportProtocolOption(recv) error = %v", err)
+	}
+	if recv.Default < netTunTCPDefaultBufferSize || recv.Max < netTunTCPMaxBufferSize {
+		t.Fatalf("receive buffer range = %+v, want default >= %d max >= %d", recv, netTunTCPDefaultBufferSize, netTunTCPMaxBufferSize)
+	}
+
+	var send tcpip.TCPSendBufferSizeRangeOption
+	if err := s.TransportProtocolOption(tcp.ProtocolNumber, &send); err != nil {
+		t.Fatalf("TransportProtocolOption(send) error = %v", err)
+	}
+	if send.Default < netTunTCPDefaultBufferSize || send.Max < netTunTCPMaxBufferSize {
+		t.Fatalf("send buffer range = %+v, want default >= %d max >= %d", send, netTunTCPDefaultBufferSize, netTunTCPMaxBufferSize)
 	}
 }
 

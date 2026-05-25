@@ -327,6 +327,39 @@ func TestWireGuardProfileCreateSeparatesBindAddressesFromInterfaceAddresses(t *t
 	}
 }
 
+func TestWireGuardProfileListDefaultsMigratedZeroPortBindAddresses(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	if err := store.SaveWireGuardProfiles(ctx, "local", []storage.WireGuardProfileRow{{
+		ID:                41,
+		AgentID:           "local",
+		Name:              "migrated-uri-profile",
+		Mode:              "generic_wireguard",
+		PrivateKey:        testWireGuardPrivateKey,
+		ListenPort:        0,
+		AddressesJSON:     `["10.8.0.1/24"]`,
+		BindAddressesJSON: `[]`,
+		PeersJSON:         `[]`,
+		DNSJSON:           `[]`,
+		Enabled:           true,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+
+	profiles, err := svc.List(ctx, "local")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("List() length = %d, want one profile", len(profiles))
+	}
+	if got := strings.Join(profiles[0].Addresses, ","); got != "0.0.0.0" {
+		t.Fatalf("List() addresses = %q, want wildcard default", got)
+	}
+}
+
 func TestWireGuardProfileUpdateAllowsEditingInterfaceAddresses(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)

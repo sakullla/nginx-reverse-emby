@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"io"
 	"net"
 	"os"
@@ -155,6 +156,51 @@ func TestWgPerfHarnessIncludesUploadBenchmarks(t *testing.T) {
 		if !strings.Contains(harness, want) {
 			t.Fatalf("harness.go missing upload benchmark marker %q", want)
 		}
+	}
+}
+
+func TestUploadFixedBytesSendsExpectedPayload(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer conn.Close()
+		var header [9]byte
+		if _, err := io.ReadFull(conn, header[:]); err != nil {
+			done <- err
+			return
+		}
+		if header[0] != protocolModeUpload {
+			t.Errorf("mode = %d, want %d", header[0], protocolModeUpload)
+		}
+		if got := binary.BigEndian.Uint64(header[1:]); got != uint64(96*1024) {
+			t.Errorf("upload size = %d, want %d", got, 96*1024)
+		}
+		if _, err := io.CopyN(io.Discard, conn, 96*1024); err != nil {
+			done <- err
+			return
+		}
+		done <- nil
+	}()
+
+	n, err := upload(ln.Addr().String(), 96*1024)
+	if err != nil {
+		t.Fatalf("upload() error = %v", err)
+	}
+	if n != 96*1024 {
+		t.Fatalf("upload() = %d, want %d", n, 96*1024)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("server error: %v", err)
 	}
 }
 

@@ -62,6 +62,7 @@ type tlsTCPTunnel struct {
 
 	writeMu           sync.Mutex
 	writeDeadlineNext time.Time
+	writeBuf          []byte
 	writeReqCh        chan *tlsTCPWriteRequest
 	writePumpOnce     sync.Once
 
@@ -578,9 +579,19 @@ func (t *tlsTCPTunnel) writeFrame(ctx context.Context, frame muxFrame) error {
 	}
 	// This synchronous path owns frame payload lifetime. Queued writers hand
 	// payload release to the write pump via writeRequestBatch/enqueueWriteFrame.
-	err := writeMuxFrame(t.writer, frame)
+	err := t.writeMuxFrameLocked(frame)
 	frame.releasePayload()
 	return err
+}
+
+func (t *tlsTCPTunnel) writeMuxFrameLocked(frame muxFrame) error {
+	if len(frame.Payload) <= tlsTCPBulkFrameSize {
+		if cap(t.writeBuf) < muxFrameHeaderSize+tlsTCPBulkFrameSize {
+			t.writeBuf = make([]byte, muxFrameHeaderSize+tlsTCPBulkFrameSize)
+		}
+		return writeMuxFrameBuffered(t.writer, frame, t.writeBuf)
+	}
+	return writeMuxFrame(t.writer, frame)
 }
 
 func (t *tlsTCPTunnel) refreshWriteDeadlineLocked(ctx context.Context) error {
@@ -683,7 +694,7 @@ func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
 		return err
 	}
 	for i, req := range batch {
-		if err := writeMuxFrame(t.writer, req.frame); err != nil {
+		if err := t.writeMuxFrameLocked(req.frame); err != nil {
 			t.queuedWrites.Add(-1)
 			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
 			req.frame.releasePayload()

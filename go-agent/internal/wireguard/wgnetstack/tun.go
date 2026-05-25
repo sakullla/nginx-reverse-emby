@@ -54,6 +54,8 @@ type netTun struct {
 type Net netTun
 
 const netTunBatchSize = 32
+const netTunTCPDefaultBufferSize = tcp.DefaultReceiveBufferSize
+const netTunTCPMaxBufferSize = 16 << 20
 
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device, RuntimeNet, *stack.Stack, error) {
 	opts := stack.Options{
@@ -70,13 +72,11 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		localAddresses: make(map[netip.Addr]struct{}, len(localAddresses)),
 		mtu:            mtu,
 	}
-	sackEnabledOpt := tcpip.TCPSACKEnabled(true)
-	tcpipErr := dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt)
-	if tcpipErr != nil {
-		return nil, nil, nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
+	if err := configureTCPBuffers(dev.stack); err != nil {
+		return nil, nil, nil, err
 	}
 	dev.notifyHandle = dev.ep.AddNotify(dev)
-	tcpipErr = dev.stack.CreateNIC(1, dev.ep)
+	tcpipErr := dev.stack.CreateNIC(1, dev.ep)
 	if tcpipErr != nil {
 		return nil, nil, nil, fmt.Errorf("CreateNIC: %v", tcpipErr)
 	}
@@ -118,6 +118,30 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 	}
 	dev.events <- tun.EventUp
 	return dev, (*Net)(dev), dev.stack, nil
+}
+
+func configureTCPBuffers(s *stack.Stack) error {
+	sackEnabledOpt := tcpip.TCPSACKEnabled(true)
+	if tcpipErr := s.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt); tcpipErr != nil {
+		return fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
+	}
+	sendBufferOpt := tcpip.TCPSendBufferSizeRangeOption{
+		Min:     tcp.MinBufferSize,
+		Default: netTunTCPDefaultBufferSize,
+		Max:     netTunTCPMaxBufferSize,
+	}
+	if tcpipErr := s.SetTransportProtocolOption(tcp.ProtocolNumber, &sendBufferOpt); tcpipErr != nil {
+		return fmt.Errorf("could not configure TCP send buffer: %v", tcpipErr)
+	}
+	receiveBufferOpt := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     tcp.MinBufferSize,
+		Default: netTunTCPDefaultBufferSize,
+		Max:     netTunTCPMaxBufferSize,
+	}
+	if tcpipErr := s.SetTransportProtocolOption(tcp.ProtocolNumber, &receiveBufferOpt); tcpipErr != nil {
+		return fmt.Errorf("could not configure TCP receive buffer: %v", tcpipErr)
+	}
+	return nil
 }
 
 func (tun *netTun) Name() (string, error) {

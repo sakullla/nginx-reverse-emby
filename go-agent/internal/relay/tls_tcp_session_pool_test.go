@@ -254,6 +254,50 @@ func TestTLSTCPTunnelWriteFrameReusesRecentWriteDeadline(t *testing.T) {
 	})
 }
 
+func TestTLSTCPTunnelWriteFrameReusesTunnelBuffer(t *testing.T) {
+	var wire bytes.Buffer
+	tunnel := &tlsTCPTunnel{
+		writer: &wire,
+		closed: make(chan struct{}),
+	}
+
+	for _, payload := range []string{"first", "second"} {
+		if err := tunnel.writeFrame(context.Background(), muxFrame{
+			Type:     muxFrameTypeData,
+			StreamID: 1,
+			Payload:  []byte(payload),
+		}); err != nil {
+			t.Fatalf("writeFrame(%q) error = %v", payload, err)
+		}
+		if len(tunnel.writeBuf) == 0 {
+			t.Fatal("writeFrame did not initialize reusable tunnel buffer")
+		}
+	}
+
+	firstBuf := &tunnel.writeBuf[0]
+	if err := tunnel.writeFrame(context.Background(), muxFrame{
+		Type:     muxFrameTypeData,
+		StreamID: 1,
+		Payload:  []byte("third"),
+	}); err != nil {
+		t.Fatalf("writeFrame(third) error = %v", err)
+	}
+	if &tunnel.writeBuf[0] != firstBuf {
+		t.Fatal("writeFrame replaced tunnel write buffer instead of reusing it")
+	}
+
+	for _, want := range []string{"first", "second", "third"} {
+		frame, err := readMuxFrame(&wire)
+		if err != nil {
+			t.Fatalf("readMuxFrame(%q) error = %v", want, err)
+		}
+		if string(frame.Payload) != want {
+			t.Fatalf("frame payload = %q, want %q", string(frame.Payload), want)
+		}
+		frame.releasePayload()
+	}
+}
+
 func TestTLSTCPLogicalStreamReadFromSingleStreamQueuesAheadOfSlowWriter(t *testing.T) {
 	writer := newBlockingFirstWrite()
 	tunnel := &tlsTCPTunnel{

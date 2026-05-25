@@ -159,6 +159,19 @@ function splitLines(value) {
     .filter(Boolean)
 }
 
+function buildBindAddresses() {
+  const addresses = splitLines(form.value.addresses_text)
+  return addresses.length > 0 ? addresses : ['0.0.0.0']
+}
+
+function buildInterfaceAddresses() {
+  const addresses = splitLines(form.value.interface_addresses_text)
+  if (addresses.length > 0 || !isEdit.value) return addresses
+  return Array.isArray(props.initialData?.interface_addresses)
+    ? [...props.initialData.interface_addresses]
+    : []
+}
+
 function addTag() {
   const tag = tagInput.value.trim()
   if (tag && !form.value.tags.includes(tag)) form.value.tags.push(tag)
@@ -182,8 +195,8 @@ function buildPayload() {
     private_key: form.value.private_key,
     listen_port: form.value.listen_port == null || form.value.listen_port === '' ? null : Number(form.value.listen_port),
     public_endpoint: form.value.public_endpoint.trim(),
-    addresses: splitLines(form.value.addresses_text),
-    interface_addresses: splitLines(form.value.interface_addresses_text),
+    addresses: buildBindAddresses(),
+    interface_addresses: buildInterfaceAddresses(),
     peers: Array.isArray(props.initialData?.peers) ? props.initialData.peers.map((peer) => ({
       name: String(peer.name || '').trim(),
       public_key: String(peer.public_key || '').trim(),
