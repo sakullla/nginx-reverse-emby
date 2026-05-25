@@ -23,7 +23,7 @@ var (
 	defaultRelayIdleTimeout      = 2 * time.Minute
 )
 
-const relayBulkSocketBufferBytes = 0
+const relayBulkSocketBufferBytes = 4 << 20
 
 type relayTimeoutOverride struct {
 	id  uint64
