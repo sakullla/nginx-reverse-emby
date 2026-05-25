@@ -239,6 +239,9 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 		cloned.WireGuardProfiles = make([]model.WireGuardProfile, len(snapshot.WireGuardProfiles))
 		copy(cloned.WireGuardProfiles, snapshot.WireGuardProfiles)
 		for i, profile := range snapshot.WireGuardProfiles {
+			if profile.BindAddresses != nil {
+				cloned.WireGuardProfiles[i].BindAddresses = append([]string(nil), profile.BindAddresses...)
+			}
 			if profile.Addresses != nil {
 				cloned.WireGuardProfiles[i].Addresses = append([]string(nil), profile.Addresses...)
 			}

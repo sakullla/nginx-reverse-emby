@@ -999,14 +999,14 @@ func allocateWireGuardProfileAddresses(rows []storage.WireGuardProfileRow, pools
 	if len(pools) == 0 {
 		pools = []string{"10.8.x.1/24", "fd10:8:x::1/64"}
 	}
-	used := map[string]struct{}{}
+	var used []netip.Prefix
 	for _, row := range rows {
 		for _, address := range parseStringArray(row.AddressesJSON) {
 			prefix, err := netip.ParsePrefix(strings.TrimSpace(address))
 			if err != nil {
 				continue
 			}
-			used[prefix.String()] = struct{}{}
+			used = append(used, prefix.Masked())
 		}
 	}
 	for index := 0; index <= 65535; index++ {
@@ -1039,10 +1039,17 @@ func renderWireGuardAddressPoolSet(pools []string, index int) ([]string, bool) {
 	return out, len(out) > 0
 }
 
-func wireGuardAddressPoolSetAvailable(candidate []string, used map[string]struct{}) bool {
+func wireGuardAddressPoolSetAvailable(candidate []string, used []netip.Prefix) bool {
 	for _, address := range candidate {
-		if _, ok := used[address]; ok {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(address))
+		if err != nil {
 			return false
+		}
+		prefix = prefix.Masked()
+		for _, usedPrefix := range used {
+			if prefix.Overlaps(usedPrefix) {
+				return false
+			}
 		}
 	}
 	return true

@@ -310,7 +310,11 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 			Mode:       "generic_wireguard",
 			PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 			ListenPort: 51820,
-			Addresses:  []string{"10.20.0.1/24"},
+			BindAddresses: []string{
+				"192.0.2.10",
+				"2001:db8::10",
+			},
+			Addresses: []string{"10.20.0.1/24"},
 			Peers: []model.WireGuardPeer{{
 				Name:         "peer-a",
 				PublicKey:    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
@@ -343,6 +347,7 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	snap.RelayListeners[0].Tags[0] = "mutated"
 	snap.Certificates[0].Domain = "mutated.example.com"
 	snap.CertificatePolicies[0].Tags[0] = "mutated"
+	snap.WireGuardProfiles[0].BindAddresses[0] = "192.0.2.99"
 	snap.WireGuardProfiles[0].Peers[0].AllowedIPs[0] = "10.20.0.99/32"
 	snap.WireGuardProfiles[0].Peers[0].Reserved[0] = 9
 
@@ -382,6 +387,9 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	}
 	if current.CertificatePolicies[0].Tags[0] != "one" {
 		t.Fatalf("policy tags leaked mutation: %+v", current.CertificatePolicies)
+	}
+	if current.WireGuardProfiles[0].BindAddresses[0] != "192.0.2.10" {
+		t.Fatalf("wireguard bind_addresses leaked mutation: %+v", current.WireGuardProfiles)
 	}
 	if current.WireGuardProfiles[0].Peers[0].AllowedIPs[0] != "10.20.0.2/32" {
 		t.Fatalf("wireguard allowed_ips leaked mutation: %+v", current.WireGuardProfiles[0].Peers)

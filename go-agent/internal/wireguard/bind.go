@@ -52,6 +52,11 @@ type hostBindConn struct {
 	rxOffload bool
 }
 
+type hostBindEndpoint struct {
+	*conn.StdNetEndpoint
+	bindConn *hostBindConn
+}
+
 func (b *hostBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -126,7 +131,10 @@ func hostBindReceiveFunc(bind *hostBind, bindConn *hostBindConn) conn.ReceiveFun
 			return 0, err
 		}
 		sizes[0] = n
-		eps[0] = &conn.StdNetEndpoint{AddrPort: addr}
+		eps[0] = &hostBindEndpoint{
+			StdNetEndpoint: &conn.StdNetEndpoint{AddrPort: addr},
+			bindConn:       bindConn,
+		}
 		return 1, nil
 	}
 }
@@ -175,7 +183,10 @@ func (b *hostBind) readBatch(bindConn *hostBindConn, packets [][]byte, sizes []i
 			continue
 		}
 		addr := (*msgs)[i].Addr.(*net.UDPAddr)
-		eps[i] = &conn.StdNetEndpoint{AddrPort: addr.AddrPort()}
+		eps[i] = &hostBindEndpoint{
+			StdNetEndpoint: &conn.StdNetEndpoint{AddrPort: addr.AddrPort()},
+			bindConn:       bindConn,
+		}
 	}
 	return n, nil
 }
@@ -315,6 +326,13 @@ retry:
 }
 
 func (b *hostBind) connForEndpointLocked(endpoint conn.Endpoint) *hostBindConn {
+	if hostEndpoint, ok := endpoint.(*hostBindEndpoint); ok && hostEndpoint.bindConn != nil {
+		for _, bindConn := range b.conns {
+			if bindConn == hostEndpoint.bindConn {
+				return bindConn
+			}
+		}
+	}
 	wantV6 := endpoint.DstIP().Is6()
 	for _, bindConn := range b.conns {
 		if bindConn.is6 == wantV6 {
@@ -325,6 +343,9 @@ func (b *hostBind) connForEndpointLocked(endpoint conn.Endpoint) *hostBindConn {
 }
 
 func endpointAddrPort(endpoint conn.Endpoint) (netip.AddrPort, error) {
+	if hostEndpoint, ok := endpoint.(*hostBindEndpoint); ok {
+		return hostEndpoint.AddrPort, nil
+	}
 	if std, ok := endpoint.(*conn.StdNetEndpoint); ok {
 		return std.AddrPort, nil
 	}
