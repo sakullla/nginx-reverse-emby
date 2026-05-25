@@ -1367,6 +1367,62 @@ func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 	}
 }
 
+func TestNewServerPrewarmsRelayPaths(t *testing.T) {
+	previous := relayPrewarmProbePath
+	defer func() { relayPrewarmProbePath = previous }()
+
+	calls := make(chan []relay.Hop, 1)
+	relayPrewarmProbePath = func(_ context.Context, network, target string, chain []relay.Hop, _ relay.TLSMaterialProvider) ([]relay.ProbeTiming, error) {
+		if network != "tcp" {
+			t.Errorf("prewarm network = %q, want tcp", network)
+		}
+		if target != "" {
+			t.Errorf("prewarm target = %q, want empty target", target)
+		}
+		calls <- append([]relay.Hop(nil), chain...)
+		return nil, nil
+	}
+
+	profileID := 9
+	runtime := &fakeL4WireGuardRuntime{
+		listenTCP: func(_ context.Context, _ string) (net.Listener, error) {
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	srv, err := NewServerWithResourcesAndWireGuardProvider(context.Background(), []model.L4Rule{{
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         7000,
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		RelayLayers:        [][]int{{101}},
+		Backends:           []model.L4Backend{{Host: "backend.example", Port: 443}},
+	}}, []model.RelayListener{{
+		ID:         101,
+		Name:       "relay-a",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9443,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin"}},
+	}}, &testL4RelayProvider{}, nil, fakeL4WireGuardProvider{
+		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+	})
+	if err != nil {
+		t.Fatalf("NewServerWithResources() error = %v", err)
+	}
+	defer srv.Close()
+
+	select {
+	case chain := <-calls:
+		if len(chain) != 1 || chain[0].Listener.ID != 101 {
+			t.Fatalf("prewarm chain = %+v, want listener 101", chain)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay path prewarm was not started")
+	}
+}
+
 func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 	profileID := 9
 	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: 0})
@@ -3144,7 +3200,7 @@ func TestTCPRelayProxy(t *testing.T) {
 			t.Fatalf("relay traffic class = %q, want %q", got, upstream.TrafficClassUnknown)
 		}
 		if len(relayReq.InitialData) != 0 {
-			t.Fatalf("initial relay payload = %q, want empty for raw downstream", relayReq.InitialData)
+			t.Fatalf("initial relay payload = %q, want empty for non-WireGuard relay downstream", relayReq.InitialData)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected l4 tcp proxy to traverse relay listener")
@@ -3332,7 +3388,7 @@ func TestPrefetchRelayInitialPayloadUsesBufferedData(t *testing.T) {
 	}
 	srv := &Server{now: time.Now}
 
-	payload, source, err := srv.prefetchRelayInitialPayload(nil, reader)
+	payload, source, err := srv.prefetchRelayInitialPayload(model.L4Rule{}, nil, reader)
 	if err != nil {
 		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
 	}
@@ -3355,7 +3411,7 @@ func TestPrefetchRelayInitialPayloadLeavesRawConnUntouched(t *testing.T) {
 	defer peer.Close()
 	srv := &Server{now: time.Now}
 
-	payload, source, err := srv.prefetchRelayInitialPayload(client, client)
+	payload, source, err := srv.prefetchRelayInitialPayload(model.L4Rule{}, client, client)
 	if err != nil {
 		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
 	}
@@ -3367,11 +3423,38 @@ func TestPrefetchRelayInitialPayloadLeavesRawConnUntouched(t *testing.T) {
 	}
 }
 
-func TestPrefetchRelayInitialPayloadSkipsRawConnWait(t *testing.T) {
+func TestPrefetchRelayInitialPayloadCapturesImmediateRawConnData(t *testing.T) {
+	client, peer := net.Pipe()
+	defer client.Close()
+	defer peer.Close()
+	srv := &Server{now: time.Now}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := peer.Write([]byte("client-hello"))
+		done <- err
+	}()
+
+	payload, source, err := srv.prefetchRelayInitialPayload(wireGuardRelayPrefetchRule(), client, client)
+	if err != nil {
+		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
+	}
+	if got := string(payload); got != "client-hello" {
+		t.Fatalf("payload = %q, want client-hello", got)
+	}
+	if source != client {
+		t.Fatalf("source changed after raw prefetch")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("peer write error = %v", err)
+	}
+}
+
+func TestPrefetchRelayInitialPayloadTimesOutRawConnWait(t *testing.T) {
 	client := &prefetchProbeConn{readErr: timeoutNetError{}}
 	srv := &Server{now: time.Now}
 
-	payload, source, err := srv.prefetchRelayInitialPayload(client, client)
+	payload, source, err := srv.prefetchRelayInitialPayload(wireGuardRelayPrefetchRule(), client, client)
 	if err != nil {
 		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
 	}
@@ -3381,11 +3464,11 @@ func TestPrefetchRelayInitialPayloadSkipsRawConnWait(t *testing.T) {
 	if source != client {
 		t.Fatalf("source changed after raw prefetch")
 	}
-	if client.readCalls != 0 {
-		t.Fatalf("readCalls = %d, want 0", client.readCalls)
+	if client.readCalls != 1 {
+		t.Fatalf("readCalls = %d, want 1", client.readCalls)
 	}
-	if client.setReadDeadlineCalls != 0 {
-		t.Fatalf("setReadDeadlineCalls = %d, want 0", client.setReadDeadlineCalls)
+	if client.setReadDeadlineCalls != 2 {
+		t.Fatalf("setReadDeadlineCalls = %d, want 2", client.setReadDeadlineCalls)
 	}
 }
 
@@ -3404,6 +3487,16 @@ func TestRelayTCPDialTrafficClassUsesObservedBufferedPayload(t *testing.T) {
 func TestRelayTCPDialTrafficClassUsesBulkAtPrefetchCap(t *testing.T) {
 	if got := relayTCPDialTrafficClass(make([]byte, relayInitialPayloadMax)); got != upstream.TrafficClassBulk {
 		t.Fatalf("relayTCPDialTrafficClass(prefetch cap) = %q, want %q", got, upstream.TrafficClassBulk)
+	}
+}
+
+func wireGuardRelayPrefetchRule() model.L4Rule {
+	profileID := 9
+	return model.L4Rule{
+		Protocol:           "tcp",
+		ListenMode:         "wireguard",
+		WireGuardProfileID: &profileID,
+		RelayLayers:        [][]int{{101}},
 	}
 }
 
