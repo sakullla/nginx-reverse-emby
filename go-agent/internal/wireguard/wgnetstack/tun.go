@@ -53,6 +53,8 @@ type netTun struct {
 
 type Net netTun
 
+const netTunBatchSize = 32
+
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device, RuntimeNet, *stack.Stack, error) {
 	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
@@ -63,7 +65,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		ep:             channel.New(1024, uint32(mtu), ""),
 		stack:          stack.New(opts),
 		events:         make(chan tun.Event, 10),
-		incomingPacket: make(chan *buffer.View),
+		incomingPacket: make(chan *buffer.View, netTunBatchSize),
 		dnsServers:     dnsServers,
 		localAddresses: make(map[netip.Addr]struct{}, len(localAddresses)),
 		mtu:            mtu,
@@ -136,12 +138,42 @@ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 		return 0, os.ErrClosed
 	}
 
-	n, err := view.Read(buf[0][offset:])
+	n, err := readPacketView(view, buf[0][offset:])
 	if err != nil {
 		return 0, err
 	}
 	sizes[0] = n
-	return 1, nil
+
+	count := 1
+	limit := len(buf)
+	if len(sizes) < limit {
+		limit = len(sizes)
+	}
+	for count < limit {
+		select {
+		case view, ok := <-tun.incomingPacket:
+			if !ok {
+				return count, nil
+			}
+			n, err := readPacketView(view, buf[count][offset:])
+			if err != nil {
+				return count, err
+			}
+			sizes[count] = n
+			count++
+		default:
+			return count, nil
+		}
+	}
+	return count, nil
+}
+
+func readPacketView(view *buffer.View, dst []byte) (int, error) {
+	n, err := view.Read(dst)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
@@ -237,7 +269,7 @@ func (tun *netTun) MTU() (int, error) {
 }
 
 func (tun *netTun) BatchSize() int {
-	return 1
+	return netTunBatchSize
 }
 
 func convertToFullAddr(endpoint netip.AddrPort) (tcpip.FullAddress, tcpip.NetworkProtocolNumber) {
