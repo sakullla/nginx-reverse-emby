@@ -62,9 +62,10 @@ func TestWgPerfBenchmarkFilterSelectsNamedBenchmarks(t *testing.T) {
 	benches := []benchmarkCase{
 		{name: "direct_b_c1"},
 		{name: "wg_to_b_c1"},
+		{name: "wg_to_b_upload_c1"},
 		{name: "wg_to_b_c8"},
 	}
-	selected, err := selectBenchmarks("wg_to_b_c1,wg_to_b_c8", benches)
+	selected, err := selectBenchmarks("wg_to_b_c1,wg_to_b_upload_c1,wg_to_b_c8", benches)
 	if err != nil {
 		t.Fatalf("selectBenchmarks() error = %v", err)
 	}
@@ -72,7 +73,7 @@ func TestWgPerfBenchmarkFilterSelectsNamedBenchmarks(t *testing.T) {
 	for _, bench := range selected {
 		names = append(names, bench.name)
 	}
-	if want := []string{"wg_to_b_c1", "wg_to_b_c8"}; !reflect.DeepEqual(names, want) {
+	if want := []string{"wg_to_b_c1", "wg_to_b_upload_c1", "wg_to_b_c8"}; !reflect.DeepEqual(names, want) {
 		t.Fatalf("selected benchmarks = %#v, want %#v", names, want)
 	}
 }
@@ -144,6 +145,19 @@ func TestWgPerfHarnessDefaultsThroughputBenchmarksToBoundedDuration(t *testing.T
 	}
 }
 
+func TestWgPerfHarnessIncludesUploadBenchmarks(t *testing.T) {
+	data, err := os.ReadFile("harness.go")
+	if err != nil {
+		t.Fatalf("read harness: %v", err)
+	}
+	harness := string(data)
+	for _, want := range []string{"protocolModeUploadUnlimited", "direct_b_upload_c1", "wg_to_b_upload_c1"} {
+		if !strings.Contains(harness, want) {
+			t.Fatalf("harness.go missing upload benchmark marker %q", want)
+		}
+	}
+}
+
 func TestWgPerfHarnessConfiguresWireGuardBindAddresses(t *testing.T) {
 	t.Setenv("HARNESS_WG_BIND_ADDRESSES", "172.30.2.15")
 	cfg := loadConfig()
@@ -151,6 +165,16 @@ func TestWgPerfHarnessConfiguresWireGuardBindAddresses(t *testing.T) {
 	profile := snapshots["relay-wg"].WireGuardProfiles[0]
 	if !reflect.DeepEqual(profile.BindAddresses, []string{"172.30.2.15"}) {
 		t.Fatalf("relay-wg bind_addresses = %#v, want docker-local bind address", profile.BindAddresses)
+	}
+}
+
+func TestWgPerfHarnessCanDisableRelayLayers(t *testing.T) {
+	t.Setenv("HARNESS_WG_RELAY_LAYERS", "none")
+	cfg := loadConfig()
+	snapshots := buildSnapshots(cfg, "cert", "key", "pin")
+	rule := snapshots["relay-wg"].L4Rules[0]
+	if len(rule.RelayLayers) != 0 {
+		t.Fatalf("relay layers = %#v, want direct WG-to-backend path", rule.RelayLayers)
 	}
 }
 

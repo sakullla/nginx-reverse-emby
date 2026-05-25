@@ -386,6 +386,17 @@ func TestWireGuardProfileCreateAllocatesNextAvailableAddress(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileAllocateSkipsOverlappingExistingSubnet(t *testing.T) {
+	rows := []storage.WireGuardProfileRow{{
+		AddressesJSON: `["10.8.0.254/24","fd10:8::ffff/64"]`,
+	}}
+
+	got := allocateWireGuardProfileAddresses(rows, nil)
+	if joined := strings.Join(got, ","); joined != "10.8.1.1/24,fd10:8:1::1/64" {
+		t.Fatalf("allocateWireGuardProfileAddresses() = %q, want next non-overlapping pools", joined)
+	}
+}
+
 func TestWireGuardProfileEnsureDefaultAllocatesNextGlobalAddressAcrossAgents(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)

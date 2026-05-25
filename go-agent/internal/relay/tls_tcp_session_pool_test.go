@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -289,15 +290,15 @@ func TestTLSTCPLogicalStreamReadFromSingleStreamQueuesAheadOfSlowWriter(t *testi
 	<-writer.started
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if src.readCalls >= 4 {
+		if src.readCalls.Load() >= 4 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if src.readCalls < 4 {
+	if got := src.readCalls.Load(); got < 4 {
 		close(writer.release)
 		<-done
-		t.Fatalf("source read calls = %d, want at least 4 queued frames before backpressure", src.readCalls)
+		t.Fatalf("source read calls = %d, want at least 4 queued frames before backpressure", got)
 	}
 
 	close(writer.release)
@@ -978,7 +979,7 @@ func (c *markingConn) SetWriteDeadline(time.Time) error {
 
 type countingChunkConn struct {
 	net.Conn
-	readCalls int
+	readCalls atomic.Int32
 	chunks    [][]byte
 }
 
@@ -988,7 +989,7 @@ func (c *countingChunkConn) Read(p []byte) (int, error) {
 	}
 	chunk := c.chunks[0]
 	c.chunks = c.chunks[1:]
-	c.readCalls++
+	c.readCalls.Add(1)
 	return copy(p, chunk), nil
 }
 

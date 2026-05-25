@@ -96,6 +96,60 @@ func TestHostBindSendAcceptsBatch(t *testing.T) {
 	}
 }
 
+func TestHostBindSendUsesReceiveSocketForMultiAddress(t *testing.T) {
+	bind := &hostBind{addresses: []string{"127.0.0.1", "127.0.0.2"}}
+	fns, port, err := bind.Open(0)
+	if err != nil {
+		t.Skipf("Open() on multiple loopback addresses unsupported: %v", err)
+	}
+	defer bind.Close()
+	if len(fns) != 2 {
+		t.Fatalf("Open() receive funcs = %d, want 2", len(fns))
+	}
+	if err := bind.conns[1].udp.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+
+	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("ListenUDP(client) error = %v", err)
+	}
+	defer client.Close()
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline(client) error = %v", err)
+	}
+	secondary := net.UDPAddr{IP: net.ParseIP("127.0.0.2"), Port: int(port)}
+	if _, err := client.WriteToUDPAddrPort([]byte("ping"), secondary.AddrPort()); err != nil {
+		t.Fatalf("WriteToUDPAddrPort() error = %v", err)
+	}
+
+	packets := [][]byte{make([]byte, 16)}
+	sizes := make([]int, 1)
+	eps := make([]conn.Endpoint, 1)
+	n, err := fns[1](packets, sizes, eps)
+	if err != nil {
+		t.Fatalf("receive func error = %v", err)
+	}
+	if n != 1 || sizes[0] != len("ping") {
+		t.Fatalf("receive n=%d size=%d, want one ping", n, sizes[0])
+	}
+	if err := bind.Send([][]byte{[]byte("pong")}, eps[0]); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	buf := make([]byte, 16)
+	nread, from, err := client.ReadFromUDPAddrPort(buf)
+	if err != nil {
+		t.Fatalf("ReadFromUDPAddrPort() error = %v", err)
+	}
+	if string(buf[:nread]) != "pong" {
+		t.Fatalf("reply = %q, want pong", string(buf[:nread]))
+	}
+	if got := from.Addr().String(); got != "127.0.0.2" {
+		t.Fatalf("reply source = %s, want 127.0.0.2", got)
+	}
+}
+
 func TestHostBindSendChunksOversizedBatch(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "android" {
 		t.Skip("oversized batch chunking exercises Linux/Android WriteBatch path")

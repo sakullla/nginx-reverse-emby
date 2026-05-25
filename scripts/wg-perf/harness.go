@@ -50,6 +50,7 @@ type config struct {
 	wgTunnelHost    string
 	wgTunnelPort    int
 	wgBindAddresses []string
+	wgRelayLayers   [][]int
 }
 
 type benchmarkCase struct {
@@ -188,6 +189,7 @@ const (
 	protocolModeEcho              = 1
 	protocolModeDownload          = 2
 	protocolModeDownloadUnlimited = 3
+	protocolModeUploadUnlimited   = 4
 )
 
 func main() {
@@ -232,11 +234,23 @@ func main() {
 		{name: "wg_to_b_c1", run: func() result {
 			return measureThroughput("wg_to_b_c1", cfg.entryAddress, 1, cfg.c1Bytes, cfg.c1Duration)
 		}},
+		{name: "direct_b_upload_c1", run: func() result {
+			return measureUploadThroughput("direct_b_upload_c1", cfg.directAddress, 1, cfg.c1Duration)
+		}},
+		{name: "wg_to_b_upload_c1", run: func() result {
+			return measureUploadThroughput("wg_to_b_upload_c1", cfg.entryAddress, 1, cfg.c1Duration)
+		}},
 		{name: "direct_b_c8", run: func() result {
 			return measureThroughput("direct_b_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
 		}},
 		{name: "wg_to_b_c8", run: func() result {
 			return measureThroughput("wg_to_b_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
+		}},
+		{name: "direct_b_upload_c8", run: func() result {
+			return measureUploadThroughput("direct_b_upload_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8Duration)
+		}},
+		{name: "wg_to_b_upload_c8", run: func() result {
+			return measureUploadThroughput("wg_to_b_upload_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8Duration)
 		}},
 	}
 	selected, err := selectBenchmarks(cfg.benchmarkFilter, benchmarks)
@@ -280,6 +294,7 @@ func loadConfig() config {
 		wgTunnelHost:    envString("HARNESS_WG_TUNNEL_HOST", "10.80.0.1"),
 		wgTunnelPort:    envInt("HARNESS_WG_TUNNEL_PORT", 9443),
 		wgBindAddresses: envList("HARNESS_WG_BIND_ADDRESSES"),
+		wgRelayLayers:   envRelayLayers("HARNESS_WG_RELAY_LAYERS", [][]int{{2, 3}, {4, 5}}),
 	}
 }
 
@@ -382,7 +397,7 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 				Backends:             []l4Backend{{Host: cfg.backendHost, Port: cfg.backendPort}},
 				UpstreamHost:         cfg.backendHost,
 				UpstreamPort:         cfg.backendPort,
-				RelayLayers:          [][]int{{2, 3}, {4, 5}},
+				RelayLayers:          cloneIntLayers(cfg.wgRelayLayers),
 				ListenMode:           "wireguard",
 				WireGuardProfileID:   intPtr(1),
 				WireGuardInboundMode: "address",
@@ -582,6 +597,8 @@ func handleBackendConn(conn net.Conn) {
 				return
 			}
 		}
+	case protocolModeUploadUnlimited:
+		_, _ = io.Copy(io.Discard, conn)
 	}
 }
 
@@ -712,6 +729,35 @@ func measureThroughput(name, address string, concurrency int, bytesPerConn int64
 	return result{Name: name, Target: address, Concurrency: concurrency, Bytes: total, Seconds: elapsed, MBps: float64(total) / elapsed / 1_000_000, Mbps: float64(total) * 8 / elapsed / 1_000_000}
 }
 
+func measureUploadThroughput(name, address string, concurrency int, duration time.Duration) result {
+	start := time.Now()
+	deadline := start.Add(duration)
+	var wg sync.WaitGroup
+	errCh := make(chan error, concurrency)
+	var total int64
+	var totalMu sync.Mutex
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n, err := uploadForDuration(address, deadline)
+			totalMu.Lock()
+			total += n
+			totalMu.Unlock()
+			if err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	if err := <-errCh; err != nil {
+		log.Fatal(err)
+	}
+	elapsed := time.Since(start).Seconds()
+	return result{Name: name, Target: address, Concurrency: concurrency, Bytes: total, Seconds: elapsed, MBps: float64(total) / elapsed / 1_000_000, Mbps: float64(total) * 8 / elapsed / 1_000_000}
+}
+
 func transfer(address string, totalBytes int64) (int64, error) {
 	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
 	if err != nil {
@@ -769,6 +815,34 @@ func transferForDuration(address string, deadline time.Time) (int64, error) {
 			return readBytes, nil
 		}
 		return readBytes, err
+	}
+}
+
+func uploadForDuration(address string, deadline time.Time) (int64, error) {
+	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+	}
+	_ = conn.SetWriteDeadline(deadline)
+	if _, err := conn.Write([]byte{protocolModeUploadUnlimited}); err != nil {
+		return 0, err
+	}
+	payload := bytes.Repeat([]byte{9}, 64*1024)
+	var written int64
+	for {
+		n, err := conn.Write(payload)
+		written += int64(n)
+		if err == nil {
+			continue
+		}
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return written, nil
+		}
+		return written, err
 	}
 }
 
@@ -839,6 +913,28 @@ func envList(name string) []string {
 		if trimmed := strings.TrimSpace(field); trimmed != "" {
 			out = append(out, trimmed)
 		}
+	}
+	return out
+}
+
+func envRelayLayers(name string, fallback [][]int) [][]int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	if strings.EqualFold(value, "none") || strings.EqualFold(value, "direct") {
+		return nil
+	}
+	return fallback
+}
+
+func cloneIntLayers(value [][]int) [][]int {
+	if value == nil {
+		return nil
+	}
+	out := make([][]int, len(value))
+	for i := range value {
+		out[i] = append([]int(nil), value[i]...)
 	}
 	return out
 }
