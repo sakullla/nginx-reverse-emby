@@ -102,8 +102,8 @@ func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T
 	if profile.Name != "phone" || profile.Mode != "generic_wireguard" || profile.ListenPort != 0 || !profile.Enabled {
 		t.Fatalf("profile core fields = %+v", profile)
 	}
-	if len(profile.Addresses) != 1 || profile.Addresses[0] != "10.44.0.2/32" {
-		t.Fatalf("addresses = %+v", profile.Addresses)
+	if len(profile.InterfaceAddresses) != 1 || profile.InterfaceAddresses[0] != "10.44.0.2/32" {
+		t.Fatalf("interface_addresses = %+v", profile.InterfaceAddresses)
 	}
 	if len(profile.Peers) != 1 || profile.Peers[0].PublicKey != httpTestWireGuardPublicKey || profile.Peers[0].Endpoint != "peer.example.com:51820" {
 		t.Fatalf("peers = %+v", profile.Peers)
@@ -169,7 +169,8 @@ func TestRouterWireGuardProfilesRejectsInvalidCIDR(t *testing.T) {
 		"mode":"generic_wireguard",
 		"private_key":"`+httpTestWireGuardPrivateKey+`",
 		"listen_port":51820,
-		"addresses":["10.20.0.1"],
+		"addresses":["0.0.0.0"],
+		"interface_addresses":["10.20.0.1"],
 		"peers":[{"name":"peer-a","public_key":"`+httpTestWireGuardPublicKey+`","preshared_key":"`+httpTestWireGuardPresharedKey+`","allowed_ips":["10.20.0.2/32"]}]
 	}`))
 	req.Header.Set("X-Panel-Token", "secret")
@@ -223,7 +224,8 @@ func TestRouterWireGuardProfilesUpdateClearsDNSAndTags(t *testing.T) {
 		"mode":"generic_wireguard",
 		"private_key":"`+httpTestWireGuardRedacted+`",
 		"listen_port":51820,
-		"addresses":["10.20.0.1/24"],
+		"addresses":["0.0.0.0"],
+		"interface_addresses":["10.20.0.1/24"],
 		"peers":[{"name":"peer-a","public_key":"`+httpTestWireGuardPublicKey+`","preshared_key":"`+httpTestWireGuardRedacted+`","endpoint":"peer.example.com:51820","allowed_ips":["10.20.0.2/32"],"persistent_keepalive_seconds":25}],
 		"dns":[],
 		"mtu":1420,
@@ -699,7 +701,8 @@ func validWireGuardHTTPPayloadWithPort(listenPort int) string {
 		"mode":"generic_wireguard",
 		"private_key":"` + httpTestWireGuardPrivateKey + `",
 		"listen_port":` + strconv.Itoa(listenPort) + `,
-		"addresses":["10.20.0.1/24"],
+		"addresses":["0.0.0.0"],
+		"interface_addresses":["10.20.0.1/24"],
 		"peers":[{"name":"peer-a","public_key":"` + httpTestWireGuardPublicKey + `","preshared_key":"` + httpTestWireGuardPresharedKey + `","endpoint":"peer.example.com:51820","allowed_ips":["10.20.0.2/32"],"persistent_keepalive_seconds":25}],
 		"dns":["1.1.1.1"],
 		"mtu":1420,
@@ -715,7 +718,8 @@ func validWireGuardHTTPClientProfilePayload(listenPort int) string {
 		"private_key":"` + httpTestWireGuardPrivateKey + `",
 		"listen_port":` + strconv.Itoa(listenPort) + `,
 		"public_endpoint":"wg.example.com:51820",
-		"addresses":["10.8.0.1/24"],
+		"addresses":["0.0.0.0"],
+		"interface_addresses":["10.8.0.1/24"],
 		"peers":[{"name":"manual-peer","public_key":"` + httpTestWireGuardPublicKey + `","preshared_key":"` + httpTestWireGuardPresharedKey + `","allowed_ips":["10.8.0.254/32"]}],
 		"dns":["1.1.1.1"],
 		"mtu":1420,

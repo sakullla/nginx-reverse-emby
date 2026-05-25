@@ -928,6 +928,7 @@ func normalizeWireGuardProfileRow(row *WireGuardProfileRow) {
 	row.PrivateKey = defaultString(row.PrivateKey, "")
 	row.PublicEndpoint = defaultString(row.PublicEndpoint, "")
 	row.AddressesJSON = defaultJSON(row.AddressesJSON, "[]")
+	row.BindAddressesJSON = defaultJSON(row.BindAddressesJSON, "[]")
 	row.PeersJSON = defaultJSON(row.PeersJSON, "[]")
 	row.DNSJSON = defaultJSON(row.DNSJSON, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
@@ -2060,6 +2061,7 @@ func SnapshotWireGuardProfiles(rows []WireGuardProfileRow) []WireGuardProfile {
 			PrivateKey:     row.PrivateKey,
 			ListenPort:     row.ListenPort,
 			PublicEndpoint: row.PublicEndpoint,
+			BindAddresses:  parseStringSlice(row.BindAddressesJSON),
 			Addresses:      parseStringSlice(row.AddressesJSON),
 			Peers:          parseWireGuardPeers(row.PeersJSON),
 			DNS:            parseStringSlice(row.DNSJSON),

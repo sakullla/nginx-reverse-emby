@@ -54,6 +54,8 @@
 - `HARNESS_DELAY_CLI_TO_WG_MS`
 - `HARNESS_DELAY_WG_TO_RELAY_MS`
 - `HARNESS_DELAY_RELAY_A_TO_RELAY_B_MS`
+- `HARNESS_WG_BIND_ADDRESSES`：逗号分隔的 relay-wg WireGuard UDP 监听地址；留空使用默认 `0.0.0.0`/`::` 绑定。
+- `HARNESS_C1_DURATION_SECONDS` / `HARNESS_C8_DURATION_SECONDS`：吞吐测试默认各跑 10 秒；设为 `0` 时改用固定字节数。
 
 如果不设置，脚本默认按每段 20ms 单向延迟执行。
 

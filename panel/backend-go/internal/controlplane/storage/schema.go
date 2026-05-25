@@ -221,6 +221,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		sql    string
 	}{
 		{column: "public_endpoint", sql: `ALTER TABLE wireguard_profiles ADD COLUMN public_endpoint TEXT NOT NULL DEFAULT ''`},
+		{column: "bind_addresses", sql: `ALTER TABLE wireguard_profiles ADD COLUMN bind_addresses TEXT NOT NULL DEFAULT '[]'`},
 	}
 	for _, migration := range wireGuardProfileColumnMigrations {
 		if tx.Migrator().HasColumn(&WireGuardProfileRow{}, migration.column) {
@@ -310,6 +311,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE relay_listeners SET allow_transport_fallback = 1 WHERE allow_transport_fallback IS NULL`,
 		`UPDATE relay_listeners SET obfs_mode = 'off' WHERE obfs_mode IS NULL OR trim(obfs_mode) = ''`,
 		`UPDATE wireguard_profiles SET public_endpoint = '' WHERE public_endpoint IS NULL`,
+		`UPDATE wireguard_profiles SET bind_addresses = '[]' WHERE bind_addresses IS NULL OR trim(bind_addresses) = ''`,
 	}
 	for _, stmt := range normalizationStatements {
 		if err := tx.Exec(stmt).Error; err != nil {

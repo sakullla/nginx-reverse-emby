@@ -19,7 +19,8 @@ function mountCard() {
         id: 7,
         name: 'wg-main',
         enabled: true,
-        addresses: ['10.8.0.1/24'],
+        addresses: ['0.0.0.0'],
+        interface_addresses: ['10.8.0.1/24'],
         tags: []
       },
       clientCount: 2

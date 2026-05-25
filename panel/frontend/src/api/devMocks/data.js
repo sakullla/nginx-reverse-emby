@@ -1947,7 +1947,8 @@ const mockWireGuardProfilesByAgent = {
       private_key: 'xxxxx',
       listen_port: 51820,
       public_endpoint: 'local.example.com:51820',
-      addresses: ['10.8.0.1/24'],
+      addresses: ['0.0.0.0'],
+      interface_addresses: ['10.8.0.1/24', 'fd10:8::1/64'],
       peers: [
         {
           name: 'edge-peer',
@@ -1974,7 +1975,8 @@ const mockWireGuardProfilesByAgent = {
       private_key: 'xxxxx',
       listen_port: 51821,
       public_endpoint: 'edge-1.example.com:51821',
-      addresses: ['10.9.0.1/24'],
+      addresses: ['0.0.0.0'],
+      interface_addresses: ['10.9.0.1/24', 'fd10:8:1::1/64'],
       peers: [],
       dns: [],
       mtu: 1420,
@@ -2073,6 +2075,12 @@ function validateMockWireGuardDNSAddrs(values) {
   }
 }
 
+function validateMockWireGuardIPAddrs(values, field) {
+  for (const value of values) {
+    if (!isMockIPAddress(value)) throw new Error(`${field} must be IP addresses`)
+  }
+}
+
 function normalizeMockWireGuardPeer(peer = {}) {
   return {
     name: String(peer.name || '').trim(),
@@ -2089,7 +2097,7 @@ function normalizeMockWireGuardPeer(peer = {}) {
 function allocateMockWireGuardAddress(agentId) {
   const used = new Set()
   for (const profile of mockWireGuardProfilesByAgent[agentId] || []) {
-    for (const address of normalizeStringList(profile.addresses)) {
+    for (const address of normalizeStringList(profile.interface_addresses)) {
       const match = /^10\.8\.(\d{1,3})\.1\/24$/.exec(address)
       if (!match) continue
       const subnet = Number(match[1])
@@ -2097,9 +2105,9 @@ function allocateMockWireGuardAddress(agentId) {
     }
   }
   for (let subnet = 0; subnet <= 255; subnet += 1) {
-    if (!used.has(subnet)) return `10.8.${subnet}.1/24`
+      if (!used.has(subnet)) return [`10.8.${subnet}.1/24`, subnet === 0 ? 'fd10:8::1/64' : `fd10:8:${subnet}::1/64`]
   }
-  return '10.8.0.1/24'
+  return ['10.8.0.1/24', 'fd10:8::1/64']
 }
 
 function findMockWireGuardProfile(agentId, profileId) {
@@ -2107,7 +2115,7 @@ function findMockWireGuardProfile(agentId, profileId) {
 }
 
 function profileSubnetPrefix(profile = {}) {
-  const address = normalizeStringList(profile.addresses)[0] || '10.8.0.1/24'
+  const address = normalizeStringList(profile.interface_addresses)[0] || '10.8.0.1/24'
   const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}\/\d{1,2}$/.exec(address)
   return match ? `${match[1]}.${match[2]}.${match[3]}` : '10.8.0'
 }
@@ -2194,6 +2202,10 @@ function reconcileMockWireGuardGeneratedClientPeers(agentId, profile = {}) {
 
 function normalizeMockWireGuardProfile(agentId, profile = {}) {
   const id = Number(profile.id || ++mockWireGuardProfileIdCounter)
+  const addresses = normalizeStringList(profile.addresses)
+  const interfaceAddresses = normalizeStringList(profile.interface_addresses)
+  validateMockWireGuardIPAddrs(addresses, 'addresses')
+  validateMockWireGuardPrefixes(interfaceAddresses, 'interface_addresses')
   return {
     ...profile,
     id: Number.isInteger(id) && id > 0 ? id : ++mockWireGuardProfileIdCounter,
@@ -2203,7 +2215,8 @@ function normalizeMockWireGuardProfile(agentId, profile = {}) {
     private_key: String(profile.private_key || '').trim(),
     listen_port: profile.listen_port == null || profile.listen_port === '' ? null : Number(profile.listen_port),
     public_endpoint: String(profile.public_endpoint || '').trim(),
-    addresses: normalizeStringList(profile.addresses),
+    addresses,
+    interface_addresses: interfaceAddresses,
     peers: Array.isArray(profile.peers) ? profile.peers.map((peer) => normalizeMockWireGuardPeer(peer)) : [],
     dns: normalizeStringList(profile.dns),
     mtu: profile.mtu == null || profile.mtu === '' ? null : Number(profile.mtu),
@@ -2294,11 +2307,13 @@ export async function createWireGuardProfile(agentId, payload) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
     const addresses = normalizeStringList(payload.addresses)
+    const interfaceAddresses = normalizeStringList(payload.interface_addresses)
     const profile = normalizeMockWireGuardProfile(agentId, {
       ...payload,
       id: ++mockWireGuardProfileIdCounter,
       agent_id: agentId,
-      addresses: addresses.length ? addresses : [allocateMockWireGuardAddress(agentId)],
+      addresses: addresses.length ? addresses : ['0.0.0.0'],
+      interface_addresses: interfaceAddresses.length ? interfaceAddresses : allocateMockWireGuardAddress(agentId),
       revision: Date.now()
     })
     mockWireGuardProfilesByAgent[agentId] = mockWireGuardProfilesByAgent[agentId] || []
@@ -2545,7 +2560,8 @@ export async function importWireGuardURIProfile(agentId, uri, name = '') {
       private_key: 'xxxxx',
       listen_port: 0,
       public_endpoint: parsed.endpoint,
-      addresses: parsed.addresses,
+      addresses: ['0.0.0.0'],
+      interface_addresses: parsed.addresses,
       peers: [{
         name: 'egress',
         public_key: parsed.public_key,

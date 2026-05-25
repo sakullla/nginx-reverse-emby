@@ -93,7 +93,8 @@ function defaultProfilesData() {
       enabled: true,
       private_key: 'xxxxx',
       listen_port: 51820,
-      addresses: ['10.8.0.1/24'],
+      addresses: ['0.0.0.0'],
+      interface_addresses: ['10.8.0.1/24'],
       peers: [],
       public_endpoint: 'wg.example.com:51820',
       dns: ['1.1.1.1'],
@@ -106,7 +107,8 @@ function defaultProfilesData() {
       enabled: true,
       private_key: 'xxxxx',
       listen_port: 51821,
-      addresses: ['10.9.0.1/24'],
+      addresses: ['0.0.0.0'],
+      interface_addresses: ['10.9.0.1/24'],
       peers: [],
       public_endpoint: 'wg-backup.example.com:51821'
     }
@@ -200,13 +202,27 @@ describe('WireGuardProfilesPage client row actions', () => {
       private_key: 'xxxxx',
       listen_port: 51820,
       public_endpoint: 'wg.example.com:51820',
-      addresses: ['10.8.0.1/24'],
+      addresses: ['0.0.0.0'],
+      interface_addresses: ['10.8.0.1/24'],
       peers: [],
       dns: ['1.1.1.1'],
       mtu: 1420,
       enabled: false,
       tags: ['manual']
     })
+  })
+
+  it('passes profile client counts to list cards', async () => {
+    mocks.profilesData = defaultProfilesData()
+    mocks.profilesData[0].client_count = 2
+    mocks.profilesData[1].client_count = 1
+
+    const wrapper = mountPage()
+    const cards = wrapper.findAllComponents({ name: 'WireGuardProfileCard' })
+
+    expect(cards).toHaveLength(2)
+    expect(cards[0].props('clientCount')).toBe(2)
+    expect(cards[1].props('clientCount')).toBe(1)
   })
 
   it('excludes generated client peers from the manual peer editor', async () => {

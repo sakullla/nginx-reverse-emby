@@ -715,12 +715,13 @@ func TestNewControlPlaneAppProvidesWireGuardClientServiceWhenLocalAgentEnabled(t
 		}
 
 		profile, err := deps.WireGuardProfileService.Create(t.Context(), cfg.LocalAgentID, service.WireGuardProfileInput{
-			Name:           "wg clients",
-			Mode:           "generic_wireguard",
-			PrivateKey:     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-			ListenPort:     51820,
-			PublicEndpoint: "wg.example.com:51820",
-			Addresses:      []string{"10.8.0.1/24"},
+			Name:               "wg clients",
+			Mode:               "generic_wireguard",
+			PrivateKey:         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			ListenPort:         51820,
+			PublicEndpoint:     "wg.example.com:51820",
+			Addresses:          []string{"0.0.0.0"},
+			InterfaceAddresses: []string{"10.8.0.1/24"},
 			Peers: []service.WireGuardPeer{{
 				Name:       "peer-a",
 				PublicKey:  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",

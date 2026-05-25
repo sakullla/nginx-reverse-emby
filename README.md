@@ -346,9 +346,9 @@ nre-control-plane migrate-storage \
 
 ### WireGuard Profile
 
-控制面提供 WireGuard Profiles 页面，可按 Agent 管理标准 WireGuard 配置。Profile 包含 private key、listen port、addresses、peers、DNS、MTU、enabled 和 tags，可用于 Relay transport 或 L4 规则。密钥等敏感字段在接口和面板中会显示为 `xxxxx`；编辑时保持 redacted 值不变即可保留已存储密钥。
+控制面提供 WireGuard Profiles 页面，可按 Agent 管理标准 WireGuard 配置。Profile 包含 private key、listen port、addresses、interface addresses、peers、DNS、MTU、enabled 和 tags，可用于 Relay transport 或 L4 规则。密钥等敏感字段在接口和面板中会显示为 `xxxxx`；编辑时保持 redacted 值不变即可保留已存储密钥。
 
-创建通用 WireGuard Profile 时，按常规 WireGuard 配置填写本端私钥、监听 UDP 端口、本端隧道地址，以及 peer 的 public key、allowed IPs、endpoint 和 persistent keepalive 等参数。该功能只管理标准 WireGuard profile，不内置 Cloudflare WARP 注册、MASQUE 或密钥轮换。
+创建通用 WireGuard Profile 时，`Addresses` 表示 Agent 主机上 WireGuard UDP socket 的实际监听地址（例如 `192.168.0.109`，留空默认 `0.0.0.0`），`WG 分配地址` 表示 WireGuard 接口地址/地址池（例如 `10.8.0.1/24`、`fd10:8::1/64`）。创建时可留空自动分配，之后可在面板中调整。自动分配地址池可通过 `NRE_WIREGUARD_AUTO_ADDRESS_POOLS` 配置，逗号分隔同时支持 IPv4/IPv6，默认 `10.8.x.1/24,fd10:8:x::1/64`。该功能只管理标准 WireGuard profile，不内置 Cloudflare WARP 注册、MASQUE 或密钥轮换。
 
 ### L4 与 WireGuard
 

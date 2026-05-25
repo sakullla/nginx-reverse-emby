@@ -536,7 +536,7 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		if profile, ok, err := s.relayWireGuardProfile(ctx, agentID, workingInput.WireGuardProfileID, fallback.WireGuardProfileID); err != nil {
 			return relayPreparation{}, err
 		} else if ok {
-			host := firstWireGuardAddressHost(profile.Addresses)
+			host := firstWireGuardAddressHost(profile.InterfaceAddresses)
 			workingInput.ListenHost = &host
 			workingInput.BindHosts = &[]string{host}
 			publicHost := ""

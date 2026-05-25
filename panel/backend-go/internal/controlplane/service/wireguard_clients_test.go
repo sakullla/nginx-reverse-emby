@@ -16,7 +16,7 @@ func TestWireGuardClientCreateAllocatesAddressAndGeneratesConfig(t *testing.T) {
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	input.DNS = []string{"1.1.1.1"}
@@ -64,7 +64,7 @@ func TestWireGuardClientCreateHonorsExplicitAllowedIPs(t *testing.T) {
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -110,7 +110,7 @@ func TestWireGuardClientConfigDefaultsAllowedIPsToFullTunnel(t *testing.T) {
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -140,7 +140,7 @@ func TestWireGuardClientURIIncludesReservedWhenPresent(t *testing.T) {
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -167,7 +167,7 @@ func TestWireGuardClientCreateRejectsInvalidAllowedIPs(t *testing.T) {
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -320,7 +320,7 @@ func TestWireGuardClientListReturnsRedactedClients(t *testing.T) {
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -349,7 +349,7 @@ func TestWireGuardClientUpdateDisablesEnabledClientAndKeepsSecretsStable(t *test
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -415,7 +415,7 @@ func TestWireGuardClientUpdateEnablesDisabledClient(t *testing.T) {
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -461,7 +461,7 @@ func TestWireGuardProfileUpdatePreservesEnabledGeneratedClientPeer(t *testing.T)
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers = []WireGuardPeer{}
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -511,7 +511,7 @@ func TestWireGuardProfileUpdateUsesTransactionalClientStateForGeneratedPeers(t *
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers = []WireGuardPeer{}
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -584,7 +584,7 @@ func TestWireGuardProfileUpdateDoesNotReaddDisabledGeneratedClientPeer(t *testin
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers = []WireGuardPeer{}
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -627,7 +627,7 @@ func TestWireGuardProfileUpdateHonorsExplicitEmptyManualPeersWhenGeneratedClient
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	input.Peers[0].AllowedIPs = []string{"10.8.0.2/32"}
@@ -669,7 +669,7 @@ func TestWireGuardProfileUpdatePreservesManualPeersWhenGeneratedClientExists(t *
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	input.Peers[0].AllowedIPs = []string{"10.8.0.2/32"}
@@ -725,7 +725,7 @@ func TestWireGuardClientUpdateRejectsMissingEnabledWithoutMutation(t *testing.T)
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -771,7 +771,7 @@ func TestWireGuardClientUpdateEditsNameAllowedIPsAndDNS(t *testing.T) {
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -832,7 +832,7 @@ func TestWireGuardClientUpdateAllowedIPsPreservesExplicitEmptyList(t *testing.T)
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -863,7 +863,7 @@ func TestWireGuardClientUpdateMissingClientReturnsNotFound(t *testing.T) {
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -883,7 +883,7 @@ func TestWireGuardClientConfigRejectsMissingEndpoint(t *testing.T) {
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = ""
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)
@@ -909,7 +909,7 @@ func TestWireGuardClientCreateSkipsManualPeerAllowedIP(t *testing.T) {
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	input.Peers[0].AllowedIPs = []string{"10.8.0.2/32"}
@@ -932,7 +932,7 @@ func TestWireGuardClientCreateSkipsManualPeerAllowedIPPrefixRange(t *testing.T) 
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	input.Peers[0].AllowedIPs = []string{"10.8.0.2/31"}
@@ -955,7 +955,7 @@ func TestWireGuardProfileDeleteRemovesClients(t *testing.T) {
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.8.0.1/24"}
+	input.InterfaceAddresses = []string{"10.8.0.1/24"}
 	input.PublicEndpoint = "wg.example.com:51820"
 	input.Peers[0].Endpoint = ""
 	profile, err := profileSvc.Create(ctx, "local", input)

@@ -26,6 +26,7 @@ type Config struct {
 	model.WireGuardProfile
 
 	PrivateKeyBytes []byte
+	BindAddresses   []string
 	AddressPrefixes []netip.Prefix
 	AddressAddrs    []netip.Addr
 	DNSAddrs        []netip.Addr
@@ -64,6 +65,11 @@ func NormalizeConfig(profile model.WireGuardProfile) (Config, error) {
 	if profile.ListenPort < 0 || profile.ListenPort > 65535 {
 		return Config{}, fmt.Errorf("listen_port must be between 0 and 65535")
 	}
+	bindAddresses, err := normalizeBindAddresses(profile.BindAddresses)
+	if err != nil {
+		return Config{}, err
+	}
+	profile.BindAddresses = bindAddresses
 	if profile.MTU < 0 {
 		return Config{}, fmt.Errorf("mtu must be non-negative")
 	}
@@ -90,6 +96,7 @@ func NormalizeConfig(profile model.WireGuardProfile) (Config, error) {
 	return Config{
 		WireGuardProfile: profile,
 		PrivateKeyBytes:  privateKey,
+		BindAddresses:    bindAddresses,
 		AddressPrefixes:  addresses,
 		AddressAddrs:     addressAddrs,
 		DNSAddrs:         dnsAddrs,
@@ -112,23 +119,25 @@ func Fingerprint(profile model.WireGuardProfile) (string, error) {
 		PersistentKeepaliveSeconds int      `json:"persistent_keepalive_seconds,omitempty"`
 	}
 	type fingerprintConfig struct {
-		Mode       string            `json:"mode"`
-		PrivateKey string            `json:"private_key"`
-		ListenPort int               `json:"listen_port"`
-		Addresses  []string          `json:"addresses"`
-		DNS        []string          `json:"dns"`
-		MTU        int               `json:"mtu"`
-		Peers      []fingerprintPeer `json:"peers"`
+		Mode          string            `json:"mode"`
+		PrivateKey    string            `json:"private_key"`
+		ListenPort    int               `json:"listen_port"`
+		BindAddresses []string          `json:"bind_addresses,omitempty"`
+		Addresses     []string          `json:"addresses"`
+		DNS           []string          `json:"dns"`
+		MTU           int               `json:"mtu"`
+		Peers         []fingerprintPeer `json:"peers"`
 	}
 
 	value := fingerprintConfig{
-		Mode:       cfg.Mode,
-		PrivateKey: base64.StdEncoding.EncodeToString(cfg.PrivateKeyBytes),
-		ListenPort: cfg.ListenPort,
-		Addresses:  prefixStrings(cfg.AddressPrefixes),
-		DNS:        addrStrings(cfg.DNSAddrs),
-		MTU:        cfg.MTU,
-		Peers:      make([]fingerprintPeer, 0, len(cfg.Peers)),
+		Mode:          cfg.Mode,
+		PrivateKey:    base64.StdEncoding.EncodeToString(cfg.PrivateKeyBytes),
+		ListenPort:    cfg.ListenPort,
+		BindAddresses: append([]string(nil), cfg.BindAddresses...),
+		Addresses:     prefixStrings(cfg.AddressPrefixes),
+		DNS:           addrStrings(cfg.DNSAddrs),
+		MTU:           cfg.MTU,
+		Peers:         make([]fingerprintPeer, 0, len(cfg.Peers)),
 	}
 	for _, peer := range cfg.Peers {
 		value.Peers = append(value.Peers, fingerprintPeer{
@@ -184,6 +193,22 @@ func parseAddressPrefixes(values []string) ([]netip.Prefix, []netip.Addr, error)
 		addrs = append(addrs, prefix.Addr())
 	}
 	return prefixes, addrs, nil
+}
+
+func normalizeBindAddresses(values []string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	for i, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("bind_addresses[%d] must be an IP address: %w", i, err)
+		}
+		out = append(out, addr.String())
+	}
+	return out, nil
 }
 
 func parseDNSAddrs(values []string) ([]netip.Addr, error) {

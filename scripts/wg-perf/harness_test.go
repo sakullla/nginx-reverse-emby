@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"net"
 	"os"
 	"reflect"
 	"strings"
@@ -117,6 +119,99 @@ func TestWgPerfRunScriptDefaultsToFortyMsRTTPerHop(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("run.ps1 missing default %q", want)
 		}
+	}
+}
+
+func TestWgPerfRunScriptReportsProgressAndTimesOut(t *testing.T) {
+	data, err := os.ReadFile("run.ps1")
+	if err != nil {
+		t.Fatalf("read run script: %v", err)
+	}
+	script := string(data)
+	for _, want := range []string{"HARNESS_RUN_TIMEOUT_SECONDS", "wg-perf running", "wg-perf timed out"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("run.ps1 missing progress/timeout marker %q", want)
+		}
+	}
+}
+
+func TestWgPerfHarnessDefaultsThroughputBenchmarksToBoundedDuration(t *testing.T) {
+	t.Setenv("HARNESS_C1_DURATION_SECONDS", "")
+	t.Setenv("HARNESS_C8_DURATION_SECONDS", "")
+	cfg := loadConfig()
+	if cfg.c1Duration <= 0 || cfg.c8Duration <= 0 {
+		t.Fatalf("throughput durations = c1 %s c8 %s, want bounded defaults", cfg.c1Duration, cfg.c8Duration)
+	}
+}
+
+func TestWgPerfHarnessConfiguresWireGuardBindAddresses(t *testing.T) {
+	t.Setenv("HARNESS_WG_BIND_ADDRESSES", "172.30.2.15")
+	cfg := loadConfig()
+	snapshots := buildSnapshots(cfg, "cert", "key", "pin")
+	profile := snapshots["relay-wg"].WireGuardProfiles[0]
+	if !reflect.DeepEqual(profile.BindAddresses, []string{"172.30.2.15"}) {
+		t.Fatalf("relay-wg bind_addresses = %#v, want docker-local bind address", profile.BindAddresses)
+	}
+}
+
+func TestWgPerfComposeExposesWireGuardBindAddressOverride(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yaml")
+	if err != nil {
+		t.Fatalf("read compose: %v", err)
+	}
+	if !strings.Contains(string(data), "HARNESS_WG_BIND_ADDRESSES") {
+		t.Fatal("docker-compose.yaml does not expose HARNESS_WG_BIND_ADDRESSES")
+	}
+}
+
+func TestWgPerfRunScriptStatsHeaderMatchesRows(t *testing.T) {
+	data, err := os.ReadFile("run.ps1")
+	if err != nil {
+		t.Fatalf("read run script: %v", err)
+	}
+	script := string(data)
+	if !strings.Contains(script, "$statsRows.Add('ts,name,cpu,mem,net')") {
+		t.Fatal("run.ps1 stats header does not match docker stats row format")
+	}
+	if strings.Contains(script, "$statsRows.Add('ts,name,cpu,mem,net,ps,threads')") {
+		t.Fatal("run.ps1 stats header advertises ps/threads columns that rows do not contain")
+	}
+}
+
+func TestEchoOnceRejectsMismatchedPayload(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer conn.Close()
+		var mode [1]byte
+		if _, err := io.ReadFull(conn, mode[:]); err != nil {
+			done <- err
+			return
+		}
+		payload := make([]byte, len("payload"))
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			done <- err
+			return
+		}
+		_, err = conn.Write([]byte("PAYLOAD"))
+		done <- err
+	}()
+
+	if err := echoOnce(ln.Addr().String(), []byte("payload")); err == nil {
+		t.Fatal("echoOnce() error = nil, want mismatch error")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("server error: %v", err)
 	}
 }
 

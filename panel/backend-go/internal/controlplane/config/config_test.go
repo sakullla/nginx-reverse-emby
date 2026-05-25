@@ -28,6 +28,34 @@ func TestDefaultUsesNormalizedControlPlaneDataDir(t *testing.T) {
 	if cfg.DataDir != "/opt/nginx-reverse-emby/panel/data" {
 		t.Fatalf("DataDir = %q", cfg.DataDir)
 	}
+	if got := strings.Join(cfg.WireGuardAutoAddressPools, ","); got != "10.8.x.1/24,fd10:8:x::1/64" {
+		t.Fatalf("WireGuardAutoAddressPools = %q", got)
+	}
+}
+
+func TestLoadFromEnvReadsWireGuardAutoAddressPools(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_WIREGUARD_AUTO_ADDRESS_POOLS", "10.9.x.1/24, fd99:9:x::1/64")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if got := strings.Join(cfg.WireGuardAutoAddressPools, ","); got != "10.9.x.1/24,fd99:9:x::1/64" {
+		t.Fatalf("WireGuardAutoAddressPools = %q", got)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidWireGuardAutoAddressPools(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_WIREGUARD_AUTO_ADDRESS_POOLS", "10.9.x.1/24,not-a-cidr")
+
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "NRE_WIREGUARD_AUTO_ADDRESS_POOLS") {
+		t.Fatalf("LoadFromEnv() error = %v, want WireGuard auto address pools validation error", err)
+	}
 }
 
 func TestLoadFromEnvInfersRuntimeAssetDefaults(t *testing.T) {

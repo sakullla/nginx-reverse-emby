@@ -1085,6 +1085,9 @@ func wireGuardProfileRowMatchesURI(row storage.WireGuardProfileRow, parsed Parse
 	if !stringSlicesEqual(normalizeStringList(profile.Addresses), normalizeStringList(expected.Addresses)) {
 		return false
 	}
+	if !stringSlicesEqual(normalizeStringList(profile.InterfaceAddresses), normalizeStringList(expected.InterfaceAddresses)) {
+		return false
+	}
 	if !stringSlicesEqual(normalizeStringList(profile.DNS), normalizeStringList(expected.DNS)) {
 		return false
 	}
