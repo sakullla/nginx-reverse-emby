@@ -16,7 +16,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard/wgnetstack"
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -553,6 +552,7 @@ func runtimeEntryByProfile(entries map[runtimeKey]*runtimeEntry, agentID string,
 
 func cloneConfig(cfg Config) Config {
 	cloned := cfg
+	cloned.BindAddresses = append([]string(nil), cfg.BindAddresses...)
 	cloned.Addresses = append([]string(nil), cfg.Addresses...)
 	cloned.DNS = append([]string(nil), cfg.DNS...)
 	cloned.Peers = clonePeerConfigs(cfg.Peers)
@@ -658,7 +658,7 @@ func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
 		return nil, err
 	}
 
-	dev := device.NewDevice(tunDevice, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, "wireguard: "))
+	dev := device.NewDevice(tunDevice, newWireGuardBind(cfg.BindAddresses), device.NewLogger(device.LogLevelSilent, "wireguard: "))
 	runtime := newNetstackRuntime(tunDevice, tnet, gstack, dev)
 	ipc, err := ipcConfig(ctx, cfg, lookupEndpointIP)
 	if err != nil {

@@ -58,9 +58,17 @@
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Addresses（每行一个）</label>
-          <textarea v-model="form.addresses_text" class="input textarea" placeholder="10.8.0.1/24"></textarea>
-          <p class="form-hint">留空时会自动分配下一个 10.8.x.1/24 地址。</p>
+          <textarea v-model="form.addresses_text" class="input textarea" placeholder="192.168.0.109"></textarea>
+          <p class="form-hint">本机实际 UDP 监听地址；留空默认监听 0.0.0.0。</p>
         </div>
+        <div class="form-group">
+          <label class="form-label">WG 分配地址（每行一个）</label>
+          <textarea v-model="form.interface_addresses_text" class="input textarea" placeholder="10.8.0.1/24&#10;fd10:8::1/64"></textarea>
+          <p class="form-hint">留空时按控制面地址池自动分配 IPv4/IPv6。</p>
+        </div>
+      </div>
+
+      <div class="form-row">
         <div class="form-group">
           <label class="form-label">DNS（每行一个）</label>
           <textarea v-model="form.dns_text" class="input textarea" placeholder="1.1.1.1"></textarea>
@@ -129,6 +137,7 @@ function createFormState(profile = null) {
     listen_port: profile?.listen_port ?? null,
     public_endpoint: profile?.public_endpoint || '',
     addresses_text: lines(profile?.addresses),
+    interface_addresses_text: lines(profile?.interface_addresses),
     dns_text: lines(profile?.dns),
     mtu: profile?.mtu ?? null,
     enabled: profile?.enabled !== false,
@@ -174,6 +183,7 @@ function buildPayload() {
     listen_port: form.value.listen_port == null || form.value.listen_port === '' ? null : Number(form.value.listen_port),
     public_endpoint: form.value.public_endpoint.trim(),
     addresses: splitLines(form.value.addresses_text),
+    interface_addresses: splitLines(form.value.interface_addresses_text),
     peers: Array.isArray(props.initialData?.peers) ? props.initialData.peers.map((peer) => ({
       name: String(peer.name || '').trim(),
       public_key: String(peer.public_key || '').trim(),

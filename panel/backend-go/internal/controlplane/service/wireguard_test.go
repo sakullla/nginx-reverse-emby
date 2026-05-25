@@ -172,13 +172,13 @@ func TestWireGuardProfileRejectsInvalidCIDR(t *testing.T) {
 	_, svc := newTestWireGuardProfileService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.0.0.1"}
+	input.InterfaceAddresses = []string{"10.0.0.1"}
 	_, err := svc.Create(ctx, "local", input)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "addresses must be CIDR") {
-		t.Fatalf("Create() error = %v, want addresses CIDR message", err)
+	if err == nil || !strings.Contains(err.Error(), "interface_addresses must be CIDR") {
+		t.Fatalf("Create() error = %v, want interface_addresses CIDR message", err)
 	}
 }
 
@@ -259,13 +259,80 @@ func TestWireGuardProfileCreateAllocatesAddressWhenOmitted(t *testing.T) {
 	_, svc := newTestWireGuardProfileService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = nil
+	input.InterfaceAddresses = nil
 	created, err := svc.Create(ctx, "local", input)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if len(created.Addresses) != 1 || created.Addresses[0] != "10.8.0.1/24" {
-		t.Fatalf("Create() addresses = %+v, want allocated 10.8.0.1/24", created.Addresses)
+	if len(created.InterfaceAddresses) != 2 || created.InterfaceAddresses[0] != "10.8.0.1/24" || created.InterfaceAddresses[1] != "fd10:8::1/64" {
+		t.Fatalf("Create() interface_addresses = %+v, want allocated v4/v6 pair", created.InterfaceAddresses)
+	}
+}
+
+func TestWireGuardProfileCreateSeparatesBindAddressesFromInterfaceAddresses(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.Addresses = []string{"192.168.0.109"}
+	input.InterfaceAddresses = nil
+	created, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if strings.Join(created.Addresses, ",") != "192.168.0.109" {
+		t.Fatalf("Create() addresses = %+v, want bind address", created.Addresses)
+	}
+	if len(created.InterfaceAddresses) != 2 || created.InterfaceAddresses[0] != "10.8.0.1/24" || created.InterfaceAddresses[1] != "fd10:8::1/64" {
+		t.Fatalf("Create() interface_addresses = %+v, want allocated v4/v6 pair", created.InterfaceAddresses)
+	}
+
+	rows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v, want one profile", rows)
+	}
+	if rows[0].BindAddressesJSON != `["192.168.0.109"]` {
+		t.Fatalf("BindAddressesJSON = %q, want bind address JSON", rows[0].BindAddressesJSON)
+	}
+	if rows[0].AddressesJSON != `["10.8.0.1/24","fd10:8::1/64"]` {
+		t.Fatalf("AddressesJSON = %q, want interface address JSON", rows[0].AddressesJSON)
+	}
+}
+
+func TestWireGuardProfileUpdateAllowsEditingInterfaceAddresses(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	update := testWireGuardProfileInput()
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	update.Addresses = []string{"192.168.0.109"}
+	update.InterfaceAddresses = []string{"10.8.44.1/24", "fd10:8:44::1/64"}
+	updated, err := svc.Update(ctx, "local", created.ID, update)
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if strings.Join(updated.Addresses, ",") != "192.168.0.109" {
+		t.Fatalf("Update() addresses = %+v, want updated bind address", updated.Addresses)
+	}
+	if strings.Join(updated.InterfaceAddresses, ",") != "10.8.44.1/24,fd10:8:44::1/64" {
+		t.Fatalf("Update() interface_addresses = %+v, want updated WG addresses", updated.InterfaceAddresses)
+	}
+
+	rows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].BindAddressesJSON != `["192.168.0.109"]` || rows[0].AddressesJSON != `["10.8.44.1/24","fd10:8:44::1/64"]` {
+		t.Fatalf("stored row = %+v, want separated bind/interface addresses", rows)
 	}
 }
 
@@ -274,7 +341,7 @@ func TestWireGuardProfileCreateAllocatesNextAvailableAddress(t *testing.T) {
 	_, svc := newTestWireGuardProfileService(t)
 
 	first := testWireGuardProfileInput()
-	first.Addresses = []string{"10.8.0.1/24"}
+	first.InterfaceAddresses = []string{"10.8.0.1/24"}
 	if _, err := svc.Create(ctx, "local", first); err != nil {
 		t.Fatalf("Create(first) error = %v", err)
 	}
@@ -283,14 +350,14 @@ func TestWireGuardProfileCreateAllocatesNextAvailableAddress(t *testing.T) {
 	second.PrivateKey = testWireGuardPresharedKey
 	second.Peers[0].PublicKey = testWireGuardPublicKeyB
 	second.Peers[0].PresharedKey = testWireGuardPresharedKeyB
-	second.Addresses = nil
+	second.InterfaceAddresses = nil
 	second.ListenPort = 51821
 	created, err := svc.Create(ctx, "local", second)
 	if err != nil {
 		t.Fatalf("Create(second) error = %v", err)
 	}
-	if len(created.Addresses) != 1 || created.Addresses[0] != "10.8.1.1/24" {
-		t.Fatalf("Create(second) addresses = %+v, want allocated 10.8.1.1/24", created.Addresses)
+	if len(created.InterfaceAddresses) != 2 || created.InterfaceAddresses[0] != "10.8.1.1/24" || created.InterfaceAddresses[1] != "fd10:8:1::1/64" {
+		t.Fatalf("Create(second) interface_addresses = %+v, want allocated 10.8.1.1/24 and fd10:8:1::1/64", created.InterfaceAddresses)
 	}
 }
 
@@ -311,16 +378,16 @@ func TestWireGuardProfileEnsureDefaultAllocatesNextGlobalAddressAcrossAgents(t *
 	if err != nil {
 		t.Fatalf("EnsureDefault(remote) error = %v", err)
 	}
-	if len(remoteProfile.Addresses) != 1 || remoteProfile.Addresses[0] != "10.8.0.1/24" {
-		t.Fatalf("EnsureDefault(remote) addresses = %+v, want allocated 10.8.0.1/24", remoteProfile.Addresses)
+	if len(remoteProfile.InterfaceAddresses) != 2 || remoteProfile.InterfaceAddresses[0] != "10.8.0.1/24" || remoteProfile.InterfaceAddresses[1] != "fd10:8::1/64" {
+		t.Fatalf("EnsureDefault(remote) interface_addresses = %+v, want allocated 10.8.0.1/24 and fd10:8::1/64", remoteProfile.InterfaceAddresses)
 	}
 
 	localProfile, err := svc.EnsureDefault(ctx, "local")
 	if err != nil {
 		t.Fatalf("EnsureDefault(local) error = %v", err)
 	}
-	if len(localProfile.Addresses) != 1 || localProfile.Addresses[0] != "10.8.1.1/24" {
-		t.Fatalf("EnsureDefault(local) addresses = %+v, want allocated 10.8.1.1/24", localProfile.Addresses)
+	if len(localProfile.InterfaceAddresses) != 2 || localProfile.InterfaceAddresses[0] != "10.8.1.1/24" || localProfile.InterfaceAddresses[1] != "fd10:8:1::1/64" {
+		t.Fatalf("EnsureDefault(local) interface_addresses = %+v, want allocated 10.8.1.1/24 and fd10:8:1::1/64", localProfile.InterfaceAddresses)
 	}
 }
 
@@ -341,13 +408,41 @@ func TestWireGuardProfileCreateAllocatesNextGlobalAddressAcrossAgentsWhenOmitted
 	}
 
 	input := testWireGuardProfileInput()
-	input.Addresses = nil
+	input.InterfaceAddresses = nil
 	created, err := svc.Create(ctx, "local", input)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if len(created.Addresses) != 1 || created.Addresses[0] != "10.8.1.1/24" {
-		t.Fatalf("Create() addresses = %+v, want allocated 10.8.1.1/24", created.Addresses)
+	if len(created.InterfaceAddresses) != 2 || created.InterfaceAddresses[0] != "10.8.1.1/24" || created.InterfaceAddresses[1] != "fd10:8:1::1/64" {
+		t.Fatalf("Create() interface_addresses = %+v, want allocated 10.8.1.1/24 and fd10:8:1::1/64", created.InterfaceAddresses)
+	}
+}
+
+func TestWireGuardProfileCreateAllocatesFromConfiguredAddressPools(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	svc := NewWireGuardProfileService(config.Config{
+		EnableLocalAgent:          true,
+		LocalAgentID:              "local",
+		WireGuardAutoAddressPools: []string{"10.9.x.1/24", "fd99:9:x::1/64"},
+	}, store)
+
+	input := testWireGuardProfileInput()
+	input.InterfaceAddresses = nil
+	created, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if got := strings.Join(created.InterfaceAddresses, ","); got != "10.9.0.1/24,fd99:9::1/64" {
+		t.Fatalf("Create() interface_addresses = %q, want configured pools", got)
 	}
 }
 
@@ -519,7 +614,8 @@ func TestWireGuardProfileUpdateRejectsExplicitEmptyAddresses(t *testing.T) {
 		"name":"wg relay",
 		"mode":"generic_wireguard",
 		"private_key":"xxxxx",
-		"addresses":[],
+		"addresses":["0.0.0.0"],
+		"interface_addresses":[],
 		"peers":[{
 			"name":"peer-a",
 			"public_key":"`+testWireGuardPublicKey+`",
@@ -540,8 +636,8 @@ func TestWireGuardProfileUpdateRejectsExplicitEmptyAddresses(t *testing.T) {
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "addresses is required") {
-		t.Fatalf("Update() error = %v, want addresses required message", err)
+	if err == nil || !strings.Contains(err.Error(), "interface_addresses is required") {
+		t.Fatalf("Update() error = %v, want interface_addresses required message", err)
 	}
 }
 
@@ -559,7 +655,8 @@ func TestWireGuardProfileUpdateAcceptsExplicitEmptyPeers(t *testing.T) {
 		"name":"wg relay",
 		"mode":"generic_wireguard",
 		"private_key":"xxxxx",
-		"addresses":["10.0.0.1/24"],
+		"addresses":["0.0.0.0"],
+		"interface_addresses":["10.0.0.1/24"],
 		"peers":[],
 		"dns":["1.1.1.1"],
 		"mtu":1420,
@@ -602,7 +699,8 @@ func TestWireGuardProfileUpdateCanClearListenPortFromJSONNull(t *testing.T) {
 		"mode":"generic_wireguard",
 		"private_key":"xxxxx",
 		"listen_port":null,
-		"addresses":["10.0.0.1/24"],
+		"addresses":["0.0.0.0"],
+		"interface_addresses":["10.0.0.1/24"],
 		"peers":[{
 			"name":"peer-a",
 			"public_key":"`+testWireGuardPublicKey+`",
@@ -1056,7 +1154,7 @@ func TestWireGuardProfileUpdateRejectsRemovingAddressUsedByDependentListener(t *
 			update := testWireGuardProfileInput()
 			update.PrivateKey = redactedProxyPassword
 			update.Peers[0].PresharedKey = redactedProxyPassword
-			update.Addresses = []string{"10.0.0.2/24"}
+			update.InterfaceAddresses = []string{"10.0.0.2/24"}
 			_, err = svc.Update(ctx, "local", created.ID, update)
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
@@ -1081,7 +1179,7 @@ func TestWireGuardProfileUpdateRejectsShrinkingAddressesWithExistingClients(t *t
 	store, svc := newTestWireGuardProfileService(t)
 
 	input := testWireGuardProfileInput()
-	input.Addresses = []string{"10.0.0.1/24"}
+	input.InterfaceAddresses = []string{"10.0.0.1/24"}
 	created, err := svc.Create(ctx, "local", input)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -1098,7 +1196,7 @@ func TestWireGuardProfileUpdateRejectsShrinkingAddressesWithExistingClients(t *t
 	update := input
 	update.PrivateKey = redactedProxyPassword
 	update.Peers[0].PresharedKey = redactedProxyPassword
-	update.Addresses = []string{"10.0.1.1/24"}
+	update.InterfaceAddresses = []string{"10.0.1.1/24"}
 
 	_, err = svc.Update(ctx, "local", created.ID, update)
 	if err == nil || !strings.Contains(err.Error(), "wireguard client") {
@@ -1479,8 +1577,8 @@ func TestWireGuardProfileImportURIPreservesPublicEndpointForClientConfig(t *test
 	if profile.PublicEndpoint != "peer.example.com:51820" {
 		t.Fatalf("Create() PublicEndpoint = %q, want imported endpoint", profile.PublicEndpoint)
 	}
-	if len(profile.Addresses) != 1 || profile.Addresses[0] != "10.44.0.1/24" {
-		t.Fatalf("Create() Addresses = %+v, want imported pool", profile.Addresses)
+	if len(profile.InterfaceAddresses) != 1 || profile.InterfaceAddresses[0] != "10.44.0.1/24" {
+		t.Fatalf("Create() InterfaceAddresses = %+v, want imported pool", profile.InterfaceAddresses)
 	}
 
 	client, err := clientSvc.CreateClient(ctx, "local", profile.ID, WireGuardClientInput{Name: "phone"})
@@ -1583,11 +1681,12 @@ func testWireGuardProfileInput() WireGuardProfileInput {
 
 func testWireGuardProfileInputWithoutEnabled() WireGuardProfileInput {
 	return WireGuardProfileInput{
-		Name:       "wg relay",
-		Mode:       "generic_wireguard",
-		PrivateKey: testWireGuardPrivateKey,
-		ListenPort: 51820,
-		Addresses:  []string{"10.0.0.1/24"},
+		Name:               "wg relay",
+		Mode:               "generic_wireguard",
+		PrivateKey:         testWireGuardPrivateKey,
+		ListenPort:         51820,
+		Addresses:          []string{"0.0.0.0"},
+		InterfaceAddresses: []string{"10.0.0.1/24"},
 		Peers: []WireGuardPeer{{
 			Name:                       "peer-a",
 			PublicKey:                  testWireGuardPublicKey,

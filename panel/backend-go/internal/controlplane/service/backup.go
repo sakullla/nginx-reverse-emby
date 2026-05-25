@@ -2304,6 +2304,7 @@ func backupWireGuardProfileFromRow(row storage.WireGuardProfileRow) BackupWireGu
 		PrivateKey:     row.PrivateKey,
 		ListenPort:     row.ListenPort,
 		PublicEndpoint: row.PublicEndpoint,
+		BindAddresses:  parseStringArray(row.BindAddressesJSON),
 		Addresses:      parseStringArray(row.AddressesJSON),
 		Peers:          parseWireGuardPeers(row.PeersJSON),
 		DNS:            parseStringArray(row.DNSJSON),
@@ -2348,6 +2349,14 @@ func wireGuardClientRowFromBackup(item BackupWireGuardClient, agentID string, pr
 		CreatedAt:      strings.TrimSpace(item.CreatedAt),
 		UpdatedAt:      strings.TrimSpace(item.UpdatedAt),
 	}
+}
+
+func backupWireGuardBindAddresses(addresses []string) []string {
+	normalized := normalizeStringList(addresses)
+	if len(normalized) == 0 {
+		return []string{"0.0.0.0"}
+	}
+	return normalized
 }
 
 func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int, wireGuardProfileID *int) HTTPRuleInput {
@@ -2595,17 +2604,18 @@ func planWireGuardProfilesWithRows(ctx context.Context, incoming []BackupWireGua
 		}
 		assignedID := allocator.AllocateRuleID(item.ID)
 		input := WireGuardProfileInput{
-			Name:           item.Name,
-			Mode:           item.Mode,
-			PrivateKey:     item.PrivateKey,
-			ListenPort:     item.ListenPort,
-			PublicEndpoint: item.PublicEndpoint,
-			Addresses:      append([]string(nil), item.Addresses...),
-			Peers:          append([]WireGuardPeer(nil), item.Peers...),
-			DNS:            append([]string(nil), item.DNS...),
-			MTU:            item.MTU,
-			Enabled:        backupBoolPtr(item.Enabled),
-			Tags:           append([]string(nil), item.Tags...),
+			Name:               item.Name,
+			Mode:               item.Mode,
+			PrivateKey:         item.PrivateKey,
+			ListenPort:         item.ListenPort,
+			PublicEndpoint:     item.PublicEndpoint,
+			Addresses:          backupWireGuardBindAddresses(item.BindAddresses),
+			InterfaceAddresses: append([]string(nil), item.Addresses...),
+			Peers:              append([]WireGuardPeer(nil), item.Peers...),
+			DNS:                append([]string(nil), item.DNS...),
+			MTU:                item.MTU,
+			Enabled:            backupBoolPtr(item.Enabled),
+			Tags:               append([]string(nil), item.Tags...),
 		}
 		normalized, err := normalizeWireGuardProfileInput(input, WireGuardProfile{}, assignedID)
 		if err != nil {

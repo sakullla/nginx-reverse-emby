@@ -61,6 +61,12 @@
       </div>
 
       <div class="profile-card__info-bar">
+        <span v-if="hasInterfaceAddresses" class="info-item" :title="formatList(profile.interface_addresses)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 2v20M2 12h20"/>
+          </svg>
+          {{ formatList(profile.interface_addresses) }}
+        </span>
         <span v-if="hasAddresses" class="info-item" :title="formatList(profile.addresses)">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <rect x="2" y="2" width="20" height="8" rx="2"/>
@@ -113,6 +119,7 @@ const router = useRouter()
 
 const hasTags = computed(() => Array.isArray(props.profile.tags) && props.profile.tags.length > 0)
 const hasAddresses = computed(() => Array.isArray(props.profile.addresses) && props.profile.addresses.length > 0)
+const hasInterfaceAddresses = computed(() => Array.isArray(props.profile.interface_addresses) && props.profile.interface_addresses.length > 0)
 
 function formatList(items) {
   return Array.isArray(items) ? items.join(', ') : ''

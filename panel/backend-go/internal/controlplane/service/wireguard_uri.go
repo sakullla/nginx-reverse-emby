@@ -206,15 +206,17 @@ func wireGuardProfileInputFromURI(parsed ParsedWireGuardURI, name string) WireGu
 	}
 	enabled := true
 	return WireGuardProfileInput{
-		Name:              profileName,
-		Mode:              "generic_wireguard",
-		PrivateKey:        parsed.PrivateKey,
-		ListenPort:        0,
-		ListenPortSet:     true,
-		PublicEndpoint:    parsed.Endpoint,
-		PublicEndpointSet: true,
-		Addresses:         append([]string(nil), parsed.Addresses...),
-		AddressesSet:      true,
+		Name:                  profileName,
+		Mode:                  "generic_wireguard",
+		PrivateKey:            parsed.PrivateKey,
+		ListenPort:            0,
+		ListenPortSet:         true,
+		PublicEndpoint:        parsed.Endpoint,
+		PublicEndpointSet:     true,
+		Addresses:             []string{"0.0.0.0"},
+		AddressesSet:          true,
+		InterfaceAddresses:    append([]string(nil), parsed.Addresses...),
+		InterfaceAddressesSet: true,
 		Peers: []WireGuardPeer{{
 			PublicKey:    parsed.PublicKey,
 			PresharedKey: parsed.PresharedKey,

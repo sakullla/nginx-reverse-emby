@@ -31,6 +31,24 @@ func TestNormalizeConfigAcceptsValidProfile(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigSeparatesBindAddressesFromInterfaceAddresses(t *testing.T) {
+	t.Parallel()
+
+	profile := validProfile()
+	profile.BindAddresses = []string{"192.168.0.109", "::1"}
+	profile.Addresses = []string{"10.8.44.1/24", "fd10:8:44::1/64"}
+	cfg, err := NormalizeConfig(profile)
+	if err != nil {
+		t.Fatalf("NormalizeConfig() error = %v", err)
+	}
+	if got := strings.Join(cfg.BindAddresses, ","); got != "192.168.0.109,::1" {
+		t.Fatalf("BindAddresses = %q, want configured listen bind addresses", got)
+	}
+	if got := strings.Join(addrStrings(cfg.AddressAddrs), ","); got != "10.8.44.1,fd10:8:44::1" {
+		t.Fatalf("AddressAddrs = %q, want interface addresses", got)
+	}
+}
+
 func TestNormalizeConfigDefaultsEmptyMode(t *testing.T) {
 	t.Parallel()
 

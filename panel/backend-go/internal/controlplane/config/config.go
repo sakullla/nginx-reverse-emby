@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -22,6 +23,8 @@ const (
 	defaultManagedCertRenew  = 24 * time.Hour
 	defaultTrafficCleanup    = 24 * time.Hour
 )
+
+var defaultWireGuardAutoAddressPools = []string{"10.8.x.1/24", "fd10:8:x::1/64"}
 
 type Config struct {
 	ListenAddr                        string
@@ -49,6 +52,7 @@ type Config struct {
 	TrafficCleanupInterval            time.Duration
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
+	WireGuardAutoAddressPools         []string
 	AppVersion                        string
 	BuildTime                         string
 	GoVersion                         string
@@ -119,6 +123,7 @@ func Default() Config {
 		LocalAgentTrafficStatsEnabled:   true,
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
+		WireGuardAutoAddressPools:       append([]string(nil), defaultWireGuardAutoAddressPools...),
 	}
 }
 
@@ -353,6 +358,17 @@ func LoadFromEnv() (Config, error) {
 		cfg.ManagedCertificateRenewInterval = time.Duration(ms) * time.Millisecond
 	}
 
+	if val := strings.TrimSpace(os.Getenv("NRE_WIREGUARD_AUTO_ADDRESS_POOLS")); val != "" {
+		pools := splitCommaList(val)
+		if len(pools) == 0 {
+			return Config{}, errors.New("NRE_WIREGUARD_AUTO_ADDRESS_POOLS must contain at least one pool")
+		}
+		if err := validateWireGuardAutoAddressPools(pools); err != nil {
+			return Config{}, err
+		}
+		cfg.WireGuardAutoAddressPools = pools
+	}
+
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
 	cfToken := strings.TrimSpace(firstEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token"))
 	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && cfToken != ""
@@ -370,6 +386,28 @@ func LoadFromEnv() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func splitCommaList(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func validateWireGuardAutoAddressPools(pools []string) error {
+	for _, pool := range pools {
+		rendered := strings.ReplaceAll(pool, "x", "0")
+		rendered = strings.ReplaceAll(rendered, "X", "0")
+		if _, err := netip.ParsePrefix(rendered); err != nil {
+			return fmt.Errorf("NRE_WIREGUARD_AUTO_ADDRESS_POOLS contains invalid CIDR template %q: %w", pool, err)
+		}
+	}
+	return nil
 }
 
 func firstEnv(keys ...string) string {

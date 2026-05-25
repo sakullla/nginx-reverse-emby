@@ -18,6 +18,7 @@ type WireGuardProfile struct {
 	PrivateKey     string          `json:"private_key,omitempty"`
 	ListenPort     int             `json:"listen_port"`
 	PublicEndpoint string          `json:"public_endpoint,omitempty"`
+	BindAddresses  []string        `json:"bind_addresses,omitempty"`
 	Addresses      []string        `json:"addresses"`
 	Peers          []WireGuardPeer `json:"peers"`
 	DNS            []string        `json:"dns"`

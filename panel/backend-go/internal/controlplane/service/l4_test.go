@@ -918,8 +918,8 @@ func TestL4RuleServiceCreateMaterializesWireGuardURIEgressProfile(t *testing.T) 
 	if peer.Endpoint != "edge.example.com:51820" || peer.PublicKey != testWireGuardPublicKey || peer.PresharedKey != testWireGuardPresharedKey {
 		t.Fatalf("materialized peer = %+v", peer)
 	}
-	if got := strings.Join(profile.Addresses, ","); got != "10.44.0.2/32" {
-		t.Fatalf("profile addresses = %q", got)
+	if got := strings.Join(profile.InterfaceAddresses, ","); got != "10.44.0.2/32" {
+		t.Fatalf("profile interface_addresses = %q", got)
 	}
 	if got := strings.Join(peer.AllowedIPs, ","); got != "10.0.0.0/8" {
 		t.Fatalf("peer allowed_ips = %q", got)

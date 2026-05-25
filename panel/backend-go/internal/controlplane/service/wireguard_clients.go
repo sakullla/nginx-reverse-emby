@@ -512,7 +512,7 @@ func nextWireGuardClientID(rows []storage.WireGuardClientRow) int {
 func allocateWireGuardClientAddress(profile WireGuardProfile, clients []storage.WireGuardClientRow) (string, error) {
 	var network netip.Prefix
 	interfaceAddresses := map[netip.Addr]struct{}{}
-	for _, raw := range profile.Addresses {
+	for _, raw := range profile.InterfaceAddresses {
 		prefix, err := netip.ParsePrefix(raw)
 		if err != nil {
 			continue

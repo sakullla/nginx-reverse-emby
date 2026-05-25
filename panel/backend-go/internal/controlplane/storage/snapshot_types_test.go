@@ -66,6 +66,7 @@ func TestSnapshotWireGuardProfileJSONPreservesPublicEndpoint(t *testing.T) {
 			Mode:           "generic_wireguard",
 			ListenPort:     51820,
 			PublicEndpoint: "wg.example.com:51820",
+			BindAddresses:  []string{"192.168.0.109"},
 			Addresses:      []string{"10.10.0.1/24"},
 			Enabled:        true,
 			Revision:       9,
@@ -86,5 +87,8 @@ func TestSnapshotWireGuardProfileJSONPreservesPublicEndpoint(t *testing.T) {
 	}
 	if got := payload.WireGuardProfiles[0]["public_endpoint"]; got != "wg.example.com:51820" {
 		t.Fatalf("public_endpoint = %#v, want wg.example.com:51820; raw=%s", got, raw)
+	}
+	if got := payload.WireGuardProfiles[0]["bind_addresses"]; got == nil {
+		t.Fatalf("bind_addresses missing from WireGuard profile JSON; raw=%s", raw)
 	}
 }

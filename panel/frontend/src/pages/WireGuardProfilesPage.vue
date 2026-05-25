@@ -64,6 +64,7 @@
             <div class="profile-summary__meta">
               <span>端口 {{ selectedProfile?.listen_port || '-' }}</span>
               <span>{{ formatList(selectedProfile?.addresses) || '-' }}</span>
+              <span>{{ formatList(selectedProfile?.interface_addresses) || '-' }}</span>
               <span>{{ selectedProfile?.public_endpoint || '-' }}</span>
               <BaseBadge :tone="selectedProfile?.enabled === false ? 'neutral' : 'success'" dot>
                 {{ selectedProfile?.enabled === false ? '停用' : '启用' }}
@@ -321,6 +322,7 @@ function wireGuardProfileUpdatePayload(profile, overrides = {}) {
     listen_port: profile.listen_port,
     public_endpoint: profile.public_endpoint || '',
     addresses: Array.isArray(profile.addresses) ? [...profile.addresses] : [],
+    interface_addresses: Array.isArray(profile.interface_addresses) ? [...profile.interface_addresses] : [],
     peers: Array.isArray(profile.peers) ? [...profile.peers] : [],
     dns: Array.isArray(profile.dns) ? [...profile.dns] : [],
     mtu: profile.mtu,

@@ -29,39 +29,42 @@ type WireGuardPeer struct {
 }
 
 type WireGuardProfile struct {
-	ID             int             `json:"id"`
-	AgentID        string          `json:"agent_id"`
-	Name           string          `json:"name"`
-	Mode           string          `json:"mode"`
-	PrivateKey     string          `json:"private_key,omitempty"`
-	ListenPort     int             `json:"listen_port"`
-	PublicEndpoint string          `json:"public_endpoint"`
-	Addresses      []string        `json:"addresses"`
-	Peers          []WireGuardPeer `json:"peers"`
-	DNS            []string        `json:"dns"`
-	MTU            int             `json:"mtu"`
-	Enabled        bool            `json:"enabled"`
-	Tags           []string        `json:"tags"`
-	Revision       int             `json:"revision"`
+	ID                 int             `json:"id"`
+	AgentID            string          `json:"agent_id"`
+	Name               string          `json:"name"`
+	Mode               string          `json:"mode"`
+	PrivateKey         string          `json:"private_key,omitempty"`
+	ListenPort         int             `json:"listen_port"`
+	PublicEndpoint     string          `json:"public_endpoint"`
+	Addresses          []string        `json:"addresses"`
+	InterfaceAddresses []string        `json:"interface_addresses"`
+	Peers              []WireGuardPeer `json:"peers"`
+	DNS                []string        `json:"dns"`
+	MTU                int             `json:"mtu"`
+	Enabled            bool            `json:"enabled"`
+	Tags               []string        `json:"tags"`
+	Revision           int             `json:"revision"`
 }
 
 type WireGuardProfileInput struct {
-	ID                int             `json:"id,omitempty"`
-	Name              string          `json:"name"`
-	Mode              string          `json:"mode"`
-	PrivateKey        string          `json:"private_key,omitempty"`
-	ListenPort        int             `json:"listen_port"`
-	ListenPortSet     bool            `json:"-"`
-	PublicEndpoint    string          `json:"public_endpoint"`
-	PublicEndpointSet bool            `json:"-"`
-	Addresses         []string        `json:"addresses"`
-	AddressesSet      bool            `json:"-"`
-	Peers             []WireGuardPeer `json:"peers"`
-	PeersSet          bool            `json:"-"`
-	DNS               []string        `json:"dns"`
-	MTU               int             `json:"mtu"`
-	Enabled           *bool           `json:"enabled,omitempty"`
-	Tags              []string        `json:"tags"`
+	ID                    int             `json:"id,omitempty"`
+	Name                  string          `json:"name"`
+	Mode                  string          `json:"mode"`
+	PrivateKey            string          `json:"private_key,omitempty"`
+	ListenPort            int             `json:"listen_port"`
+	ListenPortSet         bool            `json:"-"`
+	PublicEndpoint        string          `json:"public_endpoint"`
+	PublicEndpointSet     bool            `json:"-"`
+	Addresses             []string        `json:"addresses"`
+	AddressesSet          bool            `json:"-"`
+	InterfaceAddresses    []string        `json:"interface_addresses"`
+	InterfaceAddressesSet bool            `json:"-"`
+	Peers                 []WireGuardPeer `json:"peers"`
+	PeersSet              bool            `json:"-"`
+	DNS                   []string        `json:"dns"`
+	MTU                   int             `json:"mtu"`
+	Enabled               *bool           `json:"enabled,omitempty"`
+	Tags                  []string        `json:"tags"`
 }
 
 func (i *WireGuardProfileInput) UnmarshalJSON(data []byte) error {
@@ -83,6 +86,9 @@ func (i *WireGuardProfileInput) UnmarshalJSON(data []byte) error {
 	}
 	if _, ok := fields["addresses"]; ok {
 		i.AddressesSet = true
+	}
+	if _, ok := fields["interface_addresses"]; ok {
+		i.InterfaceAddressesSet = true
 	}
 	if _, ok := fields["peers"]; ok {
 		i.PeersSet = true
@@ -169,14 +175,15 @@ func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID str
 	}
 	listenPort := nextAvailableWireGuardListenPort(rows, 51820)
 	input := WireGuardProfileInput{
-		Name:       "Default WireGuard",
-		Mode:       "generic_wireguard",
-		PrivateKey: privateKey,
-		ListenPort: listenPort,
-		Addresses:  []string{allocateWireGuardProfileAddress(allRows)},
-		MTU:        1280,
-		Enabled:    wireGuardBoolPtr(true),
-		Tags:       []string{"system:default-wireguard"},
+		Name:               "Default WireGuard",
+		Mode:               "generic_wireguard",
+		PrivateKey:         privateKey,
+		ListenPort:         listenPort,
+		Addresses:          []string{"0.0.0.0"},
+		InterfaceAddresses: allocateWireGuardProfileAddresses(allRows, s.cfg.WireGuardAutoAddressPools),
+		MTU:                1280,
+		Enabled:            wireGuardBoolPtr(true),
+		Tags:               []string{"system:default-wireguard"},
 	}
 	return s.Create(ctx, resolvedID, input)
 }
@@ -206,7 +213,10 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	maxRevision := maxWireGuardProfileRevision(rows)
 	allocatedID := allocator.AllocateRuleID(input.ID)
 	if len(normalizeStringList(input.Addresses)) == 0 {
-		input.Addresses = []string{allocateWireGuardProfileAddress(allRows)}
+		input.Addresses = []string{"0.0.0.0"}
+	}
+	if len(normalizeStringList(input.InterfaceAddresses)) == 0 {
+		input.InterfaceAddresses = allocateWireGuardProfileAddresses(allRows, s.cfg.WireGuardAutoAddressPools)
 	}
 	if strings.TrimSpace(input.PrivateKey) == "" {
 		privateKey, _, err := generateWireGuardKeyPair()
@@ -278,7 +288,7 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 				return state, err
 			}
 		}
-		if current.Enabled && normalized.Enabled && input.hasAddressesField() {
+		if current.Enabled && normalized.Enabled && input.hasInterfaceAddressesField() {
 			if err := s.ensureReferencedProfileAddressesPreserved(ctx, resolvedID, current, normalized); err != nil {
 				return state, err
 			}
@@ -401,7 +411,7 @@ func (s *wireGuardProfileService) ensureProfileNotReferenced(ctx context.Context
 }
 
 func (s *wireGuardProfileService) ensureReferencedProfileAddressesPreserved(ctx context.Context, agentID string, current WireGuardProfile, next WireGuardProfile) error {
-	removedHosts := removedWireGuardAddressHosts(current.Addresses, next.Addresses)
+	removedHosts := removedWireGuardAddressHosts(current.InterfaceAddresses, next.InterfaceAddresses)
 	if len(removedHosts) == 0 {
 		return nil
 	}
@@ -438,8 +448,8 @@ func (s *wireGuardProfileService) ensureReferencedProfileAddressesPreserved(ctx 
 		}
 	}
 
-	nextPrefixes := make([]netip.Prefix, 0, len(next.Addresses))
-	for _, address := range next.Addresses {
+	nextPrefixes := make([]netip.Prefix, 0, len(next.InterfaceAddresses))
+	for _, address := range next.InterfaceAddresses {
 		prefix, err := netip.ParsePrefix(strings.TrimSpace(address))
 		if err != nil {
 			continue
@@ -671,7 +681,15 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 	if !input.hasAddressesField() && fallback.ID > 0 {
 		addresses = append([]string(nil), fallback.Addresses...)
 	}
-	if err := validateWireGuardPrefixes(addresses, "addresses"); err != nil {
+	if err := validateWireGuardBindAddresses(addresses); err != nil {
+		return WireGuardProfile{}, err
+	}
+
+	interfaceAddresses := normalizeStringList(input.InterfaceAddresses)
+	if !input.hasInterfaceAddressesField() && fallback.ID > 0 {
+		interfaceAddresses = append([]string(nil), fallback.InterfaceAddresses...)
+	}
+	if err := validateWireGuardPrefixes(interfaceAddresses, "interface_addresses"); err != nil {
 		return WireGuardProfile{}, err
 	}
 
@@ -746,25 +764,30 @@ func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGu
 	}
 
 	return WireGuardProfile{
-		ID:             id,
-		AgentID:        fallback.AgentID,
-		Name:           name,
-		Mode:           mode,
-		PrivateKey:     privateKey,
-		ListenPort:     listenPort,
-		PublicEndpoint: publicEndpoint,
-		Addresses:      addresses,
-		Peers:          peers,
-		DNS:            dns,
-		MTU:            mtu,
-		Enabled:        enabled,
-		Tags:           tags,
-		Revision:       fallback.Revision,
+		ID:                 id,
+		AgentID:            fallback.AgentID,
+		Name:               name,
+		Mode:               mode,
+		PrivateKey:         privateKey,
+		ListenPort:         listenPort,
+		PublicEndpoint:     publicEndpoint,
+		Addresses:          addresses,
+		InterfaceAddresses: interfaceAddresses,
+		Peers:              peers,
+		DNS:                dns,
+		MTU:                mtu,
+		Enabled:            enabled,
+		Tags:               tags,
+		Revision:           fallback.Revision,
 	}, nil
 }
 
 func (input WireGuardProfileInput) hasAddressesField() bool {
 	return input.AddressesSet || input.Addresses != nil
+}
+
+func (input WireGuardProfileInput) hasInterfaceAddressesField() bool {
+	return input.InterfaceAddressesSet || input.InterfaceAddresses != nil
 }
 
 func (input WireGuardProfileInput) hasPublicEndpointField() bool {
@@ -913,6 +936,9 @@ func validateRequiredWireGuardProfileEssentials(profile WireGuardProfile) error 
 	if len(profile.Addresses) == 0 {
 		return fmt.Errorf("%w: addresses is required", ErrInvalidArgument)
 	}
+	if len(profile.InterfaceAddresses) == 0 {
+		return fmt.Errorf("%w: interface_addresses is required", ErrInvalidArgument)
+	}
 	return nil
 }
 
@@ -961,26 +987,58 @@ func nextAvailableWireGuardListenPort(rows []storage.WireGuardProfileRow, start 
 	return 0
 }
 
-func allocateWireGuardProfileAddress(rows []storage.WireGuardProfileRow) string {
-	used := map[int]struct{}{}
+func allocateWireGuardProfileAddresses(rows []storage.WireGuardProfileRow, pools []string) []string {
+	pools = normalizeStringList(pools)
+	if len(pools) == 0 {
+		pools = []string{"10.8.x.1/24", "fd10:8:x::1/64"}
+	}
+	used := map[string]struct{}{}
 	for _, row := range rows {
 		for _, address := range parseStringArray(row.AddressesJSON) {
-			prefix, err := netip.ParsePrefix(address)
-			if err != nil || prefix.Bits() != 24 || !prefix.Addr().Is4() {
+			prefix, err := netip.ParsePrefix(strings.TrimSpace(address))
+			if err != nil {
 				continue
 			}
-			octets := prefix.Masked().Addr().As4()
-			if octets[0] == 10 && octets[1] == 8 {
-				used[int(octets[2])] = struct{}{}
-			}
+			used[prefix.String()] = struct{}{}
 		}
 	}
-	for subnet := 0; subnet <= 255; subnet++ {
-		if _, exists := used[subnet]; !exists {
-			return fmt.Sprintf("10.8.%d.1/24", subnet)
+	for index := 0; index <= 65535; index++ {
+		candidate, ok := renderWireGuardAddressPoolSet(pools, index)
+		if !ok {
+			continue
+		}
+		if wireGuardAddressPoolSetAvailable(candidate, used) {
+			return candidate
 		}
 	}
-	return "10.8.0.1/24"
+	fallback, ok := renderWireGuardAddressPoolSet([]string{"10.8.x.1/24", "fd10:8:x::1/64"}, 0)
+	if ok {
+		return fallback
+	}
+	return []string{"10.8.0.1/24", "fd10:8::1/64"}
+}
+
+func renderWireGuardAddressPoolSet(pools []string, index int) ([]string, bool) {
+	out := make([]string, 0, len(pools))
+	for _, pool := range pools {
+		raw := strings.ReplaceAll(pool, "x", strconv.Itoa(index))
+		raw = strings.ReplaceAll(raw, "X", strconv.Itoa(index))
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, prefix.String())
+	}
+	return out, len(out) > 0
+}
+
+func wireGuardAddressPoolSetAvailable(candidate []string, used map[string]struct{}) bool {
+	for _, address := range candidate {
+		if _, ok := used[address]; ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *wireGuardProfileService) listAllWireGuardProfiles(ctx context.Context) ([]storage.WireGuardProfileRow, error) {
@@ -1025,6 +1083,15 @@ func validateWireGuardPrefixes(values []string, field string) error {
 	return nil
 }
 
+func validateWireGuardBindAddresses(values []string) error {
+	for _, value := range values {
+		if _, err := netip.ParseAddr(strings.TrimSpace(value)); err != nil {
+			return fmt.Errorf("%w: addresses must be IP addresses", ErrInvalidArgument)
+		}
+	}
+	return nil
+}
+
 func validateWireGuardDNSAddrs(values []string) error {
 	for _, value := range values {
 		if _, err := netip.ParseAddr(value); err != nil {
@@ -1059,40 +1126,50 @@ func redactWireGuardProfile(profile WireGuardProfile) WireGuardProfile {
 
 func wireGuardProfileFromRow(row storage.WireGuardProfileRow) WireGuardProfile {
 	return WireGuardProfile{
-		ID:             row.ID,
-		AgentID:        row.AgentID,
-		Name:           row.Name,
-		Mode:           row.Mode,
-		PrivateKey:     row.PrivateKey,
-		ListenPort:     row.ListenPort,
-		PublicEndpoint: row.PublicEndpoint,
-		Addresses:      parseStringArray(row.AddressesJSON),
-		Peers:          parseWireGuardPeers(row.PeersJSON),
-		DNS:            parseStringArray(row.DNSJSON),
-		MTU:            row.MTU,
-		Enabled:        row.Enabled,
-		Tags:           parseStringArray(row.TagsJSON),
-		Revision:       row.Revision,
+		ID:                 row.ID,
+		AgentID:            row.AgentID,
+		Name:               row.Name,
+		Mode:               row.Mode,
+		PrivateKey:         row.PrivateKey,
+		ListenPort:         row.ListenPort,
+		PublicEndpoint:     row.PublicEndpoint,
+		Addresses:          wireGuardProfileBindAddressesFromRow(row),
+		InterfaceAddresses: parseStringArray(row.AddressesJSON),
+		Peers:              parseWireGuardPeers(row.PeersJSON),
+		DNS:                parseStringArray(row.DNSJSON),
+		MTU:                row.MTU,
+		Enabled:            row.Enabled,
+		Tags:               parseStringArray(row.TagsJSON),
+		Revision:           row.Revision,
 	}
 }
 
 func wireGuardProfileToRow(profile WireGuardProfile) storage.WireGuardProfileRow {
 	return storage.WireGuardProfileRow{
-		ID:             profile.ID,
-		AgentID:        profile.AgentID,
-		Name:           profile.Name,
-		Mode:           profile.Mode,
-		PrivateKey:     profile.PrivateKey,
-		ListenPort:     profile.ListenPort,
-		PublicEndpoint: profile.PublicEndpoint,
-		AddressesJSON:  marshalJSON(profile.Addresses, "[]"),
-		PeersJSON:      marshalJSON(profile.Peers, "[]"),
-		DNSJSON:        marshalJSON(profile.DNS, "[]"),
-		MTU:            profile.MTU,
-		Enabled:        profile.Enabled,
-		TagsJSON:       marshalJSON(profile.Tags, "[]"),
-		Revision:       profile.Revision,
+		ID:                profile.ID,
+		AgentID:           profile.AgentID,
+		Name:              profile.Name,
+		Mode:              profile.Mode,
+		PrivateKey:        profile.PrivateKey,
+		ListenPort:        profile.ListenPort,
+		PublicEndpoint:    profile.PublicEndpoint,
+		AddressesJSON:     marshalJSON(profile.InterfaceAddresses, "[]"),
+		BindAddressesJSON: marshalJSON(profile.Addresses, "[]"),
+		PeersJSON:         marshalJSON(profile.Peers, "[]"),
+		DNSJSON:           marshalJSON(profile.DNS, "[]"),
+		MTU:               profile.MTU,
+		Enabled:           profile.Enabled,
+		TagsJSON:          marshalJSON(profile.Tags, "[]"),
+		Revision:          profile.Revision,
 	}
+}
+
+func wireGuardProfileBindAddressesFromRow(row storage.WireGuardProfileRow) []string {
+	addresses := parseStringArray(row.BindAddressesJSON)
+	if len(addresses) == 0 && row.ListenPort > 0 {
+		return []string{"0.0.0.0"}
+	}
+	return addresses
 }
 
 func parseWireGuardPeers(raw string) []WireGuardPeer {
