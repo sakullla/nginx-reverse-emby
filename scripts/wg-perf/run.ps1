@@ -51,13 +51,13 @@ $delayCliToWg = Get-OptionalEnvInt 'HARNESS_DELAY_CLI_TO_WG_MS'
 $delayWgToRelay = Get-OptionalEnvInt 'HARNESS_DELAY_WG_TO_RELAY_MS'
 $delayRelayAToRelayB = Get-OptionalEnvInt 'HARNESS_DELAY_RELAY_A_TO_RELAY_B_MS'
 if ($null -eq $delayWgToRelay) {
-    $delayWgToRelay = 40
+    $delayWgToRelay = 20
 }
 if ($null -eq $delayCliToWg) {
-    $delayCliToWg = 40
+    $delayCliToWg = 20
 }
 if ($null -eq $delayRelayAToRelayB) {
-    $delayRelayAToRelayB = 40
+    $delayRelayAToRelayB = 20
 }
 
 if (

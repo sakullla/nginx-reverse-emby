@@ -56,6 +56,32 @@ func TestWgPerfHarnessIncludesWireGuardRelay(t *testing.T) {
 	}
 }
 
+func TestWgPerfBenchmarkFilterSelectsNamedBenchmarks(t *testing.T) {
+	benches := []benchmarkCase{
+		{name: "direct_b_c1"},
+		{name: "wg_to_b_c1"},
+		{name: "wg_to_b_c8"},
+	}
+	selected, err := selectBenchmarks("wg_to_b_c1,wg_to_b_c8", benches)
+	if err != nil {
+		t.Fatalf("selectBenchmarks() error = %v", err)
+	}
+	var names []string
+	for _, bench := range selected {
+		names = append(names, bench.name)
+	}
+	if want := []string{"wg_to_b_c1", "wg_to_b_c8"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("selected benchmarks = %#v, want %#v", names, want)
+	}
+}
+
+func TestWgPerfBenchmarkFilterRejectsUnknownName(t *testing.T) {
+	_, err := selectBenchmarks("missing", []benchmarkCase{{name: "wg_to_b_c1"}})
+	if err == nil {
+		t.Fatal("selectBenchmarks() error = nil, want error for unknown benchmark")
+	}
+}
+
 func TestWgPerfComposeUsesL4EntryPort(t *testing.T) {
 	data, err := os.ReadFile("docker-compose.yaml")
 	if err != nil {
@@ -81,13 +107,13 @@ func TestWgPerfComposeUsesL4EntryPort(t *testing.T) {
 	}
 }
 
-func TestWgPerfRunScriptDefaultsToFortyMsOneWayDelay(t *testing.T) {
+func TestWgPerfRunScriptDefaultsToFortyMsRTTPerHop(t *testing.T) {
 	data, err := os.ReadFile("run.ps1")
 	if err != nil {
 		t.Fatalf("read run script: %v", err)
 	}
 	script := string(data)
-	for _, want := range []string{"$delayCliToWg = 40", "$delayWgToRelay = 40", "$delayRelayAToRelayB = 40", "nre-agent-b", "nre-backend-b"} {
+	for _, want := range []string{"$delayCliToWg = 20", "$delayWgToRelay = 20", "$delayRelayAToRelayB = 20", "nre-agent-b", "nre-backend-b"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("run.ps1 missing default %q", want)
 		}

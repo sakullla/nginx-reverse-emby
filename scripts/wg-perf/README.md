@@ -46,15 +46,16 @@
 
 ## 延迟模型
 
-默认按“每一跳 40ms 单向延迟”测试。
+默认按“每一跳 RTT 40ms”测试，即每段 netem 单向延迟 20ms。
 
 可以通过环境变量覆盖：
 
+- `HARNESS_BENCHMARKS`：逗号分隔，只跑指定项，例如 `wg_to_b_c1,wg_to_b_c8`
 - `HARNESS_DELAY_CLI_TO_WG_MS`
 - `HARNESS_DELAY_WG_TO_RELAY_MS`
 - `HARNESS_DELAY_RELAY_A_TO_RELAY_B_MS`
 
-如果不设置，脚本默认按 40ms 单向延迟执行。
+如果不设置，脚本默认按每段 20ms 单向延迟执行。
 
 ## 结果解释
 

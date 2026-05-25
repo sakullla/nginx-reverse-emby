@@ -22,31 +22,38 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 type config struct {
-	mode           string
-	masterAddr     string
-	entryAddress   string
-	directAddress  string
-	rttIterations  int
-	c1Bytes        int64
-	c1Duration     time.Duration
-	c8BytesPerConn int64
-	c8Duration     time.Duration
-	c8Concurrency  int
-	preMeasureWait time.Duration
-	backendAddr    string
-	backendHost    string
-	backendPort    int
-	wgEntryHost    string
-	wgEntryPort    int
-	wgRelayHost    string
-	wgRelayPort    int
-	wgTunnelHost   string
-	wgTunnelPort   int
+	mode            string
+	masterAddr      string
+	entryAddress    string
+	directAddress   string
+	rttIterations   int
+	c1Bytes         int64
+	c1Duration      time.Duration
+	c8BytesPerConn  int64
+	c8Duration      time.Duration
+	c8Concurrency   int
+	benchmarkFilter string
+	preMeasureWait  time.Duration
+	backendAddr     string
+	backendHost     string
+	backendPort     int
+	wgEntryHost     string
+	wgEntryPort     int
+	wgRelayHost     string
+	wgRelayPort     int
+	wgTunnelHost    string
+	wgTunnelPort    int
+}
+
+type benchmarkCase struct {
+	name string
+	run  func() result
 }
 
 type snapshot struct {
@@ -209,15 +216,31 @@ func main() {
 		time.Sleep(cfg.preMeasureWait)
 	}
 
-	results := []result{
-		measureConnectEcho("direct_b_connect", cfg.directAddress, cfg.rttIterations),
-		measureConnectEcho("wg_to_b_connect", cfg.entryAddress, cfg.rttIterations),
-		measureRTT("direct_b_rtt", cfg.directAddress, cfg.rttIterations),
-		measureRTT("wg_to_b_rtt", cfg.entryAddress, cfg.rttIterations),
-		measureThroughput("direct_b_c1", cfg.directAddress, 1, cfg.c1Bytes, cfg.c1Duration),
-		measureThroughput("wg_to_b_c1", cfg.entryAddress, 1, cfg.c1Bytes, cfg.c1Duration),
-		measureThroughput("direct_b_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration),
-		measureThroughput("wg_to_b_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration),
+	benchmarks := []benchmarkCase{
+		{name: "direct_b_connect", run: func() result { return measureConnectEcho("direct_b_connect", cfg.directAddress, cfg.rttIterations) }},
+		{name: "wg_to_b_connect", run: func() result { return measureConnectEcho("wg_to_b_connect", cfg.entryAddress, cfg.rttIterations) }},
+		{name: "direct_b_rtt", run: func() result { return measureRTT("direct_b_rtt", cfg.directAddress, cfg.rttIterations) }},
+		{name: "wg_to_b_rtt", run: func() result { return measureRTT("wg_to_b_rtt", cfg.entryAddress, cfg.rttIterations) }},
+		{name: "direct_b_c1", run: func() result {
+			return measureThroughput("direct_b_c1", cfg.directAddress, 1, cfg.c1Bytes, cfg.c1Duration)
+		}},
+		{name: "wg_to_b_c1", run: func() result {
+			return measureThroughput("wg_to_b_c1", cfg.entryAddress, 1, cfg.c1Bytes, cfg.c1Duration)
+		}},
+		{name: "direct_b_c8", run: func() result {
+			return measureThroughput("direct_b_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
+		}},
+		{name: "wg_to_b_c8", run: func() result {
+			return measureThroughput("wg_to_b_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
+		}},
+	}
+	selected, err := selectBenchmarks(cfg.benchmarkFilter, benchmarks)
+	if err != nil {
+		log.Fatal(err)
+	}
+	results := make([]result, 0, len(selected))
+	for _, bench := range selected {
+		results = append(results, bench.run())
 	}
 	for _, res := range results {
 		emit("RESULT", res)
@@ -229,27 +252,57 @@ func loadConfig() config {
 	backendHost := envString("HARNESS_BACKEND_HOST", "172.30.3.13")
 	backendPort := envInt("HARNESS_BACKEND_PORT", 9002)
 	return config{
-		mode:           envString("HARNESS_MODE", "bench"),
-		masterAddr:     envString("HARNESS_MASTER_ADDR", ":8080"),
-		entryAddress:   envString("HARNESS_ENTRY_ADDRESS", "10.80.0.1:7000"),
-		directAddress:  envString("HARNESS_DIRECT_ADDRESS", "172.30.0.20:9001"),
-		rttIterations:  envInt("HARNESS_RTT_ITERATIONS", 300),
-		c1Bytes:        envBytes("HARNESS_C1_BYTES", 512<<20),
-		c1Duration:     envSeconds("HARNESS_C1_DURATION_SECONDS", 0),
-		c8BytesPerConn: envBytes("HARNESS_C8_BYTES_PER_CONN", 256<<20),
-		c8Duration:     envSeconds("HARNESS_C8_DURATION_SECONDS", 0),
-		c8Concurrency:  envInt("HARNESS_C8_CONCURRENCY", 8),
-		preMeasureWait: time.Duration(envInt("HARNESS_PRE_MEASURE_DELAY_MS", 0)) * time.Millisecond,
-		backendAddr:    envString("HARNESS_BACKEND_LISTEN_ADDR", fmt.Sprintf(":%d", backendPort)),
-		backendHost:    backendHost,
-		backendPort:    backendPort,
-		wgEntryHost:    envString("HARNESS_WG_ENTRY_HOST", "172.30.0.10"),
-		wgEntryPort:    envInt("HARNESS_WG_ENTRY_PORT", 51820),
-		wgRelayHost:    envString("HARNESS_WG_RELAY_HOST", "172.30.2.15"),
-		wgRelayPort:    envInt("HARNESS_WG_RELAY_PORT", 51820),
-		wgTunnelHost:   envString("HARNESS_WG_TUNNEL_HOST", "10.80.0.1"),
-		wgTunnelPort:   envInt("HARNESS_WG_TUNNEL_PORT", 9443),
+		mode:            envString("HARNESS_MODE", "bench"),
+		masterAddr:      envString("HARNESS_MASTER_ADDR", ":8080"),
+		entryAddress:    envString("HARNESS_ENTRY_ADDRESS", "10.80.0.1:7000"),
+		directAddress:   envString("HARNESS_DIRECT_ADDRESS", "172.30.0.20:9001"),
+		rttIterations:   envInt("HARNESS_RTT_ITERATIONS", 300),
+		c1Bytes:         envBytes("HARNESS_C1_BYTES", 512<<20),
+		c1Duration:      envSeconds("HARNESS_C1_DURATION_SECONDS", 0),
+		c8BytesPerConn:  envBytes("HARNESS_C8_BYTES_PER_CONN", 256<<20),
+		c8Duration:      envSeconds("HARNESS_C8_DURATION_SECONDS", 0),
+		c8Concurrency:   envInt("HARNESS_C8_CONCURRENCY", 8),
+		benchmarkFilter: envString("HARNESS_BENCHMARKS", ""),
+		preMeasureWait:  time.Duration(envInt("HARNESS_PRE_MEASURE_DELAY_MS", 0)) * time.Millisecond,
+		backendAddr:     envString("HARNESS_BACKEND_LISTEN_ADDR", fmt.Sprintf(":%d", backendPort)),
+		backendHost:     backendHost,
+		backendPort:     backendPort,
+		wgEntryHost:     envString("HARNESS_WG_ENTRY_HOST", "172.30.0.10"),
+		wgEntryPort:     envInt("HARNESS_WG_ENTRY_PORT", 51820),
+		wgRelayHost:     envString("HARNESS_WG_RELAY_HOST", "172.30.2.15"),
+		wgRelayPort:     envInt("HARNESS_WG_RELAY_PORT", 51820),
+		wgTunnelHost:    envString("HARNESS_WG_TUNNEL_HOST", "10.80.0.1"),
+		wgTunnelPort:    envInt("HARNESS_WG_TUNNEL_PORT", 9443),
 	}
+}
+
+func selectBenchmarks(filter string, benchmarks []benchmarkCase) ([]benchmarkCase, error) {
+	if strings.TrimSpace(filter) == "" {
+		return benchmarks, nil
+	}
+	byName := make(map[string]benchmarkCase, len(benchmarks))
+	for _, bench := range benchmarks {
+		byName[bench.name] = bench
+	}
+	fields := strings.FieldsFunc(filter, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	})
+	selected := make([]benchmarkCase, 0, len(fields))
+	for _, field := range fields {
+		name := strings.TrimSpace(field)
+		if name == "" {
+			continue
+		}
+		bench, ok := byName[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown HARNESS_BENCHMARKS item %q", name)
+		}
+		selected = append(selected, bench)
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("HARNESS_BENCHMARKS did not select any benchmark")
+	}
+	return selected, nil
 }
 
 func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot {
