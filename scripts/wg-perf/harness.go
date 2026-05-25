@@ -190,6 +190,7 @@ const (
 	protocolModeDownload          = 2
 	protocolModeDownloadUnlimited = 3
 	protocolModeUploadUnlimited   = 4
+	protocolModeUpload            = 5
 )
 
 func main() {
@@ -235,10 +236,10 @@ func main() {
 			return measureThroughput("wg_to_b_c1", cfg.entryAddress, 1, cfg.c1Bytes, cfg.c1Duration)
 		}},
 		{name: "direct_b_upload_c1", run: func() result {
-			return measureUploadThroughput("direct_b_upload_c1", cfg.directAddress, 1, cfg.c1Duration)
+			return measureUploadThroughput("direct_b_upload_c1", cfg.directAddress, 1, cfg.c1Bytes, cfg.c1Duration)
 		}},
 		{name: "wg_to_b_upload_c1", run: func() result {
-			return measureUploadThroughput("wg_to_b_upload_c1", cfg.entryAddress, 1, cfg.c1Duration)
+			return measureUploadThroughput("wg_to_b_upload_c1", cfg.entryAddress, 1, cfg.c1Bytes, cfg.c1Duration)
 		}},
 		{name: "direct_b_c8", run: func() result {
 			return measureThroughput("direct_b_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
@@ -247,10 +248,10 @@ func main() {
 			return measureThroughput("wg_to_b_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
 		}},
 		{name: "direct_b_upload_c8", run: func() result {
-			return measureUploadThroughput("direct_b_upload_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8Duration)
+			return measureUploadThroughput("direct_b_upload_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
 		}},
 		{name: "wg_to_b_upload_c8", run: func() result {
-			return measureUploadThroughput("wg_to_b_upload_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8Duration)
+			return measureUploadThroughput("wg_to_b_upload_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
 		}},
 	}
 	selected, err := selectBenchmarks(cfg.benchmarkFilter, benchmarks)
@@ -599,6 +600,12 @@ func handleBackendConn(conn net.Conn) {
 		}
 	case protocolModeUploadUnlimited:
 		_, _ = io.Copy(io.Discard, conn)
+	case protocolModeUpload:
+		var sizeBuf [8]byte
+		if _, err := io.ReadFull(conn, sizeBuf[:]); err != nil {
+			return
+		}
+		_, _ = io.CopyN(io.Discard, conn, int64(binary.BigEndian.Uint64(sizeBuf[:])))
 	}
 }
 
@@ -729,7 +736,7 @@ func measureThroughput(name, address string, concurrency int, bytesPerConn int64
 	return result{Name: name, Target: address, Concurrency: concurrency, Bytes: total, Seconds: elapsed, MBps: float64(total) / elapsed / 1_000_000, Mbps: float64(total) * 8 / elapsed / 1_000_000}
 }
 
-func measureUploadThroughput(name, address string, concurrency int, duration time.Duration) result {
+func measureUploadThroughput(name, address string, concurrency int, bytesPerConn int64, duration time.Duration) result {
 	start := time.Now()
 	deadline := start.Add(duration)
 	var wg sync.WaitGroup
@@ -740,7 +747,13 @@ func measureUploadThroughput(name, address string, concurrency int, duration tim
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := uploadForDuration(address, deadline)
+			var n int64
+			var err error
+			if duration > 0 {
+				n, err = uploadForDuration(address, deadline)
+			} else {
+				n, err = upload(address, bytesPerConn)
+			}
 			totalMu.Lock()
 			total += n
 			totalMu.Unlock()
@@ -756,6 +769,37 @@ func measureUploadThroughput(name, address string, concurrency int, duration tim
 	}
 	elapsed := time.Since(start).Seconds()
 	return result{Name: name, Target: address, Concurrency: concurrency, Bytes: total, Seconds: elapsed, MBps: float64(total) / elapsed / 1_000_000, Mbps: float64(total) * 8 / elapsed / 1_000_000}
+}
+
+func upload(address string, totalBytes int64) (int64, error) {
+	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+	}
+	req := make([]byte, 9)
+	req[0] = protocolModeUpload
+	binary.BigEndian.PutUint64(req[1:], uint64(totalBytes))
+	if _, err := conn.Write(req); err != nil {
+		return 0, err
+	}
+	payload := bytes.Repeat([]byte{9}, 64*1024)
+	var written int64
+	for written < totalBytes {
+		want := len(payload)
+		if remaining := totalBytes - written; remaining < int64(want) {
+			want = int(remaining)
+		}
+		n, err := conn.Write(payload[:want])
+		written += int64(n)
+		if err != nil {
+			return written, err
+		}
+	}
+	return written, nil
 }
 
 func transfer(address string, totalBytes int64) (int64, error) {
