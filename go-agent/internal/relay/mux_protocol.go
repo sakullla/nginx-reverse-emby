@@ -82,6 +82,27 @@ func writeMuxFrame(w io.Writer, frame muxFrame) error {
 	return writeAll(w, frame.Payload)
 }
 
+func writeMuxFrameBuffered(w io.Writer, frame muxFrame, buf []byte) error {
+	if len(frame.Payload) > tlsTCPBulkFrameSize || len(buf) < muxFrameHeaderSize+len(frame.Payload) {
+		return writeMuxFrame(w, frame)
+	}
+	if frame.Version == 0 {
+		frame.Version = muxProtocolVersion
+	}
+	if len(frame.Payload) > maxMuxPayloadBytes {
+		return fmt.Errorf("mux payload exceeds %d bytes", maxMuxPayloadBytes)
+	}
+
+	header := buf[:muxFrameHeaderSize]
+	header[0] = frame.Version
+	header[1] = byte(frame.Type)
+	header[2] = byte(frame.Flags)
+	binary.BigEndian.PutUint32(header[3:7], frame.StreamID)
+	binary.BigEndian.PutUint32(header[7:11], uint32(len(frame.Payload)))
+	copy(buf[muxFrameHeaderSize:], frame.Payload)
+	return writeAll(w, buf[:muxFrameHeaderSize+len(frame.Payload)])
+}
+
 func readMuxFrame(r io.Reader) (muxFrame, error) {
 	var header [11]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
