@@ -83,7 +83,7 @@ Apply-NetemDelayOnCIDR -Container 'nre-relay-b4' -CIDR '172.30.4.14/24' -DelayMs
 
 $statsRows = [System.Collections.Generic.List[string]]::new()
 if (-not $SkipStats) {
-    $statsRows.Add('ts,name,cpu,mem,net,ps,threads')
+    $statsRows.Add('ts,name,cpu,mem,net')
 }
 try {
     while ($true) {

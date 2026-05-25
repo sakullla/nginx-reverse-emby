@@ -607,6 +607,9 @@ func echoOnce(address string, payload []byte) error {
 	if _, err := io.ReadFull(conn, reply); err != nil {
 		return err
 	}
+	if !bytes.Equal(reply, payload) {
+		return fmt.Errorf("echo mismatch: got %q want %q", reply, payload)
+	}
 	return nil
 }
 
