@@ -23,7 +23,25 @@ func copyRelayTraffic(dst io.Writer, src io.Reader, rxDirection bool, recorder *
 		direction = stream.DirectionRX
 	}
 	writer := stream.NewTrafficWriterFlushBelow(dst, direction, recorder, relayTrafficFlushThreshold)
-	n, err := stream.CopyGeneric(writer, src)
+	var n int64
+	var err error
+	if shouldUseRelayDestinationReadFrom(dst) {
+		n, err = writer.ReadFrom(src)
+	} else {
+		n, err = stream.CopyPreferReaderFrom(writer, src)
+	}
 	writer.FlushTraffic()
 	return n, err
+}
+
+func shouldUseRelayDestinationReadFrom(dst io.Writer) bool {
+	switch conn := dst.(type) {
+	case *tlsTCPLogicalStream:
+		return true
+	case *idleDeadlineConn:
+		_, ok := conn.Conn.(*tlsTCPLogicalStream)
+		return ok
+	default:
+		return false
+	}
 }

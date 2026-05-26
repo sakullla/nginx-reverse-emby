@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -647,6 +649,7 @@ type netstackRuntime struct {
 	tun                 interface{ Close() error }
 	tcp                 *transparentTCPDispatcher
 	udp                 *transparentUDPDispatcher
+	releaseScavenger    func()
 	tcpHandlerInstalled bool
 	udpHandlerInstalled bool
 	closed              bool
@@ -660,6 +663,7 @@ func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
 
 	dev := device.NewDevice(tunDevice, newWireGuardBind(cfg.BindAddresses), device.NewLogger(device.LogLevelSilent, "wireguard: "))
 	runtime := newNetstackRuntime(tunDevice, tnet, gstack, dev)
+	runtime.releaseScavenger = retainWireGuardMemoryScavenger()
 	ipc, err := ipcConfig(ctx, cfg, lookupEndpointIP)
 	if err != nil {
 		runtime.Close()
@@ -793,10 +797,15 @@ func (r *netstackRuntime) Close() error {
 	r.stack = nil
 	tcpDispatcher := r.tcp
 	udpDispatcher := r.udp
+	releaseScavenger := r.releaseScavenger
 	r.tcp = nil
 	r.udp = nil
+	r.releaseScavenger = nil
 	r.mu.Unlock()
 
+	if releaseScavenger != nil {
+		releaseScavenger()
+	}
 	if tcpDispatcher != nil {
 		tcpDispatcher.Close()
 	}
@@ -813,6 +822,74 @@ func (r *netstackRuntime) Close() error {
 	return tunDevice.Close()
 }
 
+const (
+	wireGuardMemoryScavengeInterval  = 45 * time.Second
+	wireGuardHeapScavengeMinHeapSys  = 128 << 20
+	wireGuardHeapScavengeMinRetained = 64 << 20
+)
+
+var wireGuardMemoryScavenger wireGuardMemoryScavengerState
+
+type wireGuardMemoryScavengerState struct {
+	mu     sync.Mutex
+	refs   int
+	stopCh chan struct{}
+}
+
+func retainWireGuardMemoryScavenger() func() {
+	wireGuardMemoryScavenger.mu.Lock()
+	defer wireGuardMemoryScavenger.mu.Unlock()
+
+	if wireGuardMemoryScavenger.refs == 0 {
+		wireGuardMemoryScavenger.stopCh = make(chan struct{})
+		go runWireGuardMemoryScavenger(wireGuardMemoryScavenger.stopCh)
+	}
+	wireGuardMemoryScavenger.refs++
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			wireGuardMemoryScavenger.mu.Lock()
+			defer wireGuardMemoryScavenger.mu.Unlock()
+
+			if wireGuardMemoryScavenger.refs > 0 {
+				wireGuardMemoryScavenger.refs--
+			}
+			if wireGuardMemoryScavenger.refs == 0 && wireGuardMemoryScavenger.stopCh != nil {
+				close(wireGuardMemoryScavenger.stopCh)
+				wireGuardMemoryScavenger.stopCh = nil
+			}
+		})
+	}
+}
+
+func runWireGuardMemoryScavenger(stopCh <-chan struct{}) {
+	ticker := time.NewTicker(wireGuardMemoryScavengeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			var stats runtime.MemStats
+			runtime.ReadMemStats(&stats)
+			if wireGuardHeapScavengeNeeded(stats) {
+				debug.FreeOSMemory()
+			}
+		case <-stopCh:
+			return
+		}
+	}
+}
+
+func wireGuardHeapScavengeNeeded(stats runtime.MemStats) bool {
+	if stats.HeapSys < wireGuardHeapScavengeMinHeapSys {
+		return false
+	}
+	if stats.HeapSys <= stats.HeapReleased+stats.HeapAlloc {
+		return false
+	}
+	return stats.HeapSys-stats.HeapReleased-stats.HeapAlloc >= wireGuardHeapScavengeMinRetained
+}
+
 type transparentTCPDispatcher struct {
 	mu       sync.Mutex
 	stack    *stack.Stack
@@ -820,9 +897,11 @@ type transparentTCPDispatcher struct {
 	forward  *tcp.Forwarder
 }
 
+const transparentTCPQueueSize = 256
+
 func newTransparentTCPDispatcher(s *stack.Stack) *transparentTCPDispatcher {
 	d := &transparentTCPDispatcher{stack: s}
-	d.forward = tcp.NewForwarder(s, 0, 1024, d.handleRequest)
+	d.forward = tcp.NewForwarder(s, 0, transparentTCPQueueSize, d.handleRequest)
 	return d
 }
 
@@ -882,7 +961,7 @@ type transparentTCPListener struct {
 
 func newTransparentTCPListener() *transparentTCPListener {
 	return &transparentTCPListener{
-		conns: make(chan net.Conn, 1024),
+		conns: make(chan net.Conn, transparentTCPQueueSize),
 		done:  make(chan struct{}),
 	}
 }
@@ -991,6 +1070,8 @@ type netstackForwardedUDPConn struct {
 
 var forwardedUDPFlowIdleTimeout = time.Minute
 
+const transparentUDPQueueSize = 256
+
 var errForwardedUDPFlowIdleTimeout = errors.New("wireguard transparent udp flow idle timeout")
 
 func newNetstackForwardedUDPConn(s *stack.Stack) *netstackForwardedUDPConn {
@@ -998,7 +1079,7 @@ func newNetstackForwardedUDPConn(s *stack.Stack) *netstackForwardedUDPConn {
 		stack: s,
 		done:  make(chan struct{}),
 		conns: make(map[*netstackTransparentUDPConn]string),
-		queue: make(chan TransparentUDPPacket, 1024),
+		queue: make(chan TransparentUDPPacket, transparentUDPQueueSize),
 	}
 }
 

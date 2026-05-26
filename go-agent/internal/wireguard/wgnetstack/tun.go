@@ -54,8 +54,9 @@ type netTun struct {
 type Net netTun
 
 const netTunBatchSize = 32
+const netTunChannelQueueSize = 256
 const netTunTCPDefaultBufferSize = tcp.DefaultReceiveBufferSize
-const netTunTCPMaxBufferSize = 16 << 20
+const netTunTCPMaxBufferSize = 4 << 20
 
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device, RuntimeNet, *stack.Stack, error) {
 	opts := stack.Options{
@@ -64,7 +65,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		HandleLocal:        false,
 	}
 	dev := &netTun{
-		ep:             channel.New(1024, uint32(mtu), ""),
+		ep:             channel.New(netTunChannelQueueSize, uint32(mtu), ""),
 		stack:          stack.New(opts),
 		events:         make(chan tun.Event, 10),
 		incomingPacket: make(chan *buffer.View, netTunBatchSize),

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -79,6 +80,37 @@ func TestNetstackRuntimeListenTCPAcceptsWildcardAddress(t *testing.T) {
 	}
 	if addr.Port != listenPort {
 		t.Fatalf("listener port = %d, want %d", addr.Port, listenPort)
+	}
+}
+
+func TestTransparentListenersUseBoundedQueues(t *testing.T) {
+	tcpListener := newTransparentTCPListener()
+	defer tcpListener.Close()
+	if got, wantMax := cap(tcpListener.conns), 256; got > wantMax {
+		t.Fatalf("transparent TCP accept queue capacity = %d, want <= %d", got, wantMax)
+	}
+
+	udpConn := newNetstackForwardedUDPConn(nil)
+	defer udpConn.Close()
+	if got, wantMax := cap(udpConn.queue), 256; got > wantMax {
+		t.Fatalf("transparent UDP packet queue capacity = %d, want <= %d", got, wantMax)
+	}
+}
+
+func TestWireGuardHeapScavengeNeededAfterHeapExpansion(t *testing.T) {
+	stats := runtime.MemStats{
+		HeapAlloc:    220 << 20,
+		HeapSys:      568 << 20,
+		HeapIdle:     339 << 20,
+		HeapReleased: 2 << 20,
+	}
+	if !wireGuardHeapScavengeNeeded(stats) {
+		t.Fatal("wireGuardHeapScavengeNeeded() = false for large idle heap")
+	}
+
+	stats.HeapReleased = stats.HeapIdle - 1<<20
+	if wireGuardHeapScavengeNeeded(stats) {
+		t.Fatal("wireGuardHeapScavengeNeeded() = true when idle heap is already released")
 	}
 }
 
