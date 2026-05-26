@@ -55,7 +55,7 @@ type Net netTun
 
 const netTunBatchSize = 32
 const netTunChannelQueueSize = 256
-const netTunTCPDefaultBufferSize = tcp.DefaultReceiveBufferSize
+const netTunTCPDefaultBufferSize = 2 << 20
 const netTunTCPMaxBufferSize = 4 << 20
 
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device, RuntimeNet, *stack.Stack, error) {

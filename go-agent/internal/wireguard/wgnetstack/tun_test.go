@@ -52,6 +52,33 @@ func TestConfigureTCPBuffersRaisesNetstackWindowDefaults(t *testing.T) {
 	}
 }
 
+func TestConfigureTCPBuffersUsesModerateDefaultWindow(t *testing.T) {
+	s := stack.New(stack.Options{
+		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
+		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol},
+	})
+
+	if err := configureTCPBuffers(s); err != nil {
+		t.Fatalf("configureTCPBuffers() error = %v", err)
+	}
+
+	var recv tcpip.TCPReceiveBufferSizeRangeOption
+	if err := s.TransportProtocolOption(tcp.ProtocolNumber, &recv); err != nil {
+		t.Fatalf("TransportProtocolOption(recv) error = %v", err)
+	}
+	if recv.Default != 2<<20 {
+		t.Fatalf("receive buffer default = %d, want %d", recv.Default, 2<<20)
+	}
+
+	var send tcpip.TCPSendBufferSizeRangeOption
+	if err := s.TransportProtocolOption(tcp.ProtocolNumber, &send); err != nil {
+		t.Fatalf("TransportProtocolOption(send) error = %v", err)
+	}
+	if send.Default != 2<<20 {
+		t.Fatalf("send buffer default = %d, want %d", send.Default, 2<<20)
+	}
+}
+
 func TestConfigureTCPBuffersBoundsNetstackWindowMax(t *testing.T) {
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
