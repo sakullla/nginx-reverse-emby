@@ -285,8 +285,12 @@ func (c *idleDeadlineConn) Write(p []byte) (int, error) {
 }
 
 func (c *idleDeadlineConn) ReadFrom(r io.Reader) (int64, error) {
+	return c.ReadFromWithProgress(r, nil)
+}
+
+func (c *idleDeadlineConn) ReadFromWithProgress(r io.Reader, onWritten func(int64)) (int64, error) {
 	if stream, ok := c.Conn.(*tlsTCPLogicalStream); ok {
-		return stream.ReadFrom(r)
+		return stream.ReadFromWithProgress(r, onWritten)
 	}
 
 	buf := tlsTCPBulkBufferPool.Get().([]byte)
@@ -298,6 +302,9 @@ func (c *idleDeadlineConn) ReadFrom(r io.Reader) (int64, error) {
 		if n > 0 {
 			written, writeErr := c.Write(buf[:n])
 			total += int64(written)
+			if written > 0 && onWritten != nil {
+				onWritten(int64(written))
+			}
 			if writeErr != nil {
 				return total, writeErr
 			}

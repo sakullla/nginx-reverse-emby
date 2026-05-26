@@ -57,6 +57,10 @@ type writerWithoutReaderFrom struct {
 	io.Writer
 }
 
+type readerFromWithProgress interface {
+	ReadFromWithProgress(io.Reader, func(int64)) (int64, error)
+}
+
 type TrafficWriter struct {
 	dst       io.Writer
 	direction Direction
@@ -85,6 +89,9 @@ func (w *TrafficWriter) Write(p []byte) (int, error) {
 func (w *TrafficWriter) ReadFrom(r io.Reader) (int64, error) {
 	if _, ok := w.dst.(*net.TCPConn); ok {
 		return CopyGeneric(w, r)
+	}
+	if rf, ok := w.dst.(readerFromWithProgress); ok {
+		return rf.ReadFromWithProgress(r, w.recordCopied)
 	}
 	if rf, ok := w.dst.(io.ReaderFrom); ok {
 		n, err := rf.ReadFrom(r)
