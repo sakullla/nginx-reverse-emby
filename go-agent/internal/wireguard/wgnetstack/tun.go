@@ -43,7 +43,7 @@ type netTun struct {
 	stack          *stack.Stack
 	events         chan tun.Event
 	notifyHandle   *channel.NotificationHandle
-	incomingPacket chan *buffer.View
+	incomingPacket chan *stack.PacketBuffer
 	dnsServers     []netip.Addr
 	localAddresses map[netip.Addr]struct{}
 	mtu            int
@@ -68,7 +68,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		ep:             channel.New(netTunChannelQueueSize, uint32(mtu), ""),
 		stack:          stack.New(opts),
 		events:         make(chan tun.Event, 10),
-		incomingPacket: make(chan *buffer.View, netTunBatchSize),
+		incomingPacket: make(chan *stack.PacketBuffer, netTunBatchSize),
 		dnsServers:     dnsServers,
 		localAddresses: make(map[netip.Addr]struct{}, len(localAddresses)),
 		mtu:            mtu,
@@ -158,15 +158,13 @@ func (tun *netTun) Events() <-chan tun.Event {
 }
 
 func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
-	view, ok := <-tun.incomingPacket
+	pkt, ok := <-tun.incomingPacket
 	if !ok {
 		return 0, os.ErrClosed
 	}
 
-	n, err := readPacketView(view, buf[0][offset:])
-	if err != nil {
-		return 0, err
-	}
+	n := readPacketBuffer(pkt, buf[0][offset:])
+	pkt.DecRef()
 	sizes[0] = n
 
 	count := 1
@@ -176,14 +174,12 @@ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 	}
 	for count < limit {
 		select {
-		case view, ok := <-tun.incomingPacket:
+		case pkt, ok := <-tun.incomingPacket:
 			if !ok {
 				return count, nil
 			}
-			n, err := readPacketView(view, buf[count][offset:])
-			if err != nil {
-				return count, err
-			}
+			n := readPacketBuffer(pkt, buf[count][offset:])
+			pkt.DecRef()
 			sizes[count] = n
 			count++
 		default:
@@ -193,12 +189,25 @@ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 	return count, nil
 }
 
-func readPacketView(view *buffer.View, dst []byte) (int, error) {
-	n, err := view.Read(dst)
-	if err != nil {
-		return 0, err
+func readPacketBuffer(pkt *stack.PacketBuffer, dst []byte) int {
+	if len(dst) == 0 || pkt == nil {
+		return 0
 	}
-	return n, nil
+	views, skip := pkt.AsViewList()
+	copied := 0
+	for view := views.Front(); view != nil && copied < len(dst); view = view.Next() {
+		src := view.AsSlice()
+		if skip >= len(src) {
+			skip -= len(src)
+			continue
+		}
+		if skip > 0 {
+			src = src[skip:]
+			skip = 0
+		}
+		copied += copy(dst[copied:], src)
+	}
+	return copied
 }
 
 func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
@@ -228,16 +237,22 @@ func (tun *netTun) WriteNotify() {
 			return
 		}
 
-		view := pkt.ToView()
-		pkt.DecRef()
-
-		if tun.isLocalDestination(view.AsSlice()) {
+		if tun.isLocalPacket(pkt) {
+			view := pkt.ToView()
+			pkt.DecRef()
 			tun.injectInbound(view.AsSlice())
+			view.Release()
 			continue
 		}
 
-		tun.incomingPacket <- view
+		tun.incomingPacket <- pkt
 	}
+}
+
+func (tun *netTun) isLocalPacket(pkt *stack.PacketBuffer) bool {
+	var prefix [header.IPv6MinimumSize]byte
+	n := readPacketBuffer(pkt, prefix[:])
+	return tun.isLocalDestination(prefix[:n])
 }
 
 func (tun *netTun) isLocalDestination(packet []byte) bool {

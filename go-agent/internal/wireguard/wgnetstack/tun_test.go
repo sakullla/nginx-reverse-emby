@@ -80,10 +80,11 @@ func TestConfigureTCPBuffersBoundsNetstackWindowMax(t *testing.T) {
 }
 
 func TestNetTunReadDrainsQueuedPacketBatch(t *testing.T) {
-	tun := &netTun{incomingPacket: make(chan *buffer.View, netTunBatchSize)}
+	tun := &netTun{incomingPacket: make(chan *stack.PacketBuffer, netTunBatchSize)}
 	for _, payload := range [][]byte{[]byte("one"), []byte("two"), []byte("three")} {
-		view := buffer.NewViewWithData(payload)
-		tun.incomingPacket <- view
+		tun.incomingPacket <- stack.NewPacketBuffer(stack.PacketBufferOptions{
+			Payload: buffer.MakeWithData(payload),
+		})
 	}
 
 	bufs := [][]byte{make([]byte, 16), make([]byte, 16), make([]byte, 16)}
@@ -105,7 +106,7 @@ func TestNetTunReadDrainsQueuedPacketBatch(t *testing.T) {
 func TestNetTunWriteNotifyDrainsQueuedOutboundBatch(t *testing.T) {
 	tun := &netTun{
 		ep:             channel.New(netTunChannelQueueSize, 1280, ""),
-		incomingPacket: make(chan *buffer.View, netTunBatchSize),
+		incomingPacket: make(chan *stack.PacketBuffer, netTunBatchSize),
 		localAddresses: map[netip.Addr]struct{}{},
 	}
 
@@ -135,6 +136,41 @@ func TestNetTunWriteNotifyDrainsQueuedOutboundBatch(t *testing.T) {
 	for i, want := range []string{"one", "two", "three"} {
 		if got := string(bufs[i][:sizes[i]]); got != want {
 			t.Fatalf("packet %d = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func BenchmarkNetTunWriteNotifyRead1400B(b *testing.B) {
+	payload := make([]byte, 1400)
+	payload[0] = 0x45
+	tun := &netTun{
+		ep:             channel.New(netTunChannelQueueSize, 1500, ""),
+		incomingPacket: make(chan *stack.PacketBuffer, netTunBatchSize),
+		localAddresses: map[netip.Addr]struct{}{},
+	}
+	bufs := [][]byte{make([]byte, 1600)}
+	sizes := make([]int, len(bufs))
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var packets stack.PacketBufferList
+		packets.PushBack(stack.NewPacketBuffer(stack.PacketBufferOptions{
+			Payload: buffer.MakeWithData(payload),
+		}))
+		if written, tcpipErr := tun.ep.WritePackets(packets); tcpipErr != nil || written != 1 {
+			b.Fatalf("WritePackets() = %d, %v; want 1, nil", written, tcpipErr)
+		}
+		packets.DecRef()
+
+		tun.WriteNotify()
+		n, err := tun.Read(bufs, sizes, 0)
+		if err != nil {
+			b.Fatalf("Read() error = %v", err)
+		}
+		if n != 1 || sizes[0] != len(payload) {
+			b.Fatalf("Read() = %d size %d, want 1 size %d", n, sizes[0], len(payload))
 		}
 	}
 }
