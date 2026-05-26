@@ -574,7 +574,7 @@ func TestDialWireGuardRelayUsesRuntimeDialContext(t *testing.T) {
 	}
 }
 
-func TestDialWireGuardRelayResolvesRelayHopAddressThroughCache(t *testing.T) {
+func TestDialWireGuardRelayPreservesHostnameForRuntimeDNS(t *testing.T) {
 	provider := newFakeTLSMaterialProvider()
 	conn := &fakeRelayTCPBufferConn{}
 	wgRuntime := &fakeWireGuardRuntime{
@@ -588,12 +588,10 @@ func TestDialWireGuardRelayResolvesRelayHopAddressThroughCache(t *testing.T) {
 	listener.TransportMode = ListenerTransportModeWireGuard
 	listener.WireGuardProfileID = &profileID
 	hop.Listener = listener
-	hop.Address = net.JoinHostPort("relay-wg.example", "9443")
+	hop.Address = net.JoinHostPort("relay-wg.internal", "9443")
 
 	resolver := &stubRelayResolver{
-		answers: map[string][]net.IPAddr{
-			"relay-wg.example": {{IP: net.ParseIP("10.8.0.9")}},
-		},
+		answers: map[string][]net.IPAddr{},
 	}
 	previousCache := relayHopCache
 	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
@@ -612,8 +610,11 @@ func TestDialWireGuardRelayResolvesRelayHopAddressThroughCache(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("DialContext calls = %d, want 1", len(calls))
 	}
-	if calls[0].address != "10.8.0.9:9443" {
-		t.Fatalf("WireGuard relay dial address = %q, want resolved relay hop address", calls[0].address)
+	if calls[0].address != hop.Address {
+		t.Fatalf("WireGuard relay dial address = %q, want original relay hop address", calls[0].address)
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("host resolver calls = %d, want 0 because WireGuard runtime owns relay hostname DNS", resolver.calls)
 	}
 }
 
