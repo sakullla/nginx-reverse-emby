@@ -157,7 +157,9 @@ func dialRelayHopTCP(ctx context.Context, address string) (net.Conn, error) {
 		start := time.Now()
 		conn, err := relayDialContext(ctx, "tcp", candidate.Address)
 		if err != nil {
-			relayHopMarkFailure(candidate.Address)
+			if !isCallerDrivenContextError(ctx, err) {
+				relayHopMarkFailure(candidate.Address)
+			}
 			lastErr = err
 			continue
 		}

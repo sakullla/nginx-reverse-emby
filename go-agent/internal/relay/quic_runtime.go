@@ -425,7 +425,9 @@ func dialQUICRelayHop(ctx context.Context, address string, tlsConfig *tls.Config
 		start := time.Now()
 		conn, err := quicDialAddr(ctx, candidate.Address, tlsConfig, newRelayQUICConfig())
 		if err != nil {
-			relayHopMarkFailure(candidate.Address)
+			if !isCallerDrivenContextError(ctx, err) {
+				relayHopMarkFailure(candidate.Address)
+			}
 			lastErr = err
 			continue
 		}

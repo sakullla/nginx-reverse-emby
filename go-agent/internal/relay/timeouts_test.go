@@ -349,6 +349,49 @@ func TestDialRelayTCPTryNextResolvedAddressAfterFailure(t *testing.T) {
 	}
 }
 
+func TestDialRelayTCPDoesNotBackoffResolvedAddressesOnCallerCancellation(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay.example": {
+				{IP: net.ParseIP("203.0.113.10")},
+				{IP: net.ParseIP("203.0.113.11")},
+			},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	originalDial := relayDialContext
+	var calls []string
+	relayDialContext = func(ctx context.Context, _ string, address string) (net.Conn, error) {
+		calls = append(calls, address)
+		return nil, ctx.Err()
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := dialRelayHopTCP(ctx, "relay.example:9443")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("dialRelayHopTCP() error = %v, want context.Canceled", err)
+	}
+	want := []string{"203.0.113.10:9443", "203.0.113.11:9443"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("dial addresses = %+v, want %+v", calls, want)
+	}
+	for _, address := range want {
+		if relayHopCache.IsInBackoff(address) {
+			t.Fatalf("caller cancellation put %s into relay hop backoff", address)
+		}
+	}
+}
+
 func TestRelayTCPDialerEnablesMultipathTCP(t *testing.T) {
 	dialer := newRelayTCPDialer()
 
