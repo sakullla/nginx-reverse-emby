@@ -222,20 +222,22 @@ func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
 }
 
 func (tun *netTun) WriteNotify() {
-	pkt := tun.ep.Read()
-	if pkt == nil {
-		return
+	for {
+		pkt := tun.ep.Read()
+		if pkt == nil {
+			return
+		}
+
+		view := pkt.ToView()
+		pkt.DecRef()
+
+		if tun.isLocalDestination(view.AsSlice()) {
+			tun.injectInbound(view.AsSlice())
+			continue
+		}
+
+		tun.incomingPacket <- view
 	}
-
-	view := pkt.ToView()
-	pkt.DecRef()
-
-	if tun.isLocalDestination(view.AsSlice()) {
-		tun.injectInbound(view.AsSlice())
-		return
-	}
-
-	tun.incomingPacket <- view
 }
 
 func (tun *netTun) isLocalDestination(packet []byte) bool {

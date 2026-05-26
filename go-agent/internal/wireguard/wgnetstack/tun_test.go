@@ -1,10 +1,12 @@
 package wgnetstack
 
 import (
+	"net/netip"
 	"testing"
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
@@ -83,6 +85,43 @@ func TestNetTunReadDrainsQueuedPacketBatch(t *testing.T) {
 		view := buffer.NewViewWithData(payload)
 		tun.incomingPacket <- view
 	}
+
+	bufs := [][]byte{make([]byte, 16), make([]byte, 16), make([]byte, 16)}
+	sizes := make([]int, len(bufs))
+	n, err := tun.Read(bufs, sizes, 0)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("Read() packet count = %d, want 3", n)
+	}
+	for i, want := range []string{"one", "two", "three"} {
+		if got := string(bufs[i][:sizes[i]]); got != want {
+			t.Fatalf("packet %d = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestNetTunWriteNotifyDrainsQueuedOutboundBatch(t *testing.T) {
+	tun := &netTun{
+		ep:             channel.New(netTunChannelQueueSize, 1280, ""),
+		incomingPacket: make(chan *buffer.View, netTunBatchSize),
+		localAddresses: map[netip.Addr]struct{}{},
+	}
+
+	var packets stack.PacketBufferList
+	for _, payload := range [][]byte{[]byte("one"), []byte("two"), []byte("three")} {
+		packets.PushBack(stack.NewPacketBuffer(stack.PacketBufferOptions{
+			Payload: buffer.MakeWithData(payload),
+		}))
+	}
+	defer packets.DecRef()
+
+	if written, tcpipErr := tun.ep.WritePackets(packets); tcpipErr != nil || written != 3 {
+		t.Fatalf("WritePackets() = %d, %v; want 3, nil", written, tcpipErr)
+	}
+
+	tun.WriteNotify()
 
 	bufs := [][]byte{make([]byte, 16), make([]byte, 16), make([]byte, 16)}
 	sizes := make([]int, len(bufs))
