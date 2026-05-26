@@ -53,15 +53,24 @@ function Cleanup {
     docker compose -f $ComposeFile down -v | Out-Null
 }
 
+$defaultDelayCliToA = 30
+$defaultDelayAToRelay = 10
+
 $delayCliToA = Get-OptionalEnvInt 'HARNESS_DELAY_CLI_TO_A_MS'
 $delayAToRelay = Get-OptionalEnvInt 'HARNESS_DELAY_A_TO_RELAY_MS'
 $fallbackDelay = Get-OptionalEnvInt 'HARNESS_NETEM_DELAY_MS'
+if ($null -eq $delayCliToA) {
+    $delayCliToA = $defaultDelayCliToA
+}
 if ($null -eq $delayAToRelay -and $null -ne $fallbackDelay) {
     $delayAToRelay = $fallbackDelay
 }
+if ($null -eq $delayAToRelay) {
+    $delayAToRelay = $defaultDelayAToRelay
+}
 
 if (
-    ($null -ne $delayCliToA -or $null -ne $delayAToRelay) -and
+    ($delayCliToA -gt 0 -or $delayAToRelay -gt 0) -and
     [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('HARNESS_PRE_MEASURE_DELAY_MS'))
 ) {
     $env:HARNESS_PRE_MEASURE_DELAY_MS = '8000'
@@ -70,12 +79,12 @@ if (
 Cleanup
 docker compose -f $ComposeFile up -d --build | Out-Null
 
-if ($null -ne $delayCliToA -and $delayCliToA -gt 0) {
+if ($delayCliToA -gt 0) {
     Apply-NetemDelayOnCIDR -Container 'nre-perf' -CIDR '172.29.1.2/24' -DelayMs $delayCliToA
     Apply-NetemDelayOnCIDR -Container 'nre-agent-a' -CIDR '172.29.1.10/24' -DelayMs $delayCliToA
 }
 
-if ($null -ne $delayAToRelay -and $delayAToRelay -gt 0) {
+if ($delayAToRelay -gt 0) {
     Apply-NetemDelayOnCIDR -Container 'nre-agent-a' -CIDR '172.29.2.10/24' -DelayMs $delayAToRelay
     Apply-NetemDelayOnCIDR -Container 'nre-relay-a1' -CIDR '172.29.2.11/24' -DelayMs $delayAToRelay
     Apply-NetemDelayOnCIDR -Container 'nre-relay-a2' -CIDR '172.29.2.12/24' -DelayMs $delayAToRelay
