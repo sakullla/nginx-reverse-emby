@@ -208,6 +208,46 @@ func TestParseSOCKS5UDPPacketRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseSOCKS5UDPPacketInPlaceReusesInputBuffer(t *testing.T) {
+	packet, err := BuildSOCKS5UDPPacket("127.0.0.1:5300", []byte("ping"))
+	if err != nil {
+		t.Fatalf("BuildSOCKS5UDPPacket() error = %v", err)
+	}
+
+	parsed, err := ParseSOCKS5UDPPacketInPlace(packet)
+	if err != nil {
+		t.Fatalf("ParseSOCKS5UDPPacketInPlace() error = %v", err)
+	}
+	if parsed.Target != "127.0.0.1:5300" {
+		t.Fatalf("Target = %q, want 127.0.0.1:5300", parsed.Target)
+	}
+	if string(parsed.Payload) != "ping" {
+		t.Fatalf("Payload = %q, want ping", parsed.Payload)
+	}
+	if len(parsed.Payload) > 0 && &parsed.Payload[0] != &packet[len(packet)-len(parsed.Payload)] {
+		t.Fatal("ParseSOCKS5UDPPacketInPlace did not reuse input buffer")
+	}
+}
+
+func TestBuildSOCKS5UDPPacketIntoReusesCallerBuffer(t *testing.T) {
+	buf := make([]byte, 0, 128)
+
+	packet, err := BuildSOCKS5UDPPacketInto(buf, "127.0.0.1:5300", []byte("ping"))
+	if err != nil {
+		t.Fatalf("BuildSOCKS5UDPPacketInto() error = %v", err)
+	}
+	if len(packet) == 0 || &packet[0] != &buf[:cap(buf)][0] {
+		t.Fatal("BuildSOCKS5UDPPacketInto did not reuse caller buffer")
+	}
+	parsed, err := ParseSOCKS5UDPPacket(packet)
+	if err != nil {
+		t.Fatalf("ParseSOCKS5UDPPacket() error = %v", err)
+	}
+	if parsed.Target != "127.0.0.1:5300" || string(parsed.Payload) != "ping" {
+		t.Fatalf("parsed packet = %+v", parsed)
+	}
+}
+
 func TestDialUDPViaSOCKS5ProxyResolvesLocalDNS(t *testing.T) {
 	proxyAddr, packetCh := startObservingSOCKS5UDPProxy(t)
 

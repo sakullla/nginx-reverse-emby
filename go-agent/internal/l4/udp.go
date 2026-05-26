@@ -7,12 +7,15 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
+
+const udpPacketBufferSize = 64 * 1024
 
 type udpSession struct {
 	key                   string
@@ -110,19 +113,22 @@ func (l wireGuardTransparentUDPListener) SetReadDeadline(time.Time) error  { ret
 func (l wireGuardTransparentUDPListener) SetWriteDeadline(time.Time) error { return nil }
 
 type directUDPUpstream struct {
-	conn *net.UDPConn
+	conn    *net.UDPConn
+	readBuf []byte
 }
 
 func (u *directUDPUpstream) Close() error                       { return u.conn.Close() }
 func (u *directUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
 func (u *directUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
 func (u *directUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
-	buf := make([]byte, 64*1024)
-	n, err := u.conn.Read(buf)
+	if u.readBuf == nil {
+		u.readBuf = make([]byte, udpPacketBufferSize)
+	}
+	n, err := u.conn.Read(u.readBuf)
 	if err != nil {
 		return udpUpstreamPacket{}, err
 	}
-	return udpUpstreamPacket{payload: append([]byte(nil), buf[:n]...)}, nil
+	return udpUpstreamPacket{payload: u.readBuf[:n]}, nil
 }
 func (u *directUDPUpstream) WritePacket(payload []byte) error {
 	_, err := u.conn.Write(payload)
@@ -130,14 +136,18 @@ func (u *directUDPUpstream) WritePacket(payload []byte) error {
 }
 
 type relayUDPUpstream struct {
-	conn net.Conn
+	conn    net.Conn
+	readBuf []byte
 }
 
 func (u *relayUDPUpstream) Close() error                       { return u.conn.Close() }
 func (u *relayUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
 func (u *relayUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
 func (u *relayUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
-	payload, err := relay.ReadUOTPacket(u.conn)
+	if u.readBuf == nil {
+		u.readBuf = make([]byte, udpPacketBufferSize)
+	}
+	payload, err := relay.ReadUOTPacketInto(u.conn, u.readBuf)
 	if err != nil {
 		return udpUpstreamPacket{}, err
 	}
@@ -148,19 +158,22 @@ func (u *relayUDPUpstream) WritePacket(payload []byte) error {
 }
 
 type connUDPUpstream struct {
-	conn net.Conn
+	conn    net.Conn
+	readBuf []byte
 }
 
 func (u *connUDPUpstream) Close() error                       { return u.conn.Close() }
 func (u *connUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
 func (u *connUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
 func (u *connUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
-	buf := make([]byte, 64*1024)
-	n, err := u.conn.Read(buf)
+	if u.readBuf == nil {
+		u.readBuf = make([]byte, udpPacketBufferSize)
+	}
+	n, err := u.conn.Read(u.readBuf)
 	if err != nil {
 		return udpUpstreamPacket{}, err
 	}
-	return udpUpstreamPacket{payload: append([]byte(nil), buf[:n]...)}, nil
+	return udpUpstreamPacket{payload: u.readBuf[:n]}, nil
 }
 func (u *connUDPUpstream) WritePacket(payload []byte) error {
 	_, err := u.conn.Write(payload)
@@ -262,6 +275,9 @@ func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, erro
 		if err != nil {
 			return nil, err
 		}
+		if tuner, ok := conn.(netutil.UDPBufferTuner); ok {
+			netutil.TuneUDPBuffers(tuner)
+		}
 		if listener, ok := conn.(udpListener); ok {
 			return listener, nil
 		}
@@ -272,7 +288,12 @@ func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, erro
 	if err != nil {
 		return nil, err
 	}
-	return net.ListenUDP("udp", addr)
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	netutil.TuneUDPBuffers(conn)
+	return conn, nil
 }
 
 func (s *Server) udpReadLoop(conn udpListener, rule model.L4Rule) {
@@ -580,6 +601,7 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 		if err != nil {
 			return nil, err
 		}
+		netutil.TuneUDPBuffers(upstream)
 		return &directUDPUpstream{conn: upstream}, nil
 	}
 

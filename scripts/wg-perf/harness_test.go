@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWgPerfRunScriptTargetsWgPerfHarness(t *testing.T) {
@@ -218,6 +220,19 @@ func TestUploadFixedBytesSendsExpectedPayload(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("server error: %v", err)
+	}
+}
+
+func TestUploadDeadlineTerminalErrorIsSuccessfulOnlyAfterDeadline(t *testing.T) {
+	err := errors.New("write: broken pipe")
+	if !isUploadDeadlineTerminalError(err, time.Now().Add(-time.Second)) {
+		t.Fatal("broken pipe after deadline should end duration upload successfully")
+	}
+	if isUploadDeadlineTerminalError(err, time.Now().Add(time.Second)) {
+		t.Fatal("broken pipe before deadline should remain an error")
+	}
+	if isUploadDeadlineTerminalError(errors.New("permission denied"), time.Now().Add(-time.Second)) {
+		t.Fatal("unrelated errors should remain errors")
 	}
 }
 

@@ -119,6 +119,49 @@ func TestDialQUICResolvesRelayHopAddressThroughCache(t *testing.T) {
 	}
 }
 
+func TestDialQUICRelayHopDoesNotBackoffResolvedAddressesOnCallerCancellation(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay-quic.example": {
+				{IP: net.ParseIP("203.0.113.20")},
+				{IP: net.ParseIP("203.0.113.21")},
+			},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	prevDial := quicDialAddr
+	var calls []string
+	quicDialAddr = func(ctx context.Context, addr string, _ *tls.Config, _ *quic.Config) (*quic.Conn, error) {
+		calls = append(calls, addr)
+		return nil, ctx.Err()
+	}
+	defer func() {
+		quicDialAddr = prevDial
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := dialQUICRelayHop(ctx, "relay-quic.example:9443", &tls.Config{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("dialQUICRelayHop() error = %v, want context.Canceled", err)
+	}
+	want := []string{"203.0.113.20:9443", "203.0.113.21:9443"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("quic dial addresses = %+v, want %+v", calls, want)
+	}
+	for _, address := range want {
+		if relayHopCache.IsInBackoff(address) {
+			t.Fatalf("caller cancellation put %s into relay hop backoff", address)
+		}
+	}
+}
+
 func TestPickFreeUDPPortReturnsBindablePort(t *testing.T) {
 	port := pickFreeUDPPort(t)
 

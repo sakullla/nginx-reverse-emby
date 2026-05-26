@@ -68,3 +68,31 @@ func TestClientIPStripsPortWhenPresent(t *testing.T) {
 		t.Fatalf("ClientIP() = %q, want host", got)
 	}
 }
+
+func TestTuneUDPBuffersAppliesDefaultSocketBuffer(t *testing.T) {
+	conn := &recordingUDPBufferConn{}
+
+	TuneUDPBuffers(conn)
+
+	if conn.readBuffer != DefaultUDPSocketBufferBytes {
+		t.Fatalf("read buffer = %d, want %d", conn.readBuffer, DefaultUDPSocketBufferBytes)
+	}
+	if conn.writeBuffer != DefaultUDPSocketBufferBytes {
+		t.Fatalf("write buffer = %d, want %d", conn.writeBuffer, DefaultUDPSocketBufferBytes)
+	}
+}
+
+type recordingUDPBufferConn struct {
+	readBuffer  int
+	writeBuffer int
+}
+
+func (c *recordingUDPBufferConn) SetReadBuffer(bytes int) error {
+	c.readBuffer = bytes
+	return nil
+}
+
+func (c *recordingUDPBufferConn) SetWriteBuffer(bytes int) error {
+	c.writeBuffer = bytes
+	return nil
+}

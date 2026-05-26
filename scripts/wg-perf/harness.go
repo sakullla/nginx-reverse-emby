@@ -883,8 +883,21 @@ func uploadForDuration(address string, deadline time.Time) (int64, error) {
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 			return written, nil
 		}
+		if isUploadDeadlineTerminalError(err, deadline) {
+			return written, nil
+		}
 		return written, err
 	}
+}
+
+func isUploadDeadlineTerminalError(err error, deadline time.Time) bool {
+	if err == nil || time.Now().Before(deadline) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "broken pipe") ||
+		strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "forcibly closed")
 }
 
 func issueRelayCert(host string) (string, string, string, error) {

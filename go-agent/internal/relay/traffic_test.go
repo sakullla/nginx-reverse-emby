@@ -196,6 +196,51 @@ func TestCopyRelayTrafficPreservesTLSTCPDestinationReadFrom(t *testing.T) {
 	}
 }
 
+func TestCopyRelayTrafficReportsTLSTCPFastPathTrafficBeforeSourceEOF(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	var wire bytes.Buffer
+	tunnel := &tlsTCPTunnel{
+		rawConn:    noopDeadlineConn{},
+		writer:     &wire,
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	dst := wrapIdleConn(&tlsTCPLogicalStream{
+		tunnel:       tunnel,
+		streamID:     11,
+		readCh:       make(chan struct{}, 1),
+		openResultCh: make(chan muxOpenResult, 1),
+	})
+	src := newBlockingRelayReader([]byte("active-tls-payload"))
+	defer src.close()
+	recorder := traffic.NewRelayRecorder()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := copyRelayTraffic(dst, src, true, recorder)
+		done <- err
+	}()
+
+	src.waitFirstRead(t, time.Second)
+	relayStats := waitForRelayTraffic(t, len("active-tls-payload"), 0)
+	if relayStats["rx_bytes"] != uint64(len("active-tls-payload")) {
+		t.Fatalf("relay rx_bytes while TLS fast-path copy is active = %d, want %d", relayStats["rx_bytes"], len("active-tls-payload"))
+	}
+
+	src.close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("copyRelayTraffic() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("copyRelayTraffic did not exit after source close")
+	}
+}
+
 func TestPipeBothWaysIncludesInitialPayloadTraffic(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
@@ -524,4 +569,52 @@ func (s *relayWriterToSource) WriteTo(w io.Writer) (int64, error) {
 	n, err := w.Write(s.payload)
 	s.payload = s.payload[n:]
 	return int64(n), err
+}
+
+type blockingRelayReader struct {
+	mu        sync.Mutex
+	payload   []byte
+	read      bool
+	firstRead chan struct{}
+	release   chan struct{}
+	once      sync.Once
+}
+
+func newBlockingRelayReader(payload []byte) *blockingRelayReader {
+	return &blockingRelayReader{
+		payload:   append([]byte(nil), payload...),
+		firstRead: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+}
+
+func (r *blockingRelayReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	if !r.read {
+		r.read = true
+		n := copy(p, r.payload)
+		r.payload = r.payload[n:]
+		close(r.firstRead)
+		r.mu.Unlock()
+		return n, nil
+	}
+	r.mu.Unlock()
+
+	<-r.release
+	return 0, io.EOF
+}
+
+func (r *blockingRelayReader) close() {
+	r.once.Do(func() {
+		close(r.release)
+	})
+}
+
+func (r *blockingRelayReader) waitFirstRead(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-r.firstRead:
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for source read")
+	}
 }

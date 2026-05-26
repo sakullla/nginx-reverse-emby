@@ -172,6 +172,24 @@ func TestRunScriptCollectsStatsForActualRelayContainers(t *testing.T) {
 	}
 }
 
+func TestRunScriptDefaultsToDelayedRelayModel(t *testing.T) {
+	data, err := os.ReadFile("run.ps1")
+	if err != nil {
+		t.Fatalf("read run script: %v", err)
+	}
+
+	script := string(data)
+	for _, want := range []string{
+		"$defaultDelayCliToA = 30",
+		"$defaultDelayAToRelay = 10",
+		"$env:HARNESS_PRE_MEASURE_DELAY_MS = '8000'",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("run.ps1 missing default delayed relay model marker %q", want)
+		}
+	}
+}
+
 func yamlTopLevelBlock(t *testing.T, yaml, header string) string {
 	t.Helper()
 

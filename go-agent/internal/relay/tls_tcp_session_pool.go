@@ -102,8 +102,9 @@ type tlsTCPReadChunk struct {
 }
 
 type tlsTCPWriteRequest struct {
-	frame muxFrame
-	done  chan error
+	frame     muxFrame
+	done      chan error
+	onWritten func(int64)
 }
 
 func newTLSTCPWriteRequest(frame muxFrame) *tlsTCPWriteRequest {
@@ -118,6 +119,7 @@ func newTLSTCPWriteRequest(frame muxFrame) *tlsTCPWriteRequest {
 
 func releaseTLSTCPWriteRequest(req *tlsTCPWriteRequest) {
 	req.frame = muxFrame{}
+	req.onWritten = nil
 	select {
 	case <-req.done:
 	default:
@@ -736,9 +738,10 @@ func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
 		return err
 	}
 	for i, req := range batch {
+		payloadSize := int64(len(req.frame.Payload))
 		if err := t.writeMuxFrameLocked(req.frame); err != nil {
 			t.queuedWrites.Add(-1)
-			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
+			t.bufferedBytes.Add(-payloadSize)
 			req.frame.releasePayload()
 			for _, pending := range batch[i+1:] {
 				t.queuedWrites.Add(-1)
@@ -748,7 +751,10 @@ func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
 			return err
 		}
 		t.queuedWrites.Add(-1)
-		t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
+		t.bufferedBytes.Add(-payloadSize)
+		if req.onWritten != nil {
+			req.onWritten(payloadSize)
+		}
 		req.frame.releasePayload()
 	}
 	return nil
@@ -775,10 +781,15 @@ func (t *tlsTCPTunnel) failQueuedWriteRequests(err error) {
 }
 
 func (t *tlsTCPTunnel) enqueueWriteFrame(ctx context.Context, frame muxFrame) (*tlsTCPWriteRequest, error) {
+	return t.enqueueWriteFrameWithProgress(ctx, frame, nil)
+}
+
+func (t *tlsTCPTunnel) enqueueWriteFrameWithProgress(ctx context.Context, frame muxFrame, onWritten func(int64)) (*tlsTCPWriteRequest, error) {
 	t.startWritePump()
 
 	payloadSize := int64(len(frame.Payload))
 	req := newTLSTCPWriteRequest(frame)
+	req.onWritten = onWritten
 	t.queuedWrites.Add(1)
 	t.bufferedBytes.Add(payloadSize)
 	select {
@@ -1047,6 +1058,10 @@ func (s *tlsTCPLogicalStream) Write(p []byte) (int, error) {
 }
 
 func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
+	return s.ReadFromWithProgress(r, nil)
+}
+
+func (s *tlsTCPLogicalStream) ReadFromWithProgress(r io.Reader, onWritten func(int64)) (int64, error) {
 	s.readMu.Lock()
 	writeClosed := s.writeClosed
 	s.readMu.Unlock()
@@ -1058,7 +1073,7 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 	defer tlsTCPBulkBufferPool.Put(buf)
 
 	if s.tunnel.logicalStreamCount() <= 1 {
-		return s.readFromSingleStream(r, buf)
+		return s.readFromSingleStreamWithProgress(r, buf, onWritten)
 	}
 
 	var total int64
@@ -1076,6 +1091,9 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 				return total, frameErr
 			}
 			total += int64(n)
+			if onWritten != nil {
+				onWritten(int64(n))
+			}
 		}
 		if errors.Is(err, io.EOF) {
 			return total, nil
@@ -1087,6 +1105,10 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 }
 
 func (s *tlsTCPLogicalStream) readFromSingleStream(r io.Reader, buf []byte) (int64, error) {
+	return s.readFromSingleStreamWithProgress(r, buf, nil)
+}
+
+func (s *tlsTCPLogicalStream) readFromSingleStreamWithProgress(r io.Reader, buf []byte, onWritten func(int64)) (int64, error) {
 	var total int64
 	var inflight []*tlsTCPWriteRequest
 	flushOldest := func() error {
@@ -1099,7 +1121,7 @@ func (s *tlsTCPLogicalStream) readFromSingleStream(r io.Reader, buf []byte) (int
 		n, err := r.Read(buf)
 		if n > 0 {
 			frame := newQueuedTLSTCPDataFrame(s.streamID, buf[:n])
-			req, enqueueErr := s.tunnel.enqueueWriteFrame(context.Background(), frame)
+			req, enqueueErr := s.tunnel.enqueueWriteFrameWithProgress(context.Background(), frame, onWritten)
 			if enqueueErr != nil {
 				return total, enqueueErr
 			}

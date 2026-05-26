@@ -677,6 +677,7 @@ func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
 		runtime.Close()
 		return nil, err
 	}
+	startWireGuardRuntimeWarmup(runtime, cfg)
 	return runtime, nil
 }
 
@@ -687,6 +688,64 @@ func newNetstackRuntime(tunDevice interface{ Close() error }, tnet wgnetstack.Ru
 		runtime.udp = newTransparentUDPDispatcher(gstack)
 	}
 	return runtime
+}
+
+const wireGuardRuntimeWarmupTimeout = 2 * time.Second
+
+func startWireGuardRuntimeWarmup(rt Runtime, cfg Config) {
+	if len(wireGuardWarmupTargets(cfg)) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wireGuardRuntimeWarmupTimeout)
+	defer cancel()
+	warmWireGuardRuntime(ctx, rt, cfg)
+}
+
+func warmWireGuardRuntime(ctx context.Context, rt Runtime, cfg Config) {
+	for _, target := range wireGuardWarmupTargets(cfg) {
+		conn, err := rt.DialContext(ctx, "udp", target)
+		if err != nil {
+			continue
+		}
+		_ = setConnDeadlineFromContext(conn, ctx)
+		_, _ = conn.Write(wireGuardDNSWarmupQuery())
+		var buf [512]byte
+		_, _ = conn.Read(buf[:])
+		_ = conn.Close()
+		return
+	}
+}
+
+func wireGuardDNSWarmupQuery() []byte {
+	return []byte{
+		0x12, 0x34, // ID
+		0x01, 0x00, // recursion desired
+		0x00, 0x01, // questions
+		0x00, 0x00, // answers
+		0x00, 0x00, // authority
+		0x00, 0x00, // additional
+		0x00,       // root name
+		0x00, 0x02, // NS
+		0x00, 0x01, // IN
+	}
+}
+
+func setConnDeadlineFromContext(conn net.Conn, ctx context.Context) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		return conn.SetDeadline(deadline)
+	}
+	return nil
+}
+
+func wireGuardWarmupTargets(cfg Config) []string {
+	targets := make([]string, 0, len(cfg.DNSAddrs))
+	for _, addr := range cfg.DNSAddrs {
+		if !addr.IsValid() || addr.IsUnspecified() {
+			continue
+		}
+		targets = append(targets, net.JoinHostPort(addr.String(), "53"))
+	}
+	return targets
 }
 
 func (r *netstackRuntime) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {

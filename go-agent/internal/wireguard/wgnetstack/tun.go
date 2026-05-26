@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,20 +44,28 @@ type netTun struct {
 	stack          *stack.Stack
 	events         chan tun.Event
 	notifyHandle   *channel.NotificationHandle
-	incomingPacket chan *buffer.View
+	incomingPacket chan *stack.PacketBuffer
 	dnsServers     []netip.Addr
+	dnsCacheMu     sync.Mutex
+	dnsCache       map[string]dnsCacheEntry
 	localAddresses map[netip.Addr]struct{}
 	mtu            int
 	hasV4          bool
 	hasV6          bool
 }
 
+type dnsCacheEntry struct {
+	addrs  []string
+	expiry time.Time
+}
+
 type Net netTun
 
 const netTunBatchSize = 32
 const netTunChannelQueueSize = 256
-const netTunTCPDefaultBufferSize = tcp.DefaultReceiveBufferSize
+const netTunTCPDefaultBufferSize = 2 << 20
 const netTunTCPMaxBufferSize = 4 << 20
+const netTunDNSCacheMaxTTL = 5 * time.Minute
 
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device, RuntimeNet, *stack.Stack, error) {
 	opts := stack.Options{
@@ -68,7 +77,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		ep:             channel.New(netTunChannelQueueSize, uint32(mtu), ""),
 		stack:          stack.New(opts),
 		events:         make(chan tun.Event, 10),
-		incomingPacket: make(chan *buffer.View, netTunBatchSize),
+		incomingPacket: make(chan *stack.PacketBuffer, netTunBatchSize),
 		dnsServers:     dnsServers,
 		localAddresses: make(map[netip.Addr]struct{}, len(localAddresses)),
 		mtu:            mtu,
@@ -158,15 +167,13 @@ func (tun *netTun) Events() <-chan tun.Event {
 }
 
 func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
-	view, ok := <-tun.incomingPacket
+	pkt, ok := <-tun.incomingPacket
 	if !ok {
 		return 0, os.ErrClosed
 	}
 
-	n, err := readPacketView(view, buf[0][offset:])
-	if err != nil {
-		return 0, err
-	}
+	n := readPacketBuffer(pkt, buf[0][offset:])
+	pkt.DecRef()
 	sizes[0] = n
 
 	count := 1
@@ -176,14 +183,12 @@ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 	}
 	for count < limit {
 		select {
-		case view, ok := <-tun.incomingPacket:
+		case pkt, ok := <-tun.incomingPacket:
 			if !ok {
 				return count, nil
 			}
-			n, err := readPacketView(view, buf[count][offset:])
-			if err != nil {
-				return count, err
-			}
+			n := readPacketBuffer(pkt, buf[count][offset:])
+			pkt.DecRef()
 			sizes[count] = n
 			count++
 		default:
@@ -193,12 +198,25 @@ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
 	return count, nil
 }
 
-func readPacketView(view *buffer.View, dst []byte) (int, error) {
-	n, err := view.Read(dst)
-	if err != nil {
-		return 0, err
+func readPacketBuffer(pkt *stack.PacketBuffer, dst []byte) int {
+	if len(dst) == 0 || pkt == nil {
+		return 0
 	}
-	return n, nil
+	views, skip := pkt.AsViewList()
+	copied := 0
+	for view := views.Front(); view != nil && copied < len(dst); view = view.Next() {
+		src := view.AsSlice()
+		if skip >= len(src) {
+			skip -= len(src)
+			continue
+		}
+		if skip > 0 {
+			src = src[skip:]
+			skip = 0
+		}
+		copied += copy(dst[copied:], src)
+	}
+	return copied
 }
 
 func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
@@ -222,20 +240,28 @@ func (tun *netTun) Write(buf [][]byte, offset int) (int, error) {
 }
 
 func (tun *netTun) WriteNotify() {
-	pkt := tun.ep.Read()
-	if pkt == nil {
-		return
+	for {
+		pkt := tun.ep.Read()
+		if pkt == nil {
+			return
+		}
+
+		if tun.isLocalPacket(pkt) {
+			view := pkt.ToView()
+			pkt.DecRef()
+			tun.injectInbound(view.AsSlice())
+			view.Release()
+			continue
+		}
+
+		tun.incomingPacket <- pkt
 	}
+}
 
-	view := pkt.ToView()
-	pkt.DecRef()
-
-	if tun.isLocalDestination(view.AsSlice()) {
-		tun.injectInbound(view.AsSlice())
-		return
-	}
-
-	tun.incomingPacket <- view
+func (tun *netTun) isLocalPacket(pkt *stack.PacketBuffer) bool {
+	var prefix [header.IPv6MinimumSize]byte
+	n := readPacketBuffer(pkt, prefix[:])
+	return tun.isLocalDestination(prefix[:n])
 }
 
 func (tun *netTun) isLocalDestination(packet []byte) bool {
@@ -717,12 +743,16 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 	if !isDomainName(host) {
 		return nil, &net.DNSError{Err: errNoSuchHost.Error(), Name: host, IsNotFound: true}
 	}
+	if cached, ok := (*netTun)(tnet).lookupDNSCache(host); ok {
+		return cached, nil
+	}
 	type result struct {
 		p      dnsmessage.Parser
 		server string
 		error
 	}
 	var addrsV4, addrsV6 []netip.Addr
+	var minTTL uint32
 	lanes := 0
 	if tnet.hasV4 {
 		lanes++
@@ -778,6 +808,7 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 					break loop
 				}
 				addrsV4 = append(addrsV4, netip.AddrFrom4(a.A))
+				minTTL = minPositiveTTL(minTTL, h.TTL)
 
 			case dnsmessage.TypeAAAA:
 				aaaa, err := result.p.AAAAResource()
@@ -790,6 +821,7 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 					break loop
 				}
 				addrsV6 = append(addrsV6, netip.AddrFrom16(aaaa.AAAA))
+				minTTL = minPositiveTTL(minTTL, h.TTL)
 
 			default:
 				if err := result.p.SkipAnswer(); err != nil {
@@ -818,7 +850,61 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 	for _, ip := range addrs {
 		saddrs = append(saddrs, ip.String())
 	}
+	if minTTL > 0 {
+		(*netTun)(tnet).storeDNSCache(host, saddrs, time.Duration(minTTL)*time.Second)
+	}
 	return saddrs, nil
+}
+
+func minPositiveTTL(current, next uint32) uint32 {
+	if next == 0 {
+		return current
+	}
+	if current == 0 || next < current {
+		return next
+	}
+	return current
+}
+
+func (tun *netTun) lookupDNSCache(host string) ([]string, bool) {
+	key := dnsCacheKey(host)
+	if key == "" {
+		return nil, false
+	}
+	tun.dnsCacheMu.Lock()
+	defer tun.dnsCacheMu.Unlock()
+	entry, ok := tun.dnsCache[key]
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiry) {
+		delete(tun.dnsCache, key)
+		return nil, false
+	}
+	return append([]string(nil), entry.addrs...), true
+}
+
+func (tun *netTun) storeDNSCache(host string, addrs []string, ttl time.Duration) {
+	key := dnsCacheKey(host)
+	if key == "" || len(addrs) == 0 || ttl <= 0 {
+		return
+	}
+	if ttl > netTunDNSCacheMaxTTL {
+		ttl = netTunDNSCacheMaxTTL
+	}
+	tun.dnsCacheMu.Lock()
+	defer tun.dnsCacheMu.Unlock()
+	if tun.dnsCache == nil {
+		tun.dnsCache = make(map[string]dnsCacheEntry)
+	}
+	tun.dnsCache[key] = dnsCacheEntry{
+		addrs:  append([]string(nil), addrs...),
+		expiry: time.Now().Add(ttl),
+	}
+}
+
+func dnsCacheKey(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
 var protoSplitter = regexp.MustCompile(`^(tcp|udp)(4|6)?$`)
