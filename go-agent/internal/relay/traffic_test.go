@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"io"
 	"net"
 	"sync"
@@ -143,6 +144,55 @@ func TestPipeBothWaysReportsRelayTrafficBeforeStreamsClose(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("pipeBothWays did not exit")
+	}
+}
+
+func TestCopyRelayTrafficPreservesTLSTCPDestinationReadFrom(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	var wire bytes.Buffer
+	tunnel := &tlsTCPTunnel{
+		rawConn:    noopDeadlineConn{},
+		writer:     &wire,
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	dst := wrapIdleConn(&tlsTCPLogicalStream{
+		tunnel:       tunnel,
+		streamID:     7,
+		readCh:       make(chan struct{}, 1),
+		openResultCh: make(chan muxOpenResult, 1),
+	})
+	src := &relayWriterToSource{payload: []byte("payload")}
+	recorder := traffic.NewRelayRecorder()
+
+	n, err := copyRelayTraffic(dst, src, true, recorder)
+	if err != nil {
+		t.Fatalf("copyRelayTraffic() error = %v", err)
+	}
+	if n != int64(len("payload")) {
+		t.Fatalf("copyRelayTraffic() = %d, want %d", n, len("payload"))
+	}
+	if src.usedWriterTo {
+		t.Fatal("source WriterTo was used instead of TLS TCP destination ReadFrom fast path")
+	}
+	frame, err := readMuxFrame(bytes.NewReader(wire.Bytes()))
+	if err != nil {
+		t.Fatalf("readMuxFrame() error = %v", err)
+	}
+	if frame.Type != muxFrameTypeData {
+		t.Fatalf("frame.Type = %v, want %v", frame.Type, muxFrameTypeData)
+	}
+	if got := string(frame.Payload); got != "payload" {
+		t.Fatalf("mux payload = %q, want payload", got)
+	}
+
+	stats := traffic.Snapshot()["traffic"].(map[string]any)
+	relayStats := stats["relay"].(map[string]uint64)
+	if relayStats["rx_bytes"] != uint64(len("payload")) || relayStats["tx_bytes"] != 0 {
+		t.Fatalf("relay counters = %+v, want rx=%d tx=0", relayStats, len("payload"))
 	}
 }
 
@@ -454,3 +504,24 @@ type dummyAddr string
 
 func (a dummyAddr) Network() string { return string(a) }
 func (a dummyAddr) String() string  { return string(a) }
+
+type relayWriterToSource struct {
+	payload      []byte
+	usedWriterTo bool
+}
+
+func (s *relayWriterToSource) Read(p []byte) (int, error) {
+	if len(s.payload) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, s.payload)
+	s.payload = s.payload[n:]
+	return n, nil
+}
+
+func (s *relayWriterToSource) WriteTo(w io.Writer) (int64, error) {
+	s.usedWriterTo = true
+	n, err := w.Write(s.payload)
+	s.payload = s.payload[n:]
+	return int64(n), err
+}

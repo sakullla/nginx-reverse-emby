@@ -482,29 +482,12 @@ func dialRelayWireGuardTCP(ctx context.Context, hop Hop, provider WireGuardRunti
 	if !ok || runtime == nil {
 		return nil, fmt.Errorf("wireguard profile %d runtime not found", *hop.Listener.WireGuardProfileID)
 	}
-	candidates, err := resolveRelayHopCandidates(ctx, hop.Address)
+	conn, err := runtime.DialContext(ctx, "tcp", hop.Address)
 	if err != nil {
 		return nil, err
 	}
-	candidates = relayHopCandidatesAvailableForDial(candidates)
-
-	var lastErr error
-	for _, candidate := range candidates {
-		start := time.Now()
-		conn, err := runtime.DialContext(ctx, "tcp", candidate.Address)
-		if err != nil {
-			relayHopMarkFailure(candidate.Address)
-			lastErr = err
-			continue
-		}
-		relayHopObserveSuccess(candidate.Address, time.Since(start))
-		tuneBulkRelayConn(conn)
-		return conn, nil
-	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, fmt.Errorf("no healthy relay hop candidates for %s", hop.Address)
+	tuneBulkRelayConn(conn)
+	return conn, nil
 }
 
 func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
