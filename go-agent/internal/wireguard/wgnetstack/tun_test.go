@@ -2,7 +2,9 @@ package wgnetstack
 
 import (
 	"net/netip"
+	"reflect"
 	"testing"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -103,6 +105,34 @@ func TestConfigureTCPBuffersBoundsNetstackWindowMax(t *testing.T) {
 	}
 	if send.Max > 4<<20 {
 		t.Fatalf("send buffer max = %d, want <= %d", send.Max, 4<<20)
+	}
+}
+
+func TestNetTunDNSCacheReturnsStoredHostBeforeExpiry(t *testing.T) {
+	tun := &netTun{}
+	tun.storeDNSCache("Example.COM", []string{"203.0.113.10"}, time.Minute)
+
+	got, ok := tun.lookupDNSCache("example.com")
+
+	if !ok {
+		t.Fatal("lookupDNSCache() ok = false, want true")
+	}
+	if !reflect.DeepEqual(got, []string{"203.0.113.10"}) {
+		t.Fatalf("lookupDNSCache() = %#v", got)
+	}
+	got[0] = "198.51.100.99"
+	again, ok := tun.lookupDNSCache("example.com")
+	if !ok || !reflect.DeepEqual(again, []string{"203.0.113.10"}) {
+		t.Fatalf("cached addrs were not isolated from caller mutation: %#v ok=%t", again, ok)
+	}
+}
+
+func TestNetTunDNSCacheSkipsExpiredHost(t *testing.T) {
+	tun := &netTun{}
+	tun.storeDNSCache("example.com", []string{"203.0.113.10"}, -time.Second)
+
+	if got, ok := tun.lookupDNSCache("example.com"); ok {
+		t.Fatalf("lookupDNSCache() = %#v, true; want expired miss", got)
 	}
 }
 

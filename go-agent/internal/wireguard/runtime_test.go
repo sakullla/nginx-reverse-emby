@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"runtime"
@@ -1361,6 +1362,49 @@ func TestIPCConfigReturnsResolverErrorForDNSEndpoint(t *testing.T) {
 	}
 }
 
+func TestWireGuardWarmupTargetsUseTunnelDNS(t *testing.T) {
+	t.Parallel()
+
+	profile := validProfile()
+	profile.DNS = []string{"10.8.0.1", "2001:db8::53"}
+	cfg, err := NormalizeConfig(profile)
+	if err != nil {
+		t.Fatalf("NormalizeConfig() error = %v", err)
+	}
+
+	got := wireGuardWarmupTargets(cfg)
+
+	want := []string{"10.8.0.1:53", "[2001:db8::53]:53"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("wireGuardWarmupTargets() = %#v, want %#v", got, want)
+	}
+}
+
+func TestWarmWireGuardRuntimeWritesUDPProbeToFirstReachableDNSTarget(t *testing.T) {
+	t.Parallel()
+
+	profile := validProfile()
+	profile.DNS = []string{"10.8.0.1"}
+	cfg, err := NormalizeConfig(profile)
+	if err != nil {
+		t.Fatalf("NormalizeConfig() error = %v", err)
+	}
+	conn := &recordingConn{}
+	runtime := &warmupRuntime{conn: conn}
+
+	warmWireGuardRuntime(context.Background(), runtime, cfg)
+
+	if len(runtime.dials) != 1 || runtime.dials[0] != "udp 10.8.0.1:53" {
+		t.Fatalf("warmup dials = %#v, want udp DNS target", runtime.dials)
+	}
+	if len(conn.writes) == 0 || string(conn.writes[:2]) != "\x12\x34" {
+		t.Fatalf("warmup write = %x, want DNS probe payload", conn.writes)
+	}
+	if !conn.closed {
+		t.Fatal("warmup connection was not closed")
+	}
+}
+
 func TestNetstackRuntimeCloseIsIdempotent(t *testing.T) {
 	t.Parallel()
 
@@ -1694,6 +1738,82 @@ func (r *fakeRuntime) Close() error {
 	if r.onClose != nil {
 		r.onClose(r.profileID)
 	}
+	return nil
+}
+
+type warmupRuntime struct {
+	conn  net.Conn
+	dials []string
+}
+
+func (r *warmupRuntime) DialContext(_ context.Context, network string, address string) (net.Conn, error) {
+	r.dials = append(r.dials, network+" "+address)
+	if r.conn == nil {
+		return nil, errFakeRuntime
+	}
+	return r.conn, nil
+}
+
+func (r *warmupRuntime) ListenTCP(context.Context, string) (net.Listener, error) {
+	return nil, errFakeRuntime
+}
+
+func (r *warmupRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
+	return nil, errFakeRuntime
+}
+
+func (r *warmupRuntime) ListenUDP(context.Context, string) (PacketConn, error) {
+	return nil, errFakeRuntime
+}
+
+func (r *warmupRuntime) ListenTransparentUDP(context.Context, string) (TransparentUDPConn, error) {
+	return nil, errFakeRuntime
+}
+
+func (r *warmupRuntime) Close() error {
+	return nil
+}
+
+type recordingConn struct {
+	writes  []byte
+	closed  bool
+	readErr error
+}
+
+func (c *recordingConn) Read([]byte) (int, error) {
+	if c.readErr != nil {
+		return 0, c.readErr
+	}
+	return 0, io.EOF
+}
+
+func (c *recordingConn) Write(p []byte) (int, error) {
+	c.writes = append(c.writes, p...)
+	return len(p), nil
+}
+
+func (c *recordingConn) Close() error {
+	c.closed = true
+	return nil
+}
+
+func (c *recordingConn) LocalAddr() net.Addr {
+	return nil
+}
+
+func (c *recordingConn) RemoteAddr() net.Addr {
+	return nil
+}
+
+func (c *recordingConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c *recordingConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c *recordingConn) SetWriteDeadline(time.Time) error {
 	return nil
 }
 

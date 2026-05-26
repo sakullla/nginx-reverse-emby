@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,10 +46,17 @@ type netTun struct {
 	notifyHandle   *channel.NotificationHandle
 	incomingPacket chan *stack.PacketBuffer
 	dnsServers     []netip.Addr
+	dnsCacheMu     sync.Mutex
+	dnsCache       map[string]dnsCacheEntry
 	localAddresses map[netip.Addr]struct{}
 	mtu            int
 	hasV4          bool
 	hasV6          bool
+}
+
+type dnsCacheEntry struct {
+	addrs  []string
+	expiry time.Time
 }
 
 type Net netTun
@@ -57,6 +65,7 @@ const netTunBatchSize = 32
 const netTunChannelQueueSize = 256
 const netTunTCPDefaultBufferSize = 2 << 20
 const netTunTCPMaxBufferSize = 4 << 20
+const netTunDNSCacheMaxTTL = 5 * time.Minute
 
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device, RuntimeNet, *stack.Stack, error) {
 	opts := stack.Options{
@@ -734,12 +743,16 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 	if !isDomainName(host) {
 		return nil, &net.DNSError{Err: errNoSuchHost.Error(), Name: host, IsNotFound: true}
 	}
+	if cached, ok := (*netTun)(tnet).lookupDNSCache(host); ok {
+		return cached, nil
+	}
 	type result struct {
 		p      dnsmessage.Parser
 		server string
 		error
 	}
 	var addrsV4, addrsV6 []netip.Addr
+	var minTTL uint32
 	lanes := 0
 	if tnet.hasV4 {
 		lanes++
@@ -795,6 +808,7 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 					break loop
 				}
 				addrsV4 = append(addrsV4, netip.AddrFrom4(a.A))
+				minTTL = minPositiveTTL(minTTL, h.TTL)
 
 			case dnsmessage.TypeAAAA:
 				aaaa, err := result.p.AAAAResource()
@@ -807,6 +821,7 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 					break loop
 				}
 				addrsV6 = append(addrsV6, netip.AddrFrom16(aaaa.AAAA))
+				minTTL = minPositiveTTL(minTTL, h.TTL)
 
 			default:
 				if err := result.p.SkipAnswer(); err != nil {
@@ -835,7 +850,61 @@ func (tnet *Net) LookupContextHost(ctx context.Context, host string) ([]string, 
 	for _, ip := range addrs {
 		saddrs = append(saddrs, ip.String())
 	}
+	if minTTL > 0 {
+		(*netTun)(tnet).storeDNSCache(host, saddrs, time.Duration(minTTL)*time.Second)
+	}
 	return saddrs, nil
+}
+
+func minPositiveTTL(current, next uint32) uint32 {
+	if next == 0 {
+		return current
+	}
+	if current == 0 || next < current {
+		return next
+	}
+	return current
+}
+
+func (tun *netTun) lookupDNSCache(host string) ([]string, bool) {
+	key := dnsCacheKey(host)
+	if key == "" {
+		return nil, false
+	}
+	tun.dnsCacheMu.Lock()
+	defer tun.dnsCacheMu.Unlock()
+	entry, ok := tun.dnsCache[key]
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiry) {
+		delete(tun.dnsCache, key)
+		return nil, false
+	}
+	return append([]string(nil), entry.addrs...), true
+}
+
+func (tun *netTun) storeDNSCache(host string, addrs []string, ttl time.Duration) {
+	key := dnsCacheKey(host)
+	if key == "" || len(addrs) == 0 || ttl <= 0 {
+		return
+	}
+	if ttl > netTunDNSCacheMaxTTL {
+		ttl = netTunDNSCacheMaxTTL
+	}
+	tun.dnsCacheMu.Lock()
+	defer tun.dnsCacheMu.Unlock()
+	if tun.dnsCache == nil {
+		tun.dnsCache = make(map[string]dnsCacheEntry)
+	}
+	tun.dnsCache[key] = dnsCacheEntry{
+		addrs:  append([]string(nil), addrs...),
+		expiry: time.Now().Add(ttl),
+	}
+}
+
+func dnsCacheKey(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
 var protoSplitter = regexp.MustCompile(`^(tcp|udp)(4|6)?$`)
