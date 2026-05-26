@@ -270,6 +270,17 @@ func WriteClientRequestFailure(conn net.Conn, req ClientRequest, status int) err
 }
 
 func ParseSOCKS5UDPPacket(buf []byte) (SOCKS5UDPPacket, error) {
+	packet, err := ParseSOCKS5UDPPacketInPlace(buf)
+	if err != nil {
+		return SOCKS5UDPPacket{}, err
+	}
+	return SOCKS5UDPPacket{
+		Target:  packet.Target,
+		Payload: append([]byte(nil), packet.Payload...),
+	}, nil
+}
+
+func ParseSOCKS5UDPPacketInPlace(buf []byte) (SOCKS5UDPPacket, error) {
 	if len(buf) < 4 {
 		return SOCKS5UDPPacket{}, fmt.Errorf("SOCKS5 UDP packet too short")
 	}
@@ -294,23 +305,23 @@ func ParseSOCKS5UDPPacket(buf []byte) (SOCKS5UDPPacket, error) {
 	if err != nil {
 		return SOCKS5UDPPacket{}, err
 	}
-	payload, err := io.ReadAll(reader)
-	if err != nil {
-		return SOCKS5UDPPacket{}, err
-	}
 	return SOCKS5UDPPacket{
 		Target:  req.Target,
-		Payload: append([]byte(nil), payload...),
+		Payload: buf[len(buf)-reader.Len():],
 	}, nil
 }
 
 func BuildSOCKS5UDPPacket(target string, payload []byte) ([]byte, error) {
+	return BuildSOCKS5UDPPacketInto(nil, target, payload)
+}
+
+func BuildSOCKS5UDPPacketInto(dst []byte, target string, payload []byte) ([]byte, error) {
 	host, port, err := splitTarget(target)
 	if err != nil {
 		return nil, err
 	}
 
-	packet := []byte{0x00, 0x00, 0x00}
+	packet := append(dst[:0], 0x00, 0x00, 0x00)
 	if ip := net.ParseIP(host); ip != nil {
 		if ipv4 := ip.To4(); ipv4 != nil {
 			packet = append(packet, 0x01)

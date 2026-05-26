@@ -18,6 +18,10 @@ func ReadUOTPacket(r io.Reader) ([]byte, error) {
 	return readUOTPacket(r)
 }
 
+func ReadUOTPacketInto(r io.Reader, buf []byte) ([]byte, error) {
+	return readUOTPacketInto(r, buf)
+}
+
 func writeUOTPacket(w io.Writer, payload []byte) error {
 	if len(payload) > maxUOTPacketSize {
 		return fmt.Errorf("uot packet exceeds %d bytes", maxUOTPacketSize)
@@ -71,7 +75,8 @@ type udpPacketPeer interface {
 }
 
 type udpStreamPeer struct {
-	conn net.Conn
+	conn    net.Conn
+	readBuf []byte
 }
 
 func newUDPStreamPeer(conn net.Conn) udpPacketPeer {
@@ -91,7 +96,10 @@ func (p *udpStreamPeer) SetWriteDeadline(deadline time.Time) error {
 }
 
 func (p *udpStreamPeer) ReadPacket() ([]byte, error) {
-	return readUOTPacket(p.conn)
+	if p.readBuf == nil {
+		p.readBuf = make([]byte, maxUOTPacketSize)
+	}
+	return readUOTPacketInto(p.conn, p.readBuf)
 }
 
 func (p *udpStreamPeer) WritePacket(payload []byte) error {
@@ -99,7 +107,8 @@ func (p *udpStreamPeer) WritePacket(payload []byte) error {
 }
 
 type udpSocketPeer struct {
-	conn *net.UDPConn
+	conn    *net.UDPConn
+	readBuf []byte
 }
 
 func newUDPSocketPeer(conn *net.UDPConn) udpPacketPeer {
@@ -119,12 +128,14 @@ func (p *udpSocketPeer) SetWriteDeadline(deadline time.Time) error {
 }
 
 func (p *udpSocketPeer) ReadPacket() ([]byte, error) {
-	buf := make([]byte, maxUOTPacketSize)
-	n, err := p.conn.Read(buf)
+	if p.readBuf == nil {
+		p.readBuf = make([]byte, maxUOTPacketSize)
+	}
+	n, err := p.conn.Read(p.readBuf)
 	if err != nil {
 		return nil, err
 	}
-	return append([]byte(nil), buf[:n]...), nil
+	return p.readBuf[:n], nil
 }
 
 func (p *udpSocketPeer) WritePacket(payload []byte) error {

@@ -9,6 +9,21 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
+const DefaultUDPSocketBufferBytes = 4 << 20
+
+type UDPBufferTuner interface {
+	SetReadBuffer(bytes int) error
+	SetWriteBuffer(bytes int) error
+}
+
+func TuneUDPBuffers(conn UDPBufferTuner) {
+	if conn == nil || DefaultUDPSocketBufferBytes <= 0 {
+		return
+	}
+	_ = conn.SetReadBuffer(DefaultUDPSocketBufferBytes)
+	_ = conn.SetWriteBuffer(DefaultUDPSocketBufferBytes)
+}
+
 func NormalizeHost(value string) string {
 	host := strings.TrimSpace(value)
 	if host == "" {

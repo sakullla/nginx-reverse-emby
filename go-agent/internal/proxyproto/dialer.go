@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 )
 
 func Dial(ctx context.Context, proxyURL string, target string) (net.Conn, error) {
@@ -45,6 +47,8 @@ type UDPAssociation struct {
 	packet    *net.UDPConn
 	relay     *net.UDPAddr
 	remoteDNS bool
+	readBuf   []byte
+	writeBuf  []byte
 }
 
 func DialUDP(ctx context.Context, proxyURL string) (*UDPAssociation, error) {
@@ -62,6 +66,7 @@ func DialUDP(ctx context.Context, proxyURL string) (*UDPAssociation, error) {
 	if err != nil {
 		return nil, err
 	}
+	netutil.TuneUDPBuffers(packet)
 
 	var dialer net.Dialer
 	control, err := dialer.DialContext(ctx, "tcp", cfg.Address)
@@ -130,16 +135,18 @@ func (a *UDPAssociation) ReadPacket() (string, []byte, error) {
 	if a == nil || a.packet == nil {
 		return "", nil, fmt.Errorf("SOCKS5 UDP association is closed")
 	}
-	buf := make([]byte, 64*1024)
+	if a.readBuf == nil {
+		a.readBuf = make([]byte, 64*1024)
+	}
 	for {
-		n, addr, err := a.packet.ReadFromUDP(buf)
+		n, addr, err := a.packet.ReadFromUDP(a.readBuf)
 		if err != nil {
 			return "", nil, err
 		}
 		if a.relay != nil && addr != nil && (!addr.IP.Equal(a.relay.IP) || addr.Port != a.relay.Port) {
 			continue
 		}
-		packet, err := ParseSOCKS5UDPPacket(buf[:n])
+		packet, err := ParseSOCKS5UDPPacketInPlace(a.readBuf[:n])
 		if err != nil {
 			return "", nil, err
 		}
@@ -151,11 +158,12 @@ func (a *UDPAssociation) WritePacket(target string, payload []byte) error {
 	if a == nil || a.packet == nil {
 		return fmt.Errorf("SOCKS5 UDP association is closed")
 	}
-	packet, err := buildSOCKS5UDPPacketForProxy(target, payload, a.remoteDNS)
+	packet, err := buildSOCKS5UDPPacketForProxyInto(a.writeBuf, target, payload, a.remoteDNS)
 	if err != nil {
 		return err
 	}
 	_, err = a.packet.WriteToUDP(packet, a.relay)
+	a.writeBuf = packet[:0]
 	return err
 }
 
@@ -417,6 +425,10 @@ func socks5Request(command byte, host string, port int) ([]byte, error) {
 }
 
 func buildSOCKS5UDPPacketForProxy(target string, payload []byte, remoteDNS bool) ([]byte, error) {
+	return buildSOCKS5UDPPacketForProxyInto(nil, target, payload, remoteDNS)
+}
+
+func buildSOCKS5UDPPacketForProxyInto(dst []byte, target string, payload []byte, remoteDNS bool) ([]byte, error) {
 	host, port, err := splitTarget(target)
 	if err != nil {
 		return nil, err
@@ -428,7 +440,7 @@ func buildSOCKS5UDPPacketForProxy(target string, payload []byte, remoteDNS bool)
 		}
 		host = resolvedHost
 	}
-	return BuildSOCKS5UDPPacket(net.JoinHostPort(host, fmt.Sprintf("%d", port)), payload)
+	return BuildSOCKS5UDPPacketInto(dst, net.JoinHostPort(host, fmt.Sprintf("%d", port)), payload)
 }
 
 func socks5UDPRelayAddr(bindAddr *net.UDPAddr, controlRemoteAddr net.Addr) (*net.UDPAddr, error) {

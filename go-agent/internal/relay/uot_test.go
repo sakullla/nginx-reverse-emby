@@ -45,6 +45,27 @@ func TestReadUOTPacketIntoReusesCallerBuffer(t *testing.T) {
 	}
 }
 
+func TestReadUOTPacketIntoExportedWrapperReusesCallerBuffer(t *testing.T) {
+	payload := []byte("uot-exported-buffer")
+	var framed bytes.Buffer
+
+	if err := writeUOTPacket(&framed, payload); err != nil {
+		t.Fatalf("writeUOTPacket() error = %v", err)
+	}
+
+	buf := make([]byte, maxUOTPacketSize)
+	got, err := ReadUOTPacketInto(&framed, buf)
+	if err != nil {
+		t.Fatalf("ReadUOTPacketInto() error = %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload = %q", got)
+	}
+	if len(got) > 0 && &got[0] != &buf[0] {
+		t.Fatalf("ReadUOTPacketInto() did not return caller buffer")
+	}
+}
+
 func TestReadUOTPacketIntoReportsPacketAndBufferSizes(t *testing.T) {
 	var framed bytes.Buffer
 	var header [2]byte
