@@ -589,6 +589,33 @@ func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(
 	}
 }
 
+func TestNetstackForwardedUDPReplyReusesSourceBoundEndpoint(t *testing.T) {
+	runtime := newTestNetstackRuntime(t)
+	defer runtime.Close()
+
+	conn := newNetstackForwardedUDPConn(runtime.stack)
+	defer conn.Close()
+
+	source := "203.0.113.46:18446"
+	first, err := conn.sourceBoundReplyConn(source)
+	if err != nil {
+		t.Fatalf("sourceBoundReplyConn(first) error = %v", err)
+	}
+	second, err := conn.sourceBoundReplyConn(source)
+	if err != nil {
+		t.Fatalf("sourceBoundReplyConn(second) error = %v", err)
+	}
+	if first != second {
+		t.Fatal("sourceBoundReplyConn did not reuse cached endpoint for same source")
+	}
+	conn.mu.Lock()
+	cached := len(conn.sourceConns)
+	conn.mu.Unlock()
+	if cached != 1 {
+		t.Fatalf("cached source endpoints = %d, want 1", cached)
+	}
+}
+
 func TestNetstackRuntimeTransparentUDPPortZeroCapturesAnyDestinationPort(t *testing.T) {
 	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
 	defer runtime.Close()

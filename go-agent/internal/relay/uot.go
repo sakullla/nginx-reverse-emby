@@ -14,6 +14,10 @@ func WriteUOTPacket(w io.Writer, payload []byte) error {
 	return writeUOTPacket(w, payload)
 }
 
+func WriteUOTPacketInto(w io.Writer, buf []byte, payload []byte) ([]byte, error) {
+	return writeUOTPacketInto(w, buf, payload)
+}
+
 func ReadUOTPacket(r io.Reader) ([]byte, error) {
 	return readUOTPacket(r)
 }
@@ -23,16 +27,24 @@ func ReadUOTPacketInto(r io.Reader, buf []byte) ([]byte, error) {
 }
 
 func writeUOTPacket(w io.Writer, payload []byte) error {
+	_, err := writeUOTPacketInto(w, nil, payload)
+	return err
+}
+
+func writeUOTPacketInto(w io.Writer, buf []byte, payload []byte) ([]byte, error) {
 	if len(payload) > maxUOTPacketSize {
-		return fmt.Errorf("uot packet exceeds %d bytes", maxUOTPacketSize)
+		return buf, fmt.Errorf("uot packet exceeds %d bytes", maxUOTPacketSize)
 	}
 
-	var header [2]byte
-	binary.BigEndian.PutUint16(header[:], uint16(len(payload)))
-	if err := writeAll(w, header[:]); err != nil {
-		return err
+	size := len(payload) + 2
+	if cap(buf) < size {
+		buf = make([]byte, size)
+	} else {
+		buf = buf[:size]
 	}
-	return writeAll(w, payload)
+	binary.BigEndian.PutUint16(buf[:2], uint16(len(payload)))
+	copy(buf[2:], payload)
+	return buf, writeAll(w, buf)
 }
 
 func readUOTPacket(r io.Reader) ([]byte, error) {
