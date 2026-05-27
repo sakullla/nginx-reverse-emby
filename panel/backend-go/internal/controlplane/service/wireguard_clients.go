@@ -144,7 +144,10 @@ func (s *wireGuardClientService) CreateClient(ctx context.Context, agentID strin
 		}
 
 		now := time.Now().UTC().Format(time.RFC3339)
-		id := nextWireGuardClientID(state.Clients)
+		id := state.NextClientID
+		if id <= 0 {
+			id = nextWireGuardClientID(state.Clients)
+		}
 		enabled := true
 		if input.Enabled != nil {
 			enabled = *input.Enabled

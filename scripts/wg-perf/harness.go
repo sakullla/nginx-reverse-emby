@@ -306,7 +306,7 @@ func loadConfig() config {
 		c8Concurrency:   envInt("HARNESS_C8_CONCURRENCY", 8),
 		udpPayloadBytes: envInt("HARNESS_UDP_PAYLOAD_BYTES", 1200),
 		udpInflight:     envInt("HARNESS_UDP_INFLIGHT", 512),
-		udpBurst:        envInt("HARNESS_UDP_BURST", 32),
+		udpBurst:        envInt("HARNESS_UDP_BURST", 64),
 		benchmarkFilter: envString("HARNESS_BENCHMARKS", ""),
 		preMeasureWait:  time.Duration(envInt("HARNESS_PRE_MEASURE_DELAY_MS", 0)) * time.Millisecond,
 		backendAddr:     envString("HARNESS_BACKEND_LISTEN_ADDR", fmt.Sprintf(":%d", backendPort)),

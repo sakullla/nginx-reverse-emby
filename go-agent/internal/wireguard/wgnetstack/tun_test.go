@@ -136,6 +136,33 @@ func TestNetTunDNSCacheSkipsExpiredHost(t *testing.T) {
 	}
 }
 
+func TestNetTunDNSCachePrunesExpiredHostsOnInsert(t *testing.T) {
+	tun := &netTun{
+		dnsCache: map[string]dnsCacheEntry{
+			"expired.example.com": {
+				addrs:  []string{"203.0.113.10"},
+				expiry: time.Now().Add(-time.Second),
+			},
+			"fresh.example.com": {
+				addrs:  []string{"203.0.113.11"},
+				expiry: time.Now().Add(time.Minute),
+			},
+		},
+	}
+
+	tun.storeDNSCache("new.example.com", []string{"203.0.113.12"}, time.Minute)
+
+	if _, ok := tun.dnsCache["expired.example.com"]; ok {
+		t.Fatal("expired DNS cache entry was retained after insert")
+	}
+	if _, ok := tun.dnsCache["fresh.example.com"]; !ok {
+		t.Fatal("fresh DNS cache entry was pruned")
+	}
+	if _, ok := tun.dnsCache["new.example.com"]; !ok {
+		t.Fatal("new DNS cache entry was not stored")
+	}
+}
+
 func TestNetTunReadDrainsQueuedPacketBatch(t *testing.T) {
 	tun := &netTun{incomingPacket: make(chan *stack.PacketBuffer, netTunBatchSize)}
 	for _, payload := range [][]byte{[]byte("one"), []byte("two"), []byte("three")} {
