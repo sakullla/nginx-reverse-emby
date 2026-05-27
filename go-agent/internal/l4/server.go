@@ -20,6 +20,7 @@ import (
 const (
 	relayInitialPayloadMax = 32 * 1024
 	defaultUDPReplyTimeout = time.Second
+	relayPathWarmupTimeout = 2 * time.Second
 )
 
 type RelayMaterialProvider interface {
@@ -48,6 +49,7 @@ type Server struct {
 	relayListenersByID map[int]model.RelayListener
 	relayProvider      RelayMaterialProvider
 	relayPathDialer    relayplan.Dialer
+	relayPathPrewarmer func(context.Context, relayplan.Path, relay.DialOptions) error
 	wireGuardProvider  relay.WireGuardRuntimeProvider
 	tcpDialer          func(context.Context, string, string) (net.Conn, error)
 
@@ -179,6 +181,7 @@ func newServerWithOptions(
 			return nil, fmt.Errorf("unsupported protocol %q", rule.Protocol)
 		}
 	}
+	s.startRelayPathWarmups(rules)
 	return s, nil
 }
 

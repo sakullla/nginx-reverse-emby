@@ -166,6 +166,86 @@ func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOp
 	return result.Conn, nil
 }
 
+func (s *Server) startRelayPathWarmups(rules []model.L4Rule) {
+	if s == nil {
+		return
+	}
+	paths := s.relayPathWarmupPaths(rules)
+	for _, path := range paths {
+		path := path
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+
+			ctx := s.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			warmupCtx, cancel := context.WithTimeout(ctx, relayPathWarmupTimeout)
+			defer cancel()
+
+			prewarmer := s.relayPathPrewarmer
+			if prewarmer == nil {
+				prewarmer = s.prewarmRelayPath
+			}
+			_ = prewarmer(warmupCtx, path, relay.DialOptions{WireGuardProvider: s.wireGuardProvider})
+		}()
+	}
+}
+
+func (s *Server) relayPathWarmupPaths(rules []model.L4Rule) []relayplan.Path {
+	seen := make(map[string]struct{})
+	var out []relayplan.Path
+	for _, rule := range rules {
+		if !shouldPrewarmRelayPath(rule) {
+			continue
+		}
+		paths, err := s.resolveRelayPaths(rule)
+		if err != nil {
+			continue
+		}
+		for _, path := range paths {
+			key := relayPathWarmupKey(path)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func shouldPrewarmRelayPath(rule model.L4Rule) bool {
+	if !isWireGuardTransparentForwardRule(rule) || !ruleUsesRelay(rule) {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode))
+	return mode == "" || mode == "relay"
+}
+
+func relayPathWarmupKey(path relayplan.Path) string {
+	var b strings.Builder
+	for i, id := range path.IDs {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.Itoa(id))
+	}
+	for _, hop := range path.Hops {
+		b.WriteByte('|')
+		b.WriteString(hop.Address)
+	}
+	return b.String()
+}
+
+func (s *Server) prewarmRelayPath(ctx context.Context, path relayplan.Path, options relay.DialOptions) error {
+	if options.WireGuardProvider == nil {
+		options.WireGuardProvider = s.wireGuardProvider
+	}
+	return relay.PrewarmPath(ctx, path.Hops, s.relayProvider, options)
+}
+
 func cloneRelayPlanPaths(paths []relayplan.Path) []relayplan.Path {
 	cloned := make([]relayplan.Path, len(paths))
 	for i, path := range paths {
