@@ -892,14 +892,24 @@ func (tun *netTun) storeDNSCache(host string, addrs []string, ttl time.Duration)
 	if ttl > netTunDNSCacheMaxTTL {
 		ttl = netTunDNSCacheMaxTTL
 	}
+	now := time.Now()
 	tun.dnsCacheMu.Lock()
 	defer tun.dnsCacheMu.Unlock()
 	if tun.dnsCache == nil {
 		tun.dnsCache = make(map[string]dnsCacheEntry)
 	}
+	tun.pruneExpiredDNSCacheLocked(now)
 	tun.dnsCache[key] = dnsCacheEntry{
 		addrs:  append([]string(nil), addrs...),
-		expiry: time.Now().Add(ttl),
+		expiry: now.Add(ttl),
+	}
+}
+
+func (tun *netTun) pruneExpiredDNSCacheLocked(now time.Time) {
+	for key, entry := range tun.dnsCache {
+		if now.After(entry.expiry) {
+			delete(tun.dnsCache, key)
+		}
 	}
 }
 
