@@ -30,10 +30,10 @@ func TestWgPerfHarnessIncludesWireGuardRelay(t *testing.T) {
 		t.Fatal("agent-a snapshot should not exist; WireGuard entry replaces agent-a")
 	}
 	relayWG := snapshots["relay-wg"]
-	if len(relayWG.L4Rules) != 1 {
-		t.Fatalf("relay-wg L4Rules = %d, want WireGuard entry rule", len(relayWG.L4Rules))
+	if len(relayWG.L4Rules) != 2 {
+		t.Fatalf("relay-wg L4Rules = %d, want TCP and UDP WireGuard entry rules", len(relayWG.L4Rules))
 	}
-	rule := relayWG.L4Rules[0]
+	rule := l4RuleByProtocol(t, relayWG.L4Rules, "tcp")
 	if rule.ListenPort != 0 {
 		t.Fatalf("relay-wg listen_port = %d, want transparent wildcard port 0", rule.ListenPort)
 	}
@@ -64,8 +64,12 @@ func TestWgPerfHarnessIncludesWireGuardRelay(t *testing.T) {
 	if relayWG.WireGuardProfiles[0].ID != *rule.WireGuardProfileID {
 		t.Fatalf("relay-wg profile id = %d, L4 rule references %d", relayWG.WireGuardProfiles[0].ID, *rule.WireGuardProfileID)
 	}
+	udpRule := l4RuleByProtocol(t, relayWG.L4Rules, "udp")
+	if udpRule.ListenMode != "wireguard" || udpRule.WireGuardInboundMode != "transparent" || udpRule.ProxyEgressMode != "relay" {
+		t.Fatalf("relay-wg UDP rule mode = listen=%q inbound=%q egress=%q", udpRule.ListenMode, udpRule.WireGuardInboundMode, udpRule.ProxyEgressMode)
+	}
 	agentB := snapshots["agent-b"]
-	if len(agentB.L4Rules) != 1 || len(agentB.L4Rules[0].Backends) != 1 {
+	if len(agentB.L4Rules) != 2 || len(l4RuleByProtocol(t, agentB.L4Rules, "tcp").Backends) != 1 || len(l4RuleByProtocol(t, agentB.L4Rules, "udp").Backends) != 1 {
 		t.Fatalf("agent-b L4 rule backends = %+v, want 1 backend", agentB.L4Rules)
 	}
 }
@@ -74,10 +78,12 @@ func TestWgPerfBenchmarkFilterSelectsNamedBenchmarks(t *testing.T) {
 	benches := []benchmarkCase{
 		{name: "direct_b_c1"},
 		{name: "wg_to_b_c1"},
+		{name: "wg_to_b_udp_rtt"},
 		{name: "wg_to_b_upload_c1"},
 		{name: "wg_to_b_c8"},
+		{name: "wg_to_b_udp_c8"},
 	}
-	selected, err := selectBenchmarks("wg_to_b_c1,wg_to_b_upload_c1,wg_to_b_c8", benches)
+	selected, err := selectBenchmarks("wg_to_b_c1,wg_to_b_udp_rtt,wg_to_b_upload_c1,wg_to_b_c8,wg_to_b_udp_c8", benches)
 	if err != nil {
 		t.Fatalf("selectBenchmarks() error = %v", err)
 	}
@@ -85,7 +91,7 @@ func TestWgPerfBenchmarkFilterSelectsNamedBenchmarks(t *testing.T) {
 	for _, bench := range selected {
 		names = append(names, bench.name)
 	}
-	if want := []string{"wg_to_b_c1", "wg_to_b_upload_c1", "wg_to_b_c8"}; !reflect.DeepEqual(names, want) {
+	if want := []string{"wg_to_b_c1", "wg_to_b_udp_rtt", "wg_to_b_upload_c1", "wg_to_b_c8", "wg_to_b_udp_c8"}; !reflect.DeepEqual(names, want) {
 		t.Fatalf("selected benchmarks = %#v, want %#v", names, want)
 	}
 }
@@ -178,6 +184,36 @@ func TestWgPerfHarnessIncludesUploadBenchmarks(t *testing.T) {
 	}
 }
 
+func TestWgPerfHarnessIncludesUDPBenchmarks(t *testing.T) {
+	data, err := os.ReadFile("harness.go")
+	if err != nil {
+		t.Fatalf("read harness: %v", err)
+	}
+	harness := string(data)
+	for _, want := range []string{"direct_b_udp_rtt", "wg_to_b_udp_rtt", "direct_b_udp_c1", "wg_to_b_udp_c8", "measureUDPThroughput", "HARNESS_UDP_INFLIGHT", "HARNESS_UDP_BURST"} {
+		if !strings.Contains(harness, want) {
+			t.Fatalf("harness.go missing UDP benchmark marker %q", want)
+		}
+	}
+}
+
+func TestUDPEchoForDurationMeasuresPayloadBytes(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket() error = %v", err)
+	}
+	defer conn.Close()
+	go handleBackendUDP(conn)
+
+	n, err := udpEchoForDuration(conn.LocalAddr().String(), 256, 8, 4, time.Now().Add(100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("udpEchoForDuration() error = %v", err)
+	}
+	if n <= 0 || n%256 != 0 {
+		t.Fatalf("udpEchoForDuration() = %d, want positive multiple of payload size", n)
+	}
+}
+
 func TestUploadFixedBytesSendsExpectedPayload(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -250,9 +286,10 @@ func TestWgPerfHarnessCanDisableRelayLayers(t *testing.T) {
 	t.Setenv("HARNESS_WG_RELAY_LAYERS", "none")
 	cfg := loadConfig()
 	snapshots := buildSnapshots(cfg, "cert", "key", "pin")
-	rule := snapshots["relay-wg"].L4Rules[0]
-	if len(rule.RelayLayers) != 0 {
-		t.Fatalf("relay layers = %#v, want direct WG-to-backend path", rule.RelayLayers)
+	for _, rule := range snapshots["relay-wg"].L4Rules {
+		if len(rule.RelayLayers) != 0 {
+			t.Fatalf("%s relay layers = %#v, want direct WG-to-backend path", rule.Protocol, rule.RelayLayers)
+		}
 	}
 }
 
@@ -382,4 +419,15 @@ func composeServiceBlock(t *testing.T, compose, service string) string {
 		t.Fatalf("docker-compose.yaml missing %s service", service)
 	}
 	return b.String()
+}
+
+func l4RuleByProtocol(t *testing.T, rules []l4Rule, protocol string) l4Rule {
+	t.Helper()
+	for _, rule := range rules {
+		if strings.EqualFold(rule.Protocol, protocol) {
+			return rule
+		}
+	}
+	t.Fatalf("missing %s L4 rule in %+v", protocol, rules)
+	return l4Rule{}
 }

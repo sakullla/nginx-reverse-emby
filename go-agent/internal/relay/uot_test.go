@@ -66,6 +66,27 @@ func TestReadUOTPacketIntoExportedWrapperReusesCallerBuffer(t *testing.T) {
 	}
 }
 
+func TestWriteUOTPacketIntoReusesCallerBuffer(t *testing.T) {
+	payload := []byte("uot-write-buffer")
+	buf := make([]byte, 0, 128)
+	var framed bytes.Buffer
+
+	got, err := WriteUOTPacketInto(&framed, buf, payload)
+	if err != nil {
+		t.Fatalf("WriteUOTPacketInto() error = %v", err)
+	}
+	if len(got) == 0 || &got[0] != &buf[:cap(buf)][0] {
+		t.Fatal("WriteUOTPacketInto did not reuse caller buffer")
+	}
+	read, err := ReadUOTPacket(&framed)
+	if err != nil {
+		t.Fatalf("ReadUOTPacket() error = %v", err)
+	}
+	if !bytes.Equal(read, payload) {
+		t.Fatalf("payload = %q, want %q", read, payload)
+	}
+}
+
 func TestReadUOTPacketIntoReportsPacketAndBufferSizes(t *testing.T) {
 	var framed bytes.Buffer
 	var header [2]byte

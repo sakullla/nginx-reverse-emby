@@ -38,6 +38,9 @@ type config struct {
 	c8BytesPerConn  int64
 	c8Duration      time.Duration
 	c8Concurrency   int
+	udpPayloadBytes int
+	udpInflight     int
+	udpBurst        int
 	benchmarkFilter string
 	preMeasureWait  time.Duration
 	backendAddr     string
@@ -229,6 +232,12 @@ func main() {
 		{name: "wg_to_b_connect", run: func() result { return measureConnectEcho("wg_to_b_connect", cfg.entryAddress, cfg.rttIterations) }},
 		{name: "direct_b_rtt", run: func() result { return measureRTT("direct_b_rtt", cfg.directAddress, cfg.rttIterations) }},
 		{name: "wg_to_b_rtt", run: func() result { return measureRTT("wg_to_b_rtt", cfg.entryAddress, cfg.rttIterations) }},
+		{name: "direct_b_udp_rtt", run: func() result {
+			return measureUDPRTT("direct_b_udp_rtt", cfg.directAddress, cfg.rttIterations, cfg.udpPayloadBytes)
+		}},
+		{name: "wg_to_b_udp_rtt", run: func() result {
+			return measureUDPRTT("wg_to_b_udp_rtt", cfg.entryAddress, cfg.rttIterations, cfg.udpPayloadBytes)
+		}},
 		{name: "direct_b_c1", run: func() result {
 			return measureThroughput("direct_b_c1", cfg.directAddress, 1, cfg.c1Bytes, cfg.c1Duration)
 		}},
@@ -252,6 +261,18 @@ func main() {
 		}},
 		{name: "wg_to_b_upload_c8", run: func() result {
 			return measureUploadThroughput("wg_to_b_upload_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration)
+		}},
+		{name: "direct_b_udp_c1", run: func() result {
+			return measureUDPThroughput("direct_b_udp_c1", cfg.directAddress, 1, cfg.udpPayloadBytes, cfg.udpInflight, cfg.udpBurst, cfg.c1Duration)
+		}},
+		{name: "wg_to_b_udp_c1", run: func() result {
+			return measureUDPThroughput("wg_to_b_udp_c1", cfg.entryAddress, 1, cfg.udpPayloadBytes, cfg.udpInflight, cfg.udpBurst, cfg.c1Duration)
+		}},
+		{name: "direct_b_udp_c8", run: func() result {
+			return measureUDPThroughput("direct_b_udp_c8", cfg.directAddress, cfg.c8Concurrency, cfg.udpPayloadBytes, cfg.udpInflight, cfg.udpBurst, cfg.c8Duration)
+		}},
+		{name: "wg_to_b_udp_c8", run: func() result {
+			return measureUDPThroughput("wg_to_b_udp_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.udpPayloadBytes, cfg.udpInflight, cfg.udpBurst, cfg.c8Duration)
 		}},
 	}
 	selected, err := selectBenchmarks(cfg.benchmarkFilter, benchmarks)
@@ -283,6 +304,9 @@ func loadConfig() config {
 		c8BytesPerConn:  envBytes("HARNESS_C8_BYTES_PER_CONN", 256<<20),
 		c8Duration:      envSeconds("HARNESS_C8_DURATION_SECONDS", 10),
 		c8Concurrency:   envInt("HARNESS_C8_CONCURRENCY", 8),
+		udpPayloadBytes: envInt("HARNESS_UDP_PAYLOAD_BYTES", 1200),
+		udpInflight:     envInt("HARNESS_UDP_INFLIGHT", 512),
+		udpBurst:        envInt("HARNESS_UDP_BURST", 32),
 		benchmarkFilter: envString("HARNESS_BENCHMARKS", ""),
 		preMeasureWait:  time.Duration(envInt("HARNESS_PRE_MEASURE_DELAY_MS", 0)) * time.Millisecond,
 		backendAddr:     envString("HARNESS_BACKEND_LISTEN_ADDR", fmt.Sprintf(":%d", backendPort)),
@@ -389,20 +413,10 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 			DesiredVersion:  "perf",
 			DesiredRevision: 1,
 			Rules:           []httpRule{},
-			L4Rules: []l4Rule{{
-				ID:                   101,
-				Name:                 "wg-entry-layered-relay-to-b",
-				Protocol:             "tcp",
-				ListenHost:           "0.0.0.0",
-				ListenPort:           0,
-				RelayLayers:          cloneIntLayers(cfg.wgRelayLayers),
-				ListenMode:           "wireguard",
-				WireGuardProfileID:   intPtr(1),
-				WireGuardInboundMode: "transparent",
-				ProxyEgressMode:      "relay",
-				Enabled:              true,
-				Revision:             1,
-			}},
+			L4Rules: []l4Rule{
+				newWireGuardTransparentL4Rule(101, "wg-entry-layered-relay-to-b", "tcp", cfg),
+				newWireGuardTransparentL4Rule(102, "wg-entry-layered-relay-to-b-udp", "udp", cfg),
+			},
 			RelayListeners:      listeners,
 			WireGuardProfiles:   []wireGuardProfile{relayWGProfile},
 			Certificates:        certs,
@@ -452,23 +466,47 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 			DesiredVersion:  "perf",
 			DesiredRevision: 1,
 			Rules:           []httpRule{},
-			L4Rules: []l4Rule{{
-				ID:           201,
-				Name:         "b-direct-to-echo",
-				Protocol:     "tcp",
-				ListenHost:   "0.0.0.0",
-				ListenPort:   9001,
-				Backends:     []l4Backend{{Host: cfg.backendHost, Port: cfg.backendPort}},
-				UpstreamHost: cfg.backendHost,
-				UpstreamPort: cfg.backendPort,
-				Enabled:      true,
-				Revision:     1,
-			}},
+			L4Rules: []l4Rule{
+				newAgentBBackendL4Rule(201, "b-direct-to-echo", "tcp", cfg),
+				newAgentBBackendL4Rule(202, "b-direct-to-echo-udp", "udp", cfg),
+			},
 			RelayListeners:      listeners,
 			WireGuardProfiles:   []wireGuardProfile{},
 			Certificates:        []certificateBundle{},
 			CertificatePolicies: []certificatePolicy{},
 		},
+	}
+}
+
+func newWireGuardTransparentL4Rule(id int, name, protocol string, cfg config) l4Rule {
+	return l4Rule{
+		ID:                   id,
+		Name:                 name,
+		Protocol:             protocol,
+		ListenHost:           "0.0.0.0",
+		ListenPort:           0,
+		RelayLayers:          cloneIntLayers(cfg.wgRelayLayers),
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   intPtr(1),
+		WireGuardInboundMode: "transparent",
+		ProxyEgressMode:      "relay",
+		Enabled:              true,
+		Revision:             1,
+	}
+}
+
+func newAgentBBackendL4Rule(id int, name, protocol string, cfg config) l4Rule {
+	return l4Rule{
+		ID:           id,
+		Name:         name,
+		Protocol:     protocol,
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9001,
+		Backends:     []l4Backend{{Host: cfg.backendHost, Port: cfg.backendPort}},
+		UpstreamHost: cfg.backendHost,
+		UpstreamPort: cfg.backendPort,
+		Enabled:      true,
+		Revision:     1,
 	}
 }
 
@@ -543,9 +581,15 @@ func startBackend(ctx context.Context, address string) error {
 	if err != nil {
 		return err
 	}
+	udpConn, err := net.ListenPacket("udp", address)
+	if err != nil {
+		_ = ln.Close()
+		return err
+	}
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
+		_ = udpConn.Close()
 	}()
 	go func() {
 		for {
@@ -559,7 +603,19 @@ func startBackend(ctx context.Context, address string) error {
 			}(conn)
 		}
 	}()
+	go handleBackendUDP(udpConn)
 	return nil
+}
+
+func handleBackendUDP(conn net.PacketConn) {
+	buf := make([]byte, 64*1024)
+	for {
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		_, _ = conn.WriteTo(buf[:n], addr)
+	}
 }
 
 func handleBackendConn(conn net.Conn) {
@@ -685,6 +741,35 @@ func measureRTT(name, address string, iterations int) result {
 	return latencyResult(name, address, samples)
 }
 
+func measureUDPRTT(name, address string, iterations int, payloadBytes int) result {
+	conn, err := net.DialTimeout("udp", address, 2*time.Second)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+	payload := udpPayload(payloadBytes)
+	reply := make([]byte, len(payload))
+	samples := make([]float64, 0, iterations)
+	for i := 0; i < iterations+20; i++ {
+		start := time.Now()
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		if _, err := conn.Write(payload); err != nil {
+			log.Fatal(err)
+		}
+		n, err := io.ReadFull(conn, reply)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if n != len(payload) || !bytes.Equal(reply[:n], payload) {
+			log.Fatalf("udp echo mismatch: read %d bytes", n)
+		}
+		if i >= 20 {
+			samples = append(samples, float64(time.Since(start).Microseconds()))
+		}
+	}
+	return latencyResult(name, address, samples)
+}
+
 func latencyResult(name, address string, samples []float64) result {
 	sort.Float64s(samples)
 	sum := 0.0
@@ -766,6 +851,100 @@ func measureUploadThroughput(name, address string, concurrency int, bytesPerConn
 	}
 	elapsed := time.Since(start).Seconds()
 	return result{Name: name, Target: address, Concurrency: concurrency, Bytes: total, Seconds: elapsed, MBps: float64(total) / elapsed / 1_000_000, Mbps: float64(total) * 8 / elapsed / 1_000_000}
+}
+
+func measureUDPThroughput(name, address string, concurrency int, payloadBytes int, inflight int, burst int, duration time.Duration) result {
+	if duration <= 0 {
+		duration = 10 * time.Second
+	}
+	start := time.Now()
+	deadline := start.Add(duration)
+	var wg sync.WaitGroup
+	errCh := make(chan error, concurrency)
+	var total int64
+	var totalMu sync.Mutex
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n, err := udpEchoForDuration(address, payloadBytes, inflight, burst, deadline)
+			totalMu.Lock()
+			total += n
+			totalMu.Unlock()
+			if err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	if err := <-errCh; err != nil {
+		log.Fatal(err)
+	}
+	elapsed := time.Since(start).Seconds()
+	return result{Name: name, Target: address, Concurrency: concurrency, Bytes: total, Seconds: elapsed, MBps: float64(total) / elapsed / 1_000_000, Mbps: float64(total) * 8 / elapsed / 1_000_000}
+}
+
+func udpEchoForDuration(address string, payloadBytes int, inflight int, burst int, deadline time.Time) (int64, error) {
+	conn, err := net.DialTimeout("udp", address, 2*time.Second)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	if inflight <= 0 {
+		inflight = 1
+	}
+	if burst <= 0 || burst > inflight {
+		burst = inflight
+	}
+	payload := udpPayload(payloadBytes)
+	reply := make([]byte, len(payload))
+	var total, sent, received int64
+	for {
+		if time.Now().After(deadline) {
+			return total, nil
+		}
+		for budget := burst; sent-received < int64(inflight) && budget > 0 && time.Now().Before(deadline); budget-- {
+			binary.BigEndian.PutUint64(payload[:8], uint64(sent))
+			_ = conn.SetWriteDeadline(deadline)
+			if _, err := conn.Write(payload); err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					return total, nil
+				}
+				return total, err
+			}
+			sent++
+		}
+
+		readDeadline := time.Now().Add(5 * time.Millisecond)
+		if readDeadline.After(deadline) {
+			readDeadline = deadline
+		}
+		_ = conn.SetReadDeadline(readDeadline)
+		n, err := io.ReadFull(conn, reply)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			return total, err
+		}
+		if n != len(payload) {
+			return total, fmt.Errorf("udp echo mismatch: read %d bytes", n)
+		}
+		received++
+		total += int64(n)
+	}
+}
+
+func udpPayload(size int) []byte {
+	if size < 8 {
+		size = 1200
+	}
+	payload := make([]byte, size)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	return payload
 }
 
 func upload(address string, totalBytes int64) (int64, error) {

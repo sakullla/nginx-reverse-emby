@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -35,6 +36,7 @@ type udpSession struct {
 	pendingReplyTimes     []time.Time
 	ready                 chan struct{}
 	initErr               error
+	writeMu               sync.Mutex
 	trafficRecorder       *traffic.Recorder
 }
 
@@ -136,8 +138,9 @@ func (u *directUDPUpstream) WritePacket(payload []byte) error {
 }
 
 type relayUDPUpstream struct {
-	conn    net.Conn
-	readBuf []byte
+	conn     net.Conn
+	readBuf  []byte
+	writeBuf []byte
 }
 
 func (u *relayUDPUpstream) Close() error                       { return u.conn.Close() }
@@ -154,7 +157,9 @@ func (u *relayUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
 	return udpUpstreamPacket{payload: payload}, nil
 }
 func (u *relayUDPUpstream) WritePacket(payload []byte) error {
-	return relay.WriteUOTPacket(u.conn, payload)
+	var err error
+	u.writeBuf, err = relay.WriteUOTPacketInto(u.conn, u.writeBuf, payload)
+	return err
 }
 
 type connUDPUpstream struct {
@@ -349,11 +354,7 @@ func (s *Server) proxyUDPPacket(listener udpListener, rule model.L4Rule, payload
 	if err != nil || session == nil {
 		return
 	}
-	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
-		address:       session.targetAddr,
-		directUDPPath: session.directUDPPath,
-	})))
-	if err := session.upstream.WritePacket(payload); err != nil {
+	if err := s.writeUDPSessionPacket(session, payload); err != nil {
 		s.observeCandidateFailure(l4Candidate{
 			address:               session.targetAddr,
 			backoffKey:            session.backoffKey,
@@ -380,11 +381,7 @@ func (s *Server) proxySOCKS5UDPPacket(listener udpListener, rule model.L4Rule, p
 	if err != nil || session == nil {
 		return
 	}
-	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
-		address:       session.targetAddr,
-		directUDPPath: session.directUDPPath,
-	})))
-	if err := session.upstream.WritePacket(packet.Payload); err != nil {
+	if err := s.writeUDPSessionPacket(session, packet.Payload); err != nil {
 		s.observeCandidateFailure(l4Candidate{
 			address:               session.targetAddr,
 			backoffKey:            session.backoffKey,
@@ -408,11 +405,7 @@ func (s *Server) proxyWireGuardTransparentUDPPacket(listener udpListener, rule m
 	if err != nil || session == nil {
 		return
 	}
-	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
-		address:       session.targetAddr,
-		directUDPPath: session.directUDPPath,
-	})))
-	if err := session.upstream.WritePacket(packet.Payload); err != nil {
+	if err := s.writeUDPSessionPacket(session, packet.Payload); err != nil {
 		s.observeCandidateFailure(l4Candidate{
 			address:               session.targetAddr,
 			backoffKey:            session.backoffKey,
@@ -425,6 +418,16 @@ func (s *Server) proxyWireGuardTransparentUDPPacket(listener udpListener, rule m
 	session.trafficRecorder.Add(int64(len(packet.Payload)), 0)
 	session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
 	s.markUDPSessionWrite(session.key)
+}
+
+func (s *Server) writeUDPSessionPacket(session *udpSession, payload []byte) error {
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       session.targetAddr,
+		directUDPPath: session.directUDPPath,
+	})))
+	return session.upstream.WritePacket(payload)
 }
 
 func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer *net.UDPAddr, target string) (*udpSession, error) {

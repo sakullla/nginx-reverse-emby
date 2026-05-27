@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,6 +57,56 @@ func TestRelayUDPUpstreamReusesReadBuffer(t *testing.T) {
 	if len(first.payload) > 0 && len(second.payload) > 0 && &first.payload[0] != &second.payload[0] {
 		t.Fatal("ReadPacket did not reuse relay read buffer")
 	}
+}
+
+func TestWriteUDPSessionPacketSerializesConcurrentUpstreamWrites(t *testing.T) {
+	srv := &Server{now: time.Now, udpReplyTimeout: defaultUDPReplyTimeout}
+	upstream := &concurrencyCheckingUDPUpstream{}
+	session := &udpSession{
+		upstream:   upstream,
+		targetAddr: "127.0.0.1:53",
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 32)
+	for i := 0; i < cap(errCh); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := srv.writeUDPSessionPacket(session, []byte("payload")); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("writeUDPSessionPacket() error = %v", err)
+	}
+}
+
+type concurrencyCheckingUDPUpstream struct {
+	active int32
+}
+
+func (u *concurrencyCheckingUDPUpstream) Close() error { return nil }
+func (u *concurrencyCheckingUDPUpstream) SetReadDeadline(time.Time) error {
+	return nil
+}
+func (u *concurrencyCheckingUDPUpstream) SetWriteDeadline(time.Time) error {
+	return nil
+}
+func (u *concurrencyCheckingUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
+	return udpUpstreamPacket{}, io.EOF
+}
+func (u *concurrencyCheckingUDPUpstream) WritePacket([]byte) error {
+	if atomic.AddInt32(&u.active, 1) != 1 {
+		atomic.AddInt32(&u.active, -1)
+		return io.ErrShortWrite
+	}
+	time.Sleep(time.Millisecond)
+	atomic.AddInt32(&u.active, -1)
+	return nil
 }
 
 type scriptedUDPConn struct {

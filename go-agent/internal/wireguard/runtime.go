@@ -1119,27 +1119,41 @@ func (d *transparentUDPDispatcher) handleRequest(req *udp.ForwarderRequest) {
 }
 
 type netstackForwardedUDPConn struct {
-	stack  *stack.Stack
-	mu     sync.Mutex
-	closed bool
-	done   chan struct{}
-	conns  map[*netstackTransparentUDPConn]string
-	queue  chan TransparentUDPPacket
+	stack       *stack.Stack
+	mu          sync.Mutex
+	closed      bool
+	done        chan struct{}
+	conns       map[*netstackTransparentUDPConn]string
+	sourceConns map[string]*cachedSourceUDPConn
+	queue       chan TransparentUDPPacket
 }
 
 var forwardedUDPFlowIdleTimeout = time.Minute
 
 const transparentUDPQueueSize = 256
+const transparentUDPSourceConnCacheSize = 256
 
 var errForwardedUDPFlowIdleTimeout = errors.New("wireguard transparent udp flow idle timeout")
+var transparentUDPReadBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, 64*1024)
+	},
+}
 
 func newNetstackForwardedUDPConn(s *stack.Stack) *netstackForwardedUDPConn {
 	return &netstackForwardedUDPConn{
-		stack: s,
-		done:  make(chan struct{}),
-		conns: make(map[*netstackTransparentUDPConn]string),
-		queue: make(chan TransparentUDPPacket, transparentUDPQueueSize),
+		stack:       s,
+		done:        make(chan struct{}),
+		conns:       make(map[*netstackTransparentUDPConn]string),
+		sourceConns: make(map[string]*cachedSourceUDPConn),
+		queue:       make(chan TransparentUDPPacket, transparentUDPQueueSize),
 	}
+}
+
+type cachedSourceUDPConn struct {
+	conn     *netstackTransparentUDPConn
+	lastUsed time.Time
+	mu       sync.Mutex
 }
 
 func (c *netstackForwardedUDPConn) addConn(conn *netstackTransparentUDPConn, originalDst string) {
@@ -1191,9 +1205,23 @@ func (c *netstackForwardedUDPConn) Close() error {
 	for conn := range c.conns {
 		conns = append(conns, conn)
 	}
+	sourceConns := make([]*cachedSourceUDPConn, 0, len(c.sourceConns))
+	for key, entry := range c.sourceConns {
+		if entry != nil {
+			sourceConns = append(sourceConns, entry)
+		}
+		delete(c.sourceConns, key)
+	}
 	c.mu.Unlock()
 	for _, conn := range conns {
 		_ = conn.Close()
+	}
+	for _, entry := range sourceConns {
+		entry.mu.Lock()
+		if entry.conn != nil {
+			_ = entry.conn.Close()
+		}
+		entry.mu.Unlock()
 	}
 	return nil
 }
@@ -1212,8 +1240,94 @@ func (c *netstackForwardedUDPConn) ReadPacket() (TransparentUDPPacket, error) {
 }
 
 func (c *netstackForwardedUDPConn) WritePacket(payload []byte, peer *net.UDPAddr, source string) error {
+	if peer != nil && strings.TrimSpace(source) != "" {
+		addr, _, err := udpFullAddress(peer)
+		if err != nil {
+			return err
+		}
+		entry, err := c.sourceBoundReplyConn(source)
+		if err != nil {
+			return err
+		}
+		entry.mu.Lock()
+		defer entry.mu.Unlock()
+		return entry.conn.writePacket(payload, tcpip.WriteOptions{To: &addr})
+	}
 	conn := &netstackTransparentUDPConn{stack: c.stack}
 	return conn.WritePacket(payload, peer, source)
+}
+
+func (c *netstackForwardedUDPConn) sourceBoundReplyConn(source string) (*cachedSourceUDPConn, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return nil, fmt.Errorf("wireguard transparent udp reply source is empty")
+	}
+	now := time.Now()
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	if entry := c.sourceConns[source]; entry != nil {
+		entry.lastUsed = now
+		c.mu.Unlock()
+		return entry, nil
+	}
+	c.mu.Unlock()
+
+	sourceAddr, err := net.ResolveUDPAddr("udp", source)
+	if err != nil {
+		return nil, err
+	}
+	base := &netstackTransparentUDPConn{stack: c.stack}
+	conn, err := base.sourceBoundConn(sourceAddr)
+	if err != nil {
+		return nil, err
+	}
+	entry := &cachedSourceUDPConn{conn: conn, lastUsed: now}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		_ = conn.Close()
+		return nil, net.ErrClosed
+	}
+	if existing := c.sourceConns[source]; existing != nil {
+		existing.lastUsed = now
+		_ = conn.Close()
+		return existing, nil
+	}
+	if len(c.sourceConns) >= transparentUDPSourceConnCacheSize {
+		c.evictOldestSourceConnLocked()
+	}
+	c.sourceConns[source] = entry
+	return entry, nil
+}
+
+func (c *netstackForwardedUDPConn) evictOldestSourceConnLocked() {
+	var oldestKey string
+	var oldest time.Time
+	for key, entry := range c.sourceConns {
+		if entry == nil {
+			delete(c.sourceConns, key)
+			continue
+		}
+		if oldestKey == "" || entry.lastUsed.Before(oldest) {
+			oldestKey = key
+			oldest = entry.lastUsed
+		}
+	}
+	if oldestKey == "" {
+		return
+	}
+	entry := c.sourceConns[oldestKey]
+	delete(c.sourceConns, oldestKey)
+	if entry != nil && entry.conn != nil {
+		entry.mu.Lock()
+		_ = entry.conn.Close()
+		entry.mu.Unlock()
+	}
 }
 
 func udpAddrFromTransportEndpointIDLocal(id stack.TransportEndpointID) *net.UDPAddr {
@@ -1248,7 +1362,9 @@ func (c *netstackTransparentUDPConn) ReadPacketWithIdleTimeout(timeout time.Dura
 }
 
 func (c *netstackTransparentUDPConn) readPacket(timeout time.Duration) (TransparentUDPPacket, error) {
-	payload := make([]byte, 64*1024)
+	payload := transparentUDPReadBufferPool.Get().([]byte)
+	defer transparentUDPReadBufferPool.Put(payload)
+
 	writer := tcpip.SliceWriter(payload)
 	res, err := c.read(&writer, tcpip.ReadOptions{NeedRemoteAddr: true}, timeout)
 	if err != nil {
