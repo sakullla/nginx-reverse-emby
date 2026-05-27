@@ -294,6 +294,21 @@ func TestWireGuardProfileCreateAllocatesAddressWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCreateRejectsExplicitEmptyInterfaceAddresses(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.InterfaceAddresses = []string{}
+	_, err := svc.Create(ctx, "local", input)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "interface_addresses is required") {
+		t.Fatalf("Create() error = %v, want interface_addresses required message", err)
+	}
+}
+
 func TestWireGuardProfileCreateSeparatesBindAddressesFromInterfaceAddresses(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)

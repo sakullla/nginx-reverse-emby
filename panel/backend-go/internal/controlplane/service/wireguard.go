@@ -222,7 +222,7 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	if len(normalizeStringList(input.Addresses)) == 0 {
 		input.Addresses = []string{"0.0.0.0"}
 	}
-	if len(normalizeStringList(input.InterfaceAddresses)) == 0 {
+	if !input.hasInterfaceAddressesField() {
 		input.InterfaceAddresses = allocateWireGuardProfileAddresses(allRows, s.cfg.WireGuardAutoAddressPools)
 	}
 	if strings.TrimSpace(input.PrivateKey) == "" {
