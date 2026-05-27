@@ -2,6 +2,7 @@ package l4
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -203,12 +204,24 @@ func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.C
 	case "relay":
 		return s.dialRelayPath("tcp", target, rule, relay.DialOptions{})
 	case "wireguard":
+		if ruleUsesRelay(rule) {
+			return s.dialRelayPath("tcp", target, rule, relay.DialOptions{})
+		}
 		runtime, err := s.wireGuardRuntime(rule)
 		if err != nil {
 			return nil, err
 		}
 		return runtime.DialContext(s.ctx, "tcp", target)
 	case "proxy":
+		if ruleUsesRelay(rule) {
+			proxyURL, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
+			if err != nil {
+				return nil, err
+			}
+			return proxyproto.DialWithOptions(s.ctx, rule.ProxyEgressURL, target, proxyproto.WithDialContext(func(_ context.Context, network, _ string) (net.Conn, error) {
+				return s.dialRelayPath(network, proxyURL.Address, rule, relay.DialOptions{})
+			}))
+		}
 		return proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
 	default:
 		return nil, fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)

@@ -40,6 +40,12 @@ type fakeL4RelayPathDialer struct {
 	conn    net.Conn
 }
 
+type l4RelayPathDialerFunc func(context.Context, relayplan.Request, relayplan.Path) (net.Conn, relay.DialResult, error)
+
+func (f l4RelayPathDialerFunc) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	return f(ctx, req, path)
+}
+
 func (d *fakeL4RelayPathDialer) DialPath(_ context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
 	options := relay.DialOptions{}
 	if len(req.Options) > 0 {
@@ -2903,6 +2909,206 @@ func TestDialTCPUpstreamWireGuardTransparentRelayUsesClientLocalAddr(t *testing.
 	}
 }
 
+func TestDialProxyEntryWireGuardEgressUsesRelayLayers(t *testing.T) {
+	profileID := 7
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	dialer := &fakeL4RelayPathDialer{conn: clientConn}
+	runtime := &fakeL4WireGuardRuntime{}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		},
+		relayPathDialer: dialer,
+		wireGuardProvider: fakeL4WireGuardProvider{
+			runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
+		},
+	}
+	rule := model.L4Rule{
+		Protocol:           "tcp",
+		ListenMode:         "proxy",
+		ProxyEgressMode:    "wireguard",
+		WireGuardProfileID: &profileID,
+		RelayLayers:        [][]int{{1, 2}},
+	}
+
+	conn, err := srv.dialProxyEntryUpstream(rule, "backend.example:443")
+	if err != nil {
+		t.Fatalf("dialProxyEntryUpstream() error = %v", err)
+	}
+	defer conn.Close()
+	if !waitForL4RelayPathCalls(dialer, 1, 2) {
+		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
+	}
+	for _, target := range dialer.calledTargets() {
+		if target != "backend.example:443" {
+			t.Fatalf("relay target = %q, want backend.example:443", target)
+		}
+	}
+	if calls := runtime.dialContextCalls(); len(calls) != 0 {
+		t.Fatalf("wireguard dial calls = %+v, want relay egress path", calls)
+	}
+}
+
+func TestDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	dialer := &fakeL4RelayPathDialer{conn: clientConn}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		},
+		relayPathDialer: dialer,
+	}
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "http://proxy.example:8080",
+		RelayLayers:     [][]int{{1, 2}},
+	}
+
+	requestedTarget := make(chan string, 1)
+	go func() {
+		reader := bufio.NewReader(serverConn)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			requestedTarget <- "read error: " + err.Error()
+			return
+		}
+		requestedTarget <- strings.TrimSpace(line)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if strings.TrimSpace(line) == "" {
+				break
+			}
+		}
+		_, _ = io.WriteString(serverConn, "HTTP/1.1 200 OK\r\n\r\n")
+	}()
+
+	conn, err := srv.dialProxyEntryUpstream(rule, "backend.example:443")
+	if err != nil {
+		t.Fatalf("dialProxyEntryUpstream() error = %v", err)
+	}
+	defer conn.Close()
+	if !waitForL4RelayPathCalls(dialer, 1, 2) {
+		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
+	}
+	for _, target := range dialer.calledTargets() {
+		if target != "proxy.example:8080" {
+			t.Fatalf("relay target = %q, want proxy.example:8080", target)
+		}
+	}
+	select {
+	case target := <-requestedTarget:
+		if target != "CONNECT backend.example:443 HTTP/1.1" {
+			t.Fatalf("proxy request = %q", target)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for proxy CONNECT request")
+	}
+}
+
+func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
+	controlClient, controlServer := net.Pipe()
+	defer controlServer.Close()
+	packetClient, packetServer := net.Pipe()
+	defer packetServer.Close()
+	dialer := &fakeL4RelayPathDialer{}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		},
+		relayPathDialer: dialer,
+	}
+	dialCount := 0
+	srv.relayPathDialer = l4RelayPathDialerFunc(func(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+		dialer.mu.Lock()
+		dialer.calls = append(dialer.calls, append([]int(nil), path.IDs...))
+		dialer.targets = append(dialer.targets, req.Target)
+		dialer.mu.Unlock()
+		if path.IDs[0] != 2 {
+			return nil, relay.DialResult{}, fmt.Errorf("path %v failed", path.IDs)
+		}
+		dialCount++
+		if dialCount == 1 {
+			return controlClient, relay.DialResult{}, nil
+		}
+		return packetClient, relay.DialResult{}, nil
+	})
+	rule := model.L4Rule{
+		Protocol:        "udp",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks5h://proxy.example:1080",
+		RelayLayers:     [][]int{{1, 2}},
+	}
+
+	go func() {
+		reader := bufio.NewReader(controlServer)
+		methods := make([]byte, 3)
+		_, _ = io.ReadFull(reader, methods)
+		_, _ = controlServer.Write([]byte{0x05, 0x00})
+		req := make([]byte, 10)
+		_, _ = io.ReadFull(reader, req)
+		_, _ = controlServer.Write([]byte{0x05, 0x00, 0x00, 0x01, 198, 51, 100, 10, 0x15, 0xb3})
+	}()
+
+	upstreamConn, err := srv.dialTargetUDPUpstream(rule, l4Candidate{address: "backend.example:5300"})
+	if err != nil {
+		t.Fatalf("dialTargetUDPUpstream() error = %v", err)
+	}
+	defer upstreamConn.Close()
+	packetCh := make(chan []byte, 1)
+	readErr := make(chan error, 1)
+	go func() {
+		packet, err := relay.ReadUOTPacket(packetServer)
+		if err != nil {
+			readErr <- err
+			return
+		}
+		packetCh <- packet
+	}()
+	if err := upstreamConn.WritePacket([]byte("ping")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+	var packet []byte
+	select {
+	case packet = <-packetCh:
+	case err := <-readErr:
+		t.Fatalf("ReadUOTPacket() error = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for UDP relay packet")
+	}
+	parsed, err := proxyproto.ParseSOCKS5UDPPacket(packet)
+	if err != nil {
+		t.Fatalf("ParseSOCKS5UDPPacket() error = %v", err)
+	}
+	if parsed.Target != "backend.example:5300" || string(parsed.Payload) != "ping" {
+		t.Fatalf("SOCKS5 packet = %+v", parsed)
+	}
+	if targets := dialer.calledTargets(); !stringSliceContains(targets, "proxy.example:1080") || !stringSliceContains(targets, "198.51.100.10:5555") {
+		t.Fatalf("relay targets = %+v", targets)
+	}
+}
+
 func TestDialTCPUpstreamRelayLayersFailureDoesNotMarkAggregateBackoff(t *testing.T) {
 	dialer := &fakeL4RelayPathDialer{}
 	cache := backends.NewCache(backends.Config{})
@@ -3068,6 +3274,15 @@ func waitForL4RelayPathCalls(dialer *fakeL4RelayPathDialer, firstIDs ...int) boo
 func hasL4RelayPathCall(calls [][]int, firstID int) bool {
 	for _, call := range calls {
 		if len(call) > 0 && call[0] == firstID {
+			return true
+		}
+	}
+	return false
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

@@ -14,10 +14,42 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 )
 
+type DialOption func(*dialOptions)
+
+type dialOptions struct {
+	dialContext func(context.Context, string, string) (net.Conn, error)
+	udpPeer     UDPPeer
+}
+
+func WithDialContext(dialContext func(context.Context, string, string) (net.Conn, error)) DialOption {
+	return func(options *dialOptions) {
+		options.dialContext = dialContext
+	}
+}
+
+type UDPPeer interface {
+	Close() error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+	ReadPacket() ([]byte, error)
+	WritePacket([]byte) error
+}
+
+func WithUDPPeer(peer UDPPeer) DialOption {
+	return func(options *dialOptions) {
+		options.udpPeer = peer
+	}
+}
+
 func Dial(ctx context.Context, proxyURL string, target string) (net.Conn, error) {
+	return DialWithOptions(ctx, proxyURL, target)
+}
+
+func DialWithOptions(ctx context.Context, proxyURL string, target string, opts ...DialOption) (net.Conn, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	options := proxyDialOptions(opts)
 	cfg, err := ParseProxyURL(proxyURL)
 	if err != nil {
 		return nil, err
@@ -30,8 +62,7 @@ func Dial(ctx context.Context, proxyURL string, target string) (net.Conn, error)
 		return nil, err
 	}
 
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "tcp", cfg.Address)
+	conn, err := options.dialContext(ctx, "tcp", cfg.Address)
 	if err != nil {
 		return nil, err
 	}
@@ -42,19 +73,37 @@ func Dial(ctx context.Context, proxyURL string, target string) (net.Conn, error)
 	return conn, nil
 }
 
+func proxyDialOptions(opts []DialOption) dialOptions {
+	var dialer net.Dialer
+	options := dialOptions{dialContext: dialer.DialContext}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
+	if options.dialContext == nil {
+		options.dialContext = dialer.DialContext
+	}
+	return options
+}
+
 type UDPAssociation struct {
 	control   net.Conn
-	packet    *net.UDPConn
-	relay     *net.UDPAddr
+	packet    UDPPeer
 	remoteDNS bool
 	readBuf   []byte
 	writeBuf  []byte
 }
 
 func DialUDP(ctx context.Context, proxyURL string) (*UDPAssociation, error) {
+	return DialUDPWithOptions(ctx, proxyURL)
+}
+
+func DialUDPWithOptions(ctx context.Context, proxyURL string, opts ...DialOption) (*UDPAssociation, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	options := proxyDialOptions(opts)
 	cfg, err := ParseProxyURL(proxyURL)
 	if err != nil {
 		return nil, err
@@ -62,21 +111,28 @@ func DialUDP(ctx context.Context, proxyURL string) (*UDPAssociation, error) {
 	if cfg.HTTPConnect || cfg.SOCKSVersion != 5 {
 		return nil, fmt.Errorf("UDP proxy egress requires a SOCKS5-family proxy")
 	}
-	packet, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return nil, err
+	packet := options.udpPeer
+	var socketPeer *udpSocketPeer
+	var localUDPAddr *net.UDPAddr
+	if packet == nil {
+		socket, err := net.ListenUDP("udp", nil)
+		if err != nil {
+			return nil, err
+		}
+		netutil.TuneUDPBuffers(socket)
+		socketPeer = &udpSocketPeer{conn: socket}
+		localUDPAddr = socket.LocalAddr().(*net.UDPAddr)
+		packet = socketPeer
 	}
-	netutil.TuneUDPBuffers(packet)
 
-	var dialer net.Dialer
-	control, err := dialer.DialContext(ctx, "tcp", cfg.Address)
+	control, err := options.dialContext(ctx, "tcp", cfg.Address)
 	if err != nil {
 		_ = packet.Close()
 		return nil, err
 	}
 	resetDeadline := applyContextDeadline(ctx, control)
 	defer resetDeadline()
-	if err := handshakeSOCKS5UDPAssociate(control, cfg, packet.LocalAddr().(*net.UDPAddr)); err != nil {
+	if err := handshakeSOCKS5UDPAssociate(control, cfg, localUDPAddr); err != nil {
 		_ = packet.Close()
 		_ = control.Close()
 		return nil, err
@@ -87,16 +143,30 @@ func DialUDP(ctx context.Context, proxyURL string) (*UDPAssociation, error) {
 		_ = control.Close()
 		return nil, err
 	}
-	bindAddr, err = socks5UDPRelayAddr(bindAddr, control.RemoteAddr())
-	if err != nil {
-		_ = packet.Close()
-		_ = control.Close()
-		return nil, err
+	if socketPeer != nil {
+		relayAddr, err := socks5UDPRelayAddr(bindAddr, control.RemoteAddr())
+		if err != nil {
+			_ = packet.Close()
+			_ = control.Close()
+			return nil, err
+		}
+		socketPeer.relay = relayAddr
+	} else if setter, ok := packet.(interface{ SetRelayAddress(string) error }); ok {
+		relayAddr, err := socks5UDPRelayTarget(bindAddr, cfg.Address)
+		if err != nil {
+			_ = packet.Close()
+			_ = control.Close()
+			return nil, err
+		}
+		if err := setter.SetRelayAddress(relayAddr); err != nil {
+			_ = packet.Close()
+			_ = control.Close()
+			return nil, err
+		}
 	}
 	return &UDPAssociation{
 		control:   control,
 		packet:    packet,
-		relay:     bindAddr,
 		remoteDNS: cfg.RemoteDNS,
 	}, nil
 }
@@ -138,20 +208,15 @@ func (a *UDPAssociation) ReadPacket() (string, []byte, error) {
 	if a.readBuf == nil {
 		a.readBuf = make([]byte, 64*1024)
 	}
-	for {
-		n, addr, err := a.packet.ReadFromUDP(a.readBuf)
-		if err != nil {
-			return "", nil, err
-		}
-		if a.relay != nil && addr != nil && (!addr.IP.Equal(a.relay.IP) || addr.Port != a.relay.Port) {
-			continue
-		}
-		packet, err := ParseSOCKS5UDPPacketInPlace(a.readBuf[:n])
-		if err != nil {
-			return "", nil, err
-		}
-		return packet.Target, packet.Payload, nil
+	raw, err := a.packet.ReadPacket()
+	if err != nil {
+		return "", nil, err
 	}
+	packet, err := ParseSOCKS5UDPPacketInPlace(raw)
+	if err != nil {
+		return "", nil, err
+	}
+	return packet.Target, packet.Payload, nil
 }
 
 func (a *UDPAssociation) WritePacket(target string, payload []byte) error {
@@ -162,7 +227,7 @@ func (a *UDPAssociation) WritePacket(target string, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	_, err = a.packet.WriteToUDP(packet, a.relay)
+	err = a.packet.WritePacket(packet)
 	a.writeBuf = packet[:0]
 	return err
 }
@@ -464,6 +529,20 @@ func socks5UDPRelayAddr(bindAddr *net.UDPAddr, controlRemoteAddr net.Addr) (*net
 	return &net.UDPAddr{IP: ip, Port: bindAddr.Port, Zone: bindAddr.Zone}, nil
 }
 
+func socks5UDPRelayTarget(bindAddr *net.UDPAddr, fallbackAddress string) (string, error) {
+	if bindAddr == nil {
+		return "", fmt.Errorf("SOCKS5 UDP relay address is missing")
+	}
+	if bindAddr.IP != nil && !bindAddr.IP.IsUnspecified() {
+		return bindAddr.String(), nil
+	}
+	host, _, err := net.SplitHostPort(fallbackAddress)
+	if err != nil {
+		return "", fmt.Errorf("parse SOCKS5 control target %q: %w", fallbackAddress, err)
+	}
+	return net.JoinHostPort(host, fmt.Sprintf("%d", bindAddr.Port)), nil
+}
+
 func readSOCKS5ReplyBindAddress(conn net.Conn) (*net.UDPAddr, error) {
 	var reply [4]byte
 	if _, err := io.ReadFull(conn, reply[:]); err != nil {
@@ -484,6 +563,63 @@ func readSOCKS5ReplyBindAddress(conn net.Conn) (*net.UDPAddr, error) {
 		return nil, err
 	}
 	return net.ResolveUDPAddr("udp", net.JoinHostPort(host, fmt.Sprintf("%d", int(portBytes[0])<<8|int(portBytes[1]))))
+}
+
+type udpSocketPeer struct {
+	conn    *net.UDPConn
+	relay   *net.UDPAddr
+	readBuf []byte
+}
+
+func (p *udpSocketPeer) Close() error {
+	if p == nil || p.conn == nil {
+		return nil
+	}
+	return p.conn.Close()
+}
+
+func (p *udpSocketPeer) SetReadDeadline(deadline time.Time) error {
+	if p == nil || p.conn == nil {
+		return nil
+	}
+	return p.conn.SetReadDeadline(deadline)
+}
+
+func (p *udpSocketPeer) SetWriteDeadline(deadline time.Time) error {
+	if p == nil || p.conn == nil {
+		return nil
+	}
+	return p.conn.SetWriteDeadline(deadline)
+}
+
+func (p *udpSocketPeer) ReadPacket() ([]byte, error) {
+	if p == nil || p.conn == nil {
+		return nil, fmt.Errorf("SOCKS5 UDP peer is closed")
+	}
+	if p.readBuf == nil {
+		p.readBuf = make([]byte, 64*1024)
+	}
+	for {
+		n, addr, err := p.conn.ReadFromUDP(p.readBuf)
+		if err != nil {
+			return nil, err
+		}
+		if p.relay != nil && addr != nil && (!addr.IP.Equal(p.relay.IP) || addr.Port != p.relay.Port) {
+			continue
+		}
+		return p.readBuf[:n], nil
+	}
+}
+
+func (p *udpSocketPeer) WritePacket(payload []byte) error {
+	if p == nil || p.conn == nil {
+		return fmt.Errorf("SOCKS5 UDP peer is closed")
+	}
+	if p.relay == nil {
+		return fmt.Errorf("SOCKS5 UDP relay address is missing")
+	}
+	_, err := p.conn.WriteToUDP(payload, p.relay)
+	return err
 }
 
 func drainSOCKS5BindAddress(conn net.Conn, atyp byte) error {

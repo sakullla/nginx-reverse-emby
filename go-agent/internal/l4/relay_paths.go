@@ -100,14 +100,29 @@ func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, di
 	case "relay":
 		upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 	case "wireguard":
-		runtime, runtimeErr := s.wireGuardRuntime(rule)
-		if runtimeErr != nil {
-			err = runtimeErr
-			break
+		if ruleUsesRelay(rule) {
+			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
+		} else {
+			runtime, runtimeErr := s.wireGuardRuntime(rule)
+			if runtimeErr != nil {
+				err = runtimeErr
+				break
+			}
+			upstream, err = runtime.DialContext(s.ctx, "tcp", target)
 		}
-		upstream, err = runtime.DialContext(s.ctx, "tcp", target)
 	case "proxy":
-		upstream, err = proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
+		if ruleUsesRelay(rule) {
+			proxyURL, parseErr := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
+			if parseErr != nil {
+				err = parseErr
+				break
+			}
+			upstream, err = proxyproto.DialWithOptions(s.ctx, rule.ProxyEgressURL, target, proxyproto.WithDialContext(func(_ context.Context, network, _ string) (net.Conn, error) {
+				return s.dialRelayPath(network, proxyURL.Address, rule, dialOptions)
+			}))
+		} else {
+			upstream, err = proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
+		}
 	default:
 		err = fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
 	}

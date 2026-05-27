@@ -790,6 +790,63 @@ func TestNormalizeL4RuleInputRejectsProxyEntryInvalidEgressMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeL4RuleInputPreservesRelayLayersWithProxyEgressProxy(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "proxy"
+	egressURL := "socks5://127.0.0.1:2080"
+	relayLayers := [][]int{{7}, {8, 9}}
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+		ProxyEgressURL:  &egressURL,
+		RelayLayers:     &relayLayers,
+	}
+	rule, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.ProxyEgressMode != "proxy" {
+		t.Fatalf("ProxyEgressMode = %q", rule.ProxyEgressMode)
+	}
+	if rule.ProxyEgressURL != egressURL {
+		t.Fatalf("ProxyEgressURL = %q", rule.ProxyEgressURL)
+	}
+	if len(rule.RelayLayers) != 2 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 7 || len(rule.RelayLayers[1]) != 2 || rule.RelayLayers[1][1] != 9 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
+	}
+}
+
+func TestNormalizeL4RuleInputPreservesRelayLayersWithProxyEgressWireGuard(t *testing.T) {
+	profileID := 21
+	relayLayers := [][]int{{7}, {8, 9}}
+	input := L4RuleInput{
+		Protocol:           stringPtrL4("tcp"),
+		ListenHost:         stringPtrL4("127.0.0.1"),
+		ListenPort:         intPtrL4(1080),
+		ListenMode:         stringPtrL4("proxy"),
+		ProxyEgressMode:    stringPtrL4("wireguard"),
+		WireGuardProfileID: intPtrL4(profileID),
+		RelayLayers:        &relayLayers,
+	}
+	rule, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.ProxyEgressMode != "wireguard" {
+		t.Fatalf("ProxyEgressMode = %q", rule.ProxyEgressMode)
+	}
+	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != profileID {
+		t.Fatalf("WireGuardProfileID = %+v", rule.WireGuardProfileID)
+	}
+	if len(rule.RelayLayers) != 2 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 7 || len(rule.RelayLayers[1]) != 2 || rule.RelayLayers[1][1] != 9 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
+	}
+}
+
 func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDP(t *testing.T) {
 	tests := []struct {
 		protocol string
@@ -3779,7 +3836,7 @@ func TestNormalizeL4RuleInputAcceptsProxyEntryProxyEgress(t *testing.T) {
 	}
 }
 
-func TestL4RuleServiceUpdateProxyEgressClearsStaleRelayFields(t *testing.T) {
+func TestL4RuleServiceUpdateProxyEgressPreservesRelayLayers(t *testing.T) {
 	current := L4Rule{
 		ID:              1,
 		AgentID:         "local",
@@ -3799,7 +3856,13 @@ func TestL4RuleServiceUpdateProxyEgressClearsStaleRelayFields(t *testing.T) {
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {l4RuleToRow(current)},
 		},
-		relayByAgent: map[string][]storage.RelayListenerRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      101,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
@@ -3810,11 +3873,17 @@ func TestL4RuleServiceUpdateProxyEgressClearsStaleRelayFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if len(rule.RelayChain) != 0 || len(rule.RelayLayers) != 0 || rule.RelayObfs {
-		t.Fatalf("relay fields = chain=%+v layers=%+v obfs=%v", rule.RelayChain, rule.RelayLayers, rule.RelayObfs)
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("relay chain = %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 101 {
+		t.Fatalf("relay layers = %+v", rule.RelayLayers)
+	}
+	if rule.RelayObfs {
+		t.Fatalf("relay obfs = %v, want false for proxy egress", rule.RelayObfs)
 	}
 	row := store.l4RulesByID["local"][0]
-	if row.RelayChainJSON != "[]" || row.RelayLayersJSON != "[]" || row.RelayObfs {
+	if row.RelayChainJSON != "[]" || row.RelayLayersJSON != "[[101]]" || row.RelayObfs {
 		t.Fatalf("persisted relay fields = chain=%s layers=%s obfs=%v", row.RelayChainJSON, row.RelayLayersJSON, row.RelayObfs)
 	}
 }

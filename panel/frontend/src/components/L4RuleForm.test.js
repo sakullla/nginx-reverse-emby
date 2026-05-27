@@ -252,6 +252,67 @@ describe('L4RuleForm WireGuard egress', () => {
     })
   })
 
+  it('preserves relay layers when proxy egress uses socks', async () => {
+    const wrapper = mountEditForm({
+      id: 9,
+      protocol: 'tcp',
+      listen_host: '0.0.0.0',
+      listen_port: 1080,
+      listen_mode: 'proxy',
+      proxy_egress_mode: 'proxy',
+      proxy_egress_url: 'socks5://127.0.0.1:2080',
+      relay_layers: [[7], [8, 9]],
+      backends: []
+    })
+
+    await flushPromises()
+    await switchTab(wrapper, '协议与监听')
+    expect(wrapper.text()).toContain('出口模式')
+    expect(wrapper.get('input[placeholder="socks://user:pass@127.0.0.1:1080"]').element.value).toBe('socks5://127.0.0.1:2080')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
+      id: 9,
+      listen_mode: 'proxy',
+      proxy_egress_mode: 'proxy',
+      proxy_egress_url: 'socks5://127.0.0.1:2080',
+      relay_layers: [[7], [8, 9]]
+    })
+  })
+
+  it('preserves relay layers when proxy egress uses WireGuard', async () => {
+    const wrapper = mountEditForm({
+      id: 10,
+      protocol: 'tcp',
+      listen_host: '0.0.0.0',
+      listen_port: 1080,
+      listen_mode: 'proxy',
+      proxy_egress_mode: 'wireguard',
+      wireguard_profile_id: 21,
+      relay_layers: [[7], [8, 9]],
+      backends: []
+    })
+
+    await flushPromises()
+    await switchTab(wrapper, '协议与监听')
+    expect(wrapper.text()).toContain('WireGuard 配置')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
+      id: 10,
+      listen_mode: 'proxy',
+      proxy_egress_mode: 'wireguard',
+      wireguard_profile_id: 21,
+      relay_layers: [[7], [8, 9]]
+    })
+  })
+
   it('rejects UDP proxy entry without same-port TCP SOCKS5 rule', async () => {
     const wrapper = mountFormWithRules([
       {

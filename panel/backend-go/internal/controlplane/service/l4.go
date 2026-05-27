@@ -722,12 +722,6 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 					return L4Rule{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 				}
 			}
-			relayChain = []int{}
-			relayLayers = [][]int{}
-		}
-		if proxyEgressMode == "wireguard" {
-			relayChain = []int{}
-			relayLayers = [][]int{}
 		}
 	}
 	if proxyEntryMode {
@@ -747,12 +741,6 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 			if err := validateL4ProxyEgressURL(proxyEgressURL); err != nil {
 				return L4Rule{}, fmt.Errorf("%w: invalid proxy_egress_url: %v", ErrInvalidArgument, err)
 			}
-			relayChain = []int{}
-			relayLayers = [][]int{}
-		}
-		if proxyEgressMode == "wireguard" {
-			relayChain = []int{}
-			relayLayers = [][]int{}
 		}
 		backends = []L4Backend{}
 		upstreamHost = ""
