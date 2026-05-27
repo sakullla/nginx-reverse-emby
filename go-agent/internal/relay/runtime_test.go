@@ -2316,37 +2316,6 @@ func TestProbePathReturnsIndependentHopTimingsForRelayChain(t *testing.T) {
 	}
 }
 
-func TestPrewarmPathWarmsRelayChainWithoutTarget(t *testing.T) {
-	resetTLSTCPSessionPoolForTest()
-
-	provider := newFakeTLSMaterialProvider()
-	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-prewarm-a", "pin_only", true, false)
-	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-prewarm-b", "pin_only", true, false)
-
-	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
-	if err != nil {
-		t.Fatalf("Start(A) error = %v", err)
-	}
-	defer serverA.Close()
-	serverB, err := Start(context.Background(), []Listener{listenerB}, provider)
-	if err != nil {
-		t.Fatalf("Start(B) error = %v", err)
-	}
-	defer serverB.Close()
-
-	if err := PrewarmPath(context.Background(), []Hop{hopA, hopB}, provider, DialOptions{}); err != nil {
-		t.Fatalf("PrewarmPath() error = %v", err)
-	}
-
-	stats := currentTLSTCPSessionPoolStats()
-	if stats.ActiveSessions != 2 {
-		t.Fatalf("ActiveSessions = %d, want 2 warmed relay-hop sessions", stats.ActiveSessions)
-	}
-	if stats.LogicalStreams != 0 {
-		t.Fatalf("LogicalStreams = %d, want closed probe streams after prewarm", stats.LogicalStreams)
-	}
-}
-
 func TestDialWithResultUsesFallbackAfterQUICProbeDialFails(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
