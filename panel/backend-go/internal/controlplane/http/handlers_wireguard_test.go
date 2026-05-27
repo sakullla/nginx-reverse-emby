@@ -533,6 +533,37 @@ func TestWireGuardProfileClientLifecycleAndConfig(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileClientCreateAcceptsExplicitEmptyLists(t *testing.T) {
+	router, cleanup := newWireGuardHTTPTestRouter(t)
+	defer cleanup()
+
+	profileA := createWireGuardHTTPClientProfile(t, router, "/panel-api", 51820)
+	basePathA := "/panel-api/agents/local/wireguard-profiles/" + strconv.Itoa(profileA.ID) + "/clients"
+	createA := httptest.NewRequest(http.MethodPost, basePathA, bytes.NewBufferString(`{"name":"first"}`))
+	createA.Header.Set("X-Panel-Token", "secret")
+	createA.Header.Set("Content-Type", "application/json")
+	respA := httptest.NewRecorder()
+	router.ServeHTTP(respA, createA)
+	if respA.Code != http.StatusCreated {
+		t.Fatalf("POST first client = %d, body=%s", respA.Code, respA.Body.String())
+	}
+
+	profileB := createWireGuardHTTPClientProfile(t, router, "/panel-api", 51821)
+	basePathB := "/panel-api/agents/local/wireguard-profiles/" + strconv.Itoa(profileB.ID) + "/clients"
+	createB := httptest.NewRequest(http.MethodPost, basePathB, bytes.NewBufferString(`{"name":"test111","allowed_ips":[],"dns":[],"enabled":true}`))
+	createB.Header.Set("X-Panel-Token", "secret")
+	createB.Header.Set("Content-Type", "application/json")
+	respB := httptest.NewRecorder()
+	router.ServeHTTP(respB, createB)
+	if respB.Code != http.StatusCreated {
+		t.Fatalf("POST second client = %d, body=%s", respB.Code, respB.Body.String())
+	}
+	client := decodeWireGuardHTTPClientResponse(t, respB.Body.Bytes())
+	if client.Name != "test111" || !client.Enabled {
+		t.Fatalf("created client = %+v, want requested name/enabled", client)
+	}
+}
+
 func TestWireGuardProfileClientPatchUpdatesEnabled(t *testing.T) {
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()

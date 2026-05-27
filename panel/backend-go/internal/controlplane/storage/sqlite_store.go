@@ -52,6 +52,7 @@ type WireGuardClientProfileMutation struct {
 	Profiles     []WireGuardProfileRow
 	ProfileIndex int
 	Clients      []WireGuardClientRow
+	NextClientID int
 }
 
 func NewSQLiteStore(dataRoot string, localAgentID string) (*SQLiteStore, error) {
@@ -697,11 +698,16 @@ func (s *GormStore) MutateWireGuardClientProfile(ctx context.Context, agentID st
 		for i := range clients {
 			normalizeWireGuardClientRow(&clients[i])
 		}
+		var maxClientID int
+		if err := tx.Model(&WireGuardClientRow{}).Select("COALESCE(MAX(id), 0)").Scan(&maxClientID).Error; err != nil {
+			return err
+		}
 
 		next, err := mutate(WireGuardClientProfileMutation{
 			Profiles:     profiles,
 			ProfileIndex: profileIndex,
 			Clients:      clients,
+			NextClientID: maxClientID + 1,
 		})
 		if err != nil {
 			return err

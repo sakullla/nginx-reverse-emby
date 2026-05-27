@@ -135,6 +135,93 @@ func TestWireGuardClientConfigDefaultsAllowedIPsToFullTunnel(t *testing.T) {
 	}
 }
 
+func TestWireGuardClientCreateAllocatesIDsAcrossProfiles(t *testing.T) {
+	ctx := context.Background()
+	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
+
+	firstInput := testWireGuardProfileInput()
+	firstInput.Name = "wg-a"
+	firstInput.InterfaceAddresses = []string{"10.8.0.1/24"}
+	firstInput.Peers[0].Endpoint = ""
+	firstProfile, err := profileSvc.Create(ctx, "local", firstInput)
+	if err != nil {
+		t.Fatalf("Create(first profile) error = %v", err)
+	}
+	firstClient, err := clientSvc.CreateClient(ctx, "local", firstProfile.ID, WireGuardClientInput{Name: "phone-a"})
+	if err != nil {
+		t.Fatalf("CreateClient(first) error = %v", err)
+	}
+
+	secondInput := testWireGuardProfileInput()
+	secondInput.Name = "wg-b"
+	secondInput.ListenPort = 51821
+	secondInput.InterfaceAddresses = []string{"10.9.0.1/24"}
+	secondInput.Peers[0].Endpoint = ""
+	secondProfile, err := profileSvc.Create(ctx, "local", secondInput)
+	if err != nil {
+		t.Fatalf("Create(second profile) error = %v", err)
+	}
+	secondClient, err := clientSvc.CreateClient(ctx, "local", secondProfile.ID, WireGuardClientInput{
+		Name:       "phone-b",
+		AllowedIPs: []string{},
+		DNS:        []string{},
+		Enabled:    boolPtr(true),
+	})
+	if err != nil {
+		t.Fatalf("CreateClient(second) error = %v", err)
+	}
+	if secondClient.ID <= firstClient.ID {
+		t.Fatalf("second client ID = %d, want greater than first client ID %d", secondClient.ID, firstClient.ID)
+	}
+}
+
+func TestWireGuardClientCreateAllocatesIDsAcrossAgents(t *testing.T) {
+	ctx := context.Background()
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "edge-a",
+		AgentToken:       "token-edge-a",
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(edge-a) error = %v", err)
+	}
+
+	edgeInput := testWireGuardProfileInput()
+	edgeInput.Name = "edge-wg"
+	edgeInput.InterfaceAddresses = []string{"10.44.0.1/24"}
+	edgeInput.Peers[0].Endpoint = ""
+	edgeProfile, err := profileSvc.Create(ctx, "edge-a", edgeInput)
+	if err != nil {
+		t.Fatalf("Create(edge profile) error = %v", err)
+	}
+	edgeClient, err := clientSvc.CreateClient(ctx, "edge-a", edgeProfile.ID, WireGuardClientInput{Name: "edge-phone"})
+	if err != nil {
+		t.Fatalf("CreateClient(edge) error = %v", err)
+	}
+
+	localInput := testWireGuardProfileInput()
+	localInput.Name = "local-wg"
+	localInput.InterfaceAddresses = []string{"10.8.1.1/24"}
+	localInput.Peers[0].Endpoint = ""
+	localProfile, err := profileSvc.Create(ctx, "local", localInput)
+	if err != nil {
+		t.Fatalf("Create(local profile) error = %v", err)
+	}
+	localClient, err := clientSvc.CreateClient(ctx, "local", localProfile.ID, WireGuardClientInput{
+		Name:       "test111",
+		AllowedIPs: []string{},
+		DNS:        []string{},
+		Enabled:    boolPtr(true),
+	})
+	if err != nil {
+		t.Fatalf("CreateClient(local) error = %v", err)
+	}
+	if localClient.ID <= edgeClient.ID {
+		t.Fatalf("local client ID = %d, want greater than edge client ID %d", localClient.ID, edgeClient.ID)
+	}
+}
+
 func TestWireGuardClientURIIncludesReservedWhenPresent(t *testing.T) {
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
