@@ -259,25 +259,21 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
-	egressRows := allEgressRows
-	egressScopeRevision := 0
-	if len(allEgressRows) > 0 {
-		allHTTPRows, err := s.loadAllHTTPRulesForSnapshot(ctx)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		allL4Rows, err := s.loadAllL4RulesForSnapshot(ctx)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		allL4Rows = filterSyncL4RuleRows(allL4Rows)
-		allRelayRows, err := s.ListRelayListeners(ctx, "")
-		if err != nil {
-			return Snapshot{}, err
-		}
-		egressRows = filterEgressProfilesForSnapshot(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
-		egressScopeRevision = egressProfileScopeRevision(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
+	allHTTPRows, err := s.loadAllHTTPRulesForSnapshot(ctx)
+	if err != nil {
+		return Snapshot{}, err
 	}
+	allL4Rows, err := s.loadAllL4RulesForSnapshot(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	allL4Rows = filterSyncL4RuleRows(allL4Rows)
+	allRelayRows, err := s.ListRelayListeners(ctx, "")
+	if err != nil {
+		return Snapshot{}, err
+	}
+	egressRows := filterEgressProfilesForSnapshot(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
+	egressScopeRevision := egressProfileScopeRevision(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
 	wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
 	if err != nil {
 		return Snapshot{}, err
