@@ -85,6 +85,9 @@ func literalHostCandidate(host string, port int) (bool, string) {
 }
 
 func (s *finalHopSelector) dialTCP(ctx context.Context, target string, options DialOptions) (net.Conn, string, error) {
+	if err := rejectUnresolvedEgressProfile(options); err != nil {
+		return nil, "", err
+	}
 	candidates, err := s.resolvedCandidates(ctx, target)
 	if err != nil {
 		return nil, "", err
@@ -108,9 +111,6 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string, options D
 }
 
 func dialFinalHopTCP(ctx context.Context, address string, options DialOptions) (net.Conn, error) {
-	if err := rejectUnresolvedEgressProfile(options); err != nil {
-		return nil, err
-	}
 	return dialTCP(ctx, address)
 }
 
@@ -161,6 +161,9 @@ func (p *observedUDPPeer) ReadPacket() ([]byte, error) {
 }
 
 func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string, options DialOptions) (udpPacketPeer, string, error) {
+	if err := rejectUnresolvedEgressProfile(options); err != nil {
+		return nil, "", err
+	}
 	candidates, err := s.resolvedCandidates(ctx, target)
 	if err != nil {
 		return nil, "", err
@@ -186,9 +189,6 @@ func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string, optio
 }
 
 func openFinalHopUDPPeer(ctx context.Context, address string, options DialOptions) (udpPacketPeer, error) {
-	if err := rejectUnresolvedEgressProfile(options); err != nil {
-		return nil, err
-	}
 	addr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, err

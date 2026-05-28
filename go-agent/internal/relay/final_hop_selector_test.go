@@ -258,9 +258,25 @@ func TestFinalHopSelectorRejectsUnresolvedEgressProfileID(t *testing.T) {
 	if _, _, err := selector.dialTCP(context.Background(), backendAddr, DialOptions{EgressProfileID: &profileID}); err == nil || !strings.Contains(err.Error(), "egress profile 17") {
 		t.Fatalf("dialTCP() error = %v, want unresolved egress profile error", err)
 	}
+	conn, selected, err := selector.dialTCP(context.Background(), backendAddr, DialOptions{})
+	if err != nil {
+		t.Fatalf("dialTCP() after unresolved profile error = %v", err)
+	}
+	_ = conn.Close()
+	if selected != backendAddr {
+		t.Fatalf("selected = %q, want %q", selected, backendAddr)
+	}
 	selector = newFinalHopSelector(finalHopSelectorConfig{})
 	if _, _, err := selector.openUDPPeer(context.Background(), backendAddr, DialOptions{EgressProfileID: &profileID}); err == nil || !strings.Contains(err.Error(), "egress profile 17") {
 		t.Fatalf("openUDPPeer() error = %v, want unresolved egress profile error", err)
+	}
+	peer, selected, err := selector.openUDPPeer(context.Background(), backendAddr, DialOptions{})
+	if err != nil {
+		t.Fatalf("openUDPPeer() after unresolved profile error = %v", err)
+	}
+	_ = peer.Close()
+	if selected != backendAddr {
+		t.Fatalf("udp selected = %q, want %q", selected, backendAddr)
 	}
 }
 
