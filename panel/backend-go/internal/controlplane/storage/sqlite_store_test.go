@@ -258,6 +258,23 @@ func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveEgressProfiles() error = %v", err)
 	}
+	profileID := 41
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
+		ID:                1001,
+		AgentID:           "local",
+		FrontendURL:       "https://emby.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
 
 	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{
 		DesiredRevision: 1,
@@ -272,6 +289,163 @@ func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
 	if len(snapshot.EgressProfiles) != 1 || snapshot.EgressProfiles[0].ProxyURL != "socks5://127.0.0.1:1080" {
 		t.Fatalf("snapshot EgressProfiles = %+v, want raw proxy URL", snapshot.EgressProfiles)
 	}
+}
+
+func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	httpProfileID := 41
+	l4ProfileID := 42
+	relayProfileID := 43
+	unusedProfileID := 44
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{
+		{ID: httpProfileID, Name: "http exit", Type: "socks", ProxyURL: "socks5://http-secret@127.0.0.1:1080", Enabled: true, Revision: 7},
+		{ID: l4ProfileID, Name: "l4 exit", Type: "http", ProxyURL: "http://l4-secret@127.0.0.1:8080", Enabled: true, Revision: 8},
+		{ID: relayProfileID, Name: "relay exit", Type: "socks", ProxyURL: "socks5://relay-secret@127.0.0.1:1081", Enabled: true, Revision: 9},
+		{ID: unusedProfileID, Name: "unused exit", Type: "socks", ProxyURL: "socks5://unused-secret@127.0.0.1:1082", Enabled: true, Revision: 10},
+	}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "http-owner", []HTTPRuleRow{{
+		ID:                1001,
+		AgentID:           "http-owner",
+		FrontendURL:       "https://http.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &httpProfileID,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(http-owner) error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "l4-owner", []L4RuleRow{{
+		ID:                 2001,
+		AgentID:            "l4-owner",
+		Name:               "tcp direct",
+		Protocol:           "tcp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         25565,
+		BackendsJSON:       `[{"host":"127.0.0.1","port":25566}]`,
+		LoadBalancingJSON:  `{"strategy":"adaptive"}`,
+		TuningJSON:         `{}`,
+		RelayChainJSON:     `[]`,
+		RelayLayersJSON:    `[]`,
+		ListenMode:         "tcp",
+		ProxyEntryAuthJSON: `{}`,
+		Enabled:            true,
+		TagsJSON:           `[]`,
+		EgressProfileID:    &l4ProfileID,
+		Revision:           1,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules(l4-owner) error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "relay-entry", []HTTPRuleRow{{
+		ID:                3001,
+		AgentID:           "relay-entry",
+		FrontendURL:       "https://relay.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[501,502]`,
+		RelayLayersJSON:   `[[501,502],[501,503]]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &relayProfileID,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(relay-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-entry", []RelayListenerRow{{
+		ID:         501,
+		AgentID:    "relay-entry",
+		Name:       "entry relay",
+		ListenHost: "127.0.0.1",
+		ListenPort: 7443,
+		PublicHost: "entry.example.com",
+		PublicPort: 7443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-final-a", []RelayListenerRow{{
+		ID:         502,
+		AgentID:    "relay-final-a",
+		Name:       "final relay a",
+		ListenHost: "127.0.0.1",
+		ListenPort: 8443,
+		PublicHost: "final-a.example.com",
+		PublicPort: 8443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-final-a) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-final-b", []RelayListenerRow{{
+		ID:         503,
+		AgentID:    "relay-final-b",
+		Name:       "final relay b",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9443,
+		PublicHost: "final-b.example.com",
+		PublicPort: 9443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-final-b) error = %v", err)
+	}
+
+	httpOwnerSnapshot, err := store.LoadAgentSnapshot(t.Context(), "http-owner", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(http-owner) error = %v", err)
+	}
+	assertSnapshotHasProfile(t, httpOwnerSnapshot, httpProfileID, "socks5://http-secret@127.0.0.1:1080")
+	assertSnapshotLacksProfile(t, httpOwnerSnapshot, unusedProfileID)
+
+	l4OwnerSnapshot, err := store.LoadAgentSnapshot(t.Context(), "l4-owner", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(l4-owner) error = %v", err)
+	}
+	assertSnapshotHasProfile(t, l4OwnerSnapshot, l4ProfileID, "http://l4-secret@127.0.0.1:8080")
+	assertSnapshotLacksProfile(t, l4OwnerSnapshot, unusedProfileID)
+
+	relayEntrySnapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-entry", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(relay-entry) error = %v", err)
+	}
+	assertSnapshotLacksProfile(t, relayEntrySnapshot, relayProfileID)
+	assertSnapshotLacksProfile(t, relayEntrySnapshot, unusedProfileID)
+
+	relayFinalASnapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-final-a", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(relay-final-a) error = %v", err)
+	}
+	assertSnapshotHasProfile(t, relayFinalASnapshot, relayProfileID, "socks5://relay-secret@127.0.0.1:1081")
+	assertSnapshotLacksProfile(t, relayFinalASnapshot, unusedProfileID)
+
+	relayFinalBSnapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-final-b", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(relay-final-b) error = %v", err)
+	}
+	assertSnapshotHasProfile(t, relayFinalBSnapshot, relayProfileID, "socks5://relay-secret@127.0.0.1:1081")
+	assertSnapshotLacksProfile(t, relayFinalBSnapshot, unusedProfileID)
+
+	unrelatedSnapshot, err := store.LoadAgentSnapshot(t.Context(), "unrelated", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(unrelated) error = %v", err)
+	}
+	assertSnapshotLacksProfile(t, unrelatedSnapshot, httpProfileID)
+	assertSnapshotLacksProfile(t, unrelatedSnapshot, l4ProfileID)
+	assertSnapshotLacksProfile(t, unrelatedSnapshot, relayProfileID)
+	assertSnapshotLacksProfile(t, unrelatedSnapshot, unusedProfileID)
 }
 
 func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.T) {
@@ -6161,6 +6335,28 @@ func writeManagedCertificateMaterial(t *testing.T, dataRoot string, domain strin
 
 func intPointer(value int) *int {
 	return &value
+}
+
+func assertSnapshotHasProfile(t *testing.T, snapshot Snapshot, id int, proxyURL string) {
+	t.Helper()
+	for _, profile := range snapshot.EgressProfiles {
+		if profile.ID == id {
+			if profile.ProxyURL != proxyURL {
+				t.Fatalf("profile %d proxy_url = %q, want %q", id, profile.ProxyURL, proxyURL)
+			}
+			return
+		}
+	}
+	t.Fatalf("snapshot egress profiles = %+v, want profile %d", snapshot.EgressProfiles, id)
+}
+
+func assertSnapshotLacksProfile(t *testing.T, snapshot Snapshot, id int) {
+	t.Helper()
+	for _, profile := range snapshot.EgressProfiles {
+		if profile.ID == id {
+			t.Fatalf("snapshot unexpectedly included profile %d: %+v", id, snapshot.EgressProfiles)
+		}
+	}
 }
 
 func containsCertificateID(values []ManagedCertificateBundle, expected int) bool {

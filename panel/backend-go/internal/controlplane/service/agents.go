@@ -149,6 +149,7 @@ type HeartbeatReply struct {
 	L4Rules              []storage.L4Rule                   `json:"l4_rules"`
 	RelayListeners       []storage.RelayListener            `json:"relay_listeners"`
 	WireGuardProfiles    []storage.WireGuardProfile         `json:"wireguard_profiles"`
+	EgressProfiles       []storage.EgressProfile            `json:"egress_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
 	OutboundProxyURL     string                             `json:"-"`
@@ -806,6 +807,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		L4Rules:              snapshot.L4Rules,
 		RelayListeners:       snapshot.RelayListeners,
 		WireGuardProfiles:    snapshot.WireGuardProfiles,
+		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
 		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
@@ -824,6 +826,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.Rules = nil
 		reply.L4Rules = nil
 		reply.WireGuardProfiles = nil
+		reply.EgressProfiles = nil
 		reply.Certificates = nil
 		reply.CertificatePolicies = nil
 	}
