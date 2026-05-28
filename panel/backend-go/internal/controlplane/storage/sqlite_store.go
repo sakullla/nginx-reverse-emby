@@ -937,6 +937,7 @@ func normalizeHTTPRuleRow(row *HTTPRuleRow) {
 	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
 	row.UserAgent = defaultString(row.UserAgent, "")
 	row.CustomHeadersJSON = defaultJSON(row.CustomHeadersJSON, "[]")
+	row.EgressProfileID = copyOptionalPositiveInt(row.EgressProfileID)
 	if !row.WireGuardEntryEnabled {
 		row.WireGuardProfileID = nil
 		row.WireGuardEntryListenHost = ""
@@ -968,6 +969,7 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.ProxyEgressMode = defaultString(row.ProxyEgressMode, "")
 	row.ProxyEgressURL = defaultString(row.ProxyEgressURL, "")
 	row.WireGuardEgressURI = defaultString(row.WireGuardEgressURI, "")
+	row.EgressProfileID = copyOptionalPositiveInt(row.EgressProfileID)
 	if row.ProxyEgressMode != "wireguard" {
 		row.WireGuardEgressURI = ""
 	}
@@ -2106,7 +2108,7 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 			CustomHeaders:            parseHTTPHeaders(row.CustomHeadersJSON),
 			WireGuardEntryEnabled:    row.WireGuardEntryEnabled,
 			WireGuardProfileID:       copyOptionalInt(row.WireGuardProfileID),
-			EgressProfileID:          copyOptionalInt(row.EgressProfileID),
+			EgressProfileID:          copyOptionalPositiveInt(row.EgressProfileID),
 			WireGuardEntryListenHost: row.WireGuardEntryListenHost,
 			WireGuardEntryListenPort: wireGuardEntryListenPort,
 			RelayLayers:              parseIntLayers(row.RelayLayersJSON),
@@ -2156,7 +2158,7 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			RelayObfs:            row.RelayObfs,
 			ListenMode:           defaultString(row.ListenMode, "tcp"),
 			WireGuardProfileID:   copyOptionalInt(row.WireGuardProfileID),
-			EgressProfileID:      copyOptionalInt(row.EgressProfileID),
+			EgressProfileID:      copyOptionalPositiveInt(row.EgressProfileID),
 			WireGuardInboundMode: normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode),
 			WireGuardListenHost:  row.WireGuardListenHost,
 			ProxyEntryAuth:       parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
@@ -2702,6 +2704,14 @@ func containsString(values []string, expected string) bool {
 
 func copyOptionalInt(value *int) *int {
 	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
+}
+
+func copyOptionalPositiveInt(value *int) *int {
+	if value == nil || *value <= 0 {
 		return nil
 	}
 	copyValue := *value

@@ -55,6 +55,10 @@ type egressProfileStore interface {
 	SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error
 }
 
+type egressProfileLookupStore interface {
+	ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error)
+}
+
 type egressProfileService struct {
 	cfg   config.Config
 	store egressProfileStore
@@ -519,4 +523,37 @@ func maxEgressProfileRevision(rows []storage.EgressProfileRow) int {
 		}
 	}
 	return maxRevision
+}
+
+func getEnabledEgressProfile(ctx context.Context, store egressProfileLookupStore, id int) (EgressProfile, error) {
+	if id <= 0 {
+		return EgressProfile{}, fmt.Errorf("%w: egress profile id is required", ErrInvalidArgument)
+	}
+	rows, err := store.ListEgressProfiles(ctx)
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	for _, row := range rows {
+		if row.ID != id {
+			continue
+		}
+		profile, err := egressProfileFromRow(row)
+		if err != nil {
+			return EgressProfile{}, err
+		}
+		if !profile.Enabled {
+			return EgressProfile{}, fmt.Errorf("%w: egress profile %d is disabled", ErrInvalidArgument, id)
+		}
+		return profile, nil
+	}
+	return EgressProfile{}, fmt.Errorf("%w: egress profile %d not found", ErrInvalidArgument, id)
+}
+
+func egressProfileSupportsHTTP(profile EgressProfile) bool {
+	switch strings.ToLower(strings.TrimSpace(profile.Type)) {
+	case "direct", "socks", "http", "wireguard":
+		return true
+	default:
+		return false
+	}
 }

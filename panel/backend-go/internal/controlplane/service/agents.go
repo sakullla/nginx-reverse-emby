@@ -108,6 +108,7 @@ type HTTPRule struct {
 	PassProxyHeaders         bool               `json:"pass_proxy_headers"`
 	UserAgent                string             `json:"user_agent"`
 	CustomHeaders            []HTTPCustomHeader `json:"custom_headers"`
+	EgressProfileID          *int               `json:"egress_profile_id,omitempty"`
 	WireGuardEntryEnabled    bool               `json:"wireguard_entry_enabled"`
 	WireGuardProfileID       *int               `json:"wireguard_profile_id,omitempty"`
 	WireGuardEntryListenHost string             `json:"wireguard_entry_listen_host,omitempty"`

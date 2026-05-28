@@ -62,6 +62,7 @@ type L4Rule struct {
 	RelayObfs            bool             `json:"relay_obfs"`
 	ListenMode           string           `json:"listen_mode"`
 	WireGuardProfileID   *int             `json:"wireguard_profile_id,omitempty"`
+	EgressProfileID      *int             `json:"egress_profile_id,omitempty"`
 	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
 	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
 	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth"`
@@ -89,6 +90,7 @@ type L4RuleInput struct {
 	RelayObfs            *bool             `json:"relay_obfs,omitempty"`
 	ListenMode           *string           `json:"listen_mode,omitempty"`
 	WireGuardProfileID   *int              `json:"wireguard_profile_id,omitempty"`
+	EgressProfileID      *int              `json:"egress_profile_id,omitempty"`
 	WireGuardInboundMode *string           `json:"wireguard_inbound_mode,omitempty"`
 	WireGuardListenHost  *string           `json:"wireguard_listen_host,omitempty"`
 	ProxyEntryAuth       *L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
@@ -205,6 +207,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := s.validateL4EgressProfileReference(ctx, rule); err != nil {
+		return L4Rule{}, err
+	}
 	if l4RuleUsesWireGuard(rule) {
 		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
 			return L4Rule{}, err
@@ -319,6 +324,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := s.validateL4EgressProfileReference(ctx, rule); err != nil {
+		return L4Rule{}, err
+	}
 	if l4RuleUsesWireGuard(rule) {
 		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
 			return L4Rule{}, err
@@ -588,6 +596,10 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		wireGuardInboundMode = ""
 	}
 	wireGuardListenHost := strings.TrimSpace(defaultString(pointerString(input.WireGuardListenHost), fallback.WireGuardListenHost))
+	egressProfileID := normalizeOptionalPositiveInt(fallback.EgressProfileID)
+	if input.EgressProfileID != nil {
+		egressProfileID = normalizeOptionalPositiveInt(input.EgressProfileID)
+	}
 
 	id := fallback.ID
 	if input.ID != nil && *input.ID > 0 {
@@ -836,6 +848,7 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		RelayObfs:            relayObfs,
 		ListenMode:           listenMode,
 		WireGuardProfileID:   wireGuardProfileID,
+		EgressProfileID:      egressProfileID,
 		WireGuardInboundMode: wireGuardInboundMode,
 		WireGuardListenHost:  wireGuardListenHost,
 		ProxyEntryAuth:       proxyEntryAuth,
@@ -856,6 +869,20 @@ func (s *l4Service) validateRelayChain(ctx context.Context, agentID string, rela
 	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain, relayChainValidationOptions{
 		RuleAgentID: agentID,
 	})
+}
+
+func (s *l4Service) validateL4EgressProfileReference(ctx context.Context, rule L4Rule) error {
+	if rule.EgressProfileID == nil {
+		return nil
+	}
+	profile, err := getEnabledEgressProfile(ctx, s.store, *rule.EgressProfileID)
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(rule.Protocol, "udp") && strings.EqualFold(profile.Type, "http") {
+		return fmt.Errorf("%w: UDP rules cannot use HTTP egress profiles", ErrInvalidArgument)
+	}
+	return nil
 }
 
 func (s *l4Service) validateWireGuardProfileReference(ctx context.Context, agentID string, rule L4Rule) error {
@@ -1660,6 +1687,7 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		RelayObfs:            row.RelayObfs,
 		ListenMode:           listenMode,
 		WireGuardProfileID:   copyOptionalInt(row.WireGuardProfileID),
+		EgressProfileID:      normalizeOptionalPositiveInt(row.EgressProfileID),
 		WireGuardInboundMode: wireGuardInboundMode,
 		WireGuardListenHost:  row.WireGuardListenHost,
 		ProxyEntryAuth:       proxyEntryAuth,
@@ -1712,6 +1740,7 @@ func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 		RelayObfs:            rule.RelayObfs,
 		ListenMode:           defaultString(rule.ListenMode, "tcp"),
 		WireGuardProfileID:   copyOptionalInt(rule.WireGuardProfileID),
+		EgressProfileID:      normalizeOptionalPositiveInt(rule.EgressProfileID),
 		WireGuardInboundMode: rule.WireGuardInboundMode,
 		WireGuardListenHost:  rule.WireGuardListenHost,
 		ProxyEntryAuthJSON:   marshalJSON(rule.ProxyEntryAuth, "{}"),

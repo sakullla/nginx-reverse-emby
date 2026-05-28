@@ -15,6 +15,7 @@ type fakeRuleStore struct {
 	rulesByAgent       map[string][]storage.HTTPRuleRow
 	l4RulesByAgent     map[string][]storage.L4RuleRow
 	wireGuardByAgentID map[string][]storage.WireGuardProfileRow
+	egressProfiles     []storage.EgressProfileRow
 	listeners          []storage.RelayListenerRow
 	managedCerts       []storage.ManagedCertificateRow
 
@@ -63,6 +64,15 @@ func (f *fakeRuleStore) ListL4Rules(_ context.Context, agentID string) ([]storag
 
 func (f *fakeRuleStore) ListWireGuardProfiles(_ context.Context, agentID string) ([]storage.WireGuardProfileRow, error) {
 	return append([]storage.WireGuardProfileRow(nil), f.wireGuardByAgentID[agentID]...), nil
+}
+
+func (f *fakeRuleStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
+	return append([]storage.EgressProfileRow(nil), f.egressProfiles...), nil
+}
+
+func (f *fakeRuleStore) SaveEgressProfiles(_ context.Context, rows []storage.EgressProfileRow) error {
+	f.egressProfiles = append([]storage.EgressProfileRow(nil), rows...)
+	return nil
 }
 
 func (f *fakeRuleStore) ListWireGuardClients(_ context.Context, agentID string, profileID int) ([]storage.WireGuardClientRow, error) {
@@ -194,6 +204,119 @@ func ruleStoreAgentByID(t *testing.T, store *fakeRuleStore, agentID string) stor
 	}
 	t.Fatalf("agent %q not found", agentID)
 	return storage.AgentRow{}
+}
+
+func newRuleServiceTestStore(t *testing.T) *fakeRuleStore {
+	t.Helper()
+	return &fakeRuleStore{
+		rulesByAgent:       map[string][]storage.HTTPRuleRow{},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+}
+
+func testConfig() config.Config {
+	return config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+}
+
+type egressProfileSeedStore interface {
+	SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error
+}
+
+func seedEgressProfile(t *testing.T, store egressProfileSeedStore, row storage.EgressProfileRow) int {
+	t.Helper()
+	if err := store.SaveEgressProfiles(context.Background(), []storage.EgressProfileRow{row}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	return row.ID
+}
+
+func TestRuleServiceCreateRejectsDisabledEgressProfile(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 17, Name: "off", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: false})
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("https://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("Create() error = %v, want disabled egress profile validation", err)
+	}
+}
+
+func TestRuleServiceCreateAcceptsEnabledSOCKSEgressProfile(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 18, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+	rule, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("https://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: &profileID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.EgressProfileID == nil || *rule.EgressProfileID != profileID {
+		t.Fatalf("EgressProfileID = %v, want %d", rule.EgressProfileID, profileID)
+	}
+	if rows := store.rulesByAgent["local"]; len(rows) != 1 || rows[0].EgressProfileID == nil || *rows[0].EgressProfileID != profileID {
+		t.Fatalf("persisted EgressProfileID = %+v, want %d", rows, profileID)
+	}
+}
+
+func TestRuleServiceUpdateRejectsUnknownEgressProfile(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		PassProxyHeaders:  true,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		RelayLayersJSON:   `[]`,
+		Revision:          1,
+	}}
+	profileID := 404
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Update(t.Context(), "local", 1, HTTPRuleInput{EgressProfileID: &profileID})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("Update() error = %v, want unknown egress profile validation", err)
+	}
+}
+
+func TestRuleServiceUpdateAcceptsEnabledHTTPEgressProfile(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		PassProxyHeaders:  true,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		RelayLayersJSON:   `[]`,
+		Revision:          1,
+	}}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 19, Name: "http", Type: "http", ProxyURL: "http://127.0.0.1:8080", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+	rule, err := svc.Update(t.Context(), "local", 1, HTTPRuleInput{EgressProfileID: &profileID})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.EgressProfileID == nil || *rule.EgressProfileID != profileID {
+		t.Fatalf("EgressProfileID = %v, want %d", rule.EgressProfileID, profileID)
+	}
+	if rows := store.rulesByAgent["local"]; len(rows) != 1 || rows[0].EgressProfileID == nil || *rows[0].EgressProfileID != profileID {
+		t.Fatalf("persisted EgressProfileID = %+v, want %d", rows, profileID)
+	}
 }
 
 func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {

@@ -29,6 +29,7 @@ type HTTPRuleInput struct {
 	PassProxyHeaders         *bool               `json:"pass_proxy_headers,omitempty"`
 	UserAgent                *string             `json:"user_agent,omitempty"`
 	CustomHeaders            *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
+	EgressProfileID          *int                `json:"egress_profile_id,omitempty"`
 	WireGuardEntryEnabled    *bool               `json:"wireguard_entry_enabled,omitempty"`
 	WireGuardProfileID       *int                `json:"wireguard_profile_id,omitempty"`
 	WireGuardEntryListenHost *string             `json:"wireguard_entry_listen_host,omitempty"`
@@ -41,6 +42,7 @@ type ruleStore interface {
 	GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
 	ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error)
+	ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error)
 	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
@@ -1034,6 +1036,20 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		customHeaders = normalizeHTTPCustomHeaders(*input.CustomHeaders)
 	}
 
+	egressProfileID := normalizeOptionalPositiveInt(fallback.EgressProfileID)
+	if input.EgressProfileID != nil {
+		egressProfileID = normalizeOptionalPositiveInt(input.EgressProfileID)
+	}
+	if egressProfileID != nil {
+		profile, err := s.getEnabledEgressProfile(ctx, *egressProfileID)
+		if err != nil {
+			return HTTPRule{}, err
+		}
+		if !egressProfileSupportsHTTP(profile) {
+			return HTTPRule{}, fmt.Errorf("%w: egress profile %d does not support HTTP rules", ErrInvalidArgument, profile.ID)
+		}
+	}
+
 	wireGuardEntryEnabled := false
 	if fallback.ID > 0 {
 		wireGuardEntryEnabled = fallback.WireGuardEntryEnabled
@@ -1099,12 +1115,17 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		PassProxyHeaders:         passProxyHeaders,
 		UserAgent:                userAgent,
 		CustomHeaders:            customHeaders,
+		EgressProfileID:          egressProfileID,
 		WireGuardEntryEnabled:    wireGuardEntryEnabled,
 		WireGuardProfileID:       wireGuardProfileID,
 		WireGuardEntryListenHost: wireGuardEntryListenHost,
 		WireGuardEntryListenPort: wireGuardEntryListenPort,
 		Revision:                 fallback.Revision,
 	}, nil
+}
+
+func (s *ruleService) getEnabledEgressProfile(ctx context.Context, id int) (EgressProfile, error) {
+	return getEnabledEgressProfile(ctx, s.store, id)
 }
 
 func (s *ruleService) ensureDefaultHTTPWireGuardProfile(ctx context.Context, agentID string) (WireGuardProfile, error) {
@@ -1303,6 +1324,7 @@ func httpRuleFromRow(row storage.HTTPRuleRow) HTTPRule {
 		PassProxyHeaders:         row.PassProxyHeaders,
 		UserAgent:                row.UserAgent,
 		CustomHeaders:            parseCustomHeaders(row.CustomHeadersJSON),
+		EgressProfileID:          normalizeOptionalPositiveInt(row.EgressProfileID),
 		WireGuardEntryEnabled:    row.WireGuardEntryEnabled,
 		WireGuardProfileID:       copyOptionalInt(row.WireGuardProfileID),
 		WireGuardEntryListenHost: row.WireGuardEntryListenHost,
@@ -1328,6 +1350,7 @@ func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 		PassProxyHeaders:         rule.PassProxyHeaders,
 		UserAgent:                rule.UserAgent,
 		CustomHeadersJSON:        marshalJSON(rule.CustomHeaders, "[]"),
+		EgressProfileID:          normalizeOptionalPositiveInt(rule.EgressProfileID),
 		WireGuardEntryEnabled:    rule.WireGuardEntryEnabled,
 		WireGuardProfileID:       copyOptionalInt(rule.WireGuardProfileID),
 		WireGuardEntryListenHost: rule.WireGuardEntryListenHost,

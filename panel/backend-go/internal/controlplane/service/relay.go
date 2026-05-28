@@ -1329,6 +1329,14 @@ func copyOptionalInt(value *int) *int {
 	return &copied
 }
 
+func normalizeOptionalPositiveInt(value *int) *int {
+	if value == nil || *value <= 0 {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
 func validateEnabledWireGuardProfileReference(ctx context.Context, store storage.Store, agentID string, profileID *int) error {
 	if profileID == nil || *profileID <= 0 {
 		return nil
