@@ -212,7 +212,7 @@ func (s *egressProfileService) ensureProfileNotReferenced(ctx context.Context, p
 			return err
 		}
 		for _, row := range httpRows {
-			if row.Enabled && row.EgressProfileID != nil && *row.EgressProfileID == profileID {
+			if row.EgressProfileID != nil && *row.EgressProfileID == profileID {
 				return fmt.Errorf("%w: egress profile is referenced by HTTP rule %d", ErrInvalidArgument, row.ID)
 			}
 		}
@@ -222,7 +222,7 @@ func (s *egressProfileService) ensureProfileNotReferenced(ctx context.Context, p
 			return err
 		}
 		for _, row := range l4Rows {
-			if row.Enabled && row.EgressProfileID != nil && *row.EgressProfileID == profileID {
+			if row.EgressProfileID != nil && *row.EgressProfileID == profileID {
 				return fmt.Errorf("%w: egress profile is referenced by l4 rule %d", ErrInvalidArgument, row.ID)
 			}
 		}

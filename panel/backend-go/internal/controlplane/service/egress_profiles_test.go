@@ -218,49 +218,14 @@ func TestEgressProfileServiceCreateRejectsInvalidProfileTypesAndSchemes(t *testi
 	}
 }
 
-func TestEgressProfileServiceReferencesExcludeDisabledRules(t *testing.T) {
-	store := newEgressProfileTestStore(t)
-	svc := NewEgressProfileService(store)
-	profile := createTestEgressProfile(t, svc)
-	if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{{
-		ID:              10,
-		AgentID:         "local",
-		FrontendURL:     "http://example.com",
-		BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
-		EgressProfileID: &profile.ID,
-		Enabled:         false,
-		Revision:        1,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules() error = %v", err)
-	}
-	if err := store.SaveL4Rules(t.Context(), "local", []storage.L4RuleRow{{
-		ID:              11,
-		AgentID:         "local",
-		Name:            "disabled l4",
-		Protocol:        "tcp",
-		ListenHost:      "0.0.0.0",
-		ListenPort:      8443,
-		BackendsJSON:    `[{"host":"127.0.0.1","port":443}]`,
-		EgressProfileID: &profile.ID,
-		Enabled:         false,
-		Revision:        1,
-	}}); err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-
-	if _, err := svc.Delete(t.Context(), profile.ID); err != nil {
-		t.Fatalf("Delete() error = %v, want disabled references ignored", err)
-	}
-}
-
-func TestEgressProfileServiceDeleteRejectsEnabledReferences(t *testing.T) {
+func TestEgressProfileServiceDeleteRejectsReferencesRegardlessOfEnabledState(t *testing.T) {
 	tests := []struct {
 		name string
 		seed func(t *testing.T, store *storage.SQLiteStore, profileID int)
 		want string
 	}{
 		{
-			name: "http rule",
+			name: "enabled http rule",
 			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
 				t.Helper()
 				if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{{
@@ -278,7 +243,25 @@ func TestEgressProfileServiceDeleteRejectsEnabledReferences(t *testing.T) {
 			want: "HTTP rule 20",
 		},
 		{
-			name: "l4 rule",
+			name: "disabled http rule",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{{
+					ID:              22,
+					AgentID:         "local",
+					FrontendURL:     "http://example.com",
+					BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+					EgressProfileID: &profileID,
+					Enabled:         false,
+					Revision:        1,
+				}}); err != nil {
+					t.Fatalf("SaveHTTPRules() error = %v", err)
+				}
+			},
+			want: "HTTP rule 22",
+		},
+		{
+			name: "enabled l4 rule",
 			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
 				t.Helper()
 				if err := store.SaveL4Rules(t.Context(), "local", []storage.L4RuleRow{{
@@ -297,6 +280,27 @@ func TestEgressProfileServiceDeleteRejectsEnabledReferences(t *testing.T) {
 				}
 			},
 			want: "l4 rule 21",
+		},
+		{
+			name: "disabled l4 rule",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveL4Rules(t.Context(), "local", []storage.L4RuleRow{{
+					ID:              23,
+					AgentID:         "local",
+					Name:            "disabled l4",
+					Protocol:        "tcp",
+					ListenHost:      "0.0.0.0",
+					ListenPort:      8443,
+					BackendsJSON:    `[{"host":"127.0.0.1","port":443}]`,
+					EgressProfileID: &profileID,
+					Enabled:         false,
+					Revision:        1,
+				}}); err != nil {
+					t.Fatalf("SaveL4Rules() error = %v", err)
+				}
+			},
+			want: "l4 rule 23",
 		},
 	}
 
