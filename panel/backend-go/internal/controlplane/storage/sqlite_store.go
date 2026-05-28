@@ -1222,6 +1222,9 @@ func filterEgressProfilesForSnapshot(
 	}
 	filtered := make([]EgressProfileRow, 0, len(executorIDs))
 	for _, row := range rows {
+		if !row.Enabled {
+			continue
+		}
 		if _, ok := executorIDs[row.ID]; ok {
 			filtered = append(filtered, row)
 		}

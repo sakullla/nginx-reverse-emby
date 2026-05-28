@@ -448,6 +448,59 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	assertSnapshotLacksProfile(t, unrelatedSnapshot, unusedProfileID)
 }
 
+func TestStoreLoadAgentSnapshotIgnoresDisabledReferencedEgressProfileRevision(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "disabled-egress-agent",
+		Name:            "disabled egress agent",
+		DesiredRevision: 5,
+		CurrentRevision: 5,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	profileID := 91
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
+		ID:       profileID,
+		Name:     "disabled exit",
+		Type:     "socks",
+		ProxyURL: "socks5://disabled-secret@127.0.0.1:1080",
+		Enabled:  false,
+		Revision: 99,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "disabled-egress-agent", []HTTPRuleRow{{
+		ID:                1001,
+		AgentID:           "disabled-egress-agent",
+		FrontendURL:       "https://disabled-egress.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          3,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "disabled-egress-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	assertSnapshotLacksProfile(t, snapshot, profileID)
+	if snapshot.Revision != 5 {
+		t.Fatalf("snapshot revision = %d, want 5 without disabled egress profile revision", snapshot.Revision)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.T) {
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
