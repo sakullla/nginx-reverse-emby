@@ -879,6 +879,9 @@ func (s *l4Service) validateL4EgressProfileReference(ctx context.Context, rule L
 	if err != nil {
 		return err
 	}
+	if !egressProfileSupportsL4(profile) {
+		return fmt.Errorf("%w: egress profile %d does not support L4 rules", ErrInvalidArgument, profile.ID)
+	}
 	if strings.EqualFold(rule.Protocol, "udp") && strings.EqualFold(profile.Type, "http") {
 		return fmt.Errorf("%w: UDP rules cannot use HTTP egress profiles", ErrInvalidArgument)
 	}

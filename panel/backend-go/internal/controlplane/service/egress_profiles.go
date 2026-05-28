@@ -550,6 +550,14 @@ func getEnabledEgressProfile(ctx context.Context, store egressProfileLookupStore
 }
 
 func egressProfileSupportsHTTP(profile EgressProfile) bool {
+	return egressProfileTypeSupported(profile)
+}
+
+func egressProfileSupportsL4(profile EgressProfile) bool {
+	return egressProfileTypeSupported(profile)
+}
+
+func egressProfileTypeSupported(profile EgressProfile) bool {
 	switch strings.ToLower(strings.TrimSpace(profile.Type)) {
 	case "direct", "socks", "http", "wireguard":
 		return true

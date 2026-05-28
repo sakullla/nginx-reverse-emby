@@ -262,6 +262,36 @@ func TestL4RuleServiceCreateAcceptsUDPSOCKSEgressProfile(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceCreateRejectsTCPUnsupportedEgressProfileType(t *testing.T) {
+	store := newL4RuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 24, Name: "bogus", Type: "bogus", Enabled: true})
+	svc := NewL4RuleService(testConfig(), store)
+	_, err := svc.Create(t.Context(), "local", L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenPort:      intPtrL4(8443),
+		Backends:        &[]L4Backend{{Host: "127.0.0.1", Port: 8096}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "does not support L4 rules") {
+		t.Fatalf("Create() error = %v, want unsupported egress profile type validation", err)
+	}
+}
+
+func TestL4RuleServiceCreateRejectsUDPUnsupportedEgressProfileType(t *testing.T) {
+	store := newL4RuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 25, Name: "bogus", Type: "bogus", Enabled: true})
+	svc := NewL4RuleService(testConfig(), store)
+	_, err := svc.Create(t.Context(), "local", L4RuleInput{
+		Protocol:        stringPtrL4("udp"),
+		ListenPort:      intPtrL4(5353),
+		Backends:        &[]L4Backend{{Host: "127.0.0.1", Port: 53}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "does not support L4 rules") {
+		t.Fatalf("Create() error = %v, want unsupported egress profile type validation", err)
+	}
+}
+
 func TestL4RuleServiceUpdateRejectsDisabledEgressProfile(t *testing.T) {
 	store := newL4RuleServiceTestStore(t)
 	store.l4RulesByID["local"] = []storage.L4RuleRow{{
