@@ -50,10 +50,12 @@ func TestEgressProfileResolveValidatesProfilesByTypeAndNetwork(t *testing.T) {
 	httpID := 12
 	wgID := 13
 	directID := 14
+	httpsHTTPID := 15
 	resolver := NewResolver([]model.EgressProfile{
 		{ID: directID, Name: "direct", Type: "direct", Enabled: true},
 		{ID: socksID, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true},
 		{ID: httpID, Name: "http", Type: "http", ProxyURL: "http://127.0.0.1:8080", Enabled: true},
+		{ID: httpsHTTPID, Name: "https-http", Type: "http", ProxyURL: "https://127.0.0.1:8443", Enabled: true},
 		{ID: wgID, Name: "wg", Type: "wireguard", WireGuardConfig: &model.EgressWireGuardConfig{PrivateKey: "k"}, Enabled: true},
 	})
 
@@ -67,6 +69,7 @@ func TestEgressProfileResolveValidatesProfilesByTypeAndNetwork(t *testing.T) {
 		{name: "direct tcp4", id: intPtr(directID), network: "tcp4", wantID: directID, wantFound: true},
 		{name: "socks udp6", id: intPtr(socksID), network: "UDP6", wantID: socksID, wantFound: true},
 		{name: "http tcp", id: intPtr(httpID), network: "tcp", wantID: httpID, wantFound: true},
+		{name: "https http tcp", id: intPtr(httpsHTTPID), network: "tcp", wantID: httpsHTTPID, wantFound: true},
 		{name: "wireguard udp", id: intPtr(wgID), network: "udp", wantID: wgID, wantFound: true},
 	}
 

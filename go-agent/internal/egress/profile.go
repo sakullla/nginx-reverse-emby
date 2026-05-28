@@ -2,6 +2,9 @@ package egress
 
 import (
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -60,12 +63,8 @@ func (r Resolver) Resolve(id *int, network string) (model.EgressProfile, bool, e
 		if normalizedNetwork != "tcp" {
 			return model.EgressProfile{}, false, fmt.Errorf("egress profile %d type http does not support network %q", profile.ID, normalizedNetwork)
 		}
-		proxyURL, err := parseProfileProxyURL(profile)
-		if err != nil {
+		if err := validateHTTPProxyURL(profile); err != nil {
 			return model.EgressProfile{}, false, err
-		}
-		if !proxyURL.HTTPConnect {
-			return model.EgressProfile{}, false, fmt.Errorf("egress profile %d type http requires HTTP proxy URL", profile.ID)
 		}
 	case "wireguard":
 		if !isTCPOrUDP(normalizedNetwork) {
@@ -79,6 +78,59 @@ func (r Resolver) Resolve(id *int, network string) (model.EgressProfile, bool, e
 	}
 
 	return profile, true, nil
+}
+
+func validateHTTPProxyURL(profile model.EgressProfile) error {
+	u, err := parseProfileURL(profile)
+	if err != nil {
+		return err
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("egress profile %d type http requires HTTP proxy URL", profile.ID)
+	}
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		return fmt.Errorf("egress profile %d invalid proxy URL: proxy URL must include host and port: %w", profile.ID, err)
+	}
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("egress profile %d invalid proxy URL: proxy URL missing host", profile.ID)
+	}
+	if err := validateProxyURLPort(port); err != nil {
+		return fmt.Errorf("egress profile %d invalid proxy URL: %w", profile.ID, err)
+	}
+	return nil
+}
+
+func parseProfileURL(profile model.EgressProfile) (*url.URL, error) {
+	if strings.TrimSpace(profile.ProxyURL) == "" {
+		return nil, fmt.Errorf("egress profile %d missing ProxyURL", profile.ID)
+	}
+	u, err := url.Parse(profile.ProxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("egress profile %d invalid proxy URL: parse proxy URL: %w", profile.ID, err)
+	}
+	if strings.TrimSpace(u.Scheme) == "" {
+		return nil, fmt.Errorf("egress profile %d invalid proxy URL: proxy URL missing scheme", profile.ID)
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return nil, fmt.Errorf("egress profile %d invalid proxy URL: proxy URL missing host", profile.ID)
+	}
+	return u, nil
+}
+
+func validateProxyURLPort(port string) error {
+	if port == "" {
+		return fmt.Errorf("proxy URL missing port")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return fmt.Errorf("proxy URL port must be numeric: %w", err)
+	}
+	if n < 1 || n > 65535 {
+		return fmt.Errorf("proxy URL port out of range")
+	}
+	return nil
 }
 
 func parseProfileProxyURL(profile model.EgressProfile) (proxyproto.ProxyURL, error) {
