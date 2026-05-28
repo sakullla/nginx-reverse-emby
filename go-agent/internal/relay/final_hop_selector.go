@@ -107,7 +107,10 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string, options D
 	return nil, lastAddress, lastErr
 }
 
-func dialFinalHopTCP(ctx context.Context, address string, _ DialOptions) (net.Conn, error) {
+func dialFinalHopTCP(ctx context.Context, address string, options DialOptions) (net.Conn, error) {
+	if err := rejectUnresolvedEgressProfile(options); err != nil {
+		return nil, err
+	}
 	return dialTCP(ctx, address)
 }
 
@@ -182,7 +185,10 @@ func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string, optio
 	return nil, "", lastErr
 }
 
-func openFinalHopUDPPeer(ctx context.Context, address string, _ DialOptions) (udpPacketPeer, error) {
+func openFinalHopUDPPeer(ctx context.Context, address string, options DialOptions) (udpPacketPeer, error) {
+	if err := rejectUnresolvedEgressProfile(options); err != nil {
+		return nil, err
+	}
 	addr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, err
@@ -193,4 +199,11 @@ func openFinalHopUDPPeer(ctx context.Context, address string, _ DialOptions) (ud
 	}
 	netutil.TuneUDPBuffers(conn)
 	return newUDPSocketPeer(conn), nil
+}
+
+func rejectUnresolvedEgressProfile(options DialOptions) error {
+	if options.EgressProfileID == nil || *options.EgressProfileID <= 0 {
+		return nil
+	}
+	return fmt.Errorf("egress profile %d resolver is not wired for relay final hop", *options.EgressProfileID)
 }

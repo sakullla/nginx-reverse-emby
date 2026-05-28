@@ -249,6 +249,21 @@ func TestFinalHopSelectorTreatsScopedIPv6AsLiteral(t *testing.T) {
 	}
 }
 
+func TestFinalHopSelectorRejectsUnresolvedEgressProfileID(t *testing.T) {
+	backendAddr, stopBackend := startSelectorTCPEchoServer(t)
+	defer stopBackend()
+
+	profileID := 17
+	selector := newFinalHopSelector(finalHopSelectorConfig{})
+	if _, _, err := selector.dialTCP(context.Background(), backendAddr, DialOptions{EgressProfileID: &profileID}); err == nil || !strings.Contains(err.Error(), "egress profile 17") {
+		t.Fatalf("dialTCP() error = %v, want unresolved egress profile error", err)
+	}
+	selector = newFinalHopSelector(finalHopSelectorConfig{})
+	if _, _, err := selector.openUDPPeer(context.Background(), backendAddr, DialOptions{EgressProfileID: &profileID}); err == nil || !strings.Contains(err.Error(), "egress profile 17") {
+		t.Fatalf("openUDPPeer() error = %v, want unresolved egress profile error", err)
+	}
+}
+
 func startSelectorTCPEchoServer(t *testing.T) (string, func()) {
 	t.Helper()
 
