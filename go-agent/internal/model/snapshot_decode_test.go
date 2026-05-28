@@ -160,7 +160,7 @@ func TestSnapshotDecodePreservesEgressProfilesAndRuleProfileIDs(t *testing.T) {
 			}
 		],
 		"rules":[{"frontend_url":"https://app.example.com","egress_profile_id":11}],
-		"l4_rules":[{"protocol":"tcp","listen_host":"0.0.0.0","listen_port":8443,"egress_profile_id":12}]
+		"l4_rules":[{"agent_id":"l4-agent","protocol":"tcp","listen_host":"0.0.0.0","listen_port":8443,"egress_profile_id":12}]
 	}`)
 
 	var snapshot Snapshot
@@ -204,6 +204,9 @@ func TestSnapshotDecodePreservesEgressProfilesAndRuleProfileIDs(t *testing.T) {
 	}
 	if snapshot.L4Rules[0].EgressProfileID == nil || *snapshot.L4Rules[0].EgressProfileID != 12 {
 		t.Fatalf("L4 EgressProfileID = %+v, want 12", snapshot.L4Rules[0].EgressProfileID)
+	}
+	if snapshot.L4Rules[0].AgentID != "l4-agent" {
+		t.Fatalf("L4 AgentID = %q, want l4-agent", snapshot.L4Rules[0].AgentID)
 	}
 }
 

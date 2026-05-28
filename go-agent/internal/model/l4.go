@@ -22,6 +22,7 @@ type L4Tuning struct {
 
 type L4Rule struct {
 	ID         int    `json:"id,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
 	Name       string `json:"name,omitempty"`
 	Protocol   string `json:"protocol"`
 	ListenHost string `json:"listen_host"`

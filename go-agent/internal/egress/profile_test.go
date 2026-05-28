@@ -38,6 +38,13 @@ func TestEgressProfileResolveReturnsDirectProfileForNilAndNonPositiveIDs(t *test
 	}
 }
 
+func TestEgressProfileResolveRejectsUnsupportedNetworkForImplicitDirect(t *testing.T) {
+	_, _, err := NewResolver(nil).Resolve(nil, "icmp")
+	if err == nil || !strings.Contains(err.Error(), `network "icmp"`) {
+		t.Fatalf("Resolve() error = %v, want unsupported network", err)
+	}
+}
+
 func TestEgressProfileResolveValidatesProfilesByTypeAndNetwork(t *testing.T) {
 	socksID := 11
 	httpID := 12
@@ -88,8 +95,8 @@ func TestEgressProfileResolveReturnsValidationErrors(t *testing.T) {
 
 	resolver := NewResolver([]model.EgressProfile{
 		{ID: disabledID, Name: "disabled", Type: "direct", Enabled: false},
-		{ID: socksID, Name: "socks", Type: "socks", Enabled: true},
-		{ID: httpID, Name: "http", Type: "http", ProxyURL: "http://proxy.example:8080", Enabled: true},
+		{ID: socksID, Name: "socks", Type: "socks", ProxyURL: "http://proxy.example:8080", Enabled: true},
+		{ID: httpID, Name: "http", Type: "http", ProxyURL: "socks5://proxy.example:1080", Enabled: true},
 		{ID: wgID, Name: "wg", Type: "wireguard", Enabled: true},
 		{ID: unknownID, Name: "unknown", Type: "something-else", Enabled: true},
 	})
@@ -102,7 +109,8 @@ func TestEgressProfileResolveReturnsValidationErrors(t *testing.T) {
 	}{
 		{name: "missing", id: 999, network: "tcp", wantErr: "egress profile 999 not found"},
 		{name: "disabled", id: disabledID, network: "tcp", wantErr: "egress profile 21 is disabled"},
-		{name: "socks missing url", id: socksID, network: "tcp", wantErr: "ProxyURL"},
+		{name: "socks wrong scheme", id: socksID, network: "tcp", wantErr: "requires SOCKS proxy URL"},
+		{name: "http wrong scheme", id: httpID, network: "tcp", wantErr: "requires HTTP proxy URL"},
 		{name: "http udp", id: httpID, network: "udp6", wantErr: "UDP"},
 		{name: "wireguard missing config", id: wgID, network: "tcp", wantErr: "WireGuardConfig"},
 		{name: "unknown type", id: unknownID, network: "tcp", wantErr: "unsupported egress profile type"},
@@ -118,6 +126,22 @@ func TestEgressProfileResolveReturnsValidationErrors(t *testing.T) {
 				t.Fatalf("Resolve() error = %q, want substring %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestEgressProfileResolveRejectsMalformedProxyURLs(t *testing.T) {
+	id := 31
+	resolver := NewResolver([]model.EgressProfile{{
+		ID:       id,
+		Name:     "bad socks",
+		Type:     "socks",
+		ProxyURL: "socks5://127.0.0.1",
+		Enabled:  true,
+	}})
+
+	_, _, err := resolver.Resolve(&id, "tcp")
+	if err == nil || !strings.Contains(err.Error(), "invalid proxy URL") {
+		t.Fatalf("Resolve() error = %v, want invalid proxy URL", err)
 	}
 }
 
