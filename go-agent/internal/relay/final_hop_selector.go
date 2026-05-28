@@ -12,6 +12,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 )
 
 type finalHopSelectorConfig struct {
@@ -84,7 +85,7 @@ func literalHostCandidate(host string, port int) (bool, string) {
 	return false, ""
 }
 
-func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn, string, error) {
+func (s *finalHopSelector) dialTCP(ctx context.Context, target string, options DialOptions) (net.Conn, string, error) {
 	candidates, err := s.resolvedCandidates(ctx, target)
 	if err != nil {
 		return nil, "", err
@@ -95,7 +96,7 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn
 	for _, candidate := range candidates {
 		start := s.now()
 		lastAddress = candidate.Address
-		conn, err := dialTCP(ctx, candidate.Address)
+		conn, err := dialFinalHopTCP(ctx, candidate.Address, options)
 		if err != nil {
 			s.cache.MarkFailure(candidate.Address)
 			lastErr = err
@@ -105,6 +106,13 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn
 		return conn, candidate.Address, nil
 	}
 	return nil, lastAddress, lastErr
+}
+
+func dialFinalHopTCP(ctx context.Context, address string, options DialOptions) (net.Conn, error) {
+	if strings.TrimSpace(options.FinalHopProxyURL) != "" {
+		return proxyproto.Dial(ctx, options.FinalHopProxyURL, address)
+	}
+	return dialTCP(ctx, address)
 }
 
 type observedUDPPeer struct {
@@ -153,7 +161,7 @@ func (p *observedUDPPeer) ReadPacket() ([]byte, error) {
 	return payload, nil
 }
 
-func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string) (udpPacketPeer, string, error) {
+func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string, options DialOptions) (udpPacketPeer, string, error) {
 	candidates, err := s.resolvedCandidates(ctx, target)
 	if err != nil {
 		return nil, "", err
@@ -161,21 +169,14 @@ func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string) (udpP
 
 	var lastErr error
 	for _, candidate := range candidates {
-		addr, err := net.ResolveUDPAddr("udp", candidate.Address)
+		peer, err := openFinalHopUDPPeer(ctx, candidate.Address, options)
 		if err != nil {
 			s.cache.MarkFailure(candidate.Address)
 			lastErr = err
 			continue
 		}
-		conn, err := net.DialUDP("udp", nil, addr)
-		if err != nil {
-			s.cache.MarkFailure(candidate.Address)
-			lastErr = err
-			continue
-		}
-		netutil.TuneUDPBuffers(conn)
 		return &observedUDPPeer{
-			udpPacketPeer:     newUDPSocketPeer(conn),
+			udpPacketPeer:     peer,
 			selector:          s,
 			address:           candidate.Address,
 			openedAt:          s.now(),
@@ -183,4 +184,50 @@ func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string) (udpP
 		}, candidate.Address, nil
 	}
 	return nil, "", lastErr
+}
+
+func openFinalHopUDPPeer(ctx context.Context, address string, options DialOptions) (udpPacketPeer, error) {
+	if strings.TrimSpace(options.FinalHopProxyURL) != "" {
+		association, err := proxyproto.DialUDP(ctx, options.FinalHopProxyURL)
+		if err != nil {
+			return nil, err
+		}
+		return &proxyUDPFinalHopPeer{association: association, target: address}, nil
+	}
+	addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		return nil, err
+	}
+	netutil.TuneUDPBuffers(conn)
+	return newUDPSocketPeer(conn), nil
+}
+
+type proxyUDPFinalHopPeer struct {
+	association *proxyproto.UDPAssociation
+	target      string
+}
+
+func (p *proxyUDPFinalHopPeer) Close() error {
+	return p.association.Close()
+}
+
+func (p *proxyUDPFinalHopPeer) SetReadDeadline(deadline time.Time) error {
+	return p.association.SetReadDeadline(deadline)
+}
+
+func (p *proxyUDPFinalHopPeer) SetWriteDeadline(deadline time.Time) error {
+	return p.association.SetWriteDeadline(deadline)
+}
+
+func (p *proxyUDPFinalHopPeer) ReadPacket() ([]byte, error) {
+	_, payload, err := p.association.ReadPacket()
+	return payload, err
+}
+
+func (p *proxyUDPFinalHopPeer) WritePacket(payload []byte) error {
+	return p.association.WritePacket(p.target, payload)
 }

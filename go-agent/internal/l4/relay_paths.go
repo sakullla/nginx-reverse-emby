@@ -112,14 +112,12 @@ func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, di
 		}
 	case "proxy":
 		if ruleUsesRelay(rule) {
-			proxyURL, parseErr := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
-			if parseErr != nil {
+			if _, parseErr := proxyproto.ParseProxyURL(rule.ProxyEgressURL); parseErr != nil {
 				err = parseErr
 				break
 			}
-			upstream, err = proxyproto.DialWithOptions(s.ctx, rule.ProxyEgressURL, target, proxyproto.WithDialContext(func(_ context.Context, network, _ string) (net.Conn, error) {
-				return s.dialRelayPath(network, proxyURL.Address, rule, dialOptions)
-			}))
+			dialOptions.FinalHopProxyURL = rule.ProxyEgressURL
+			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 		} else {
 			upstream, err = proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
 		}

@@ -11,7 +11,11 @@ import (
 )
 
 const maxRequestSize = 1 << 20
-const relayMetadataTrafficClass = "traffic_class"
+
+const (
+	relayMetadataTrafficClass     = "traffic_class"
+	relayMetadataFinalHopProxyURL = "final_hop_proxy_url"
+)
 
 const (
 	ListenerTransportModeTLSTCP    = "tls_tcp"
@@ -25,6 +29,21 @@ type relayRequest struct {
 	Network string `json:"network"`
 	Target  string `json:"target"`
 	Chain   []Hop  `json:"chain,omitempty"`
+}
+
+func relayFinalHopProxyURLFromMetadata(metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	raw, ok := metadata[relayMetadataFinalHopProxyURL]
+	if !ok {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 type relayOpenFrame struct {

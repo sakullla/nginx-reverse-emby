@@ -60,7 +60,7 @@ func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, opt
 		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
-	conn, selectedAddress, err := selector.dialTCP(s.ctx, target)
+	conn, selectedAddress, err := selector.dialTCP(s.ctx, target, options)
 	return conn, DialResult{SelectedAddress: selectedAddress}, err
 }
 
@@ -90,7 +90,7 @@ func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, option
 		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
-	peer, selectedAddress, err := selector.openUDPPeer(s.ctx, target)
+	peer, selectedAddress, err := selector.openUDPPeer(s.ctx, target, options)
 	return peer, selectedAddress, err
 }
 
@@ -301,10 +301,17 @@ func relayDialTrafficClass(network string, options DialOptions) upstream.Traffic
 
 func relayMetadataForDialOptions(network string, options DialOptions) map[string]any {
 	class := relayDialTrafficClass(network, options)
-	if class == upstream.TrafficClassUnknown {
+	metadata := make(map[string]any)
+	if class != upstream.TrafficClassUnknown {
+		metadata[relayMetadataTrafficClass] = string(class)
+	}
+	if finalHopProxyURL := strings.TrimSpace(options.FinalHopProxyURL); finalHopProxyURL != "" {
+		metadata[relayMetadataFinalHopProxyURL] = finalHopProxyURL
+	}
+	if len(metadata) == 0 {
 		return nil
 	}
-	return map[string]any{relayMetadataTrafficClass: string(class)}
+	return metadata
 }
 
 func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialOptions {
@@ -312,7 +319,10 @@ func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialO
 	if class == upstream.TrafficClassUnknown {
 		class = relayDialTrafficClass(network, DialOptions{})
 	}
-	return DialOptions{TrafficClass: class}
+	return DialOptions{
+		TrafficClass:     class,
+		FinalHopProxyURL: relayFinalHopProxyURLFromMetadata(metadata),
+	}
 }
 
 func dialRelayTCPWithProxy(ctx context.Context, address string, _ Listener, proxyURL string) (net.Conn, error) {

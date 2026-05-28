@@ -71,7 +71,7 @@ func (s *Server) probeRelayPath(ctx context.Context, network, target string, cha
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
 	startedAt := time.Now()
-	conn, selectedAddress, err := selector.dialTCP(ctx, target)
+	conn, selectedAddress, err := selector.dialTCP(ctx, target, DialOptions{})
 	if err != nil {
 		return nil, err
 	}

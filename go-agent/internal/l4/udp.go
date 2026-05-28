@@ -1,7 +1,6 @@
 package l4
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -210,66 +209,6 @@ func (u *proxyUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
 }
 func (u *proxyUDPUpstream) WritePacket(payload []byte) error {
 	return u.association.WritePacket(u.target, payload)
-}
-
-type proxyRelayUDPPeer struct {
-	rule         model.L4Rule
-	dialRelayUDP func(model.L4Rule, string) (udpUpstream, error)
-	peer         udpUpstream
-}
-
-func (p *proxyRelayUDPPeer) SetRelayAddress(address string) error {
-	if p == nil {
-		return fmt.Errorf("SOCKS5 UDP relay peer is nil")
-	}
-	if p.dialRelayUDP == nil {
-		return fmt.Errorf("SOCKS5 UDP relay dialer is missing")
-	}
-	peer, err := p.dialRelayUDP(p.rule, address)
-	if err != nil {
-		return err
-	}
-	p.peer = peer
-	return nil
-}
-
-func (p *proxyRelayUDPPeer) Close() error {
-	if p.peer == nil {
-		return nil
-	}
-	return p.peer.Close()
-}
-
-func (p *proxyRelayUDPPeer) SetReadDeadline(deadline time.Time) error {
-	if p.peer == nil {
-		return nil
-	}
-	return p.peer.SetReadDeadline(deadline)
-}
-
-func (p *proxyRelayUDPPeer) SetWriteDeadline(deadline time.Time) error {
-	if p.peer == nil {
-		return nil
-	}
-	return p.peer.SetWriteDeadline(deadline)
-}
-
-func (p *proxyRelayUDPPeer) ReadPacket() ([]byte, error) {
-	if p.peer == nil {
-		return nil, fmt.Errorf("SOCKS5 UDP relay peer is not connected")
-	}
-	packet, err := p.peer.ReadPacket()
-	if err != nil {
-		return nil, err
-	}
-	return packet.payload, nil
-}
-
-func (p *proxyRelayUDPPeer) WritePacket(payload []byte) error {
-	if p.peer == nil {
-		return fmt.Errorf("SOCKS5 UDP relay peer is not connected")
-	}
-	return p.peer.WritePacket(payload)
 }
 
 func proxyUDPReplySourceMatches(expected string, source string) bool {
@@ -654,23 +593,17 @@ func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate)
 		return &connUDPUpstream{conn: conn}, nil
 	case "proxy":
 		if ruleUsesRelay(rule) {
-			proxyURL, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
+			if _, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL); err != nil {
+				return nil, err
+			}
+			conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
+				TrafficClass:     upstream.TrafficClassBulk,
+				FinalHopProxyURL: rule.ProxyEgressURL,
+			})
 			if err != nil {
 				return nil, err
 			}
-			association, err := proxyproto.DialUDPWithOptions(s.ctx, rule.ProxyEgressURL,
-				proxyproto.WithDialContext(func(_ context.Context, network, _ string) (net.Conn, error) {
-					return s.dialRelayPath(network, proxyURL.Address, rule, relay.DialOptions{})
-				}),
-				proxyproto.WithUDPPeer(&proxyRelayUDPPeer{
-					rule:         rule,
-					dialRelayUDP: s.dialProxyUDPRelayPeer,
-				}),
-			)
-			if err != nil {
-				return nil, err
-			}
-			return &proxyUDPUpstream{association: association, target: candidate.address}, nil
+			return &relayUDPUpstream{conn: conn}, nil
 		}
 		association, err := proxyproto.DialUDP(s.ctx, rule.ProxyEgressURL)
 		if err != nil {
@@ -704,16 +637,6 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 		return nil, err
 	}
 	return &relayUDPUpstream{conn: upstream}, nil
-}
-
-func (s *Server) dialProxyUDPRelayPeer(rule model.L4Rule, targetAddress string) (udpUpstream, error) {
-	conn, err := s.dialRelayPath("udp", targetAddress, rule, relay.DialOptions{
-		TrafficClass: upstream.TrafficClassBulk,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &relayUDPUpstream{conn: conn}, nil
 }
 
 func (s *Server) existingUDPSessionLocked(listener udpListener, peer *net.UDPAddr, target string) *udpSession {

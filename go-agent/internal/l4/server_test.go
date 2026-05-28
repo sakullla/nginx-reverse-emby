@@ -90,8 +90,9 @@ func (d *fakeL4RelayPathDialer) calledOptions() []relay.DialOptions {
 
 func cloneRelayDialOptionsForL4Test(options relay.DialOptions) relay.DialOptions {
 	return relay.DialOptions{
-		InitialPayload: append([]byte(nil), options.InitialPayload...),
-		TrafficClass:   options.TrafficClass,
+		InitialPayload:   append([]byte(nil), options.InitialPayload...),
+		TrafficClass:     options.TrafficClass,
+		FinalHopProxyURL: options.FinalHopProxyURL,
 	}
 }
 
@@ -2955,9 +2956,9 @@ func TestDialProxyEntryWireGuardEgressUsesRelayLayers(t *testing.T) {
 }
 
 func TestDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-	defer serverConn.Close()
-	dialer := &fakeL4RelayPathDialer{conn: clientConn}
+	upstream, relayConn := net.Pipe()
+	defer relayConn.Close()
+	dialer := &fakeL4RelayPathDialer{conn: upstream}
 	srv := &Server{
 		ctx:   context.Background(),
 		cache: backends.NewCache(backends.Config{}),
@@ -2976,27 +2977,6 @@ func TestDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
 		RelayLayers:     [][]int{{1, 2}},
 	}
 
-	requestedTarget := make(chan string, 1)
-	go func() {
-		reader := bufio.NewReader(serverConn)
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			requestedTarget <- "read error: " + err.Error()
-			return
-		}
-		requestedTarget <- strings.TrimSpace(line)
-		for {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				return
-			}
-			if strings.TrimSpace(line) == "" {
-				break
-			}
-		}
-		_, _ = io.WriteString(serverConn, "HTTP/1.1 200 OK\r\n\r\n")
-	}()
-
 	conn, err := srv.dialProxyEntryUpstream(rule, "backend.example:443")
 	if err != nil {
 		t.Fatalf("dialProxyEntryUpstream() error = %v", err)
@@ -3006,23 +2986,22 @@ func TestDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
 		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
 	}
 	for _, target := range dialer.calledTargets() {
-		if target != "proxy.example:8080" {
-			t.Fatalf("relay target = %q, want proxy.example:8080", target)
+		if target != "backend.example:443" {
+			t.Fatalf("relay target = %q, want backend.example:443", target)
 		}
 	}
-	select {
-	case target := <-requestedTarget:
-		if target != "CONNECT backend.example:443 HTTP/1.1" {
-			t.Fatalf("proxy request = %q", target)
+	options := dialer.calledOptions()
+	if len(options) == 0 {
+		t.Fatal("dial options were not captured")
+	}
+	for _, option := range options {
+		if option.FinalHopProxyURL != "http://proxy.example:8080" {
+			t.Fatalf("FinalHopProxyURL = %q, want proxy URL", option.FinalHopProxyURL)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for proxy CONNECT request")
 	}
 }
 
 func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
-	controlClient, controlServer := net.Pipe()
-	defer controlServer.Close()
 	packetClient, packetServer := net.Pipe()
 	defer packetServer.Close()
 	dialer := &fakeL4RelayPathDialer{}
@@ -3036,18 +3015,18 @@ func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
 		},
 		relayPathDialer: dialer,
 	}
-	dialCount := 0
 	srv.relayPathDialer = l4RelayPathDialerFunc(func(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+		options := relay.DialOptions{}
+		if len(req.Options) > 0 {
+			options = req.Options[0]
+		}
 		dialer.mu.Lock()
 		dialer.calls = append(dialer.calls, append([]int(nil), path.IDs...))
 		dialer.targets = append(dialer.targets, req.Target)
+		dialer.options = append(dialer.options, cloneRelayDialOptionsForL4Test(options))
 		dialer.mu.Unlock()
 		if path.IDs[0] != 2 {
 			return nil, relay.DialResult{}, fmt.Errorf("path %v failed", path.IDs)
-		}
-		dialCount++
-		if dialCount == 1 {
-			return controlClient, relay.DialResult{}, nil
 		}
 		return packetClient, relay.DialResult{}, nil
 	})
@@ -3060,16 +3039,6 @@ func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
 		ProxyEgressURL:  "socks5h://proxy.example:1080",
 		RelayLayers:     [][]int{{1, 2}},
 	}
-
-	go func() {
-		reader := bufio.NewReader(controlServer)
-		methods := make([]byte, 3)
-		_, _ = io.ReadFull(reader, methods)
-		_, _ = controlServer.Write([]byte{0x05, 0x00})
-		req := make([]byte, 10)
-		_, _ = io.ReadFull(reader, req)
-		_, _ = controlServer.Write([]byte{0x05, 0x00, 0x00, 0x01, 198, 51, 100, 10, 0x15, 0xb3})
-	}()
 
 	upstreamConn, err := srv.dialTargetUDPUpstream(rule, l4Candidate{address: "backend.example:5300"})
 	if err != nil {
@@ -3097,15 +3066,20 @@ func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for UDP relay packet")
 	}
-	parsed, err := proxyproto.ParseSOCKS5UDPPacket(packet)
-	if err != nil {
-		t.Fatalf("ParseSOCKS5UDPPacket() error = %v", err)
+	if string(packet) != "ping" {
+		t.Fatalf("UDP relay packet = %q, want ping", string(packet))
 	}
-	if parsed.Target != "backend.example:5300" || string(parsed.Payload) != "ping" {
-		t.Fatalf("SOCKS5 packet = %+v", parsed)
-	}
-	if targets := dialer.calledTargets(); !stringSliceContains(targets, "proxy.example:1080") || !stringSliceContains(targets, "198.51.100.10:5555") {
+	if targets := dialer.calledTargets(); !stringSliceContains(targets, "backend.example:5300") {
 		t.Fatalf("relay targets = %+v", targets)
+	}
+	options := dialer.calledOptions()
+	if len(options) == 0 {
+		t.Fatal("dial options were not captured")
+	}
+	for _, option := range options {
+		if option.FinalHopProxyURL != "socks5h://proxy.example:1080" {
+			t.Fatalf("FinalHopProxyURL = %q, want proxy URL", option.FinalHopProxyURL)
+		}
 	}
 }
 

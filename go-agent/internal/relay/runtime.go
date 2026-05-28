@@ -16,6 +16,7 @@ type DialOptions struct {
 	InitialPayload    []byte
 	TrafficClass      upstream.TrafficClass
 	OutboundProxyURL  string
+	FinalHopProxyURL  string
 	WireGuardProvider WireGuardRuntimeProvider
 }
 
@@ -30,12 +31,13 @@ type StartOptions struct {
 
 func (o DialOptions) clone() DialOptions {
 	if len(o.InitialPayload) == 0 {
-		return DialOptions{TrafficClass: o.TrafficClass, OutboundProxyURL: o.OutboundProxyURL, WireGuardProvider: o.WireGuardProvider}
+		return DialOptions{TrafficClass: o.TrafficClass, OutboundProxyURL: o.OutboundProxyURL, FinalHopProxyURL: o.FinalHopProxyURL, WireGuardProvider: o.WireGuardProvider}
 	}
 	return DialOptions{
 		InitialPayload:    append([]byte(nil), o.InitialPayload...),
 		TrafficClass:      o.TrafficClass,
 		OutboundProxyURL:  o.OutboundProxyURL,
+		FinalHopProxyURL:  o.FinalHopProxyURL,
 		WireGuardProvider: o.WireGuardProvider,
 	}
 }
