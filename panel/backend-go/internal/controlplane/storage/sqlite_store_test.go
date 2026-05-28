@@ -130,6 +130,12 @@ func TestSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
 	assertSQLiteColumnContract(t, columns, "enabled", 1, "1")
 	assertSQLiteColumnContract(t, columns, "description", 1, `""`)
 	assertSQLiteColumnContract(t, columns, "revision", 1, "0")
+
+	httpColumns := loadSQLiteTableInfo(t, store.db, "rules")
+	assertSQLiteColumnContract(t, httpColumns, "egress_profile_id", 0, "")
+
+	l4Columns := loadSQLiteTableInfo(t, store.db, "l4_rules")
+	assertSQLiteColumnContract(t, l4Columns, "egress_profile_id", 0, "")
 }
 
 func TestStoreSaveListEgressProfilesPreservesSecretMaterial(t *testing.T) {
@@ -157,6 +163,81 @@ func TestStoreSaveListEgressProfilesPreservesSecretMaterial(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ProxyURL != row.ProxyURL {
 		t.Fatalf("profiles = %+v, want raw proxy secret", got)
+	}
+}
+
+func TestStoreSaveListEgressProfilesPersistsDisabledProfile(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
+		ID:      41,
+		Name:    "disabled exit",
+		Type:    "socks",
+		Enabled: false,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+
+	got, err := store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Enabled {
+		t.Fatalf("profiles = %+v, want one disabled profile", got)
+	}
+}
+
+func TestStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{
+		{ID: 3, Name: "third", Type: "socks", Enabled: true},
+		{ID: 1, Name: "first", Type: "http", Enabled: true},
+		{ID: 2, Name: "second", Type: "wireguard", Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveEgressProfiles(initial) error = %v", err)
+	}
+
+	got, err := store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles(initial) error = %v", err)
+	}
+	if len(got) != 3 || got[0].ID != 1 || got[1].ID != 2 || got[2].ID != 3 {
+		t.Fatalf("initial profiles = %+v, want ordered by id", got)
+	}
+
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{
+		{ID: 2, Name: "second only", Type: "wireguard", Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveEgressProfiles(smaller) error = %v", err)
+	}
+
+	got, err = store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles(smaller) error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 2 || got[0].Name != "second only" {
+		t.Fatalf("profiles after smaller replace = %+v", got)
+	}
+
+	if err := store.SaveEgressProfiles(t.Context(), nil); err != nil {
+		t.Fatalf("SaveEgressProfiles(empty) error = %v", err)
+	}
+
+	got, err = store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles(empty) error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("profiles after empty replace = %+v, want none", got)
 	}
 }
 
@@ -190,6 +271,73 @@ func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
 	}
 	if len(snapshot.EgressProfiles) != 1 || snapshot.EgressProfiles[0].ProxyURL != "socks5://127.0.0.1:1080" {
 		t.Fatalf("snapshot EgressProfiles = %+v, want raw proxy URL", snapshot.EgressProfiles)
+	}
+}
+
+func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	egressProfileID := 41
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
+		ID:       egressProfileID,
+		Name:     "socks exit",
+		Type:     "socks",
+		ProxyURL: "socks5://127.0.0.1:1080",
+		Enabled:  true,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
+		ID:                1001,
+		AgentID:           "local",
+		FrontendURL:       "https://emby.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &egressProfileID,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
+		ID:                 2001,
+		AgentID:            "local",
+		Name:               "tcp",
+		Protocol:           "tcp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         25565,
+		BackendsJSON:       `[{"host":"127.0.0.1","port":25566}]`,
+		LoadBalancingJSON:  `{"strategy":"adaptive"}`,
+		TuningJSON:         `{}`,
+		RelayChainJSON:     `[]`,
+		RelayLayersJSON:    `[]`,
+		ListenMode:         "tcp",
+		ProxyEntryAuthJSON: `{}`,
+		Enabled:            true,
+		TagsJSON:           `[]`,
+		EgressProfileID:    &egressProfileID,
+		Revision:           1,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.Rules) != 1 || snapshot.Rules[0].EgressProfileID == nil || *snapshot.Rules[0].EgressProfileID != egressProfileID {
+		t.Fatalf("snapshot Rules = %+v, want egress_profile_id %d", snapshot.Rules, egressProfileID)
+	}
+	if len(snapshot.L4Rules) != 1 || snapshot.L4Rules[0].EgressProfileID == nil || *snapshot.L4Rules[0].EgressProfileID != egressProfileID {
+		t.Fatalf("snapshot L4Rules = %+v, want egress_profile_id %d", snapshot.L4Rules, egressProfileID)
 	}
 }
 

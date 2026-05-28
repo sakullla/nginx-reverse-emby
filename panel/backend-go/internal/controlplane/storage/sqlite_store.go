@@ -664,12 +664,21 @@ func (s *GormStore) SaveEgressProfiles(ctx context.Context, profiles []EgressPro
 			return nil
 		}
 
-		rows := make([]EgressProfileRow, 0, len(profiles))
+		rows := make([]map[string]any, 0, len(profiles))
 		for _, row := range profiles {
 			normalizeEgressProfileRow(&row)
-			rows = append(rows, row)
+			rows = append(rows, map[string]any{
+				"id":                    row.ID,
+				"name":                  row.Name,
+				"type":                  row.Type,
+				"proxy_url":             row.ProxyURL,
+				"wireguard_config_json": row.WireGuardConfigJSON,
+				"enabled":               row.Enabled,
+				"description":           row.Description,
+				"revision":              row.Revision,
+			})
 		}
-		return tx.Create(&rows).Error
+		return tx.Model(&EgressProfileRow{}).Create(&rows).Error
 	})
 }
 

@@ -79,3 +79,33 @@ func TestCopyDefaultMigrationRowsCopiesTrafficPolicyAndBaselineButSkipsHistory(t
 		t.Fatalf("target events = %d, want 0", len(events))
 	}
 }
+
+func TestCopyDefaultMigrationRowsCopiesEgressProfiles(t *testing.T) {
+	ctx := t.Context()
+	source := newTrafficTestStore(t, true)
+	target := newTrafficTestStore(t, true)
+
+	if err := source.SaveEgressProfiles(ctx, []EgressProfileRow{{
+		ID:                  41,
+		Name:                "wg exit",
+		Type:                "wireguard",
+		WireGuardConfigJSON: `{"private_key":"secret","addresses":["10.10.0.2/32"],"peers":[]}`,
+		Enabled:             false,
+		Description:         "lab",
+		Revision:            7,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+
+	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
+		t.Fatalf("CopyDefaultMigrationRows() error = %v", err)
+	}
+
+	got, err := target.ListEgressProfiles(ctx)
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 41 || got[0].WireGuardConfigJSON == "" || got[0].Enabled {
+		t.Fatalf("target egress profiles = %+v, want copied disabled profile with config", got)
+	}
+}
