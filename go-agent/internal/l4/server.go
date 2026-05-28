@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
@@ -49,6 +50,7 @@ type Server struct {
 	relayProvider      RelayMaterialProvider
 	relayPathDialer    relayplan.Dialer
 	wireGuardProvider  relay.WireGuardRuntimeProvider
+	egressDialer       egress.Dialer
 	tcpDialer          func(context.Context, string, string) (net.Conn, error)
 
 	tcpMu    sync.Mutex
@@ -79,6 +81,16 @@ func NewServer(
 	return NewServerWithResources(ctx, rules, relayListeners, relayProvider, nil)
 }
 
+func NewServerWithEgressProfiles(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	relayProvider RelayMaterialProvider,
+	egressProfiles []model.EgressProfile,
+) (*Server, error) {
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, nil, nil, egressProfiles)
+}
+
 func NewServerWithWireGuardProvider(
 	ctx context.Context,
 	rules []model.L4Rule,
@@ -86,7 +98,7 @@ func NewServerWithWireGuardProvider(
 	relayProvider RelayMaterialProvider,
 	wireGuardProvider relay.WireGuardRuntimeProvider,
 ) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, nil, wireGuardProvider)
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, nil, wireGuardProvider, nil)
 }
 
 func NewServerWithResources(
@@ -96,7 +108,7 @@ func NewServerWithResources(
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
 ) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, cache, nil)
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, cache, nil, nil)
 }
 
 func NewServerWithResourcesAndWireGuardProvider(
@@ -107,7 +119,7 @@ func NewServerWithResourcesAndWireGuardProvider(
 	cache *backends.Cache,
 	wireGuardProvider relay.WireGuardRuntimeProvider,
 ) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider)
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider, nil)
 }
 
 func newServerWithOptions(
@@ -117,6 +129,7 @@ func newServerWithOptions(
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
 	wireGuardProvider relay.WireGuardRuntimeProvider,
+	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
@@ -143,10 +156,15 @@ func newServerWithOptions(
 		relayProvider:         relayProvider,
 		relayPathDialer:       relayPathDialer{provider: relayProvider, wireGuardProvider: wireGuardProvider},
 		wireGuardProvider:     wireGuardProvider,
+		egressDialer:          egress.Dialer{Resolver: egress.NewResolver(egressProfiles), WireGuardProvider: wireGuardProvider},
 		tcpDialer:             (&net.Dialer{}).DialContext,
 	}
 	for _, rule := range rules {
 		if err := ValidateRule(rule); err != nil {
+			s.Close()
+			return nil, err
+		}
+		if err := s.validateLocalEgressProfile(rule); err != nil {
 			s.Close()
 			return nil, err
 		}

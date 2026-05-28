@@ -62,7 +62,7 @@ func (s *Server) dialTCPUpstreamCandidates(rule model.L4Rule, dialOptions relay.
 		start := s.now()
 		var upstream net.Conn
 		if !ruleUsesRelay(rule) {
-			upstream, err = s.dialTCPDirect(target)
+			upstream, err = s.dialTCPLocalEgress(rule, target)
 		} else {
 			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 		}
@@ -95,7 +95,7 @@ func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, di
 		if ruleUsesRelay(rule) {
 			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 		} else {
-			upstream, err = s.dialTCPDirect(target)
+			upstream, err = s.dialTCPLocalEgress(rule, target)
 		}
 	case "relay":
 		upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
@@ -114,6 +114,8 @@ func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, di
 		if ruleUsesRelay(rule) {
 			dialOptions.EgressProfileID = rule.EgressProfileID
 			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
+		} else if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			upstream, err = s.egressDialer.DialTCP(s.ctx, target, rule.EgressProfileID)
 		} else {
 			upstream, err = proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
 		}
@@ -132,6 +134,25 @@ func (s *Server) dialTCPDirect(target string) (net.Conn, error) {
 		dialer = (&net.Dialer{}).DialContext
 	}
 	return dialer(s.ctx, "tcp", target)
+}
+
+func (s *Server) dialTCPLocalEgress(rule model.L4Rule, target string) (net.Conn, error) {
+	if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+		return s.dialTCPDirect(target)
+	}
+	return s.egressDialer.DialTCP(s.ctx, target, rule.EgressProfileID)
+}
+
+func (s *Server) validateLocalEgressProfile(rule model.L4Rule) error {
+	if ruleUsesRelay(rule) || rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+		return nil
+	}
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	_, _, err := s.egressDialer.Resolver.Resolve(rule.EgressProfileID, protocol)
+	return err
 }
 
 func transparentTCPTargetFromConn(client net.Conn) (string, error) {

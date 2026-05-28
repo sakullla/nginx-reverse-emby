@@ -35,6 +35,14 @@ type UDPPeer interface {
 	WritePacket([]byte) error
 }
 
+type UDPPacketConn interface {
+	Close() error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+	ReadPacket() (string, []byte, error)
+	WritePacket(string, []byte) error
+}
+
 func WithUDPPeer(peer UDPPeer) DialOption {
 	return func(options *dialOptions) {
 		options.udpPeer = peer

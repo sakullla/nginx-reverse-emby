@@ -215,6 +215,9 @@ func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.C
 		if ruleUsesRelay(rule) {
 			return s.dialRelayPath("tcp", target, rule, relay.DialOptions{EgressProfileID: rule.EgressProfileID})
 		}
+		if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			return s.egressDialer.DialTCP(s.ctx, target, rule.EgressProfileID)
+		}
 		return proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
 	default:
 		return nil, fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)

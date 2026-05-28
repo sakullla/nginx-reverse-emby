@@ -211,6 +211,32 @@ func (u *proxyUDPUpstream) WritePacket(payload []byte) error {
 	return u.association.WritePacket(u.target, payload)
 }
 
+type egressUDPUpstream struct {
+	conn   proxyproto.UDPPacketConn
+	target string
+}
+
+func (u *egressUDPUpstream) Close() error { return u.conn.Close() }
+func (u *egressUDPUpstream) SetReadDeadline(t time.Time) error {
+	return u.conn.SetReadDeadline(t)
+}
+func (u *egressUDPUpstream) SetWriteDeadline(t time.Time) error {
+	return u.conn.SetWriteDeadline(t)
+}
+func (u *egressUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
+	source, payload, err := u.conn.ReadPacket()
+	if err != nil {
+		return udpUpstreamPacket{}, err
+	}
+	if strings.TrimSpace(source) != "" && !proxyUDPReplySourceMatches(u.target, source) {
+		return udpUpstreamPacket{}, fmt.Errorf("UDP egress reply source %q does not match target %q", source, u.target)
+	}
+	return udpUpstreamPacket{payload: payload, source: source}, nil
+}
+func (u *egressUDPUpstream) WritePacket(payload []byte) error {
+	return u.conn.WritePacket(u.target, payload)
+}
+
 func proxyUDPReplySourceMatches(expected string, source string) bool {
 	expectedHost, expectedPort, expectedErr := net.SplitHostPort(strings.TrimSpace(expected))
 	sourceHost, sourcePort, sourceErr := net.SplitHostPort(strings.TrimSpace(source))
@@ -530,7 +556,7 @@ func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udp
 	if target = strings.TrimSpace(target); target != "" {
 		candidate := l4Candidate{
 			address:       target,
-			directUDPPath: !ruleUsesRelay(rule) && strings.TrimSpace(rule.ProxyEgressMode) == "",
+			directUDPPath: s.usesLocalDirectUDPEgress(rule),
 		}
 		upstream, err := s.dialTargetUDPUpstream(rule, candidate)
 		if err != nil {
@@ -552,6 +578,7 @@ func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udp
 			lastErr = err
 			continue
 		}
+		candidate.directUDPPath = s.usesLocalDirectUDPEgress(rule)
 		return upstream, candidate, nil
 	}
 	if lastErr != nil {
@@ -604,6 +631,13 @@ func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate)
 			}
 			return &relayUDPUpstream{conn: conn}, nil
 		}
+		if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			conn, err := s.egressDialer.DialUDP(s.ctx, candidate.address, rule.EgressProfileID)
+			if err != nil {
+				return nil, err
+			}
+			return &egressUDPUpstream{conn: conn, target: candidate.address}, nil
+		}
 		association, err := proxyproto.DialUDP(s.ctx, rule.ProxyEgressURL)
 		if err != nil {
 			return nil, err
@@ -617,6 +651,13 @@ func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate)
 func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {
 	targetAddress := candidate.address
 	if !ruleUsesRelay(rule) {
+		if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			conn, err := s.egressDialer.DialUDP(s.ctx, targetAddress, rule.EgressProfileID)
+			if err != nil {
+				return nil, err
+			}
+			return &egressUDPUpstream{conn: conn, target: targetAddress}, nil
+		}
 		addr, err := net.ResolveUDPAddr("udp", targetAddress)
 		if err != nil {
 			return nil, err
@@ -637,6 +678,20 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 		return nil, err
 	}
 	return &relayUDPUpstream{conn: upstream}, nil
+}
+
+func (s *Server) usesLocalDirectUDPEgress(rule model.L4Rule) bool {
+	if ruleUsesRelay(rule) || strings.TrimSpace(rule.ProxyEgressMode) != "" {
+		return false
+	}
+	if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+		return true
+	}
+	profile, _, err := s.egressDialer.Resolver.Resolve(rule.EgressProfileID, "udp")
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(profile.Type), "direct")
 }
 
 func (s *Server) existingUDPSessionLocked(listener udpListener, peer *net.UDPAddr, target string) *udpSession {

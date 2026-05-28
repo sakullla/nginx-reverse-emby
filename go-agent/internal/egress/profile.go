@@ -58,7 +58,7 @@ func (r Resolver) Resolve(id *int, network string) (model.EgressProfile, bool, e
 		}
 	case "http":
 		if normalizedNetwork == "udp" {
-			return model.EgressProfile{}, false, fmt.Errorf("egress profile %d type http does not support UDP", profile.ID)
+			return model.EgressProfile{}, false, fmt.Errorf("UDP egress profile %d type http is unsupported", profile.ID)
 		}
 		if normalizedNetwork != "tcp" {
 			return model.EgressProfile{}, false, fmt.Errorf("egress profile %d type http does not support network %q", profile.ID, normalizedNetwork)

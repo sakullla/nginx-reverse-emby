@@ -249,6 +249,82 @@ func TestTCPDirectProxy(t *testing.T) {
 	}
 }
 
+func TestL4UDPRejectsHTTPProxyEgressProfileAtRuntime(t *testing.T) {
+	profileID := 23
+	_, err := NewServerWithEgressProfiles(context.Background(), []model.L4Rule{{
+		ID:              1,
+		Protocol:        "udp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      pickFreeUDPPort(t),
+		Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: 5353}},
+		EgressProfileID: &profileID,
+	}}, nil, nil, []model.EgressProfile{{
+		ID:       profileID,
+		Type:     "http",
+		ProxyURL: "http://127.0.0.1:8080",
+		Enabled:  true,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "UDP egress profile 23 type http is unsupported") {
+		t.Fatalf("NewServerWithEgressProfiles() error = %v, want UDP/http incompatibility", err)
+	}
+}
+
+func TestL4TCPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
+	backend := newTCPEchoListener(t)
+	defer backend.Close()
+	proxyURL, targets := startRecordingL4EgressProxy(t, "socks5")
+
+	profileID := 24
+	listenPort := pickFreeTCPPort(t)
+	srv, err := NewServerWithEgressProfiles(context.Background(), []model.L4Rule{{
+		ID:              1,
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: backend.Port()}},
+		EgressProfileID: &profileID,
+	}}, nil, nil, []model.EgressProfile{{
+		ID:       profileID,
+		Type:     "socks",
+		ProxyURL: proxyURL,
+		Enabled:  true,
+	}})
+	if err != nil {
+		t.Fatalf("NewServerWithEgressProfiles() error = %v", err)
+	}
+	defer srv.Close()
+
+	assertL4TCPProxyProfileTarget(t, listenPort, net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port())), targets)
+}
+
+func TestL4TCPHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
+	backend := newTCPEchoListener(t)
+	defer backend.Close()
+	proxyURL, targets := startRecordingL4EgressProxy(t, "http")
+
+	profileID := 25
+	listenPort := pickFreeTCPPort(t)
+	srv, err := NewServerWithEgressProfiles(context.Background(), []model.L4Rule{{
+		ID:              1,
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: backend.Port()}},
+		EgressProfileID: &profileID,
+	}}, nil, nil, []model.EgressProfile{{
+		ID:       profileID,
+		Type:     "http",
+		ProxyURL: proxyURL,
+		Enabled:  true,
+	}})
+	if err != nil {
+		t.Fatalf("NewServerWithEgressProfiles() error = %v", err)
+	}
+	defer srv.Close()
+
+	assertL4TCPProxyProfileTarget(t, listenPort, net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port())), targets)
+}
+
 func TestL4ProxyEntrySOCKS5RelayEgress(t *testing.T) {
 	clientConn, relayConn := net.Pipe()
 	defer relayConn.Close()
@@ -6048,6 +6124,77 @@ func startL4ProxyEntryUpstreamProxy(t *testing.T) string {
 	}()
 
 	return "http://" + ln.Addr().String()
+}
+
+func startRecordingL4EgressProxy(t *testing.T, scheme string) (string, <-chan string) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen recording egress proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	targets := make(chan string, 8)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(client net.Conn) {
+				defer client.Close()
+				req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+				if err != nil {
+					return
+				}
+				targets <- req.Target
+				upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
+				if err != nil {
+					_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+					return
+				}
+				defer upstream.Close()
+				if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+					return
+				}
+				copyTCPPairForTest(client, upstream)
+			}(conn)
+		}
+	}()
+
+	return scheme + "://" + ln.Addr().String(), targets
+}
+
+func assertL4TCPProxyProfileTarget(t *testing.T, listenPort int, wantTarget string, targets <-chan string) {
+	t.Helper()
+
+	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)))
+	if err != nil {
+		t.Fatalf("dial l4 listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("profile-egress")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !bytes.Equal(reply, payload) {
+		t.Fatalf("reply = %q, want %q", reply, payload)
+	}
+
+	select {
+	case got := <-targets:
+		if got != wantTarget {
+			t.Fatalf("proxy target = %q, want %q", got, wantTarget)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for recording proxy target")
+	}
 }
 
 func startL4SOCKS5UDPProxy(t *testing.T) string {
