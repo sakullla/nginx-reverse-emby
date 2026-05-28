@@ -260,6 +260,7 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		return Snapshot{}, err
 	}
 	egressRows := allEgressRows
+	egressScopeRevision := 0
 	if len(allEgressRows) > 0 {
 		allHTTPRows, err := s.loadAllHTTPRulesForSnapshot(ctx)
 		if err != nil {
@@ -275,6 +276,7 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 			return Snapshot{}, err
 		}
 		egressRows = filterEgressProfilesForSnapshot(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
+		egressScopeRevision = egressProfileScopeRevision(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
 	}
 	wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
 	if err != nil {
@@ -330,7 +332,7 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
-		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, egressRows, relevantCertRows)),
+		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, egressRows, relevantCertRows, egressScopeRevision)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
 		Rules:               SnapshotHTTPRules(httpRows),
@@ -1130,6 +1132,7 @@ func computeDesiredRevision(
 	wireGuardRows []WireGuardProfileRow,
 	egressRows []EgressProfileRow,
 	certRows []ManagedCertificateRow,
+	extraRevisions ...int,
 ) int {
 	desiredRevision := normalizeRevision(localState.DesiredRevision)
 	currentRevision := normalizeRevision(localState.CurrentRevision)
@@ -1141,6 +1144,9 @@ func computeDesiredRevision(
 		highestEgressProfileRevision(egressRows),
 		highestManagedCertificateRevision(certRows),
 	)
+	for _, revision := range extraRevisions {
+		highestConfigRevision = maxInt(highestConfigRevision, normalizeRevision(revision))
+	}
 
 	if desiredRevision > currentRevision {
 		return maxInt(desiredRevision, highestConfigRevision)
@@ -1204,6 +1210,115 @@ func highestEgressProfileRevision(rows []EgressProfileRow) int {
 		maxRevision = maxInt(maxRevision, normalizeRevision(int(row.Revision)))
 	}
 	return maxRevision
+}
+
+func egressProfileScopeRevision(
+	agentID string,
+	egressRows []EgressProfileRow,
+	httpRows []HTTPRuleRow,
+	l4Rows []L4RuleRow,
+	relayRows []RelayListenerRow,
+) int {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return 0
+	}
+
+	revision := 0
+	for _, row := range egressRows {
+		if row.ID <= 0 {
+			continue
+		}
+		if egressProfileRowReferencesAgent(row.ID, agentID, httpRows, l4Rows, relayRows) {
+			revision = maxInt(revision, normalizeRevision(int(row.Revision)))
+		}
+	}
+	for _, row := range httpRows {
+		if !egressScopeRuleAffectsAgent(agentID, row.AgentID, row.RelayLayersJSON, relayRows) {
+			continue
+		}
+		revision = maxInt(revision, normalizeRevision(row.Revision))
+	}
+	for _, row := range l4Rows {
+		if !egressScopeRuleAffectsAgent(agentID, row.AgentID, row.RelayLayersJSON, relayRows) {
+			continue
+		}
+		revision = maxInt(revision, normalizeRevision(row.Revision))
+	}
+	return revision
+}
+
+func egressProfileRowReferencesAgent(profileID int, agentID string, httpRows []HTTPRuleRow, l4Rows []L4RuleRow, relayRows []RelayListenerRow) bool {
+	if profileID <= 0 || strings.TrimSpace(agentID) == "" {
+		return false
+	}
+	matchesProfile := func(value *int) bool {
+		return value != nil && *value == profileID
+	}
+	for _, row := range httpRows {
+		if !matchesProfile(row.EgressProfileID) {
+			continue
+		}
+		if egressScopeRuleAffectsAgent(agentID, row.AgentID, row.RelayLayersJSON, relayRows) {
+			return true
+		}
+	}
+	for _, row := range l4Rows {
+		if !matchesProfile(row.EgressProfileID) {
+			continue
+		}
+		if egressScopeRuleAffectsAgent(agentID, row.AgentID, row.RelayLayersJSON, relayRows) {
+			return true
+		}
+	}
+	return false
+}
+
+func egressScopeRuleAffectsAgent(agentID string, rowAgentID string, relayLayersJSON string, relayRows []RelayListenerRow) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return false
+	}
+	relayLayers := parseIntLayers(relayLayersJSON)
+	if len(relayLayers) == 0 {
+		return strings.TrimSpace(rowAgentID) == agentID
+	}
+	if relayLayersReferenceAgent(relayLayers, relayRows, agentID) {
+		return true
+	}
+	_, isFinalHop := finalHopAgentIDsForRelayLayers(relayLayers, relayRows)[agentID]
+	return isFinalHop || agentOwnsRelayListener(agentID, relayRows)
+}
+
+func relayLayersReferenceAgent(relayLayers [][]int, relayRows []RelayListenerRow, agentID string) bool {
+	relayAgentByID := make(map[int]string, len(relayRows))
+	for _, row := range relayRows {
+		if row.ID <= 0 {
+			continue
+		}
+		relayAgentByID[row.ID] = strings.TrimSpace(row.AgentID)
+	}
+	for _, layer := range relayLayers {
+		for _, relayID := range layer {
+			if strings.TrimSpace(relayAgentByID[relayID]) == agentID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func agentOwnsRelayListener(agentID string, relayRows []RelayListenerRow) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return false
+	}
+	for _, row := range relayRows {
+		if strings.TrimSpace(row.AgentID) == agentID {
+			return true
+		}
+	}
+	return false
 }
 
 func filterEgressProfilesForSnapshot(

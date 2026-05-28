@@ -500,7 +500,7 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	assertSnapshotLacksProfile(t, unrelatedSnapshot, disabledRelayProfileID)
 }
 
-func TestStoreLoadAgentSnapshotIgnoresDisabledReferencedEgressProfileRevision(t *testing.T) {
+func TestStoreLoadAgentSnapshotBumpsForDisabledReferencedEgressProfileCleanup(t *testing.T) {
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -548,8 +548,330 @@ func TestStoreLoadAgentSnapshotIgnoresDisabledReferencedEgressProfileRevision(t 
 		t.Fatalf("LoadAgentSnapshot() error = %v", err)
 	}
 	assertSnapshotLacksProfile(t, snapshot, profileID)
-	if snapshot.Revision != 5 {
-		t.Fatalf("snapshot revision = %d, want 5 without disabled egress profile revision", snapshot.Revision)
+	if snapshot.Revision != 99 {
+		t.Fatalf("snapshot revision = %d, want disabled egress profile revision 99 for stale-secret cleanup", snapshot.Revision)
+	}
+}
+
+func TestStoreLoadAgentSnapshotBumpsFormerRelayExecutorForEgressProfileScopeCleanup(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "old-final-agent",
+		Name:            "old final agent",
+		DesiredRevision: 7,
+		CurrentRevision: 7,
+	}); err != nil {
+		t.Fatalf("SaveAgent(old-final-agent) error = %v", err)
+	}
+	profileID := 101
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
+		ID:       profileID,
+		Name:     "relay exit",
+		Type:     "socks",
+		ProxyURL: "socks5://relay-secret@127.0.0.1:1080",
+		Enabled:  true,
+		Revision: 8,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "relay-entry", []HTTPRuleRow{{
+		ID:                4001,
+		AgentID:           "relay-entry",
+		FrontendURL:       "https://relay-cleanup.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[501,503]`,
+		RelayLayersJSON:   `[[501],[503]]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          21,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(relay-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-entry", []RelayListenerRow{{
+		ID:         501,
+		AgentID:    "relay-entry",
+		Name:       "entry",
+		ListenHost: "127.0.0.1",
+		ListenPort: 7443,
+		PublicHost: "entry.example.com",
+		PublicPort: 7443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "old-final-agent", []RelayListenerRow{{
+		ID:         502,
+		AgentID:    "old-final-agent",
+		Name:       "old final",
+		ListenHost: "127.0.0.1",
+		ListenPort: 8443,
+		PublicHost: "old-final.example.com",
+		PublicPort: 8443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(old-final-agent) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "new-final-agent", []RelayListenerRow{{
+		ID:         503,
+		AgentID:    "new-final-agent",
+		Name:       "new final",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9443,
+		PublicHost: "new-final.example.com",
+		PublicPort: 9443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(new-final-agent) error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "old-final-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	assertSnapshotLacksProfile(t, snapshot, profileID)
+	if snapshot.Revision != 21 {
+		t.Fatalf("snapshot revision = %d, want relay egress scope revision 21 for cleanup", snapshot.Revision)
+	}
+}
+
+func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressProfileReferenceRemoved(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "reference-removed-final",
+		Name:            "reference removed final",
+		DesiredRevision: 7,
+		CurrentRevision: 7,
+	}); err != nil {
+		t.Fatalf("SaveAgent(reference-removed-final) error = %v", err)
+	}
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
+		ID:       102,
+		Name:     "unreferenced exit",
+		Type:     "socks",
+		ProxyURL: "socks5://unreferenced-secret@127.0.0.1:1080",
+		Enabled:  true,
+		Revision: 8,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "reference-removed-entry", []HTTPRuleRow{{
+		ID:                5001,
+		AgentID:           "reference-removed-entry",
+		FrontendURL:       "https://reference-removed.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[601,602]`,
+		RelayLayersJSON:   `[[601],[602]]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          22,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(reference-removed-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "reference-removed-entry", []RelayListenerRow{{
+		ID:         601,
+		AgentID:    "reference-removed-entry",
+		Name:       "entry",
+		ListenHost: "127.0.0.1",
+		ListenPort: 10443,
+		PublicHost: "entry.example.com",
+		PublicPort: 10443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(reference-removed-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "reference-removed-final", []RelayListenerRow{{
+		ID:         602,
+		AgentID:    "reference-removed-final",
+		Name:       "final",
+		ListenHost: "127.0.0.1",
+		ListenPort: 11443,
+		PublicHost: "final.example.com",
+		PublicPort: 11443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(reference-removed-final) error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "reference-removed-final", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.EgressProfiles) != 0 {
+		t.Fatalf("snapshot egress profiles = %+v, want none after reference removal", snapshot.EgressProfiles)
+	}
+	if snapshot.Revision != 22 {
+		t.Fatalf("snapshot revision = %d, want relay rule revision 22 for cleanup", snapshot.Revision)
+	}
+}
+
+func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenLastEgressProfileRemoved(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "last-profile-removed-final",
+		Name:            "last profile removed final",
+		DesiredRevision: 7,
+		CurrentRevision: 7,
+	}); err != nil {
+		t.Fatalf("SaveAgent(last-profile-removed-final) error = %v", err)
+	}
+	if err := store.SaveEgressProfiles(t.Context(), nil); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "last-profile-removed-entry", []HTTPRuleRow{{
+		ID:                5501,
+		AgentID:           "last-profile-removed-entry",
+		FrontendURL:       "https://last-profile-removed.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[651,652]`,
+		RelayLayersJSON:   `[[651],[652]]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          24,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(last-profile-removed-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "last-profile-removed-entry", []RelayListenerRow{{
+		ID:         651,
+		AgentID:    "last-profile-removed-entry",
+		Name:       "entry",
+		ListenHost: "127.0.0.1",
+		ListenPort: 14443,
+		PublicHost: "entry.example.com",
+		PublicPort: 14443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(last-profile-removed-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "last-profile-removed-final", []RelayListenerRow{{
+		ID:         652,
+		AgentID:    "last-profile-removed-final",
+		Name:       "final",
+		ListenHost: "127.0.0.1",
+		ListenPort: 15443,
+		PublicHost: "final.example.com",
+		PublicPort: 15443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(last-profile-removed-final) error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "last-profile-removed-final", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.EgressProfiles) != 0 {
+		t.Fatalf("snapshot egress profiles = %+v, want none after last profile removal", snapshot.EgressProfiles)
+	}
+	if snapshot.Revision != 24 {
+		t.Fatalf("snapshot revision = %d, want relay rule revision 24 for cleanup after last profile removal", snapshot.Revision)
+	}
+}
+
+func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressRelayRuleDisabled(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "disabled-rule-final",
+		Name:            "disabled rule final",
+		DesiredRevision: 7,
+		CurrentRevision: 7,
+	}); err != nil {
+		t.Fatalf("SaveAgent(disabled-rule-final) error = %v", err)
+	}
+	profileID := 103
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
+		ID:       profileID,
+		Name:     "disabled rule exit",
+		Type:     "socks",
+		ProxyURL: "socks5://disabled-rule-secret@127.0.0.1:1080",
+		Enabled:  true,
+		Revision: 8,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "disabled-rule-entry", []HTTPRuleRow{{
+		ID:                6001,
+		AgentID:           "disabled-rule-entry",
+		FrontendURL:       "https://disabled-rule.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           false,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[701,702]`,
+		RelayLayersJSON:   `[[701],[702]]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          23,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(disabled-rule-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "disabled-rule-entry", []RelayListenerRow{{
+		ID:         701,
+		AgentID:    "disabled-rule-entry",
+		Name:       "entry",
+		ListenHost: "127.0.0.1",
+		ListenPort: 12443,
+		PublicHost: "entry.example.com",
+		PublicPort: 12443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(disabled-rule-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "disabled-rule-final", []RelayListenerRow{{
+		ID:         702,
+		AgentID:    "disabled-rule-final",
+		Name:       "final",
+		ListenHost: "127.0.0.1",
+		ListenPort: 13443,
+		PublicHost: "final.example.com",
+		PublicPort: 13443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(disabled-rule-final) error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "disabled-rule-final", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	assertSnapshotLacksProfile(t, snapshot, profileID)
+	if snapshot.Revision != 23 {
+		t.Fatalf("snapshot revision = %d, want disabled relay rule revision 23 for cleanup", snapshot.Revision)
 	}
 }
 
