@@ -265,6 +265,20 @@ func TestRuleServiceCreateAcceptsEnabledSOCKSEgressProfile(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateRejectsUnsupportedEgressProfileType(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 20, Name: "bogus", Type: "bogus", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("https://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "does not support HTTP rules") {
+		t.Fatalf("Create() error = %v, want unsupported egress profile type validation", err)
+	}
+}
+
 func TestRuleServiceUpdateRejectsUnknownEgressProfile(t *testing.T) {
 	store := newRuleServiceTestStore(t)
 	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
@@ -316,6 +330,37 @@ func TestRuleServiceUpdateAcceptsEnabledHTTPEgressProfile(t *testing.T) {
 	}
 	if rows := store.rulesByAgent["local"]; len(rows) != 1 || rows[0].EgressProfileID == nil || *rows[0].EgressProfileID != profileID {
 		t.Fatalf("persisted EgressProfileID = %+v, want %d", rows, profileID)
+	}
+}
+
+func TestRuleServiceUpdateClearsEgressProfileWithZero(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 21, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		PassProxyHeaders:  true,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		RelayLayersJSON:   `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          1,
+	}}
+	svc := NewRuleService(testConfig(), store)
+	rule, err := svc.Update(t.Context(), "local", 1, HTTPRuleInput{EgressProfileID: intPtrRule(0)})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.EgressProfileID != nil {
+		t.Fatalf("EgressProfileID = %v, want nil", rule.EgressProfileID)
+	}
+	if rows := store.rulesByAgent["local"]; len(rows) != 1 || rows[0].EgressProfileID != nil {
+		t.Fatalf("persisted EgressProfileID = %+v, want nil", rows)
 	}
 }
 

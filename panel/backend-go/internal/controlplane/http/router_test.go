@@ -1810,7 +1810,7 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 				}},
 			},
 			createdRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, EgressProfileID: intPtr(31), Enabled: true, Tags: []string{}, Revision: 5},
-			updatedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, EgressProfileID: intPtr(32), Enabled: true, Tags: []string{"edge"}, Revision: 6},
+			updatedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
 			deletedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
 			state:       l4State,
 		},
@@ -1860,7 +1860,7 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 		t.Fatalf("POST l4 response missing egress_profile_id: %s", createL4Resp.Body.String())
 	}
 
-	updateL4Req := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/l4-rules/2", bytes.NewBufferString(`{"listen_host":"127.0.0.1","tags":["edge"],"egress_profile_id":32}`))
+	updateL4Req := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/l4-rules/2", bytes.NewBufferString(`{"listen_host":"127.0.0.1","tags":["edge"],"egress_profile_id":0}`))
 	updateL4Req.Header.Set("X-Panel-Token", "secret")
 	updateL4Req.Header.Set("Content-Type", "application/json")
 	updateL4Resp := httptest.NewRecorder()
@@ -1868,11 +1868,11 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 	if updateL4Resp.Code != http.StatusOK {
 		t.Fatalf("PUT /panel-api/agents/local/l4-rules/2 = %d", updateL4Resp.Code)
 	}
-	if len(l4State.updateInputs) != 1 || l4State.updateRuleIDs[0] != 2 || l4State.updateInputs[0].EgressProfileID == nil || *l4State.updateInputs[0].EgressProfileID != 32 {
+	if len(l4State.updateInputs) != 1 || l4State.updateRuleIDs[0] != 2 || l4State.updateInputs[0].EgressProfileID == nil || *l4State.updateInputs[0].EgressProfileID != 0 {
 		t.Fatalf("PUT l4 egress_profile_id input = ids=%+v inputs=%+v", l4State.updateRuleIDs, l4State.updateInputs)
 	}
-	if !strings.Contains(updateL4Resp.Body.String(), `"egress_profile_id":32`) {
-		t.Fatalf("PUT l4 response missing egress_profile_id: %s", updateL4Resp.Body.String())
+	if strings.Contains(updateL4Resp.Body.String(), `"egress_profile_id"`) {
+		t.Fatalf("PUT l4 response included cleared egress_profile_id: %s", updateL4Resp.Body.String())
 	}
 
 	deleteL4Req := httptest.NewRequest(http.MethodDelete, "/panel-api/agents/local/l4-rules/2", nil)
@@ -2750,7 +2750,7 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 				}},
 			},
 			createdRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://new.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}, RelayLayers: [][]int{{1, 2}, {3}}, EgressProfileID: intPtr(17)},
-			updatedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}, RelayLayers: [][]int{{4}, {5, 6}}, EgressProfileID: intPtr(18)},
+			updatedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}, RelayLayers: [][]int{{4}, {5, 6}}},
 			deletedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}},
 			state:       ruleState,
 		},
@@ -2820,7 +2820,7 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 		t.Fatalf("POST response missing egress_profile_id: %s", createResp.Body.String())
 	}
 
-	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/rules/2", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com","relay_layers":[[4],[5,6]],"egress_profile_id":18}`))
+	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/rules/2", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com","relay_layers":[[4],[5,6]],"egress_profile_id":0}`))
 	updateReq.Header.Set("X-Panel-Token", "secret")
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateResp := httptest.NewRecorder()
@@ -2831,14 +2831,14 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 	if len(ruleState.updateInputs) != 1 || ruleState.updateInputs[0].RelayLayers == nil || len(*ruleState.updateInputs[0].RelayLayers) != 2 {
 		t.Fatalf("PUT relay_layers input = %+v", ruleState.updateInputs)
 	}
-	if ruleState.updateInputs[0].EgressProfileID == nil || *ruleState.updateInputs[0].EgressProfileID != 18 {
+	if ruleState.updateInputs[0].EgressProfileID == nil || *ruleState.updateInputs[0].EgressProfileID != 0 {
 		t.Fatalf("PUT egress_profile_id input = %+v", ruleState.updateInputs[0].EgressProfileID)
 	}
 	if !strings.Contains(updateResp.Body.String(), `"relay_layers":[[4],[5,6]]`) {
 		t.Fatalf("PUT response missing relay_layers: %s", updateResp.Body.String())
 	}
-	if !strings.Contains(updateResp.Body.String(), `"egress_profile_id":18`) {
-		t.Fatalf("PUT response missing egress_profile_id: %s", updateResp.Body.String())
+	if strings.Contains(updateResp.Body.String(), `"egress_profile_id"`) {
+		t.Fatalf("PUT response included cleared egress_profile_id: %s", updateResp.Body.String())
 	}
 	var updatePayload map[string]any
 	if err := json.Unmarshal(updateResp.Body.Bytes(), &updatePayload); err != nil {

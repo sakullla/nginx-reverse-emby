@@ -350,6 +350,39 @@ func TestL4RuleServiceUpdateAcceptsEnabledHTTPEgressProfileForTCP(t *testing.T) 
 	}
 }
 
+func TestL4RuleServiceUpdateClearsEgressProfileWithZero(t *testing.T) {
+	store := newL4RuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 26, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	store.l4RulesByID["local"] = []storage.L4RuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		Name:              "TCP 8443",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        8443,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":8096}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{}`,
+		RelayLayersJSON:   `[]`,
+		ListenMode:        "tcp",
+		EgressProfileID:   &profileID,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		Revision:          1,
+	}}
+	svc := NewL4RuleService(testConfig(), store)
+	rule, err := svc.Update(t.Context(), "local", 1, L4RuleInput{EgressProfileID: intPtrL4(0)})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.EgressProfileID != nil {
+		t.Fatalf("EgressProfileID = %v, want nil", rule.EgressProfileID)
+	}
+	if rows := store.l4RulesByID["local"]; len(rows) != 1 || rows[0].EgressProfileID != nil {
+		t.Fatalf("persisted EgressProfileID = %+v, want nil", rows)
+	}
+}
+
 func TestL4RuleServiceCreateAllowsRelayLayersForUDP(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
