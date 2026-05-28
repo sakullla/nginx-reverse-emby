@@ -279,6 +279,19 @@ func TestRuleServiceCreateRejectsUnsupportedEgressProfileType(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateRejectsNegativeEgressProfileID(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("https://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: intPtrRule(-1),
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "egress_profile_id") {
+		t.Fatalf("Create() error = %v, want negative egress_profile_id validation", err)
+	}
+}
+
 func TestRuleServiceUpdateRejectsUnknownEgressProfile(t *testing.T) {
 	store := newRuleServiceTestStore(t)
 	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
@@ -330,6 +343,29 @@ func TestRuleServiceUpdateAcceptsEnabledHTTPEgressProfile(t *testing.T) {
 	}
 	if rows := store.rulesByAgent["local"]; len(rows) != 1 || rows[0].EgressProfileID == nil || *rows[0].EgressProfileID != profileID {
 		t.Fatalf("persisted EgressProfileID = %+v, want %d", rows, profileID)
+	}
+}
+
+func TestRuleServiceUpdateRejectsNegativeEgressProfileID(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		PassProxyHeaders:  true,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		RelayLayersJSON:   `[]`,
+		Revision:          1,
+	}}
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Update(t.Context(), "local", 1, HTTPRuleInput{EgressProfileID: intPtrRule(-1)})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "egress_profile_id") {
+		t.Fatalf("Update() error = %v, want negative egress_profile_id validation", err)
 	}
 }
 

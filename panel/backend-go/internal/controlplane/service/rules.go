@@ -1036,9 +1036,9 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		customHeaders = normalizeHTTPCustomHeaders(*input.CustomHeaders)
 	}
 
-	egressProfileID := normalizeOptionalPositiveInt(fallback.EgressProfileID)
-	if input.EgressProfileID != nil {
-		egressProfileID = normalizeOptionalPositiveInt(input.EgressProfileID)
+	egressProfileID, err := normalizeEgressProfileIDInput(input.EgressProfileID, fallback.EgressProfileID)
+	if err != nil {
+		return HTTPRule{}, err
 	}
 	if egressProfileID != nil {
 		profile, err := s.getEnabledEgressProfile(ctx, *egressProfileID)

@@ -596,9 +596,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		wireGuardInboundMode = ""
 	}
 	wireGuardListenHost := strings.TrimSpace(defaultString(pointerString(input.WireGuardListenHost), fallback.WireGuardListenHost))
-	egressProfileID := normalizeOptionalPositiveInt(fallback.EgressProfileID)
-	if input.EgressProfileID != nil {
-		egressProfileID = normalizeOptionalPositiveInt(input.EgressProfileID)
+	egressProfileID, egressProfileErr := normalizeEgressProfileIDInput(input.EgressProfileID, fallback.EgressProfileID)
+	if egressProfileErr != nil {
+		return L4Rule{}, egressProfileErr
 	}
 
 	id := fallback.ID

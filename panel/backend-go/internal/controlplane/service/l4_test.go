@@ -292,6 +292,20 @@ func TestL4RuleServiceCreateRejectsUDPUnsupportedEgressProfileType(t *testing.T)
 	}
 }
 
+func TestL4RuleServiceCreateRejectsNegativeEgressProfileID(t *testing.T) {
+	store := newL4RuleServiceTestStore(t)
+	svc := NewL4RuleService(testConfig(), store)
+	_, err := svc.Create(t.Context(), "local", L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenPort:      intPtrL4(8443),
+		Backends:        &[]L4Backend{{Host: "127.0.0.1", Port: 8096}},
+		EgressProfileID: intPtrL4(-1),
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "egress_profile_id") {
+		t.Fatalf("Create() error = %v, want negative egress_profile_id validation", err)
+	}
+}
+
 func TestL4RuleServiceUpdateRejectsDisabledEgressProfile(t *testing.T) {
 	store := newL4RuleServiceTestStore(t)
 	store.l4RulesByID["local"] = []storage.L4RuleRow{{
@@ -347,6 +361,31 @@ func TestL4RuleServiceUpdateAcceptsEnabledHTTPEgressProfileForTCP(t *testing.T) 
 	}
 	if rows := store.l4RulesByID["local"]; len(rows) != 1 || rows[0].EgressProfileID == nil || *rows[0].EgressProfileID != profileID {
 		t.Fatalf("persisted EgressProfileID = %+v, want %d", rows, profileID)
+	}
+}
+
+func TestL4RuleServiceUpdateRejectsNegativeEgressProfileID(t *testing.T) {
+	store := newL4RuleServiceTestStore(t)
+	store.l4RulesByID["local"] = []storage.L4RuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		Name:              "TCP 8443",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        8443,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":8096}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{}`,
+		RelayLayersJSON:   `[]`,
+		ListenMode:        "tcp",
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		Revision:          1,
+	}}
+	svc := NewL4RuleService(testConfig(), store)
+	_, err := svc.Update(t.Context(), "local", 1, L4RuleInput{EgressProfileID: intPtrL4(-1)})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "egress_profile_id") {
+		t.Fatalf("Update() error = %v, want negative egress_profile_id validation", err)
 	}
 }
 

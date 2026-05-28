@@ -549,6 +549,20 @@ func getEnabledEgressProfile(ctx context.Context, store egressProfileLookupStore
 	return EgressProfile{}, fmt.Errorf("%w: egress profile %d not found", ErrInvalidArgument, id)
 }
 
+func normalizeEgressProfileIDInput(input *int, fallback *int) (*int, error) {
+	if input == nil {
+		return normalizeOptionalPositiveInt(fallback), nil
+	}
+	if *input < 0 {
+		return nil, fmt.Errorf("%w: egress_profile_id must be non-negative", ErrInvalidArgument)
+	}
+	if *input == 0 {
+		return nil, nil
+	}
+	copied := *input
+	return &copied, nil
+}
+
 func egressProfileSupportsHTTP(profile EgressProfile) bool {
 	return egressProfileTypeSupported(profile)
 }
