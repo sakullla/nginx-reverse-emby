@@ -51,6 +51,7 @@ type egressProfileStore interface {
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error)
+	EgressProfileReferences(context.Context, int) ([]storage.EgressProfileReference, error)
 	SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error
 }
 
@@ -153,8 +154,13 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 	if targetIndex < 0 {
 		return EgressProfile{}, ErrEgressProfileNotFound
 	}
+	if input.ID != nil && *input.ID != id {
+		return EgressProfile{}, fmt.Errorf("%w: egress profile id in body must match path id", ErrInvalidArgument)
+	}
 
-	profile, err := normalizeEgressProfileInput(input, current, id)
+	normalizedInput := input
+	normalizedInput.ID = nil
+	profile, err := normalizeEgressProfileInput(normalizedInput, current, id)
 	if err != nil {
 		return EgressProfile{}, err
 	}
@@ -202,29 +208,18 @@ func (s *egressProfileService) Delete(ctx context.Context, id int) (EgressProfil
 }
 
 func (s *egressProfileService) ensureProfileNotReferenced(ctx context.Context, profileID int) error {
-	agentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
+	references, err := s.store.EgressProfileReferences(ctx, profileID)
 	if err != nil {
 		return err
 	}
-	for _, agentID := range agentIDs {
-		httpRows, err := s.store.ListHTTPRules(ctx, agentID)
-		if err != nil {
-			return err
-		}
-		for _, row := range httpRows {
-			if row.EgressProfileID != nil && *row.EgressProfileID == profileID {
-				return fmt.Errorf("%w: egress profile is referenced by HTTP rule %d", ErrInvalidArgument, row.ID)
-			}
-		}
-
-		l4Rows, err := s.store.ListL4Rules(ctx, agentID)
-		if err != nil {
-			return err
-		}
-		for _, row := range l4Rows {
-			if row.EgressProfileID != nil && *row.EgressProfileID == profileID {
-				return fmt.Errorf("%w: egress profile is referenced by l4 rule %d", ErrInvalidArgument, row.ID)
-			}
+	for _, reference := range references {
+		switch reference.Kind {
+		case "http":
+			return fmt.Errorf("%w: egress profile is referenced by HTTP rule %d", ErrInvalidArgument, reference.ID)
+		case "l4":
+			return fmt.Errorf("%w: egress profile is referenced by l4 rule %d", ErrInvalidArgument, reference.ID)
+		default:
+			return fmt.Errorf("%w: egress profile is referenced by %s rule %d", ErrInvalidArgument, reference.Kind, reference.ID)
 		}
 	}
 	return nil

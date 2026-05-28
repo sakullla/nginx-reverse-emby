@@ -322,6 +322,108 @@ func TestEgressProfileServiceDeleteRejectsReferencesRegardlessOfEnabledState(t *
 	}
 }
 
+func TestEgressProfileServiceUpdateRejectsMismatchedBodyIDAndPreservesProfile(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	svc := NewEgressProfileService(store)
+	profile, err := svc.Create(t.Context(), EgressProfileInput{
+		Name:     stringPtrEgress("office socks"),
+		Type:     stringPtrEgress("socks"),
+		ProxyURL: stringPtrEgress("socks5://127.0.0.1:1080"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	_, err = svc.Update(t.Context(), profile.ID, EgressProfileInput{
+		ID:   intPtrEgress(profile.ID + 1),
+		Name: stringPtrEgress("mutated"),
+		Type: stringPtrEgress("direct"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+
+	got, err := svc.Get(t.Context(), profile.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.ID != profile.ID || got.Name != profile.Name || got.Type != profile.Type || got.ProxyURL != profile.ProxyURL {
+		t.Fatalf("profile after rejected update = %+v, want unchanged %+v", got, profile)
+	}
+	profiles, err := svc.List(t.Context())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].ID != profile.ID {
+		t.Fatalf("profiles after rejected update = %+v, want only original profile", profiles)
+	}
+}
+
+func TestEgressProfileServiceDeleteRejectsOrphanedAgentReferences(t *testing.T) {
+	tests := []struct {
+		name string
+		seed func(t *testing.T, store *storage.SQLiteStore, profileID int)
+		want string
+	}{
+		{
+			name: "orphaned http rule",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveHTTPRules(t.Context(), "orphan-agent", []storage.HTTPRuleRow{{
+					ID:              30,
+					AgentID:         "orphan-agent",
+					FrontendURL:     "http://orphan.example.com",
+					BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+					EgressProfileID: &profileID,
+					Enabled:         true,
+					Revision:        1,
+				}}); err != nil {
+					t.Fatalf("SaveHTTPRules() error = %v", err)
+				}
+			},
+			want: "HTTP rule 30",
+		},
+		{
+			name: "orphaned l4 rule",
+			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
+				t.Helper()
+				if err := store.SaveL4Rules(t.Context(), "orphan-agent", []storage.L4RuleRow{{
+					ID:              31,
+					AgentID:         "orphan-agent",
+					Name:            "orphan l4",
+					Protocol:        "tcp",
+					ListenHost:      "0.0.0.0",
+					ListenPort:      9443,
+					BackendsJSON:    `[{"host":"127.0.0.1","port":443}]`,
+					EgressProfileID: &profileID,
+					Enabled:         true,
+					Revision:        1,
+				}}); err != nil {
+					t.Fatalf("SaveL4Rules() error = %v", err)
+				}
+			},
+			want: "l4 rule 31",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newEgressProfileTestStore(t)
+			svc := NewEgressProfileService(store)
+			profile := createTestEgressProfile(t, svc)
+			tc.seed(t, store, profile.ID)
+
+			_, err := svc.Delete(t.Context(), profile.ID)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Delete() error = %v, want ErrInvalidArgument", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Delete() error = %v, want reference %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestEgressProfileServiceListAndGetRedactSecrets(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
@@ -520,6 +622,10 @@ func stringPtrEgress(value string) *string {
 }
 
 func boolPtrEgress(value bool) *bool {
+	return &value
+}
+
+func intPtrEgress(value int) *int {
 	return &value
 }
 

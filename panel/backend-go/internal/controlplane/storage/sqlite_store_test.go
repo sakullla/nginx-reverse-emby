@@ -341,6 +341,64 @@ func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.
 	}
 }
 
+func TestStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	profileID := 51
+	otherProfileID := 52
+	if err := store.SaveHTTPRules(t.Context(), "orphan-http", []HTTPRuleRow{{
+		ID:              7,
+		AgentID:         "orphan-http",
+		FrontendURL:     "http://orphan.example.com",
+		BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+		EgressProfileID: &profileID,
+		Enabled:         false,
+		Revision:        1,
+	}, {
+		ID:              8,
+		AgentID:         "orphan-http",
+		FrontendURL:     "http://other.example.com",
+		BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+		EgressProfileID: &otherProfileID,
+		Enabled:         true,
+		Revision:        1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "orphan-l4", []L4RuleRow{{
+		ID:              9,
+		AgentID:         "orphan-l4",
+		Name:            "orphan l4",
+		Protocol:        "tcp",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      9443,
+		BackendsJSON:    `[{"host":"127.0.0.1","port":443}]`,
+		EgressProfileID: &profileID,
+		Enabled:         false,
+		Revision:        1,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	references, err := store.EgressProfileReferences(t.Context(), profileID)
+	if err != nil {
+		t.Fatalf("EgressProfileReferences() error = %v", err)
+	}
+	if len(references) != 2 {
+		t.Fatalf("reference count = %d, want 2: %+v", len(references), references)
+	}
+	if references[0] != (EgressProfileReference{Kind: "http", AgentID: "orphan-http", ID: 7}) {
+		t.Fatalf("references[0] = %+v", references[0])
+	}
+	if references[1] != (EgressProfileReference{Kind: "l4", AgentID: "orphan-l4", ID: 9}) {
+		t.Fatalf("references[1] = %+v", references[1])
+	}
+}
+
 func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")

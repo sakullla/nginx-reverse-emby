@@ -46,6 +46,12 @@ type Store interface {
 	CleanupManagedCertificateMaterial(context.Context, []ManagedCertificateRow, []ManagedCertificateRow) error
 }
 
+type EgressProfileReference struct {
+	Kind    string
+	AgentID string
+	ID      int
+}
+
 type SQLiteStore = GormStore
 
 const localRuntimeStateMetaKey = "local_runtime_state"
@@ -431,6 +437,44 @@ func (s *GormStore) ListEgressProfiles(ctx context.Context) ([]EgressProfileRow,
 		normalizeEgressProfileRow(&profiles[i])
 	}
 	return profiles, nil
+}
+
+func (s *GormStore) EgressProfileReferences(ctx context.Context, profileID int) ([]EgressProfileReference, error) {
+	if profileID <= 0 {
+		return nil, nil
+	}
+	var httpRows []HTTPRuleRow
+	if err := s.db.WithContext(ctx).
+		Select("id", "agent_id").
+		Where("egress_profile_id = ?", profileID).
+		Order("agent_id, id").
+		Find(&httpRows).Error; err != nil {
+		return nil, err
+	}
+	var l4Rows []L4RuleRow
+	if err := s.db.WithContext(ctx).
+		Select("id", "agent_id").
+		Where("egress_profile_id = ?", profileID).
+		Order("agent_id, id").
+		Find(&l4Rows).Error; err != nil {
+		return nil, err
+	}
+	references := make([]EgressProfileReference, 0, len(httpRows)+len(l4Rows))
+	for _, row := range httpRows {
+		references = append(references, EgressProfileReference{
+			Kind:    "http",
+			AgentID: row.AgentID,
+			ID:      row.ID,
+		})
+	}
+	for _, row := range l4Rows {
+		references = append(references, EgressProfileReference{
+			Kind:    "l4",
+			AgentID: row.AgentID,
+			ID:      row.ID,
+		})
+	}
+	return references, nil
 }
 
 func (s *GormStore) ListWireGuardClients(ctx context.Context, agentID string, profileID int) ([]WireGuardClientRow, error) {
