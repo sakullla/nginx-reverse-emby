@@ -89,11 +89,15 @@ func (d *fakeL4RelayPathDialer) calledOptions() []relay.DialOptions {
 }
 
 func cloneRelayDialOptionsForL4Test(options relay.DialOptions) relay.DialOptions {
-	return relay.DialOptions{
-		InitialPayload:   append([]byte(nil), options.InitialPayload...),
-		TrafficClass:     options.TrafficClass,
-		FinalHopProxyURL: options.FinalHopProxyURL,
+	cloned := relay.DialOptions{
+		InitialPayload: append([]byte(nil), options.InitialPayload...),
+		TrafficClass:   options.TrafficClass,
 	}
+	if options.EgressProfileID != nil {
+		profileID := *options.EgressProfileID
+		cloned.EgressProfileID = &profileID
+	}
+	return cloned
 }
 
 type addrOverrideConn struct {
@@ -2973,9 +2977,10 @@ func TestDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
 		Protocol:        "tcp",
 		ListenMode:      "proxy",
 		ProxyEgressMode: "proxy",
-		ProxyEgressURL:  "http://proxy.example:8080",
 		RelayLayers:     [][]int{{1, 2}},
 	}
+	egressProfileID := 17
+	rule.EgressProfileID = &egressProfileID
 
 	conn, err := srv.dialProxyEntryUpstream(rule, "backend.example:443")
 	if err != nil {
@@ -2995,8 +3000,8 @@ func TestDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
 		t.Fatal("dial options were not captured")
 	}
 	for _, option := range options {
-		if option.FinalHopProxyURL != "http://proxy.example:8080" {
-			t.Fatalf("FinalHopProxyURL = %q, want proxy URL", option.FinalHopProxyURL)
+		if option.EgressProfileID == nil || *option.EgressProfileID != egressProfileID {
+			t.Fatalf("EgressProfileID = %v, want %d", option.EgressProfileID, egressProfileID)
 		}
 	}
 }
@@ -3036,9 +3041,10 @@ func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
 		ListenPort:      1080,
 		ListenMode:      "proxy",
 		ProxyEgressMode: "proxy",
-		ProxyEgressURL:  "socks5h://proxy.example:1080",
 		RelayLayers:     [][]int{{1, 2}},
 	}
+	egressProfileID := 23
+	rule.EgressProfileID = &egressProfileID
 
 	upstreamConn, err := srv.dialTargetUDPUpstream(rule, l4Candidate{address: "backend.example:5300"})
 	if err != nil {
@@ -3077,8 +3083,8 @@ func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
 		t.Fatal("dial options were not captured")
 	}
 	for _, option := range options {
-		if option.FinalHopProxyURL != "socks5h://proxy.example:1080" {
-			t.Fatalf("FinalHopProxyURL = %q, want proxy URL", option.FinalHopProxyURL)
+		if option.EgressProfileID == nil || *option.EgressProfileID != egressProfileID {
+			t.Fatalf("EgressProfileID = %v, want %d", option.EgressProfileID, egressProfileID)
 		}
 	}
 }

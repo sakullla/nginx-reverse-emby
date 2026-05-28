@@ -13,8 +13,8 @@ import (
 const maxRequestSize = 1 << 20
 
 const (
-	relayMetadataTrafficClass     = "traffic_class"
-	relayMetadataFinalHopProxyURL = "final_hop_proxy_url"
+	relayMetadataTrafficClass    = "traffic_class"
+	relayMetadataEgressProfileID = "egress_profile_id"
 )
 
 const (
@@ -31,19 +31,32 @@ type relayRequest struct {
 	Chain   []Hop  `json:"chain,omitempty"`
 }
 
-func relayFinalHopProxyURLFromMetadata(metadata map[string]any) string {
+func relayEgressProfileIDFromMetadata(metadata map[string]any) *int {
 	if len(metadata) == 0 {
-		return ""
+		return nil
 	}
-	raw, ok := metadata[relayMetadataFinalHopProxyURL]
+	raw, ok := metadata[relayMetadataEgressProfileID]
 	if !ok {
-		return ""
+		return nil
 	}
-	value, ok := raw.(string)
-	if !ok {
-		return ""
+	var id int
+	switch value := raw.(type) {
+	case int:
+		id = value
+	case int64:
+		id = int(value)
+	case float64:
+		id = int(value)
+		if float64(id) != value {
+			return nil
+		}
+	default:
+		return nil
 	}
-	return strings.TrimSpace(value)
+	if id <= 0 {
+		return nil
+	}
+	return &id
 }
 
 type relayOpenFrame struct {

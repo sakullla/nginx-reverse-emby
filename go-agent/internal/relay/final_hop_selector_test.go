@@ -9,8 +9,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 )
 
 type relayResolverFunc func(ctx context.Context, host string) ([]net.IPAddr, error)
@@ -251,61 +249,6 @@ func TestFinalHopSelectorTreatsScopedIPv6AsLiteral(t *testing.T) {
 	}
 }
 
-func TestFinalHopSelectorDialTCPUsesFinalHopProxy(t *testing.T) {
-	backendAddr, stopBackend := startSelectorTCPEchoServer(t)
-	defer stopBackend()
-	proxy := startSelectorHTTPConnectProxy(t)
-
-	selector := newFinalHopSelector(finalHopSelectorConfig{})
-	conn, selected, err := selector.dialTCP(context.Background(), backendAddr, DialOptions{FinalHopProxyURL: proxy.URL})
-	if err != nil {
-		t.Fatalf("dialTCP() error = %v", err)
-	}
-	defer conn.Close()
-	if selected != backendAddr {
-		t.Fatalf("selected = %q, want backend address", selected)
-	}
-	if !proxy.SawConnectTo(backendAddr) {
-		t.Fatalf("proxy did not see CONNECT to %s", backendAddr)
-	}
-	if _, err := conn.Write([]byte("ping")); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-	reply := make([]byte, 4)
-	if _, err := io.ReadFull(conn, reply); err != nil {
-		t.Fatalf("ReadFull() error = %v", err)
-	}
-	if string(reply) != "ping" {
-		t.Fatalf("reply = %q, want ping", string(reply))
-	}
-}
-
-func TestFinalHopSelectorOpenUDPPeerUsesFinalHopProxy(t *testing.T) {
-	proxyAddr, packets := startSelectorSOCKS5UDPProxy(t)
-	selector := newFinalHopSelector(finalHopSelectorConfig{})
-	target := "127.0.0.1:5300"
-
-	peer, selected, err := selector.openUDPPeer(context.Background(), target, DialOptions{FinalHopProxyURL: "socks5h://" + proxyAddr})
-	if err != nil {
-		t.Fatalf("openUDPPeer() error = %v", err)
-	}
-	defer peer.Close()
-	if selected != target {
-		t.Fatalf("selected = %q, want target", selected)
-	}
-	if err := peer.WritePacket([]byte("ping")); err != nil {
-		t.Fatalf("WritePacket() error = %v", err)
-	}
-	select {
-	case packet := <-packets:
-		if packet.Target != target || string(packet.Payload) != "ping" {
-			t.Fatalf("SOCKS5 UDP packet = %+v", packet)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for SOCKS5 UDP packet")
-	}
-}
-
 func startSelectorTCPEchoServer(t *testing.T) (string, func()) {
 	t.Helper()
 
@@ -333,129 +276,6 @@ func startSelectorTCPEchoServer(t *testing.T) (string, func()) {
 		_ = ln.Close()
 		<-done
 	}
-}
-
-type selectorHTTPConnectProxy struct {
-	URL string
-
-	mu      sync.Mutex
-	targets []string
-}
-
-func startSelectorHTTPConnectProxy(t *testing.T) *selectorHTTPConnectProxy {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen() error = %v", err)
-	}
-	proxy := &selectorHTTPConnectProxy{URL: "http://" + ln.Addr().String()}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			client, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go proxy.handleConn(client)
-		}
-	}()
-	t.Cleanup(func() {
-		_ = ln.Close()
-		<-done
-	})
-	return proxy
-}
-
-func (p *selectorHTTPConnectProxy) handleConn(client net.Conn) {
-	defer client.Close()
-	req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
-	if err != nil {
-		return
-	}
-	target := req.Target
-	p.mu.Lock()
-	p.targets = append(p.targets, target)
-	p.mu.Unlock()
-	upstream, err := net.DialTimeout("tcp", target, 5*time.Second)
-	if err != nil {
-		_, _ = io.WriteString(client, "HTTP/1.1 502 Bad Gateway\r\n\r\n")
-		return
-	}
-	defer upstream.Close()
-	_, _ = io.WriteString(client, "HTTP/1.1 200 OK\r\n\r\n")
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(upstream, client)
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(client, upstream)
-		done <- struct{}{}
-	}()
-	<-done
-}
-
-func (p *selectorHTTPConnectProxy) SawConnectTo(target string) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, seen := range p.targets {
-		if seen == target {
-			return true
-		}
-	}
-	return false
-}
-
-func startSelectorSOCKS5UDPProxy(t *testing.T) (string, <-chan proxyproto.SOCKS5UDPPacket) {
-	t.Helper()
-	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen tcp proxy: %v", err)
-	}
-	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		_ = tcpLn.Close()
-		t.Fatalf("listen udp proxy: %v", err)
-	}
-	packetCh := make(chan proxyproto.SOCKS5UDPPacket, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer close(packetCh)
-		client, err := tcpLn.Accept()
-		if err != nil {
-			return
-		}
-		defer client.Close()
-		req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
-		if err != nil {
-			return
-		}
-		if err := proxyproto.WriteClientRequestSuccessWithBind(client, req, udpLn.LocalAddr()); err != nil {
-			return
-		}
-		buf := make([]byte, 64*1024)
-		n, _, err := udpLn.ReadFromUDP(buf)
-		if err != nil {
-			return
-		}
-		packet, err := proxyproto.ParseSOCKS5UDPPacket(buf[:n])
-		if err != nil {
-			return
-		}
-		packetCh <- packet
-	}()
-	t.Cleanup(func() {
-		_ = tcpLn.Close()
-		_ = udpLn.Close()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("timed out waiting for SOCKS5 UDP proxy")
-		}
-	})
-	return tcpLn.Addr().String(), packetCh
 }
 
 type closeUnblocksUDPPeer struct {

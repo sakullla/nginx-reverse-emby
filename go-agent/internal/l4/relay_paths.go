@@ -112,11 +112,7 @@ func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, di
 		}
 	case "proxy":
 		if ruleUsesRelay(rule) {
-			if _, parseErr := proxyproto.ParseProxyURL(rule.ProxyEgressURL); parseErr != nil {
-				err = parseErr
-				break
-			}
-			dialOptions.FinalHopProxyURL = rule.ProxyEgressURL
+			dialOptions.EgressProfileID = rule.EgressProfileID
 			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 		} else {
 			upstream, err = proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
@@ -154,6 +150,9 @@ func transparentTCPTargetFromConn(client net.Conn) (string, error) {
 }
 
 func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, error) {
+	if dialOptions.EgressProfileID == nil {
+		dialOptions.EgressProfileID = rule.EgressProfileID
+	}
 	paths, err := s.resolveRelayPaths(rule)
 	if err != nil {
 		return nil, err

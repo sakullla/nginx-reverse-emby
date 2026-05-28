@@ -16,7 +16,7 @@ type DialOptions struct {
 	InitialPayload    []byte
 	TrafficClass      upstream.TrafficClass
 	OutboundProxyURL  string
-	FinalHopProxyURL  string
+	EgressProfileID   *int
 	WireGuardProvider WireGuardRuntimeProvider
 }
 
@@ -30,14 +30,24 @@ type StartOptions struct {
 }
 
 func (o DialOptions) clone() DialOptions {
+	var egressProfileID *int
+	if o.EgressProfileID != nil {
+		profileID := *o.EgressProfileID
+		egressProfileID = &profileID
+	}
 	if len(o.InitialPayload) == 0 {
-		return DialOptions{TrafficClass: o.TrafficClass, OutboundProxyURL: o.OutboundProxyURL, FinalHopProxyURL: o.FinalHopProxyURL, WireGuardProvider: o.WireGuardProvider}
+		return DialOptions{
+			TrafficClass:      o.TrafficClass,
+			OutboundProxyURL:  o.OutboundProxyURL,
+			EgressProfileID:   egressProfileID,
+			WireGuardProvider: o.WireGuardProvider,
+		}
 	}
 	return DialOptions{
 		InitialPayload:    append([]byte(nil), o.InitialPayload...),
 		TrafficClass:      o.TrafficClass,
 		OutboundProxyURL:  o.OutboundProxyURL,
-		FinalHopProxyURL:  o.FinalHopProxyURL,
+		EgressProfileID:   egressProfileID,
 		WireGuardProvider: o.WireGuardProvider,
 	}
 }

@@ -213,10 +213,7 @@ func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.C
 		return runtime.DialContext(s.ctx, "tcp", target)
 	case "proxy":
 		if ruleUsesRelay(rule) {
-			if _, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL); err != nil {
-				return nil, err
-			}
-			return s.dialRelayPath("tcp", target, rule, relay.DialOptions{FinalHopProxyURL: rule.ProxyEgressURL})
+			return s.dialRelayPath("tcp", target, rule, relay.DialOptions{EgressProfileID: rule.EgressProfileID})
 		}
 		return proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
 	default:

@@ -305,8 +305,8 @@ func relayMetadataForDialOptions(network string, options DialOptions) map[string
 	if class != upstream.TrafficClassUnknown {
 		metadata[relayMetadataTrafficClass] = string(class)
 	}
-	if finalHopProxyURL := strings.TrimSpace(options.FinalHopProxyURL); finalHopProxyURL != "" {
-		metadata[relayMetadataFinalHopProxyURL] = finalHopProxyURL
+	if options.EgressProfileID != nil && *options.EgressProfileID > 0 {
+		metadata[relayMetadataEgressProfileID] = *options.EgressProfileID
 	}
 	if len(metadata) == 0 {
 		return nil
@@ -320,8 +320,8 @@ func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialO
 		class = relayDialTrafficClass(network, DialOptions{})
 	}
 	return DialOptions{
-		TrafficClass:     class,
-		FinalHopProxyURL: relayFinalHopProxyURLFromMetadata(metadata),
+		TrafficClass:    class,
+		EgressProfileID: relayEgressProfileIDFromMetadata(metadata),
 	}
 }
 

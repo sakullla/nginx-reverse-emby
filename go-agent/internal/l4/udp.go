@@ -566,7 +566,8 @@ func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate)
 		return s.dialUDPUpstreamCandidate(rule, candidate)
 	case "relay":
 		conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
-			TrafficClass: upstream.TrafficClassBulk,
+			TrafficClass:    upstream.TrafficClassBulk,
+			EgressProfileID: rule.EgressProfileID,
 		})
 		if err != nil {
 			return nil, err
@@ -575,7 +576,8 @@ func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate)
 	case "wireguard":
 		if ruleUsesRelay(rule) {
 			conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
-				TrafficClass: upstream.TrafficClassBulk,
+				TrafficClass:    upstream.TrafficClassBulk,
+				EgressProfileID: rule.EgressProfileID,
 			})
 			if err != nil {
 				return nil, err
@@ -593,12 +595,9 @@ func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate)
 		return &connUDPUpstream{conn: conn}, nil
 	case "proxy":
 		if ruleUsesRelay(rule) {
-			if _, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL); err != nil {
-				return nil, err
-			}
 			conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
-				TrafficClass:     upstream.TrafficClassBulk,
-				FinalHopProxyURL: rule.ProxyEgressURL,
+				TrafficClass:    upstream.TrafficClassBulk,
+				EgressProfileID: rule.EgressProfileID,
 			})
 			if err != nil {
 				return nil, err
@@ -631,7 +630,8 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 	}
 
 	upstream, err := s.dialRelayPath("udp", targetAddress, rule, relay.DialOptions{
-		TrafficClass: upstream.TrafficClassBulk,
+		TrafficClass:    upstream.TrafficClassBulk,
+		EgressProfileID: rule.EgressProfileID,
 	})
 	if err != nil {
 		return nil, err

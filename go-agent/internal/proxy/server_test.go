@@ -2788,13 +2788,15 @@ func TestStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) 
 	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeOff)
 	defer relayStop()
 	relayListenPort := pickFreePort(t)
+	egressProfileID := 17
 
 	runtime, err := Start(
 		context.Background(),
 		[]model.HTTPRule{{
-			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
-			RelayLayers: [][]int{{41}},
+			FrontendURL:     fmt.Sprintf("http://edge.example.test:%d", frontendPort),
+			Backends:        []model.HTTPBackend{{URL: "http://" + backendAddress}},
+			RelayLayers:     [][]int{{41}},
+			EgressProfileID: &egressProfileID,
 		}},
 		[]model.RelayListener{{
 			ID:         41,
@@ -2859,6 +2861,12 @@ func TestStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) 
 	for _, relayReq := range requests {
 		if relayReq.Target != backendAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
+		}
+		if got := relayReq.Metadata["egress_profile_id"]; got != float64(egressProfileID) && got != egressProfileID {
+			t.Fatalf("egress_profile_id metadata = %#v, want %d", got, egressProfileID)
+		}
+		if _, ok := relayReq.Metadata["final_hop_proxy_url"]; ok {
+			t.Fatalf("relay metadata leaked final_hop_proxy_url: %+v", relayReq.Metadata)
 		}
 		rawClass, ok := relayReq.Metadata["traffic_class"].(string)
 		if !ok {

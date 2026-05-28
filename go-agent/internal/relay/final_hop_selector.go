@@ -12,7 +12,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 )
 
 type finalHopSelectorConfig struct {
@@ -108,10 +107,7 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string, options D
 	return nil, lastAddress, lastErr
 }
 
-func dialFinalHopTCP(ctx context.Context, address string, options DialOptions) (net.Conn, error) {
-	if strings.TrimSpace(options.FinalHopProxyURL) != "" {
-		return proxyproto.Dial(ctx, options.FinalHopProxyURL, address)
-	}
+func dialFinalHopTCP(ctx context.Context, address string, _ DialOptions) (net.Conn, error) {
 	return dialTCP(ctx, address)
 }
 
@@ -186,14 +182,7 @@ func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string, optio
 	return nil, "", lastErr
 }
 
-func openFinalHopUDPPeer(ctx context.Context, address string, options DialOptions) (udpPacketPeer, error) {
-	if strings.TrimSpace(options.FinalHopProxyURL) != "" {
-		association, err := proxyproto.DialUDP(ctx, options.FinalHopProxyURL)
-		if err != nil {
-			return nil, err
-		}
-		return &proxyUDPFinalHopPeer{association: association, target: address}, nil
-	}
+func openFinalHopUDPPeer(ctx context.Context, address string, _ DialOptions) (udpPacketPeer, error) {
 	addr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, err
@@ -204,30 +193,4 @@ func openFinalHopUDPPeer(ctx context.Context, address string, options DialOption
 	}
 	netutil.TuneUDPBuffers(conn)
 	return newUDPSocketPeer(conn), nil
-}
-
-type proxyUDPFinalHopPeer struct {
-	association *proxyproto.UDPAssociation
-	target      string
-}
-
-func (p *proxyUDPFinalHopPeer) Close() error {
-	return p.association.Close()
-}
-
-func (p *proxyUDPFinalHopPeer) SetReadDeadline(deadline time.Time) error {
-	return p.association.SetReadDeadline(deadline)
-}
-
-func (p *proxyUDPFinalHopPeer) SetWriteDeadline(deadline time.Time) error {
-	return p.association.SetWriteDeadline(deadline)
-}
-
-func (p *proxyUDPFinalHopPeer) ReadPacket() ([]byte, error) {
-	_, payload, err := p.association.ReadPacket()
-	return payload, err
-}
-
-func (p *proxyUDPFinalHopPeer) WritePacket(payload []byte) error {
-	return p.association.WritePacket(p.target, payload)
 }

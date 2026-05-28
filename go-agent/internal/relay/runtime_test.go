@@ -187,6 +187,25 @@ func TestValidateListener(t *testing.T) {
 	}
 }
 
+func TestRelayMetadataCarriesEgressProfileIDOnly(t *testing.T) {
+	profileID := 17
+	metadata := relayMetadataForDialOptions("tcp", DialOptions{EgressProfileID: &profileID})
+	if metadata == nil {
+		t.Fatal("metadata = nil, want egress profile id")
+	}
+	if got := metadata["egress_profile_id"]; got != 17 {
+		t.Fatalf("egress_profile_id metadata = %#v, want 17", got)
+	}
+	if _, ok := metadata["final_hop_proxy_url"]; ok {
+		t.Fatalf("metadata leaked final_hop_proxy_url: %#v", metadata)
+	}
+
+	decoded := relayDialOptionsFromMetadata("tcp", map[string]any{"egress_profile_id": float64(19)})
+	if decoded.EgressProfileID == nil || *decoded.EgressProfileID != 19 {
+		t.Fatalf("decoded EgressProfileID = %v, want 19", decoded.EgressProfileID)
+	}
+}
+
 func TestNormalizeListenerDerivesBindAndPublicFields(t *testing.T) {
 	t.Parallel()
 
