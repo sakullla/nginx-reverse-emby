@@ -148,7 +148,7 @@ type EgressProfileRow struct {
 	Type                string `gorm:"column:type;not null"`
 	ProxyURL            string `gorm:"column:proxy_url;not null;default:''"`
 	WireGuardConfigJSON string `gorm:"column:wireguard_config_json;not null;default:''"`
-	Enabled             bool   `gorm:"column:enabled;type:integer;not null;default:1"`
+	Enabled             bool   `gorm:"column:enabled;not null;default:1"`
 	Description         string `gorm:"column:description;not null;default:''"`
 	Revision            int64  `gorm:"column:revision;not null;default:0"`
 }

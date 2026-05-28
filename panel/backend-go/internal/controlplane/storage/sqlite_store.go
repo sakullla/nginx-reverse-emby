@@ -666,17 +666,7 @@ func (s *GormStore) SaveEgressProfiles(ctx context.Context, profiles []EgressPro
 
 		rows := make([]map[string]any, 0, len(profiles))
 		for _, row := range profiles {
-			normalizeEgressProfileRow(&row)
-			rows = append(rows, map[string]any{
-				"id":                    row.ID,
-				"name":                  row.Name,
-				"type":                  row.Type,
-				"proxy_url":             row.ProxyURL,
-				"wireguard_config_json": row.WireGuardConfigJSON,
-				"enabled":               row.Enabled,
-				"description":           row.Description,
-				"revision":              row.Revision,
-			})
+			rows = append(rows, egressProfileRowPayload(row))
 		}
 		return tx.Model(&EgressProfileRow{}).Create(&rows).Error
 	})
@@ -994,6 +984,20 @@ func normalizeEgressProfileRow(row *EgressProfileRow) {
 	row.ProxyURL = defaultString(row.ProxyURL, "")
 	row.WireGuardConfigJSON = defaultString(row.WireGuardConfigJSON, "")
 	row.Description = defaultString(row.Description, "")
+}
+
+func egressProfileRowPayload(row EgressProfileRow) map[string]any {
+	normalizeEgressProfileRow(&row)
+	return map[string]any{
+		"id":                    row.ID,
+		"name":                  row.Name,
+		"type":                  row.Type,
+		"proxy_url":             row.ProxyURL,
+		"wireguard_config_json": row.WireGuardConfigJSON,
+		"enabled":               row.Enabled,
+		"description":           row.Description,
+		"revision":              row.Revision,
+	}
 }
 
 func normalizeWireGuardClientRow(row *WireGuardClientRow) {
