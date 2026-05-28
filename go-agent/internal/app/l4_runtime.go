@@ -21,12 +21,14 @@ type l4RuntimeManager struct {
 	cache              *backends.Cache
 	provider           relay.TLSMaterialProvider
 	wireGuardRuntime   *sharedWireGuardRuntime
+	egressWireGuard    *egressWireGuardRuntime
 	wireGuardProvider  relay.WireGuardRuntimeProvider
 	ownsWireGuard      bool
 	localAgentID       string
 	blockState         l4TrafficBlockStateValue
 	lastRules          []model.L4Rule
 	lastRelayListeners []model.RelayListener
+	lastEgressProfiles []model.EgressProfile
 }
 
 func newL4RuntimeManager() *l4RuntimeManager {
@@ -54,6 +56,7 @@ func newL4RuntimeManagerWithRelayConfigAndWireGuard(provider relay.TLSMaterialPr
 		cache:             backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
 		provider:          provider,
 		wireGuardRuntime:  wireGuardRuntime,
+		egressWireGuard:   newEgressWireGuardRuntime(nil),
 		wireGuardProvider: wireGuardRuntime.providerForAgent(cfg.AgentID),
 		ownsWireGuard:     owns,
 		localAgentID:      strings.TrimSpace(cfg.AgentID),
@@ -65,17 +68,18 @@ func newL4RuntimeManagerWithWireGuardFactory(factory wireguard.Factory) *l4Runti
 	return &l4RuntimeManager{
 		cache:             backends.NewCache(backends.Config{}),
 		wireGuardRuntime:  wireGuardRuntime,
+		egressWireGuard:   newEgressWireGuardRuntime(factory),
 		wireGuardProvider: wireGuardRuntime.provider(),
 		ownsWireGuard:     true,
 	}
 }
 
 func (m *l4RuntimeManager) Apply(ctx context.Context, rules []model.L4Rule) error {
-	return m.ApplyWithRelayAndWireGuardProfiles(ctx, rules, nil, nil)
+	return m.ApplyWithRelayWireGuardAndEgressProfiles(ctx, rules, nil, nil, nil)
 }
 
 func (m *l4RuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.L4Rule, relayListeners []model.RelayListener) error {
-	return m.ApplyWithRelayAndWireGuardProfiles(ctx, rules, relayListeners, nil)
+	return m.ApplyWithRelayWireGuardAndEgressProfiles(ctx, rules, relayListeners, nil, nil)
 }
 
 func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
@@ -84,6 +88,16 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	relayListeners []model.RelayListener,
 	wireGuardProfiles []model.WireGuardProfile,
 ) error {
+	return m.ApplyWithRelayWireGuardAndEgressProfiles(ctx, rules, relayListeners, wireGuardProfiles, nil)
+}
+
+func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	wireGuardProfiles []model.WireGuardProfile,
+	egressProfiles []model.EgressProfile,
+) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -91,11 +105,14 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
 			return err
 		}
+		if err := m.applyEgressWireGuardProfilesLocked(ctx, egressProfiles); err != nil {
+			return err
+		}
 		if m.server != nil {
 			_ = m.server.Close()
 			m.server = nil
 		}
-		m.storeLastAppliedInputsLocked(nil, nil)
+		m.storeLastAppliedInputsLocked(nil, nil, nil)
 		return nil
 	}
 	if err := validateL4Rules(rules, relayListeners, m.provider); err != nil {
@@ -105,6 +122,13 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 	if err != nil {
 		return err
 	}
+	egressTransaction, egressProvider, err := m.prepareEgressWireGuardProfilesLocked(ctx, egressProfiles)
+	if err != nil {
+		if transaction != nil {
+			transaction.Rollback()
+		}
+		return err
+	}
 	if transaction != nil {
 		defer func() {
 			if transaction != nil {
@@ -112,8 +136,21 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 			}
 		}()
 	}
+	if egressTransaction != nil {
+		defer func() {
+			if egressTransaction != nil {
+				egressTransaction.Rollback()
+			}
+		}()
+	}
 	if err := m.validateWireGuardReferencesLocked(rules, provider); err != nil {
-		if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+		if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
+			return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+		}
+		return err
+	}
+	if err := validateEgressWireGuardReferences(rules, egressProfiles, egressProvider); err != nil {
+		if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
 			return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 		}
 		return err
@@ -121,20 +158,24 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 
 	previous := m.server
 	if previous != nil {
-		server, err := l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
+		server, err := l4.NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, egressProfiles)
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
 			if transaction != nil {
 				m.wireGuardRuntime.Commit(transaction, wireGuardProfiles)
 				transaction = nil
 			}
+			if egressTransaction != nil {
+				m.egressWireGuard.Commit(egressTransaction, egressProfiles)
+				egressTransaction = nil
+			}
 			_ = previous.Close()
 			m.server = server
-			m.storeLastAppliedInputsLocked(rules, relayListeners)
+			m.storeLastAppliedInputsLocked(rules, relayListeners, egressProfiles)
 			return nil
 		}
 		if !bindingKeysOverlap(l4ServerBindingKeys(previous), l4RuleBindingKeys(rules)) || !isRuntimeBindConflict(err) {
-			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
 				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 			return err
@@ -144,7 +185,7 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		m.server = nil
 	}
 	server, err := retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
-		return l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
+		return l4.NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, egressProfiles)
 	})
 	if err != nil && previous != nil && m.canRecreateWireGuardRuntimeForBindConflict(err, rules, wireGuardProfiles) {
 		if transaction != nil {
@@ -156,13 +197,13 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		} else {
 			provider = m.wireGuardProvider
 			server, err = retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
-				return l4.NewServerWithResourcesAndWireGuardProvider(ctx, rules, relayListeners, m.provider, m.cache, provider)
+				return l4.NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, egressProfiles)
 			})
 		}
 	}
 	if err != nil {
 		if previous != nil {
-			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
 				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 		}
@@ -173,8 +214,12 @@ func (m *l4RuntimeManager) ApplyWithRelayAndWireGuardProfiles(
 		m.wireGuardRuntime.Commit(transaction, wireGuardProfiles)
 		transaction = nil
 	}
+	if egressTransaction != nil {
+		m.egressWireGuard.Commit(egressTransaction, egressProfiles)
+		egressTransaction = nil
+	}
 	m.server = server
-	m.storeLastAppliedInputsLocked(rules, relayListeners)
+	m.storeLastAppliedInputsLocked(rules, relayListeners, egressProfiles)
 	return nil
 }
 
@@ -190,10 +235,14 @@ func (m *l4RuntimeManager) canRecreateWireGuardRuntimeForBindConflict(err error,
 	return false
 }
 
-func (m *l4RuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **wireguard.Transaction) error {
+func (m *l4RuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **wireguard.Transaction, egressTransaction **wireguard.Transaction) error {
 	if transaction != nil && *transaction != nil {
 		(*transaction).Rollback()
 		*transaction = nil
+	}
+	if egressTransaction != nil && *egressTransaction != nil {
+		(*egressTransaction).Rollback()
+		*egressTransaction = nil
 	}
 	return m.restorePreviousServerLocked(ctx)
 }
@@ -204,7 +253,7 @@ func (m *l4RuntimeManager) restorePreviousServerLocked(ctx context.Context) erro
 		return nil
 	}
 	server, err := retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
-		return l4.NewServerWithResourcesAndWireGuardProvider(ctx, m.lastRules, m.lastRelayListeners, m.provider, m.cache, m.wireGuardProvider)
+		return l4.NewServerWithResourcesWireGuardAndEgressRuntime(ctx, m.lastRules, m.lastRelayListeners, m.provider, m.cache, m.wireGuardProvider, m.egressWireGuard.Provider(), m.lastEgressProfiles)
 	})
 	if err != nil {
 		if m.server != nil && isRuntimeBindConflict(err) {
@@ -221,9 +270,10 @@ func (m *l4RuntimeManager) restorePreviousServerLocked(ctx context.Context) erro
 	return nil
 }
 
-func (m *l4RuntimeManager) storeLastAppliedInputsLocked(rules []model.L4Rule, relayListeners []model.RelayListener) {
+func (m *l4RuntimeManager) storeLastAppliedInputsLocked(rules []model.L4Rule, relayListeners []model.RelayListener, egressProfiles []model.EgressProfile) {
 	m.lastRules = cloneL4Rules(rules)
 	m.lastRelayListeners = cloneRelayListeners(relayListeners)
+	m.lastEgressProfiles = cloneEgressProfiles(egressProfiles)
 }
 
 func l4ServerBindingKeys(server *l4.Server) []string {
@@ -297,6 +347,20 @@ func (m *l4RuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, p
 	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID, profiles: cloneWireGuardProfiles(profiles)}, nil
 }
 
+func (m *l4RuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) error {
+	if m.egressWireGuard == nil || profiles == nil {
+		return nil
+	}
+	return m.egressWireGuard.Apply(ctx, profiles)
+}
+
+func (m *l4RuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+	if m.egressWireGuard == nil || profiles == nil {
+		return nil, nil, nil
+	}
+	return m.egressWireGuard.Prepare(ctx, profiles)
+}
+
 func (m *l4RuntimeManager) validateWireGuardReferencesLocked(rules []model.L4Rule, provider relay.WireGuardRuntimeProvider) error {
 	for _, rule := range rules {
 		if !l4RuleUsesWireGuard(rule) {
@@ -343,6 +407,11 @@ func (m *l4RuntimeManager) Close() error {
 	}
 	if m.ownsWireGuard && m.wireGuardRuntime != nil {
 		if err := m.wireGuardRuntime.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if m.egressWireGuard != nil {
+		if err := m.egressWireGuard.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

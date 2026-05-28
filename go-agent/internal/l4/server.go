@@ -27,6 +27,13 @@ type RelayMaterialProvider interface {
 	relay.TLSMaterialProvider
 }
 
+type serverOptions struct {
+	cache                   *backends.Cache
+	wireGuardProvider       relay.WireGuardRuntimeProvider
+	egressWireGuardProvider relay.WireGuardRuntimeProvider
+	egressProfiles          []model.EgressProfile
+}
+
 type Server struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -88,7 +95,7 @@ func NewServerWithEgressProfiles(
 	relayProvider RelayMaterialProvider,
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, nil, nil, egressProfiles)
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{egressProfiles: egressProfiles})
 }
 
 func NewServerWithWireGuardProvider(
@@ -98,7 +105,7 @@ func NewServerWithWireGuardProvider(
 	relayProvider RelayMaterialProvider,
 	wireGuardProvider relay.WireGuardRuntimeProvider,
 ) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, nil, wireGuardProvider, nil)
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{wireGuardProvider: wireGuardProvider})
 }
 
 func NewServerWithResources(
@@ -108,7 +115,7 @@ func NewServerWithResources(
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
 ) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, cache, nil, nil)
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{cache: cache})
 }
 
 func NewServerWithResourcesAndWireGuardProvider(
@@ -119,10 +126,10 @@ func NewServerWithResourcesAndWireGuardProvider(
 	cache *backends.Cache,
 	wireGuardProvider relay.WireGuardRuntimeProvider,
 ) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider, nil)
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{cache: cache, wireGuardProvider: wireGuardProvider})
 }
 
-func newServerWithOptions(
+func NewServerWithResourcesWireGuardAndEgressProfiles(
 	ctx context.Context,
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
@@ -131,18 +138,46 @@ func newServerWithOptions(
 	wireGuardProvider relay.WireGuardRuntimeProvider,
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
+	return NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider, wireGuardProvider, egressProfiles)
+}
+
+func NewServerWithResourcesWireGuardAndEgressRuntime(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	relayProvider RelayMaterialProvider,
+	cache *backends.Cache,
+	wireGuardProvider relay.WireGuardRuntimeProvider,
+	egressWireGuardProvider relay.WireGuardRuntimeProvider,
+	egressProfiles []model.EgressProfile,
+) (*Server, error) {
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{
+		cache:                   cache,
+		wireGuardProvider:       wireGuardProvider,
+		egressWireGuardProvider: egressWireGuardProvider,
+		egressProfiles:          egressProfiles,
+	})
+}
+
+func newServerWithOptions(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	relayProvider RelayMaterialProvider,
+	options serverOptions,
+) (*Server, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
 	for _, listener := range relayListeners {
 		relayListenersByID[listener.ID] = listener
 	}
-	if cache == nil {
-		cache = backends.NewCache(backends.Config{})
+	if options.cache == nil {
+		options.cache = backends.NewCache(backends.Config{})
 	}
 	s := &Server{
 		ctx:                   ctx,
 		cancel:                cancel,
-		cache:                 cache,
+		cache:                 options.cache,
 		now:                   time.Now,
 		tcpConns:              make(map[net.Conn]struct{}),
 		udpConns:              nil,
@@ -154,9 +189,9 @@ func newServerWithOptions(
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
-		relayPathDialer:       relayPathDialer{provider: relayProvider, wireGuardProvider: wireGuardProvider},
-		wireGuardProvider:     wireGuardProvider,
-		egressDialer:          egress.Dialer{Resolver: egress.NewResolver(egressProfiles), WireGuardProvider: wireGuardProvider},
+		relayPathDialer:       relayPathDialer{provider: relayProvider, wireGuardProvider: options.wireGuardProvider},
+		wireGuardProvider:     options.wireGuardProvider,
+		egressDialer:          egress.Dialer{Resolver: egress.NewResolver(options.egressProfiles), WireGuardProvider: options.egressWireGuardProvider},
 		tcpDialer:             (&net.Dialer{}).DialContext,
 	}
 	for _, rule := range rules {

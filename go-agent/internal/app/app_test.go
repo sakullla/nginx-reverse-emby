@@ -683,6 +683,34 @@ func TestMergeSnapshotPayloadAppliesExplicitEmptyWireGuardProfiles(t *testing.T)
 	}
 }
 
+func TestMergeSnapshotPayloadAppliesExplicitEmptyEgressProfiles(t *testing.T) {
+	previous := Snapshot{
+		DesiredVersion: "previous",
+		Revision:       7,
+		EgressProfiles: []model.EgressProfile{{
+			ID:       41,
+			Name:     "stale",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 7,
+		}},
+	}
+	var next Snapshot
+	if err := json.Unmarshal([]byte(`{"desired_version":"cleanup","desired_revision":8,"egress_profiles":[]}`), &next); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	merged := mergeSnapshotPayload(next, previous)
+
+	if merged.EgressProfiles == nil {
+		t.Fatal("EgressProfiles = nil, want explicit empty slice")
+	}
+	if len(merged.EgressProfiles) != 0 {
+		t.Fatalf("EgressProfiles = %+v, want cleared", merged.EgressProfiles)
+	}
+}
+
 func TestRunAppliesExplicitEmptyWireGuardProfilesToClearStaleProfiles(t *testing.T) {
 	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
@@ -1647,6 +1675,13 @@ type l4WireGuardApplyCall struct {
 	profiles  []model.WireGuardProfile
 }
 
+type l4EgressApplyCall struct {
+	rules             []model.L4Rule
+	listeners         []model.RelayListener
+	wireGuardProfiles []model.WireGuardProfile
+	egressProfiles    []model.EgressProfile
+}
+
 type updateCall struct {
 	desiredVersion string
 	pkg            model.VersionPackage
@@ -1776,6 +1811,32 @@ func (a *testWireGuardL4Applier) wireGuardCalls() []l4WireGuardApplyCall {
 	defer a.wgMu.Unlock()
 	out := make([]l4WireGuardApplyCall, len(a.wgCalls))
 	copy(out, a.wgCalls)
+	return out
+}
+
+type testEgressL4Applier struct {
+	testWireGuardL4Applier
+	egressMu    sync.Mutex
+	egressCalls []l4EgressApplyCall
+}
+
+func (a *testEgressL4Applier) ApplyWithRelayWireGuardAndEgressProfiles(_ context.Context, rules []model.L4Rule, listeners []model.RelayListener, wireGuardProfiles []model.WireGuardProfile, egressProfiles []model.EgressProfile) error {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	a.egressCalls = append(a.egressCalls, l4EgressApplyCall{
+		rules:             append([]model.L4Rule(nil), rules...),
+		listeners:         append([]model.RelayListener(nil), listeners...),
+		wireGuardProfiles: append([]model.WireGuardProfile(nil), wireGuardProfiles...),
+		egressProfiles:    append([]model.EgressProfile(nil), egressProfiles...),
+	})
+	return a.applyErr
+}
+
+func (a *testEgressL4Applier) egressProfileCalls() []l4EgressApplyCall {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	out := make([]l4EgressApplyCall, len(a.egressCalls))
+	copy(out, a.egressCalls)
 	return out
 }
 
@@ -4334,6 +4395,97 @@ func TestSnapshotActivatorRefreshesL4WireGuardProfilesWhenRulesUnchanged(t *test
 	}
 	if calls[0].profiles[0].Revision != 2 {
 		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)
+	}
+}
+
+func TestSnapshotActivatorPassesEgressProfilesToL4Applier(t *testing.T) {
+	l4Applier := &testEgressL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 17
+	next := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       profileID,
+			Name:     "socks exit",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:        "tcp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      8443,
+			Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			EgressProfileID: &profileID,
+			Revision:        1,
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.egressProfileCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1", len(calls))
+	}
+	if len(calls[0].egressProfiles) != 1 || calls[0].egressProfiles[0].ID != profileID {
+		t.Fatalf("egress profiles passed to l4 applier = %+v", calls[0].egressProfiles)
+	}
+}
+
+func TestSnapshotActivatorRefreshesL4EgressProfilesWhenRulesUnchanged(t *testing.T) {
+	l4Applier := &testEgressL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 17
+	previous := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       profileID,
+			Name:     "socks exit",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:        "tcp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      8443,
+			Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			EgressProfileID: &profileID,
+			Revision:        1,
+		}},
+	}
+	next := previous
+	next.EgressProfiles = append([]model.EgressProfile(nil), previous.EgressProfiles...)
+	next.EgressProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.egressProfileCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1 after profile-only change", len(calls))
+	}
+	if calls[0].egressProfiles[0].Revision != 2 {
+		t.Fatalf("egress profile revision = %d, want 2", calls[0].egressProfiles[0].Revision)
 	}
 }
 

@@ -137,6 +137,12 @@ func (u *directUDPUpstream) WritePacket(payload []byte) error {
 	return err
 }
 
+func (u *directUDPUpstream) directUDPScored() {}
+
+type directUDPScoreUpstream interface {
+	directUDPScored()
+}
+
 type relayUDPUpstream struct {
 	conn     net.Conn
 	readBuf  []byte
@@ -236,6 +242,12 @@ func (u *egressUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
 func (u *egressUDPUpstream) WritePacket(payload []byte) error {
 	return u.conn.WritePacket(u.target, payload)
 }
+
+type directEgressUDPUpstream struct {
+	egressUDPUpstream
+}
+
+func (u *directEgressUDPUpstream) directUDPScored() {}
 
 func proxyUDPReplySourceMatches(expected string, source string) bool {
 	expectedHost, expectedPort, expectedErr := net.SplitHostPort(strings.TrimSpace(expected))
@@ -656,6 +668,9 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 			if err != nil {
 				return nil, err
 			}
+			if s.usesLocalDirectUDPEgress(rule) {
+				return &directEgressUDPUpstream{egressUDPUpstream{conn: conn, target: targetAddress}}, nil
+			}
 			return &egressUDPUpstream{conn: conn, target: targetAddress}, nil
 		}
 		addr, err := net.ResolveUDPAddr("udp", targetAddress)
@@ -724,7 +739,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				if s.shouldFailUDPSession(session.key) {
-					if _, ok := session.upstream.(*directUDPUpstream); ok && s.upstreamScore != nil {
+					if _, ok := session.upstream.(directUDPScoreUpstream); ok && s.upstreamScore != nil {
 						s.upstreamScore.ObserveFailure(
 							upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: session.targetAddr},
 							upstream.FailureTimeout,
@@ -751,7 +766,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		payload := reply.payload
 		replyDuration := s.udpReplyDuration(session.key)
 		s.markUDPSessionReply(session.key)
-		if _, ok := session.upstream.(*directUDPUpstream); ok && s.upstreamScore != nil {
+		if _, ok := session.upstream.(directUDPScoreUpstream); ok && s.upstreamScore != nil {
 			s.upstreamScore.ObserveProbeSuccess(
 				upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: session.targetAddr},
 				0,

@@ -63,6 +63,10 @@ type L4RelayAwareApplier interface {
 	ApplyWithRelay(context.Context, []model.L4Rule, []model.RelayListener) error
 }
 
+type L4EgressAwareApplier interface {
+	ApplyWithRelayWireGuardAndEgressProfiles(context.Context, []model.L4Rule, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
+}
+
 type Updater interface {
 	Stage(context.Context, model.VersionPackage) (string, error)
 	Activate(stagedPath string, desiredVersion string) error
@@ -402,6 +406,7 @@ func runtimePayloadComplete(snapshot Snapshot) bool {
 		snapshot.L4Rules != nil &&
 		snapshot.RelayListeners != nil &&
 		snapshot.WireGuardProfiles != nil &&
+		snapshot.EgressProfiles != nil &&
 		snapshot.Certificates != nil &&
 		snapshot.CertificatePolicies != nil
 }

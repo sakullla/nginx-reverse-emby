@@ -56,6 +56,9 @@ func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	if next.WireGuardProfiles == nil {
 		merged.WireGuardProfiles = previous.WireGuardProfiles
 	}
+	if next.EgressProfiles == nil {
+		merged.EgressProfiles = previous.EgressProfiles
+	}
 	if next.Certificates == nil {
 		merged.Certificates = previous.Certificates
 	}
@@ -75,6 +78,9 @@ func (a *App) rollbackRuntime(ctx context.Context, previousApplied, targetApplie
 func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
 	if a.l4Applier == nil || snapshot.L4Rules == nil {
 		return nil
+	}
+	if egressAware, ok := a.l4Applier.(L4EgressAwareApplier); ok {
+		return egressAware.ApplyWithRelayWireGuardAndEgressProfiles(ctx, snapshot.L4Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles, snapshot.EgressProfiles)
 	}
 	if wireGuardAware, ok := a.l4Applier.(L4WireGuardAwareApplier); ok {
 		return wireGuardAware.ApplyWithRelayAndWireGuardProfiles(ctx, snapshot.L4Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles)
@@ -130,12 +136,14 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 
 		if (!reflect.DeepEqual(previous.L4Rules, next.L4Rules) ||
 			l4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners) ||
-			l4WireGuardInputsChanged(next.L4Rules, previous.WireGuardProfiles, next.WireGuardProfiles)) &&
+			l4WireGuardInputsChanged(next.L4Rules, previous.WireGuardProfiles, next.WireGuardProfiles) ||
+			l4EgressInputsChanged(next.L4Rules, previous.EgressProfiles, next.EgressProfiles)) &&
 			handlers.ActivateL4Rules != nil {
 			if err := a.applyL4Rules(ctx, Snapshot{
 				L4Rules:           next.L4Rules,
 				RelayListeners:    next.RelayListeners,
 				WireGuardProfiles: next.WireGuardProfiles,
+				EgressProfiles:    next.EgressProfiles,
 			}); err != nil {
 				return err
 			}
@@ -198,6 +206,16 @@ func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandle
 func l4WireGuardInputsChanged(rules []model.L4Rule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
 	for _, rule := range rules {
 		if !l4RuleUsesWireGuard(rule) {
+			continue
+		}
+		return !reflect.DeepEqual(previousProfiles, nextProfiles)
+	}
+	return false
+}
+
+func l4EgressInputsChanged(rules []model.L4Rule, previousProfiles, nextProfiles []model.EgressProfile) bool {
+	for _, rule := range rules {
+		if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
 			continue
 		}
 		return !reflect.DeepEqual(previousProfiles, nextProfiles)

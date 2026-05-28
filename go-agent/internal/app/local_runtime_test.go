@@ -1799,6 +1799,100 @@ func TestCloneWireGuardProfilesDeepCopiesBindAddresses(t *testing.T) {
 	}
 }
 
+func TestCloneEgressProfilesDeepCopiesWireGuardConfig(t *testing.T) {
+	profiles := []model.EgressProfile{validAppWireGuardEgressProfile(9)}
+	profiles[0].WireGuardConfig.Peers[0].Reserved = []byte{1}
+
+	cloned := cloneEgressProfiles(profiles)
+	profiles[0].WireGuardConfig.Addresses[0] = "10.99.0.1/24"
+	profiles[0].WireGuardConfig.Peers[0].AllowedIPs[0] = "10.99.0.2/32"
+	profiles[0].WireGuardConfig.Peers[0].Reserved[0] = 9
+	profiles[0].WireGuardConfig.DNS[0] = "9.9.9.9"
+
+	if got := cloned[0].WireGuardConfig.Addresses[0]; got != "10.30.0.1/24" {
+		t.Fatalf("cloned address changed after source mutation: %q", got)
+	}
+	if got := cloned[0].WireGuardConfig.Peers[0].AllowedIPs[0]; got != "10.30.0.2/32" {
+		t.Fatalf("cloned allowed IP changed after source mutation: %q", got)
+	}
+	if got := cloned[0].WireGuardConfig.Peers[0].Reserved[0]; got != 1 {
+		t.Fatalf("cloned reserved changed after source mutation: %d", got)
+	}
+	if got := cloned[0].WireGuardConfig.DNS[0]; got != "1.1.1.1" {
+		t.Fatalf("cloned DNS changed after source mutation: %q", got)
+	}
+
+	cloned[0].WireGuardConfig.Addresses[0] = "10.88.0.1/24"
+	if got := profiles[0].WireGuardConfig.Addresses[0]; got != "10.99.0.1/24" {
+		t.Fatalf("source address changed after clone mutation: %q", got)
+	}
+}
+
+func TestL4RuntimeManagerAppliesWireGuardEgressProfilesFromInlineConfig(t *testing.T) {
+	var created []wireguard.Config
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+		created = append(created, cfg)
+		return &testAppWireGuardRuntime{}, nil
+	})
+	defer manager.Close()
+
+	profileID := 77
+	rule := model.L4Rule{
+		ID:              1,
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      pickFreeTCPPort(t),
+		Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+		EgressProfileID: &profileID,
+	}
+
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(
+		context.Background(),
+		[]model.L4Rule{rule},
+		nil,
+		nil,
+		[]model.EgressProfile{validAppWireGuardEgressProfile(profileID)},
+	); err != nil {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles() error = %v", err)
+	}
+
+	if len(created) != 1 {
+		t.Fatalf("wireguard runtime creations = %d, want 1", len(created))
+	}
+	if got := created[0].ID; got != profileID {
+		t.Fatalf("wireguard runtime profile ID = %d, want egress profile ID %d", got, profileID)
+	}
+	if got := created[0].PrivateKey; got != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
+		t.Fatalf("wireguard runtime private key = %q, want egress inline config key", got)
+	}
+}
+
+func TestL4RuntimeManagerRejectsUnpreparedWireGuardEgressProfiles(t *testing.T) {
+	profileID := 78
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		return nil, fmt.Errorf("egress wg runtime failed")
+	})
+	defer manager.Close()
+
+	err := manager.ApplyWithRelayWireGuardAndEgressProfiles(
+		context.Background(),
+		[]model.L4Rule{{
+			ID:              1,
+			Protocol:        "tcp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      pickFreeTCPPort(t),
+			Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+			EgressProfileID: &profileID,
+		}},
+		nil,
+		nil,
+		[]model.EgressProfile{validAppWireGuardEgressProfile(profileID)},
+	)
+	if err == nil || !strings.Contains(err.Error(), "egress wg runtime failed") {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles() error = %v, want egress runtime creation failure", err)
+	}
+}
+
 func TestRelayRuntimeManagerPreservesRunningServerOnReplacementWireGuardListenFailure(t *testing.T) {
 	provider := &testRelayTLSProvider{
 		certificates: map[int]tls.Certificate{
@@ -2763,6 +2857,28 @@ func validAppWireGuardProfile(profileID int) model.WireGuardProfile {
 		}},
 		MTU:      1420,
 		Enabled:  true,
+		Revision: 1,
+	}
+}
+
+func validAppWireGuardEgressProfile(profileID int) model.EgressProfile {
+	return model.EgressProfile{
+		ID:      profileID,
+		Name:    "egress-wg",
+		Type:    "wireguard",
+		Enabled: true,
+		WireGuardConfig: &model.EgressWireGuardConfig{
+			PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			Addresses:  []string{"10.30.0.1/24"},
+			DNS:        []string{"1.1.1.1"},
+			Peers: []model.WireGuardPeer{{
+				Name:       "peer-a",
+				PublicKey:  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+				Endpoint:   "127.0.0.1:51820",
+				AllowedIPs: []string{"10.30.0.2/32"},
+			}},
+			MTU: 1420,
+		},
 		Revision: 1,
 	}
 }

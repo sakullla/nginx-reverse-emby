@@ -269,6 +269,26 @@ func TestL4UDPRejectsHTTPProxyEgressProfileAtRuntime(t *testing.T) {
 	}
 }
 
+func TestL4RejectsWireGuardEgressProfileWithoutRuntimeProvider(t *testing.T) {
+	profileID := 24
+	_, err := NewServerWithEgressProfiles(context.Background(), []model.L4Rule{{
+		ID:              1,
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      pickFreeTCPPort(t),
+		Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: 5353}},
+		EgressProfileID: &profileID,
+	}}, nil, nil, []model.EgressProfile{{
+		ID:              profileID,
+		Type:            "wireguard",
+		WireGuardConfig: &model.EgressWireGuardConfig{PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+		Enabled:         true,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "wireguard runtime provider is required for egress profile 24") {
+		t.Fatalf("NewServerWithEgressProfiles() error = %v, want missing wireguard egress runtime provider", err)
+	}
+}
+
 func TestL4TCPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	backend := newTCPEchoListener(t)
 	defer backend.Close()
@@ -323,6 +343,66 @@ func TestL4TCPHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	defer srv.Close()
 
 	assertL4TCPProxyProfileTarget(t, listenPort, net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port())), targets)
+}
+
+func TestL4TCPWireGuardEgressProfileUsesEgressRuntimeProvider(t *testing.T) {
+	backend := newTCPEchoListener(t)
+	defer backend.Close()
+
+	ordinaryRuntime := &fakeL4WireGuardRuntime{
+		dialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, fmt.Errorf("ordinary runtime must not handle egress profile")
+		},
+	}
+	egressRuntime := &fakeL4WireGuardRuntime{
+		dialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, address)
+		},
+	}
+
+	profileID := 92
+	listenPort := pickFreeTCPPort(t)
+	srv, err := NewServerWithResourcesWireGuardAndEgressRuntime(context.Background(), []model.L4Rule{{
+		ID:              1,
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: backend.Port()}},
+		EgressProfileID: &profileID,
+	}}, nil, nil, nil,
+		fakeL4WireGuardProvider{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: ordinaryRuntime}},
+		fakeL4WireGuardProvider{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: egressRuntime}},
+		[]model.EgressProfile{{
+			ID:              profileID,
+			Type:            "wireguard",
+			WireGuardConfig: &model.EgressWireGuardConfig{PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+			Enabled:         true,
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewServerWithResourcesWireGuardAndEgressRuntime() error = %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)))
+	if err != nil {
+		t.Fatalf("dial l4 listener: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatalf("write through l4 listener: %v", err)
+	}
+	reply := make([]byte, 4)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read through l4 listener: %v", err)
+	}
+
+	if calls := ordinaryRuntime.dialContextCalls(); len(calls) != 0 {
+		t.Fatalf("ordinary wireguard runtime dial calls = %+v, want none", calls)
+	}
+	if calls := egressRuntime.dialContextCalls(); len(calls) != 1 {
+		t.Fatalf("egress wireguard runtime dial calls = %+v, want one", calls)
+	}
 }
 
 func TestL4ProxyEntrySOCKS5RelayEgress(t *testing.T) {
@@ -2417,6 +2497,67 @@ func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimate(t *testing.T) {
 	}
 	if got <= srv.udpReplyTimeout {
 		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want adaptive timeout above static default %s", got, srv.udpReplyTimeout)
+	}
+}
+
+func TestAdaptiveUDPReplyTimeoutRecordsDirectEgressProfileProbeSuccess(t *testing.T) {
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	const replyDelay = 300 * time.Millisecond
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			time.Sleep(replyDelay)
+			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	profileID := 91
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServerWithEgressProfiles(context.Background(), []model.L4Rule{{
+		Protocol:        "udp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
+		EgressProfileID: &profileID,
+	}}, nil, nil, []model.EgressProfile{{
+		ID:      profileID,
+		Type:    "direct",
+		Enabled: true,
+	}})
+	if err != nil {
+		t.Fatalf("NewServerWithEgressProfiles() error = %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatalf("write udp payload: %v", err)
+	}
+	reply := make([]byte, 4)
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read udp reply: %v", err)
+	}
+
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: upstreamConn.LocalAddr().String()}
+	if estimate := srv.upstreamScore.FirstByteEstimate(key); estimate < 200*time.Millisecond {
+		t.Fatalf("FirstByteEstimate() = %s, want recorded direct egress UDP reply estimate", estimate)
 	}
 }
 
