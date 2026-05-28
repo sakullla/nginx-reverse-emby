@@ -31,6 +31,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		if err := cleanupSQLiteLegacyLocalAgentState(ctx, db); err != nil {
 			return err
 		}
+		if err := createSQLiteEgressProfilesTable(ctx, db); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.AutoMigrate(
@@ -39,6 +42,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&L4RuleRow{},
 		&RelayListenerRow{},
 		&WireGuardProfileRow{},
+		&EgressProfileRow{},
 		&WireGuardClientRow{},
 		&ManagedCertificateRow{},
 		&LocalAgentStateRow{},
@@ -136,6 +140,24 @@ func cleanupSQLiteLegacyLocalAgentState(ctx context.Context, db *gorm.DB) error 
 	return nil
 }
 
+func createSQLiteEgressProfilesTable(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if tx.Migrator().HasTable(&EgressProfileRow{}) {
+		return nil
+	}
+	return tx.Exec(`CREATE TABLE egress_profiles (
+		id integer NOT NULL,
+		name text NOT NULL,
+		type text NOT NULL,
+		proxy_url text NOT NULL DEFAULT "",
+		wireguard_config_json text NOT NULL DEFAULT "",
+		enabled integer NOT NULL DEFAULT 1,
+		description text NOT NULL DEFAULT "",
+		revision integer NOT NULL DEFAULT 0,
+		PRIMARY KEY (id)
+	)`).Error
+}
+
 func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 	tx := db.WithContext(ctx)
 
@@ -200,6 +222,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 	}{
 		{column: "listen_mode", sql: `ALTER TABLE l4_rules ADD COLUMN listen_mode TEXT NOT NULL DEFAULT 'tcp'`},
 		{column: "wireguard_profile_id", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_profile_id INTEGER`},
+		{column: "egress_profile_id", sql: `ALTER TABLE l4_rules ADD COLUMN egress_profile_id INTEGER`},
 		{column: "wireguard_inbound_mode", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_inbound_mode TEXT NOT NULL DEFAULT 'address'`},
 		{column: "wireguard_listen_host", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_listen_host TEXT NOT NULL DEFAULT ''`},
 		{column: "proxy_entry_auth", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_entry_auth TEXT NOT NULL DEFAULT '{}'`},
@@ -240,6 +263,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		{model: &HTTPRuleRow{}, column: "relay_layers", sql: `ALTER TABLE rules ADD COLUMN relay_layers TEXT NOT NULL DEFAULT '[]'`},
 		{model: &HTTPRuleRow{}, column: "wireguard_entry_enabled", sql: `ALTER TABLE rules ADD COLUMN wireguard_entry_enabled INTEGER NOT NULL DEFAULT 0`},
 		{model: &HTTPRuleRow{}, column: "wireguard_profile_id", sql: `ALTER TABLE rules ADD COLUMN wireguard_profile_id INTEGER`},
+		{model: &HTTPRuleRow{}, column: "egress_profile_id", sql: `ALTER TABLE rules ADD COLUMN egress_profile_id INTEGER`},
 		{model: &HTTPRuleRow{}, column: "wireguard_entry_listen_host", sql: `ALTER TABLE rules ADD COLUMN wireguard_entry_listen_host TEXT NOT NULL DEFAULT ''`},
 		{model: &HTTPRuleRow{}, column: "wireguard_entry_listen_port", sql: `ALTER TABLE rules ADD COLUMN wireguard_entry_listen_port INTEGER NOT NULL DEFAULT 0`},
 		{model: &L4RuleRow{}, column: "relay_layers", sql: `ALTER TABLE l4_rules ADD COLUMN relay_layers TEXT NOT NULL DEFAULT '[]'`},

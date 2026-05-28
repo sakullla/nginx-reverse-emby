@@ -48,6 +48,7 @@ type HTTPRuleRow struct {
 	CustomHeadersJSON        string `gorm:"column:custom_headers"`
 	WireGuardEntryEnabled    bool   `gorm:"column:wireguard_entry_enabled;not null;default:false"`
 	WireGuardProfileID       *int   `gorm:"column:wireguard_profile_id"`
+	EgressProfileID          *int   `gorm:"column:egress_profile_id"`
 	WireGuardEntryListenHost string `gorm:"column:wireguard_entry_listen_host;not null;default:''"`
 	WireGuardEntryListenPort int    `gorm:"column:wireguard_entry_listen_port;not null;default:0"`
 	Revision                 int    `gorm:"column:revision"`
@@ -80,6 +81,7 @@ type L4RuleRow struct {
 	RelayObfs            bool   `gorm:"column:relay_obfs"`
 	ListenMode           string `gorm:"column:listen_mode;not null;default:'tcp'"`
 	WireGuardProfileID   *int   `gorm:"column:wireguard_profile_id"`
+	EgressProfileID      *int   `gorm:"column:egress_profile_id"`
 	WireGuardInboundMode string `gorm:"column:wireguard_inbound_mode;not null;default:'address'"`
 	WireGuardListenHost  string `gorm:"column:wireguard_listen_host;not null;default:''"`
 	ProxyEntryAuthJSON   string `gorm:"column:proxy_entry_auth;not null;default:'{}'"`
@@ -138,6 +140,17 @@ type WireGuardProfileRow struct {
 	Enabled           bool   `gorm:"column:enabled"`
 	TagsJSON          string `gorm:"column:tags"`
 	Revision          int    `gorm:"column:revision"`
+}
+
+type EgressProfileRow struct {
+	ID                  int    `gorm:"column:id;primaryKey;not null"`
+	Name                string `gorm:"column:name;not null"`
+	Type                string `gorm:"column:type;not null"`
+	ProxyURL            string `gorm:"column:proxy_url;not null;default:''"`
+	WireGuardConfigJSON string `gorm:"column:wireguard_config_json;not null;default:''"`
+	Enabled             bool   `gorm:"column:enabled;type:integer;not null;default:1"`
+	Description         string `gorm:"column:description;not null;default:''"`
+	Revision            int64  `gorm:"column:revision;not null;default:0"`
 }
 
 type WireGuardClientRow struct {
@@ -283,6 +296,10 @@ func (RelayListenerRow) TableName() string {
 
 func (WireGuardProfileRow) TableName() string {
 	return "wireguard_profiles"
+}
+
+func (EgressProfileRow) TableName() string {
+	return "egress_profiles"
 }
 
 func (WireGuardClientRow) TableName() string {

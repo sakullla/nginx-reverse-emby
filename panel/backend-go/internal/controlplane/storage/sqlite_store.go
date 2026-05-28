@@ -29,6 +29,7 @@ type Store interface {
 	GetL4Rule(context.Context, string, int) (L4RuleRow, bool, error)
 	ListRelayListeners(context.Context, string) ([]RelayListenerRow, error)
 	ListWireGuardProfiles(context.Context, string) ([]WireGuardProfileRow, error)
+	ListEgressProfiles(context.Context) ([]EgressProfileRow, error)
 	LoadLocalAgentState(context.Context) (LocalAgentStateRow, error)
 	LoadAgentSnapshot(context.Context, string, AgentSnapshotInput) (Snapshot, error)
 	ListVersionPolicies(context.Context) ([]VersionPolicyRow, error)
@@ -37,6 +38,7 @@ type Store interface {
 	SaveL4Rules(context.Context, string, []L4RuleRow) error
 	SaveRelayListeners(context.Context, string, []RelayListenerRow) error
 	SaveWireGuardProfiles(context.Context, string, []WireGuardProfileRow) error
+	SaveEgressProfiles(context.Context, []EgressProfileRow) error
 	SaveVersionPolicies(context.Context, []VersionPolicyRow) error
 	SaveManagedCertificates(context.Context, []ManagedCertificateRow) error
 	LoadManagedCertificateMaterial(context.Context, string) (ManagedCertificateBundle, bool, error)
@@ -247,6 +249,10 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
+	egressRows, err := s.ListEgressProfiles(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
 	if err != nil {
 		return Snapshot{}, err
@@ -301,13 +307,14 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
-		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, relevantCertRows)),
+		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, egressRows, relevantCertRows)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
 		Rules:               SnapshotHTTPRules(httpRows),
 		L4Rules:             SnapshotL4Rules(l4Rows),
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		WireGuardProfiles:   SnapshotWireGuardProfiles(wireGuardRows),
+		EgressProfiles:      SnapshotEgressProfiles(egressRows),
 		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
 	}, nil
@@ -409,6 +416,19 @@ func (s *GormStore) ListWireGuardProfiles(ctx context.Context, agentID string) (
 	}
 	for i := range profiles {
 		normalizeWireGuardProfileRow(&profiles[i])
+	}
+	return profiles, nil
+}
+
+func (s *GormStore) ListEgressProfiles(ctx context.Context) ([]EgressProfileRow, error) {
+	var profiles []EgressProfileRow
+	if err := s.db.WithContext(ctx).
+		Order("id").
+		Find(&profiles).Error; err != nil {
+		return nil, err
+	}
+	for i := range profiles {
+		normalizeEgressProfileRow(&profiles[i])
 	}
 	return profiles, nil
 }
@@ -631,6 +651,25 @@ func (s *GormStore) SaveWireGuardProfiles(ctx context.Context, agentID string, p
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return s.saveWireGuardProfilesTx(tx, agentID, profiles)
+	})
+}
+
+func (s *GormStore) SaveEgressProfiles(ctx context.Context, profiles []EgressProfileRow) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&EgressProfileRow{}).Error; err != nil {
+			return err
+		}
+
+		if len(profiles) == 0 {
+			return nil
+		}
+
+		rows := make([]EgressProfileRow, 0, len(profiles))
+		for _, row := range profiles {
+			normalizeEgressProfileRow(&row)
+			rows = append(rows, row)
+		}
+		return tx.Create(&rows).Error
 	})
 }
 
@@ -940,6 +979,14 @@ func normalizeWireGuardProfileRow(row *WireGuardProfileRow) {
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 }
 
+func normalizeEgressProfileRow(row *EgressProfileRow) {
+	row.Name = defaultString(row.Name, "")
+	row.Type = defaultString(row.Type, "")
+	row.ProxyURL = defaultString(row.ProxyURL, "")
+	row.WireGuardConfigJSON = defaultString(row.WireGuardConfigJSON, "")
+	row.Description = defaultString(row.Description, "")
+}
+
 func normalizeWireGuardClientRow(row *WireGuardClientRow) {
 	row.Name = defaultString(row.Name, "")
 	row.PrivateKey = defaultString(row.PrivateKey, "")
@@ -1005,6 +1052,7 @@ func computeDesiredRevision(
 	l4Rows []L4RuleRow,
 	relayRows []RelayListenerRow,
 	wireGuardRows []WireGuardProfileRow,
+	egressRows []EgressProfileRow,
 	certRows []ManagedCertificateRow,
 ) int {
 	desiredRevision := normalizeRevision(localState.DesiredRevision)
@@ -1014,6 +1062,7 @@ func computeDesiredRevision(
 		highestL4RuleRevision(l4Rows),
 		highestRelayListenerRevision(relayRows),
 		highestWireGuardProfileRevision(wireGuardRows),
+		highestEgressProfileRevision(egressRows),
 		highestManagedCertificateRevision(certRows),
 	)
 
@@ -1069,6 +1118,14 @@ func highestWireGuardProfileRevision(rows []WireGuardProfileRow) int {
 	maxRevision := 0
 	for _, row := range rows {
 		maxRevision = maxInt(maxRevision, normalizeRevision(row.Revision))
+	}
+	return maxRevision
+}
+
+func highestEgressProfileRevision(rows []EgressProfileRow) int {
+	maxRevision := 0
+	for _, row := range rows {
+		maxRevision = maxInt(maxRevision, normalizeRevision(int(row.Revision)))
 	}
 	return maxRevision
 }
@@ -1992,6 +2049,7 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 			CustomHeaders:            parseHTTPHeaders(row.CustomHeadersJSON),
 			WireGuardEntryEnabled:    row.WireGuardEntryEnabled,
 			WireGuardProfileID:       copyOptionalInt(row.WireGuardProfileID),
+			EgressProfileID:          copyOptionalInt(row.EgressProfileID),
 			WireGuardEntryListenHost: row.WireGuardEntryListenHost,
 			WireGuardEntryListenPort: wireGuardEntryListenPort,
 			RelayLayers:              parseIntLayers(row.RelayLayersJSON),
@@ -2041,6 +2099,7 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			RelayObfs:            row.RelayObfs,
 			ListenMode:           defaultString(row.ListenMode, "tcp"),
 			WireGuardProfileID:   copyOptionalInt(row.WireGuardProfileID),
+			EgressProfileID:      copyOptionalInt(row.EgressProfileID),
 			WireGuardInboundMode: normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode),
 			WireGuardListenHost:  row.WireGuardListenHost,
 			ProxyEntryAuth:       parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
@@ -2078,6 +2137,37 @@ func SnapshotWireGuardProfiles(rows []WireGuardProfileRow) []WireGuardProfile {
 		})
 	}
 	return profiles
+}
+
+func SnapshotEgressProfiles(rows []EgressProfileRow) []EgressProfile {
+	profiles := make([]EgressProfile, 0, len(rows))
+	for _, row := range rows {
+		if !row.Enabled {
+			continue
+		}
+		profiles = append(profiles, EgressProfile{
+			ID:              row.ID,
+			Name:            row.Name,
+			Type:            row.Type,
+			ProxyURL:        row.ProxyURL,
+			WireGuardConfig: parseEgressWireGuardConfig(row.WireGuardConfigJSON),
+			Enabled:         row.Enabled,
+			Description:     row.Description,
+			Revision:        row.Revision,
+		})
+	}
+	return profiles
+}
+
+func parseEgressWireGuardConfig(raw string) *EgressWireGuardConfig {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var config EgressWireGuardConfig
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return nil
+	}
+	return &config
 }
 
 func (s *GormStore) relayListenerAgentNames(ctx context.Context, rows []RelayListenerRow) (map[string]string, error) {

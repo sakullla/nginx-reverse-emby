@@ -114,6 +114,85 @@ func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
 	assertSQLiteColumnContract(t, l4Columns, "wireguard_egress_uri", 1, `""`)
 }
 
+func TestSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+	columns := loadSQLiteTableInfo(t, store.db, "egress_profiles")
+
+	assertSQLiteColumnContract(t, columns, "id", 1, "")
+	assertSQLiteColumnContract(t, columns, "name", 1, "")
+	assertSQLiteColumnContract(t, columns, "type", 1, "")
+	assertSQLiteColumnContract(t, columns, "proxy_url", 1, `""`)
+	assertSQLiteColumnContract(t, columns, "wireguard_config_json", 1, `""`)
+	assertSQLiteColumnContract(t, columns, "enabled", 1, "1")
+	assertSQLiteColumnContract(t, columns, "description", 1, `""`)
+	assertSQLiteColumnContract(t, columns, "revision", 1, "0")
+}
+
+func TestStoreSaveListEgressProfilesPreservesSecretMaterial(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+	row := EgressProfileRow{
+		ID:          41,
+		Name:        "socks exit",
+		Type:        "socks",
+		ProxyURL:    "socks5://user:secret@127.0.0.1:1080",
+		Enabled:     true,
+		Description: "lab",
+		Revision:    7,
+	}
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{row}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+
+	got, err := store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ProxyURL != row.ProxyURL {
+		t.Fatalf("profiles = %+v, want raw proxy secret", got)
+	}
+}
+
+func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
+		ID:       41,
+		Name:     "socks exit",
+		Type:     "socks",
+		ProxyURL: "socks5://127.0.0.1:1080",
+		Enabled:  true,
+		Revision: 7,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{
+		DesiredRevision: 1,
+		CurrentRevision: 2,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.Revision != 7 {
+		t.Fatalf("snapshot revision = %d, want egress profile revision 7", snapshot.Revision)
+	}
+	if len(snapshot.EgressProfiles) != 1 || snapshot.EgressProfiles[0].ProxyURL != "socks5://127.0.0.1:1080" {
+		t.Fatalf("snapshot EgressProfiles = %+v, want raw proxy URL", snapshot.EgressProfiles)
+	}
+}
+
 func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
@@ -5817,6 +5896,12 @@ func assertSQLiteColumnContract(t *testing.T, columns map[string]sqliteTableColu
 	}
 	if column.NotNull != wantNotNull {
 		t.Fatalf("%s notnull = %d, want %d", columnName, column.NotNull, wantNotNull)
+	}
+	if wantDefault == "" {
+		if column.DefaultValue.Valid {
+			t.Fatalf("%s dflt_value = %q, want NULL", columnName, column.DefaultValue.String)
+		}
+		return
 	}
 	if !column.DefaultValue.Valid {
 		t.Fatalf("%s dflt_value is NULL, want %q", columnName, wantDefault)

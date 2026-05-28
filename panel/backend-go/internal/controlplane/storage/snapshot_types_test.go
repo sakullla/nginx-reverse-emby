@@ -92,3 +92,63 @@ func TestSnapshotWireGuardProfileJSONPreservesPublicEndpoint(t *testing.T) {
 		t.Fatalf("bind_addresses missing from WireGuard profile JSON; raw=%s", raw)
 	}
 }
+
+func TestSnapshotEgressProfileJSONShape(t *testing.T) {
+	egressProfileID := 41
+	raw, err := json.Marshal(Snapshot{
+		Rules: []HTTPRule{{
+			ID:              1,
+			FrontendURL:     "https://emby.example.com",
+			EgressProfileID: &egressProfileID,
+		}},
+		L4Rules: []L4Rule{{
+			ID:              2,
+			Protocol:        "tcp",
+			ListenHost:      "0.0.0.0",
+			ListenPort:      25565,
+			EgressProfileID: &egressProfileID,
+		}},
+		EgressProfiles: []EgressProfile{{
+			ID:      egressProfileID,
+			Name:    "wg exit",
+			Type:    "wireguard",
+			Enabled: true,
+			WireGuardConfig: &EgressWireGuardConfig{
+				PrivateKey: "private",
+				Addresses:  []string{"10.10.0.2/32"},
+				Peers: []WireGuardPeer{{
+					PublicKey:  "peer",
+					Endpoint:   "wg.example.com:51820",
+					AllowedIPs: []string{"0.0.0.0/0"},
+				}},
+				DNS: []string{"1.1.1.1"},
+				MTU: 1420,
+			},
+			Revision: 7,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(Snapshot) error = %v", err)
+	}
+
+	var payload struct {
+		Rules          []map[string]any `json:"rules"`
+		L4Rules        []map[string]any `json:"l4_rules"`
+		EgressProfiles []map[string]any `json:"egress_profiles"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(Snapshot) error = %v", err)
+	}
+	if got := payload.Rules[0]["egress_profile_id"]; got != float64(egressProfileID) {
+		t.Fatalf("HTTP egress_profile_id = %#v, want %d; raw=%s", got, egressProfileID, raw)
+	}
+	if got := payload.L4Rules[0]["egress_profile_id"]; got != float64(egressProfileID) {
+		t.Fatalf("L4 egress_profile_id = %#v, want %d; raw=%s", got, egressProfileID, raw)
+	}
+	if len(payload.EgressProfiles) != 1 {
+		t.Fatalf("egress profile count = %d, want 1; raw=%s", len(payload.EgressProfiles), raw)
+	}
+	if got := payload.EgressProfiles[0]["wireguard_config"]; got == nil {
+		t.Fatalf("wireguard_config missing from egress profile JSON; raw=%s", raw)
+	}
+}

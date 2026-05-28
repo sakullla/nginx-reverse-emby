@@ -9,6 +9,7 @@ type Snapshot struct {
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
 	WireGuardProfiles   []WireGuardProfile         `json:"wireguard_profiles"`
+	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 }
@@ -73,6 +74,7 @@ type HTTPRule struct {
 	CustomHeaders            []HTTPHeader  `json:"custom_headers,omitempty"`
 	WireGuardEntryEnabled    bool          `json:"wireguard_entry_enabled,omitempty"`
 	WireGuardProfileID       *int          `json:"wireguard_profile_id,omitempty"`
+	EgressProfileID          *int          `json:"egress_profile_id,omitempty"`
 	WireGuardEntryListenHost string        `json:"wireguard_entry_listen_host,omitempty"`
 	WireGuardEntryListenPort int           `json:"wireguard_entry_listen_port,omitempty"`
 	RelayChain               []int         `json:"-"`
@@ -118,6 +120,7 @@ type L4Rule struct {
 	RelayObfs            bool             `json:"relay_obfs,omitempty"`
 	ListenMode           string           `json:"listen_mode,omitempty"`
 	WireGuardProfileID   *int             `json:"wireguard_profile_id,omitempty"`
+	EgressProfileID      *int             `json:"egress_profile_id,omitempty"`
 	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
 	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
 	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
@@ -182,6 +185,25 @@ type WireGuardProfile struct {
 	Enabled        bool            `json:"enabled"`
 	Tags           []string        `json:"tags"`
 	Revision       int64           `json:"revision"`
+}
+
+type EgressProfile struct {
+	ID              int                    `json:"id"`
+	Name            string                 `json:"name"`
+	Type            string                 `json:"type"`
+	ProxyURL        string                 `json:"proxy_url,omitempty"`
+	WireGuardConfig *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
+	Enabled         bool                   `json:"enabled"`
+	Description     string                 `json:"description,omitempty"`
+	Revision        int64                  `json:"revision"`
+}
+
+type EgressWireGuardConfig struct {
+	PrivateKey string          `json:"private_key,omitempty"`
+	Addresses  []string        `json:"addresses"`
+	Peers      []WireGuardPeer `json:"peers"`
+	DNS        []string        `json:"dns,omitempty"`
+	MTU        int             `json:"mtu,omitempty"`
 }
 
 type ManagedCertificateBundle struct {
