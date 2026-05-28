@@ -116,7 +116,27 @@ func copyEgressProfiles(ctx context.Context, source, target *GormStore) error {
 	if err != nil {
 		return err
 	}
-	return target.SaveEgressProfiles(ctx, rows)
+	if len(rows) == 0 {
+		return nil
+	}
+	payload := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		normalizeEgressProfileRow(&row)
+		payload = append(payload, map[string]any{
+			"id":                    row.ID,
+			"name":                  row.Name,
+			"type":                  row.Type,
+			"proxy_url":             row.ProxyURL,
+			"wireguard_config_json": row.WireGuardConfigJSON,
+			"enabled":               row.Enabled,
+			"description":           row.Description,
+			"revision":              row.Revision,
+		})
+	}
+	return target.db.WithContext(ctx).
+		Model(&EgressProfileRow{}).
+		Clauses(clause.OnConflict{UpdateAll: true}).
+		Create(&payload).Error
 }
 
 func copyTrafficPolicies(ctx context.Context, source, target *GormStore) error {

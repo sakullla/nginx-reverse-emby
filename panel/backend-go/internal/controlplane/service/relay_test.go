@@ -100,6 +100,10 @@ func (s *relayCertStore) ListWireGuardProfiles(_ context.Context, agentID string
 	return append([]storage.WireGuardProfileRow(nil), s.wireGuardByAgentID[agentID]...), nil
 }
 
+func (s *relayCertStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
+	return nil, nil
+}
+
 func (s *relayCertStore) ListWireGuardClients(_ context.Context, agentID string, profileID int) ([]storage.WireGuardClientRow, error) {
 	_ = agentID
 	_ = profileID
@@ -169,6 +173,10 @@ func (s *relayCertStore) SaveWireGuardProfiles(_ context.Context, agentID string
 		s.wireGuardByAgentID = map[string][]storage.WireGuardProfileRow{}
 	}
 	s.wireGuardByAgentID[agentID] = append([]storage.WireGuardProfileRow(nil), rows...)
+	return nil
+}
+
+func (s *relayCertStore) SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error {
 	return nil
 }
 

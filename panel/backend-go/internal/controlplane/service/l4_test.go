@@ -82,6 +82,10 @@ func (f *fakeL4Store) ListWireGuardProfiles(_ context.Context, agentID string) (
 	return append([]storage.WireGuardProfileRow(nil), f.wireGuardByAgent[agentID]...), nil
 }
 
+func (f *fakeL4Store) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
+	return nil, nil
+}
+
 func (f *fakeL4Store) ListWireGuardClients(_ context.Context, agentID string, profileID int) ([]storage.WireGuardClientRow, error) {
 	_ = agentID
 	_ = profileID
@@ -134,6 +138,10 @@ func (f *fakeL4Store) SaveWireGuardProfiles(_ context.Context, agentID string, r
 		f.wireGuardByAgent = map[string][]storage.WireGuardProfileRow{}
 	}
 	f.wireGuardByAgent[agentID] = append([]storage.WireGuardProfileRow(nil), rows...)
+	return nil
+}
+
+func (f *fakeL4Store) SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error {
 	return nil
 }
 
