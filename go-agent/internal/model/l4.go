@@ -39,6 +39,7 @@ type L4Rule struct {
 	RelayObfs            bool             `json:"relay_obfs,omitempty"`
 	ListenMode           string           `json:"listen_mode,omitempty"`
 	WireGuardProfileID   *int             `json:"wireguard_profile_id,omitempty"`
+	EgressProfileID      *int             `json:"egress_profile_id,omitempty"`
 	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
 	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
 	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
