@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -203,6 +204,30 @@ func TestSnapshotDecodePreservesEgressProfilesAndRuleProfileIDs(t *testing.T) {
 	}
 	if snapshot.L4Rules[0].EgressProfileID == nil || *snapshot.L4Rules[0].EgressProfileID != 12 {
 		t.Fatalf("L4 EgressProfileID = %+v, want 12", snapshot.L4Rules[0].EgressProfileID)
+	}
+}
+
+func TestEgressProfileJSONShapeRetainsControlPlaneRequiredFields(t *testing.T) {
+	raw, err := json.Marshal(EgressProfile{
+		ID:       31,
+		Name:     "disabled direct",
+		Type:     "direct",
+		Enabled:  false,
+		Revision: 0,
+		WireGuardConfig: &EgressWireGuardConfig{
+			Addresses: nil,
+			Peers:     nil,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	payload := string(raw)
+	for _, field := range []string{`"enabled":false`, `"revision":0`, `"addresses":null`, `"peers":null`} {
+		if !strings.Contains(payload, field) {
+			t.Fatalf("egress profile JSON = %s, want field %s", payload, field)
+		}
 	}
 }
 

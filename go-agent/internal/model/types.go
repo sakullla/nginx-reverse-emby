@@ -59,15 +59,15 @@ type EgressProfile struct {
 	Type            string                 `json:"type"`
 	ProxyURL        string                 `json:"proxy_url,omitempty"`
 	WireGuardConfig *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
-	Enabled         bool                   `json:"enabled,omitempty"`
+	Enabled         bool                   `json:"enabled"`
 	Description     string                 `json:"description,omitempty"`
-	Revision        int64                  `json:"revision,omitempty"`
+	Revision        int64                  `json:"revision"`
 }
 
 type EgressWireGuardConfig struct {
 	PrivateKey string          `json:"private_key,omitempty"`
-	Addresses  []string        `json:"addresses,omitempty"`
-	Peers      []WireGuardPeer `json:"peers,omitempty"`
+	Addresses  []string        `json:"addresses"`
+	Peers      []WireGuardPeer `json:"peers"`
 	DNS        []string        `json:"dns,omitempty"`
 	MTU        int             `json:"mtu,omitempty"`
 }
