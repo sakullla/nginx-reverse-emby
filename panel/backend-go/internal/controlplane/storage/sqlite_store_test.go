@@ -302,11 +302,13 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	l4ProfileID := 42
 	relayProfileID := 43
 	unusedProfileID := 44
+	disabledRelayProfileID := 45
 	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{
 		{ID: httpProfileID, Name: "http exit", Type: "socks", ProxyURL: "socks5://http-secret@127.0.0.1:1080", Enabled: true, Revision: 7},
 		{ID: l4ProfileID, Name: "l4 exit", Type: "http", ProxyURL: "http://l4-secret@127.0.0.1:8080", Enabled: true, Revision: 8},
 		{ID: relayProfileID, Name: "relay exit", Type: "socks", ProxyURL: "socks5://relay-secret@127.0.0.1:1081", Enabled: true, Revision: 9},
 		{ID: unusedProfileID, Name: "unused exit", Type: "socks", ProxyURL: "socks5://unused-secret@127.0.0.1:1082", Enabled: true, Revision: 10},
+		{ID: disabledRelayProfileID, Name: "disabled final exit", Type: "socks", ProxyURL: "socks5://disabled-final-secret@127.0.0.1:1083", Enabled: true, Revision: 11},
 	}); err != nil {
 		t.Fatalf("SaveEgressProfiles() error = %v", err)
 	}
@@ -356,12 +358,28 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 		Enabled:           true,
 		TagsJSON:          `[]`,
 		RelayChainJSON:    `[501,502]`,
-		RelayLayersJSON:   `[[501,502],[501,503]]`,
+		RelayLayersJSON:   `[[501],[502,503]]`,
 		CustomHeadersJSON: `[]`,
 		EgressProfileID:   &relayProfileID,
 		Revision:          1,
 	}}); err != nil {
 		t.Fatalf("SaveHTTPRules(relay-entry) error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "disabled-final-entry", []HTTPRuleRow{{
+		ID:                3002,
+		AgentID:           "disabled-final-entry",
+		FrontendURL:       "https://disabled-final.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[504,505]`,
+		RelayLayersJSON:   `[[504],[505]]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &disabledRelayProfileID,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(disabled-final-entry) error = %v", err)
 	}
 	if err := store.SaveRelayListeners(t.Context(), "relay-entry", []RelayListenerRow{{
 		ID:         501,
@@ -402,6 +420,32 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveRelayListeners(relay-final-b) error = %v", err)
 	}
+	if err := store.SaveRelayListeners(t.Context(), "disabled-final-entry", []RelayListenerRow{{
+		ID:         504,
+		AgentID:    "disabled-final-entry",
+		Name:       "disabled final entry",
+		ListenHost: "127.0.0.1",
+		ListenPort: 10443,
+		PublicHost: "disabled-entry.example.com",
+		PublicPort: 10443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(disabled-final-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "disabled-final-agent", []RelayListenerRow{{
+		ID:         505,
+		AgentID:    "disabled-final-agent",
+		Name:       "disabled final",
+		ListenHost: "127.0.0.1",
+		ListenPort: 11443,
+		PublicHost: "disabled-final.example.com",
+		PublicPort: 11443,
+		Enabled:    false,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(disabled-final-agent) error = %v", err)
+	}
 
 	httpOwnerSnapshot, err := store.LoadAgentSnapshot(t.Context(), "http-owner", AgentSnapshotInput{})
 	if err != nil {
@@ -423,6 +467,7 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	}
 	assertSnapshotLacksProfile(t, relayEntrySnapshot, relayProfileID)
 	assertSnapshotLacksProfile(t, relayEntrySnapshot, unusedProfileID)
+	assertSnapshotLacksProfile(t, relayEntrySnapshot, disabledRelayProfileID)
 
 	relayFinalASnapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-final-a", AgentSnapshotInput{})
 	if err != nil {
@@ -438,6 +483,12 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	assertSnapshotHasProfile(t, relayFinalBSnapshot, relayProfileID, "socks5://relay-secret@127.0.0.1:1081")
 	assertSnapshotLacksProfile(t, relayFinalBSnapshot, unusedProfileID)
 
+	disabledFinalSnapshot, err := store.LoadAgentSnapshot(t.Context(), "disabled-final-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(disabled-final-agent) error = %v", err)
+	}
+	assertSnapshotLacksProfile(t, disabledFinalSnapshot, disabledRelayProfileID)
+
 	unrelatedSnapshot, err := store.LoadAgentSnapshot(t.Context(), "unrelated", AgentSnapshotInput{})
 	if err != nil {
 		t.Fatalf("LoadAgentSnapshot(unrelated) error = %v", err)
@@ -446,6 +497,7 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	assertSnapshotLacksProfile(t, unrelatedSnapshot, l4ProfileID)
 	assertSnapshotLacksProfile(t, unrelatedSnapshot, relayProfileID)
 	assertSnapshotLacksProfile(t, unrelatedSnapshot, unusedProfileID)
+	assertSnapshotLacksProfile(t, unrelatedSnapshot, disabledRelayProfileID)
 }
 
 func TestStoreLoadAgentSnapshotIgnoresDisabledReferencedEgressProfileRevision(t *testing.T) {

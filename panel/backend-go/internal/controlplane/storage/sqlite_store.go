@@ -1275,23 +1275,25 @@ func egressProfileExecutorIDs(agentID string, httpRows []HTTPRuleRow, l4Rows []L
 func finalHopAgentIDsForRelayLayers(relayLayers [][]int, relayRows []RelayListenerRow) map[string]struct{} {
 	relayAgentByID := make(map[int]string, len(relayRows))
 	for _, row := range relayRows {
-		if row.ID <= 0 {
+		if row.ID <= 0 || !row.Enabled {
 			continue
 		}
 		relayAgentByID[row.ID] = strings.TrimSpace(row.AgentID)
 	}
 
 	agentIDs := make(map[string]struct{})
-	for _, layer := range relayLayers {
-		if len(layer) == 0 {
+	for i := len(relayLayers) - 1; i >= 0; i-- {
+		if len(relayLayers[i]) == 0 {
 			continue
 		}
-		finalHopID := layer[len(layer)-1]
-		finalHopAgentID := strings.TrimSpace(relayAgentByID[finalHopID])
-		if finalHopAgentID == "" {
-			continue
+		for _, finalHopID := range relayLayers[i] {
+			finalHopAgentID := strings.TrimSpace(relayAgentByID[finalHopID])
+			if finalHopAgentID == "" {
+				continue
+			}
+			agentIDs[finalHopAgentID] = struct{}{}
 		}
-		agentIDs[finalHopAgentID] = struct{}{}
+		return agentIDs
 	}
 	return agentIDs
 }

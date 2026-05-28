@@ -510,7 +510,9 @@ func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *te
 
 	for _, row := range []storage.AgentRow{
 		{ID: "relay-entry", Name: "relay entry", AgentToken: "token-entry"},
-		{ID: "relay-final", Name: "relay final", AgentToken: "token-final"},
+		{ID: "relay-final-a", Name: "relay final a", AgentToken: "token-final-a"},
+		{ID: "relay-final-b", Name: "relay final b", AgentToken: "token-final-b"},
+		{ID: "disabled-final-agent", Name: "disabled final", AgentToken: "token-disabled-final"},
 		{ID: "unrelated", Name: "unrelated", AgentToken: "token-unrelated"},
 	} {
 		if err := store.SaveAgent(t.Context(), row); err != nil {
@@ -518,14 +520,25 @@ func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *te
 		}
 	}
 	profileID := 77
-	if err := store.SaveEgressProfiles(t.Context(), []storage.EgressProfileRow{{
-		ID:       profileID,
-		Name:     "relay exit",
-		Type:     "socks",
-		ProxyURL: "socks5://executor-secret@127.0.0.1:1080",
-		Enabled:  true,
-		Revision: 12,
-	}}); err != nil {
+	disabledFinalProfileID := 78
+	if err := store.SaveEgressProfiles(t.Context(), []storage.EgressProfileRow{
+		{
+			ID:       profileID,
+			Name:     "relay exit",
+			Type:     "socks",
+			ProxyURL: "socks5://executor-secret@127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 12,
+		},
+		{
+			ID:       disabledFinalProfileID,
+			Name:     "disabled final exit",
+			Type:     "socks",
+			ProxyURL: "socks5://disabled-final-secret@127.0.0.1:1081",
+			Enabled:  true,
+			Revision: 13,
+		},
+	}); err != nil {
 		t.Fatalf("SaveEgressProfiles() error = %v", err)
 	}
 	if err := store.SaveHTTPRules(t.Context(), "relay-entry", []storage.HTTPRuleRow{{
@@ -537,12 +550,28 @@ func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *te
 		Enabled:           true,
 		TagsJSON:          `[]`,
 		RelayChainJSON:    `[701,702]`,
-		RelayLayersJSON:   `[[701,702]]`,
+		RelayLayersJSON:   `[[701],[702,703]]`,
 		CustomHeadersJSON: `[]`,
 		EgressProfileID:   &profileID,
 		Revision:          1,
 	}}); err != nil {
 		t.Fatalf("SaveHTTPRules(relay-entry) error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "disabled-final-entry", []storage.HTTPRuleRow{{
+		ID:                3002,
+		AgentID:           "disabled-final-entry",
+		FrontendURL:       "https://disabled-final.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[704,705]`,
+		RelayLayersJSON:   `[[704],[705]]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &disabledFinalProfileID,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(disabled-final-entry) error = %v", err)
 	}
 	if err := store.SaveRelayListeners(t.Context(), "relay-entry", []storage.RelayListenerRow{{
 		ID:         701,
@@ -557,18 +586,57 @@ func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *te
 	}}); err != nil {
 		t.Fatalf("SaveRelayListeners(relay-entry) error = %v", err)
 	}
-	if err := store.SaveRelayListeners(t.Context(), "relay-final", []storage.RelayListenerRow{{
+	if err := store.SaveRelayListeners(t.Context(), "relay-final-a", []storage.RelayListenerRow{{
 		ID:         702,
-		AgentID:    "relay-final",
-		Name:       "final relay",
+		AgentID:    "relay-final-a",
+		Name:       "final relay a",
 		ListenHost: "127.0.0.1",
 		ListenPort: 8443,
-		PublicHost: "final.example.com",
+		PublicHost: "final-a.example.com",
 		PublicPort: 8443,
 		Enabled:    true,
 		Revision:   1,
 	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(relay-final) error = %v", err)
+		t.Fatalf("SaveRelayListeners(relay-final-a) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-final-b", []storage.RelayListenerRow{{
+		ID:         703,
+		AgentID:    "relay-final-b",
+		Name:       "final relay b",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9443,
+		PublicHost: "final-b.example.com",
+		PublicPort: 9443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-final-b) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "disabled-final-entry", []storage.RelayListenerRow{{
+		ID:         704,
+		AgentID:    "disabled-final-entry",
+		Name:       "disabled final entry",
+		ListenHost: "127.0.0.1",
+		ListenPort: 10443,
+		PublicHost: "disabled-entry.example.com",
+		PublicPort: 10443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(disabled-final-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "disabled-final-agent", []storage.RelayListenerRow{{
+		ID:         705,
+		AgentID:    "disabled-final-agent",
+		Name:       "disabled final",
+		ListenHost: "127.0.0.1",
+		ListenPort: 11443,
+		PublicHost: "disabled-final.example.com",
+		PublicPort: 11443,
+		Enabled:    false,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(disabled-final-agent) error = %v", err)
 	}
 
 	router, err := NewRouter(Dependencies{
@@ -585,11 +653,17 @@ func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *te
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 
-	finalSync := postHeartbeatForSyncPayload(t, router, "token-final")
-	assertSyncHasEgressProfile(t, finalSync, profileID, "socks5://executor-secret@127.0.0.1:1080")
+	finalASync := postHeartbeatForSyncPayload(t, router, "token-final-a")
+	assertSyncHasEgressProfile(t, finalASync, profileID, "socks5://executor-secret@127.0.0.1:1080")
+
+	finalBSync := postHeartbeatForSyncPayload(t, router, "token-final-b")
+	assertSyncHasEgressProfile(t, finalBSync, profileID, "socks5://executor-secret@127.0.0.1:1080")
 
 	entrySync := postHeartbeatForSyncPayload(t, router, "token-entry")
 	assertSyncLacksEgressProfile(t, entrySync, profileID)
+
+	disabledFinalSync := postHeartbeatForSyncPayload(t, router, "token-disabled-final")
+	assertSyncLacksEgressProfile(t, disabledFinalSync, disabledFinalProfileID)
 
 	unrelatedSync := postHeartbeatForSyncPayload(t, router, "token-unrelated")
 	assertSyncLacksEgressProfile(t, unrelatedSync, profileID)
