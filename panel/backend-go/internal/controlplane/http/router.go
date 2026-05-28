@@ -68,6 +68,14 @@ type VersionPolicyService interface {
 	Delete(context.Context, string) (service.VersionPolicy, error)
 }
 
+type EgressProfileService interface {
+	List(context.Context) ([]service.EgressProfile, error)
+	Get(context.Context, int) (service.EgressProfile, error)
+	Create(context.Context, service.EgressProfileInput) (service.EgressProfile, error)
+	Update(context.Context, int, service.EgressProfileInput) (service.EgressProfile, error)
+	Delete(context.Context, int) (service.EgressProfile, error)
+}
+
 type RelayListenerService interface {
 	List(context.Context, string) ([]service.RelayListener, error)
 	Create(context.Context, string, service.RelayListenerInput) (service.RelayListener, error)
@@ -114,6 +122,7 @@ type Dependencies struct {
 	RuleService             RuleService
 	L4RuleService           L4RuleService
 	VersionPolicyService    VersionPolicyService
+	EgressProfileService    EgressProfileService
 	RelayListenerService    RelayListenerService
 	WireGuardProfileService WireGuardProfileService
 	WireGuardClientService  WireGuardClientService
@@ -137,6 +146,8 @@ type agentRuleServiceAdapter struct {
 type unavailableBackupService struct{}
 
 type unavailableTrafficService struct{}
+
+type unavailableEgressProfileService struct{}
 
 type unavailableWireGuardProfileService struct{}
 
@@ -196,6 +207,26 @@ func (unavailableTrafficService) Aggregate(context.Context, string, string, map[
 
 func trafficStatsDisabledError() error {
 	return service.TrafficServiceError{Code: service.ErrCodeTrafficStatsDisabled, Err: service.ErrTrafficStatsDisabled}
+}
+
+func (unavailableEgressProfileService) List(context.Context) ([]service.EgressProfile, error) {
+	return nil, fmt.Errorf("egress profile service unavailable")
+}
+
+func (unavailableEgressProfileService) Get(context.Context, int) (service.EgressProfile, error) {
+	return service.EgressProfile{}, fmt.Errorf("egress profile service unavailable")
+}
+
+func (unavailableEgressProfileService) Create(context.Context, service.EgressProfileInput) (service.EgressProfile, error) {
+	return service.EgressProfile{}, fmt.Errorf("egress profile service unavailable")
+}
+
+func (unavailableEgressProfileService) Update(context.Context, int, service.EgressProfileInput) (service.EgressProfile, error) {
+	return service.EgressProfile{}, fmt.Errorf("egress profile service unavailable")
+}
+
+func (unavailableEgressProfileService) Delete(context.Context, int) (service.EgressProfile, error) {
+	return service.EgressProfile{}, fmt.Errorf("egress profile service unavailable")
 }
 
 func (unavailableWireGuardProfileService) List(context.Context, string) ([]service.WireGuardProfile, error) {
@@ -302,6 +333,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/traffic-cleanup", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficCleanup)))
 		mux.Handle(prefix+"/traffic-overview", resolved.requirePanelToken(http.HandlerFunc(resolved.handleTrafficOverview)))
 		mux.Handle(prefix+"/traffic-aggregate", resolved.requirePanelToken(http.HandlerFunc(resolved.handleTrafficAggregate)))
+		mux.Handle(prefix+"/egress-profiles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleEgressProfiles)))
+		mux.Handle(prefix+"/egress-profiles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleEgressProfile)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRule)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}/diagnose", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRuleDiagnose)))
@@ -369,6 +402,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 
 	canOpenOwnedStore := d.canOpenConfiguredStore()
 	if !canOpenOwnedStore {
+		if d.EgressProfileService == nil && d.hasCoreServices() {
+			d.EgressProfileService = unavailableEgressProfileService{}
+		}
 		if d.WireGuardProfileService == nil && d.hasCoreServices() {
 			d.WireGuardProfileService = unavailableWireGuardProfileService{}
 		}
@@ -377,11 +413,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 	}
 
-	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || (canOpenOwnedStore && (d.WireGuardProfileService == nil || d.WireGuardClientService == nil))
-	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil && d.WireGuardProfileService != nil {
+	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || (canOpenOwnedStore && (d.EgressProfileService == nil || d.WireGuardProfileService == nil || d.WireGuardClientService == nil))
+	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil && d.WireGuardClientService != nil && d.WireGuardProfileService != nil {
 		return d, nil
 	}
-	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.WireGuardClientService != nil && d.WireGuardProfileService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
+	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil && d.WireGuardClientService != nil && d.WireGuardProfileService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
 		d.TrafficService = unavailableTrafficService{}
 		return d, nil
 	}
@@ -406,6 +442,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	}
 	if d.VersionPolicyService == nil {
 		d.VersionPolicyService = service.NewVersionPolicyService(store)
+	}
+	if d.EgressProfileService == nil {
+		d.EgressProfileService = service.NewEgressProfileServiceWithConfig(d.Config, store)
 	}
 	if d.RelayListenerService == nil {
 		d.RelayListenerService = service.NewRelayListenerService(d.Config, store)
@@ -476,6 +515,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusNotFound, errorPayload("rule id not found")
 	case errors.Is(err, service.ErrVersionPolicyNotFound):
 		return http.StatusNotFound, errorPayload("version policy not found")
+	case errors.Is(err, service.ErrEgressProfileNotFound):
+		return http.StatusNotFound, errorPayload("egress profile not found")
 	case errors.Is(err, service.ErrRelayListenerNotFound):
 		return http.StatusNotFound, errorPayload("relay listener not found")
 	case errors.Is(err, service.ErrCertificateNotFound):

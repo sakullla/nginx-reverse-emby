@@ -356,6 +356,72 @@ func (f fakeVersionPolicyService) Delete(context.Context, string) (service.Versi
 	return f.deletedPolicy, nil
 }
 
+type fakeEgressProfileService struct {
+	profiles       []service.EgressProfile
+	createdProfile service.EgressProfile
+	updatedProfile service.EgressProfile
+	deletedProfile service.EgressProfile
+	getErr         error
+	createErr      error
+	updateErr      error
+	deleteErr      error
+	state          *fakeEgressProfileServiceState
+}
+
+type fakeEgressProfileServiceState struct {
+	createInputs []service.EgressProfileInput
+	updateIDs    []int
+	updateInputs []service.EgressProfileInput
+	deleteIDs    []int
+}
+
+func (f fakeEgressProfileService) List(context.Context) ([]service.EgressProfile, error) {
+	return f.profiles, nil
+}
+
+func (f fakeEgressProfileService) Get(_ context.Context, id int) (service.EgressProfile, error) {
+	if f.getErr != nil {
+		return service.EgressProfile{}, f.getErr
+	}
+	for _, profile := range f.profiles {
+		if profile.ID == id {
+			return profile, nil
+		}
+	}
+	return service.EgressProfile{}, service.ErrEgressProfileNotFound
+}
+
+func (f fakeEgressProfileService) Create(_ context.Context, input service.EgressProfileInput) (service.EgressProfile, error) {
+	if f.state != nil {
+		f.state.createInputs = append(f.state.createInputs, input)
+	}
+	if f.createErr != nil {
+		return service.EgressProfile{}, f.createErr
+	}
+	return f.createdProfile, nil
+}
+
+func (f fakeEgressProfileService) Update(_ context.Context, id int, input service.EgressProfileInput) (service.EgressProfile, error) {
+	if f.state != nil {
+		f.state.updateIDs = append(f.state.updateIDs, id)
+		f.state.updateInputs = append(f.state.updateInputs, input)
+	}
+	if f.updateErr != nil {
+		return service.EgressProfile{}, f.updateErr
+	}
+	return f.updatedProfile, nil
+}
+
+func (f fakeEgressProfileService) Delete(_ context.Context, id int) (service.EgressProfile, error) {
+	if f.state != nil {
+		f.state.deleteIDs = append(f.state.deleteIDs, id)
+	}
+	if f.deleteErr != nil {
+		return service.EgressProfile{}, f.deleteErr
+	}
+	return f.deletedProfile, nil
+}
+
 type fakeRelayListenerService struct {
 	listeners       map[string][]service.RelayListener
 	createdListener service.RelayListener
@@ -3022,6 +3088,155 @@ func TestRouterGlobalCertificateCRUDRoutesUseGlobalContext(t *testing.T) {
 	}
 	if len(state.deleteIDs) != 2 || state.deleteIDs[0] != 31 || state.deleteIDs[1] != 31 {
 		t.Fatalf("delete ids = %+v", state.deleteIDs)
+	}
+}
+
+func TestRouterEgressProfileCRUDRoutes(t *testing.T) {
+	state := &fakeEgressProfileServiceState{}
+	for _, prefix := range []string{"/api", "/panel-api"} {
+		router, err := NewRouter(Dependencies{
+			Config: config.Config{PanelToken: "secret"},
+			SystemService: fakeSystemService{
+				info: service.SystemInfo{
+					Role:              "master",
+					LocalApplyRuntime: "go-agent",
+					DefaultAgentID:    "local",
+					LocalAgentEnabled: true,
+				},
+			},
+			AgentService:         fakeAgentService{},
+			RuleService:          fakeRuleService{},
+			L4RuleService:        fakeL4RuleService{},
+			VersionPolicyService: fakeVersionPolicyService{},
+			RelayListenerService: fakeRelayListenerService{},
+			EgressProfileService: fakeEgressProfileService{
+				profiles: []service.EgressProfile{{
+					ID:       1,
+					Name:     "office socks",
+					Type:     "socks",
+					ProxyURL: "socks5://user:xxxxx@127.0.0.1:1080",
+					Enabled:  true,
+					Revision: 1,
+				}},
+				createdProfile: service.EgressProfile{ID: 2, Name: "created", Type: "direct", Enabled: true, Revision: 2},
+				updatedProfile: service.EgressProfile{ID: 1, Name: "updated", Type: "http", ProxyURL: "http://user:xxxxx@proxy.example.com", Enabled: true, Revision: 3},
+				deletedProfile: service.EgressProfile{ID: 1, Name: "updated", Type: "http", ProxyURL: "http://user:xxxxx@proxy.example.com", Enabled: true, Revision: 3},
+				state:          state,
+			},
+			CertificateService: fakeCertificateService{},
+		})
+		if err != nil {
+			t.Fatalf("NewRouter() error = %v", err)
+		}
+
+		unauthorizedReq := httptest.NewRequest(http.MethodGet, prefix+"/egress-profiles", nil)
+		unauthorizedResp := httptest.NewRecorder()
+		router.ServeHTTP(unauthorizedResp, unauthorizedReq)
+		if unauthorizedResp.Code != http.StatusUnauthorized {
+			t.Fatalf("GET %s/egress-profiles without token = %d", prefix, unauthorizedResp.Code)
+		}
+
+		listReq := httptest.NewRequest(http.MethodGet, prefix+"/egress-profiles", nil)
+		listReq.Header.Set("X-Panel-Token", "secret")
+		listResp := httptest.NewRecorder()
+		router.ServeHTTP(listResp, listReq)
+		if listResp.Code != http.StatusOK {
+			t.Fatalf("GET %s/egress-profiles = %d", prefix, listResp.Code)
+		}
+		var listPayload map[string]any
+		if err := json.Unmarshal(listResp.Body.Bytes(), &listPayload); err != nil {
+			t.Fatalf("json.Unmarshal(list) error = %v", err)
+		}
+		if _, ok := listPayload["profiles"]; !ok {
+			t.Fatalf("GET %s/egress-profiles payload missing profiles: %+v", prefix, listPayload)
+		}
+
+		getReq := httptest.NewRequest(http.MethodGet, prefix+"/egress-profiles/1", nil)
+		getReq.Header.Set("X-Panel-Token", "secret")
+		getResp := httptest.NewRecorder()
+		router.ServeHTTP(getResp, getReq)
+		if getResp.Code != http.StatusOK {
+			t.Fatalf("GET %s/egress-profiles/1 = %d", prefix, getResp.Code)
+		}
+		var getPayload map[string]any
+		if err := json.Unmarshal(getResp.Body.Bytes(), &getPayload); err != nil {
+			t.Fatalf("json.Unmarshal(get) error = %v", err)
+		}
+		if _, ok := getPayload["profile"]; !ok {
+			t.Fatalf("GET %s/egress-profiles/1 payload missing profile: %+v", prefix, getPayload)
+		}
+
+		createReq := httptest.NewRequest(http.MethodPost, prefix+"/egress-profiles", bytes.NewBufferString(`{"name":"created","type":"direct","enabled":true}`))
+		createReq.Header.Set("X-Panel-Token", "secret")
+		createReq.Header.Set("Content-Type", "application/json")
+		createResp := httptest.NewRecorder()
+		router.ServeHTTP(createResp, createReq)
+		if createResp.Code != http.StatusCreated {
+			t.Fatalf("POST %s/egress-profiles = %d", prefix, createResp.Code)
+		}
+
+		updateReq := httptest.NewRequest(http.MethodPut, prefix+"/egress-profiles/1", bytes.NewBufferString(`{"name":"updated","type":"http","proxy_url":"http://user:secret@proxy.example.com"}`))
+		updateReq.Header.Set("X-Panel-Token", "secret")
+		updateReq.Header.Set("Content-Type", "application/json")
+		updateResp := httptest.NewRecorder()
+		router.ServeHTTP(updateResp, updateReq)
+		if updateResp.Code != http.StatusOK {
+			t.Fatalf("PUT %s/egress-profiles/1 = %d", prefix, updateResp.Code)
+		}
+
+		deleteReq := httptest.NewRequest(http.MethodDelete, prefix+"/egress-profiles/1", nil)
+		deleteReq.Header.Set("X-Panel-Token", "secret")
+		deleteResp := httptest.NewRecorder()
+		router.ServeHTTP(deleteResp, deleteReq)
+		if deleteResp.Code != http.StatusOK {
+			t.Fatalf("DELETE %s/egress-profiles/1 = %d", prefix, deleteResp.Code)
+		}
+	}
+
+	if len(state.createInputs) != 2 {
+		t.Fatalf("create inputs = %d, want 2", len(state.createInputs))
+	}
+	if state.createInputs[0].Name == nil || *state.createInputs[0].Name != "created" {
+		t.Fatalf("create input = %+v", state.createInputs[0])
+	}
+	if len(state.updateIDs) != 2 || state.updateIDs[0] != 1 || state.updateIDs[1] != 1 {
+		t.Fatalf("update ids = %+v", state.updateIDs)
+	}
+	if len(state.deleteIDs) != 2 || state.deleteIDs[0] != 1 || state.deleteIDs[1] != 1 {
+		t.Fatalf("delete ids = %+v", state.deleteIDs)
+	}
+}
+
+func TestRouterEgressProfileErrors(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config:               config.Config{PanelToken: "secret"},
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		EgressProfileService: fakeEgressProfileService{deleteErr: service.ErrEgressProfileNotFound},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	invalidIDReq := httptest.NewRequest(http.MethodGet, "/api/egress-profiles/not-an-id", nil)
+	invalidIDReq.Header.Set("X-Panel-Token", "secret")
+	invalidIDResp := httptest.NewRecorder()
+	router.ServeHTTP(invalidIDResp, invalidIDReq)
+	if invalidIDResp.Code != http.StatusBadRequest {
+		t.Fatalf("GET /api/egress-profiles/not-an-id = %d, want 400", invalidIDResp.Code)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/egress-profiles/9", nil)
+	deleteReq.Header.Set("X-Panel-Token", "secret")
+	deleteResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteResp, deleteReq)
+	if deleteResp.Code != http.StatusNotFound {
+		t.Fatalf("DELETE /api/egress-profiles/9 = %d, want 404", deleteResp.Code)
 	}
 }
 
