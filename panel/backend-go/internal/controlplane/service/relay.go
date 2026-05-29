@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -526,6 +527,11 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		wireGuardProfileRollback = rollback
 		id := profile.ID
 		workingInput.WireGuardProfileID = &id
+		if workingInput.ListenHost == nil {
+			if host := wireGuardProfileFirstInterfaceHost(profile); host != "" {
+				workingInput.ListenHost = &host
+			}
+		}
 	}
 	draft, err := normalizeRelayListenerInput(workingInput, fallback, suggestedID, relayNormalizeOptions{
 		AllowMissingCertificate: true,
@@ -695,6 +701,17 @@ func relayWireGuardProfilePublicEndpoint(input RelayListenerInput, fallback Rela
 	return net.JoinHostPort(publicHost, fmt.Sprintf("%d", publicPort))
 }
 
+func wireGuardProfileFirstInterfaceHost(profile WireGuardProfile) string {
+	for _, address := range profile.InterfaceAddresses {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(address))
+		if err != nil {
+			continue
+		}
+		return prefix.Addr().String()
+	}
+	return ""
+}
+
 func relayListenerUsesAutoCertificate(rows []storage.ManagedCertificateRow, listener RelayListener) bool {
 	if listener.ID <= 0 || listener.CertificateID == nil {
 		return false
@@ -797,7 +814,6 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		}
 		bindHosts = []string{listenHost}
 	}
-	listenHost = bindHosts[0]
 
 	publicHost := strings.TrimSpace(pointerString(input.PublicHost))
 	if publicHost == "" {
@@ -863,6 +879,9 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 	case "quic", "wireguard":
 	default:
 		return RelayListener{}, fmt.Errorf("%w: transport_mode must be tls_tcp, quic, or wireguard", ErrInvalidArgument)
+	}
+	if transportMode != "wireguard" || listenHost == "" {
+		listenHost = bindHosts[0]
 	}
 	wireGuardProfileID := copyOptionalInt(fallback.WireGuardProfileID)
 	if input.WireGuardProfileID != nil && *input.WireGuardProfileID > 0 {

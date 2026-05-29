@@ -6,6 +6,7 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/quic-go/quic-go"
@@ -133,6 +134,18 @@ func (s *Server) startListener(listener Listener) error {
 		return err
 	}
 
+	if transportMode == ListenerTransportModeWireGuard {
+		addr := net.JoinHostPort(strings.TrimSpace(listener.ListenHost), strconv.Itoa(listener.ListenPort))
+		ln, err := s.listenWireGuardTCP(listener, addr)
+		if err != nil {
+			return err
+		}
+		s.listeners = append(s.listeners, ln)
+		s.wg.Add(1)
+		go s.acceptLoop(ln, listener)
+		return nil
+	}
+
 	for _, bindHost := range listener.BindHosts {
 		addr := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
 		switch transportMode {
@@ -144,14 +157,6 @@ func (s *Server) startListener(listener Listener) error {
 			s.quicListeners = append(s.quicListeners, ln)
 			s.wg.Add(1)
 			go s.acceptQUICLoop(ln.listener, listener)
-		case ListenerTransportModeWireGuard:
-			ln, err := s.listenWireGuardTCP(listener, addr)
-			if err != nil {
-				return err
-			}
-			s.listeners = append(s.listeners, ln)
-			s.wg.Add(1)
-			go s.acceptLoop(ln, listener)
 		default:
 			listenConfig := newRelayTCPListenConfig()
 			ln, err := listenConfig.Listen(s.ctx, "tcp", addr)

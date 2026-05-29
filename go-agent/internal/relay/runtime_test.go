@@ -364,6 +364,55 @@ func TestListenerBindingKeysNamespaceWireGuardTransport(t *testing.T) {
 	}
 }
 
+func TestStartWireGuardRelayListensOnTunnelHostNotBindHosts(t *testing.T) {
+	t.Parallel()
+
+	provider := newFakeTLSMaterialProvider()
+	certificateID := 10
+	cert, parsed := newServerCertificate(t, certificateOptions{
+		commonName: "relay-wg.example.com",
+		dnsNames:   []string{"relay-wg.example.com"},
+	})
+	provider.mu.Lock()
+	provider.serverCerts[certificateID] = cert
+	provider.mu.Unlock()
+	profileID := 7
+	listener := Listener{
+		ID:                 1,
+		AgentID:            "agent-a",
+		Name:               "relay-wg",
+		ListenHost:         "10.8.0.1",
+		BindHosts:          []string{"0.0.0.0"},
+		ListenPort:         18443,
+		PublicHost:         "relay-wg.example.com",
+		PublicPort:         28443,
+		Enabled:            true,
+		CertificateID:      &certificateID,
+		TLSMode:            "pin_only",
+		TransportMode:      ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+		PinSet: []model.RelayPin{{
+			Type:  "spki_sha256",
+			Value: spkiPin(t, parsed),
+		}},
+	}
+	wgRuntime := &fakeWireGuardRuntime{
+		listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+			if address != net.JoinHostPort("10.8.0.1", "18443") {
+				return nil, fmt.Errorf("ListenTCP address = %q, want tunnel listen host", address)
+			}
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{profileID: wgRuntime}},
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions() error = %v", err)
+	}
+	defer server.Close()
+}
+
 func TestValidateListenerWireGuardTransportRequiresTLSMaterial(t *testing.T) {
 	t.Parallel()
 

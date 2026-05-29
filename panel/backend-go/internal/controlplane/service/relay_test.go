@@ -574,8 +574,8 @@ func TestRelayListenerCreateWireGuardMapsRelayFieldsToGeneratedProfile(t *testin
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if listener.ListenHost != "0.0.0.0" || !stringSlicesEqual(listener.BindHosts, []string{"0.0.0.0", "127.0.0.1"}) {
-		t.Fatalf("listener bind = host %q hosts %+v, want relay bind hosts", listener.ListenHost, listener.BindHosts)
+	if listener.ListenHost != "10.8.0.1" || !stringSlicesEqual(listener.BindHosts, []string{"0.0.0.0", "127.0.0.1"}) {
+		t.Fatalf("listener bind = host %q hosts %+v, want WG tunnel host and relay bind hosts", listener.ListenHost, listener.BindHosts)
 	}
 	if listener.ListenPort != 19001 || listener.PublicHost != "relay.example.com" || listener.PublicPort != 19001 {
 		t.Fatalf("listener endpoint = listen %d public %q:%d", listener.ListenPort, listener.PublicHost, listener.PublicPort)
@@ -596,6 +596,9 @@ func TestRelayListenerCreateWireGuardMapsRelayFieldsToGeneratedProfile(t *testin
 	}
 	if !stringSlicesEqual(profile.Addresses, []string{"0.0.0.0", "127.0.0.1"}) {
 		t.Fatalf("profile.Addresses = %+v, want relay bind hosts", profile.Addresses)
+	}
+	if len(profile.InterfaceAddresses) == 0 || profile.InterfaceAddresses[0] != "10.8.0.1/24" {
+		t.Fatalf("profile.InterfaceAddresses = %+v, want allocated tunnel address", profile.InterfaceAddresses)
 	}
 	if profile.PublicEndpoint != "relay.example.com:19001" {
 		t.Fatalf("profile.PublicEndpoint = %q, want relay public endpoint", profile.PublicEndpoint)
