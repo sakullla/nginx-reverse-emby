@@ -12,6 +12,15 @@
       <label>标签（逗号分隔）</label>
       <input v-model="localForm.tags" class="input-base" placeholder="emby, media">
     </div>
+    <div class="form-group">
+      <label>出口 Profile</label>
+      <select v-model.number="localForm.egress_profile_id" class="input-base" name="egress-profile">
+        <option :value="0">Direct</option>
+        <option v-for="profile in egressProfiles" :key="profile.id" :value="Number(profile.id)">
+          {{ profile.name || profile.id }} ({{ profile.type }})
+        </option>
+      </select>
+    </div>
     <div class="form-group form-group--check">
       <label>
         <input type="checkbox" v-model="localForm.enabled"> 启用规则
@@ -24,7 +33,8 @@
 import { ref, watch } from 'vue'
 
 const props = defineProps({
-  rule: { type: Object, default: null }
+  rule: { type: Object, default: null },
+  egressProfiles: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['submit'])
@@ -33,6 +43,7 @@ const localForm = ref({
   frontend_url: '',
   backendUrl: '',
   tags: '',
+  egress_profile_id: 0,
   enabled: true
 })
 
@@ -47,22 +58,28 @@ watch(() => props.rule, (r) => {
       frontend_url: r.frontend_url || '',
       backendUrl: firstBackendUrl(r),
       tags: (r.tags || []).join(', '),
+      egress_profile_id: r.egress_profile_id == null ? 0 : Number(r.egress_profile_id),
       enabled: r.enabled !== false
     }
   } else {
-    localForm.value = { frontend_url: '', backendUrl: '', tags: '', enabled: true }
+    localForm.value = { frontend_url: '', backendUrl: '', tags: '', egress_profile_id: 0, enabled: true }
   }
 }, { immediate: true })
 
 function submit() {
   const backendUrl = localForm.value.backendUrl.trim()
-  emit('submit', {
+  const egressProfileID = Number(localForm.value.egress_profile_id)
+  const payload = {
     frontend_url: localForm.value.frontend_url,
     backends: backendUrl ? [{ url: backendUrl }] : [],
     relay_layers: [],
     enabled: localForm.value.enabled,
     tags: localForm.value.tags.split(',').map(t => t.trim()).filter(Boolean)
-  })
+  }
+  if (Number.isInteger(egressProfileID) && egressProfileID > 0) {
+    payload.egress_profile_id = egressProfileID
+  }
+  emit('submit', payload)
 }
 
 defineExpose({ submit, localForm })

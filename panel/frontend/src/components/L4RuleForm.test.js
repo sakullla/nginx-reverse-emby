@@ -30,6 +30,18 @@ vi.mock('../hooks/useWireGuardProfiles', () => ({
   })
 }))
 
+vi.mock('../hooks/useEgressProfiles', () => ({
+  useEgressProfiles: () => ({
+    data: {
+      value: [
+        { id: 31, name: 'tcp http proxy', type: 'http', enabled: true },
+        { id: 32, name: 'udp socks proxy', type: 'socks', enabled: true },
+        { id: 33, name: 'disabled socks', type: 'socks', enabled: false }
+      ]
+    }
+  })
+}))
+
 function mountForm() {
   return mount(L4RuleForm, {
     props: { agentId: 'local' },
@@ -429,5 +441,38 @@ describe('L4RuleForm WireGuard egress', () => {
       wireguard_profile_id: 21,
       backends: []
     })
+  })
+
+  it('submits selected L4 egress profile id', async () => {
+    const wrapper = mountForm()
+
+    await selectByLabel(wrapper, '监听端口').setValue('25565')
+    await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:25565')
+    await wrapper.get('select[name="egress-profile"]').setValue('32')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
+      protocol: 'tcp',
+      egress_profile_id: 32
+    })
+  })
+
+  it('filters HTTP egress profiles from UDP rules', async () => {
+    const wrapper = mountForm()
+
+    await selectByLabel(wrapper, '协议').setValue('udp')
+    await flushPromises()
+
+    const options = wrapper
+      .get('select[name="egress-profile"]')
+      .findAll('option')
+      .map((option) => option.text())
+
+    expect(options).toContain('Direct')
+    expect(options.join('\n')).toContain('udp socks proxy')
+    expect(options.join('\n')).not.toContain('tcp http proxy')
+    expect(options.join('\n')).not.toContain('disabled socks')
   })
 })

@@ -141,6 +141,16 @@
         </div>
 
         <div class="form-group">
+          <label class="form-label">出口 Profile</label>
+          <select v-model.number="form.egress_profile_id" name="egress-profile" class="input">
+            <option :value="0">Direct</option>
+            <option v-for="profile in filteredEgressProfiles" :key="profile.id" :value="Number(profile.id)">
+              {{ profile.name || profile.id }} ({{ profile.type }})
+            </option>
+          </select>
+        </div>
+
+        <div class="form-group">
           <label class="form-label">分类标签</label>
           <div class="tag-input">
             <div class="tag-input__container">
@@ -419,6 +429,7 @@ import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import { useWireGuardProfiles } from '../hooks/useWireGuardProfiles'
+import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import RelayChainInput from './RelayChainInput.vue'
 import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
 import { buildProxyEgressURLPayload } from './l4/proxyEgressURL'
@@ -435,10 +446,16 @@ const createL4Rule = useCreateL4Rule(props.agentId)
 const updateL4Rule = useUpdateL4Rule(props.agentId)
 const { data: relayListenersData } = useAllRelayListeners()
 const { data: wireGuardProfilesData } = useWireGuardProfiles(props.agentId)
+const { data: egressProfilesData } = useEgressProfiles()
 const isEdit = computed(() => !!props.initialData?.id)
 const relayListeners = computed(() => relayListenersData.value ?? [])
 const wireGuardProfiles = computed(() => wireGuardProfilesData.value ?? [])
+const egressProfiles = computed(() => egressProfilesData.value ?? [])
 const enabledWireGuardProfiles = computed(() => wireGuardProfiles.value.filter((profile) => {
+  const id = Number(profile.id)
+  return Number.isInteger(id) && id > 0 && profile.enabled !== false
+}))
+const enabledEgressProfiles = computed(() => egressProfiles.value.filter((profile) => {
   const id = Number(profile.id)
   return Number.isInteger(id) && id > 0 && profile.enabled !== false
 }))
@@ -500,6 +517,7 @@ function createFormState(initialData) {
       strategy: normalizeL4Strategy(initialData?.load_balancing?.strategy),
     },
     tuning: mergeTuning(initialData?.tuning, protocol),
+    egress_profile_id: initialData?.egress_profile_id == null ? 0 : Number(initialData.egress_profile_id),
     enabled: initialData?.enabled !== false,
     tags: Array.isArray(initialData?.tags) ? [...initialData.tags] : [],
     listen_mode: initialListenMode,
@@ -599,6 +617,15 @@ const selectedWireGuardProfileID = computed(() => {
   const id = Number(form.value.wireguard_profile_id)
   if (!Number.isInteger(id) || id <= 0) return null
   return enabledWireGuardProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
+})
+const filteredEgressProfiles = computed(() => enabledEgressProfiles.value.filter((profile) => {
+  if (String(form.value.protocol).toLowerCase() !== 'udp') return true
+  return profile.type !== 'http'
+}))
+const selectedEgressProfileID = computed(() => {
+  const id = Number(form.value.egress_profile_id)
+  if (!Number.isInteger(id) || id <= 0) return null
+  return filteredEgressProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
 })
 const samePortTCPProxyRule = computed(() => {
   if (!(form.value.protocol === 'udp' && form.value.listen_mode === 'proxy')) return true
@@ -927,6 +954,9 @@ function buildPayload() {
   }
   if (isWireGuardInbound.value) {
     payload.wireguard_inbound_mode = form.value.wireguard_inbound_mode
+  }
+  if (selectedEgressProfileID.value != null) {
+    payload.egress_profile_id = selectedEgressProfileID.value
   }
   if (hasTuningChanges.value || isEdit.value) {
     const t = form.value.tuning
