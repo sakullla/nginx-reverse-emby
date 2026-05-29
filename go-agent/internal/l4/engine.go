@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 )
 
 type Rule = model.L4Rule
@@ -50,9 +49,7 @@ func ValidateRule(rule Rule) error {
 		return validateProxyEntryRule(rule)
 	}
 	if isWireGuardTransparentForwardRule(rule) {
-		if err := validateTransparentEgressRule(rule); err != nil {
-			return err
-		}
+		// Transparent WireGuard forwards can be direct, relay, or egress-profile final hop.
 	}
 
 	backends := rule.Backends
@@ -81,77 +78,16 @@ func isWireGuardTransparentForwardRule(rule Rule) bool {
 }
 
 func validateProxyEntryRule(rule Rule) error {
-	mode := strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode))
 	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
-	switch mode {
-	case "relay":
-		if !ruleUsesRelay(rule) {
-			return fmt.Errorf("proxy relay egress requires relay_layers")
-		}
-	case "wireguard":
-		if !hasWireGuardProfile(rule) {
-			return fmt.Errorf("wireguard_profile_id is required for wireguard proxy egress")
-		}
-	case "proxy":
-		if strings.TrimSpace(rule.ProxyEgressURL) == "" {
-			return fmt.Errorf("proxy_egress_url is required for proxy egress")
-		}
-		parsed, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
-		if err != nil {
-			return fmt.Errorf("invalid proxy_egress_url: %w", err)
-		}
-		if protocol == "udp" {
-			switch parsed.Scheme {
-			case "socks", "socks5", "socks5h":
-			default:
-				return fmt.Errorf("udp proxy entry requires a SOCKS5-family proxy")
-			}
-		}
-	default:
-		return fmt.Errorf("proxy_egress_mode must be relay, proxy, or wireguard")
-	}
-	return nil
-}
-
-func validateTransparentEgressRule(rule Rule) error {
-	mode := strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode))
-	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
-	switch mode {
-	case "":
-		return nil
-	case "relay":
-		if !ruleUsesRelay(rule) {
-			return fmt.Errorf("transparent relay egress requires relay_layers")
-		}
-	case "wireguard":
-		if !hasWireGuardProfile(rule) {
-			return fmt.Errorf("wireguard_profile_id is required for wireguard transparent egress")
-		}
-	case "proxy":
-		if strings.TrimSpace(rule.ProxyEgressURL) == "" {
-			return fmt.Errorf("proxy_egress_url is required for proxy egress")
-		}
-		parsed, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL)
-		if err != nil {
-			return fmt.Errorf("invalid proxy_egress_url: %w", err)
-		}
-		if protocol == "udp" {
-			switch parsed.Scheme {
-			case "socks", "socks5", "socks5h":
-			default:
-				return fmt.Errorf("udp transparent proxy egress requires a SOCKS5-family proxy")
-			}
-		}
-	default:
-		return fmt.Errorf("proxy_egress_mode must be relay, proxy, or wireguard")
+	if protocol != "tcp" && protocol != "udp" {
+		return fmt.Errorf("listen_mode=proxy requires protocol tcp or udp")
 	}
 	return nil
 }
 
 func isProxyEntryRule(rule Rule) bool {
 	listenMode := strings.ToLower(strings.TrimSpace(rule.ListenMode))
-	return listenMode == "proxy" ||
-		(listenMode == "wireguard" && wireGuardInboundMode(rule) != "transparent" && strings.TrimSpace(rule.ProxyEgressMode) != "")
+	return listenMode == "proxy"
 }
 
 func hasWireGuardProfile(rule Rule) bool {

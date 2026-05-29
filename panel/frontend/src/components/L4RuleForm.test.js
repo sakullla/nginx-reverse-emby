@@ -20,7 +20,13 @@ vi.mock('../hooks/useL4Rules', () => ({
 
 vi.mock('../hooks/useRelayListeners', () => ({
   useAllRelayListeners: () => ({
-    data: { value: [] }
+    data: {
+      value: [
+        { id: 7, name: 'relay-a', agent_id: 'local', transport_mode: 'tls_tcp' },
+        { id: 8, name: 'relay-b', agent_id: 'local', transport_mode: 'tls_tcp' },
+        { id: 9, name: 'relay-c', agent_id: 'local', transport_mode: 'tls_tcp' }
+      ]
+    }
   })
 }))
 
@@ -90,7 +96,7 @@ async function switchTab(wrapper, name) {
   await flushPromises()
 }
 
-describe('L4RuleForm WireGuard egress', () => {
+describe('L4RuleForm egress profile and relay path', () => {
   beforeEach(() => {
     mocks.createMutateAsync.mockReset()
     mocks.updateMutateAsync.mockReset()
@@ -98,57 +104,74 @@ describe('L4RuleForm WireGuard egress', () => {
     mocks.updateMutateAsync.mockResolvedValue({})
   })
 
-  it('disables WireGuard URI egress for WireGuard inbound rules', async () => {
+  it('keeps egress profile in the protocol tab and removes old egress mode controls', async () => {
     const wrapper = mountForm()
 
-    await selectByLabel(wrapper, '监听端口').setValue('1080')
+    expect(wrapper.get('select[name="egress-profile"]').exists()).toBe(true)
     await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
-    await selectByLabel(wrapper, '出口模式').setValue('wireguard')
-    await flushPromises()
 
-    expect(wrapper.text()).toContain('WireGuard 配置')
-    expect(wrapper.text()).not.toContain('WireGuard 出口来源')
+    expect(wrapper.text()).toContain('出口 Profile')
+    expect(wrapper.text()).not.toContain('出口模式')
+    expect(wrapper.find('input[placeholder="socks://user:pass@127.0.0.1:1080"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder="wireguard://user:pass@host:51820"]').exists()).toBe(false)
-
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-
-    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
-      protocol: 'tcp',
-      listen_mode: 'wireguard',
-      proxy_egress_mode: 'wireguard',
-      wireguard_inbound_mode: 'transparent',
-      wireguard_profile_id: 21
-    })
-    expect(mocks.createMutateAsync.mock.calls[0][0]).not.toHaveProperty('wireguard_egress_uri')
   })
 
-  it('derives WireGuard address-mode listen host from the selected profile', async () => {
+  it('submits relay layers and egress profile id together', async () => {
     const wrapper = mountForm()
 
-    await selectByLabel(wrapper, '监听端口').setValue('8443')
+    await selectByLabel(wrapper, '监听端口').setValue('25565')
+    await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:25565')
     await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
-    await selectByLabel(wrapper, 'WireGuard 入站模式').setValue('address')
+    await wrapper.get('select[name="egress-profile"]').setValue('32')
+    await wrapper.findComponent({ name: 'RelayChainInput' }).vm.$emit('update:modelValue', [[7], [8, 9]])
     await flushPromises()
-    await switchTab(wrapper, '基础配置')
-    const backend = wrapper.get('input[placeholder="IP:端口 或 域名:端口"]')
-    await backend.setValue('upstream.local:9000')
-
-    expect(wrapper.text()).not.toContain('WireGuard Listen Host')
-
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
     expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
-      listen_mode: 'wireguard',
-      wireguard_inbound_mode: 'address',
-      wireguard_profile_id: 21
+    const payload = mocks.createMutateAsync.mock.calls[0][0]
+    expect(payload).toMatchObject({
+      protocol: 'tcp',
+      egress_profile_id: 32,
+      relay_layers: [[7], [8, 9]]
     })
-    expect(mocks.createMutateAsync.mock.calls[0][0]).not.toHaveProperty('wireguard_listen_host')
+    expect(payload).not.toHaveProperty('proxy_egress_mode')
+    expect(payload).not.toHaveProperty('proxy_egress_url')
+    expect(payload).not.toHaveProperty('wireguard_egress_uri')
+    expect(payload).not.toHaveProperty('wireguard_profile_override')
+  })
+
+  it('preserves relay layers and egress profile id when editing proxy entry rules', async () => {
+    const wrapper = mountEditForm({
+      id: 9,
+      protocol: 'tcp',
+      listen_host: '0.0.0.0',
+      listen_port: 1080,
+      listen_mode: 'proxy',
+      egress_profile_id: 32,
+      relay_layers: [[7], [8, 9]],
+      backends: []
+    })
+
+    await flushPromises()
+    await switchTab(wrapper, '协议与监听')
+    expect(wrapper.text()).not.toContain('出口模式')
+    expect(wrapper.get('select[name="egress-profile"]').element.value).toBe('32')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
+    const payload = mocks.updateMutateAsync.mock.calls[0][0]
+    expect(payload).toMatchObject({
+      id: 9,
+      listen_mode: 'proxy',
+      egress_profile_id: 32,
+      relay_layers: [[7], [8, 9]]
+    })
+    expect(payload).not.toHaveProperty('proxy_egress_mode')
+    expect(payload).not.toHaveProperty('proxy_egress_url')
+    expect(payload).not.toHaveProperty('wireguard_egress_uri')
   })
 
   it('requires a selected profile for WireGuard transparent inbound rules', async () => {
@@ -171,7 +194,7 @@ describe('L4RuleForm WireGuard egress', () => {
     })
   })
 
-  it('allows port 0 for WireGuard transparent inbound rules', async () => {
+  it('allows port 0 for WireGuard transparent inbound rules without old egress mode', async () => {
     const wrapper = mountForm()
 
     await selectByLabel(wrapper, '监听端口').setValue('0')
@@ -182,39 +205,16 @@ describe('L4RuleForm WireGuard egress', () => {
 
     expect(wrapper.text()).not.toContain('监听端口必须在 1-65535 之间')
     expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
+    const payload = mocks.createMutateAsync.mock.calls[0][0]
+    expect(payload).toMatchObject({
       protocol: 'tcp',
       listen_port: 0,
       listen_mode: 'wireguard',
-      proxy_egress_mode: '',
       wireguard_inbound_mode: 'transparent',
       wireguard_profile_id: 21,
       backends: []
     })
-  })
-
-  it('allows relay egress for WireGuard transparent inbound rules', async () => {
-    const wrapper = mountForm()
-
-    await selectByLabel(wrapper, '监听端口').setValue('0')
-    await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
-    await selectByLabel(wrapper, '出口模式').setValue('relay')
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-
-    expect(wrapper.text()).not.toContain('监听端口必须在 1-65535 之间')
-    expect(wrapper.text()).not.toContain('至少需要一个有效的后端服务器')
-    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
-      protocol: 'tcp',
-      listen_port: 0,
-      listen_mode: 'wireguard',
-      proxy_egress_mode: 'relay',
-      wireguard_inbound_mode: 'transparent',
-      wireguard_profile_id: 21,
-      backends: []
-    })
+    expect(payload).not.toHaveProperty('proxy_egress_mode')
   })
 
   it('rejects port 0 outside WireGuard transparent inbound rules', async () => {
@@ -227,102 +227,6 @@ describe('L4RuleForm WireGuard egress', () => {
 
     expect(wrapper.text()).toContain('监听端口必须在 1-65535 之间')
     expect(mocks.createMutateAsync).not.toHaveBeenCalled()
-  })
-
-  it('does not offer entry authentication for WireGuard proxy egress', async () => {
-    const wrapper = mountForm()
-
-    await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
-    await selectByLabel(wrapper, '出口模式').setValue('proxy')
-    await flushPromises()
-
-    expect(wrapper.text()).not.toContain('启用入口认证')
-  })
-
-  it('shows proxy URL input for WireGuard transparent proxy egress', async () => {
-    const wrapper = mountForm()
-
-    await selectByLabel(wrapper, '监听端口').setValue('0')
-    await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
-    await selectByLabel(wrapper, '出口模式').setValue('proxy')
-    await flushPromises()
-
-    const proxyURL = wrapper.get('input[placeholder="socks://user:pass@127.0.0.1:1080"]')
-    await proxyURL.setValue('socks5://127.0.0.1:1080')
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-
-    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
-      listen_mode: 'wireguard',
-      wireguard_inbound_mode: 'transparent',
-      proxy_egress_mode: 'proxy',
-      proxy_egress_url: 'socks5://127.0.0.1:1080',
-      wireguard_profile_id: 21
-    })
-  })
-
-  it('preserves relay layers when proxy egress uses socks', async () => {
-    const wrapper = mountEditForm({
-      id: 9,
-      protocol: 'tcp',
-      listen_host: '0.0.0.0',
-      listen_port: 1080,
-      listen_mode: 'proxy',
-      proxy_egress_mode: 'proxy',
-      proxy_egress_url: 'socks5://127.0.0.1:2080',
-      relay_layers: [[7], [8, 9]],
-      backends: []
-    })
-
-    await flushPromises()
-    await switchTab(wrapper, '协议与监听')
-    expect(wrapper.text()).toContain('出口模式')
-    expect(wrapper.get('input[placeholder="socks://user:pass@127.0.0.1:1080"]').element.value).toBe('socks5://127.0.0.1:2080')
-
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-
-    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
-      id: 9,
-      listen_mode: 'proxy',
-      proxy_egress_mode: 'proxy',
-      proxy_egress_url: 'socks5://127.0.0.1:2080',
-      relay_layers: [[7], [8, 9]]
-    })
-  })
-
-  it('preserves relay layers when proxy egress uses WireGuard', async () => {
-    const wrapper = mountEditForm({
-      id: 10,
-      protocol: 'tcp',
-      listen_host: '0.0.0.0',
-      listen_port: 1080,
-      listen_mode: 'proxy',
-      proxy_egress_mode: 'wireguard',
-      wireguard_profile_id: 21,
-      relay_layers: [[7], [8, 9]],
-      backends: []
-    })
-
-    await flushPromises()
-    await switchTab(wrapper, '协议与监听')
-    expect(wrapper.text()).toContain('WireGuard 配置')
-
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-
-    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
-      id: 10,
-      listen_mode: 'proxy',
-      proxy_egress_mode: 'wireguard',
-      wireguard_profile_id: 21,
-      relay_layers: [[7], [8, 9]]
-    })
   })
 
   it('rejects UDP proxy entry without same-port TCP SOCKS5 rule', async () => {
@@ -397,7 +301,6 @@ describe('L4RuleForm WireGuard egress', () => {
       listen_host: '0.0.0.0',
       listen_port: 51820,
       listen_mode: 'wireguard',
-      proxy_egress_mode: '',
       wireguard_inbound_mode: 'transparent',
       wireguard_profile_id: 21,
       backends: []
@@ -409,15 +312,16 @@ describe('L4RuleForm WireGuard egress', () => {
 
     expect(wrapper.text()).not.toContain('至少需要一个有效的后端服务器')
     expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
+    const payload = mocks.updateMutateAsync.mock.calls[0][0]
+    expect(payload).toMatchObject({
       id: 7,
       protocol: 'udp',
       listen_mode: 'wireguard',
-      proxy_egress_mode: '',
       wireguard_inbound_mode: 'transparent',
       wireguard_profile_id: 21,
       backends: []
     })
+    expect(payload).not.toHaveProperty('proxy_egress_mode')
   })
 
   it('allows selecting transparent mode for new UDP WireGuard rules', async () => {
@@ -433,37 +337,22 @@ describe('L4RuleForm WireGuard egress', () => {
 
     expect(wrapper.text()).not.toContain('至少需要一个有效的后端服务器')
     expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
+    const payload = mocks.createMutateAsync.mock.calls[0][0]
+    expect(payload).toMatchObject({
       protocol: 'udp',
       listen_mode: 'wireguard',
-      proxy_egress_mode: '',
       wireguard_inbound_mode: 'transparent',
       wireguard_profile_id: 21,
       backends: []
     })
-  })
-
-  it('submits selected L4 egress profile id', async () => {
-    const wrapper = mountForm()
-
-    await selectByLabel(wrapper, '监听端口').setValue('25565')
-    await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:25565')
-    await wrapper.get('select[name="egress-profile"]').setValue('32')
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-
-    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
-      protocol: 'tcp',
-      egress_profile_id: 32
-    })
+    expect(payload).not.toHaveProperty('proxy_egress_mode')
   })
 
   it('filters HTTP egress profiles from UDP rules', async () => {
     const wrapper = mountForm()
 
     await selectByLabel(wrapper, '协议').setValue('udp')
-    await flushPromises()
+    await switchTab(wrapper, '协议与监听')
 
     const options = wrapper
       .get('select[name="egress-profile"]')

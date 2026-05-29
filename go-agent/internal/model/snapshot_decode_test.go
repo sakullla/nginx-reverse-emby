@@ -333,7 +333,6 @@ func TestSnapshotDecodePreservesAgentConfigAndL4ProxyEntryFields(t *testing.T) {
 			"listen_port":1080,
 			"listen_mode":"proxy",
 			"proxy_entry_auth":{"enabled":true,"username":"u","password":"p"},
-			"proxy_egress_mode":"relay",
 			"relay_layers":[[101]]
 		}]
 	}`)
@@ -355,9 +354,6 @@ func TestSnapshotDecodePreservesAgentConfigAndL4ProxyEntryFields(t *testing.T) {
 	}
 	if !rule.ProxyEntryAuth.Enabled || rule.ProxyEntryAuth.Username != "u" || rule.ProxyEntryAuth.Password != "p" {
 		t.Fatalf("ProxyEntryAuth = %+v", rule.ProxyEntryAuth)
-	}
-	if rule.ProxyEgressMode != "relay" {
-		t.Fatalf("ProxyEgressMode = %q", rule.ProxyEgressMode)
 	}
 	if !reflect.DeepEqual(rule.RelayLayers, [][]int{{101}}) {
 		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)

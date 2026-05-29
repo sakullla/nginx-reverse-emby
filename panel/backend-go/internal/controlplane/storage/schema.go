@@ -226,9 +226,6 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		{column: "wireguard_inbound_mode", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_inbound_mode TEXT NOT NULL DEFAULT 'address'`},
 		{column: "wireguard_listen_host", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_listen_host TEXT NOT NULL DEFAULT ''`},
 		{column: "proxy_entry_auth", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_entry_auth TEXT NOT NULL DEFAULT '{}'`},
-		{column: "proxy_egress_mode", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_egress_mode TEXT NOT NULL DEFAULT ''`},
-		{column: "proxy_egress_url", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_egress_url TEXT NOT NULL DEFAULT ''`},
-		{column: "wireguard_egress_uri", sql: `ALTER TABLE l4_rules ADD COLUMN wireguard_egress_uri TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, migration := range l4ColumnMigrations {
 		if tx.Migrator().HasColumn(&L4RuleRow{}, migration.column) {
@@ -293,9 +290,6 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE l4_rules SET wireguard_inbound_mode = 'address' WHERE wireguard_inbound_mode IS NULL OR trim(wireguard_inbound_mode) = ''`,
 		`UPDATE l4_rules SET wireguard_listen_host = '' WHERE wireguard_listen_host IS NULL`,
 		`UPDATE l4_rules SET proxy_entry_auth = '{}' WHERE proxy_entry_auth IS NULL OR trim(proxy_entry_auth) = ''`,
-		`UPDATE l4_rules SET proxy_egress_mode = '' WHERE proxy_egress_mode IS NULL`,
-		`UPDATE l4_rules SET proxy_egress_url = '' WHERE proxy_egress_url IS NULL`,
-		`UPDATE l4_rules SET wireguard_egress_uri = '' WHERE wireguard_egress_uri IS NULL`,
 		`UPDATE agents SET desired_version = '' WHERE desired_version IS NULL`,
 		`UPDATE agents SET platform = '' WHERE platform IS NULL`,
 		`UPDATE agents SET runtime_package_version = '' WHERE runtime_package_version IS NULL`,

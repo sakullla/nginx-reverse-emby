@@ -370,10 +370,9 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 			ListenHost:          "0.0.0.0",
 			ListenPort:          19000,
 			ListenMode:          "proxy",
-			WireGuardProfileID:  &l4WireGuardProfileID,
 			WireGuardListenHost: "10.60.0.1",
 			ProxyEntryAuth:      storage.L4ProxyEntryAuth{Enabled: true, Username: "client", Password: "secret"},
-			ProxyEgressMode:     "wireguard",
+			EgressProfileID:     &l4WireGuardProfileID,
 			Backends: []storage.L4Backend{{
 				Host: "relay-echo-test",
 				Port: 18081,
@@ -442,11 +441,8 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	if !embedded.L4Rules[0].ProxyEntryAuth.Enabled || embedded.L4Rules[0].ProxyEntryAuth.Username != "client" || embedded.L4Rules[0].ProxyEntryAuth.Password != "secret" {
 		t.Fatalf("embedded L4Rules[0].ProxyEntryAuth = %+v", embedded.L4Rules[0].ProxyEntryAuth)
 	}
-	if embedded.L4Rules[0].ProxyEgressMode != "wireguard" || embedded.L4Rules[0].ProxyEgressURL != "" {
-		t.Fatalf("embedded L4Rules[0] proxy egress = mode %q url %q", embedded.L4Rules[0].ProxyEgressMode, embedded.L4Rules[0].ProxyEgressURL)
-	}
-	if embedded.L4Rules[0].WireGuardProfileID == nil || *embedded.L4Rules[0].WireGuardProfileID != l4WireGuardProfileID || embedded.L4Rules[0].WireGuardListenHost != "10.60.0.1" {
-		t.Fatalf("embedded L4Rules[0] WireGuard fields = profile %v listen_host %q", embedded.L4Rules[0].WireGuardProfileID, embedded.L4Rules[0].WireGuardListenHost)
+	if embedded.L4Rules[0].EgressProfileID == nil || *embedded.L4Rules[0].EgressProfileID != l4WireGuardProfileID {
+		t.Fatalf("embedded L4Rules[0].EgressProfileID = %v", embedded.L4Rules[0].EgressProfileID)
 	}
 	if len(embedded.L4Rules[0].RelayLayers) != 2 || embedded.L4Rules[0].RelayLayers[1][1] != 3 {
 		t.Fatalf("embedded L4Rules[0].RelayLayers = %+v", embedded.L4Rules[0].RelayLayers)

@@ -981,13 +981,7 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.WireGuardInboundMode = normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode)
 	row.WireGuardListenHost = defaultString(row.WireGuardListenHost, "")
 	row.ProxyEntryAuthJSON = defaultJSON(row.ProxyEntryAuthJSON, "{}")
-	row.ProxyEgressMode = defaultString(row.ProxyEgressMode, "")
-	row.ProxyEgressURL = defaultString(row.ProxyEgressURL, "")
-	row.WireGuardEgressURI = defaultString(row.WireGuardEgressURI, "")
 	row.EgressProfileID = copyOptionalPositiveInt(row.EgressProfileID)
-	if row.ProxyEgressMode != "wireguard" {
-		row.WireGuardEgressURI = ""
-	}
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 }
 
@@ -2096,8 +2090,7 @@ func referencedWireGuardProfileIDs(
 		if !row.Enabled {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(row.ListenMode), "wireguard") ||
-			strings.EqualFold(strings.TrimSpace(row.ProxyEgressMode), "wireguard") {
+		if strings.EqualFold(strings.TrimSpace(row.ListenMode), "wireguard") {
 			add(row.WireGuardProfileID)
 		}
 	}
@@ -2224,9 +2217,6 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 		if row.ListenPort < 1 || row.ListenPort > 65535 {
 			return false
 		}
-		if strings.TrimSpace(row.ProxyEgressMode) != "" {
-			return protocol == "tcp"
-		}
 	}
 
 	if row.ListenPort < 1 || row.ListenPort > 65535 {
@@ -2254,7 +2244,6 @@ func filterL4RuleRowsWithoutWireGuard(rows []L4RuleRow, relayRows []RelayListene
 	filtered := make([]L4RuleRow, 0, len(rows))
 	for _, row := range rows {
 		if strings.EqualFold(strings.TrimSpace(row.ListenMode), "wireguard") ||
-			strings.EqualFold(strings.TrimSpace(row.ProxyEgressMode), "wireguard") ||
 			positiveOptionalInt(row.WireGuardProfileID) ||
 			relayLayersReferenceMissingListener(row.RelayLayersJSON, relayIDs) {
 			continue
@@ -2382,9 +2371,6 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			WireGuardInboundMode: normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode),
 			WireGuardListenHost:  row.WireGuardListenHost,
 			ProxyEntryAuth:       parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
-			ProxyEgressMode:      row.ProxyEgressMode,
-			ProxyEgressURL:       row.ProxyEgressURL,
-			WireGuardEgressURI:   row.WireGuardEgressURI,
 			Revision:             int64(row.Revision),
 		})
 	}

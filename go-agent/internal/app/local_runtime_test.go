@@ -988,7 +988,6 @@ func TestL4RuntimeManagerRetriesTransientWireGuardPortInUseAfterClosingPreviousS
 		ListenHost:         "127.0.0.1",
 		ListenPort:         pickFreeTCPPort(t),
 		ListenMode:         "proxy",
-		ProxyEgressMode:    "wireguard",
 		WireGuardProfileID: &profileID,
 	}
 	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.L4Rule{initial, proxyRule}, nil, []model.WireGuardProfile{profile}); err != nil {
@@ -1030,7 +1029,6 @@ func TestL4RuntimeManagerRecreatesWireGuardRuntimeWhenClosedListenerPortRemainsI
 		ListenHost:         "127.0.0.1",
 		ListenPort:         pickFreeTCPPort(t),
 		ListenMode:         "proxy",
-		ProxyEgressMode:    "wireguard",
 		WireGuardProfileID: &profileID,
 	}
 	if err := manager.ApplyWithRelayAndWireGuardProfiles(ctx, []model.L4Rule{initial, proxyRule}, nil, []model.WireGuardProfile{profile}); err != nil {

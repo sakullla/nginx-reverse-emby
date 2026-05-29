@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
@@ -86,41 +85,12 @@ func (s *Server) dialTCPUpstreamCandidates(rule model.L4Rule, dialOptions relay.
 func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
 	candidate := l4Candidate{address: target}
 	start := s.now()
-	var (
-		upstream net.Conn
-		err      error
-	)
-	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
-	case "":
-		if ruleUsesRelay(rule) {
-			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
-		} else {
-			upstream, err = s.dialTCPLocalEgress(rule, target)
-		}
-	case "relay":
+	var upstream net.Conn
+	var err error
+	if ruleUsesRelay(rule) {
 		upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
-	case "wireguard":
-		if ruleUsesRelay(rule) {
-			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
-		} else {
-			runtime, runtimeErr := s.wireGuardRuntime(rule)
-			if runtimeErr != nil {
-				err = runtimeErr
-				break
-			}
-			upstream, err = runtime.DialContext(s.ctx, "tcp", target)
-		}
-	case "proxy":
-		if ruleUsesRelay(rule) {
-			dialOptions.EgressProfileID = rule.EgressProfileID
-			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
-		} else if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
-			upstream, err = s.egressDialer.DialTCP(s.ctx, target, rule.EgressProfileID)
-		} else {
-			upstream, err = proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
-		}
-	default:
-		err = fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
+	} else {
+		upstream, err = s.dialTCPLocalEgress(rule, target)
 	}
 	if err != nil {
 		return nil, candidate, 0, err

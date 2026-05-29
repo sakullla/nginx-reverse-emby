@@ -387,7 +387,7 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('sends Relay listener WireGuard payloads with profile id and neutralized transport options', async () => {
+  it('preserves Relay listener WireGuard bind and public endpoint payloads', async () => {
     const { api } = await vi.importActual('./client.js')
     const requests = []
     const originalAdapter = api.defaults.adapter
@@ -417,9 +417,8 @@ describe('runtime canonical rule payloads', () => {
       await runtime.createRelayListener('edge-a', {
         name: 'wg-relay',
         transport_mode: 'wireguard',
-        wireguard_profile_id: 101,
         bind_hosts: ['0.0.0.0'],
-        public_host: 'stale.example.com',
+        public_host: 'relay.example.com',
         public_port: 7443,
         obfs_mode: 'early_window_v2',
         allow_transport_fallback: true
@@ -427,9 +426,8 @@ describe('runtime canonical rule payloads', () => {
       await runtime.updateRelayListener('edge-a', 11, {
         name: 'wg-relay',
         transport_mode: 'wireguard',
-        wireguard_profile_id: 101,
         bind_hosts: ['0.0.0.0'],
-        public_host: 'stale.example.com',
+        public_host: 'relay.example.com',
         public_port: 7443,
         obfs_mode: 'early_window_v2',
         allow_transport_fallback: true
@@ -439,12 +437,12 @@ describe('runtime canonical rule payloads', () => {
       for (const request of requests) {
         const payload = JSON.parse(request.data)
         expect(payload.transport_mode).toBe('wireguard')
-        expect(payload.wireguard_profile_id).toBe(101)
         expect(payload.obfs_mode).toBe('off')
         expect(payload.allow_transport_fallback).toBe(false)
-        expect(payload).not.toHaveProperty('bind_hosts')
-        expect(payload).not.toHaveProperty('public_host')
-        expect(payload).not.toHaveProperty('public_port')
+        expect(payload.bind_hosts).toEqual(['0.0.0.0'])
+        expect(payload.public_host).toBe('relay.example.com')
+        expect(payload.public_port).toBe(7443)
+        expect(payload).not.toHaveProperty('wireguard_profile_id')
       }
     } finally {
       api.defaults.adapter = originalAdapter
@@ -566,66 +564,6 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('sends L4 WireGuard egress URI payloads without profile id', async () => {
-    const { api } = await vi.importActual('./client.js')
-    const requests = []
-    const originalAdapter = api.defaults.adapter
-    api.defaults.adapter = async (config) => {
-      requests.push(config)
-      return {
-        data: {
-          rule: {
-            id: 15,
-            ...JSON.parse(config.data)
-          }
-        },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config
-      }
-    }
-
-    try {
-      const runtime = await vi.importActual('./runtime.js')
-
-      const created = await runtime.createL4Rule('edge-a', {
-        protocol: 'tcp',
-        listen_host: '0.0.0.0',
-        listen_port: 1080,
-        listen_mode: 'wireguard',
-        proxy_egress_mode: 'wireguard',
-        wireguard_egress_uri: 'wireguard://endpoint.example.test?profile=egress',
-        proxy_entry_auth: { enabled: false, username: '', password: '' },
-        backends: []
-      })
-      const updated = await runtime.updateL4Rule('edge-a', 15, {
-        protocol: 'tcp',
-        listen_host: '0.0.0.0',
-        listen_port: 1080,
-        listen_mode: 'wireguard',
-        proxy_egress_mode: 'wireguard',
-        wireguard_egress_uri: 'wireguard://endpoint.example.test?profile=egress',
-        proxy_entry_auth: { enabled: false, username: '', password: '' },
-        backends: []
-      })
-
-      expect(requests).toHaveLength(2)
-      for (const request of requests) {
-        const payload = JSON.parse(request.data)
-        expect(payload.listen_mode).toBe('wireguard')
-        expect(payload.proxy_egress_mode).toBe('wireguard')
-        expect(payload.wireguard_egress_uri).toBe('wireguard://endpoint.example.test?profile=egress')
-        expect(payload).not.toHaveProperty('wireguard_profile_id')
-      }
-      expect(created.proxy_egress_mode).toBe('wireguard')
-      expect(updated.proxy_egress_mode).toBe('wireguard')
-      expect(created.wireguard_egress_uri).toBe('wireguard://endpoint.example.test?profile=egress')
-      expect(updated.wireguard_egress_uri).toBe('wireguard://endpoint.example.test?profile=egress')
-    } finally {
-      api.defaults.adapter = originalAdapter
-    }
-  })
 
   it('preserves L4 transparent UDP payloads for wireguard listen mode', async () => {
     const { api } = await vi.importActual('./client.js')
@@ -671,50 +609,6 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('preserves UDP proxy entry payloads', async () => {
-    const { api } = await vi.importActual('./client.js')
-    const requests = []
-    const originalAdapter = api.defaults.adapter
-    api.defaults.adapter = async (config) => {
-      requests.push(config)
-      return {
-        data: {
-          rule: {
-            id: 19,
-            ...JSON.parse(config.data)
-          }
-        },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config
-      }
-    }
-
-    try {
-      const runtime = await vi.importActual('./runtime.js')
-
-      await runtime.createL4Rule('edge-a', {
-        protocol: 'udp',
-        listen_host: '0.0.0.0',
-        listen_port: 1080,
-        listen_mode: 'proxy',
-        proxy_egress_mode: 'proxy',
-        proxy_egress_url: 'socks5://127.0.0.1:2080',
-        proxy_entry_auth: { enabled: true, username: 'user', password: 'pass' },
-        backends: []
-      })
-
-      const payload = JSON.parse(requests[0].data)
-      expect(payload.protocol).toBe('udp')
-      expect(payload.listen_mode).toBe('proxy')
-      expect(payload.proxy_egress_mode).toBe('proxy')
-      expect(payload.proxy_egress_url).toBe('socks5://127.0.0.1:2080')
-      expect(payload.proxy_entry_auth).toEqual({ enabled: true, username: 'user', password: 'pass' })
-    } finally {
-      api.defaults.adapter = originalAdapter
-    }
-  })
 
   it('calls WireGuard URI preview and import endpoints', async () => {
     const { api } = await vi.importActual('./client.js')
@@ -1130,71 +1024,27 @@ describe('runtime canonical rule payloads', () => {
     expect(profile.peers[0].preshared_key).toBe('xxxxx')
   })
 
-  it('omits stale L4 WireGuard egress URI when egress is not WireGuard', async () => {
-    const { api } = await vi.importActual('./client.js')
-    const requests = []
-    const originalAdapter = api.defaults.adapter
-    api.defaults.adapter = async (config) => {
-      requests.push(config)
-      return {
-        data: {
-          rule: {
-            id: 16,
-            ...JSON.parse(config.data)
-          }
-        },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config
-      }
-    }
 
-    try {
-      const runtime = await vi.importActual('./runtime.js')
-
-      await runtime.createL4Rule('edge-a', {
-        protocol: 'tcp',
-        listen_host: '0.0.0.0',
-        listen_port: 1080,
-        listen_mode: 'proxy',
-        proxy_egress_mode: 'relay',
-        wireguard_profile_id: 102,
-        wireguard_egress_uri: 'wireguard://endpoint.example.test?profile=egress',
-        proxy_entry_auth: { enabled: false, username: '', password: '' },
-        relay_layers: [[7]],
-        backends: []
-      })
-
-      const payload = JSON.parse(requests[0].data)
-      expect(payload.proxy_egress_mode).toBe('relay')
-      expect(payload).not.toHaveProperty('wireguard_egress_uri')
-      expect(payload).not.toHaveProperty('wireguard_profile_id')
-    } finally {
-      api.defaults.adapter = originalAdapter
-    }
-  })
-
-  it('L4 form keeps WireGuard transparent egress separate from proxy entry mode', async () => {
+  it('L4 form keeps relay layers and egress profile as independent selectors', async () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
 
-    expect(l4Form.default).toContain('form.value.wireguard_inbound_mode !== \'transparent\' && form.value.proxy_egress_mode !== \'\'')
-    expect(l4Form.default).toContain('const hasTransparentEgress = computed(() => isWireGuardInbound.value && form.value.wireguard_inbound_mode === \'transparent\' && form.value.proxy_egress_mode !== \'\')')
+    expect(l4Form.default).toContain('name="egress-profile"')
+    expect(l4Form.default).toContain('relay_layers: Array.isArray(form.value.relay_layers)')
     expect(l4Form.default).toContain('const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)')
     expect(l4Form.default).toContain('backends: requiresBackends.value ? validBackends : []')
-    expect(l4Form.default).toContain('proxy_egress_mode: (isProxyEntry.value || hasTransparentEgress.value) ? form.value.proxy_egress_mode : \'\'')
-    expect(l4Form.default).toContain('v-if="(isProxyEntry || hasTransparentEgress) && form.proxy_egress_mode === \'proxy\'"')
+    expect(l4Form.default).toContain('payload.egress_profile_id = selectedEgressProfileID.value')
+    expect(l4Form.default).not.toContain('proxy_egress_mode')
+    expect(l4Form.default).not.toContain('wireguard_egress_uri')
     expect(l4Form.default).toContain('if (requiresBackends.value && validBackends.length === 0)')
   })
 
-  it('L4 form exposes WireGuard egress URI source controls', async () => {
+  it('L4 form does not expose legacy WireGuard egress URI controls', async () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
 
-    expect(l4Form.default).toContain('wireguard_egress_source')
-    expect(l4Form.default).toContain('wireguard_egress_uri')
-    expect(l4Form.default).toContain('WireGuard 连接 URI')
-    expect(l4Form.default).toContain('<option value="uri">WireGuard URI</option>')
-    expect(l4Form.default).toContain('payload.wireguard_egress_uri = form.value.wireguard_egress_uri.trim()')
+    expect(l4Form.default).not.toContain('wireguard_egress_source')
+    expect(l4Form.default).not.toContain('wireguard_egress_uri')
+    expect(l4Form.default).not.toContain('WireGuard 连接 URI')
+    expect(l4Form.default).not.toContain('<option value="uri">WireGuard URI</option>')
     expect(l4Form.default).toContain('payload.wireguard_profile_id = selectedWireGuardProfileID.value')
   })
 
@@ -1264,66 +1114,25 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
-  it('preserves L4 WireGuard proxy egress mode on read', async () => {
-    const { api } = await vi.importActual('./client.js')
-    const originalAdapter = api.defaults.adapter
-    api.defaults.adapter = async (config) => ({
-      data: {
-        rules: [
-          {
-            id: 14,
-            protocol: 'tcp',
-            listen_host: '0.0.0.0',
-            listen_port: 1080,
-            listen_mode: 'wireguard',
-            proxy_egress_mode: 'proxy',
-            proxy_egress_url: 'socks5://127.0.0.1:1080',
-            wireguard_profile_id: 101,
-            wireguard_listen_host: '10.8.0.1',
-            backends: []
-          }
-        ]
-      },
-      status: 200,
-      statusText: 'OK',
-      headers: {},
-      config
-    })
 
-    try {
-      const runtime = await vi.importActual('./runtime.js')
-
-      const rules = await runtime.fetchL4Rules('edge-a')
-
-      expect(rules[0].listen_mode).toBe('wireguard')
-      expect(rules[0].proxy_egress_mode).toBe('proxy')
-      expect(rules[0].proxy_egress_url).toBe('socks5://127.0.0.1:1080')
-    } finally {
-      api.defaults.adapter = originalAdapter
-    }
-  })
-
-  it('Relay and L4 forms restrict WireGuard selection to enabled numeric profiles', async () => {
-    const relayForm = await import('../components/RelayListenerForm.vue?raw')
+  it('L4 form restricts WireGuard selection to enabled numeric profiles', async () => {
     const l4Form = await import('../components/L4RuleForm.vue?raw')
 
-    for (const source of [relayForm.default, l4Form.default]) {
-      expect(source).toContain('enabledWireGuardProfiles')
-      expect(source).toContain('selectedWireGuardProfileID')
-      expect(source).toContain('Number.isInteger(id) && id > 0')
-      expect(source).not.toContain('payload.wireguard_profile_id = String')
-    }
+    expect(l4Form.default).toContain('enabledWireGuardProfiles')
+    expect(l4Form.default).toContain('selectedWireGuardProfileID')
+    expect(l4Form.default).toContain('Number.isInteger(id) && id > 0')
+    expect(l4Form.default).not.toContain('payload.wireguard_profile_id = String')
   })
 
-  it('Relay listener form hides WireGuard profile selection from ordinary flow', async () => {
+  it('Relay listener form uses automatic WireGuard profiles without exposing profile selection', async () => {
     const form = await import('../components/RelayListenerForm.vue?raw')
     const source = form.default
     expect(source).toContain('高级设置')
-    const ordinaryStart = source.indexOf('Relay Transport')
-    const advancedStart = source.indexOf('advanced-panel')
-    expect(source.slice(ordinaryStart, advancedStart)).not.toContain("v-model.number='form.wireguard_profile_id'")
-    expect(source.slice(ordinaryStart, advancedStart)).not.toContain('form-label form-label--required\'>WireGuard 配置')
-    expect(source).toContain("form.value.transport_mode === 'wireguard' && selectedWireGuardProfileID.value != null")
+    expect(source).not.toContain("v-model.number='form.wireguard_profile_id'")
+    expect(source).not.toContain('WireGuard 配置')
+    expect(source).not.toContain('selectedWireGuardProfileID')
+    expect(source).not.toContain('payload.wireguard_profile_id')
+    expect(source).toContain('Relay TLS 证书 / Pin 校验仍会在隧道内生效')
   })
 
   it('L4 edit form does not auto-replace invalid initial WireGuard profiles', async () => {

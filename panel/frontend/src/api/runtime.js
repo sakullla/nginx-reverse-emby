@@ -108,13 +108,6 @@ function normalizeL4Rule(rule = {}) {
     : listenMode === 'wireguard'
       ? 'address'
       : ''
-  const proxyEgressMode = listenMode === 'proxy'
-    ? String(rule.proxy_egress_mode || 'relay')
-    : listenMode === 'wireguard'
-      ? String(rule.proxy_egress_mode || '')
-      : ''
-  const proxyEntryMode = listenMode === 'proxy' || (listenMode === 'wireguard' && wireGuardInboundMode !== 'transparent' && proxyEgressMode)
-  const transparentEgressMode = listenMode === 'wireguard' && wireGuardInboundMode === 'transparent' && proxyEgressMode
   return {
     ...rule,
     backends: normalizeL4Backends(rule),
@@ -130,11 +123,6 @@ function normalizeL4Rule(rule = {}) {
           password: String(rule.proxy_entry_auth?.password || '')
         }
       : { enabled: false, username: '', password: '' },
-    proxy_egress_mode: proxyEgressMode,
-    proxy_egress_url: (proxyEntryMode || transparentEgressMode) ? String(rule.proxy_egress_url || '') : '',
-    wireguard_egress_uri: (proxyEntryMode || transparentEgressMode) && proxyEgressMode === 'wireguard'
-      ? String(rule.wireguard_egress_uri || '')
-      : '',
     wireguard_inbound_mode: wireGuardInboundMode,
     egress_profile_id: egressProfileID
   }
@@ -142,7 +130,7 @@ function normalizeL4Rule(rule = {}) {
 
 function normalizeRelayListenerPayload(payload = {}) {
   if (payload.transport_mode !== 'wireguard') return payload
-  const { bind_hosts, public_host, public_port, listen_host, ...rest } = payload
+  const { wireguard_profile_id, ...rest } = payload
   return {
     ...rest,
     transport_mode: 'wireguard',
@@ -203,16 +191,19 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
 
 function normalizeL4RulePayload(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
-  const { upstream_host, upstream_port, relay_chain, wireguard_profile_override, wireguard_listen_host, ...rest } = payload
+  const {
+    upstream_host,
+    upstream_port,
+    relay_chain,
+    wireguard_listen_host,
+    ...rest
+  } = payload
   const listenMode = payload.listen_mode === 'wireguard' ? 'wireguard' : payload.listen_mode
-  const protocol = String(payload.protocol || '').toLowerCase()
   const wireGuardInboundMode = listenMode === 'wireguard' && payload.wireguard_inbound_mode === 'transparent'
     ? 'transparent'
     : listenMode === 'wireguard'
       ? 'address'
       : ''
-  const proxyEgressMode = String(payload.proxy_egress_mode || '')
-  const wireGuardEgressURI = String(payload.wireguard_egress_uri || '').trim()
   const normalizedPayload = {
     ...rest,
     backends: normalizeL4Backends(payload),
@@ -228,19 +219,7 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
   } else {
     delete normalizedPayload.wireguard_inbound_mode
   }
-  if (proxyEgressMode === 'wireguard' && wireGuardEgressURI) {
-    normalizedPayload.wireguard_egress_uri = wireGuardEgressURI
-    if (listenMode !== 'wireguard') {
-      delete normalizedPayload.wireguard_profile_id
-    }
-  } else {
-    delete normalizedPayload.wireguard_egress_uri
-  }
-  if (
-    normalizedPayload.wireguard_profile_id != null
-    && listenMode !== 'wireguard'
-    && !(proxyEgressMode === 'wireguard' && wireGuardEgressURI === '' && wireguard_profile_override === true)
-  ) {
+  if (normalizedPayload.wireguard_profile_id != null && listenMode !== 'wireguard') {
     delete normalizedPayload.wireguard_profile_id
   }
   if (Array.isArray(payload.relay_layers)) {

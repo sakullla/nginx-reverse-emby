@@ -200,10 +200,8 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	}
 
 tlsTCPDial:
-	if transportMode != ListenerTransportModeWireGuard {
-		if err := requireTLSMaterialProvider(provider); err != nil {
-			return nil, DialResult{}, err
-		}
+	if err := requireTLSMaterialProvider(provider); err != nil {
+		return nil, DialResult{}, err
 	}
 	conn, result, err := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
 	if err != nil {

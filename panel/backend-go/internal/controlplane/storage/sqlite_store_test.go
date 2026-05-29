@@ -109,9 +109,6 @@ func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
 	l4Columns := loadSQLiteTableInfo(t, db, "l4_rules")
 	assertSQLiteColumnContract(t, l4Columns, "listen_mode", 1, `"tcp"`)
 	assertSQLiteColumnContract(t, l4Columns, "proxy_entry_auth", 1, `"{}"`)
-	assertSQLiteColumnContract(t, l4Columns, "proxy_egress_mode", 1, `""`)
-	assertSQLiteColumnContract(t, l4Columns, "proxy_egress_url", 1, `""`)
-	assertSQLiteColumnContract(t, l4Columns, "wireguard_egress_uri", 1, `""`)
 }
 
 func TestSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
@@ -1989,8 +1986,6 @@ func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
 		RelayLayersJSON:    `[[101]]`,
 		ListenMode:         "proxy",
 		ProxyEntryAuthJSON: `{"enabled":true,"username":"u","password":"p"}`,
-		ProxyEgressMode:    "relay",
-		ProxyEgressURL:     "socks://user:pass@127.0.0.1:1080",
 		Enabled:            true,
 		TagsJSON:           `[]`,
 		Revision:           1,
@@ -2008,8 +2003,7 @@ func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
 	got := rows[0]
 	if got.ListenMode != row.ListenMode ||
 		got.ProxyEntryAuthJSON != row.ProxyEntryAuthJSON ||
-		got.ProxyEgressMode != row.ProxyEgressMode ||
-		got.ProxyEgressURL != row.ProxyEgressURL {
+		got.RelayLayersJSON != row.RelayLayersJSON {
 		t.Fatalf("proxy fields not persisted: %+v", got)
 	}
 }
@@ -2356,8 +2350,6 @@ func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T
 		RelayLayersJSON:    `[]`,
 		ListenMode:         "proxy",
 		ProxyEntryAuthJSON: `{"enabled":true,"username":" u ","password":" p "}`,
-		ProxyEgressMode:    "proxy",
-		ProxyEgressURL:     "socks://127.0.0.1:1080",
 		Enabled:            true,
 		Revision:           3,
 	}})
@@ -4466,8 +4458,6 @@ func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing
 		RelayLayersJSON:    `[]`,
 		ListenMode:         "proxy",
 		ProxyEntryAuthJSON: `{"enabled":true,"username":"client","password":"secret"}`,
-		ProxyEgressMode:    "proxy",
-		ProxyEgressURL:     "socks://egress.example.test:1080",
 		Enabled:            true,
 		Revision:           17,
 	}}); err != nil {
@@ -4489,7 +4479,7 @@ func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing
 		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
 	}
 	rule := snapshot.L4Rules[0]
-	if rule.ID != 71 || rule.ListenMode != "proxy" || rule.ProxyEgressMode != "proxy" || rule.ProxyEgressURL == "" {
+	if rule.ID != 71 || rule.ListenMode != "proxy" {
 		t.Fatalf("L4Rules[0] = %+v", rule)
 	}
 	if len(rule.Backends) != 0 || rule.UpstreamHost != "" || rule.UpstreamPort != 0 {
@@ -4536,8 +4526,6 @@ func TestStoreLoadAgentSnapshotIncludesUDPProxyEntryL4RuleWithoutBackend(t *test
 		RelayLayersJSON:    `[]`,
 		ListenMode:         "proxy",
 		ProxyEntryAuthJSON: `{"enabled":true,"username":"client","password":"secret"}`,
-		ProxyEgressMode:    "proxy",
-		ProxyEgressURL:     "socks5://egress.example.test:1080",
 		Enabled:            true,
 		Revision:           23,
 	}}); err != nil {
@@ -4556,78 +4544,11 @@ func TestStoreLoadAgentSnapshotIncludesUDPProxyEntryL4RuleWithoutBackend(t *test
 		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
 	}
 	rule := snapshot.L4Rules[0]
-	if rule.ID != 75 || rule.Protocol != "udp" || rule.ListenMode != "proxy" || rule.ProxyEgressMode != "proxy" {
+	if rule.ID != 75 || rule.Protocol != "udp" || rule.ListenMode != "proxy" {
 		t.Fatalf("L4Rules[0] = %+v", rule)
 	}
 	if len(rule.Backends) != 0 || rule.UpstreamHost != "" || rule.UpstreamPort != 0 {
 		t.Fatalf("udp proxy entry targets = backends=%+v upstream=%s:%d", rule.Backends, rule.UpstreamHost, rule.UpstreamPort)
-	}
-}
-
-func TestStoreLoadAgentSnapshotIncludesWireGuardProxyEntryL4RuleWithoutBackend(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:               "wg-proxy-entry-agent",
-		Name:             "wg-proxy-entry-agent",
-		AgentToken:       "token-wg-proxy-entry-agent",
-		CapabilitiesJSON: `["wireguard"]`,
-		DesiredRevision:  0,
-		CurrentRevision:  0,
-		LastApplyStatus:  "success",
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	profileID := 7
-	if err := store.SaveL4Rules(t.Context(), "wg-proxy-entry-agent", []L4RuleRow{{
-		ID:                 72,
-		AgentID:            "wg-proxy-entry-agent",
-		Name:               "wg-proxy-entry",
-		Protocol:           "tcp",
-		ListenHost:         "0.0.0.0",
-		ListenPort:         1081,
-		BackendsJSON:       `[]`,
-		LoadBalancingJSON:  `{}`,
-		TuningJSON:         `{}`,
-		RelayChainJSON:     `[]`,
-		RelayLayersJSON:    `[]`,
-		ListenMode:         "wireguard",
-		WireGuardProfileID: &profileID,
-		ProxyEntryAuthJSON: `{"enabled":true,"username":"client","password":"secret"}`,
-		ProxyEgressMode:    "wireguard",
-		Enabled:            true,
-		Revision:           18,
-	}}); err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "wg-proxy-entry-agent", AgentSnapshotInput{})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-	if len(snapshot.L4Rules) != 1 {
-		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
-	}
-	rule := snapshot.L4Rules[0]
-	if rule.ID != 72 || rule.ListenMode != "wireguard" || rule.ProxyEgressMode != "wireguard" {
-		t.Fatalf("L4Rules[0] = %+v", rule)
-	}
-	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != profileID {
-		t.Fatalf("WireGuardProfileID = %v, want %d", rule.WireGuardProfileID, profileID)
-	}
-	if len(rule.Backends) != 0 {
-		t.Fatalf("Backends = %+v, want empty proxy entry target list", rule.Backends)
 	}
 }
 
@@ -4975,7 +4896,6 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardTCPL4RuleWith
 		ListenMode:           "wireguard",
 		WireGuardProfileID:   &profileID,
 		WireGuardInboundMode: "transparent",
-		ProxyEgressMode:      "relay",
 		Enabled:              true,
 		Revision:             27,
 	}}); err != nil {
@@ -4990,7 +4910,7 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardTCPL4RuleWith
 		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
 	}
 	rule := snapshot.L4Rules[0]
-	if rule.ID != 77 || rule.Protocol != "tcp" || rule.ListenPort != 0 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" || rule.ProxyEgressMode != "relay" {
+	if rule.ID != 77 || rule.Protocol != "tcp" || rule.ListenPort != 0 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" || len(rule.RelayLayers) != 2 {
 		t.Fatalf("L4Rules[0] = %+v", rule)
 	}
 }
@@ -5048,7 +4968,6 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardUDPL4RuleWith
 		ListenMode:           "wireguard",
 		WireGuardProfileID:   &profileID,
 		WireGuardInboundMode: "transparent",
-		ProxyEgressMode:      "relay",
 		Enabled:              true,
 		Revision:             29,
 	}}); err != nil {
@@ -5063,7 +4982,7 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardUDPL4RuleWith
 		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
 	}
 	rule := snapshot.L4Rules[0]
-	if rule.ID != 78 || rule.Protocol != "udp" || rule.ListenPort != 0 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" || rule.ProxyEgressMode != "relay" {
+	if rule.ID != 78 || rule.Protocol != "udp" || rule.ListenPort != 0 || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode != "transparent" || len(rule.RelayLayers) != 2 {
 		t.Fatalf("L4Rules[0] = %+v", rule)
 	}
 }
@@ -5301,7 +5220,6 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByRelayAndL4Pr
 	}
 	relayProfileID := 121
 	l4ProfileID := 122
-	l4EgressProfileID := 123
 	staleProfileID := 126
 	if err := store.SaveWireGuardProfiles(t.Context(), "wg-graph-agent", []WireGuardProfileRow{
 		{
@@ -5329,19 +5247,6 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByRelayAndL4Pr
 			DNSJSON:       `[]`,
 			Enabled:       true,
 			Revision:      32,
-		},
-		{
-			ID:            l4EgressProfileID,
-			AgentID:       "wg-graph-agent",
-			Name:          "l4-egress-wg",
-			Mode:          "generic_wireguard",
-			PrivateKey:    "l4-egress-private-key",
-			ListenPort:    51822,
-			AddressesJSON: `["10.123.0.1/24"]`,
-			PeersJSON:     `[]`,
-			DNSJSON:       `[]`,
-			Enabled:       true,
-			Revision:      33,
 		},
 		{
 			ID:            staleProfileID,
@@ -5394,24 +5299,6 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByRelayAndL4Pr
 			Enabled:            true,
 			Revision:           25,
 		},
-		{
-			ID:                 127,
-			AgentID:            "wg-graph-agent",
-			Name:               "wg-l4-egress",
-			Protocol:           "tcp",
-			ListenHost:         "0.0.0.0",
-			ListenPort:         1082,
-			BackendsJSON:       `[{"host":"10.123.0.9","port":9443}]`,
-			LoadBalancingJSON:  `{}`,
-			TuningJSON:         `{}`,
-			RelayChainJSON:     `[]`,
-			RelayLayersJSON:    `[]`,
-			ListenMode:         "tcp",
-			WireGuardProfileID: &l4EgressProfileID,
-			ProxyEgressMode:    "wireguard",
-			Enabled:            true,
-			Revision:           27,
-		},
 	}); err != nil {
 		t.Fatalf("SaveL4Rules() error = %v", err)
 	}
@@ -5420,7 +5307,7 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByRelayAndL4Pr
 	if err != nil {
 		t.Fatalf("LoadAgentSnapshot() error = %v", err)
 	}
-	if len(snapshot.WireGuardProfiles) != 3 {
+	if len(snapshot.WireGuardProfiles) != 2 {
 		t.Fatalf("WireGuardProfiles = %+v, want relay and L4 referenced profiles", snapshot.WireGuardProfiles)
 	}
 	got := map[int]WireGuardProfile{}
@@ -5432,9 +5319,6 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByRelayAndL4Pr
 	}
 	if got[l4ProfileID].PrivateKey != "l4-private-key" {
 		t.Fatalf("l4 profile = %+v", got[l4ProfileID])
-	}
-	if got[l4EgressProfileID].PrivateKey != "l4-egress-private-key" {
-		t.Fatalf("l4 egress profile = %+v", got[l4EgressProfileID])
 	}
 	if _, ok := got[staleProfileID]; ok {
 		t.Fatalf("snapshot leaked stale WireGuard profile: %+v", got[staleProfileID])
@@ -6112,7 +5996,6 @@ func TestStoreLoadAgentSnapshotOmitsWireGuardProfilesWhenAgentLacksCapability(t 
 			ListenHost:         "0.0.0.0",
 			ListenPort:         9004,
 			ListenMode:         "tcp",
-			ProxyEgressMode:    "wireguard",
 			WireGuardProfileID: intPointer(7),
 			BackendsJSON:       `[{"host":"127.0.0.1","port":9005}]`,
 			Enabled:            true,

@@ -141,16 +141,6 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label">出口 Profile</label>
-          <select v-model.number="form.egress_profile_id" name="egress-profile" class="input">
-            <option :value="0">Direct</option>
-            <option v-for="profile in filteredEgressProfiles" :key="profile.id" :value="Number(profile.id)">
-              {{ profile.name || profile.id }} ({{ profile.type }})
-            </option>
-          </select>
-        </div>
-
-        <div class="form-group">
           <label class="form-label">分类标签</label>
           <div class="tag-input">
             <div class="tag-input__container">
@@ -259,57 +249,16 @@
         </div>
       </div>
 
-      <!-- Egress Mode -->
-      <div v-if="supportsProxyEgress" class="form-section">
-        <h3 class="form-section__title">出口模式</h3>
-
+      <div class="form-section">
+        <h3 class="form-section__title">出口 Profile</h3>
         <div class="form-group">
-          <label class="form-label">出口模式</label>
-          <select v-model="form.proxy_egress_mode" class="input">
-            <option v-if="form.listen_mode === 'wireguard'" value="">后端转发</option>
-            <option value="relay">Relay</option>
-            <option value="proxy">SOCKS / HTTP 代理</option>
-            <option value="wireguard">WireGuard</option>
+          <label class="form-label">出口 Profile</label>
+          <select v-model.number="form.egress_profile_id" name="egress-profile" class="input">
+            <option :value="0">Direct</option>
+            <option v-for="profile in filteredEgressProfiles" :key="profile.id" :value="Number(profile.id)">
+              {{ profile.name || profile.id }} ({{ profile.type }})
+            </option>
           </select>
-        </div>
-
-        <!-- Proxy egress URL -->
-        <div v-if="(isProxyEntry || hasTransparentEgress) && form.proxy_egress_mode === 'proxy'" class="form-group">
-          <label class="form-label">出口代理 URL</label>
-          <input v-model="form.proxy_egress_url" class="input" placeholder="socks://user:pass@127.0.0.1:1080">
-        </div>
-
-        <!-- WireGuard egress config -->
-        <div v-if="isWireGuardEgress" class="form-row">
-          <div v-if="canSelectWireGuardEgressSource" class="form-group">
-            <label class="form-label form-label--required">WireGuard 出口来源</label>
-            <select v-model="form.wireguard_egress_source" class="input">
-              <option value="uri">WireGuard URI</option>
-              <option value="profile">WireGuard 配置</option>
-            </select>
-          </div>
-
-          <div v-if="isWireGuardEgressProfileSource" class="form-group">
-            <label class="form-label form-label--required">WireGuard 配置</label>
-            <select v-model.number="form.wireguard_profile_id" class="input">
-              <option value="">请选择配置</option>
-              <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
-                {{ profile.name || profile.id }}
-              </option>
-            </select>
-          </div>
-
-          <div v-if="isWireGuardEgressUriSource" class="form-group">
-            <label class="form-label form-label--required">WireGuard 连接 URI</label>
-            <input v-model="form.wireguard_egress_uri" class="input" placeholder="wireguard://user:pass@host:51820" autocomplete="off">
-          </div>
-        </div>
-
-        <div v-if="isWireGuardEgressProfileSource" class="form-help">
-          代理出口将通过所选 WireGuard 配置转发。
-        </div>
-        <div v-if="isWireGuardEgressUriSource" class="form-help">
-          代理出口将通过 WireGuard URI 自动生成出口 Profile。
         </div>
       </div>
 
@@ -432,7 +381,6 @@ import { useWireGuardProfiles } from '../hooks/useWireGuardProfiles'
 import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import RelayChainInput from './RelayChainInput.vue'
 import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
-import { buildProxyEgressURLPayload } from './l4/proxyEgressURL'
 import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
 
 const props = defineProps({
@@ -503,11 +451,6 @@ function createFormState(initialData) {
   const initialListenMode = ['proxy', 'wireguard'].includes(initialData?.listen_mode)
     ? initialData.listen_mode
     : 'tcp'
-  const initialProxyEgressMode = initialData?.proxy_egress_mode || (initialListenMode === 'wireguard' ? '' : 'relay')
-  const initialWireGuardEgressURI = String(initialData?.wireguard_egress_uri || '').trim()
-  const initialWireGuardEgressSource = initialWireGuardEgressURI
-    ? 'uri'
-    : initialData?.wireguard_profile_id == null ? 'uri' : 'profile'
   return {
     protocol,
     listen_host: initialData?.listen_host || '0.0.0.0',
@@ -526,13 +469,7 @@ function createFormState(initialData) {
       username: initialData?.proxy_entry_auth?.username || '',
       password: initialData?.proxy_entry_auth?.password || '',
     },
-    proxy_egress_mode: initialProxyEgressMode,
-    proxy_egress_url: initialData?.proxy_egress_url || '',
-    wireguard_egress_source: initialWireGuardEgressSource,
-    wireguard_egress_uri: initialWireGuardEgressURI,
-    wireguard_profile_id: initialWireGuardEgressSource === 'uri'
-      ? ''
-      : initialData?.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
+    wireguard_profile_id: initialData?.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
     wireguard_inbound_mode: initialData?.wireguard_inbound_mode || 'transparent',
     relay_layers: getRelayLayers(initialData),
     relay_obfs: initialData?.relay_obfs === true,
@@ -592,27 +529,16 @@ const hasTuningChanges = computed(() => {
   )
 })
 
-const supportsProxyEgress = computed(() => form.value.listen_mode === 'proxy' || form.value.listen_mode === 'wireguard')
 const isWireGuardInbound = computed(() => form.value.listen_mode === 'wireguard')
-const isProxyEntry = computed(() => form.value.listen_mode === 'proxy' ||
-  (form.value.listen_mode === 'wireguard' && form.value.wireguard_inbound_mode !== 'transparent' && form.value.proxy_egress_mode !== ''))
-const hasTransparentEgress = computed(() => isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'transparent' && form.value.proxy_egress_mode !== '')
+const isProxyEntry = computed(() => form.value.listen_mode === 'proxy')
 const isProxyEntryAuthAvailable = computed(() => form.value.listen_mode === 'proxy')
-const isWireGuardEgress = computed(() => (isProxyEntry.value || hasTransparentEgress.value) && form.value.proxy_egress_mode === 'wireguard')
 const isWireGuardTransparentForward = computed(() => isWireGuardInbound.value
   && form.value.wireguard_inbound_mode === 'transparent')
 const allowsWildcardListenPort = computed(() => isWireGuardTransparentForward.value)
 const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)
-const canUseWireGuardEgressURI = computed(() => !isWireGuardInbound.value)
-const isWireGuardEgressProfileSource = computed(() => isWireGuardEgress.value && form.value.wireguard_egress_source === 'profile')
-const isWireGuardEgressUriSource = computed(() => isWireGuardEgress.value && form.value.wireguard_egress_source === 'uri')
-const usesWireGuard = computed(() => isWireGuardInbound.value || isWireGuardEgress.value)
-const canSelectWireGuardEgressSource = computed(() => canUseWireGuardEgressURI.value && (isEdit.value
-  && props.initialData?.proxy_egress_mode === 'wireguard'
-  && props.initialData?.wireguard_profile_id != null
-  && !String(props.initialData?.wireguard_egress_uri || '').trim()))
-const isWireGuardAdvancedProfileOverride = computed(() => (isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'address') || isWireGuardEgressProfileSource.value)
-const requiresWireGuardProfile = computed(() => isWireGuardInbound.value || isWireGuardEgressProfileSource.value)
+const usesWireGuard = computed(() => isWireGuardInbound.value)
+const isWireGuardAdvancedProfileOverride = computed(() => isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'address')
+const requiresWireGuardProfile = computed(() => isWireGuardInbound.value)
 const selectedWireGuardProfileID = computed(() => {
   const id = Number(form.value.wireguard_profile_id)
   if (!Number.isInteger(id) || id <= 0) return null
@@ -721,29 +647,8 @@ watch(() => form.value.protocol, (newProto) => {
 })
 
 watch(() => form.value.listen_mode, (mode, previousMode) => {
-  if (mode === 'wireguard' && previousMode !== 'wireguard' && form.value.proxy_egress_mode === 'relay') {
-    form.value.proxy_egress_mode = ''
-  }
-  if (mode === 'proxy' && form.value.proxy_egress_mode === '') {
-    form.value.proxy_egress_mode = 'relay'
-  }
   if (!isEdit.value) updateAutoTags()
 })
-
-watch([isWireGuardEgress, canUseWireGuardEgressURI], ([egressEnabled, uriAllowed]) => {
-  if (!egressEnabled) return
-  if (uriAllowed) return
-  if (form.value.wireguard_egress_source !== 'profile') {
-    form.value.wireguard_egress_source = 'profile'
-  }
-  form.value.wireguard_egress_uri = ''
-}, { immediate: true })
-
-watch([isWireGuardInbound, isWireGuardEgress], ([inbound, egress]) => {
-  if (inbound && form.value.protocol === 'udp' && form.value.wireguard_inbound_mode === 'transparent') {
-    return
-  }
-}, { immediate: true })
 
 watch(requiresWireGuardProfile, (enabled, wasEnabled) => {
   if (!enabled) return
@@ -914,9 +819,6 @@ function buildPayload() {
   const proxyEntryAuth = isProxyEntryAuthAvailable.value
     ? buildProxyEntryAuthPayload(props.initialData?.proxy_entry_auth, form.value.proxy_entry_auth)
     : { enabled: false, username: '', password: '' }
-  const proxyEgressURL = (isProxyEntry.value || hasTransparentEgress.value) && form.value.proxy_egress_mode === 'proxy'
-    ? buildProxyEgressURLPayload(props.initialData?.proxy_egress_url, form.value.proxy_egress_url)
-    : ''
 
   const payload = {
     protocol: form.value.protocol,
@@ -929,7 +831,6 @@ function buildPayload() {
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
     listen_mode: form.value.listen_mode,
-    proxy_egress_mode: (isProxyEntry.value || hasTransparentEgress.value) ? form.value.proxy_egress_mode : '',
     relay_layers: Array.isArray(form.value.relay_layers) ? form.value.relay_layers.map((l) => [...l]) : [],
     relay_obfs: form.value.protocol === 'tcp'
       && firstRelayListener.value?.transport_mode === 'tls_tcp'
@@ -940,17 +841,8 @@ function buildPayload() {
   if (proxyEntryAuth !== undefined) {
     payload.proxy_entry_auth = proxyEntryAuth
   }
-  if (proxyEgressURL !== undefined) {
-    payload.proxy_egress_url = proxyEgressURL
-  }
-  if (isWireGuardEgressUriSource.value) {
-    payload.wireguard_egress_uri = form.value.wireguard_egress_uri.trim()
-  }
   if (requiresWireGuardProfile.value) {
     payload.wireguard_profile_id = selectedWireGuardProfileID.value
-    if (isWireGuardEgressProfileSource.value) {
-      payload.wireguard_profile_override = true
-    }
   }
   if (isWireGuardInbound.value) {
     payload.wireguard_inbound_mode = form.value.wireguard_inbound_mode
@@ -1006,11 +898,7 @@ async function handleSubmit() {
     return
   }
   if (requiresWireGuardProfile.value && selectedWireGuardProfileID.value == null) {
-    error.value = 'WireGuard 入站或出口必须选择当前 Agent 已启用的 Profile'
-    return
-  }
-  if (isWireGuardEgressUriSource.value && !form.value.wireguard_egress_uri.trim()) {
-    error.value = 'WireGuard URI 不能为空'
+    error.value = 'WireGuard 入站必须选择当前 Agent 已启用的 Profile'
     return
   }
   if (!samePortTCPProxyRule.value) {

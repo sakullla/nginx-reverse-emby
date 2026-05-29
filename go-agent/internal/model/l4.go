@@ -44,9 +44,6 @@ type L4Rule struct {
 	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
 	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
 	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
-	ProxyEgressMode      string           `json:"proxy_egress_mode,omitempty"`
-	ProxyEgressURL       string           `json:"proxy_egress_url,omitempty"`
-	WireGuardEgressURI   string           `json:"-"`
 	Enabled              bool             `json:"enabled,omitempty"`
 	Tags                 []string         `json:"tags,omitempty"`
 	Revision             int64            `json:"revision,omitempty"`

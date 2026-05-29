@@ -479,7 +479,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 			return AgentSummary{}, err
 		}
 		if outboundProxyURL != "" {
-			if err := validateL4ProxyEgressURL(outboundProxyURL); err != nil {
+			if err := validateProxyURL(outboundProxyURL); err != nil {
 				return AgentSummary{}, fmt.Errorf("%w: invalid outbound_proxy_url: %v", ErrInvalidArgument, err)
 			}
 		}
@@ -514,7 +514,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 }
 
 func normalizeOutboundProxyURLUpdate(raw string, fallback string) (string, error) {
-	normalized, err := normalizeProxyEgressURLUpdate(raw, fallback)
+	normalized, err := normalizeProxyURLUpdate(raw, fallback)
 	if err != nil {
 		return "", fmt.Errorf("%w: outbound_proxy_url password is redacted; re-enter the password before saving changes", ErrInvalidArgument)
 	}

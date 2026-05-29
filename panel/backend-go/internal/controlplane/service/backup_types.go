@@ -113,9 +113,6 @@ type BackupL4Rule struct {
 	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
 	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
 	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
-	ProxyEgressMode      string           `json:"proxy_egress_mode,omitempty"`
-	ProxyEgressURL       string           `json:"proxy_egress_url,omitempty"`
-	WireGuardEgressURI   string           `json:"wireguard_egress_uri,omitempty"`
 	Enabled              bool             `json:"enabled"`
 	Tags                 []string         `json:"tags,omitempty"`
 	Revision             int              `json:"revision,omitempty"`

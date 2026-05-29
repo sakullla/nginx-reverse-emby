@@ -678,14 +678,13 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 			DesiredRevision:  10,
 			OutboundProxyURL: "socks://127.0.0.1:1080",
 			L4Rules: []storage.L4Rule{{
-				ID:              1,
-				Protocol:        "tcp",
-				ListenHost:      "127.0.0.1",
-				ListenPort:      1080,
-				ListenMode:      "proxy",
-				ProxyEntryAuth:  storage.L4ProxyEntryAuth{Enabled: true, Username: "u", Password: " p "},
-				ProxyEgressMode: "relay",
-				ProxyEgressURL:  "socks://127.0.0.1:1081",
+				ID:             1,
+				Protocol:       "tcp",
+				ListenHost:     "127.0.0.1",
+				ListenPort:     1080,
+				ListenMode:     "proxy",
+				ProxyEntryAuth: storage.L4ProxyEntryAuth{Enabled: true, Username: "u", Password: " p "},
+				RelayLayers:    [][]int{{101}},
 			}},
 		}},
 		RuleService:          fakeRuleService{},
@@ -719,8 +718,7 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 					Username string `json:"username"`
 					Password string `json:"password"`
 				} `json:"proxy_entry_auth"`
-				ProxyEgressMode string `json:"proxy_egress_mode"`
-				ProxyEgressURL  string `json:"proxy_egress_url"`
+				RelayLayers [][]int `json:"relay_layers"`
 			} `json:"l4_rules"`
 		} `json:"sync"`
 	}
@@ -739,11 +737,8 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 	if !payload.Sync.L4Rules[0].ProxyEntryAuth.Enabled || payload.Sync.L4Rules[0].ProxyEntryAuth.Username != "u" || payload.Sync.L4Rules[0].ProxyEntryAuth.Password != " p " {
 		t.Fatalf("sync.l4_rules[0].proxy_entry_auth = %+v", payload.Sync.L4Rules[0].ProxyEntryAuth)
 	}
-	if payload.Sync.L4Rules[0].ProxyEgressMode != "relay" {
-		t.Fatalf("sync.l4_rules[0].proxy_egress_mode = %q", payload.Sync.L4Rules[0].ProxyEgressMode)
-	}
-	if payload.Sync.L4Rules[0].ProxyEgressURL != "socks://127.0.0.1:1081" {
-		t.Fatalf("sync.l4_rules[0].proxy_egress_url = %q", payload.Sync.L4Rules[0].ProxyEgressURL)
+	if len(payload.Sync.L4Rules[0].RelayLayers) != 1 || payload.Sync.L4Rules[0].RelayLayers[0][0] != 101 {
+		t.Fatalf("sync.l4_rules[0].relay_layers = %+v", payload.Sync.L4Rules[0].RelayLayers)
 	}
 }
 

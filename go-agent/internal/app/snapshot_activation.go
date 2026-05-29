@@ -282,8 +282,7 @@ func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.R
 }
 
 func l4RuleUsesWireGuard(rule model.L4Rule) bool {
-	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") ||
-		strings.EqualFold(strings.TrimSpace(rule.ProxyEgressMode), "wireguard")
+	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
 }
 
 func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {

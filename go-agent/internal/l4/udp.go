@@ -600,10 +600,7 @@ func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udp
 }
 
 func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {
-	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
-	case "":
-		return s.dialUDPUpstreamCandidate(rule, candidate)
-	case "relay":
+	if ruleUsesRelay(rule) {
 		conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
 			TrafficClass:    upstream.TrafficClassBulk,
 			EgressProfileID: rule.EgressProfileID,
@@ -612,52 +609,8 @@ func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate)
 			return nil, err
 		}
 		return &relayUDPUpstream{conn: conn}, nil
-	case "wireguard":
-		if ruleUsesRelay(rule) {
-			conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
-				TrafficClass:    upstream.TrafficClassBulk,
-				EgressProfileID: rule.EgressProfileID,
-			})
-			if err != nil {
-				return nil, err
-			}
-			return &relayUDPUpstream{conn: conn}, nil
-		}
-		runtime, err := s.wireGuardRuntime(rule)
-		if err != nil {
-			return nil, err
-		}
-		conn, err := runtime.DialContext(s.ctx, "udp", candidate.address)
-		if err != nil {
-			return nil, err
-		}
-		return &connUDPUpstream{conn: conn}, nil
-	case "proxy":
-		if ruleUsesRelay(rule) {
-			conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
-				TrafficClass:    upstream.TrafficClassBulk,
-				EgressProfileID: rule.EgressProfileID,
-			})
-			if err != nil {
-				return nil, err
-			}
-			return &relayUDPUpstream{conn: conn}, nil
-		}
-		if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
-			conn, err := s.egressDialer.DialUDP(s.ctx, candidate.address, rule.EgressProfileID)
-			if err != nil {
-				return nil, err
-			}
-			return &egressUDPUpstream{conn: conn, target: candidate.address}, nil
-		}
-		association, err := proxyproto.DialUDP(s.ctx, rule.ProxyEgressURL)
-		if err != nil {
-			return nil, err
-		}
-		return &proxyUDPUpstream{association: association, target: candidate.address}, nil
-	default:
-		return nil, fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
 	}
+	return s.dialUDPUpstreamCandidate(rule, candidate)
 }
 
 func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {
@@ -696,7 +649,7 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 }
 
 func (s *Server) usesLocalDirectUDPEgress(rule model.L4Rule) bool {
-	if ruleUsesRelay(rule) || strings.TrimSpace(rule.ProxyEgressMode) != "" {
+	if ruleUsesRelay(rule) {
 		return false
 	}
 	if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {

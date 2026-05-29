@@ -34,7 +34,7 @@
     </div>
 
     <div class='form-row'>
-      <div v-if='form.transport_mode !== "wireguard"' class='form-group'>
+      <div class='form-group'>
         <label class='form-label form-label--required'>绑定地址（每行一个）</label>
         <textarea
           v-model='form.bind_hosts_text'
@@ -58,7 +58,7 @@
       </div>
     </div>
 
-    <div v-if='form.transport_mode !== "wireguard"' class='form-group'>
+    <div class='form-group'>
       <label class='form-label'>{{ publicEndpointLabel }}</label>
       <input
         v-model='form.public_endpoint'
@@ -185,18 +185,6 @@
           : '高级自定义模式会直接提交你填写的 TLS 模式、Pin Set 和 CA 配置。' }}
       </p>
 
-      <div v-if='form.transport_mode === "wireguard"' class='form-group'>
-        <label class='form-label'>WireGuard 配置</label>
-        <select v-model.number='form.wireguard_profile_id' class='input' :class="{ 'input--error': errors.wireguard_profile_id }">
-          <option value=''>自动默认配置</option>
-          <option v-for='profile in enabledWireGuardProfiles' :key='profile.id' :value='Number(profile.id)'>
-            {{ profile.name || profile.id }}
-          </option>
-        </select>
-        <p class='form-hint'>仅在需要覆盖默认配置时选择；留空时由系统自动复用或创建默认配置。</p>
-        <p v-if='errors.wireguard_profile_id' class='form-error'>{{ errors.wireguard_profile_id }}</p>
-      </div>
-
       <div class='form-row'>
         <div class='form-group'>
           <label class='form-label'>TLS 模式</label>
@@ -248,7 +236,6 @@
 import { computed, ref, watch } from 'vue'
 import { useCreateRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import { useCertificates } from '../hooks/useCertificates'
-import { useWireGuardProfiles } from '../hooks/useWireGuardProfiles'
 import {
   parsePublicEndpoint,
   buildPublicEndpoint,
@@ -266,36 +253,13 @@ const emit = defineEmits(['success'])
 const createRelayListener = useCreateRelayListener(props.agentId)
 const updateRelayListener = useUpdateRelayListener(props.agentId)
 const { data: certificatesData } = useCertificates(props.agentId)
-const { data: wireGuardProfilesData } = useWireGuardProfiles(props.agentId)
 
 const certificates = computed(() => certificatesData.value ?? [])
-const wireGuardProfiles = computed(() => wireGuardProfilesData.value ?? [])
-const enabledWireGuardProfiles = computed(() => wireGuardProfiles.value.filter((profile) => {
-  const id = Number(profile.id)
-  return Number.isInteger(id) && id > 0 && profile.enabled !== false
-}))
-const selectedWireGuardProfileID = computed(() => {
-  const id = Number(form.value.wireguard_profile_id)
-  if (!Number.isInteger(id) || id <= 0) return null
-  return enabledWireGuardProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
-})
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRelayListener.isPending.value || updateRelayListener.isPending.value)
-const publicEndpointLabel = computed(() => (
-  form.value.transport_mode === 'wireguard'
-    ? 'WireGuard 配置 Endpoint（可选）'
-    : '公网入口（可选）'
-))
-const publicEndpointPlaceholder = computed(() => (
-  form.value.transport_mode === 'wireguard'
-    ? 'relay.example.com:51820'
-    : 'relay.example.com:7443'
-))
-const publicEndpointHint = computed(() => (
-  form.value.transport_mode === 'wireguard'
-    ? '填写所选配置的公网 UDP endpoint；留空时由默认 WireGuard 配置提供。'
-    : '支持空值、host、host:port。留空时由后端使用 bind/listen 默认值。'
-))
+const publicEndpointLabel = computed(() => '公网入口（可选）')
+const publicEndpointPlaceholder = computed(() => 'relay.example.com:7443')
+const publicEndpointHint = computed(() => '支持空值、host、host:port。留空时由后端使用 bind/listen 默认值。')
 const transportModeHint = computed(() => {
   if (form.value.transport_mode === 'wireguard') {
     return '使用 WireGuard 隧道承载中继连接；Relay TLS 证书 / Pin 校验仍会在隧道内生效。'
@@ -316,7 +280,6 @@ const errors = ref({
   public_endpoint: '',
   listen_port: '',
   certificate_id: '',
-  wireguard_profile_id: '',
   trust_material: '',
   submit: ''
 })
@@ -325,10 +288,7 @@ watch(
   () => props.initialData,
   (value) => {
     form.value = createFormState(value)
-    const hasExplicitWireGuardProfile = !!value?.id
-      && form.value.transport_mode === 'wireguard'
-      && form.value.wireguard_profile_id !== ''
-    showAdvanced.value = form.value.trust_mode_source === 'custom' || hasExplicitWireGuardProfile
+    showAdvanced.value = form.value.trust_mode_source === 'custom'
     tagInput.value = ''
     pinSetText.value = (form.value.pin_set || [])
       .map((item) => `${item.type}:${item.value}`)
@@ -406,7 +366,6 @@ function createDefaultForm() {
     transport_mode: 'tls_tcp',
     allow_transport_fallback: true,
     obfs_mode: 'off',
-    wireguard_profile_id: '',
     enabled: true,
     certificate_id: null,
     certificate_source: 'auto_relay_ca',
@@ -444,12 +403,6 @@ function normalizeObfsMode(value, transportMode) {
   return value === 'early_window_v2' ? 'early_window_v2' : 'off'
 }
 
-function normalizeWireGuardProfileID(value) {
-  if (value == null || String(value).trim() === '') return ''
-  const id = Number(value)
-  return Number.isInteger(id) && id > 0 ? id : ''
-}
-
 function createFormState(initialData) {
   if (!initialData) return createDefaultForm()
   const transportMode = normalizeTransportMode(initialData.transport_mode)
@@ -465,7 +418,6 @@ function createFormState(initialData) {
     transport_mode: transportMode,
     allow_transport_fallback: transportMode === 'wireguard' ? false : initialData.allow_transport_fallback !== false,
     obfs_mode: normalizeObfsMode(initialData.obfs_mode, transportMode),
-    wireguard_profile_id: normalizeWireGuardProfileID(initialData.wireguard_profile_id),
     enabled: initialData.enabled !== false,
     certificate_id: initialData.certificate_id == null ? null : Number(initialData.certificate_id),
     certificate_source: inferCertificateSource(initialData),
@@ -493,7 +445,6 @@ function resetErrors() {
     public_endpoint: '',
     listen_port: '',
     certificate_id: '',
-    wireguard_profile_id: '',
     trust_material: '',
     submit: ''
   }
@@ -570,14 +521,6 @@ function validate() {
   if (form.value.enabled && form.value.certificate_source === 'existing_certificate' && form.value.certificate_id == null) {
     errors.value.certificate_id = '启用监听器时必须绑定监听证书'
   }
-  if (
-    form.value.transport_mode === 'wireguard'
-    && form.value.wireguard_profile_id !== ''
-    && selectedWireGuardProfileID.value == null
-  ) {
-    errors.value.wireguard_profile_id = '请选择当前 Agent 已启用的 WireGuard 配置'
-  }
-
   const pinSet = parsePinSetRows()
   const trustedCaIds = [...trustedCaSet.value]
   if (form.value.trust_mode_source === 'custom') {
@@ -588,7 +531,6 @@ function validate() {
     && !errors.value.public_endpoint
     && !errors.value.listen_port
     && !errors.value.certificate_id
-    && !errors.value.wireguard_profile_id
     && !errors.value.trust_material
 }
 
@@ -625,12 +567,7 @@ async function handleSubmit() {
     allow_self_signed: form.value.trust_mode_source === 'auto' ? true : form.value.allow_self_signed,
     tags: [...form.value.tags]
   }
-  if (form.value.transport_mode !== 'wireguard') {
-    payload.bind_hosts = bindHosts
-  }
-  if (form.value.transport_mode === 'wireguard' && selectedWireGuardProfileID.value != null) {
-    payload.wireguard_profile_id = selectedWireGuardProfileID.value
-  }
+  payload.bind_hosts = bindHosts
   if (publicEndpoint.publicHost) {
     payload.public_host = publicEndpoint.publicHost
   }

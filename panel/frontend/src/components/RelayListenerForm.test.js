@@ -77,7 +77,7 @@ function baseInitialData(overrides = {}) {
   }
 }
 
-describe('RelayListenerForm WireGuard profile override', () => {
+describe('RelayListenerForm WireGuard transport', () => {
   beforeEach(() => {
     mocks.createMutateAsync.mockReset()
     mocks.updateMutateAsync.mockReset()
@@ -85,7 +85,7 @@ describe('RelayListenerForm WireGuard profile override', () => {
     mocks.updateMutateAsync.mockResolvedValue({})
   })
 
-  it('omits wireguard_profile_id for ordinary WireGuard submissions without an advanced override', async () => {
+  it('submits WireGuard transport on the automatic profile path', async () => {
     const wrapper = mountForm()
 
     await fillValidWireGuardForm(wrapper)
@@ -96,19 +96,22 @@ describe('RelayListenerForm WireGuard profile override', () => {
       name: 'relay-wg',
       transport_mode: 'wireguard',
       allow_transport_fallback: false,
-      obfs_mode: 'off'
+      obfs_mode: 'off',
+      certificate_source: 'auto_relay_ca',
+      trust_mode_source: 'auto',
+      tls_mode: 'pin_and_ca'
     })
     expect(mocks.createMutateAsync.mock.calls[0][0]).not.toHaveProperty('wireguard_profile_id')
   })
 
-  it('hides WireGuard public endpoint and bind host inputs in the ordinary flow', async () => {
+  it('keeps Relay bind host and public endpoint inputs visible for WireGuard transport', async () => {
     const wrapper = mountForm()
 
     await fillValidWireGuardForm(wrapper)
 
-    expect(wrapper.text()).not.toContain('WireGuard 配置 Endpoint（可选）')
-    expect(wrapper.text()).not.toContain('绑定地址（每行一个）')
-    expect(wrapper.text()).not.toContain('作为公网 UDP 入口')
+    expect(wrapper.text()).toContain('绑定地址（每行一个）')
+    expect(wrapper.text()).toContain('公网入口（可选）')
+    expect(wrapper.text()).toContain('支持空值、host、host:port')
     expect(wrapper.text()).not.toContain('默认使用 TLS/TCP；如需更低握手耗时')
   })
 
@@ -121,53 +124,32 @@ describe('RelayListenerForm WireGuard profile override', () => {
     expect(wrapper.text()).toContain('证书 / Pin')
   })
 
-  it('omits WireGuard bind hosts and relay public endpoint fields from submissions', async () => {
+  it('maps Relay bind hosts, listen port, and public endpoint to WireGuard submissions', async () => {
     const wrapper = mountForm()
 
     await fillValidWireGuardForm(wrapper)
+    await wrapper.get('textarea').setValue('0.0.0.0\n127.0.0.1')
+    await wrapper.get('input[placeholder="relay.example.com:7443"]').setValue('relay.example.com:7443')
     await submit(wrapper)
 
     expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
     const payload = mocks.createMutateAsync.mock.calls[0][0]
     expect(payload.transport_mode).toBe('wireguard')
-    expect(payload).not.toHaveProperty('bind_hosts')
-    expect(payload).not.toHaveProperty('public_host')
-    expect(payload).not.toHaveProperty('public_port')
+    expect(payload.listen_port).toBe(7443)
+    expect(payload.bind_hosts).toEqual(['0.0.0.0', '127.0.0.1'])
+    expect(payload.public_host).toBe('relay.example.com')
+    expect(payload.public_port).toBe(7443)
+    expect(payload).not.toHaveProperty('wireguard_profile_id')
   })
 
-  it('includes wireguard_profile_id when the advanced WireGuard override is selected', async () => {
-    const wrapper = mountForm()
-
-    await fillValidWireGuardForm(wrapper)
-    await wrapper.get('.advanced-toggle').trigger('click')
-    await selectByLabel(wrapper, 'WireGuard 配置').setValue('22')
-    await submit(wrapper)
-
-    expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
-      transport_mode: 'wireguard',
-      wireguard_profile_id: 22
-    })
-  })
-
-  it('opens the advanced panel with the explicit existing WireGuard profile selected while editing', () => {
+  it('does not expose WireGuard profile selection in advanced settings', async () => {
     const wrapper = mountForm({
       initialData: baseInitialData({ wireguard_profile_id: 22 })
     })
 
+    await wrapper.get('.advanced-toggle').trigger('click')
+
+    expect(wrapper.text()).not.toContain('WireGuard 配置')
     expect(wrapper.find('.advanced-panel').exists()).toBe(true)
-    expect(selectByLabel(wrapper, 'WireGuard 配置').element.value).toBe('22')
-  })
-
-  it('keeps blank existing WireGuard profile IDs on the ordinary automatic profile path while editing', () => {
-    const wrapper = mountForm({
-      initialData: baseInitialData({ wireguard_profile_id: '' })
-    })
-
-    expect(wrapper.find('.advanced-panel').exists()).toBe(false)
-
-    return wrapper.get('.advanced-toggle').trigger('click').then(() => {
-      expect(selectByLabel(wrapper, 'WireGuard 配置').element.value).toBe('')
-    })
   })
 })

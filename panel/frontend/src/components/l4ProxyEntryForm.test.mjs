@@ -16,8 +16,8 @@ test('L4 RuleForm exposes proxy entry controls and payload fields', () => {
   const source = read('components/L4RuleForm.vue')
   assert.match(source, /listen_mode/)
   assert.match(source, /proxy_entry_auth/)
-  assert.match(source, /proxy_egress_mode/)
-  assert.match(source, /proxy_egress_url/)
+  assert.doesNotMatch(source, /proxy_egress_mode/)
+  assert.doesNotMatch(source, /proxy_egress_url/)
 })
 
 test('Agent list edit modal exposes outbound proxy update control', () => {

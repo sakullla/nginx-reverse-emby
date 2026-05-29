@@ -1039,34 +1039,6 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 			},
 		},
 		{
-			name:        "l4 egress",
-			wantMessage: "wireguard profile is referenced",
-			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
-				t.Helper()
-				if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
-					ID:                 102,
-					AgentID:            "local",
-					Name:               "wg egress",
-					Protocol:           "tcp",
-					ListenHost:         "0.0.0.0",
-					ListenPort:         1080,
-					BackendsJSON:       `[]`,
-					LoadBalancingJSON:  `{"strategy":"adaptive"}`,
-					TuningJSON:         `{"proxy_protocol":{"decode":false,"send":false}}`,
-					RelayLayersJSON:    `[]`,
-					ListenMode:         "proxy",
-					WireGuardProfileID: &profileID,
-					ProxyEntryAuthJSON: `{}`,
-					ProxyEgressMode:    "wireguard",
-					Enabled:            true,
-					TagsJSON:           `[]`,
-					Revision:           1,
-				}}); err != nil {
-					t.Fatalf("SaveL4Rules() error = %v", err)
-				}
-			},
-		},
-		{
 			name:        "http wireguard entry",
 			wantMessage: "HTTP rule 103",
 			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
