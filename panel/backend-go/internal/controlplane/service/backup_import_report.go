@@ -71,6 +71,8 @@ func (c *BackupCounts) increment(kind string) {
 		c.WireGuardProfiles++
 	case "wireguard_client":
 		c.WireGuardClients++
+	case "egress_profile":
+		c.EgressProfiles++
 	case "relay_listener":
 		c.RelayListeners++
 	case "certificate":

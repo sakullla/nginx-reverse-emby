@@ -433,6 +433,170 @@ func TestBackupServicePreservesAgentTrafficStatsInterval(t *testing.T) {
 	}
 }
 
+func TestBackupServiceExportIncludesEgressProfiles(t *testing.T) {
+	ctx := context.Background()
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "egress-export-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	if err := sourceStore.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
+		ID:          41,
+		Name:        "office socks",
+		Type:        "socks",
+		ProxyURL:    "socks5://user:secret@127.0.0.1:1080",
+		Enabled:     true,
+		Description: "lab",
+		Revision:    7,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	files := backupArchiveFileNames(t, archive)
+	if !files["egress_profiles.json"] {
+		t.Fatalf("backup files missing egress_profiles.json: %#v", files)
+	}
+	bundle, err := decodeBackupBundle(archive)
+	if err != nil {
+		t.Fatalf("decodeBackupBundle() error = %v", err)
+	}
+	if bundle.Manifest.Counts.EgressProfiles != 1 {
+		t.Fatalf("manifest counts = %+v", bundle.Manifest.Counts)
+	}
+	if len(bundle.EgressProfiles) != 1 || bundle.EgressProfiles[0].ProxyURL != "socks5://user:secret@127.0.0.1:1080" {
+		t.Fatalf("egress profiles = %+v, want raw proxy secret", bundle.EgressProfiles)
+	}
+}
+
+func TestBackupServiceImportRemapsEgressProfileReferences(t *testing.T) {
+	ctx := context.Background()
+	sourceProfileID := 41
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "egress-import-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	if err := targetStore.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
+		ID:       sourceProfileID,
+		Name:     "existing direct",
+		Type:     "direct",
+		Enabled:  true,
+		Revision: 2,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles(target) error = %v", err)
+	}
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			SourceLocalAgentID: "source-local",
+			Counts: BackupCounts{
+				Agents:         1,
+				HTTPRules:      1,
+				L4Rules:        1,
+				EgressProfiles: 1,
+			},
+		},
+		Agents: []BackupAgent{{
+			ID:           "edge-egress",
+			Name:         "edge-egress",
+			AgentToken:   "token-edge-egress",
+			Capabilities: []string{"http_rules", "l4"},
+		}},
+		EgressProfiles: []BackupEgressProfile{{
+			ID:          sourceProfileID,
+			Name:        "office socks",
+			Type:        "socks",
+			ProxyURL:    "socks5://user:secret@127.0.0.1:1080",
+			Enabled:     true,
+			Description: "lab",
+			Revision:    3,
+		}},
+		HTTPRules: []BackupHTTPRule{{
+			ID:               51,
+			AgentID:          "edge-egress",
+			FrontendURL:      "https://media.example.test",
+			Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+			LoadBalancing:    HTTPLoadBalancing{Strategy: "adaptive"},
+			Enabled:          true,
+			ProxyRedirect:    true,
+			PassProxyHeaders: defaultPassProxyHeaders(),
+			CustomHeaders:    []HTTPCustomHeader{},
+			EgressProfileID:  &sourceProfileID,
+		}},
+		L4Rules: []BackupL4Rule{{
+			ID:              52,
+			AgentID:         "edge-egress",
+			Name:            "tcp egress",
+			Protocol:        "tcp",
+			ListenHost:      "0.0.0.0",
+			ListenPort:      25565,
+			Backends:        []L4Backend{{Host: "127.0.0.1", Port: 25565}},
+			LoadBalancing:   L4LoadBalancing{Strategy: "adaptive"},
+			Tuning:          L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
+			ListenMode:      "tcp",
+			Enabled:         true,
+			EgressProfileID: &sourceProfileID,
+		}},
+		WireGuardProfiles: []BackupWireGuardProfile{},
+		WireGuardClients:  []BackupWireGuardClient{},
+		RelayListeners:    []BackupRelayListener{},
+		Certificates:      []BackupCertificate{},
+		VersionPolicies:   []BackupVersionPolicy{},
+		TrafficPolicies:   []BackupTrafficPolicy{},
+		TrafficBaselines:  []BackupTrafficBaseline{},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.EgressProfiles != 1 || result.Summary.Imported.HTTPRules != 1 || result.Summary.Imported.L4Rules != 1 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+
+	profiles, err := targetStore.ListEgressProfiles(ctx)
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("egress profiles = %+v, want existing plus imported", profiles)
+	}
+	importedID := 0
+	for _, profile := range profiles {
+		if profile.Name == "office socks" {
+			importedID = profile.ID
+		}
+	}
+	if importedID == 0 || importedID == sourceProfileID {
+		t.Fatalf("imported egress profile id = %d, want remapped away from %d in %+v", importedID, sourceProfileID, profiles)
+	}
+	httpRows, err := targetStore.ListHTTPRules(ctx, "edge-egress")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	l4Rows, err := targetStore.ListL4Rules(ctx, "edge-egress")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(httpRows) != 1 || httpRows[0].EgressProfileID == nil || *httpRows[0].EgressProfileID != importedID {
+		t.Fatalf("http rows = %+v, want egress profile id %d", httpRows, importedID)
+	}
+	if len(l4Rows) != 1 || l4Rows[0].EgressProfileID == nil || *l4Rows[0].EgressProfileID != importedID {
+		t.Fatalf("l4 rows = %+v, want egress profile id %d", l4Rows, importedID)
+	}
+}
+
 func TestBackupServiceTrafficPolicyAndBaselineRoundTripExcludesHistory(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
@@ -1800,7 +1964,7 @@ func TestBackupL4RuleConversionPreservesWireGuardFields(t *testing.T) {
 		t.Fatalf("backup WireGuardEgressURI = %q, want %q", backupRule.WireGuardEgressURI, uri)
 	}
 
-	input := l4RuleInputFromBackup(backupRule, nil, backupRule.WireGuardProfileID)
+	input := l4RuleInputFromBackup(backupRule, nil, backupRule.WireGuardProfileID, nil)
 	if input.WireGuardProfileID == nil || *input.WireGuardProfileID != profileID {
 		t.Fatalf("input WireGuardProfileID = %v, want %d", input.WireGuardProfileID, profileID)
 	}
