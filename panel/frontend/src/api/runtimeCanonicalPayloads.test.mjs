@@ -58,6 +58,216 @@ describe('runtime canonical rule payloads', () => {
     }
   })
 
+  it('sends HTTP egress profile id payloads', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      return {
+        data: {
+          rule: {
+            id: 17,
+            ...JSON.parse(config.data)
+          }
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      await runtime.createRule('edge-a', {
+        frontend_url: 'https://media.example.test',
+        backends: [{ url: 'http://10.0.0.9:8096' }],
+        egress_profile_id: '17'
+      })
+      await runtime.updateRule('edge-a', 17, {
+        frontend_url: 'https://media.example.test',
+        backends: [{ url: 'http://10.0.0.9:8096' }],
+        egress_profile_id: 0
+      })
+
+      expect(requests).toHaveLength(2)
+      const createPayload = JSON.parse(requests[0].data)
+      const updatePayload = JSON.parse(requests[1].data)
+      expect(createPayload.egress_profile_id).toBe(17)
+      expect(updatePayload).not.toHaveProperty('egress_profile_id')
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
+  it('sends L4 egress profile id payloads', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      return {
+        data: {
+          rule: {
+            id: 23,
+            ...JSON.parse(config.data)
+          }
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      await runtime.createL4Rule('edge-a', {
+        protocol: 'tcp',
+        listen_host: '0.0.0.0',
+        listen_port: 25565,
+        backends: [{ host: '10.0.0.9', port: 25565 }],
+        egress_profile_id: '23'
+      })
+      await runtime.updateL4Rule('edge-a', 23, {
+        protocol: 'tcp',
+        listen_host: '0.0.0.0',
+        listen_port: 25565,
+        backends: [{ host: '10.0.0.9', port: 25565 }],
+        egress_profile_id: -1
+      })
+
+      expect(requests).toHaveLength(2)
+      const createPayload = JSON.parse(requests[0].data)
+      const updatePayload = JSON.parse(requests[1].data)
+      expect(createPayload.egress_profile_id).toBe(23)
+      expect(updatePayload).not.toHaveProperty('egress_profile_id')
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
+  it('calls egress profile CRUD endpoints', async () => {
+    const { api } = await vi.importActual('./client.js')
+    const requests = []
+    const originalAdapter = api.defaults.adapter
+    api.defaults.adapter = async (config) => {
+      requests.push(config)
+      if (config.method === 'get') {
+        return {
+          data: { profiles: [{ id: 17, name: 'office socks', type: 'socks', proxy_url: 'socks5://127.0.0.1:1080', enabled: true }] },
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config
+        }
+      }
+      return {
+        data: { profile: { id: 17, ...(config.data ? JSON.parse(config.data) : {}) } },
+        status: config.method === 'post' ? 201 : 200,
+        statusText: 'OK',
+        headers: {},
+        config
+      }
+    }
+
+    try {
+      const runtime = await vi.importActual('./runtime.js')
+
+      const profiles = await runtime.fetchEgressProfiles()
+      const created = await runtime.createEgressProfile({
+        name: 'office socks',
+        type: 'socks',
+        proxy_url: ' socks5://127.0.0.1:1080 ',
+        wireguard_config: { private_key: 'stale' },
+        enabled: true
+      })
+      const updated = await runtime.updateEgressProfile(17, {
+        name: 'direct',
+        type: 'direct',
+        proxy_url: 'socks5://127.0.0.1:1080',
+        wireguard_config: { private_key: 'stale' },
+        enabled: false
+      })
+      await runtime.deleteEgressProfile(17)
+
+      expect(profiles).toHaveLength(1)
+      expect(created.proxy_url).toBe('socks5://127.0.0.1:1080')
+      expect(created).not.toHaveProperty('wireguard_config')
+      expect(updated.proxy_url).toBe('')
+      expect(updated).not.toHaveProperty('wireguard_config')
+      expect(requests.map((request) => [request.method, request.url])).toEqual([
+        ['get', '/egress-profiles'],
+        ['post', '/egress-profiles'],
+        ['put', '/egress-profiles/17'],
+        ['delete', '/egress-profiles/17']
+      ])
+    } finally {
+      api.defaults.adapter = originalAdapter
+    }
+  })
+
+  it('exports egress profile helpers from API facades, dev mocks, and hooks', async () => {
+    const index = await import('./index.js?raw')
+    const devRuntime = await import('./devRuntime.js?raw')
+    const devMocks = await import('./devMocks/index.js?raw')
+    const devData = await import('./devMocks/data.js?raw')
+    const hooks = await import('../hooks/useEgressProfiles.js?raw')
+
+    for (const source of [index.default, devRuntime.default, devMocks.default, devData.default]) {
+      expect(source).toContain('fetchEgressProfiles')
+      expect(source).toContain('createEgressProfile')
+      expect(source).toContain('updateEgressProfile')
+      expect(source).toContain('deleteEgressProfile')
+    }
+    expect(hooks.default).toContain('useEgressProfiles')
+    expect(hooks.default).toContain('useCreateEgressProfile')
+    expect(hooks.default).toContain('useUpdateEgressProfile')
+    expect(hooks.default).toContain('useDeleteEgressProfile')
+    expect(hooks.default).toContain("queryKey: ['egress-profiles']")
+  })
+
+  it('dev mock egress profile CRUD follows global profile contracts', async () => {
+    const devData = await vi.importActual('./devMocks/data.js')
+
+    const before = await devData.fetchEgressProfiles()
+    const created = await devData.createEgressProfile({
+      name: 'wg exit',
+      type: 'wireguard',
+      proxy_url: 'socks5://127.0.0.1:1080',
+      wireguard_config: {
+        private_key: 'private',
+        addresses: ['10.42.0.2/32'],
+        peers: [{ public_key: 'public', endpoint: '127.0.0.1:51820', allowed_ips: ['0.0.0.0/0'] }],
+        dns: ['1.1.1.1'],
+        mtu: 1420
+      },
+      enabled: true
+    })
+    const updated = await devData.updateEgressProfile(created.id, {
+      name: 'direct',
+      type: 'direct',
+      proxy_url: 'socks5://127.0.0.1:1080',
+      wireguard_config: { private_key: 'stale' },
+      enabled: false
+    })
+    const deleted = await devData.deleteEgressProfile(created.id)
+    const after = await devData.fetchEgressProfiles()
+
+    expect(before.some((profile) => profile.id === created.id)).toBe(false)
+    expect(created.type).toBe('wireguard')
+    expect(created.proxy_url).toBe('')
+    expect(created.wireguard_config.addresses).toEqual(['10.42.0.2/32'])
+    expect(updated.type).toBe('direct')
+    expect(updated.proxy_url).toBe('')
+    expect(updated).not.toHaveProperty('wireguard_config')
+    expect(deleted.id).toBe(created.id)
+    expect(after.some((profile) => profile.id === created.id)).toBe(false)
+  })
+
   it('sends L4 save payloads with backends and relay_layers only', async () => {
     const { api } = await vi.importActual('./client.js')
     const requests = []

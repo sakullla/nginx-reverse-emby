@@ -272,14 +272,76 @@ function normalizeRelayLayers(value) {
     .filter((layer) => layer.length > 0)
 }
 
+function normalizeEgressProfileID(payload = {}) {
+  const id = Number(payload.egress_profile_id)
+  return Number.isInteger(id) && id > 0 ? id : undefined
+}
+
+function applyEgressProfileID(normalizedPayload, payload = {}) {
+  const id = normalizeEgressProfileID(payload)
+  if (id) {
+    normalizedPayload.egress_profile_id = id
+  } else {
+    delete normalizedPayload.egress_profile_id
+  }
+  return normalizedPayload
+}
+
+function cloneEgressProfile(profile = {}) {
+  const cloned = {
+    ...profile,
+    id: Number(profile.id),
+    enabled: profile.enabled !== false,
+    revision: Number(profile.revision) || 0
+  }
+  if (profile.wireguard_config) {
+    cloned.wireguard_config = {
+      ...profile.wireguard_config,
+      addresses: Array.isArray(profile.wireguard_config.addresses) ? [...profile.wireguard_config.addresses] : [],
+      dns: Array.isArray(profile.wireguard_config.dns) ? [...profile.wireguard_config.dns] : [],
+      peers: Array.isArray(profile.wireguard_config.peers)
+        ? profile.wireguard_config.peers.map((peer) => ({
+            ...peer,
+            allowed_ips: Array.isArray(peer.allowed_ips) ? [...peer.allowed_ips] : []
+          }))
+        : []
+    }
+  }
+  return cloned
+}
+
+function normalizeEgressProfilePayload(payload = {}) {
+  const type = String(payload.type || 'direct').trim().toLowerCase()
+  const profile = {
+    ...payload,
+    name: String(payload.name || '').trim(),
+    type,
+    enabled: payload.enabled !== false,
+    description: String(payload.description || '').trim()
+  }
+  if (type === 'socks' || type === 'http') {
+    profile.proxy_url = String(payload.proxy_url || '').trim()
+    delete profile.wireguard_config
+  } else if (type === 'wireguard') {
+    profile.proxy_url = ''
+    profile.wireguard_config = cloneEgressProfile({ wireguard_config: payload.wireguard_config || {} }).wireguard_config
+  } else {
+    profile.proxy_url = ''
+    delete profile.wireguard_config
+  }
+  return profile
+}
+
 function normalizeHttpRule(rule = {}) {
+  const egressProfileID = normalizeEgressProfileID(rule)
   return {
     ...rule,
     backends: normalizeHttpBackends(rule),
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
     },
-    relay_obfs: rule.relay_obfs === true
+    relay_obfs: rule.relay_obfs === true,
+    egress_profile_id: egressProfileID
   }
 }
 
@@ -297,6 +359,7 @@ function normalizeL4Backends(rule = {}) {
 
 function normalizeL4Rule(rule = {}) {
   const listenMode = ['proxy', 'wireguard'].includes(rule.listen_mode) ? rule.listen_mode : 'tcp'
+  const egressProfileID = normalizeEgressProfileID(rule)
   const proxyEgressMode = listenMode === 'proxy'
     ? String(rule.proxy_egress_mode || 'relay')
     : listenMode === 'wireguard'
@@ -322,7 +385,8 @@ function normalizeL4Rule(rule = {}) {
     proxy_egress_url: proxyEntryMode ? String(rule.proxy_egress_url || '') : '',
     wireguard_egress_uri: proxyEntryMode && proxyEgressMode === 'wireguard'
       ? String(rule.wireguard_egress_uri || '')
-      : ''
+      : '',
+    egress_profile_id: egressProfileID
   }
 }
 
@@ -364,7 +428,7 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   } else if (includeRelayDefaults) {
     normalizedPayload.relay_obfs = false
   }
-  return normalizedPayload
+  return applyEgressProfileID(normalizedPayload, payload)
 }
 
 function normalizeL4RulePayload(payload = {}, options = {}) {
@@ -391,9 +455,7 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
   } else if (includeRelayDefaults) {
     normalizedPayload.relay_obfs = false
   }
-  return {
-    ...normalizedPayload
-  }
+  return applyEgressProfileID(normalizedPayload, payload)
 }
 
 const mockRulesByAgent = {
@@ -455,6 +517,28 @@ const mockTrafficPolicies = Object.fromEntries(mockAgents.map((agent) => [
     monthly_retention_months: null
   }
 ]))
+
+const mockEgressProfiles = [
+  {
+    id: 1,
+    name: 'Office SOCKS',
+    type: 'socks',
+    proxy_url: 'socks5://user:xxxxx@127.0.0.1:1080',
+    enabled: true,
+    description: 'Mock global SOCKS exit',
+    revision: 1
+  },
+  {
+    id: 2,
+    name: 'Direct',
+    type: 'direct',
+    proxy_url: '',
+    enabled: true,
+    description: 'No proxy egress',
+    revision: 1
+  }
+]
+let mockEgressProfileIdCounter = 2
 
 function trafficAccountedBytes(bucket, direction = 'both') {
   const rx = Number(bucket?.rx_bytes) || 0
@@ -738,6 +822,69 @@ export async function fetchAgents() {
   }
   const { data } = await api.get('/agents')
   return data.agents || []
+}
+
+export async function fetchEgressProfiles() {
+  if (isDev) {
+    await sleep()
+    return mockEgressProfiles.map((profile) => cloneEgressProfile(profile))
+  }
+  const { data } = await api.get('/egress-profiles')
+  return data.profiles || []
+}
+
+export async function createEgressProfile(payload) {
+  const normalized = normalizeEgressProfilePayload(payload)
+  if (isDev) {
+    await sleep()
+    const profile = cloneEgressProfile({
+      id: ++mockEgressProfileIdCounter,
+      revision: 1,
+      ...normalized
+    })
+    mockEgressProfiles.push(profile)
+    return cloneEgressProfile(profile)
+  }
+  const { data } = await api.post('/egress-profiles', normalized)
+  return data.profile
+}
+
+export async function updateEgressProfile(id, payload) {
+  const normalized = normalizeEgressProfilePayload(payload)
+  if (isDev) {
+    await sleep()
+    const idx = mockEgressProfiles.findIndex((profile) => String(profile.id) === String(id))
+    if (idx === -1) return null
+    const current = mockEgressProfiles[idx]
+    const merged = {
+      ...current,
+      ...normalized,
+      id: current.id,
+      revision: (Number(current.revision) || 0) + 1
+    }
+    if (normalized.type === 'direct' || normalized.type === 'socks' || normalized.type === 'http') {
+      delete merged.wireguard_config
+    }
+    if (normalized.type === 'direct' || normalized.type === 'wireguard') {
+      merged.proxy_url = ''
+    }
+    const profile = cloneEgressProfile(merged)
+    mockEgressProfiles[idx] = profile
+    return cloneEgressProfile(profile)
+  }
+  const { data } = await api.put(`/egress-profiles/${encodeURIComponent(id)}`, normalized)
+  return data.profile
+}
+
+export async function deleteEgressProfile(id) {
+  if (isDev) {
+    await sleep()
+    const idx = mockEgressProfiles.findIndex((profile) => String(profile.id) === String(id))
+    if (idx === -1) return null
+    return cloneEgressProfile(mockEgressProfiles.splice(idx, 1)[0])
+  }
+  const { data } = await api.delete(`/egress-profiles/${encodeURIComponent(id)}`)
+  return data.profile
 }
 
 export async function fetchAgentStats(agentId) {
