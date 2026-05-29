@@ -20,6 +20,11 @@ type DialOptions struct {
 	WireGuardProvider WireGuardRuntimeProvider
 }
 
+type FinalHopDialer interface {
+	DialTCP(context.Context, string, *int) (net.Conn, error)
+	OpenUDP(context.Context, string, *int) (UDPPacketPeer, error)
+}
+
 type DialResult struct {
 	SelectedAddress string
 	TransportMode   string
@@ -27,6 +32,7 @@ type DialResult struct {
 
 type StartOptions struct {
 	WireGuardProvider WireGuardRuntimeProvider
+	FinalHopDialer    FinalHopDialer
 }
 
 func (o DialOptions) clone() DialOptions {
@@ -83,9 +89,11 @@ func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMat
 		cancel:            cancel,
 		provider:          provider,
 		wireGuardProvider: options.WireGuardProvider,
-		finalHopSelector:  newFinalHopSelector(finalHopSelectorConfig{}),
-		conns:             make(map[net.Conn]struct{}),
-		quicConns:         make(map[*quic.Conn]struct{}),
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
+			FinalHopDialer: options.FinalHopDialer,
+		}),
+		conns:     make(map[net.Conn]struct{}),
+		quicConns: make(map[*quic.Conn]struct{}),
 	}
 
 	for _, listener := range listeners {

@@ -497,6 +497,63 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	assertSnapshotLacksProfile(t, unrelatedSnapshot, disabledRelayProfileID)
 }
 
+func TestStoreLoadLocalSnapshotIncludesRelayFinalHopEgressProfile(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	profileID := 41
+	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
+		ID:       profileID,
+		Name:     "local relay exit",
+		Type:     "socks",
+		ProxyURL: "socks5://127.0.0.1:1080",
+		Enabled:  true,
+		Revision: 7,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "local", []RelayListenerRow{{
+		ID:         501,
+		AgentID:    "local",
+		Name:       "local final relay",
+		ListenHost: "127.0.0.1",
+		ListenPort: 8443,
+		PublicHost: "127.0.0.1",
+		PublicPort: 8443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(local) error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
+		ID:                2001,
+		AgentID:           "local",
+		Name:              "local relay l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        19000,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":19101}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{}`,
+		RelayLayersJSON:   `[[501]]`,
+		ListenMode:        "tcp",
+		Enabled:           true,
+		EgressProfileID:   &profileID,
+		Revision:          2,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules(local) error = %v", err)
+	}
+
+	snapshot, err := store.LoadLocalSnapshot(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("LoadLocalSnapshot() error = %v", err)
+	}
+	assertSnapshotHasProfile(t, snapshot, profileID, "socks5://127.0.0.1:1080")
+}
+
 func TestStoreLoadAgentSnapshotBumpsForDisabledReferencedEgressProfileCleanup(t *testing.T) {
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {

@@ -95,8 +95,11 @@ func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
 }
 
 func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error {
-	if a.relayApplier == nil || (snapshot.RelayListeners == nil && snapshot.WireGuardProfiles == nil) {
+	if a.relayApplier == nil || (snapshot.RelayListeners == nil && snapshot.WireGuardProfiles == nil && snapshot.EgressProfiles == nil) {
 		return nil
+	}
+	if egressAware, ok := a.relayApplier.(RelayEgressAwareApplier); ok {
+		return egressAware.ApplyWithWireGuardAndEgressProfiles(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName), snapshot.WireGuardProfiles, snapshot.EgressProfiles)
 	}
 	if relayWireGuardApplier, ok := a.relayApplier.(RelayWireGuardApplier); ok {
 		return relayWireGuardApplier.ApplyWithWireGuardProfiles(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName), snapshot.WireGuardProfiles)
@@ -155,11 +158,13 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 		}
 
 		if (relay.ListenersChanged(localPrevious.RelayListeners, localNext.RelayListeners) ||
-			!reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles)) &&
+			!reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles) ||
+			(len(localNext.RelayListeners) > 0 && !reflect.DeepEqual(previous.EgressProfiles, next.EgressProfiles))) &&
 			handlers.ActivateRelayListeners != nil {
 			if err := a.applyRelayListeners(ctx, Snapshot{
 				RelayListeners:    localNext.RelayListeners,
 				WireGuardProfiles: next.WireGuardProfiles,
+				EgressProfiles:    next.EgressProfiles,
 			}); err != nil {
 				return err
 			}

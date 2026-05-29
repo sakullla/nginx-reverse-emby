@@ -232,6 +232,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 		})
 	}
 	copyEmbeddedWireGuardProfiles(&embedded, snapshot.WireGuardProfiles)
+	copyEmbeddedEgressProfiles(&embedded, snapshot.EgressProfiles)
 	embedded.Certificates = make([]goagentembedded.ManagedCertificateBundle, 0, len(snapshot.Certificates))
 	for _, bundle := range snapshot.Certificates {
 		embedded.Certificates = append(embedded.Certificates, goagentembedded.ManagedCertificateBundle{
@@ -278,6 +279,14 @@ func copyEmbeddedWireGuardProfiles(embedded *goagentembedded.Snapshot, profiles 
 		return
 	}
 	_ = json.Unmarshal(data, &embedded.WireGuardProfiles)
+}
+
+func copyEmbeddedEgressProfiles(embedded *goagentembedded.Snapshot, profiles []storage.EgressProfile) {
+	data, err := json.Marshal(profiles)
+	if err != nil {
+		return
+	}
+	_ = json.Unmarshal(data, &embedded.EgressProfiles)
 }
 
 func fromEmbeddedRuntimeState(state goagentembedded.RuntimeState) RuntimeState {

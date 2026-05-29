@@ -87,6 +87,10 @@ type RelayWireGuardApplier interface {
 	ApplyWithWireGuardProfiles(context.Context, []model.RelayListener, []model.WireGuardProfile) error
 }
 
+type RelayEgressAwareApplier interface {
+	ApplyWithWireGuardAndEgressProfiles(context.Context, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
+}
+
 type L4WireGuardAwareApplier interface {
 	ApplyWithRelayAndWireGuardProfiles(context.Context, []model.L4Rule, []model.RelayListener, []model.WireGuardProfile) error
 }

@@ -1669,6 +1669,12 @@ type relayWireGuardApplyCall struct {
 	profiles  []model.WireGuardProfile
 }
 
+type relayEgressApplyCall struct {
+	listeners      []model.RelayListener
+	profiles       []model.WireGuardProfile
+	egressProfiles []model.EgressProfile
+}
+
 type l4WireGuardApplyCall struct {
 	rules     []model.L4Rule
 	listeners []model.RelayListener
@@ -1910,6 +1916,46 @@ func (a *testWireGuardRelayApplier) wireGuardCalls() []relayWireGuardApplyCall {
 	defer a.wgMu.Unlock()
 	out := make([]relayWireGuardApplyCall, len(a.wgCalls))
 	copy(out, a.wgCalls)
+	return out
+}
+
+type testEgressRelayApplier struct {
+	testRelayApplier
+	egressMu    sync.Mutex
+	egressCalls []relayEgressApplyCall
+}
+
+func (a *testEgressRelayApplier) ApplyWithWireGuardAndEgressProfiles(_ context.Context, listeners []model.RelayListener, profiles []model.WireGuardProfile, egressProfiles []model.EgressProfile) error {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	var copiedListeners []model.RelayListener
+	if listeners != nil {
+		copiedListeners = make([]model.RelayListener, len(listeners))
+		copy(copiedListeners, listeners)
+	}
+	var copiedProfiles []model.WireGuardProfile
+	if profiles != nil {
+		copiedProfiles = make([]model.WireGuardProfile, len(profiles))
+		copy(copiedProfiles, profiles)
+	}
+	var copiedEgress []model.EgressProfile
+	if egressProfiles != nil {
+		copiedEgress = make([]model.EgressProfile, len(egressProfiles))
+		copy(copiedEgress, egressProfiles)
+	}
+	a.egressCalls = append(a.egressCalls, relayEgressApplyCall{
+		listeners:      copiedListeners,
+		profiles:       copiedProfiles,
+		egressProfiles: copiedEgress,
+	})
+	return a.applyErr
+}
+
+func (a *testEgressRelayApplier) egressSnapshotCalls() []relayEgressApplyCall {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	out := make([]relayEgressApplyCall, len(a.egressCalls))
+	copy(out, a.egressCalls)
 	return out
 }
 
@@ -4341,6 +4387,61 @@ func TestSnapshotActivatorRefreshesRelayWireGuardProfilesWhenListenersUnchanged(
 	}
 	if calls[0].profiles[0].Revision != 2 {
 		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)
+	}
+}
+
+func TestSnapshotActivatorRefreshesRelayEgressProfilesWhenListenersUnchanged(t *testing.T) {
+	relayApplier := &testEgressRelayApplier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		nil,
+		relayApplier,
+	)
+
+	previous := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       7,
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:            51,
+			AgentID:       "local-agent",
+			Name:          "relay-hop",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    9443,
+			Enabled:       true,
+			TLSMode:       "pin_only",
+			TransportMode: relay.ListenerTransportModeTLSTCP,
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin",
+			}},
+			Revision: 1,
+		}},
+	}
+	next := previous
+	next.EgressProfiles = append([]model.EgressProfile(nil), previous.EgressProfiles...)
+	next.EgressProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := relayApplier.egressSnapshotCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithWireGuardAndEgressProfiles calls = %d, want 1 after egress profile-only change", len(calls))
+	}
+	if len(calls[0].egressProfiles) != 1 || calls[0].egressProfiles[0].Revision != 2 {
+		t.Fatalf("egress profiles passed to relay applier = %+v", calls[0].egressProfiles)
+	}
+	if len(calls[0].listeners) != 1 || calls[0].listeners[0].ID != 51 {
+		t.Fatalf("relay listeners passed to relay applier = %+v", calls[0].listeners)
 	}
 }
 

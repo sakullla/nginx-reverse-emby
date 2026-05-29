@@ -280,6 +280,69 @@ func TestFinalHopSelectorRejectsUnresolvedEgressProfileID(t *testing.T) {
 	}
 }
 
+func TestFinalHopSelectorUsesEgressDialerForProfileID(t *testing.T) {
+	profileID := 17
+	dialer := &recordingFinalHopDialer{}
+	selector := newFinalHopSelector(finalHopSelectorConfig{FinalHopDialer: dialer})
+
+	conn, selected, err := selector.dialTCP(context.Background(), "127.0.0.1:443", DialOptions{EgressProfileID: &profileID})
+	if err != nil {
+		t.Fatalf("dialTCP() error = %v", err)
+	}
+	_ = conn.Close()
+	if selected != "127.0.0.1:443" {
+		t.Fatalf("selected = %q, want backend address", selected)
+	}
+	if dialer.tcpTarget != "127.0.0.1:443" || dialer.tcpProfileID != profileID {
+		t.Fatalf("dialer tcp target/profile = %q/%d, want 127.0.0.1:443/%d", dialer.tcpTarget, dialer.tcpProfileID, profileID)
+	}
+
+	peer, selected, err := selector.openUDPPeer(context.Background(), "127.0.0.1:5353", DialOptions{EgressProfileID: &profileID})
+	if err != nil {
+		t.Fatalf("openUDPPeer() error = %v", err)
+	}
+	_ = peer.Close()
+	if selected != "127.0.0.1:5353" {
+		t.Fatalf("udp selected = %q, want backend address", selected)
+	}
+	if dialer.udpTarget != "127.0.0.1:5353" || dialer.udpProfileID != profileID {
+		t.Fatalf("dialer udp target/profile = %q/%d, want 127.0.0.1:5353/%d", dialer.udpTarget, dialer.udpProfileID, profileID)
+	}
+}
+
+type recordingFinalHopDialer struct {
+	tcpTarget    string
+	tcpProfileID int
+	udpTarget    string
+	udpProfileID int
+}
+
+func (d *recordingFinalHopDialer) DialTCP(_ context.Context, target string, id *int) (net.Conn, error) {
+	d.tcpTarget = target
+	if id != nil {
+		d.tcpProfileID = *id
+	}
+	client, server := net.Pipe()
+	_ = server.Close()
+	return client, nil
+}
+
+func (d *recordingFinalHopDialer) OpenUDP(_ context.Context, target string, id *int) (udpPacketPeer, error) {
+	d.udpTarget = target
+	if id != nil {
+		d.udpProfileID = *id
+	}
+	return noopUDPPacketPeer{}, nil
+}
+
+type noopUDPPacketPeer struct{}
+
+func (noopUDPPacketPeer) ReadPacket() ([]byte, error)      { return nil, io.EOF }
+func (noopUDPPacketPeer) WritePacket([]byte) error         { return nil }
+func (noopUDPPacketPeer) SetReadDeadline(time.Time) error  { return nil }
+func (noopUDPPacketPeer) SetWriteDeadline(time.Time) error { return nil }
+func (noopUDPPacketPeer) Close() error                     { return nil }
+
 func startSelectorTCPEchoServer(t *testing.T) (string, func()) {
 	t.Helper()
 

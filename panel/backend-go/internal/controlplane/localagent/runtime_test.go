@@ -533,6 +533,74 @@ func TestToEmbeddedSnapshotPreservesWireGuardProfilesWithRawSecrets(t *testing.T
 	}
 }
 
+func TestToEmbeddedSnapshotPreservesEgressProfilesWithRawSecrets(t *testing.T) {
+	snapshot := Snapshot{
+		EgressProfiles: []storage.EgressProfile{{
+			ID:          41,
+			Name:        "relay socks exit",
+			Type:        "socks",
+			ProxyURL:    "socks5://user:pass@127.0.0.1:1080",
+			Enabled:     true,
+			Description: "local relay final hop",
+			Revision:    7,
+		}, {
+			ID:   42,
+			Name: "relay wg exit",
+			Type: "wireguard",
+			WireGuardConfig: &storage.EgressWireGuardConfig{
+				PrivateKey: "raw-private-key",
+				Addresses:  []string{"10.70.0.2/32"},
+				Peers: []storage.WireGuardPeer{{
+					Name:                       "hub",
+					PublicKey:                  "peer-public-key",
+					PresharedKey:               "raw-preshared-key",
+					Endpoint:                   "hub.example.com:51820",
+					AllowedIPs:                 []string{"0.0.0.0/0"},
+					PersistentKeepaliveSeconds: 25,
+				}},
+				DNS: []string{"1.1.1.1"},
+				MTU: 1420,
+			},
+			Enabled:  true,
+			Revision: 8,
+		}},
+	}
+
+	embedded := toEmbeddedSnapshot(snapshot)
+
+	if len(embedded.EgressProfiles) != 2 {
+		t.Fatalf("embedded EgressProfiles len = %d, want 2", len(embedded.EgressProfiles))
+	}
+	socksProfile := embedded.EgressProfiles[0]
+	if socksProfile.ID != 41 || socksProfile.Name != "relay socks exit" || socksProfile.Type != "socks" {
+		t.Fatalf("embedded socks egress profile identity = %+v", socksProfile)
+	}
+	if socksProfile.ProxyURL != "socks5://user:pass@127.0.0.1:1080" || !socksProfile.Enabled || socksProfile.Description != "local relay final hop" || socksProfile.Revision != 7 {
+		t.Fatalf("embedded socks egress profile scalar fields = %+v", socksProfile)
+	}
+
+	wgProfile := embedded.EgressProfiles[1]
+	if wgProfile.ID != 42 || wgProfile.Type != "wireguard" || wgProfile.WireGuardConfig == nil {
+		t.Fatalf("embedded wireguard egress profile = %+v", wgProfile)
+	}
+	if wgProfile.WireGuardConfig.PrivateKey != "raw-private-key" {
+		t.Fatalf("embedded wireguard private key = %q, want raw private key", wgProfile.WireGuardConfig.PrivateKey)
+	}
+	if !reflect.DeepEqual(wgProfile.WireGuardConfig.Addresses, []string{"10.70.0.2/32"}) || !reflect.DeepEqual(wgProfile.WireGuardConfig.DNS, []string{"1.1.1.1"}) || wgProfile.WireGuardConfig.MTU != 1420 {
+		t.Fatalf("embedded wireguard config scalar fields = %+v", wgProfile.WireGuardConfig)
+	}
+	if len(wgProfile.WireGuardConfig.Peers) != 1 {
+		t.Fatalf("embedded wireguard peers len = %d, want 1", len(wgProfile.WireGuardConfig.Peers))
+	}
+	peer := wgProfile.WireGuardConfig.Peers[0]
+	if peer.Name != "hub" || peer.PublicKey != "peer-public-key" || peer.PresharedKey != "raw-preshared-key" || peer.Endpoint != "hub.example.com:51820" {
+		t.Fatalf("embedded wireguard peer secrets/endpoint = %+v", peer)
+	}
+	if !reflect.DeepEqual(peer.AllowedIPs, []string{"0.0.0.0/0"}) || peer.PersistentKeepaliveSeconds != 25 {
+		t.Fatalf("embedded wireguard peer routing = %+v", peer)
+	}
+}
+
 func TestToEmbeddedSnapshotClearsWireGuardProfilesWithEmptySlice(t *testing.T) {
 	embedded := toEmbeddedSnapshot(Snapshot{
 		WireGuardProfiles: []storage.WireGuardProfile{},
