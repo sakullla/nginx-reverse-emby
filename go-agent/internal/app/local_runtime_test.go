@@ -27,6 +27,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
@@ -1583,6 +1584,181 @@ func TestHTTPRuntimeManagerReusesSharedCacheAndTransportAcrossReapply(t *testing
 	}
 }
 
+func TestHTTPRuntimeManagerAppliesSOCKSEgressProfiles(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("via-socks"))
+	}))
+	defer backend.Close()
+	proxyURL, targets := startRuntimeRecordingEgressProxy(t, "socks5")
+
+	profileID := 64
+	listenPort := pickFreeTCPPort(t)
+	rule := runtimeTestHTTPRule(listenPort, backend.URL)
+	rule.EgressProfileID = &profileID
+
+	manager := newHTTPRuntimeManagerWithTLS(&testHTTPRelayRuntimeProvider{})
+	defer manager.Close()
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(context.Background(), []model.HTTPRule{rule}, nil, nil, []model.EgressProfile{{
+		ID:       profileID,
+		Type:     "socks",
+		ProxyURL: proxyURL,
+		Enabled:  true,
+	}}); err != nil {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles() error = %v", err)
+	}
+
+	assertHTTPRuntimeBody(t, listenPort, "via-socks")
+	assertRuntimeEgressProxyTarget(t, targets, strings.TrimPrefix(backend.URL, "http://"))
+}
+
+func TestHTTPRuntimeManagerDoesNotRequireWireGuardEgressConfigForRelayRules(t *testing.T) {
+	profileID := 65
+	listenPort := pickFreeTCPPort(t)
+	rule := runtimeTestHTTPRule(listenPort, "http://final.example.test:8096")
+	rule.RelayLayers = [][]int{{41}}
+	rule.EgressProfileID = &profileID
+
+	manager := newHTTPRuntimeManagerWithTLS(&testHTTPRelayRuntimeProvider{})
+	defer manager.Close()
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(
+		context.Background(),
+		[]model.HTTPRule{rule},
+		[]model.RelayListener{{
+			ID:         41,
+			AgentID:    "remote-agent",
+			Name:       "relay-hop",
+			ListenHost: "127.0.0.1",
+			ListenPort: pickFreeTCPPort(t),
+			PublicHost: "127.0.0.1",
+			PublicPort: pickFreeTCPPort(t),
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin",
+			}},
+		}},
+		nil,
+		[]model.EgressProfile{{
+			ID:              profileID,
+			Type:            "wireguard",
+			WireGuardConfig: nil,
+			Enabled:         true,
+		}},
+	); err != nil {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles() error = %v, want relay entry to not require scoped wireguard config", err)
+	}
+}
+
+func TestHTTPRuntimeManagerDoesNotRequireWireGuardEgressConfigForEmptyRules(t *testing.T) {
+	profileID := 66
+	manager := newHTTPRuntimeManagerWithTLS(&testHTTPRelayRuntimeProvider{})
+	defer manager.Close()
+
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(
+		context.Background(),
+		nil,
+		nil,
+		nil,
+		[]model.EgressProfile{{
+			ID:              profileID,
+			Type:            "wireguard",
+			WireGuardConfig: nil,
+			Enabled:         true,
+		}},
+	); err != nil {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles() error = %v, want empty http rules to not require scoped wireguard egress config", err)
+	}
+}
+
+func TestHTTPRuntimeManagerClosesWireGuardEgressWhenLocalReferenceRemoved(t *testing.T) {
+	var created []*testAppWireGuardRuntime
+	manager := newHTTPRuntimeManagerWithTLS(&testHTTPRelayRuntimeProvider{})
+	manager.egressWireGuard = newEgressWireGuardRuntime(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		runtime := &testAppWireGuardRuntime{}
+		created = append(created, runtime)
+		return runtime, nil
+	})
+	defer manager.Close()
+
+	ctx := context.Background()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	profileID := 67
+	profile := validAppWireGuardEgressProfile(profileID)
+	rule := runtimeTestHTTPRule(pickFreeTCPPort(t), backend.URL)
+	rule.EgressProfileID = &profileID
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(ctx, []model.HTTPRule{rule}, nil, nil, []model.EgressProfile{profile}); err != nil {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles(initial) error = %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("wireguard egress runtimes created = %d, want 1", len(created))
+	}
+
+	directRule := rule
+	directRule.EgressProfileID = nil
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(ctx, []model.HTTPRule{directRule}, nil, nil, []model.EgressProfile{profile}); err != nil {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles(remove egress) error = %v", err)
+	}
+	if !created[0].closed {
+		t.Fatal("expected removed wireguard egress runtime to be closed")
+	}
+}
+
+func TestHTTPRuntimeManagerAppliesWireGuardEgressForEmptyRelayLayers(t *testing.T) {
+	var created []*testAppWireGuardRuntime
+	manager := newHTTPRuntimeManagerWithTLS(&testHTTPRelayRuntimeProvider{})
+	manager.egressWireGuard = newEgressWireGuardRuntime(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		runtime := &testAppWireGuardRuntime{
+			onDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, network, address)
+			},
+		}
+		created = append(created, runtime)
+		return runtime, nil
+	})
+	defer manager.Close()
+
+	ctx := context.Background()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("via-wg"))
+	}))
+	defer backend.Close()
+
+	profileID := 68
+	listenPort := pickFreeTCPPort(t)
+	rule := runtimeTestHTTPRule(listenPort, backend.URL)
+	rule.RelayLayers = [][]int{{}}
+	rule.EgressProfileID = &profileID
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(ctx, []model.HTTPRule{rule}, nil, nil, []model.EgressProfile{
+		validAppWireGuardEgressProfile(profileID),
+	}); err != nil {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles() error = %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("wireguard egress runtimes created = %d, want 1", len(created))
+	}
+	assertHTTPRuntimeBody(t, listenPort, "via-wg")
+}
+
+type testHTTPRelayRuntimeProvider struct{}
+
+func (p *testHTTPRelayRuntimeProvider) ServerCertificateForHost(context.Context, string) (*tls.Certificate, error) {
+	return nil, fmt.Errorf("unexpected server certificate lookup")
+}
+
+func (p *testHTTPRelayRuntimeProvider) ServerCertificate(context.Context, int) (*tls.Certificate, error) {
+	return nil, fmt.Errorf("unexpected relay server certificate lookup")
+}
+
+func (p *testHTTPRelayRuntimeProvider) TrustedCAPool(context.Context, []int) (*x509.CertPool, error) {
+	return x509.NewCertPool(), nil
+}
+
 func TestRelayRuntimeManagerPreservesRunningServerOnInvalidListenerReconfigure(t *testing.T) {
 	provider := &testRelayTLSProvider{
 		certificates: map[int]tls.Certificate{
@@ -3074,6 +3250,72 @@ func assertHTTPRuntimeHostBody(t *testing.T, port int, host string, wantBody str
 	}
 
 	t.Fatalf("timed out waiting for http runtime on port %d to return body %q", port, wantBody)
+}
+
+func startRuntimeRecordingEgressProxy(t *testing.T, scheme string) (string, <-chan string) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen recording egress proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	targets := make(chan string, 8)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(client net.Conn) {
+				defer client.Close()
+				req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+				if err != nil {
+					return
+				}
+				targets <- req.Target
+				upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
+				if err != nil {
+					_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+					return
+				}
+				defer upstream.Close()
+				if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+					return
+				}
+				copyRuntimeTCPPair(client, upstream)
+			}(conn)
+		}
+	}()
+
+	return scheme + "://" + ln.Addr().String(), targets
+}
+
+func assertRuntimeEgressProxyTarget(t *testing.T, targets <-chan string, wantTarget string) {
+	t.Helper()
+
+	select {
+	case got := <-targets:
+		if got != wantTarget {
+			t.Fatalf("egress proxy target = %q, want %q", got, wantTarget)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for egress proxy target")
+	}
+}
+
+func copyRuntimeTCPPair(a net.Conn, b net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(a, b)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(b, a)
+		done <- struct{}{}
+	}()
+	<-done
 }
 
 func runtimeTestSPKIPin(t *testing.T, cert *x509.Certificate) string {

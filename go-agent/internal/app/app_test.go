@@ -1691,6 +1691,13 @@ type httpApplyCall struct {
 	rules []model.HTTPRule
 }
 
+type httpEgressApplyCall struct {
+	rules             []model.HTTPRule
+	listeners         []model.RelayListener
+	wireGuardProfiles []model.WireGuardProfile
+	egressProfiles    []model.EgressProfile
+}
+
 type testCertificateApplier struct {
 	mu        sync.Mutex
 	calls     []applyCall
@@ -1946,6 +1953,32 @@ func (a *testHTTPApplier) snapshotCalls() []httpApplyCall {
 
 func (a *testHTTPApplier) Close() error {
 	return nil
+}
+
+type testEgressHTTPApplier struct {
+	testHTTPApplier
+	egressMu    sync.Mutex
+	egressCalls []httpEgressApplyCall
+}
+
+func (a *testEgressHTTPApplier) ApplyWithRelayWireGuardAndEgressProfiles(_ context.Context, rules []model.HTTPRule, listeners []model.RelayListener, wireGuardProfiles []model.WireGuardProfile, egressProfiles []model.EgressProfile) error {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	a.egressCalls = append(a.egressCalls, httpEgressApplyCall{
+		rules:             append([]model.HTTPRule(nil), rules...),
+		listeners:         append([]model.RelayListener(nil), listeners...),
+		wireGuardProfiles: append([]model.WireGuardProfile(nil), wireGuardProfiles...),
+		egressProfiles:    append([]model.EgressProfile(nil), egressProfiles...),
+	})
+	return a.applyErr
+}
+
+func (a *testEgressHTTPApplier) egressProfileCalls() []httpEgressApplyCall {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	out := make([]httpEgressApplyCall, len(a.egressCalls))
+	copy(out, a.egressCalls)
+	return out
 }
 
 type testTrafficBlockHTTPApplier struct {
@@ -4481,6 +4514,95 @@ func TestSnapshotActivatorRefreshesL4EgressProfilesWhenRulesUnchanged(t *testing
 	}
 
 	calls := l4Applier.egressProfileCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1 after profile-only change", len(calls))
+	}
+	if calls[0].egressProfiles[0].Revision != 2 {
+		t.Fatalf("egress profile revision = %d, want 2", calls[0].egressProfiles[0].Revision)
+	}
+}
+
+func TestSnapshotActivatorPassesEgressProfilesToHTTPApplier(t *testing.T) {
+	httpApplier := &testEgressHTTPApplier{}
+	app := newAppWithHTTPDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		httpApplier,
+		nil,
+		nil,
+		nil,
+	)
+
+	profileID := 27
+	next := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       profileID,
+			Name:     "socks exit",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		Rules: []model.HTTPRule{{
+			FrontendURL:     "http://media.example.test",
+			Backends:        []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			EgressProfileID: &profileID,
+			Revision:        1,
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := httpApplier.egressProfileCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1", len(calls))
+	}
+	if len(calls[0].egressProfiles) != 1 || calls[0].egressProfiles[0].ID != profileID {
+		t.Fatalf("egress profiles passed to http applier = %+v", calls[0].egressProfiles)
+	}
+}
+
+func TestSnapshotActivatorRefreshesHTTPEgressProfilesWhenRulesUnchanged(t *testing.T) {
+	httpApplier := &testEgressHTTPApplier{}
+	app := newAppWithHTTPDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		httpApplier,
+		nil,
+		nil,
+		nil,
+	)
+
+	profileID := 27
+	previous := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       profileID,
+			Name:     "socks exit",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		Rules: []model.HTTPRule{{
+			FrontendURL:     "http://media.example.test",
+			Backends:        []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			EgressProfileID: &profileID,
+			Revision:        1,
+		}},
+	}
+	next := previous
+	next.EgressProfiles = append([]model.EgressProfile(nil), previous.EgressProfiles...)
+	next.EgressProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := httpApplier.egressProfileCalls()
 	if len(calls) != 1 {
 		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1 after profile-only change", len(calls))
 	}

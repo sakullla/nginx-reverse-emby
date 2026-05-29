@@ -59,6 +59,10 @@ type HTTPWireGuardAwareApplier interface {
 	ApplyWithRelayAndWireGuardProfiles(context.Context, []model.HTTPRule, []model.RelayListener, []model.WireGuardProfile) error
 }
 
+type HTTPEgressAwareApplier interface {
+	ApplyWithRelayWireGuardAndEgressProfiles(context.Context, []model.HTTPRule, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
+}
+
 type L4RelayAwareApplier interface {
 	ApplyWithRelay(context.Context, []model.L4Rule, []model.RelayListener) error
 }

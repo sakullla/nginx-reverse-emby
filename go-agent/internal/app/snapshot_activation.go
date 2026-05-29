@@ -27,6 +27,9 @@ func (a *App) applyHTTPRules(ctx context.Context, snapshot Snapshot) error {
 	if a.httpApplier == nil || snapshot.Rules == nil {
 		return nil
 	}
+	if egressAware, ok := a.httpApplier.(HTTPEgressAwareApplier); ok {
+		return egressAware.ApplyWithRelayWireGuardAndEgressProfiles(ctx, snapshot.Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles, snapshot.EgressProfiles)
+	}
 	if wireGuardAware, ok := a.httpApplier.(HTTPWireGuardAwareApplier); ok {
 		return wireGuardAware.ApplyWithRelayAndWireGuardProfiles(ctx, snapshot.Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles)
 	}
@@ -124,11 +127,13 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 
 		if !reflect.DeepEqual(previous.Rules, next.Rules) ||
 			httpRelayInputsChanged(next.Rules, previous.RelayListeners, next.RelayListeners) ||
-			httpWireGuardInputsChanged(next.Rules, previous.WireGuardProfiles, next.WireGuardProfiles) {
+			httpWireGuardInputsChanged(next.Rules, previous.WireGuardProfiles, next.WireGuardProfiles) ||
+			httpEgressInputsChanged(next.Rules, previous.EgressProfiles, next.EgressProfiles) {
 			if err := a.applyHTTPRules(ctx, Snapshot{
 				Rules:             next.Rules,
 				RelayListeners:    next.RelayListeners,
 				WireGuardProfiles: next.WireGuardProfiles,
+				EgressProfiles:    next.EgressProfiles,
 			}); err != nil {
 				return err
 			}
@@ -228,6 +233,16 @@ func httpWireGuardInputsChanged(rules []model.HTTPRule, previousProfiles, nextPr
 		if rule.WireGuardEntryEnabled {
 			return !reflect.DeepEqual(previousProfiles, nextProfiles)
 		}
+	}
+	return false
+}
+
+func httpEgressInputsChanged(rules []model.HTTPRule, previousProfiles, nextProfiles []model.EgressProfile) bool {
+	for _, rule := range rules {
+		if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+			continue
+		}
+		return !reflect.DeepEqual(previousProfiles, nextProfiles)
 	}
 	return false
 }
