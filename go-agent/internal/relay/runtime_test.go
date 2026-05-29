@@ -1182,6 +1182,53 @@ func TestMultiHopRelayUDPDataFlow(t *testing.T) {
 	assertUDPRelayRoundTrip(t, conn, []byte("multi-hop-udp"))
 }
 
+func TestMultiHopRelayUDPSendsPayloadToFinalHopEgressPeer(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-a-udp-egress", "pin_only", true, false)
+	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-b-udp-egress", "pin_only", true, false)
+	egressProfileID := 17
+	peer := &recordingUDPPacketPeer{writes: make(chan []byte, 1), reads: make(chan []byte)}
+	dialer := &recordingUDPFinalHopDialer{peer: peer}
+
+	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
+	if err != nil {
+		t.Fatalf("failed to start first relay: %v", err)
+	}
+	defer serverA.Close()
+
+	serverB, err := StartWithOptions(context.Background(), []Listener{listenerB}, provider, StartOptions{
+		FinalHopDialer: dialer,
+	})
+	if err != nil {
+		t.Fatalf("failed to start second relay: %v", err)
+	}
+	defer serverB.Close()
+
+	conn, err := Dial(context.Background(), "udp", "127.0.0.1:5300", []Hop{hopA, hopB}, provider, DialOptions{
+		EgressProfileID: &egressProfileID,
+	})
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	if err := WriteUOTPacket(conn, []byte("udp-egress-final-hop")); err != nil {
+		t.Fatalf("WriteUOTPacket() error = %v", err)
+	}
+
+	select {
+	case payload := <-peer.writes:
+		if string(payload) != "udp-egress-final-hop" {
+			t.Fatalf("final hop UDP payload = %q, want udp-egress-final-hop", string(payload))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for final hop UDP egress payload")
+	}
+	if dialer.target != "127.0.0.1:5300" || dialer.profileID != egressProfileID {
+		t.Fatalf("final hop dial target/profile = %q/%d, want 127.0.0.1:5300/%d", dialer.target, dialer.profileID, egressProfileID)
+	}
+}
+
 func TestMultiHopRelayDataFlowWithEarlyWindowMask(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
@@ -3274,6 +3321,52 @@ func assertUDPRelayRoundTrip(t *testing.T, conn net.Conn, payload []byte) {
 	if !bytes.Equal(reply, payload) {
 		t.Fatalf("udp payload mismatch: got %q want %q", reply, payload)
 	}
+}
+
+type recordingUDPFinalHopDialer struct {
+	peer      *recordingUDPPacketPeer
+	target    string
+	profileID int
+}
+
+func (d *recordingUDPFinalHopDialer) DialTCP(context.Context, string, *int) (net.Conn, error) {
+	return nil, fmt.Errorf("unexpected tcp final hop dial")
+}
+
+func (d *recordingUDPFinalHopDialer) OpenUDP(_ context.Context, target string, id *int) (UDPPacketPeer, error) {
+	d.target = target
+	if id != nil {
+		d.profileID = *id
+	}
+	return d.peer, nil
+}
+
+type recordingUDPPacketPeer struct {
+	writes chan []byte
+	reads  chan []byte
+	once   sync.Once
+}
+
+func (p *recordingUDPPacketPeer) ReadPacket() ([]byte, error) {
+	payload, ok := <-p.reads
+	if !ok {
+		return nil, io.EOF
+	}
+	return payload, nil
+}
+
+func (p *recordingUDPPacketPeer) WritePacket(payload []byte) error {
+	p.writes <- append([]byte(nil), payload...)
+	return nil
+}
+
+func (p *recordingUDPPacketPeer) SetReadDeadline(time.Time) error  { return nil }
+func (p *recordingUDPPacketPeer) SetWriteDeadline(time.Time) error { return nil }
+func (p *recordingUDPPacketPeer) Close() error {
+	p.once.Do(func() {
+		close(p.reads)
+	})
+	return nil
 }
 
 type fakeWireGuardRuntimeProvider struct {

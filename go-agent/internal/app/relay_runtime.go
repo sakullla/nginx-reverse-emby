@@ -228,11 +228,12 @@ func (d relayEgressFinalHopDialer) OpenUDP(ctx context.Context, target string, i
 	if err != nil {
 		return nil, err
 	}
-	return relayUDPPacketConn{conn: conn}, nil
+	return relayUDPPacketConn{conn: conn, target: target}, nil
 }
 
 type relayUDPPacketConn struct {
-	conn proxyproto.UDPPacketConn
+	conn   proxyproto.UDPPacketConn
+	target string
 }
 
 func (c relayUDPPacketConn) Close() error { return c.conn.Close() }
@@ -247,7 +248,7 @@ func (c relayUDPPacketConn) ReadPacket() ([]byte, error) {
 	return payload, err
 }
 func (c relayUDPPacketConn) WritePacket(payload []byte) error {
-	return c.conn.WritePacket("", payload)
+	return c.conn.WritePacket(c.target, payload)
 }
 
 func (m *relayRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
