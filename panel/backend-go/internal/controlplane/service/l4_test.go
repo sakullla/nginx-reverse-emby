@@ -22,7 +22,9 @@ type fakeL4Store struct {
 	savedAgent         storage.AgentRow
 	loadSnapshotCalls  int
 	listL4RulesErr     error
+	listL4RulesErrs    []error
 	saveL4RulesErr     error
+	saveAgentErrs      []error
 	listWireGuardErr   error
 	listWireGuardCalls int
 	listWireGuardHook  func()
@@ -45,6 +47,9 @@ func (f *fakeL4Store) GetHTTPRule(context.Context, string, int) (storage.HTTPRul
 }
 
 func (f *fakeL4Store) ListL4Rules(_ context.Context, agentID string) ([]storage.L4RuleRow, error) {
+	if err := popRuleStoreError(&f.listL4RulesErrs); err != nil {
+		return nil, err
+	}
 	if f.listL4RulesErr != nil {
 		return nil, f.listL4RulesErr
 	}
@@ -111,6 +116,9 @@ func (f *fakeL4Store) ListManagedCertificates(context.Context) ([]storage.Manage
 }
 
 func (f *fakeL4Store) SaveAgent(_ context.Context, row storage.AgentRow) error {
+	if err := popRuleStoreError(&f.saveAgentErrs); err != nil {
+		return err
+	}
 	f.savedAgent = row
 	for i := range f.agents {
 		if f.agents[i].ID == row.ID {
@@ -3559,6 +3567,171 @@ func TestL4RuleServiceUpdateAllowsCrossAgentWireGuardRelayListener(t *testing.T)
 	}
 	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 7 {
 		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
+	}
+}
+
+func TestL4RuleServiceCreateRestoresAgentRevisionWhenRelayCallerApplyFails(t *testing.T) {
+	wireGuardProfileID := 7
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{
+			{ID: "edge-1", Name: "Edge 1", CapabilitiesJSON: `["l4"]`, DesiredRevision: 4, CurrentRevision: 4},
+			{ID: "edge-2", Name: "Edge 2", CapabilitiesJSON: `["l4"]`, DesiredRevision: 4, CurrentRevision: 4},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:            41,
+				AgentID:       "local",
+				Enabled:       true,
+				TransportMode: "tls_tcp",
+			}},
+			"edge-2": {{
+				ID:                 42,
+				AgentID:            "edge-2",
+				Enabled:            true,
+				TransportMode:      "wireguard",
+				WireGuardProfileID: &wireGuardProfileID,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{
+				ID:       99,
+				AgentID:  "local",
+				Name:     "default",
+				Enabled:  true,
+				TagsJSON: `["system:default-wireguard"]`,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		return errors.New("local apply failed")
+	})
+
+	_, err := svc.Create(context.Background(), "edge-1", L4RuleInput{
+		Protocol:    stringPtrL4("tcp"),
+		ListenHost:  stringPtrL4("0.0.0.0"),
+		ListenPort:  intPtrL4(50381),
+		Backends:    &[]L4Backend{{Host: "127.0.0.1", Port: 26966}},
+		RelayLayers: &[][]int{{41}, {42}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if got := store.l4RulesByID["edge-1"]; len(got) != 0 {
+		t.Fatalf("l4 rules after failed relay apply = %+v, want rollback to empty", got)
+	}
+	if store.agents[0].DesiredRevision != 4 {
+		t.Fatalf("edge-1 DesiredRevision = %d, want restored 4", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestL4RuleServiceUpdateRestoresAgentRevisionWhenRelayCallerApplyFails(t *testing.T) {
+	wireGuardProfileID := 7
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{
+			{ID: "edge-1", Name: "Edge 1", CapabilitiesJSON: `["l4"]`, DesiredRevision: 4, CurrentRevision: 4},
+			{ID: "edge-2", Name: "Edge 2", CapabilitiesJSON: `["l4"]`, DesiredRevision: 4, CurrentRevision: 4},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:           1,
+				AgentID:      "edge-1",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				BackendsJSON: `[{"host":"127.0.0.1","port":26966}]`,
+				Enabled:      true,
+				Revision:     4,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:            41,
+				AgentID:       "local",
+				Enabled:       true,
+				TransportMode: "tls_tcp",
+			}},
+			"edge-2": {{
+				ID:                 42,
+				AgentID:            "edge-2",
+				Enabled:            true,
+				TransportMode:      "wireguard",
+				WireGuardProfileID: &wireGuardProfileID,
+			}},
+		},
+		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
+			"local": {{
+				ID:       99,
+				AgentID:  "local",
+				Name:     "default",
+				Enabled:  true,
+				TagsJSON: `["system:default-wireguard"]`,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		return errors.New("local apply failed")
+	})
+
+	_, err := svc.Update(context.Background(), "edge-1", 1, L4RuleInput{
+		RelayLayers: &[][]int{{41}, {42}},
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+	got := store.l4RulesByID["edge-1"]
+	if len(got) != 1 || got[0].RelayLayersJSON != "" {
+		t.Fatalf("l4 rules after failed relay apply = %+v, want original rule", got)
+	}
+	if store.agents[0].DesiredRevision != 4 {
+		t.Fatalf("edge-1 DesiredRevision = %d, want restored 4", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestL4RuleServiceDeleteRollsBackRuleWhenAllocatorFailsAfterSave(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["l4"]`,
+			DesiredRevision:  4,
+			CurrentRevision:  4,
+		}},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:           1,
+				AgentID:      "edge-1",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				BackendsJSON: `[{"host":"127.0.0.1","port":26966}]`,
+				Enabled:      true,
+				Revision:     4,
+			}},
+		},
+		relayByAgent:    map[string][]storage.RelayListenerRow{},
+		listL4RulesErrs: []error{nil, errors.New("allocator list l4 failed")},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Delete(context.Background(), "edge-1", 1)
+	if err == nil {
+		t.Fatal("Delete() error = nil")
+	}
+	got := store.l4RulesByID["edge-1"]
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("l4 rules after allocator failure = %+v, want original rule", got)
 	}
 }
 

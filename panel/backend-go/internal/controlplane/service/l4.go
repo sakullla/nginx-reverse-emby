@@ -249,6 +249,11 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		return L4Rule{}, err
 	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...))
+	if err != nil {
+		rollbackDefaultWireGuard()
+		return L4Rule{}, err
+	}
 
 	rollbackL4Rows := append([]storage.L4RuleRow(nil), rows...)
 	rows = append(rows, l4RuleToRow(rule))
@@ -257,15 +262,15 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		return L4Rule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
-		s.rollbackL4RowsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil)
+		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
-		s.rollbackL4RowsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil)
+		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		s.rollbackL4RowsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil)
+		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	return rule, nil
@@ -360,6 +365,11 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		return L4Rule{}, err
 	}
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...))
+	if err != nil {
+		rollbackDefaultWireGuard()
+		return L4Rule{}, err
+	}
 
 	rollbackL4Rows := append([]storage.L4RuleRow(nil), rows...)
 	rows[targetIndex] = l4RuleToRow(rule)
@@ -368,15 +378,15 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		return L4Rule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
-		s.rollbackL4RowsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil)
+		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
-		s.rollbackL4RowsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil)
+		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		s.rollbackL4RowsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil)
+		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	return rule, nil
@@ -412,20 +422,24 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	if err := validateL4RuleSet(l4RulesFromRows(nextRows)); err != nil {
 		return L4Rule{}, err
 	}
-	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {
-		return L4Rule{}, err
-	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
 		return L4Rule{}, err
 	}
 	nextRevision := allocator.AllocateRevisionForAgent(resolvedID, deleted.Revision)
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, []string{resolvedID})
+	if err != nil {
+		return L4Rule{}, err
+	}
+	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
-		s.rollbackL4RowsAndWireGuardProfiles(ctx, resolvedID, rows, nil)
+		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rows, nil, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		s.rollbackL4RowsAndWireGuardProfiles(ctx, resolvedID, rows, nil)
+		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rows, nil, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "l4_rule", deleted.ID)
@@ -741,6 +755,11 @@ func (s *l4Service) ensureDefaultWireGuardProfile(ctx context.Context, agentID s
 func (s *l4Service) rollbackL4RowsAndWireGuardProfiles(ctx context.Context, agentID string, l4Rows []storage.L4RuleRow, wireGuardRows *wireGuardProfileRollback) {
 	_ = s.store.SaveL4Rules(ctx, agentID, append([]storage.L4RuleRow(nil), l4Rows...))
 	s.restoreWireGuardProfileRollback(ctx, agentID, wireGuardRows)
+}
+
+func (s *l4Service) rollbackL4RowsAgentsAndWireGuardProfiles(ctx context.Context, agentID string, l4Rows []storage.L4RuleRow, wireGuardRows *wireGuardProfileRollback, agentRows []storage.AgentRow) {
+	restoreAgentRowsBestEffort(ctx, s.store, agentRows)
+	s.rollbackL4RowsAndWireGuardProfiles(ctx, agentID, l4Rows, wireGuardRows)
 }
 
 func ensureDefaultWireGuardProfileWithRollback(ctx context.Context, cfg config.Config, store wireGuardProfileStore, agentID string) (WireGuardProfile, *wireGuardProfileRollback, error) {
