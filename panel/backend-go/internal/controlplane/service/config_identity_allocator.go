@@ -170,6 +170,21 @@ func (a *configIdentityAllocator) AllocateRevisionForTargets(agentIDs []string, 
 	return next
 }
 
+func (a *configIdentityAllocator) AllocateRevisionGlobal(maxExistingRevision int) int {
+	next := maxExistingRevision + 1
+	for _, floor := range a.nextRevisionByAgent {
+		if floor > next {
+			next = floor
+		}
+	}
+	for agentID := range a.nextRevisionByAgent {
+		if a.nextRevisionByAgent[agentID] < next+1 {
+			a.nextRevisionByAgent[agentID] = next + 1
+		}
+	}
+	return next
+}
+
 func (a *configIdentityAllocator) seedIDs(state configIdentityAllocatorState) {
 	for _, row := range state.HTTPRules {
 		if row.ID > 0 {

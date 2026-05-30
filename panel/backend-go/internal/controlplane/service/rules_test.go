@@ -22,6 +22,7 @@ type fakeRuleStore struct {
 	listHTTPRulesErr  error
 	saveHTTPRulesErrs []error
 	saveManagedErrs   []error
+	saveAgentErrs     []error
 	cleanupErrs       []error
 	materialByDomain  map[string]bool
 	cleanupCallCount  int
@@ -98,6 +99,9 @@ func (f *fakeRuleStore) SaveHTTPRules(_ context.Context, agentID string, rows []
 }
 
 func (f *fakeRuleStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
+	if err := popRuleStoreError(&f.saveAgentErrs); err != nil {
+		return err
+	}
 	for i, agent := range f.agents {
 		if agent.ID == row.ID {
 			f.agents[i] = row
@@ -3276,6 +3280,37 @@ func TestRuleServiceCreateRollsBackManagedCertificatesWhenRuleSaveFails(t *testi
 	}
 	if len(store.managedCerts) != 0 {
 		t.Fatalf("managed certs should roll back, got %d rows", len(store.managedCerts))
+	}
+}
+
+func TestRuleServiceCreateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-a",
+			Name:            "edge-a",
+			DesiredRevision: 3,
+			CurrentRevision: 3,
+		}},
+		rulesByAgent:       map[string][]storage.HTTPRuleRow{},
+		saveAgentErrs:      []error{errors.New("save agent failed")},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		egressProfiles:     []storage.EgressProfileRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "edge-a", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://rollback.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if got := store.rulesByAgent["edge-a"]; len(got) != 0 {
+		t.Fatalf("rules after failed revision bump = %+v, want rollback to empty", got)
 	}
 }
 

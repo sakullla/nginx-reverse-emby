@@ -141,7 +141,7 @@ func (s *egressProfileService) Create(ctx context.Context, input EgressProfileIn
 	if err != nil {
 		return EgressProfile{}, err
 	}
-	profile.Revision = maxEgressProfileRevision(rows) + 1
+	profile.Revision = allocator.AllocateRevisionGlobal(maxEgressProfileRevision(rows))
 
 	nextRows := append(append([]storage.EgressProfileRow(nil), rows...), egressProfileToRow(profile))
 	if err := s.store.SaveEgressProfiles(ctx, nextRows); err != nil {
@@ -214,9 +214,11 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 		return EgressProfile{}, err
 	}
 	if err := s.bumpRemoteDesiredRevisions(ctx, affectedAgentIDs, profile.Revision); err != nil {
+		_ = s.store.SaveEgressProfiles(ctx, rows)
 		return EgressProfile{}, err
 	}
 	if err := s.triggerLocalApplyForAgents(ctx, affectedAgentIDs); err != nil {
+		_ = s.store.SaveEgressProfiles(ctx, rows)
 		return EgressProfile{}, err
 	}
 	return redactEgressProfile(profile), nil

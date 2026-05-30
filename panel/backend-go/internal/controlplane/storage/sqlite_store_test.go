@@ -1336,6 +1336,9 @@ func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
 	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
 		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
 	}
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("second BootstrapSQLiteSchema() migration error = %v", err)
+	}
 
 	store, err := NewSQLiteStore(dataRoot, "legacy-egress-agent")
 	if err != nil {
@@ -1403,6 +1406,9 @@ func TestBootstrapSchemaMigratesLegacyL4WireGuardEgressToProfile(t *testing.T) {
 
 	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
 		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
+	}
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("second BootstrapSQLiteSchema() migration error = %v", err)
 	}
 
 	store, err := NewSQLiteStore(dataRoot, "legacy-wg-egress-agent")

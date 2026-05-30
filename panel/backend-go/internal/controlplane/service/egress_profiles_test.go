@@ -39,6 +39,31 @@ func TestEgressProfileServiceCreateRedactsProxyURLInOutput(t *testing.T) {
 	}
 }
 
+func TestEgressProfileServiceCreateUsesGlobalRevisionFloor(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID:              "edge-a",
+		Name:            "edge-a",
+		DesiredRevision: 50,
+		CurrentRevision: 50,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewEgressProfileService(store)
+
+	profile, err := svc.Create(t.Context(), EgressProfileInput{
+		Name:     stringPtrEgress("office socks"),
+		Type:     stringPtrEgress("socks"),
+		ProxyURL: stringPtrEgress("socks5://127.0.0.1:1080"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if profile.Revision <= 50 {
+		t.Fatalf("Revision = %d, want above global agent revision floor 50", profile.Revision)
+	}
+}
+
 func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -487,6 +512,51 @@ func TestEgressProfileServiceUpdateBumpsReferencedRemoteAgentRevision(t *testing
 	}
 }
 
+func TestEgressProfileServiceUpdateRollsBackProfileWhenRemoteRevisionBumpFails(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID:              "edge-a",
+		Name:            "edge-a",
+		DesiredRevision: 50,
+		CurrentRevision: 50,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewEgressProfileService(store)
+	profile := createTestEgressProfile(t, svc)
+	if err := store.SaveHTTPRules(t.Context(), "edge-a", []storage.HTTPRuleRow{{
+		ID:              51,
+		AgentID:         "edge-a",
+		FrontendURL:     "http://edge.example.com",
+		BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+		EgressProfileID: &profile.ID,
+		Enabled:         true,
+		Revision:        2,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	failingStore := &failingSaveAgentEgressProfileStore{
+		SQLiteStore:   store,
+		saveAgentErrs: []error{errors.New("save agent failed")},
+	}
+	failingSvc := NewEgressProfileService(failingStore)
+	_, err := failingSvc.Update(t.Context(), profile.ID, EgressProfileInput{
+		ProxyURL: stringPtrEgress("socks5://127.0.0.1:2080"),
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+
+	rows, err := store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].ProxyURL != "socks5://127.0.0.1:1080" {
+		t.Fatalf("egress profiles after failed revision bump = %+v, want original proxy URL", rows)
+	}
+}
+
 func TestEgressProfileServiceUpdateTriggersLocalApplyWhenLocalExecutorUsesProfile(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
@@ -793,6 +863,18 @@ func newEgressProfileTestStore(t *testing.T) *storage.SQLiteStore {
 		}
 	})
 	return store
+}
+
+type failingSaveAgentEgressProfileStore struct {
+	*storage.SQLiteStore
+	saveAgentErrs []error
+}
+
+func (s *failingSaveAgentEgressProfileStore) SaveAgent(ctx context.Context, row storage.AgentRow) error {
+	if err := popRuleStoreError(&s.saveAgentErrs); err != nil {
+		return err
+	}
+	return s.SQLiteStore.SaveAgent(ctx, row)
 }
 
 func createTestEgressProfile(t *testing.T, svc *egressProfileService) EgressProfile {
