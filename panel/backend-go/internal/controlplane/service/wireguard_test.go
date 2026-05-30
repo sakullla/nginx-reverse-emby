@@ -87,6 +87,50 @@ func TestWireGuardProfileCreateGeneratesBlankPrivateKey(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCreateAutoAllocatesExplicitEmptyInterfaceAddresses(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	var input WireGuardProfileInput
+	if err := json.Unmarshal([]byte(`{
+		"name":"wg relay",
+		"mode":"generic_wireguard",
+		"private_key":"`+testWireGuardPrivateKey+`",
+		"listen_port":51820,
+		"addresses":["0.0.0.0"],
+		"interface_addresses":[],
+		"peers":[{
+			"name":"peer-a",
+			"public_key":"`+testWireGuardPublicKey+`",
+			"preshared_key":"`+testWireGuardPresharedKey+`",
+			"endpoint":"example.com:51820",
+			"allowed_ips":["10.0.0.2/32"]
+		}],
+		"enabled":true
+	}`), &input); err != nil {
+		t.Fatalf("UnmarshalJSON() error = %v", err)
+	}
+	if !input.InterfaceAddressesSet || len(input.InterfaceAddresses) != 0 {
+		t.Fatalf("input interface address state = set %t values %+v, want explicit empty", input.InterfaceAddressesSet, input.InterfaceAddresses)
+	}
+
+	profile, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(profile.InterfaceAddresses) == 0 {
+		t.Fatalf("Create() InterfaceAddresses = %+v, want auto-allocated addresses", profile.InterfaceAddresses)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rawRows) != 1 || len(parseStringArray(rawRows[0].AddressesJSON)) == 0 {
+		t.Fatalf("stored interface addresses = %+v, want auto-allocated addresses", rawRows)
+	}
+}
+
 func TestWireGuardProfileServiceEnsureDefaultCreatesProfile(t *testing.T) {
 	store, svc := newTestWireGuardProfileService(t)
 	agentID := "local"
@@ -294,18 +338,18 @@ func TestWireGuardProfileCreateAllocatesAddressWhenOmitted(t *testing.T) {
 	}
 }
 
-func TestWireGuardProfileCreateRejectsExplicitEmptyInterfaceAddresses(t *testing.T) {
+func TestWireGuardProfileCreateRejectsInvalidInterfaceAddresses(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
 	input := testWireGuardProfileInput()
-	input.InterfaceAddresses = []string{}
+	input.InterfaceAddresses = []string{"not-a-cidr"}
 	_, err := svc.Create(ctx, "local", input)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "interface_addresses is required") {
-		t.Fatalf("Create() error = %v, want interface_addresses required message", err)
+	if err == nil || !strings.Contains(err.Error(), "interface_addresses") {
+		t.Fatalf("Create() error = %v, want interface_addresses validation message", err)
 	}
 }
 

@@ -118,4 +118,43 @@ describe('EgressProfileForm', () => {
       }
     })
   })
+
+  it('preserves additional WireGuard peers when editing', async () => {
+    const wrapper = mountForm({
+      id: 43,
+      name: 'wg multi',
+      type: 'wireguard',
+      enabled: true,
+      wireguard_config: {
+        private_key: 'xxxxx',
+        addresses: ['10.42.0.2/32'],
+        peers: [
+          {
+            public_key: 'peer-a',
+            endpoint: 'a.example.com:51820',
+            allowed_ips: ['10.42.0.0/24'],
+            preshared_key: 'xxxxx'
+          },
+          {
+            public_key: 'peer-b',
+            endpoint: 'b.example.com:51820',
+            allowed_ips: ['10.43.0.0/24'],
+            persistent_keepalive_seconds: 30
+          }
+        ]
+      }
+    })
+
+    await inputByName(wrapper, 'description').setValue('rename only')
+    await wrapper.get('form').trigger('submit')
+
+    const payload = wrapper.emitted('submit')[0][0]
+    expect(payload.wireguard_config.peers).toHaveLength(2)
+    expect(payload.wireguard_config.peers[1]).toMatchObject({
+      public_key: 'peer-b',
+      endpoint: 'b.example.com:51820',
+      allowed_ips: ['10.43.0.0/24'],
+      persistent_keepalive_seconds: 30
+    })
+  })
 })

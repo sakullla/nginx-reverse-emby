@@ -144,6 +144,11 @@ function existingWireGuardPeer() {
   return Array.isArray(wg.peers) ? { ...(wg.peers[0] || {}) } : {}
 }
 
+function existingWireGuardPeers() {
+  const wg = props.initialData?.wireguard_config || {}
+  return Array.isArray(wg.peers) ? wg.peers.map((peer) => ({ ...peer })) : []
+}
+
 function validate() {
   error.value = ''
   if (!form.value.name.trim()) {
@@ -186,16 +191,18 @@ function handleSubmit() {
   }
 
   if (form.value.type === 'wireguard') {
-    const peer = existingWireGuardPeer()
+    const peers = existingWireGuardPeers()
+    const firstPeer = peers[0] || existingWireGuardPeer()
+    peers[0] = {
+      ...firstPeer,
+      public_key: form.value.peer_public_key.trim(),
+      endpoint: form.value.peer_endpoint.trim(),
+      allowed_ips: splitLines(form.value.peer_allowed_ips)
+    }
     payload.wireguard_config = {
       private_key: form.value.private_key.trim(),
       addresses: splitLines(form.value.addresses),
-      peers: [{
-        ...peer,
-        public_key: form.value.peer_public_key.trim(),
-        endpoint: form.value.peer_endpoint.trim(),
-        allowed_ips: splitLines(form.value.peer_allowed_ips)
-      }],
+      peers,
       dns: splitLines(form.value.dns),
       mtu: Number(form.value.mtu) || 0
     }
