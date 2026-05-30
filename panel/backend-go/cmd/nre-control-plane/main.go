@@ -435,6 +435,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	ruleSvc := service.NewRuleService(cfg, serviceStore)
 	l4Svc := service.NewL4RuleService(cfg, serviceStore)
 	versionSvc := service.NewVersionPolicyService(serviceStore)
+	egressSvc := service.NewEgressProfileServiceWithConfig(cfg, serviceStore)
 	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
 	certSvc := service.NewCertificateService(cfg, serviceStore)
 	wireGuardSvc := service.NewWireGuardProfileService(cfg, serviceStore)
@@ -469,6 +470,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	l4Svc.SetLocalApplyTrigger(runtime.SyncNow)
 	relaySvc.SetLocalApplyTrigger(runtime.SyncNow)
 	certSvc.SetLocalApplyTrigger(runtime.SyncNow)
+	egressSvc.SetLocalApplyTrigger(runtime.SyncNow)
 	if triggerSvc, ok := any(wireGuardSvc).(interface {
 		SetLocalApplyTrigger(func(context.Context) error)
 	}); ok {
@@ -493,6 +495,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		RuleService:             ruleSvc,
 		L4RuleService:           l4Svc,
 		VersionPolicyService:    versionSvc,
+		EgressProfileService:    egressSvc,
 		RelayListenerService:    relaySvc,
 		CertificateService:      certSvc,
 		WireGuardProfileService: wireGuardSvc,

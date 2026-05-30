@@ -64,8 +64,9 @@ type egressProfileLookupStore interface {
 }
 
 type egressProfileService struct {
-	cfg   config.Config
-	store egressProfileStore
+	cfg               config.Config
+	store             egressProfileStore
+	localApplyTrigger func(context.Context) error
 }
 
 func NewEgressProfileService(store egressProfileStore) *egressProfileService {
@@ -77,6 +78,17 @@ func NewEgressProfileServiceWithConfig(cfg config.Config, store egressProfileSto
 		cfg.LocalAgentID = "local"
 	}
 	return &egressProfileService{cfg: cfg, store: store}
+}
+
+func (s *egressProfileService) SetLocalApplyTrigger(trigger func(context.Context) error) {
+	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
+}
+
+func (s *egressProfileService) triggerLocalApply(ctx context.Context, agentID string) error {
+	if !s.cfg.EnableLocalAgent || agentID != s.cfg.LocalAgentID || s.localApplyTrigger == nil {
+		return nil
+	}
+	return s.localApplyTrigger(ctx)
 }
 
 func (s *egressProfileService) List(ctx context.Context) ([]EgressProfile, error) {
@@ -202,6 +214,9 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 		return EgressProfile{}, err
 	}
 	if err := s.bumpRemoteDesiredRevisions(ctx, affectedAgentIDs, profile.Revision); err != nil {
+		return EgressProfile{}, err
+	}
+	if err := s.triggerLocalApplyForAgents(ctx, affectedAgentIDs); err != nil {
 		return EgressProfile{}, err
 	}
 	return redactEgressProfile(profile), nil
@@ -415,6 +430,15 @@ func (s *egressProfileService) bumpRemoteDesiredRevisions(ctx context.Context, a
 			row.DesiredRevision = nextRevision
 		}
 		if err := s.store.SaveAgent(ctx, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *egressProfileService) triggerLocalApplyForAgents(ctx context.Context, agentIDs []string) error {
+	for _, agentID := range agentIDs {
+		if err := s.triggerLocalApply(ctx, agentID); err != nil {
 			return err
 		}
 	}

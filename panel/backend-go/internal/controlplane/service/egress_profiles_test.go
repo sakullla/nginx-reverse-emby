@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -483,6 +484,37 @@ func TestEgressProfileServiceUpdateBumpsReferencedRemoteAgentRevision(t *testing
 	}
 	if snapshot.Revision != int64(updated.Revision) {
 		t.Fatalf("snapshot Revision = %d, want %d", snapshot.Revision, updated.Revision)
+	}
+}
+
+func TestEgressProfileServiceUpdateTriggersLocalApplyWhenLocalExecutorUsesProfile(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	svc := NewEgressProfileService(store)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return nil
+	})
+	profile := createTestEgressProfile(t, svc)
+	if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{{
+		ID:              61,
+		AgentID:         "local",
+		FrontendURL:     "http://local.example.com",
+		BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+		EgressProfileID: &profile.ID,
+		Enabled:         true,
+		Revision:        2,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	if _, err := svc.Update(t.Context(), profile.ID, EgressProfileInput{
+		ProxyURL: stringPtrEgress("socks5://127.0.0.1:2080"),
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if applyCalls != 1 {
+		t.Fatalf("local apply calls = %d, want 1", applyCalls)
 	}
 }
 
