@@ -127,7 +127,7 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 			return nil
 		}
 		if !bindingKeysOverlap(relayServerBindingKeys(previous), relayListenerBindingKeys(listeners)) || !isRuntimeBindConflict(err) {
-			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
 				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 			return err
@@ -162,7 +162,7 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 	}
 	if err != nil {
 		if previous != nil {
-			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction); restoreErr != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
 				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 		}
@@ -194,10 +194,14 @@ func (m *relayRuntimeManager) canRecreateWireGuardRuntimeForBindConflict(err err
 	return false
 }
 
-func (m *relayRuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **wireguard.Transaction) error {
+func (m *relayRuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **wireguard.Transaction, egressTransaction **wireguard.Transaction) error {
 	if transaction != nil && *transaction != nil {
 		(*transaction).Rollback()
 		*transaction = nil
+	}
+	if egressTransaction != nil && *egressTransaction != nil {
+		(*egressTransaction).Rollback()
+		*egressTransaction = nil
 	}
 	return m.restorePreviousServerLocked(ctx)
 }
