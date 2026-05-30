@@ -626,7 +626,7 @@ func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing
 			WireGuardProfileID: &remoteProfileID,
 		},
 	}
-	provider := shared.providerForAgent("wg-relay-caller")
+	provider := shared.ProviderForAgent("wg-relay-caller")
 	runtime, ok := relay.ResolveWireGuardRuntimeForHop(provider, hop)
 	if !ok {
 		t.Fatal("ResolveWireGuardRuntimeForHop() ok = false, want local caller runtime")
@@ -667,7 +667,7 @@ func TestWireGuardProviderDoesNotFallbackAcrossAgentsForScopedLookup(t *testing.
 		t.Fatalf("Apply() error = %v", err)
 	}
 
-	provider := shared.providerForAgent("local-agent")
+	provider := shared.ProviderForAgent("local-agent")
 	if runtime, ok := provider.WireGuardRuntime(profile.ID); ok {
 		t.Fatalf("WireGuardRuntime() returned %p from another agent, want missing scoped runtime", runtime)
 	}
@@ -2016,10 +2016,6 @@ func TestRelayRuntimeManagerAppliesWireGuardProfilesWithoutLocalListeners(t *tes
 
 	if _, ok := shared.RuntimeForAgent(profile.AgentID, profileID); !ok {
 		t.Fatal("expected wireguard runtime to be registered without local relay listeners")
-	}
-	snapshot := shared.profileSnapshot()
-	if len(snapshot) != 1 || snapshot[0].ID != profileID {
-		t.Fatalf("profileSnapshot() = %+v, want profile %d", snapshot, profileID)
 	}
 	if created != 1 {
 		t.Fatalf("wireguard runtime creations = %d, want 1", created)

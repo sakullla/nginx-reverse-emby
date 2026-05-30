@@ -7,15 +7,21 @@ import (
 	"os"
 	"reflect"
 	stdruntime "runtime"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
+	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
@@ -81,37 +87,33 @@ type hostTrafficCollector interface {
 }
 
 type App struct {
-	cfg                           Config
-	syncClient                    SyncClient
-	store                         store.Store
-	httpApplier                   HTTPApplier
-	certApplier                   CertificateApplier
-	l4Applier                     L4Applier
-	relayApplier                  RelayApplier
-	updater                       Updater
-	runtime                       *agentruntime.Runtime
-	taskClient                    *agenttask.Client
-	diagnosticHandler             *agenttask.DiagnosticHandler
-	httpProber                    *diagnostics.HTTPProber
-	tcpProber                     *diagnostics.TCPProber
-	hostTrafficCollector          hostTrafficCollector
-	wireGuardRuntime              *sharedWireGuardRuntime
-	relayTimeoutReset             func()
-	closeOnce                     sync.Once
-	syncMu                        sync.Mutex
-	pendingTrafficStatsReportUnix string
+	cfg                  Config
+	syncClient           SyncClient
+	store                store.Store
+	httpApplier          HTTPApplier
+	certApplier          CertificateApplier
+	l4Applier            L4Applier
+	relayApplier         RelayApplier
+	updater              Updater
+	runtime              *agentruntime.Runtime
+	taskClient           *agenttask.Client
+	diagnosticHandler    *agenttask.DiagnosticHandler
+	httpProber           *diagnostics.HTTPProber
+	tcpProber            *diagnostics.TCPProber
+	hostTrafficCollector hostTrafficCollector
+	moduleRegistry       *agentmodule.Registry
+	certModule           *modulecerts.Module
+	diagnosticModule     *modulediagnostics.Module
+	egressModule         *moduleegress.Module
+	wireGuardRuntime     *modulewireguard.Runtime
+	relayTimeoutReset    func()
+	pendingSyncMetadata  map[string]string
+	closeOnce            sync.Once
+	syncMu               sync.Mutex
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"}
-	if cfg.WireGuardModuleEnabled() {
-		capabilities = append(capabilities, "wireguard")
-	}
-	capabilities = append(capabilities, "egress_profiles")
-	if cfg.HTTP3Enabled {
-		capabilities = append(capabilities, "http3_ingress")
-	}
-	return capabilities
+	return core.CapabilityNames(cfg, nil)
 }
 
 func normalizeConstructorConfig(cfg Config) Config {
@@ -195,6 +197,14 @@ func New(cfg Config) (*App, error) {
 	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
 	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
+	certModule := modulecerts.NewModule(certManager)
+	diagnosticModule := modulediagnostics.NewModule(diagnosticHandler, httpProber, tcpProber)
+	egressModule := moduleegress.NewModule(nil)
+	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, wireGuardRuntime)
+	if err != nil {
+		_ = wireGuardRuntime.Close()
+		return nil, err
+	}
 	taskClient := agenttask.NewClient(agenttask.ClientConfig{
 		MasterURL:     cfg.MasterURL,
 		AgentToken:    cfg.AgentToken,
@@ -204,16 +214,16 @@ func New(cfg Config) (*App, error) {
 		Capabilities:  advertisedCapabilities(cfg),
 		ReconnectWait: time.Second,
 		HTTPTransport: cfg.HTTPTransport,
-		Handler:       diagnosticHandler,
+		Handler:       diagnosticModule,
 	})
 	app := newAppWithAllDeps(
 		cfg,
 		st,
 		client,
 		httpManager,
-		certManager,
+		certModule,
 		l4Manager,
-		newRelayRuntimeManagerWithWireGuard(certManager, wireGuardRuntime),
+		newRelayRuntimeManagerWithWireGuardAndEgressModule(certManager, wireGuardRuntime, egressModule, false),
 		agentupdate.NewManager(
 			cfg.DataDir,
 			executablePath,
@@ -224,12 +234,48 @@ func New(cfg Config) (*App, error) {
 		),
 		taskClient,
 	)
-	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
+	app.setDiagnosticModule(diagnosticModule)
 	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
+	app.moduleRegistry = moduleRegistry
+	app.egressModule = egressModule
 	app.wireGuardRuntime = wireGuardRuntime
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil
+}
+
+func newAppModuleRegistry(
+	cfg Config,
+	certModule *modulecerts.Module,
+	diagnosticModule *modulediagnostics.Module,
+	egressModule *moduleegress.Module,
+	wireGuardRuntime *modulewireguard.Runtime,
+) (*agentmodule.Registry, error) {
+	registry := agentmodule.NewRegistry()
+	if err := registry.Register(moduletraffic.NewModule()); err != nil {
+		return nil, err
+	}
+	if certModule != nil {
+		if err := registry.Register(certModule); err != nil {
+			return nil, err
+		}
+	}
+	if diagnosticModule != nil {
+		if err := registry.Register(diagnosticModule); err != nil {
+			return nil, err
+		}
+	}
+	if egressModule != nil {
+		if err := registry.Register(egressModule); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.WireGuardModuleEnabled() {
+		if err := registry.Register(modulewireguard.NewModule(wireGuardRuntime)); err != nil {
+			return nil, err
+		}
+	}
+	return registry, nil
 }
 
 func newAppWithDeps(
@@ -280,6 +326,9 @@ func newAppWithAllDeps(
 		updater:      updater,
 		taskClient:   taskClient,
 	}
+	if certModule, ok := certApplier.(*modulecerts.Module); ok {
+		app.certModule = certModule
+	}
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	return app
 }
@@ -297,23 +346,49 @@ func newRuntimeDiagnosticProbers(relayProvider relay.TLSMaterialProvider, httpAp
 }
 
 func (a *App) setDiagnostics(handler *agenttask.DiagnosticHandler, httpProber *diagnostics.HTTPProber, tcpProber *diagnostics.TCPProber) {
-	a.diagnosticHandler = handler
-	a.httpProber = httpProber
-	a.tcpProber = tcpProber
+	a.setDiagnosticModule(modulediagnostics.NewModule(handler, httpProber, tcpProber))
+}
+
+func (a *App) setDiagnosticModule(diagnosticModule *modulediagnostics.Module) {
+	if a == nil {
+		return
+	}
+	a.diagnosticModule = diagnosticModule
+	if diagnosticModule == nil {
+		a.diagnosticHandler = nil
+		a.httpProber = nil
+		a.tcpProber = nil
+		return
+	}
+	if handler, ok := diagnosticModule.Handler().(*agenttask.DiagnosticHandler); ok {
+		a.diagnosticHandler = handler
+	} else {
+		a.diagnosticHandler = nil
+	}
+	a.httpProber = diagnosticModule.HTTPProber()
+	a.tcpProber = diagnosticModule.TCPProber()
 }
 
 func (a *App) Diagnose(ctx context.Context, taskType string, ruleID int) (map[string]any, error) {
-	if a == nil || a.diagnosticHandler == nil {
+	if a == nil {
 		return nil, errors.New("diagnostic handler is not configured")
 	}
-	return a.diagnosticHandler.HandleTask(ctx, agenttask.TaskMessage{
+	msg := agenttask.TaskMessage{
 		TaskType:   taskType,
 		RawPayload: map[string]any{"rule_id": ruleID},
-	})
+	}
+	if a.diagnosticModule != nil && a.diagnosticModule.Handler() != nil {
+		return a.diagnosticModule.HandleTask(ctx, msg)
+	}
+	if a.diagnosticHandler == nil {
+		return nil, errors.New("diagnostic handler is not configured")
+	}
+	return a.diagnosticHandler.HandleTask(ctx, msg)
 }
 
 func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType string, ruleID int) (map[string]any, error) {
-	if a == nil || a.httpProber == nil || a.tcpProber == nil {
+	httpProber, tcpProber := a.diagnosticProbers()
+	if httpProber == nil || tcpProber == nil {
 		return nil, errors.New("diagnostic handler is not configured")
 	}
 	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
@@ -323,11 +398,21 @@ func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType 
 	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
 		return nil, err
 	}
-	handler := agenttask.NewDiagnosticHandler(mem, a.httpProber, a.tcpProber)
+	handler := agenttask.NewDiagnosticHandler(mem, httpProber, tcpProber)
 	return handler.HandleTask(ctx, agenttask.TaskMessage{
 		TaskType:   taskType,
 		RawPayload: map[string]any{"rule_id": ruleID},
 	})
+}
+
+func (a *App) diagnosticProbers() (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
+	if a == nil {
+		return nil, nil
+	}
+	if a.diagnosticModule != nil {
+		return a.diagnosticModule.HTTPProber(), a.diagnosticModule.TCPProber()
+	}
+	return a.httpProber, a.tcpProber
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -440,11 +525,12 @@ func (a *App) performSync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req, err := a.syncRequest(ctx, applied)
+	controller := a.syncController()
+	plan, err := controller.BuildSyncPlan(ctx, applied)
 	if err != nil {
 		return err
 	}
-	return a.syncOnce(ctx, req)
+	return controller.PerformSyncPlan(ctx, plan)
 }
 
 func (a *App) SyncNow(ctx context.Context) error {
@@ -475,30 +561,5 @@ func (a *App) closeLocalRuntimes() {
 }
 
 func (a *App) handlePendingUpdate(ctx context.Context, snapshot Snapshot) error {
-	if !agentupdate.HasValidPackage(snapshot.VersionPackage) {
-		return nil
-	}
-	desiredSHA := strings.TrimSpace(snapshot.VersionPackage.SHA256)
-	if desiredSHA == "" {
-		return nil
-	}
-	currentSHA := strings.TrimSpace(a.cfg.RuntimePackageSHA256)
-	if currentSHA != "" && strings.EqualFold(currentSHA, desiredSHA) {
-		return nil
-	}
-	if a.updater == nil {
-		return a.recordRuntimeError(errors.New("updater unavailable"))
-	}
-
-	stagedPath, err := a.updater.Stage(ctx, *snapshot.VersionPackage)
-	if err != nil {
-		return a.recordRuntimeError(err)
-	}
-	if err := a.updater.Activate(stagedPath, snapshot.DesiredVersion); err != nil {
-		if errors.Is(err, agentupdate.ErrRestartRequested) {
-			return err
-		}
-		return a.recordRuntimeError(err)
-	}
-	return agentupdate.ErrRestartRequested
+	return a.syncController().HandlePendingUpdate(ctx, snapshot)
 }

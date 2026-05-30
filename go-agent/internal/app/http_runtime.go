@@ -10,6 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
+	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
@@ -19,7 +20,7 @@ type httpRuntimeManager struct {
 	mu                 sync.Mutex
 	runtime            *proxy.Runtime
 	provider           proxy.TLSMaterialProvider
-	wireGuardRuntime   *sharedWireGuardRuntime
+	wireGuardRuntime   *modulewireguard.Runtime
 	egressWireGuard    *egressWireGuardRuntime
 	wireGuardProvider  relay.WireGuardRuntimeProvider
 	ownsWireGuard      bool
@@ -54,7 +55,7 @@ func newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(provider proxy.TLSMaterialPro
 	return newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider, http3Enabled, cfg, newSharedWireGuardRuntime(), true)
 }
 
-func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMaterialProvider, http3Enabled bool, cfg Config, wireGuardRuntime *sharedWireGuardRuntime, ownsWireGuard ...bool) *httpRuntimeManager {
+func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMaterialProvider, http3Enabled bool, cfg Config, wireGuardRuntime *modulewireguard.Runtime, ownsWireGuard ...bool) *httpRuntimeManager {
 	transport := proxy.NewSharedTransport()
 	proxy.ApplyTransportOptions(transport, proxy.TransportOptions{
 		DialTimeout:           cfg.HTTPTransport.DialTimeout,
@@ -72,7 +73,7 @@ func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMater
 		provider:          provider,
 		wireGuardRuntime:  wireGuardRuntime,
 		egressWireGuard:   newEgressWireGuardRuntime(nil),
-		wireGuardProvider: wireGuardRuntime.providerForAgent(cfg.AgentID),
+		wireGuardProvider: wireGuardRuntime.ProviderForAgent(cfg.AgentID),
 		ownsWireGuard:     owns,
 		cache:             backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
 		transport:         transport,
@@ -334,7 +335,7 @@ func (m *httpRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context,
 	if transaction == nil {
 		return nil, m.wireGuardProvider, nil
 	}
-	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID, profiles: cloneWireGuardProfiles(profiles)}, nil
+	return transaction, m.wireGuardRuntime.TransactionProviderForAgent(transaction, m.localAgentID, profiles), nil
 }
 
 func (m *httpRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) error {

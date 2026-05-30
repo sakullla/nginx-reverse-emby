@@ -22,6 +22,10 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
@@ -61,6 +65,111 @@ func TestNewBuildsRealWiring(t *testing.T) {
 	}
 	if app.relayApplier == nil {
 		t.Fatal("expected relay applier to be initialized")
+	}
+}
+
+func TestNewRegistersModulesWhenDependenciesExist(t *testing.T) {
+	tests := []struct {
+		name              string
+		wireGuardEnabled  bool
+		wireGuardExplicit bool
+		wantNames         []string
+	}{
+		{
+			name:              "explicit enabled",
+			wireGuardEnabled:  true,
+			wireGuardExplicit: true,
+			wantNames:         []string{"traffic", "certs", "diagnostics", "egress", "wireguard"},
+		},
+		{
+			name:              "implicit default",
+			wireGuardEnabled:  false,
+			wireGuardExplicit: false,
+			wantNames:         []string{"traffic", "certs", "diagnostics", "egress", "wireguard"},
+		},
+		{
+			name:              "explicit disabled",
+			wireGuardEnabled:  false,
+			wireGuardExplicit: true,
+			wantNames:         []string{"traffic", "certs", "diagnostics", "egress"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				AgentID:           "agent",
+				AgentName:         "agent",
+				MasterURL:         "https://master.example.com",
+				AgentToken:        "token",
+				CurrentVersion:    "0.1.0",
+				DataDir:           t.TempDir(),
+				WireGuardEnabled:  tc.wireGuardEnabled,
+				WireGuardExplicit: tc.wireGuardExplicit,
+			}
+			app, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			defer app.Close()
+
+			registry := extractPrivateField(t, app, "moduleRegistry").Interface().(*agentmodule.Registry)
+			if registry == nil {
+				t.Fatal("moduleRegistry = nil")
+			}
+			if got := registry.Names(); !reflect.DeepEqual(got, tc.wantNames) {
+				t.Fatalf("module registry names = %+v, want %+v", got, tc.wantNames)
+			}
+		})
+	}
+}
+
+func TestNewUsesRegisteredAdapterModulesAsAppDependencies(t *testing.T) {
+	cfg := Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		MasterURL:      "https://master.example.com",
+		AgentToken:     "token",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+	}
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer app.Close()
+
+	registry := extractPrivateField(t, app, "moduleRegistry").Interface().(*agentmodule.Registry)
+	certModule := extractPrivateField(t, app, "certModule").Interface().(*modulecerts.Module)
+	diagnosticModule := extractPrivateField(t, app, "diagnosticModule").Interface().(*modulediagnostics.Module)
+	egressModule := extractPrivateField(t, app, "egressModule").Interface().(*moduleegress.Module)
+
+	if app.certApplier != certModule {
+		t.Fatalf("certApplier = %T, want retained cert module", app.certApplier)
+	}
+	if app.diagnosticHandler != diagnosticModule.Handler() {
+		t.Fatal("diagnostic handler does not come from retained diagnostic module")
+	}
+	if app.httpProber != diagnosticModule.HTTPProber() {
+		t.Fatal("http prober does not come from retained diagnostic module")
+	}
+	if app.tcpProber != diagnosticModule.TCPProber() {
+		t.Fatal("tcp prober does not come from retained diagnostic module")
+	}
+	if relayManager, ok := app.relayApplier.(*relayRuntimeManager); !ok {
+		t.Fatalf("relayApplier = %T, want relayRuntimeManager", app.relayApplier)
+	} else if got := extractPrivateField(t, relayManager, "egressModule").Interface().(*moduleegress.Module); got != egressModule {
+		t.Fatal("relay manager does not use retained egress module")
+	}
+
+	if got := registryModuleByName(registry, "certs"); got != certModule {
+		t.Fatal("registry certs module is not the retained cert module")
+	}
+	if got := registryModuleByName(registry, "diagnostics"); got != diagnosticModule {
+		t.Fatal("registry diagnostics module is not the retained diagnostics module")
+	}
+	if got := registryModuleByName(registry, "egress"); got != egressModule {
+		t.Fatal("registry egress module is not the retained egress module")
 	}
 }
 
@@ -151,6 +260,69 @@ func TestNewSharesRuntimeBackendCachesWithDiagnosticTaskHandler(t *testing.T) {
 	}
 }
 
+func TestDiagnoseUsesDiagnosticModuleHandler(t *testing.T) {
+	handler := &recordingModuleDiagnosticHandler{
+		result: map[string]any{"kind": "http", "rule_id": 77},
+	}
+	app := &App{
+		diagnosticModule: modulediagnostics.NewModule(handler, nil, nil),
+	}
+
+	got, err := app.Diagnose(context.Background(), agenttask.TaskTypeDiagnoseHTTPRule, 77)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, handler.result) {
+		t.Fatalf("Diagnose() = %+v, want %+v", got, handler.result)
+	}
+	if handler.msg.TaskType != agenttask.TaskTypeDiagnoseHTTPRule {
+		t.Fatalf("diagnostic task type = %q", handler.msg.TaskType)
+	}
+	if gotRuleID := handler.msg.RawPayload["rule_id"]; gotRuleID != 77 {
+		t.Fatalf("diagnostic rule_id = %+v, want 77", gotRuleID)
+	}
+}
+
+func TestDiagnoseSnapshotUsesDiagnosticModuleProbers(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	app := &App{
+		diagnosticModule: modulediagnostics.NewModule(
+			nil,
+			diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{Attempts: 1}),
+			diagnostics.NewTCPProber(diagnostics.TCPProberConfig{Attempts: 1}),
+		),
+	}
+	snapshot := Snapshot{
+		Rules: []model.HTTPRule{{
+			ID:          88,
+			FrontendURL: "http://frontend.example.test",
+			Backends:    []model.HTTPBackend{{URL: backend.URL}},
+		}},
+	}
+
+	got, err := app.DiagnoseSnapshot(context.Background(), snapshot, agenttask.TaskTypeDiagnoseHTTPRule, 88)
+	if err != nil {
+		t.Fatalf("DiagnoseSnapshot() error = %v", err)
+	}
+	if got["kind"] != "http" || got["rule_id"] != 88 {
+		t.Fatalf("DiagnoseSnapshot() = %+v, want http report for rule 88", got)
+	}
+}
+
+type recordingModuleDiagnosticHandler struct {
+	msg    agenttask.TaskMessage
+	result map[string]any
+}
+
+func (h *recordingModuleDiagnosticHandler) HandleTask(_ context.Context, msg agenttask.TaskMessage) (map[string]any, error) {
+	h.msg = msg
+	return h.result, nil
+}
+
 func TestDiagnoseSnapshotAppliesSnapshotCertificatesBeforeTaskHandling(t *testing.T) {
 	mem := store.NewInMemory()
 	certApplier := &testCertificateApplier{applyErr: errors.New("certificate apply failed")}
@@ -190,6 +362,15 @@ func TestDiagnoseSnapshotAppliesSnapshotCertificatesBeforeTaskHandling(t *testin
 	if len(calls[0].policies) != 1 || calls[0].policies[0].ID != 7 {
 		t.Fatalf("certificate policies = %+v", calls[0].policies)
 	}
+}
+
+func registryModuleByName(registry *agentmodule.Registry, name string) agentmodule.Module {
+	for _, mod := range registry.Modules() {
+		if mod.Name() == name {
+			return mod
+		}
+	}
+	return nil
 }
 
 func extractPrivateTransport(t *testing.T, client any) *http.Transport {
@@ -2799,6 +2980,54 @@ func TestPerformSyncIncludesStatsAfterTrafficStatsInterval(t *testing.T) {
 	}
 	if time.Since(time.Unix(reportedAt, 0)) > time.Minute {
 		t.Fatalf("last_traffic_stats_report_unix = %d, want recent timestamp", reportedAt)
+	}
+}
+
+func TestSyncRequestThenSyncOncePersistsTrafficStatsReportTimestamp(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
+	traffic.AddHTTP(11, 22)
+
+	mem := store.NewInMemory()
+	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	lastReportedAt := time.Now().Add(-time.Hour).Unix()
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		Metadata: map[string]string{
+			runtimeMetaTrafficStatsInterval:       "1s",
+			runtimeMetaLastTrafficStatsReportUnix: strconv.FormatInt(lastReportedAt, 10),
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, client, &testCertificateApplier{}, nil, nil)
+	req, err := app.syncRequest(context.Background(), applied)
+	if err != nil {
+		t.Fatalf("syncRequest() error = %v", err)
+	}
+	if req.Stats == nil {
+		t.Fatal("Stats = nil, want traffic stats after traffic stats interval elapses")
+	}
+
+	if err := app.syncOnce(context.Background(), req); err != nil {
+		t.Fatalf("syncOnce() error = %v", err)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	reportedAt := parseInt64(state.Metadata[runtimeMetaLastTrafficStatsReportUnix], 0)
+	if reportedAt <= lastReportedAt {
+		t.Fatalf("last_traffic_stats_report_unix = %d, want after %d", reportedAt, lastReportedAt)
 	}
 }
 

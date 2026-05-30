@@ -4,15 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
@@ -21,9 +19,10 @@ type relayRuntimeManager struct {
 	mu                 sync.Mutex
 	server             *relay.Server
 	provider           relay.TLSMaterialProvider
-	wireGuardRuntime   *sharedWireGuardRuntime
+	wireGuardRuntime   *modulewireguard.Runtime
 	wireGuardProvider  relay.WireGuardRuntimeProvider
 	egressWireGuard    *egressWireGuardRuntime
+	egressModule       *moduleegress.Module
 	ownsWireGuard      bool
 	blockState         relayTrafficBlockStateValue
 	lastListeners      []model.RelayListener
@@ -34,18 +33,26 @@ func newRelayRuntimeManager(provider relay.TLSMaterialProvider) *relayRuntimeMan
 	return newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntime(), true)
 }
 
-func newRelayRuntimeManagerWithWireGuard(provider relay.TLSMaterialProvider, wireGuardRuntime *sharedWireGuardRuntime, ownsWireGuard ...bool) *relayRuntimeManager {
+func newRelayRuntimeManagerWithWireGuard(provider relay.TLSMaterialProvider, wireGuardRuntime *modulewireguard.Runtime, ownsWireGuard ...bool) *relayRuntimeManager {
+	return newRelayRuntimeManagerWithWireGuardAndEgressModule(provider, wireGuardRuntime, moduleegress.NewModule(nil), ownsWireGuard...)
+}
+
+func newRelayRuntimeManagerWithWireGuardAndEgressModule(provider relay.TLSMaterialProvider, wireGuardRuntime *modulewireguard.Runtime, egressModule *moduleegress.Module, ownsWireGuard ...bool) *relayRuntimeManager {
 	if wireGuardRuntime == nil {
 		wireGuardRuntime = newSharedWireGuardRuntime()
 	}
+	if egressModule == nil {
+		egressModule = moduleegress.NewModule(nil)
+	}
 	owns := len(ownsWireGuard) > 0 && ownsWireGuard[0]
-	runtimeProvider := wireGuardRuntime.provider()
+	runtimeProvider := wireGuardRuntime.Provider()
 	relay.SetDefaultWireGuardRuntimeProvider(runtimeProvider)
 	return &relayRuntimeManager{
 		provider:          provider,
 		wireGuardRuntime:  wireGuardRuntime,
 		wireGuardProvider: runtimeProvider,
-		egressWireGuard:   newEgressWireGuardRuntime(nil),
+		egressWireGuard:   egressModule.WireGuardRuntime(),
+		egressModule:      egressModule,
 		ownsWireGuard:     owns,
 	}
 }
@@ -109,7 +116,7 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 	if previous != nil {
 		server, err := relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
 			WireGuardProvider: provider,
-			FinalHopDialer:    relayFinalHopDialer(egressProfiles, egressProvider),
+			FinalHopDialer:    m.relayFinalHopDialer(egressProfiles, egressProvider),
 		})
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
@@ -140,7 +147,7 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 	server, err := retryRuntimeBindConflict(ctx, func() (*relay.Server, error) {
 		return relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
 			WireGuardProvider: provider,
-			FinalHopDialer:    relayFinalHopDialer(egressProfiles, egressProvider),
+			FinalHopDialer:    m.relayFinalHopDialer(egressProfiles, egressProvider),
 		})
 	})
 	if err != nil && previous != nil && m.canRecreateWireGuardRuntimeForBindConflict(err, listeners, profiles) {
@@ -155,7 +162,7 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 			server, err = retryRuntimeBindConflict(ctx, func() (*relay.Server, error) {
 				return relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
 					WireGuardProvider: provider,
-					FinalHopDialer:    relayFinalHopDialer(egressProfiles, egressProvider),
+					FinalHopDialer:    m.relayFinalHopDialer(egressProfiles, egressProvider),
 				})
 			})
 		}
@@ -214,7 +221,7 @@ func (m *relayRuntimeManager) restorePreviousServerLocked(ctx context.Context) e
 	server, err := retryRuntimeBindConflict(ctx, func() (*relay.Server, error) {
 		return relay.StartWithOptions(ctx, m.lastListeners, m.provider, relay.StartOptions{
 			WireGuardProvider: m.wireGuardProvider,
-			FinalHopDialer:    relayFinalHopDialer(m.lastEgressProfiles, m.egressWireGuard.Provider()),
+			FinalHopDialer:    m.relayFinalHopDialer(m.lastEgressProfiles, m.egressWireGuard.Provider()),
 		})
 	})
 	if err != nil {
@@ -238,48 +245,14 @@ func (m *relayRuntimeManager) storeLastAppliedInputsLocked(listeners []model.Rel
 }
 
 func relayFinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relay.WireGuardRuntimeProvider) relay.FinalHopDialer {
-	return relayEgressFinalHopDialer{
-		dialer: egress.Dialer{
-			Resolver:          egress.NewResolver(profiles),
-			WireGuardProvider: wireGuardProvider,
-		},
+	return moduleegress.NewFinalHopDialer(profiles, wireGuardProvider)
+}
+
+func (m *relayRuntimeManager) relayFinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relay.WireGuardRuntimeProvider) relay.FinalHopDialer {
+	if m != nil && m.egressModule != nil {
+		return m.egressModule.FinalHopDialer(profiles, wireGuardProvider)
 	}
-}
-
-type relayEgressFinalHopDialer struct {
-	dialer egress.Dialer
-}
-
-func (d relayEgressFinalHopDialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, error) {
-	return d.dialer.DialTCP(ctx, target, id)
-}
-
-func (d relayEgressFinalHopDialer) OpenUDP(ctx context.Context, target string, id *int) (relay.UDPPacketPeer, error) {
-	conn, err := d.dialer.DialUDP(ctx, target, id)
-	if err != nil {
-		return nil, err
-	}
-	return relayUDPPacketConn{conn: conn, target: target}, nil
-}
-
-type relayUDPPacketConn struct {
-	conn   proxyproto.UDPPacketConn
-	target string
-}
-
-func (c relayUDPPacketConn) Close() error { return c.conn.Close() }
-func (c relayUDPPacketConn) SetReadDeadline(t time.Time) error {
-	return c.conn.SetReadDeadline(t)
-}
-func (c relayUDPPacketConn) SetWriteDeadline(t time.Time) error {
-	return c.conn.SetWriteDeadline(t)
-}
-func (c relayUDPPacketConn) ReadPacket() ([]byte, error) {
-	_, payload, err := c.conn.ReadPacket()
-	return payload, err
-}
-func (c relayUDPPacketConn) WritePacket(payload []byte) error {
-	return c.conn.WritePacket(c.target, payload)
+	return relayFinalHopDialer(profiles, wireGuardProvider)
 }
 
 func (m *relayRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
@@ -527,7 +500,7 @@ func (m *relayRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context
 	if transaction == nil {
 		return nil, m.wireGuardProvider, nil
 	}
-	return transaction, wireGuardTransactionProvider{transaction: transaction, profiles: cloneWireGuardProfiles(profiles)}, nil
+	return transaction, m.wireGuardRuntime.TransactionProvider(transaction, profiles), nil
 }
 
 func (m *relayRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) error {
@@ -583,281 +556,4 @@ func (m *relayRuntimeManager) Close() error {
 		relay.SetDefaultWireGuardRuntimeProvider(nil)
 	}
 	return firstErr
-}
-
-type sharedWireGuardRuntime struct {
-	mu       sync.RWMutex
-	manager  *wireguard.Manager
-	profiles []model.WireGuardProfile
-}
-
-func newSharedWireGuardRuntime() *sharedWireGuardRuntime {
-	return newSharedWireGuardRuntimeWithFactory(nil)
-}
-
-func newSharedWireGuardRuntimeWithFactory(factory wireguard.Factory) *sharedWireGuardRuntime {
-	return &sharedWireGuardRuntime{
-		manager: wireguard.NewManager(wireguard.ManagerOptions{Factory: factory}),
-	}
-}
-
-func (r *sharedWireGuardRuntime) Apply(ctx context.Context, profiles []model.WireGuardProfile) error {
-	if r == nil || r.manager == nil {
-		return nil
-	}
-	if err := r.manager.Apply(ctx, profiles); err != nil {
-		return err
-	}
-	r.storeProfiles(profiles)
-	return nil
-}
-
-func (r *sharedWireGuardRuntime) Prepare(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, error) {
-	if r == nil || r.manager == nil {
-		return nil, nil
-	}
-	return r.manager.Prepare(ctx, profiles)
-}
-
-func (r *sharedWireGuardRuntime) Recreate(ctx context.Context, profiles []model.WireGuardProfile) error {
-	if r == nil || r.manager == nil {
-		return nil
-	}
-	if err := r.manager.Recreate(ctx, profiles); err != nil {
-		return err
-	}
-	r.storeProfiles(profiles)
-	return nil
-}
-
-func (r *sharedWireGuardRuntime) Runtime(profileID int) (wireguard.Runtime, bool) {
-	if r == nil || r.manager == nil {
-		return nil, false
-	}
-	return r.manager.Runtime(profileID)
-}
-
-func (r *sharedWireGuardRuntime) RuntimeForAgent(agentID string, profileID int) (wireguard.Runtime, bool) {
-	if r == nil || r.manager == nil {
-		return nil, false
-	}
-	return r.manager.RuntimeForAgent(agentID, profileID)
-}
-
-func (r *sharedWireGuardRuntime) Commit(transaction *wireguard.Transaction, profiles []model.WireGuardProfile) {
-	if transaction == nil {
-		return
-	}
-	transaction.Commit()
-	r.storeProfiles(profiles)
-}
-
-func (r *sharedWireGuardRuntime) storeProfiles(profiles []model.WireGuardProfile) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.profiles = cloneWireGuardProfiles(profiles)
-}
-
-func (r *sharedWireGuardRuntime) profileSnapshot() []model.WireGuardProfile {
-	if r == nil {
-		return nil
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return cloneWireGuardProfiles(r.profiles)
-}
-
-func (r *sharedWireGuardRuntime) Close() error {
-	if r == nil || r.manager == nil {
-		return nil
-	}
-	return r.manager.Close()
-}
-
-func (r *sharedWireGuardRuntime) provider() relay.WireGuardRuntimeProvider {
-	return wireGuardRuntimeProvider{runtime: r}
-}
-
-func (r *sharedWireGuardRuntime) providerForAgent(agentID string) relay.WireGuardRuntimeProvider {
-	return wireGuardRuntimeProvider{runtime: r, agentID: strings.TrimSpace(agentID)}
-}
-
-type wireGuardRuntimeProvider struct {
-	runtime *sharedWireGuardRuntime
-	agentID string
-}
-
-func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
-	if p.runtime == nil {
-		return nil, false
-	}
-	if p.agentID != "" {
-		runtime, ok := p.runtime.RuntimeForAgent(p.agentID, profileID)
-		if ok {
-			return runtime, true
-		}
-		return nil, false
-	}
-	runtime, ok := p.runtime.Runtime(profileID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-func (p wireGuardRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
-	if p.runtime == nil {
-		return nil, false
-	}
-	runtime, ok := p.runtime.RuntimeForAgent(agentID, profileID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-func (p wireGuardRuntimeProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {
-	if p.runtime == nil {
-		return nil, false
-	}
-	if hop.Listener.WireGuardProfileID != nil && *hop.Listener.WireGuardProfileID > 0 {
-		if runtime, ok := p.WireGuardRuntimeForAgent(hop.Listener.AgentID, *hop.Listener.WireGuardProfileID); ok {
-			return runtime, true
-		}
-	}
-	profile, ok := wireGuardProfileForRelayHop(p.runtime.profileSnapshot(), p.agentID, hop)
-	if !ok {
-		return nil, false
-	}
-	runtime, ok := p.runtime.RuntimeForAgent(profile.AgentID, profile.ID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-type wireGuardTransactionProvider struct {
-	transaction *wireguard.Transaction
-	agentID     string
-	profiles    []model.WireGuardProfile
-}
-
-func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
-	if p.transaction == nil {
-		return nil, false
-	}
-	if p.agentID != "" {
-		runtime, ok := p.transaction.RuntimeForAgent(p.agentID, profileID)
-		if ok {
-			return runtime, true
-		}
-		return nil, false
-	}
-	runtime, ok := p.transaction.Runtime(profileID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-func (p wireGuardTransactionProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
-	if p.transaction == nil {
-		return nil, false
-	}
-	runtime, ok := p.transaction.RuntimeForAgent(agentID, profileID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-func (p wireGuardTransactionProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {
-	if p.transaction == nil {
-		return nil, false
-	}
-	if hop.Listener.WireGuardProfileID != nil && *hop.Listener.WireGuardProfileID > 0 {
-		if runtime, ok := p.WireGuardRuntimeForAgent(hop.Listener.AgentID, *hop.Listener.WireGuardProfileID); ok {
-			return runtime, true
-		}
-	}
-	profile, ok := wireGuardProfileForRelayHop(p.profiles, p.agentID, hop)
-	if !ok {
-		return nil, false
-	}
-	runtime, ok := p.transaction.RuntimeForAgent(profile.AgentID, profile.ID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-func wireGuardProfileForRelayHop(profiles []model.WireGuardProfile, localAgentID string, hop relay.Hop) (model.WireGuardProfile, bool) {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(hop.Address))
-	if err != nil {
-		return model.WireGuardProfile{}, false
-	}
-	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
-	if err != nil {
-		return model.WireGuardProfile{}, false
-	}
-	localAgentID = strings.TrimSpace(localAgentID)
-
-	var found model.WireGuardProfile
-	for _, profile := range profiles {
-		if !profile.Enabled {
-			continue
-		}
-		if localAgentID != "" && strings.TrimSpace(profile.AgentID) != localAgentID {
-			continue
-		}
-		if !wireGuardProfileRoutesRelayHop(profile, addr) {
-			continue
-		}
-		if found.ID != 0 {
-			return model.WireGuardProfile{}, false
-		}
-		found = profile
-	}
-	return found, found.ID != 0
-}
-
-func wireGuardProfileRoutesRelayHop(profile model.WireGuardProfile, addr netip.Addr) bool {
-	for _, peer := range profile.Peers {
-		for _, allowed := range peer.AllowedIPs {
-			prefix, err := netip.ParsePrefix(strings.TrimSpace(allowed))
-			if err != nil {
-				continue
-			}
-			if prefix.Addr().BitLen() != addr.BitLen() {
-				continue
-			}
-			if prefix.Contains(addr) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func cloneWireGuardProfiles(profiles []model.WireGuardProfile) []model.WireGuardProfile {
-	if profiles == nil {
-		return nil
-	}
-	cloned := make([]model.WireGuardProfile, len(profiles))
-	for i, profile := range profiles {
-		cloned[i] = profile
-		cloned[i].BindAddresses = append([]string(nil), profile.BindAddresses...)
-		cloned[i].Addresses = append([]string(nil), profile.Addresses...)
-		cloned[i].DNS = append([]string(nil), profile.DNS...)
-		cloned[i].Tags = append([]string(nil), profile.Tags...)
-		cloned[i].Peers = append([]model.WireGuardPeer(nil), profile.Peers...)
-		for j := range cloned[i].Peers {
-			cloned[i].Peers[j].AllowedIPs = append([]string(nil), profile.Peers[j].AllowedIPs...)
-			cloned[i].Peers[j].Reserved = append([]byte(nil), profile.Peers[j].Reserved...)
-		}
-	}
-	return cloned
 }

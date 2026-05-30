@@ -11,6 +11,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
@@ -20,7 +21,7 @@ type l4RuntimeManager struct {
 	server             *l4.Server
 	cache              *backends.Cache
 	provider           relay.TLSMaterialProvider
-	wireGuardRuntime   *sharedWireGuardRuntime
+	wireGuardRuntime   *modulewireguard.Runtime
 	egressWireGuard    *egressWireGuardRuntime
 	wireGuardProvider  relay.WireGuardRuntimeProvider
 	ownsWireGuard      bool
@@ -47,7 +48,7 @@ func newL4RuntimeManagerWithRelayAndConfig(provider relay.TLSMaterialProvider, c
 	return newL4RuntimeManagerWithRelayConfigAndWireGuard(provider, cfg, newSharedWireGuardRuntime(), true)
 }
 
-func newL4RuntimeManagerWithRelayConfigAndWireGuard(provider relay.TLSMaterialProvider, cfg Config, wireGuardRuntime *sharedWireGuardRuntime, ownsWireGuard ...bool) *l4RuntimeManager {
+func newL4RuntimeManagerWithRelayConfigAndWireGuard(provider relay.TLSMaterialProvider, cfg Config, wireGuardRuntime *modulewireguard.Runtime, ownsWireGuard ...bool) *l4RuntimeManager {
 	if wireGuardRuntime == nil {
 		wireGuardRuntime = newSharedWireGuardRuntime()
 	}
@@ -57,7 +58,7 @@ func newL4RuntimeManagerWithRelayConfigAndWireGuard(provider relay.TLSMaterialPr
 		provider:          provider,
 		wireGuardRuntime:  wireGuardRuntime,
 		egressWireGuard:   newEgressWireGuardRuntime(nil),
-		wireGuardProvider: wireGuardRuntime.providerForAgent(cfg.AgentID),
+		wireGuardProvider: wireGuardRuntime.ProviderForAgent(cfg.AgentID),
 		ownsWireGuard:     owns,
 		localAgentID:      strings.TrimSpace(cfg.AgentID),
 	}
@@ -69,7 +70,7 @@ func newL4RuntimeManagerWithWireGuardFactory(factory wireguard.Factory) *l4Runti
 		cache:             backends.NewCache(backends.Config{}),
 		wireGuardRuntime:  wireGuardRuntime,
 		egressWireGuard:   newEgressWireGuardRuntime(factory),
-		wireGuardProvider: wireGuardRuntime.provider(),
+		wireGuardProvider: wireGuardRuntime.Provider(),
 		ownsWireGuard:     true,
 	}
 }
@@ -347,7 +348,7 @@ func (m *l4RuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, p
 	if transaction == nil {
 		return nil, m.wireGuardProvider, nil
 	}
-	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID, profiles: cloneWireGuardProfiles(profiles)}, nil
+	return transaction, m.wireGuardRuntime.TransactionProviderForAgent(transaction, m.localAgentID, profiles), nil
 }
 
 func (m *l4RuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) error {

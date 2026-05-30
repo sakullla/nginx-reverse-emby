@@ -139,6 +139,10 @@ func flattenRelayLayers(layers [][]int) []int {
 	return ids
 }
 
+func l4RuleUsesWireGuard(rule model.L4Rule) bool {
+	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
+}
+
 func validateRelayListeners(ctx context.Context, listeners []model.RelayListener, provider relay.TLSMaterialProvider) error {
 	if provider == nil {
 		return fmt.Errorf("tls material provider is required")

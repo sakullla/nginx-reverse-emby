@@ -7,57 +7,10 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 type Activator func(ctx context.Context, previous, next model.Snapshot) error
-
-type SnapshotActivationHandlers struct {
-	ActivateAgentConfig         func(context.Context, model.AgentConfig) error
-	ActivateManagedCertificates func(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
-	ActivateHTTPRules           func(context.Context, []model.HTTPRule, []model.RelayListener) error
-	ActivateRelayListeners      func(context.Context, []model.RelayListener) error
-	ActivateL4Rules             func(context.Context, []model.L4Rule, []model.RelayListener) error
-}
-
-func NewSnapshotActivator(handlers SnapshotActivationHandlers) Activator {
-	return func(ctx context.Context, previous, next model.Snapshot) error {
-		if certificatesChanged(previous, next) && handlers.ActivateManagedCertificates != nil {
-			if err := handlers.ActivateManagedCertificates(ctx, next.Certificates, next.CertificatePolicies); err != nil {
-				return err
-			}
-		}
-
-		if agentConfigChanged(previous, next) && handlers.ActivateAgentConfig != nil {
-			if err := handlers.ActivateAgentConfig(ctx, next.AgentConfig); err != nil {
-				return err
-			}
-		}
-
-		if (httpRulesChanged(previous, next) || httpRelayInputsChanged(previous, next)) && handlers.ActivateHTTPRules != nil {
-			if err := handlers.ActivateHTTPRules(ctx, next.Rules, next.RelayListeners); err != nil {
-				return err
-			}
-		}
-
-		if relay.ListenersChanged(previous.RelayListeners, next.RelayListeners) && handlers.ActivateRelayListeners != nil {
-			if err := handlers.ActivateRelayListeners(ctx, next.RelayListeners); err != nil {
-				return err
-			}
-		}
-
-		if (l4RulesChanged(previous, next) || l4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners)) &&
-			handlers.ActivateL4Rules != nil {
-			if err := handlers.ActivateL4Rules(ctx, next.L4Rules, next.RelayListeners); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	}
-}
 
 type Runtime struct {
 	mu             sync.RWMutex
@@ -169,10 +122,12 @@ func isZeroSnapshot(s model.Snapshot) bool {
 	return s.DesiredVersion == "" &&
 		s.Revision == 0 &&
 		s.VersionPackage == nil &&
+		!s.HasAgentConfig() &&
 		len(s.Rules) == 0 &&
 		len(s.L4Rules) == 0 &&
 		len(s.RelayListeners) == 0 &&
 		len(s.WireGuardProfiles) == 0 &&
+		len(s.EgressProfiles) == 0 &&
 		len(s.Certificates) == 0 &&
 		len(s.CertificatePolicies) == 0
 }
@@ -183,6 +138,10 @@ func snapshotEqual(left, right model.Snapshot) bool {
 
 func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
+	if snapshot.AgentConfig.TrafficStatsEnabled != nil {
+		value := *snapshot.AgentConfig.TrafficStatsEnabled
+		cloned.AgentConfig.TrafficStatsEnabled = &value
+	}
 	if snapshot.VersionPackage != nil {
 		copyValue := *snapshot.VersionPackage
 		cloned.VersionPackage = &copyValue
@@ -199,7 +158,17 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 				cloned.Rules[i].CustomHeaders = make([]model.HTTPHeader, len(rule.CustomHeaders))
 				copy(cloned.Rules[i].CustomHeaders, rule.CustomHeaders)
 			}
+			if rule.WireGuardProfileID != nil {
+				value := *rule.WireGuardProfileID
+				cloned.Rules[i].WireGuardProfileID = &value
+			}
+			if rule.EgressProfileID != nil {
+				value := *rule.EgressProfileID
+				cloned.Rules[i].EgressProfileID = &value
+			}
+			cloned.Rules[i].RelayChain = append([]int(nil), rule.RelayChain...)
 			cloned.Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
+			cloned.Rules[i].Tags = append([]string(nil), rule.Tags...)
 		}
 	}
 	if snapshot.L4Rules != nil {
@@ -210,7 +179,17 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 				cloned.L4Rules[i].Backends = make([]model.L4Backend, len(rule.Backends))
 				copy(cloned.L4Rules[i].Backends, rule.Backends)
 			}
+			if rule.WireGuardProfileID != nil {
+				value := *rule.WireGuardProfileID
+				cloned.L4Rules[i].WireGuardProfileID = &value
+			}
+			if rule.EgressProfileID != nil {
+				value := *rule.EgressProfileID
+				cloned.L4Rules[i].EgressProfileID = &value
+			}
+			cloned.L4Rules[i].RelayChain = append([]int(nil), rule.RelayChain...)
 			cloned.L4Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
+			cloned.L4Rules[i].Tags = append([]string(nil), rule.Tags...)
 		}
 	}
 	if snapshot.RelayListeners != nil {
@@ -220,6 +199,14 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			if listener.BindHosts != nil {
 				cloned.RelayListeners[i].BindHosts = make([]string, len(listener.BindHosts))
 				copy(cloned.RelayListeners[i].BindHosts, listener.BindHosts)
+			}
+			if listener.CertificateID != nil {
+				value := *listener.CertificateID
+				cloned.RelayListeners[i].CertificateID = &value
+			}
+			if listener.WireGuardProfileID != nil {
+				value := *listener.WireGuardProfileID
+				cloned.RelayListeners[i].WireGuardProfileID = &value
 			}
 			if listener.PinSet != nil {
 				cloned.RelayListeners[i].PinSet = make([]model.RelayPin, len(listener.PinSet))
@@ -326,55 +313,4 @@ func describeSnapshot(snapshot model.Snapshot) string {
 		len(snapshot.Certificates),
 		len(snapshot.CertificatePolicies),
 	)
-}
-
-func certificatesChanged(previous, next model.Snapshot) bool {
-	return !reflect.DeepEqual(previous.Certificates, next.Certificates) ||
-		!reflect.DeepEqual(previous.CertificatePolicies, next.CertificatePolicies)
-}
-
-func agentConfigChanged(previous, next model.Snapshot) bool {
-	return !reflect.DeepEqual(previous.AgentConfig, next.AgentConfig)
-}
-
-func httpRulesChanged(previous, next model.Snapshot) bool {
-	return !reflect.DeepEqual(previous.Rules, next.Rules)
-}
-
-func l4RulesChanged(previous, next model.Snapshot) bool {
-	return !reflect.DeepEqual(previous.L4Rules, next.L4Rules)
-}
-
-func httpRelayInputsChanged(previous, next model.Snapshot) bool {
-	for _, rule := range next.Rules {
-		for _, layer := range rule.RelayLayers {
-			for _, listenerID := range layer {
-				if relayListenerChangedByID(listenerID, previous.RelayListeners, next.RelayListeners) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func relayListenerChangedByID(listenerID int, previous, next []model.RelayListener) bool {
-	previousListener, previousOK := relayListenerByID(listenerID, previous)
-	nextListener, nextOK := relayListenerByID(listenerID, next)
-	if previousOK != nextOK {
-		return true
-	}
-	if !previousOK {
-		return false
-	}
-	return !reflect.DeepEqual(previousListener, nextListener)
-}
-
-func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.RelayListener, bool) {
-	for _, listener := range listeners {
-		if listener.ID == listenerID {
-			return listener, true
-		}
-	}
-	return model.RelayListener{}, false
 }

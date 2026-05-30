@@ -147,12 +147,63 @@ func TestApplyPreviousMismatchReportsError(t *testing.T) {
 	}
 }
 
+func TestApplyPreviousMismatchTreatsAgentConfigAndEgressAsSnapshotPayload(t *testing.T) {
+	tests := []struct {
+		name     string
+		previous model.Snapshot
+	}{
+		{
+			name: "agent config only",
+			previous: model.Snapshot{
+				AgentConfig: model.AgentConfig{
+					OutboundProxyURL: "http://127.0.0.1:8080",
+				},
+			},
+		},
+		{
+			name: "egress profiles only",
+			previous: model.Snapshot{
+				EgressProfiles: []model.EgressProfile{{
+					ID:       7,
+					Name:     "exit",
+					Type:     "socks",
+					ProxyURL: "socks5://127.0.0.1:1080",
+					Enabled:  true,
+				}},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New()
+			active := model.Snapshot{DesiredVersion: "active", Revision: 1}
+			if err := r.Apply(context.Background(), model.Snapshot{}, active); err != nil {
+				t.Fatalf("priming apply failed: %v", err)
+			}
+
+			err := r.Apply(context.Background(), tc.previous, model.Snapshot{DesiredVersion: "next", Revision: 2})
+			if err == nil {
+				t.Fatal("expected previous mismatch to return error")
+			}
+			if got := r.ActiveSnapshot(); !snapshotEqual(got, active) {
+				t.Fatalf("active snapshot changed after mismatch: got %+v want %+v", got, active)
+			}
+		})
+	}
+}
+
 func TestStateReturnsMetadataCopy(t *testing.T) {
 	r := New()
 	ctx := context.Background()
 	initial := model.Snapshot{
 		DesiredVersion: "copy",
 		Revision:       1,
+		AgentConfig: model.AgentConfig{
+			OutboundProxyURL:     "http://127.0.0.1:8080",
+			TrafficStatsInterval: "30s",
+			TrafficStatsEnabled:  ptrBool(true),
+		},
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
 			Backends: []model.HTTPBackend{
@@ -232,6 +283,11 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	initial := model.Snapshot{
 		DesiredVersion: "copy",
 		Revision:       1,
+		AgentConfig: model.AgentConfig{
+			OutboundProxyURL:     "http://127.0.0.1:8080",
+			TrafficStatsInterval: "30s",
+			TrafficStatsEnabled:  ptrBool(true),
+		},
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
 			Backends: []model.HTTPBackend{
@@ -245,8 +301,12 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 				Name:  "X-Test",
 				Value: "one",
 			}},
-			RelayLayers: [][]int{{1, 2}, {3}},
-			Revision:    1,
+			WireGuardProfileID: ptrInt(51),
+			EgressProfileID:    ptrInt(52),
+			RelayChain:         []int{31, 32},
+			RelayLayers:        [][]int{{1, 2}, {3}},
+			Tags:               []string{"http-tag"},
+			Revision:           1,
 		}},
 		L4Rules: []model.L4Rule{{
 			Protocol:   "tcp",
@@ -265,18 +325,24 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 					Send:   true,
 				},
 			},
-			RelayLayers: [][]int{{4}, {5, 6}},
-			Revision:    1,
+			WireGuardProfileID: ptrInt(61),
+			EgressProfileID:    ptrInt(62),
+			RelayChain:         []int{41, 42},
+			RelayLayers:        [][]int{{4}, {5, 6}},
+			Tags:               []string{"l4-tag"},
+			Revision:           1,
 		}},
 		RelayListeners: []model.RelayListener{{
-			ID:         10,
-			AgentID:    "agent-a",
-			Name:       "relay-a",
-			ListenHost: "127.0.0.1",
-			BindHosts:  []string{"127.0.0.1", "127.0.0.2"},
-			ListenPort: 9443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
+			ID:                 10,
+			AgentID:            "agent-a",
+			Name:               "relay-a",
+			ListenHost:         "127.0.0.1",
+			BindHosts:          []string{"127.0.0.1", "127.0.0.2"},
+			ListenPort:         9443,
+			Enabled:            true,
+			CertificateID:      ptrInt(71),
+			WireGuardProfileID: ptrInt(72),
+			TLSMode:            "pin_only",
 			PinSet: []model.RelayPin{{
 				Type:  "sha256",
 				Value: "pin-one",
@@ -356,12 +422,23 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	}
 
 	snap := r.ActiveSnapshot()
+	*snap.AgentConfig.TrafficStatsEnabled = false
 	snap.Rules[0].CustomHeaders[0].Value = "mutated"
 	snap.Rules[0].Backends[0].URL = "http://mutated.example.internal:8096"
+	*snap.Rules[0].WireGuardProfileID = 99
+	*snap.Rules[0].EgressProfileID = 98
+	snap.Rules[0].RelayChain[0] = 99
 	snap.Rules[0].RelayLayers[0][0] = 99
+	snap.Rules[0].Tags[0] = "mutated"
+	snap.L4Rules[0].WireGuardProfileID = ptrInt(97)
+	snap.L4Rules[0].EgressProfileID = ptrInt(96)
+	snap.L4Rules[0].RelayChain[0] = 99
 	snap.L4Rules[0].RelayLayers[0][0] = 99
 	snap.L4Rules[0].RelayLayers[1][0] = 88
 	snap.L4Rules[0].Backends[0].Host = "mutated-host"
+	snap.L4Rules[0].Tags[0] = "mutated"
+	*snap.RelayListeners[0].CertificateID = 95
+	*snap.RelayListeners[0].WireGuardProfileID = 94
 	snap.RelayListeners[0].BindHosts[0] = "127.0.0.99"
 	snap.RelayListeners[0].PinSet[0].Value = "mutated"
 	snap.RelayListeners[0].TrustedCACertificateIDs[0] = 99
@@ -378,14 +455,32 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	snap.EgressProfiles[0].WireGuardConfig.DNS[0] = "8.8.8.8"
 
 	current := r.ActiveSnapshot()
+	if current.AgentConfig.TrafficStatsEnabled == nil || !*current.AgentConfig.TrafficStatsEnabled {
+		t.Fatalf("agent config traffic stats enabled leaked mutation: %+v", current.AgentConfig.TrafficStatsEnabled)
+	}
 	if current.Rules[0].CustomHeaders[0].Value != "one" {
 		t.Fatalf("http rule slice leaked mutation: %+v", current.Rules)
 	}
 	if current.Rules[0].Backends[0].URL != "http://10.0.0.11:8096" {
 		t.Fatalf("http backends leaked mutation: %+v", current.Rules[0].Backends)
 	}
+	if current.Rules[0].WireGuardProfileID == nil || *current.Rules[0].WireGuardProfileID != 51 {
+		t.Fatalf("http wireguard profile id leaked mutation: %+v", current.Rules[0].WireGuardProfileID)
+	}
+	if current.Rules[0].EgressProfileID == nil || *current.Rules[0].EgressProfileID != 52 {
+		t.Fatalf("http egress profile id leaked mutation: %+v", current.Rules[0].EgressProfileID)
+	}
+	if current.Rules[0].RelayChain[0] != 31 {
+		t.Fatalf("http relay_chain leaked mutation: %+v", current.Rules)
+	}
 	if current.Rules[0].RelayLayers[0][0] != 1 {
 		t.Fatalf("http relay_layers leaked mutation: %+v", current.Rules)
+	}
+	if current.Rules[0].Tags[0] != "http-tag" {
+		t.Fatalf("http tags leaked mutation: %+v", current.Rules)
+	}
+	if current.L4Rules[0].RelayChain[0] != 41 {
+		t.Fatalf("l4 relay_chain leaked mutation: %+v", current.L4Rules)
 	}
 	if current.L4Rules[0].RelayLayers[0][0] != 4 {
 		t.Fatalf("l4 relay_layers leaked mutation: %+v", current.L4Rules)
@@ -396,8 +491,23 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	if current.L4Rules[0].Backends[0].Host != "10.0.0.21" {
 		t.Fatalf("l4 backends leaked mutation: %+v", current.L4Rules[0].Backends)
 	}
+	if current.L4Rules[0].WireGuardProfileID == nil || *current.L4Rules[0].WireGuardProfileID != 61 {
+		t.Fatalf("l4 wireguard profile id leaked mutation: %+v", current.L4Rules[0].WireGuardProfileID)
+	}
+	if current.L4Rules[0].EgressProfileID == nil || *current.L4Rules[0].EgressProfileID != 62 {
+		t.Fatalf("l4 egress profile id leaked mutation: %+v", current.L4Rules[0].EgressProfileID)
+	}
+	if current.L4Rules[0].Tags[0] != "l4-tag" {
+		t.Fatalf("l4 tags leaked mutation: %+v", current.L4Rules)
+	}
 	if current.RelayListeners[0].BindHosts[0] != "127.0.0.1" {
 		t.Fatalf("relay bind_hosts leaked mutation: %+v", current.RelayListeners)
+	}
+	if current.RelayListeners[0].CertificateID == nil || *current.RelayListeners[0].CertificateID != 71 {
+		t.Fatalf("relay certificate id leaked mutation: %+v", current.RelayListeners[0].CertificateID)
+	}
+	if current.RelayListeners[0].WireGuardProfileID == nil || *current.RelayListeners[0].WireGuardProfileID != 72 {
+		t.Fatalf("relay wireguard profile id leaked mutation: %+v", current.RelayListeners[0].WireGuardProfileID)
 	}
 	if current.RelayListeners[0].PinSet[0].Value != "pin-one" {
 		t.Fatalf("relay pin_set leaked mutation: %+v", current.RelayListeners)
@@ -487,4 +597,12 @@ func TestActiveSnapshotPreservesExplicitEmptySlices(t *testing.T) {
 	if snap.CertificatePolicies == nil || len(snap.CertificatePolicies) != 0 {
 		t.Fatalf("expected explicit empty certificate policies slice, got %+v", snap.CertificatePolicies)
 	}
+}
+
+func ptrInt(v int) *int {
+	return &v
+}
+
+func ptrBool(v bool) *bool {
+	return &v
 }
