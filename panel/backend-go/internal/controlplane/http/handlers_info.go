@@ -42,6 +42,7 @@ func (d Dependencies) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"online_agents":                   info.OnlineAgents,
 		"total_agents":                    info.TotalAgents,
 		"traffic_stats_enabled":           info.TrafficStatsEnabled,
+		"wireguard_enabled":               info.WireGuardEnabled,
 	}
 	if authorized {
 		payload["data_dir"] = info.DataDir

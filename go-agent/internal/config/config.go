@@ -37,6 +37,8 @@ type Config struct {
 	HTTP3Enabled            bool
 	TrafficStatsEnabled     bool
 	TrafficStatsExplicit    bool
+	WireGuardEnabled        bool
+	WireGuardExplicit       bool
 	CurrentVersion          string
 	RuntimePackageSHA256    string
 }
@@ -98,6 +100,7 @@ func Default() Config {
 			IdleTimeout:      2 * time.Minute,
 		},
 		TrafficStatsEnabled: true,
+		WireGuardEnabled:    true,
 		CurrentVersion:      defaultAgentVersion,
 	}
 }
@@ -108,6 +111,10 @@ func LoadFromEnv() (Config, error) {
 
 func (c Config) HasExplicitBackendFailureOverrides() bool {
 	return c.BackendFailuresExplicit
+}
+
+func (c Config) WireGuardModuleEnabled() bool {
+	return c.WireGuardEnabled || !c.WireGuardExplicit
 }
 
 func loadFromEnvForExecutable(executablePath string) (Config, error) {
@@ -166,6 +173,14 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 		}
 		cfg.TrafficStatsEnabled = enabled
 		cfg.TrafficStatsExplicit = true
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_WIREGUARD_ENABLED")); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_WIREGUARD_ENABLED: %w", err)
+		}
+		cfg.WireGuardEnabled = enabled
+		cfg.WireGuardExplicit = true
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_TRAFFIC_INTERFACES")); val != "" {
 		cfg.TrafficInterfaces = parseTrafficInterfaces(val)

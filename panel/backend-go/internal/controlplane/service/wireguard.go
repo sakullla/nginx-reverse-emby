@@ -16,7 +16,12 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-var ErrWireGuardProfileNotFound = errors.New("wireguard profile not found")
+const ErrCodeWireGuardDisabled = "WIREGUARD_DISABLED"
+
+var (
+	ErrWireGuardDisabled        = errors.New("wireguard disabled")
+	ErrWireGuardProfileNotFound = errors.New("wireguard profile not found")
+)
 
 type WireGuardPeer struct {
 	Name                       string   `json:"name"`
@@ -133,6 +138,9 @@ func (s *wireGuardProfileService) triggerLocalApply(ctx context.Context, agentID
 }
 
 func (s *wireGuardProfileService) List(ctx context.Context, agentID string) ([]WireGuardProfile, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return nil, ErrWireGuardDisabled
+	}
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -155,6 +163,9 @@ func (s *wireGuardProfileService) List(ctx context.Context, agentID string) ([]W
 }
 
 func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID string) (WireGuardProfile, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return WireGuardProfile{}, ErrWireGuardDisabled
+	}
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardProfile{}, err
@@ -196,6 +207,9 @@ func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID str
 }
 
 func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, input WireGuardProfileInput) (WireGuardProfile, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return WireGuardProfile{}, ErrWireGuardDisabled
+	}
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardProfile{}, err
@@ -262,6 +276,9 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 }
 
 func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id int, input WireGuardProfileInput) (WireGuardProfile, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return WireGuardProfile{}, ErrWireGuardDisabled
+	}
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardProfile{}, err
@@ -328,6 +345,9 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 }
 
 func (s *wireGuardProfileService) Delete(ctx context.Context, agentID string, id int) (WireGuardProfile, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return WireGuardProfile{}, ErrWireGuardDisabled
+	}
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardProfile{}, err

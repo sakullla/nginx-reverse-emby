@@ -16,6 +16,8 @@ func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
 	cfg.DataDir = "/tmp/nre-data"
 	cfg.LocalAgentID = "edge-1"
 	cfg.TrafficStatsEnabled = false
+	cfg.WireGuardEnabled = false
+	cfg.WireGuardExplicit = true
 
 	storeCfg := StoreConfigFromConfig(cfg)
 
@@ -33,6 +35,9 @@ func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
 	}
 	if storeCfg.TrafficStatsEnabled {
 		t.Fatal("TrafficStatsEnabled = true, want false")
+	}
+	if storeCfg.WireGuardEnabled {
+		t.Fatal("WireGuardEnabled = true, want false")
 	}
 }
 

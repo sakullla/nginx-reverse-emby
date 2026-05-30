@@ -128,6 +128,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `NRE_TIMEZONE` | `UTC` | 控制面板统一时区（IANA 名称，如 `Asia/Shanghai`），用于流量日/月汇总、周期边界和清理口径 |
 | `NRE_HEARTBEAT_INTERVAL` | `30s` | 心跳同步间隔（Go duration 格式） |
 | `NRE_TRAFFIC_STATS_ENABLED` | `true` | 是否启用流量统计模块；关闭后控制面不迁移 traffic history 表、不持久化 stats、不执行额度阻断 |
+| `NRE_WIREGUARD_ENABLED` | `true` | 是否启用 WireGuard 模块；关闭后控制面不迁移 WireGuard Profile/Client 表、不提供 WireGuard API，Agent 不声明 WireGuard 能力 |
 | `NRE_TRAFFIC_INTERFACES` | - | Agent 主机网卡采集白名单，逗号分隔（如 `eth0,ens3`）；为空时自动排除 loopback/docker/veth/bridge/tun/tap 等虚拟接口 |
 | `NRE_TRAFFIC_CLEANUP_INTERVAL` | `24h` | 主动清理 traffic history 的周期；设为 `0`、`off` 或 `disabled` 可关闭，仅在 `NRE_TRAFFIC_STATS_ENABLED=true` 时生效 |
 | `NRE_MANAGED_CERT_RENEW_INTERVAL` | `24h` | 托管证书续期检查间隔 |

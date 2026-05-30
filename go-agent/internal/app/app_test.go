@@ -214,19 +214,32 @@ func extractPrivateField(t *testing.T, target any, name string) reflect.Value {
 
 func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing.T) {
 	tests := []struct {
-		name         string
-		http3Enabled bool
-		expectedCaps []string
+		name              string
+		http3Enabled      bool
+		wireGuardEnabled  bool
+		wireGuardExplicit bool
+		expectedCaps      []string
 	}{
 		{
-			name:         "http3 disabled",
-			http3Enabled: false,
-			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles"},
+			name:              "http3 disabled",
+			http3Enabled:      false,
+			wireGuardEnabled:  true,
+			wireGuardExplicit: true,
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles"},
 		},
 		{
-			name:         "http3 enabled",
-			http3Enabled: true,
-			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress"},
+			name:              "http3 enabled",
+			http3Enabled:      true,
+			wireGuardEnabled:  true,
+			wireGuardExplicit: true,
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress"},
+		},
+		{
+			name:              "wireguard disabled",
+			http3Enabled:      false,
+			wireGuardEnabled:  false,
+			wireGuardExplicit: true,
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles"},
 		},
 	}
 
@@ -256,6 +269,8 @@ func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing
 				DataDir:           t.TempDir(),
 				HeartbeatInterval: 100 * time.Millisecond,
 				HTTP3Enabled:      tc.http3Enabled,
+				WireGuardEnabled:  tc.wireGuardEnabled,
+				WireGuardExplicit: tc.wireGuardExplicit,
 			}
 			app, err := New(cfg)
 			if err != nil {
