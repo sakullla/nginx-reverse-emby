@@ -2431,7 +2431,7 @@ func TestRelayBindingKeysNamespaceWireGuardTransport(t *testing.T) {
 	wireGuard := relayListenerBindingKeys([]model.RelayListener{{
 		Enabled:            true,
 		ListenHost:         "10.8.0.1",
-		BindHosts:          []string{"10.8.0.1"},
+		BindHosts:          []string{"0.0.0.0"},
 		ListenPort:         port,
 		TransportMode:      relay.ListenerTransportModeWireGuard,
 		WireGuardProfileID: &profileID,

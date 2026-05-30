@@ -247,13 +247,17 @@ func listenerBindingKeys(listener Listener) []string {
 	if transportMode == ListenerTransportModeQUIC {
 		protocol = "udp"
 	}
+	if transportMode == ListenerTransportModeWireGuard {
+		host := strings.TrimSpace(listener.ListenHost)
+		if host == "" {
+			return nil
+		}
+		address := net.JoinHostPort(host, strconv.Itoa(listener.ListenPort))
+		return []string{"wireguard:" + strconv.Itoa(valueOrZero(listener.WireGuardProfileID)) + ":" + protocol + ":" + address}
+	}
 	keys := make([]string, 0, len(listener.BindHosts))
 	for _, bindHost := range listener.BindHosts {
 		address := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
-		if transportMode == ListenerTransportModeWireGuard {
-			keys = append(keys, "wireguard:"+strconv.Itoa(valueOrZero(listener.WireGuardProfileID))+":"+protocol+":"+address)
-			continue
-		}
 		keys = append(keys, protocol+":"+address)
 	}
 	return keys
