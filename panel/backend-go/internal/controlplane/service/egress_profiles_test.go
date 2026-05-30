@@ -357,6 +357,44 @@ func TestEgressProfileServiceDeleteRejectsReferencesRegardlessOfEnabledState(t *
 	}
 }
 
+func TestEgressProfileServiceUpdateRejectsDisablingReferencedProfile(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	svc := NewEgressProfileService(store)
+	profile := createTestEgressProfile(t, svc)
+	if err := store.SaveL4Rules(t.Context(), "local", []storage.L4RuleRow{{
+		ID:              41,
+		AgentID:         "local",
+		Name:            "enabled l4",
+		Protocol:        "tcp",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      9443,
+		BackendsJSON:    `[{"host":"127.0.0.1","port":443}]`,
+		EgressProfileID: &profile.ID,
+		Enabled:         true,
+		Revision:        1,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	_, err := svc.Update(t.Context(), profile.ID, EgressProfileInput{
+		Enabled: boolPtrEgress(false),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+	if !strings.Contains(err.Error(), "l4 rule 41") {
+		t.Fatalf("Update() error = %v, want l4 rule reference", err)
+	}
+
+	got, err := svc.Get(t.Context(), profile.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !got.Enabled {
+		t.Fatalf("profile after rejected disable = %+v, want still enabled", got)
+	}
+}
+
 func TestEgressProfileServiceUpdateRejectsMismatchedBodyIDAndPreservesProfile(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)

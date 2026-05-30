@@ -171,6 +171,11 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 		return EgressProfile{}, err
 	}
 	profile.Revision = maxRevision + 1
+	if current.Enabled && !profile.Enabled {
+		if err := s.ensureProfileNotReferenced(ctx, id); err != nil {
+			return EgressProfile{}, err
+		}
+	}
 
 	nextRows := append([]storage.EgressProfileRow(nil), rows...)
 	nextRows[targetIndex] = egressProfileToRow(profile)

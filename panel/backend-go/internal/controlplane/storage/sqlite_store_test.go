@@ -1298,6 +1298,138 @@ func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
 	}
 }
 
+func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`ALTER TABLE l4_rules ADD COLUMN proxy_egress_mode TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		t.Fatalf("add legacy proxy_egress_mode column error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`ALTER TABLE l4_rules ADD COLUMN proxy_egress_url TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		t.Fatalf("add legacy proxy_egress_url column error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`ALTER TABLE l4_rules ADD COLUMN wireguard_egress_uri TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		t.Fatalf("add legacy wireguard_egress_uri column error = %v", err)
+	}
+
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('legacy-egress-agent', 'legacy-egress-agent')`).Error; err != nil {
+		t.Fatalf("seed legacy agent error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO l4_rules (
+		id, agent_id, name, protocol, listen_host, listen_port, upstream_host, upstream_port, backends,
+		load_balancing, tuning, relay_chain, relay_layers, relay_obfs, listen_mode, proxy_egress_mode,
+		proxy_egress_url, wireguard_egress_uri, enabled, tags, revision
+	) VALUES (72, 'legacy-egress-agent', 'legacy proxy egress', 'tcp', '0.0.0.0', 25565, '', 0, '[]',
+		NULL, NULL, '[]', '[]', 0, 'proxy', 'proxy', 'socks5://127.0.0.1:1080', '', 1, '[]', 4)`).Error; err != nil {
+		t.Fatalf("seed legacy l4 rule error = %v", err)
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(dataRoot, "legacy-egress-agent")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	rules, err := store.ListL4Rules(t.Context(), "legacy-egress-agent")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	profiles, err := store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("egress profiles = %+v, want one migrated profile", profiles)
+	}
+	if profiles[0].Name != "legacy proxy egress" || profiles[0].Type != "socks" || profiles[0].ProxyURL != "socks5://127.0.0.1:1080" || !profiles[0].Enabled || profiles[0].Revision != 4 {
+		t.Fatalf("migrated egress profile = %+v", profiles[0])
+	}
+	if len(rules) != 1 || rules[0].EgressProfileID == nil || *rules[0].EgressProfileID != profiles[0].ID {
+		t.Fatalf("migrated l4 rule = %+v, profiles=%+v", rules, profiles)
+	}
+}
+
+func TestBootstrapSchemaMigratesLegacyL4WireGuardEgressToProfile(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`ALTER TABLE l4_rules ADD COLUMN proxy_egress_mode TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		t.Fatalf("add legacy proxy_egress_mode column error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`ALTER TABLE l4_rules ADD COLUMN proxy_egress_url TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		t.Fatalf("add legacy proxy_egress_url column error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`ALTER TABLE l4_rules ADD COLUMN wireguard_egress_uri TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		t.Fatalf("add legacy wireguard_egress_uri column error = %v", err)
+	}
+
+	const privateKey = "yAnzJsdbLTM3g2E5tbvhXfqz1aOBsKSOCWDJvuYEH2M="
+	const publicKey = "ZiHvSwADcEppH6wKlffryv7ApEPcl+Kf0/x4AMY0iUw="
+	const presharedKey = "WkE3qkRM7VCG59azvTz3WntYWK2Uhv1YVXBvXWP7t3I="
+	uri := "wireguard://" + privateKey + "@edge.example.com:51820?publickey=" + publicKey + "&preshared-key=" + presharedKey + "&address=10.44.0.2%2F32&allowedips=0.0.0.0%2F0&dns=1.1.1.1&mtu=1420#Legacy%20WG"
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('legacy-wg-egress-agent', 'legacy-wg-egress-agent')`).Error; err != nil {
+		t.Fatalf("seed legacy agent error = %v", err)
+	}
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO l4_rules (
+		id, agent_id, name, protocol, listen_host, listen_port, upstream_host, upstream_port, backends,
+		load_balancing, tuning, relay_chain, relay_layers, relay_obfs, listen_mode, proxy_egress_mode,
+		proxy_egress_url, wireguard_egress_uri, enabled, tags, revision
+	) VALUES (?, 'legacy-wg-egress-agent', 'legacy wg egress', 'tcp', '0.0.0.0', 25565, '', 0, '[]',
+		NULL, NULL, '[]', '[]', 0, 'proxy', 'wireguard', '', ?, 1, '[]', 4)`, 73, uri).Error; err != nil {
+		t.Fatalf("seed legacy l4 rule error = %v", err)
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(dataRoot, "legacy-wg-egress-agent")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	rules, err := store.ListL4Rules(t.Context(), "legacy-wg-egress-agent")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	profiles, err := store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("egress profiles = %+v, want one migrated profile", profiles)
+	}
+	if profiles[0].Name != "legacy wg egress" || profiles[0].Type != "wireguard" || profiles[0].Revision != 4 || !strings.Contains(profiles[0].WireGuardConfigJSON, privateKey) || !strings.Contains(profiles[0].WireGuardConfigJSON, publicKey) {
+		t.Fatalf("migrated wireguard egress profile = %+v", profiles[0])
+	}
+	if len(rules) != 1 || rules[0].EgressProfileID == nil || *rules[0].EgressProfileID != profiles[0].ID {
+		t.Fatalf("migrated l4 rule = %+v, profiles=%+v", rules, profiles)
+	}
+}
+
 func TestBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *testing.T) {
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")

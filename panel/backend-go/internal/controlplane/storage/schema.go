@@ -3,6 +3,10 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -358,13 +362,19 @@ type legacyHTTPRuleMigrationRow struct {
 }
 
 type legacyL4RuleMigrationRow struct {
-	ID              int    `gorm:"column:id"`
-	AgentID         string `gorm:"column:agent_id"`
-	UpstreamHost    string `gorm:"column:upstream_host"`
-	UpstreamPort    int    `gorm:"column:upstream_port"`
-	BackendsJSON    string `gorm:"column:backends"`
-	RelayChainJSON  string `gorm:"column:relay_chain"`
-	RelayLayersJSON string `gorm:"column:relay_layers"`
+	ID                 int    `gorm:"column:id"`
+	AgentID            string `gorm:"column:agent_id"`
+	Name               string `gorm:"column:name"`
+	UpstreamHost       string `gorm:"column:upstream_host"`
+	UpstreamPort       int    `gorm:"column:upstream_port"`
+	BackendsJSON       string `gorm:"column:backends"`
+	RelayChainJSON     string `gorm:"column:relay_chain"`
+	RelayLayersJSON    string `gorm:"column:relay_layers"`
+	ProxyEgressMode    string `gorm:"column:proxy_egress_mode"`
+	ProxyEgressURL     string `gorm:"column:proxy_egress_url"`
+	WireGuardEgressURI string `gorm:"column:wireguard_egress_uri"`
+	EgressProfileID    *int   `gorm:"column:egress_profile_id"`
+	Revision           int    `gorm:"column:revision"`
 }
 
 func migrateLegacyRuleCanonicalFields(ctx context.Context, db *gorm.DB) error {
@@ -433,10 +443,22 @@ func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
 		return nil
 	}
 
+	legacyEgressColumns := tx.Migrator().HasColumn(&L4RuleRow{}, "proxy_egress_mode") &&
+		tx.Migrator().HasColumn(&L4RuleRow{}, "proxy_egress_url") &&
+		tx.Migrator().HasColumn(&L4RuleRow{}, "wireguard_egress_uri") &&
+		tx.Migrator().HasColumn(&L4RuleRow{}, "egress_profile_id")
+	selectColumns := "id, agent_id, name, upstream_host, upstream_port, backends, relay_chain, relay_layers, revision"
+	if legacyEgressColumns {
+		selectColumns += ", proxy_egress_mode, proxy_egress_url, wireguard_egress_uri, egress_profile_id"
+	}
 	var rows []legacyL4RuleMigrationRow
 	if err := tx.Model(&L4RuleRow{}).
-		Select("id", "agent_id", "upstream_host", "upstream_port", "backends", "relay_chain", "relay_layers").
+		Select(selectColumns).
 		Find(&rows).Error; err != nil {
+		return err
+	}
+	nextEgressProfileID, err := nextLegacyEgressProfileID(tx)
+	if err != nil {
 		return err
 	}
 
@@ -466,6 +488,19 @@ func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
 				updates["relay_layers"] = string(relayLayersJSON)
 			}
 		}
+		if legacyEgressColumns && row.EgressProfileID == nil {
+			profile, ok, err := legacyL4EgressProfileFromRow(row, nextEgressProfileID)
+			if err != nil {
+				return err
+			}
+			if ok {
+				if err := tx.Create(&profile).Error; err != nil {
+					return err
+				}
+				updates["egress_profile_id"] = profile.ID
+				nextEgressProfileID++
+			}
+		}
 		if len(updates) == 0 {
 			continue
 		}
@@ -477,6 +512,238 @@ func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func nextLegacyEgressProfileID(tx *gorm.DB) (int, error) {
+	if !tx.Migrator().HasTable(&EgressProfileRow{}) {
+		return 1, nil
+	}
+	var maxID int
+	if err := tx.Model(&EgressProfileRow{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error; err != nil {
+		return 0, err
+	}
+	return maxID + 1, nil
+}
+
+func legacyL4EgressProfileFromRow(row legacyL4RuleMigrationRow, id int) (EgressProfileRow, bool, error) {
+	mode := strings.ToLower(strings.TrimSpace(row.ProxyEgressMode))
+	switch mode {
+	case "proxy":
+		proxyURL := strings.TrimSpace(row.ProxyEgressURL)
+		if proxyURL == "" {
+			return EgressProfileRow{}, false, nil
+		}
+		profileType, err := legacyEgressProfileProxyType(proxyURL)
+		if err != nil {
+			return EgressProfileRow{}, false, err
+		}
+		return EgressProfileRow{
+			ID:          id,
+			Name:        legacyEgressProfileName(row),
+			Type:        profileType,
+			ProxyURL:    proxyURL,
+			Enabled:     true,
+			Description: fmt.Sprintf("Migrated from legacy L4 rule %d", row.ID),
+			Revision:    int64(legacyEgressProfileRevision(row)),
+		}, true, nil
+	case "wireguard":
+		configJSON, err := legacyWireGuardEgressConfigJSON(row.WireGuardEgressURI)
+		if err != nil {
+			return EgressProfileRow{}, false, err
+		}
+		if configJSON == "" {
+			return EgressProfileRow{}, false, nil
+		}
+		return EgressProfileRow{
+			ID:                  id,
+			Name:                legacyEgressProfileName(row),
+			Type:                "wireguard",
+			WireGuardConfigJSON: configJSON,
+			Enabled:             true,
+			Description:         fmt.Sprintf("Migrated from legacy L4 rule %d", row.ID),
+			Revision:            int64(legacyEgressProfileRevision(row)),
+		}, true, nil
+	default:
+		return EgressProfileRow{}, false, nil
+	}
+}
+
+func legacyEgressProfileRevision(row legacyL4RuleMigrationRow) int {
+	if row.Revision > 0 {
+		return row.Revision
+	}
+	return 1
+}
+
+func legacyEgressProfileName(row legacyL4RuleMigrationRow) string {
+	name := strings.TrimSpace(row.Name)
+	if name == "" {
+		name = fmt.Sprintf("L4 rule %d", row.ID)
+	}
+	if strings.HasSuffix(strings.ToLower(name), " egress") {
+		return name
+	}
+	return name + " egress"
+}
+
+func legacyEgressProfileProxyType(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "http":
+		return "http", nil
+	case "socks", "socks5", "socks5h":
+		return "socks", nil
+	default:
+		return "", fmt.Errorf("unsupported legacy proxy egress URL scheme %q", parsed.Scheme)
+	}
+}
+
+type legacyWireGuardURI struct {
+	Name         string
+	PrivateKey   string
+	Endpoint     string
+	PublicKey    string
+	PresharedKey string
+	Addresses    []string
+	AllowedIPs   []string
+	DNS          []string
+	MTU          int
+}
+
+func legacyWireGuardEgressConfigJSON(raw string) (string, error) {
+	parsed, err := parseLegacyWireGuardURI(raw)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(parsed.PrivateKey) == "" {
+		return "", nil
+	}
+	if strings.TrimSpace(parsed.Endpoint) == "" {
+		return "", fmt.Errorf("legacy wireguard egress URI endpoint host and port are required")
+	}
+	if strings.TrimSpace(parsed.PublicKey) == "" {
+		return "", fmt.Errorf("legacy wireguard egress URI publickey is required")
+	}
+	if len(parsed.Addresses) == 0 {
+		return "", fmt.Errorf("legacy wireguard egress URI address is required")
+	}
+	type peer struct {
+		Name         string   `json:"name,omitempty"`
+		PublicKey    string   `json:"public_key"`
+		PresharedKey string   `json:"preshared_key,omitempty"`
+		Endpoint     string   `json:"endpoint"`
+		AllowedIPs   []string `json:"allowed_ips"`
+	}
+	config := struct {
+		PrivateKey string   `json:"private_key"`
+		Addresses  []string `json:"addresses"`
+		Peers      []peer   `json:"peers"`
+		DNS        []string `json:"dns,omitempty"`
+		MTU        int      `json:"mtu,omitempty"`
+	}{
+		PrivateKey: parsed.PrivateKey,
+		Addresses:  parsed.Addresses,
+		Peers: []peer{{
+			Name:         parsed.Name,
+			PublicKey:    parsed.PublicKey,
+			PresharedKey: parsed.PresharedKey,
+			Endpoint:     parsed.Endpoint,
+			AllowedIPs:   parsed.AllowedIPs,
+		}},
+		DNS: parsed.DNS,
+		MTU: parsed.MTU,
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func parseLegacyWireGuardURI(raw string) (legacyWireGuardURI, error) {
+	uri := strings.TrimSpace(raw)
+	if uri == "" {
+		return legacyWireGuardURI{}, nil
+	}
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return legacyWireGuardURI{}, err
+	}
+	if !strings.EqualFold(parsed.Scheme, "wireguard") {
+		return legacyWireGuardURI{}, fmt.Errorf("legacy wireguard egress URI scheme must be wireguard")
+	}
+	if parsed.User == nil {
+		return legacyWireGuardURI{}, nil
+	}
+	query := parseLegacyWireGuardURIQuery(parsed.RawQuery)
+	endpoint := ""
+	if host, port := strings.TrimSpace(parsed.Hostname()), strings.TrimSpace(parsed.Port()); host != "" && port != "" {
+		endpoint = net.JoinHostPort(host, port)
+	}
+	allowedIPs := splitLegacyWireGuardURIList(firstLegacyWireGuardURIValue(query["allowedips"], query["allowed-ips"]))
+	if len(allowedIPs) == 0 {
+		allowedIPs = []string{"0.0.0.0/0", "::/0"}
+	}
+	mtu := 0
+	if rawMTU := strings.TrimSpace(query["mtu"]); rawMTU != "" {
+		if value, err := strconv.Atoi(rawMTU); err == nil && value >= 0 {
+			mtu = value
+		}
+	}
+	return legacyWireGuardURI{
+		Name:         strings.TrimSpace(parsed.Fragment),
+		PrivateKey:   strings.TrimSpace(parsed.User.Username()),
+		Endpoint:     endpoint,
+		PublicKey:    strings.TrimSpace(query["publickey"]),
+		PresharedKey: firstLegacyWireGuardURIValue(query["preshared-key"], query["psk"]),
+		Addresses:    splitLegacyWireGuardURIList(query["address"]),
+		AllowedIPs:   allowedIPs,
+		DNS:          splitLegacyWireGuardURIList(query["dns"]),
+		MTU:          mtu,
+	}, nil
+}
+
+func parseLegacyWireGuardURIQuery(raw string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(raw, "&") {
+		if part == "" {
+			continue
+		}
+		key, value, _ := strings.Cut(part, "=")
+		decodedKey, err := url.QueryUnescape(key)
+		if err != nil {
+			continue
+		}
+		decodedValue, err := url.PathUnescape(value)
+		if err != nil {
+			decodedValue = value
+		}
+		out[strings.ToLower(strings.TrimSpace(decodedKey))] = decodedValue
+	}
+	return out
+}
+
+func firstLegacyWireGuardURIValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func splitLegacyWireGuardURIList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func canonicalJSONIsEmptyArray(raw string) bool {
