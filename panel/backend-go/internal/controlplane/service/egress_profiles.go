@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -54,6 +55,7 @@ type egressProfileStore interface {
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error)
 	EgressProfileReferences(context.Context, int) ([]storage.EgressProfileReference, error)
+	SaveAgent(context.Context, storage.AgentRow) error
 	SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error
 }
 
@@ -170,7 +172,6 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 	if err != nil {
 		return EgressProfile{}, err
 	}
-	profile.Revision = maxRevision + 1
 	if current.Enabled && !profile.Enabled {
 		if err := s.ensureProfileNotReferenced(ctx, id); err != nil {
 			return EgressProfile{}, err
@@ -181,10 +182,26 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 			return EgressProfile{}, err
 		}
 	}
+	affectedAgentIDs, err := s.profileSnapshotTargetAgentIDs(ctx, id)
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	if len(affectedAgentIDs) > 0 {
+		profile.Revision = allocator.AllocateRevisionForTargets(affectedAgentIDs, maxRevision)
+	} else {
+		profile.Revision = maxRevision + 1
+	}
 
 	nextRows := append([]storage.EgressProfileRow(nil), rows...)
 	nextRows[targetIndex] = egressProfileToRow(profile)
 	if err := s.store.SaveEgressProfiles(ctx, nextRows); err != nil {
+		return EgressProfile{}, err
+	}
+	if err := s.bumpRemoteDesiredRevisions(ctx, affectedAgentIDs, profile.Revision); err != nil {
 		return EgressProfile{}, err
 	}
 	return redactEgressProfile(profile), nil
@@ -302,6 +319,132 @@ func (s *egressProfileService) referencedL4Rule(ctx context.Context, reference s
 		}
 	}
 	return storage.L4RuleRow{}, false, nil
+}
+
+func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context, profileID int) ([]string, error) {
+	references, err := s.store.EgressProfileReferences(ctx, profileID)
+	if err != nil {
+		return nil, err
+	}
+	if len(references) == 0 {
+		return nil, nil
+	}
+	relayRows, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, err
+	}
+	knownAgents := make(map[string]struct{}, len(knownAgentIDs))
+	for _, agentID := range knownAgentIDs {
+		knownAgents[strings.TrimSpace(agentID)] = struct{}{}
+	}
+	affected := make(map[string]struct{})
+	addAgent := func(agentID string) {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			return
+		}
+		if _, ok := knownAgents[agentID]; !ok {
+			return
+		}
+		affected[agentID] = struct{}{}
+	}
+	addRuleExecutors := func(ruleAgentID string, relayLayersJSON string) {
+		relayLayers := parseIntLayers(relayLayersJSON)
+		if len(relayLayers) == 0 {
+			addAgent(ruleAgentID)
+			return
+		}
+		for agentID := range egressProfileFinalHopAgentIDs(relayLayers, relayRows) {
+			addAgent(agentID)
+		}
+	}
+	for _, reference := range references {
+		switch reference.Kind {
+		case "http":
+			row, ok, err := s.referencedHTTPRule(ctx, reference)
+			if err != nil {
+				return nil, err
+			}
+			if ok && row.Enabled {
+				addRuleExecutors(row.AgentID, row.RelayLayersJSON)
+			}
+		case "l4":
+			row, ok, err := s.referencedL4Rule(ctx, reference)
+			if err != nil {
+				return nil, err
+			}
+			if ok && row.Enabled {
+				addRuleExecutors(row.AgentID, row.RelayLayersJSON)
+			}
+		}
+	}
+	agentIDs := make([]string, 0, len(affected))
+	for agentID := range affected {
+		agentIDs = append(agentIDs, agentID)
+	}
+	sort.Strings(agentIDs)
+	return agentIDs, nil
+}
+
+func (s *egressProfileService) bumpRemoteDesiredRevisions(ctx context.Context, agentIDs []string, revision int) error {
+	if len(agentIDs) == 0 {
+		return nil
+	}
+	agents, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	agentsByID := make(map[string]storage.AgentRow, len(agents))
+	for _, row := range agents {
+		agentsByID[row.ID] = row
+	}
+	for _, agentID := range agentIDs {
+		if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+			continue
+		}
+		row, ok := agentsByID[agentID]
+		if !ok {
+			return ErrAgentNotFound
+		}
+		nextRevision := maxInt(revision, row.DesiredRevision, row.CurrentRevision+1)
+		if row.DesiredRevision < nextRevision {
+			row.DesiredRevision = nextRevision
+		}
+		if err := s.store.SaveAgent(ctx, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func egressProfileFinalHopAgentIDs(relayLayers [][]int, relayRows []storage.RelayListenerRow) map[string]struct{} {
+	relayAgentByID := make(map[int]string, len(relayRows))
+	for _, row := range relayRows {
+		if row.ID <= 0 || !row.Enabled {
+			continue
+		}
+		relayAgentByID[row.ID] = strings.TrimSpace(row.AgentID)
+	}
+
+	agentIDs := make(map[string]struct{})
+	for i := len(relayLayers) - 1; i >= 0; i-- {
+		if len(relayLayers[i]) == 0 {
+			continue
+		}
+		for _, finalHopID := range relayLayers[i] {
+			finalHopAgentID := strings.TrimSpace(relayAgentByID[finalHopID])
+			if finalHopAgentID == "" {
+				continue
+			}
+			agentIDs[finalHopAgentID] = struct{}{}
+		}
+		return agentIDs
+	}
+	return agentIDs
 }
 
 func normalizeEgressProfileInput(input EgressProfileInput, fallback EgressProfile, suggestedID int) (EgressProfile, error) {
