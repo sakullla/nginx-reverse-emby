@@ -379,6 +379,12 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
+	previousEgressExecutorAgentIDs, err := egressProfileExecutorAgentIDsForMutation(ctx, s.store, resolvedID, current.RelayLayers, current.EgressProfileID)
+	if err != nil {
+		rollbackDefaultWireGuard()
+		return L4Rule{}, err
+	}
+	egressExecutorAgentIDs = uniqueAgentIDs(append(egressExecutorAgentIDs, previousEgressExecutorAgentIDs...))
 	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append(append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...), egressExecutorAgentIDs...)))
 	if err != nil {
 		rollbackDefaultWireGuard()

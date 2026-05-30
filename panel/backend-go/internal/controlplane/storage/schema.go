@@ -498,6 +498,7 @@ func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
 					return err
 				}
 				updates["egress_profile_id"] = profile.ID
+				updates["revision"] = int(profile.Revision)
 				nextEgressProfileID++
 			}
 		}
@@ -509,9 +510,24 @@ func migrateLegacyL4RuleCanonicalFields(tx *gorm.DB) error {
 			Updates(updates).Error; err != nil {
 			return err
 		}
+		if revision, ok := updates["revision"].(int); ok {
+			if err := bumpLegacyMigrationAgentDesiredRevision(tx, row.AgentID, revision); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
+}
+
+func bumpLegacyMigrationAgentDesiredRevision(tx *gorm.DB, agentID string, revision int) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || revision <= 0 {
+		return nil
+	}
+	return tx.Model(&AgentRow{}).
+		Where("id = ? AND desired_revision < ?", agentID, revision).
+		Update("desired_revision", revision).Error
 }
 
 func nextLegacyEgressProfileID(tx *gorm.DB) (int, error) {
@@ -570,7 +586,7 @@ func legacyL4EgressProfileFromRow(row legacyL4RuleMigrationRow, id int) (EgressP
 
 func legacyEgressProfileRevision(row legacyL4RuleMigrationRow) int {
 	if row.Revision > 0 {
-		return row.Revision
+		return row.Revision + 1
 	}
 	return 1
 }

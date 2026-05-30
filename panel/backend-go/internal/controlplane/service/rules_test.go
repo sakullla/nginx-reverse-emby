@@ -424,6 +424,63 @@ func TestRuleServiceUpdateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T
 	}
 }
 
+func TestRuleServiceUpdateBumpsPreviousRelayedEgressProfileFinalHopWhenCleared(t *testing.T) {
+	profileID := 27
+	store := newRuleServiceTestStore(t)
+	store.agents = []storage.AgentRow{{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: marshalStringArray([]string{"http_rules", "egress_profiles"}),
+		DesiredRevision:  4,
+		CurrentRevision:  4,
+	}, {
+		ID:               "relay-a",
+		Name:             "Relay A",
+		CapabilitiesJSON: marshalStringArray([]string{"relay_quic", "egress_profiles"}),
+		DesiredRevision:  10,
+		CurrentRevision:  10,
+	}}
+	store.rulesByAgent["edge-a"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "edge-a",
+		FrontendURL:       "http://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		ProxyRedirect:     true,
+		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[[7]]`,
+		PassProxyHeaders:  true,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          4,
+	}}
+	store.listeners = []storage.RelayListenerRow{{
+		ID:            7,
+		AgentID:       "relay-a",
+		Name:          "relay-a",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    9443,
+		PublicHost:    "relay-a.example.test",
+		PublicPort:    9443,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+	}}
+	seedEgressProfile(t, store, storage.EgressProfileRow{ID: profileID, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true, Revision: 20})
+	svc := NewRuleService(testConfig(), store)
+
+	_, err := svc.Update(t.Context(), "edge-a", 1, HTTPRuleInput{
+		EgressProfileID: intPtrRule(0),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if row := ruleStoreAgentByID(t, store, "relay-a"); row.DesiredRevision <= 10 {
+		t.Fatalf("relay-a DesiredRevision = %d, want bumped above current revision 10", row.DesiredRevision)
+	}
+}
+
 func TestRuleServiceDeleteBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
 	profileID := 26
 	store := newRuleServiceTestStore(t)

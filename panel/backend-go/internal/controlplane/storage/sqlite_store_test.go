@@ -1321,7 +1321,7 @@ func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
 		t.Fatalf("add legacy wireguard_egress_uri column error = %v", err)
 	}
 
-	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('legacy-egress-agent', 'legacy-egress-agent')`).Error; err != nil {
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name, desired_revision, current_revision) VALUES ('legacy-egress-agent', 'legacy-egress-agent', 4, 4)`).Error; err != nil {
 		t.Fatalf("seed legacy agent error = %v", err)
 	}
 	if err := db.WithContext(t.Context()).Exec(`INSERT INTO l4_rules (
@@ -1357,11 +1357,18 @@ func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
 	if len(profiles) != 1 {
 		t.Fatalf("egress profiles = %+v, want one migrated profile", profiles)
 	}
-	if profiles[0].Name != "legacy proxy egress" || profiles[0].Type != "socks" || profiles[0].ProxyURL != "socks5://127.0.0.1:1080" || !profiles[0].Enabled || profiles[0].Revision != 4 {
+	if profiles[0].Name != "legacy proxy egress" || profiles[0].Type != "socks" || profiles[0].ProxyURL != "socks5://127.0.0.1:1080" || !profiles[0].Enabled || profiles[0].Revision <= 4 {
 		t.Fatalf("migrated egress profile = %+v", profiles[0])
 	}
 	if len(rules) != 1 || rules[0].EgressProfileID == nil || *rules[0].EgressProfileID != profiles[0].ID {
 		t.Fatalf("migrated l4 rule = %+v, profiles=%+v", rules, profiles)
+	}
+	agents, err := store.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 || agents[0].DesiredRevision <= 4 {
+		t.Fatalf("agents after legacy egress migration = %+v, want desired revision above applied revision 4", agents)
 	}
 }
 
@@ -1392,7 +1399,7 @@ func TestBootstrapSchemaMigratesLegacyL4WireGuardEgressToProfile(t *testing.T) {
 	const publicKey = "ZiHvSwADcEppH6wKlffryv7ApEPcl+Kf0/x4AMY0iUw="
 	const presharedKey = "WkE3qkRM7VCG59azvTz3WntYWK2Uhv1YVXBvXWP7t3I="
 	uri := "wireguard://" + privateKey + "@edge.example.com:51820?publickey=" + publicKey + "&preshared-key=" + presharedKey + "&address=10.44.0.2%2F32&allowedips=0.0.0.0%2F0&dns=1.1.1.1&mtu=1420#Legacy%20WG"
-	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('legacy-wg-egress-agent', 'legacy-wg-egress-agent')`).Error; err != nil {
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name, desired_revision, current_revision) VALUES ('legacy-wg-egress-agent', 'legacy-wg-egress-agent', 4, 4)`).Error; err != nil {
 		t.Fatalf("seed legacy agent error = %v", err)
 	}
 	if err := db.WithContext(t.Context()).Exec(`INSERT INTO l4_rules (
@@ -1428,11 +1435,18 @@ func TestBootstrapSchemaMigratesLegacyL4WireGuardEgressToProfile(t *testing.T) {
 	if len(profiles) != 1 {
 		t.Fatalf("egress profiles = %+v, want one migrated profile", profiles)
 	}
-	if profiles[0].Name != "legacy wg egress" || profiles[0].Type != "wireguard" || profiles[0].Revision != 4 || !strings.Contains(profiles[0].WireGuardConfigJSON, privateKey) || !strings.Contains(profiles[0].WireGuardConfigJSON, publicKey) {
+	if profiles[0].Name != "legacy wg egress" || profiles[0].Type != "wireguard" || profiles[0].Revision <= 4 || !strings.Contains(profiles[0].WireGuardConfigJSON, privateKey) || !strings.Contains(profiles[0].WireGuardConfigJSON, publicKey) {
 		t.Fatalf("migrated wireguard egress profile = %+v", profiles[0])
 	}
 	if len(rules) != 1 || rules[0].EgressProfileID == nil || *rules[0].EgressProfileID != profiles[0].ID {
 		t.Fatalf("migrated l4 rule = %+v, profiles=%+v", rules, profiles)
+	}
+	agents, err := store.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 || agents[0].DesiredRevision <= 4 {
+		t.Fatalf("agents after legacy wireguard egress migration = %+v, want desired revision above applied revision 4", agents)
 	}
 }
 

@@ -371,6 +371,18 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
+	previousEgressExecutorAgentIDs, err := egressProfileExecutorAgentIDsForMutation(ctx, s.store, resolvedID, current.RelayLayers, current.EgressProfileID)
+	if err != nil {
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
+	egressExecutorAgentIDs = uniqueAgentIDs(append(egressExecutorAgentIDs, previousEgressExecutorAgentIDs...))
 	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append(append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...), egressExecutorAgentIDs...)))
 	if err != nil {
 		if certRowsChanged {
