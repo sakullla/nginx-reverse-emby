@@ -379,17 +379,17 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedInvalid("http_rule", key, err.Error())
 			continue
 		}
+		normalized, err := previewRuleSvc.normalizeHTTPRuleInput(ctx, input, HTTPRule{AgentID: resolvedAgentID}, 0)
+		if err != nil {
+			result.addSkippedInvalid("http_rule", key, err.Error())
+			continue
+		}
+		normalized.AgentID = resolvedAgentID
 		if item.WireGuardEntryEnabled {
 			if !profileOK {
 				result.addSkippedInvalid("http_rule", key, "wireguard profile was not imported")
 				continue
 			}
-			normalized, err := previewRuleSvc.normalizeHTTPRuleInput(ctx, input, HTTPRule{AgentID: resolvedAgentID}, 0)
-			if err != nil {
-				result.addSkippedInvalid("http_rule", key, err.Error())
-				continue
-			}
-			normalized.AgentID = resolvedAgentID
 			if routeKey, ok := httpWireGuardEntryRouteKey(normalized); ok {
 				if _, exists := existingHTTPWireGuardEntryRouteKeys[routeKey]; exists {
 					result.addSkippedConflict("http_rule", key, "wireguard entry route already exists")
@@ -447,6 +447,10 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		key = l4RuleConflictKey(normalized)
 		if err := ensureUniqueL4Listen(l4RulesFromRows(existingL4RulesByAgent[resolvedAgentID]), normalized, -1); err != nil {
 			result.addSkippedConflict("l4_rule", key, err.Error())
+			continue
+		}
+		if err := validateL4EgressProfileReferenceForStore(ctx, s.cfg, previewRuleSvc.store, normalized); err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
 		if err := validateRelayChainReferencesFromRows(knownAgentIDs, previewRelayListeners, flattenRelayLayers(pointerRelayLayers(input.RelayLayers)), relayChainValidationOptions{RuleAgentID: resolvedAgentID}); err != nil {
@@ -1767,9 +1771,17 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
 			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
 		}
+		executorAgentIDs, executorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedAgentID, normalized.RelayLayers, normalized.EgressProfileID, normalized.Revision)
+		if err != nil {
+			result.addSkippedInvalid("http_rule", key, err.Error())
+			continue
+		}
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], httpRuleToRow(normalized))
 		conflictSet[conflictKey] = struct{}{}
 		recordModifiedAgentRevision(modifiedAgents, resolvedAgentID, normalized.Revision)
+		for _, executorAgentID := range executorAgentIDs {
+			recordModifiedAgentRevision(modifiedAgents, executorAgentID, executorRevision)
+		}
 		result.addImported("http_rule", key)
 	}
 
@@ -1870,8 +1882,16 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
 			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
 		}
+		executorAgentIDs, executorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedAgentID, normalized.RelayLayers, normalized.EgressProfileID, normalized.Revision)
+		if err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
+			continue
+		}
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], l4RuleToRow(normalized))
 		recordModifiedAgentRevision(modifiedAgents, resolvedAgentID, normalized.Revision)
+		for _, executorAgentID := range executorAgentIDs {
+			recordModifiedAgentRevision(modifiedAgents, executorAgentID, executorRevision)
+		}
 		result.addImported("l4_rule", key)
 	}
 

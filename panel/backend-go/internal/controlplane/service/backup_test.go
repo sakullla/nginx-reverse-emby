@@ -597,6 +597,103 @@ func TestBackupServiceImportRemapsEgressProfileReferences(t *testing.T) {
 	}
 }
 
+func TestBackupServiceImportBumpsRelayedEgressFinalHopAgent(t *testing.T) {
+	ctx := context.Background()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "relayed-egress-import-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:               "relay-a",
+		Name:             "relay-a",
+		CapabilitiesJSON: marshalStringArray([]string{"relay_quic", "egress_profiles"}),
+		DesiredRevision:  10,
+		CurrentRevision:  10,
+	}); err != nil {
+		t.Fatalf("SaveAgent(relay-a) error = %v", err)
+	}
+	if err := targetStore.SaveRelayListeners(ctx, "relay-a", []storage.RelayListenerRow{{
+		ID:            7,
+		AgentID:       "relay-a",
+		Name:          "relay-a",
+		ListenHost:    "127.0.0.1",
+		BindHostsJSON: `["127.0.0.1"]`,
+		ListenPort:    9443,
+		PublicHost:    "relay-a.example.test",
+		PublicPort:    9443,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-a) error = %v", err)
+	}
+
+	profileID := 41
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			SourceLocalAgentID: "source-local",
+			Counts: BackupCounts{
+				Agents:         1,
+				HTTPRules:      1,
+				EgressProfiles: 1,
+			},
+		},
+		Agents: []BackupAgent{{
+			ID:           "edge-a",
+			Name:         "edge-a",
+			AgentToken:   "token-edge-a",
+			Capabilities: []string{"http_rules", "egress_profiles"},
+		}},
+		EgressProfiles: []BackupEgressProfile{{
+			ID:       profileID,
+			Name:     "office socks",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 20,
+		}},
+		RelayListeners: []BackupRelayListener{},
+		HTTPRules: []BackupHTTPRule{{
+			ID:               51,
+			AgentID:          "edge-a",
+			FrontendURL:      "http://media.example.test",
+			Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+			LoadBalancing:    HTTPLoadBalancing{Strategy: "adaptive"},
+			RelayLayers:      [][]int{{7}},
+			Enabled:          true,
+			ProxyRedirect:    true,
+			PassProxyHeaders: defaultPassProxyHeaders(),
+			CustomHeaders:    []HTTPCustomHeader{},
+			EgressProfileID:  &profileID,
+		}},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.HTTPRules != 1 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+	agents, err := targetStore.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	desired := map[string]int{}
+	for _, row := range agents {
+		desired[row.ID] = row.DesiredRevision
+	}
+	if desired["relay-a"] <= 10 {
+		t.Fatalf("agent desired revisions = %+v, want relay-a bumped above current revision 10", desired)
+	}
+}
+
 func TestBackupServiceImportMigratesLegacyL4ProxyEgress(t *testing.T) {
 	ctx := context.Background()
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "legacy-egress-import-target"), "local")

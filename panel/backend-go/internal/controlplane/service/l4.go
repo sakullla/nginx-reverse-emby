@@ -742,10 +742,19 @@ func (s *l4Service) validateRelayChain(ctx context.Context, agentID string, rela
 }
 
 func (s *l4Service) validateL4EgressProfileReference(ctx context.Context, rule L4Rule) error {
+	return validateL4EgressProfileReferenceForStore(ctx, s.cfg, s.store, rule)
+}
+
+type l4EgressProfileValidationStore interface {
+	egressProfileCapabilityStore
+	egressProfileLookupStore
+}
+
+func validateL4EgressProfileReferenceForStore(ctx context.Context, cfg config.Config, store l4EgressProfileValidationStore, rule L4Rule) error {
 	if rule.EgressProfileID == nil {
 		return nil
 	}
-	profile, err := getEnabledEgressProfile(ctx, s.store, *rule.EgressProfileID)
+	profile, err := getEnabledEgressProfile(ctx, store, *rule.EgressProfileID)
 	if err != nil {
 		return err
 	}
@@ -755,7 +764,7 @@ func (s *l4Service) validateL4EgressProfileReference(ctx context.Context, rule L
 	if strings.EqualFold(rule.Protocol, "udp") && strings.EqualFold(profile.Type, "http") {
 		return fmt.Errorf("%w: UDP rules cannot use HTTP egress profiles", ErrInvalidArgument)
 	}
-	if err := ensureEgressProfileExecutorsSupportCapability(ctx, s.cfg, s.store, rule.AgentID, rule.RelayLayers); err != nil {
+	if err := ensureEgressProfileExecutorsSupportCapability(ctx, cfg, store, rule.AgentID, rule.RelayLayers); err != nil {
 		return err
 	}
 	return nil
