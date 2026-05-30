@@ -597,6 +597,83 @@ func TestBackupServiceImportRemapsEgressProfileReferences(t *testing.T) {
 	}
 }
 
+func TestBackupServiceImportMigratesLegacyL4ProxyEgress(t *testing.T) {
+	ctx := context.Background()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "legacy-egress-import-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			SourceLocalAgentID: "source-local",
+			Counts: BackupCounts{
+				Agents:  1,
+				L4Rules: 1,
+			},
+		},
+		Agents: []BackupAgent{{
+			ID:           "legacy-egress-agent",
+			Name:         "legacy-egress-agent",
+			AgentToken:   "token-legacy-egress",
+			Capabilities: []string{"l4"},
+		}},
+		L4Rules: []BackupL4Rule{},
+	}
+	legacyL4Rules := []map[string]any{{
+		"id":                   52,
+		"agent_id":             "legacy-egress-agent",
+		"name":                 "legacy proxy egress",
+		"protocol":             "tcp",
+		"listen_host":          "0.0.0.0",
+		"listen_port":          25565,
+		"backends":             []map[string]any{{"host": "127.0.0.1", "port": 25565}},
+		"load_balancing":       map[string]any{"strategy": "adaptive"},
+		"tuning":               map[string]any{},
+		"listen_mode":          "tcp",
+		"proxy_egress_mode":    "proxy",
+		"proxy_egress_url":     "socks5://user:secret@127.0.0.1:1080",
+		"wireguard_egress_uri": "",
+		"enabled":              true,
+		"revision":             4,
+	}}
+	archive, err := encodeBackupBundleWithOverrides(t, bundle, map[string]any{
+		backupL4RulesFile: legacyL4Rules,
+	})
+	if err != nil {
+		t.Fatalf("encodeBackupBundleWithOverrides() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.EgressProfiles != 1 || result.Summary.Imported.L4Rules != 1 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+
+	profiles, err := targetStore.ListEgressProfiles(ctx)
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("egress profiles = %+v, want one migrated profile", profiles)
+	}
+	if profiles[0].Name != "legacy proxy egress" || profiles[0].Type != "socks" || profiles[0].ProxyURL != "socks5://user:secret@127.0.0.1:1080" || !profiles[0].Enabled {
+		t.Fatalf("migrated egress profile = %+v", profiles[0])
+	}
+	l4Rows, err := targetStore.ListL4Rules(ctx, "legacy-egress-agent")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(l4Rows) != 1 || l4Rows[0].EgressProfileID == nil || *l4Rows[0].EgressProfileID != profiles[0].ID {
+		t.Fatalf("l4 rows = %+v, profiles=%+v", l4Rows, profiles)
+	}
+}
+
 func TestBackupServiceTrafficPolicyAndBaselineRoundTripExcludesHistory(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}

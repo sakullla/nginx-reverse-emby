@@ -266,7 +266,11 @@ func normalizeEgressProfileInput(input EgressProfileInput, fallback EgressProfil
 
 	proxyURL := strings.TrimSpace(fallback.ProxyURL)
 	if input.ProxyURL != nil {
-		proxyURL = mergeEgressProxyURL(strings.TrimSpace(*input.ProxyURL), fallback.ProxyURL)
+		var err error
+		proxyURL, err = mergeEgressProxyURL(strings.TrimSpace(*input.ProxyURL), fallback.ProxyURL)
+		if err != nil {
+			return EgressProfile{}, err
+		}
 	}
 
 	wireGuardConfig := cloneEgressWireGuardConfig(fallback.WireGuardConfig)
@@ -467,27 +471,32 @@ func redactProxyURL(raw string) string {
 	return parsed.String()
 }
 
-func mergeEgressProxyURL(input string, fallback string) string {
+func mergeEgressProxyURL(input string, fallback string) (string, error) {
 	if strings.TrimSpace(input) == redactedProxyPassword {
-		return strings.TrimSpace(fallback)
+		return strings.TrimSpace(fallback), nil
 	}
-	parsed, err := url.Parse(strings.TrimSpace(input))
+	trimmedInput := strings.TrimSpace(input)
+	parsed, err := url.Parse(trimmedInput)
 	if err != nil || parsed == nil || parsed.User == nil {
-		return strings.TrimSpace(input)
+		return trimmedInput, nil
 	}
 	if password, hasPassword := parsed.User.Password(); !hasPassword || password != redactedProxyPassword {
-		return strings.TrimSpace(input)
+		return trimmedInput, nil
 	}
-	fallbackParsed, err := url.Parse(strings.TrimSpace(fallback))
+	trimmedFallback := strings.TrimSpace(fallback)
+	if trimmedInput != redactProxyURL(trimmedFallback) {
+		return "", fmt.Errorf("%w: redacted proxy_url can only preserve the existing password when the URL is otherwise unchanged", ErrInvalidArgument)
+	}
+	fallbackParsed, err := url.Parse(trimmedFallback)
 	if err != nil || fallbackParsed == nil || fallbackParsed.User == nil {
-		return strings.TrimSpace(input)
+		return trimmedInput, nil
 	}
 	fallbackPassword, hasFallbackPassword := fallbackParsed.User.Password()
 	if !hasFallbackPassword {
-		return strings.TrimSpace(input)
+		return trimmedInput, nil
 	}
 	parsed.User = url.UserPassword(parsed.User.Username(), fallbackPassword)
-	return parsed.String()
+	return parsed.String(), nil
 }
 
 func redactEgressWireGuardConfig(config *EgressWireGuardConfig) *EgressWireGuardConfig {

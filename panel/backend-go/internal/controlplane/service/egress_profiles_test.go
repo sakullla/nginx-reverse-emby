@@ -630,6 +630,34 @@ func TestEgressProfileServiceUpdatePreservesProxyPasswordOnRedactedInput(t *test
 	}
 }
 
+func TestEgressProfileServiceUpdateRejectsEditedRedactedProxyURL(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	svc := NewEgressProfileService(store)
+	profile, err := svc.Create(t.Context(), EgressProfileInput{
+		Name:     stringPtrEgress("office socks"),
+		Type:     stringPtrEgress("socks"),
+		ProxyURL: stringPtrEgress("socks5://user:secret@127.0.0.1:1080"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	_, err = svc.Update(t.Context(), profile.ID, EgressProfileInput{
+		ProxyURL: stringPtrEgress("socks5://user:xxxxx@10.0.0.2:1080"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+
+	rows, err := store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].ProxyURL != "socks5://user:secret@127.0.0.1:1080" {
+		t.Fatalf("stored rows after rejected update = %+v", rows)
+	}
+}
+
 func newEgressProfileTestStore(t *testing.T) *storage.SQLiteStore {
 	t.Helper()
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")

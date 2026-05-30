@@ -183,6 +183,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	if err != nil {
 		return BackupImportResult{}, err
 	}
+	bundle = normalizeLegacyBackupEgressProfiles(bundle)
 	if bundle.Manifest.PackageVersion != BackupPackageVersion {
 		return BackupImportResult{}, fmt.Errorf("%w: unsupported backup package version %d", ErrInvalidArgument, bundle.Manifest.PackageVersion)
 	}
@@ -835,6 +836,7 @@ func (s *backupService) Import(ctx context.Context, archive []byte) (BackupImpor
 	if err != nil {
 		return BackupImportResult{}, err
 	}
+	bundle = normalizeLegacyBackupEgressProfiles(bundle)
 	if bundle.Manifest.PackageVersion != BackupPackageVersion {
 		return BackupImportResult{}, fmt.Errorf("%w: unsupported backup package version %d", ErrInvalidArgument, bundle.Manifest.PackageVersion)
 	}
@@ -1003,6 +1005,7 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 }
 
 func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (BackupImportResult, error) {
+	bundle = normalizeLegacyBackupEgressProfiles(bundle)
 	result := newBackupImportResult(bundle.Manifest)
 
 	agentRows, err := s.store.ListAgents(ctx)
@@ -2385,6 +2388,131 @@ func egressProfileInputFromBackup(profile BackupEgressProfile) EgressProfileInpu
 		WireGuardConfig: cloneEgressWireGuardConfig(profile.WireGuardConfig),
 		Enabled:         backupBoolPtr(profile.Enabled),
 		Description:     backupStringPtr(profile.Description),
+	}
+}
+
+func normalizeLegacyBackupEgressProfiles(bundle BackupBundle) BackupBundle {
+	nextID := maxBackupEgressProfileID(bundle.EgressProfiles) + 1
+	for i := range bundle.L4Rules {
+		rule := &bundle.L4Rules[i]
+		if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			continue
+		}
+		profile, ok := legacyBackupL4EgressProfile(*rule, nextID)
+		if !ok {
+			continue
+		}
+		bundle.EgressProfiles = append(bundle.EgressProfiles, profile)
+		rule.EgressProfileID = backupIntPtr(profile.ID)
+		nextID++
+	}
+	if len(bundle.EgressProfiles) > 0 {
+		bundle.Manifest.Counts.EgressProfiles = len(bundle.EgressProfiles)
+	}
+	return bundle
+}
+
+func maxBackupEgressProfileID(profiles []BackupEgressProfile) int {
+	maxID := 0
+	for _, profile := range profiles {
+		if profile.ID > maxID {
+			maxID = profile.ID
+		}
+	}
+	return maxID
+}
+
+func legacyBackupL4EgressProfile(rule BackupL4Rule, id int) (BackupEgressProfile, bool) {
+	mode := strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode))
+	switch mode {
+	case "proxy":
+		proxyURL := strings.TrimSpace(rule.ProxyEgressURL)
+		if proxyURL == "" {
+			return BackupEgressProfile{}, false
+		}
+		profileType := legacyBackupProxyEgressProfileType(proxyURL)
+		if profileType == "" {
+			return BackupEgressProfile{}, false
+		}
+		return BackupEgressProfile{
+			ID:          id,
+			Name:        legacyBackupEgressProfileName(rule),
+			Type:        profileType,
+			ProxyURL:    proxyURL,
+			Enabled:     true,
+			Description: fmt.Sprintf("Migrated from legacy L4 rule %d", rule.ID),
+			Revision:    legacyBackupEgressProfileRevision(rule),
+		}, true
+	case "wireguard":
+		config := legacyBackupWireGuardEgressConfig(rule.WireGuardEgressURI)
+		if config == nil {
+			return BackupEgressProfile{}, false
+		}
+		return BackupEgressProfile{
+			ID:              id,
+			Name:            legacyBackupEgressProfileName(rule),
+			Type:            "wireguard",
+			WireGuardConfig: config,
+			Enabled:         true,
+			Description:     fmt.Sprintf("Migrated from legacy L4 rule %d", rule.ID),
+			Revision:        legacyBackupEgressProfileRevision(rule),
+		}, true
+	default:
+		return BackupEgressProfile{}, false
+	}
+}
+
+func legacyBackupProxyEgressProfileType(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "http":
+		return "http"
+	case "socks", "socks5", "socks5h":
+		return "socks"
+	default:
+		return ""
+	}
+}
+
+func legacyBackupEgressProfileName(rule BackupL4Rule) string {
+	name := strings.TrimSpace(rule.Name)
+	if name == "" {
+		name = fmt.Sprintf("L4 rule %d", rule.ID)
+	}
+	if strings.HasSuffix(strings.ToLower(name), " egress") {
+		return name
+	}
+	return name + " egress"
+}
+
+func legacyBackupEgressProfileRevision(rule BackupL4Rule) int {
+	if rule.Revision > 0 {
+		return rule.Revision
+	}
+	return 1
+}
+
+func legacyBackupWireGuardEgressConfig(raw string) *EgressWireGuardConfig {
+	parsed, err := ParseWireGuardURI(raw)
+	if err != nil {
+		return nil
+	}
+	return &EgressWireGuardConfig{
+		PrivateKey: parsed.PrivateKey,
+		Addresses:  append([]string(nil), parsed.Addresses...),
+		Peers: []WireGuardPeer{{
+			Name:         parsed.Name,
+			PublicKey:    parsed.PublicKey,
+			PresharedKey: parsed.PresharedKey,
+			Endpoint:     parsed.Endpoint,
+			AllowedIPs:   append([]string(nil), parsed.AllowedIPs...),
+			Reserved:     append([]byte(nil), parsed.Reserved...),
+		}},
+		DNS: append([]string(nil), parsed.DNS...),
+		MTU: parsed.MTU,
 	}
 }
 
