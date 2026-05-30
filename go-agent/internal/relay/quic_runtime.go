@@ -81,6 +81,10 @@ func (s *Server) acceptQUICLoop(ln *quic.Listener, listener Listener) {
 			if s.ctx.Err() != nil {
 				return
 			}
+			if !isTemporaryAcceptError(err) {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 
