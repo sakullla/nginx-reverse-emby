@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -29,6 +30,7 @@ type HTTPRuleInput struct {
 	PassProxyHeaders         *bool               `json:"pass_proxy_headers,omitempty"`
 	UserAgent                *string             `json:"user_agent,omitempty"`
 	CustomHeaders            *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
+	EgressProfileID          *int                `json:"egress_profile_id,omitempty"`
 	WireGuardEntryEnabled    *bool               `json:"wireguard_entry_enabled,omitempty"`
 	WireGuardProfileID       *int                `json:"wireguard_profile_id,omitempty"`
 	WireGuardEntryListenHost *string             `json:"wireguard_entry_listen_host,omitempty"`
@@ -41,6 +43,7 @@ type ruleStore interface {
 	GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
 	ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error)
+	ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error)
 	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
@@ -179,6 +182,16 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
+	egressExecutorAgentIDs, egressExecutorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedID, rule.RelayLayers, rule.EgressProfileID, rule.Revision)
+	if err != nil {
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append(append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...), egressExecutorAgentIDs...)))
+	if err != nil {
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
 
 	nextRows := append(append([]storage.HTTPRuleRow(nil), rows...), httpRuleToRow(rule))
 	certRowsChanged := false
@@ -213,17 +226,35 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
-	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+	rollbackPostSave := func(err error) (HTTPRule, error) {
+		restoreAgentRowsBestEffort(ctx, s.store, agentRollbackRows)
+		if rollbackErr := s.store.SaveHTTPRules(ctx, resolvedID, rows); rollbackErr != nil {
+			rollbackDefaultWireGuard()
+			return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+		}
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+		return rollbackPostSave(err)
+	}
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
-		return HTTPRule{}, err
+		return rollbackPostSave(err)
+	}
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
+		return rollbackPostSave(err)
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return rollbackPostSave(err)
 	}
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
-	}
-	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		return HTTPRule{}, err
 	}
 	return rule, nil
 }
@@ -329,6 +360,40 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 			return HTTPRule{}, err
 		}
 	}
+	egressExecutorAgentIDs, egressExecutorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedID, rule.RelayLayers, rule.EgressProfileID, rule.Revision)
+	if err != nil {
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
+	previousEgressExecutorAgentIDs, err := egressProfileExecutorAgentIDsForMutation(ctx, s.store, resolvedID, current.RelayLayers, current.EgressProfileID)
+	if err != nil {
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
+	egressExecutorAgentIDs = uniqueAgentIDs(append(egressExecutorAgentIDs, previousEgressExecutorAgentIDs...))
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append(append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...), egressExecutorAgentIDs...)))
+	if err != nil {
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
 		if certRowsChanged {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
@@ -339,17 +404,35 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
-	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+	rollbackPostSave := func(err error) (HTTPRule, error) {
+		restoreAgentRowsBestEffort(ctx, s.store, agentRollbackRows)
+		if rollbackErr := s.store.SaveHTTPRules(ctx, resolvedID, rows); rollbackErr != nil {
+			rollbackDefaultWireGuard()
+			return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+		}
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+		return rollbackPostSave(err)
+	}
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
-		return HTTPRule{}, err
+		return rollbackPostSave(err)
+	}
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
+		return rollbackPostSave(err)
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return rollbackPostSave(err)
 	}
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
-	}
-	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		return HTTPRule{}, err
 	}
 	return rule, nil
 }
@@ -391,6 +474,14 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	egressExecutorAgentIDs, err := egressProfileExecutorAgentIDsForMutation(ctx, s.store, resolvedID, deleted.RelayLayers, deleted.EgressProfileID)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append([]string{resolvedID}, egressExecutorAgentIDs...)))
+	if err != nil {
+		return HTTPRule{}, err
+	}
 	if certRowsChanged {
 		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
 			return HTTPRule{}, err
@@ -404,19 +495,34 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		}
 		return HTTPRule{}, err
 	}
+	rollbackPostSave := func(err error) (HTTPRule, error) {
+		restoreAgentRowsBestEffort(ctx, s.store, agentRollbackRows)
+		if rollbackErr := s.store.SaveHTTPRules(ctx, resolvedID, rows); rollbackErr != nil {
+			return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+		}
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		return HTTPRule{}, err
+	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
-		return HTTPRule{}, err
+		return rollbackPostSave(err)
 	}
 	nextRevision := allocator.AllocateRevisionForAgent(resolvedID, deleted.Revision)
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
-		return HTTPRule{}, err
+		return rollbackPostSave(err)
+	}
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, nextRevision); err != nil {
+		return rollbackPostSave(err)
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return rollbackPostSave(err)
 	}
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
-	}
-	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		return HTTPRule{}, err
 	}
 	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "http_rule", deleted.ID)
 	return deleted, nil
@@ -891,6 +997,11 @@ type agentCapabilityStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 }
 
+type egressProfileCapabilityStore interface {
+	agentCapabilityStore
+	relayChainLookupStore
+}
+
 func resolveAgentCapabilitiesForStore(ctx context.Context, cfg config.Config, store agentCapabilityStore, agentID string) (string, string, []string, error) {
 	resolvedID := strings.TrimSpace(agentID)
 	if resolvedID == "" {
@@ -925,6 +1036,119 @@ func ensureAgentSupportsWireGuardCapability(ctx context.Context, cfg config.Conf
 		return fmt.Errorf("%w: agent does not support WireGuard: %s", ErrInvalidArgument, name)
 	}
 	return nil
+}
+
+func ensureAgentSupportsEgressProfilesCapability(ctx context.Context, cfg config.Config, store agentCapabilityStore, agentID string) error {
+	_, name, capabilities, err := resolveAgentCapabilitiesForStore(ctx, cfg, store, agentID)
+	if err != nil {
+		return err
+	}
+	if !agentHasCapability(capabilities, "egress_profiles") {
+		return fmt.Errorf("%w: agent does not support egress profiles: %s", ErrInvalidArgument, name)
+	}
+	return nil
+}
+
+func ensureEgressProfileExecutorsSupportCapability(ctx context.Context, cfg config.Config, store egressProfileCapabilityStore, ruleAgentID string, relayLayers [][]int) error {
+	executors, err := egressProfileExecutorAgentIDsForRule(ctx, store, ruleAgentID, relayLayers)
+	if err != nil {
+		return err
+	}
+	for _, agentID := range executors {
+		if err := ensureAgentSupportsEgressProfilesCapability(ctx, cfg, store, agentID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type egressProfileScheduleStore interface {
+	egressProfileLookupStore
+	relayChainLookupStore
+}
+
+func egressProfileScheduleTargets(ctx context.Context, store egressProfileScheduleStore, ruleAgentID string, relayLayers [][]int, egressProfileID *int, ruleRevision int) ([]string, int, error) {
+	executors, err := egressProfileExecutorAgentIDsForMutation(ctx, store, ruleAgentID, relayLayers, egressProfileID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(executors) == 0 {
+		return nil, ruleRevision, nil
+	}
+	profile, err := getEnabledEgressProfile(ctx, store, *egressProfileID)
+	if err != nil {
+		return nil, 0, err
+	}
+	return executors, maxInt(ruleRevision, profile.Revision), nil
+}
+
+func egressProfileExecutorAgentIDsForMutation(ctx context.Context, store relayChainLookupStore, ruleAgentID string, relayLayers [][]int, egressProfileID *int) ([]string, error) {
+	if egressProfileID == nil || *egressProfileID <= 0 {
+		return nil, nil
+	}
+	executors, err := egressProfileExecutorAgentIDsForRule(ctx, store, ruleAgentID, relayLayers)
+	if err != nil {
+		return nil, err
+	}
+	return agentIDsExcept(executors, ruleAgentID), nil
+}
+
+func agentIDsExcept(agentIDs []string, excluded string) []string {
+	excluded = strings.TrimSpace(excluded)
+	out := make([]string, 0, len(agentIDs))
+	seen := map[string]struct{}{}
+	for _, agentID := range agentIDs {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" || agentID == excluded {
+			continue
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func uniqueAgentIDs(agentIDs []string) []string {
+	out := make([]string, 0, len(agentIDs))
+	seen := map[string]struct{}{}
+	for _, agentID := range agentIDs {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			continue
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func egressProfileExecutorAgentIDsForRule(ctx context.Context, store relayChainLookupStore, ruleAgentID string, relayLayers [][]int) ([]string, error) {
+	ruleAgentID = strings.TrimSpace(ruleAgentID)
+	if len(relayLayers) == 0 {
+		if ruleAgentID == "" {
+			return nil, nil
+		}
+		return []string{ruleAgentID}, nil
+	}
+	listeners, err := store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	finalHops := egressProfileFinalHopAgentIDs(relayLayers, listeners)
+	agentIDs := make([]string, 0, len(finalHops))
+	for agentID := range finalHops {
+		agentIDs = append(agentIDs, agentID)
+	}
+	sort.Strings(agentIDs)
+	return agentIDs, nil
 }
 
 func httpRuleInputEnablesWireGuard(input HTTPRuleInput, fallback HTTPRule) bool {
@@ -1034,6 +1258,23 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		customHeaders = normalizeHTTPCustomHeaders(*input.CustomHeaders)
 	}
 
+	egressProfileID, err := normalizeEgressProfileIDInput(input.EgressProfileID, fallback.EgressProfileID)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	if egressProfileID != nil {
+		profile, err := s.getEnabledEgressProfile(ctx, *egressProfileID)
+		if err != nil {
+			return HTTPRule{}, err
+		}
+		if !egressProfileSupportsHTTP(profile) {
+			return HTTPRule{}, fmt.Errorf("%w: egress profile %d does not support HTTP rules", ErrInvalidArgument, profile.ID)
+		}
+		if err := ensureEgressProfileExecutorsSupportCapability(ctx, s.cfg, s.store, fallback.AgentID, relayLayers); err != nil {
+			return HTTPRule{}, err
+		}
+	}
+
 	wireGuardEntryEnabled := false
 	if fallback.ID > 0 {
 		wireGuardEntryEnabled = fallback.WireGuardEntryEnabled
@@ -1099,12 +1340,17 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		PassProxyHeaders:         passProxyHeaders,
 		UserAgent:                userAgent,
 		CustomHeaders:            customHeaders,
+		EgressProfileID:          egressProfileID,
 		WireGuardEntryEnabled:    wireGuardEntryEnabled,
 		WireGuardProfileID:       wireGuardProfileID,
 		WireGuardEntryListenHost: wireGuardEntryListenHost,
 		WireGuardEntryListenPort: wireGuardEntryListenPort,
 		Revision:                 fallback.Revision,
 	}, nil
+}
+
+func (s *ruleService) getEnabledEgressProfile(ctx context.Context, id int) (EgressProfile, error) {
+	return getEnabledEgressProfile(ctx, s.store, id)
 }
 
 func (s *ruleService) ensureDefaultHTTPWireGuardProfile(ctx context.Context, agentID string) (WireGuardProfile, error) {
@@ -1303,6 +1549,7 @@ func httpRuleFromRow(row storage.HTTPRuleRow) HTTPRule {
 		PassProxyHeaders:         row.PassProxyHeaders,
 		UserAgent:                row.UserAgent,
 		CustomHeaders:            parseCustomHeaders(row.CustomHeadersJSON),
+		EgressProfileID:          normalizeOptionalPositiveInt(row.EgressProfileID),
 		WireGuardEntryEnabled:    row.WireGuardEntryEnabled,
 		WireGuardProfileID:       copyOptionalInt(row.WireGuardProfileID),
 		WireGuardEntryListenHost: row.WireGuardEntryListenHost,
@@ -1328,6 +1575,7 @@ func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 		PassProxyHeaders:         rule.PassProxyHeaders,
 		UserAgent:                rule.UserAgent,
 		CustomHeadersJSON:        marshalJSON(rule.CustomHeaders, "[]"),
+		EgressProfileID:          normalizeOptionalPositiveInt(rule.EgressProfileID),
 		WireGuardEntryEnabled:    rule.WireGuardEntryEnabled,
 		WireGuardProfileID:       copyOptionalInt(rule.WireGuardProfileID),
 		WireGuardEntryListenHost: rule.WireGuardEntryListenHost,

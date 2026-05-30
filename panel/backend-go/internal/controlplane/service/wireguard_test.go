@@ -87,6 +87,50 @@ func TestWireGuardProfileCreateGeneratesBlankPrivateKey(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCreateAutoAllocatesExplicitEmptyInterfaceAddresses(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newTestWireGuardProfileService(t)
+
+	var input WireGuardProfileInput
+	if err := json.Unmarshal([]byte(`{
+		"name":"wg relay",
+		"mode":"generic_wireguard",
+		"private_key":"`+testWireGuardPrivateKey+`",
+		"listen_port":51820,
+		"addresses":["0.0.0.0"],
+		"interface_addresses":[],
+		"peers":[{
+			"name":"peer-a",
+			"public_key":"`+testWireGuardPublicKey+`",
+			"preshared_key":"`+testWireGuardPresharedKey+`",
+			"endpoint":"example.com:51820",
+			"allowed_ips":["10.0.0.2/32"]
+		}],
+		"enabled":true
+	}`), &input); err != nil {
+		t.Fatalf("UnmarshalJSON() error = %v", err)
+	}
+	if !input.InterfaceAddressesSet || len(input.InterfaceAddresses) != 0 {
+		t.Fatalf("input interface address state = set %t values %+v, want explicit empty", input.InterfaceAddressesSet, input.InterfaceAddresses)
+	}
+
+	profile, err := svc.Create(ctx, "local", input)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(profile.InterfaceAddresses) == 0 {
+		t.Fatalf("Create() InterfaceAddresses = %+v, want auto-allocated addresses", profile.InterfaceAddresses)
+	}
+
+	rawRows, err := store.ListWireGuardProfiles(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rawRows) != 1 || len(parseStringArray(rawRows[0].AddressesJSON)) == 0 {
+		t.Fatalf("stored interface addresses = %+v, want auto-allocated addresses", rawRows)
+	}
+}
+
 func TestWireGuardProfileServiceEnsureDefaultCreatesProfile(t *testing.T) {
 	store, svc := newTestWireGuardProfileService(t)
 	agentID := "local"
@@ -291,6 +335,21 @@ func TestWireGuardProfileCreateAllocatesAddressWhenOmitted(t *testing.T) {
 	}
 	if len(created.InterfaceAddresses) != 2 || created.InterfaceAddresses[0] != "10.8.0.1/24" || created.InterfaceAddresses[1] != "fd10:8::1/64" {
 		t.Fatalf("Create() interface_addresses = %+v, want allocated v4/v6 pair", created.InterfaceAddresses)
+	}
+}
+
+func TestWireGuardProfileCreateRejectsInvalidInterfaceAddresses(t *testing.T) {
+	ctx := context.Background()
+	_, svc := newTestWireGuardProfileService(t)
+
+	input := testWireGuardProfileInput()
+	input.InterfaceAddresses = []string{"not-a-cidr"}
+	_, err := svc.Create(ctx, "local", input)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "interface_addresses") {
+		t.Fatalf("Create() error = %v, want interface_addresses validation message", err)
 	}
 }
 
@@ -1015,34 +1074,6 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 					RelayLayersJSON:    `[]`,
 					ListenMode:         "wireguard",
 					WireGuardProfileID: &profileID,
-					Enabled:            true,
-					TagsJSON:           `[]`,
-					Revision:           1,
-				}}); err != nil {
-					t.Fatalf("SaveL4Rules() error = %v", err)
-				}
-			},
-		},
-		{
-			name:        "l4 egress",
-			wantMessage: "wireguard profile is referenced",
-			seed: func(t *testing.T, store *storage.SQLiteStore, profileID int) {
-				t.Helper()
-				if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
-					ID:                 102,
-					AgentID:            "local",
-					Name:               "wg egress",
-					Protocol:           "tcp",
-					ListenHost:         "0.0.0.0",
-					ListenPort:         1080,
-					BackendsJSON:       `[]`,
-					LoadBalancingJSON:  `{"strategy":"adaptive"}`,
-					TuningJSON:         `{"proxy_protocol":{"decode":false,"send":false}}`,
-					RelayLayersJSON:    `[]`,
-					ListenMode:         "proxy",
-					WireGuardProfileID: &profileID,
-					ProxyEntryAuthJSON: `{}`,
-					ProxyEgressMode:    "wireguard",
 					Enabled:            true,
 					TagsJSON:           `[]`,
 					Revision:           1,

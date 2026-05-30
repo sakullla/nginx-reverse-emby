@@ -29,6 +29,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
@@ -91,6 +92,130 @@ func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
 
 	if got := resp.Header.Get("Location"); got != "https://route.example/redirected" {
 		t.Fatalf("unexpected location: %q", got)
+	}
+}
+
+func TestHTTPMissingEgressProfileFailsStartup(t *testing.T) {
+	profileID := 17
+	_, err := StartWithResourcesAndOptions(context.Background(), []model.HTTPRule{{
+		ID:              1,
+		FrontendURL:     "http://media.example.test",
+		Backends:        []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: &profileID,
+	}}, nil, Providers{}, backends.NewCache(backends.Config{}), NewSharedTransport(), false, StreamResilienceOptions{})
+	if err == nil || !strings.Contains(err.Error(), "egress profile 17 not found") {
+		t.Fatalf("StartWithResourcesAndOptions() error = %v, want missing egress profile", err)
+	}
+}
+
+func TestHTTPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("via-socks"))
+	}))
+	defer backend.Close()
+	proxyURL, targets := startRecordingHTTPEgressProxy(t, "socks5")
+
+	profileID := 18
+	listener := model.HTTPListener{Rules: []model.HTTPRule{{
+		ID:              1,
+		FrontendURL:     "http://media.example.test",
+		Backends:        []model.HTTPBackend{{URL: backend.URL}},
+		EgressProfileID: &profileID,
+	}}}
+	server, err := newServerWithResilience(listener, nil, Providers{EgressProfiles: []model.EgressProfile{{
+		ID:       profileID,
+		Type:     "socks",
+		ProxyURL: proxyURL,
+		Enabled:  true,
+	}}}, backends.NewCache(backends.Config{}), NewSharedTransport(), StreamResilienceOptions{})
+	if err != nil {
+		t.Fatalf("newServerWithResilience() error = %v", err)
+	}
+	proxyServer := httptest.NewServer(server)
+	defer proxyServer.Close()
+
+	resp, body := doHTTPProxyTestRequest(t, proxyServer.URL, "media.example.test")
+	defer resp.Body.Close()
+	if string(body) != "via-socks" {
+		t.Fatalf("response body = %q, want via-socks", body)
+	}
+
+	assertHTTPEgressProxyTarget(t, targets, strings.TrimPrefix(backend.URL, "http://"))
+}
+
+func TestHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("via-http"))
+	}))
+	defer backend.Close()
+	proxyURL, targets := startRecordingHTTPEgressProxy(t, "http")
+
+	profileID := 19
+	listener := model.HTTPListener{Rules: []model.HTTPRule{{
+		ID:              1,
+		FrontendURL:     "http://media.example.test",
+		Backends:        []model.HTTPBackend{{URL: backend.URL}},
+		EgressProfileID: &profileID,
+	}}}
+	server, err := newServerWithResilience(listener, nil, Providers{EgressProfiles: []model.EgressProfile{{
+		ID:       profileID,
+		Type:     "http",
+		ProxyURL: proxyURL,
+		Enabled:  true,
+	}}}, backends.NewCache(backends.Config{}), NewSharedTransport(), StreamResilienceOptions{})
+	if err != nil {
+		t.Fatalf("newServerWithResilience() error = %v", err)
+	}
+	proxyServer := httptest.NewServer(server)
+	defer proxyServer.Close()
+
+	resp, body := doHTTPProxyTestRequest(t, proxyServer.URL, "media.example.test")
+	defer resp.Body.Close()
+	if string(body) != "via-http" {
+		t.Fatalf("response body = %q, want via-http", body)
+	}
+
+	assertHTTPEgressProxyTarget(t, targets, strings.TrimPrefix(backend.URL, "http://"))
+}
+
+func TestHTTPDirectEgressProfileUsesSharedDirectTransport(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("via-direct"))
+	}))
+	defer backend.Close()
+
+	var dialCalls atomic.Int32
+	sharedTransport := NewSharedTransport()
+	sharedTransport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialCalls.Add(1)
+		return (&net.Dialer{}).DialContext(ctx, network, dialAddressFromContext(ctx, address))
+	}
+
+	profileID := 20
+	listener := model.HTTPListener{Rules: []model.HTTPRule{{
+		ID:              1,
+		FrontendURL:     "http://media.example.test",
+		Backends:        []model.HTTPBackend{{URL: backend.URL}},
+		EgressProfileID: &profileID,
+	}}}
+	server, err := newServerWithResilience(listener, nil, Providers{EgressProfiles: []model.EgressProfile{{
+		ID:      profileID,
+		Type:    "direct",
+		Enabled: true,
+	}}}, backends.NewCache(backends.Config{}), sharedTransport, StreamResilienceOptions{})
+	if err != nil {
+		t.Fatalf("newServerWithResilience() error = %v", err)
+	}
+	proxyServer := httptest.NewServer(server)
+	defer proxyServer.Close()
+
+	resp, body := doHTTPProxyTestRequest(t, proxyServer.URL, "media.example.test")
+	defer resp.Body.Close()
+	if string(body) != "via-direct" {
+		t.Fatalf("response body = %q, want via-direct", body)
+	}
+	if got := dialCalls.Load(); got != 1 {
+		t.Fatalf("shared direct transport dial calls = %d, want 1", got)
 	}
 }
 
@@ -2788,13 +2913,15 @@ func TestStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) 
 	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeOff)
 	defer relayStop()
 	relayListenPort := pickFreePort(t)
+	egressProfileID := 17
 
 	runtime, err := Start(
 		context.Background(),
 		[]model.HTTPRule{{
-			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
-			RelayLayers: [][]int{{41}},
+			FrontendURL:     fmt.Sprintf("http://edge.example.test:%d", frontendPort),
+			Backends:        []model.HTTPBackend{{URL: "http://" + backendAddress}},
+			RelayLayers:     [][]int{{41}},
+			EgressProfileID: &egressProfileID,
 		}},
 		[]model.RelayListener{{
 			ID:         41,
@@ -2859,6 +2986,12 @@ func TestStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) 
 	for _, relayReq := range requests {
 		if relayReq.Target != backendAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
+		}
+		if got := relayReq.Metadata["egress_profile_id"]; got != float64(egressProfileID) && got != egressProfileID {
+			t.Fatalf("egress_profile_id metadata = %#v, want %d", got, egressProfileID)
+		}
+		if _, ok := relayReq.Metadata["final_hop_proxy_url"]; ok {
+			t.Fatalf("relay metadata leaked final_hop_proxy_url: %+v", relayReq.Metadata)
 		}
 		rawClass, ok := relayReq.Metadata["traffic_class"].(string)
 		if !ok {
@@ -3947,6 +4080,97 @@ func startTestRelayServer(
 		_ = ln.Close()
 		<-done
 	}
+}
+
+func startRecordingHTTPEgressProxy(t *testing.T, scheme string) (string, <-chan string) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen recording http egress proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	targets := make(chan string, 8)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(client net.Conn) {
+				defer client.Close()
+				req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+				if err != nil {
+					return
+				}
+				targets <- req.Target
+				upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
+				if err != nil {
+					_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+					return
+				}
+				defer upstream.Close()
+				if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+					return
+				}
+				copyTCPPairForProxyTest(client, upstream)
+			}(conn)
+		}
+	}()
+
+	return scheme + "://" + ln.Addr().String(), targets
+}
+
+func doHTTPProxyTestRequest(t *testing.T, proxyURL string, host string) (*http.Response, []byte) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, proxyURL+"/library", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Host = host
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		_ = resp.Body.Close()
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	return resp, body
+}
+
+func assertHTTPEgressProxyTarget(t *testing.T, targets <-chan string, wantTarget string) {
+	t.Helper()
+
+	select {
+	case got := <-targets:
+		if got != wantTarget {
+			t.Fatalf("egress proxy target = %q, want %q", got, wantTarget)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for egress proxy target")
+	}
+	select {
+	case got := <-targets:
+		t.Fatalf("unexpected extra egress proxy target %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func copyTCPPairForProxyTest(a net.Conn, b net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(a, b)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(b, a)
+		done <- struct{}{}
+	}()
+	<-done
 }
 
 func startStreamingTestRelayServer(

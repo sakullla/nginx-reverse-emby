@@ -78,13 +78,15 @@ func readUOTPacketInto(r io.Reader, buf []byte) ([]byte, error) {
 	return payload, nil
 }
 
-type udpPacketPeer interface {
+type UDPPacketPeer interface {
 	Close() error
 	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
 	ReadPacket() ([]byte, error)
 	WritePacket([]byte) error
 }
+
+type udpPacketPeer = UDPPacketPeer
 
 type udpStreamPeer struct {
 	conn    net.Conn

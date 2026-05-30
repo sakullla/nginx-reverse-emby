@@ -262,10 +262,10 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	if agents[0].HTTPRulesCount != 1 {
 		t.Fatalf("local HTTPRulesCount = %d", agents[0].HTTPRulesCount)
 	}
-	if len(agents[0].Capabilities) != 6 {
+	if len(agents[0].Capabilities) != 7 {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
-	if agents[0].Capabilities[4] != "relay_quic" || agents[0].Capabilities[5] != "wireguard" {
+	if agents[0].Capabilities[4] != "relay_quic" || agents[0].Capabilities[5] != "wireguard" || agents[0].Capabilities[6] != "egress_profiles" {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
 

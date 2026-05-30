@@ -94,8 +94,16 @@ func normalizeListener(listener Listener) (Listener, error) {
 		return Listener{}, fmt.Errorf("listen_host is required")
 	}
 
+	transportMode, err := normalizeListenerTransportMode(listener.TransportMode)
+	if err != nil {
+		return Listener{}, err
+	}
+	normalized.TransportMode = transportMode
 	normalized.BindHosts = bindHosts
 	normalized.ListenHost = bindHosts[0]
+	if transportMode == ListenerTransportModeWireGuard && listenHost != "" {
+		normalized.ListenHost = listenHost
+	}
 
 	publicHost := strings.TrimSpace(listener.PublicHost)
 	if publicHost == "" {
@@ -105,12 +113,6 @@ func normalizeListener(listener Listener) (Listener, error) {
 	if normalized.PublicPort <= 0 {
 		normalized.PublicPort = normalized.ListenPort
 	}
-
-	transportMode, err := normalizeListenerTransportMode(listener.TransportMode)
-	if err != nil {
-		return Listener{}, err
-	}
-	normalized.TransportMode = transportMode
 
 	obfsMode, err := normalizeListenerObfsMode(listener.ObfsMode)
 	if err != nil {

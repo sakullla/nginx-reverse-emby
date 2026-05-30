@@ -54,6 +54,10 @@ type Runtime interface {
 	Close() error
 }
 
+type endpointResolutionState interface {
+	EndpointResolutionPending() bool
+}
+
 type Factory func(context.Context, Config) (Runtime, error)
 
 type Preflight func(context.Context, Config) error
@@ -133,7 +137,7 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 			return fmt.Errorf("wireguard profile %d fingerprint: %w", profile.ID, err)
 		}
 
-		if existing, ok := m.runtimes[key]; ok && existing.fingerprint == fingerprint {
+		if existing, ok := m.runtimes[key]; ok && existing.fingerprint == fingerprint && !runtimeEndpointResolutionPending(existing.runtime) {
 			continue
 		}
 
@@ -293,7 +297,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 			return nil, wrapPrepareError(profile.ID, "fingerprint", err)
 		}
 
-		if existing, ok := m.runtimes[key]; ok && existing.fingerprint == fingerprint {
+		if existing, ok := m.runtimes[key]; ok && existing.fingerprint == fingerprint && !runtimeEndpointResolutionPending(existing.runtime) {
 			candidates[key] = &runtimeEntry{
 				fingerprint: existing.fingerprint,
 				config:      cloneConfig(existing.config),
@@ -460,12 +464,17 @@ type runtimeReplacement struct {
 }
 
 func PreflightConfig(ctx context.Context, cfg Config) error {
-	_, err := ipcConfig(ctx, cfg, lookupEndpointIP)
+	_, _, err := ipcConfig(ctx, cfg, lookupEndpointIP)
 	return err
 }
 
 func sameListenPort(existingPort, nextPort int) bool {
 	return existingPort > 0 && existingPort == nextPort
+}
+
+func runtimeEndpointResolutionPending(runtime Runtime) bool {
+	state, ok := runtime.(endpointResolutionState)
+	return ok && state.EndpointResolutionPending()
 }
 
 func isListenPortConflict(err error) bool {
@@ -642,17 +651,18 @@ func (m *Manager) Close() error {
 }
 
 type netstackRuntime struct {
-	mu                  sync.Mutex
-	net                 wgnetstack.RuntimeNet
-	stack               *stack.Stack
-	device              *device.Device
-	tun                 interface{ Close() error }
-	tcp                 *transparentTCPDispatcher
-	udp                 *transparentUDPDispatcher
-	releaseScavenger    func()
-	tcpHandlerInstalled bool
-	udpHandlerInstalled bool
-	closed              bool
+	mu                        sync.Mutex
+	net                       wgnetstack.RuntimeNet
+	stack                     *stack.Stack
+	device                    *device.Device
+	tun                       interface{ Close() error }
+	tcp                       *transparentTCPDispatcher
+	udp                       *transparentUDPDispatcher
+	releaseScavenger          func()
+	tcpHandlerInstalled       bool
+	udpHandlerInstalled       bool
+	endpointResolutionPending bool
+	closed                    bool
 }
 
 func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
@@ -664,11 +674,12 @@ func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
 	dev := device.NewDevice(tunDevice, newWireGuardBind(cfg.BindAddresses), device.NewLogger(device.LogLevelSilent, "wireguard: "))
 	runtime := newNetstackRuntime(tunDevice, tnet, gstack, dev)
 	runtime.releaseScavenger = retainWireGuardMemoryScavenger()
-	ipc, err := ipcConfig(ctx, cfg, lookupEndpointIP)
+	ipc, endpointResolutionPending, err := ipcConfig(ctx, cfg, lookupEndpointIP)
 	if err != nil {
 		runtime.Close()
 		return nil, err
 	}
+	runtime.endpointResolutionPending = endpointResolutionPending
 	if err := dev.IpcSet(ipc); err != nil {
 		runtime.Close()
 		return nil, err
@@ -688,6 +699,15 @@ func newNetstackRuntime(tunDevice interface{ Close() error }, tnet wgnetstack.Ru
 		runtime.udp = newTransparentUDPDispatcher(gstack)
 	}
 	return runtime
+}
+
+func (r *netstackRuntime) EndpointResolutionPending() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.endpointResolutionPending
 }
 
 const wireGuardRuntimeWarmupTimeout = 2 * time.Second
@@ -1524,8 +1544,9 @@ func udpAddrFromFullAddress(addr tcpip.FullAddress) *net.UDPAddr {
 	return &net.UDPAddr{IP: net.IP(addr.Addr.AsSlice()), Port: int(addr.Port)}
 }
 
-func ipcConfig(ctx context.Context, cfg Config, resolve endpointResolver) (string, error) {
+func ipcConfig(ctx context.Context, cfg Config, resolve endpointResolver) (string, bool, error) {
 	var builder strings.Builder
+	endpointResolutionPending := false
 	builder.WriteString("private_key=")
 	builder.WriteString(hex.EncodeToString(cfg.PrivateKeyBytes))
 	builder.WriteByte('\n')
@@ -1545,7 +1566,8 @@ func ipcConfig(ctx context.Context, cfg Config, resolve endpointResolver) (strin
 		}
 		endpoint, err := ipcEndpoint(ctx, peer, resolve)
 		if err != nil {
-			return "", err
+			endpointResolutionPending = true
+			endpoint = ""
 		}
 		if endpoint != "" {
 			builder.WriteString("endpoint=")
@@ -1563,7 +1585,7 @@ func ipcConfig(ctx context.Context, cfg Config, resolve endpointResolver) (strin
 		}
 	}
 	builder.WriteByte('\n')
-	return builder.String(), nil
+	return builder.String(), endpointResolutionPending, nil
 }
 
 func ipcEndpoint(ctx context.Context, peer PeerConfig, resolve endpointResolver) (string, error) {

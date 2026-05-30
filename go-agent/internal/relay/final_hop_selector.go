@@ -15,14 +15,16 @@ import (
 )
 
 type finalHopSelectorConfig struct {
-	Resolver   backends.Resolver
-	Now        func() time.Time
-	RandomIntn func(int) int
+	Resolver       backends.Resolver
+	Now            func() time.Time
+	RandomIntn     func(int) int
+	FinalHopDialer FinalHopDialer
 }
 
 type finalHopSelector struct {
-	cache *backends.Cache
-	now   func() time.Time
+	cache          *backends.Cache
+	now            func() time.Time
+	finalHopDialer FinalHopDialer
 }
 
 func newFinalHopSelector(cfg finalHopSelectorConfig) *finalHopSelector {
@@ -35,7 +37,7 @@ func newFinalHopSelector(cfg finalHopSelectorConfig) *finalHopSelector {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
-	return &finalHopSelector{cache: cache, now: nowFn}
+	return &finalHopSelector{cache: cache, now: nowFn, finalHopDialer: cfg.FinalHopDialer}
 }
 
 func (s *finalHopSelector) resolvedCandidates(ctx context.Context, target string) ([]backends.Candidate, error) {
@@ -84,7 +86,12 @@ func literalHostCandidate(host string, port int) (bool, string) {
 	return false, ""
 }
 
-func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn, string, error) {
+func (s *finalHopSelector) dialTCP(ctx context.Context, target string, options DialOptions) (net.Conn, string, error) {
+	if s.finalHopDialer == nil {
+		if err := rejectUnresolvedEgressProfile(options); err != nil {
+			return nil, "", err
+		}
+	}
 	candidates, err := s.resolvedCandidates(ctx, target)
 	if err != nil {
 		return nil, "", err
@@ -95,7 +102,7 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn
 	for _, candidate := range candidates {
 		start := s.now()
 		lastAddress = candidate.Address
-		conn, err := dialTCP(ctx, candidate.Address)
+		conn, err := s.dialFinalHopTCP(ctx, candidate.Address, options)
 		if err != nil {
 			s.cache.MarkFailure(candidate.Address)
 			lastErr = err
@@ -105,6 +112,16 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn
 		return conn, candidate.Address, nil
 	}
 	return nil, lastAddress, lastErr
+}
+
+func (s *finalHopSelector) dialFinalHopTCP(ctx context.Context, address string, options DialOptions) (net.Conn, error) {
+	if options.EgressProfileID != nil && *options.EgressProfileID > 0 {
+		if s.finalHopDialer == nil {
+			return nil, rejectUnresolvedEgressProfile(options)
+		}
+		return s.finalHopDialer.DialTCP(ctx, address, options.EgressProfileID)
+	}
+	return dialTCP(ctx, address)
 }
 
 type observedUDPPeer struct {
@@ -153,7 +170,12 @@ func (p *observedUDPPeer) ReadPacket() ([]byte, error) {
 	return payload, nil
 }
 
-func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string) (udpPacketPeer, string, error) {
+func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string, options DialOptions) (udpPacketPeer, string, error) {
+	if s.finalHopDialer == nil {
+		if err := rejectUnresolvedEgressProfile(options); err != nil {
+			return nil, "", err
+		}
+	}
 	candidates, err := s.resolvedCandidates(ctx, target)
 	if err != nil {
 		return nil, "", err
@@ -161,21 +183,14 @@ func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string) (udpP
 
 	var lastErr error
 	for _, candidate := range candidates {
-		addr, err := net.ResolveUDPAddr("udp", candidate.Address)
+		peer, err := s.openFinalHopUDPPeer(ctx, candidate.Address, options)
 		if err != nil {
 			s.cache.MarkFailure(candidate.Address)
 			lastErr = err
 			continue
 		}
-		conn, err := net.DialUDP("udp", nil, addr)
-		if err != nil {
-			s.cache.MarkFailure(candidate.Address)
-			lastErr = err
-			continue
-		}
-		netutil.TuneUDPBuffers(conn)
 		return &observedUDPPeer{
-			udpPacketPeer:     newUDPSocketPeer(conn),
+			udpPacketPeer:     peer,
 			selector:          s,
 			address:           candidate.Address,
 			openedAt:          s.now(),
@@ -183,4 +198,30 @@ func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string) (udpP
 		}, candidate.Address, nil
 	}
 	return nil, "", lastErr
+}
+
+func (s *finalHopSelector) openFinalHopUDPPeer(ctx context.Context, address string, options DialOptions) (udpPacketPeer, error) {
+	if options.EgressProfileID != nil && *options.EgressProfileID > 0 {
+		if s.finalHopDialer == nil {
+			return nil, rejectUnresolvedEgressProfile(options)
+		}
+		return s.finalHopDialer.OpenUDP(ctx, address, options.EgressProfileID)
+	}
+	addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		return nil, err
+	}
+	netutil.TuneUDPBuffers(conn)
+	return newUDPSocketPeer(conn), nil
+}
+
+func rejectUnresolvedEgressProfile(options DialOptions) error {
+	if options.EgressProfileID == nil || *options.EgressProfileID <= 0 {
+		return nil
+	}
+	return fmt.Errorf("egress profile %d resolver is not wired for relay final hop", *options.EgressProfileID)
 }

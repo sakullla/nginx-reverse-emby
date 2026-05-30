@@ -60,7 +60,7 @@ func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, opt
 		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
-	conn, selectedAddress, err := selector.dialTCP(s.ctx, target)
+	conn, selectedAddress, err := selector.dialTCP(s.ctx, target, options)
 	return conn, DialResult{SelectedAddress: selectedAddress}, err
 }
 
@@ -90,7 +90,7 @@ func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, option
 		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
-	peer, selectedAddress, err := selector.openUDPPeer(s.ctx, target)
+	peer, selectedAddress, err := selector.openUDPPeer(s.ctx, target, options)
 	return peer, selectedAddress, err
 }
 
@@ -200,10 +200,8 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	}
 
 tlsTCPDial:
-	if transportMode != ListenerTransportModeWireGuard {
-		if err := requireTLSMaterialProvider(provider); err != nil {
-			return nil, DialResult{}, err
-		}
+	if err := requireTLSMaterialProvider(provider); err != nil {
+		return nil, DialResult{}, err
 	}
 	conn, result, err := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
 	if err != nil {
@@ -301,10 +299,17 @@ func relayDialTrafficClass(network string, options DialOptions) upstream.Traffic
 
 func relayMetadataForDialOptions(network string, options DialOptions) map[string]any {
 	class := relayDialTrafficClass(network, options)
-	if class == upstream.TrafficClassUnknown {
+	metadata := make(map[string]any)
+	if class != upstream.TrafficClassUnknown {
+		metadata[relayMetadataTrafficClass] = string(class)
+	}
+	if options.EgressProfileID != nil && *options.EgressProfileID > 0 {
+		metadata[relayMetadataEgressProfileID] = *options.EgressProfileID
+	}
+	if len(metadata) == 0 {
 		return nil
 	}
-	return map[string]any{relayMetadataTrafficClass: string(class)}
+	return metadata
 }
 
 func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialOptions {
@@ -312,7 +317,10 @@ func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialO
 	if class == upstream.TrafficClassUnknown {
 		class = relayDialTrafficClass(network, DialOptions{})
 	}
-	return DialOptions{TrafficClass: class}
+	return DialOptions{
+		TrafficClass:    class,
+		EgressProfileID: relayEgressProfileIDFromMetadata(metadata),
+	}
 }
 
 func dialRelayTCPWithProxy(ctx context.Context, address string, _ Listener, proxyURL string) (net.Conn, error) {

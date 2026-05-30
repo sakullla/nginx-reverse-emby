@@ -6,6 +6,7 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/quic-go/quic-go"
@@ -16,7 +17,13 @@ type DialOptions struct {
 	InitialPayload    []byte
 	TrafficClass      upstream.TrafficClass
 	OutboundProxyURL  string
+	EgressProfileID   *int
 	WireGuardProvider WireGuardRuntimeProvider
+}
+
+type FinalHopDialer interface {
+	DialTCP(context.Context, string, *int) (net.Conn, error)
+	OpenUDP(context.Context, string, *int) (UDPPacketPeer, error)
 }
 
 type DialResult struct {
@@ -26,16 +33,28 @@ type DialResult struct {
 
 type StartOptions struct {
 	WireGuardProvider WireGuardRuntimeProvider
+	FinalHopDialer    FinalHopDialer
 }
 
 func (o DialOptions) clone() DialOptions {
+	var egressProfileID *int
+	if o.EgressProfileID != nil {
+		profileID := *o.EgressProfileID
+		egressProfileID = &profileID
+	}
 	if len(o.InitialPayload) == 0 {
-		return DialOptions{TrafficClass: o.TrafficClass, OutboundProxyURL: o.OutboundProxyURL, WireGuardProvider: o.WireGuardProvider}
+		return DialOptions{
+			TrafficClass:      o.TrafficClass,
+			OutboundProxyURL:  o.OutboundProxyURL,
+			EgressProfileID:   egressProfileID,
+			WireGuardProvider: o.WireGuardProvider,
+		}
 	}
 	return DialOptions{
 		InitialPayload:    append([]byte(nil), o.InitialPayload...),
 		TrafficClass:      o.TrafficClass,
 		OutboundProxyURL:  o.OutboundProxyURL,
+		EgressProfileID:   egressProfileID,
 		WireGuardProvider: o.WireGuardProvider,
 	}
 }
@@ -71,9 +90,11 @@ func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMat
 		cancel:            cancel,
 		provider:          provider,
 		wireGuardProvider: options.WireGuardProvider,
-		finalHopSelector:  newFinalHopSelector(finalHopSelectorConfig{}),
-		conns:             make(map[net.Conn]struct{}),
-		quicConns:         make(map[*quic.Conn]struct{}),
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
+			FinalHopDialer: options.FinalHopDialer,
+		}),
+		conns:     make(map[net.Conn]struct{}),
+		quicConns: make(map[*quic.Conn]struct{}),
 	}
 
 	for _, listener := range listeners {
@@ -89,15 +110,13 @@ func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMat
 			server.Close()
 			return nil, fmt.Errorf("relay listener %d: %w", listener.ID, err)
 		}
-		if normalizeListenerTransportModeValue(normalized.TransportMode) != ListenerTransportModeWireGuard {
-			if err := requireTLSMaterialProvider(provider); err != nil {
-				server.Close()
-				return nil, err
-			}
-			if normalized.CertificateID == nil {
-				server.Close()
-				return nil, fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
-			}
+		if err := requireTLSMaterialProvider(provider); err != nil {
+			server.Close()
+			return nil, err
+		}
+		if normalized.CertificateID == nil {
+			server.Close()
+			return nil, fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
 		}
 		if err := server.startListener(normalized); err != nil {
 			server.Close()
@@ -115,6 +134,18 @@ func (s *Server) startListener(listener Listener) error {
 		return err
 	}
 
+	if transportMode == ListenerTransportModeWireGuard {
+		addr := net.JoinHostPort(strings.TrimSpace(listener.ListenHost), strconv.Itoa(listener.ListenPort))
+		ln, err := s.listenWireGuardTCP(listener, addr)
+		if err != nil {
+			return err
+		}
+		s.listeners = append(s.listeners, ln)
+		s.wg.Add(1)
+		go s.acceptLoop(ln, listener)
+		return nil
+	}
+
 	for _, bindHost := range listener.BindHosts {
 		addr := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
 		switch transportMode {
@@ -126,14 +157,6 @@ func (s *Server) startListener(listener Listener) error {
 			s.quicListeners = append(s.quicListeners, ln)
 			s.wg.Add(1)
 			go s.acceptQUICLoop(ln.listener, listener)
-		case ListenerTransportModeWireGuard:
-			ln, err := s.listenWireGuardTCP(listener, addr)
-			if err != nil {
-				return err
-			}
-			s.listeners = append(s.listeners, ln)
-			s.wg.Add(1)
-			go s.acceptLoop(ln, listener)
 		default:
 			listenConfig := newRelayTCPListenConfig()
 			ln, err := listenConfig.Listen(s.ctx, "tcp", addr)
@@ -224,13 +247,17 @@ func listenerBindingKeys(listener Listener) []string {
 	if transportMode == ListenerTransportModeQUIC {
 		protocol = "udp"
 	}
+	if transportMode == ListenerTransportModeWireGuard {
+		host := strings.TrimSpace(listener.ListenHost)
+		if host == "" {
+			return nil
+		}
+		address := net.JoinHostPort(host, strconv.Itoa(listener.ListenPort))
+		return []string{"wireguard:" + strconv.Itoa(valueOrZero(listener.WireGuardProfileID)) + ":" + protocol + ":" + address}
+	}
 	keys := make([]string, 0, len(listener.BindHosts))
 	for _, bindHost := range listener.BindHosts {
 		address := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
-		if transportMode == ListenerTransportModeWireGuard {
-			keys = append(keys, "wireguard:"+strconv.Itoa(valueOrZero(listener.WireGuardProfileID))+":"+protocol+":"+address)
-			continue
-		}
 		keys = append(keys, protocol+":"+address)
 	}
 	return keys

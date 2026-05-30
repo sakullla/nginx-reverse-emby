@@ -64,6 +64,7 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 		"current_revision":   reply.CurrentRevision,
 		"relay_listeners":    reply.RelayListeners,
 		"wireguard_profiles": reply.WireGuardProfiles,
+		"egress_profiles":    reply.EgressProfiles,
 	}
 	payload["agent_config"] = service.AgentRuntimeConfig{
 		OutboundProxyURL:     reply.OutboundProxyURL,

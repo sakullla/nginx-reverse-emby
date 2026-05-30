@@ -425,22 +425,19 @@ func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMa
 		return nil, err
 	}
 
-	transportMode := normalizeListenerTransportModeValue(hop.Listener.TransportMode)
 	conn := rawConn
-	if transportMode != ListenerTransportModeWireGuard {
-		tlsConfig, err := clientTLSConfig(ctx, provider, hop.Listener, hop.Address, hop.ServerName)
-		if err != nil {
-			_ = rawConn.Close()
-			return nil, err
-		}
-
-		relayConn := tls.Client(rawConn, tlsConfig)
-		if err := handshakeTLS(ctx, relayConn); err != nil {
-			_ = rawConn.Close()
-			return nil, err
-		}
-		conn = relayConn
+	tlsConfig, err := clientTLSConfig(ctx, provider, hop.Listener, hop.Address, hop.ServerName)
+	if err != nil {
+		_ = rawConn.Close()
+		return nil, err
 	}
+
+	relayConn := tls.Client(rawConn, tlsConfig)
+	if err := handshakeTLS(ctx, relayConn); err != nil {
+		_ = rawConn.Close()
+		return nil, err
+	}
+	conn = relayConn
 
 	reader := io.Reader(conn)
 	writer := io.Writer(conn)

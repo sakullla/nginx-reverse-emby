@@ -11,7 +11,11 @@ import (
 )
 
 const maxRequestSize = 1 << 20
-const relayMetadataTrafficClass = "traffic_class"
+
+const (
+	relayMetadataTrafficClass    = "traffic_class"
+	relayMetadataEgressProfileID = "egress_profile_id"
+)
 
 const (
 	ListenerTransportModeTLSTCP    = "tls_tcp"
@@ -25,6 +29,34 @@ type relayRequest struct {
 	Network string `json:"network"`
 	Target  string `json:"target"`
 	Chain   []Hop  `json:"chain,omitempty"`
+}
+
+func relayEgressProfileIDFromMetadata(metadata map[string]any) *int {
+	if len(metadata) == 0 {
+		return nil
+	}
+	raw, ok := metadata[relayMetadataEgressProfileID]
+	if !ok {
+		return nil
+	}
+	var id int
+	switch value := raw.(type) {
+	case int:
+		id = value
+	case int64:
+		id = int(value)
+	case float64:
+		id = int(value)
+		if float64(id) != value {
+			return nil
+		}
+	default:
+		return nil
+	}
+	if id <= 0 {
+		return nil
+	}
+	return &id
 }
 
 type relayOpenFrame struct {

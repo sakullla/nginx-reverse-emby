@@ -194,6 +194,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			RelayObfs:            rule.RelayObfs,
 			ListenMode:           rule.ListenMode,
 			WireGuardProfileID:   copyOptionalInt(rule.WireGuardProfileID),
+			EgressProfileID:      copyOptionalInt(rule.EgressProfileID),
 			WireGuardInboundMode: rule.WireGuardInboundMode,
 			WireGuardListenHost:  rule.WireGuardListenHost,
 			ProxyEntryAuth: goagentembedded.L4ProxyEntryAuth{
@@ -201,9 +202,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 				Username: rule.ProxyEntryAuth.Username,
 				Password: rule.ProxyEntryAuth.Password,
 			},
-			ProxyEgressMode: rule.ProxyEgressMode,
-			ProxyEgressURL:  rule.ProxyEgressURL,
-			Revision:        rule.Revision,
+			Revision: rule.Revision,
 		})
 	}
 	embedded.RelayListeners = make([]goagentembedded.RelayListener, 0, len(snapshot.RelayListeners))
@@ -233,6 +232,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 		})
 	}
 	copyEmbeddedWireGuardProfiles(&embedded, snapshot.WireGuardProfiles)
+	copyEmbeddedEgressProfiles(&embedded, snapshot.EgressProfiles)
 	embedded.Certificates = make([]goagentembedded.ManagedCertificateBundle, 0, len(snapshot.Certificates))
 	for _, bundle := range snapshot.Certificates {
 		embedded.Certificates = append(embedded.Certificates, goagentembedded.ManagedCertificateBundle{
@@ -279,6 +279,14 @@ func copyEmbeddedWireGuardProfiles(embedded *goagentembedded.Snapshot, profiles 
 		return
 	}
 	_ = json.Unmarshal(data, &embedded.WireGuardProfiles)
+}
+
+func copyEmbeddedEgressProfiles(embedded *goagentembedded.Snapshot, profiles []storage.EgressProfile) {
+	data, err := json.Marshal(profiles)
+	if err != nil {
+		return
+	}
+	_ = json.Unmarshal(data, &embedded.EgressProfiles)
 }
 
 func fromEmbeddedRuntimeState(state goagentembedded.RuntimeState) RuntimeState {

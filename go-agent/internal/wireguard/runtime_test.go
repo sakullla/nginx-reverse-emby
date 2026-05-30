@@ -43,6 +43,49 @@ func TestManagerReusesSameFingerprintRuntime(t *testing.T) {
 	}
 }
 
+func TestManagerRetriesPendingEndpointResolutionForSameFingerprint(t *testing.T) {
+	t.Parallel()
+
+	factory := &recordingFactory{}
+	manager := NewManager(ManagerOptions{Factory: factory.Create})
+	defer manager.Close()
+
+	profile := validProfile()
+	firstPending := true
+	secondPending := false
+	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+		runtime := factory.newRuntime(cfg)
+		if len(factory.created) == 1 {
+			runtime.endpointResolutionPending = firstPending
+		}
+		if len(factory.created) == 2 {
+			runtime.endpointResolutionPending = secondPending
+		}
+		return runtime, nil
+	}
+
+	if err := manager.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	first := factory.created[0]
+	if err := manager.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
+		t.Fatalf("Apply(second) error = %v", err)
+	}
+	if len(factory.created) != 2 {
+		t.Fatalf("created runtimes = %d, want retry after pending endpoint resolution", len(factory.created))
+	}
+	if !first.closed {
+		t.Fatal("pending runtime was not closed after endpoint resolution recovered")
+	}
+	got, ok := manager.Runtime(profile.ID)
+	if !ok {
+		t.Fatal("manager has no runtime after endpoint resolution retry")
+	}
+	if got != factory.created[1] {
+		t.Fatal("manager did not replace pending runtime after endpoint resolution recovered")
+	}
+}
+
 func TestManagerAppliesEnabledBootstrapProfileWithoutPeers(t *testing.T) {
 	t.Parallel()
 
@@ -1315,9 +1358,12 @@ func TestIPCConfigResolvesDNSEndpoint(t *testing.T) {
 		return []net.IP{net.ParseIP("2001:db8::7"), net.ParseIP("203.0.113.7")}, nil
 	}
 
-	ipc, err := ipcConfig(context.Background(), cfg, resolve)
+	ipc, pending, err := ipcConfig(context.Background(), cfg, resolve)
 	if err != nil {
 		t.Fatalf("ipcConfig() error = %v", err)
+	}
+	if pending {
+		t.Fatal("endpoint resolution pending = true, want false")
 	}
 	if !strings.Contains(ipc, "endpoint=[2001:db8::7]:51820\n") {
 		t.Fatalf("ipc endpoint was not resolved to first IP: %q", ipc)
@@ -1338,12 +1384,15 @@ func TestIPCConfigKeepsIPEndpointWithoutResolver(t *testing.T) {
 	}
 	resolveCalls := 0
 
-	ipc, err := ipcConfig(context.Background(), cfg, func(context.Context, string) ([]net.IP, error) {
+	ipc, pending, err := ipcConfig(context.Background(), cfg, func(context.Context, string) ([]net.IP, error) {
 		resolveCalls++
 		return nil, errors.New("unexpected resolver call")
 	})
 	if err != nil {
 		t.Fatalf("ipcConfig() error = %v", err)
+	}
+	if pending {
+		t.Fatal("endpoint resolution pending = true, want false")
 	}
 	if resolveCalls != 0 {
 		t.Fatalf("resolver calls = %d, want 0", resolveCalls)
@@ -1361,18 +1410,21 @@ func TestIPCConfigUnmapsResolvedIPv4Endpoint(t *testing.T) {
 		t.Fatalf("NormalizeConfig() error = %v", err)
 	}
 
-	ipc, err := ipcConfig(context.Background(), cfg, func(context.Context, string) ([]net.IP, error) {
+	ipc, pending, err := ipcConfig(context.Background(), cfg, func(context.Context, string) ([]net.IP, error) {
 		return []net.IP{net.ParseIP("203.0.113.7")}, nil
 	})
 	if err != nil {
 		t.Fatalf("ipcConfig() error = %v", err)
+	}
+	if pending {
+		t.Fatal("endpoint resolution pending = true, want false")
 	}
 	if !strings.Contains(ipc, "endpoint=203.0.113.7:51820\n") {
 		t.Fatalf("ipc endpoint = %q, want unmapped IPv4 endpoint", ipc)
 	}
 }
 
-func TestIPCConfigReturnsResolverErrorForDNSEndpoint(t *testing.T) {
+func TestIPCConfigOmitsDNSEndpointWhenResolverFails(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := NormalizeConfig(validProfile())
@@ -1381,11 +1433,17 @@ func TestIPCConfigReturnsResolverErrorForDNSEndpoint(t *testing.T) {
 	}
 	resolveErr := errors.New("no such host")
 
-	_, err = ipcConfig(context.Background(), cfg, func(context.Context, string) ([]net.IP, error) {
+	ipc, pending, err := ipcConfig(context.Background(), cfg, func(context.Context, string) ([]net.IP, error) {
 		return nil, resolveErr
 	})
-	if err == nil || !strings.Contains(err.Error(), "resolve endpoint peer.example.com") {
-		t.Fatalf("ipcConfig() error = %v, want resolver context", err)
+	if err != nil {
+		t.Fatalf("ipcConfig() error = %v", err)
+	}
+	if !pending {
+		t.Fatal("endpoint resolution pending = false, want true")
+	}
+	if strings.Contains(ipc, "endpoint=") {
+		t.Fatalf("ipcConfig() included endpoint after resolver failure: %q", ipc)
 	}
 }
 
@@ -1731,10 +1789,11 @@ func (f *recordingFactory) newRuntime(cfg Config) *fakeRuntime {
 }
 
 type fakeRuntime struct {
-	profileID int
-	endpoint  string
-	closed    bool
-	onClose   func(int)
+	profileID                 int
+	endpoint                  string
+	endpointResolutionPending bool
+	closed                    bool
+	onClose                   func(int)
 }
 
 func (r *fakeRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
@@ -1766,6 +1825,10 @@ func (r *fakeRuntime) Close() error {
 		r.onClose(r.profileID)
 	}
 	return nil
+}
+
+func (r *fakeRuntime) EndpointResolutionPending() bool {
+	return r.endpointResolutionPending
 }
 
 type warmupRuntime struct {

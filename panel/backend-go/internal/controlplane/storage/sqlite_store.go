@@ -29,6 +29,7 @@ type Store interface {
 	GetL4Rule(context.Context, string, int) (L4RuleRow, bool, error)
 	ListRelayListeners(context.Context, string) ([]RelayListenerRow, error)
 	ListWireGuardProfiles(context.Context, string) ([]WireGuardProfileRow, error)
+	ListEgressProfiles(context.Context) ([]EgressProfileRow, error)
 	LoadLocalAgentState(context.Context) (LocalAgentStateRow, error)
 	LoadAgentSnapshot(context.Context, string, AgentSnapshotInput) (Snapshot, error)
 	ListVersionPolicies(context.Context) ([]VersionPolicyRow, error)
@@ -37,11 +38,18 @@ type Store interface {
 	SaveL4Rules(context.Context, string, []L4RuleRow) error
 	SaveRelayListeners(context.Context, string, []RelayListenerRow) error
 	SaveWireGuardProfiles(context.Context, string, []WireGuardProfileRow) error
+	SaveEgressProfiles(context.Context, []EgressProfileRow) error
 	SaveVersionPolicies(context.Context, []VersionPolicyRow) error
 	SaveManagedCertificates(context.Context, []ManagedCertificateRow) error
 	LoadManagedCertificateMaterial(context.Context, string) (ManagedCertificateBundle, bool, error)
 	SaveManagedCertificateMaterial(context.Context, string, ManagedCertificateBundle) error
 	CleanupManagedCertificateMaterial(context.Context, []ManagedCertificateRow, []ManagedCertificateRow) error
+}
+
+type EgressProfileReference struct {
+	Kind    string
+	AgentID string
+	ID      int
 }
 
 type SQLiteStore = GormStore
@@ -247,6 +255,25 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
+	allEgressRows, err := s.ListEgressProfiles(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	allHTTPRows, err := s.loadAllHTTPRulesForSnapshot(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	allL4Rows, err := s.loadAllL4RulesForSnapshot(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	allL4Rows = filterSyncL4RuleRows(allL4Rows)
+	allRelayRows, err := s.ListRelayListeners(ctx, "")
+	if err != nil {
+		return Snapshot{}, err
+	}
+	egressRows := filterEgressProfilesForSnapshot(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
+	egressScopeRevision := egressProfileScopeRevision(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
 	wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
 	if err != nil {
 		return Snapshot{}, err
@@ -301,13 +328,14 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
-		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, relevantCertRows)),
+		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, egressRows, relevantCertRows, egressScopeRevision)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
 		Rules:               SnapshotHTTPRules(httpRows),
 		L4Rules:             SnapshotL4Rules(l4Rows),
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		WireGuardProfiles:   SnapshotWireGuardProfiles(wireGuardRows),
+		EgressProfiles:      SnapshotEgressProfiles(egressRows),
 		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
 	}, nil
@@ -411,6 +439,57 @@ func (s *GormStore) ListWireGuardProfiles(ctx context.Context, agentID string) (
 		normalizeWireGuardProfileRow(&profiles[i])
 	}
 	return profiles, nil
+}
+
+func (s *GormStore) ListEgressProfiles(ctx context.Context) ([]EgressProfileRow, error) {
+	var profiles []EgressProfileRow
+	if err := s.db.WithContext(ctx).
+		Order("id").
+		Find(&profiles).Error; err != nil {
+		return nil, err
+	}
+	for i := range profiles {
+		normalizeEgressProfileRow(&profiles[i])
+	}
+	return profiles, nil
+}
+
+func (s *GormStore) EgressProfileReferences(ctx context.Context, profileID int) ([]EgressProfileReference, error) {
+	if profileID <= 0 {
+		return nil, nil
+	}
+	var httpRows []HTTPRuleRow
+	if err := s.db.WithContext(ctx).
+		Select("id", "agent_id").
+		Where("egress_profile_id = ?", profileID).
+		Order("agent_id, id").
+		Find(&httpRows).Error; err != nil {
+		return nil, err
+	}
+	var l4Rows []L4RuleRow
+	if err := s.db.WithContext(ctx).
+		Select("id", "agent_id").
+		Where("egress_profile_id = ?", profileID).
+		Order("agent_id, id").
+		Find(&l4Rows).Error; err != nil {
+		return nil, err
+	}
+	references := make([]EgressProfileReference, 0, len(httpRows)+len(l4Rows))
+	for _, row := range httpRows {
+		references = append(references, EgressProfileReference{
+			Kind:    "http",
+			AgentID: row.AgentID,
+			ID:      row.ID,
+		})
+	}
+	for _, row := range l4Rows {
+		references = append(references, EgressProfileReference{
+			Kind:    "l4",
+			AgentID: row.AgentID,
+			ID:      row.ID,
+		})
+	}
+	return references, nil
 }
 
 func (s *GormStore) ListWireGuardClients(ctx context.Context, agentID string, profileID int) ([]WireGuardClientRow, error) {
@@ -631,6 +710,24 @@ func (s *GormStore) SaveWireGuardProfiles(ctx context.Context, agentID string, p
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return s.saveWireGuardProfilesTx(tx, agentID, profiles)
+	})
+}
+
+func (s *GormStore) SaveEgressProfiles(ctx context.Context, profiles []EgressProfileRow) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&EgressProfileRow{}).Error; err != nil {
+			return err
+		}
+
+		if len(profiles) == 0 {
+			return nil
+		}
+
+		rows := make([]map[string]any, 0, len(profiles))
+		for _, row := range profiles {
+			rows = append(rows, egressProfileRowPayload(row))
+		}
+		return tx.Model(&EgressProfileRow{}).Create(&rows).Error
 	})
 }
 
@@ -855,6 +952,7 @@ func normalizeHTTPRuleRow(row *HTTPRuleRow) {
 	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
 	row.UserAgent = defaultString(row.UserAgent, "")
 	row.CustomHeadersJSON = defaultJSON(row.CustomHeadersJSON, "[]")
+	row.EgressProfileID = copyOptionalPositiveInt(row.EgressProfileID)
 	if !row.WireGuardEntryEnabled {
 		row.WireGuardProfileID = nil
 		row.WireGuardEntryListenHost = ""
@@ -883,12 +981,7 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.WireGuardInboundMode = normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode)
 	row.WireGuardListenHost = defaultString(row.WireGuardListenHost, "")
 	row.ProxyEntryAuthJSON = defaultJSON(row.ProxyEntryAuthJSON, "{}")
-	row.ProxyEgressMode = defaultString(row.ProxyEgressMode, "")
-	row.ProxyEgressURL = defaultString(row.ProxyEgressURL, "")
-	row.WireGuardEgressURI = defaultString(row.WireGuardEgressURI, "")
-	if row.ProxyEgressMode != "wireguard" {
-		row.WireGuardEgressURI = ""
-	}
+	row.EgressProfileID = copyOptionalPositiveInt(row.EgressProfileID)
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 }
 
@@ -938,6 +1031,28 @@ func normalizeWireGuardProfileRow(row *WireGuardProfileRow) {
 	row.PeersJSON = defaultJSON(row.PeersJSON, "[]")
 	row.DNSJSON = defaultJSON(row.DNSJSON, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
+}
+
+func normalizeEgressProfileRow(row *EgressProfileRow) {
+	row.Name = defaultString(row.Name, "")
+	row.Type = defaultString(row.Type, "")
+	row.ProxyURL = defaultString(row.ProxyURL, "")
+	row.WireGuardConfigJSON = defaultString(row.WireGuardConfigJSON, "")
+	row.Description = defaultString(row.Description, "")
+}
+
+func egressProfileRowPayload(row EgressProfileRow) map[string]any {
+	normalizeEgressProfileRow(&row)
+	return map[string]any{
+		"id":                    row.ID,
+		"name":                  row.Name,
+		"type":                  row.Type,
+		"proxy_url":             row.ProxyURL,
+		"wireguard_config_json": row.WireGuardConfigJSON,
+		"enabled":               row.Enabled,
+		"description":           row.Description,
+		"revision":              row.Revision,
+	}
 }
 
 func normalizeWireGuardClientRow(row *WireGuardClientRow) {
@@ -1005,7 +1120,9 @@ func computeDesiredRevision(
 	l4Rows []L4RuleRow,
 	relayRows []RelayListenerRow,
 	wireGuardRows []WireGuardProfileRow,
+	egressRows []EgressProfileRow,
 	certRows []ManagedCertificateRow,
+	extraRevisions ...int,
 ) int {
 	desiredRevision := normalizeRevision(localState.DesiredRevision)
 	currentRevision := normalizeRevision(localState.CurrentRevision)
@@ -1014,8 +1131,12 @@ func computeDesiredRevision(
 		highestL4RuleRevision(l4Rows),
 		highestRelayListenerRevision(relayRows),
 		highestWireGuardProfileRevision(wireGuardRows),
+		highestEgressProfileRevision(egressRows),
 		highestManagedCertificateRevision(certRows),
 	)
+	for _, revision := range extraRevisions {
+		highestConfigRevision = maxInt(highestConfigRevision, normalizeRevision(revision))
+	}
 
 	if desiredRevision > currentRevision {
 		return maxInt(desiredRevision, highestConfigRevision)
@@ -1071,6 +1192,215 @@ func highestWireGuardProfileRevision(rows []WireGuardProfileRow) int {
 		maxRevision = maxInt(maxRevision, normalizeRevision(row.Revision))
 	}
 	return maxRevision
+}
+
+func highestEgressProfileRevision(rows []EgressProfileRow) int {
+	maxRevision := 0
+	for _, row := range rows {
+		maxRevision = maxInt(maxRevision, normalizeRevision(int(row.Revision)))
+	}
+	return maxRevision
+}
+
+func egressProfileScopeRevision(
+	agentID string,
+	egressRows []EgressProfileRow,
+	httpRows []HTTPRuleRow,
+	l4Rows []L4RuleRow,
+	relayRows []RelayListenerRow,
+) int {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return 0
+	}
+
+	revision := 0
+	for _, row := range egressRows {
+		if row.ID <= 0 {
+			continue
+		}
+		if egressProfileRowReferencesAgent(row.ID, agentID, httpRows, l4Rows, relayRows) {
+			revision = maxInt(revision, normalizeRevision(int(row.Revision)))
+		}
+	}
+	for _, row := range httpRows {
+		if !egressScopeRuleAffectsAgent(agentID, row.AgentID, row.RelayLayersJSON, relayRows) {
+			continue
+		}
+		revision = maxInt(revision, normalizeRevision(row.Revision))
+	}
+	for _, row := range l4Rows {
+		if !egressScopeRuleAffectsAgent(agentID, row.AgentID, row.RelayLayersJSON, relayRows) {
+			continue
+		}
+		revision = maxInt(revision, normalizeRevision(row.Revision))
+	}
+	return revision
+}
+
+func egressProfileRowReferencesAgent(profileID int, agentID string, httpRows []HTTPRuleRow, l4Rows []L4RuleRow, relayRows []RelayListenerRow) bool {
+	if profileID <= 0 || strings.TrimSpace(agentID) == "" {
+		return false
+	}
+	matchesProfile := func(value *int) bool {
+		return value != nil && *value == profileID
+	}
+	for _, row := range httpRows {
+		if !matchesProfile(row.EgressProfileID) {
+			continue
+		}
+		if egressScopeRuleAffectsAgent(agentID, row.AgentID, row.RelayLayersJSON, relayRows) {
+			return true
+		}
+	}
+	for _, row := range l4Rows {
+		if !matchesProfile(row.EgressProfileID) {
+			continue
+		}
+		if egressScopeRuleAffectsAgent(agentID, row.AgentID, row.RelayLayersJSON, relayRows) {
+			return true
+		}
+	}
+	return false
+}
+
+func egressScopeRuleAffectsAgent(agentID string, rowAgentID string, relayLayersJSON string, relayRows []RelayListenerRow) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return false
+	}
+	relayLayers := parseIntLayers(relayLayersJSON)
+	if len(relayLayers) == 0 {
+		return strings.TrimSpace(rowAgentID) == agentID
+	}
+	if relayLayersReferenceAgent(relayLayers, relayRows, agentID) {
+		return true
+	}
+	_, isFinalHop := finalHopAgentIDsForRelayLayers(relayLayers, relayRows)[agentID]
+	return isFinalHop || agentOwnsRelayListener(agentID, relayRows)
+}
+
+func relayLayersReferenceAgent(relayLayers [][]int, relayRows []RelayListenerRow, agentID string) bool {
+	relayAgentByID := make(map[int]string, len(relayRows))
+	for _, row := range relayRows {
+		if row.ID <= 0 {
+			continue
+		}
+		relayAgentByID[row.ID] = strings.TrimSpace(row.AgentID)
+	}
+	for _, layer := range relayLayers {
+		for _, relayID := range layer {
+			if strings.TrimSpace(relayAgentByID[relayID]) == agentID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func agentOwnsRelayListener(agentID string, relayRows []RelayListenerRow) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return false
+	}
+	for _, row := range relayRows {
+		if strings.TrimSpace(row.AgentID) == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+func filterEgressProfilesForSnapshot(
+	agentID string,
+	rows []EgressProfileRow,
+	httpRows []HTTPRuleRow,
+	l4Rows []L4RuleRow,
+	relayRows []RelayListenerRow,
+) []EgressProfileRow {
+	if len(rows) == 0 {
+		return rows
+	}
+	executorIDs := egressProfileExecutorIDs(agentID, httpRows, l4Rows, relayRows)
+	if len(executorIDs) == 0 {
+		return nil
+	}
+	filtered := make([]EgressProfileRow, 0, len(executorIDs))
+	for _, row := range rows {
+		if !row.Enabled {
+			continue
+		}
+		if _, ok := executorIDs[row.ID]; ok {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func egressProfileExecutorIDs(agentID string, httpRows []HTTPRuleRow, l4Rows []L4RuleRow, relayRows []RelayListenerRow) map[int]struct{} {
+	agentID = strings.TrimSpace(agentID)
+	executorIDs := make(map[int]struct{})
+	addProfile := func(profileID *int) {
+		if profileID == nil || *profileID <= 0 {
+			return
+		}
+		executorIDs[*profileID] = struct{}{}
+	}
+	addIfExecutor := func(rowAgentID string, profileID *int, relayLayersJSON string) {
+		if profileID == nil || *profileID <= 0 {
+			return
+		}
+		relayLayers := parseIntLayers(relayLayersJSON)
+		if len(relayLayers) == 0 {
+			if strings.TrimSpace(rowAgentID) == agentID {
+				addProfile(profileID)
+			}
+			return
+		}
+		if _, ok := finalHopAgentIDsForRelayLayers(relayLayers, relayRows)[agentID]; ok {
+			addProfile(profileID)
+		}
+	}
+
+	for _, row := range httpRows {
+		if !row.Enabled {
+			continue
+		}
+		addIfExecutor(row.AgentID, row.EgressProfileID, row.RelayLayersJSON)
+	}
+	for _, row := range l4Rows {
+		if !row.Enabled {
+			continue
+		}
+		addIfExecutor(row.AgentID, row.EgressProfileID, row.RelayLayersJSON)
+	}
+	return executorIDs
+}
+
+func finalHopAgentIDsForRelayLayers(relayLayers [][]int, relayRows []RelayListenerRow) map[string]struct{} {
+	relayAgentByID := make(map[int]string, len(relayRows))
+	for _, row := range relayRows {
+		if row.ID <= 0 || !row.Enabled {
+			continue
+		}
+		relayAgentByID[row.ID] = strings.TrimSpace(row.AgentID)
+	}
+
+	agentIDs := make(map[string]struct{})
+	for i := len(relayLayers) - 1; i >= 0; i-- {
+		if len(relayLayers[i]) == 0 {
+			continue
+		}
+		for _, finalHopID := range relayLayers[i] {
+			finalHopAgentID := strings.TrimSpace(relayAgentByID[finalHopID])
+			if finalHopAgentID == "" {
+				continue
+			}
+			agentIDs[finalHopAgentID] = struct{}{}
+		}
+		return agentIDs
+	}
+	return agentIDs
 }
 
 func (s *GormStore) loadRelayListenersForSync(
@@ -1760,8 +2090,7 @@ func referencedWireGuardProfileIDs(
 		if !row.Enabled {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(row.ListenMode), "wireguard") ||
-			strings.EqualFold(strings.TrimSpace(row.ProxyEgressMode), "wireguard") {
+		if strings.EqualFold(strings.TrimSpace(row.ListenMode), "wireguard") {
 			add(row.WireGuardProfileID)
 		}
 	}
@@ -1888,9 +2217,6 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 		if row.ListenPort < 1 || row.ListenPort > 65535 {
 			return false
 		}
-		if strings.TrimSpace(row.ProxyEgressMode) != "" {
-			return protocol == "tcp"
-		}
 	}
 
 	if row.ListenPort < 1 || row.ListenPort > 65535 {
@@ -1918,7 +2244,6 @@ func filterL4RuleRowsWithoutWireGuard(rows []L4RuleRow, relayRows []RelayListene
 	filtered := make([]L4RuleRow, 0, len(rows))
 	for _, row := range rows {
 		if strings.EqualFold(strings.TrimSpace(row.ListenMode), "wireguard") ||
-			strings.EqualFold(strings.TrimSpace(row.ProxyEgressMode), "wireguard") ||
 			positiveOptionalInt(row.WireGuardProfileID) ||
 			relayLayersReferenceMissingListener(row.RelayLayersJSON, relayIDs) {
 			continue
@@ -1992,6 +2317,7 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 			CustomHeaders:            parseHTTPHeaders(row.CustomHeadersJSON),
 			WireGuardEntryEnabled:    row.WireGuardEntryEnabled,
 			WireGuardProfileID:       copyOptionalInt(row.WireGuardProfileID),
+			EgressProfileID:          copyOptionalPositiveInt(row.EgressProfileID),
 			WireGuardEntryListenHost: row.WireGuardEntryListenHost,
 			WireGuardEntryListenPort: wireGuardEntryListenPort,
 			RelayLayers:              parseIntLayers(row.RelayLayersJSON),
@@ -2041,12 +2367,10 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			RelayObfs:            row.RelayObfs,
 			ListenMode:           defaultString(row.ListenMode, "tcp"),
 			WireGuardProfileID:   copyOptionalInt(row.WireGuardProfileID),
+			EgressProfileID:      copyOptionalPositiveInt(row.EgressProfileID),
 			WireGuardInboundMode: normalizeWireGuardInboundMode(row.ListenMode, row.WireGuardInboundMode),
 			WireGuardListenHost:  row.WireGuardListenHost,
 			ProxyEntryAuth:       parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
-			ProxyEgressMode:      row.ProxyEgressMode,
-			ProxyEgressURL:       row.ProxyEgressURL,
-			WireGuardEgressURI:   row.WireGuardEgressURI,
 			Revision:             int64(row.Revision),
 		})
 	}
@@ -2078,6 +2402,37 @@ func SnapshotWireGuardProfiles(rows []WireGuardProfileRow) []WireGuardProfile {
 		})
 	}
 	return profiles
+}
+
+func SnapshotEgressProfiles(rows []EgressProfileRow) []EgressProfile {
+	profiles := make([]EgressProfile, 0, len(rows))
+	for _, row := range rows {
+		if !row.Enabled {
+			continue
+		}
+		profiles = append(profiles, EgressProfile{
+			ID:              row.ID,
+			Name:            row.Name,
+			Type:            row.Type,
+			ProxyURL:        row.ProxyURL,
+			WireGuardConfig: parseEgressWireGuardConfig(row.WireGuardConfigJSON),
+			Enabled:         row.Enabled,
+			Description:     row.Description,
+			Revision:        row.Revision,
+		})
+	}
+	return profiles
+}
+
+func parseEgressWireGuardConfig(raw string) *EgressWireGuardConfig {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var config EgressWireGuardConfig
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return nil
+	}
+	return &config
 }
 
 func (s *GormStore) relayListenerAgentNames(ctx context.Context, rows []RelayListenerRow) (map[string]string, error) {
@@ -2555,6 +2910,14 @@ func containsString(values []string, expected string) bool {
 
 func copyOptionalInt(value *int) *int {
 	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
+}
+
+func copyOptionalPositiveInt(value *int) *int {
+	if value == nil || *value <= 0 {
 		return nil
 	}
 	copyValue := *value

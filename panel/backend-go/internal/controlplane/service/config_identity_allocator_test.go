@@ -23,11 +23,15 @@ func TestConfigIdentityAllocatorRuleNamespaceSharedAcrossHTTPAndL4(t *testing.T)
 func TestConfigIdentityAllocatorNamespacesStayIndependent(t *testing.T) {
 	allocator := newConfigIdentityAllocator(configIdentityAllocatorState{
 		RelayListeners: []storage.RelayListenerRow{{ID: 5, AgentID: "edge-a", Revision: 2}},
+		EgressProfiles: []storage.EgressProfileRow{{ID: 5, Name: "office socks", Type: "socks", Revision: 2}},
 		Certificates:   []storage.ManagedCertificateRow{{ID: 5, Domain: "media.example.com", Revision: 2}},
 	})
 
 	if got := allocator.AllocateListenerID(0); got != 6 {
 		t.Fatalf("AllocateListenerID() = %d, want 6", got)
+	}
+	if got := allocator.AllocateEgressProfileID(0); got != 6 {
+		t.Fatalf("AllocateEgressProfileID() = %d, want 6", got)
 	}
 	if got := allocator.AllocateCertificateID(0); got != 6 {
 		t.Fatalf("AllocateCertificateID() = %d, want 6", got)
@@ -39,6 +43,9 @@ func TestConfigIdentityAllocatorPreservesPreferredIDWhenUnused(t *testing.T) {
 
 	if got := allocator.AllocateRuleID(42); got != 42 {
 		t.Fatalf("AllocateRuleID(42) = %d, want 42", got)
+	}
+	if got := allocator.AllocateEgressProfileID(42); got != 42 {
+		t.Fatalf("AllocateEgressProfileID(42) = %d, want 42", got)
 	}
 }
 

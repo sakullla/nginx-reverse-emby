@@ -59,8 +59,16 @@ type HTTPWireGuardAwareApplier interface {
 	ApplyWithRelayAndWireGuardProfiles(context.Context, []model.HTTPRule, []model.RelayListener, []model.WireGuardProfile) error
 }
 
+type HTTPEgressAwareApplier interface {
+	ApplyWithRelayWireGuardAndEgressProfiles(context.Context, []model.HTTPRule, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
+}
+
 type L4RelayAwareApplier interface {
 	ApplyWithRelay(context.Context, []model.L4Rule, []model.RelayListener) error
+}
+
+type L4EgressAwareApplier interface {
+	ApplyWithRelayWireGuardAndEgressProfiles(context.Context, []model.L4Rule, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
 }
 
 type Updater interface {
@@ -95,7 +103,7 @@ type App struct {
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard"}
+	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles"}
 	if cfg.HTTP3Enabled {
 		capabilities = append(capabilities, "http3_ingress")
 	}
@@ -402,6 +410,7 @@ func runtimePayloadComplete(snapshot Snapshot) bool {
 		snapshot.L4Rules != nil &&
 		snapshot.RelayListeners != nil &&
 		snapshot.WireGuardProfiles != nil &&
+		snapshot.EgressProfiles != nil &&
 		snapshot.Certificates != nil &&
 		snapshot.CertificatePolicies != nil
 }

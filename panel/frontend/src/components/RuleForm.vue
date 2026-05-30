@@ -81,6 +81,23 @@
           </div>
         </div>
 
+        <div class="form-group">
+          <label class="form-label">出口 Profile</label>
+          <div class="select-wrapper">
+            <select
+              v-model.number="form.egress_profile_id"
+              name="egress-profile"
+              class="input"
+              @change="errors.submit = ''"
+            >
+              <option :value="0">Direct</option>
+              <option v-for="profile in enabledEgressProfiles" :key="profile.id" :value="Number(profile.id)">
+                {{ profile.name || profile.id }} ({{ profile.type }})
+              </option>
+            </select>
+          </div>
+        </div>
+
         <div class="form-group form-group--block">
           <div class="backends-header">
             <label class="form-label form-label--required">后端服务器</label>
@@ -572,6 +589,7 @@ import { computed, ref, watch } from 'vue'
 import { useCreateRule, useUpdateRule } from '../hooks/useRules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import { useWireGuardProfiles } from '../hooks/useWireGuardProfiles'
+import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import { useAgent } from '../context/AgentContext'
 import RelayChainInput from './RelayChainInput.vue'
 
@@ -598,12 +616,18 @@ const createRule = useCreateRule(props.agentId)
 const updateRule = useUpdateRule(props.agentId)
 const { data: relayListenersData } = useAllRelayListeners()
 const { data: wireGuardProfilesData } = useWireGuardProfiles(props.agentId)
+const { data: egressProfilesData } = useEgressProfiles()
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 const proxyHeadersGloballyDisabled = computed(() => systemInfo.value?.proxy_headers_globally_disabled === true)
 const relayListeners = computed(() => relayListenersData.value ?? [])
 const wireGuardProfiles = computed(() => wireGuardProfilesData.value ?? [])
+const egressProfiles = computed(() => egressProfilesData.value ?? [])
 const enabledWireGuardProfiles = computed(() => wireGuardProfiles.value.filter((profile) => {
+  const id = Number(profile.id)
+  return Number.isInteger(id) && id > 0 && profile.enabled !== false
+}))
+const enabledEgressProfiles = computed(() => egressProfiles.value.filter((profile) => {
   const id = Number(profile.id)
   return Number.isInteger(id) && id > 0 && profile.enabled !== false
 }))
@@ -611,6 +635,11 @@ const selectedWireGuardProfileID = computed(() => {
   const id = Number(form.value.wireguard_profile_id)
   if (!Number.isInteger(id) || id <= 0) return null
   return enabledWireGuardProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
+})
+const selectedEgressProfileID = computed(() => {
+  const id = Number(form.value.egress_profile_id)
+  if (!Number.isInteger(id) || id <= 0) return null
+  return enabledEgressProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
 })
 const selectedWireGuardProfile = computed(() => {
   if (selectedWireGuardProfileID.value == null) return null
@@ -787,6 +816,7 @@ function createDefaultForm() {
     pass_proxy_headers: false,
     user_agent: '',
     custom_headers: [],
+    egress_profile_id: 0,
     wireguard_entry_enabled: false,
     wireguard_profile_id: '',
     relay_layers: [],
@@ -840,6 +870,7 @@ function createFormState(initialData) {
     pass_proxy_headers: initialData.pass_proxy_headers !== false,
     user_agent: String(initialData.user_agent || ''),
     custom_headers: normalizeCustomHeaders(initialData.custom_headers),
+    egress_profile_id: initialData.egress_profile_id == null ? 0 : Number(initialData.egress_profile_id),
     wireguard_entry_enabled: initialData.wireguard_entry_enabled === true,
     wireguard_profile_id: initialData.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
     relay_layers: getRelayLayers(initialData),
@@ -1065,6 +1096,11 @@ async function handleSubmit() {
     }
     if (form.value.wireguard_entry_enabled) {
       payload.wireguard_profile_id = selectedWireGuardProfileID.value
+    }
+    if (selectedEgressProfileID.value != null) {
+      payload.egress_profile_id = selectedEgressProfileID.value
+    } else if (isEdit.value && Number(form.value.egress_profile_id) === 0) {
+      payload.egress_profile_id = 0
     }
 
     if (isEdit.value) {

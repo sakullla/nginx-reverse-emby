@@ -520,32 +520,19 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, agentID); err != nil {
 			return relayPreparation{}, err
 		}
-		profileStore, ok := s.store.(wireGuardProfileStore)
-		if !ok {
-			return relayPreparation{}, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
-		}
-		profile, rollback, err := ensureDefaultWireGuardProfileWithRollback(ctx, s.cfg, profileStore, agentID)
+		profile, rollback, err := s.createRelayWireGuardProfileWithRollback(ctx, agentID, input, fallback, suggestedID)
 		if err != nil {
 			return relayPreparation{}, err
 		}
 		wireGuardProfileRollback = rollback
 		id := profile.ID
 		workingInput.WireGuardProfileID = &id
-	}
-	if inputTransportMode == "wireguard" {
-		if profile, ok, err := s.relayWireGuardProfile(ctx, agentID, workingInput.WireGuardProfileID, fallback.WireGuardProfileID); err != nil {
-			return relayPreparation{}, err
-		} else if ok {
-			host := firstWireGuardAddressHost(profile.InterfaceAddresses)
-			workingInput.ListenHost = &host
-			workingInput.BindHosts = &[]string{host}
-			publicHost := ""
-			publicPort := 0
-			workingInput.PublicHost = &publicHost
-			workingInput.PublicPort = &publicPort
+		if workingInput.ListenHost == nil {
+			if host := wireGuardProfileFirstInterfaceHost(profile); host != "" {
+				workingInput.ListenHost = &host
+			}
 		}
 	}
-
 	draft, err := normalizeRelayListenerInput(workingInput, fallback, suggestedID, relayNormalizeOptions{
 		AllowMissingCertificate: true,
 		SkipTrustValidation:     true,
@@ -626,6 +613,105 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	}, nil
 }
 
+func (s *relayService) createRelayWireGuardProfileWithRollback(ctx context.Context, agentID string, input RelayListenerInput, fallback RelayListener, suggestedID int) (WireGuardProfile, *wireGuardProfileRollback, error) {
+	profileStore, ok := s.store.(wireGuardProfileStore)
+	if !ok {
+		return WireGuardProfile{}, nil, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
+	}
+	rows, err := profileStore.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, nil, err
+	}
+	agents, err := profileStore.ListAgents(ctx)
+	if err != nil {
+		return WireGuardProfile{}, nil, err
+	}
+
+	listenPort := fallback.ListenPort
+	if input.ListenPort != nil {
+		listenPort = *input.ListenPort
+	}
+	bindHosts := relayWireGuardProfileBindHosts(input, fallback)
+	name := strings.TrimSpace(pointerString(input.Name))
+	if name == "" {
+		name = strings.TrimSpace(fallback.Name)
+	}
+	if name == "" {
+		name = fmt.Sprintf("Relay %d WireGuard", suggestedID)
+	}
+
+	profile, err := NewWireGuardProfileService(s.cfg, profileStore).Create(ctx, agentID, WireGuardProfileInput{
+		Name:           fmt.Sprintf("%s WireGuard", name),
+		Mode:           "generic_wireguard",
+		ListenPort:     listenPort,
+		PublicEndpoint: relayWireGuardProfilePublicEndpoint(input, fallback, listenPort),
+		Addresses:      bindHosts,
+		MTU:            1280,
+		Enabled:        wireGuardBoolPtr(true),
+		Tags:           []string{"system:relay-wireguard", fmt.Sprintf("listener:%d", suggestedID)},
+	})
+	if err != nil {
+		return WireGuardProfile{}, nil, err
+	}
+
+	rollback := newWireGuardProfileRollback(rows)
+	rollback.agents = append([]storage.AgentRow(nil), agents...)
+	return profile, rollback, nil
+}
+
+func relayWireGuardProfileBindHosts(input RelayListenerInput, fallback RelayListener) []string {
+	bindHosts := append([]string(nil), fallback.BindHosts...)
+	if input.BindHosts != nil {
+		bindHosts = normalizeRelayBindHosts(*input.BindHosts)
+	}
+	if len(bindHosts) > 0 {
+		return bindHosts
+	}
+
+	listenHost := strings.TrimSpace(pointerString(input.ListenHost))
+	if listenHost == "" {
+		listenHost = strings.TrimSpace(fallback.ListenHost)
+	}
+	if listenHost == "" {
+		listenHost = "0.0.0.0"
+	}
+	return []string{listenHost}
+}
+
+func relayWireGuardProfilePublicEndpoint(input RelayListenerInput, fallback RelayListener, listenPort int) string {
+	publicHost := ""
+	if input.PublicHost != nil {
+		publicHost = strings.TrimSpace(pointerString(input.PublicHost))
+	} else if fallback.ID > 0 {
+		publicHost = strings.TrimSpace(fallback.PublicHost)
+	}
+	if publicHost == "" {
+		return ""
+	}
+
+	publicPort := listenPort
+	if input.PublicPort != nil {
+		publicPort = *input.PublicPort
+	} else if fallback.PublicPort > 0 {
+		publicPort = fallback.PublicPort
+	}
+	if publicPort <= 0 {
+		publicPort = listenPort
+	}
+	return net.JoinHostPort(publicHost, fmt.Sprintf("%d", publicPort))
+}
+
+func wireGuardProfileFirstInterfaceHost(profile WireGuardProfile) string {
+	for _, address := range profile.InterfaceAddresses {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(address))
+		if err != nil {
+			continue
+		}
+		return prefix.Addr().String()
+	}
+	return ""
+}
+
 func relayListenerUsesAutoCertificate(rows []storage.ManagedCertificateRow, listener RelayListener) bool {
 	if listener.ID <= 0 || listener.CertificateID == nil {
 		return false
@@ -635,37 +721,6 @@ func relayListenerUsesAutoCertificate(rows []storage.ManagedCertificateRow, list
 		return false
 	}
 	return isAutoRelayListenerCertificate(cert, listener.ID)
-}
-
-func firstWireGuardAddressHost(addresses []string) string {
-	for _, raw := range addresses {
-		if prefix, err := netip.ParsePrefix(strings.TrimSpace(raw)); err == nil {
-			return prefix.Addr().String()
-		}
-	}
-	return "0.0.0.0"
-}
-
-func (s *relayService) relayWireGuardProfile(ctx context.Context, agentID string, inputProfileID *int, fallbackProfileID *int) (WireGuardProfile, bool, error) {
-	profileID := 0
-	if inputProfileID != nil && *inputProfileID > 0 {
-		profileID = *inputProfileID
-	} else if fallbackProfileID != nil && *fallbackProfileID > 0 {
-		profileID = *fallbackProfileID
-	}
-	if profileID <= 0 {
-		return WireGuardProfile{}, false, nil
-	}
-	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
-	if err != nil {
-		return WireGuardProfile{}, false, err
-	}
-	for _, row := range rows {
-		if row.ID == profileID {
-			return wireGuardProfileFromRow(row), true, nil
-		}
-	}
-	return WireGuardProfile{}, false, nil
 }
 
 func shouldAutoIssueRelayListenerCertificate(certificateSource string, draft RelayListener, previousUsesAutoCert bool, shouldRotateAutoCert bool) bool {
@@ -759,7 +814,6 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		}
 		bindHosts = []string{listenHost}
 	}
-	listenHost = bindHosts[0]
 
 	publicHost := strings.TrimSpace(pointerString(input.PublicHost))
 	if publicHost == "" {
@@ -826,6 +880,9 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 	default:
 		return RelayListener{}, fmt.Errorf("%w: transport_mode must be tls_tcp, quic, or wireguard", ErrInvalidArgument)
 	}
+	if transportMode != "wireguard" || listenHost == "" {
+		listenHost = bindHosts[0]
+	}
 	wireGuardProfileID := copyOptionalInt(fallback.WireGuardProfileID)
 	if input.WireGuardProfileID != nil && *input.WireGuardProfileID > 0 {
 		value := *input.WireGuardProfileID
@@ -835,8 +892,6 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		if wireGuardProfileID == nil {
 			return RelayListener{}, fmt.Errorf("%w: wireguard_profile_id is required when transport_mode=wireguard", ErrInvalidArgument)
 		}
-		publicHost = ""
-		publicPort = 0
 	} else {
 		wireGuardProfileID = nil
 	}
@@ -1323,6 +1378,14 @@ func containsInt(values []int, target int) bool {
 
 func copyOptionalInt(value *int) *int {
 	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
+func normalizeOptionalPositiveInt(value *int) *int {
+	if value == nil || *value <= 0 {
 		return nil
 	}
 	copied := *value

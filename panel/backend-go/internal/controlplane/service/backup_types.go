@@ -25,6 +25,7 @@ type BackupCounts struct {
 	RelayListeners    int `json:"relay_listeners"`
 	WireGuardProfiles int `json:"wireguard_profiles,omitempty"`
 	WireGuardClients  int `json:"wireguard_clients,omitempty"`
+	EgressProfiles    int `json:"egress_profiles,omitempty"`
 	Certificates      int `json:"certificates"`
 	VersionPolicies   int `json:"version_policies"`
 	TrafficPolicies   int `json:"traffic_policies,omitempty"`
@@ -38,6 +39,7 @@ type BackupBundle struct {
 	L4Rules           []BackupL4Rule           `json:"l4_rules"`
 	WireGuardProfiles []BackupWireGuardProfile `json:"wireguard_profiles,omitempty"`
 	WireGuardClients  []BackupWireGuardClient  `json:"wireguard_clients,omitempty"`
+	EgressProfiles    []BackupEgressProfile    `json:"egress_profiles,omitempty"`
 	RelayListeners    []BackupRelayListener    `json:"relay_listeners"`
 	Certificates      []BackupCertificate      `json:"certificates"`
 	VersionPolicies   []BackupVersionPolicy    `json:"version_policies"`
@@ -84,6 +86,7 @@ type BackupHTTPRule struct {
 	CustomHeaders            []HTTPCustomHeader `json:"custom_headers,omitempty"`
 	WireGuardEntryEnabled    bool               `json:"wireguard_entry_enabled,omitempty"`
 	WireGuardProfileID       *int               `json:"wireguard_profile_id,omitempty"`
+	EgressProfileID          *int               `json:"egress_profile_id,omitempty"`
 	WireGuardEntryListenHost string             `json:"wireguard_entry_listen_host,omitempty"`
 	WireGuardEntryListenPort int                `json:"wireguard_entry_listen_port,omitempty"`
 	Revision                 int                `json:"revision,omitempty"`
@@ -106,12 +109,13 @@ type BackupL4Rule struct {
 	RelayObfs            bool             `json:"relay_obfs,omitempty"`
 	ListenMode           string           `json:"listen_mode,omitempty"`
 	WireGuardProfileID   *int             `json:"wireguard_profile_id,omitempty"`
-	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
-	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
-	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	EgressProfileID      *int             `json:"egress_profile_id,omitempty"`
 	ProxyEgressMode      string           `json:"proxy_egress_mode,omitempty"`
 	ProxyEgressURL       string           `json:"proxy_egress_url,omitempty"`
 	WireGuardEgressURI   string           `json:"wireguard_egress_uri,omitempty"`
+	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
+	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
+	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
 	Enabled              bool             `json:"enabled"`
 	Tags                 []string         `json:"tags,omitempty"`
 	Revision             int              `json:"revision,omitempty"`
@@ -120,6 +124,17 @@ type BackupL4Rule struct {
 type BackupRelayListener = RelayListener
 type BackupCertificate = ManagedCertificate
 type BackupVersionPolicy = VersionPolicy
+
+type BackupEgressProfile struct {
+	ID              int                    `json:"id"`
+	Name            string                 `json:"name"`
+	Type            string                 `json:"type"`
+	ProxyURL        string                 `json:"proxy_url,omitempty"`
+	WireGuardConfig *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
+	Enabled         bool                   `json:"enabled"`
+	Description     string                 `json:"description,omitempty"`
+	Revision        int                    `json:"revision,omitempty"`
+}
 
 type BackupWireGuardProfile struct {
 	ID             int             `json:"id"`

@@ -100,6 +100,10 @@ func (s *relayCertStore) ListWireGuardProfiles(_ context.Context, agentID string
 	return append([]storage.WireGuardProfileRow(nil), s.wireGuardByAgentID[agentID]...), nil
 }
 
+func (s *relayCertStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
+	return nil, nil
+}
+
 func (s *relayCertStore) ListWireGuardClients(_ context.Context, agentID string, profileID int) ([]storage.WireGuardClientRow, error) {
 	_ = agentID
 	_ = profileID
@@ -169,6 +173,10 @@ func (s *relayCertStore) SaveWireGuardProfiles(_ context.Context, agentID string
 		s.wireGuardByAgentID = map[string][]storage.WireGuardProfileRow{}
 	}
 	s.wireGuardByAgentID[agentID] = append([]storage.WireGuardProfileRow(nil), rows...)
+	return nil
+}
+
+func (s *relayCertStore) SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error {
 	return nil
 }
 
@@ -544,6 +552,141 @@ func TestRelayListenerCreateWireGuardUsesDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestRelayListenerCreateWireGuardMapsRelayFieldsToGeneratedProfile(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID:     map[string][]storage.RelayListenerRow{},
+		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:        map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:              stringPtr("wg-relay"),
+		TransportMode:     stringPtr("wireguard"),
+		BindHosts:         &[]string{"0.0.0.0", "127.0.0.1"},
+		ListenPort:        intPtrService(19001),
+		PublicHost:        stringPtr("relay.example.com"),
+		PublicPort:        intPtrService(19001),
+		Enabled:           boolPtr(false),
+		CertificateSource: stringPtr("existing_certificate"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.ListenHost != "10.8.0.1" || !stringSlicesEqual(listener.BindHosts, []string{"0.0.0.0", "127.0.0.1"}) {
+		t.Fatalf("listener bind = host %q hosts %+v, want WG tunnel host and relay bind hosts", listener.ListenHost, listener.BindHosts)
+	}
+	if listener.ListenPort != 19001 || listener.PublicHost != "relay.example.com" || listener.PublicPort != 19001 {
+		t.Fatalf("listener endpoint = listen %d public %q:%d", listener.ListenPort, listener.PublicHost, listener.PublicPort)
+	}
+	if listener.WireGuardProfileID == nil || *listener.WireGuardProfileID <= 0 {
+		t.Fatalf("WireGuardProfileID = %v, want generated profile", listener.WireGuardProfileID)
+	}
+	rows, err := store.ListWireGuardProfiles(context.Background(), "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("profiles = %+v, want generated profile", rows)
+	}
+	profile := wireGuardProfileFromRow(rows[0])
+	if profile.ListenPort != 19001 {
+		t.Fatalf("profile.ListenPort = %d, want relay listen port", profile.ListenPort)
+	}
+	if !stringSlicesEqual(profile.Addresses, []string{"0.0.0.0", "127.0.0.1"}) {
+		t.Fatalf("profile.Addresses = %+v, want relay bind hosts", profile.Addresses)
+	}
+	if len(profile.InterfaceAddresses) == 0 || profile.InterfaceAddresses[0] != "10.8.0.1/24" {
+		t.Fatalf("profile.InterfaceAddresses = %+v, want allocated tunnel address", profile.InterfaceAddresses)
+	}
+	if profile.PublicEndpoint != "relay.example.com:19001" {
+		t.Fatalf("profile.PublicEndpoint = %q, want relay public endpoint", profile.PublicEndpoint)
+	}
+}
+
+func TestRelayListenerCreateWireGuardAutoCertificateKeepsTLSAndPinLink(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
+	store := &relayCertStore{
+		relayByAgentID:     map[string][]storage.RelayListenerRow{},
+		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:        map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              10,
+			Domain:          "__relay-ca.internal",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			MaterialHash:    "relay-ca-hash",
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+			TagsJSON:        `["system:relay-ca","system"]`,
+			Revision:        3,
+		}},
+	}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:              stringPtr("wg-relay"),
+		TransportMode:     stringPtr("wireguard"),
+		BindHosts:         &[]string{"0.0.0.0"},
+		ListenPort:        intPtrService(19002),
+		PublicHost:        stringPtr("wg-relay.example.com"),
+		PublicPort:        intPtrService(19002),
+		Enabled:           boolPtr(true),
+		CertificateSource: stringPtr("auto_relay_ca"),
+		TrustModeSource:   stringPtr("auto"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.PublicHost != "wg-relay.example.com" || listener.PublicPort != 19002 {
+		t.Fatalf("listener public endpoint = %q:%d, want preserved relay endpoint", listener.PublicHost, listener.PublicPort)
+	}
+	if listener.TLSMode != "pin_and_ca" {
+		t.Fatalf("listener.TLSMode = %q, want pin_and_ca", listener.TLSMode)
+	}
+	if len(listener.PinSet) != 1 || listener.PinSet[0].Type != "spki_sha256" || listener.PinSet[0].Value == "" {
+		t.Fatalf("listener.PinSet = %+v, want generated SPKI pin", listener.PinSet)
+	}
+	if len(listener.TrustedCACertificateIDs) != 1 || listener.TrustedCACertificateIDs[0] != 10 {
+		t.Fatalf("listener.TrustedCACertificateIDs = %+v, want Relay CA", listener.TrustedCACertificateIDs)
+	}
+	if listener.WireGuardProfileID == nil || *listener.WireGuardProfileID <= 0 {
+		t.Fatalf("WireGuardProfileID = %v, want generated profile", listener.WireGuardProfileID)
+	}
+
+	profiles, err := store.ListWireGuardProfiles(context.Background(), "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("profiles = %+v, want generated WireGuard profile", profiles)
+	}
+	profile := wireGuardProfileFromRow(profiles[0])
+	if profile.ListenPort != 19002 || profile.PublicEndpoint != "wg-relay.example.com:19002" {
+		t.Fatalf("profile endpoint = listen %d public %q, want relay endpoint", profile.ListenPort, profile.PublicEndpoint)
+	}
+
+	cert := managedCertificateFromRow(store.managedCerts[1])
+	material := store.materialsByHost[cert.Domain]
+	leaf := mustParseCertificate(t, material.CertPEM)
+	if !containsString(leaf.DNSNames, "wg-relay.example.com") {
+		t.Fatalf("auto cert dns names = %+v, want WireGuard relay public host", leaf.DNSNames)
+	}
+	expectedPin := mustSPKIPinFromPEM(t, material.CertPEM)
+	if listener.PinSet[0].Value != expectedPin {
+		t.Fatalf("listener pin = %q, want %q", listener.PinSet[0].Value, expectedPin)
+	}
+}
+
 func TestRelayListenerCreateMixedCaseWireGuardUsesDefaultProfile(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
@@ -600,7 +743,7 @@ func TestRelayListenerCreateWireGuardRollsBackDefaultProfileOnValidationError(t 
 	}
 }
 
-func TestRelayListenerCreateWireGuardDerivesBindAndPublicEndpointFromProfile(t *testing.T) {
+func TestRelayListenerCreateWireGuardPreservesRelayBindAndPublicEndpointWithExplicitProfile(t *testing.T) {
 	profileID := 7
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -632,18 +775,18 @@ func TestRelayListenerCreateWireGuardDerivesBindAndPublicEndpointFromProfile(t *
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if listener.ListenHost != "10.88.0.1" || len(listener.BindHosts) != 1 || listener.BindHosts[0] != "10.88.0.1" {
-		t.Fatalf("listener bind = host %q hosts %+v, want profile address", listener.ListenHost, listener.BindHosts)
+	if listener.ListenHost != "0.0.0.0" || len(listener.BindHosts) != 1 || listener.BindHosts[0] != "0.0.0.0" {
+		t.Fatalf("listener bind = host %q hosts %+v, want relay bind host", listener.ListenHost, listener.BindHosts)
 	}
-	if listener.PublicHost != "" || listener.PublicPort != 0 {
-		t.Fatalf("relay public endpoint = %q:%d, want cleared for wireguard transport", listener.PublicHost, listener.PublicPort)
+	if listener.PublicHost != "relay.example.com" || listener.PublicPort != 7443 {
+		t.Fatalf("relay public endpoint = %q:%d, want preserved", listener.PublicHost, listener.PublicPort)
 	}
 	row := store.relayByAgentID["local"][0]
-	if row.ListenHost != "10.88.0.1" || row.BindHostsJSON != `["10.88.0.1"]` {
-		t.Fatalf("persisted bind = host %q hosts %s, want profile address", row.ListenHost, row.BindHostsJSON)
+	if row.ListenHost != "0.0.0.0" || row.BindHostsJSON != `["0.0.0.0"]` {
+		t.Fatalf("persisted bind = host %q hosts %s, want relay bind host", row.ListenHost, row.BindHostsJSON)
 	}
-	if row.PublicHost != "" || row.PublicPort != 0 {
-		t.Fatalf("persisted relay public endpoint = %q:%d, want cleared", row.PublicHost, row.PublicPort)
+	if row.PublicHost != "relay.example.com" || row.PublicPort != 7443 {
+		t.Fatalf("persisted relay public endpoint = %q:%d, want preserved", row.PublicHost, row.PublicPort)
 	}
 }
 

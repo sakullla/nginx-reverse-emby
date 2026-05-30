@@ -11,6 +11,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
@@ -19,6 +20,7 @@ type httpRuntimeManager struct {
 	runtime            *proxy.Runtime
 	provider           proxy.TLSMaterialProvider
 	wireGuardRuntime   *sharedWireGuardRuntime
+	egressWireGuard    *egressWireGuardRuntime
 	wireGuardProvider  relay.WireGuardRuntimeProvider
 	ownsWireGuard      bool
 	cache              *backends.Cache
@@ -29,6 +31,7 @@ type httpRuntimeManager struct {
 	localAgentID       string
 	lastRules          []model.HTTPRule
 	lastRelayListeners []model.RelayListener
+	lastEgressProfiles []model.EgressProfile
 }
 
 func newHTTPRuntimeManager() *httpRuntimeManager {
@@ -68,6 +71,7 @@ func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMater
 	return &httpRuntimeManager{
 		provider:          provider,
 		wireGuardRuntime:  wireGuardRuntime,
+		egressWireGuard:   newEgressWireGuardRuntime(nil),
 		wireGuardProvider: wireGuardRuntime.providerForAgent(cfg.AgentID),
 		ownsWireGuard:     owns,
 		cache:             backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
@@ -83,14 +87,18 @@ func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMater
 }
 
 func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) error {
-	return m.ApplyWithRelayAndWireGuardProfiles(ctx, rules, nil, nil)
+	return m.ApplyWithRelayWireGuardAndEgressProfiles(ctx, rules, nil, nil, nil)
 }
 
 func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener) error {
-	return m.ApplyWithRelayAndWireGuardProfiles(ctx, rules, relayListeners, nil)
+	return m.ApplyWithRelayWireGuardAndEgressProfiles(ctx, rules, relayListeners, nil, nil)
 }
 
 func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener, wireGuardProfiles []model.WireGuardProfile) error {
+	return m.ApplyWithRelayWireGuardAndEgressProfiles(ctx, rules, relayListeners, wireGuardProfiles, nil)
+}
+
+func (m *httpRuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener, wireGuardProfiles []model.WireGuardProfile, egressProfiles []model.EgressProfile) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -98,11 +106,14 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 		if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
 			return err
 		}
+		if err := m.applyEgressWireGuardProfilesLocked(ctx, localHTTPEgressProfiles(rules, egressProfiles)); err != nil {
+			return err
+		}
 		if m.runtime != nil {
 			_ = m.runtime.Close()
 			m.runtime = nil
 		}
-		m.storeLastAppliedInputsLocked(nil, nil)
+		m.storeLastAppliedInputsLocked(nil, nil, nil)
 		return nil
 	}
 	providers := proxy.Providers{TLS: m.provider}
@@ -113,6 +124,14 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 	if err != nil {
 		return err
 	}
+	localEgressProfiles := localHTTPEgressProfiles(rules, egressProfiles)
+	egressTransaction, egressProvider, err := m.prepareEgressWireGuardProfilesLocked(ctx, localEgressProfiles)
+	if err != nil {
+		if transaction != nil {
+			transaction.Rollback()
+		}
+		return err
+	}
 	if transaction != nil {
 		defer func() {
 			if transaction != nil {
@@ -120,12 +139,21 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 			}
 		}()
 	}
+	if egressTransaction != nil {
+		defer func() {
+			if egressTransaction != nil {
+				egressTransaction.Rollback()
+			}
+		}()
+	}
 	providers.WireGuard = wireGuardProvider
+	providers.EgressProfiles = egressProfiles
+	providers.EgressWireGuard = egressProvider
 
 	bindings, err := proxy.BindingKeys(ctx, rules, relayListeners, providers)
 	if err != nil {
 		if m.runtime != nil {
-			if restoreErr := m.rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx, &transaction); restoreErr != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
 				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 		}
@@ -136,7 +164,7 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 	if previous != nil && !httpBindingsOverlap(previous.BindingKeys(), bindings) {
 		runtime, err := proxy.StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 		if err != nil {
-			if restoreErr := m.rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx, &transaction); restoreErr != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
 				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 			return err
@@ -146,9 +174,13 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 			m.wireGuardRuntime.Commit(transaction, wireGuardProfiles)
 			transaction = nil
 		}
+		if egressTransaction != nil {
+			m.egressWireGuard.Commit(egressTransaction, localEgressProfiles)
+			egressTransaction = nil
+		}
 		_ = previous.Close()
 		m.runtime = runtime
-		m.storeLastAppliedInputsLocked(rules, relayListeners)
+		m.storeLastAppliedInputsLocked(rules, relayListeners, egressProfiles)
 		return nil
 	}
 	if previous != nil {
@@ -159,7 +191,7 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 	runtime, err := proxy.StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 	if err != nil {
 		if previous != nil {
-			if restoreErr := m.rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx, &transaction); restoreErr != nil {
+			if restoreErr := m.rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
 				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 		}
@@ -170,17 +202,26 @@ func (m *httpRuntimeManager) ApplyWithRelayAndWireGuardProfiles(ctx context.Cont
 		m.wireGuardRuntime.Commit(transaction, wireGuardProfiles)
 		transaction = nil
 	}
+	if egressTransaction != nil {
+		m.egressWireGuard.Commit(egressTransaction, localEgressProfiles)
+		egressTransaction = nil
+	}
 	m.runtime = runtime
-	m.storeLastAppliedInputsLocked(rules, relayListeners)
+	m.storeLastAppliedInputsLocked(rules, relayListeners, egressProfiles)
 	return nil
 }
 
-func (m *httpRuntimeManager) rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx context.Context, transaction **wireguard.Transaction) error {
+func (m *httpRuntimeManager) rollbackWireGuardAndRestorePreviousRuntimeLocked(ctx context.Context, transaction **wireguard.Transaction, egressTransaction **wireguard.Transaction) error {
 	rebuild := false
 	if transaction != nil && *transaction != nil {
 		rebuild = (*transaction).HasCloseFirstReplacements()
 		(*transaction).Rollback()
 		*transaction = nil
+	}
+	if egressTransaction != nil && *egressTransaction != nil {
+		rebuild = rebuild || (*egressTransaction).HasCloseFirstReplacements()
+		(*egressTransaction).Rollback()
+		*egressTransaction = nil
 	}
 	if !rebuild && m.runtime != nil {
 		return nil
@@ -203,6 +244,8 @@ func (m *httpRuntimeManager) restorePreviousRuntimeLocked(ctx context.Context, r
 		providers.Relay = relayProvider
 	}
 	providers.WireGuard = m.wireGuardProvider
+	providers.EgressProfiles = m.lastEgressProfiles
+	providers.EgressWireGuard = m.egressWireGuard.Provider()
 	runtime, err := retryRuntimeBindConflict(ctx, func() (*proxy.Runtime, error) {
 		return proxy.StartWithResourcesAndOptions(ctx, m.lastRules, m.lastRelayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 	})
@@ -220,9 +263,10 @@ func (m *httpRuntimeManager) restorePreviousRuntimeLocked(ctx context.Context, r
 	return nil
 }
 
-func (m *httpRuntimeManager) storeLastAppliedInputsLocked(rules []model.HTTPRule, relayListeners []model.RelayListener) {
+func (m *httpRuntimeManager) storeLastAppliedInputsLocked(rules []model.HTTPRule, relayListeners []model.RelayListener, egressProfiles []model.EgressProfile) {
 	m.lastRules = cloneHTTPRules(rules)
 	m.lastRelayListeners = cloneRelayListeners(relayListeners)
+	m.lastEgressProfiles = cloneEgressProfiles(egressProfiles)
 }
 
 func cloneHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
@@ -246,6 +290,32 @@ func cloneHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
 	return cloned
 }
 
+func localHTTPEgressProfiles(rules []model.HTTPRule, profiles []model.EgressProfile) []model.EgressProfile {
+	if profiles == nil {
+		return nil
+	}
+	if len(rules) == 0 || len(profiles) == 0 {
+		return []model.EgressProfile{}
+	}
+	referenced := make(map[int]struct{})
+	for _, rule := range rules {
+		if relayroute.UsesRelay(nil, rule.RelayLayers) || rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+			continue
+		}
+		referenced[*rule.EgressProfileID] = struct{}{}
+	}
+	if len(referenced) == 0 {
+		return []model.EgressProfile{}
+	}
+	out := make([]model.EgressProfile, 0, len(referenced))
+	for _, profile := range profiles {
+		if _, ok := referenced[profile.ID]; ok {
+			out = append(out, profile)
+		}
+	}
+	return out
+}
+
 func (m *httpRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
 	if m.wireGuardRuntime == nil || profiles == nil {
 		return nil
@@ -265,6 +335,20 @@ func (m *httpRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context,
 		return nil, m.wireGuardProvider, nil
 	}
 	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID, profiles: cloneWireGuardProfiles(profiles)}, nil
+}
+
+func (m *httpRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) error {
+	if m.egressWireGuard == nil || profiles == nil {
+		return nil
+	}
+	return m.egressWireGuard.Apply(ctx, profiles)
+}
+
+func (m *httpRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+	if m.egressWireGuard == nil || profiles == nil {
+		return nil, nil, nil
+	}
+	return m.egressWireGuard.Prepare(ctx, profiles)
 }
 
 func (m *httpRuntimeManager) UpdateTrafficBlockState(state proxy.TrafficBlockState) {
@@ -294,6 +378,11 @@ func (m *httpRuntimeManager) Close() error {
 	}
 	if m.ownsWireGuard && m.wireGuardRuntime != nil {
 		if err := m.wireGuardRuntime.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if m.egressWireGuard != nil {
+		if err := m.egressWireGuard.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

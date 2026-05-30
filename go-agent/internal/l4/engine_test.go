@@ -182,14 +182,15 @@ func TestValidateRuleAllowsWireGuardTransparentPortZero(t *testing.T) {
 	}
 }
 
-func TestValidateRuleAllowsWireGuardTransparentPortZeroWithEgressMode(t *testing.T) {
+func TestValidateRuleAllowsWireGuardTransparentPortZeroWithRelayAndEgressProfile(t *testing.T) {
 	profileID := 7
+	egressProfileID := 11
 	tests := []struct {
 		name string
 		rule Rule
 	}{
 		{
-			name: "tcp relay egress",
+			name: "tcp relay path",
 			rule: Rule{
 				Protocol:             "tcp",
 				ListenHost:           "0.0.0.0",
@@ -197,12 +198,11 @@ func TestValidateRuleAllowsWireGuardTransparentPortZeroWithEgressMode(t *testing
 				ListenMode:           "wireguard",
 				WireGuardInboundMode: "transparent",
 				WireGuardProfileID:   &profileID,
-				ProxyEgressMode:      "relay",
 				RelayLayers:          [][]int{{101}},
 			},
 		},
 		{
-			name: "tcp proxy egress",
+			name: "tcp egress profile",
 			rule: Rule{
 				Protocol:             "tcp",
 				ListenHost:           "0.0.0.0",
@@ -210,12 +210,11 @@ func TestValidateRuleAllowsWireGuardTransparentPortZeroWithEgressMode(t *testing
 				ListenMode:           "wireguard",
 				WireGuardInboundMode: "transparent",
 				WireGuardProfileID:   &profileID,
-				ProxyEgressMode:      "proxy",
-				ProxyEgressURL:       "socks5://127.0.0.1:1080",
+				EgressProfileID:      &egressProfileID,
 			},
 		},
 		{
-			name: "udp proxy egress",
+			name: "udp egress profile",
 			rule: Rule{
 				Protocol:             "udp",
 				ListenHost:           "0.0.0.0",
@@ -223,8 +222,7 @@ func TestValidateRuleAllowsWireGuardTransparentPortZeroWithEgressMode(t *testing
 				ListenMode:           "wireguard",
 				WireGuardInboundMode: "transparent",
 				WireGuardProfileID:   &profileID,
-				ProxyEgressMode:      "proxy",
-				ProxyEgressURL:       "socks5://127.0.0.1:1080",
+				EgressProfileID:      &egressProfileID,
 			},
 		},
 	}
@@ -363,92 +361,54 @@ func TestValidateRuleRejectsWireGuardListenModeWithoutProfile(t *testing.T) {
 
 func TestValidateRuleAcceptsProxyEntryWithRelayEgress(t *testing.T) {
 	rule := model.L4Rule{
-		Protocol:        "tcp",
-		ListenHost:      "127.0.0.1",
-		ListenPort:      1080,
-		ListenMode:      "proxy",
-		ProxyEgressMode: "relay",
-		RelayLayers:     [][]int{{101}},
+		Protocol:    "tcp",
+		ListenHost:  "127.0.0.1",
+		ListenPort:  1080,
+		ListenMode:  "proxy",
+		RelayLayers: [][]int{{101}},
 	}
 	if err := ValidateRule(rule); err != nil {
 		t.Fatalf("ValidateRule() error = %v", err)
 	}
 }
 
-func TestValidateRuleAcceptsProxyEntryWithWireGuardEgress(t *testing.T) {
+func TestValidateRuleAcceptsProxyEntryWithEgressProfile(t *testing.T) {
+	egressProfileID := 7
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		EgressProfileID: &egressProfileID,
+	}
+	if err := ValidateRule(rule); err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
+func TestValidateRuleAcceptsWireGuardTransparentWithEgressProfile(t *testing.T) {
 	profileID := 7
+	egressProfileID := 9
 	rule := model.L4Rule{
-		Protocol:           "tcp",
-		ListenHost:         "127.0.0.1",
-		ListenPort:         1080,
-		ListenMode:         "proxy",
-		ProxyEgressMode:    "wireguard",
-		WireGuardProfileID: &profileID,
+		Protocol:             "tcp",
+		ListenHost:           "127.0.0.1",
+		ListenPort:           0,
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+		EgressProfileID:      &egressProfileID,
 	}
 	if err := ValidateRule(rule); err != nil {
 		t.Fatalf("ValidateRule() error = %v", err)
-	}
-}
-
-func TestValidateRuleAcceptsWireGuardProxyEntryWithWireGuardEgress(t *testing.T) {
-	profileID := 7
-	rule := model.L4Rule{
-		Protocol:           "tcp",
-		ListenHost:         "127.0.0.1",
-		ListenPort:         1080,
-		ListenMode:         "wireguard",
-		WireGuardProfileID: &profileID,
-		ProxyEgressMode:    "wireguard",
-	}
-	if err := ValidateRule(rule); err != nil {
-		t.Fatalf("ValidateRule() error = %v", err)
-	}
-}
-
-func TestValidateRuleRejectsProxyEntryWithWireGuardEgressWithoutProfile(t *testing.T) {
-	err := ValidateRule(model.L4Rule{
-		Protocol:        "tcp",
-		ListenHost:      "127.0.0.1",
-		ListenPort:      1080,
-		ListenMode:      "proxy",
-		ProxyEgressMode: "wireguard",
-	})
-	if err == nil || !strings.Contains(err.Error(), "wireguard_profile_id") {
-		t.Fatalf("ValidateRule() error = %v", err)
-	}
-}
-
-func TestValidateRuleRejectsProxyEntryWithLegacyRelayChainOnly(t *testing.T) {
-	rule := model.L4Rule{
-		Protocol:        "tcp",
-		ListenHost:      "127.0.0.1",
-		ListenPort:      1080,
-		ListenMode:      "proxy",
-		ProxyEgressMode: "relay",
-		RelayChain:      []int{101},
-	}
-	err := ValidateRule(rule)
-	if err == nil || !strings.Contains(err.Error(), "relay_layers") {
-		t.Fatalf("ValidateRule() error = %v", err)
-	}
-}
-
-func TestValidateRuleRejectsProxyEntryWithoutEgressMode(t *testing.T) {
-	rule := model.L4Rule{Protocol: "udp", ListenHost: "127.0.0.1", ListenPort: 1080, ListenMode: "proxy"}
-	err := ValidateRule(rule)
-	if err == nil || !strings.Contains(err.Error(), "proxy_egress_mode") {
-		t.Fatalf("error = %v", err)
 	}
 }
 
 func TestValidateRuleAllowsUDPProxyEntry(t *testing.T) {
 	err := ValidateRule(model.L4Rule{
-		Protocol:        "udp",
-		ListenHost:      "0.0.0.0",
-		ListenPort:      1080,
-		ListenMode:      "proxy",
-		ProxyEgressMode: "proxy",
-		ProxyEgressURL:  "socks5://127.0.0.1:2080",
+		Protocol:   "udp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 1080,
+		ListenMode: "proxy",
 	})
 	if err != nil {
 		t.Fatalf("ValidateRule() error = %v", err)
@@ -457,91 +417,27 @@ func TestValidateRuleAllowsUDPProxyEntry(t *testing.T) {
 
 func TestValidateRuleAllowsUDPProxyEntryWithRelayEgress(t *testing.T) {
 	err := ValidateRule(model.L4Rule{
+		Protocol:    "udp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  1080,
+		ListenMode:  "proxy",
+		RelayLayers: [][]int{{101}},
+	})
+	if err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
+func TestValidateRuleAllowsUDPProxyEntryWithEgressProfile(t *testing.T) {
+	egressProfileID := 7
+	err := ValidateRule(model.L4Rule{
 		Protocol:        "udp",
 		ListenHost:      "0.0.0.0",
 		ListenPort:      1080,
 		ListenMode:      "proxy",
-		ProxyEgressMode: "relay",
-		RelayLayers:     [][]int{{101}},
+		EgressProfileID: &egressProfileID,
 	})
 	if err != nil {
-		t.Fatalf("ValidateRule() error = %v", err)
-	}
-}
-
-func TestValidateRuleAllowsUDPProxyEntryWithWireGuardEgress(t *testing.T) {
-	profileID := 7
-	err := ValidateRule(model.L4Rule{
-		Protocol:           "udp",
-		ListenHost:         "0.0.0.0",
-		ListenPort:         1080,
-		ListenMode:         "proxy",
-		ProxyEgressMode:    "wireguard",
-		WireGuardProfileID: &profileID,
-	})
-	if err != nil {
-		t.Fatalf("ValidateRule() error = %v", err)
-	}
-}
-
-func TestValidateRuleRejectsUDPProxyEntryWithRelayEgressWithoutRelayLayers(t *testing.T) {
-	err := ValidateRule(model.L4Rule{
-		Protocol:        "udp",
-		ListenHost:      "127.0.0.1",
-		ListenPort:      1080,
-		ListenMode:      "proxy",
-		ProxyEgressMode: "relay",
-	})
-	if err == nil || !strings.Contains(err.Error(), "relay_layers") {
-		t.Fatalf("ValidateRule() error = %v", err)
-	}
-}
-
-func TestValidateRuleRejectsUDPProxyEntryWithWireGuardEgressWithoutProfile(t *testing.T) {
-	err := ValidateRule(model.L4Rule{
-		Protocol:        "udp",
-		ListenHost:      "127.0.0.1",
-		ListenPort:      1080,
-		ListenMode:      "proxy",
-		ProxyEgressMode: "wireguard",
-	})
-	if err == nil || !strings.Contains(err.Error(), "wireguard_profile_id") {
-		t.Fatalf("ValidateRule() error = %v", err)
-	}
-}
-
-func TestValidateRuleRejectsUDPProxyEntryWithNonSOCKS5ProxyURL(t *testing.T) {
-	for _, proxyURL := range []string{
-		"http://127.0.0.1:2080",
-		"socks4://127.0.0.1:2080",
-		"socks4a://127.0.0.1:2080",
-	} {
-		t.Run(proxyURL, func(t *testing.T) {
-			err := ValidateRule(model.L4Rule{
-				Protocol:        "udp",
-				ListenHost:      "127.0.0.1",
-				ListenPort:      1080,
-				ListenMode:      "proxy",
-				ProxyEgressMode: "proxy",
-				ProxyEgressURL:  proxyURL,
-			})
-			if err == nil || !strings.Contains(err.Error(), "SOCKS5-family") {
-				t.Fatalf("ValidateRule() error = %v", err)
-			}
-		})
-	}
-}
-
-func TestValidateRuleAcceptsProxyEntryWithProxyEgress(t *testing.T) {
-	rule := model.L4Rule{
-		Protocol:        "tcp",
-		ListenHost:      "127.0.0.1",
-		ListenPort:      1080,
-		ListenMode:      "proxy",
-		ProxyEgressMode: "proxy",
-		ProxyEgressURL:  "http://127.0.0.1:8080",
-	}
-	if err := ValidateRule(rule); err != nil {
 		t.Fatalf("ValidateRule() error = %v", err)
 	}
 }

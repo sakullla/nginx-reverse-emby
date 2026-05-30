@@ -199,20 +199,10 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 }
 
 func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.Conn, error) {
-	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
-	case "relay":
+	if ruleUsesRelay(rule) {
 		return s.dialRelayPath("tcp", target, rule, relay.DialOptions{})
-	case "wireguard":
-		runtime, err := s.wireGuardRuntime(rule)
-		if err != nil {
-			return nil, err
-		}
-		return runtime.DialContext(s.ctx, "tcp", target)
-	case "proxy":
-		return proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
-	default:
-		return nil, fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
 	}
+	return s.dialTCPLocalEgress(rule, target)
 }
 
 func copyBidirectionalTCP(a net.Conn, b net.Conn, recorder *traffic.Recorder) {

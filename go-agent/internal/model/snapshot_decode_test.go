@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -133,6 +134,106 @@ func TestSnapshotDecodePreservesHTTPWireGuardEntry(t *testing.T) {
 	}
 }
 
+func TestSnapshotDecodePreservesEgressProfilesAndRuleProfileIDs(t *testing.T) {
+	raw := []byte(`{
+		"egress_profiles":[
+			{
+				"id":11,
+				"name":"direct-default",
+				"type":"direct",
+				"enabled":true,
+				"description":"default path",
+				"revision":5
+			},
+			{
+				"id":12,
+				"name":"wg-egress",
+				"type":"wireguard",
+				"wireguard_config":{
+					"private_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+					"addresses":["10.20.0.1/24"],
+					"peers":[{"name":"peer-a","public_key":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=","endpoint":"peer.example.com:51820","allowed_ips":["10.20.0.2/32"]}],
+					"dns":["1.1.1.1","8.8.8.8"],
+					"mtu":1420
+				},
+				"enabled":false
+			}
+		],
+		"rules":[{"frontend_url":"https://app.example.com","egress_profile_id":11}],
+		"l4_rules":[{"agent_id":"l4-agent","protocol":"tcp","listen_host":"0.0.0.0","listen_port":8443,"egress_profile_id":12}]
+	}`)
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	if len(snapshot.EgressProfiles) != 2 {
+		t.Fatalf("expected two egress profiles, got %d", len(snapshot.EgressProfiles))
+	}
+	direct := snapshot.EgressProfiles[0]
+	if direct.ID != 11 || direct.Type != "direct" || !direct.Enabled || direct.Description != "default path" || direct.Revision != 5 {
+		t.Fatalf("unexpected direct egress profile: %+v", direct)
+	}
+	if snapshot.EgressProfiles[1].WireGuardConfig == nil {
+		t.Fatal("expected wireguard config to decode")
+	}
+	wg := snapshot.EgressProfiles[1].WireGuardConfig
+	if wg.PrivateKey != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
+		t.Fatalf("wireguard private_key = %q", wg.PrivateKey)
+	}
+	if !reflect.DeepEqual(wg.Addresses, []string{"10.20.0.1/24"}) {
+		t.Fatalf("wireguard addresses = %+v", wg.Addresses)
+	}
+	if len(wg.Peers) != 1 || wg.Peers[0].PublicKey != "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=" {
+		t.Fatalf("wireguard peers = %+v", wg.Peers)
+	}
+	if !reflect.DeepEqual(wg.DNS, []string{"1.1.1.1", "8.8.8.8"}) || wg.MTU != 1420 {
+		t.Fatalf("wireguard dns/mtu = %+v", wg)
+	}
+
+	if len(snapshot.Rules) != 1 {
+		t.Fatalf("expected one http rule, got %d", len(snapshot.Rules))
+	}
+	if snapshot.Rules[0].EgressProfileID == nil || *snapshot.Rules[0].EgressProfileID != 11 {
+		t.Fatalf("HTTP EgressProfileID = %+v, want 11", snapshot.Rules[0].EgressProfileID)
+	}
+
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("expected one l4 rule, got %d", len(snapshot.L4Rules))
+	}
+	if snapshot.L4Rules[0].EgressProfileID == nil || *snapshot.L4Rules[0].EgressProfileID != 12 {
+		t.Fatalf("L4 EgressProfileID = %+v, want 12", snapshot.L4Rules[0].EgressProfileID)
+	}
+	if snapshot.L4Rules[0].AgentID != "l4-agent" {
+		t.Fatalf("L4 AgentID = %q, want l4-agent", snapshot.L4Rules[0].AgentID)
+	}
+}
+
+func TestEgressProfileJSONShapeRetainsControlPlaneRequiredFields(t *testing.T) {
+	raw, err := json.Marshal(EgressProfile{
+		ID:       31,
+		Name:     "disabled direct",
+		Type:     "direct",
+		Enabled:  false,
+		Revision: 0,
+		WireGuardConfig: &EgressWireGuardConfig{
+			Addresses: nil,
+			Peers:     nil,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	payload := string(raw)
+	for _, field := range []string{`"enabled":false`, `"revision":0`, `"addresses":null`, `"peers":null`} {
+		if !strings.Contains(payload, field) {
+			t.Fatalf("egress profile JSON = %s, want field %s", payload, field)
+		}
+	}
+}
+
 func TestSnapshotDecodePreservesRelayBindAndPublicFields(t *testing.T) {
 	raw := []byte(`{
 		"desired_version":"2.1.0",
@@ -232,7 +333,6 @@ func TestSnapshotDecodePreservesAgentConfigAndL4ProxyEntryFields(t *testing.T) {
 			"listen_port":1080,
 			"listen_mode":"proxy",
 			"proxy_entry_auth":{"enabled":true,"username":"u","password":"p"},
-			"proxy_egress_mode":"relay",
 			"relay_layers":[[101]]
 		}]
 	}`)
@@ -254,9 +354,6 @@ func TestSnapshotDecodePreservesAgentConfigAndL4ProxyEntryFields(t *testing.T) {
 	}
 	if !rule.ProxyEntryAuth.Enabled || rule.ProxyEntryAuth.Username != "u" || rule.ProxyEntryAuth.Password != "p" {
 		t.Fatalf("ProxyEntryAuth = %+v", rule.ProxyEntryAuth)
-	}
-	if rule.ProxyEgressMode != "relay" {
-		t.Fatalf("ProxyEgressMode = %q", rule.ProxyEgressMode)
 	}
 	if !reflect.DeepEqual(rule.RelayLayers, [][]int{{101}}) {
 		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)

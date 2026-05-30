@@ -393,8 +393,7 @@ func (s *wireGuardProfileService) ensureProfileNotReferenced(ctx context.Context
 	}
 	for _, row := range l4Rows {
 		listenMode := strings.ToLower(strings.TrimSpace(row.ListenMode))
-		proxyEgressMode := strings.ToLower(strings.TrimSpace(row.ProxyEgressMode))
-		if listenMode != "wireguard" && proxyEgressMode != "wireguard" {
+		if listenMode != "wireguard" {
 			continue
 		}
 		if row.WireGuardProfileID != nil && *row.WireGuardProfileID == profileID {

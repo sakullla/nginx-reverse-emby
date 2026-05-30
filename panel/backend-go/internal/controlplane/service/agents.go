@@ -23,7 +23,7 @@ import (
 var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
-var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard"}
+var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard", "egress_profiles"}
 
 type agentStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
@@ -108,6 +108,7 @@ type HTTPRule struct {
 	PassProxyHeaders         bool               `json:"pass_proxy_headers"`
 	UserAgent                string             `json:"user_agent"`
 	CustomHeaders            []HTTPCustomHeader `json:"custom_headers"`
+	EgressProfileID          *int               `json:"egress_profile_id,omitempty"`
 	WireGuardEntryEnabled    bool               `json:"wireguard_entry_enabled"`
 	WireGuardProfileID       *int               `json:"wireguard_profile_id,omitempty"`
 	WireGuardEntryListenHost string             `json:"wireguard_entry_listen_host,omitempty"`
@@ -148,6 +149,7 @@ type HeartbeatReply struct {
 	L4Rules              []storage.L4Rule                   `json:"l4_rules"`
 	RelayListeners       []storage.RelayListener            `json:"relay_listeners"`
 	WireGuardProfiles    []storage.WireGuardProfile         `json:"wireguard_profiles"`
+	EgressProfiles       []storage.EgressProfile            `json:"egress_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
 	OutboundProxyURL     string                             `json:"-"`
@@ -477,7 +479,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 			return AgentSummary{}, err
 		}
 		if outboundProxyURL != "" {
-			if err := validateL4ProxyEgressURL(outboundProxyURL); err != nil {
+			if err := validateProxyURL(outboundProxyURL); err != nil {
 				return AgentSummary{}, fmt.Errorf("%w: invalid outbound_proxy_url: %v", ErrInvalidArgument, err)
 			}
 		}
@@ -512,7 +514,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 }
 
 func normalizeOutboundProxyURLUpdate(raw string, fallback string) (string, error) {
-	normalized, err := normalizeProxyEgressURLUpdate(raw, fallback)
+	normalized, err := normalizeProxyURLUpdate(raw, fallback)
 	if err != nil {
 		return "", fmt.Errorf("%w: outbound_proxy_url password is redacted; re-enter the password before saving changes", ErrInvalidArgument)
 	}
@@ -805,6 +807,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		L4Rules:              snapshot.L4Rules,
 		RelayListeners:       snapshot.RelayListeners,
 		WireGuardProfiles:    snapshot.WireGuardProfiles,
+		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
 		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
@@ -823,6 +826,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.Rules = nil
 		reply.L4Rules = nil
 		reply.WireGuardProfiles = nil
+		reply.EgressProfiles = nil
 		reply.Certificates = nil
 		reply.CertificatePolicies = nil
 	}
@@ -1334,13 +1338,14 @@ func normalizeAgentTags(values []string) []string {
 
 func normalizeCapabilities(values []string) []string {
 	allowed := map[string]struct{}{
-		"http_rules":    {},
-		"local_acme":    {},
-		"cert_install":  {},
-		"l4":            {},
-		"relay_quic":    {},
-		"wireguard":     {},
-		"http3_ingress": {},
+		"http_rules":      {},
+		"local_acme":      {},
+		"cert_install":    {},
+		"l4":              {},
+		"relay_quic":      {},
+		"wireguard":       {},
+		"egress_profiles": {},
+		"http3_ingress":   {},
 	}
 	seen := map[string]struct{}{}
 	normalized := make([]string, 0, len(values))

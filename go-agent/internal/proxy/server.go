@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
@@ -31,9 +32,11 @@ type RelayMaterialProvider interface {
 }
 
 type Providers struct {
-	TLS       TLSMaterialProvider
-	Relay     RelayMaterialProvider
-	WireGuard relay.WireGuardRuntimeProvider
+	TLS             TLSMaterialProvider
+	Relay           RelayMaterialProvider
+	WireGuard       relay.WireGuardRuntimeProvider
+	EgressProfiles  []model.EgressProfile
+	EgressWireGuard relay.WireGuardRuntimeProvider
 }
 
 type routeEntry struct {
@@ -84,6 +87,7 @@ func newServerWithResilience(
 	for _, relayListener := range relayListeners {
 		relayListenersByID[relayListener.ID] = relayListener
 	}
+	egressDialer := egress.Dialer{Resolver: egress.NewResolver(providers.EgressProfiles), WireGuardProvider: providers.EgressWireGuard}
 	directInteractiveTransport, directBulkTransport := NewClassedDirectTransports(sharedTransport)
 	for _, rule := range listener.Rules {
 		hostKey := HostFromRule(rule)
@@ -108,6 +112,17 @@ func newServerWithResilience(
 			transport = relayTransport
 			entryDirectInteractiveTransport = nil
 			entryDirectBulkTransport = nil
+		} else if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			profile, err := httpRuleEgressProfile(rule, egressDialer)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.EqualFold(strings.TrimSpace(profile.Type), "direct") {
+				transport, entryDirectInteractiveTransport, entryDirectBulkTransport, err = newEgressTransports(rule, egressDialer, sharedTransport)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 
 		frontendBaseURL := FrontendOriginFromRule(rule)

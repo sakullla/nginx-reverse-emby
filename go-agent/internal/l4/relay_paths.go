@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
@@ -62,7 +61,7 @@ func (s *Server) dialTCPUpstreamCandidates(rule model.L4Rule, dialOptions relay.
 		start := s.now()
 		var upstream net.Conn
 		if !ruleUsesRelay(rule) {
-			upstream, err = s.dialTCPDirect(target)
+			upstream, err = s.dialTCPLocalEgress(rule, target)
 		} else {
 			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 		}
@@ -86,30 +85,12 @@ func (s *Server) dialTCPUpstreamCandidates(rule model.L4Rule, dialOptions relay.
 func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
 	candidate := l4Candidate{address: target}
 	start := s.now()
-	var (
-		upstream net.Conn
-		err      error
-	)
-	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
-	case "":
-		if ruleUsesRelay(rule) {
-			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
-		} else {
-			upstream, err = s.dialTCPDirect(target)
-		}
-	case "relay":
+	var upstream net.Conn
+	var err error
+	if ruleUsesRelay(rule) {
 		upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
-	case "wireguard":
-		runtime, runtimeErr := s.wireGuardRuntime(rule)
-		if runtimeErr != nil {
-			err = runtimeErr
-			break
-		}
-		upstream, err = runtime.DialContext(s.ctx, "tcp", target)
-	case "proxy":
-		upstream, err = proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
-	default:
-		err = fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
+	} else {
+		upstream, err = s.dialTCPLocalEgress(rule, target)
 	}
 	if err != nil {
 		return nil, candidate, 0, err
@@ -123,6 +104,38 @@ func (s *Server) dialTCPDirect(target string) (net.Conn, error) {
 		dialer = (&net.Dialer{}).DialContext
 	}
 	return dialer(s.ctx, "tcp", target)
+}
+
+func (s *Server) dialTCPLocalEgress(rule model.L4Rule, target string) (net.Conn, error) {
+	if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+		return s.dialTCPDirect(target)
+	}
+	return s.egressDialer.DialTCP(s.ctx, target, rule.EgressProfileID)
+}
+
+func (s *Server) validateLocalEgressProfile(rule model.L4Rule) error {
+	if ruleUsesRelay(rule) || rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+		return nil
+	}
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	profile, _, err := s.egressDialer.Resolver.Resolve(rule.EgressProfileID, protocol)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimSpace(profile.Type), "wireguard") {
+		return nil
+	}
+	if s.egressDialer.WireGuardProvider == nil {
+		return fmt.Errorf("wireguard runtime provider is required for egress profile %d", profile.ID)
+	}
+	runtime, ok := s.egressDialer.WireGuardProvider.WireGuardRuntime(profile.ID)
+	if !ok || runtime == nil {
+		return fmt.Errorf("wireguard egress profile %d runtime not found", profile.ID)
+	}
+	return err
 }
 
 func transparentTCPTargetFromConn(client net.Conn) (string, error) {
@@ -141,6 +154,9 @@ func transparentTCPTargetFromConn(client net.Conn) (string, error) {
 }
 
 func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, error) {
+	if dialOptions.EgressProfileID == nil {
+		dialOptions.EgressProfileID = rule.EgressProfileID
+	}
 	paths, err := s.resolveRelayPaths(rule)
 	if err != nil {
 		return nil, err

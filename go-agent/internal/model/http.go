@@ -27,6 +27,7 @@ type HTTPRule struct {
 	CustomHeaders            []HTTPHeader  `json:"custom_headers,omitempty"`
 	WireGuardEntryEnabled    bool          `json:"wireguard_entry_enabled,omitempty"`
 	WireGuardProfileID       *int          `json:"wireguard_profile_id,omitempty"`
+	EgressProfileID          *int          `json:"egress_profile_id,omitempty"`
 	WireGuardEntryListenHost string        `json:"wireguard_entry_listen_host,omitempty"`
 	WireGuardEntryListenPort int           `json:"wireguard_entry_listen_port,omitempty"`
 	// RelayChain is retained only to ignore legacy payloads; runtime uses RelayLayers.

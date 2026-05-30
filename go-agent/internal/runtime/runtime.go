@@ -265,6 +265,29 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			}
 		}
 	}
+	if snapshot.EgressProfiles != nil {
+		cloned.EgressProfiles = make([]model.EgressProfile, len(snapshot.EgressProfiles))
+		copy(cloned.EgressProfiles, snapshot.EgressProfiles)
+		for i, profile := range snapshot.EgressProfiles {
+			if profile.WireGuardConfig == nil {
+				continue
+			}
+			cfg := *profile.WireGuardConfig
+			cfg.Addresses = append([]string(nil), profile.WireGuardConfig.Addresses...)
+			cfg.Peers = make([]model.WireGuardPeer, len(profile.WireGuardConfig.Peers))
+			copy(cfg.Peers, profile.WireGuardConfig.Peers)
+			for j, peer := range profile.WireGuardConfig.Peers {
+				if peer.AllowedIPs != nil {
+					cfg.Peers[j].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
+				}
+				if peer.Reserved != nil {
+					cfg.Peers[j].Reserved = append([]byte(nil), peer.Reserved...)
+				}
+			}
+			cfg.DNS = append([]string(nil), profile.WireGuardConfig.DNS...)
+			cloned.EgressProfiles[i].WireGuardConfig = &cfg
+		}
+	}
 	if snapshot.Certificates != nil {
 		cloned.Certificates = make([]model.ManagedCertificateBundle, len(snapshot.Certificates))
 		copy(cloned.Certificates, snapshot.Certificates)

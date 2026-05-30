@@ -187,6 +187,25 @@ func TestValidateListener(t *testing.T) {
 	}
 }
 
+func TestRelayMetadataCarriesEgressProfileIDOnly(t *testing.T) {
+	profileID := 17
+	metadata := relayMetadataForDialOptions("tcp", DialOptions{EgressProfileID: &profileID})
+	if metadata == nil {
+		t.Fatal("metadata = nil, want egress profile id")
+	}
+	if got := metadata["egress_profile_id"]; got != 17 {
+		t.Fatalf("egress_profile_id metadata = %#v, want 17", got)
+	}
+	if _, ok := metadata["final_hop_proxy_url"]; ok {
+		t.Fatalf("metadata leaked final_hop_proxy_url: %#v", metadata)
+	}
+
+	decoded := relayDialOptionsFromMetadata("tcp", map[string]any{"egress_profile_id": float64(19)})
+	if decoded.EgressProfileID == nil || *decoded.EgressProfileID != 19 {
+		t.Fatalf("decoded EgressProfileID = %v, want 19", decoded.EgressProfileID)
+	}
+}
+
 func TestNormalizeListenerDerivesBindAndPublicFields(t *testing.T) {
 	t.Parallel()
 
@@ -331,7 +350,8 @@ func TestListenerBindingKeysNamespaceWireGuardTransport(t *testing.T) {
 		ID:                 1,
 		AgentID:            "agent-a",
 		Name:               "relay-wg",
-		BindHosts:          []string{"10.8.0.1"},
+		ListenHost:         "10.8.0.1",
+		BindHosts:          []string{"0.0.0.0"},
 		ListenPort:         18443,
 		Enabled:            true,
 		TransportMode:      ListenerTransportModeWireGuard,
@@ -343,6 +363,55 @@ func TestListenerBindingKeysNamespaceWireGuardTransport(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("listenerBindingKeys() = %+v, want %+v", got, want)
 	}
+}
+
+func TestStartWireGuardRelayListensOnTunnelHostNotBindHosts(t *testing.T) {
+	t.Parallel()
+
+	provider := newFakeTLSMaterialProvider()
+	certificateID := 10
+	cert, parsed := newServerCertificate(t, certificateOptions{
+		commonName: "relay-wg.example.com",
+		dnsNames:   []string{"relay-wg.example.com"},
+	})
+	provider.mu.Lock()
+	provider.serverCerts[certificateID] = cert
+	provider.mu.Unlock()
+	profileID := 7
+	listener := Listener{
+		ID:                 1,
+		AgentID:            "agent-a",
+		Name:               "relay-wg",
+		ListenHost:         "10.8.0.1",
+		BindHosts:          []string{"0.0.0.0"},
+		ListenPort:         18443,
+		PublicHost:         "relay-wg.example.com",
+		PublicPort:         28443,
+		Enabled:            true,
+		CertificateID:      &certificateID,
+		TLSMode:            "pin_only",
+		TransportMode:      ListenerTransportModeWireGuard,
+		WireGuardProfileID: &profileID,
+		PinSet: []model.RelayPin{{
+			Type:  "spki_sha256",
+			Value: spkiPin(t, parsed),
+		}},
+	}
+	wgRuntime := &fakeWireGuardRuntime{
+		listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
+			if address != net.JoinHostPort("10.8.0.1", "18443") {
+				return nil, fmt.Errorf("ListenTCP address = %q, want tunnel listen host", address)
+			}
+			return net.Listen("tcp", "127.0.0.1:0")
+		},
+	}
+	server, err := StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
+		WireGuardProvider: fakeWireGuardRuntimeProvider{runtimes: map[int]*fakeWireGuardRuntime{profileID: wgRuntime}},
+	})
+	if err != nil {
+		t.Fatalf("StartWithOptions() error = %v", err)
+	}
+	defer server.Close()
 }
 
 func TestValidateListenerWireGuardTransportRequiresTLSMaterial(t *testing.T) {
@@ -409,7 +478,7 @@ func TestValidateListenerRejectsWireGuardObfsAndFallback(t *testing.T) {
 	}
 }
 
-func TestStartWireGuardRelayDoesNotRequireCertificateOrTLSProvider(t *testing.T) {
+func TestStartWireGuardRelayRequiresCertificateAndTLSProvider(t *testing.T) {
 	provider := newFakeTLSMaterialProvider()
 	wgRuntime := &fakeWireGuardRuntime{listenTCP: func(ctx context.Context, address string) (net.Listener, error) {
 		listenConfig := newRelayTCPListenConfig()
@@ -437,18 +506,24 @@ func TestStartWireGuardRelayDoesNotRequireCertificateOrTLSProvider(t *testing.T)
 	server, err := StartWithOptions(context.Background(), []Listener{listener}, nil, StartOptions{
 		WireGuardProvider: wgProvider,
 	})
-	if err != nil {
-		t.Fatalf("StartWithOptions(nil provider) error = %v, want wireguard transport to start without tls provider", err)
+	if err == nil {
+		server.Close()
+		t.Fatal("StartWithOptions(nil provider) error = nil, want missing TLS material provider error")
 	}
-	server.Close()
+	if !strings.Contains(err.Error(), "tls material provider is required") {
+		t.Fatalf("StartWithOptions(nil provider) error = %v, want missing TLS material provider error", err)
+	}
 
 	server, err = StartWithOptions(context.Background(), []Listener{listener}, provider, StartOptions{
 		WireGuardProvider: wgProvider,
 	})
-	if err != nil {
-		t.Fatalf("StartWithOptions(provider) error = %v, want wireguard transport to start without certificate_id", err)
+	if err == nil {
+		server.Close()
+		t.Fatal("StartWithOptions(provider) error = nil, want missing certificate_id error")
 	}
-	server.Close()
+	if !strings.Contains(err.Error(), "certificate_id is required") {
+		t.Fatalf("StartWithOptions(provider) error = %v, want missing certificate_id error", err)
+	}
 }
 
 func TestStartWireGuardRelayUsesRuntimeListenTCP(t *testing.T) {
@@ -618,7 +693,7 @@ func TestDialWireGuardRelayPreservesHostnameForRuntimeDNS(t *testing.T) {
 	}
 }
 
-func TestDialWireGuardRelayDoesNotRequireTLSPinVerification(t *testing.T) {
+func TestDialWireGuardRelayRequiresTLSPinVerification(t *testing.T) {
 	resetTLSTCPSessionPoolForTest()
 
 	backendAddr, stopBackend := startTCPEchoServer(t)
@@ -654,18 +729,14 @@ func TestDialWireGuardRelayDoesNotRequireTLSPinVerification(t *testing.T) {
 
 	badHop := hop
 	badHop.Listener.PinSet = []model.RelayPin{{Type: "spki_sha256", Value: base64.StdEncoding.EncodeToString([]byte("wrong"))}}
-	badConn, badResult, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{badHop}, provider, DialOptions{
+	if badConn, _, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{badHop}, provider, DialOptions{
 		WireGuardProvider: wgProvider,
-	})
-	if err != nil {
-		t.Fatalf("DialWithResult(bad pin) error = %v, want wireguard direct relay to ignore tls pinning", err)
+	}); err == nil {
+		badConn.Close()
+		t.Fatal("DialWithResult(bad pin) error = nil, want WireGuard relay to enforce TLS pinning")
+	} else if !strings.Contains(err.Error(), "pin") {
+		t.Fatalf("DialWithResult(bad pin) error = %v, want pin verification error", err)
 	}
-	defer badConn.Close()
-
-	if badResult.TransportMode != ListenerTransportModeWireGuard {
-		t.Fatalf("TransportMode(bad pin) = %q, want %q", badResult.TransportMode, ListenerTransportModeWireGuard)
-	}
-	assertRoundTrip(t, badConn, []byte("wireguard-direct-relay-no-pin"))
 
 	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
 		WireGuardProvider: wgProvider,
@@ -763,7 +834,7 @@ func TestDialTLSTCPRelayRequiresTLSMaterialProvider(t *testing.T) {
 	}
 }
 
-func TestDialWireGuardRelayDoesNotRequireTLSMaterialProvider(t *testing.T) {
+func TestDialWireGuardRelayRequiresTLSMaterialProvider(t *testing.T) {
 	resetTLSTCPSessionPoolForTest()
 
 	backendAddr, stopBackend := startTCPEchoServer(t)
@@ -797,18 +868,26 @@ func TestDialWireGuardRelayDoesNotRequireTLSMaterialProvider(t *testing.T) {
 	}
 	defer server.Close()
 
-	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, nil, DialOptions{
+	if conn, _, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, nil, DialOptions{
+		WireGuardProvider: wgProvider,
+	}); err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want missing TLS material provider error")
+	} else if !strings.Contains(err.Error(), "tls material provider is required") {
+		t.Fatalf("DialWithResult() error = %v, want missing TLS material provider error", err)
+	}
+
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
 		WireGuardProvider: wgProvider,
 	})
 	if err != nil {
-		t.Fatalf("DialWithResult() error = %v, want wireguard direct relay to work without tls material", err)
+		t.Fatalf("DialWithResult() error = %v", err)
 	}
 	defer conn.Close()
-
 	if result.TransportMode != ListenerTransportModeWireGuard {
 		t.Fatalf("TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeWireGuard)
 	}
-	assertRoundTrip(t, conn, []byte("wireguard-no-tls-provider"))
+	assertRoundTrip(t, conn, []byte("wireguard-tls-provider"))
 }
 
 func TestStartBindsAllConfiguredHosts(t *testing.T) {
@@ -1102,6 +1181,53 @@ func TestMultiHopRelayUDPDataFlow(t *testing.T) {
 	defer conn.Close()
 
 	assertUDPRelayRoundTrip(t, conn, []byte("multi-hop-udp"))
+}
+
+func TestMultiHopRelayUDPSendsPayloadToFinalHopEgressPeer(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-a-udp-egress", "pin_only", true, false)
+	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-b-udp-egress", "pin_only", true, false)
+	egressProfileID := 17
+	peer := &recordingUDPPacketPeer{writes: make(chan []byte, 1), reads: make(chan []byte)}
+	dialer := &recordingUDPFinalHopDialer{peer: peer}
+
+	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
+	if err != nil {
+		t.Fatalf("failed to start first relay: %v", err)
+	}
+	defer serverA.Close()
+
+	serverB, err := StartWithOptions(context.Background(), []Listener{listenerB}, provider, StartOptions{
+		FinalHopDialer: dialer,
+	})
+	if err != nil {
+		t.Fatalf("failed to start second relay: %v", err)
+	}
+	defer serverB.Close()
+
+	conn, err := Dial(context.Background(), "udp", "127.0.0.1:5300", []Hop{hopA, hopB}, provider, DialOptions{
+		EgressProfileID: &egressProfileID,
+	})
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	if err := WriteUOTPacket(conn, []byte("udp-egress-final-hop")); err != nil {
+		t.Fatalf("WriteUOTPacket() error = %v", err)
+	}
+
+	select {
+	case payload := <-peer.writes:
+		if string(payload) != "udp-egress-final-hop" {
+			t.Fatalf("final hop UDP payload = %q, want udp-egress-final-hop", string(payload))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for final hop UDP egress payload")
+	}
+	if dialer.target != "127.0.0.1:5300" || dialer.profileID != egressProfileID {
+		t.Fatalf("final hop dial target/profile = %q/%d, want 127.0.0.1:5300/%d", dialer.target, dialer.profileID, egressProfileID)
+	}
 }
 
 func TestMultiHopRelayDataFlowWithEarlyWindowMask(t *testing.T) {
@@ -2892,16 +3018,15 @@ func TestResolveCandidatesWireGuardRelayRequiresTLSMaterialProvider(t *testing.T
 	}
 	defer server.Close()
 
-	addresses, err := ResolveCandidatesWithOptions(context.Background(), "localhost:8096", []Hop{hop}, nil, DialOptions{
+	if addresses, err := ResolveCandidatesWithOptions(context.Background(), "localhost:8096", []Hop{hop}, nil, DialOptions{
 		WireGuardProvider: wgProvider,
-	})
-	if err != nil {
-		t.Fatalf("ResolveCandidatesWithOptions() error = %v, want wireguard direct relay to work without tls material", err)
+	}); err == nil {
+		t.Fatalf("ResolveCandidatesWithOptions() error = nil with addresses %+v, want missing TLS material provider error", addresses)
+	} else if !strings.Contains(err.Error(), "tls material provider is required") {
+		t.Fatalf("ResolveCandidatesWithOptions() error = %v, want missing TLS material provider error", err)
 	}
-	if len(addresses) == 0 {
-		t.Fatal("ResolveCandidatesWithOptions() returned no addresses without tls material")
-	}
-	addresses, err = ResolveCandidatesWithOptions(context.Background(), "localhost:8096", []Hop{hop}, provider, DialOptions{
+
+	addresses, err := ResolveCandidatesWithOptions(context.Background(), "localhost:8096", []Hop{hop}, provider, DialOptions{
 		WireGuardProvider: wgProvider,
 	})
 	if err != nil {
@@ -3197,6 +3322,52 @@ func assertUDPRelayRoundTrip(t *testing.T, conn net.Conn, payload []byte) {
 	if !bytes.Equal(reply, payload) {
 		t.Fatalf("udp payload mismatch: got %q want %q", reply, payload)
 	}
+}
+
+type recordingUDPFinalHopDialer struct {
+	peer      *recordingUDPPacketPeer
+	target    string
+	profileID int
+}
+
+func (d *recordingUDPFinalHopDialer) DialTCP(context.Context, string, *int) (net.Conn, error) {
+	return nil, fmt.Errorf("unexpected tcp final hop dial")
+}
+
+func (d *recordingUDPFinalHopDialer) OpenUDP(_ context.Context, target string, id *int) (UDPPacketPeer, error) {
+	d.target = target
+	if id != nil {
+		d.profileID = *id
+	}
+	return d.peer, nil
+}
+
+type recordingUDPPacketPeer struct {
+	writes chan []byte
+	reads  chan []byte
+	once   sync.Once
+}
+
+func (p *recordingUDPPacketPeer) ReadPacket() ([]byte, error) {
+	payload, ok := <-p.reads
+	if !ok {
+		return nil, io.EOF
+	}
+	return payload, nil
+}
+
+func (p *recordingUDPPacketPeer) WritePacket(payload []byte) error {
+	p.writes <- append([]byte(nil), payload...)
+	return nil
+}
+
+func (p *recordingUDPPacketPeer) SetReadDeadline(time.Time) error  { return nil }
+func (p *recordingUDPPacketPeer) SetWriteDeadline(time.Time) error { return nil }
+func (p *recordingUDPPacketPeer) Close() error {
+	p.once.Do(func() {
+		close(p.reads)
+	})
+	return nil
 }
 
 type fakeWireGuardRuntimeProvider struct {

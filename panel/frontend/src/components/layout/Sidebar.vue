@@ -117,6 +117,7 @@ const navItems = [
       { label: '证书管理', to: '/certs', icon: icons.lock },
       { label: 'Relay 监听器', to: '/relay-listeners', icon: icons.relay },
       { label: 'WireGuard 配置', to: '/wireguard-profiles', icon: icons.wireguard },
+      { label: 'Egress Profiles', to: '/egress-profiles', icon: icons.traffic },
       { label: '节点管理', to: '/agents', icon: icons.monitor, activeMatch: (name) => name === 'agents' || name === 'agent-detail' },
     ],
   },

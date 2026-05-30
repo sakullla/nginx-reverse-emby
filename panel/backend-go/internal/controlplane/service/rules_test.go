@@ -15,12 +15,14 @@ type fakeRuleStore struct {
 	rulesByAgent       map[string][]storage.HTTPRuleRow
 	l4RulesByAgent     map[string][]storage.L4RuleRow
 	wireGuardByAgentID map[string][]storage.WireGuardProfileRow
+	egressProfiles     []storage.EgressProfileRow
 	listeners          []storage.RelayListenerRow
 	managedCerts       []storage.ManagedCertificateRow
 
 	listHTTPRulesErr  error
 	saveHTTPRulesErrs []error
 	saveManagedErrs   []error
+	saveAgentErrs     []error
 	cleanupErrs       []error
 	materialByDomain  map[string]bool
 	cleanupCallCount  int
@@ -65,6 +67,15 @@ func (f *fakeRuleStore) ListWireGuardProfiles(_ context.Context, agentID string)
 	return append([]storage.WireGuardProfileRow(nil), f.wireGuardByAgentID[agentID]...), nil
 }
 
+func (f *fakeRuleStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
+	return append([]storage.EgressProfileRow(nil), f.egressProfiles...), nil
+}
+
+func (f *fakeRuleStore) SaveEgressProfiles(_ context.Context, rows []storage.EgressProfileRow) error {
+	f.egressProfiles = append([]storage.EgressProfileRow(nil), rows...)
+	return nil
+}
+
 func (f *fakeRuleStore) ListWireGuardClients(_ context.Context, agentID string, profileID int) ([]storage.WireGuardClientRow, error) {
 	_ = agentID
 	_ = profileID
@@ -88,6 +99,9 @@ func (f *fakeRuleStore) SaveHTTPRules(_ context.Context, agentID string, rows []
 }
 
 func (f *fakeRuleStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
+	if err := popRuleStoreError(&f.saveAgentErrs); err != nil {
+		return err
+	}
 	for i, agent := range f.agents {
 		if agent.ID == row.ID {
 			f.agents[i] = row
@@ -194,6 +208,467 @@ func ruleStoreAgentByID(t *testing.T, store *fakeRuleStore, agentID string) stor
 	}
 	t.Fatalf("agent %q not found", agentID)
 	return storage.AgentRow{}
+}
+
+func newRuleServiceTestStore(t *testing.T) *fakeRuleStore {
+	t.Helper()
+	return &fakeRuleStore{
+		rulesByAgent:       map[string][]storage.HTTPRuleRow{},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+}
+
+func testConfig() config.Config {
+	return config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+}
+
+type egressProfileSeedStore interface {
+	SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error
+}
+
+func seedEgressProfile(t *testing.T, store egressProfileSeedStore, row storage.EgressProfileRow) int {
+	t.Helper()
+	if err := store.SaveEgressProfiles(context.Background(), []storage.EgressProfileRow{row}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	return row.ID
+}
+
+func TestRuleServiceCreateRejectsDisabledEgressProfile(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 17, Name: "off", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: false})
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("https://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("Create() error = %v, want disabled egress profile validation", err)
+	}
+}
+
+func TestRuleServiceCreateAcceptsEnabledSOCKSEgressProfile(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 18, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+	rule, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("https://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: &profileID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.EgressProfileID == nil || *rule.EgressProfileID != profileID {
+		t.Fatalf("EgressProfileID = %v, want %d", rule.EgressProfileID, profileID)
+	}
+	if rows := store.rulesByAgent["local"]; len(rows) != 1 || rows[0].EgressProfileID == nil || *rows[0].EgressProfileID != profileID {
+		t.Fatalf("persisted EgressProfileID = %+v, want %d", rows, profileID)
+	}
+}
+
+func TestRuleServiceCreateRejectsEgressProfileWhenRemoteExecutorLacksCapability(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.agents = []storage.AgentRow{{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: marshalStringArray([]string{"http_rules"}),
+	}}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 22, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+
+	_, err := svc.Create(t.Context(), "edge-a", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("http://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "agent does not support egress profiles") {
+		t.Fatalf("Create() error = %v, want egress profile capability validation", err)
+	}
+}
+
+func TestRuleServiceCreateRejectsRelayedEgressProfileWhenFinalHopLacksCapability(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.agents = []storage.AgentRow{{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: marshalStringArray([]string{"http_rules", "egress_profiles"}),
+	}, {
+		ID:               "relay-a",
+		Name:             "Relay A",
+		CapabilitiesJSON: marshalStringArray([]string{"relay_quic"}),
+	}}
+	store.listeners = []storage.RelayListenerRow{{
+		ID:            7,
+		AgentID:       "relay-a",
+		Name:          "relay-a",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    9443,
+		PublicHost:    "relay-a.example.test",
+		PublicPort:    9443,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+	}}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 23, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+
+	_, err := svc.Create(t.Context(), "edge-a", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("http://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers:     &[][]int{{7}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "Relay A") || !strings.Contains(err.Error(), "egress profiles") {
+		t.Fatalf("Create() error = %v, want relay final-hop egress profile capability validation", err)
+	}
+}
+
+func TestRuleServiceCreateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.agents = []storage.AgentRow{{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: marshalStringArray([]string{"http_rules", "egress_profiles"}),
+		DesiredRevision:  4,
+		CurrentRevision:  4,
+	}, {
+		ID:               "relay-a",
+		Name:             "Relay A",
+		CapabilitiesJSON: marshalStringArray([]string{"relay_quic", "egress_profiles"}),
+		DesiredRevision:  10,
+		CurrentRevision:  10,
+	}}
+	store.listeners = []storage.RelayListenerRow{{
+		ID:            7,
+		AgentID:       "relay-a",
+		Name:          "relay-a",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    9443,
+		PublicHost:    "relay-a.example.test",
+		PublicPort:    9443,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+	}}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 24, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true, Revision: 20})
+	svc := NewRuleService(testConfig(), store)
+
+	_, err := svc.Create(t.Context(), "edge-a", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("http://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers:     &[][]int{{7}},
+		EgressProfileID: &profileID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if row := ruleStoreAgentByID(t, store, "relay-a"); row.DesiredRevision != 20 {
+		t.Fatalf("relay-a DesiredRevision = %d, want egress profile revision 20", row.DesiredRevision)
+	}
+}
+
+func TestRuleServiceUpdateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.agents = []storage.AgentRow{{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: marshalStringArray([]string{"http_rules", "egress_profiles"}),
+		DesiredRevision:  4,
+		CurrentRevision:  4,
+	}, {
+		ID:               "relay-a",
+		Name:             "Relay A",
+		CapabilitiesJSON: marshalStringArray([]string{"relay_quic", "egress_profiles"}),
+		DesiredRevision:  10,
+		CurrentRevision:  10,
+	}}
+	store.rulesByAgent["edge-a"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "edge-a",
+		FrontendURL:       "http://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		ProxyRedirect:     true,
+		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[]`,
+		PassProxyHeaders:  true,
+		CustomHeadersJSON: `[]`,
+		Revision:          4,
+	}}
+	store.listeners = []storage.RelayListenerRow{{
+		ID:            7,
+		AgentID:       "relay-a",
+		Name:          "relay-a",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    9443,
+		PublicHost:    "relay-a.example.test",
+		PublicPort:    9443,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+	}}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 25, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true, Revision: 20})
+	svc := NewRuleService(testConfig(), store)
+
+	_, err := svc.Update(t.Context(), "edge-a", 1, HTTPRuleInput{
+		RelayLayers:     &[][]int{{7}},
+		EgressProfileID: &profileID,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if row := ruleStoreAgentByID(t, store, "relay-a"); row.DesiredRevision != 20 {
+		t.Fatalf("relay-a DesiredRevision = %d, want egress profile revision 20", row.DesiredRevision)
+	}
+}
+
+func TestRuleServiceUpdateBumpsPreviousRelayedEgressProfileFinalHopWhenCleared(t *testing.T) {
+	profileID := 27
+	store := newRuleServiceTestStore(t)
+	store.agents = []storage.AgentRow{{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: marshalStringArray([]string{"http_rules", "egress_profiles"}),
+		DesiredRevision:  4,
+		CurrentRevision:  4,
+	}, {
+		ID:               "relay-a",
+		Name:             "Relay A",
+		CapabilitiesJSON: marshalStringArray([]string{"relay_quic", "egress_profiles"}),
+		DesiredRevision:  10,
+		CurrentRevision:  10,
+	}}
+	store.rulesByAgent["edge-a"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "edge-a",
+		FrontendURL:       "http://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		ProxyRedirect:     true,
+		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[[7]]`,
+		PassProxyHeaders:  true,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          4,
+	}}
+	store.listeners = []storage.RelayListenerRow{{
+		ID:            7,
+		AgentID:       "relay-a",
+		Name:          "relay-a",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    9443,
+		PublicHost:    "relay-a.example.test",
+		PublicPort:    9443,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+	}}
+	seedEgressProfile(t, store, storage.EgressProfileRow{ID: profileID, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true, Revision: 20})
+	svc := NewRuleService(testConfig(), store)
+
+	_, err := svc.Update(t.Context(), "edge-a", 1, HTTPRuleInput{
+		EgressProfileID: intPtrRule(0),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if row := ruleStoreAgentByID(t, store, "relay-a"); row.DesiredRevision <= 10 {
+		t.Fatalf("relay-a DesiredRevision = %d, want bumped above current revision 10", row.DesiredRevision)
+	}
+}
+
+func TestRuleServiceDeleteBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	profileID := 26
+	store := newRuleServiceTestStore(t)
+	store.agents = []storage.AgentRow{{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: marshalStringArray([]string{"http_rules", "egress_profiles"}),
+		DesiredRevision:  4,
+		CurrentRevision:  4,
+	}, {
+		ID:               "relay-a",
+		Name:             "Relay A",
+		CapabilitiesJSON: marshalStringArray([]string{"relay_quic", "egress_profiles"}),
+		DesiredRevision:  10,
+		CurrentRevision:  10,
+	}}
+	store.rulesByAgent["edge-a"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "edge-a",
+		FrontendURL:       "http://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		ProxyRedirect:     true,
+		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[[7]]`,
+		PassProxyHeaders:  true,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          4,
+	}}
+	store.listeners = []storage.RelayListenerRow{{
+		ID:            7,
+		AgentID:       "relay-a",
+		Name:          "relay-a",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    9443,
+		PublicHost:    "relay-a.example.test",
+		PublicPort:    9443,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+	}}
+	seedEgressProfile(t, store, storage.EgressProfileRow{ID: profileID, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true, Revision: 20})
+	svc := NewRuleService(testConfig(), store)
+
+	_, err := svc.Delete(t.Context(), "edge-a", 1)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if row := ruleStoreAgentByID(t, store, "relay-a"); row.DesiredRevision <= 10 {
+		t.Fatalf("relay-a DesiredRevision = %d, want bumped above current revision 10", row.DesiredRevision)
+	}
+}
+
+func TestRuleServiceCreateRejectsUnsupportedEgressProfileType(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 20, Name: "bogus", Type: "bogus", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("https://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "does not support HTTP rules") {
+		t.Fatalf("Create() error = %v, want unsupported egress profile type validation", err)
+	}
+}
+
+func TestRuleServiceCreateRejectsNegativeEgressProfileID(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("https://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: intPtrRule(-1),
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "egress_profile_id") {
+		t.Fatalf("Create() error = %v, want negative egress_profile_id validation", err)
+	}
+}
+
+func TestRuleServiceUpdateRejectsUnknownEgressProfile(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		PassProxyHeaders:  true,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		RelayLayersJSON:   `[]`,
+		Revision:          1,
+	}}
+	profileID := 404
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Update(t.Context(), "local", 1, HTTPRuleInput{EgressProfileID: &profileID})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("Update() error = %v, want unknown egress profile validation", err)
+	}
+}
+
+func TestRuleServiceUpdateAcceptsEnabledHTTPEgressProfile(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		PassProxyHeaders:  true,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		RelayLayersJSON:   `[]`,
+		Revision:          1,
+	}}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 19, Name: "http", Type: "http", ProxyURL: "http://127.0.0.1:8080", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+	rule, err := svc.Update(t.Context(), "local", 1, HTTPRuleInput{EgressProfileID: &profileID})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.EgressProfileID == nil || *rule.EgressProfileID != profileID {
+		t.Fatalf("EgressProfileID = %v, want %d", rule.EgressProfileID, profileID)
+	}
+	if rows := store.rulesByAgent["local"]; len(rows) != 1 || rows[0].EgressProfileID == nil || *rows[0].EgressProfileID != profileID {
+		t.Fatalf("persisted EgressProfileID = %+v, want %d", rows, profileID)
+	}
+}
+
+func TestRuleServiceUpdateRejectsNegativeEgressProfileID(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		PassProxyHeaders:  true,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		RelayLayersJSON:   `[]`,
+		Revision:          1,
+	}}
+	svc := NewRuleService(testConfig(), store)
+	_, err := svc.Update(t.Context(), "local", 1, HTTPRuleInput{EgressProfileID: intPtrRule(-1)})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "egress_profile_id") {
+		t.Fatalf("Update() error = %v, want negative egress_profile_id validation", err)
+	}
+}
+
+func TestRuleServiceUpdateClearsEgressProfileWithZero(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 21, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://media.example.test",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		PassProxyHeaders:  true,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		RelayLayersJSON:   `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          1,
+	}}
+	svc := NewRuleService(testConfig(), store)
+	rule, err := svc.Update(t.Context(), "local", 1, HTTPRuleInput{EgressProfileID: intPtrRule(0)})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.EgressProfileID != nil {
+		t.Fatalf("EgressProfileID = %v, want nil", rule.EgressProfileID)
+	}
+	if rows := store.rulesByAgent["local"]; len(rows) != 1 || rows[0].EgressProfileID != nil {
+		t.Fatalf("persisted EgressProfileID = %+v, want nil", rows)
+	}
 }
 
 func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
@@ -3019,6 +3494,143 @@ func TestRuleServiceCreateRollsBackManagedCertificatesWhenRuleSaveFails(t *testi
 	}
 }
 
+func TestRuleServiceCreateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-a",
+			Name:            "edge-a",
+			DesiredRevision: 3,
+			CurrentRevision: 3,
+		}},
+		rulesByAgent:       map[string][]storage.HTTPRuleRow{},
+		saveAgentErrs:      []error{errors.New("save agent failed")},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		egressProfiles:     []storage.EgressProfileRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "edge-a", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://rollback.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if got := store.rulesByAgent["edge-a"]; len(got) != 0 {
+		t.Fatalf("rules after failed revision bump = %+v, want rollback to empty", got)
+	}
+}
+
+func TestRuleServiceCreateRestoresAgentRevisionWhenRelayCallerBumpFails(t *testing.T) {
+	wireGuardProfileID := 7
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-a", Name: "edge-a", DesiredRevision: 3, CurrentRevision: 3},
+			{ID: "edge-b", Name: "edge-b", DesiredRevision: 3, CurrentRevision: 3},
+		},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		listeners: []storage.RelayListenerRow{{
+			ID:            41,
+			AgentID:       "local",
+			Enabled:       true,
+			TransportMode: "tls_tcp",
+		}, {
+			ID:                 42,
+			AgentID:            "edge-b",
+			Enabled:            true,
+			TransportMode:      "wireguard",
+			WireGuardProfileID: &wireGuardProfileID,
+		}},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{},
+		egressProfiles: []storage.EgressProfileRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{
+				ID:       99,
+				AgentID:  "local",
+				Name:     "default",
+				Enabled:  true,
+				TagsJSON: `["system:default-wireguard"]`,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		return errors.New("local apply failed")
+	})
+
+	_, err := svc.Create(context.Background(), "edge-a", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://rollback.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers: &[][]int{{41}, {42}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if got := store.rulesByAgent["edge-a"]; len(got) != 0 {
+		t.Fatalf("rules after failed relay caller bump = %+v, want rollback to empty", got)
+	}
+	if row := ruleStoreAgentByID(t, store, "edge-a"); row.DesiredRevision != 3 {
+		t.Fatalf("edge-a DesiredRevision = %d, want restored 3", row.DesiredRevision)
+	}
+	if row := ruleStoreAgentByID(t, store, "edge-b"); row.DesiredRevision != 3 {
+		t.Fatalf("edge-b DesiredRevision = %d, want restored 3", row.DesiredRevision)
+	}
+}
+
+func TestRuleServiceUpdateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-a",
+			Name:            "edge-a",
+			DesiredRevision: 3,
+			CurrentRevision: 3,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-a": {{
+				ID:                1,
+				AgentID:           "edge-a",
+				FrontendURL:       "http://rollback.example.com",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				RelayLayersJSON:   `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          3,
+			}},
+		},
+		saveAgentErrs:      []error{errors.New("save agent failed")},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		egressProfiles:     []storage.EgressProfileRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "edge-a", 1, HTTPRuleInput{
+		Backends: &[]HTTPRuleBackend{{URL: "http://127.0.0.1:9096"}},
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+	got := store.rulesByAgent["edge-a"]
+	if len(got) != 1 || got[0].BackendsJSON != `[{"url":"http://127.0.0.1:8096"}]` {
+		t.Fatalf("rules after failed revision bump = %+v, want original backend", got)
+	}
+}
+
 func TestRuleServiceUpdateRollbackPreservesManagedCertificateMaterial(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
@@ -3077,6 +3689,111 @@ func TestRuleServiceUpdateRollbackPreservesManagedCertificateMaterial(t *testing
 	}
 	if store.cleanupCallCount != 0 {
 		t.Fatalf("cleanup should not run on rollback path, cleanupCallCount = %d", store.cleanupCallCount)
+	}
+}
+
+func TestRuleServiceUpdateLocalApplyFailurePreservesManagedCertificateMaterial(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:                1,
+				AgentID:           "local",
+				FrontendURL:       "https://stale-auto.example.com",
+				BackendURL:        "http://127.0.0.1:8096",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          7,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              3,
+			Domain:          "stale-auto.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			TagsJSON:        `["auto","auto_target:local"]`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        8,
+		}},
+		materialByDomain: map[string]bool{
+			"stale-auto.example.com": true,
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		return errors.New("local apply failed")
+	})
+
+	_, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://stale-auto.example.com"),
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+	if got := store.rulesByAgent["local"]; len(got) != 1 || got[0].FrontendURL != "https://stale-auto.example.com" {
+		t.Fatalf("rules after failed local apply = %+v, want original HTTPS rule", got)
+	}
+	if len(store.managedCerts) != 1 || store.managedCerts[0].Domain != "stale-auto.example.com" {
+		t.Fatalf("managed certs after failed local apply = %+v, want original cert", store.managedCerts)
+	}
+	if !store.materialByDomain["stale-auto.example.com"] {
+		t.Fatalf("material was deleted during local apply rollback path")
+	}
+}
+
+func TestRuleServiceDeleteRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-a",
+			Name:            "edge-a",
+			DesiredRevision: 3,
+			CurrentRevision: 3,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-a": {{
+				ID:                1,
+				AgentID:           "edge-a",
+				FrontendURL:       "http://rollback.example.com",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				RelayLayersJSON:   `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          3,
+			}},
+		},
+		saveAgentErrs:      []error{errors.New("save agent failed")},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		egressProfiles:     []storage.EgressProfileRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Delete(context.Background(), "edge-a", 1)
+	if err == nil {
+		t.Fatal("Delete() error = nil")
+	}
+	got := store.rulesByAgent["edge-a"]
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("rules after failed delete revision bump = %+v, want original rule", got)
 	}
 }
 

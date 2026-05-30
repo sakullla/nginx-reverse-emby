@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
@@ -227,6 +228,60 @@ func NewSharedTransport() *http.Transport {
 		return dialer.DialContext(ctx, network, dialAddressFromContext(ctx, addr))
 	}
 	return transport
+}
+
+func newEgressTransports(rule model.HTTPRule, dialer egress.Dialer, base *http.Transport) (*http.Transport, *http.Transport, *http.Transport, error) {
+	transport, err := newEgressTransport(rule, dialer, base)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	interactive, bulk := NewClassedDirectTransports(base)
+	configureEgressTransport(interactive, rule, dialer)
+	configureEgressTransport(bulk, rule, dialer)
+	return transport, interactive, bulk, nil
+}
+
+func newEgressTransport(rule model.HTTPRule, dialer egress.Dialer, base *http.Transport) (*http.Transport, error) {
+	transport := cloneTransport(base)
+	configureEgressTransport(transport, rule, dialer)
+	return transport, nil
+}
+
+func configureEgressTransport(transport *http.Transport, rule model.HTTPRule, dialer egress.Dialer) {
+	if transport == nil {
+		return
+	}
+	transport.DialTLS = nil
+	transport.DialTLSContext = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dialer.DialTCP(ctx, dialAddressFromContext(ctx, address), rule.EgressProfileID)
+	}
+}
+
+func validateHTTPRuleEgressProfile(rule model.HTTPRule, dialer egress.Dialer) error {
+	_, err := httpRuleEgressProfile(rule, dialer)
+	return err
+}
+
+func httpRuleEgressProfile(rule model.HTTPRule, dialer egress.Dialer) (model.EgressProfile, error) {
+	if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+		return model.EgressProfile{Type: "direct", Enabled: true}, nil
+	}
+	profile, _, err := dialer.Resolver.Resolve(rule.EgressProfileID, "tcp")
+	if err != nil {
+		return model.EgressProfile{}, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(profile.Type), "wireguard") {
+		return profile, nil
+	}
+	if dialer.WireGuardProvider == nil {
+		return model.EgressProfile{}, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profile.ID)
+	}
+	runtime, ok := dialer.WireGuardProvider.WireGuardRuntime(profile.ID)
+	if !ok || runtime == nil {
+		return model.EgressProfile{}, fmt.Errorf("wireguard egress profile %d runtime not found", profile.ID)
+	}
+	return profile, nil
 }
 
 func parseHTTPBackends(rule model.HTTPRule) ([]httpBackend, error) {

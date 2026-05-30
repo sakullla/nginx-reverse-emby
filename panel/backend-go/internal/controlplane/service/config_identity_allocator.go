@@ -16,15 +16,17 @@ type configIdentityAllocatorState struct {
 	L4Rules        []storage.L4RuleRow
 	RelayListeners []storage.RelayListenerRow
 	WireGuard      []storage.WireGuardProfileRow
+	EgressProfiles []storage.EgressProfileRow
 	Certificates   []storage.ManagedCertificateRow
 }
 
 type configIdentityAllocator struct {
-	localAgentID        string
-	usedRuleIDs         map[int]struct{}
-	usedListenerIDs     map[int]struct{}
-	usedCertificateIDs  map[int]struct{}
-	nextRevisionByAgent map[string]int
+	localAgentID         string
+	usedRuleIDs          map[int]struct{}
+	usedListenerIDs      map[int]struct{}
+	usedEgressProfileIDs map[int]struct{}
+	usedCertificateIDs   map[int]struct{}
+	nextRevisionByAgent  map[string]int
 }
 
 type configIdentityAllocatorStore interface {
@@ -40,13 +42,18 @@ type wireGuardProfileLister interface {
 	ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error)
 }
 
+type egressProfileLister interface {
+	ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error)
+}
+
 func newConfigIdentityAllocator(state configIdentityAllocatorState) *configIdentityAllocator {
 	allocator := &configIdentityAllocator{
-		localAgentID:        strings.TrimSpace(state.LocalAgentID),
-		usedRuleIDs:         map[int]struct{}{},
-		usedListenerIDs:     map[int]struct{}{},
-		usedCertificateIDs:  map[int]struct{}{},
-		nextRevisionByAgent: map[string]int{},
+		localAgentID:         strings.TrimSpace(state.LocalAgentID),
+		usedRuleIDs:          map[int]struct{}{},
+		usedListenerIDs:      map[int]struct{}{},
+		usedEgressProfileIDs: map[int]struct{}{},
+		usedCertificateIDs:   map[int]struct{}{},
+		nextRevisionByAgent:  map[string]int{},
 	}
 	allocator.seedIDs(state)
 	allocator.seedRevisionFloors(state)
@@ -92,6 +99,10 @@ func loadConfigIdentityAllocatorBaseState(ctx context.Context, cfg config.Config
 	if err != nil {
 		return configIdentityAllocatorState{}, nil, err
 	}
+	egressRows, err := listEgressProfileRows(ctx, store)
+	if err != nil {
+		return configIdentityAllocatorState{}, nil, err
+	}
 	certRows, err := store.ListManagedCertificates(ctx)
 	if err != nil {
 		return configIdentityAllocatorState{}, nil, err
@@ -104,6 +115,7 @@ func loadConfigIdentityAllocatorBaseState(ctx context.Context, cfg config.Config
 		HTTPRules:      httpRows,
 		L4Rules:        l4Rows,
 		RelayListeners: relayRows,
+		EgressProfiles: egressRows,
 		Certificates:   certRows,
 	}, agentIDs, nil
 }
@@ -114,6 +126,10 @@ func (a *configIdentityAllocator) AllocateRuleID(preferredID int) int {
 
 func (a *configIdentityAllocator) AllocateListenerID(preferredID int) int {
 	return allocatePreferredID(a.usedListenerIDs, preferredID)
+}
+
+func (a *configIdentityAllocator) AllocateEgressProfileID(preferredID int) int {
+	return allocatePreferredID(a.usedEgressProfileIDs, preferredID)
 }
 
 func (a *configIdentityAllocator) AllocateCertificateID(preferredID int) int {
@@ -154,6 +170,21 @@ func (a *configIdentityAllocator) AllocateRevisionForTargets(agentIDs []string, 
 	return next
 }
 
+func (a *configIdentityAllocator) AllocateRevisionGlobal(maxExistingRevision int) int {
+	next := maxExistingRevision + 1
+	for _, floor := range a.nextRevisionByAgent {
+		if floor > next {
+			next = floor
+		}
+	}
+	for agentID := range a.nextRevisionByAgent {
+		if a.nextRevisionByAgent[agentID] < next+1 {
+			a.nextRevisionByAgent[agentID] = next + 1
+		}
+	}
+	return next
+}
+
 func (a *configIdentityAllocator) seedIDs(state configIdentityAllocatorState) {
 	for _, row := range state.HTTPRules {
 		if row.ID > 0 {
@@ -173,6 +204,11 @@ func (a *configIdentityAllocator) seedIDs(state configIdentityAllocatorState) {
 	for _, row := range state.RelayListeners {
 		if row.ID > 0 {
 			a.usedListenerIDs[row.ID] = struct{}{}
+		}
+	}
+	for _, row := range state.EgressProfiles {
+		if row.ID > 0 {
+			a.usedEgressProfileIDs[row.ID] = struct{}{}
 		}
 	}
 	for _, row := range state.Certificates {
@@ -274,6 +310,14 @@ func listAllWireGuardProfileRows(ctx context.Context, store configIdentityAlloca
 		rows = append(rows, agentRows...)
 	}
 	return rows, nil
+}
+
+func listEgressProfileRows(ctx context.Context, store configIdentityAllocatorStore) ([]storage.EgressProfileRow, error) {
+	egressStore, ok := store.(egressProfileLister)
+	if !ok {
+		return nil, nil
+	}
+	return egressStore.ListEgressProfiles(ctx)
 }
 
 func highestAgentRuleRevision(agentID string, httpRows []storage.HTTPRuleRow, l4Rows []storage.L4RuleRow) int {

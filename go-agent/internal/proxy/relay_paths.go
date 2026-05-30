@@ -53,7 +53,8 @@ func newRelayTransports(
 			Target:  target,
 			Paths:   requestPaths,
 			Options: []relay.DialOptions{{
-				TrafficClass: class,
+				TrafficClass:    class,
+				EgressProfileID: rule.EgressProfileID,
 			}},
 		})
 		if result.DialResult.SelectedAddress != "" {

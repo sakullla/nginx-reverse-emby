@@ -137,6 +137,12 @@ func (u *directUDPUpstream) WritePacket(payload []byte) error {
 	return err
 }
 
+func (u *directUDPUpstream) directUDPScored() {}
+
+type directUDPScoreUpstream interface {
+	directUDPScored()
+}
+
 type relayUDPUpstream struct {
 	conn     net.Conn
 	readBuf  []byte
@@ -210,6 +216,38 @@ func (u *proxyUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
 func (u *proxyUDPUpstream) WritePacket(payload []byte) error {
 	return u.association.WritePacket(u.target, payload)
 }
+
+type egressUDPUpstream struct {
+	conn   proxyproto.UDPPacketConn
+	target string
+}
+
+func (u *egressUDPUpstream) Close() error { return u.conn.Close() }
+func (u *egressUDPUpstream) SetReadDeadline(t time.Time) error {
+	return u.conn.SetReadDeadline(t)
+}
+func (u *egressUDPUpstream) SetWriteDeadline(t time.Time) error {
+	return u.conn.SetWriteDeadline(t)
+}
+func (u *egressUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
+	source, payload, err := u.conn.ReadPacket()
+	if err != nil {
+		return udpUpstreamPacket{}, err
+	}
+	if strings.TrimSpace(source) != "" && !proxyUDPReplySourceMatches(u.target, source) {
+		return udpUpstreamPacket{}, fmt.Errorf("UDP egress reply source %q does not match target %q", source, u.target)
+	}
+	return udpUpstreamPacket{payload: payload, source: source}, nil
+}
+func (u *egressUDPUpstream) WritePacket(payload []byte) error {
+	return u.conn.WritePacket(u.target, payload)
+}
+
+type directEgressUDPUpstream struct {
+	egressUDPUpstream
+}
+
+func (u *directEgressUDPUpstream) directUDPScored() {}
 
 func proxyUDPReplySourceMatches(expected string, source string) bool {
 	expectedHost, expectedPort, expectedErr := net.SplitHostPort(strings.TrimSpace(expected))
@@ -530,7 +568,7 @@ func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udp
 	if target = strings.TrimSpace(target); target != "" {
 		candidate := l4Candidate{
 			address:       target,
-			directUDPPath: !ruleUsesRelay(rule) && strings.TrimSpace(rule.ProxyEgressMode) == "",
+			directUDPPath: s.usesLocalDirectUDPEgress(rule),
 		}
 		upstream, err := s.dialTargetUDPUpstream(rule, candidate)
 		if err != nil {
@@ -552,6 +590,7 @@ func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udp
 			lastErr = err
 			continue
 		}
+		candidate.directUDPPath = s.usesLocalDirectUDPEgress(rule)
 		return upstream, candidate, nil
 	}
 	if lastErr != nil {
@@ -561,41 +600,32 @@ func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udp
 }
 
 func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {
-	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
-	case "":
-		return s.dialUDPUpstreamCandidate(rule, candidate)
-	case "relay":
+	if ruleUsesRelay(rule) {
 		conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
-			TrafficClass: upstream.TrafficClassBulk,
+			TrafficClass:    upstream.TrafficClassBulk,
+			EgressProfileID: rule.EgressProfileID,
 		})
 		if err != nil {
 			return nil, err
 		}
 		return &relayUDPUpstream{conn: conn}, nil
-	case "wireguard":
-		runtime, err := s.wireGuardRuntime(rule)
-		if err != nil {
-			return nil, err
-		}
-		conn, err := runtime.DialContext(s.ctx, "udp", candidate.address)
-		if err != nil {
-			return nil, err
-		}
-		return &connUDPUpstream{conn: conn}, nil
-	case "proxy":
-		association, err := proxyproto.DialUDP(s.ctx, rule.ProxyEgressURL)
-		if err != nil {
-			return nil, err
-		}
-		return &proxyUDPUpstream{association: association, target: candidate.address}, nil
-	default:
-		return nil, fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
 	}
+	return s.dialUDPUpstreamCandidate(rule, candidate)
 }
 
 func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {
 	targetAddress := candidate.address
 	if !ruleUsesRelay(rule) {
+		if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			conn, err := s.egressDialer.DialUDP(s.ctx, targetAddress, rule.EgressProfileID)
+			if err != nil {
+				return nil, err
+			}
+			if s.usesLocalDirectUDPEgress(rule) {
+				return &directEgressUDPUpstream{egressUDPUpstream{conn: conn, target: targetAddress}}, nil
+			}
+			return &egressUDPUpstream{conn: conn, target: targetAddress}, nil
+		}
 		addr, err := net.ResolveUDPAddr("udp", targetAddress)
 		if err != nil {
 			return nil, err
@@ -609,12 +639,27 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 	}
 
 	upstream, err := s.dialRelayPath("udp", targetAddress, rule, relay.DialOptions{
-		TrafficClass: upstream.TrafficClassBulk,
+		TrafficClass:    upstream.TrafficClassBulk,
+		EgressProfileID: rule.EgressProfileID,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &relayUDPUpstream{conn: upstream}, nil
+}
+
+func (s *Server) usesLocalDirectUDPEgress(rule model.L4Rule) bool {
+	if ruleUsesRelay(rule) {
+		return false
+	}
+	if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+		return true
+	}
+	profile, _, err := s.egressDialer.Resolver.Resolve(rule.EgressProfileID, "udp")
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(profile.Type), "direct")
 }
 
 func (s *Server) existingUDPSessionLocked(listener udpListener, peer *net.UDPAddr, target string) *udpSession {
@@ -647,7 +692,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				if s.shouldFailUDPSession(session.key) {
-					if _, ok := session.upstream.(*directUDPUpstream); ok && s.upstreamScore != nil {
+					if _, ok := session.upstream.(directUDPScoreUpstream); ok && s.upstreamScore != nil {
 						s.upstreamScore.ObserveFailure(
 							upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: session.targetAddr},
 							upstream.FailureTimeout,
@@ -674,7 +719,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		payload := reply.payload
 		replyDuration := s.udpReplyDuration(session.key)
 		s.markUDPSessionReply(session.key)
-		if _, ok := session.upstream.(*directUDPUpstream); ok && s.upstreamScore != nil {
+		if _, ok := session.upstream.(directUDPScoreUpstream); ok && s.upstreamScore != nil {
 			s.upstreamScore.ObserveProbeSuccess(
 				upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: session.targetAddr},
 				0,

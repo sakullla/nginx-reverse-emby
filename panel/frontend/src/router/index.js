@@ -66,6 +66,12 @@ const routes = [
         meta: { title: 'WireGuard 配置' }
       },
       {
+        path: 'egress-profiles',
+        name: 'egress-profiles',
+        component: () => import('../pages/EgressProfilesPage.vue'),
+        meta: { title: 'Egress Profiles' }
+      },
+      {
         path: 'wireguard-profiles/:id',
         name: 'wireguard-profile-clients',
         component: () => import('../pages/WireGuardProfilesPage.vue'),
