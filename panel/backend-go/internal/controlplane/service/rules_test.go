@@ -3314,6 +3314,112 @@ func TestRuleServiceCreateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T)
 	}
 }
 
+func TestRuleServiceCreateRestoresAgentRevisionWhenRelayCallerBumpFails(t *testing.T) {
+	wireGuardProfileID := 7
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-a", Name: "edge-a", DesiredRevision: 3, CurrentRevision: 3},
+			{ID: "edge-b", Name: "edge-b", DesiredRevision: 3, CurrentRevision: 3},
+		},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		listeners: []storage.RelayListenerRow{{
+			ID:            41,
+			AgentID:       "local",
+			Enabled:       true,
+			TransportMode: "tls_tcp",
+		}, {
+			ID:                 42,
+			AgentID:            "edge-b",
+			Enabled:            true,
+			TransportMode:      "wireguard",
+			WireGuardProfileID: &wireGuardProfileID,
+		}},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{},
+		egressProfiles: []storage.EgressProfileRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{
+				ID:       99,
+				AgentID:  "local",
+				Name:     "default",
+				Enabled:  true,
+				TagsJSON: `["system:default-wireguard"]`,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		return errors.New("local apply failed")
+	})
+
+	_, err := svc.Create(context.Background(), "edge-a", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://rollback.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers: &[][]int{{41}, {42}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if got := store.rulesByAgent["edge-a"]; len(got) != 0 {
+		t.Fatalf("rules after failed relay caller bump = %+v, want rollback to empty", got)
+	}
+	if row := ruleStoreAgentByID(t, store, "edge-a"); row.DesiredRevision != 3 {
+		t.Fatalf("edge-a DesiredRevision = %d, want restored 3", row.DesiredRevision)
+	}
+	if row := ruleStoreAgentByID(t, store, "edge-b"); row.DesiredRevision != 3 {
+		t.Fatalf("edge-b DesiredRevision = %d, want restored 3", row.DesiredRevision)
+	}
+}
+
+func TestRuleServiceUpdateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-a",
+			Name:            "edge-a",
+			DesiredRevision: 3,
+			CurrentRevision: 3,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-a": {{
+				ID:                1,
+				AgentID:           "edge-a",
+				FrontendURL:       "http://rollback.example.com",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				RelayLayersJSON:   `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          3,
+			}},
+		},
+		saveAgentErrs:      []error{errors.New("save agent failed")},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		egressProfiles:     []storage.EgressProfileRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "edge-a", 1, HTTPRuleInput{
+		Backends: &[]HTTPRuleBackend{{URL: "http://127.0.0.1:9096"}},
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+	got := store.rulesByAgent["edge-a"]
+	if len(got) != 1 || got[0].BackendsJSON != `[{"url":"http://127.0.0.1:8096"}]` {
+		t.Fatalf("rules after failed revision bump = %+v, want original backend", got)
+	}
+}
+
 func TestRuleServiceUpdateRollbackPreservesManagedCertificateMaterial(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
@@ -3372,6 +3478,111 @@ func TestRuleServiceUpdateRollbackPreservesManagedCertificateMaterial(t *testing
 	}
 	if store.cleanupCallCount != 0 {
 		t.Fatalf("cleanup should not run on rollback path, cleanupCallCount = %d", store.cleanupCallCount)
+	}
+}
+
+func TestRuleServiceUpdateLocalApplyFailurePreservesManagedCertificateMaterial(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:                1,
+				AgentID:           "local",
+				FrontendURL:       "https://stale-auto.example.com",
+				BackendURL:        "http://127.0.0.1:8096",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          7,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              3,
+			Domain:          "stale-auto.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			TagsJSON:        `["auto","auto_target:local"]`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        8,
+		}},
+		materialByDomain: map[string]bool{
+			"stale-auto.example.com": true,
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		return errors.New("local apply failed")
+	})
+
+	_, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://stale-auto.example.com"),
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+	if got := store.rulesByAgent["local"]; len(got) != 1 || got[0].FrontendURL != "https://stale-auto.example.com" {
+		t.Fatalf("rules after failed local apply = %+v, want original HTTPS rule", got)
+	}
+	if len(store.managedCerts) != 1 || store.managedCerts[0].Domain != "stale-auto.example.com" {
+		t.Fatalf("managed certs after failed local apply = %+v, want original cert", store.managedCerts)
+	}
+	if !store.materialByDomain["stale-auto.example.com"] {
+		t.Fatalf("material was deleted during local apply rollback path")
+	}
+}
+
+func TestRuleServiceDeleteRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-a",
+			Name:            "edge-a",
+			DesiredRevision: 3,
+			CurrentRevision: 3,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-a": {{
+				ID:                1,
+				AgentID:           "edge-a",
+				FrontendURL:       "http://rollback.example.com",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				RelayLayersJSON:   `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          3,
+			}},
+		},
+		saveAgentErrs:      []error{errors.New("save agent failed")},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		egressProfiles:     []storage.EgressProfileRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Delete(context.Background(), "edge-a", 1)
+	if err == nil {
+		t.Fatal("Delete() error = nil")
+	}
+	got := store.rulesByAgent["edge-a"]
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("rules after failed delete revision bump = %+v, want original rule", got)
 	}
 }
 

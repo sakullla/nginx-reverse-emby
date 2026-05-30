@@ -207,19 +207,26 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 	} else {
 		profile.Revision = maxRevision + 1
 	}
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, affectedAgentIDs)
+	if err != nil {
+		return EgressProfile{}, err
+	}
 
 	nextRows := append([]storage.EgressProfileRow(nil), rows...)
 	nextRows[targetIndex] = egressProfileToRow(profile)
 	if err := s.store.SaveEgressProfiles(ctx, nextRows); err != nil {
 		return EgressProfile{}, err
 	}
-	if err := s.bumpRemoteDesiredRevisions(ctx, affectedAgentIDs, profile.Revision); err != nil {
+	rollbackPostSave := func(err error) (EgressProfile, error) {
 		_ = s.store.SaveEgressProfiles(ctx, rows)
+		restoreAgentRowsBestEffort(ctx, s.store, agentRollbackRows)
 		return EgressProfile{}, err
 	}
+	if err := s.bumpRemoteDesiredRevisions(ctx, affectedAgentIDs, profile.Revision); err != nil {
+		return rollbackPostSave(err)
+	}
 	if err := s.triggerLocalApplyForAgents(ctx, affectedAgentIDs); err != nil {
-		_ = s.store.SaveEgressProfiles(ctx, rows)
-		return EgressProfile{}, err
+		return rollbackPostSave(err)
 	}
 	return redactEgressProfile(profile), nil
 }

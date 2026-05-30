@@ -557,6 +557,57 @@ func TestEgressProfileServiceUpdateRollsBackProfileWhenRemoteRevisionBumpFails(t
 	}
 }
 
+func TestEgressProfileServiceUpdateRestoresAgentRevisionsWhenPartialBumpFails(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	for _, row := range []storage.AgentRow{
+		{ID: "edge-a", Name: "edge-a", DesiredRevision: 50, CurrentRevision: 50},
+		{ID: "edge-b", Name: "edge-b", DesiredRevision: 60, CurrentRevision: 60},
+	} {
+		if err := store.SaveAgent(t.Context(), row); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", row.ID, err)
+		}
+	}
+	svc := NewEgressProfileService(store)
+	profile := createTestEgressProfile(t, svc)
+	for i, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveHTTPRules(t.Context(), agentID, []storage.HTTPRuleRow{{
+			ID:              51 + i,
+			AgentID:         agentID,
+			FrontendURL:     "http://" + agentID + ".example.com",
+			BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+			EgressProfileID: &profile.ID,
+			Enabled:         true,
+			Revision:        2,
+		}}); err != nil {
+			t.Fatalf("SaveHTTPRules(%s) error = %v", agentID, err)
+		}
+	}
+
+	failingStore := &failingSaveAgentEgressProfileStore{
+		SQLiteStore:   store,
+		saveAgentErrs: []error{nil, errors.New("save second agent failed")},
+	}
+	failingSvc := NewEgressProfileService(failingStore)
+	_, err := failingSvc.Update(t.Context(), profile.ID, EgressProfileInput{
+		ProxyURL: stringPtrEgress("socks5://127.0.0.1:2080"),
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+
+	agents, err := store.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	desired := map[string]int{}
+	for _, row := range agents {
+		desired[row.ID] = row.DesiredRevision
+	}
+	if desired["edge-a"] != 50 || desired["edge-b"] != 60 {
+		t.Fatalf("agent DesiredRevision after partial bump failure = %+v, want edge-a=50 edge-b=60", desired)
+	}
+}
+
 func TestEgressProfileServiceUpdateTriggersLocalApplyWhenLocalExecutorUsesProfile(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)

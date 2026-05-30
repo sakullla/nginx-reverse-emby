@@ -182,6 +182,11 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...))
+	if err != nil {
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
 
 	nextRows := append(append([]storage.HTTPRuleRow(nil), rows...), httpRuleToRow(rule))
 	certRowsChanged := false
@@ -217,6 +222,7 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		return HTTPRule{}, err
 	}
 	rollbackPostSave := func(err error) (HTTPRule, error) {
+		restoreAgentRowsBestEffort(ctx, s.store, agentRollbackRows)
 		if rollbackErr := s.store.SaveHTTPRules(ctx, resolvedID, rows); rollbackErr != nil {
 			rollbackDefaultWireGuard()
 			return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
@@ -236,11 +242,11 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
 		return rollbackPostSave(err)
 	}
-	if certRowsChanged {
-		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
-	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return rollbackPostSave(err)
+	}
+	if certRowsChanged {
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
 	}
 	return rule, nil
 }
@@ -346,6 +352,17 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 			return HTTPRule{}, err
 		}
 	}
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...))
+	if err != nil {
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
 		if certRowsChanged {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
@@ -356,17 +373,32 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
-	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+	rollbackPostSave := func(err error) (HTTPRule, error) {
+		restoreAgentRowsBestEffort(ctx, s.store, agentRollbackRows)
+		if rollbackErr := s.store.SaveHTTPRules(ctx, resolvedID, rows); rollbackErr != nil {
+			rollbackDefaultWireGuard()
+			return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+		}
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+		return rollbackPostSave(err)
+	}
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
-		return HTTPRule{}, err
+		return rollbackPostSave(err)
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return rollbackPostSave(err)
 	}
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
-	}
-	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		return HTTPRule{}, err
 	}
 	return rule, nil
 }
@@ -408,6 +440,10 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, []string{resolvedID})
+	if err != nil {
+		return HTTPRule{}, err
+	}
 	if certRowsChanged {
 		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
 			return HTTPRule{}, err
@@ -421,19 +457,31 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		}
 		return HTTPRule{}, err
 	}
+	rollbackPostSave := func(err error) (HTTPRule, error) {
+		restoreAgentRowsBestEffort(ctx, s.store, agentRollbackRows)
+		if rollbackErr := s.store.SaveHTTPRules(ctx, resolvedID, rows); rollbackErr != nil {
+			return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+		}
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		return HTTPRule{}, err
+	}
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
-		return HTTPRule{}, err
+		return rollbackPostSave(err)
 	}
 	nextRevision := allocator.AllocateRevisionForAgent(resolvedID, deleted.Revision)
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
-		return HTTPRule{}, err
+		return rollbackPostSave(err)
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return rollbackPostSave(err)
 	}
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
-	}
-	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		return HTTPRule{}, err
 	}
 	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "http_rule", deleted.ID)
 	return deleted, nil
