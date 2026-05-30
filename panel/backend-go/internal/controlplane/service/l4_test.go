@@ -337,6 +337,169 @@ func TestL4RuleServiceCreateRejectsRelayedEgressProfileWhenFinalHopLacksCapabili
 	}
 }
 
+func TestL4RuleServiceCreateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-a",
+			Name:             "Edge A",
+			CapabilitiesJSON: marshalStringArray([]string{"l4", "egress_profiles"}),
+			DesiredRevision:  4,
+			CurrentRevision:  4,
+		}, {
+			ID:               "relay-a",
+			Name:             "Relay A",
+			CapabilitiesJSON: marshalStringArray([]string{"relay_quic", "egress_profiles"}),
+			DesiredRevision:  10,
+			CurrentRevision:  10,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"relay-a": {{
+				ID:            8,
+				AgentID:       "relay-a",
+				Name:          "relay-a",
+				ListenHost:    "127.0.0.1",
+				ListenPort:    9443,
+				PublicHost:    "relay-a.example.test",
+				PublicPort:    9443,
+				Enabled:       true,
+				TransportMode: "tls_tcp",
+			}},
+		},
+	}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 29, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true, Revision: 20})
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(t.Context(), "edge-a", L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenPort:      intPtrL4(9000),
+		Backends:        &[]L4Backend{{Host: "127.0.0.1", Port: 9001}},
+		RelayLayers:     &[][]int{{8}},
+		EgressProfileID: &profileID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if row := l4StoreAgentByID(t, store, "relay-a"); row.DesiredRevision != 20 {
+		t.Fatalf("relay-a DesiredRevision = %d, want egress profile revision 20", row.DesiredRevision)
+	}
+}
+
+func TestL4RuleServiceUpdateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-a",
+			Name:             "Edge A",
+			CapabilitiesJSON: marshalStringArray([]string{"l4", "egress_profiles"}),
+			DesiredRevision:  4,
+			CurrentRevision:  4,
+		}, {
+			ID:               "relay-a",
+			Name:             "Relay A",
+			CapabilitiesJSON: marshalStringArray([]string{"relay_quic", "egress_profiles"}),
+			DesiredRevision:  10,
+			CurrentRevision:  10,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-a": {{
+				ID:           1,
+				AgentID:      "edge-a",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   9000,
+				BackendsJSON: `[{"host":"127.0.0.1","port":9001}]`,
+				Enabled:      true,
+				Revision:     4,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"relay-a": {{
+				ID:            8,
+				AgentID:       "relay-a",
+				Name:          "relay-a",
+				ListenHost:    "127.0.0.1",
+				ListenPort:    9443,
+				PublicHost:    "relay-a.example.test",
+				PublicPort:    9443,
+				Enabled:       true,
+				TransportMode: "tls_tcp",
+			}},
+		},
+	}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 30, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true, Revision: 20})
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Update(t.Context(), "edge-a", 1, L4RuleInput{
+		RelayLayers:     &[][]int{{8}},
+		EgressProfileID: &profileID,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if row := l4StoreAgentByID(t, store, "relay-a"); row.DesiredRevision != 20 {
+		t.Fatalf("relay-a DesiredRevision = %d, want egress profile revision 20", row.DesiredRevision)
+	}
+}
+
+func TestL4RuleServiceDeleteBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	profileID := 31
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-a",
+			Name:             "Edge A",
+			CapabilitiesJSON: marshalStringArray([]string{"l4", "egress_profiles"}),
+			DesiredRevision:  4,
+			CurrentRevision:  4,
+		}, {
+			ID:               "relay-a",
+			Name:             "Relay A",
+			CapabilitiesJSON: marshalStringArray([]string{"relay_quic", "egress_profiles"}),
+			DesiredRevision:  10,
+			CurrentRevision:  10,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-a": {{
+				ID:              1,
+				AgentID:         "edge-a",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9000,
+				BackendsJSON:    `[{"host":"127.0.0.1","port":9001}]`,
+				RelayLayersJSON: `[[8]]`,
+				EgressProfileID: &profileID,
+				Enabled:         true,
+				Revision:        4,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"relay-a": {{
+				ID:            8,
+				AgentID:       "relay-a",
+				Name:          "relay-a",
+				ListenHost:    "127.0.0.1",
+				ListenPort:    9443,
+				PublicHost:    "relay-a.example.test",
+				PublicPort:    9443,
+				Enabled:       true,
+				TransportMode: "tls_tcp",
+			}},
+		},
+	}
+	seedEgressProfile(t, store, storage.EgressProfileRow{ID: profileID, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true, Revision: 20})
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Delete(t.Context(), "edge-a", 1)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if row := l4StoreAgentByID(t, store, "relay-a"); row.DesiredRevision <= 10 {
+		t.Fatalf("relay-a DesiredRevision = %d, want bumped above current revision 10", row.DesiredRevision)
+	}
+}
+
 func TestL4RuleServiceCreateRejectsTCPUnsupportedEgressProfileType(t *testing.T) {
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 24, Name: "bogus", Type: "bogus", Enabled: true})

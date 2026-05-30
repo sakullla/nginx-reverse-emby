@@ -45,3 +45,12 @@ func restoreAgentRowsBestEffort(ctx context.Context, store agentRollbackStore, r
 		_ = store.SaveAgent(ctx, row)
 	}
 }
+
+func restoreAgentRows(ctx context.Context, store agentRollbackStore, rows []storage.AgentRow) error {
+	for _, row := range rows {
+		if err := store.SaveAgent(ctx, row); err != nil {
+			return err
+		}
+	}
+	return nil
+}

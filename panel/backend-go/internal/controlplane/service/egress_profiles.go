@@ -218,8 +218,12 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 		return EgressProfile{}, err
 	}
 	rollbackPostSave := func(err error) (EgressProfile, error) {
-		_ = s.store.SaveEgressProfiles(ctx, rows)
-		restoreAgentRowsBestEffort(ctx, s.store, agentRollbackRows)
+		if rollbackErr := s.store.SaveEgressProfiles(ctx, rows); rollbackErr != nil {
+			return EgressProfile{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+		}
+		if rollbackErr := restoreAgentRows(ctx, s.store, agentRollbackRows); rollbackErr != nil {
+			return EgressProfile{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+		}
 		return EgressProfile{}, err
 	}
 	if err := s.bumpRemoteDesiredRevisions(ctx, affectedAgentIDs, profile.Revision); err != nil {

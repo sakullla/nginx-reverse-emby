@@ -608,6 +608,44 @@ func TestEgressProfileServiceUpdateRestoresAgentRevisionsWhenPartialBumpFails(t 
 	}
 }
 
+func TestEgressProfileServiceUpdateReportsRollbackFailure(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID:              "edge-a",
+		Name:            "edge-a",
+		DesiredRevision: 50,
+		CurrentRevision: 50,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewEgressProfileService(store)
+	profile := createTestEgressProfile(t, svc)
+	if err := store.SaveHTTPRules(t.Context(), "edge-a", []storage.HTTPRuleRow{{
+		ID:              51,
+		AgentID:         "edge-a",
+		FrontendURL:     "http://edge.example.com",
+		BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+		EgressProfileID: &profile.ID,
+		Enabled:         true,
+		Revision:        2,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	failingStore := &failingSaveAgentEgressProfileStore{
+		SQLiteStore:           store,
+		saveAgentErrs:         []error{errors.New("save agent failed")},
+		saveEgressProfileErrs: []error{nil, errors.New("rollback profiles failed")},
+	}
+	failingSvc := NewEgressProfileService(failingStore)
+	_, err := failingSvc.Update(t.Context(), profile.ID, EgressProfileInput{
+		ProxyURL: stringPtrEgress("socks5://127.0.0.1:2080"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "rollback failed") || !strings.Contains(err.Error(), "rollback profiles failed") {
+		t.Fatalf("Update() error = %v, want rollback failure detail", err)
+	}
+}
+
 func TestEgressProfileServiceUpdateTriggersLocalApplyWhenLocalExecutorUsesProfile(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
@@ -918,7 +956,8 @@ func newEgressProfileTestStore(t *testing.T) *storage.SQLiteStore {
 
 type failingSaveAgentEgressProfileStore struct {
 	*storage.SQLiteStore
-	saveAgentErrs []error
+	saveAgentErrs         []error
+	saveEgressProfileErrs []error
 }
 
 func (s *failingSaveAgentEgressProfileStore) SaveAgent(ctx context.Context, row storage.AgentRow) error {
@@ -926,6 +965,13 @@ func (s *failingSaveAgentEgressProfileStore) SaveAgent(ctx context.Context, row 
 		return err
 	}
 	return s.SQLiteStore.SaveAgent(ctx, row)
+}
+
+func (s *failingSaveAgentEgressProfileStore) SaveEgressProfiles(ctx context.Context, rows []storage.EgressProfileRow) error {
+	if err := popRuleStoreError(&s.saveEgressProfileErrs); err != nil {
+		return err
+	}
+	return s.SQLiteStore.SaveEgressProfiles(ctx, rows)
 }
 
 func createTestEgressProfile(t *testing.T, svc *egressProfileService) EgressProfile {

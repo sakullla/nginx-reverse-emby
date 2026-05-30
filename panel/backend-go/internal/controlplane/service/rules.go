@@ -182,7 +182,12 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
-	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...))
+	egressExecutorAgentIDs, egressExecutorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedID, rule.RelayLayers, rule.EgressProfileID, rule.Revision)
+	if err != nil {
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append(append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...), egressExecutorAgentIDs...)))
 	if err != nil {
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
@@ -240,6 +245,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		return rollbackPostSave(err)
 	}
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
+		return rollbackPostSave(err)
+	}
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
 		return rollbackPostSave(err)
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
@@ -352,7 +360,18 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 			return HTTPRule{}, err
 		}
 	}
-	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...))
+	egressExecutorAgentIDs, egressExecutorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedID, rule.RelayLayers, rule.EgressProfileID, rule.Revision)
+	if err != nil {
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
+		rollbackDefaultWireGuard()
+		return HTTPRule{}, err
+	}
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append(append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...), egressExecutorAgentIDs...)))
 	if err != nil {
 		if certRowsChanged {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
@@ -392,6 +411,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		return rollbackPostSave(err)
 	}
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
+		return rollbackPostSave(err)
+	}
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
 		return rollbackPostSave(err)
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
@@ -440,7 +462,11 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	if err != nil {
 		return HTTPRule{}, err
 	}
-	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, []string{resolvedID})
+	egressExecutorAgentIDs, err := egressProfileExecutorAgentIDsForMutation(ctx, s.store, resolvedID, deleted.RelayLayers, deleted.EgressProfileID)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append([]string{resolvedID}, egressExecutorAgentIDs...)))
 	if err != nil {
 		return HTTPRule{}, err
 	}
@@ -475,6 +501,9 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	}
 	nextRevision := allocator.AllocateRevisionForAgent(resolvedID, deleted.Revision)
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
+		return rollbackPostSave(err)
+	}
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, nextRevision); err != nil {
 		return rollbackPostSave(err)
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
@@ -1019,6 +1048,74 @@ func ensureEgressProfileExecutorsSupportCapability(ctx context.Context, cfg conf
 		}
 	}
 	return nil
+}
+
+type egressProfileScheduleStore interface {
+	egressProfileLookupStore
+	relayChainLookupStore
+}
+
+func egressProfileScheduleTargets(ctx context.Context, store egressProfileScheduleStore, ruleAgentID string, relayLayers [][]int, egressProfileID *int, ruleRevision int) ([]string, int, error) {
+	executors, err := egressProfileExecutorAgentIDsForMutation(ctx, store, ruleAgentID, relayLayers, egressProfileID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(executors) == 0 {
+		return nil, ruleRevision, nil
+	}
+	profile, err := getEnabledEgressProfile(ctx, store, *egressProfileID)
+	if err != nil {
+		return nil, 0, err
+	}
+	return executors, maxInt(ruleRevision, profile.Revision), nil
+}
+
+func egressProfileExecutorAgentIDsForMutation(ctx context.Context, store relayChainLookupStore, ruleAgentID string, relayLayers [][]int, egressProfileID *int) ([]string, error) {
+	if egressProfileID == nil || *egressProfileID <= 0 {
+		return nil, nil
+	}
+	executors, err := egressProfileExecutorAgentIDsForRule(ctx, store, ruleAgentID, relayLayers)
+	if err != nil {
+		return nil, err
+	}
+	return agentIDsExcept(executors, ruleAgentID), nil
+}
+
+func agentIDsExcept(agentIDs []string, excluded string) []string {
+	excluded = strings.TrimSpace(excluded)
+	out := make([]string, 0, len(agentIDs))
+	seen := map[string]struct{}{}
+	for _, agentID := range agentIDs {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" || agentID == excluded {
+			continue
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func uniqueAgentIDs(agentIDs []string) []string {
+	out := make([]string, 0, len(agentIDs))
+	seen := map[string]struct{}{}
+	for _, agentID := range agentIDs {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			continue
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func egressProfileExecutorAgentIDsForRule(ctx context.Context, store relayChainLookupStore, ruleAgentID string, relayLayers [][]int) ([]string, error) {
