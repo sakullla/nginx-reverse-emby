@@ -176,6 +176,11 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 			return EgressProfile{}, err
 		}
 	}
+	if profile.Enabled {
+		if err := s.validateProfileReferences(ctx, profile); err != nil {
+			return EgressProfile{}, err
+		}
+	}
 
 	nextRows := append([]storage.EgressProfileRow(nil), rows...)
 	nextRows[targetIndex] = egressProfileToRow(profile)
@@ -234,6 +239,69 @@ func (s *egressProfileService) ensureProfileNotReferenced(ctx context.Context, p
 		}
 	}
 	return nil
+}
+
+func (s *egressProfileService) validateProfileReferences(ctx context.Context, profile EgressProfile) error {
+	references, err := s.store.EgressProfileReferences(ctx, profile.ID)
+	if err != nil {
+		return err
+	}
+	for _, reference := range references {
+		switch reference.Kind {
+		case "http":
+			row, ok, err := s.referencedHTTPRule(ctx, reference)
+			if err != nil {
+				return err
+			}
+			if !ok || !row.Enabled {
+				continue
+			}
+			if !egressProfileSupportsHTTP(profile) {
+				return fmt.Errorf("%w: egress profile %d does not support referenced HTTP rule %d", ErrInvalidArgument, profile.ID, reference.ID)
+			}
+		case "l4":
+			row, ok, err := s.referencedL4Rule(ctx, reference)
+			if err != nil {
+				return err
+			}
+			if !ok || !row.Enabled {
+				continue
+			}
+			if !egressProfileSupportsL4(profile) {
+				return fmt.Errorf("%w: egress profile %d does not support referenced l4 rule %d", ErrInvalidArgument, profile.ID, reference.ID)
+			}
+			if strings.EqualFold(row.Protocol, "udp") && strings.EqualFold(profile.Type, "http") {
+				return fmt.Errorf("%w: UDP l4 rule %d cannot use HTTP egress profile %d", ErrInvalidArgument, reference.ID, profile.ID)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *egressProfileService) referencedHTTPRule(ctx context.Context, reference storage.EgressProfileReference) (storage.HTTPRuleRow, bool, error) {
+	rows, err := s.store.ListHTTPRules(ctx, reference.AgentID)
+	if err != nil {
+		return storage.HTTPRuleRow{}, false, err
+	}
+	for _, row := range rows {
+		if row.ID == reference.ID {
+			return row, true, nil
+		}
+	}
+	return storage.HTTPRuleRow{}, false, nil
+}
+
+func (s *egressProfileService) referencedL4Rule(ctx context.Context, reference storage.EgressProfileReference) (storage.L4RuleRow, bool, error) {
+	rows, err := s.store.ListL4Rules(ctx, reference.AgentID)
+	if err != nil {
+		return storage.L4RuleRow{}, false, err
+	}
+	for _, row := range rows {
+		if row.ID == reference.ID {
+			return row, true, nil
+		}
+	}
+	return storage.L4RuleRow{}, false, nil
 }
 
 func normalizeEgressProfileInput(input EgressProfileInput, fallback EgressProfile, suggestedID int) (EgressProfile, error) {

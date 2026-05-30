@@ -395,6 +395,45 @@ func TestEgressProfileServiceUpdateRejectsDisablingReferencedProfile(t *testing.
 	}
 }
 
+func TestEgressProfileServiceUpdateRejectsHTTPTypeWhenReferencedByEnabledUDPL4Rule(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	svc := NewEgressProfileService(store)
+	profile := createTestEgressProfile(t, svc)
+	if err := store.SaveL4Rules(t.Context(), "local", []storage.L4RuleRow{{
+		ID:              42,
+		AgentID:         "local",
+		Name:            "udp l4",
+		Protocol:        "udp",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      5353,
+		BackendsJSON:    `[{"host":"127.0.0.1","port":53}]`,
+		EgressProfileID: &profile.ID,
+		Enabled:         true,
+		Revision:        1,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	_, err := svc.Update(t.Context(), profile.ID, EgressProfileInput{
+		Type:     stringPtrEgress("http"),
+		ProxyURL: stringPtrEgress("http://127.0.0.1:8080"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v, want ErrInvalidArgument", err)
+	}
+	if !strings.Contains(err.Error(), "UDP") || !strings.Contains(err.Error(), "l4 rule 42") {
+		t.Fatalf("Update() error = %v, want UDP l4 rule reference", err)
+	}
+
+	got, err := svc.Get(t.Context(), profile.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Type != "socks" || got.ProxyURL != "socks5://127.0.0.1:1080" {
+		t.Fatalf("profile after rejected type change = %+v, want original socks profile", got)
+	}
+}
+
 func TestEgressProfileServiceUpdateRejectsMismatchedBodyIDAndPreservesProfile(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
