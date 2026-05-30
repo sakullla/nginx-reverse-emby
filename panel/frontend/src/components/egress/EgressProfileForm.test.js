@@ -79,4 +79,43 @@ describe('EgressProfileForm', () => {
       }
     })
   })
+
+  it('preserves existing WireGuard peer fields when editing', async () => {
+    const wrapper = mountForm({
+      id: 42,
+      name: 'wg exit',
+      type: 'wireguard',
+      enabled: true,
+      wireguard_config: {
+        private_key: 'xxxxx',
+        addresses: ['10.42.0.2/32'],
+        peers: [{
+          public_key: 'peer-public',
+          endpoint: '127.0.0.1:51820',
+          allowed_ips: ['0.0.0.0/0'],
+          preshared_key: 'xxxxx',
+          reserved: [1, 2, 3],
+          persistent_keepalive_seconds: 25
+        }]
+      }
+    })
+
+    await inputByName(wrapper, 'name').setValue('wg exit renamed')
+    await wrapper.get('form').trigger('submit')
+
+    expect(wrapper.emitted('submit')[0][0]).toMatchObject({
+      name: 'wg exit renamed',
+      type: 'wireguard',
+      wireguard_config: {
+        peers: [{
+          public_key: 'peer-public',
+          endpoint: '127.0.0.1:51820',
+          allowed_ips: ['0.0.0.0/0'],
+          preshared_key: 'xxxxx',
+          reserved: [1, 2, 3],
+          persistent_keepalive_seconds: 25
+        }]
+      }
+    })
+  })
 })

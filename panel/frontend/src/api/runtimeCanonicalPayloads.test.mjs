@@ -96,7 +96,7 @@ describe('runtime canonical rule payloads', () => {
       const createPayload = JSON.parse(requests[0].data)
       const updatePayload = JSON.parse(requests[1].data)
       expect(createPayload.egress_profile_id).toBe(17)
-      expect(updatePayload).not.toHaveProperty('egress_profile_id')
+      expect(updatePayload.egress_profile_id).toBe(0)
     } finally {
       api.defaults.adapter = originalAdapter
     }

@@ -1099,6 +1099,8 @@ async function handleSubmit() {
     }
     if (selectedEgressProfileID.value != null) {
       payload.egress_profile_id = selectedEgressProfileID.value
+    } else if (isEdit.value && Number(form.value.egress_profile_id) === 0) {
+      payload.egress_profile_id = 0
     }
 
     if (isEdit.value) {

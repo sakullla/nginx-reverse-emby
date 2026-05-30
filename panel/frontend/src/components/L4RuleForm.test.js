@@ -174,6 +174,30 @@ describe('L4RuleForm egress profile and relay path', () => {
     expect(payload).not.toHaveProperty('wireguard_egress_uri')
   })
 
+  it('sends explicit clear value when direct egress is selected while editing', async () => {
+    const wrapper = mountEditForm({
+      id: 10,
+      protocol: 'tcp',
+      listen_host: '0.0.0.0',
+      listen_port: 9443,
+      listen_mode: 'tcp',
+      egress_profile_id: 32,
+      backends: [{ host: '127.0.0.1', port: 443 }]
+    })
+
+    await flushPromises()
+    await switchTab(wrapper, '协议与监听')
+    await wrapper.get('select[name="egress-profile"]').setValue('0')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
+      id: 10,
+      egress_profile_id: 0
+    })
+  })
+
   it('requires a selected profile for WireGuard transparent inbound rules', async () => {
     const wrapper = mountForm()
 

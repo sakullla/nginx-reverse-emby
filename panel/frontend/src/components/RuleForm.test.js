@@ -59,6 +59,18 @@ function mountForm() {
   })
 }
 
+function mountEditForm(initialData) {
+  return mount(RuleForm, {
+    props: { agentId: 'local', initialData },
+    global: {
+      stubs: {
+        RouterLink: true,
+        RelayChainInput: true
+      }
+    }
+  })
+}
+
 describe('RuleForm WireGuard entry', () => {
   beforeEach(() => {
     mocks.createMutateAsync.mockReset()
@@ -121,5 +133,25 @@ describe('RuleForm WireGuard entry', () => {
 
     expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
     expect(mocks.createMutateAsync.mock.calls[0][0]).not.toHaveProperty('egress_profile_id')
+  })
+
+  it('sends explicit clear value when direct egress is selected while editing', async () => {
+    const wrapper = mountEditForm({
+      id: 9,
+      frontend_url: 'https://app.example.test',
+      backends: [{ url: 'http://origin.example.test:8096' }],
+      egress_profile_id: 17,
+      enabled: true
+    })
+
+    await wrapper.get('select[name="egress-profile"]').setValue('0')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
+      id: 9,
+      egress_profile_id: 0
+    })
   })
 })
