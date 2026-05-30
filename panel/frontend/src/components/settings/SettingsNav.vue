@@ -23,6 +23,7 @@ defineEmits(['update:activeTab'])
 
 const tabs = [
   { id: 'general', icon: '⚙️', label: '通用' },
+  { id: 'egress', icon: '↗', label: 'Egress Profiles' },
   { id: 'data', icon: '💾', label: '数据管理' },
   { id: 'about', icon: 'ℹ️', label: '关于' }
 ]
