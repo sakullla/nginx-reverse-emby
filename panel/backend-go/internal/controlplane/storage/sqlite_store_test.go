@@ -5919,6 +5919,57 @@ func TestStoreListWireGuardProfilesReturnsEmptySliceWhenWireGuardDisabled(t *tes
 	}
 }
 
+func TestStoreSaveEmptyWireGuardProfilesNoopsWhenWireGuardDisabled(t *testing.T) {
+	store, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            t.TempDir(),
+		LocalAgentID:        "local",
+		TrafficStatsEnabled: true,
+		WireGuardEnabled:    false,
+		WireGuardExplicit:   true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveWireGuardProfiles(t.Context(), "local", nil); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(nil) error = %v", err)
+	}
+	if err := store.SaveWireGuardProfiles(t.Context(), "local", []WireGuardProfileRow{}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles(empty) error = %v", err)
+	}
+}
+
+func TestStoreSaveNonEmptyWireGuardProfilesFailsWhenWireGuardDisabled(t *testing.T) {
+	store, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            t.TempDir(),
+		LocalAgentID:        "local",
+		TrafficStatsEnabled: true,
+		WireGuardEnabled:    false,
+		WireGuardExplicit:   true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	err = store.SaveWireGuardProfiles(t.Context(), "local", []WireGuardProfileRow{{
+		ID:         1,
+		Name:       "disabled write",
+		PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		Enabled:    true,
+		TagsJSON:   `[]`,
+		PeersJSON:  `[]`,
+		DNSJSON:    `[]`,
+		Revision:   1,
+	}})
+	if err == nil {
+		t.Fatal("SaveWireGuardProfiles(non-empty) error = nil, want disabled error")
+	}
+}
+
 func TestStoreBootstrapBumpsAgentRevisionsForWireGuardSnapshotCleanupOnce(t *testing.T) {
 	dataRoot := t.TempDir()
 
