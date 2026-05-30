@@ -8,6 +8,7 @@
       <SettingsNav v-model:activeTab="activeTab" />
       <div class="settings-content">
         <SettingsGeneral v-if="activeTab === 'general'" />
+        <EgressProfilesPage v-else-if="activeTab === 'egress'" />
         <SettingsDataMgmt v-else-if="activeTab === 'data'" />
         <SettingsAbout v-else-if="activeTab === 'about'" />
       </div>
@@ -21,6 +22,7 @@ import SettingsNav from '../components/settings/SettingsNav.vue'
 import SettingsGeneral from '../components/settings/SettingsGeneral.vue'
 import SettingsDataMgmt from '../components/settings/SettingsDataMgmt.vue'
 import SettingsAbout from '../components/settings/SettingsAbout.vue'
+import EgressProfilesPage from './EgressProfilesPage.vue'
 
 const activeTab = ref('general')
 </script>

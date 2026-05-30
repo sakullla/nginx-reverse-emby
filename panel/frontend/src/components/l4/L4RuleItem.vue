@@ -6,7 +6,7 @@
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ rule.id }}</BaseBadge>
       <BaseBadge :tone="protoTone" shape="square" mono>{{ rule.protocol?.toUpperCase() }}</BaseBadge>
-      <BaseBadge :tone="listenModeTone" shape="square" mono>{{ listenModeLabel }}</BaseBadge>
+      <BaseBadge v-if="listenModeLabel" :tone="listenModeTone" shape="square" mono>{{ listenModeLabel }}</BaseBadge>
       <BaseBadge :tone="statusTone" dot>{{ statusLabel }}</BaseBadge>
     </template>
     <template #header-right>
@@ -134,10 +134,9 @@ const protoTone = computed(() => {
 
 const listenModeLabel = computed(() => {
   const mode = String(props.rule?.listen_mode || '').toLowerCase()
-  const proto = String(props.rule?.protocol || '').toLowerCase()
   if (mode === 'proxy') return '代理'
   if (mode === 'wireguard') return 'WG'
-  return proto === 'udp' ? 'UDP转发' : 'TCP转发'
+  return ''
 })
 
 const listenModeTone = computed(() => {

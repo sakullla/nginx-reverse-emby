@@ -711,6 +711,9 @@ func (s *GormStore) SaveRelayListeners(ctx context.Context, agentID string, list
 
 func (s *GormStore) SaveWireGuardProfiles(ctx context.Context, agentID string, profiles []WireGuardProfileRow) error {
 	if !s.wireGuard {
+		if len(profiles) == 0 {
+			return nil
+		}
 		return fmt.Errorf("wireguard disabled")
 	}
 	if agentID == "" {
