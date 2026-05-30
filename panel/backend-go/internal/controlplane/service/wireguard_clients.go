@@ -77,6 +77,9 @@ func (s *wireGuardClientService) SetLocalApplyTrigger(trigger func(context.Conte
 }
 
 func (s *wireGuardClientService) ListClients(ctx context.Context, agentID string, profileID int) ([]WireGuardClient, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return nil, ErrWireGuardDisabled
+	}
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -96,6 +99,9 @@ func (s *wireGuardClientService) ListClients(ctx context.Context, agentID string
 }
 
 func (s *wireGuardClientService) CreateClient(ctx context.Context, agentID string, profileID int, input WireGuardClientInput) (WireGuardClient, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return WireGuardClient{}, ErrWireGuardDisabled
+	}
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardClient{}, err
@@ -194,6 +200,9 @@ func (s *wireGuardClientService) CreateClient(ctx context.Context, agentID strin
 }
 
 func (s *wireGuardClientService) DeleteClient(ctx context.Context, agentID string, profileID int, clientID int) (WireGuardClient, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return WireGuardClient{}, ErrWireGuardDisabled
+	}
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardClient{}, err
@@ -245,6 +254,9 @@ func (s *wireGuardClientService) DeleteClient(ctx context.Context, agentID strin
 }
 
 func (s *wireGuardClientService) UpdateClient(ctx context.Context, agentID string, profileID int, clientID int, input WireGuardClientInput) (WireGuardClient, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return WireGuardClient{}, ErrWireGuardDisabled
+	}
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return WireGuardClient{}, err
@@ -330,6 +342,9 @@ func (s *wireGuardClientService) UpdateClient(ctx context.Context, agentID strin
 }
 
 func (s *wireGuardClientService) ClientConfig(ctx context.Context, agentID string, profileID int, clientID int) (string, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return "", ErrWireGuardDisabled
+	}
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return "", err
@@ -400,6 +415,9 @@ func (s *wireGuardClientService) ClientConfig(ctx context.Context, agentID strin
 }
 
 func (s *wireGuardClientService) ClientURI(ctx context.Context, agentID string, profileID int, clientID int, reserved []byte) (string, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return "", ErrWireGuardDisabled
+	}
 	resolvedID, err := s.profileService.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return "", err

@@ -36,6 +36,8 @@ type Config struct {
 	DatabaseDriver                    string
 	DatabaseDSN                       string
 	TrafficStatsEnabled               bool
+	WireGuardEnabled                  bool
+	WireGuardExplicit                 bool
 	Timezone                          string
 	EnableLocalAgent                  bool
 	LocalAgentID                      string
@@ -49,6 +51,8 @@ type Config struct {
 	LocalAgentRelayTimeouts           RelayTimeoutConfig
 	LocalAgentTrafficStatsEnabled     bool
 	LocalAgentTrafficStatsExplicit    bool
+	LocalAgentWireGuardEnabled        bool
+	LocalAgentWireGuardExplicit       bool
 	TrafficCleanupInterval            time.Duration
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
@@ -93,6 +97,7 @@ func Default() Config {
 		PublicAgentAssetsDir: defaultPublicAssetsDir,
 		DatabaseDriver:       defaultDatabaseDriver,
 		TrafficStatsEnabled:  true,
+		WireGuardEnabled:     true,
 		Timezone:             "UTC",
 		EnableLocalAgent:     defaultEnableLocalAgent,
 		LocalAgentID:         defaultLocalAgentID,
@@ -121,6 +126,7 @@ func Default() Config {
 			IdleTimeout:      2 * time.Minute,
 		},
 		LocalAgentTrafficStatsEnabled:   true,
+		LocalAgentWireGuardEnabled:      true,
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
 		WireGuardAutoAddressPools:       append([]string(nil), defaultWireGuardAutoAddressPools...),
@@ -221,6 +227,16 @@ func LoadFromEnv() (Config, error) {
 		cfg.TrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsExplicit = true
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_WIREGUARD_ENABLED")); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_WIREGUARD_ENABLED: %w", err)
+		}
+		cfg.WireGuardEnabled = enabled
+		cfg.WireGuardExplicit = true
+		cfg.LocalAgentWireGuardEnabled = enabled
+		cfg.LocalAgentWireGuardExplicit = true
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_TIMEZONE")); val != "" {
 		if _, err := time.LoadLocation(val); err != nil {
@@ -408,6 +424,14 @@ func validateWireGuardAutoAddressPools(pools []string) error {
 		}
 	}
 	return nil
+}
+
+func (c Config) WireGuardModuleEnabled() bool {
+	return c.WireGuardEnabled || !c.WireGuardExplicit
+}
+
+func (c Config) LocalAgentWireGuardModuleEnabled() bool {
+	return c.LocalAgentWireGuardEnabled || !c.LocalAgentWireGuardExplicit
 }
 
 func firstEnv(keys ...string) string {

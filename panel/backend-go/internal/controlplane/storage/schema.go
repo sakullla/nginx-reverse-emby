@@ -17,19 +17,26 @@ const wireGuardAgentLocalSnapshotMarkerKey = "migration.wireguard_snapshots_agen
 
 type SchemaOptions struct {
 	TrafficStatsEnabled    bool
+	WireGuardEnabled       *bool
 	SQLiteLegacyMigrations bool
 }
 
-func SchemaOptionsForDriver(driver string, trafficStatsEnabled bool) SchemaOptions {
+func SchemaOptionsForDriver(driver string, trafficStatsEnabled bool, wireGuardEnabled ...bool) SchemaOptions {
 	driver = strings.ToLower(strings.TrimSpace(driver))
+	wgEnabled := true
+	if len(wireGuardEnabled) > 0 {
+		wgEnabled = wireGuardEnabled[0]
+	}
 	return SchemaOptions{
 		TrafficStatsEnabled:    trafficStatsEnabled,
+		WireGuardEnabled:       &wgEnabled,
 		SQLiteLegacyMigrations: driver == "" || driver == "sqlite",
 	}
 }
 
 func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) error {
 	tx := db.WithContext(ctx)
+	wireGuardEnabled := schemaWireGuardEnabled(options)
 
 	if options.SQLiteLegacyMigrations {
 		if err := cleanupSQLiteLegacyLocalAgentState(ctx, db); err != nil {
@@ -45,15 +52,22 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&HTTPRuleRow{},
 		&L4RuleRow{},
 		&RelayListenerRow{},
-		&WireGuardProfileRow{},
 		&EgressProfileRow{},
-		&WireGuardClientRow{},
 		&ManagedCertificateRow{},
 		&LocalAgentStateRow{},
 		&VersionPolicyRow{},
 		&MetaRow{},
 	); err != nil {
 		return err
+	}
+
+	if wireGuardEnabled {
+		if err := tx.AutoMigrate(
+			&WireGuardProfileRow{},
+			&WireGuardClientRow{},
+		); err != nil {
+			return err
+		}
 	}
 
 	if options.TrafficStatsEnabled {
@@ -71,7 +85,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	}
 
 	if options.SQLiteLegacyMigrations {
-		if err := bootstrapSQLiteLegacySchema(ctx, db); err != nil {
+		if err := bootstrapSQLiteLegacySchema(ctx, db, wireGuardEnabled); err != nil {
 			return err
 		}
 	}
@@ -80,8 +94,10 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		return err
 	}
 
-	if err := markWireGuardSnapshotsAgentLocal(ctx, db); err != nil {
-		return err
+	if wireGuardEnabled {
+		if err := markWireGuardSnapshotsAgentLocal(ctx, db); err != nil {
+			return err
+		}
 	}
 
 	return tx.
@@ -90,6 +106,13 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func schemaWireGuardEnabled(options SchemaOptions) bool {
+	if options.WireGuardEnabled == nil {
+		return true
+	}
+	return *options.WireGuardEnabled
 }
 
 func markWireGuardSnapshotsAgentLocal(ctx context.Context, db *gorm.DB) error {
@@ -162,7 +185,7 @@ func createSQLiteEgressProfilesTable(ctx context.Context, db *gorm.DB) error {
 	)`).Error
 }
 
-func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
+func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB, wireGuardEnabled bool) error {
 	tx := db.WithContext(ctx)
 
 	requiredIndexes := []struct {
@@ -172,8 +195,18 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		{model: &HTTPRuleRow{}, name: "idx_rules_agent"},
 		{model: &L4RuleRow{}, name: "idx_l4_rules_agent"},
 		{model: &RelayListenerRow{}, name: "idx_relay_listeners_agent"},
-		{model: &WireGuardProfileRow{}, name: "idx_wireguard_profiles_agent"},
-		{model: &WireGuardClientRow{}, name: "idx_wireguard_clients_agent_profile"},
+	}
+	if wireGuardEnabled {
+		requiredIndexes = append(requiredIndexes,
+			struct {
+				model any
+				name  string
+			}{model: &WireGuardProfileRow{}, name: "idx_wireguard_profiles_agent"},
+			struct {
+				model any
+				name  string
+			}{model: &WireGuardClientRow{}, name: "idx_wireguard_clients_agent_profile"},
+		)
 	}
 	for _, index := range requiredIndexes {
 		if tx.Migrator().HasIndex(index.model, index.name) {
@@ -240,19 +273,21 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 
-	wireGuardProfileColumnMigrations := []struct {
-		column string
-		sql    string
-	}{
-		{column: "public_endpoint", sql: `ALTER TABLE wireguard_profiles ADD COLUMN public_endpoint TEXT NOT NULL DEFAULT ''`},
-		{column: "bind_addresses", sql: `ALTER TABLE wireguard_profiles ADD COLUMN bind_addresses TEXT NOT NULL DEFAULT '[]'`},
-	}
-	for _, migration := range wireGuardProfileColumnMigrations {
-		if tx.Migrator().HasColumn(&WireGuardProfileRow{}, migration.column) {
-			continue
+	if wireGuardEnabled {
+		wireGuardProfileColumnMigrations := []struct {
+			column string
+			sql    string
+		}{
+			{column: "public_endpoint", sql: `ALTER TABLE wireguard_profiles ADD COLUMN public_endpoint TEXT NOT NULL DEFAULT ''`},
+			{column: "bind_addresses", sql: `ALTER TABLE wireguard_profiles ADD COLUMN bind_addresses TEXT NOT NULL DEFAULT '[]'`},
 		}
-		if err := tx.Exec(migration.sql).Error; err != nil {
-			return err
+		for _, migration := range wireGuardProfileColumnMigrations {
+			if tx.Migrator().HasColumn(&WireGuardProfileRow{}, migration.column) {
+				continue
+			}
+			if err := tx.Exec(migration.sql).Error; err != nil {
+				return err
+			}
 		}
 	}
 
@@ -332,8 +367,12 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE relay_listeners SET transport_mode = 'tls_tcp' WHERE transport_mode IS NULL OR trim(transport_mode) = ''`,
 		`UPDATE relay_listeners SET allow_transport_fallback = 1 WHERE allow_transport_fallback IS NULL`,
 		`UPDATE relay_listeners SET obfs_mode = 'off' WHERE obfs_mode IS NULL OR trim(obfs_mode) = ''`,
-		`UPDATE wireguard_profiles SET public_endpoint = '' WHERE public_endpoint IS NULL`,
-		`UPDATE wireguard_profiles SET bind_addresses = '[]' WHERE bind_addresses IS NULL OR trim(bind_addresses) = ''`,
+	}
+	if wireGuardEnabled {
+		normalizationStatements = append(normalizationStatements,
+			`UPDATE wireguard_profiles SET public_endpoint = '' WHERE public_endpoint IS NULL`,
+			`UPDATE wireguard_profiles SET bind_addresses = '[]' WHERE bind_addresses IS NULL OR trim(bind_addresses) = ''`,
+		)
 	}
 	for _, stmt := range normalizationStatements {
 		if err := tx.Exec(stmt).Error; err != nil {

@@ -1028,6 +1028,9 @@ func resolveAgentCapabilitiesForStore(ctx context.Context, cfg config.Config, st
 }
 
 func ensureAgentSupportsWireGuardCapability(ctx context.Context, cfg config.Config, store agentCapabilityStore, agentID string) error {
+	if !cfg.WireGuardModuleEnabled() {
+		return ErrWireGuardDisabled
+	}
 	_, name, capabilities, err := resolveAgentCapabilitiesForStore(ctx, cfg, store, agentID)
 	if err != nil {
 		return err

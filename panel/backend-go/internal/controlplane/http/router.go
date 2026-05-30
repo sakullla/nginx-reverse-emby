@@ -149,9 +149,13 @@ type unavailableTrafficService struct{}
 
 type unavailableEgressProfileService struct{}
 
-type unavailableWireGuardProfileService struct{}
+type unavailableWireGuardProfileService struct {
+	disabled bool
+}
 
-type unavailableWireGuardClientService struct{}
+type unavailableWireGuardClientService struct {
+	disabled bool
+}
 
 func (unavailableBackupService) Export(context.Context) ([]byte, string, error) {
 	return nil, "", fmt.Errorf("backup service unavailable")
@@ -229,44 +233,58 @@ func (unavailableEgressProfileService) Delete(context.Context, int) (service.Egr
 	return service.EgressProfile{}, fmt.Errorf("egress profile service unavailable")
 }
 
-func (unavailableWireGuardProfileService) List(context.Context, string) ([]service.WireGuardProfile, error) {
-	return nil, fmt.Errorf("wireguard profile service unavailable")
+func (s unavailableWireGuardProfileService) err() error {
+	if s.disabled {
+		return service.ErrWireGuardDisabled
+	}
+	return fmt.Errorf("wireguard profile service unavailable")
 }
 
-func (unavailableWireGuardProfileService) Create(context.Context, string, service.WireGuardProfileInput) (service.WireGuardProfile, error) {
-	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
+func (s unavailableWireGuardProfileService) List(context.Context, string) ([]service.WireGuardProfile, error) {
+	return nil, s.err()
 }
 
-func (unavailableWireGuardProfileService) Update(context.Context, string, int, service.WireGuardProfileInput) (service.WireGuardProfile, error) {
-	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
+func (s unavailableWireGuardProfileService) Create(context.Context, string, service.WireGuardProfileInput) (service.WireGuardProfile, error) {
+	return service.WireGuardProfile{}, s.err()
 }
 
-func (unavailableWireGuardProfileService) Delete(context.Context, string, int) (service.WireGuardProfile, error) {
-	return service.WireGuardProfile{}, fmt.Errorf("wireguard profile service unavailable")
+func (s unavailableWireGuardProfileService) Update(context.Context, string, int, service.WireGuardProfileInput) (service.WireGuardProfile, error) {
+	return service.WireGuardProfile{}, s.err()
 }
 
-func (unavailableWireGuardClientService) ListClients(context.Context, string, int) ([]service.WireGuardClient, error) {
-	return nil, fmt.Errorf("wireguard client service unavailable")
+func (s unavailableWireGuardProfileService) Delete(context.Context, string, int) (service.WireGuardProfile, error) {
+	return service.WireGuardProfile{}, s.err()
 }
 
-func (unavailableWireGuardClientService) CreateClient(context.Context, string, int, service.WireGuardClientInput) (service.WireGuardClient, error) {
-	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
+func (s unavailableWireGuardClientService) err() error {
+	if s.disabled {
+		return service.ErrWireGuardDisabled
+	}
+	return fmt.Errorf("wireguard client service unavailable")
 }
 
-func (unavailableWireGuardClientService) UpdateClient(context.Context, string, int, int, service.WireGuardClientInput) (service.WireGuardClient, error) {
-	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
+func (s unavailableWireGuardClientService) ListClients(context.Context, string, int) ([]service.WireGuardClient, error) {
+	return nil, s.err()
 }
 
-func (unavailableWireGuardClientService) DeleteClient(context.Context, string, int, int) (service.WireGuardClient, error) {
-	return service.WireGuardClient{}, fmt.Errorf("wireguard client service unavailable")
+func (s unavailableWireGuardClientService) CreateClient(context.Context, string, int, service.WireGuardClientInput) (service.WireGuardClient, error) {
+	return service.WireGuardClient{}, s.err()
 }
 
-func (unavailableWireGuardClientService) ClientConfig(context.Context, string, int, int) (string, error) {
-	return "", fmt.Errorf("wireguard client service unavailable")
+func (s unavailableWireGuardClientService) UpdateClient(context.Context, string, int, int, service.WireGuardClientInput) (service.WireGuardClient, error) {
+	return service.WireGuardClient{}, s.err()
 }
 
-func (unavailableWireGuardClientService) ClientURI(context.Context, string, int, int, []byte) (string, error) {
-	return "", fmt.Errorf("wireguard client service unavailable")
+func (s unavailableWireGuardClientService) DeleteClient(context.Context, string, int, int) (service.WireGuardClient, error) {
+	return service.WireGuardClient{}, s.err()
+}
+
+func (s unavailableWireGuardClientService) ClientConfig(context.Context, string, int, int) (string, error) {
+	return "", s.err()
+}
+
+func (s unavailableWireGuardClientService) ClientURI(context.Context, string, int, int, []byte) (string, error) {
+	return "", s.err()
 }
 
 func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
@@ -406,10 +424,19 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 			d.EgressProfileService = unavailableEgressProfileService{}
 		}
 		if d.WireGuardProfileService == nil && d.hasCoreServices() {
-			d.WireGuardProfileService = unavailableWireGuardProfileService{}
+			d.WireGuardProfileService = unavailableWireGuardProfileService{disabled: !d.Config.WireGuardModuleEnabled()}
 		}
 		if d.WireGuardClientService == nil && d.hasCoreServices() {
-			d.WireGuardClientService = unavailableWireGuardClientService{}
+			d.WireGuardClientService = unavailableWireGuardClientService{disabled: !d.Config.WireGuardModuleEnabled()}
+		}
+	}
+
+	if !d.Config.WireGuardModuleEnabled() {
+		if d.WireGuardProfileService == nil {
+			d.WireGuardProfileService = unavailableWireGuardProfileService{disabled: true}
+		}
+		if d.WireGuardClientService == nil {
+			d.WireGuardClientService = unavailableWireGuardClientService{disabled: true}
 		}
 	}
 
@@ -450,10 +477,18 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.RelayListenerService = service.NewRelayListenerService(d.Config, store)
 	}
 	if d.WireGuardProfileService == nil {
-		d.WireGuardProfileService = service.NewWireGuardProfileService(d.Config, store)
+		if d.Config.WireGuardModuleEnabled() {
+			d.WireGuardProfileService = service.NewWireGuardProfileService(d.Config, store)
+		} else {
+			d.WireGuardProfileService = unavailableWireGuardProfileService{disabled: true}
+		}
 	}
 	if d.WireGuardClientService == nil {
-		d.WireGuardClientService = service.NewWireGuardClientService(d.Config, store)
+		if d.Config.WireGuardModuleEnabled() {
+			d.WireGuardClientService = service.NewWireGuardClientService(d.Config, store)
+		} else {
+			d.WireGuardClientService = unavailableWireGuardClientService{disabled: true}
+		}
 	}
 	if d.CertificateService == nil {
 		d.CertificateService = service.NewCertificateService(d.Config, store)
@@ -503,6 +538,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusNotFound, trafficStatsDisabledPayload()
 	case errors.Is(err, service.ErrTrafficStatsDisabled):
 		return http.StatusNotFound, trafficStatsDisabledPayload()
+	case errors.Is(err, service.ErrWireGuardDisabled):
+		return http.StatusNotFound, wireGuardDisabledPayload()
 	case errors.Is(err, service.ErrAgentUnauthorized):
 		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
 	case errors.Is(err, service.ErrAgentNotFound):
@@ -536,5 +573,12 @@ func trafficStatsDisabledPayload() map[string]any {
 	return map[string]any{
 		"error": service.ErrTrafficStatsDisabled.Error(),
 		"code":  service.ErrCodeTrafficStatsDisabled,
+	}
+}
+
+func wireGuardDisabledPayload() map[string]any {
+	return map[string]any{
+		"error": service.ErrWireGuardDisabled.Error(),
+		"code":  service.ErrCodeWireGuardDisabled,
 	}
 }

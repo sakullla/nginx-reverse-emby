@@ -2,7 +2,9 @@ package relay
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
+	"time"
 )
 
 func (s *Server) acceptLoop(ln net.Listener, listener Listener) {
@@ -14,6 +16,10 @@ func (s *Server) acceptLoop(ln net.Listener, listener Listener) {
 			if s.ctx.Err() != nil {
 				return
 			}
+			if !isTemporaryAcceptError(err) {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 
@@ -24,6 +30,11 @@ func (s *Server) acceptLoop(ln net.Listener, listener Listener) {
 			s.handleConn(rawConn, listener)
 		}(conn)
 	}
+}
+
+func isTemporaryAcceptError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Temporary()
 }
 
 func (s *Server) handleConn(rawConn net.Conn, listener Listener) {

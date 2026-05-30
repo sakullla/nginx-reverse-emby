@@ -22,6 +22,27 @@ func TestTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
 	}
 }
 
+func TestWireGuardSchemaDisabledSkipsWireGuardTables(t *testing.T) {
+	db := openTrafficTestGormDB(t)
+
+	if err := BootstrapSchema(context.Background(), db, SchemaOptions{TrafficStatsEnabled: true, WireGuardEnabled: testBoolPtr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	if db.Migrator().HasTable(&WireGuardProfileRow{}) {
+		t.Fatal("wireguard profile table exists while module disabled")
+	}
+	if db.Migrator().HasTable(&WireGuardClientRow{}) {
+		t.Fatal("wireguard client table exists while module disabled")
+	}
+	if !db.Migrator().HasTable(&AgentTrafficPolicyRow{}) {
+		t.Fatal("traffic policy table missing while traffic stats enabled")
+	}
+}
+
+func testBoolPtr(value bool) *bool {
+	return &value
+}
+
 func TestTrafficPolicyDefaults(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 

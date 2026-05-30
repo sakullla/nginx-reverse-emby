@@ -285,6 +285,50 @@ func TestLoadFromEnvParsesDatabaseConfig(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvWireGuardEnabledDefaultsTrue(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "panel")
+	t.Setenv("NRE_REGISTER_TOKEN", "register")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.WireGuardEnabled {
+		t.Fatal("WireGuardEnabled = false, want true")
+	}
+}
+
+func TestLoadFromEnvParsesWireGuardEnabledFalse(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "panel")
+	t.Setenv("NRE_REGISTER_TOKEN", "register")
+	t.Setenv("NRE_WIREGUARD_ENABLED", "false")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.WireGuardEnabled {
+		t.Fatal("WireGuardEnabled = true, want false")
+	}
+	if cfg.LocalAgentWireGuardEnabled {
+		t.Fatal("LocalAgentWireGuardEnabled = true, want false")
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidWireGuardEnabled(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "panel")
+	t.Setenv("NRE_REGISTER_TOKEN", "register")
+	t.Setenv("NRE_WIREGUARD_ENABLED", "maybe")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid NRE_WIREGUARD_ENABLED error")
+	}
+	if !strings.Contains(err.Error(), "NRE_WIREGUARD_ENABLED") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadFromEnvParsesTrafficCleanupInterval(t *testing.T) {
 	t.Setenv("NRE_PANEL_TOKEN", "panel")
 	t.Setenv("NRE_REGISTER_TOKEN", "register")

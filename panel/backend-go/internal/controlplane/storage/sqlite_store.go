@@ -424,6 +424,9 @@ func (s *GormStore) ListRelayListeners(ctx context.Context, agentID string) ([]R
 }
 
 func (s *GormStore) ListWireGuardProfiles(ctx context.Context, agentID string) ([]WireGuardProfileRow, error) {
+	if !s.wireGuard {
+		return []WireGuardProfileRow{}, nil
+	}
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -493,6 +496,9 @@ func (s *GormStore) EgressProfileReferences(ctx context.Context, profileID int) 
 }
 
 func (s *GormStore) ListWireGuardClients(ctx context.Context, agentID string, profileID int) ([]WireGuardClientRow, error) {
+	if !s.wireGuard {
+		return []WireGuardClientRow{}, nil
+	}
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -704,6 +710,9 @@ func (s *GormStore) SaveRelayListeners(ctx context.Context, agentID string, list
 }
 
 func (s *GormStore) SaveWireGuardProfiles(ctx context.Context, agentID string, profiles []WireGuardProfileRow) error {
+	if !s.wireGuard {
+		return fmt.Errorf("wireguard disabled")
+	}
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -732,6 +741,9 @@ func (s *GormStore) SaveEgressProfiles(ctx context.Context, profiles []EgressPro
 }
 
 func (s *GormStore) SaveWireGuardClients(ctx context.Context, agentID string, profileID int, clients []WireGuardClientRow) error {
+	if !s.wireGuard {
+		return fmt.Errorf("wireguard disabled")
+	}
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -745,6 +757,9 @@ func (s *GormStore) SaveWireGuardClients(ctx context.Context, agentID string, pr
 }
 
 func (s *GormStore) SaveWireGuardClientProfileMutation(ctx context.Context, agentID string, profileID int, clients []WireGuardClientRow, profiles []WireGuardProfileRow) error {
+	if !s.wireGuard {
+		return fmt.Errorf("wireguard disabled")
+	}
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -761,6 +776,9 @@ func (s *GormStore) SaveWireGuardClientProfileMutation(ctx context.Context, agen
 }
 
 func (s *GormStore) MutateWireGuardClientProfile(ctx context.Context, agentID string, profileID int, mutate func(WireGuardClientProfileMutation) (WireGuardClientProfileMutation, error)) error {
+	if !s.wireGuard {
+		return fmt.Errorf("wireguard disabled")
+	}
 	if agentID == "" {
 		agentID = s.localAgentID
 	}

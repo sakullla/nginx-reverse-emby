@@ -129,6 +129,35 @@ func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T
 	}
 }
 
+func TestWireGuardProfilesDisabledReturnsNotFound(t *testing.T) {
+	deps, cleanup := newWireGuardHTTPTestDependencies(t)
+	defer cleanup()
+	deps.Config.WireGuardEnabled = false
+	deps.Config.WireGuardExplicit = true
+	deps.WireGuardProfileService = nil
+	deps.WireGuardClientService = nil
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/agents/local/wireguard-profiles", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("GET wireguard-profiles disabled = %d, body=%s", resp.Code, resp.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["error"] != "wireguard disabled" || payload["code"] != service.ErrCodeWireGuardDisabled {
+		t.Fatalf("payload = %+v", payload)
+	}
+}
+
 func TestRouterWireGuardProfilesCreateAndListRedactsSecrets(t *testing.T) {
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
@@ -683,12 +712,24 @@ func TestWireGuardProfileClientPatchMissingReturnsNotFound(t *testing.T) {
 func newWireGuardHTTPTestRouter(t *testing.T) (http.Handler, func()) {
 	t.Helper()
 
+	deps, cleanup := newWireGuardHTTPTestDependencies(t)
+	router, err := NewRouter(deps)
+	if err != nil {
+		cleanup()
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	return router, cleanup
+}
+
+func newWireGuardHTTPTestDependencies(t *testing.T) (Dependencies, func()) {
+	t.Helper()
+
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
-	cfg := config.Config{PanelToken: "secret", LocalAgentID: "local", EnableLocalAgent: true}
-	router, err := NewRouter(Dependencies{
+	cfg := config.Config{PanelToken: "secret", LocalAgentID: "local", EnableLocalAgent: true, WireGuardEnabled: true, WireGuardExplicit: true}
+	return Dependencies{
 		Config:                  cfg,
 		SystemService:           fakeSystemService{},
 		AgentService:            fakeAgentService{},
@@ -702,11 +743,7 @@ func newWireGuardHTTPTestRouter(t *testing.T) (http.Handler, func()) {
 		TrafficService:          unavailableTrafficService{},
 		WireGuardProfileService: service.NewWireGuardProfileService(cfg, store),
 		WireGuardClientService:  service.NewWireGuardClientService(cfg, store),
-	})
-	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
-	}
-	return router, func() { _ = store.Close() }
+	}, func() { _ = store.Close() }
 }
 
 func createWireGuardHTTPClientProfile(t *testing.T, router http.Handler, prefix string, listenPort int) service.WireGuardProfile {

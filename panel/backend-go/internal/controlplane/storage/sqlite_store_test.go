@@ -5816,6 +5816,109 @@ func TestStoreLoadAgentSnapshotUsesWireGuardProfileRevision(t *testing.T) {
 	}
 }
 
+func TestStoreLoadAgentSnapshotSendsEmptyWireGuardProfilesWhenWireGuardDisabled(t *testing.T) {
+	dataRoot := t.TempDir()
+
+	enabledStore, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            dataRoot,
+		LocalAgentID:        "local",
+		TrafficStatsEnabled: true,
+		WireGuardEnabled:    true,
+		WireGuardExplicit:   true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore(enabled) error = %v", err)
+	}
+	if err := enabledStore.SaveAgent(t.Context(), AgentRow{
+		ID:               "remote-wg-disabled",
+		Name:             "remote-wg-disabled",
+		AgentToken:       "token-remote-wg-disabled",
+		DesiredRevision:  5,
+		CurrentRevision:  4,
+		CapabilitiesJSON: `["wireguard"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := enabledStore.SaveWireGuardProfiles(t.Context(), "remote-wg-disabled", []WireGuardProfileRow{{
+		ID:             9,
+		AgentID:        "remote-wg-disabled",
+		Name:           "stale runtime",
+		Mode:           "generic_wireguard",
+		PrivateKey:     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		ListenPort:     51820,
+		PublicEndpoint: "wg.example.com:51820",
+		AddressesJSON:  `["10.10.0.1/24"]`,
+		PeersJSON:      `[]`,
+		DNSJSON:        `[]`,
+		MTU:            1420,
+		Enabled:        true,
+		TagsJSON:       `[]`,
+		Revision:       9,
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+	if err := enabledStore.Close(); err != nil {
+		t.Fatalf("Close(enabled) error = %v", err)
+	}
+
+	disabledStore, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            dataRoot,
+		LocalAgentID:        "local",
+		TrafficStatsEnabled: true,
+		WireGuardEnabled:    false,
+		WireGuardExplicit:   true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore(disabled) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = disabledStore.Close()
+	})
+
+	snapshot, err := disabledStore.LoadAgentSnapshot(t.Context(), "remote-wg-disabled", AgentSnapshotInput{
+		DesiredRevision: 5,
+		CurrentRevision: 4,
+		Platform:        "linux-amd64",
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.WireGuardProfiles == nil {
+		t.Fatal("WireGuardProfiles = nil, want explicit empty slice")
+	}
+	if len(snapshot.WireGuardProfiles) != 0 {
+		t.Fatalf("WireGuardProfiles = %+v, want cleared", snapshot.WireGuardProfiles)
+	}
+}
+
+func TestStoreListWireGuardProfilesReturnsEmptySliceWhenWireGuardDisabled(t *testing.T) {
+	store, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            t.TempDir(),
+		LocalAgentID:        "local",
+		TrafficStatsEnabled: true,
+		WireGuardEnabled:    false,
+		WireGuardExplicit:   true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	profiles, err := store.ListWireGuardProfiles(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListWireGuardProfiles() error = %v", err)
+	}
+	if profiles == nil {
+		t.Fatal("ListWireGuardProfiles() = nil, want explicit empty slice")
+	}
+	if len(profiles) != 0 {
+		t.Fatalf("ListWireGuardProfiles() = %+v, want empty", profiles)
+	}
+}
+
 func TestStoreBootstrapBumpsAgentRevisionsForWireGuardSnapshotCleanupOnce(t *testing.T) {
 	dataRoot := t.TempDir()
 

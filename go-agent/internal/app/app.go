@@ -103,7 +103,11 @@ type App struct {
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles"}
+	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"}
+	if cfg.WireGuardModuleEnabled() {
+		capabilities = append(capabilities, "wireguard")
+	}
+	capabilities = append(capabilities, "egress_profiles")
 	if cfg.HTTP3Enabled {
 		capabilities = append(capabilities, "http3_ingress")
 	}
@@ -133,6 +137,9 @@ func normalizeConstructorConfig(cfg Config) Config {
 	}
 	if !cfg.TrafficStatsExplicit {
 		cfg.TrafficStatsEnabled = defaults.TrafficStatsEnabled
+	}
+	if !cfg.WireGuardExplicit {
+		cfg.WireGuardEnabled = defaults.WireGuardEnabled
 	}
 
 	return cfg

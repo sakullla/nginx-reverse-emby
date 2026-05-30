@@ -50,6 +50,8 @@ type Config struct {
 	HTTP3Enabled            bool
 	TrafficStatsEnabled     bool
 	TrafficStatsExplicit    bool
+	WireGuardEnabled        bool
+	WireGuardExplicit       bool
 	HTTPTransport           HTTPTransportConfig
 	HTTPResilience          HTTPResilienceConfig
 	BackendFailures         BackendFailureConfig
@@ -133,6 +135,8 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 		HTTP3Enabled:         cfg.HTTP3Enabled,
 		TrafficStatsEnabled:  cfg.TrafficStatsEnabled,
 		TrafficStatsExplicit: cfg.TrafficStatsExplicit,
+		WireGuardEnabled:     cfg.WireGuardEnabled,
+		WireGuardExplicit:    cfg.WireGuardExplicit,
 		HTTPTransport: config.HTTPTransportConfig{
 			DialTimeout:           cfg.HTTPTransport.DialTimeout,
 			TLSHandshakeTimeout:   cfg.HTTPTransport.TLSHandshakeTimeout,

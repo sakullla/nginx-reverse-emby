@@ -53,6 +53,10 @@ func (s *Server) tcpAcceptLoop(ln net.Listener, rule model.L4Rule) {
 			if s.ctx.Err() != nil {
 				return
 			}
+			if !isTemporaryAcceptError(err) {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 
@@ -63,6 +67,11 @@ func (s *Server) tcpAcceptLoop(ln net.Listener, rule model.L4Rule) {
 			s.handleTCPConnection(c, rule)
 		}(conn)
 	}
+}
+
+func isTemporaryAcceptError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Temporary()
 }
 
 func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {

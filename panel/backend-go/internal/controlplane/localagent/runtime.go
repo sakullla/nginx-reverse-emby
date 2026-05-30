@@ -46,6 +46,8 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 			HTTP3Enabled:         cfg.LocalAgentHTTP3Enabled,
 			TrafficStatsEnabled:  cfg.LocalAgentTrafficStatsEnabled,
 			TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit,
+			WireGuardEnabled:     cfg.LocalAgentWireGuardModuleEnabled(),
+			WireGuardExplicit:    true,
 			HTTPTransport: goagentembedded.HTTPTransportConfig{
 				DialTimeout:           cfg.LocalAgentHTTPTransport.DialTimeout,
 				TLSHandshakeTimeout:   cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout,
