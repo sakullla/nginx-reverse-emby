@@ -49,6 +49,7 @@ func parseExportOptions(include string) service.BackupExportOptions {
 		L4Rules:           parts["l4_rules"],
 		WireGuardProfiles: parts["wireguard_profiles"],
 		WireGuardClients:  parts["wireguard_clients"] || parts["wireguard_profiles"],
+		EgressProfiles:    parts["egress_profiles"],
 		RelayListeners:    parts["relay_listeners"],
 		Certificates:      parts["certificates"],
 		VersionPolicies:   parts["version_policies"],
