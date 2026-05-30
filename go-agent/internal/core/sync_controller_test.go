@@ -333,6 +333,94 @@ func TestSyncControllerApplyFailureRollsRuntimeBackAndRecordsCandidateError(t *t
 	}
 }
 
+func TestSyncControllerStartsModulesAfterRuntimeApply(t *testing.T) {
+	st := newSyncControllerStore()
+	rt := agentruntime.New()
+	lifecycle := &syncControllerModuleLifecycle{}
+	controller := &SyncController{
+		Store:      st,
+		Runtime:    rt,
+		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 8}},
+		Modules:    lifecycle,
+	}
+
+	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(lifecycle.startedRevisions, []int64{8}) {
+		t.Fatalf("started module revisions = %+v, want [8]", lifecycle.startedRevisions)
+	}
+}
+
+func TestSyncControllerModuleStartFailureRollsRuntimeBackAndRecordsCandidateError(t *testing.T) {
+	st := newSyncControllerStore()
+	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
+	if err := st.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
+	}
+	rt := agentruntime.New()
+	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	startErr := errors.New("module start failed")
+	controller := &SyncController{
+		Store:      st,
+		Runtime:    rt,
+		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
+		Modules:    &syncControllerModuleLifecycle{startErr: startErr},
+	}
+
+	err := controller.PerformSync(context.Background(), agentsync.SyncRequest{})
+	if !errors.Is(err, startErr) {
+		t.Fatalf("PerformSync() error = %v, want %v", err, startErr)
+	}
+	if active := rt.ActiveSnapshot(); !reflect.DeepEqual(active, previous) {
+		t.Fatalf("active snapshot = %+v, want previous %+v", active, previous)
+	}
+	state, err := st.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState() error = %v", err)
+	}
+	if state.Metadata["last_apply_revision"] != "9" || state.Metadata["last_apply_status"] != "error" {
+		t.Fatalf("apply metadata = %+v, want module start failure at revision 9", state.Metadata)
+	}
+}
+
+func TestSyncControllerReportsModuleRestoreFailureDuringRollback(t *testing.T) {
+	st := newSyncControllerStore()
+	st.failOnAppliedSave = 2
+	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
+	if err := st.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
+	}
+	rt := agentruntime.New()
+	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	restoreErr := errors.New("module restore failed")
+	controller := &SyncController{
+		Store:      st,
+		Runtime:    rt,
+		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
+		Modules: &syncControllerModuleLifecycle{
+			startErrsByRevision: map[int64]error{7: restoreErr},
+		},
+	}
+
+	err := controller.PerformSync(context.Background(), agentsync.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "applied persistence fail") || !errors.Is(err, restoreErr) {
+		t.Fatalf("PerformSync() error = %v, want applied persistence and module restore errors", err)
+	}
+	state, err := st.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState() error = %v", err)
+	}
+	if !strings.Contains(state.Metadata["last_sync_error"], "module restore failed") {
+		t.Fatalf("last_sync_error = %q, want module restore failure context", state.Metadata["last_sync_error"])
+	}
+}
+
 func TestSyncControllerAppliedSnapshotSaveFailureRollsRuntimeBackAndRecordsPersistedError(t *testing.T) {
 	st := newSyncControllerStore()
 	st.failOnAppliedSave = 2
@@ -354,7 +442,7 @@ func TestSyncControllerAppliedSnapshotSaveFailureRollsRuntimeBackAndRecordsPersi
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || err.Error() != "applied persistence fail" {
+	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || !strings.Contains(err.Error(), "applied persistence fail") {
 		t.Fatalf("PerformSync() error = %v, want applied persistence fail", err)
 	}
 
@@ -369,7 +457,7 @@ func TestSyncControllerAppliedSnapshotSaveFailureRollsRuntimeBackAndRecordsPersi
 	if state.CurrentRevision != 7 || state.Metadata["current_revision"] != "7" || state.Metadata["foo"] != "bar" {
 		t.Fatalf("runtime state changed unexpectedly: %+v", state)
 	}
-	if state.Metadata["last_sync_error"] != "applied persistence fail" ||
+	if !strings.Contains(state.Metadata["last_sync_error"], "applied persistence fail") ||
 		state.Metadata["last_apply_revision"] != "9" ||
 		state.Metadata["last_apply_status"] != "error" {
 		t.Fatalf("error metadata = %+v", state.Metadata)
@@ -403,8 +491,8 @@ func TestSyncControllerAppliedSnapshotSaveFailureRecordsPersistedErrorWhenRollba
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || err.Error() != "applied persistence fail" {
-		t.Fatalf("PerformSync() error = %v, want applied persistence fail", err)
+	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || !strings.Contains(err.Error(), "applied persistence fail") || !errors.Is(err, rollbackErr) {
+		t.Fatalf("PerformSync() error = %v, want applied persistence and rollback errors", err)
 	}
 
 	applied, _ := st.LoadAppliedSnapshot()
@@ -415,7 +503,8 @@ func TestSyncControllerAppliedSnapshotSaveFailureRecordsPersistedErrorWhenRollba
 	if state.CurrentRevision != 7 || state.Metadata["current_revision"] != "7" || state.Metadata["foo"] != "bar" {
 		t.Fatalf("runtime state advanced unexpectedly: %+v", state)
 	}
-	if state.Metadata["last_sync_error"] != "applied persistence fail" ||
+	if !strings.Contains(state.Metadata["last_sync_error"], "applied persistence fail") ||
+		!strings.Contains(state.Metadata["last_sync_error"], "rollback failed") ||
 		state.Metadata["last_apply_revision"] != "9" ||
 		state.Metadata["last_apply_status"] != "error" {
 		t.Fatalf("error metadata = %+v", state.Metadata)
@@ -1011,6 +1100,22 @@ type syncControllerCertificateReporter struct {
 
 func (r syncControllerCertificateReporter) ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error) {
 	return append([]model.ManagedCertificateReport(nil), r.reports...), r.err
+}
+
+type syncControllerModuleLifecycle struct {
+	startedRevisions    []int64
+	startErr            error
+	startErrsByRevision map[int64]error
+}
+
+func (l *syncControllerModuleLifecycle) StartAll(_ context.Context, snapshot model.Snapshot) error {
+	l.startedRevisions = append(l.startedRevisions, snapshot.Revision)
+	if l.startErrsByRevision != nil {
+		if err := l.startErrsByRevision[snapshot.Revision]; err != nil {
+			return err
+		}
+	}
+	return l.startErr
 }
 
 type syncControllerStore struct {

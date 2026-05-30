@@ -168,22 +168,6 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := agentsync.NewClient(agentsync.ClientConfig{
-		MasterURL:      cfg.MasterURL,
-		AgentToken:     cfg.AgentToken,
-		AgentID:        cfg.AgentID,
-		AgentName:      cfg.AgentName,
-		Capabilities:   advertisedCapabilities(cfg),
-		CurrentVersion: cfg.CurrentVersion,
-		Platform:       stdruntime.GOOS + "-" + stdruntime.GOARCH,
-		RuntimePackage: model.RuntimePackage{
-			Version:  cfg.CurrentVersion,
-			Platform: stdruntime.GOOS,
-			Arch:     stdruntime.GOARCH,
-			SHA256:   cfg.RuntimePackageSHA256,
-		},
-		HTTPTransport: cfg.HTTPTransport,
-	}, nil)
 	certManager, err := certs.NewManager(cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -205,13 +189,30 @@ func New(cfg Config) (*App, error) {
 		_ = wireGuardRuntime.Close()
 		return nil, err
 	}
+	capabilities := core.CapabilityNames(cfg, moduleRegistry)
+	client := agentsync.NewClient(agentsync.ClientConfig{
+		MasterURL:      cfg.MasterURL,
+		AgentToken:     cfg.AgentToken,
+		AgentID:        cfg.AgentID,
+		AgentName:      cfg.AgentName,
+		Capabilities:   capabilities,
+		CurrentVersion: cfg.CurrentVersion,
+		Platform:       stdruntime.GOOS + "-" + stdruntime.GOARCH,
+		RuntimePackage: model.RuntimePackage{
+			Version:  cfg.CurrentVersion,
+			Platform: stdruntime.GOOS,
+			Arch:     stdruntime.GOARCH,
+			SHA256:   cfg.RuntimePackageSHA256,
+		},
+		HTTPTransport: cfg.HTTPTransport,
+	}, nil)
 	taskClient := agenttask.NewClient(agenttask.ClientConfig{
 		MasterURL:     cfg.MasterURL,
 		AgentToken:    cfg.AgentToken,
 		AgentID:       cfg.AgentID,
 		AgentName:     cfg.AgentName,
 		Version:       cfg.CurrentVersion,
-		Capabilities:  advertisedCapabilities(cfg),
+		Capabilities:  capabilities,
 		ReconnectWait: time.Second,
 		HTTPTransport: cfg.HTTPTransport,
 		Handler:       diagnosticModule,
@@ -252,9 +253,6 @@ func newAppModuleRegistry(
 	wireGuardRuntime *modulewireguard.Runtime,
 ) (*agentmodule.Registry, error) {
 	registry := agentmodule.NewRegistry()
-	if err := registry.Register(moduletraffic.NewModule()); err != nil {
-		return nil, err
-	}
 	if certModule != nil {
 		if err := registry.Register(certModule); err != nil {
 			return nil, err
@@ -274,6 +272,9 @@ func newAppModuleRegistry(
 		if err := registry.Register(modulewireguard.NewModule(wireGuardRuntime)); err != nil {
 			return nil, err
 		}
+	}
+	if err := registry.Register(moduletraffic.NewModule()); err != nil {
+		return nil, err
 	}
 	return registry, nil
 }
@@ -439,6 +440,12 @@ func (a *App) Run(ctx context.Context) error {
 			log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", hydratedApplied.Revision, err)
 			_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
 		}
+		if err := a.startModules(ctx, hydratedApplied); err != nil {
+			// Preserve startup hydration compatibility: record module startup
+			// errors, then let the first sync attempt recover or fail normally.
+			log.Printf("[agent] startup module lifecycle error at revision %d: %v", hydratedApplied.Revision, err)
+			_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
+		}
 	}
 
 	if err := a.performSync(ctx); err != nil {
@@ -537,9 +544,19 @@ func (a *App) SyncNow(ctx context.Context) error {
 	return a.performSync(ctx)
 }
 
+func (a *App) startModules(ctx context.Context, snapshot Snapshot) error {
+	if a == nil || a.moduleRegistry == nil {
+		return nil
+	}
+	return a.moduleRegistry.StartAll(ctx, snapshot)
+}
+
 func (a *App) closeLocalRuntimes() {
-	if closer, ok := a.certApplier.(certCloser); ok {
-		_ = closer.Close()
+	hasModuleRegistry := a.moduleRegistry != nil
+	if !hasModuleRegistry {
+		if closer, ok := a.certApplier.(certCloser); ok {
+			_ = closer.Close()
+		}
 	}
 	if a.httpApplier != nil {
 		_ = a.httpApplier.Close()
@@ -550,7 +567,11 @@ func (a *App) closeLocalRuntimes() {
 	if a.l4Applier != nil {
 		_ = a.l4Applier.Close()
 	}
-	if a.wireGuardRuntime != nil {
+	if hasModuleRegistry {
+		_ = a.moduleRegistry.StopAll(context.Background())
+		a.moduleRegistry = nil
+		a.wireGuardRuntime = nil
+	} else if a.wireGuardRuntime != nil {
 		_ = a.wireGuardRuntime.Close()
 		a.wireGuardRuntime = nil
 	}

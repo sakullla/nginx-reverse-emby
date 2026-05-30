@@ -12,19 +12,34 @@ type CapabilityRegistry interface {
 }
 
 func CapabilityNames(cfg config.Config, registry CapabilityRegistry) []string {
-	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"}
-	if cfg.WireGuardModuleEnabled() {
-		capabilities = append(capabilities, "wireguard")
+	var capabilities []string
+	seen := make(map[string]struct{})
+	appendCapability := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		capabilities = append(capabilities, name)
 	}
-	capabilities = append(capabilities, "egress_profiles")
+
+	for _, name := range []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"} {
+		appendCapability(name)
+	}
+	if cfg.WireGuardModuleEnabled() {
+		appendCapability("wireguard")
+	}
+	appendCapability("egress_profiles")
 	if cfg.HTTP3Enabled {
-		capabilities = append(capabilities, "http3_ingress")
+		appendCapability("http3_ingress")
 	}
 	if registry != nil {
 		for _, capability := range registry.Capabilities() {
-			name := strings.TrimSpace(capability.Name)
-			if name != "" && capability.Enabled {
-				capabilities = append(capabilities, name)
+			if capability.Enabled {
+				appendCapability(capability.Name)
 			}
 		}
 	}

@@ -75,19 +75,19 @@ func TestNewRegistersModulesWhenDependenciesExist(t *testing.T) {
 			name:              "explicit enabled",
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			wantNames:         []string{"traffic", "certs", "diagnostics", "egress", "wireguard"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "wireguard", "traffic"},
 		},
 		{
 			name:              "implicit default",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: false,
-			wantNames:         []string{"traffic", "certs", "diagnostics", "egress", "wireguard"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "wireguard", "traffic"},
 		},
 		{
 			name:              "explicit disabled",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: true,
-			wantNames:         []string{"traffic", "certs", "diagnostics", "egress"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "traffic"},
 		},
 	}
 
@@ -319,6 +319,30 @@ func (h *recordingModuleDiagnosticHandler) HandleTask(_ context.Context, msg age
 	return h.result, nil
 }
 
+type appLifecycleModule struct {
+	name   string
+	starts []int64
+	stops  int
+}
+
+func (m *appLifecycleModule) Name() string { return m.name }
+
+func (m *appLifecycleModule) Capabilities() []agentmodule.Capability { return nil }
+
+func (m *appLifecycleModule) Health(context.Context) agentmodule.Health {
+	return agentmodule.Health{Status: "healthy"}
+}
+
+func (m *appLifecycleModule) Start(_ context.Context, snapshot model.Snapshot) error {
+	m.starts = append(m.starts, snapshot.Revision)
+	return nil
+}
+
+func (m *appLifecycleModule) Stop(context.Context) error {
+	m.stops++
+	return nil
+}
+
 func TestDiagnoseSnapshotAppliesSnapshotCertificatesBeforeTaskHandling(t *testing.T) {
 	mem := store.NewInMemory()
 	certApplier := &testCertificateApplier{applyErr: errors.New("certificate apply failed")}
@@ -402,21 +426,21 @@ func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing
 			http3Enabled:      false,
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles"},
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "managed_certs", "diagnostics", "traffic_stats"},
 		},
 		{
 			name:              "http3 enabled",
 			http3Enabled:      true,
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress"},
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress", "managed_certs", "diagnostics", "traffic_stats"},
 		},
 		{
 			name:              "wireguard disabled",
 			http3Enabled:      false,
 			wireGuardEnabled:  false,
 			wireGuardExplicit: true,
-			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles"},
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles", "managed_certs", "diagnostics", "traffic_stats"},
 		},
 	}
 
@@ -542,6 +566,47 @@ func TestRunTracksCurrentRevisionFromSuccessfulApplies(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunStartsAndStopsModuleRegistry(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+	applied := Snapshot{DesiredVersion: "stored", Revision: 5}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("sync failed")})
+	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
+	first := &appLifecycleModule{name: "first"}
+	second := &appLifecycleModule{name: "second"}
+	registry := agentmodule.NewRegistry()
+	if err := registry.Register(first); err != nil {
+		t.Fatalf("Register(first) error = %v", err)
+	}
+	if err := registry.Register(second); err != nil {
+		t.Fatalf("Register(second) error = %v", err)
+	}
+	app.moduleRegistry = registry
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForObservedCalls(t, time.Second, func() []int64 {
+		return append([]int64(nil), first.starts...)
+	}, 1, "module start")
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !reflect.DeepEqual(first.starts, []int64{5}) || !reflect.DeepEqual(second.starts, []int64{5}) {
+		t.Fatalf("module starts first=%+v second=%+v, want revision 5", first.starts, second.starts)
+	}
+	if first.stops != 1 || second.stops != 1 {
+		t.Fatalf("module stops first=%d second=%d, want 1 each", first.stops, second.stops)
 	}
 }
 

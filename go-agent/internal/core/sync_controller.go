@@ -52,6 +52,10 @@ type ManagedCertificateReporter interface {
 	ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error)
 }
 
+type ModuleLifecycle interface {
+	StartAll(context.Context, model.Snapshot) error
+}
+
 type SyncController struct {
 	Store                store.Store
 	Runtime              *agentruntime.Runtime
@@ -59,6 +63,7 @@ type SyncController struct {
 	Updater              Updater
 	Traffic              TrafficReporter
 	CertReports          ManagedCertificateReporter
+	Modules              ModuleLifecycle
 	CurrentPackageSHA256 string
 }
 
@@ -141,18 +146,26 @@ func (c *SyncController) PerformSyncPlan(ctx context.Context, plan SyncPlan) err
 	candidateApplied := MergeSnapshotPayload(snapshot, previousApplied)
 	if err := c.Runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
 		log.Printf("[agent] runtime apply error at revision %d: %v", candidateApplied.Revision, err)
-		c.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		return c.recordRuntimeErrorWithRevision(err, candidateApplied.Revision)
+		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
+		return c.recordRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidateApplied.Revision)
+	}
+	if c.Modules != nil {
+		if err := c.Modules.StartAll(ctx, candidateApplied); err != nil {
+			moduleErr := fmt.Errorf("module lifecycle start revision %d: %w", candidateApplied.Revision, err)
+			log.Printf("[agent] module lifecycle error at revision %d: %v", candidateApplied.Revision, err)
+			rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
+			return c.recordRuntimeErrorWithRevision(errors.Join(moduleErr, rollbackErr), candidateApplied.Revision)
+		}
 	}
 	if err := c.Store.SaveAppliedSnapshot(candidateApplied); err != nil {
 		log.Printf("[agent] save applied snapshot error at revision %d: %v", candidateApplied.Revision, err)
-		c.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		return c.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
+		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
+		return c.recordPersistedRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidateApplied.Revision)
 	}
 	if err := c.persistRuntimeState(true); err != nil {
-		c.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		_ = c.Store.SaveAppliedSnapshot(previousApplied)
-		return c.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
+		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
+		restoreErr := c.Store.SaveAppliedSnapshot(previousApplied)
+		return c.recordPersistedRuntimeErrorWithRevision(errors.Join(err, rollbackErr, restoreErr), candidateApplied.Revision)
 	}
 	return nil
 }
@@ -279,11 +292,20 @@ func (c *SyncController) handlePendingUpdate(ctx context.Context, snapshot model
 	return agentupdate.ErrRestartRequested
 }
 
-func (c *SyncController) rollbackRuntime(ctx context.Context, previousApplied, targetApplied model.Snapshot) {
+func (c *SyncController) rollbackRuntime(ctx context.Context, previousApplied, targetApplied model.Snapshot) error {
 	if reflect.DeepEqual(previousApplied, targetApplied) {
-		return
+		return nil
 	}
-	_ = c.Runtime.Rollback(ctx, previousApplied, targetApplied)
+	var errs []error
+	if err := c.Runtime.Rollback(ctx, previousApplied, targetApplied); err != nil {
+		errs = append(errs, fmt.Errorf("runtime rollback: %w", err))
+	}
+	if c.Modules != nil {
+		if err := c.Modules.StartAll(ctx, targetApplied); err != nil {
+			errs = append(errs, fmt.Errorf("module restore revision %d: %w", targetApplied.Revision, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *SyncController) recordRuntimeError(syncErr error) error {
