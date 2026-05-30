@@ -430,6 +430,75 @@ func TestL4RuntimeManagerReusesSharedCacheAcrossReapply(t *testing.T) {
 	}
 }
 
+func TestL4RuntimeManagerHandlesBindConflictFromEquivalentListenHost(t *testing.T) {
+	manager := newL4RuntimeManager()
+	defer manager.Close()
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+
+	initial := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "localhost",
+		ListenPort: listenPort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}
+	if err := manager.Apply(ctx, []model.L4Rule{initial}); err != nil {
+		t.Fatalf("failed to apply initial l4 runtime: %v", err)
+	}
+	waitForPortState(t, listenPort, true)
+	original := manager.server
+
+	next := initial
+	next.ListenHost = "127.0.0.1"
+	if err := manager.Apply(ctx, []model.L4Rule{next}); err != nil {
+		t.Fatalf("equivalent listen host reconfigure failed: %v", err)
+	}
+	if manager.server == nil {
+		t.Fatal("expected l4 server after equivalent listen host reconfigure")
+	}
+	if manager.server == original {
+		t.Fatal("expected l4 server to be rebuilt after equivalent listen host bind conflict")
+	}
+	waitForPortState(t, listenPort, true)
+}
+
+func TestL4RuntimeManagerKeepsPreviousServerOnExternalBindConflict(t *testing.T) {
+	manager := newL4RuntimeManager()
+	defer manager.Close()
+	ctx := context.Background()
+	activePort := pickFreeTCPPort(t)
+
+	initial := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: activePort,
+		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+	}
+	if err := manager.Apply(ctx, []model.L4Rule{initial}); err != nil {
+		t.Fatalf("failed to apply initial l4 runtime: %v", err)
+	}
+	waitForPortState(t, activePort, true)
+	original := manager.server
+
+	occupiedPort := pickFreeTCPPort(t)
+	occupier, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(occupiedPort)))
+	if err != nil {
+		t.Fatalf("failed to occupy external bind-conflict port: %v", err)
+	}
+	defer occupier.Close()
+
+	next := initial
+	next.ListenPort = occupiedPort
+	err = manager.Apply(ctx, []model.L4Rule{next})
+	if err == nil {
+		t.Fatal("expected external bind conflict")
+	}
+	if manager.server != original {
+		t.Fatal("expected previous l4 server to stay active on external bind conflict")
+	}
+	waitForPortState(t, activePort, true)
+}
+
 func TestL4RuntimeManagerAppliesWireGuardProfilesBeforeStartingL4(t *testing.T) {
 	var events []string
 	runtime := &testAppWireGuardRuntime{
@@ -1957,6 +2026,148 @@ func TestRelayRuntimeManagerAppliesWireGuardProfilesWithoutLocalListeners(t *tes
 	}
 }
 
+func TestL4RuntimeManagerReplacesWireGuardTransparentServerWithoutClosingNewListener(t *testing.T) {
+	var current *trackingListener
+	var listeners []*trackingListener
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		return &testAppWireGuardRuntime{
+			onListenTransparentTCP: func(context.Context) (net.Listener, error) {
+				if current == nil || current.closed {
+					current = &trackingListener{}
+					listeners = append(listeners, current)
+				}
+				return current, nil
+			},
+		}, nil
+	})
+	defer shared.Close()
+
+	provider := &testRelayTLSProvider{}
+	manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(provider, Config{AgentID: "local-agent"}, shared, false)
+	defer manager.Close()
+
+	profileID := 9
+	profile := validAppWireGuardProfile(profileID)
+	profile.AgentID = "local-agent"
+	rule := model.L4Rule{
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           0,
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+	}
+	relayListener := model.RelayListener{
+		ID:         51,
+		AgentID:    "relay-agent",
+		Name:       "relay-hop",
+		ListenHost: "127.0.0.1",
+		BindHosts:  []string{"127.0.0.1"},
+		ListenPort: 9443,
+		PublicHost: "relay.example.com",
+		PublicPort: 9443,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: "pin",
+		}},
+	}
+
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(context.Background(), []model.L4Rule{rule}, []model.RelayListener{relayListener}, []model.WireGuardProfile{profile}, nil); err != nil {
+		t.Fatalf("initial ApplyWithRelayWireGuardAndEgressProfiles() error = %v", err)
+	}
+	if len(listeners) != 1 {
+		t.Fatalf("initial transparent listener creations = %d, want 1", len(listeners))
+	}
+	if listeners[0].closed {
+		t.Fatal("initial transparent listener is closed")
+	}
+
+	relayListener.PublicPort = 9444
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(context.Background(), []model.L4Rule{rule}, []model.RelayListener{relayListener}, []model.WireGuardProfile{profile}, nil); err != nil {
+		t.Fatalf("second ApplyWithRelayWireGuardAndEgressProfiles() error = %v", err)
+	}
+
+	if len(listeners) != 2 {
+		t.Fatalf("transparent listener creations = %d, want 2", len(listeners))
+	}
+	if listeners[1].closed {
+		t.Fatal("replacement L4 server listener was closed by the previous server")
+	}
+}
+
+func TestL4RuntimeManagerReplacesWireGuardTransparentUDPServerWithoutClosingNewListener(t *testing.T) {
+	var current *trackingTransparentUDPConn
+	var listeners []*trackingTransparentUDPConn
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+		return &testAppWireGuardRuntime{
+			onListenTransparentUDP: func(context.Context, string) (wireguard.TransparentUDPConn, error) {
+				if current == nil || current.closed {
+					current = &trackingTransparentUDPConn{}
+					listeners = append(listeners, current)
+				}
+				return current, nil
+			},
+		}, nil
+	})
+	defer shared.Close()
+
+	provider := &testRelayTLSProvider{}
+	manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(provider, Config{AgentID: "local-agent"}, shared, false)
+	defer manager.Close()
+
+	profileID := 9
+	profile := validAppWireGuardProfile(profileID)
+	profile.AgentID = "local-agent"
+	rule := model.L4Rule{
+		Protocol:             "udp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           0,
+		ListenMode:           "wireguard",
+		WireGuardProfileID:   &profileID,
+		WireGuardInboundMode: "transparent",
+	}
+	relayListener := model.RelayListener{
+		ID:         51,
+		AgentID:    "relay-agent",
+		Name:       "relay-hop",
+		ListenHost: "127.0.0.1",
+		BindHosts:  []string{"127.0.0.1"},
+		ListenPort: 9443,
+		PublicHost: "relay.example.com",
+		PublicPort: 9443,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: "pin",
+		}},
+	}
+
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(context.Background(), []model.L4Rule{rule}, []model.RelayListener{relayListener}, []model.WireGuardProfile{profile}, nil); err != nil {
+		t.Fatalf("initial ApplyWithRelayWireGuardAndEgressProfiles() error = %v", err)
+	}
+	if len(listeners) != 1 {
+		t.Fatalf("initial transparent UDP listener creations = %d, want 1", len(listeners))
+	}
+	if listeners[0].closed {
+		t.Fatal("initial transparent UDP listener is closed")
+	}
+
+	relayListener.PublicPort = 9444
+	if err := manager.ApplyWithRelayWireGuardAndEgressProfiles(context.Background(), []model.L4Rule{rule}, []model.RelayListener{relayListener}, []model.WireGuardProfile{profile}, nil); err != nil {
+		t.Fatalf("second ApplyWithRelayWireGuardAndEgressProfiles() error = %v", err)
+	}
+
+	if len(listeners) != 2 {
+		t.Fatalf("transparent UDP listener creations = %d, want 2", len(listeners))
+	}
+	if listeners[1].closed {
+		t.Fatal("replacement L4 UDP server listener was closed by the previous server")
+	}
+}
+
 func TestCloneWireGuardProfilesDeepCopiesBindAddresses(t *testing.T) {
 	profiles := []model.WireGuardProfile{validAppWireGuardProfile(9)}
 	profiles[0].BindAddresses = []string{"127.0.0.1"}
@@ -2304,6 +2515,18 @@ func TestBindingKeysOverlapTreatsWildcardHostsAsSamePortOverlap(t *testing.T) {
 			name:  "exact host overlaps",
 			left:  "tcp:" + net.JoinHostPort("127.0.0.1", port),
 			right: "tcp:" + net.JoinHostPort("127.0.0.1", port),
+			want:  true,
+		},
+		{
+			name:  "localhost overlaps loopback ipv4",
+			left:  "tcp:" + net.JoinHostPort("localhost", port),
+			right: "tcp:" + net.JoinHostPort("127.0.0.1", port),
+			want:  true,
+		},
+		{
+			name:  "localhost overlaps loopback ipv6",
+			left:  "tcp:" + net.JoinHostPort("localhost", port),
+			right: "tcp:" + net.JoinHostPort("::1", port),
 			want:  true,
 		},
 		{
@@ -2771,12 +2994,52 @@ func (p *testRelayTLSProvider) TrustedCAPool(_ context.Context, ids []int) (*x50
 	return pool, nil
 }
 
+type trackingListener struct {
+	closed bool
+}
+
+func (l *trackingListener) Accept() (net.Conn, error) {
+	return nil, net.ErrClosed
+}
+
+func (l *trackingListener) Close() error {
+	l.closed = true
+	return nil
+}
+
+func (l *trackingListener) Addr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+type trackingTransparentUDPConn struct {
+	closed bool
+}
+
+func (c *trackingTransparentUDPConn) Close() error {
+	c.closed = true
+	return nil
+}
+
+func (c *trackingTransparentUDPConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{}
+}
+
+func (c *trackingTransparentUDPConn) ReadPacket() (wireguard.TransparentUDPPacket, error) {
+	return wireguard.TransparentUDPPacket{}, net.ErrClosed
+}
+
+func (c *trackingTransparentUDPConn) WritePacket([]byte, *net.UDPAddr, string) error {
+	return nil
+}
+
 type testAppWireGuardRuntime struct {
-	onDialContext func(context.Context, string, string) (net.Conn, error)
-	onListenTCP   func(context.Context, string) (net.Listener, error)
-	onListenUDP   func(context.Context, string) (net.PacketConn, error)
-	onClose       func() error
-	closed        bool
+	onDialContext          func(context.Context, string, string) (net.Conn, error)
+	onListenTCP            func(context.Context, string) (net.Listener, error)
+	onListenTransparentTCP func(context.Context) (net.Listener, error)
+	onListenUDP            func(context.Context, string) (net.PacketConn, error)
+	onListenTransparentUDP func(context.Context, string) (wireguard.TransparentUDPConn, error)
+	onClose                func() error
+	closed                 bool
 }
 
 func (r *testAppWireGuardRuntime) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -2793,7 +3056,10 @@ func (r *testAppWireGuardRuntime) ListenTCP(ctx context.Context, address string)
 	return nil, fmt.Errorf("unexpected wireguard ListenTCP call")
 }
 
-func (r *testAppWireGuardRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
+func (r *testAppWireGuardRuntime) ListenTransparentTCP(ctx context.Context) (net.Listener, error) {
+	if r.onListenTransparentTCP != nil {
+		return r.onListenTransparentTCP(ctx)
+	}
 	return nil, fmt.Errorf("unexpected wireguard ListenTransparentTCP call")
 }
 
@@ -2804,7 +3070,10 @@ func (r *testAppWireGuardRuntime) ListenUDP(ctx context.Context, address string)
 	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
 }
 
-func (r *testAppWireGuardRuntime) ListenTransparentUDP(context.Context, string) (wireguard.TransparentUDPConn, error) {
+func (r *testAppWireGuardRuntime) ListenTransparentUDP(ctx context.Context, address string) (wireguard.TransparentUDPConn, error) {
+	if r.onListenTransparentUDP != nil {
+		return r.onListenTransparentUDP(ctx, address)
+	}
 	return nil, fmt.Errorf("unexpected wireguard ListenTransparentUDP call")
 }
 

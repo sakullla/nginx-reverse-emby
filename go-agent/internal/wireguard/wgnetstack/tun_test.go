@@ -1,13 +1,18 @@
 package wgnetstack
 
 import (
+	"context"
+	"encoding/binary"
+	"io"
 	"net/netip"
 	"reflect"
 	"testing"
 	"time"
 
+	"golang.org/x/net/dns/dnsmessage"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -161,6 +166,134 @@ func TestNetTunDNSCachePrunesExpiredHostsOnInsert(t *testing.T) {
 	if _, ok := tun.dnsCache["new.example.com"]; !ok {
 		t.Fatal("new DNS cache entry was not stored")
 	}
+}
+
+func TestNetExchangeFallsBackToTCPWhenUDPQueryTimesOut(t *testing.T) {
+	_, runtimeNet, _, err := CreateNetTUN(
+		[]netip.Addr{netip.MustParseAddr("10.99.0.1")},
+		[]netip.Addr{netip.MustParseAddr("10.99.0.1")},
+		1420,
+	)
+	if err != nil {
+		t.Fatalf("CreateNetTUN() error = %v", err)
+	}
+	tnet := runtimeNet.(*Net)
+
+	udpConn, err := tnet.ListenUDPAddrPort(netip.MustParseAddrPort("10.99.0.1:53"))
+	if err != nil {
+		t.Fatalf("ListenUDPAddrPort() error = %v", err)
+	}
+	defer udpConn.Close()
+	go func() {
+		buf := make([]byte, 512)
+		_, _, _ = udpConn.ReadFrom(buf)
+	}()
+
+	tcpListener, err := tnet.ListenTCPAddrPort(netip.MustParseAddrPort("10.99.0.1:53"))
+	if err != nil {
+		t.Fatalf("ListenTCPAddrPort() error = %v", err)
+	}
+	defer tcpListener.Close()
+	servedTCP := make(chan struct{}, 1)
+	go serveSingleDNSOverTCP(t, tcpListener, servedTCP)
+
+	name := dnsmessage.MustNewName("example.com.")
+	parser, header, err := tnet.exchange(context.Background(), netip.MustParseAddr("10.99.0.1"), dnsmessage.Question{
+		Name:  name,
+		Type:  dnsmessage.TypeA,
+		Class: dnsmessage.ClassINET,
+	}, 25*time.Millisecond)
+	if err != nil {
+		t.Fatalf("exchange() error = %v", err)
+	}
+	if !header.Response || header.Truncated {
+		t.Fatalf("exchange() header = %+v, want non-truncated response", header)
+	}
+	answerHeader, err := parser.AnswerHeader()
+	if err != nil {
+		t.Fatalf("AnswerHeader() error = %v", err)
+	}
+	if answerHeader.Type != dnsmessage.TypeA {
+		t.Fatalf("answer type = %v, want A", answerHeader.Type)
+	}
+	answer, err := parser.AResource()
+	if err != nil {
+		t.Fatalf("AResource() error = %v", err)
+	}
+	if got, want := answer.A, [4]byte{203, 0, 113, 55}; got != want {
+		t.Fatalf("AResource() = %v, want %v", got, want)
+	}
+	select {
+	case <-servedTCP:
+	case <-time.After(time.Second):
+		t.Fatal("DNS TCP server was not used after UDP timeout")
+	}
+}
+
+func serveSingleDNSOverTCP(t *testing.T, listener *gonet.TCPListener, served chan<- struct{}) {
+	t.Helper()
+
+	conn, err := listener.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	defer func() { served <- struct{}{} }()
+
+	var lengthBuf [2]byte
+	if _, err := io.ReadFull(conn, lengthBuf[:]); err != nil {
+		t.Errorf("read DNS TCP length error = %v", err)
+		return
+	}
+	req := make([]byte, binary.BigEndian.Uint16(lengthBuf[:]))
+	if _, err := io.ReadFull(conn, req); err != nil {
+		t.Errorf("read DNS TCP request error = %v", err)
+		return
+	}
+	resp, err := dnsTCPAResponse(req, [4]byte{203, 0, 113, 55})
+	if err != nil {
+		t.Errorf("build DNS TCP response error = %v", err)
+		return
+	}
+	binary.BigEndian.PutUint16(lengthBuf[:], uint16(len(resp)))
+	if _, err := conn.Write(append(lengthBuf[:], resp...)); err != nil {
+		t.Errorf("write DNS TCP response error = %v", err)
+	}
+}
+
+func dnsTCPAResponse(req []byte, ip [4]byte) ([]byte, error) {
+	var parser dnsmessage.Parser
+	header, err := parser.Start(req)
+	if err != nil {
+		return nil, err
+	}
+	question, err := parser.Question()
+	if err != nil {
+		return nil, err
+	}
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{
+		ID:                 header.ID,
+		Response:           true,
+		RecursionAvailable: true,
+	})
+	if err := builder.StartQuestions(); err != nil {
+		return nil, err
+	}
+	if err := builder.Question(question); err != nil {
+		return nil, err
+	}
+	if err := builder.StartAnswers(); err != nil {
+		return nil, err
+	}
+	if err := builder.AResource(dnsmessage.ResourceHeader{
+		Name:  question.Name,
+		Type:  dnsmessage.TypeA,
+		Class: dnsmessage.ClassINET,
+		TTL:   60,
+	}, dnsmessage.AResource{A: ip}); err != nil {
+		return nil, err
+	}
+	return builder.Finish()
 }
 
 func TestNetTunReadDrainsQueuedPacketBatch(t *testing.T) {

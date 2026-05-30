@@ -1183,6 +1183,39 @@ func TestMultiHopRelayUDPDataFlow(t *testing.T) {
 	assertUDPRelayRoundTrip(t, conn, []byte("multi-hop-udp"))
 }
 
+func TestMultiHopRelayUDPDataFlowWithEarlyWindowMask(t *testing.T) {
+	backendAddr, stopBackend := startUDPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-a-udp-obfs", "pin_only", true, false)
+	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-b-udp-obfs", "pin_only", true, false)
+	listenerA.ObfsMode = RelayObfsModeEarlyWindowV2
+	listenerB.ObfsMode = RelayObfsModeEarlyWindowV2
+	hopA.Listener = listenerA
+	hopB.Listener = listenerB
+
+	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
+	if err != nil {
+		t.Fatalf("failed to start first relay: %v", err)
+	}
+	defer serverA.Close()
+
+	serverB, err := Start(context.Background(), []Listener{listenerB}, provider)
+	if err != nil {
+		t.Fatalf("failed to start second relay: %v", err)
+	}
+	defer serverB.Close()
+
+	conn, err := Dial(context.Background(), "udp", backendAddr, []Hop{hopA, hopB}, provider)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	assertUDPRelayRoundTrip(t, conn, bytes.Repeat([]byte{0x16, 0x03, 0x01, 0x20}, 128))
+}
+
 func TestMultiHopRelayUDPSendsPayloadToFinalHopEgressPeer(t *testing.T) {
 	provider := newFakeTLSMaterialProvider()
 	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-a-udp-egress", "pin_only", true, false)
