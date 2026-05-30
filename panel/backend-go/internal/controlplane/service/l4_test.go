@@ -262,6 +262,73 @@ func TestL4RuleServiceCreateAcceptsUDPSOCKSEgressProfile(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceCreateRejectsEgressProfileWhenRemoteExecutorLacksCapability(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-a",
+			Name:             "Edge A",
+			CapabilitiesJSON: marshalStringArray([]string{"l4"}),
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		relayByAgent:  map[string][]storage.RelayListenerRow{},
+	}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 27, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(t.Context(), "edge-a", L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenPort:      intPtrL4(9000),
+		Backends:        &[]L4Backend{{Host: "127.0.0.1", Port: 9001}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "agent does not support egress profiles") {
+		t.Fatalf("Create() error = %v, want egress profile capability validation", err)
+	}
+}
+
+func TestL4RuleServiceCreateRejectsRelayedEgressProfileWhenFinalHopLacksCapability(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-a",
+			Name:             "Edge A",
+			CapabilitiesJSON: marshalStringArray([]string{"l4", "egress_profiles"}),
+		}, {
+			ID:               "relay-a",
+			Name:             "Relay A",
+			CapabilitiesJSON: marshalStringArray([]string{"relay_quic"}),
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"relay-a": {{
+				ID:            8,
+				AgentID:       "relay-a",
+				Name:          "relay-a",
+				ListenHost:    "127.0.0.1",
+				ListenPort:    9443,
+				PublicHost:    "relay-a.example.test",
+				PublicPort:    9443,
+				Enabled:       true,
+				TransportMode: "tls_tcp",
+			}},
+		},
+	}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 28, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Create(t.Context(), "edge-a", L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenPort:      intPtrL4(9000),
+		Backends:        &[]L4Backend{{Host: "127.0.0.1", Port: 9001}},
+		RelayLayers:     &[][]int{{8}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "Relay A") || !strings.Contains(err.Error(), "egress profiles") {
+		t.Fatalf("Create() error = %v, want relay final-hop egress profile capability validation", err)
+	}
+}
+
 func TestL4RuleServiceCreateRejectsTCPUnsupportedEgressProfileType(t *testing.T) {
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 24, Name: "bogus", Type: "bogus", Enabled: true})

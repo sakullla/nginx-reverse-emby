@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -893,6 +894,11 @@ type agentCapabilityStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 }
 
+type egressProfileCapabilityStore interface {
+	agentCapabilityStore
+	relayChainLookupStore
+}
+
 func resolveAgentCapabilitiesForStore(ctx context.Context, cfg config.Config, store agentCapabilityStore, agentID string) (string, string, []string, error) {
 	resolvedID := strings.TrimSpace(agentID)
 	if resolvedID == "" {
@@ -927,6 +933,51 @@ func ensureAgentSupportsWireGuardCapability(ctx context.Context, cfg config.Conf
 		return fmt.Errorf("%w: agent does not support WireGuard: %s", ErrInvalidArgument, name)
 	}
 	return nil
+}
+
+func ensureAgentSupportsEgressProfilesCapability(ctx context.Context, cfg config.Config, store agentCapabilityStore, agentID string) error {
+	_, name, capabilities, err := resolveAgentCapabilitiesForStore(ctx, cfg, store, agentID)
+	if err != nil {
+		return err
+	}
+	if !agentHasCapability(capabilities, "egress_profiles") {
+		return fmt.Errorf("%w: agent does not support egress profiles: %s", ErrInvalidArgument, name)
+	}
+	return nil
+}
+
+func ensureEgressProfileExecutorsSupportCapability(ctx context.Context, cfg config.Config, store egressProfileCapabilityStore, ruleAgentID string, relayLayers [][]int) error {
+	executors, err := egressProfileExecutorAgentIDsForRule(ctx, store, ruleAgentID, relayLayers)
+	if err != nil {
+		return err
+	}
+	for _, agentID := range executors {
+		if err := ensureAgentSupportsEgressProfilesCapability(ctx, cfg, store, agentID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func egressProfileExecutorAgentIDsForRule(ctx context.Context, store relayChainLookupStore, ruleAgentID string, relayLayers [][]int) ([]string, error) {
+	ruleAgentID = strings.TrimSpace(ruleAgentID)
+	if len(relayLayers) == 0 {
+		if ruleAgentID == "" {
+			return nil, nil
+		}
+		return []string{ruleAgentID}, nil
+	}
+	listeners, err := store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	finalHops := egressProfileFinalHopAgentIDs(relayLayers, listeners)
+	agentIDs := make([]string, 0, len(finalHops))
+	for agentID := range finalHops {
+		agentIDs = append(agentIDs, agentID)
+	}
+	sort.Strings(agentIDs)
+	return agentIDs, nil
 }
 
 func httpRuleInputEnablesWireGuard(input HTTPRuleInput, fallback HTTPRule) bool {
@@ -1047,6 +1098,9 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		}
 		if !egressProfileSupportsHTTP(profile) {
 			return HTTPRule{}, fmt.Errorf("%w: egress profile %d does not support HTTP rules", ErrInvalidArgument, profile.ID)
+		}
+		if err := ensureEgressProfileExecutorsSupportCapability(ctx, s.cfg, s.store, fallback.AgentID, relayLayers); err != nil {
+			return HTTPRule{}, err
 		}
 	}
 

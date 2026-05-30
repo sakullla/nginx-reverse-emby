@@ -103,7 +103,7 @@ type App struct {
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard"}
+	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles"}
 	if cfg.HTTP3Enabled {
 		capabilities = append(capabilities, "http3_ingress")
 	}

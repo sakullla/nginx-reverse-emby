@@ -507,7 +507,7 @@ func TestBackupServiceImportRemapsEgressProfileReferences(t *testing.T) {
 			ID:           "edge-egress",
 			Name:         "edge-egress",
 			AgentToken:   "token-edge-egress",
-			Capabilities: []string{"http_rules", "l4"},
+			Capabilities: []string{"http_rules", "l4", "egress_profiles"},
 		}},
 		EgressProfiles: []BackupEgressProfile{{
 			ID:          sourceProfileID,
@@ -619,7 +619,7 @@ func TestBackupServiceImportMigratesLegacyL4ProxyEgress(t *testing.T) {
 			ID:           "legacy-egress-agent",
 			Name:         "legacy-egress-agent",
 			AgentToken:   "token-legacy-egress",
-			Capabilities: []string{"l4"},
+			Capabilities: []string{"l4", "egress_profiles"},
 		}},
 		L4Rules: []BackupL4Rule{},
 	}

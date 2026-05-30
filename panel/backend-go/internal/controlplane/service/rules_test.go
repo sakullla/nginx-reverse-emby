@@ -265,6 +265,62 @@ func TestRuleServiceCreateAcceptsEnabledSOCKSEgressProfile(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateRejectsEgressProfileWhenRemoteExecutorLacksCapability(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.agents = []storage.AgentRow{{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: marshalStringArray([]string{"http_rules"}),
+	}}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 22, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+
+	_, err := svc.Create(t.Context(), "edge-a", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("http://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "agent does not support egress profiles") {
+		t.Fatalf("Create() error = %v, want egress profile capability validation", err)
+	}
+}
+
+func TestRuleServiceCreateRejectsRelayedEgressProfileWhenFinalHopLacksCapability(t *testing.T) {
+	store := newRuleServiceTestStore(t)
+	store.agents = []storage.AgentRow{{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: marshalStringArray([]string{"http_rules", "egress_profiles"}),
+	}, {
+		ID:               "relay-a",
+		Name:             "Relay A",
+		CapabilitiesJSON: marshalStringArray([]string{"relay_quic"}),
+	}}
+	store.listeners = []storage.RelayListenerRow{{
+		ID:            7,
+		AgentID:       "relay-a",
+		Name:          "relay-a",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    9443,
+		PublicHost:    "relay-a.example.test",
+		PublicPort:    9443,
+		Enabled:       true,
+		TransportMode: "tls_tcp",
+	}}
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 23, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	svc := NewRuleService(testConfig(), store)
+
+	_, err := svc.Create(t.Context(), "edge-a", HTTPRuleInput{
+		FrontendURL:     stringPtrRule("http://media.example.test"),
+		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers:     &[][]int{{7}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "Relay A") || !strings.Contains(err.Error(), "egress profiles") {
+		t.Fatalf("Create() error = %v, want relay final-hop egress profile capability validation", err)
+	}
+}
+
 func TestRuleServiceCreateRejectsUnsupportedEgressProfileType(t *testing.T) {
 	store := newRuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 20, Name: "bogus", Type: "bogus", Enabled: true})
