@@ -608,6 +608,9 @@ func (tnet *Net) exchange(ctx context.Context, server netip.Addr, q dnsmessage.Q
 			} else if err == context.DeadlineExceeded {
 				err = errTimeout
 			}
+			if useUDP && shouldRetryDNSOverTCP(err) {
+				continue
+			}
 			return dnsmessage.Parser{}, dnsmessage.Header{}, err
 		}
 		if err := p.SkipQuestion(); err != dnsmessage.ErrSectionDone {
@@ -619,6 +622,19 @@ func (tnet *Net) exchange(ctx context.Context, server netip.Addr, q dnsmessage.Q
 		return p, h, nil
 	}
 	return dnsmessage.Parser{}, dnsmessage.Header{}, errNoAnswerFromDNSServer
+}
+
+func shouldRetryDNSOverTCP(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, errTimeout) {
+		return true
+	}
+	if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func checkHeader(p *dnsmessage.Parser, h dnsmessage.Header) error {

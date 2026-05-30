@@ -632,30 +632,75 @@ func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(
 	}
 }
 
-func TestNetstackForwardedUDPReplyReusesSourceBoundEndpoint(t *testing.T) {
-	runtime := newTestNetstackRuntime(t)
+func TestNetstackRuntimeTransparentUDPReplyDoesNotCaptureLaterPacketsToSameDestination(t *testing.T) {
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
 	defer runtime.Close()
 
-	conn := newNetstackForwardedUDPConn(runtime.stack)
+	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
+	}
 	defer conn.Close()
 
-	source := "203.0.113.46:18446"
-	first, err := conn.sourceBoundReplyConn(source)
+	firstClient := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40129}
+	targetAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.53"), Port: 53}
+	injectIPv4UDPPacket(t, runtime, udpPacket{
+		src:     netip.MustParseAddr(firstClient.IP.String()),
+		dst:     netip.MustParseAddr(targetAddr.IP.String()),
+		srcPort: uint16(firstClient.Port),
+		dstPort: uint16(targetAddr.Port),
+		payload: []byte("first query"),
+	})
+
+	first, err := readTransparentUDPPacketWithTimeout(conn, time.Second)
 	if err != nil {
-		t.Fatalf("sourceBoundReplyConn(first) error = %v", err)
+		t.Fatalf("ReadPacket(first) error = %v", err)
 	}
-	second, err := conn.sourceBoundReplyConn(source)
+	if first.OriginalDst != targetAddr.String() {
+		t.Fatalf("first OriginalDst = %q, want %q", first.OriginalDst, targetAddr.String())
+	}
+	if err := conn.WritePacket([]byte("first reply"), first.Peer, first.OriginalDst); err != nil {
+		t.Fatalf("WritePacket(first reply) error = %v", err)
+	}
+	_ = readOutboundIPv4UDPPacket(t, runtime)
+
+	secondClient := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40130}
+	injectIPv4UDPPacket(t, runtime, udpPacket{
+		src:     netip.MustParseAddr(secondClient.IP.String()),
+		dst:     netip.MustParseAddr(targetAddr.IP.String()),
+		srcPort: uint16(secondClient.Port),
+		dstPort: uint16(targetAddr.Port),
+		payload: []byte("second query"),
+	})
+
+	second, err := readTransparentUDPPacketWithTimeout(conn, time.Second)
 	if err != nil {
-		t.Fatalf("sourceBoundReplyConn(second) error = %v", err)
+		t.Fatalf("ReadPacket(second) error = %v", err)
 	}
-	if first != second {
-		t.Fatal("sourceBoundReplyConn did not reuse cached endpoint for same source")
+	if got := string(second.Payload); got != "second query" {
+		t.Fatalf("second payload = %q, want second query", got)
 	}
-	conn.mu.Lock()
-	cached := len(conn.sourceConns)
-	conn.mu.Unlock()
-	if cached != 1 {
-		t.Fatalf("cached source endpoints = %d, want 1", cached)
+	if second.OriginalDst != targetAddr.String() {
+		t.Fatalf("second OriginalDst = %q, want %q", second.OriginalDst, targetAddr.String())
+	}
+}
+
+func TestNetstackRuntimeTransparentUDPWriteAfterCloseReturnsClosed(t *testing.T) {
+	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer runtime.Close()
+
+	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	peer := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40131}
+	err = conn.WritePacket([]byte("late reply"), peer, "203.0.113.53:53")
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("WritePacket() error = %v, want net.ErrClosed", err)
 	}
 }
 
@@ -729,6 +774,54 @@ func TestNetstackRuntimeTransparentUDPPortZeroCleansIdleForwardedFlows(t *testin
 	}
 	waitForForwardedUDPConnCount(t, forwarded, 1)
 	waitForForwardedUDPConnCount(t, forwarded, 0)
+}
+
+func TestNetstackRuntimeDNSLookupSendsUDPAfterWarmupFlow(t *testing.T) {
+	tunDevice, tnet, gstack, err := wgnetstack.CreateNetTUN(
+		[]netip.Addr{netip.MustParseAddr("10.99.0.1")},
+		[]netip.Addr{netip.MustParseAddr("1.1.1.1")},
+		1420,
+	)
+	if err != nil {
+		t.Fatalf("CreateNetTUN() error = %v", err)
+	}
+	runtime := newNetstackRuntime(tunDevice, tnet, gstack, nil)
+	defer runtime.Close()
+
+	warmupConn, err := runtime.DialContext(context.Background(), "udp", "1.1.1.1:53")
+	if err != nil {
+		t.Fatalf("warmup DialContext(udp) error = %v", err)
+	}
+	if _, err := warmupConn.Write(wireGuardDNSWarmupQuery()); err != nil {
+		t.Fatalf("warmup Write() error = %v", err)
+	}
+	warmup := readOutboundIPv4UDPPacket(t, runtime)
+	if warmup.dst != netip.MustParseAddr("1.1.1.1") || warmup.dstPort != 53 {
+		t.Fatalf("warmup UDP packet = %s:%d -> %s:%d, want DNS target", warmup.src, warmup.srcPort, warmup.dst, warmup.dstPort)
+	}
+	if err := warmupConn.Close(); err != nil {
+		t.Fatalf("warmup Close() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	dialDone := make(chan error, 1)
+	go func() {
+		conn, err := runtime.DialContext(ctx, "tcp", "www.apple.com:80")
+		if conn != nil {
+			_ = conn.Close()
+		}
+		dialDone <- err
+	}()
+
+	query := readOutboundIPv4UDPPacket(t, runtime)
+	if query.dst != netip.MustParseAddr("1.1.1.1") || query.dstPort != 53 {
+		t.Fatalf("lookup UDP packet = %s:%d -> %s:%d, want DNS target", query.src, query.srcPort, query.dst, query.dstPort)
+	}
+	if len(query.payload) <= len(wireGuardDNSWarmupQuery()) {
+		t.Fatalf("lookup UDP payload length = %d, want DNS host query larger than warmup", len(query.payload))
+	}
+	_ = <-dialDone
 }
 
 func TestNewTestNetstackRuntimeProvidesExplicitStack(t *testing.T) {
@@ -1725,6 +1818,24 @@ func readOutboundIPv4UDPPacket(t *testing.T, runtime *netstackRuntime) udpPacket
 		t.Fatal("timed out waiting for outbound UDP packet")
 	}
 	panic("unreachable")
+}
+
+func readTransparentUDPPacketWithTimeout(conn TransparentUDPConn, timeout time.Duration) (TransparentUDPPacket, error) {
+	type result struct {
+		packet TransparentUDPPacket
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		packet, err := conn.ReadPacket()
+		done <- result{packet: packet, err: err}
+	}()
+	select {
+	case res := <-done:
+		return res.packet, res.err
+	case <-time.After(timeout):
+		return TransparentUDPPacket{}, fmt.Errorf("timed out waiting for transparent UDP packet")
+	}
 }
 
 func waitForForwardedUDPConnCount(t *testing.T, conn *netstackForwardedUDPConn, want int) {

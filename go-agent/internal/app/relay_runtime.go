@@ -370,7 +370,10 @@ func (k bindingKey) overlaps(other bindingKey) bool {
 	if k.namespace != other.namespace || k.protocol != other.protocol || k.port != other.port {
 		return false
 	}
-	return k.host == other.host || k.wildcard || other.wildcard
+	if k.host == other.host || k.wildcard || other.wildcard {
+		return true
+	}
+	return bindingHostsEquivalent(k.host, other.host)
 }
 
 func normalizeBindingHost(host string) string {
@@ -378,6 +381,26 @@ func normalizeBindingHost(host string) string {
 		return ip.String()
 	}
 	return strings.ToLower(host)
+}
+
+func bindingHostsEquivalent(left, right string) bool {
+	left = strings.ToLower(strings.TrimSpace(left))
+	right = strings.ToLower(strings.TrimSpace(right))
+	if left == right {
+		return true
+	}
+	if left == "localhost" && isLoopbackBindingHost(right) {
+		return true
+	}
+	if right == "localhost" && isLoopbackBindingHost(left) {
+		return true
+	}
+	return false
+}
+
+func isLoopbackBindingHost(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func bindingHostIsWildcard(host string) bool {

@@ -25,6 +25,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/nre-agent ./cmd/nre-agent
 
 FROM golang:1.26.3-trixie AS backend-go-builder
+ARG APP_VERSION=dev
+ARG BUILD_TIME=dev
+ARG GO_VERSION=dev
 WORKDIR /src
 COPY go-agent/go.mod go-agent/go.sum ./go-agent/
 COPY panel/backend-go/go.mod panel/backend-go/go.sum ./panel/backend-go/
@@ -36,7 +39,9 @@ COPY panel/backend-go/ ./panel/backend-go/
 WORKDIR /src/panel/backend-go
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=0 go build -o /out/nre-control-plane ./cmd/nre-control-plane
+    CGO_ENABLED=0 go build \
+      -ldflags "-s -w -X main.appVersion=${APP_VERSION} -X main.buildTime=${BUILD_TIME} -X main.goVersion=${GO_VERSION}" \
+      -o /out/nre-control-plane ./cmd/nre-control-plane
 
 FROM debian:trixie-slim AS go-agent-runtime
 RUN set -eux; \

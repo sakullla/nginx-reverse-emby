@@ -157,7 +157,8 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 	}
 
 	previous := m.server
-	if previous != nil {
+	overlappingBindings := previous != nil && bindingKeysOverlap(l4ServerBindingKeys(previous), l4RuleBindingKeys(rules))
+	if previous != nil && !overlappingBindings {
 		server, err := l4.NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, egressProfiles)
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
@@ -174,13 +175,15 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 			m.storeLastAppliedInputsLocked(rules, relayListeners, egressProfiles)
 			return nil
 		}
-		if !bindingKeysOverlap(l4ServerBindingKeys(previous), l4RuleBindingKeys(rules)) || !isRuntimeBindConflict(err) {
+		if !overlappingBindings || !isRuntimeBindConflict(err) {
 			if restoreErr := m.rollbackWireGuardAndRestorePreviousServerLocked(ctx, &transaction, &egressTransaction); restoreErr != nil {
 				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 			return err
 		}
-
+		overlappingBindings = true
+	}
+	if previous != nil && overlappingBindings {
 		_ = previous.Close()
 		m.server = nil
 	}

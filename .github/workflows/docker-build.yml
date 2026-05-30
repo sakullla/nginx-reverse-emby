@@ -63,6 +63,18 @@ jobs:
             org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+      - name: Resolve build variables
+        id: build-vars
+        shell: bash
+        run: |
+          app_version="dev"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            app_version="${GITHUB_REF_NAME}"
+          fi
+          echo "app_version=${app_version}" >> "${GITHUB_OUTPUT}"
+          echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "${GITHUB_OUTPUT}"
+          echo "go_version=go1.26.3" >> "${GITHUB_OUTPUT}"
+
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
@@ -88,6 +100,10 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.build-vars.outputs.app_version }}
+            BUILD_TIME=${{ steps.build-vars.outputs.build_time }}
+            GO_VERSION=${{ steps.build-vars.outputs.go_version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
