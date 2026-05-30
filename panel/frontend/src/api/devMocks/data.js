@@ -277,7 +277,19 @@ function normalizeEgressProfileID(payload = {}) {
   return Number.isInteger(id) && id > 0 ? id : undefined
 }
 
+function normalizeExplicitEgressProfileID(payload = {}) {
+  if (!Object.prototype.hasOwnProperty.call(payload, 'egress_profile_id')) return undefined
+  if (payload.egress_profile_id === '' || payload.egress_profile_id == null) return undefined
+  const id = Number(payload.egress_profile_id)
+  return Number.isInteger(id) && id >= 0 ? id : undefined
+}
+
 function applyEgressProfileID(normalizedPayload, payload = {}) {
+  const explicitID = normalizeExplicitEgressProfileID(payload)
+  if (explicitID != null) {
+    normalizedPayload.egress_profile_id = explicitID
+    return normalizedPayload
+  }
   const id = normalizeEgressProfileID(payload)
   if (id) {
     normalizedPayload.egress_profile_id = id

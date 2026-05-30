@@ -91,15 +91,6 @@ func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T)
 			wantType: "http",
 		},
 		{
-			name: "http accepts https scheme",
-			input: EgressProfileInput{
-				Name:     stringPtrEgress("https proxy"),
-				Type:     stringPtrEgress("http"),
-				ProxyURL: stringPtrEgress("https://proxy.example.com"),
-			},
-			wantType: "http",
-		},
-		{
 			name: "wireguard accepts config",
 			input: EgressProfileInput{
 				Name:            stringPtrEgress("wg"),
@@ -128,6 +119,50 @@ func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T)
 			}
 			if profile.Type == "wireguard" && profile.ProxyURL != "" {
 				t.Fatalf("wireguard ProxyURL = %q, want empty", profile.ProxyURL)
+			}
+		})
+	}
+}
+
+func TestEgressProfileServiceCreateRejectsProxyURLsUnsupportedByAgent(t *testing.T) {
+	tests := []struct {
+		name  string
+		input EgressProfileInput
+	}{
+		{
+			name: "http rejects https scheme",
+			input: EgressProfileInput{
+				Name:     stringPtrEgress("https proxy"),
+				Type:     stringPtrEgress("http"),
+				ProxyURL: stringPtrEgress("https://proxy.example.com:443"),
+			},
+		},
+		{
+			name: "http rejects missing port",
+			input: EgressProfileInput{
+				Name:     stringPtrEgress("http proxy"),
+				Type:     stringPtrEgress("http"),
+				ProxyURL: stringPtrEgress("http://proxy.example.com"),
+			},
+		},
+		{
+			name: "socks rejects missing port",
+			input: EgressProfileInput{
+				Name:     stringPtrEgress("socks proxy"),
+				Type:     stringPtrEgress("socks"),
+				ProxyURL: stringPtrEgress("socks5://proxy.example.com"),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newEgressProfileTestStore(t)
+			svc := NewEgressProfileService(store)
+
+			_, err := svc.Create(t.Context(), tc.input)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
 			}
 		})
 	}

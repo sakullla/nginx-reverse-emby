@@ -29,7 +29,7 @@ describe('EgressProfileForm', () => {
     })
   })
 
-  it('rejects saving an unchanged redacted proxy url', async () => {
+  it('allows saving an unchanged redacted proxy url', async () => {
     const wrapper = mountForm({
       id: 17,
       name: 'office socks',
@@ -40,8 +40,12 @@ describe('EgressProfileForm', () => {
 
     await wrapper.get('form').trigger('submit')
 
-    expect(wrapper.emitted('submit')).toBeUndefined()
-    expect(wrapper.text()).toContain('请重新输入代理 URL')
+    expect(wrapper.emitted('submit')[0][0]).toMatchObject({
+      name: 'office socks',
+      type: 'socks',
+      proxy_url: 'socks5://user:xxxxx@127.0.0.1:1080',
+      enabled: true
+    })
   })
 
   it('submits a wireguard profile payload', async () => {

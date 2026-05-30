@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -290,7 +292,7 @@ func normalizeEgressProfileInput(input EgressProfileInput, fallback EgressProfil
 		}
 		wireGuardConfig = nil
 	case "http":
-		if err := requireEgressProxyURLScheme(proxyURL, "http", "https"); err != nil {
+		if err := requireEgressProxyURLScheme(proxyURL, "http"); err != nil {
 			return EgressProfile{}, err
 		}
 		wireGuardConfig = nil
@@ -320,6 +322,9 @@ func requireEgressProxyURLScheme(raw string, allowed ...string) error {
 	if err != nil || parsed == nil || parsed.Host == "" {
 		return fmt.Errorf("%w: proxy_url must be a valid URL", ErrInvalidArgument)
 	}
+	if err := requireEgressProxyURLHostPort(parsed.Host); err != nil {
+		return err
+	}
 	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
 	for _, candidate := range allowed {
 		if scheme == candidate {
@@ -327,6 +332,21 @@ func requireEgressProxyURLScheme(raw string, allowed ...string) error {
 		}
 	}
 	return fmt.Errorf("%w: proxy_url scheme must be %s", ErrInvalidArgument, strings.Join(allowed, ", "))
+}
+
+func requireEgressProxyURLHostPort(hostPort string) error {
+	host, port, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return fmt.Errorf("%w: proxy_url must include host and port", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("%w: proxy_url must include host", ErrInvalidArgument)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("%w: proxy_url port must be between 1 and 65535", ErrInvalidArgument)
+	}
+	return nil
 }
 
 func requireEgressWireGuardConfig(config *EgressWireGuardConfig) error {

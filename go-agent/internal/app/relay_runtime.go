@@ -23,6 +23,7 @@ type relayRuntimeManager struct {
 	provider           relay.TLSMaterialProvider
 	wireGuardRuntime   *sharedWireGuardRuntime
 	wireGuardProvider  relay.WireGuardRuntimeProvider
+	egressWireGuard    *egressWireGuardRuntime
 	ownsWireGuard      bool
 	blockState         relayTrafficBlockStateValue
 	lastListeners      []model.RelayListener
@@ -44,6 +45,7 @@ func newRelayRuntimeManagerWithWireGuard(provider relay.TLSMaterialProvider, wir
 		provider:          provider,
 		wireGuardRuntime:  wireGuardRuntime,
 		wireGuardProvider: runtimeProvider,
+		egressWireGuard:   newEgressWireGuardRuntime(nil),
 		ownsWireGuard:     owns,
 	}
 }
@@ -64,6 +66,9 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 		if err := m.applyWireGuardProfilesLocked(ctx, profiles); err != nil {
 			return err
 		}
+		if err := m.applyEgressWireGuardProfilesLocked(ctx, nil); err != nil {
+			return err
+		}
 		if m.server != nil {
 			_ = m.server.Close()
 			m.server = nil
@@ -78,10 +83,24 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 	if err != nil {
 		return err
 	}
+	egressTransaction, egressProvider, err := m.prepareEgressWireGuardProfilesLocked(ctx, egressProfiles)
+	if err != nil {
+		if transaction != nil {
+			transaction.Rollback()
+		}
+		return err
+	}
 	if transaction != nil {
 		defer func() {
 			if transaction != nil {
 				transaction.Rollback()
+			}
+		}()
+	}
+	if egressTransaction != nil {
+		defer func() {
+			if egressTransaction != nil {
+				egressTransaction.Rollback()
 			}
 		}()
 	}
@@ -90,13 +109,17 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 	if previous != nil {
 		server, err := relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
 			WireGuardProvider: provider,
-			FinalHopDialer:    relayFinalHopDialer(egressProfiles, provider),
+			FinalHopDialer:    relayFinalHopDialer(egressProfiles, egressProvider),
 		})
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
 			if transaction != nil {
 				m.wireGuardRuntime.Commit(transaction, profiles)
 				transaction = nil
+			}
+			if egressTransaction != nil {
+				m.egressWireGuard.Commit(egressTransaction, egressProfiles)
+				egressTransaction = nil
 			}
 			_ = previous.Close()
 			m.server = server
@@ -117,7 +140,7 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 	server, err := retryRuntimeBindConflict(ctx, func() (*relay.Server, error) {
 		return relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
 			WireGuardProvider: provider,
-			FinalHopDialer:    relayFinalHopDialer(egressProfiles, provider),
+			FinalHopDialer:    relayFinalHopDialer(egressProfiles, egressProvider),
 		})
 	})
 	if err != nil && previous != nil && m.canRecreateWireGuardRuntimeForBindConflict(err, listeners, profiles) {
@@ -132,7 +155,7 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 			server, err = retryRuntimeBindConflict(ctx, func() (*relay.Server, error) {
 				return relay.StartWithOptions(ctx, listeners, m.provider, relay.StartOptions{
 					WireGuardProvider: provider,
-					FinalHopDialer:    relayFinalHopDialer(egressProfiles, provider),
+					FinalHopDialer:    relayFinalHopDialer(egressProfiles, egressProvider),
 				})
 			})
 		}
@@ -149,6 +172,10 @@ func (m *relayRuntimeManager) ApplyWithWireGuardAndEgressProfiles(ctx context.Co
 	if transaction != nil {
 		m.wireGuardRuntime.Commit(transaction, profiles)
 		transaction = nil
+	}
+	if egressTransaction != nil {
+		m.egressWireGuard.Commit(egressTransaction, egressProfiles)
+		egressTransaction = nil
 	}
 	m.server = server
 	m.storeLastAppliedInputsLocked(listeners, egressProfiles)
@@ -183,7 +210,7 @@ func (m *relayRuntimeManager) restorePreviousServerLocked(ctx context.Context) e
 	server, err := retryRuntimeBindConflict(ctx, func() (*relay.Server, error) {
 		return relay.StartWithOptions(ctx, m.lastListeners, m.provider, relay.StartOptions{
 			WireGuardProvider: m.wireGuardProvider,
-			FinalHopDialer:    relayFinalHopDialer(m.lastEgressProfiles, m.wireGuardProvider),
+			FinalHopDialer:    relayFinalHopDialer(m.lastEgressProfiles, m.egressWireGuard.Provider()),
 		})
 	})
 	if err != nil {
@@ -471,6 +498,20 @@ func (m *relayRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context
 	return transaction, wireGuardTransactionProvider{transaction: transaction, profiles: cloneWireGuardProfiles(profiles)}, nil
 }
 
+func (m *relayRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) error {
+	if m.egressWireGuard == nil {
+		return nil
+	}
+	return m.egressWireGuard.Apply(ctx, profiles)
+}
+
+func (m *relayRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+	if m.egressWireGuard == nil || profiles == nil {
+		return nil, nil, nil
+	}
+	return m.egressWireGuard.Prepare(ctx, profiles)
+}
+
 func (m *relayRuntimeManager) UpdateTrafficBlockState(state relay.TrafficBlockState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -498,6 +539,11 @@ func (m *relayRuntimeManager) Close() error {
 	}
 	if m.ownsWireGuard && m.wireGuardRuntime != nil {
 		if err := m.wireGuardRuntime.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if m.egressWireGuard != nil {
+		if err := m.egressWireGuard.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

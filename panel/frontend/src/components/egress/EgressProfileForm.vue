@@ -147,7 +147,7 @@ function validate() {
   }
   if (usesProxyURL.value) {
     const proxyURL = form.value.proxy_url.trim()
-    if (!proxyURL || proxyURL.includes('xxxxx')) {
+    if (!proxyURL) {
       error.value = '请重新输入代理 URL'
       return false
     }

@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 func TestRelayFinalHopUDPEgressPreservesTargetForSOCKS5(t *testing.T) {
@@ -37,6 +39,41 @@ func TestRelayFinalHopUDPEgressPreservesTargetForSOCKS5(t *testing.T) {
 	}
 	if string(packet.Payload) != "ping" {
 		t.Fatalf("SOCKS5 UDP payload = %q, want ping", string(packet.Payload))
+	}
+}
+
+func TestRelayRuntimeManagerAppliesWireGuardEgressProfilesFromInlineConfig(t *testing.T) {
+	var created []wireguard.Config
+	provider := &testRelayTLSProvider{
+		certificates: map[int]tls.Certificate{
+			1: mustIssueTestTLSCertificate(t),
+		},
+	}
+	manager := newRelayRuntimeManager(provider)
+	manager.egressWireGuard = newEgressWireGuardRuntime(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+		created = append(created, cfg)
+		return &testAppWireGuardRuntime{}, nil
+	})
+	defer manager.Close()
+
+	profileID := 91
+	if err := manager.ApplyWithWireGuardAndEgressProfiles(
+		context.Background(),
+		[]model.RelayListener{runtimeTestRelayListener(pickFreeTCPPort(t), 1)},
+		nil,
+		[]model.EgressProfile{validAppWireGuardEgressProfile(profileID)},
+	); err != nil {
+		t.Fatalf("ApplyWithWireGuardAndEgressProfiles() error = %v", err)
+	}
+
+	if len(created) != 1 {
+		t.Fatalf("wireguard egress runtime creations = %d, want 1", len(created))
+	}
+	if got := created[0].ID; got != profileID {
+		t.Fatalf("wireguard egress runtime profile ID = %d, want %d", got, profileID)
+	}
+	if got := created[0].PrivateKey; got != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
+		t.Fatalf("wireguard egress runtime private key = %q, want inline egress config key", got)
 	}
 }
 
