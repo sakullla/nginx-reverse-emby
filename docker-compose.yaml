@@ -1,6 +1,6 @@
 services:
   nginx-reverse-emby:
-    image: ghcr.io/sakullla/nginx-reverse-emby:latest
+    image: sakullla/nginx-reverse-emby:latest
     container_name: nginx-reverse-emby
     restart: unless-stopped
     network_mode: host
