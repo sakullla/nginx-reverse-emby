@@ -42,6 +42,44 @@ func (s localAgentRuntimeStub) DiagnoseSnapshot(context.Context, storage.Snapsho
 	return map[string]any{}, nil
 }
 
+func TestDockerBuildInjectsControlPlaneVersionMetadata(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", "..", "..", ".."))
+	dockerfile, err := os.ReadFile(filepath.Join(repoRoot, "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	dockerText := string(dockerfile)
+	for _, want := range []string{
+		"ARG APP_VERSION=dev",
+		"ARG BUILD_TIME=dev",
+		"ARG GO_VERSION=dev",
+		"-X main.appVersion=${APP_VERSION}",
+		"-X main.buildTime=${BUILD_TIME}",
+		"-X main.goVersion=${GO_VERSION}",
+	} {
+		if !strings.Contains(dockerText, want) {
+			t.Fatalf("Dockerfile must inject control-plane version metadata; missing %q", want)
+		}
+	}
+
+	workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "docker-build.yml"))
+	if err != nil {
+		t.Fatalf("read docker-build workflow: %v", err)
+	}
+	workflowText := string(workflow)
+	for _, want := range []string{
+		"id: build-vars",
+		`app_version="${GITHUB_REF_NAME}"`,
+		"APP_VERSION=${{ steps.build-vars.outputs.app_version }}",
+		"BUILD_TIME=${{ steps.build-vars.outputs.build_time }}",
+		"GO_VERSION=${{ steps.build-vars.outputs.go_version }}",
+	} {
+		if !strings.Contains(workflowText, want) {
+			t.Fatalf("docker-build workflow must pass tag version metadata into Docker build; missing %q", want)
+		}
+	}
+}
+
 type closeTrackingHandler struct {
 	http.Handler
 	closed bool
