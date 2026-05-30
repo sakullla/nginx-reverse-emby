@@ -425,7 +425,7 @@ func (s *GormStore) ListRelayListeners(ctx context.Context, agentID string) ([]R
 
 func (s *GormStore) ListWireGuardProfiles(ctx context.Context, agentID string) ([]WireGuardProfileRow, error) {
 	if !s.wireGuard {
-		return nil, nil
+		return []WireGuardProfileRow{}, nil
 	}
 	if agentID == "" {
 		agentID = s.localAgentID
@@ -497,7 +497,7 @@ func (s *GormStore) EgressProfileReferences(ctx context.Context, profileID int) 
 
 func (s *GormStore) ListWireGuardClients(ctx context.Context, agentID string, profileID int) ([]WireGuardClientRow, error) {
 	if !s.wireGuard {
-		return nil, nil
+		return []WireGuardClientRow{}, nil
 	}
 	if agentID == "" {
 		agentID = s.localAgentID
