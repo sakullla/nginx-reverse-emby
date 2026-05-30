@@ -172,6 +172,7 @@ func isZeroSnapshot(s model.Snapshot) bool {
 		len(s.Rules) == 0 &&
 		len(s.L4Rules) == 0 &&
 		len(s.RelayListeners) == 0 &&
+		len(s.WireGuardProfiles) == 0 &&
 		len(s.Certificates) == 0 &&
 		len(s.CertificatePolicies) == 0
 }
@@ -198,10 +199,6 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 				cloned.Rules[i].CustomHeaders = make([]model.HTTPHeader, len(rule.CustomHeaders))
 				copy(cloned.Rules[i].CustomHeaders, rule.CustomHeaders)
 			}
-			if rule.RelayChain != nil {
-				cloned.Rules[i].RelayChain = make([]int, len(rule.RelayChain))
-				copy(cloned.Rules[i].RelayChain, rule.RelayChain)
-			}
 			cloned.Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
 		}
 	}
@@ -212,10 +209,6 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			if rule.Backends != nil {
 				cloned.L4Rules[i].Backends = make([]model.L4Backend, len(rule.Backends))
 				copy(cloned.L4Rules[i].Backends, rule.Backends)
-			}
-			if rule.RelayChain != nil {
-				cloned.L4Rules[i].RelayChain = make([]int, len(rule.RelayChain))
-				copy(cloned.L4Rules[i].RelayChain, rule.RelayChain)
 			}
 			cloned.L4Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
 		}
@@ -240,6 +233,59 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 				cloned.RelayListeners[i].Tags = make([]string, len(listener.Tags))
 				copy(cloned.RelayListeners[i].Tags, listener.Tags)
 			}
+		}
+	}
+	if snapshot.WireGuardProfiles != nil {
+		cloned.WireGuardProfiles = make([]model.WireGuardProfile, len(snapshot.WireGuardProfiles))
+		copy(cloned.WireGuardProfiles, snapshot.WireGuardProfiles)
+		for i, profile := range snapshot.WireGuardProfiles {
+			if profile.BindAddresses != nil {
+				cloned.WireGuardProfiles[i].BindAddresses = append([]string(nil), profile.BindAddresses...)
+			}
+			if profile.Addresses != nil {
+				cloned.WireGuardProfiles[i].Addresses = append([]string(nil), profile.Addresses...)
+			}
+			if profile.DNS != nil {
+				cloned.WireGuardProfiles[i].DNS = append([]string(nil), profile.DNS...)
+			}
+			if profile.Tags != nil {
+				cloned.WireGuardProfiles[i].Tags = append([]string(nil), profile.Tags...)
+			}
+			if profile.Peers != nil {
+				cloned.WireGuardProfiles[i].Peers = make([]model.WireGuardPeer, len(profile.Peers))
+				copy(cloned.WireGuardProfiles[i].Peers, profile.Peers)
+				for j, peer := range profile.Peers {
+					if peer.AllowedIPs != nil {
+						cloned.WireGuardProfiles[i].Peers[j].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
+					}
+					if peer.Reserved != nil {
+						cloned.WireGuardProfiles[i].Peers[j].Reserved = append([]byte(nil), peer.Reserved...)
+					}
+				}
+			}
+		}
+	}
+	if snapshot.EgressProfiles != nil {
+		cloned.EgressProfiles = make([]model.EgressProfile, len(snapshot.EgressProfiles))
+		copy(cloned.EgressProfiles, snapshot.EgressProfiles)
+		for i, profile := range snapshot.EgressProfiles {
+			if profile.WireGuardConfig == nil {
+				continue
+			}
+			cfg := *profile.WireGuardConfig
+			cfg.Addresses = append([]string(nil), profile.WireGuardConfig.Addresses...)
+			cfg.Peers = make([]model.WireGuardPeer, len(profile.WireGuardConfig.Peers))
+			copy(cfg.Peers, profile.WireGuardConfig.Peers)
+			for j, peer := range profile.WireGuardConfig.Peers {
+				if peer.AllowedIPs != nil {
+					cfg.Peers[j].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
+				}
+				if peer.Reserved != nil {
+					cfg.Peers[j].Reserved = append([]byte(nil), peer.Reserved...)
+				}
+			}
+			cfg.DNS = append([]string(nil), profile.WireGuardConfig.DNS...)
+			cloned.EgressProfiles[i].WireGuardConfig = &cfg
 		}
 	}
 	if snapshot.Certificates != nil {
@@ -301,11 +347,6 @@ func l4RulesChanged(previous, next model.Snapshot) bool {
 
 func httpRelayInputsChanged(previous, next model.Snapshot) bool {
 	for _, rule := range next.Rules {
-		for _, listenerID := range rule.RelayChain {
-			if relayListenerChangedByID(listenerID, previous.RelayListeners, next.RelayListeners) {
-				return true
-			}
-		}
 		for _, layer := range rule.RelayLayers {
 			for _, listenerID := range layer {
 				if relayListenerChangedByID(listenerID, previous.RelayListeners, next.RelayListeners) {

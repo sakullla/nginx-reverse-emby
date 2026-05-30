@@ -5,10 +5,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +21,8 @@ import (
 )
 
 type HTTPTransportConfig = config.HTTPTransportConfig
+
+const maxTaskMessageLineBytes = 4 * 1024 * 1024
 
 type ClientConfig struct {
 	MasterURL     string
@@ -38,6 +45,16 @@ type TaskHandlerFunc func(context.Context, TaskMessage) (map[string]any, error)
 
 func (f TaskHandlerFunc) HandleTask(ctx context.Context, task TaskMessage) (map[string]any, error) {
 	return f(ctx, task)
+}
+
+type streamStatusError struct {
+	statusCode int
+	status     string
+	probe      bool
+}
+
+func (e streamStatusError) Error() string {
+	return fmt.Sprintf("task stream failed: %s", e.status)
 }
 
 type Client struct {
@@ -91,7 +108,11 @@ func (c *Client) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if err := c.runSession(ctx); err != nil && ctx.Err() == nil {
+		err := c.runStreamSession(ctx)
+		if err != nil && ctx.Err() == nil && isStreamUnavailable(err) {
+			err = c.runSSESession(ctx)
+		}
+		if err != nil && ctx.Err() == nil {
 			timer := time.NewTimer(c.cfg.ReconnectWait)
 			select {
 			case <-ctx.Done():
@@ -104,7 +125,157 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Client) runSession(ctx context.Context) error {
+func (c *Client) runStreamSession(ctx context.Context) error {
+	sessionID := c.nextSessionID()
+	if err := c.probeStreamSession(ctx, sessionID); err != nil {
+		return err
+	}
+
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	var writeMu sync.Mutex
+	writeMessage := func(msg Message) error {
+		data, err := encodeMessage(msg)
+		if err != nil {
+			return err
+		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if _, err := pw.Write(append(data, '\n')); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.streamURL(sessionID), pr)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-ndjson")
+	req.Header.Set("X-Agent-Token", c.cfg.AgentToken)
+
+	helloWritten := make(chan error, 1)
+	go func() {
+		if ctx.Err() != nil {
+			helloWritten <- nil
+			return
+		}
+		helloWritten <- writeMessage(c.helloMessage(sessionID))
+	}()
+
+	resp, err := c.cfg.HTTPClient.Do(req)
+	if err != nil {
+		_ = pw.CloseWithError(err)
+		c.discardConnections()
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_ = pw.Close()
+		c.discardConnections()
+		return streamStatusError{
+			statusCode: resp.StatusCode,
+			status:     resp.Status,
+		}
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.EqualFold(mediaType, "application/x-ndjson") {
+		_ = pw.Close()
+		c.discardConnections()
+		return fmt.Errorf("task stream returned content type %q", contentType)
+	}
+
+	if err := <-helloWritten; err != nil {
+		return err
+	}
+
+	update := func(ctx context.Context, taskID string, payload map[string]any) error {
+		msg := Message{
+			Type: "update",
+			Update: &UpdateMessage{
+				TaskID: taskID,
+			},
+		}
+		if state, ok := payload["state"].(string); ok {
+			msg.Update.State = state
+		}
+		if errText, ok := payload["error"].(string); ok {
+			msg.Update.Error = errText
+		}
+		if result, ok := payload["result"].(map[string]any); ok {
+			msg.Update.Result = result
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		return writeMessage(msg)
+	}
+
+	scanner := newTaskMessageScanner(resp.Body)
+	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return nil
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var msg Message
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			return err
+		}
+		if msg.Type != "task" || msg.Task == nil {
+			continue
+		}
+		if err := c.handleTaskMessage(ctx, *msg.Task, update); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Client) probeStreamSession(ctx context.Context, sessionID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.streamURL(sessionID), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Agent-Token", c.cfg.AgentToken)
+
+	resp, err := c.cfg.HTTPClient.Do(req)
+	if err != nil {
+		c.discardConnections()
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
+		return streamStatusError{
+			statusCode: resp.StatusCode,
+			status:     resp.Status,
+			probe:      true,
+		}
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.EqualFold(mediaType, "application/x-ndjson") {
+		c.discardConnections()
+		return fmt.Errorf("task stream probe returned content type %q", contentType)
+	}
+	return nil
+}
+
+func (c *Client) runSSESession(ctx context.Context) error {
 	sessionID := c.nextSessionID()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sessionURL(sessionID), nil)
 	if err != nil {
@@ -124,7 +295,7 @@ func (c *Client) runSession(ctx context.Context) error {
 		return fmt.Errorf("task session failed: %s", resp.Status)
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := newTaskMessageScanner(resp.Body)
 	eventName := ""
 	dataLines := make([]string, 0, 1)
 	for scanner.Scan() {
@@ -158,12 +329,18 @@ func (c *Client) runSession(ctx context.Context) error {
 }
 
 func (c *Client) sessionURL(sessionID string) string {
-	return fmt.Sprintf(
-		"%s/api/agents/task-session?agent_id=%s&session_id=%s",
-		c.cfg.MasterURL,
-		c.cfg.AgentID,
-		sessionID,
-	)
+	return c.taskEndpointURL("/api/agents/task-session", sessionID)
+}
+
+func (c *Client) streamURL(sessionID string) string {
+	return c.taskEndpointURL("/api/agents/task-stream", sessionID)
+}
+
+func (c *Client) taskEndpointURL(path string, sessionID string) string {
+	values := url.Values{}
+	values.Set("agent_id", c.cfg.AgentID)
+	values.Set("session_id", sessionID)
+	return c.cfg.MasterURL + path + "?" + values.Encode()
 }
 
 func (c *Client) nextSessionID() string {
@@ -187,6 +364,12 @@ func encodeMessage(msg Message) ([]byte, error) {
 	return json.Marshal(msg)
 }
 
+func newTaskMessageScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxTaskMessageLineBytes)
+	return scanner
+}
+
 func (c *Client) handleSSEEvent(ctx context.Context, eventName string, data string) error {
 	if strings.TrimSpace(eventName) != "task" || strings.TrimSpace(data) == "" {
 		return nil
@@ -200,11 +383,21 @@ func (c *Client) handleSSEEvent(ctx context.Context, eventName string, data stri
 		return nil
 	}
 
-	if err := c.postUpdate(ctx, task.TaskID, map[string]any{"state": "running"}); err != nil {
+	return c.handleTaskMessage(ctx, task, c.postUpdate)
+}
+
+type taskUpdateFunc func(context.Context, string, map[string]any) error
+
+func (c *Client) handleTaskMessage(ctx context.Context, task TaskMessage, update taskUpdateFunc) error {
+	if strings.TrimSpace(task.TaskID) == "" || strings.TrimSpace(task.TaskType) == "" {
+		return nil
+	}
+
+	if err := update(ctx, task.TaskID, map[string]any{"state": "running"}); err != nil {
 		return err
 	}
 	if c.cfg.Handler == nil {
-		return c.postUpdate(ctx, task.TaskID, map[string]any{
+		return update(ctx, task.TaskID, map[string]any{
 			"state": "failed",
 			"error": "no task handler configured",
 		})
@@ -215,12 +408,12 @@ func (c *Client) handleSSEEvent(ctx context.Context, eventName string, data stri
 
 	result, err := c.cfg.Handler.HandleTask(taskCtx, task)
 	if err != nil {
-		return c.postUpdate(ctx, task.TaskID, map[string]any{
+		return update(ctx, task.TaskID, map[string]any{
 			"state": "failed",
 			"error": err.Error(),
 		})
 	}
-	return c.postUpdate(ctx, task.TaskID, map[string]any{
+	return update(ctx, task.TaskID, map[string]any{
 		"state":  "completed",
 		"result": result,
 	})
@@ -280,5 +473,21 @@ func normalizeMasterBaseURL(raw string) string {
 		return strings.TrimSuffix(trimmed, "/api")
 	default:
 		return trimmed
+	}
+}
+
+func isStreamUnavailable(err error) bool {
+	var streamErr streamStatusError
+	if !errors.As(err, &streamErr) {
+		return false
+	}
+
+	switch streamErr.statusCode {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true
+	case http.StatusUnauthorized:
+		return streamErr.probe
+	default:
+		return false
 	}
 }

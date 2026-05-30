@@ -72,10 +72,51 @@ func (h *DiagnosticHandler) HandleTask(ctx context.Context, task TaskMessage) (m
 
 func (h *DiagnosticHandler) loadSnapshot() (model.Snapshot, error) {
 	snapshot, err := h.store.LoadAppliedSnapshot()
-	if err == nil && (len(snapshot.Rules) > 0 || len(snapshot.L4Rules) > 0) {
-		return snapshot, nil
+	if err == nil {
+		desired, desiredErr := h.store.LoadDesiredSnapshot()
+		if desiredErr == nil && canMergeSnapshotPayload(snapshot, desired) {
+			snapshot = mergeMissingRuntimePayload(snapshot, desired)
+		}
+		if len(snapshot.Rules) > 0 || len(snapshot.L4Rules) > 0 {
+			return snapshot, nil
+		}
 	}
 	return h.store.LoadDesiredSnapshot()
+}
+
+func canMergeSnapshotPayload(snapshot, fallback model.Snapshot) bool {
+	if fallback.Revision == 0 && fallback.DesiredVersion == "" {
+		return false
+	}
+	if snapshot.Revision > 0 && fallback.Revision > 0 && snapshot.Revision != fallback.Revision {
+		return false
+	}
+	if snapshot.DesiredVersion != "" && fallback.DesiredVersion != "" && snapshot.DesiredVersion != fallback.DesiredVersion {
+		return false
+	}
+	return true
+}
+
+func mergeMissingRuntimePayload(snapshot, fallback model.Snapshot) model.Snapshot {
+	if snapshot.Rules == nil {
+		snapshot.Rules = fallback.Rules
+	}
+	if snapshot.L4Rules == nil {
+		snapshot.L4Rules = fallback.L4Rules
+	}
+	if snapshot.RelayListeners == nil {
+		snapshot.RelayListeners = fallback.RelayListeners
+	}
+	if snapshot.WireGuardProfiles == nil {
+		snapshot.WireGuardProfiles = fallback.WireGuardProfiles
+	}
+	if snapshot.Certificates == nil {
+		snapshot.Certificates = fallback.Certificates
+	}
+	if snapshot.CertificatePolicies == nil {
+		snapshot.CertificatePolicies = fallback.CertificatePolicies
+	}
+	return snapshot
 }
 
 func taskRuleID(payload map[string]any) (int, error) {

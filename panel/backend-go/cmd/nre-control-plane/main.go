@@ -435,8 +435,11 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	ruleSvc := service.NewRuleService(cfg, serviceStore)
 	l4Svc := service.NewL4RuleService(cfg, serviceStore)
 	versionSvc := service.NewVersionPolicyService(serviceStore)
+	egressSvc := service.NewEgressProfileServiceWithConfig(cfg, serviceStore)
 	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
 	certSvc := service.NewCertificateService(cfg, serviceStore)
+	wireGuardSvc := service.NewWireGuardProfileService(cfg, serviceStore)
+	wireGuardClientSvc := service.NewWireGuardClientService(cfg, serviceStore)
 
 	runtimeStore, err := openConfiguredStore(cfg)
 	if err != nil {
@@ -467,6 +470,17 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	l4Svc.SetLocalApplyTrigger(runtime.SyncNow)
 	relaySvc.SetLocalApplyTrigger(runtime.SyncNow)
 	certSvc.SetLocalApplyTrigger(runtime.SyncNow)
+	egressSvc.SetLocalApplyTrigger(runtime.SyncNow)
+	if triggerSvc, ok := any(wireGuardSvc).(interface {
+		SetLocalApplyTrigger(func(context.Context) error)
+	}); ok {
+		triggerSvc.SetLocalApplyTrigger(runtime.SyncNow)
+	}
+	if triggerSvc, ok := any(wireGuardClientSvc).(interface {
+		SetLocalApplyTrigger(func(context.Context) error)
+	}); ok {
+		triggerSvc.SetLocalApplyTrigger(runtime.SyncNow)
+	}
 
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
 
@@ -476,15 +490,18 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	}
 
 	handler, err := newHandlerWithDependencies(cfg, httpapi.Dependencies{
-		SystemService:        systemSvc,
-		AgentService:         agentSvc,
-		RuleService:          ruleSvc,
-		L4RuleService:        l4Svc,
-		VersionPolicyService: versionSvc,
-		RelayListenerService: relaySvc,
-		CertificateService:   certSvc,
-		BackupService:        service.NewBackupService(cfg, serviceStore),
-		TaskService:          taskSvc,
+		SystemService:           systemSvc,
+		AgentService:            agentSvc,
+		RuleService:             ruleSvc,
+		L4RuleService:           l4Svc,
+		VersionPolicyService:    versionSvc,
+		EgressProfileService:    egressSvc,
+		RelayListenerService:    relaySvc,
+		CertificateService:      certSvc,
+		WireGuardProfileService: wireGuardSvc,
+		WireGuardClientService:  wireGuardClientSvc,
+		BackupService:           service.NewBackupService(cfg, serviceStore),
+		TaskService:             taskSvc,
 	})
 	if err != nil {
 		_ = closeStores()

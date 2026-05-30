@@ -21,16 +21,19 @@ import (
 )
 
 const (
-	backupManifestFile         = "manifest.json"
-	backupAgentsFile           = "agents.json"
-	backupHTTPRulesFile        = "http_rules.json"
-	backupL4RulesFile          = "l4_rules.json"
-	backupRelayListenersFile   = "relay_listeners.json"
-	backupCertificatesFile     = "certificates.json"
-	backupVersionPoliciesFile  = "version_policies.json"
-	backupTrafficPoliciesFile  = "traffic_policies.json"
-	backupTrafficBaselinesFile = "traffic_baselines.json"
-	backupMaterialPrefix       = "certificate_material"
+	backupManifestFile          = "manifest.json"
+	backupAgentsFile            = "agents.json"
+	backupHTTPRulesFile         = "http_rules.json"
+	backupL4RulesFile           = "l4_rules.json"
+	backupWireGuardProfilesFile = "wireguard_profiles.json"
+	backupWireGuardClientsFile  = "wireguard_clients.json"
+	backupEgressProfilesFile    = "egress_profiles.json"
+	backupRelayListenersFile    = "relay_listeners.json"
+	backupCertificatesFile      = "certificates.json"
+	backupVersionPoliciesFile   = "version_policies.json"
+	backupTrafficPoliciesFile   = "traffic_policies.json"
+	backupTrafficBaselinesFile  = "traffic_baselines.json"
+	backupMaterialPrefix        = "certificate_material"
 )
 
 type backupService struct {
@@ -45,6 +48,8 @@ type backupStore interface {
 	storage.Store
 	DeleteAgent(context.Context, string) error
 	SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error
+	ListWireGuardClients(context.Context, string, int) ([]storage.WireGuardClientRow, error)
+	SaveWireGuardClients(context.Context, string, int, []storage.WireGuardClientRow) error
 	ListTrafficPolicies(context.Context) ([]storage.AgentTrafficPolicyRow, error)
 	ListTrafficBaselines(context.Context) ([]storage.AgentTrafficBaselineRow, error)
 	SaveTrafficPolicy(context.Context, storage.AgentTrafficPolicyRow) error
@@ -54,26 +59,32 @@ type backupStore interface {
 }
 
 type BackupExportOptions struct {
-	Agents           bool `json:"agents"`
-	HTTPRules        bool `json:"http_rules"`
-	L4Rules          bool `json:"l4_rules"`
-	RelayListeners   bool `json:"relay_listeners"`
-	Certificates     bool `json:"certificates"`
-	VersionPolicies  bool `json:"version_policies"`
-	TrafficPolicies  bool `json:"traffic_policies"`
-	TrafficBaselines bool `json:"traffic_baselines"`
+	Agents            bool `json:"agents"`
+	HTTPRules         bool `json:"http_rules"`
+	L4Rules           bool `json:"l4_rules"`
+	WireGuardProfiles bool `json:"wireguard_profiles"`
+	WireGuardClients  bool `json:"wireguard_clients"`
+	EgressProfiles    bool `json:"egress_profiles"`
+	RelayListeners    bool `json:"relay_listeners"`
+	Certificates      bool `json:"certificates"`
+	VersionPolicies   bool `json:"version_policies"`
+	TrafficPolicies   bool `json:"traffic_policies"`
+	TrafficBaselines  bool `json:"traffic_baselines"`
 }
 
 func AllExportOptions() BackupExportOptions {
 	return BackupExportOptions{
-		Agents:           true,
-		HTTPRules:        true,
-		L4Rules:          true,
-		RelayListeners:   true,
-		Certificates:     true,
-		VersionPolicies:  true,
-		TrafficPolicies:  true,
-		TrafficBaselines: true,
+		Agents:            true,
+		HTTPRules:         true,
+		L4Rules:           true,
+		WireGuardProfiles: true,
+		WireGuardClients:  true,
+		EgressProfiles:    true,
+		RelayListeners:    true,
+		Certificates:      true,
+		VersionPolicies:   true,
+		TrafficPolicies:   true,
+		TrafficBaselines:  true,
 	}
 }
 
@@ -112,6 +123,15 @@ func (s *backupService) ExportSelective(ctx context.Context, opts BackupExportOp
 	if !opts.L4Rules {
 		bundle.L4Rules = nil
 	}
+	if !opts.WireGuardProfiles {
+		bundle.WireGuardProfiles = nil
+		bundle.WireGuardClients = nil
+	} else if !opts.WireGuardClients {
+		bundle.WireGuardClients = nil
+	}
+	if !opts.EgressProfiles {
+		bundle.EgressProfiles = nil
+	}
 	if !opts.RelayListeners {
 		bundle.RelayListeners = nil
 	}
@@ -129,14 +149,17 @@ func (s *backupService) ExportSelective(ctx context.Context, opts BackupExportOp
 		bundle.TrafficBaselines = nil
 	}
 	bundle.Manifest.Counts = BackupCounts{
-		Agents:           len(bundle.Agents),
-		HTTPRules:        len(bundle.HTTPRules),
-		L4Rules:          len(bundle.L4Rules),
-		RelayListeners:   len(bundle.RelayListeners),
-		Certificates:     len(bundle.Certificates),
-		VersionPolicies:  len(bundle.VersionPolicies),
-		TrafficPolicies:  len(bundle.TrafficPolicies),
-		TrafficBaselines: len(bundle.TrafficBaselines),
+		Agents:            len(bundle.Agents),
+		HTTPRules:         len(bundle.HTTPRules),
+		L4Rules:           len(bundle.L4Rules),
+		WireGuardProfiles: len(bundle.WireGuardProfiles),
+		WireGuardClients:  len(bundle.WireGuardClients),
+		EgressProfiles:    len(bundle.EgressProfiles),
+		RelayListeners:    len(bundle.RelayListeners),
+		Certificates:      len(bundle.Certificates),
+		VersionPolicies:   len(bundle.VersionPolicies),
+		TrafficPolicies:   len(bundle.TrafficPolicies),
+		TrafficBaselines:  len(bundle.TrafficBaselines),
 	}
 	bundle.Manifest.IncludesCertificates = len(bundle.Materials) > 0
 	archive, err := encodeBackupBundle(bundle)
@@ -160,6 +183,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	if err != nil {
 		return BackupImportResult{}, err
 	}
+	bundle = normalizeLegacyBackupEgressProfiles(bundle)
 	if bundle.Manifest.PackageVersion != BackupPackageVersion {
 		return BackupImportResult{}, fmt.Errorf("%w: unsupported backup package version %d", ErrInvalidArgument, bundle.Manifest.PackageVersion)
 	}
@@ -202,6 +226,8 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	if err != nil {
 		return BackupImportResult{}, err
 	}
+	previewAgentRowsByID := previewAgentRows(bundle.Agents, agentIDMap, existingByName, existingByID, s.cfg)
+	previewCapabilityStore := previewAgentCapabilityStore{rows: previewAgentRowsByID}
 	certIDMap := previewCertificateIDMap(bundle.Certificates, bundle.Agents, existingCertRows, agentIDMap, existingByName, existingByID, s.cfg)
 	existingCertDomains := map[string]struct{}{}
 	for _, row := range existingCertRows {
@@ -215,15 +241,44 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		}
 		result.addImported("certificate", key)
 	}
+	wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, previewWireGuardProfileRowsByAgent, err := previewWireGuardProfiles(ctx, bundle.WireGuardProfiles, agentIDMap, s.cfg, s.store, previewCapabilityStore, &result)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	if err := previewWireGuardClients(bundle.WireGuardClients, agentIDMap, wireGuardProfileIDMap, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, &result, s.cfg); err != nil {
+		return BackupImportResult{}, err
+	}
+	existingEgressRows, err := s.store.ListEgressProfiles(ctx)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	egressProfileIDMap, previewEgressRows := previewEgressProfiles(bundle.EgressProfiles, existingEgressRows, newConfigIdentityAllocator(configIdentityAllocatorState{
+		EgressProfiles: existingEgressRows,
+	}), &result)
 	existingRelayRows, err := s.store.ListRelayListeners(ctx, "")
 	if err != nil {
 		return BackupImportResult{}, err
 	}
-	listenerIDMap := previewListenerIDMap(bundle.RelayListeners, existingRelayRows, agentIDMap, certIDMap, s.cfg)
+	listenerAllocator := newConfigIdentityAllocator(configIdentityAllocatorState{
+		LocalAgentID:   s.cfg.LocalAgentID,
+		RelayListeners: existingRelayRows,
+	})
+	listenerIDMap := previewListenerIDMap(ctx, bundle.RelayListeners, existingRelayRows, agentIDMap, certIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, listenerAllocator, previewCapabilityStore, s.cfg)
+	previewRelayListeners := previewRelayListenersByID(existingRelayRows, bundle.RelayListeners, listenerIDMap, agentIDMap, s.cfg)
+	previewRuleSvc := &ruleService{cfg: s.cfg, store: previewHTTPRuleNormalizationStore{
+		ruleStore:                s.store,
+		agents:                   previewAgentRowsByID,
+		wireGuardProfilesByAgent: previewWireGuardProfileRowsByAgent,
+		egressProfiles:           previewEgressRows,
+		relayListenersByListener: previewRelayListeners,
+	}}
 	existingRelayKeys := map[string]struct{}{}
+	previewRelayRowsByAgent := map[string][]storage.RelayListenerRow{}
 	for _, row := range existingRelayRows {
 		existingRelayKeys[relayConflictKey(row.AgentID, row.Name)] = struct{}{}
+		previewRelayRowsByAgent[row.AgentID] = append(previewRelayRowsByAgent[row.AgentID], row)
 	}
+	previewRelayKeys := map[string]struct{}{}
 	for _, item := range bundle.RelayListeners {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
 		key := relayConflictKey(item.AgentID, item.Name)
@@ -236,7 +291,22 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedConflict("relay_listener", conflictKey, "relay listener already exists")
 			continue
 		}
-		input := relayListenerInputFromBackup(item, certIDMap)
+		if _, exists := previewRelayKeys[conflictKey]; exists {
+			result.addSkippedConflict("relay_listener", conflictKey, "relay listener already exists")
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.TransportMode), "wireguard") {
+			if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, previewCapabilityStore, resolvedAgentID); err != nil {
+				result.addSkippedInvalid("relay_listener", conflictKey, err.Error())
+				continue
+			}
+		}
+		wireGuardProfileID, ok := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		if strings.EqualFold(strings.TrimSpace(item.TransportMode), "wireguard") && !ok {
+			result.addSkippedInvalid("relay_listener", conflictKey, "wireguard profile was not imported")
+			continue
+		}
+		input := relayListenerInputFromBackup(item, certIDMap, wireGuardProfileID)
 		if item.CertificateID != nil && input.CertificateID == nil {
 			result.addSkippedInvalid("relay_listener", conflictKey, "referenced certificate was not imported")
 			continue
@@ -245,19 +315,36 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedInvalid("relay_listener", conflictKey, "referenced trusted CA certificate was not imported")
 			continue
 		}
+		normalized, err := normalizeRelayListenerInput(input, RelayListener{}, item.ID, relayNormalizeOptions{})
+		if err != nil {
+			result.addSkippedInvalid("relay_listener", conflictKey, err.Error())
+			continue
+		}
+		normalized.AgentID = resolvedAgentID
+		if err := ensureUniqueRelayListen(relayListenersFromRows(previewRelayRowsByAgent[resolvedAgentID]), normalized, 0); err != nil {
+			result.addSkippedConflict("relay_listener", conflictKey, err.Error())
+			continue
+		}
 		result.addImported("relay_listener", conflictKey)
+		previewRelayKeys[conflictKey] = struct{}{}
+		previewRelayRowsByAgent[resolvedAgentID] = append(previewRelayRowsByAgent[resolvedAgentID], relayListenerToRow(normalized))
 	}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
 		return BackupImportResult{}, err
 	}
+	knownAgentIDs = appendKnownAgentIDs(knownAgentIDs, agentIDMap)
 	existingHTTPRules, err := s.listAllHTTPRules(ctx, knownAgentIDs)
 	if err != nil {
 		return BackupImportResult{}, err
 	}
 	existingHTTPKeys := map[string]struct{}{}
+	existingHTTPWireGuardEntryRouteKeys := map[string]struct{}{}
 	for _, row := range existingHTTPRules {
 		existingHTTPKeys[httpRuleConflictKey(row.AgentID, row.FrontendURL)] = struct{}{}
+		if routeKey, ok := httpWireGuardEntryRouteKey(httpRuleFromRow(row)); ok {
+			existingHTTPWireGuardEntryRouteKeys[routeKey] = struct{}{}
+		}
 	}
 	for _, item := range bundle.HTTPRules {
 		key := strings.TrimSpace(item.FrontendURL)
@@ -271,47 +358,107 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedConflict("http_rule", key, "frontend_url already exists")
 			continue
 		}
-		input := httpRuleInputFromBackup(item, listenerIDMap)
-		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
+		if item.WireGuardEntryEnabled {
+			if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, previewCapabilityStore, resolvedAgentID); err != nil {
+				result.addSkippedInvalid("http_rule", key, err.Error())
+				continue
+			}
+		}
+		wireGuardProfileID, profileOK := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		egressProfileID, egressOK := remapBackupEgressProfileID(item.EgressProfileID, egressProfileIDMap)
+		if !egressOK {
+			result.addSkippedInvalid("http_rule", key, "egress profile was not imported")
+			continue
+		}
+		input := httpRuleInputFromBackup(item, listenerIDMap, wireGuardProfileID, egressProfileID)
+		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
 			continue
 		}
-		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
-			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
+		if err := validateRelayChainReferencesFromRows(knownAgentIDs, previewRelayListeners, flattenRelayLayers(pointerRelayLayers(input.RelayLayers)), relayChainValidationOptions{RuleAgentID: resolvedAgentID}); err != nil {
+			result.addSkippedInvalid("http_rule", key, err.Error())
 			continue
+		}
+		normalized, err := previewRuleSvc.normalizeHTTPRuleInput(ctx, input, HTTPRule{AgentID: resolvedAgentID}, 0)
+		if err != nil {
+			result.addSkippedInvalid("http_rule", key, err.Error())
+			continue
+		}
+		normalized.AgentID = resolvedAgentID
+		if item.WireGuardEntryEnabled {
+			if !profileOK {
+				result.addSkippedInvalid("http_rule", key, "wireguard profile was not imported")
+				continue
+			}
+			if routeKey, ok := httpWireGuardEntryRouteKey(normalized); ok {
+				if _, exists := existingHTTPWireGuardEntryRouteKeys[routeKey]; exists {
+					result.addSkippedConflict("http_rule", key, "wireguard entry route already exists")
+					continue
+				}
+				existingHTTPWireGuardEntryRouteKeys[routeKey] = struct{}{}
+			}
 		}
 		result.addImported("http_rule", key)
+		existingHTTPKeys[conflictKey] = struct{}{}
 	}
 	existingL4Rules, err := s.listAllL4Rules(ctx, knownAgentIDs)
 	if err != nil {
 		return BackupImportResult{}, err
 	}
-	existingL4Keys := map[string]struct{}{}
+	existingL4RulesByAgent := map[string][]storage.L4RuleRow{}
 	for _, row := range existingL4Rules {
-		existingL4Keys[l4ConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort)] = struct{}{}
+		existingL4RulesByAgent[row.AgentID] = append(existingL4RulesByAgent[row.AgentID], row)
 	}
 	for _, item := range bundle.L4Rules {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
-		key := l4ConflictKey(item.AgentID, item.Protocol, item.ListenHost, item.ListenPort)
+		key := l4BackupConflictKey(item.AgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardInboundMode, item.WireGuardListenHost, item.WireGuardProfileID)
 		if !ok {
 			result.addSkippedInvalid("l4_rule", key, "l4 rule references unknown agent")
 			continue
 		}
-		key = l4ConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort)
-		if _, exists := existingL4Keys[key]; exists {
-			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
+		wireGuardProfileID, profileOK := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		key = l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardInboundMode, item.WireGuardListenHost, wireGuardProfileID)
+		if strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") {
+			if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, previewCapabilityStore, resolvedAgentID); err != nil {
+				result.addSkippedInvalid("l4_rule", key, err.Error())
+				continue
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") && !profileOK {
+			result.addSkippedInvalid("l4_rule", key, "wireguard profile was not imported")
 			continue
 		}
-		input := l4RuleInputFromBackup(item, listenerIDMap)
-		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
+		egressProfileID, egressOK := remapBackupEgressProfileID(item.EgressProfileID, egressProfileIDMap)
+		if !egressOK {
+			result.addSkippedInvalid("l4_rule", key, "egress profile was not imported")
+			continue
+		}
+		input := l4RuleInputFromBackup(item, listenerIDMap, wireGuardProfileID, egressProfileID)
+		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
 			continue
 		}
-		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
-			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
+		normalized, err := normalizeL4RuleInput(input, L4Rule{AgentID: resolvedAgentID}, 0)
+		if err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
+			continue
+		}
+		defaultWireGuardListenHostFromRows(&normalized, previewWireGuardProfileRowsByAgent[resolvedAgentID])
+		key = l4RuleConflictKey(normalized)
+		if err := ensureUniqueL4Listen(l4RulesFromRows(existingL4RulesByAgent[resolvedAgentID]), normalized, -1); err != nil {
+			result.addSkippedConflict("l4_rule", key, err.Error())
+			continue
+		}
+		if err := validateL4EgressProfileReferenceForStore(ctx, s.cfg, previewRuleSvc.store, normalized); err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
+			continue
+		}
+		if err := validateRelayChainReferencesFromRows(knownAgentIDs, previewRelayListeners, flattenRelayLayers(pointerRelayLayers(input.RelayLayers)), relayChainValidationOptions{RuleAgentID: resolvedAgentID}); err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
 		result.addImported("l4_rule", key)
+		existingL4RulesByAgent[resolvedAgentID] = append(existingL4RulesByAgent[resolvedAgentID], l4RuleToRow(normalized))
 	}
 	existingPolicyRows, err := s.store.ListVersionPolicies(ctx)
 	if err != nil {
@@ -393,6 +540,100 @@ func previewCertificateTargetsResolvable(targetAgentIDs []string, agentIDMap map
 	return true
 }
 
+type previewAgentCapabilityStore struct {
+	rows map[string]storage.AgentRow
+}
+
+func (s previewAgentCapabilityStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
+	rows := make([]storage.AgentRow, 0, len(s.rows))
+	for _, row := range s.rows {
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+type previewHTTPRuleNormalizationStore struct {
+	ruleStore
+	agents                   map[string]storage.AgentRow
+	wireGuardProfilesByAgent map[string][]storage.WireGuardProfileRow
+	egressProfiles           []storage.EgressProfileRow
+	relayListenersByListener map[int]storage.RelayListenerRow
+}
+
+func (s previewHTTPRuleNormalizationStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
+	rows := make([]storage.AgentRow, 0, len(s.agents))
+	for _, row := range s.agents {
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func (s previewHTTPRuleNormalizationStore) ListWireGuardProfiles(_ context.Context, agentID string) ([]storage.WireGuardProfileRow, error) {
+	if strings.TrimSpace(agentID) != "" {
+		return append([]storage.WireGuardProfileRow(nil), s.wireGuardProfilesByAgent[agentID]...), nil
+	}
+	rows := []storage.WireGuardProfileRow{}
+	for _, agentRows := range s.wireGuardProfilesByAgent {
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
+}
+
+func (s previewHTTPRuleNormalizationStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
+	return append([]storage.EgressProfileRow(nil), s.egressProfiles...), nil
+}
+
+func (s previewHTTPRuleNormalizationStore) ListRelayListeners(_ context.Context, agentID string) ([]storage.RelayListenerRow, error) {
+	rows := []storage.RelayListenerRow{}
+	for _, row := range s.relayListenersByListener {
+		if strings.TrimSpace(agentID) != "" && row.AgentID != agentID {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func previewAgentRows(agents []BackupAgent, agentIDMap map[string]string, existingAgentsByName map[string]storage.AgentRow, existingAgentsByID map[string]storage.AgentRow, cfg config.Config) map[string]storage.AgentRow {
+	rows := make(map[string]storage.AgentRow, len(existingAgentsByID)+len(agents)+1)
+	for id, row := range existingAgentsByID {
+		rows[id] = row
+	}
+	for _, item := range agents {
+		if strings.TrimSpace(item.ID) == "" {
+			continue
+		}
+		resolvedID := strings.TrimSpace(agentIDMap[item.ID])
+		if resolvedID == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.Mode), "local") && cfg.EnableLocalAgent {
+			continue
+		}
+		if existingRow, ok := existingAgentsByName[item.Name]; ok {
+			rows[resolvedID] = existingRow
+			continue
+		}
+		if existingRow, ok := existingAgentsByID[item.ID]; ok {
+			rows[resolvedID] = existingRow
+			continue
+		}
+		rows[resolvedID] = storage.AgentRow{
+			ID:               resolvedID,
+			Name:             strings.TrimSpace(item.Name),
+			CapabilitiesJSON: marshalJSON(normalizeTags(item.Capabilities), "[]"),
+		}
+	}
+	if cfg.EnableLocalAgent && strings.TrimSpace(cfg.LocalAgentID) != "" {
+		rows[cfg.LocalAgentID] = storage.AgentRow{
+			ID:               cfg.LocalAgentID,
+			Name:             cfg.LocalAgentID,
+			CapabilitiesJSON: marshalJSON(defaultLocalCapabilities, "[]"),
+		}
+	}
+	return rows
+}
+
 func previewAgentCapabilities(agents []BackupAgent, agentIDMap map[string]string, existingAgentsByName map[string]storage.AgentRow, existingAgentsByID map[string]storage.AgentRow, cfg config.Config) map[string][]string {
 	capabilitiesByAgentID := make(map[string][]string, len(existingAgentsByID)+len(agents)+1)
 	for id, row := range existingAgentsByID {
@@ -426,13 +667,17 @@ func previewAgentCapabilities(agents []BackupAgent, agentIDMap map[string]string
 	return capabilitiesByAgentID
 }
 
-func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.RelayListenerRow, agentIDMap map[string]string, certIDMap map[int]int, cfg config.Config) map[int]int {
+func previewListenerIDMap(ctx context.Context, listeners []BackupRelayListener, existing []storage.RelayListenerRow, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, allocator *configIdentityAllocator, capabilityStore agentCapabilityStore, cfg config.Config) map[int]int {
 	listenerIDMap := map[int]int{}
-	conflictIndex := map[string]RelayListener{}
+	conflictIndex := map[string]int{}
+	grouped := map[string][]storage.RelayListenerRow{}
 	for _, row := range existing {
 		listener := relayListenerFromRow(row)
-		conflictIndex[relayConflictKey(listener.AgentID, listener.Name)] = listener
-		listenerIDMap[listener.ID] = listener.ID
+		conflictIndex[relayConflictKey(listener.AgentID, listener.Name)] = listener.ID
+		grouped[row.AgentID] = append(grouped[row.AgentID], row)
+		if listener.ID > 0 {
+			listenerIDMap[listener.ID] = listener.ID
+		}
 	}
 
 	for _, item := range listeners {
@@ -441,22 +686,119 @@ func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.Re
 			continue
 		}
 		conflictKey := relayConflictKey(resolvedAgentID, item.Name)
-		if existingListener, ok := conflictIndex[conflictKey]; ok {
-			listenerIDMap[item.ID] = existingListener.ID
+		if mappedID, ok := conflictIndex[conflictKey]; ok {
+			if item.ID > 0 {
+				listenerIDMap[item.ID] = mappedID
+			}
 			continue
 		}
-		input := relayListenerInputFromBackup(item, certIDMap)
+		if strings.EqualFold(strings.TrimSpace(item.TransportMode), "wireguard") && capabilityStore != nil {
+			if err := ensureAgentSupportsWireGuardCapability(ctx, cfg, capabilityStore, resolvedAgentID); err != nil {
+				continue
+			}
+		}
+		wireGuardProfileID, ok := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		if strings.EqualFold(strings.TrimSpace(item.TransportMode), "wireguard") && !ok {
+			continue
+		}
+		input := relayListenerInputFromBackup(item, certIDMap, wireGuardProfileID)
 		if item.CertificateID != nil && input.CertificateID == nil {
 			continue
 		}
 		if len(item.TrustedCACertificateIDs) > 0 && len(pointerIntSlice(input.TrustedCACertificateIDs)) != len(item.TrustedCACertificateIDs) {
 			continue
 		}
-		if item.ID > 0 {
-			listenerIDMap[item.ID] = item.ID
+		assignedID := item.ID
+		if allocator != nil {
+			assignedID = allocator.AllocateListenerID(item.ID)
 		}
+		normalized, err := normalizeRelayListenerInput(input, RelayListener{}, assignedID, relayNormalizeOptions{})
+		if err != nil {
+			continue
+		}
+		normalized.AgentID = resolvedAgentID
+		if err := ensureUniqueRelayListen(relayListenersFromRows(grouped[resolvedAgentID]), normalized, 0); err != nil {
+			continue
+		}
+		listenerIDMap[item.ID] = assignedID
+		conflictIndex[conflictKey] = assignedID
+		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], relayListenerToRow(normalized))
 	}
 	return listenerIDMap
+}
+
+func relayListenersFromRows(rows []storage.RelayListenerRow) []RelayListener {
+	listeners := make([]RelayListener, 0, len(rows))
+	for _, row := range rows {
+		listeners = append(listeners, relayListenerFromRow(row))
+	}
+	return listeners
+}
+
+func previewRelayListenersByID(existing []storage.RelayListenerRow, incoming []BackupRelayListener, listenerIDMap map[int]int, agentIDMap map[string]string, cfg config.Config) map[int]storage.RelayListenerRow {
+	listenersByID := map[int]storage.RelayListenerRow{}
+	existingConflictIDs := map[string]int{}
+	for _, row := range existing {
+		if row.ID > 0 {
+			listenersByID[row.ID] = row
+			existingConflictIDs[relayConflictKey(row.AgentID, row.Name)] = row.ID
+		}
+	}
+	for _, item := range incoming {
+		mappedID, ok := listenerIDMap[item.ID]
+		if !ok || mappedID <= 0 {
+			continue
+		}
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, cfg)
+		if !ok {
+			continue
+		}
+		conflictKey := relayConflictKey(resolvedAgentID, item.Name)
+		if existingID, exists := existingConflictIDs[conflictKey]; exists && existingID == mappedID {
+			continue
+		}
+		if _, exists := listenersByID[mappedID]; exists {
+			continue
+		}
+		row := relayListenerToRow(RelayListener{
+			ID:                 mappedID,
+			AgentID:            resolvedAgentID,
+			Name:               item.Name,
+			Enabled:            item.Enabled,
+			TransportMode:      defaultString(item.TransportMode, "tls_tcp"),
+			WireGuardProfileID: copyOptionalInt(item.WireGuardProfileID),
+		})
+		listenersByID[mappedID] = row
+	}
+	return listenersByID
+}
+
+func appendKnownAgentIDs(known []string, agentIDMap map[string]string) []string {
+	seen := make(map[string]struct{}, len(known)+len(agentIDMap))
+	out := make([]string, 0, len(known)+len(agentIDMap))
+	for _, agentID := range known {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			continue
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	for _, agentID := range agentIDMap {
+		agentID = strings.TrimSpace(agentID)
+		if agentID == "" {
+			continue
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		out = append(out, agentID)
+	}
+	return out
 }
 
 func previewAgentIDMap(manifest BackupManifest, agents []BackupAgent, existingByName map[string]storage.AgentRow, existingByID map[string]storage.AgentRow, cfg config.Config) map[string]string {
@@ -498,6 +840,7 @@ func (s *backupService) Import(ctx context.Context, archive []byte) (BackupImpor
 	if err != nil {
 		return BackupImportResult{}, err
 	}
+	bundle = normalizeLegacyBackupEgressProfiles(bundle)
 	if bundle.Manifest.PackageVersion != BackupPackageVersion {
 		return BackupImportResult{}, fmt.Errorf("%w: unsupported backup package version %d", ErrInvalidArgument, bundle.Manifest.PackageVersion)
 	}
@@ -526,15 +869,18 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 	}
 
 	bundle := BackupBundle{
-		Agents:           make([]BackupAgent, 0, len(agentRows)),
-		HTTPRules:        []BackupHTTPRule{},
-		L4Rules:          []BackupL4Rule{},
-		RelayListeners:   []BackupRelayListener{},
-		Certificates:     []BackupCertificate{},
-		VersionPolicies:  []BackupVersionPolicy{},
-		TrafficPolicies:  []BackupTrafficPolicy{},
-		TrafficBaselines: []BackupTrafficBaseline{},
-		Materials:        []BackupCertificateFile{},
+		Agents:            make([]BackupAgent, 0, len(agentRows)),
+		HTTPRules:         []BackupHTTPRule{},
+		L4Rules:           []BackupL4Rule{},
+		WireGuardProfiles: []BackupWireGuardProfile{},
+		WireGuardClients:  []BackupWireGuardClient{},
+		EgressProfiles:    []BackupEgressProfile{},
+		RelayListeners:    []BackupRelayListener{},
+		Certificates:      []BackupCertificate{},
+		VersionPolicies:   []BackupVersionPolicy{},
+		TrafficPolicies:   []BackupTrafficPolicy{},
+		TrafficBaselines:  []BackupTrafficBaseline{},
+		Materials:         []BackupCertificateFile{},
 	}
 
 	for _, row := range agentRows {
@@ -547,7 +893,7 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 			return BackupBundle{}, err
 		}
 		for _, row := range ruleRows {
-			bundle.HTTPRules = append(bundle.HTTPRules, httpRuleFromRow(row))
+			bundle.HTTPRules = append(bundle.HTTPRules, backupHTTPRuleFromRule(httpRuleFromRow(row)))
 		}
 
 		l4Rows, err := s.store.ListL4Rules(ctx, agentID)
@@ -555,8 +901,35 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 			return BackupBundle{}, err
 		}
 		for _, row := range l4Rows {
-			bundle.L4Rules = append(bundle.L4Rules, l4RuleFromRow(row))
+			bundle.L4Rules = append(bundle.L4Rules, backupL4RuleFromRule(l4RuleFromRow(row)))
 		}
+
+		wireGuardRows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+		if err != nil {
+			return BackupBundle{}, err
+		}
+		for _, row := range wireGuardRows {
+			bundle.WireGuardProfiles = append(bundle.WireGuardProfiles, backupWireGuardProfileFromRow(row))
+			clientRows, err := s.store.ListWireGuardClients(ctx, agentID, row.ID)
+			if err != nil {
+				return BackupBundle{}, err
+			}
+			for _, clientRow := range clientRows {
+				bundle.WireGuardClients = append(bundle.WireGuardClients, backupWireGuardClientFromRow(clientRow))
+			}
+		}
+	}
+
+	egressRows, err := s.store.ListEgressProfiles(ctx)
+	if err != nil {
+		return BackupBundle{}, err
+	}
+	for _, row := range egressRows {
+		profile, err := backupEgressProfileFromRow(row)
+		if err != nil {
+			return BackupBundle{}, err
+		}
+		bundle.EgressProfiles = append(bundle.EgressProfiles, profile)
 	}
 
 	listenerRows, err := s.store.ListRelayListeners(ctx, "")
@@ -619,20 +992,24 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 		ExportedAt:           s.now().UTC(),
 		IncludesCertificates: len(bundle.Materials) > 0,
 		Counts: BackupCounts{
-			Agents:           len(bundle.Agents),
-			HTTPRules:        len(bundle.HTTPRules),
-			L4Rules:          len(bundle.L4Rules),
-			RelayListeners:   len(bundle.RelayListeners),
-			Certificates:     len(bundle.Certificates),
-			VersionPolicies:  len(bundle.VersionPolicies),
-			TrafficPolicies:  len(bundle.TrafficPolicies),
-			TrafficBaselines: len(bundle.TrafficBaselines),
+			Agents:            len(bundle.Agents),
+			HTTPRules:         len(bundle.HTTPRules),
+			L4Rules:           len(bundle.L4Rules),
+			WireGuardProfiles: len(bundle.WireGuardProfiles),
+			WireGuardClients:  len(bundle.WireGuardClients),
+			EgressProfiles:    len(bundle.EgressProfiles),
+			RelayListeners:    len(bundle.RelayListeners),
+			Certificates:      len(bundle.Certificates),
+			VersionPolicies:   len(bundle.VersionPolicies),
+			TrafficPolicies:   len(bundle.TrafficPolicies),
+			TrafficBaselines:  len(bundle.TrafficBaselines),
 		},
 	}
 	return bundle, nil
 }
 
 func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (BackupImportResult, error) {
+	bundle = normalizeLegacyBackupEgressProfiles(bundle)
 	result := newBackupImportResult(bundle.Manifest)
 
 	agentRows, err := s.store.ListAgents(ctx)
@@ -665,11 +1042,23 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 		return BackupImportResult{}, err
 	}
 
+	wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, err := s.importWireGuardProfiles(ctx, bundle.WireGuardProfiles, agentIDMap, &result, modifiedAgents, allocator)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	if err := s.importWireGuardClients(ctx, bundle.WireGuardClients, agentIDMap, wireGuardProfileIDMap, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, &result, modifiedAgents, allocator); err != nil {
+		return BackupImportResult{}, err
+	}
+	egressProfileIDMap, err := s.importEgressProfiles(ctx, bundle.EgressProfiles, &result, allocator)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+
 	listenerRows, err := s.store.ListRelayListeners(ctx, "")
 	if err != nil {
 		return BackupImportResult{}, err
 	}
-	listenerIDMap, err := s.importRelayListeners(ctx, listenerRows, bundle.RelayListeners, agentIDMap, certIDMap, &result, modifiedAgents, allocator)
+	listenerIDMap, err := s.importRelayListeners(ctx, listenerRows, bundle.RelayListeners, agentIDMap, certIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, &result, modifiedAgents, allocator)
 	if err != nil {
 		return BackupImportResult{}, err
 	}
@@ -689,10 +1078,10 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 		return BackupImportResult{}, err
 	}
 
-	if err := s.importHTTPRules(ctx, bundle.HTTPRules, agentIDMap, listenerIDMap, &result, modifiedAgents, allocator); err != nil {
+	if err := s.importHTTPRules(ctx, bundle.HTTPRules, agentIDMap, listenerIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, egressProfileIDMap, &result, modifiedAgents, allocator); err != nil {
 		return BackupImportResult{}, err
 	}
-	if err := s.importL4Rules(ctx, bundle.L4Rules, agentIDMap, listenerIDMap, &result, modifiedAgents, allocator); err != nil {
+	if err := s.importL4Rules(ctx, bundle.L4Rules, agentIDMap, listenerIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, egressProfileIDMap, &result, modifiedAgents, allocator); err != nil {
 		return BackupImportResult{}, err
 	}
 	if err := s.bumpModifiedAgents(ctx, modifiedAgents); err != nil {
@@ -926,7 +1315,7 @@ func (s *backupService) importCertificates(ctx context.Context, existing []stora
 	return certIDMap, nil
 }
 
-func (s *backupService) importRelayListeners(ctx context.Context, existing []storage.RelayListenerRow, incoming []BackupRelayListener, agentIDMap map[string]string, certIDMap map[int]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[int]int, error) {
+func (s *backupService) importRelayListeners(ctx context.Context, existing []storage.RelayListenerRow, incoming []BackupRelayListener, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[int]int, error) {
 	listenerIDMap := map[int]int{}
 	maxRevisionByAgent := map[string]int{}
 	grouped := map[string][]storage.RelayListenerRow{}
@@ -955,8 +1344,19 @@ func (s *backupService) importRelayListeners(ctx context.Context, existing []sto
 			result.addSkippedConflict("relay_listener", conflictKey, "relay listener already exists")
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(item.TransportMode), "wireguard") {
+			if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedAgentID); err != nil {
+				result.addSkippedInvalid("relay_listener", conflictKey, err.Error())
+				continue
+			}
+		}
 
-		input := relayListenerInputFromBackup(item, certIDMap)
+		wireGuardProfileID, ok := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		if strings.EqualFold(strings.TrimSpace(item.TransportMode), "wireguard") && !ok {
+			result.addSkippedInvalid("relay_listener", conflictKey, "wireguard profile was not imported")
+			continue
+		}
+		input := relayListenerInputFromBackup(item, certIDMap, wireGuardProfileID)
 		if item.CertificateID != nil && input.CertificateID == nil {
 			result.addSkippedInvalid("relay_listener", conflictKey, "referenced certificate was not imported")
 			continue
@@ -974,6 +1374,10 @@ func (s *backupService) importRelayListeners(ctx context.Context, existing []sto
 		}
 		normalized.AgentID = resolvedAgentID
 
+		if err := ensureUniqueRelayListen(relayListenersFromRows(grouped[resolvedAgentID]), normalized, 0); err != nil {
+			result.addSkippedConflict("relay_listener", conflictKey, err.Error())
+			continue
+		}
 		listenerIDMap[item.ID] = assignedID
 		normalized.ID = assignedID
 		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
@@ -1077,7 +1481,216 @@ func (s *backupService) importTrafficBaselines(ctx context.Context, incoming []B
 	return nil
 }
 
-func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHTTPRule, agentIDMap map[string]string, listenerIDMap map[int]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
+func (s *backupService) importWireGuardClients(ctx context.Context, incoming []BackupWireGuardClient, agentIDMap map[string]string, wireGuardProfileIDMap map[string]int, acceptedProfileIDs map[string]struct{}, skippedConflictProfileIDs map[string]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
+	grouped := map[string]map[int][]storage.WireGuardClientRow{}
+	skippedGeneratedPeers := map[string]map[int][]storage.WireGuardClientRow{}
+	touchedProfiles := map[string]map[int]struct{}{}
+	markTouchedProfile := func(agentID string, profileID int) {
+		if touchedProfiles[agentID] == nil {
+			touchedProfiles[agentID] = map[int]struct{}{}
+		}
+		touchedProfiles[agentID][profileID] = struct{}{}
+	}
+	for _, item := range incoming {
+		key := wireGuardClientBackupKey(item.AgentID, item.ProfileID, item.Name, item.ID)
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
+		if !ok {
+			result.addSkippedInvalid("wireguard_client", key, "wireguard client references unknown agent")
+			continue
+		}
+		mappedProfileID, ok := remapBackupWireGuardClientProfileID(item.AgentID, resolvedAgentID, item.ProfileID, wireGuardProfileIDMap, acceptedProfileIDs)
+		if !ok {
+			if _, conflict := skippedConflictProfileIDs[wireGuardProfileKey(item.AgentID, item.ProfileID)]; conflict {
+				result.addSkippedConflict("wireguard_client", key, "wireguard profile was skipped due to conflict")
+			} else {
+				result.addSkippedInvalid("wireguard_client", key, "wireguard profile was not imported")
+			}
+			continue
+		}
+		row := wireGuardClientRowFromBackup(item, resolvedAgentID, mappedProfileID)
+		if err := validateBackupWireGuardClientRow(row); err != nil {
+			result.addSkippedInvalid("wireguard_client", key, err.Error())
+			if strings.TrimSpace(row.PublicKey) != "" {
+				if skippedGeneratedPeers[resolvedAgentID] == nil {
+					skippedGeneratedPeers[resolvedAgentID] = map[int][]storage.WireGuardClientRow{}
+				}
+				skippedGeneratedPeers[resolvedAgentID][mappedProfileID] = append(skippedGeneratedPeers[resolvedAgentID][mappedProfileID], row)
+				markTouchedProfile(resolvedAgentID, mappedProfileID)
+			}
+			continue
+		}
+		if grouped[resolvedAgentID] == nil {
+			grouped[resolvedAgentID] = map[int][]storage.WireGuardClientRow{}
+		}
+		grouped[resolvedAgentID][mappedProfileID] = append(grouped[resolvedAgentID][mappedProfileID], row)
+		markTouchedProfile(resolvedAgentID, mappedProfileID)
+		result.addImported("wireguard_client", key)
+	}
+
+	for agentID, profileIDs := range touchedProfiles {
+		profiles, err := s.store.ListWireGuardProfiles(ctx, agentID)
+		if err != nil {
+			return err
+		}
+		profileIndexByID := map[int]int{}
+		for i := range profiles {
+			profileIndexByID[profiles[i].ID] = i
+		}
+		profilesChanged := false
+		for profileID := range profileIDs {
+			rows, hasValidRows := grouped[agentID][profileID]
+			index, ok := profileIndexByID[profileID]
+			var existingClients []storage.WireGuardClientRow
+			if ok {
+				var err error
+				existingClients, err = s.store.ListWireGuardClients(ctx, agentID, profileID)
+				if err != nil {
+					return err
+				}
+			}
+			if hasValidRows {
+				if err := s.store.SaveWireGuardClients(ctx, agentID, profileID, rows); err != nil {
+					return err
+				}
+			}
+			if !ok {
+				continue
+			}
+			profile := wireGuardProfileFromRow(profiles[index])
+			profile.Peers = removeWireGuardGeneratedClientPeers(profile.Peers, existingClients)
+			profile.Peers = removeWireGuardGeneratedClientPeers(profile.Peers, skippedGeneratedPeers[agentID][profileID])
+			profile.Peers = reconcileWireGuardGeneratedClientPeers(profile.Peers, rows)
+			nextRow := wireGuardProfileToRow(profile)
+			if nextRow != profiles[index] {
+				profile.Revision = allocator.AllocateRevisionForAgent(agentID, maxWireGuardProfileRevision(profiles))
+				nextRow = wireGuardProfileToRow(profile)
+				profiles[index] = nextRow
+				profilesChanged = true
+				recordModifiedAgentRevision(modifiedAgents, agentID, profile.Revision)
+			}
+		}
+		if profilesChanged {
+			if err := s.store.SaveWireGuardProfiles(ctx, agentID, profiles); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func previewWireGuardClients(incoming []BackupWireGuardClient, agentIDMap map[string]string, wireGuardProfileIDMap map[string]int, acceptedProfileIDs map[string]struct{}, skippedConflictProfileIDs map[string]struct{}, result *BackupImportResult, cfg config.Config) error {
+	for _, item := range incoming {
+		key := wireGuardClientBackupKey(item.AgentID, item.ProfileID, item.Name, item.ID)
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, cfg)
+		if !ok {
+			result.addSkippedInvalid("wireguard_client", key, "wireguard client references unknown agent")
+			continue
+		}
+		mappedProfileID, ok := remapBackupWireGuardClientProfileID(item.AgentID, resolvedAgentID, item.ProfileID, wireGuardProfileIDMap, acceptedProfileIDs)
+		if !ok {
+			if _, conflict := skippedConflictProfileIDs[wireGuardProfileKey(item.AgentID, item.ProfileID)]; conflict {
+				result.addSkippedConflict("wireguard_client", key, "wireguard profile was skipped due to conflict")
+			} else {
+				result.addSkippedInvalid("wireguard_client", key, "wireguard profile was not imported")
+			}
+			continue
+		}
+		row := wireGuardClientRowFromBackup(item, resolvedAgentID, mappedProfileID)
+		if err := validateBackupWireGuardClientRow(row); err != nil {
+			result.addSkippedInvalid("wireguard_client", key, err.Error())
+			continue
+		}
+		result.addImported("wireguard_client", key)
+	}
+	return nil
+}
+
+func (s *backupService) importEgressProfiles(ctx context.Context, incoming []BackupEgressProfile, result *BackupImportResult, allocator *configIdentityAllocator) (map[int]int, error) {
+	existingRows, err := s.store.ListEgressProfiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	profileIDMap := map[int]int{}
+	rows := append([]storage.EgressProfileRow(nil), existingRows...)
+	maxRevision := maxEgressProfileRevision(rows)
+
+	for _, item := range incoming {
+		key := egressProfileBackupKey(item)
+		assignedID := allocator.AllocateEgressProfileID(item.ID)
+		profile, err := normalizeEgressProfileInput(egressProfileInputFromBackup(item), EgressProfile{}, assignedID)
+		if err != nil {
+			result.addSkippedInvalid("egress_profile", key, err.Error())
+			continue
+		}
+		profile.ID = assignedID
+		profile.Revision = maxRevision + 1
+		maxRevision = profile.Revision
+		rows = append(rows, egressProfileToRow(profile))
+		profileIDMap[item.ID] = assignedID
+		result.addImported("egress_profile", key)
+	}
+
+	if !egressProfileRowsEqual(existingRows, rows) {
+		if err := s.store.SaveEgressProfiles(ctx, rows); err != nil {
+			return nil, err
+		}
+	}
+	return profileIDMap, nil
+}
+
+func previewEgressProfiles(incoming []BackupEgressProfile, existingRows []storage.EgressProfileRow, allocator *configIdentityAllocator, result *BackupImportResult) (map[int]int, []storage.EgressProfileRow) {
+	profileIDMap := map[int]int{}
+	rows := append([]storage.EgressProfileRow(nil), existingRows...)
+	maxRevision := maxEgressProfileRevision(rows)
+	for _, item := range incoming {
+		key := egressProfileBackupKey(item)
+		assignedID := allocator.AllocateEgressProfileID(item.ID)
+		profile, err := normalizeEgressProfileInput(egressProfileInputFromBackup(item), EgressProfile{}, assignedID)
+		if err != nil {
+			result.addSkippedInvalid("egress_profile", key, err.Error())
+			continue
+		}
+		profile.ID = assignedID
+		profile.Revision = maxRevision + 1
+		maxRevision = profile.Revision
+		rows = append(rows, egressProfileToRow(profile))
+		profileIDMap[item.ID] = assignedID
+		result.addImported("egress_profile", key)
+	}
+	return profileIDMap, rows
+}
+
+func egressProfileBackupKey(profile BackupEgressProfile) string {
+	if strings.TrimSpace(profile.Name) != "" {
+		return strings.TrimSpace(profile.Name)
+	}
+	return fmt.Sprintf("#%d", profile.ID)
+}
+
+func remapBackupEgressProfileID(id *int, profileIDMap map[int]int) (*int, bool) {
+	if id == nil || *id <= 0 {
+		return nil, true
+	}
+	mapped, ok := profileIDMap[*id]
+	if !ok || mapped <= 0 {
+		return nil, false
+	}
+	return backupIntPtr(mapped), true
+}
+
+func egressProfileRowsEqual(a []storage.EgressProfileRow, b []storage.EgressProfileRow) bool {
+	return equalSortedRows(a, b, func(x storage.EgressProfileRow, y storage.EgressProfileRow) int {
+		if x.ID < y.ID {
+			return -1
+		}
+		if x.ID > y.ID {
+			return 1
+		}
+		return 0
+	})
+}
+
+func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHTTPRule, agentIDMap map[string]string, listenerIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, egressProfileIDMap map[int]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
 	ruleSvc := &ruleService{cfg: s.cfg, store: s.store}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
@@ -1088,12 +1701,16 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 		return err
 	}
 	conflictSet := map[string]struct{}{}
+	wireGuardRouteConflictSet := map[string]struct{}{}
 	grouped := map[string][]storage.HTTPRuleRow{}
 	maxRevisionByAgent := map[string]int{}
 
 	for _, row := range existingRules {
 		key := httpRuleConflictKey(row.AgentID, row.FrontendURL)
 		conflictSet[key] = struct{}{}
+		if routeKey, ok := httpWireGuardEntryRouteKey(httpRuleFromRow(row)); ok {
+			wireGuardRouteConflictSet[routeKey] = struct{}{}
+		}
 		grouped[row.AgentID] = append(grouped[row.AgentID], row)
 		if row.Revision > maxRevisionByAgent[row.AgentID] {
 			maxRevisionByAgent[row.AgentID] = row.Revision
@@ -1112,13 +1729,25 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 			result.addSkippedConflict("http_rule", key, "frontend_url already exists")
 			continue
 		}
+		if item.WireGuardEntryEnabled {
+			if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedAgentID); err != nil {
+				result.addSkippedInvalid("http_rule", key, err.Error())
+				continue
+			}
+		}
 
-		input := httpRuleInputFromBackup(item, listenerIDMap)
-		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
-			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
+		wireGuardProfileID, profileOK := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		if item.WireGuardEntryEnabled && !profileOK {
+			result.addSkippedInvalid("http_rule", key, "wireguard profile was not imported")
 			continue
 		}
-		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+		egressProfileID, egressOK := remapBackupEgressProfileID(item.EgressProfileID, egressProfileIDMap)
+		if !egressOK {
+			result.addSkippedInvalid("http_rule", key, "egress profile was not imported")
+			continue
+		}
+		input := httpRuleInputFromBackup(item, listenerIDMap, wireGuardProfileID, egressProfileID)
+		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
 			continue
 		}
@@ -1129,15 +1758,30 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 			continue
 		}
 		normalized.AgentID = resolvedAgentID
+		if routeKey, ok := httpWireGuardEntryRouteKey(normalized); ok {
+			if _, exists := wireGuardRouteConflictSet[routeKey]; exists {
+				result.addSkippedConflict("http_rule", key, "wireguard entry route already exists")
+				continue
+			}
+			wireGuardRouteConflictSet[routeKey] = struct{}{}
+		}
 		assignedID := allocator.AllocateRuleID(item.ID)
 		normalized.ID = assignedID
 		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
 		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
 			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
 		}
+		executorAgentIDs, executorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedAgentID, normalized.RelayLayers, normalized.EgressProfileID, normalized.Revision)
+		if err != nil {
+			result.addSkippedInvalid("http_rule", key, err.Error())
+			continue
+		}
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], httpRuleToRow(normalized))
 		conflictSet[conflictKey] = struct{}{}
 		recordModifiedAgentRevision(modifiedAgents, resolvedAgentID, normalized.Revision)
+		for _, executorAgentID := range executorAgentIDs {
+			recordModifiedAgentRevision(modifiedAgents, executorAgentID, executorRevision)
+		}
 		result.addImported("http_rule", key)
 	}
 
@@ -1156,7 +1800,7 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 	return nil
 }
 
-func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Rule, agentIDMap map[string]string, listenerIDMap map[int]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
+func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Rule, agentIDMap map[string]string, listenerIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, importedWireGuardProfileIDs map[string]struct{}, egressProfileIDMap map[int]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
 	l4Svc := &l4Service{cfg: s.cfg, store: s.store}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
@@ -1166,13 +1810,10 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 	if err != nil {
 		return err
 	}
-	conflictSet := map[string]struct{}{}
 	grouped := map[string][]storage.L4RuleRow{}
 	maxRevisionByAgent := map[string]int{}
 
 	for _, row := range existingRules {
-		key := l4ConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort)
-		conflictSet[key] = struct{}{}
 		grouped[row.AgentID] = append(grouped[row.AgentID], row)
 		if row.Revision > maxRevisionByAgent[row.AgentID] {
 			maxRevisionByAgent[row.AgentID] = row.Revision
@@ -1181,22 +1822,30 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 
 	for _, item := range incoming {
 		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
-		key := l4ConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort)
+		wireGuardProfileID, profileOK := remapBackupWireGuardProfileID(item.AgentID, item.WireGuardProfileID, wireGuardProfileIDMap, enabledWireGuardProfileIDs)
+		key := l4BackupConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort, item.ListenMode, item.WireGuardInboundMode, item.WireGuardListenHost, wireGuardProfileID)
 		if !ok {
 			result.addSkippedInvalid("l4_rule", key, "l4 rule references unknown agent")
 			continue
 		}
-		if _, exists := conflictSet[key]; exists {
-			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
-			continue
+		if strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") {
+			if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedAgentID); err != nil {
+				result.addSkippedInvalid("l4_rule", key, err.Error())
+				continue
+			}
 		}
 
-		input := l4RuleInputFromBackup(item, listenerIDMap)
-		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
-			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
+		if strings.EqualFold(strings.TrimSpace(item.ListenMode), "wireguard") && !profileOK {
+			result.addSkippedInvalid("l4_rule", key, "wireguard profile was not imported")
 			continue
 		}
-		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+		egressProfileID, egressOK := remapBackupEgressProfileID(item.EgressProfileID, egressProfileIDMap)
+		if !egressOK {
+			result.addSkippedInvalid("l4_rule", key, "egress profile was not imported")
+			continue
+		}
+		input := l4RuleInputFromBackup(item, listenerIDMap, wireGuardProfileID, egressProfileID)
+		if !remappedBackupRelayLayersComplete(item.RelayChain, item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
 			continue
 		}
@@ -1206,11 +1855,23 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
-		if err := l4Svc.validateRelayChain(ctx, normalized.RelayChain); err != nil {
+		if err := l4Svc.defaultWireGuardListenHost(ctx, resolvedAgentID, &normalized); err != nil {
+			return err
+		}
+		if err := l4Svc.validateL4EgressProfileReference(ctx, normalized); err != nil {
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
-		if err := l4Svc.validateRelayChain(ctx, flattenRelayLayers(normalized.RelayLayers)); err != nil {
+		key = l4RuleConflictKey(normalized)
+		if err := ensureUniqueL4Listen(l4RulesFromRows(grouped[resolvedAgentID]), normalized, -1); err != nil {
+			result.addSkippedConflict("l4_rule", key, err.Error())
+			continue
+		}
+		if err := l4Svc.validateRelayChain(ctx, resolvedAgentID, normalized.RelayChain); err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
+			continue
+		}
+		if err := l4Svc.validateRelayChain(ctx, resolvedAgentID, flattenRelayLayers(normalized.RelayLayers)); err != nil {
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
@@ -1221,9 +1882,16 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
 			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
 		}
+		executorAgentIDs, executorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedAgentID, normalized.RelayLayers, normalized.EgressProfileID, normalized.Revision)
+		if err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
+			continue
+		}
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], l4RuleToRow(normalized))
-		conflictSet[key] = struct{}{}
 		recordModifiedAgentRevision(modifiedAgents, resolvedAgentID, normalized.Revision)
+		for _, executorAgentID := range executorAgentIDs {
+			recordModifiedAgentRevision(modifiedAgents, executorAgentID, executorRevision)
+		}
 		result.addImported("l4_rule", key)
 	}
 
@@ -1240,6 +1908,21 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		}
 	}
 	return nil
+}
+
+func backupWireGuardProfileWasImported(sourceAgentID string, resolvedAgentID string, sourceProfileID int, importedWireGuardProfileIDs map[string]struct{}) bool {
+	if sourceProfileID <= 0 {
+		return false
+	}
+	for _, key := range []string{
+		wireGuardProfileKey(sourceAgentID, sourceProfileID),
+		wireGuardProfileKey(resolvedAgentID, sourceProfileID),
+	} {
+		if _, ok := importedWireGuardProfileIDs[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func recordModifiedAgentRevision(modifiedAgents modifiedAgentRevisions, agentID string, revision int) {
@@ -1369,6 +2052,15 @@ func encodeBackupBundle(bundle BackupBundle) ([]byte, error) {
 	if err := writeBackupJSONFile(tw, backupL4RulesFile, bundle.L4Rules); err != nil {
 		return nil, err
 	}
+	if err := writeBackupJSONFile(tw, backupWireGuardProfilesFile, bundle.WireGuardProfiles); err != nil {
+		return nil, err
+	}
+	if err := writeBackupJSONFile(tw, backupWireGuardClientsFile, bundle.WireGuardClients); err != nil {
+		return nil, err
+	}
+	if err := writeBackupJSONFile(tw, backupEgressProfilesFile, bundle.EgressProfiles); err != nil {
+		return nil, err
+	}
 	if err := writeBackupJSONFile(tw, backupRelayListenersFile, bundle.RelayListeners); err != nil {
 		return nil, err
 	}
@@ -1444,6 +2136,18 @@ func decodeBackupBundle(archive []byte) (BackupBundle, error) {
 		case backupL4RulesFile:
 			if err := json.Unmarshal(content, &bundle.L4Rules); err != nil {
 				return BackupBundle{}, fmt.Errorf("%w: invalid l4_rules.json", ErrInvalidArgument)
+			}
+		case backupWireGuardProfilesFile:
+			if err := json.Unmarshal(content, &bundle.WireGuardProfiles); err != nil {
+				return BackupBundle{}, fmt.Errorf("%w: invalid wireguard_profiles.json", ErrInvalidArgument)
+			}
+		case backupWireGuardClientsFile:
+			if err := json.Unmarshal(content, &bundle.WireGuardClients); err != nil {
+				return BackupBundle{}, fmt.Errorf("%w: invalid wireguard_clients.json", ErrInvalidArgument)
+			}
+		case backupEgressProfilesFile:
+			if err := json.Unmarshal(content, &bundle.EgressProfiles); err != nil {
+				return BackupBundle{}, fmt.Errorf("%w: invalid egress_profiles.json", ErrInvalidArgument)
 			}
 		case backupRelayListenersFile:
 			if err := json.Unmarshal(content, &bundle.RelayListeners); err != nil {
@@ -1556,8 +2260,29 @@ func httpRuleConflictKey(agentID string, frontendURL string) string {
 	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(frontendURL)
 }
 
-func l4ConflictKey(agentID string, protocol string, listenHost string, listenPort int) string {
-	return strings.TrimSpace(agentID) + "|" + strings.ToLower(strings.TrimSpace(protocol)) + "|" + strings.TrimSpace(listenHost) + "|" + fmt.Sprintf("%d", listenPort)
+func l4ConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenStack string) string {
+	return strings.TrimSpace(agentID) + "|" + strings.ToLower(strings.TrimSpace(protocol)) + "|" + strings.TrimSpace(listenHost) + "|" + fmt.Sprintf("%d", listenPort) + "|" + strings.TrimSpace(listenStack)
+}
+
+func l4RuleConflictKey(rule L4Rule) string {
+	return l4ConflictKey(rule.AgentID, rule.Protocol, effectiveL4ListenHost(rule), rule.ListenPort, effectiveL4ListenStack(rule))
+}
+
+func l4BackupConflictKey(agentID string, protocol string, listenHost string, listenPort int, listenMode string, wireGuardInboundMode string, wireGuardListenHost string, wireGuardProfileID *int) string {
+	effectiveHost := strings.TrimSpace(listenHost)
+	listenStack := "host"
+	if strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") {
+		listenStack = "wireguard"
+		if wireGuardProfileID != nil && *wireGuardProfileID > 0 {
+			listenStack = fmt.Sprintf("wireguard:%d", *wireGuardProfileID)
+		}
+		if strings.EqualFold(strings.TrimSpace(wireGuardInboundMode), "transparent") {
+			effectiveHost = "transparent"
+		} else if host := strings.TrimSpace(wireGuardListenHost); host != "" {
+			effectiveHost = host
+		}
+	}
+	return l4ConflictKey(agentID, protocol, effectiveHost, listenPort, listenStack)
 }
 
 func trafficBaselineKey(agentID string, cycleStart string) string {
@@ -1603,56 +2328,626 @@ func certificateRequiresMaterial(cert ManagedCertificate) bool {
 	return cert.Status == "active"
 }
 
-func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int) HTTPRuleInput {
-	relayChain := remapIntSlice(rule.RelayChain, listenerIDMap)
-	relayLayers := remapIntLayers(rule.RelayLayers, listenerIDMap)
-	return HTTPRuleInput{
-		FrontendURL:      backupStringPtr(rule.FrontendURL),
-		BackendURL:       backupStringPtr(rule.BackendURL),
-		Backends:         &rule.Backends,
-		LoadBalancing:    &rule.LoadBalancing,
-		Enabled:          backupBoolPtr(rule.Enabled),
-		Tags:             &rule.Tags,
-		ProxyRedirect:    backupBoolPtr(rule.ProxyRedirect),
-		RelayChain:       relayChain,
-		RelayLayers:      relayLayers,
-		RelayObfs:        backupBoolPtr(rule.RelayObfs),
-		PassProxyHeaders: backupBoolPtr(rule.PassProxyHeaders),
-		UserAgent:        backupStringPtr(rule.UserAgent),
-		CustomHeaders:    &rule.CustomHeaders,
+func backupHTTPRuleFromRule(rule HTTPRule) BackupHTTPRule {
+	return BackupHTTPRule{
+		ID:                       rule.ID,
+		AgentID:                  rule.AgentID,
+		FrontendURL:              rule.FrontendURL,
+		BackendURL:               rule.BackendURL,
+		Backends:                 append([]HTTPRuleBackend(nil), rule.Backends...),
+		LoadBalancing:            rule.LoadBalancing,
+		Enabled:                  rule.Enabled,
+		Tags:                     append([]string(nil), rule.Tags...),
+		ProxyRedirect:            rule.ProxyRedirect,
+		RelayChain:               append([]int(nil), rule.RelayChain...),
+		RelayLayers:              cloneIntLayers(rule.RelayLayers),
+		RelayObfs:                rule.RelayObfs,
+		PassProxyHeaders:         rule.PassProxyHeaders,
+		UserAgent:                rule.UserAgent,
+		CustomHeaders:            append([]HTTPCustomHeader(nil), rule.CustomHeaders...),
+		WireGuardEntryEnabled:    rule.WireGuardEntryEnabled,
+		WireGuardProfileID:       copyOptionalInt(rule.WireGuardProfileID),
+		EgressProfileID:          copyOptionalInt(rule.EgressProfileID),
+		WireGuardEntryListenHost: rule.WireGuardEntryListenHost,
+		WireGuardEntryListenPort: rule.WireGuardEntryListenPort,
+		Revision:                 rule.Revision,
 	}
 }
 
-func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int) L4RuleInput {
-	relayChain := remapIntSlice(rule.RelayChain, listenerIDMap)
-	relayLayers := remapIntLayers(rule.RelayLayers, listenerIDMap)
+func backupL4RuleFromRule(rule L4Rule) BackupL4Rule {
+	return BackupL4Rule{
+		ID:                   rule.ID,
+		AgentID:              rule.AgentID,
+		Name:                 rule.Name,
+		Protocol:             rule.Protocol,
+		ListenHost:           rule.ListenHost,
+		ListenPort:           rule.ListenPort,
+		UpstreamHost:         rule.UpstreamHost,
+		UpstreamPort:         rule.UpstreamPort,
+		Backends:             append([]L4Backend(nil), rule.Backends...),
+		LoadBalancing:        rule.LoadBalancing,
+		Tuning:               rule.Tuning,
+		RelayChain:           append([]int(nil), rule.RelayChain...),
+		RelayLayers:          cloneIntLayers(rule.RelayLayers),
+		RelayObfs:            rule.RelayObfs,
+		ListenMode:           rule.ListenMode,
+		WireGuardProfileID:   copyOptionalInt(rule.WireGuardProfileID),
+		EgressProfileID:      copyOptionalInt(rule.EgressProfileID),
+		WireGuardInboundMode: rule.WireGuardInboundMode,
+		WireGuardListenHost:  rule.WireGuardListenHost,
+		ProxyEntryAuth:       rule.ProxyEntryAuth,
+		Enabled:              rule.Enabled,
+		Tags:                 append([]string(nil), rule.Tags...),
+		Revision:             rule.Revision,
+	}
+}
+
+func backupEgressProfileFromRow(row storage.EgressProfileRow) (BackupEgressProfile, error) {
+	profile, err := egressProfileFromRow(row)
+	if err != nil {
+		return BackupEgressProfile{}, err
+	}
+	return BackupEgressProfile{
+		ID:              profile.ID,
+		Name:            profile.Name,
+		Type:            profile.Type,
+		ProxyURL:        profile.ProxyURL,
+		WireGuardConfig: cloneEgressWireGuardConfig(profile.WireGuardConfig),
+		Enabled:         profile.Enabled,
+		Description:     profile.Description,
+		Revision:        profile.Revision,
+	}, nil
+}
+
+func egressProfileInputFromBackup(profile BackupEgressProfile) EgressProfileInput {
+	return EgressProfileInput{
+		ID:              backupIntPtr(profile.ID),
+		Name:            backupStringPtr(profile.Name),
+		Type:            backupStringPtr(profile.Type),
+		ProxyURL:        backupStringPtr(profile.ProxyURL),
+		WireGuardConfig: cloneEgressWireGuardConfig(profile.WireGuardConfig),
+		Enabled:         backupBoolPtr(profile.Enabled),
+		Description:     backupStringPtr(profile.Description),
+	}
+}
+
+func normalizeLegacyBackupEgressProfiles(bundle BackupBundle) BackupBundle {
+	nextID := maxBackupEgressProfileID(bundle.EgressProfiles) + 1
+	for i := range bundle.L4Rules {
+		rule := &bundle.L4Rules[i]
+		if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			continue
+		}
+		profile, ok := legacyBackupL4EgressProfile(*rule, nextID)
+		if !ok {
+			continue
+		}
+		bundle.EgressProfiles = append(bundle.EgressProfiles, profile)
+		rule.EgressProfileID = backupIntPtr(profile.ID)
+		nextID++
+	}
+	if len(bundle.EgressProfiles) > 0 {
+		bundle.Manifest.Counts.EgressProfiles = len(bundle.EgressProfiles)
+	}
+	return bundle
+}
+
+func maxBackupEgressProfileID(profiles []BackupEgressProfile) int {
+	maxID := 0
+	for _, profile := range profiles {
+		if profile.ID > maxID {
+			maxID = profile.ID
+		}
+	}
+	return maxID
+}
+
+func legacyBackupL4EgressProfile(rule BackupL4Rule, id int) (BackupEgressProfile, bool) {
+	mode := strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode))
+	switch mode {
+	case "proxy":
+		proxyURL := strings.TrimSpace(rule.ProxyEgressURL)
+		if proxyURL == "" {
+			return BackupEgressProfile{}, false
+		}
+		profileType := legacyBackupProxyEgressProfileType(proxyURL)
+		if profileType == "" {
+			return BackupEgressProfile{}, false
+		}
+		return BackupEgressProfile{
+			ID:          id,
+			Name:        legacyBackupEgressProfileName(rule),
+			Type:        profileType,
+			ProxyURL:    proxyURL,
+			Enabled:     true,
+			Description: fmt.Sprintf("Migrated from legacy L4 rule %d", rule.ID),
+			Revision:    legacyBackupEgressProfileRevision(rule),
+		}, true
+	case "wireguard":
+		config := legacyBackupWireGuardEgressConfig(rule.WireGuardEgressURI)
+		if config == nil {
+			return BackupEgressProfile{}, false
+		}
+		return BackupEgressProfile{
+			ID:              id,
+			Name:            legacyBackupEgressProfileName(rule),
+			Type:            "wireguard",
+			WireGuardConfig: config,
+			Enabled:         true,
+			Description:     fmt.Sprintf("Migrated from legacy L4 rule %d", rule.ID),
+			Revision:        legacyBackupEgressProfileRevision(rule),
+		}, true
+	default:
+		return BackupEgressProfile{}, false
+	}
+}
+
+func legacyBackupProxyEgressProfileType(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "http":
+		return "http"
+	case "socks", "socks5", "socks5h":
+		return "socks"
+	default:
+		return ""
+	}
+}
+
+func legacyBackupEgressProfileName(rule BackupL4Rule) string {
+	name := strings.TrimSpace(rule.Name)
+	if name == "" {
+		name = fmt.Sprintf("L4 rule %d", rule.ID)
+	}
+	if strings.HasSuffix(strings.ToLower(name), " egress") {
+		return name
+	}
+	return name + " egress"
+}
+
+func legacyBackupEgressProfileRevision(rule BackupL4Rule) int {
+	if rule.Revision > 0 {
+		return rule.Revision
+	}
+	return 1
+}
+
+func legacyBackupWireGuardEgressConfig(raw string) *EgressWireGuardConfig {
+	parsed, err := ParseWireGuardURI(raw)
+	if err != nil {
+		return nil
+	}
+	return &EgressWireGuardConfig{
+		PrivateKey: parsed.PrivateKey,
+		Addresses:  append([]string(nil), parsed.Addresses...),
+		Peers: []WireGuardPeer{{
+			Name:         parsed.Name,
+			PublicKey:    parsed.PublicKey,
+			PresharedKey: parsed.PresharedKey,
+			Endpoint:     parsed.Endpoint,
+			AllowedIPs:   append([]string(nil), parsed.AllowedIPs...),
+			Reserved:     append([]byte(nil), parsed.Reserved...),
+		}},
+		DNS: append([]string(nil), parsed.DNS...),
+		MTU: parsed.MTU,
+	}
+}
+
+func backupWireGuardProfileFromRow(row storage.WireGuardProfileRow) BackupWireGuardProfile {
+	return BackupWireGuardProfile{
+		ID:             row.ID,
+		AgentID:        row.AgentID,
+		Name:           row.Name,
+		Mode:           row.Mode,
+		PrivateKey:     row.PrivateKey,
+		ListenPort:     row.ListenPort,
+		PublicEndpoint: row.PublicEndpoint,
+		BindAddresses:  parseStringArray(row.BindAddressesJSON),
+		Addresses:      parseStringArray(row.AddressesJSON),
+		Peers:          parseWireGuardPeers(row.PeersJSON),
+		DNS:            parseStringArray(row.DNSJSON),
+		MTU:            row.MTU,
+		Enabled:        row.Enabled,
+		Tags:           parseStringArray(row.TagsJSON),
+		Revision:       row.Revision,
+	}
+}
+
+func backupWireGuardClientFromRow(row storage.WireGuardClientRow) BackupWireGuardClient {
+	return BackupWireGuardClient{
+		ID:           row.ID,
+		AgentID:      row.AgentID,
+		ProfileID:    row.ProfileID,
+		Name:         row.Name,
+		PrivateKey:   row.PrivateKey,
+		PublicKey:    row.PublicKey,
+		PresharedKey: row.PresharedKey,
+		Address:      row.Address,
+		AllowedIPs:   parseStringArray(row.AllowedIPsJSON),
+		DNS:          parseStringArray(row.DNSJSON),
+		Enabled:      row.Enabled,
+		CreatedAt:    row.CreatedAt,
+		UpdatedAt:    row.UpdatedAt,
+	}
+}
+
+func wireGuardClientRowFromBackup(item BackupWireGuardClient, agentID string, profileID int) storage.WireGuardClientRow {
+	return storage.WireGuardClientRow{
+		ID:             item.ID,
+		AgentID:        agentID,
+		ProfileID:      profileID,
+		Name:           strings.TrimSpace(item.Name),
+		PrivateKey:     strings.TrimSpace(item.PrivateKey),
+		PublicKey:      strings.TrimSpace(item.PublicKey),
+		PresharedKey:   strings.TrimSpace(item.PresharedKey),
+		Address:        strings.TrimSpace(item.Address),
+		AllowedIPsJSON: marshalJSON(normalizeStringList(item.AllowedIPs), "[]"),
+		DNSJSON:        marshalJSON(normalizeStringList(item.DNS), "[]"),
+		Enabled:        item.Enabled,
+		CreatedAt:      strings.TrimSpace(item.CreatedAt),
+		UpdatedAt:      strings.TrimSpace(item.UpdatedAt),
+	}
+}
+
+func backupWireGuardBindAddresses(addresses []string) []string {
+	normalized := normalizeStringList(addresses)
+	if len(normalized) == 0 {
+		return []string{"0.0.0.0"}
+	}
+	return normalized
+}
+
+func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int, wireGuardProfileID *int, egressProfileID *int) HTTPRuleInput {
+	backends := backupHTTPBackends(rule.Backends, rule.BackendURL)
+	relayLayers := backupRelayLayers(rule.RelayChain, rule.RelayLayers, listenerIDMap)
+	return HTTPRuleInput{
+		FrontendURL:              backupStringPtr(rule.FrontendURL),
+		Backends:                 &backends,
+		LoadBalancing:            &rule.LoadBalancing,
+		Enabled:                  backupBoolPtr(rule.Enabled),
+		Tags:                     &rule.Tags,
+		ProxyRedirect:            backupBoolPtr(rule.ProxyRedirect),
+		RelayLayers:              relayLayers,
+		RelayObfs:                backupBoolPtr(rule.RelayObfs),
+		PassProxyHeaders:         backupBoolPtr(rule.PassProxyHeaders),
+		UserAgent:                backupStringPtr(rule.UserAgent),
+		CustomHeaders:            &rule.CustomHeaders,
+		WireGuardEntryEnabled:    backupBoolPtr(rule.WireGuardEntryEnabled),
+		WireGuardProfileID:       copyOptionalInt(wireGuardProfileID),
+		EgressProfileID:          copyOptionalInt(egressProfileID),
+		WireGuardEntryListenHost: backupStringPtr(rule.WireGuardEntryListenHost),
+		WireGuardEntryListenPort: backupIntPtr(rule.WireGuardEntryListenPort),
+	}
+}
+
+func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int, wireGuardProfileID *int, egressProfileID *int) L4RuleInput {
+	backends := backupL4Backends(rule.Backends, rule.UpstreamHost, rule.UpstreamPort)
+	relayLayers := backupRelayLayers(rule.RelayChain, rule.RelayLayers, listenerIDMap)
 	return L4RuleInput{
-		Name:          backupStringPtr(rule.Name),
-		Protocol:      backupStringPtr(rule.Protocol),
-		ListenHost:    backupStringPtr(rule.ListenHost),
-		ListenPort:    backupIntPtr(rule.ListenPort),
-		UpstreamHost:  backupStringPtr(rule.UpstreamHost),
-		UpstreamPort:  backupIntPtr(rule.UpstreamPort),
-		Backends:      &rule.Backends,
-		LoadBalancing: &rule.LoadBalancing,
-		Tuning:        &rule.Tuning,
-		RelayChain:    relayChain,
-		RelayLayers:   relayLayers,
-		RelayObfs:     backupBoolPtr(rule.RelayObfs),
-		ListenMode:    backupStringPtr(rule.ListenMode),
+		Name:                 backupStringPtr(rule.Name),
+		Protocol:             backupStringPtr(rule.Protocol),
+		ListenHost:           backupStringPtr(rule.ListenHost),
+		ListenPort:           backupIntPtr(rule.ListenPort),
+		Backends:             &backends,
+		LoadBalancing:        &rule.LoadBalancing,
+		Tuning:               &rule.Tuning,
+		RelayLayers:          relayLayers,
+		RelayObfs:            backupBoolPtr(rule.RelayObfs),
+		ListenMode:           backupStringPtr(rule.ListenMode),
+		WireGuardProfileID:   copyOptionalInt(wireGuardProfileID),
+		EgressProfileID:      copyOptionalInt(egressProfileID),
+		WireGuardInboundMode: backupStringPtr(rule.WireGuardInboundMode),
+		WireGuardListenHost:  backupStringPtr(rule.WireGuardListenHost),
 		ProxyEntryAuth: &L4ProxyEntryAuth{
 			Enabled:  rule.ProxyEntryAuth.Enabled,
 			Username: rule.ProxyEntryAuth.Username,
 			Password: rule.ProxyEntryAuth.Password,
 		},
-		ProxyEgressMode: backupStringPtr(rule.ProxyEgressMode),
-		ProxyEgressURL:  backupStringPtr(rule.ProxyEgressURL),
-		Enabled:         backupBoolPtr(rule.Enabled),
-		Tags:            &rule.Tags,
+		Enabled: backupBoolPtr(rule.Enabled),
+		Tags:    &rule.Tags,
 	}
 }
 
-func relayListenerInputFromBackup(listener BackupRelayListener, certIDMap map[int]int) RelayListenerInput {
+func wireGuardProfileKey(agentID string, profileID int) string {
+	return strings.TrimSpace(agentID) + "|" + fmt.Sprintf("%d", profileID)
+}
+
+func wireGuardProfileConflictKey(agentID string, name string) string {
+	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(name)
+}
+
+func wireGuardClientBackupKey(agentID string, profileID int, name string, id int) string {
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		trimmedName = fmt.Sprintf("#%d", id)
+	}
+	return wireGuardProfileKey(agentID, profileID) + "|" + trimmedName
+}
+
+func remapBackupWireGuardProfileID(agentID string, profileID *int, profileIDMap map[string]int, enabledProfileIDs map[string]struct{}) (*int, bool) {
+	if profileID == nil || *profileID <= 0 {
+		return nil, true
+	}
+	profileKey := wireGuardProfileKey(agentID, *profileID)
+	mapped, ok := profileIDMap[profileKey]
+	if !ok || mapped <= 0 {
+		return nil, false
+	}
+	if _, ok := enabledProfileIDs[profileKey]; !ok {
+		return nil, false
+	}
+	return backupIntPtr(mapped), true
+}
+
+func remapBackupWireGuardClientProfileID(agentID string, resolvedAgentID string, profileID int, profileIDMap map[string]int, acceptedProfileIDs map[string]struct{}) (int, bool) {
+	if profileID <= 0 {
+		return 0, false
+	}
+	for _, profileKey := range []string{
+		wireGuardProfileKey(agentID, profileID),
+		wireGuardProfileKey(resolvedAgentID, profileID),
+	} {
+		if _, ok := acceptedProfileIDs[profileKey]; !ok {
+			continue
+		}
+		mapped, ok := profileIDMap[profileKey]
+		if ok && mapped > 0 {
+			return mapped, true
+		}
+	}
+	return 0, false
+}
+
+func validateBackupWireGuardClientRow(row storage.WireGuardClientRow) error {
+	if row.ID <= 0 {
+		return fmt.Errorf("%w: wireguard client id is required", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(row.Name) == "" {
+		return fmt.Errorf("%w: wireguard client name is required", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(row.PrivateKey) == "" || strings.TrimSpace(row.PublicKey) == "" {
+		return fmt.Errorf("%w: wireguard client private_key and public_key are required", ErrInvalidArgument)
+	}
+	if err := validateWireGuardKey(row.PrivateKey, true); err != nil {
+		return fmt.Errorf("%w: wireguard client private_key must be a WireGuard key", ErrInvalidArgument)
+	}
+	if err := validateWireGuardKey(row.PublicKey, true); err != nil {
+		return fmt.Errorf("%w: wireguard client public_key must be a WireGuard key", ErrInvalidArgument)
+	}
+	if err := validateWireGuardKey(row.PresharedKey, false); err != nil {
+		return fmt.Errorf("%w: wireguard client preshared_key must be a WireGuard key", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(row.Address) == "" {
+		return fmt.Errorf("%w: wireguard client address is required", ErrInvalidArgument)
+	}
+	if err := validateWireGuardPrefixes([]string{row.Address}, "address"); err != nil {
+		return err
+	}
+	if err := validateWireGuardPrefixes(parseStringArray(row.AllowedIPsJSON), "allowed_ips"); err != nil {
+		return err
+	}
+	if err := validateWireGuardDNSAddrs(parseStringArray(row.DNSJSON)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func previewWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, cfg config.Config, store backupStore, capabilityStore agentCapabilityStore, result *BackupImportResult) (map[string]int, map[string]struct{}, map[string]struct{}, map[string]struct{}, map[string][]storage.WireGuardProfileRow, error) {
+	knownAgentIDs, err := allKnownAgentIDs(ctx, cfg, store)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	existingRows, err := listAllWireGuardProfileRows(ctx, store, knownAgentIDs)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, cfg, store)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, groupedRows, _, err := planWireGuardProfilesWithRows(ctx, incoming, existingRows, agentIDMap, cfg, capabilityStore, allocator, result)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	return profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, groupedRows, nil
+}
+
+func (s *backupService) importWireGuardProfiles(ctx context.Context, incoming []BackupWireGuardProfile, agentIDMap map[string]string, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[string]int, map[string]struct{}, map[string]struct{}, map[string]struct{}, error) {
+	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	existingRows, err := listAllWireGuardProfileRows(ctx, s.store, knownAgentIDs)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, groupedRows, revisionsByAgent, err := planWireGuardProfilesWithRows(ctx, incoming, existingRows, agentIDMap, s.cfg, s.store, allocator, result)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for agentID, rows := range groupedRows {
+		existingAgentRows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if wireGuardProfileRowsEqual(existingAgentRows, rows) {
+			continue
+		}
+		if err := s.store.SaveWireGuardProfiles(ctx, agentID, rows); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	for agentID, revision := range revisionsByAgent {
+		recordModifiedAgentRevision(modifiedAgents, agentID, revision)
+	}
+	return profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, nil
+}
+
+func planWireGuardProfilesWithRows(ctx context.Context, incoming []BackupWireGuardProfile, existing []storage.WireGuardProfileRow, agentIDMap map[string]string, cfg config.Config, capabilityStore agentCapabilityStore, allocator *configIdentityAllocator, result *BackupImportResult) (map[string]int, map[string]struct{}, map[string]struct{}, map[string]struct{}, map[string][]storage.WireGuardProfileRow, map[string]int, error) {
+	profileIDMap := map[string]int{}
+	enabledProfileIDs := map[string]struct{}{}
+	importedProfileIDs := map[string]struct{}{}
+	skippedConflictProfileIDs := map[string]struct{}{}
+	grouped := map[string][]storage.WireGuardProfileRow{}
+	maxRevisionByAgent := map[string]int{}
+	revisionsByAgent := map[string]int{}
+	conflictIndex := map[string]storage.WireGuardProfileRow{}
+
+	for _, row := range existing {
+		grouped[row.AgentID] = append(grouped[row.AgentID], row)
+		conflictIndex[wireGuardProfileConflictKey(row.AgentID, row.Name)] = row
+		if row.ID > 0 {
+			profileIDMap[wireGuardProfileKey(row.AgentID, row.ID)] = row.ID
+			if row.Enabled {
+				enabledProfileIDs[wireGuardProfileKey(row.AgentID, row.ID)] = struct{}{}
+			}
+		}
+		if row.Revision > maxRevisionByAgent[row.AgentID] {
+			maxRevisionByAgent[row.AgentID] = row.Revision
+		}
+	}
+
+	for _, item := range incoming {
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, cfg)
+		key := wireGuardProfileConflictKey(item.AgentID, item.Name)
+		if !ok {
+			if result != nil {
+				result.addSkippedInvalid("wireguard_profile", key, "wireguard profile references unknown agent")
+			}
+			continue
+		}
+		conflictKey := wireGuardProfileConflictKey(resolvedAgentID, item.Name)
+		if capabilityStore != nil {
+			if err := ensureAgentSupportsWireGuardCapability(ctx, cfg, capabilityStore, resolvedAgentID); err != nil {
+				if result != nil {
+					result.addSkippedInvalid("wireguard_profile", conflictKey, err.Error())
+				}
+				continue
+			}
+		}
+		if existingRow, ok := conflictIndex[conflictKey]; ok {
+			profileIDMap[wireGuardProfileKey(item.AgentID, item.ID)] = existingRow.ID
+			profileIDMap[wireGuardProfileKey(resolvedAgentID, item.ID)] = existingRow.ID
+			if existingRow.Enabled {
+				enabledProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+				enabledProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
+			}
+			skippedConflictProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+			skippedConflictProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
+			if result != nil {
+				result.addSkippedConflict("wireguard_profile", conflictKey, "wireguard profile already exists")
+			}
+			continue
+		}
+		assignedID := allocator.AllocateRuleID(item.ID)
+		input := WireGuardProfileInput{
+			Name:               item.Name,
+			Mode:               item.Mode,
+			PrivateKey:         item.PrivateKey,
+			ListenPort:         item.ListenPort,
+			PublicEndpoint:     item.PublicEndpoint,
+			Addresses:          backupWireGuardBindAddresses(item.BindAddresses),
+			InterfaceAddresses: append([]string(nil), item.Addresses...),
+			Peers:              append([]WireGuardPeer(nil), item.Peers...),
+			DNS:                append([]string(nil), item.DNS...),
+			MTU:                item.MTU,
+			Enabled:            backupBoolPtr(item.Enabled),
+			Tags:               append([]string(nil), item.Tags...),
+		}
+		normalized, err := normalizeWireGuardProfileInput(input, WireGuardProfile{}, assignedID)
+		if err != nil {
+			if result != nil {
+				result.addSkippedInvalid("wireguard_profile", conflictKey, err.Error())
+			}
+			continue
+		}
+		if err := validateRequiredWireGuardProfileEssentials(normalized); err != nil {
+			if result != nil {
+				result.addSkippedInvalid("wireguard_profile", conflictKey, err.Error())
+			}
+			continue
+		}
+		normalized.AgentID = resolvedAgentID
+		normalized.ID = assignedID
+		candidateRow := wireGuardProfileToRow(normalized)
+		candidateRows := append(append([]storage.WireGuardProfileRow(nil), grouped[resolvedAgentID]...), candidateRow)
+		if err := validateUniqueEnabledWireGuardListenPorts(candidateRows); err != nil {
+			if result != nil {
+				result.addSkippedConflict("wireguard_profile", conflictKey, err.Error())
+			}
+			skippedConflictProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+			skippedConflictProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
+			continue
+		}
+		profileIDMap[wireGuardProfileKey(item.AgentID, item.ID)] = assignedID
+		profileIDMap[wireGuardProfileKey(resolvedAgentID, item.ID)] = assignedID
+		importedProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+		importedProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
+		if normalized.Enabled {
+			enabledProfileIDs[wireGuardProfileKey(item.AgentID, item.ID)] = struct{}{}
+			enabledProfileIDs[wireGuardProfileKey(resolvedAgentID, item.ID)] = struct{}{}
+		}
+		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
+		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
+			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
+		}
+		if normalized.Revision > revisionsByAgent[resolvedAgentID] {
+			revisionsByAgent[resolvedAgentID] = normalized.Revision
+		}
+		candidateRow = wireGuardProfileToRow(normalized)
+		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], candidateRow)
+		conflictIndex[conflictKey] = candidateRow
+		if result != nil {
+			result.addImported("wireguard_profile", conflictKey)
+		}
+	}
+
+	return profileIDMap, enabledProfileIDs, importedProfileIDs, skippedConflictProfileIDs, grouped, revisionsByAgent, nil
+}
+
+func backupHTTPBackends(backends []HTTPRuleBackend, backendURL string) []HTTPRuleBackend {
+	canonical := append([]HTTPRuleBackend(nil), backends...)
+	if len(canonical) == 0 && strings.TrimSpace(backendURL) != "" {
+		canonical = []HTTPRuleBackend{{URL: backendURL}}
+	}
+	return canonical
+}
+
+func backupL4Backends(backends []L4Backend, upstreamHost string, upstreamPort int) []L4Backend {
+	canonical := append([]L4Backend(nil), backends...)
+	if len(canonical) == 0 && strings.TrimSpace(upstreamHost) != "" && upstreamPort > 0 {
+		canonical = []L4Backend{{Host: upstreamHost, Port: upstreamPort}}
+	}
+	return canonical
+}
+
+func backupRelayLayers(relayChain []int, relayLayers [][]int, listenerIDMap map[int]int) *[][]int {
+	if len(relayLayers) == 0 && len(relayChain) > 0 {
+		return remapRelayChainAsLayers(relayChain, listenerIDMap)
+	}
+	return remapIntLayers(relayLayers, listenerIDMap)
+}
+
+func remapRelayChainAsLayers(values []int, mapping map[int]int) *[][]int {
+	if values == nil {
+		return nil
+	}
+	mapped := make([][]int, 0, len(values))
+	for _, value := range values {
+		next, ok := mapping[value]
+		if !ok || next <= 0 {
+			empty := [][]int{}
+			return &empty
+		}
+		mapped = append(mapped, []int{next})
+	}
+	return &mapped
+}
+
+func relayListenerInputFromBackup(listener BackupRelayListener, certIDMap map[int]int, wireGuardProfileID *int) RelayListenerInput {
 	var certificateID *int
 	if listener.CertificateID != nil {
 		if mapped, ok := certIDMap[*listener.CertificateID]; ok && mapped > 0 {
@@ -1671,6 +2966,7 @@ func relayListenerInputFromBackup(listener BackupRelayListener, certIDMap map[in
 		CertificateID:              certificateID,
 		TLSMode:                    backupStringPtr(listener.TLSMode),
 		TransportMode:              backupStringPtr(listener.TransportMode),
+		WireGuardProfileID:         copyOptionalInt(wireGuardProfileID),
 		AllowTransportFallback:     backupBoolPtr(listener.AllowTransportFallback),
 		ObfsMode:                   backupStringPtr(listener.ObfsMode),
 		PinSet:                     &listener.PinSet,
@@ -1735,6 +3031,28 @@ func remappedIntLayersComplete(original [][]int, mapped *[][]int) bool {
 	return true
 }
 
+func remappedBackupRelayLayersComplete(relayChain []int, relayLayers [][]int, mapped *[][]int) bool {
+	if len(relayLayers) == 0 && len(relayChain) > 0 {
+		if mapped == nil || len(*mapped) != len(relayChain) {
+			return false
+		}
+		for _, layer := range *mapped {
+			if len(layer) != 1 {
+				return false
+			}
+		}
+		return true
+	}
+	return remappedIntLayersComplete(relayLayers, mapped)
+}
+
+func pointerRelayLayers(values *[][]int) [][]int {
+	if values == nil {
+		return nil
+	}
+	return *values
+}
+
 func pointerIntSlice(values *[]int) []int {
 	if values == nil {
 		return nil
@@ -1756,6 +3074,12 @@ func l4RuleRowsEqual(a []storage.L4RuleRow, b []storage.L4RuleRow) bool {
 
 func relayListenerRowsEqual(a []storage.RelayListenerRow, b []storage.RelayListenerRow) bool {
 	return equalSortedRows(a, b, func(x storage.RelayListenerRow, y storage.RelayListenerRow) int {
+		return compareAgentScopedRows(x.AgentID, x.ID, y.AgentID, y.ID)
+	})
+}
+
+func wireGuardProfileRowsEqual(a []storage.WireGuardProfileRow, b []storage.WireGuardProfileRow) bool {
+	return equalSortedRows(a, b, func(x storage.WireGuardProfileRow, y storage.WireGuardProfileRow) int {
 		return compareAgentScopedRows(x.AgentID, x.ID, y.AgentID, y.ID)
 	})
 }
@@ -1806,15 +3130,18 @@ func backupIntPtr(value int) *int {
 }
 
 type backupStateSnapshot struct {
-	agents               []storage.AgentRow
-	httpRulesByAgentID   map[string][]storage.HTTPRuleRow
-	l4RulesByAgentID     map[string][]storage.L4RuleRow
-	relayByAgentID       map[string][]storage.RelayListenerRow
-	certificates         []storage.ManagedCertificateRow
-	versionPolicies      []storage.VersionPolicyRow
-	trafficPolicies      []storage.AgentTrafficPolicyRow
-	trafficBaselines     []storage.AgentTrafficBaselineRow
-	certificateMaterials map[string]storage.ManagedCertificateBundle
+	agents                    []storage.AgentRow
+	httpRulesByAgentID        map[string][]storage.HTTPRuleRow
+	l4RulesByAgentID          map[string][]storage.L4RuleRow
+	wireGuardByAgentID        map[string][]storage.WireGuardProfileRow
+	wireGuardClientsByAgentID map[string]map[int][]storage.WireGuardClientRow
+	egressProfiles            []storage.EgressProfileRow
+	relayByAgentID            map[string][]storage.RelayListenerRow
+	certificates              []storage.ManagedCertificateRow
+	versionPolicies           []storage.VersionPolicyRow
+	trafficPolicies           []storage.AgentTrafficPolicyRow
+	trafficBaselines          []storage.AgentTrafficBaselineRow
+	certificateMaterials      map[string]storage.ManagedCertificateBundle
 }
 
 func (s *backupService) captureState(ctx context.Context) (backupStateSnapshot, error) {
@@ -1828,6 +3155,8 @@ func (s *backupService) captureState(ctx context.Context) (backupStateSnapshot, 
 	}
 	httpRulesByAgentID := map[string][]storage.HTTPRuleRow{}
 	l4RulesByAgentID := map[string][]storage.L4RuleRow{}
+	wireGuardByAgentID := map[string][]storage.WireGuardProfileRow{}
+	wireGuardClientsByAgentID := map[string]map[int][]storage.WireGuardClientRow{}
 	for _, agentID := range knownAgentIDs {
 		rules, err := s.store.ListHTTPRules(ctx, agentID)
 		if err != nil {
@@ -1839,6 +3168,24 @@ func (s *backupService) captureState(ctx context.Context) (backupStateSnapshot, 
 			return backupStateSnapshot{}, err
 		}
 		l4RulesByAgentID[agentID] = append([]storage.L4RuleRow(nil), l4Rules...)
+		wireGuardProfiles, err := s.store.ListWireGuardProfiles(ctx, agentID)
+		if err != nil {
+			return backupStateSnapshot{}, err
+		}
+		wireGuardByAgentID[agentID] = append([]storage.WireGuardProfileRow(nil), wireGuardProfiles...)
+		wireGuardClientsByAgentID[agentID] = map[int][]storage.WireGuardClientRow{}
+		for _, profile := range wireGuardProfiles {
+			clients, err := s.store.ListWireGuardClients(ctx, agentID, profile.ID)
+			if err != nil {
+				return backupStateSnapshot{}, err
+			}
+			wireGuardClientsByAgentID[agentID][profile.ID] = append([]storage.WireGuardClientRow(nil), clients...)
+		}
+	}
+
+	egressProfiles, err := s.store.ListEgressProfiles(ctx)
+	if err != nil {
+		return backupStateSnapshot{}, err
 	}
 
 	relayRows, err := s.store.ListRelayListeners(ctx, "")
@@ -1879,15 +3226,18 @@ func (s *backupService) captureState(ctx context.Context) (backupStateSnapshot, 
 	}
 
 	return backupStateSnapshot{
-		agents:               append([]storage.AgentRow(nil), agents...),
-		httpRulesByAgentID:   httpRulesByAgentID,
-		l4RulesByAgentID:     l4RulesByAgentID,
-		relayByAgentID:       relayByAgentID,
-		certificates:         append([]storage.ManagedCertificateRow(nil), certs...),
-		versionPolicies:      append([]storage.VersionPolicyRow(nil), policies...),
-		trafficPolicies:      append([]storage.AgentTrafficPolicyRow(nil), trafficPolicies...),
-		trafficBaselines:     append([]storage.AgentTrafficBaselineRow(nil), trafficBaselines...),
-		certificateMaterials: certificateMaterials,
+		agents:                    append([]storage.AgentRow(nil), agents...),
+		httpRulesByAgentID:        httpRulesByAgentID,
+		l4RulesByAgentID:          l4RulesByAgentID,
+		wireGuardByAgentID:        wireGuardByAgentID,
+		wireGuardClientsByAgentID: wireGuardClientsByAgentID,
+		egressProfiles:            append([]storage.EgressProfileRow(nil), egressProfiles...),
+		relayByAgentID:            relayByAgentID,
+		certificates:              append([]storage.ManagedCertificateRow(nil), certs...),
+		versionPolicies:           append([]storage.VersionPolicyRow(nil), policies...),
+		trafficPolicies:           append([]storage.AgentTrafficPolicyRow(nil), trafficPolicies...),
+		trafficBaselines:          append([]storage.AgentTrafficBaselineRow(nil), trafficBaselines...),
+		certificateMaterials:      certificateMaterials,
 	}, nil
 }
 
@@ -1910,6 +3260,12 @@ func (s *backupService) restoreState(ctx context.Context, snapshot backupStateSn
 	for agentID := range snapshot.l4RulesByAgentID {
 		agentIDs[agentID] = struct{}{}
 	}
+	for agentID := range snapshot.wireGuardByAgentID {
+		agentIDs[agentID] = struct{}{}
+	}
+	for agentID := range snapshot.wireGuardClientsByAgentID {
+		agentIDs[agentID] = struct{}{}
+	}
 	for agentID := range snapshot.relayByAgentID {
 		agentIDs[agentID] = struct{}{}
 	}
@@ -1920,9 +3276,34 @@ func (s *backupService) restoreState(ctx context.Context, snapshot backupStateSn
 		if err := s.store.SaveL4Rules(ctx, agentID, snapshot.l4RulesByAgentID[agentID]); err != nil {
 			return err
 		}
+		if err := s.store.SaveWireGuardProfiles(ctx, agentID, snapshot.wireGuardByAgentID[agentID]); err != nil {
+			return err
+		}
+		currentClients, err := s.store.ListWireGuardClients(ctx, agentID, 0)
+		if err != nil {
+			return err
+		}
+		profileIDs := map[int]struct{}{}
+		for _, row := range currentClients {
+			if row.ProfileID > 0 {
+				profileIDs[row.ProfileID] = struct{}{}
+			}
+		}
+		for profileID := range snapshot.wireGuardClientsByAgentID[agentID] {
+			profileIDs[profileID] = struct{}{}
+		}
+		for profileID := range profileIDs {
+			if err := s.store.SaveWireGuardClients(ctx, agentID, profileID, snapshot.wireGuardClientsByAgentID[agentID][profileID]); err != nil {
+				return err
+			}
+		}
 		if err := s.store.SaveRelayListeners(ctx, agentID, snapshot.relayByAgentID[agentID]); err != nil {
 			return err
 		}
+	}
+
+	if err := s.store.SaveEgressProfiles(ctx, snapshot.egressProfiles); err != nil {
+		return err
 	}
 
 	currentCerts, err := s.store.ListManagedCertificates(ctx)

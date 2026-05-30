@@ -40,6 +40,12 @@
           </svg>
           Relay 监听器
         </RouterLink>
+        <RouterLink to="/wireguard-profiles" class="more-dropdown__item" @click.stop="moreOpen = false">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 7l3 3M17 7l-3 3M7 17l3-3M17 17l-3-3"/>
+          </svg>
+          WireGuard
+        </RouterLink>
         <RouterLink to="/agents" class="more-dropdown__item" @click.stop="moreOpen = false">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
@@ -69,6 +75,7 @@ const moreRef = ref(null)
 const isMoreActive = computed(() =>
   route.path.startsWith('/l4') ||
   route.path.startsWith('/relay-listeners') ||
+  route.path.startsWith('/wireguard-profiles') ||
   route.path.startsWith('/agents') ||
   route.path.startsWith('/settings')
 )

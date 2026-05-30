@@ -6,11 +6,20 @@
     </div>
     <div class="form-group">
       <label>后端地址</label>
-      <input v-model="localForm.backend_url" class="input-base" placeholder="http://192.168.1.100:8096">
+      <input v-model="localForm.backendUrl" class="input-base" placeholder="http://192.168.1.100:8096">
     </div>
     <div class="form-group">
       <label>标签（逗号分隔）</label>
       <input v-model="localForm.tags" class="input-base" placeholder="emby, media">
+    </div>
+    <div class="form-group">
+      <label>出口 Profile</label>
+      <select v-model.number="localForm.egress_profile_id" class="input-base" name="egress-profile">
+        <option :value="0">Direct</option>
+        <option v-for="profile in egressProfiles" :key="profile.id" :value="Number(profile.id)">
+          {{ profile.name || profile.id }} ({{ profile.type }})
+        </option>
+      </select>
     </div>
     <div class="form-group form-group--check">
       <label>
@@ -24,36 +33,53 @@
 import { ref, watch } from 'vue'
 
 const props = defineProps({
-  rule: { type: Object, default: null }
+  rule: { type: Object, default: null },
+  egressProfiles: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['submit'])
 
 const localForm = ref({
   frontend_url: '',
-  backend_url: '',
+  backendUrl: '',
   tags: '',
+  egress_profile_id: 0,
   enabled: true
 })
+
+function firstBackendUrl(rule) {
+  if (!Array.isArray(rule?.backends)) return ''
+  return String(rule.backends[0]?.url || '').trim()
+}
 
 watch(() => props.rule, (r) => {
   if (r) {
     localForm.value = {
       frontend_url: r.frontend_url || '',
-      backend_url: r.backend_url || '',
+      backendUrl: firstBackendUrl(r),
       tags: (r.tags || []).join(', '),
+      egress_profile_id: r.egress_profile_id == null ? 0 : Number(r.egress_profile_id),
       enabled: r.enabled !== false
     }
   } else {
-    localForm.value = { frontend_url: '', backend_url: '', tags: '', enabled: true }
+    localForm.value = { frontend_url: '', backendUrl: '', tags: '', egress_profile_id: 0, enabled: true }
   }
 }, { immediate: true })
 
 function submit() {
-  emit('submit', {
-    ...localForm.value,
+  const backendUrl = localForm.value.backendUrl.trim()
+  const egressProfileID = Number(localForm.value.egress_profile_id)
+  const payload = {
+    frontend_url: localForm.value.frontend_url,
+    backends: backendUrl ? [{ url: backendUrl }] : [],
+    relay_layers: [],
+    enabled: localForm.value.enabled,
     tags: localForm.value.tags.split(',').map(t => t.trim()).filter(Boolean)
-  })
+  }
+  if (Number.isInteger(egressProfileID) && egressProfileID > 0) {
+    payload.egress_profile_id = egressProfileID
+  }
+  emit('submit', payload)
 }
 
 defineExpose({ submit, localForm })

@@ -3,10 +3,13 @@ package relay
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 )
 
 type fakeRelayTCPBufferConn struct {
@@ -233,8 +236,8 @@ func TestDialRelayTCPTunesSocketBuffersForRelayConnections(t *testing.T) {
 		if network != "tcp" {
 			t.Fatalf("network = %q, want tcp", network)
 		}
-		if address != "relay.example:443" {
-			t.Fatalf("address = %q, want relay.example:443", address)
+		if address != "127.0.0.1:443" {
+			t.Fatalf("address = %q, want 127.0.0.1:443", address)
 		}
 		return conn, nil
 	}
@@ -242,7 +245,7 @@ func TestDialRelayTCPTunesSocketBuffersForRelayConnections(t *testing.T) {
 		relayDialContext = originalDial
 	}()
 
-	got, err := dialRelayTCP(context.Background(), "relay.example:443")
+	got, err := dialRelayTCP(context.Background(), "127.0.0.1:443")
 	if err != nil {
 		t.Fatalf("dialRelayTCP() error = %v", err)
 	}
@@ -257,6 +260,135 @@ func TestDialRelayTCPTunesSocketBuffersForRelayConnections(t *testing.T) {
 	}
 	if !conn.noDelay {
 		t.Fatal("relay TCP connection should enable TCP_NODELAY")
+	}
+}
+
+func TestDialRelayTCPResolvesHostThroughRelayHopCache(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay.example": {{IP: net.ParseIP("203.0.113.10")}},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	originalDial := relayDialContext
+	conn := &fakeRelayTCPBufferConn{}
+	var calls []string
+	relayDialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+		if network != "tcp" {
+			t.Fatalf("network = %q, want tcp", network)
+		}
+		calls = append(calls, address)
+		return conn, nil
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	for i := 0; i < 2; i++ {
+		got, err := dialRelayTCP(context.Background(), "relay.example:9443")
+		if err != nil {
+			t.Fatalf("dialRelayTCP(%d) error = %v", i, err)
+		}
+		if got != conn {
+			t.Fatalf("dialRelayTCP(%d) returned unexpected connection", i)
+		}
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1 cached lookup", resolver.calls)
+	}
+	wantAddress := "203.0.113.10:9443"
+	if len(calls) != 2 || calls[0] != wantAddress || calls[1] != wantAddress {
+		t.Fatalf("dial addresses = %+v, want two calls to %s", calls, wantAddress)
+	}
+}
+
+func TestDialRelayTCPTryNextResolvedAddressAfterFailure(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay.example": {
+				{IP: net.ParseIP("203.0.113.10")},
+				{IP: net.ParseIP("203.0.113.11")},
+			},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	originalDial := relayDialContext
+	conn := &fakeRelayTCPBufferConn{}
+	var calls []string
+	relayDialContext = func(_ context.Context, _ string, address string) (net.Conn, error) {
+		calls = append(calls, address)
+		if address == "203.0.113.10:9443" {
+			return nil, errors.New("first resolved address failed")
+		}
+		return conn, nil
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	got, err := dialRelayTCP(context.Background(), "relay.example:9443")
+	if err != nil {
+		t.Fatalf("dialRelayTCP() error = %v", err)
+	}
+	if got != conn {
+		t.Fatalf("dialRelayTCP() returned unexpected connection")
+	}
+	want := []string{"203.0.113.10:9443", "203.0.113.11:9443"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("dial addresses = %+v, want %+v", calls, want)
+	}
+}
+
+func TestDialRelayTCPDoesNotBackoffResolvedAddressesOnCallerCancellation(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay.example": {
+				{IP: net.ParseIP("203.0.113.10")},
+				{IP: net.ParseIP("203.0.113.11")},
+			},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	originalDial := relayDialContext
+	var calls []string
+	relayDialContext = func(ctx context.Context, _ string, address string) (net.Conn, error) {
+		calls = append(calls, address)
+		return nil, ctx.Err()
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := dialRelayHopTCP(ctx, "relay.example:9443")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("dialRelayHopTCP() error = %v, want context.Canceled", err)
+	}
+	want := []string{"203.0.113.10:9443", "203.0.113.11:9443"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("dial addresses = %+v, want %+v", calls, want)
+	}
+	for _, address := range want {
+		if relayHopCache.IsInBackoff(address) {
+			t.Fatalf("caller cancellation put %s into relay hop backoff", address)
+		}
 	}
 }
 
@@ -351,4 +483,17 @@ func (r *relayChunkedReader) Read(p []byte) (int, error) {
 	chunk := r.chunks[0]
 	r.chunks = r.chunks[1:]
 	return copy(p, chunk), nil
+}
+
+type stubRelayResolver struct {
+	answers map[string][]net.IPAddr
+	calls   int
+}
+
+func (r *stubRelayResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	r.calls++
+	if answers, ok := r.answers[host]; ok {
+		return append([]net.IPAddr(nil), answers...), nil
+	}
+	return nil, errors.New("unexpected host: " + host)
 }

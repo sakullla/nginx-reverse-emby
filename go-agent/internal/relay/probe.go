@@ -71,7 +71,7 @@ func (s *Server) probeRelayPath(ctx context.Context, network, target string, cha
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
 	startedAt := time.Now()
-	conn, selectedAddress, err := selector.dialTCP(ctx, target)
+	conn, selectedAddress, err := selector.dialTCP(ctx, target, DialOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func probeRelayRequestQUIC(ctx context.Context, hop Hop, provider TLSMaterialPro
 		return relayResponse{}, err
 	}
 	session, stream, err := openQUICStream(ctx, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
-		return quicDialAddr(dialCtx, hop.Address, tlsConfig, newRelayQUICConfig())
+		return dialQUICRelayHop(dialCtx, hop.Address, tlsConfig)
 	})
 	if err != nil {
 		return relayResponse{}, err

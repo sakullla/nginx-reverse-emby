@@ -640,6 +640,136 @@ func TestNewControlPlaneAppProvidesBackupServiceWhenLocalAgentEnabled(t *testing
 	}
 }
 
+func TestNewControlPlaneAppProvidesWireGuardProfileServiceWhenLocalAgentEnabled(t *testing.T) {
+	cfg := config.Default()
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.EnableLocalAgent = true
+	cfg.DataDir = t.TempDir()
+
+	previousNewHandler := newHandler
+	previousNewHandlerWithDependencies := newHandlerWithDependencies
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		newHandler = previousNewHandler
+		newHandlerWithDependencies = previousNewHandlerWithDependencies
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	newHandler = func(config.Config) (http.Handler, error) {
+		return http.NewServeMux(), nil
+	}
+	newHandlerWithDependencies = func(_ config.Config, deps httpapi.Dependencies) (http.Handler, error) {
+		if deps.WireGuardProfileService == nil {
+			return nil, errors.New("WireGuardProfileService = nil, want configured wireguard profile service")
+		}
+		if _, err := deps.WireGuardProfileService.List(t.Context(), cfg.LocalAgentID); err != nil {
+			return nil, err
+		}
+		return http.NewServeMux(), nil
+	}
+	newLocalAgentRuntime = func(_ config.Config, store localagent.Store) (localAgentRuntime, error) {
+		if sqliteStore, ok := store.(*storage.SQLiteStore); ok {
+			t.Cleanup(func() {
+				_ = sqliteStore.Close()
+			})
+		}
+		return localAgentRuntimeStub{}, nil
+	}
+
+	application, err := newControlPlaneApp(cfg, nil)
+	if err != nil {
+		t.Fatalf("newControlPlaneApp() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestNewControlPlaneAppProvidesWireGuardClientServiceWhenLocalAgentEnabled(t *testing.T) {
+	cfg := config.Default()
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.EnableLocalAgent = true
+	cfg.DataDir = t.TempDir()
+
+	previousNewHandler := newHandler
+	previousNewHandlerWithDependencies := newHandlerWithDependencies
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		newHandler = previousNewHandler
+		newHandlerWithDependencies = previousNewHandlerWithDependencies
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	localApplyCalls := 0
+	newHandler = func(config.Config) (http.Handler, error) {
+		return http.NewServeMux(), nil
+	}
+	newHandlerWithDependencies = func(_ config.Config, deps httpapi.Dependencies) (http.Handler, error) {
+		if deps.WireGuardProfileService == nil {
+			return nil, errors.New("WireGuardProfileService = nil, want configured wireguard profile service")
+		}
+		if deps.WireGuardClientService == nil {
+			return nil, errors.New("WireGuardClientService = nil, want configured wireguard client service")
+		}
+
+		profile, err := deps.WireGuardProfileService.Create(t.Context(), cfg.LocalAgentID, service.WireGuardProfileInput{
+			Name:               "wg clients",
+			Mode:               "generic_wireguard",
+			PrivateKey:         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			ListenPort:         51820,
+			PublicEndpoint:     "wg.example.com:51820",
+			Addresses:          []string{"0.0.0.0"},
+			InterfaceAddresses: []string{"10.8.0.1/24"},
+			Peers: []service.WireGuardPeer{{
+				Name:       "peer-a",
+				PublicKey:  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+				AllowedIPs: []string{"10.8.0.2/32"},
+			}},
+			DNS: []string{"1.1.1.1"},
+			MTU: 1420,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		localApplyCalls = 0
+		client, err := deps.WireGuardClientService.CreateClient(t.Context(), cfg.LocalAgentID, profile.ID, service.WireGuardClientInput{Name: "phone"})
+		if err != nil {
+			return nil, err
+		}
+		if client.ID == 0 || client.ProfileID != profile.ID {
+			return nil, errors.New("WireGuardClientService did not create a client for the profile")
+		}
+		if localApplyCalls != 1 {
+			return nil, errors.New("WireGuardClientService did not trigger local apply")
+		}
+		return http.NewServeMux(), nil
+	}
+	newLocalAgentRuntime = func(_ config.Config, store localagent.Store) (localAgentRuntime, error) {
+		if sqliteStore, ok := store.(*storage.SQLiteStore); ok {
+			t.Cleanup(func() {
+				_ = sqliteStore.Close()
+			})
+		}
+		return localAgentRuntimeStub{syncNow: func(context.Context) error {
+			localApplyCalls++
+			return nil
+		}}, nil
+	}
+
+	application, err := newControlPlaneApp(cfg, nil)
+	if err != nil {
+		t.Fatalf("newControlPlaneApp() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
 func TestNewControlPlaneAppClosesRouterOwnedStoreWhenLocalAgentEnabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"

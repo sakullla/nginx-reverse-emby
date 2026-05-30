@@ -7,9 +7,11 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -252,6 +254,50 @@ func TestTLSTCPTunnelWriteFrameReusesRecentWriteDeadline(t *testing.T) {
 	})
 }
 
+func TestTLSTCPTunnelWriteFrameReusesTunnelBuffer(t *testing.T) {
+	var wire bytes.Buffer
+	tunnel := &tlsTCPTunnel{
+		writer: &wire,
+		closed: make(chan struct{}),
+	}
+
+	for _, payload := range []string{"first", "second"} {
+		if err := tunnel.writeFrame(context.Background(), muxFrame{
+			Type:     muxFrameTypeData,
+			StreamID: 1,
+			Payload:  []byte(payload),
+		}); err != nil {
+			t.Fatalf("writeFrame(%q) error = %v", payload, err)
+		}
+		if len(tunnel.writeBuf) == 0 {
+			t.Fatal("writeFrame did not initialize reusable tunnel buffer")
+		}
+	}
+
+	firstBuf := &tunnel.writeBuf[0]
+	if err := tunnel.writeFrame(context.Background(), muxFrame{
+		Type:     muxFrameTypeData,
+		StreamID: 1,
+		Payload:  []byte("third"),
+	}); err != nil {
+		t.Fatalf("writeFrame(third) error = %v", err)
+	}
+	if &tunnel.writeBuf[0] != firstBuf {
+		t.Fatal("writeFrame replaced tunnel write buffer instead of reusing it")
+	}
+
+	for _, want := range []string{"first", "second", "third"} {
+		frame, err := readMuxFrame(&wire)
+		if err != nil {
+			t.Fatalf("readMuxFrame(%q) error = %v", want, err)
+		}
+		if string(frame.Payload) != want {
+			t.Fatalf("frame payload = %q, want %q", string(frame.Payload), want)
+		}
+		frame.releasePayload()
+	}
+}
+
 func TestTLSTCPLogicalStreamReadFromSingleStreamQueuesAheadOfSlowWriter(t *testing.T) {
 	writer := newBlockingFirstWrite()
 	tunnel := &tlsTCPTunnel{
@@ -288,15 +334,15 @@ func TestTLSTCPLogicalStreamReadFromSingleStreamQueuesAheadOfSlowWriter(t *testi
 	<-writer.started
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if src.readCalls >= 4 {
+		if src.readCalls.Load() >= 4 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if src.readCalls < 4 {
+	if got := src.readCalls.Load(); got < 4 {
 		close(writer.release)
 		<-done
-		t.Fatalf("source read calls = %d, want at least 4 queued frames before backpressure", src.readCalls)
+		t.Fatalf("source read calls = %d, want at least 4 queued frames before backpressure", got)
 	}
 
 	close(writer.release)
@@ -655,6 +701,167 @@ func TestTLSTCPSessionPoolAllowsUnknownWhenCappedTunnelsAreCongested(t *testing.
 	}
 }
 
+func TestWireGuardSessionPoolKeyIncludesTLSMaterial(t *testing.T) {
+	profileID := 9
+	certID := 10
+	base := Hop{
+		Address:    "10.0.0.2:7443",
+		ServerName: "relay-a.example.com",
+		Listener: Listener{
+			ID:                 1,
+			AgentID:            "agent-a",
+			Revision:           3,
+			TransportMode:      ListenerTransportModeWireGuard,
+			WireGuardProfileID: &profileID,
+			CertificateID:      &certID,
+			TLSMode:            "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "spki_sha256",
+				Value: "pin-a",
+			}},
+			TrustedCACertificateIDs: []int{100},
+		},
+	}
+	changedTLSMaterial := base
+	changedTLSMaterial.ServerName = "relay-b.example.com"
+	changedTLSMaterial.Listener.CertificateID = nil
+	changedTLSMaterial.Listener.TLSMode = "ca_only"
+	changedTLSMaterial.Listener.PinSet = []model.RelayPin{{
+		Type:  "spki_sha256",
+		Value: "pin-b",
+	}}
+	changedTLSMaterial.Listener.TrustedCACertificateIDs = []int{200, 300}
+
+	keyA, err := tlsTCPSessionPoolKey(base, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(base) error = %v", err)
+	}
+	keyB, err := tlsTCPSessionPoolKey(changedTLSMaterial, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(changedTLSMaterial) error = %v", err)
+	}
+	if keyA == keyB {
+		t.Fatalf("WireGuard session key did not change for TLS material:\n%s", keyA)
+	}
+
+	changedAddress := base
+	changedAddress.Address = "10.0.0.3:7443"
+	keyC, err := tlsTCPSessionPoolKey(changedAddress, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(changedAddress) error = %v", err)
+	}
+	if keyA == keyC {
+		t.Fatal("WireGuard session key did not change when address changed")
+	}
+
+	changedProfile := base
+	nextProfileID := 10
+	changedProfile.Listener.WireGuardProfileID = &nextProfileID
+	keyD, err := tlsTCPSessionPoolKey(changedProfile, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(changedProfile) error = %v", err)
+	}
+	if keyA == keyD {
+		t.Fatal("WireGuard session key did not change when profile changed")
+	}
+
+	changedAgent := base
+	changedAgent.Listener.AgentID = "agent-b"
+	keyE, err := tlsTCPSessionPoolKey(changedAgent, "socks5://127.0.0.1:1080")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey(changedAgent) error = %v", err)
+	}
+	if keyA == keyE {
+		t.Fatal("WireGuard session key did not change when agent changed")
+	}
+}
+
+func TestTLSTCPTunnelOpenStreamHonorsFrameTimeoutAndClosesTunnel(t *testing.T) {
+	withRelayTimeouts(time.Second, time.Second, 20*time.Millisecond, time.Second, func() {
+		tunnel := &tlsTCPTunnel{
+			rawConn:    noopDeadlineConn{},
+			writer:     &bytes.Buffer{},
+			closeOuter: func() error { return nil },
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := tunnel.openStream(context.Background(), relayOpenFrame{
+				Kind:   "tcp",
+				Target: "127.0.0.1:443",
+			})
+			done <- err
+		}()
+
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("openStream() error = nil, want timeout")
+			}
+			netErr, ok := err.(net.Error)
+			if !ok || !netErr.Timeout() {
+				t.Fatalf("openStream() error = %v, want timeout net.Error", err)
+			}
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("openStream() did not honor relay frame timeout")
+		}
+
+		select {
+		case <-tunnel.closed:
+		default:
+			t.Fatal("openStream() timeout left tunnel pooled instead of closing it")
+		}
+	})
+}
+
+func TestDialTLSTCPMuxRetriesStalePooledTunnelWithoutInitialPayload(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 904, "relay-stale-mux", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	key, err := tlsTCPSessionPoolKey(hop, "")
+	if err != nil {
+		t.Fatalf("tlsTCPSessionPoolKey() error = %v", err)
+	}
+	stale := &tlsTCPTunnel{
+		key:        key,
+		rawConn:    noopDeadlineConn{},
+		writer:     &bytes.Buffer{},
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	relayTLSTCPSessionPool.mu.Lock()
+	relayTLSTCPSessionPool.sessions[key] = []*tlsTCPTunnel{stale}
+	relayTLSTCPSessionPool.mu.Unlock()
+
+	withRelayTimeouts(time.Second, time.Second, 20*time.Millisecond, time.Second, func() {
+		conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+		if err != nil {
+			t.Fatalf("Dial() error = %v, want retry on fresh tunnel", err)
+		}
+		defer conn.Close()
+		assertRoundTrip(t, conn, []byte("fresh-after-stale"))
+	})
+
+	select {
+	case <-stale.closed:
+	default:
+		t.Fatal("stale pooled tunnel was not closed")
+	}
+}
+
 func TestTLSTCPTunnelKeepsCongestionCountersUntilBlockedWriteFinishes(t *testing.T) {
 	writer := newBlockingFirstWrite()
 	tunnel := &tlsTCPTunnel{
@@ -694,6 +901,35 @@ func TestTLSTCPTunnelKeepsCongestionCountersUntilBlockedWriteFinishes(t *testing
 	}
 }
 
+func TestTLSTCPLogicalStreamReadFromReusesWriteRequests(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 1<<20)
+
+	allocs := testing.AllocsPerRun(20, func() {
+		var wire bytes.Buffer
+		tunnel := &tlsTCPTunnel{
+			rawConn:    noopDeadlineConn{},
+			writer:     &wire,
+			closeOuter: func() error { return nil },
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+		defer tunnel.close()
+		stream := &tlsTCPLogicalStream{
+			tunnel:       tunnel,
+			streamID:     1,
+			readCh:       make(chan struct{}, 1),
+			openResultCh: make(chan muxOpenResult, 1),
+		}
+		if _, err := stream.ReadFrom(bytes.NewReader(payload)); err != nil {
+			t.Fatalf("ReadFrom() error = %v", err)
+		}
+	})
+
+	if allocs > 100 {
+		t.Fatalf("ReadFrom() allocations = %.0f, want <= 100", allocs)
+	}
+}
+
 func TestWrapIdleConnPreservesTLSTCPBulkInterfaces(t *testing.T) {
 	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
 	wrapped := wrapIdleConn(stream)
@@ -703,6 +939,83 @@ func TestWrapIdleConnPreservesTLSTCPBulkInterfaces(t *testing.T) {
 	}
 	if _, ok := wrapped.(io.WriterTo); !ok {
 		t.Fatalf("wrapped tls tcp stream does not implement io.WriterTo")
+	}
+}
+
+func TestWrapIdleConnTLSTCPStreamReadHonorsIdleDeadline(t *testing.T) {
+	withRelayTimeouts(getRelayDialTimeout(), getRelayHandshakeTimeout(), getRelayFrameTimeout(), 20*time.Millisecond, func() {
+		stream := &tlsTCPLogicalStream{
+			tunnel: &tlsTCPTunnel{
+				closed: make(chan struct{}),
+			},
+			readCh:       make(chan struct{}, 1),
+			openResultCh: make(chan muxOpenResult, 1),
+		}
+		wrapped := wrapIdleConn(stream)
+
+		done := make(chan error, 1)
+		go func() {
+			buf := make([]byte, 1)
+			_, err := wrapped.Read(buf)
+			done <- err
+		}()
+
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("Read() error = nil, want timeout")
+			}
+			netErr, ok := err.(net.Error)
+			if !ok || !netErr.Timeout() {
+				t.Fatalf("Read() error = %v, want timeout net.Error", err)
+			}
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("Read() did not honor idle deadline")
+		}
+	})
+}
+
+func TestTLSTCPLogicalStreamWriteHonorsWriteDeadline(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	tunnel := &tlsTCPTunnel{
+		rawConn:    clientConn,
+		writer:     clientConn,
+		closeOuter: clientConn.Close,
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	defer tunnel.close()
+
+	stream := &tlsTCPLogicalStream{
+		tunnel:       tunnel,
+		streamID:     1,
+		readCh:       make(chan struct{}, 1),
+		openResultCh: make(chan muxOpenResult, 1),
+	}
+	if err := stream.SetWriteDeadline(time.Now().Add(20 * time.Millisecond)); err != nil {
+		t.Fatalf("SetWriteDeadline() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := stream.Write([]byte("payload"))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Write() error = nil, want timeout")
+		}
+		netErr, ok := err.(net.Error)
+		if !ok || !netErr.Timeout() {
+			t.Fatalf("Write() error = %v, want timeout net.Error", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Write() did not honor write deadline")
 	}
 }
 
@@ -796,7 +1109,7 @@ func (c *markingConn) SetWriteDeadline(time.Time) error {
 
 type countingChunkConn struct {
 	net.Conn
-	readCalls int
+	readCalls atomic.Int32
 	chunks    [][]byte
 }
 
@@ -806,7 +1119,7 @@ func (c *countingChunkConn) Read(p []byte) (int, error) {
 	}
 	chunk := c.chunks[0]
 	c.chunks = c.chunks[1:]
-	c.readCalls++
+	c.readCalls.Add(1)
 	return copy(p, chunk), nil
 }
 

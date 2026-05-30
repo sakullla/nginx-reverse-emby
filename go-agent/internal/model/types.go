@@ -17,7 +17,9 @@ type Snapshot struct {
 	AgentConfig         AgentConfig                `json:"agent_config,omitempty"`
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
+	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
+	WireGuardProfiles   []WireGuardProfile         `json:"wireguard_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 	agentConfigPresent  bool
@@ -49,4 +51,23 @@ type RuntimeState struct {
 	CurrentRevision int64             `json:"current_revision,omitempty"`
 	Status          string            `json:"status,omitempty"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
+}
+
+type EgressProfile struct {
+	ID              int                    `json:"id"`
+	Name            string                 `json:"name"`
+	Type            string                 `json:"type"`
+	ProxyURL        string                 `json:"proxy_url,omitempty"`
+	WireGuardConfig *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
+	Enabled         bool                   `json:"enabled"`
+	Description     string                 `json:"description,omitempty"`
+	Revision        int64                  `json:"revision"`
+}
+
+type EgressWireGuardConfig struct {
+	PrivateKey string          `json:"private_key,omitempty"`
+	Addresses  []string        `json:"addresses"`
+	Peers      []WireGuardPeer `json:"peers"`
+	DNS        []string        `json:"dns,omitempty"`
+	MTU        int             `json:"mtu,omitempty"`
 }

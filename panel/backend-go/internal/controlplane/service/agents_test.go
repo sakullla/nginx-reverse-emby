@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -261,10 +262,10 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	if agents[0].HTTPRulesCount != 1 {
 		t.Fatalf("local HTTPRulesCount = %d", agents[0].HTTPRulesCount)
 	}
-	if len(agents[0].Capabilities) != 5 {
+	if len(agents[0].Capabilities) != 7 {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
-	if agents[0].Capabilities[4] != "relay_quic" {
+	if agents[0].Capabilities[4] != "relay_quic" || agents[0].Capabilities[5] != "wireguard" || agents[0].Capabilities[6] != "egress_profiles" {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
 
@@ -855,12 +856,14 @@ func TestNormalizeCapabilitiesPreservesRelayQUICAndHTTP3Ingress(t *testing.T) {
 	got := normalizeCapabilities([]string{
 		"http_rules",
 		"relay_quic",
+		"wireguard",
 		"http3_ingress",
 		"bad",
+		"wireguard",
 		"relay_quic",
 	})
 
-	want := []string{"http_rules", "relay_quic", "http3_ingress"}
+	want := []string{"http_rules", "relay_quic", "wireguard", "http3_ingress"}
 	if len(got) != len(want) {
 		t.Fatalf("normalizeCapabilities() len = %d, want %d (%+v)", len(got), len(want), got)
 	}
@@ -881,8 +884,8 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 				ID:                1,
 				AgentID:           "local",
 				FrontendURL:       "https://emby.example.com",
-				BackendURL:        "http://emby:8096",
-				BackendsJSON:      `[]`,
+				BackendURL:        "http://legacy:8096",
+				BackendsJSON:      `[{"url":"http://emby:8096"}]`,
 				LoadBalancingJSON: `{}`,
 				Enabled:           true,
 				TagsJSON:          `["media"]`,
@@ -909,6 +912,9 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	if len(rule.Backends) != 1 || rule.Backends[0].URL != "http://emby:8096" {
 		t.Fatalf("Backends = %+v", rule.Backends)
 	}
+	if rule.BackendURL != "" || len(rule.RelayChain) != 0 {
+		t.Fatalf("legacy fields = backend_url=%q relay_chain=%+v", rule.BackendURL, rule.RelayChain)
+	}
 	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("LoadBalancing = %+v", rule.LoadBalancing)
 	}
@@ -917,6 +923,38 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	}
 	if len(rule.CustomHeaders) != 1 || rule.CustomHeaders[0].Name != "X-Test" {
 		t.Fatalf("CustomHeaders = %+v", rule.CustomHeaders)
+	}
+}
+
+func TestHTTPRuleJSONOmitsLegacyFields(t *testing.T) {
+	raw, err := json.Marshal(HTTPRule{
+		ID:          1,
+		AgentID:     "local",
+		FrontendURL: "https://emby.example.com",
+		BackendURL:  "http://legacy:8096",
+		Backends:    []HTTPRuleBackend{{URL: "http://emby:8096"}},
+		RelayChain:  []int{7},
+		RelayLayers: [][]int{{7}},
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(HTTPRule) error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(HTTPRule) error = %v", err)
+	}
+	for _, key := range []string{"backend_url", "relay_chain"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("HTTPRule JSON exposed legacy field %q: %s", key, raw)
+		}
+	}
+	if _, ok := payload["backends"]; !ok {
+		t.Fatalf("HTTPRule JSON missing canonical backends: %s", raw)
+	}
+	if _, ok := payload["relay_layers"]; !ok {
+		t.Fatalf("HTTPRule JSON missing canonical relay_layers: %s", raw)
 	}
 }
 
@@ -945,26 +983,44 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 			Rules: []storage.HTTPRule{{
 				ID:          9,
 				FrontendURL: "https://edge.example.com",
-				BackendURL:  "http://127.0.0.1:8096",
-				RelayChain:  []int{11, 22},
+				Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+				RelayLayers: [][]int{{11, 22}},
 				Revision:    6,
 			}},
 			L4Rules: []storage.L4Rule{{
-				ID:           2,
-				Protocol:     "tcp",
-				ListenHost:   "0.0.0.0",
-				ListenPort:   9000,
-				UpstreamHost: "127.0.0.1",
-				UpstreamPort: 9001,
-				Revision:     6,
+				ID:         2,
+				Protocol:   "tcp",
+				ListenHost: "0.0.0.0",
+				ListenPort: 9000,
+				Backends:   []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+				Revision:   6,
 			}},
 			RelayListeners: []storage.RelayListener{{
-				ID:         11,
+				ID:                 11,
+				AgentID:            "remote-a",
+				Name:               "relay-a",
+				ListenHost:         "0.0.0.0",
+				ListenPort:         7443,
+				TransportMode:      "wireguard",
+				WireGuardProfileID: intPtrService(41),
+				Revision:           4,
+			}},
+			WireGuardProfiles: []storage.WireGuardProfile{{
+				ID:         41,
 				AgentID:    "remote-a",
-				Name:       "relay-a",
-				ListenHost: "0.0.0.0",
-				ListenPort: 7443,
-				Revision:   4,
+				Name:       "wg-relay",
+				Mode:       "generic_wireguard",
+				PrivateKey: "private-key",
+				Addresses:  []string{"10.44.0.2/32"},
+				Peers: []storage.WireGuardPeer{{
+					Name:         "relay-peer",
+					PublicKey:    "public-key",
+					PresharedKey: "preshared-key",
+					Endpoint:     "relay.example.com:51820",
+					AllowedIPs:   []string{"10.44.0.1/32"},
+				}},
+				Enabled:  true,
+				Revision: 8,
 			}},
 			Certificates: []storage.ManagedCertificateBundle{{
 				ID:       21,
@@ -1025,6 +1081,12 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 	if len(reply.Rules) != 1 || len(reply.L4Rules) != 1 || len(reply.RelayListeners) != 1 {
 		t.Fatalf("sync arrays = %+v", reply)
 	}
+	if len(reply.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles length = %d, want 1: %+v", len(reply.WireGuardProfiles), reply.WireGuardProfiles)
+	}
+	if profile := reply.WireGuardProfiles[0]; profile.ID != 41 || profile.PrivateKey != "private-key" || len(profile.Peers) != 1 || profile.Peers[0].PresharedKey != "preshared-key" {
+		t.Fatalf("WireGuardProfiles[0] = %+v", profile)
+	}
 	if len(reply.Certificates) != 1 || len(reply.CertificatePolicies) != 1 {
 		t.Fatalf("cert sync arrays = %+v", reply)
 	}
@@ -1064,10 +1126,11 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 				URL:      "https://example.com/agent-linux.tar.gz",
 				SHA256:   "sha-linux",
 			},
-			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://a.example.com", BackendURL: "http://127.0.0.1:8096"}},
-			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, UpstreamHost: "127.0.0.1", UpstreamPort: 9001}},
-			RelayListeners: []storage.RelayListener{{ID: 11, AgentID: "remote-b", Name: "relay-b", ListenHost: "0.0.0.0", ListenPort: 7443}},
-			Certificates:   []storage.ManagedCertificateBundle{{ID: 31, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
+			Rules:             []storage.HTTPRule{{ID: 1, FrontendURL: "https://a.example.com", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
+			L4Rules:           []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}}}},
+			RelayListeners:    []storage.RelayListener{{ID: 11, AgentID: "remote-b", Name: "relay-b", ListenHost: "0.0.0.0", ListenPort: 7443}},
+			WireGuardProfiles: []storage.WireGuardProfile{{ID: 41, AgentID: "remote-b", Name: "wg-relay", Mode: "generic_wireguard", PrivateKey: "private-key", Enabled: true, Revision: 7}},
+			Certificates:      []storage.ManagedCertificateBundle{{ID: 31, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
 			CertificatePolicies: []storage.ManagedCertificatePolicy{{
 				ID:              31,
 				Domain:          "relay.example.com",
@@ -1102,11 +1165,153 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 	if len(reply.RelayListeners) != 1 || reply.RelayListeners[0].ID != 11 {
 		t.Fatalf("expected relay listeners to remain populated when up-to-date: %+v", reply.RelayListeners)
 	}
+	if reply.WireGuardProfiles != nil {
+		t.Fatalf("expected wireguard profiles omitted when up-to-date: %+v", reply.WireGuardProfiles)
+	}
 	if reply.VersionPackage != "https://example.com/agent-linux.tar.gz" || reply.VersionSHA256 != "sha-linux" {
 		t.Fatalf("version package fields = %q / %q", reply.VersionPackage, reply.VersionSHA256)
 	}
 	if store.lastSnapshotInput.CurrentRevision != 7 || store.lastSnapshotInput.DesiredRevision != 1 {
 		t.Fatalf("snapshot input revision state = %+v", store.lastSnapshotInput)
+	}
+}
+
+func TestAgentServiceHeartbeatSendsWireGuardCleanupSnapshotAfterRevisionBump(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-cleanup",
+			Name:            "remote-cleanup",
+			AgentToken:      "token-remote-cleanup",
+			DesiredVersion:  "3.0.0",
+			DesiredRevision: 8,
+			CurrentRevision: 7,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion:    "3.0.0",
+			Revision:          8,
+			RelayListeners:    []storage.RelayListener{{ID: 11, AgentID: "relay-host", Name: "relay-host", ListenHost: "0.0.0.0", ListenPort: 7443}},
+			WireGuardProfiles: []storage.WireGuardProfile{},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 7,
+		Platform:        "linux-amd64",
+	}, "token-remote-cleanup")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if !reply.HasUpdate {
+		t.Fatalf("HasUpdate = false, want true")
+	}
+	if reply.DesiredRevision != 8 {
+		t.Fatalf("DesiredRevision = %d, want 8", reply.DesiredRevision)
+	}
+	if reply.WireGuardProfiles == nil || len(reply.WireGuardProfiles) != 0 {
+		t.Fatalf("WireGuardProfiles = %+v, want explicit empty slice", reply.WireGuardProfiles)
+	}
+	if len(reply.RelayListeners) != 1 || reply.RelayListeners[0].ID != 11 {
+		t.Fatalf("RelayListeners = %+v", reply.RelayListeners)
+	}
+}
+
+func TestAgentServiceHeartbeatSendsWireGuardCleanupWhenCapabilityRemovedWithoutRevisionBump(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                "remote-cleanup",
+			Name:              "remote-cleanup",
+			AgentToken:        "token-remote-cleanup",
+			DesiredVersion:    "3.0.0",
+			DesiredRevision:   8,
+			CurrentRevision:   8,
+			LastApplyRevision: 8,
+			LastApplyStatus:   "success",
+			CapabilitiesJSON:  `["http_rules","wireguard"]`,
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion:    "3.0.0",
+			Revision:          8,
+			RelayListeners:    []storage.RelayListener{{ID: 11, AgentID: "relay-host", Name: "relay-host", ListenHost: "0.0.0.0", ListenPort: 7443}},
+			WireGuardProfiles: []storage.WireGuardProfile{},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 8,
+		LastApplyStatus: "success",
+		Capabilities:    []string{"http_rules"},
+		HasCapabilities: true,
+		Platform:        "linux-amd64",
+	}, "token-remote-cleanup")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if !reply.HasUpdate {
+		t.Fatalf("HasUpdate = false, want true")
+	}
+	if reply.WireGuardProfiles == nil || len(reply.WireGuardProfiles) != 0 {
+		t.Fatalf("WireGuardProfiles = %+v, want explicit empty slice", reply.WireGuardProfiles)
+	}
+	if len(reply.RelayListeners) != 1 || reply.RelayListeners[0].ID != 11 {
+		t.Fatalf("RelayListeners = %+v", reply.RelayListeners)
+	}
+	if store.savedAgent.CapabilitiesJSON != `["http_rules"]` {
+		t.Fatalf("saved capabilities = %q", store.savedAgent.CapabilitiesJSON)
+	}
+}
+
+func TestAgentServiceHeartbeatReturnsProfileOnlyUpdate(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-wg",
+			Name:            "remote-wg",
+			AgentToken:      "token-remote-wg",
+			DesiredVersion:  "3.0.0",
+			DesiredRevision: 10,
+			CurrentRevision: 9,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "3.0.0",
+			Revision:       10,
+			WireGuardProfiles: []storage.WireGuardProfile{{
+				ID:         77,
+				AgentID:    "remote-wg",
+				Name:       "wg-only",
+				Mode:       "generic_wireguard",
+				PrivateKey: "profile-only-private-key",
+				Addresses:  []string{"10.77.0.2/32"},
+				Enabled:    true,
+				Revision:   10,
+			}},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 9,
+		Platform:        "linux-amd64",
+	}, "token-remote-wg")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if !reply.HasUpdate {
+		t.Fatalf("HasUpdate = false, want true")
+	}
+	if len(reply.Rules) != 0 || len(reply.L4Rules) != 0 || len(reply.RelayListeners) != 0 {
+		t.Fatalf("expected profile-only sync payload, got %+v", reply)
+	}
+	if len(reply.WireGuardProfiles) != 1 {
+		t.Fatalf("WireGuardProfiles length = %d, want 1: %+v", len(reply.WireGuardProfiles), reply.WireGuardProfiles)
+	}
+	if profile := reply.WireGuardProfiles[0]; profile.ID != 77 || profile.PrivateKey != "profile-only-private-key" || profile.Revision != 10 {
+		t.Fatalf("WireGuardProfiles[0] = %+v", profile)
 	}
 }
 
@@ -1125,8 +1330,8 @@ func TestAgentServiceHeartbeatForcesFullSyncWhenLastApplyFailedAtCurrentRevision
 		snapshot: storage.Snapshot{
 			DesiredVersion: "3.1.0",
 			Revision:       7,
-			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://edge.example.com", BackendURL: "http://127.0.0.1:8096"}},
-			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 50381, UpstreamHost: "127.0.0.1", UpstreamPort: 9001}},
+			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://edge.example.com", Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}}}},
+			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 50381, Backends: []storage.L4Backend{{Host: "127.0.0.1", Port: 9001}}}},
 			RelayListeners: []storage.RelayListener{{ID: 4, AgentID: "remote-c", Name: "relay-local", ListenHost: "0.0.0.0", ListenPort: 443}},
 			Certificates:   []storage.ManagedCertificateBundle{{ID: 8, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
 			CertificatePolicies: []storage.ManagedCertificatePolicy{{
@@ -2009,10 +2214,11 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 		rulesByID: map[string][]storage.HTTPRuleRow{
 			"edge-a": {{ID: 1, AgentID: "edge-a"}},
 			"edge-b": {{
-				ID:             9,
-				AgentID:        "edge-b",
-				FrontendURL:    "https://relay.example.com",
-				RelayChainJSON: `[7]`,
+				ID:              9,
+				AgentID:         "edge-b",
+				FrontendURL:     "https://relay.example.com",
+				RelayChainJSON:  `[8]`,
+				RelayLayersJSON: `[[7]]`,
 			}},
 		},
 		l4RulesByID: map[string][]storage.L4RuleRow{
@@ -2040,6 +2246,48 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 	}
 	if len(store.rulesByID["edge-a"]) != 0 || len(store.l4RulesByID["edge-a"]) != 0 || len(store.relayByID["edge-a"]) != 0 {
 		t.Fatalf("agent resources not cleaned up: rules=%+v l4=%+v relay=%+v", store.rulesByID["edge-a"], store.l4RulesByID["edge-a"], store.relayByID["edge-a"])
+	}
+}
+
+func TestAgentServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}
+	store := &fakeStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-a", Name: "edge-a", AgentToken: "token-a"},
+			{ID: "edge-b", Name: "edge-b", AgentToken: "token-b"},
+		},
+		relayByID: map[string][]storage.RelayListenerRow{
+			"edge-a": {{
+				ID:      7,
+				AgentID: "edge-a",
+				Name:    "relay-a",
+			}},
+		},
+		rulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-b": {{
+				ID:              9,
+				AgentID:         "edge-b",
+				FrontendURL:     "https://relay.example.com",
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[8]]`,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+	}
+	svc := NewAgentService(cfg, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != "edge-a" {
+		t.Fatalf("deleted agent = %+v", deleted)
+	}
+	if store.deletedAgentID != "edge-a" {
+		t.Fatalf("DeleteAgent() called with %q", store.deletedAgentID)
 	}
 }
 

@@ -24,7 +24,7 @@ func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T)
 		Rules: []model.HTTPRule{{
 			ID:          7,
 			FrontendURL: "https://edge.example.test/emby",
-			BackendURL:  server.URL + "/healthz",
+			Backends:    []model.HTTPBackend{{URL: server.URL + "/healthz"}},
 		}},
 	}); err != nil {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
@@ -163,7 +163,7 @@ func TestDiagnosticHandlerUsesFiveHTTPSamplesByDefault(t *testing.T) {
 		Rules: []model.HTTPRule{{
 			ID:          27,
 			FrontendURL: "https://edge.example.test/emby",
-			BackendURL:  server.URL + "/healthz",
+			Backends:    []model.HTTPBackend{{URL: server.URL + "/healthz"}},
 		}},
 	}); err != nil {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
@@ -216,12 +216,11 @@ func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
 	addr := ln.Addr().(*net.TCPAddr)
 	if err := mem.SaveDesiredSnapshot(model.Snapshot{
 		L4Rules: []model.L4Rule{{
-			ID:           9,
-			Protocol:     "tcp",
-			ListenHost:   "0.0.0.0",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: addr.Port,
+			ID:         9,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: addr.Port}},
 		}},
 	}); err != nil {
 		t.Fatalf("SaveDesiredSnapshot() error = %v", err)
@@ -330,6 +329,106 @@ func TestDiagnosticHandlerReturnsPerBackendResultsForL4Rules(t *testing.T) {
 
 	<-doneA
 	<-doneB
+}
+
+func TestDiagnosticHandlerHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer ln.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+	}()
+	addr := ln.Addr().(*net.TCPAddr)
+
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(model.Snapshot{
+		Revision:       224,
+		DesiredVersion: "stored",
+		Rules:          []model.HTTPRule{{ID: 7, FrontendURL: "http://edge.example.test"}},
+	}); err != nil {
+		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(model.Snapshot{
+		Revision:       224,
+		DesiredVersion: "stored",
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: addr.Port}},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveDesiredSnapshot() error = %v", err)
+	}
+
+	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{
+		Attempts: 1,
+		Timeout:  time.Second,
+	}))
+
+	result, err := handler.HandleTask(context.Background(), TaskMessage{
+		TaskID:     "task-45",
+		TaskType:   TaskTypeDiagnoseL4TCPRule,
+		RawPayload: map[string]any{"rule_id": 45},
+	})
+	if err != nil {
+		t.Fatalf("HandleTask() error = %v", err)
+	}
+	if result["rule_id"] != 45 {
+		t.Fatalf("rule_id = %#v, want 45", result["rule_id"])
+	}
+	<-done
+}
+
+func TestDiagnosticHandlerDoesNotHydrateMissingAppliedRulesFromNewerDesiredSnapshot(t *testing.T) {
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(model.Snapshot{
+		Revision:       224,
+		DesiredVersion: "stored",
+		Rules:          []model.HTTPRule{{ID: 7, FrontendURL: "http://edge.example.test"}},
+	}); err != nil {
+		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(model.Snapshot{
+		Revision:       225,
+		DesiredVersion: "stored",
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9}},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveDesiredSnapshot() error = %v", err)
+	}
+
+	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{
+		Attempts: 1,
+		Timeout:  time.Second,
+	}))
+
+	_, err := handler.HandleTask(context.Background(), TaskMessage{
+		TaskID:     "task-45",
+		TaskType:   TaskTypeDiagnoseL4TCPRule,
+		RawPayload: map[string]any{"rule_id": 45},
+	})
+	if err == nil {
+		t.Fatal("HandleTask() error = nil, want newer desired snapshot to be ignored")
+	}
+	if err.Error() != "l4 rule 45 not found" {
+		t.Fatalf("HandleTask() error = %v, want l4 rule 45 not found", err)
+	}
 }
 
 func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {

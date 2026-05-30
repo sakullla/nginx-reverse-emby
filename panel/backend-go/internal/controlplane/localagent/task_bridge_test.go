@@ -70,8 +70,10 @@ type stubStore struct {
 	httpRule  storage.HTTPRuleRow
 	httpOk    bool
 	httpErr   error
-	l4Rules   []storage.L4RuleRow
+	l4Rule    storage.L4RuleRow
+	l4Ok      bool
 	l4Err     error
+	l4Rules   []storage.L4RuleRow
 	snapshot  storage.Snapshot
 	snapErr   error
 	snapAgent string
@@ -83,6 +85,10 @@ func (s *stubStore) GetHTTPRule(_ context.Context, _ string, _ int) (storage.HTT
 
 func (s *stubStore) ListL4Rules(_ context.Context, _ string) ([]storage.L4RuleRow, error) {
 	return s.l4Rules, s.l4Err
+}
+
+func (s *stubStore) GetL4Rule(_ context.Context, _ string, _ int) (storage.L4RuleRow, bool, error) {
+	return s.l4Rule, s.l4Ok, s.l4Err
 }
 
 func (s *stubStore) LoadLocalSnapshot(_ context.Context, agentID string) (storage.Snapshot, error) {
@@ -114,7 +120,6 @@ func TestLocalTaskSessionDiagnoseHTTPRuleUsesEmbeddedDiagnosticsPayload(t *testi
 				ID:          10,
 				AgentID:     "agent-1",
 				FrontendURL: "https://media.example.com",
-				BackendURL:  "http://127.0.0.1:8096",
 				Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			}},
 		},
@@ -188,7 +193,6 @@ func TestLocalTaskSessionUsesEnvelopeDeadlineForDiagnosticsContext(t *testing.T)
 				ID:          10,
 				AgentID:     "agent-1",
 				FrontendURL: "https://media.example.com",
-				BackendURL:  "http://127.0.0.1:8096",
 				Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			}},
 		},
@@ -230,7 +234,6 @@ func TestLocalTaskSessionDiagnoseHTTPRuleInjectsPendingLocalRuleIntoSnapshot(t *
 			ID:                10,
 			AgentID:           "agent-1",
 			FrontendURL:       "https://pending.example.com",
-			BackendURL:        "http://127.0.0.1:8096",
 			BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
 			LoadBalancingJSON: `{"strategy":"adaptive"}`,
 			Enabled:           true,
@@ -244,7 +247,6 @@ func TestLocalTaskSessionDiagnoseHTTPRuleInjectsPendingLocalRuleIntoSnapshot(t *
 				ID:          9,
 				AgentID:     "agent-1",
 				FrontendURL: "https://applied.example.com",
-				BackendURL:  "http://127.0.0.1:8095",
 				Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8095"}},
 			}},
 		},
@@ -311,21 +313,20 @@ func TestLocalTaskSessionDiagnoseHTTPRuleDisabled(t *testing.T) {
 func TestLocalTaskSessionDiagnoseL4RuleUsesEmbeddedDiagnostics(t *testing.T) {
 	reporter := &stubReporter{}
 	store := &stubStore{
-		l4Rules: []storage.L4RuleRow{{
+		l4Rule: storage.L4RuleRow{
 			ID:      20,
 			AgentID: "agent-1",
 			Enabled: true,
-		}},
+		},
+		l4Ok: true,
 		snapshot: storage.Snapshot{
 			L4Rules: []storage.L4Rule{{
-				ID:           20,
-				AgentID:      "agent-1",
-				Protocol:     "tcp",
-				ListenHost:   "0.0.0.0",
-				ListenPort:   25565,
-				UpstreamHost: "127.0.0.1",
-				UpstreamPort: 25565,
-				Backends:     []storage.L4Backend{{Host: "127.0.0.1", Port: 25565}},
+				ID:         20,
+				AgentID:    "agent-1",
+				Protocol:   "tcp",
+				ListenHost: "0.0.0.0",
+				ListenPort: 25565,
+				Backends:   []storage.L4Backend{{Host: "127.0.0.1", Port: 25565}},
 			}},
 		},
 	}
@@ -362,6 +363,67 @@ func TestLocalTaskSessionDiagnoseL4RuleUsesEmbeddedDiagnostics(t *testing.T) {
 	samples, ok := update.Result["samples"].([]map[string]any)
 	if !ok || len(samples) != 1 {
 		t.Fatalf("samples = %#v", update.Result["samples"])
+	}
+}
+
+func TestLocalTaskSessionDiagnoseL4RuleUsesDirectLookup(t *testing.T) {
+	reporter := &stubReporter{}
+	store := &stubStore{
+		l4Rule: storage.L4RuleRow{
+			ID:      20,
+			AgentID: "agent-1",
+			Enabled: true,
+		},
+		l4Ok: true,
+		snapshot: storage.Snapshot{
+			L4Rules: []storage.L4Rule{{
+				ID:         99,
+				AgentID:    "agent-1",
+				Protocol:   "tcp",
+				ListenHost: "0.0.0.0",
+				ListenPort: 25566,
+				Backends:   []storage.L4Backend{{Host: "127.0.0.1", Port: 25566}},
+			}},
+		},
+	}
+
+	previousRunner := runEmbeddedDiagnostics
+	t.Cleanup(func() { runEmbeddedDiagnostics = previousRunner })
+	runEmbeddedDiagnostics = func(_ context.Context, _ string, snapshot storage.Snapshot, envelope service.TaskEnvelope) (map[string]any, error) {
+		if envelope.Type != service.TaskTypeDiagnoseL4TCPRule {
+			t.Fatalf("task type = %q", envelope.Type)
+		}
+		if len(snapshot.L4Rules) != 2 {
+			t.Fatalf("snapshot = %+v, want existing and looked up rules", snapshot.L4Rules)
+		}
+		var got *storage.L4Rule
+		for i := range snapshot.L4Rules {
+			if snapshot.L4Rules[i].ID == 20 {
+				got = &snapshot.L4Rules[i]
+			}
+		}
+		if got == nil {
+			t.Fatalf("looked up rule was not injected into snapshot: %+v", snapshot.L4Rules)
+		}
+		return map[string]any{
+			"kind":    "l4_tcp",
+			"rule_id": 20,
+			"summary": map[string]any{"sent": 1, "succeeded": 1, "failed": 0, "quality": "极佳"},
+			"samples": []map[string]any{{"attempt": 1, "backend": "127.0.0.1:25566", "success": true}},
+		}, nil
+	}
+
+	sess := NewLocalTaskSession("agent-1", reporter, store)
+	sess.SendTask(service.TaskEnvelope{
+		ID:      "task-3b",
+		Type:    service.TaskTypeDiagnoseL4TCPRule,
+		Payload: map[string]any{"rule_id": 20},
+	})
+	sess.Close()
+
+	update := reporter.lastUpdate()
+	if update.State != "completed" {
+		t.Fatalf("state = %q, want completed; error = %q", update.State, update.Error)
 	}
 }
 

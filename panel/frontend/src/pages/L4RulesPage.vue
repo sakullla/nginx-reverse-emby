@@ -93,7 +93,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <L4RuleForm :initial-data="editingRule" :agent-id="agentId" @success="closeForm" />
+      <L4RuleForm :initial-data="editingRule" :agent-id="agentId" :l4-rules="rules" @success="closeForm" />
     </BaseModal>
 
     <!-- Copy Modal -->
@@ -104,7 +104,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeCopy"
     >
-      <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" @success="closeCopy" />
+      <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" :l4-rules="rules" @success="closeCopy" />
     </BaseModal>
 
     <!-- Delete Modal -->
@@ -225,11 +225,6 @@ function l4BackendAddresses(rule) {
       })
       .filter(Boolean)
   }
-
-  if (rule?.upstream_host && rule?.upstream_port) {
-    return [`${rule.upstream_host}:${rule.upstream_port}`]
-  }
-
   return []
 }
 
@@ -242,7 +237,6 @@ const filteredRules = computed(() => {
   return rules.value.filter(rule =>
     String(rule.protocol || '').toLowerCase().includes(q) ||
     String(rule.listen_host || '').toLowerCase().includes(q) ||
-    String(rule.upstream_host || '').toLowerCase().includes(q) ||
     l4BackendAddresses(rule).some((address) => address.toLowerCase().includes(q)) ||
     String(rule.listen_port || '').includes(q) ||
     (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))

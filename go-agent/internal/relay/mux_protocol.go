@@ -42,7 +42,7 @@ type muxFrame struct {
 	StreamID uint32
 	Payload  []byte
 
-	payloadRelease func()
+	pooledPayload []byte
 }
 
 func writeMuxFrame(w io.Writer, frame muxFrame) error {
@@ -82,6 +82,27 @@ func writeMuxFrame(w io.Writer, frame muxFrame) error {
 	return writeAll(w, frame.Payload)
 }
 
+func writeMuxFrameBuffered(w io.Writer, frame muxFrame, buf []byte) error {
+	if len(frame.Payload) > tlsTCPBulkFrameSize || len(buf) < muxFrameHeaderSize+len(frame.Payload) {
+		return writeMuxFrame(w, frame)
+	}
+	if frame.Version == 0 {
+		frame.Version = muxProtocolVersion
+	}
+	if len(frame.Payload) > maxMuxPayloadBytes {
+		return fmt.Errorf("mux payload exceeds %d bytes", maxMuxPayloadBytes)
+	}
+
+	header := buf[:muxFrameHeaderSize]
+	header[0] = frame.Version
+	header[1] = byte(frame.Type)
+	header[2] = byte(frame.Flags)
+	binary.BigEndian.PutUint32(header[3:7], frame.StreamID)
+	binary.BigEndian.PutUint32(header[7:11], uint32(len(frame.Payload)))
+	copy(buf[muxFrameHeaderSize:], frame.Payload)
+	return writeAll(w, buf[:muxFrameHeaderSize+len(frame.Payload)])
+}
+
 func readMuxFrame(r io.Reader) (muxFrame, error) {
 	var header [11]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
@@ -93,50 +114,48 @@ func readMuxFrame(r io.Reader) (muxFrame, error) {
 		return muxFrame{}, fmt.Errorf("invalid mux payload size %d", size)
 	}
 
-	payload, release := allocMuxPayload(size)
+	payload, pooledPayload := allocMuxPayload(size)
 	if _, err := io.ReadFull(r, payload); err != nil {
-		if release != nil {
-			release()
+		if pooledPayload != nil {
+			tlsTCPBulkBufferPool.Put(pooledPayload)
 		}
 		return muxFrame{}, err
 	}
 
 	return muxFrame{
-		Version:        header[0],
-		Type:           muxFrameType(header[1]),
-		Flags:          muxFrameFlags(header[2]),
-		StreamID:       binary.BigEndian.Uint32(header[3:7]),
-		Payload:        payload,
-		payloadRelease: release,
+		Version:       header[0],
+		Type:          muxFrameType(header[1]),
+		Flags:         muxFrameFlags(header[2]),
+		StreamID:      binary.BigEndian.Uint32(header[3:7]),
+		Payload:       payload,
+		pooledPayload: pooledPayload,
 	}, nil
 }
 
-func allocMuxPayload(size uint32) ([]byte, func()) {
+func allocMuxPayload(size uint32) ([]byte, []byte) {
 	if size == 0 {
 		return nil, nil
 	}
 	if size <= tlsTCPBulkFrameSize {
 		buf := tlsTCPBulkBufferPool.Get().([]byte)
-		return buf[:size], func() {
-			tlsTCPBulkBufferPool.Put(buf)
-		}
+		return buf[:size], buf
 	}
 	return make([]byte, size), nil
 }
 
 func (f *muxFrame) releasePayload() {
-	if f.payloadRelease != nil {
-		f.payloadRelease()
-		f.payloadRelease = nil
+	if f.pooledPayload != nil {
+		tlsTCPBulkBufferPool.Put(f.pooledPayload)
+		f.pooledPayload = nil
 	}
 }
 
 func (f *muxFrame) takeReadChunk() tlsTCPReadChunk {
 	chunk := tlsTCPReadChunk{
-		payload: f.Payload,
-		release: f.payloadRelease,
+		payload:       f.Payload,
+		pooledPayload: f.pooledPayload,
 	}
 	f.Payload = nil
-	f.payloadRelease = nil
+	f.pooledPayload = nil
 	return chunk
 }

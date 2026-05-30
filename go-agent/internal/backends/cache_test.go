@@ -2,6 +2,7 @@ package backends
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net"
 	"reflect"
@@ -56,6 +57,70 @@ func TestCacheResolveUsesFixedDNSCacheTTL(t *testing.T) {
 	}
 	if resolver.calls != 2 {
 		t.Fatalf("expected resolver to be called exactly twice, got %d", resolver.calls)
+	}
+}
+
+func TestCacheResolveUsesStaleDNSResultWhenRefreshFails(t *testing.T) {
+	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	now := base
+	resolver := &stubResolver{
+		results: [][]net.IPAddr{
+			{{IP: net.ParseIP("10.0.0.1")}},
+		},
+		errs: []error{nil, errors.New("dns refresh failed")},
+	}
+
+	cache := NewCache(Config{
+		Resolver: resolver,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	endpoint := Endpoint{Host: "backend.example.internal", Port: 8096}
+	if _, err := cache.Resolve(context.Background(), endpoint); err != nil {
+		t.Fatalf("resolve #1: %v", err)
+	}
+
+	now = now.Add(dnsCacheTTL + time.Second)
+	stale, err := cache.Resolve(context.Background(), endpoint)
+	if err != nil {
+		t.Fatalf("resolve stale after refresh error: %v", err)
+	}
+	if got := stale[0].Address; got != "10.0.0.1:8096" {
+		t.Fatalf("stale resolved address = %q, want previous IP", got)
+	}
+	if resolver.calls != 2 {
+		t.Fatalf("resolver calls = %d, want refresh attempt", resolver.calls)
+	}
+}
+
+func TestCacheResolveReturnsRefreshErrorAfterStaleDNSWindowExpires(t *testing.T) {
+	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	now := base
+	refreshErr := errors.New("dns refresh failed")
+	resolver := &stubResolver{
+		results: [][]net.IPAddr{
+			{{IP: net.ParseIP("10.0.0.1")}},
+		},
+		errs: []error{nil, refreshErr},
+	}
+
+	cache := NewCache(Config{
+		Resolver: resolver,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	endpoint := Endpoint{Host: "backend.example.internal", Port: 8096}
+	if _, err := cache.Resolve(context.Background(), endpoint); err != nil {
+		t.Fatalf("resolve #1: %v", err)
+	}
+
+	now = now.Add(dnsCacheTTL + dnsCacheStaleIfErrorTTL + time.Second)
+	if _, err := cache.Resolve(context.Background(), endpoint); !errors.Is(err, refreshErr) {
+		t.Fatalf("resolve after stale window error = %v, want %v", err, refreshErr)
 	}
 }
 
@@ -319,6 +384,30 @@ func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 	got := cache.Order(scope, StrategyAdaptive, candidates)
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"fast", "bulk"}) {
 		t.Fatalf("unexpected adaptive order with combined performance scoring: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptiveAllocations(t *testing.T) {
+	now := time.Date(2026, time.May, 11, 0, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now:        func() time.Time { return now },
+		RandomIntn: func(n int) int { return 0 },
+	})
+	candidates := benchmarkCandidates(64)
+	for i, candidate := range candidates {
+		key := BackendObservationKey("http:bench", candidate.Address)
+		latency := time.Duration(10+i%20) * time.Millisecond
+		cache.ObserveBackendSuccess(key, latency, 120*time.Millisecond, int64(256*1024+i*1024))
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		ordered := cache.Order("http:bench", StrategyAdaptive, candidates)
+		if len(ordered) != len(candidates) {
+			t.Fatalf("Order() candidates = %d, want %d", len(ordered), len(candidates))
+		}
+	})
+	if allocs > 8 {
+		t.Fatalf("Order() allocations = %.2f, want <= 8", allocs)
 	}
 }
 
@@ -841,6 +930,9 @@ func TestCachePreferResolvedCandidatesDampensSingleBandwidthSpikeWithConfidence(
 		Now: func() time.Time {
 			return base
 		},
+		RandomIntn: func(n int) int {
+			return n - 1
+		},
 	})
 	candidates := []Candidate{
 		{Address: "10.0.0.13:443"},
@@ -1129,6 +1221,63 @@ func TestCacheOrderAdaptiveUsesScopedBackendStateWithoutResolvedOverlay(t *testi
 	}
 }
 
+func TestCacheClonePreservesBackendObservationIndex(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	scope := "tcp:rule-clone-backend-order"
+	candidates := []Candidate{
+		{Address: "slow"},
+		{Address: "fast"},
+	}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "slow"), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "fast"), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
+	}
+
+	clone := cache.Clone()
+	got := clone.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"fast", "slow"}) {
+		t.Fatalf("unexpected cloned adaptive order: %v", ordered)
+	}
+	if summary := clone.Summary(BackendObservationKey(scope, "fast")); summary.RecentSucceeded != 3 || !summary.HasLatency {
+		t.Fatalf("cloned summary = %+v, want observed backend state", summary)
+	}
+}
+
+func TestCachePruneRemovesBackendObservationIndex(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	scope := "tcp:rule-prune-backend-order"
+	candidates := []Candidate{
+		{Address: "cold"},
+		{Address: "stale"},
+	}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "stale"), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
+	}
+	now = base.Add(observationWindow + time.Hour)
+	cache.Prune()
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"cold", "stale"}) {
+		t.Fatalf("unexpected adaptive order after prune: %v", ordered)
+	}
+	if summary := cache.Summary(BackendObservationKey(scope, "stale")); summary.RecentSucceeded != 0 || summary.HasLatency {
+		t.Fatalf("pruned summary = %+v, want empty backend state", summary)
+	}
+}
+
 func TestCacheFailureBackoffCapsAndSuccessResetsState(t *testing.T) {
 	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	now := base
@@ -1196,8 +1345,21 @@ func TestRelayBackoffKeyForLayersIncludesFullLayerShape(t *testing.T) {
 	if layered == layeredAlternate {
 		t.Fatalf("different relay layers produced same key %q", layered)
 	}
+	if got, want := RelayBackoffKeyForLayers(nil, [][]int{{}, {3}}, addr), "relay_layers|/3|relay-target.example:9443"; got != want {
+		t.Fatalf("empty relay layer key = %q, want %q", got, want)
+	}
 	if got := RelayBackoffKeyForLayers([]int{1}, nil, addr); got != legacy {
 		t.Fatalf("chain-only key = %q, want %q", got, legacy)
+	}
+}
+
+func TestRelayBackoffKeyForLayersAllocations(t *testing.T) {
+	layers := [][]int{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = RelayBackoffKeyForLayers(nil, layers, "backend.example:443")
+	})
+	if allocs > 2 {
+		t.Fatalf("RelayBackoffKeyForLayers() allocations = %.2f, want <= 2", allocs)
 	}
 }
 
@@ -1411,6 +1573,7 @@ func addresses(candidates []Candidate) []string {
 
 type stubResolver struct {
 	results [][]net.IPAddr
+	errs    []error
 	calls   int
 }
 
@@ -1418,10 +1581,14 @@ func (s *stubResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAdd
 	if host == "" {
 		return nil, nil
 	}
-	idx := s.calls
+	call := s.calls
+	s.calls++
+	if call < len(s.errs) && s.errs[call] != nil {
+		return nil, s.errs[call]
+	}
+	idx := call
 	if idx >= len(s.results) {
 		idx = len(s.results) - 1
 	}
-	s.calls++
 	return s.results[idx], nil
 }

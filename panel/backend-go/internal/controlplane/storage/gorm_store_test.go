@@ -16,6 +16,8 @@ func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
 	cfg.DataDir = "/tmp/nre-data"
 	cfg.LocalAgentID = "edge-1"
 	cfg.TrafficStatsEnabled = false
+	cfg.WireGuardEnabled = false
+	cfg.WireGuardExplicit = true
 
 	storeCfg := StoreConfigFromConfig(cfg)
 
@@ -33,6 +35,9 @@ func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
 	}
 	if storeCfg.TrafficStatsEnabled {
 		t.Fatal("TrafficStatsEnabled = true, want false")
+	}
+	if storeCfg.WireGuardEnabled {
+		t.Fatal("WireGuardEnabled = true, want false")
 	}
 }
 
@@ -77,6 +82,29 @@ func TestNewStoreRequiresDataRootForDefaultSQLiteDSN(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "data root is required") {
 		t.Fatalf("NewStore() error = %v, want data root is required", err)
+	}
+}
+
+func TestNewStoreEnablesSQLiteWALForDefaultDSN(t *testing.T) {
+	store, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            t.TempDir(),
+		LocalAgentID:        "local",
+		SkipBootstrapSchema: true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	var journalMode string
+	if err := store.db.Raw("PRAGMA journal_mode").Scan(&journalMode).Error; err != nil {
+		t.Fatalf("PRAGMA journal_mode error = %v", err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", journalMode)
 	}
 }
 

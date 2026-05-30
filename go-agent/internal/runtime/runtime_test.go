@@ -155,7 +155,6 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 		Revision:       1,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
-			BackendURL:  "http://127.0.0.1:8096",
 			Backends: []model.HTTPBackend{
 				{URL: "http://10.0.0.11:8096"},
 				{URL: "http://10.0.0.12:8096"},
@@ -170,11 +169,9 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 			Revision: 1,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
 			Backends: []model.L4Backend{
 				{Host: "10.0.0.21", Port: 9001},
 				{Host: "10.0.0.22", Port: 9002},
@@ -188,8 +185,8 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 					Send:   true,
 				},
 			},
-			RelayChain: []int{1, 2},
-			Revision:   1,
+			RelayLayers: [][]int{{1}, {2}},
+			Revision:    1,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         10,
@@ -237,7 +234,6 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 		Revision:       1,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
-			BackendURL:  "http://127.0.0.1:8096",
 			Backends: []model.HTTPBackend{
 				{URL: "http://10.0.0.11:8096"},
 				{URL: "http://10.0.0.12:8096"},
@@ -250,14 +246,12 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 				Value: "one",
 			}},
 			RelayLayers: [][]int{{1, 2}, {3}},
-			Revision: 1,
+			Revision:    1,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
 			Backends: []model.L4Backend{
 				{Host: "10.0.0.21", Port: 9001},
 				{Host: "10.0.0.22", Port: 9002},
@@ -271,7 +265,6 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 					Send:   true,
 				},
 			},
-			RelayChain:  []int{1, 2},
 			RelayLayers: [][]int{{4}, {5, 6}},
 			Revision:    1,
 		}},
@@ -310,6 +303,53 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 			CertificateType: "uploaded",
 			Tags:            []string{"one"},
 		}},
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:         11,
+			AgentID:    "agent-a",
+			Name:       "wg-a",
+			Mode:       "generic_wireguard",
+			PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+			ListenPort: 51820,
+			BindAddresses: []string{
+				"192.0.2.10",
+				"2001:db8::10",
+			},
+			Addresses: []string{"10.20.0.1/24"},
+			Peers: []model.WireGuardPeer{{
+				Name:         "peer-a",
+				PublicKey:    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+				PresharedKey: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
+				Endpoint:     "peer.example.com:51820",
+				AllowedIPs:   []string{"10.20.0.2/32"},
+				Reserved:     []byte{1, 2, 3},
+			}},
+			DNS:      []string{"1.1.1.1"},
+			MTU:      1420,
+			Enabled:  true,
+			Tags:     []string{"edge"},
+			Revision: 1,
+		}},
+		EgressProfiles: []model.EgressProfile{{
+			ID:      12,
+			Name:    "egress-wg",
+			Type:    "wireguard",
+			Enabled: true,
+			WireGuardConfig: &model.EgressWireGuardConfig{
+				PrivateKey: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+				Addresses:  []string{"10.30.0.1/24"},
+				Peers: []model.WireGuardPeer{{
+					Name:         "egress-peer",
+					PublicKey:    "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEM=",
+					PresharedKey: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=",
+					Endpoint:     "egress.example.com:51820",
+					AllowedIPs:   []string{"10.30.0.2/32"},
+					Reserved:     []byte{4, 5, 6},
+				}},
+				DNS: []string{"9.9.9.9"},
+				MTU: 1280,
+			},
+			Revision: 1,
+		}},
 	}
 	if err := r.Apply(ctx, model.Snapshot{}, initial); err != nil {
 		t.Fatalf("priming apply failed: %v", err)
@@ -319,7 +359,7 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	snap.Rules[0].CustomHeaders[0].Value = "mutated"
 	snap.Rules[0].Backends[0].URL = "http://mutated.example.internal:8096"
 	snap.Rules[0].RelayLayers[0][0] = 99
-	snap.L4Rules[0].RelayChain[0] = 99
+	snap.L4Rules[0].RelayLayers[0][0] = 99
 	snap.L4Rules[0].RelayLayers[1][0] = 88
 	snap.L4Rules[0].Backends[0].Host = "mutated-host"
 	snap.RelayListeners[0].BindHosts[0] = "127.0.0.99"
@@ -328,6 +368,14 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	snap.RelayListeners[0].Tags[0] = "mutated"
 	snap.Certificates[0].Domain = "mutated.example.com"
 	snap.CertificatePolicies[0].Tags[0] = "mutated"
+	snap.WireGuardProfiles[0].BindAddresses[0] = "192.0.2.99"
+	snap.WireGuardProfiles[0].Peers[0].AllowedIPs[0] = "10.20.0.99/32"
+	snap.WireGuardProfiles[0].Peers[0].Reserved[0] = 9
+	snap.EgressProfiles[0].Name = "mutated-egress"
+	snap.EgressProfiles[0].WireGuardConfig.Addresses[0] = "10.30.0.99/32"
+	snap.EgressProfiles[0].WireGuardConfig.Peers[0].AllowedIPs[0] = "10.30.0.99/32"
+	snap.EgressProfiles[0].WireGuardConfig.Peers[0].Reserved[0] = 9
+	snap.EgressProfiles[0].WireGuardConfig.DNS[0] = "8.8.8.8"
 
 	current := r.ActiveSnapshot()
 	if current.Rules[0].CustomHeaders[0].Value != "one" {
@@ -339,8 +387,8 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	if current.Rules[0].RelayLayers[0][0] != 1 {
 		t.Fatalf("http relay_layers leaked mutation: %+v", current.Rules)
 	}
-	if current.L4Rules[0].RelayChain[0] != 1 {
-		t.Fatalf("l4 relay_chain leaked mutation: %+v", current.L4Rules)
+	if current.L4Rules[0].RelayLayers[0][0] != 4 {
+		t.Fatalf("l4 relay_layers leaked mutation: %+v", current.L4Rules)
 	}
 	if current.L4Rules[0].RelayLayers[1][0] != 5 {
 		t.Fatalf("l4 relay_layers leaked mutation: %+v", current.L4Rules)
@@ -365,6 +413,30 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	}
 	if current.CertificatePolicies[0].Tags[0] != "one" {
 		t.Fatalf("policy tags leaked mutation: %+v", current.CertificatePolicies)
+	}
+	if current.WireGuardProfiles[0].BindAddresses[0] != "192.0.2.10" {
+		t.Fatalf("wireguard bind_addresses leaked mutation: %+v", current.WireGuardProfiles)
+	}
+	if current.WireGuardProfiles[0].Peers[0].AllowedIPs[0] != "10.20.0.2/32" {
+		t.Fatalf("wireguard allowed_ips leaked mutation: %+v", current.WireGuardProfiles[0].Peers)
+	}
+	if current.WireGuardProfiles[0].Peers[0].Reserved[0] != 1 {
+		t.Fatalf("wireguard reserved leaked mutation: %+v", current.WireGuardProfiles[0].Peers)
+	}
+	if current.EgressProfiles[0].Name != "egress-wg" {
+		t.Fatalf("egress profile slice leaked mutation: %+v", current.EgressProfiles)
+	}
+	if current.EgressProfiles[0].WireGuardConfig.Addresses[0] != "10.30.0.1/24" {
+		t.Fatalf("egress wireguard addresses leaked mutation: %+v", current.EgressProfiles[0].WireGuardConfig)
+	}
+	if current.EgressProfiles[0].WireGuardConfig.Peers[0].AllowedIPs[0] != "10.30.0.2/32" {
+		t.Fatalf("egress wireguard peer allowed_ips leaked mutation: %+v", current.EgressProfiles[0].WireGuardConfig.Peers)
+	}
+	if current.EgressProfiles[0].WireGuardConfig.Peers[0].Reserved[0] != 4 {
+		t.Fatalf("egress wireguard peer reserved leaked mutation: %+v", current.EgressProfiles[0].WireGuardConfig.Peers)
+	}
+	if current.EgressProfiles[0].WireGuardConfig.DNS[0] != "9.9.9.9" {
+		t.Fatalf("egress wireguard dns leaked mutation: %+v", current.EgressProfiles[0].WireGuardConfig)
 	}
 }
 

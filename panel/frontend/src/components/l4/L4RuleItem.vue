@@ -6,6 +6,7 @@
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ rule.id }}</BaseBadge>
       <BaseBadge :tone="protoTone" shape="square" mono>{{ rule.protocol?.toUpperCase() }}</BaseBadge>
+      <BaseBadge v-if="listenModeLabel" :tone="listenModeTone" shape="square" mono>{{ listenModeLabel }}</BaseBadge>
       <BaseBadge :tone="statusTone" dot>{{ statusLabel }}</BaseBadge>
     </template>
     <template #header-right>
@@ -64,6 +65,7 @@
         <code v-else class="l4-card__addr" :title="backendsTooltip">
           {{ primaryBackend }} <span class="l4-card__more">+{{ backendCount - 1 }}</span>
         </code>
+        <BaseBadge v-if="hasRelay" tone="warning" shape="square" mono>Relay</BaseBadge>
         <BaseBadge tone="primary" shape="square" :title="lbTitle">{{ lbLabel }}</BaseBadge>
       </div>
     </div>
@@ -129,11 +131,29 @@ const protoTone = computed(() => {
   if (proto === 'tcp') return 'warning'
   return 'neutral'
 })
+
+const listenModeLabel = computed(() => {
+  const mode = String(props.rule?.listen_mode || '').toLowerCase()
+  if (mode === 'proxy') return '代理'
+  if (mode === 'wireguard') return 'WG'
+  return ''
+})
+
+const listenModeTone = computed(() => {
+  const mode = String(props.rule?.listen_mode || '').toLowerCase()
+  if (mode === 'proxy') return 'primary'
+  if (mode === 'wireguard') return 'success'
+  return 'neutral'
+})
+
+const hasRelay = computed(() => {
+  return Array.isArray(props.rule?.relay_layers) && props.rule.relay_layers.length > 0
+})
+
 const canDiagnose = computed(() => String(props.rule?.protocol || '').toLowerCase() === 'tcp')
 
 const backends = computed(() => {
   if (Array.isArray(props.rule.backends) && props.rule.backends.length > 0) return props.rule.backends
-  if (props.rule.upstream_host && props.rule.upstream_port) return [{ host: props.rule.upstream_host, port: props.rule.upstream_port }]
   return []
 })
 const backendCount = computed(() => backends.value.length)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,11 @@ import (
 
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
 var errTLSTCPInteractiveAdmissionRejected = errors.New("tls_tcp relay interactive admission rejected: all tunnels are congested")
+var tlsTCPWriteRequestPool = sync.Pool{
+	New: func() any {
+		return &tlsTCPWriteRequest{done: make(chan error, 1)}
+	},
+}
 
 const tlsTCPBulkFrameSize = 64 * 1024
 const tlsTCPMuxSessionsPerKey = 4
@@ -56,6 +62,7 @@ type tlsTCPTunnel struct {
 
 	writeMu           sync.Mutex
 	writeDeadlineNext time.Time
+	writeBuf          []byte
 	writeReqCh        chan *tlsTCPWriteRequest
 	writePumpOnce     sync.Once
 
@@ -82,18 +89,42 @@ type tlsTCPLogicalStream struct {
 	readErr           error
 	readErrSet        bool
 	writeClosed       bool
+	readDeadline      time.Time
+	writeDeadline     time.Time
 
 	openResultCh chan muxOpenResult
 }
 
 type tlsTCPReadChunk struct {
-	payload []byte
-	release func()
+	payload       []byte
+	pooledPayload []byte
+	release       func()
 }
 
 type tlsTCPWriteRequest struct {
-	frame muxFrame
-	done  chan error
+	frame     muxFrame
+	done      chan error
+	onWritten func(int64)
+}
+
+func newTLSTCPWriteRequest(frame muxFrame) *tlsTCPWriteRequest {
+	req := tlsTCPWriteRequestPool.Get().(*tlsTCPWriteRequest)
+	select {
+	case <-req.done:
+	default:
+	}
+	req.frame = frame
+	return req
+}
+
+func releaseTLSTCPWriteRequest(req *tlsTCPWriteRequest) {
+	req.frame = muxFrame{}
+	req.onWritten = nil
+	select {
+	case <-req.done:
+	default:
+	}
+	tlsTCPWriteRequestPool.Put(req)
 }
 
 func (c *tlsTCPReadChunk) consume(n int) {
@@ -101,6 +132,10 @@ func (c *tlsTCPReadChunk) consume(n int) {
 }
 
 func (c *tlsTCPReadChunk) releaseNow() {
+	if c.pooledPayload != nil {
+		tlsTCPBulkBufferPool.Put(c.pooledPayload)
+		c.pooledPayload = nil
+	}
 	if c.release != nil {
 		c.release()
 		c.release = nil
@@ -297,30 +332,64 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 	}
 	trafficClass := relayDialTrafficClass(network, options)
 
-	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, trafficClass, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
-		return dialNewTLSTCPTunnelWithOptions(dialCtx, firstHop, provider, options)
-	})
-	if err != nil {
-		return nil, DialResult{}, err
-	}
-	defer release()
-
-	conn, result, err := tunnel.openStream(ctx, relayOpenFrame{
+	request := relayOpenFrame{
 		Kind:        network,
 		Target:      target,
 		Chain:       append([]Hop(nil), chain[1:]...),
 		Metadata:    relayMetadataForDialOptions(network, options),
 		InitialData: options.InitialPayload,
-	})
-	if err != nil {
-		return nil, DialResult{SelectedAddress: result.SelectedAddress}, err
 	}
-	return conn, DialResult{SelectedAddress: result.SelectedAddress}, nil
+
+	var lastResult muxOpenResult
+	var lastErr error
+	for attempt := 0; attempt < tlsTCPMuxOpenAttempts(options); attempt++ {
+		tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, trafficClass, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+			return dialNewTLSTCPTunnelWithOptions(dialCtx, firstHop, provider, options)
+		})
+		if err != nil {
+			return nil, DialResult{}, err
+		}
+
+		conn, result, err := tunnel.openStream(ctx, request)
+		release()
+		if err == nil {
+			return conn, DialResult{SelectedAddress: result.SelectedAddress}, nil
+		}
+		lastResult = result
+		lastErr = err
+		if !shouldRetryTLSTCPMuxOpen(ctx, err, options) {
+			break
+		}
+	}
+	return nil, DialResult{SelectedAddress: lastResult.SelectedAddress}, lastErr
 }
 
-func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
+func tlsTCPMuxOpenAttempts(options DialOptions) int {
+	if len(options.InitialPayload) > 0 {
+		return 1
+	}
+	return 2
+}
+
+func shouldRetryTLSTCPMuxOpen(ctx context.Context, err error, options DialOptions) bool {
+	if err == nil || len(options.InitialPayload) > 0 {
+		return false
+	}
+	if isRelayApplicationError(err) || isCallerDrivenContextError(ctx, err) {
+		return false
+	}
+	return true
+}
+
+func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) ([]string, error) {
 	firstHop := chain[0]
 	options := DialOptions{OutboundProxyURL: OutboundProxyURL()}
+	if len(opts) > 0 {
+		options = opts[0].clone()
+		if strings.TrimSpace(options.OutboundProxyURL) == "" {
+			options.OutboundProxyURL = OutboundProxyURL()
+		}
+	}
 	sessionKey, err := tlsTCPSessionPoolKey(firstHop, options.OutboundProxyURL)
 	if err != nil {
 		return nil, err
@@ -351,13 +420,15 @@ func dialNewTLSTCPTunnel(ctx context.Context, hop Hop, provider TLSMaterialProvi
 }
 
 func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMaterialProvider, options DialOptions) (*tlsTCPTunnel, error) {
-	tlsConfig, err := clientTLSConfig(ctx, provider, hop.Listener, hop.Address, hop.ServerName)
+	rawConn, err := dialRelayRawTCP(ctx, hop, options)
 	if err != nil {
 		return nil, err
 	}
 
-	rawConn, err := dialRelayTCPWithProxy(ctx, hop.Address, hop.Listener, options.OutboundProxyURL)
+	conn := rawConn
+	tlsConfig, err := clientTLSConfig(ctx, provider, hop.Listener, hop.Address, hop.ServerName)
 	if err != nil {
+		_ = rawConn.Close()
 		return nil, err
 	}
 
@@ -366,26 +437,56 @@ func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMa
 		_ = rawConn.Close()
 		return nil, err
 	}
+	conn = relayConn
 
-	reader := io.Reader(relayConn)
-	writer := io.Writer(relayConn)
+	reader := io.Reader(conn)
+	writer := io.Writer(conn)
 	if listenerUsesEarlyWindowMask(hop.Listener) {
-		masked := wrapConnWithEarlyWindowMask(relayConn, defaultEarlyWindowMaskConfig())
+		masked := wrapConnWithEarlyWindowMask(conn, defaultEarlyWindowMaskConfig())
 		reader = masked
 		writer = masked
 	}
 
 	tunnel := &tlsTCPTunnel{
 		key:        hop.Address,
-		rawConn:    relayConn,
+		rawConn:    conn,
 		reader:     reader,
 		writer:     writer,
-		closeOuter: relayConn.Close,
+		closeOuter: conn.Close,
 		streams:    make(map[uint32]*tlsTCPLogicalStream),
 		closed:     make(chan struct{}),
 	}
 	go tunnel.readLoop()
 	return tunnel, nil
+}
+
+func dialRelayRawTCP(ctx context.Context, hop Hop, options DialOptions) (net.Conn, error) {
+	if normalizeListenerTransportModeValue(hop.Listener.TransportMode) == ListenerTransportModeWireGuard {
+		if options.WireGuardProvider == nil {
+			options.WireGuardProvider = DefaultWireGuardRuntimeProvider()
+		}
+		return dialRelayWireGuardTCP(ctx, hop, options.WireGuardProvider)
+	}
+	return dialRelayTCPWithProxy(ctx, hop.Address, hop.Listener, options.OutboundProxyURL)
+}
+
+func dialRelayWireGuardTCP(ctx context.Context, hop Hop, provider WireGuardRuntimeProvider) (net.Conn, error) {
+	if hop.Listener.WireGuardProfileID == nil || *hop.Listener.WireGuardProfileID <= 0 {
+		return nil, fmt.Errorf("wireguard_profile_id is required for wireguard transport")
+	}
+	if provider == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required")
+	}
+	runtime, ok := ResolveWireGuardRuntimeForHop(provider, hop)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard profile %d runtime not found", *hop.Listener.WireGuardProfileID)
+	}
+	conn, err := runtime.DialContext(ctx, "tcp", hop.Address)
+	if err != nil {
+		return nil, err
+	}
+	tuneBulkRelayConn(conn)
+	return conn, nil
 }
 
 func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
@@ -401,13 +502,33 @@ func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if normalizeListenerTransportModeValue(hop.Listener.TransportMode) == ListenerTransportModeWireGuard {
+		return fmt.Sprintf(
+			"%d|%d|%s|%s|%s|%s|%d|%s|%t|%d|%s|%s|%s",
+			hop.Listener.ID,
+			hop.Listener.Revision,
+			strings.TrimSpace(hop.Listener.AgentID),
+			hop.Address,
+			serverName,
+			ListenerTransportModeWireGuard,
+			valueOrZero(hop.Listener.WireGuardProfileID),
+			normalizeTLSModeValue(hop.Listener.TLSMode),
+			hop.Listener.AllowSelfSigned,
+			valueOrZero(hop.Listener.CertificateID),
+			string(pinSetJSON),
+			string(trustedCAJSON),
+			strings.TrimSpace(outboundProxyURL),
+		), nil
+	}
+
 	return fmt.Sprintf(
-		"%d|%d|%s|%s|%s|%s|%t|%d|%s|%s|%s",
+		"%d|%d|%s|%s|%s|%d|%s|%t|%d|%s|%s|%s",
 		hop.Listener.ID,
 		hop.Listener.Revision,
 		hop.Address,
 		serverName,
 		normalizeListenerTransportModeValue(hop.Listener.TransportMode),
+		valueOrZero(hop.Listener.WireGuardProfileID),
 		normalizeTLSModeValue(hop.Listener.TLSMode),
 		hop.Listener.AllowSelfSigned,
 		valueOrZero(hop.Listener.CertificateID),
@@ -454,8 +575,18 @@ func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.
 		Payload:  payload,
 	}); err != nil {
 		t.removeStream(streamID)
+		if !isCallerDrivenContextError(ctx, err) {
+			_ = t.close()
+		}
 		return nil, muxOpenResult{}, err
 	}
+
+	waitCtx := ctx
+	cancel := func() {}
+	if timeout := getRelayFrameTimeout(); timeout > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
 
 	select {
 	case result := <-stream.openResultCh:
@@ -467,9 +598,13 @@ func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.
 			return nil, result, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", result.Error)}
 		}
 		return stream, result, nil
-	case <-ctx.Done():
+	case <-waitCtx.Done():
 		t.removeStream(streamID)
-		return nil, muxOpenResult{}, ctx.Err()
+		err := waitCtx.Err()
+		if !isCallerDrivenContextError(ctx, err) {
+			_ = t.close()
+		}
+		return nil, muxOpenResult{}, err
 	case <-t.closed:
 		t.removeStream(streamID)
 		return nil, muxOpenResult{}, io.EOF
@@ -480,28 +615,64 @@ func (t *tlsTCPTunnel) writeFrame(ctx context.Context, frame muxFrame) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 
-	if err := t.refreshWriteDeadlineLocked(); err != nil {
+	if err := t.refreshWriteDeadlineLocked(ctx); err != nil {
 		return err
 	}
 	// This synchronous path owns frame payload lifetime. Queued writers hand
 	// payload release to the write pump via writeRequestBatch/enqueueWriteFrame.
-	err := writeMuxFrame(t.writer, frame)
+	err := t.writeMuxFrameLocked(frame)
 	frame.releasePayload()
 	return err
 }
 
-func (t *tlsTCPTunnel) refreshWriteDeadlineLocked() error {
+func (t *tlsTCPTunnel) writeMuxFrameLocked(frame muxFrame) error {
+	if len(frame.Payload) <= tlsTCPBulkFrameSize {
+		if cap(t.writeBuf) < muxFrameHeaderSize+tlsTCPBulkFrameSize {
+			t.writeBuf = make([]byte, muxFrameHeaderSize+tlsTCPBulkFrameSize)
+		}
+		return writeMuxFrameBuffered(t.writer, frame, t.writeBuf)
+	}
+	return writeMuxFrame(t.writer, frame)
+}
+
+func (t *tlsTCPTunnel) refreshWriteDeadlineLocked(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	timeout := getRelayFrameTimeout()
-	if timeout <= 0 || t.rawConn == nil {
+	if timeout <= 0 && t.rawConn == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if t.rawConn == nil {
 		return nil
 	}
 
 	now := time.Now()
-	if !t.writeDeadlineNext.IsZero() && now.Before(t.writeDeadlineNext.Add(-(timeout / 4))) {
+	ctxDeadline, hasCtxDeadline := ctx.Deadline()
+	if hasCtxDeadline && !ctxDeadline.After(now) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return os.ErrDeadlineExceeded
+	}
+
+	if !hasCtxDeadline && timeout > 0 && !t.writeDeadlineNext.IsZero() && now.Before(t.writeDeadlineNext.Add(-(timeout / 4))) {
 		return nil
 	}
 
-	next := now.Add(timeout)
+	var next time.Time
+	if timeout > 0 {
+		next = now.Add(timeout)
+	}
+	if hasCtxDeadline && (next.IsZero() || ctxDeadline.Before(next)) {
+		next = ctxDeadline
+	}
+	if next.IsZero() {
+		return nil
+	}
 	if err := t.rawConn.SetWriteDeadline(next); err != nil {
 		return err
 	}
@@ -555,7 +726,7 @@ func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 
-	if err := t.refreshWriteDeadlineLocked(); err != nil {
+	if err := t.refreshWriteDeadlineLocked(context.Background()); err != nil {
 		for _, req := range batch {
 			t.queuedWrites.Add(-1)
 			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
@@ -564,9 +735,10 @@ func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
 		return err
 	}
 	for i, req := range batch {
-		if err := writeMuxFrame(t.writer, req.frame); err != nil {
+		payloadSize := int64(len(req.frame.Payload))
+		if err := t.writeMuxFrameLocked(req.frame); err != nil {
 			t.queuedWrites.Add(-1)
-			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
+			t.bufferedBytes.Add(-payloadSize)
 			req.frame.releasePayload()
 			for _, pending := range batch[i+1:] {
 				t.queuedWrites.Add(-1)
@@ -576,7 +748,10 @@ func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
 			return err
 		}
 		t.queuedWrites.Add(-1)
-		t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
+		t.bufferedBytes.Add(-payloadSize)
+		if req.onWritten != nil {
+			req.onWritten(payloadSize)
+		}
 		req.frame.releasePayload()
 	}
 	return nil
@@ -603,25 +778,29 @@ func (t *tlsTCPTunnel) failQueuedWriteRequests(err error) {
 }
 
 func (t *tlsTCPTunnel) enqueueWriteFrame(ctx context.Context, frame muxFrame) (*tlsTCPWriteRequest, error) {
+	return t.enqueueWriteFrameWithProgress(ctx, frame, nil)
+}
+
+func (t *tlsTCPTunnel) enqueueWriteFrameWithProgress(ctx context.Context, frame muxFrame, onWritten func(int64)) (*tlsTCPWriteRequest, error) {
 	t.startWritePump()
 
 	payloadSize := int64(len(frame.Payload))
-	req := &tlsTCPWriteRequest{
-		frame: frame,
-		done:  make(chan error, 1),
-	}
+	req := newTLSTCPWriteRequest(frame)
+	req.onWritten = onWritten
 	t.queuedWrites.Add(1)
 	t.bufferedBytes.Add(payloadSize)
 	select {
 	case <-t.closed:
 		t.queuedWrites.Add(-1)
 		t.bufferedBytes.Add(-payloadSize)
-		frame.releasePayload()
+		req.frame.releasePayload()
+		releaseTLSTCPWriteRequest(req)
 		return nil, io.EOF
 	case <-ctx.Done():
 		t.queuedWrites.Add(-1)
 		t.bufferedBytes.Add(-payloadSize)
-		frame.releasePayload()
+		req.frame.releasePayload()
+		releaseTLSTCPWriteRequest(req)
 		return nil, ctx.Err()
 	case t.writeReqCh <- req:
 		return req, nil
@@ -631,10 +810,23 @@ func (t *tlsTCPTunnel) enqueueWriteFrame(ctx context.Context, frame muxFrame) (*
 func waitTLSTCPWriteRequest(ctx context.Context, req *tlsTCPWriteRequest, tunnel *tlsTCPTunnel) error {
 	select {
 	case err := <-req.done:
+		releaseTLSTCPWriteRequest(req)
 		return err
 	case <-tunnel.closed:
+		select {
+		case err := <-req.done:
+			releaseTLSTCPWriteRequest(req)
+			return err
+		default:
+		}
 		return io.EOF
 	case <-ctx.Done():
+		select {
+		case err := <-req.done:
+			releaseTLSTCPWriteRequest(req)
+			return err
+		default:
+		}
 		return ctx.Err()
 	}
 }
@@ -765,6 +957,7 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 	for {
 		notifyReadSpace := false
 		s.readMu.Lock()
+		readDeadline := s.readDeadline
 		if len(s.readChunks) > 0 {
 			total := 0
 			for total < len(p) && len(s.readChunks) > 0 {
@@ -801,6 +994,27 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 			return 0, err
 		}
 		s.readMu.Unlock()
+		if !readDeadline.IsZero() {
+			until := time.Until(readDeadline)
+			if until <= 0 {
+				return 0, deadlineExceededError{}
+			}
+			timer := time.NewTimer(until)
+			select {
+			case <-s.readCh:
+				if !timer.Stop() {
+					<-timer.C
+				}
+			case <-s.tunnel.closed:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return 0, io.EOF
+			case <-timer.C:
+				return 0, deadlineExceededError{}
+			}
+			continue
+		}
 
 		select {
 		case <-s.readCh:
@@ -813,21 +1027,38 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 func (s *tlsTCPLogicalStream) Write(p []byte) (int, error) {
 	s.readMu.Lock()
 	writeClosed := s.writeClosed
+	writeDeadline := s.writeDeadline
 	s.readMu.Unlock()
 	if writeClosed {
 		return 0, io.ErrClosedPipe
 	}
-	if err := s.tunnel.writeFrame(context.Background(), muxFrame{
+	ctx, cancel := context.WithCancel(context.Background())
+	if !writeDeadline.IsZero() {
+		if time.Until(writeDeadline) <= 0 {
+			cancel()
+			return 0, deadlineExceededError{}
+		}
+		ctx, cancel = context.WithDeadline(context.Background(), writeDeadline)
+	}
+	defer cancel()
+	if err := s.tunnel.writeFrame(ctx, muxFrame{
 		Type:     muxFrameTypeData,
 		StreamID: s.streamID,
 		Payload:  append([]byte(nil), p...),
 	}); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+			return 0, deadlineExceededError{}
+		}
 		return 0, err
 	}
 	return len(p), nil
 }
 
 func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
+	return s.ReadFromWithProgress(r, nil)
+}
+
+func (s *tlsTCPLogicalStream) ReadFromWithProgress(r io.Reader, onWritten func(int64)) (int64, error) {
 	s.readMu.Lock()
 	writeClosed := s.writeClosed
 	s.readMu.Unlock()
@@ -839,7 +1070,7 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 	defer tlsTCPBulkBufferPool.Put(buf)
 
 	if s.tunnel.logicalStreamCount() <= 1 {
-		return s.readFromSingleStream(r, buf)
+		return s.readFromSingleStreamWithProgress(r, buf, onWritten)
 	}
 
 	var total int64
@@ -857,6 +1088,9 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 				return total, frameErr
 			}
 			total += int64(n)
+			if onWritten != nil {
+				onWritten(int64(n))
+			}
 		}
 		if errors.Is(err, io.EOF) {
 			return total, nil
@@ -868,6 +1102,10 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 }
 
 func (s *tlsTCPLogicalStream) readFromSingleStream(r io.Reader, buf []byte) (int64, error) {
+	return s.readFromSingleStreamWithProgress(r, buf, nil)
+}
+
+func (s *tlsTCPLogicalStream) readFromSingleStreamWithProgress(r io.Reader, buf []byte, onWritten func(int64)) (int64, error) {
 	var total int64
 	var inflight []*tlsTCPWriteRequest
 	flushOldest := func() error {
@@ -880,7 +1118,7 @@ func (s *tlsTCPLogicalStream) readFromSingleStream(r io.Reader, buf []byte) (int
 		n, err := r.Read(buf)
 		if n > 0 {
 			frame := newQueuedTLSTCPDataFrame(s.streamID, buf[:n])
-			req, enqueueErr := s.tunnel.enqueueWriteFrame(context.Background(), frame)
+			req, enqueueErr := s.tunnel.enqueueWriteFrameWithProgress(context.Background(), frame, onWritten)
 			if enqueueErr != nil {
 				return total, enqueueErr
 			}
@@ -910,12 +1148,10 @@ func newQueuedTLSTCPDataFrame(streamID uint32, payload []byte) muxFrame {
 	buf := tlsTCPBulkBufferPool.Get().([]byte)
 	copy(buf, payload)
 	return muxFrame{
-		Type:     muxFrameTypeData,
-		StreamID: streamID,
-		Payload:  buf[:len(payload)],
-		payloadRelease: func() {
-			tlsTCPBulkBufferPool.Put(buf)
-		},
+		Type:          muxFrameTypeData,
+		StreamID:      streamID,
+		Payload:       buf[:len(payload)],
+		pooledPayload: buf,
 	}
 }
 
@@ -1010,10 +1246,17 @@ func (s *tlsTCPLogicalStream) SetDeadline(t time.Time) error {
 }
 
 func (s *tlsTCPLogicalStream) SetReadDeadline(t time.Time) error {
+	s.readMu.Lock()
+	s.readDeadline = t
+	s.readMu.Unlock()
+	s.notifyReadable()
 	return nil
 }
 
 func (s *tlsTCPLogicalStream) SetWriteDeadline(t time.Time) error {
+	s.readMu.Lock()
+	s.writeDeadline = t
+	s.readMu.Unlock()
 	return nil
 }
 
@@ -1024,11 +1267,25 @@ func (s *tlsTCPLogicalStream) CloseWrite() error {
 		return nil
 	}
 	s.writeClosed = true
+	writeDeadline := s.writeDeadline
 	s.readMu.Unlock()
-	return s.tunnel.writeFrame(context.Background(), muxFrame{
+	ctx, cancel := context.WithCancel(context.Background())
+	if !writeDeadline.IsZero() {
+		if time.Until(writeDeadline) <= 0 {
+			cancel()
+			return deadlineExceededError{}
+		}
+		ctx, cancel = context.WithDeadline(context.Background(), writeDeadline)
+	}
+	defer cancel()
+	err := s.tunnel.writeFrame(ctx, muxFrame{
 		Type:     muxFrameTypeFin,
 		StreamID: s.streamID,
 	})
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return deadlineExceededError{}
+	}
+	return err
 }
 
 func (s *tlsTCPLogicalStream) CloseRead() error {
@@ -1159,6 +1416,13 @@ func (s *tlsTCPLogicalStream) notifyReadSpace() {
 	}
 }
 
+type deadlineExceededError struct{}
+
+func (deadlineExceededError) Error() string   { return "i/o timeout" }
+func (deadlineExceededError) Timeout() bool   { return true }
+func (deadlineExceededError) Temporary() bool { return true }
+func (deadlineExceededError) Unwrap() error   { return os.ErrDeadlineExceeded }
+
 type serverTLSTCPSession struct {
 	tunnel *tlsTCPTunnel
 	server *Server
@@ -1204,7 +1468,7 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 				continue
 			}
 			if state := s.server.currentTrafficBlockState(); state.Blocked && (strings.EqualFold(request.Kind, "tcp") || strings.EqualFold(request.Kind, "udp")) {
-				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: state.errorMessage()})
+				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: trafficBlockErrorMessage(state)})
 				continue
 			}
 

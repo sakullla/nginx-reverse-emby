@@ -24,6 +24,46 @@ func TestLoadConfigParsesThroughputDurations(t *testing.T) {
 	}
 }
 
+func TestRelayPerfBenchmarkFilterSelectsNamedBenchmarks(t *testing.T) {
+	benches := []benchmarkCase{
+		{name: "direct_b_c1"},
+		{name: "relay_a_to_b_c1"},
+		{name: "relay_a_to_b_c8"},
+	}
+	selected, err := selectBenchmarks("relay_a_to_b_c1,relay_a_to_b_c8", benches)
+	if err != nil {
+		t.Fatalf("selectBenchmarks() error = %v", err)
+	}
+	var names []string
+	for _, bench := range selected {
+		names = append(names, bench.name)
+	}
+	if got := strings.Join(names, ","); got != "relay_a_to_b_c1,relay_a_to_b_c8" {
+		t.Fatalf("selected benchmarks = %q", got)
+	}
+}
+
+func TestRelayPerfBenchmarkFilterRejectsUnknownName(t *testing.T) {
+	_, err := selectBenchmarks("missing", []benchmarkCase{{name: "relay_a_to_b_c1"}})
+	if err == nil {
+		t.Fatal("selectBenchmarks() error = nil, want error for unknown benchmark")
+	}
+}
+
+func TestRelayPerfSnapshotsUseStructuredL4Backends(t *testing.T) {
+	cfg := loadConfig()
+	snapshots := buildSnapshots(cfg, "cert", "key", "pin")
+	for agentID, ruleIndex := range map[string]int{"agent-a": 0, "agent-b": 0} {
+		rule := snapshots[agentID].L4Rules[ruleIndex]
+		if len(rule.Backends) != 1 {
+			t.Fatalf("%s backends = %#v, want one backend", agentID, rule.Backends)
+		}
+		if rule.Backends[0].Host != cfg.backendHost || rule.Backends[0].Port != cfg.backendPort {
+			t.Fatalf("%s backend = %#v, want %s:%d", agentID, rule.Backends[0], cfg.backendHost, cfg.backendPort)
+		}
+	}
+}
+
 func TestHandleBackendConnStreamsUnlimitedDownloadUntilClientClose(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
@@ -122,9 +162,30 @@ func TestRunScriptCollectsStatsForActualRelayContainers(t *testing.T) {
 	if strings.Contains(script, "nre-relay-b ") {
 		t.Fatal("run.ps1 still references nonexistent nre-relay-b container")
 	}
+	if strings.Contains(script, "'nre-relay-b'") {
+		t.Fatal("run.ps1 still applies delay to nonexistent nre-relay-b container")
+	}
 	for _, container := range []string{"nre-relay-a1", "nre-relay-a2", "nre-relay-b3", "nre-relay-b4"} {
 		if !strings.Contains(script, container) {
 			t.Fatalf("run.ps1 does not collect docker stats for %s", container)
+		}
+	}
+}
+
+func TestRunScriptDefaultsToDelayedRelayModel(t *testing.T) {
+	data, err := os.ReadFile("run.ps1")
+	if err != nil {
+		t.Fatalf("read run script: %v", err)
+	}
+
+	script := string(data)
+	for _, want := range []string{
+		"$defaultDelayCliToA = 30",
+		"$defaultDelayAToRelay = 10",
+		"$env:HARNESS_PRE_MEASURE_DELAY_MS = '8000'",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("run.ps1 missing default delayed relay model marker %q", want)
 		}
 	}
 }

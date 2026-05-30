@@ -29,6 +29,9 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 			return err
 		}
 	}
+	if err := copyEgressProfiles(ctx, source, target); err != nil {
+		return err
+	}
 	if err := copyTrafficPolicies(ctx, source, target); err != nil {
 		return err
 	}
@@ -103,6 +106,27 @@ func isEmptyMigrationSlice(rows any) bool {
 	default:
 		panic(fmt.Sprintf("unsupported migration rows %T", rows))
 	}
+}
+
+func copyEgressProfiles(ctx context.Context, source, target *GormStore) error {
+	if !source.db.Migrator().HasTable(&EgressProfileRow{}) || !target.db.Migrator().HasTable(&EgressProfileRow{}) {
+		return nil
+	}
+	rows, err := source.ListEgressProfiles(ctx)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	payload := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		payload = append(payload, egressProfileRowPayload(row))
+	}
+	return target.db.WithContext(ctx).
+		Model(&EgressProfileRow{}).
+		Clauses(clause.OnConflict{UpdateAll: true}).
+		Create(&payload).Error
 }
 
 func copyTrafficPolicies(ctx context.Context, source, target *GormStore) error {

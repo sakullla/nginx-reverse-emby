@@ -33,7 +33,7 @@ func TestRollbackReappliesTargetSnapshotAfterActivationFailure(t *testing.T) {
 		Revision:       1,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -42,7 +42,7 @@ func TestRollbackReappliesTargetSnapshotAfterActivationFailure(t *testing.T) {
 		Revision:       2,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://next.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 	}

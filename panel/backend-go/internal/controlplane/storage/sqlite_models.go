@@ -31,22 +31,27 @@ type AgentRow struct {
 }
 
 type HTTPRuleRow struct {
-	ID                int    `gorm:"column:id;primaryKey"`
-	AgentID           string `gorm:"column:agent_id;primaryKey;index:idx_rules_agent"`
-	FrontendURL       string `gorm:"column:frontend_url"`
-	BackendURL        string `gorm:"column:backend_url"`
-	BackendsJSON      string `gorm:"column:backends"`
-	LoadBalancingJSON string `gorm:"column:load_balancing"`
-	Enabled           bool   `gorm:"column:enabled"`
-	TagsJSON          string `gorm:"column:tags"`
-	ProxyRedirect     bool   `gorm:"column:proxy_redirect"`
-	RelayChainJSON    string `gorm:"column:relay_chain"`
-	RelayLayersJSON   string `gorm:"column:relay_layers"`
-	RelayObfs         bool   `gorm:"column:relay_obfs"`
-	PassProxyHeaders  bool   `gorm:"column:pass_proxy_headers"`
-	UserAgent         string `gorm:"column:user_agent"`
-	CustomHeadersJSON string `gorm:"column:custom_headers"`
-	Revision          int    `gorm:"column:revision"`
+	ID                       int    `gorm:"column:id;primaryKey"`
+	AgentID                  string `gorm:"column:agent_id;primaryKey;index:idx_rules_agent"`
+	FrontendURL              string `gorm:"column:frontend_url"`
+	BackendURL               string `gorm:"column:backend_url"`
+	BackendsJSON             string `gorm:"column:backends"`
+	LoadBalancingJSON        string `gorm:"column:load_balancing"`
+	Enabled                  bool   `gorm:"column:enabled"`
+	TagsJSON                 string `gorm:"column:tags"`
+	ProxyRedirect            bool   `gorm:"column:proxy_redirect"`
+	RelayChainJSON           string `gorm:"column:relay_chain"`
+	RelayLayersJSON          string `gorm:"column:relay_layers"`
+	RelayObfs                bool   `gorm:"column:relay_obfs"`
+	PassProxyHeaders         bool   `gorm:"column:pass_proxy_headers"`
+	UserAgent                string `gorm:"column:user_agent"`
+	CustomHeadersJSON        string `gorm:"column:custom_headers"`
+	WireGuardEntryEnabled    bool   `gorm:"column:wireguard_entry_enabled;not null;default:false"`
+	WireGuardProfileID       *int   `gorm:"column:wireguard_profile_id"`
+	EgressProfileID          *int   `gorm:"column:egress_profile_id"`
+	WireGuardEntryListenHost string `gorm:"column:wireguard_entry_listen_host;not null;default:''"`
+	WireGuardEntryListenPort int    `gorm:"column:wireguard_entry_listen_port;not null;default:0"`
+	Revision                 int    `gorm:"column:revision"`
 }
 
 type LocalAgentStateRow struct {
@@ -60,27 +65,29 @@ type LocalAgentStateRow struct {
 }
 
 type L4RuleRow struct {
-	ID                 int    `gorm:"column:id;primaryKey"`
-	AgentID            string `gorm:"column:agent_id;primaryKey;index:idx_l4_rules_agent"`
-	Name               string `gorm:"column:name"`
-	Protocol           string `gorm:"column:protocol"`
-	ListenHost         string `gorm:"column:listen_host"`
-	ListenPort         int    `gorm:"column:listen_port"`
-	UpstreamHost       string `gorm:"column:upstream_host"`
-	UpstreamPort       int    `gorm:"column:upstream_port"`
-	BackendsJSON       string `gorm:"column:backends"`
-	LoadBalancingJSON  string `gorm:"column:load_balancing"`
-	TuningJSON         string `gorm:"column:tuning"`
-	RelayChainJSON     string `gorm:"column:relay_chain"`
-	RelayLayersJSON    string `gorm:"column:relay_layers"`
-	RelayObfs          bool   `gorm:"column:relay_obfs"`
-	ListenMode         string `gorm:"column:listen_mode;not null;default:'tcp'"`
-	ProxyEntryAuthJSON string `gorm:"column:proxy_entry_auth;not null;default:'{}'"`
-	ProxyEgressMode    string `gorm:"column:proxy_egress_mode;not null;default:''"`
-	ProxyEgressURL     string `gorm:"column:proxy_egress_url;not null;default:''"`
-	Enabled            bool   `gorm:"column:enabled"`
-	TagsJSON           string `gorm:"column:tags"`
-	Revision           int    `gorm:"column:revision"`
+	ID                   int    `gorm:"column:id;primaryKey"`
+	AgentID              string `gorm:"column:agent_id;primaryKey;index:idx_l4_rules_agent"`
+	Name                 string `gorm:"column:name"`
+	Protocol             string `gorm:"column:protocol"`
+	ListenHost           string `gorm:"column:listen_host"`
+	ListenPort           int    `gorm:"column:listen_port"`
+	UpstreamHost         string `gorm:"column:upstream_host"`
+	UpstreamPort         int    `gorm:"column:upstream_port"`
+	BackendsJSON         string `gorm:"column:backends"`
+	LoadBalancingJSON    string `gorm:"column:load_balancing"`
+	TuningJSON           string `gorm:"column:tuning"`
+	RelayChainJSON       string `gorm:"column:relay_chain"`
+	RelayLayersJSON      string `gorm:"column:relay_layers"`
+	RelayObfs            bool   `gorm:"column:relay_obfs"`
+	ListenMode           string `gorm:"column:listen_mode;not null;default:'tcp'"`
+	WireGuardProfileID   *int   `gorm:"column:wireguard_profile_id"`
+	EgressProfileID      *int   `gorm:"column:egress_profile_id"`
+	WireGuardInboundMode string `gorm:"column:wireguard_inbound_mode;not null;default:'address'"`
+	WireGuardListenHost  string `gorm:"column:wireguard_listen_host;not null;default:''"`
+	ProxyEntryAuthJSON   string `gorm:"column:proxy_entry_auth;not null;default:'{}'"`
+	Enabled              bool   `gorm:"column:enabled"`
+	TagsJSON             string `gorm:"column:tags"`
+	Revision             int    `gorm:"column:revision"`
 }
 
 type VersionPolicyRow struct {
@@ -104,6 +111,7 @@ type RelayListenerRow struct {
 	CertificateID           *int   `gorm:"column:certificate_id"`
 	TLSMode                 string `gorm:"column:tls_mode"`
 	TransportMode           string `gorm:"column:transport_mode"`
+	WireGuardProfileID      *int   `gorm:"column:wireguard_profile_id"`
 	AllowTransportFallback  bool   `gorm:"column:allow_transport_fallback"`
 	ObfsMode                string `gorm:"column:obfs_mode"`
 	PinSetJSON              string `gorm:"column:pin_set"`
@@ -111,6 +119,51 @@ type RelayListenerRow struct {
 	AllowSelfSigned         bool   `gorm:"column:allow_self_signed"`
 	TagsJSON                string `gorm:"column:tags"`
 	Revision                int    `gorm:"column:revision"`
+}
+
+type WireGuardProfileRow struct {
+	ID                int    `gorm:"column:id;primaryKey"`
+	AgentID           string `gorm:"column:agent_id;primaryKey;index:idx_wireguard_profiles_agent"`
+	Name              string `gorm:"column:name"`
+	Mode              string `gorm:"column:mode"`
+	PrivateKey        string `gorm:"column:private_key"`
+	ListenPort        int    `gorm:"column:listen_port"`
+	PublicEndpoint    string `gorm:"column:public_endpoint;not null;default:''"`
+	AddressesJSON     string `gorm:"column:addresses"`
+	BindAddressesJSON string `gorm:"column:bind_addresses;not null;default:'[]'"`
+	PeersJSON         string `gorm:"column:peers"`
+	DNSJSON           string `gorm:"column:dns"`
+	MTU               int    `gorm:"column:mtu"`
+	Enabled           bool   `gorm:"column:enabled"`
+	TagsJSON          string `gorm:"column:tags"`
+	Revision          int    `gorm:"column:revision"`
+}
+
+type EgressProfileRow struct {
+	ID                  int    `gorm:"column:id;primaryKey;not null"`
+	Name                string `gorm:"column:name;not null"`
+	Type                string `gorm:"column:type;not null"`
+	ProxyURL            string `gorm:"column:proxy_url;not null;default:''"`
+	WireGuardConfigJSON string `gorm:"column:wireguard_config_json;not null;default:''"`
+	Enabled             bool   `gorm:"column:enabled;not null;default:1"`
+	Description         string `gorm:"column:description;not null;default:''"`
+	Revision            int64  `gorm:"column:revision;not null;default:0"`
+}
+
+type WireGuardClientRow struct {
+	ID             int    `gorm:"column:id;primaryKey"`
+	AgentID        string `gorm:"column:agent_id;primaryKey;index:idx_wireguard_clients_agent_profile"`
+	ProfileID      int    `gorm:"column:profile_id;primaryKey;index:idx_wireguard_clients_agent_profile"`
+	Name           string `gorm:"column:name"`
+	PrivateKey     string `gorm:"column:private_key"`
+	PublicKey      string `gorm:"column:public_key"`
+	PresharedKey   string `gorm:"column:preshared_key"`
+	Address        string `gorm:"column:address"`
+	AllowedIPsJSON string `gorm:"column:allowed_ips"`
+	DNSJSON        string `gorm:"column:dns"`
+	Enabled        bool   `gorm:"column:enabled"`
+	CreatedAt      string `gorm:"column:created_at"`
+	UpdatedAt      string `gorm:"column:updated_at"`
 }
 
 type ManagedCertificateRow struct {
@@ -236,6 +289,18 @@ func (VersionPolicyRow) TableName() string {
 
 func (RelayListenerRow) TableName() string {
 	return "relay_listeners"
+}
+
+func (WireGuardProfileRow) TableName() string {
+	return "wireguard_profiles"
+}
+
+func (EgressProfileRow) TableName() string {
+	return "egress_profiles"
+}
+
+func (WireGuardClientRow) TableName() string {
+	return "wireguard_clients"
 }
 
 func (ManagedCertificateRow) TableName() string {

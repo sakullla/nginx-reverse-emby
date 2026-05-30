@@ -148,8 +148,11 @@ type fakeL4RuleService struct {
 }
 
 type fakeL4RuleServiceState struct {
-	getAgentIDs []string
-	getIDs      []int
+	getAgentIDs   []string
+	getIDs        []int
+	createInputs  []service.L4RuleInput
+	updateInputs  []service.L4RuleInput
+	updateRuleIDs []int
 }
 
 func (f fakeL4RuleService) List(_ context.Context, agentID string) ([]service.L4Rule, error) {
@@ -177,11 +180,18 @@ func (f fakeL4RuleService) Get(_ context.Context, agentID string, id int) (servi
 	return service.L4Rule{}, service.ErrRuleNotFound
 }
 
-func (f fakeL4RuleService) Create(context.Context, string, service.L4RuleInput) (service.L4Rule, error) {
+func (f fakeL4RuleService) Create(_ context.Context, _ string, input service.L4RuleInput) (service.L4Rule, error) {
+	if f.state != nil {
+		f.state.createInputs = append(f.state.createInputs, input)
+	}
 	return f.createdRule, nil
 }
 
-func (f fakeL4RuleService) Update(context.Context, string, int, service.L4RuleInput) (service.L4Rule, error) {
+func (f fakeL4RuleService) Update(_ context.Context, _ string, id int, input service.L4RuleInput) (service.L4Rule, error) {
+	if f.state != nil {
+		f.state.updateRuleIDs = append(f.state.updateRuleIDs, id)
+		f.state.updateInputs = append(f.state.updateInputs, input)
+	}
 	return f.updatedRule, nil
 }
 
@@ -278,6 +288,14 @@ type fakeTaskServiceState struct {
 	updates              []service.TaskUpdateInput
 }
 
+type fullDuplexRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func (r *fullDuplexRecorder) EnableFullDuplex() error {
+	return nil
+}
+
 func (f fakeTaskService) CreateAndDispatch(req service.TaskCreateRequest) (service.TaskRecord, error) {
 	if f.state != nil {
 		f.state.createRequests = append(f.state.createRequests, req)
@@ -346,6 +364,72 @@ func (f fakeVersionPolicyService) Update(context.Context, string, service.Versio
 
 func (f fakeVersionPolicyService) Delete(context.Context, string) (service.VersionPolicy, error) {
 	return f.deletedPolicy, nil
+}
+
+type fakeEgressProfileService struct {
+	profiles       []service.EgressProfile
+	createdProfile service.EgressProfile
+	updatedProfile service.EgressProfile
+	deletedProfile service.EgressProfile
+	getErr         error
+	createErr      error
+	updateErr      error
+	deleteErr      error
+	state          *fakeEgressProfileServiceState
+}
+
+type fakeEgressProfileServiceState struct {
+	createInputs []service.EgressProfileInput
+	updateIDs    []int
+	updateInputs []service.EgressProfileInput
+	deleteIDs    []int
+}
+
+func (f fakeEgressProfileService) List(context.Context) ([]service.EgressProfile, error) {
+	return f.profiles, nil
+}
+
+func (f fakeEgressProfileService) Get(_ context.Context, id int) (service.EgressProfile, error) {
+	if f.getErr != nil {
+		return service.EgressProfile{}, f.getErr
+	}
+	for _, profile := range f.profiles {
+		if profile.ID == id {
+			return profile, nil
+		}
+	}
+	return service.EgressProfile{}, service.ErrEgressProfileNotFound
+}
+
+func (f fakeEgressProfileService) Create(_ context.Context, input service.EgressProfileInput) (service.EgressProfile, error) {
+	if f.state != nil {
+		f.state.createInputs = append(f.state.createInputs, input)
+	}
+	if f.createErr != nil {
+		return service.EgressProfile{}, f.createErr
+	}
+	return f.createdProfile, nil
+}
+
+func (f fakeEgressProfileService) Update(_ context.Context, id int, input service.EgressProfileInput) (service.EgressProfile, error) {
+	if f.state != nil {
+		f.state.updateIDs = append(f.state.updateIDs, id)
+		f.state.updateInputs = append(f.state.updateInputs, input)
+	}
+	if f.updateErr != nil {
+		return service.EgressProfile{}, f.updateErr
+	}
+	return f.updatedProfile, nil
+}
+
+func (f fakeEgressProfileService) Delete(_ context.Context, id int) (service.EgressProfile, error) {
+	if f.state != nil {
+		f.state.deleteIDs = append(f.state.deleteIDs, id)
+	}
+	if f.deleteErr != nil {
+		return service.EgressProfile{}, f.deleteErr
+	}
+	return f.deletedProfile, nil
 }
 
 type fakeRelayListenerService struct {
@@ -656,13 +740,11 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 					ID:               1,
 					AgentID:          "local",
 					FrontendURL:      "https://emby.example.com",
-					BackendURL:       "http://emby:8096",
 					Backends:         []service.HTTPRuleBackend{{URL: "http://emby:8096"}},
 					LoadBalancing:    service.HTTPLoadBalancing{Strategy: "round_robin"},
 					Enabled:          true,
 					Tags:             []string{},
 					ProxyRedirect:    true,
-					RelayChain:       []int{},
 					PassProxyHeaders: true,
 					UserAgent:        "",
 					CustomHeaders:    []service.HTTPCustomHeader{},
@@ -742,7 +824,7 @@ func TestHandleAgentRuleDiagnoseDispatchesTask(t *testing.T) {
 					ID:          7,
 					AgentID:     "edge-a",
 					FrontendURL: "https://edge.example.test",
-					BackendURL:  "http://127.0.0.1:8080",
+					Backends:    []service.HTTPRuleBackend{{URL: "http://127.0.0.1:8080"}},
 				}},
 			},
 		},
@@ -851,7 +933,7 @@ func TestHandleAgentRuleDiagnoseBudgetsResolvedHTTPCandidates(t *testing.T) {
 					ID:          7,
 					AgentID:     "edge-a",
 					FrontendURL: "https://edge.example.test",
-					BackendURL:  "http://origin.example.test:8080",
+					Backends:    []service.HTTPRuleBackend{{URL: "http://origin.example.test:8080"}},
 				}},
 			},
 		},
@@ -902,14 +984,13 @@ func TestHandleAgentL4RuleDiagnoseDispatchesTask(t *testing.T) {
 		L4RuleService: fakeL4RuleService{
 			rules: map[string][]service.L4Rule{
 				"edge-a": {{
-					ID:           9,
-					AgentID:      "edge-a",
-					Name:         "tcp-9000",
-					Protocol:     "tcp",
-					ListenHost:   "0.0.0.0",
-					ListenPort:   9000,
-					UpstreamHost: "127.0.0.1",
-					UpstreamPort: 9001,
+					ID:         9,
+					AgentID:    "edge-a",
+					Name:       "tcp-9000",
+					Protocol:   "tcp",
+					ListenHost: "0.0.0.0",
+					ListenPort: 9000,
+					Backends:   []service.L4Backend{{Host: "127.0.0.1", Port: 9001}},
 				}},
 			},
 		},
@@ -1060,6 +1141,258 @@ func TestHandleAgentTaskSessionResolvesAgentFromToken(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+func TestHandleAgentTaskStreamDispatchesNDJSONTask(t *testing.T) {
+	taskState := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agentsByToken: map[string]service.AgentSummary{
+				"agent-token": {ID: "edge-a", Name: "Edge A"},
+			},
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			registerDispatch: &service.TaskEnvelope{
+				ID:       "task-1",
+				Type:     service.TaskTypeDiagnoseHTTPRule,
+				Payload:  map[string]any{"rule_id": 7},
+				Deadline: time.Date(2026, 5, 11, 10, 0, 0, 0, time.UTC),
+			},
+			state: taskState,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/task-stream?agent_id=spoofed&session_id=session-1", nil)
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := &fullDuplexRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if got := resp.Header().Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q, want application/x-ndjson", got)
+	}
+	if len(taskState.sessionRegistrations) != 1 {
+		t.Fatalf("sessionRegistrations = %+v", taskState.sessionRegistrations)
+	}
+	registration := taskState.sessionRegistrations[0]
+	if registration.AgentID != "edge-a" {
+		t.Fatalf("registered AgentID = %q, want edge-a", registration.AgentID)
+	}
+	if registration.SessionID != "session-1" {
+		t.Fatalf("registered SessionID = %q, want session-1", registration.SessionID)
+	}
+
+	lines := strings.Split(strings.TrimSuffix(resp.Body.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("NDJSON lines = %d, body = %q", len(lines), resp.Body.String())
+	}
+	var message struct {
+		Type string `json:"type"`
+		Task struct {
+			TaskID   string          `json:"task_id"`
+			TaskType string          `json:"task_type"`
+			Deadline string          `json:"deadline"`
+			Payload  json.RawMessage `json:"payload"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &message); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v, line = %q", err, lines[0])
+	}
+	if message.Type != "task" {
+		t.Fatalf("message type = %q, want task", message.Type)
+	}
+	if message.Task.TaskID != "task-1" {
+		t.Fatalf("task_id = %q, want task-1", message.Task.TaskID)
+	}
+	if message.Task.TaskType != "diagnose_http_rule" {
+		t.Fatalf("task_type = %q, want diagnose_http_rule", message.Task.TaskType)
+	}
+	if message.Task.Deadline != "2026-05-11T10:00:00Z" {
+		t.Fatalf("deadline = %q, want 2026-05-11T10:00:00Z", message.Task.Deadline)
+	}
+	if string(message.Task.Payload) != `{"rule_id":7}` {
+		t.Fatalf("payload = %s, want {\"rule_id\":7}", message.Task.Payload)
+	}
+}
+
+func TestHandleAgentTaskStreamSupportsHEADProbe(t *testing.T) {
+	taskState := &fakeTaskServiceState{}
+	agentState := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agentsByToken: map[string]service.AgentSummary{
+				"agent-token": {ID: "edge-a", Name: "Edge A"},
+			},
+			state: agentState,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService:          fakeTaskService{state: taskState},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodHead, "/api/agents/task-stream?agent_id=spoofed&session_id=session-1", nil)
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if got := resp.Header().Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q, want application/x-ndjson", got)
+	}
+	if len(agentState.resolveTokens) != 1 || agentState.resolveTokens[0] != "agent-token" {
+		t.Fatalf("resolveTokens = %+v", agentState.resolveTokens)
+	}
+	if len(taskState.sessionRegistrations) != 0 {
+		t.Fatalf("sessionRegistrations = %+v, want none for probe", taskState.sessionRegistrations)
+	}
+}
+
+func TestHandleAgentTaskStreamAppliesUpdateFromAuthenticatedAgent(t *testing.T) {
+	state := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agentsByToken: map[string]service.AgentSummary{
+				"agent-token": {ID: "edge-a", Name: "Edge A"},
+			},
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			state: state,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	body := bytes.NewBufferString(strings.Join([]string{
+		`{"type":"hello","hello":{"agent_id":"spoofed","session_id":"body-session"}}`,
+		`{"type":"update","update":{"task_id":"task-1","state":"completed","result":{"ok":true}}}`,
+	}, "\n"))
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/task-stream?agent_id=spoofed&session_id=query-session", body)
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := &fullDuplexRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if len(state.updates) != 1 {
+		t.Fatalf("updates = %+v", state.updates)
+	}
+	update := state.updates[0]
+	if update.AgentID != "edge-a" {
+		t.Fatalf("AgentID = %q, want edge-a", update.AgentID)
+	}
+	if update.TaskID != "task-1" {
+		t.Fatalf("TaskID = %q, want task-1", update.TaskID)
+	}
+	if update.State != "completed" {
+		t.Fatalf("State = %q, want completed", update.State)
+	}
+	if ok, _ := update.Result["ok"].(bool); !ok {
+		t.Fatalf("Result[ok] = %#v, want true", update.Result["ok"])
+	}
+}
+
+func TestHandleAgentTaskStreamAppliesUpdateWithLargeResult(t *testing.T) {
+	state := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agentsByToken: map[string]service.AgentSummary{
+				"agent-token": {ID: "edge-a", Name: "Edge A"},
+			},
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			state: state,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	blob := strings.Repeat("x", 70*1024)
+	body := bytes.NewBufferString(`{"type":"update","update":{"task_id":"task-1","state":"completed","result":{"blob":"` + blob + `"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/task-stream?session_id=session-1", body)
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := &fullDuplexRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if len(state.updates) != 1 {
+		t.Fatalf("updates = %+v", state.updates)
+	}
+	if got, _ := state.updates[0].Result["blob"].(string); got != blob {
+		t.Fatalf("Result[blob] length = %d, want %d", len(got), len(blob))
+	}
 }
 
 func TestHandleAgentTaskUpdateAcceptsAgentResult(t *testing.T) {
@@ -1375,9 +1708,7 @@ func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
 			Username: "client",
 			Password: "entry-secret",
 		},
-		ProxyEgressMode: "proxy",
-		ProxyEgressURL:  "socks://egress:egress-secret@127.0.0.1:1080",
-		Enabled:         true,
+		Enabled: true,
 	}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1424,11 +1755,11 @@ func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
 				t.Fatalf("%s %s = %d body=%s", tt.method, tt.path, resp.Code, resp.Body.String())
 			}
 			body := resp.Body.String()
-			if strings.Contains(body, "entry-secret") || strings.Contains(body, "egress-secret") {
+			if strings.Contains(body, "entry-secret") {
 				t.Fatalf("response leaked secret: %s", body)
 			}
-			if !strings.Contains(body, `"proxy_egress_url":"socks://egress:xxxxx@127.0.0.1:1080"`) {
-				t.Fatalf("response did not redact egress URL: %s", body)
+			if strings.Contains(body, "proxy_egress_url") || strings.Contains(body, "wireguard_egress_uri") {
+				t.Fatalf("response included removed egress fields: %s", body)
 			}
 			if strings.Contains(body, `"password"`) {
 				t.Fatalf("response included proxy auth password field: %s", body)
@@ -1438,6 +1769,7 @@ func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
 }
 
 func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
+	l4State := &fakeL4RuleServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{
@@ -1453,30 +1785,28 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 		L4RuleService: fakeL4RuleService{
 			rules: map[string][]service.L4Rule{
 				"local": {{
-					ID:           1,
-					AgentID:      "local",
-					Name:         "TCP 8443",
-					Protocol:     "tcp",
-					ListenHost:   "0.0.0.0",
-					ListenPort:   8443,
-					UpstreamHost: "emby",
-					UpstreamPort: 8096,
-					Backends:     []service.L4Backend{{Host: "emby", Port: 8096}},
+					ID:         1,
+					AgentID:    "local",
+					Name:       "TCP 8443",
+					Protocol:   "tcp",
+					ListenHost: "0.0.0.0",
+					ListenPort: 8443,
+					Backends:   []service.L4Backend{{Host: "emby", Port: 8096}},
 					LoadBalancing: service.L4LoadBalancing{
 						Strategy: "round_robin",
 					},
 					Tuning: service.L4Tuning{
 						ProxyProtocol: service.L4ProxyProtocolTuning{},
 					},
-					RelayChain: []int{},
-					Enabled:    true,
-					Tags:       []string{},
-					Revision:   4,
+					Enabled:  true,
+					Tags:     []string{},
+					Revision: 4,
 				}},
 			},
-			createdRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9443, UpstreamHost: "emby", UpstreamPort: 8096, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{}, Revision: 5},
-			updatedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, UpstreamHost: "emby", UpstreamPort: 8096, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
-			deletedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, UpstreamHost: "emby", UpstreamPort: 8096, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
+			createdRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, EgressProfileID: intPtr(31), Enabled: true, Tags: []string{}, Revision: 5},
+			updatedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
+			deletedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
+			state:       l4State,
 		},
 		VersionPolicyService: fakeVersionPolicyService{
 			policies: []service.VersionPolicy{{
@@ -1509,7 +1839,7 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 		t.Fatalf("GET /panel-api/agents/local/l4-rules = %d", getL4Resp.Code)
 	}
 
-	createL4Req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/l4-rules", bytes.NewBufferString(`{"listen_port":9443,"upstream_host":"emby","upstream_port":8096}`))
+	createL4Req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/l4-rules", bytes.NewBufferString(`{"listen_port":9443,"backends":[{"host":"emby","port":8096}],"egress_profile_id":31}`))
 	createL4Req.Header.Set("X-Panel-Token", "secret")
 	createL4Req.Header.Set("Content-Type", "application/json")
 	createL4Resp := httptest.NewRecorder()
@@ -1517,14 +1847,26 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 	if createL4Resp.Code != http.StatusCreated {
 		t.Fatalf("POST /panel-api/agents/local/l4-rules = %d", createL4Resp.Code)
 	}
+	if len(l4State.createInputs) != 1 || l4State.createInputs[0].EgressProfileID == nil || *l4State.createInputs[0].EgressProfileID != 31 {
+		t.Fatalf("POST l4 egress_profile_id input = %+v", l4State.createInputs)
+	}
+	if !strings.Contains(createL4Resp.Body.String(), `"egress_profile_id":31`) {
+		t.Fatalf("POST l4 response missing egress_profile_id: %s", createL4Resp.Body.String())
+	}
 
-	updateL4Req := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/l4-rules/2", bytes.NewBufferString(`{"listen_host":"127.0.0.1","tags":["edge"]}`))
+	updateL4Req := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/l4-rules/2", bytes.NewBufferString(`{"listen_host":"127.0.0.1","tags":["edge"],"egress_profile_id":0}`))
 	updateL4Req.Header.Set("X-Panel-Token", "secret")
 	updateL4Req.Header.Set("Content-Type", "application/json")
 	updateL4Resp := httptest.NewRecorder()
 	router.ServeHTTP(updateL4Resp, updateL4Req)
 	if updateL4Resp.Code != http.StatusOK {
 		t.Fatalf("PUT /panel-api/agents/local/l4-rules/2 = %d", updateL4Resp.Code)
+	}
+	if len(l4State.updateInputs) != 1 || l4State.updateRuleIDs[0] != 2 || l4State.updateInputs[0].EgressProfileID == nil || *l4State.updateInputs[0].EgressProfileID != 0 {
+		t.Fatalf("PUT l4 egress_profile_id input = ids=%+v inputs=%+v", l4State.updateRuleIDs, l4State.updateInputs)
+	}
+	if strings.Contains(updateL4Resp.Body.String(), `"egress_profile_id"`) {
+		t.Fatalf("PUT l4 response included cleared egress_profile_id: %s", updateL4Resp.Body.String())
 	}
 
 	deleteL4Req := httptest.NewRequest(http.MethodDelete, "/panel-api/agents/local/l4-rules/2", nil)
@@ -2390,22 +2732,20 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 					ID:               1,
 					AgentID:          "local",
 					FrontendURL:      "https://emby.example.com",
-					BackendURL:       "http://emby:8096",
 					Backends:         []service.HTTPRuleBackend{{URL: "http://emby:8096"}},
 					LoadBalancing:    service.HTTPLoadBalancing{Strategy: "round_robin"},
 					Enabled:          true,
 					Tags:             []string{"media"},
 					ProxyRedirect:    true,
-					RelayChain:       []int{},
 					PassProxyHeaders: true,
 					UserAgent:        "",
 					CustomHeaders:    []service.HTTPCustomHeader{},
 					Revision:         3,
 				}},
 			},
-			createdRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096", RelayLayers: [][]int{{1, 2}, {3}}},
-			updatedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096", RelayLayers: [][]int{{4}, {5, 6}}},
-			deletedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+			createdRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://new.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}, RelayLayers: [][]int{{1, 2}, {3}}, EgressProfileID: intPtr(17)},
+			updatedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}, RelayLayers: [][]int{{4}, {5, 6}}},
+			deletedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}},
 			state:       ruleState,
 		},
 		L4RuleService:        fakeL4RuleService{},
@@ -2443,7 +2783,7 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 		t.Fatalf("GET /api/agents/local/rules = %d", getAliasResp.Code)
 	}
 
-	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096","relay_layers":[[1,2],[3]]}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backends":[{"url":"http://emby:8096"}],"relay_layers":[[1,2],[3]],"egress_profile_id":17}`))
 	createReq.Header.Set("X-Panel-Token", "secret")
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
@@ -2464,11 +2804,17 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 	if len(ruleState.createInputs) != 1 || ruleState.createInputs[0].RelayLayers == nil || len(*ruleState.createInputs[0].RelayLayers) != 2 {
 		t.Fatalf("POST relay_layers input = %+v", ruleState.createInputs)
 	}
+	if ruleState.createInputs[0].EgressProfileID == nil || *ruleState.createInputs[0].EgressProfileID != 17 {
+		t.Fatalf("POST egress_profile_id input = %+v", ruleState.createInputs[0].EgressProfileID)
+	}
 	if !strings.Contains(createResp.Body.String(), `"relay_layers":[[1,2],[3]]`) {
 		t.Fatalf("POST response missing relay_layers: %s", createResp.Body.String())
 	}
+	if !strings.Contains(createResp.Body.String(), `"egress_profile_id":17`) {
+		t.Fatalf("POST response missing egress_profile_id: %s", createResp.Body.String())
+	}
 
-	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/rules/2", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com","relay_layers":[[4],[5,6]]}`))
+	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/rules/2", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com","relay_layers":[[4],[5,6]],"egress_profile_id":0}`))
 	updateReq.Header.Set("X-Panel-Token", "secret")
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateResp := httptest.NewRecorder()
@@ -2479,8 +2825,14 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 	if len(ruleState.updateInputs) != 1 || ruleState.updateInputs[0].RelayLayers == nil || len(*ruleState.updateInputs[0].RelayLayers) != 2 {
 		t.Fatalf("PUT relay_layers input = %+v", ruleState.updateInputs)
 	}
+	if ruleState.updateInputs[0].EgressProfileID == nil || *ruleState.updateInputs[0].EgressProfileID != 0 {
+		t.Fatalf("PUT egress_profile_id input = %+v", ruleState.updateInputs[0].EgressProfileID)
+	}
 	if !strings.Contains(updateResp.Body.String(), `"relay_layers":[[4],[5,6]]`) {
 		t.Fatalf("PUT response missing relay_layers: %s", updateResp.Body.String())
+	}
+	if strings.Contains(updateResp.Body.String(), `"egress_profile_id"`) {
+		t.Fatalf("PUT response included cleared egress_profile_id: %s", updateResp.Body.String())
 	}
 	var updatePayload map[string]any
 	if err := json.Unmarshal(updateResp.Body.Bytes(), &updatePayload); err != nil {
@@ -2552,12 +2904,12 @@ func TestRouterLegacyLocalAPIRoutesMapToLocalAgent(t *testing.T) {
 						ID:          7,
 						AgentID:     "local-node",
 						FrontendURL: "https://media.example.com",
-						BackendURL:  "http://emby:8096",
+						Backends:    []service.HTTPRuleBackend{{URL: "http://emby:8096"}},
 					}},
 				},
-				createdRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096"},
-				updatedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
-				deletedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+				createdRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://new.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}},
+				updatedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}},
+				deletedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", Backends: []service.HTTPRuleBackend{{URL: "http://emby:8096"}}},
 				state:       ruleState,
 			},
 			L4RuleService:        fakeL4RuleService{},
@@ -2591,7 +2943,7 @@ func TestRouterLegacyLocalAPIRoutesMapToLocalAgent(t *testing.T) {
 			t.Fatalf("GET %s/rules payload missing rules: %+v", prefix, getRulesPayload)
 		}
 
-		createRuleReq := httptest.NewRequest(http.MethodPost, prefix+"/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096"}`))
+		createRuleReq := httptest.NewRequest(http.MethodPost, prefix+"/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backends":[{"url":"http://emby:8096"}]}`))
 		createRuleReq.Header.Set("X-Panel-Token", "secret")
 		createRuleReq.Header.Set("Content-Type", "application/json")
 		createRuleResp := httptest.NewRecorder()
@@ -2766,6 +3118,155 @@ func TestRouterGlobalCertificateCRUDRoutesUseGlobalContext(t *testing.T) {
 	}
 	if len(state.deleteIDs) != 2 || state.deleteIDs[0] != 31 || state.deleteIDs[1] != 31 {
 		t.Fatalf("delete ids = %+v", state.deleteIDs)
+	}
+}
+
+func TestRouterEgressProfileCRUDRoutes(t *testing.T) {
+	state := &fakeEgressProfileServiceState{}
+	for _, prefix := range []string{"/api", "/panel-api"} {
+		router, err := NewRouter(Dependencies{
+			Config: config.Config{PanelToken: "secret"},
+			SystemService: fakeSystemService{
+				info: service.SystemInfo{
+					Role:              "master",
+					LocalApplyRuntime: "go-agent",
+					DefaultAgentID:    "local",
+					LocalAgentEnabled: true,
+				},
+			},
+			AgentService:         fakeAgentService{},
+			RuleService:          fakeRuleService{},
+			L4RuleService:        fakeL4RuleService{},
+			VersionPolicyService: fakeVersionPolicyService{},
+			RelayListenerService: fakeRelayListenerService{},
+			EgressProfileService: fakeEgressProfileService{
+				profiles: []service.EgressProfile{{
+					ID:       1,
+					Name:     "office socks",
+					Type:     "socks",
+					ProxyURL: "socks5://user:xxxxx@127.0.0.1:1080",
+					Enabled:  true,
+					Revision: 1,
+				}},
+				createdProfile: service.EgressProfile{ID: 2, Name: "created", Type: "direct", Enabled: true, Revision: 2},
+				updatedProfile: service.EgressProfile{ID: 1, Name: "updated", Type: "http", ProxyURL: "http://user:xxxxx@proxy.example.com", Enabled: true, Revision: 3},
+				deletedProfile: service.EgressProfile{ID: 1, Name: "updated", Type: "http", ProxyURL: "http://user:xxxxx@proxy.example.com", Enabled: true, Revision: 3},
+				state:          state,
+			},
+			CertificateService: fakeCertificateService{},
+		})
+		if err != nil {
+			t.Fatalf("NewRouter() error = %v", err)
+		}
+
+		unauthorizedReq := httptest.NewRequest(http.MethodGet, prefix+"/egress-profiles", nil)
+		unauthorizedResp := httptest.NewRecorder()
+		router.ServeHTTP(unauthorizedResp, unauthorizedReq)
+		if unauthorizedResp.Code != http.StatusUnauthorized {
+			t.Fatalf("GET %s/egress-profiles without token = %d", prefix, unauthorizedResp.Code)
+		}
+
+		listReq := httptest.NewRequest(http.MethodGet, prefix+"/egress-profiles", nil)
+		listReq.Header.Set("X-Panel-Token", "secret")
+		listResp := httptest.NewRecorder()
+		router.ServeHTTP(listResp, listReq)
+		if listResp.Code != http.StatusOK {
+			t.Fatalf("GET %s/egress-profiles = %d", prefix, listResp.Code)
+		}
+		var listPayload map[string]any
+		if err := json.Unmarshal(listResp.Body.Bytes(), &listPayload); err != nil {
+			t.Fatalf("json.Unmarshal(list) error = %v", err)
+		}
+		if _, ok := listPayload["profiles"]; !ok {
+			t.Fatalf("GET %s/egress-profiles payload missing profiles: %+v", prefix, listPayload)
+		}
+
+		getReq := httptest.NewRequest(http.MethodGet, prefix+"/egress-profiles/1", nil)
+		getReq.Header.Set("X-Panel-Token", "secret")
+		getResp := httptest.NewRecorder()
+		router.ServeHTTP(getResp, getReq)
+		if getResp.Code != http.StatusOK {
+			t.Fatalf("GET %s/egress-profiles/1 = %d", prefix, getResp.Code)
+		}
+		var getPayload map[string]any
+		if err := json.Unmarshal(getResp.Body.Bytes(), &getPayload); err != nil {
+			t.Fatalf("json.Unmarshal(get) error = %v", err)
+		}
+		if _, ok := getPayload["profile"]; !ok {
+			t.Fatalf("GET %s/egress-profiles/1 payload missing profile: %+v", prefix, getPayload)
+		}
+
+		createReq := httptest.NewRequest(http.MethodPost, prefix+"/egress-profiles", bytes.NewBufferString(`{"name":"created","type":"direct","enabled":true}`))
+		createReq.Header.Set("X-Panel-Token", "secret")
+		createReq.Header.Set("Content-Type", "application/json")
+		createResp := httptest.NewRecorder()
+		router.ServeHTTP(createResp, createReq)
+		if createResp.Code != http.StatusCreated {
+			t.Fatalf("POST %s/egress-profiles = %d", prefix, createResp.Code)
+		}
+
+		updateReq := httptest.NewRequest(http.MethodPut, prefix+"/egress-profiles/1", bytes.NewBufferString(`{"name":"updated","type":"http","proxy_url":"http://user:secret@proxy.example.com"}`))
+		updateReq.Header.Set("X-Panel-Token", "secret")
+		updateReq.Header.Set("Content-Type", "application/json")
+		updateResp := httptest.NewRecorder()
+		router.ServeHTTP(updateResp, updateReq)
+		if updateResp.Code != http.StatusOK {
+			t.Fatalf("PUT %s/egress-profiles/1 = %d", prefix, updateResp.Code)
+		}
+
+		deleteReq := httptest.NewRequest(http.MethodDelete, prefix+"/egress-profiles/1", nil)
+		deleteReq.Header.Set("X-Panel-Token", "secret")
+		deleteResp := httptest.NewRecorder()
+		router.ServeHTTP(deleteResp, deleteReq)
+		if deleteResp.Code != http.StatusOK {
+			t.Fatalf("DELETE %s/egress-profiles/1 = %d", prefix, deleteResp.Code)
+		}
+	}
+
+	if len(state.createInputs) != 2 {
+		t.Fatalf("create inputs = %d, want 2", len(state.createInputs))
+	}
+	if state.createInputs[0].Name == nil || *state.createInputs[0].Name != "created" {
+		t.Fatalf("create input = %+v", state.createInputs[0])
+	}
+	if len(state.updateIDs) != 2 || state.updateIDs[0] != 1 || state.updateIDs[1] != 1 {
+		t.Fatalf("update ids = %+v", state.updateIDs)
+	}
+	if len(state.deleteIDs) != 2 || state.deleteIDs[0] != 1 || state.deleteIDs[1] != 1 {
+		t.Fatalf("delete ids = %+v", state.deleteIDs)
+	}
+}
+
+func TestRouterEgressProfileErrors(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config:               config.Config{PanelToken: "secret"},
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		EgressProfileService: fakeEgressProfileService{deleteErr: service.ErrEgressProfileNotFound},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	invalidIDReq := httptest.NewRequest(http.MethodGet, "/api/egress-profiles/not-an-id", nil)
+	invalidIDReq.Header.Set("X-Panel-Token", "secret")
+	invalidIDResp := httptest.NewRecorder()
+	router.ServeHTTP(invalidIDResp, invalidIDReq)
+	if invalidIDResp.Code != http.StatusBadRequest {
+		t.Fatalf("GET /api/egress-profiles/not-an-id = %d, want 400", invalidIDResp.Code)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/egress-profiles/9", nil)
+	deleteReq.Header.Set("X-Panel-Token", "secret")
+	deleteResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteResp, deleteReq)
+	if deleteResp.Code != http.StatusNotFound {
+		t.Fatalf("DELETE /api/egress-profiles/9 = %d, want 404", deleteResp.Code)
 	}
 }
 

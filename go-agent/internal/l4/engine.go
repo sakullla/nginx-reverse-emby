@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 )
 
 type Rule = model.L4Rule
@@ -22,7 +21,7 @@ func ValidateRule(rule Rule) error {
 	if strings.TrimSpace(rule.ListenHost) == "" {
 		return fmt.Errorf("listen_host is required")
 	}
-	if rule.ListenPort < 1 || rule.ListenPort > 65535 {
+	if rule.ListenPort < 0 || rule.ListenPort > 65535 || (rule.ListenPort == 0 && !isWireGuardTransparentForwardRule(rule)) {
 		return fmt.Errorf("listen_port must be between 1 and 65535")
 	}
 
@@ -30,24 +29,31 @@ func ValidateRule(rule Rule) error {
 	if listenMode == "" {
 		listenMode = "tcp"
 	}
-	if listenMode != "tcp" && listenMode != "proxy" {
-		return fmt.Errorf("listen_mode must be tcp or proxy")
+	if listenMode != "tcp" && listenMode != "proxy" && listenMode != "wireguard" {
+		return fmt.Errorf("listen_mode must be tcp, proxy, or wireguard")
 	}
-	if listenMode == "proxy" {
-		if protocol != "tcp" {
-			return fmt.Errorf("listen_mode=proxy requires protocol tcp")
+	wireGuardInboundMode := strings.ToLower(strings.TrimSpace(rule.WireGuardInboundMode))
+	if wireGuardInboundMode == "" {
+		wireGuardInboundMode = "address"
+	}
+	if listenMode == "wireguard" && wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
+		return fmt.Errorf("wireguard_inbound_mode must be address or transparent")
+	}
+	if listenMode == "wireguard" && !hasWireGuardProfile(rule) {
+		return fmt.Errorf("wireguard_profile_id is required for wireguard listen mode")
+	}
+	if isProxyEntryRule(rule) {
+		if protocol != "tcp" && protocol != "udp" {
+			return fmt.Errorf("listen_mode=proxy requires protocol tcp or udp")
 		}
 		return validateProxyEntryRule(rule)
 	}
+	if isWireGuardTransparentForwardRule(rule) {
+		// Transparent WireGuard forwards can be direct, relay, or egress-profile final hop.
+	}
 
 	backends := rule.Backends
-	if len(backends) == 0 && strings.TrimSpace(rule.UpstreamHost) != "" && rule.UpstreamPort > 0 {
-		backends = []model.L4Backend{{
-			Host: rule.UpstreamHost,
-			Port: rule.UpstreamPort,
-		}}
-	}
-	if len(backends) == 0 {
+	if len(backends) == 0 && !isWireGuardTransparentForwardRule(rule) {
 		return fmt.Errorf("at least one backend is required")
 	}
 	for _, backend := range backends {
@@ -61,22 +67,39 @@ func ValidateRule(rule Rule) error {
 	return nil
 }
 
+func isWireGuardTransparentForwardRule(rule Rule) bool {
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	return (protocol == "tcp" || protocol == "udp") &&
+		strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
+		wireGuardInboundMode(rule) == "transparent"
+}
+
 func validateProxyEntryRule(rule Rule) error {
-	mode := strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode))
-	switch mode {
-	case "relay":
-		if !ruleUsesRelay(rule) {
-			return fmt.Errorf("proxy relay egress requires relay_chain or relay_layers")
-		}
-	case "proxy":
-		if strings.TrimSpace(rule.ProxyEgressURL) == "" {
-			return fmt.Errorf("proxy_egress_url is required for proxy egress")
-		}
-		if _, err := proxyproto.ParseProxyURL(rule.ProxyEgressURL); err != nil {
-			return fmt.Errorf("invalid proxy_egress_url: %w", err)
-		}
-	default:
-		return fmt.Errorf("proxy_egress_mode must be relay or proxy")
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if protocol != "tcp" && protocol != "udp" {
+		return fmt.Errorf("listen_mode=proxy requires protocol tcp or udp")
 	}
 	return nil
+}
+
+func isProxyEntryRule(rule Rule) bool {
+	listenMode := strings.ToLower(strings.TrimSpace(rule.ListenMode))
+	return listenMode == "proxy"
+}
+
+func hasWireGuardProfile(rule Rule) bool {
+	return rule.WireGuardProfileID != nil && *rule.WireGuardProfileID > 0
+}
+
+func wireGuardInboundMode(rule Rule) string {
+	if !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent") {
+		return "transparent"
+	}
+	return "address"
 }

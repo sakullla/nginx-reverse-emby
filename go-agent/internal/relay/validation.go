@@ -36,7 +36,6 @@ func ValidateListener(listener Listener) error {
 	if normalized.PublicPort < 1 || normalized.PublicPort > 65535 {
 		return fmt.Errorf("public_port must be between 1 and 65535")
 	}
-
 	mode, err := normalizeTLSMode(normalized.TLSMode)
 	if err != nil {
 		return err
@@ -95,8 +94,16 @@ func normalizeListener(listener Listener) (Listener, error) {
 		return Listener{}, fmt.Errorf("listen_host is required")
 	}
 
+	transportMode, err := normalizeListenerTransportMode(listener.TransportMode)
+	if err != nil {
+		return Listener{}, err
+	}
+	normalized.TransportMode = transportMode
 	normalized.BindHosts = bindHosts
 	normalized.ListenHost = bindHosts[0]
+	if transportMode == ListenerTransportModeWireGuard && listenHost != "" {
+		normalized.ListenHost = listenHost
+	}
 
 	publicHost := strings.TrimSpace(listener.PublicHost)
 	if publicHost == "" {
@@ -107,17 +114,22 @@ func normalizeListener(listener Listener) (Listener, error) {
 		normalized.PublicPort = normalized.ListenPort
 	}
 
-	transportMode, err := normalizeListenerTransportMode(listener.TransportMode)
-	if err != nil {
-		return Listener{}, err
-	}
-	normalized.TransportMode = transportMode
-
 	obfsMode, err := normalizeListenerObfsMode(listener.ObfsMode)
 	if err != nil {
 		return Listener{}, err
 	}
 	normalized.ObfsMode = obfsMode
+	if transportMode == ListenerTransportModeWireGuard {
+		if normalized.WireGuardProfileID == nil || *normalized.WireGuardProfileID <= 0 {
+			return Listener{}, fmt.Errorf("wireguard_profile_id is required for wireguard transport")
+		}
+		if normalized.AllowTransportFallback {
+			return Listener{}, fmt.Errorf("allow_transport_fallback is not supported with wireguard transport")
+		}
+		if normalized.ObfsMode != RelayObfsModeOff {
+			return Listener{}, fmt.Errorf("obfs_mode is not supported with wireguard transport")
+		}
+	}
 
 	return normalized, nil
 }
@@ -125,7 +137,7 @@ func normalizeListener(listener Listener) (Listener, error) {
 func normalizeListenerTransportMode(mode string) (string, error) {
 	normalized := normalizeListenerTransportModeValue(mode)
 	switch normalized {
-	case ListenerTransportModeTLSTCP, ListenerTransportModeQUIC:
+	case ListenerTransportModeTLSTCP, ListenerTransportModeQUIC, ListenerTransportModeWireGuard:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported transport_mode %q", strings.TrimSpace(mode))

@@ -39,7 +39,7 @@ vi.mock('../../api', () => ({
 
 const ApexChartStub = {
   name: 'apexchart',
-  template: '<div data-testid="apexchart" />',
+  template: '<div data-testid="apexchart" :data-series="JSON.stringify(series)" />',
   props: ['type', 'options', 'series', 'height', 'width']
 }
 
@@ -84,11 +84,20 @@ function buildAggregate(agentId = null, granularity = 'day') {
     top_nodes: selectedAgents.map((agent) => ({
       agent_id: agent.agent_id,
       name: agent.name,
-      used_bytes: agent.used_bytes,
+      used_bytes: granularUsedBytes(agent.agent_id, granularity),
       quota_bytes: agent.quota_bytes
     })),
     top_rules: []
   }
+}
+
+function granularUsedBytes(agentId, granularity) {
+  const values = {
+    hour: { 'edge-1': 64, 'edge-2': 128 },
+    day: { 'edge-1': 640, 'edge-2': 1280 },
+    month: { 'edge-1': 6400, 'edge-2': 12800 }
+  }
+  return values[granularity]?.[agentId] ?? 0
 }
 
 describe('DashboardTrafficModule', () => {
@@ -136,6 +145,18 @@ describe('DashboardTrafficModule', () => {
     await mountModule()
 
     await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day'))
+  })
+
+  it('updates the traffic distribution from the selected granularity aggregate', async () => {
+    const wrapper = await mountModule()
+
+    const distributionSeries = () => JSON.parse(wrapper.findAll('[data-testid="apexchart"]')[0].attributes('data-series'))
+    await vi.waitFor(() => expect(distributionSeries()).toEqual([1280, 640]))
+
+    await wrapper.findAll('.dashboard-traffic__granularity-btn')[0].trigger('click')
+
+    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'hour'))
+    await vi.waitFor(() => expect(distributionSeries()).toEqual([128, 64]))
   })
 
   it('renders overlapping top rules from different agents without duplicate Vue keys', async () => {

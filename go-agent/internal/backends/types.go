@@ -34,26 +34,68 @@ func StableBackendID(value string) string {
 }
 
 func RelayBackoffKey(chain []int, addr string) string {
-	parts := make([]string, len(chain))
-	for i, id := range chain {
-		parts[i] = strconv.Itoa(id)
+	var builder strings.Builder
+	builder.Grow(len("relay||") + len(addr) + relayIDsStringLen(chain))
+	builder.WriteString("relay|")
+	writeRelayIDs(&builder, chain, "-")
+	builder.WriteByte('|')
+	builder.WriteString(addr)
+	return builder.String()
+}
+
+func relayIDsStringLen(ids []int) int {
+	if len(ids) == 0 {
+		return 0
 	}
-	return "relay|" + strings.Join(parts, "-") + "|" + addr
+	size := len(ids) - 1
+	for _, id := range ids {
+		size += intStringLen(id)
+	}
+	return size
 }
 
 func RelayBackoffKeyForLayers(chain []int, layers [][]int, addr string) string {
 	if len(layers) == 0 {
 		return RelayBackoffKey(chain, addr)
 	}
-	layerParts := make([]string, 0, len(layers))
-	for _, layer := range layers {
-		ids := make([]string, 0, len(layer))
-		for _, id := range layer {
-			ids = append(ids, strconv.Itoa(id))
+	var builder strings.Builder
+	builder.Grow(len("relay_layers||") + len(addr) + relayLayersStringLen(layers))
+	builder.WriteString("relay_layers|")
+	for i, layer := range layers {
+		if i > 0 {
+			builder.WriteByte('/')
 		}
-		layerParts = append(layerParts, strings.Join(ids, "-"))
+		writeRelayIDs(&builder, layer, "-")
 	}
-	return "relay_layers|" + strings.Join(layerParts, "/") + "|" + addr
+	builder.WriteByte('|')
+	builder.WriteString(addr)
+	return builder.String()
+}
+
+func relayLayersStringLen(layers [][]int) int {
+	if len(layers) == 0 {
+		return 0
+	}
+	size := len(layers) - 1
+	for _, layer := range layers {
+		size += relayIDsStringLen(layer)
+	}
+	return size
+}
+
+func writeRelayIDs(builder *strings.Builder, ids []int, sep string) {
+	var scratch [20]byte
+	for i, id := range ids {
+		if i > 0 {
+			builder.WriteString(sep)
+		}
+		builder.Write(strconv.AppendInt(scratch[:0], int64(id), 10))
+	}
+}
+
+func intStringLen(value int) int {
+	var scratch [20]byte
+	return len(strconv.AppendInt(scratch[:0], int64(value), 10))
 }
 
 type Resolver interface {

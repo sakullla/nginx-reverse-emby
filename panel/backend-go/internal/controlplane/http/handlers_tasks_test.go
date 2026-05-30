@@ -2,7 +2,6 @@ package http
 
 import (
 	"testing"
-	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -10,7 +9,7 @@ import (
 func TestDiagnosticTTLScalesByRelayLayerFanout(t *testing.T) {
 	base := diagnosticTaskTTL(service.TaskTypeDiagnoseHTTPRule, 1)
 	rule := service.HTTPRule{
-		BackendURL:  "http://backend.example:8096",
+		Backends:    []service.HTTPRuleBackend{{URL: "http://backend.example:8096"}},
 		RelayLayers: [][]int{{1, 2}, {3, 4}},
 	}
 
@@ -27,10 +26,9 @@ func TestDiagnosticTTLScalesByRelayLayerFanout(t *testing.T) {
 func TestDiagnosticL4TTLScalesByRelayLayerFanout(t *testing.T) {
 	base := diagnosticTaskTTL(service.TaskTypeDiagnoseL4TCPRule, 1)
 	rule := service.L4Rule{
-		Protocol:     "tcp",
-		UpstreamHost: "backend.example",
-		UpstreamPort: 9001,
-		RelayLayers:  [][]int{{1, 2}, {3, 4}},
+		Protocol:    "tcp",
+		Backends:    []service.L4Backend{{Host: "backend.example", Port: 9001}},
+		RelayLayers: [][]int{{1, 2}, {3, 4}},
 	}
 
 	got := diagnosticL4TaskTTL(rule)
@@ -43,14 +41,15 @@ func TestDiagnosticL4TTLScalesByRelayLayerFanout(t *testing.T) {
 	}
 }
 
-func TestDiagnosticTTLKeepsLegacyChainBudget(t *testing.T) {
+func TestDiagnosticTTLIgnoresLegacyRelayChain(t *testing.T) {
 	rule := service.HTTPRule{
-		BackendURL: "http://backend.example:8096",
-		RelayChain: []int{1, 2},
+		Backends:    []service.HTTPRuleBackend{{URL: "http://backend.example:8096"}},
+		RelayChain:  []int{1, 2},
+		RelayLayers: [][]int{},
 	}
 
 	got := diagnosticHTTPTaskTTL(rule)
-	want := time.Duration(5*2)*5*time.Second + 15*time.Second
+	want := diagnosticTaskTTL(service.TaskTypeDiagnoseHTTPRule, 1)
 	if got != want {
 		t.Fatalf("diagnosticHTTPTaskTTL() = %s, want %s", got, want)
 	}

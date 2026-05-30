@@ -23,9 +23,66 @@ func TestMuxFrameRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readMuxFrame() error = %v", err)
 	}
+	defer got.releasePayload()
 	if got.Version != frame.Version || got.Type != frame.Type || got.Flags != frame.Flags || got.StreamID != frame.StreamID || !bytes.Equal(got.Payload, frame.Payload) {
 		t.Fatalf("readMuxFrame() = %#v, want %#v", got, frame)
 	}
+}
+
+func TestReadMuxFrameAllocations(t *testing.T) {
+	payload := bytes.Repeat([]byte("m"), 64*1024)
+	var wire bytes.Buffer
+	if err := writeMuxFrame(&wire, muxFrame{
+		Type:     muxFrameTypeData,
+		StreamID: 1,
+		Payload:  payload,
+	}); err != nil {
+		t.Fatalf("writeMuxFrame() error = %v", err)
+	}
+	frameBytes := append([]byte(nil), wire.Bytes()...)
+	frame, err := readMuxFrame(bytes.NewReader(frameBytes))
+	if err != nil {
+		t.Fatalf("warm readMuxFrame() error = %v", err)
+	}
+	frame.releasePayload()
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		frame, err := readMuxFrame(bytes.NewReader(frameBytes))
+		if err != nil {
+			t.Fatalf("readMuxFrame() error = %v", err)
+		}
+		if len(frame.Payload) != len(payload) {
+			t.Fatalf("payload len = %d, want %d", len(frame.Payload), len(payload))
+		}
+		frame.releasePayload()
+	})
+	if allocs > 3 {
+		t.Fatalf("readMuxFrame() allocations = %.2f, want <= 3", allocs)
+	}
+}
+
+func TestMuxFrameTakeReadChunkTransfersPayloadOwnership(t *testing.T) {
+	payload := bytes.Repeat([]byte("m"), 1024)
+	var wire bytes.Buffer
+	if err := writeMuxFrame(&wire, muxFrame{
+		Type:     muxFrameTypeData,
+		StreamID: 1,
+		Payload:  payload,
+	}); err != nil {
+		t.Fatalf("writeMuxFrame() error = %v", err)
+	}
+	frame, err := readMuxFrame(&wire)
+	if err != nil {
+		t.Fatalf("readMuxFrame() error = %v", err)
+	}
+	chunk := frame.takeReadChunk()
+	if len(frame.Payload) != 0 {
+		t.Fatalf("frame retained payload after takeReadChunk: %d", len(frame.Payload))
+	}
+	frame.releasePayload()
+	frame.releasePayload()
+	chunk.releaseNow()
+	chunk.releaseNow()
 }
 
 func TestMuxFrameRejectsOversizedPayload(t *testing.T) {

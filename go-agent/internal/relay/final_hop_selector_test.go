@@ -39,7 +39,7 @@ func TestFinalHopSelectorDialTCPRetriesResolvedCandidatesAndBacksOffFailures(t *
 	})
 
 	target := net.JoinHostPort("dual.example", port)
-	conn, selected, err := selector.dialTCP(context.Background(), target)
+	conn, selected, err := selector.dialTCP(context.Background(), target, DialOptions{})
 	if err != nil {
 		t.Fatalf("dialTCP() error = %v", err)
 	}
@@ -52,7 +52,7 @@ func TestFinalHopSelectorDialTCPRetriesResolvedCandidatesAndBacksOffFailures(t *
 		t.Fatalf("expected failed candidate to enter backoff")
 	}
 
-	_, selectedAgain, err := selector.dialTCP(context.Background(), target)
+	_, selectedAgain, err := selector.dialTCP(context.Background(), target, DialOptions{})
 	if err != nil {
 		t.Fatalf("second dialTCP() error = %v", err)
 	}
@@ -62,13 +62,13 @@ func TestFinalHopSelectorDialTCPRetriesResolvedCandidatesAndBacksOffFailures(t *
 
 	selector = newFinalHopSelector(finalHopSelectorConfig{})
 	literalTarget := net.JoinHostPort("127.0.0.2", port)
-	if _, _, err := selector.dialTCP(context.Background(), literalTarget); err == nil {
+	if _, _, err := selector.dialTCP(context.Background(), literalTarget, DialOptions{}); err == nil {
 		t.Fatal("expected literal IP dialTCP() to fail")
 	}
 	if !selector.cache.IsInBackoff(literalTarget) {
 		t.Fatalf("expected literal IP %q to enter backoff", literalTarget)
 	}
-	if _, _, err := selector.dialTCP(context.Background(), literalTarget); err == nil || !strings.Contains(err.Error(), "no healthy relay target candidates") {
+	if _, _, err := selector.dialTCP(context.Background(), literalTarget, DialOptions{}); err == nil || !strings.Contains(err.Error(), "no healthy relay target candidates") {
 		t.Fatalf("expected literal IP in backoff to be skipped, got err = %v", err)
 	}
 }
@@ -95,7 +95,7 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 	})
 
 	target := net.JoinHostPort("dual.example", port)
-	peer, firstSelected, err := selector.openUDPPeer(context.Background(), target)
+	peer, firstSelected, err := selector.openUDPPeer(context.Background(), target, DialOptions{})
 	if err != nil {
 		t.Fatalf("openUDPPeer() error = %v", err)
 	}
@@ -114,7 +114,7 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 	}
 	_ = peer.Close()
 
-	peer, secondSelected, err := selector.openUDPPeer(context.Background(), target)
+	peer, secondSelected, err := selector.openUDPPeer(context.Background(), target, DialOptions{})
 	if err != nil {
 		t.Fatalf("second openUDPPeer() error = %v", err)
 	}
@@ -125,7 +125,7 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 
 	selector = newFinalHopSelector(finalHopSelectorConfig{})
 	literalTarget := net.JoinHostPort("127.0.0.2", port)
-	literalPeer, literalSelected, err := selector.openUDPPeer(context.Background(), literalTarget)
+	literalPeer, literalSelected, err := selector.openUDPPeer(context.Background(), literalTarget, DialOptions{})
 	if err != nil {
 		t.Fatalf("literal openUDPPeer() error = %v", err)
 	}
@@ -146,7 +146,7 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 	if !selector.cache.IsInBackoff(literalTarget) {
 		t.Fatalf("expected literal UDP target %q to enter backoff", literalTarget)
 	}
-	if _, _, err := selector.openUDPPeer(context.Background(), literalTarget); err == nil || !strings.Contains(err.Error(), "no healthy relay target candidates") {
+	if _, _, err := selector.openUDPPeer(context.Background(), literalTarget, DialOptions{}); err == nil || !strings.Contains(err.Error(), "no healthy relay target candidates") {
 		t.Fatalf("expected literal UDP target in backoff to be skipped, got err = %v", err)
 	}
 }
@@ -197,7 +197,7 @@ func TestObservedUDPPeerBacksOffFirstReplyTimeout(t *testing.T) {
 	address, stopBlackhole := startSelectorUDPBlackholeServer(t)
 	defer stopBlackhole()
 
-	peer, selected, err := selector.openUDPPeer(context.Background(), address)
+	peer, selected, err := selector.openUDPPeer(context.Background(), address, DialOptions{})
 	if err != nil {
 		t.Fatalf("openUDPPeer() error = %v", err)
 	}
@@ -248,6 +248,100 @@ func TestFinalHopSelectorTreatsScopedIPv6AsLiteral(t *testing.T) {
 		t.Fatalf("candidate address = %q, want %q", candidates[0].Address, target)
 	}
 }
+
+func TestFinalHopSelectorRejectsUnresolvedEgressProfileID(t *testing.T) {
+	backendAddr, stopBackend := startSelectorTCPEchoServer(t)
+	defer stopBackend()
+
+	profileID := 17
+	selector := newFinalHopSelector(finalHopSelectorConfig{})
+	if _, _, err := selector.dialTCP(context.Background(), backendAddr, DialOptions{EgressProfileID: &profileID}); err == nil || !strings.Contains(err.Error(), "egress profile 17") {
+		t.Fatalf("dialTCP() error = %v, want unresolved egress profile error", err)
+	}
+	conn, selected, err := selector.dialTCP(context.Background(), backendAddr, DialOptions{})
+	if err != nil {
+		t.Fatalf("dialTCP() after unresolved profile error = %v", err)
+	}
+	_ = conn.Close()
+	if selected != backendAddr {
+		t.Fatalf("selected = %q, want %q", selected, backendAddr)
+	}
+	selector = newFinalHopSelector(finalHopSelectorConfig{})
+	if _, _, err := selector.openUDPPeer(context.Background(), backendAddr, DialOptions{EgressProfileID: &profileID}); err == nil || !strings.Contains(err.Error(), "egress profile 17") {
+		t.Fatalf("openUDPPeer() error = %v, want unresolved egress profile error", err)
+	}
+	peer, selected, err := selector.openUDPPeer(context.Background(), backendAddr, DialOptions{})
+	if err != nil {
+		t.Fatalf("openUDPPeer() after unresolved profile error = %v", err)
+	}
+	_ = peer.Close()
+	if selected != backendAddr {
+		t.Fatalf("udp selected = %q, want %q", selected, backendAddr)
+	}
+}
+
+func TestFinalHopSelectorUsesEgressDialerForProfileID(t *testing.T) {
+	profileID := 17
+	dialer := &recordingFinalHopDialer{}
+	selector := newFinalHopSelector(finalHopSelectorConfig{FinalHopDialer: dialer})
+
+	conn, selected, err := selector.dialTCP(context.Background(), "127.0.0.1:443", DialOptions{EgressProfileID: &profileID})
+	if err != nil {
+		t.Fatalf("dialTCP() error = %v", err)
+	}
+	_ = conn.Close()
+	if selected != "127.0.0.1:443" {
+		t.Fatalf("selected = %q, want backend address", selected)
+	}
+	if dialer.tcpTarget != "127.0.0.1:443" || dialer.tcpProfileID != profileID {
+		t.Fatalf("dialer tcp target/profile = %q/%d, want 127.0.0.1:443/%d", dialer.tcpTarget, dialer.tcpProfileID, profileID)
+	}
+
+	peer, selected, err := selector.openUDPPeer(context.Background(), "127.0.0.1:5353", DialOptions{EgressProfileID: &profileID})
+	if err != nil {
+		t.Fatalf("openUDPPeer() error = %v", err)
+	}
+	_ = peer.Close()
+	if selected != "127.0.0.1:5353" {
+		t.Fatalf("udp selected = %q, want backend address", selected)
+	}
+	if dialer.udpTarget != "127.0.0.1:5353" || dialer.udpProfileID != profileID {
+		t.Fatalf("dialer udp target/profile = %q/%d, want 127.0.0.1:5353/%d", dialer.udpTarget, dialer.udpProfileID, profileID)
+	}
+}
+
+type recordingFinalHopDialer struct {
+	tcpTarget    string
+	tcpProfileID int
+	udpTarget    string
+	udpProfileID int
+}
+
+func (d *recordingFinalHopDialer) DialTCP(_ context.Context, target string, id *int) (net.Conn, error) {
+	d.tcpTarget = target
+	if id != nil {
+		d.tcpProfileID = *id
+	}
+	client, server := net.Pipe()
+	_ = server.Close()
+	return client, nil
+}
+
+func (d *recordingFinalHopDialer) OpenUDP(_ context.Context, target string, id *int) (udpPacketPeer, error) {
+	d.udpTarget = target
+	if id != nil {
+		d.udpProfileID = *id
+	}
+	return noopUDPPacketPeer{}, nil
+}
+
+type noopUDPPacketPeer struct{}
+
+func (noopUDPPacketPeer) ReadPacket() ([]byte, error)      { return nil, io.EOF }
+func (noopUDPPacketPeer) WritePacket([]byte) error         { return nil }
+func (noopUDPPacketPeer) SetReadDeadline(time.Time) error  { return nil }
+func (noopUDPPacketPeer) SetWriteDeadline(time.Time) error { return nil }
+func (noopUDPPacketPeer) Close() error                     { return nil }
 
 func startSelectorTCPEchoServer(t *testing.T) (string, func()) {
 	t.Helper()

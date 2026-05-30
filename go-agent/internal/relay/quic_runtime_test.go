@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -77,6 +78,87 @@ func TestDialQUICForwardsInitialPayload(t *testing.T) {
 	}
 	if !bytes.Equal(reply, initial) {
 		t.Fatalf("initial payload reply = %q, want %q", reply, initial)
+	}
+}
+
+func TestDialQUICResolvesRelayHopAddressThroughCache(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 77, "relay-quic-domain", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = false
+	hop.Listener = listener
+	hop.Address = net.JoinHostPort("relay-quic.example", "9443")
+
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay-quic.example": {{IP: net.ParseIP("203.0.113.20")}},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	prevDial := quicDialAddr
+	var dialedAddress string
+	quicDialAddr = func(_ context.Context, addr string, _ *tls.Config, _ *quic.Config) (*quic.Conn, error) {
+		dialedAddress = addr
+		return nil, errors.New("stop after address capture")
+	}
+	defer func() {
+		quicDialAddr = prevDial
+	}()
+
+	_, _, err := dialQUICWithResult(context.Background(), "tcp", "127.0.0.1:80", []Hop{hop}, provider, DialOptions{})
+	if err == nil {
+		t.Fatal("dialQUICWithResult() error = nil, want captured dial failure")
+	}
+	if dialedAddress != "203.0.113.20:9443" {
+		t.Fatalf("quic dial address = %q, want resolved relay hop address", dialedAddress)
+	}
+}
+
+func TestDialQUICRelayHopDoesNotBackoffResolvedAddressesOnCallerCancellation(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay-quic.example": {
+				{IP: net.ParseIP("203.0.113.20")},
+				{IP: net.ParseIP("203.0.113.21")},
+			},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	prevDial := quicDialAddr
+	var calls []string
+	quicDialAddr = func(ctx context.Context, addr string, _ *tls.Config, _ *quic.Config) (*quic.Conn, error) {
+		calls = append(calls, addr)
+		return nil, ctx.Err()
+	}
+	defer func() {
+		quicDialAddr = prevDial
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := dialQUICRelayHop(ctx, "relay-quic.example:9443", &tls.Config{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("dialQUICRelayHop() error = %v, want context.Canceled", err)
+	}
+	want := []string{"203.0.113.20:9443", "203.0.113.21:9443"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("quic dial addresses = %+v, want %+v", calls, want)
+	}
+	for _, address := range want {
+		if relayHopCache.IsInBackoff(address) {
+			t.Fatalf("caller cancellation put %s into relay hop backoff", address)
+		}
 	}
 }
 

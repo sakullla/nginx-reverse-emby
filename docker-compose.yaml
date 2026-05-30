@@ -1,6 +1,6 @@
 services:
   nginx-reverse-emby:
-    image: ghcr.io/sakullla/nginx-reverse-emby:latest
+    image: sakullla/nginx-reverse-emby:latest
     container_name: nginx-reverse-emby
     restart: unless-stopped
     network_mode: host
@@ -23,6 +23,8 @@ services:
       NRE_LOCAL_AGENT_NAME: local
       # 控制面板统一时区；用于日/月汇总、周期边界和流量清理口径
       NRE_TIMEZONE: Asia/Shanghai
+      # 可选：关闭 WireGuard 模块
+      # NRE_WIREGUARD_ENABLED: "false"
 
       # DNS 验证示例（按需启用，如 Cloudflare）
       # ACME_DNS_PROVIDER: cf

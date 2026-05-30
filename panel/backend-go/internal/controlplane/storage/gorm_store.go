@@ -19,6 +19,7 @@ type GormStore struct {
 	dataRoot     string
 	localAgentID string
 	driver       string
+	wireGuard    bool
 }
 
 type StoreConfig struct {
@@ -28,6 +29,8 @@ type StoreConfig struct {
 	LocalAgentID        string
 	SkipBootstrapSchema bool
 	TrafficStatsEnabled bool
+	WireGuardEnabled    bool
+	WireGuardExplicit   bool
 }
 
 func StoreConfigFromConfig(cfg config.Config) StoreConfig {
@@ -37,6 +40,8 @@ func StoreConfigFromConfig(cfg config.Config) StoreConfig {
 		DataRoot:            cfg.DataDir,
 		LocalAgentID:        cfg.LocalAgentID,
 		TrafficStatsEnabled: cfg.TrafficStatsEnabled,
+		WireGuardEnabled:    cfg.WireGuardModuleEnabled(),
+		WireGuardExplicit:   true,
 	}
 }
 
@@ -71,14 +76,19 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		dataRoot:     cfg.DataRoot,
 		localAgentID: cfg.LocalAgentID,
 		driver:       driver,
+		wireGuard:    storeWireGuardEnabled(cfg),
 	}
 	if !cfg.SkipBootstrapSchema {
-		if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)); err != nil {
+		if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled, store.wireGuard)); err != nil {
 			_ = store.Close()
 			return nil, err
 		}
 	}
 	return store, nil
+}
+
+func storeWireGuardEnabled(cfg StoreConfig) bool {
+	return cfg.WireGuardEnabled || !cfg.WireGuardExplicit
 }
 
 func resolveDialector(driver string, cfg StoreConfig) (gorm.Dialector, error) {
@@ -93,7 +103,7 @@ func resolveDialector(driver string, cfg StoreConfig) (gorm.Dialector, error) {
 			if strings.TrimSpace(cfg.DataRoot) == "" {
 				return nil, fmt.Errorf("data root is required for default sqlite DSN")
 			}
-			dsn = filepath.Join(cfg.DataRoot, "panel.db") + "?_journal_mode=WAL&_busy_timeout=5000"
+			dsn = filepath.Join(cfg.DataRoot, "panel.db") + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 		}
 		return sqlite.Open(dsn), nil
 	default:

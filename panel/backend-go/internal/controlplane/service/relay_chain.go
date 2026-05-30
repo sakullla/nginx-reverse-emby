@@ -14,6 +14,10 @@ type relayChainLookupStore interface {
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 }
 
+type relayChainValidationOptions struct {
+	RuleAgentID string
+}
+
 func normalizeRelayChainInput(values []int, protocol string) ([]int, error) {
 	normalized := make([]int, 0, len(values))
 	seen := make(map[int]struct{}, len(values))
@@ -34,7 +38,7 @@ func normalizeRelayLayersInput(layers [][]int, protocol string) ([][]int, error)
 	normalized := make([][]int, 0, len(layers))
 	seenAcrossLayers := make(map[int]struct{})
 	for _, layer := range layers {
-		normalizedLayer, err := normalizeRelayChainInput(layer, protocol)
+		normalizedLayer, err := normalizeRelayLayerInput(layer, protocol)
 		if err != nil {
 			return nil, err
 		}
@@ -50,6 +54,22 @@ func normalizeRelayLayersInput(layers [][]int, protocol string) ([][]int, error)
 	}
 	if relayLayerPathCountExceeds(normalized, maxRelayLayerPaths) {
 		return nil, fmt.Errorf("%w: relay_layers expand to more than %d relay paths", ErrInvalidArgument, maxRelayLayerPaths)
+	}
+	return normalized, nil
+}
+
+func normalizeRelayLayerInput(values []int, protocol string) ([]int, error) {
+	normalized := make([]int, 0, len(values))
+	seen := make(map[int]struct{}, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			return nil, fmt.Errorf("%w: relay_layers entries must be positive integer listener IDs", ErrInvalidArgument)
+		}
+		if _, ok := seen[value]; ok {
+			return nil, fmt.Errorf("%w: relay_layers entries must not contain duplicates", ErrInvalidArgument)
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
 	}
 	return normalized, nil
 }
@@ -79,8 +99,8 @@ func flattenRelayLayers(layers [][]int) []int {
 	return flattened
 }
 
-func relayConfigReferencesListener(chainJSON string, layersJSON string, listenerID int) bool {
-	return containsInt(parseIntArray(chainJSON), listenerID) || containsInt(flattenRelayLayers(parseIntLayers(layersJSON)), listenerID)
+func relayLayersReferenceListener(layersJSON string, listenerID int) bool {
+	return containsInt(flattenRelayLayers(parseIntLayers(layersJSON)), listenerID)
 }
 
 func cloneIntLayers(layers [][]int) [][]int {
@@ -94,7 +114,7 @@ func cloneIntLayers(layers [][]int) [][]int {
 	return cloned
 }
 
-func validateRelayChainReferences(ctx context.Context, store relayChainLookupStore, knownAgentIDs []string, relayChain []int) error {
+func validateRelayChainReferences(ctx context.Context, store relayChainLookupStore, knownAgentIDs []string, relayChain []int, opts relayChainValidationOptions) error {
 	if len(relayChain) == 0 {
 		return nil
 	}
@@ -107,7 +127,13 @@ func validateRelayChainReferences(ctx context.Context, store relayChainLookupSto
 	for _, listener := range listeners {
 		listenersByID[listener.ID] = listener
 	}
+	return validateRelayChainReferencesFromRows(knownAgentIDs, listenersByID, relayChain, opts)
+}
 
+func validateRelayChainReferencesFromRows(knownAgentIDs []string, listenersByID map[int]storage.RelayListenerRow, relayChain []int, opts relayChainValidationOptions) error {
+	if len(relayChain) == 0 {
+		return nil
+	}
 	knownAgents := make(map[string]struct{}, len(knownAgentIDs))
 	for _, agentID := range knownAgentIDs {
 		knownAgents[strings.TrimSpace(agentID)] = struct{}{}

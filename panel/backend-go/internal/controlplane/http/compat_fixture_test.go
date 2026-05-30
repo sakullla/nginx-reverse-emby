@@ -100,6 +100,11 @@ func TestRouterCompatibilityFixtureServesKeySQLiteBackedPanelEndpoints(t *testin
 	if err != nil {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
+	if closeable, ok := router.(interface{ Close() error }); ok {
+		t.Cleanup(func() {
+			_ = closeable.Close()
+		})
+	}
 
 	t.Run("info", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/panel-api/info", nil)

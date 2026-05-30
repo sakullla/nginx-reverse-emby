@@ -14,21 +14,29 @@ type LoadBalancing struct {
 }
 
 type HTTPRule struct {
-	ID               int           `json:"id,omitempty"`
-	FrontendURL      string        `json:"frontend_url"`
-	BackendURL       string        `json:"backend_url"`
-	Backends         []HTTPBackend `json:"backends,omitempty"`
-	LoadBalancing    LoadBalancing `json:"load_balancing,omitempty"`
-	ProxyRedirect    bool          `json:"proxy_redirect,omitempty"`
-	PassProxyHeaders bool          `json:"pass_proxy_headers,omitempty"`
-	UserAgent        string        `json:"user_agent,omitempty"`
-	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
-	RelayChain       []int         `json:"relay_chain,omitempty"`
-	RelayLayers      [][]int       `json:"relay_layers,omitempty"`
-	RelayObfs        bool          `json:"relay_obfs,omitempty"`
-	Enabled          bool          `json:"enabled,omitempty"`
-	Tags             []string      `json:"tags,omitempty"`
-	Revision         int64         `json:"revision,omitempty"`
+	ID          int    `json:"id,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
+	FrontendURL string `json:"frontend_url"`
+	// BackendURL is retained only to ignore legacy payloads; runtime uses Backends.
+	BackendURL               string        `json:"backend_url"`
+	Backends                 []HTTPBackend `json:"backends,omitempty"`
+	LoadBalancing            LoadBalancing `json:"load_balancing,omitempty"`
+	ProxyRedirect            bool          `json:"proxy_redirect,omitempty"`
+	PassProxyHeaders         bool          `json:"pass_proxy_headers,omitempty"`
+	UserAgent                string        `json:"user_agent,omitempty"`
+	CustomHeaders            []HTTPHeader  `json:"custom_headers,omitempty"`
+	WireGuardEntryEnabled    bool          `json:"wireguard_entry_enabled,omitempty"`
+	WireGuardProfileID       *int          `json:"wireguard_profile_id,omitempty"`
+	EgressProfileID          *int          `json:"egress_profile_id,omitempty"`
+	WireGuardEntryListenHost string        `json:"wireguard_entry_listen_host,omitempty"`
+	WireGuardEntryListenPort int           `json:"wireguard_entry_listen_port,omitempty"`
+	// RelayChain is retained only to ignore legacy payloads; runtime uses RelayLayers.
+	RelayChain  []int    `json:"relay_chain,omitempty"`
+	RelayLayers [][]int  `json:"relay_layers,omitempty"`
+	RelayObfs   bool     `json:"relay_obfs,omitempty"`
+	Enabled     bool     `json:"enabled,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Revision    int64    `json:"revision,omitempty"`
 }
 
 type HTTPListener struct {

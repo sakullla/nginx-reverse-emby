@@ -21,7 +21,7 @@ func TestStartWithResourcesStartsHTTP3ForHTTPSBinding(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	port := pickFreePort(t)
+	port := pickFreeTCPUDPPort(t)
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{
 			"edge.example.test": mustIssueProxyTLSCertificate(t, "edge.example.test"),
@@ -30,7 +30,7 @@ func TestStartWithResourcesStartsHTTP3ForHTTPSBinding(t *testing.T) {
 
 	runtime, err := StartWithResources(context.Background(), []model.HTTPRule{{
 		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", port),
-		BackendURL:  backend.URL,
+		Backends:    []model.HTTPBackend{{URL: backend.URL}},
 	}}, nil, Providers{TLS: provider}, nil, nil, true)
 	if err != nil {
 		t.Fatalf("StartWithResources() error = %v", err)
@@ -95,7 +95,7 @@ func TestHTTP3StartupFailureDoesNotBreakTCPHTTPS(t *testing.T) {
 
 	runtime, err := StartWithResources(context.Background(), []model.HTTPRule{{
 		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", port),
-		BackendURL:  backend.URL,
+		Backends:    []model.HTTPBackend{{URL: backend.URL}},
 	}}, nil, Providers{TLS: provider}, nil, nil, true)
 	if err != nil {
 		t.Fatalf("StartWithResources() error = %v", err)

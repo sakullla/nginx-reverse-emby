@@ -55,7 +55,7 @@
               :used-bytes="selectedSummary?.used_bytes ?? 0"
               :quota-bytes="selectedSummary?.quota_bytes ?? null"
               :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
-              :agents="selectedAgentId && selectedSummary ? [selectedSummary] : overviewAgents"
+              :agents="distributionAgents"
             />
           </div>
           <div class="dt-card">
@@ -204,6 +204,37 @@ const selectedSummary = computed(() => {
   }
 })
 
+const aggregateNodes = computed(() => aggregateQuery.data.value?.top_nodes ?? [])
+const distributionAgents = computed(() => {
+  const data = aggregateQuery.data.value
+  if (!data || !Array.isArray(data.top_nodes)) {
+    return selectedAgentId.value && selectedSummary.value ? [selectedSummary.value] : overviewAgents.value
+  }
+
+  const overviewById = new Map(overviewAgents.value.map((agent) => [agent.agent_id, agent]))
+  const granularAgents = aggregateNodes.value
+    .filter((node) => node.agent_id)
+    .map((node) => {
+      const agent = overviewById.get(node.agent_id)
+      return {
+        ...(agent || {}),
+        agent_id: node.agent_id,
+        name: node.name || agent?.name || node.agent_id,
+        used_bytes: Number(node.used_bytes) || 0,
+        quota_bytes: node.quota_bytes ?? agent?.quota_bytes ?? null,
+        remaining_bytes: agent?.remaining_bytes ?? null
+      }
+    })
+  if (granularAgents.length) {
+    return granularAgents
+  }
+
+  return overviewAgents.value.map((agent) => ({
+    ...agent,
+    used_bytes: 0
+  }))
+})
+
 const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).length)
 const statsVisible = computed(() => overviewAgents.value.length > 0)
 
@@ -235,7 +266,7 @@ const directionLabel = computed(() => {
 })
 
 const topNodes = computed(() => {
-  const nodes = aggregateQuery.data.value?.top_nodes ?? []
+  const nodes = aggregateNodes.value
   if (nodes.length) return nodes.slice(0, 5)
   if (!import.meta.env.DEV) return []
   const agents = [...overviewAgents.value]

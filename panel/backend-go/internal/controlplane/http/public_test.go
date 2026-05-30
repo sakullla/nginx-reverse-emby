@@ -347,7 +347,29 @@ func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithout
 		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
 			HasUpdate:       false,
 			DesiredRevision: 7,
-			RelayListeners:  []storage.RelayListener{{ID: 11, AgentID: "edge", Name: "relay-a"}},
+			RelayListeners: []storage.RelayListener{{
+				ID:                 11,
+				AgentID:            "edge",
+				Name:               "relay-a",
+				TransportMode:      "wireguard",
+				WireGuardProfileID: intPtr(41),
+			}},
+			WireGuardProfiles: []storage.WireGuardProfile{{
+				ID:         41,
+				AgentID:    "edge",
+				Name:       "wg-relay",
+				Mode:       "generic_wireguard",
+				PrivateKey: "private-key",
+				Peers: []storage.WireGuardPeer{{
+					Name:         "relay-peer",
+					PublicKey:    "public-key",
+					PresharedKey: "preshared-key",
+					Endpoint:     "relay.example.com:51820",
+					AllowedIPs:   []string{"10.44.0.1/32"},
+				}},
+				Enabled:  true,
+				Revision: 7,
+			}},
 			Certificates: []storage.ManagedCertificateBundle{{
 				ID:      31,
 				Domain:  "relay-a.example.com",
@@ -398,6 +420,25 @@ func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithout
 	if _, found := syncPayload["relay_listeners"]; !found {
 		t.Fatalf("expected relay_listeners key in no-update relay payload: %+v", syncPayload)
 	}
+	profiles, ok := syncPayload["wireguard_profiles"].([]any)
+	if !ok || len(profiles) != 1 {
+		t.Fatalf("expected wireguard_profiles in no-update relay payload: %+v", syncPayload)
+	}
+	profile, ok := profiles[0].(map[string]any)
+	if !ok {
+		t.Fatalf("wireguard_profiles[0] = %#v", profiles[0])
+	}
+	if profile["private_key"] != "private-key" {
+		t.Fatalf("wireguard profile private_key = %#v", profile["private_key"])
+	}
+	peers, ok := profile["peers"].([]any)
+	if !ok || len(peers) != 1 {
+		t.Fatalf("wireguard profile peers = %#v", profile["peers"])
+	}
+	peer, ok := peers[0].(map[string]any)
+	if !ok || peer["preshared_key"] != "preshared-key" {
+		t.Fatalf("wireguard profile peer = %#v", peers[0])
+	}
 	if _, found := syncPayload["certificates"]; !found {
 		t.Fatalf("expected certificates key in no-update relay payload: %+v", syncPayload)
 	}
@@ -416,6 +457,8 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 			Rules:               []storage.HTTPRule{},
 			L4Rules:             []storage.L4Rule{},
 			RelayListeners:      []storage.RelayListener{},
+			WireGuardProfiles:   []storage.WireGuardProfile{},
+			EgressProfiles:      []storage.EgressProfile{},
 			Certificates:        []storage.ManagedCertificateBundle{},
 			CertificatePolicies: []storage.ManagedCertificatePolicy{},
 		}},
@@ -446,7 +489,7 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 	if !ok {
 		t.Fatalf("sync payload = %#v", payload["sync"])
 	}
-	for _, key := range []string{"rules", "l4_rules", "certificates", "certificate_policies"} {
+	for _, key := range []string{"rules", "l4_rules", "wireguard_profiles", "egress_profiles", "certificates", "certificate_policies"} {
 		value, found := syncPayload[key]
 		if !found {
 			t.Fatalf("expected %s key in update payload: %+v", key, syncPayload)
@@ -458,6 +501,174 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 	}
 }
 
+func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	for _, row := range []storage.AgentRow{
+		{ID: "relay-entry", Name: "relay entry", AgentToken: "token-entry"},
+		{ID: "relay-final-a", Name: "relay final a", AgentToken: "token-final-a"},
+		{ID: "relay-final-b", Name: "relay final b", AgentToken: "token-final-b"},
+		{ID: "disabled-final-agent", Name: "disabled final", AgentToken: "token-disabled-final"},
+		{ID: "unrelated", Name: "unrelated", AgentToken: "token-unrelated"},
+	} {
+		if err := store.SaveAgent(t.Context(), row); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", row.ID, err)
+		}
+	}
+	profileID := 77
+	disabledFinalProfileID := 78
+	if err := store.SaveEgressProfiles(t.Context(), []storage.EgressProfileRow{
+		{
+			ID:       profileID,
+			Name:     "relay exit",
+			Type:     "socks",
+			ProxyURL: "socks5://executor-secret@127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 12,
+		},
+		{
+			ID:       disabledFinalProfileID,
+			Name:     "disabled final exit",
+			Type:     "socks",
+			ProxyURL: "socks5://disabled-final-secret@127.0.0.1:1081",
+			Enabled:  true,
+			Revision: 13,
+		},
+	}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "relay-entry", []storage.HTTPRuleRow{{
+		ID:                3001,
+		AgentID:           "relay-entry",
+		FrontendURL:       "https://relay.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[701,702]`,
+		RelayLayersJSON:   `[[701],[702,703]]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &profileID,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(relay-entry) error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "disabled-final-entry", []storage.HTTPRuleRow{{
+		ID:                3002,
+		AgentID:           "disabled-final-entry",
+		FrontendURL:       "https://disabled-final.example.com",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[704,705]`,
+		RelayLayersJSON:   `[[704],[705]]`,
+		CustomHeadersJSON: `[]`,
+		EgressProfileID:   &disabledFinalProfileID,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(disabled-final-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-entry", []storage.RelayListenerRow{{
+		ID:         701,
+		AgentID:    "relay-entry",
+		Name:       "entry relay",
+		ListenHost: "127.0.0.1",
+		ListenPort: 7443,
+		PublicHost: "entry.example.com",
+		PublicPort: 7443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-final-a", []storage.RelayListenerRow{{
+		ID:         702,
+		AgentID:    "relay-final-a",
+		Name:       "final relay a",
+		ListenHost: "127.0.0.1",
+		ListenPort: 8443,
+		PublicHost: "final-a.example.com",
+		PublicPort: 8443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-final-a) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-final-b", []storage.RelayListenerRow{{
+		ID:         703,
+		AgentID:    "relay-final-b",
+		Name:       "final relay b",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9443,
+		PublicHost: "final-b.example.com",
+		PublicPort: 9443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-final-b) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "disabled-final-entry", []storage.RelayListenerRow{{
+		ID:         704,
+		AgentID:    "disabled-final-entry",
+		Name:       "disabled final entry",
+		ListenHost: "127.0.0.1",
+		ListenPort: 10443,
+		PublicHost: "disabled-entry.example.com",
+		PublicPort: 10443,
+		Enabled:    true,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(disabled-final-entry) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "disabled-final-agent", []storage.RelayListenerRow{{
+		ID:         705,
+		AgentID:    "disabled-final-agent",
+		Name:       "disabled final",
+		ListenHost: "127.0.0.1",
+		ListenPort: 11443,
+		PublicHost: "disabled-final.example.com",
+		PublicPort: 11443,
+		Enabled:    false,
+		Revision:   1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(disabled-final-agent) error = %v", err)
+	}
+
+	router, err := NewRouter(Dependencies{
+		Config:               config.Config{PanelToken: "secret", LocalAgentID: "local", EnableLocalAgent: true},
+		SystemService:        fakeSystemService{},
+		AgentService:         service.NewAgentService(config.Config{LocalAgentID: "local", EnableLocalAgent: true}, store),
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	finalASync := postHeartbeatForSyncPayload(t, router, "token-final-a")
+	assertSyncHasEgressProfile(t, finalASync, profileID, "socks5://executor-secret@127.0.0.1:1080")
+
+	finalBSync := postHeartbeatForSyncPayload(t, router, "token-final-b")
+	assertSyncHasEgressProfile(t, finalBSync, profileID, "socks5://executor-secret@127.0.0.1:1080")
+
+	entrySync := postHeartbeatForSyncPayload(t, router, "token-entry")
+	assertSyncLacksEgressProfile(t, entrySync, profileID)
+
+	disabledFinalSync := postHeartbeatForSyncPayload(t, router, "token-disabled-final")
+	assertSyncLacksEgressProfile(t, disabledFinalSync, disabledFinalProfileID)
+
+	unrelatedSync := postHeartbeatForSyncPayload(t, router, "token-unrelated")
+	assertSyncLacksEgressProfile(t, unrelatedSync, profileID)
+}
+
 func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
@@ -467,14 +678,13 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 			DesiredRevision:  10,
 			OutboundProxyURL: "socks://127.0.0.1:1080",
 			L4Rules: []storage.L4Rule{{
-				ID:              1,
-				Protocol:        "tcp",
-				ListenHost:      "127.0.0.1",
-				ListenPort:      1080,
-				ListenMode:      "proxy",
-				ProxyEntryAuth:  storage.L4ProxyEntryAuth{Enabled: true, Username: "u", Password: " p "},
-				ProxyEgressMode: "relay",
-				ProxyEgressURL:  "socks://127.0.0.1:1081",
+				ID:             1,
+				Protocol:       "tcp",
+				ListenHost:     "127.0.0.1",
+				ListenPort:     1080,
+				ListenMode:     "proxy",
+				ProxyEntryAuth: storage.L4ProxyEntryAuth{Enabled: true, Username: "u", Password: " p "},
+				RelayLayers:    [][]int{{101}},
 			}},
 		}},
 		RuleService:          fakeRuleService{},
@@ -508,8 +718,7 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 					Username string `json:"username"`
 					Password string `json:"password"`
 				} `json:"proxy_entry_auth"`
-				ProxyEgressMode string `json:"proxy_egress_mode"`
-				ProxyEgressURL  string `json:"proxy_egress_url"`
+				RelayLayers [][]int `json:"relay_layers"`
 			} `json:"l4_rules"`
 		} `json:"sync"`
 	}
@@ -528,11 +737,8 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 	if !payload.Sync.L4Rules[0].ProxyEntryAuth.Enabled || payload.Sync.L4Rules[0].ProxyEntryAuth.Username != "u" || payload.Sync.L4Rules[0].ProxyEntryAuth.Password != " p " {
 		t.Fatalf("sync.l4_rules[0].proxy_entry_auth = %+v", payload.Sync.L4Rules[0].ProxyEntryAuth)
 	}
-	if payload.Sync.L4Rules[0].ProxyEgressMode != "relay" {
-		t.Fatalf("sync.l4_rules[0].proxy_egress_mode = %q", payload.Sync.L4Rules[0].ProxyEgressMode)
-	}
-	if payload.Sync.L4Rules[0].ProxyEgressURL != "socks://127.0.0.1:1081" {
-		t.Fatalf("sync.l4_rules[0].proxy_egress_url = %q", payload.Sync.L4Rules[0].ProxyEgressURL)
+	if len(payload.Sync.L4Rules[0].RelayLayers) != 1 || payload.Sync.L4Rules[0].RelayLayers[0][0] != 101 {
+		t.Fatalf("sync.l4_rules[0].relay_layers = %+v", payload.Sync.L4Rules[0].RelayLayers)
 	}
 }
 
@@ -727,5 +933,78 @@ func TestHeartbeatUsesRemoteAddrHostWhenForwardedMissing(t *testing.T) {
 	}
 	if state.heartbeat.LastSeenIP != "198.51.100.7" {
 		t.Fatalf("heartbeat LastSeenIP = %q", state.heartbeat.LastSeenIP)
+	}
+}
+
+func postHeartbeatForSyncPayload(t *testing.T, router http.Handler, token string) map[string]any {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":0}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", token)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat token %q = %d, body = %s", token, resp.Code, resp.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	syncPayload, ok := payload["sync"].(map[string]any)
+	if !ok {
+		t.Fatalf("sync payload = %#v", payload["sync"])
+	}
+	return syncPayload
+}
+
+func assertSyncHasEgressProfile(t *testing.T, syncPayload map[string]any, id int, proxyURL string) {
+	t.Helper()
+	profiles, ok := syncPayload["egress_profiles"].([]any)
+	if !ok {
+		t.Fatalf("egress_profiles = %#v", syncPayload["egress_profiles"])
+	}
+	for _, rawProfile := range profiles {
+		profile, ok := rawProfile.(map[string]any)
+		if !ok {
+			t.Fatalf("egress profile = %#v", rawProfile)
+		}
+		profileID, ok := profile["id"].(float64)
+		if !ok {
+			t.Fatalf("egress profile id = %#v", profile["id"])
+		}
+		if int(profileID) != id {
+			continue
+		}
+		if profile["proxy_url"] != proxyURL {
+			t.Fatalf("profile %d proxy_url = %#v, want %q", id, profile["proxy_url"], proxyURL)
+		}
+		return
+	}
+	t.Fatalf("egress_profiles = %+v, want profile %d", profiles, id)
+}
+
+func assertSyncLacksEgressProfile(t *testing.T, syncPayload map[string]any, id int) {
+	t.Helper()
+	profiles, ok := syncPayload["egress_profiles"].([]any)
+	if !ok && syncPayload["egress_profiles"] == nil {
+		return
+	}
+	if !ok {
+		t.Fatalf("egress_profiles = %#v", syncPayload["egress_profiles"])
+	}
+	for _, rawProfile := range profiles {
+		profile, ok := rawProfile.(map[string]any)
+		if !ok {
+			t.Fatalf("egress profile = %#v", rawProfile)
+		}
+		profileID, ok := profile["id"].(float64)
+		if !ok {
+			t.Fatalf("egress profile id = %#v", profile["id"])
+		}
+		if int(profileID) == id {
+			t.Fatalf("sync unexpectedly included profile %d: %+v", id, profiles)
+		}
 	}
 }

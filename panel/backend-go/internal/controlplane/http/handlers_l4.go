@@ -98,6 +98,5 @@ func redactL4Rules(rules []service.L4Rule) []service.L4Rule {
 
 func redactL4Rule(rule service.L4Rule) service.L4Rule {
 	rule.ProxyEntryAuth.Password = ""
-	rule.ProxyEgressURL = redactProxyURL(rule.ProxyEgressURL)
 	return rule
 }

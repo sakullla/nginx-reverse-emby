@@ -23,6 +23,7 @@ type SystemInfo struct {
 	OnlineAgents                 int
 	TotalAgents                  int
 	TrafficStatsEnabled          bool
+	WireGuardEnabled             bool
 }
 
 type systemStore interface {
@@ -65,6 +66,7 @@ func (s systemService) Info(ctx context.Context) SystemInfo {
 		DataDir:                      s.cfg.DataDir,
 		StartedAt:                    s.startedAt,
 		TrafficStatsEnabled:          s.cfg.TrafficStatsEnabled,
+		WireGuardEnabled:             s.cfg.WireGuardModuleEnabled(),
 	}
 
 	if s.store != nil {

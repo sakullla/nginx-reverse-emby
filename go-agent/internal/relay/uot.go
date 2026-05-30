@@ -14,21 +14,37 @@ func WriteUOTPacket(w io.Writer, payload []byte) error {
 	return writeUOTPacket(w, payload)
 }
 
+func WriteUOTPacketInto(w io.Writer, buf []byte, payload []byte) ([]byte, error) {
+	return writeUOTPacketInto(w, buf, payload)
+}
+
 func ReadUOTPacket(r io.Reader) ([]byte, error) {
 	return readUOTPacket(r)
 }
 
+func ReadUOTPacketInto(r io.Reader, buf []byte) ([]byte, error) {
+	return readUOTPacketInto(r, buf)
+}
+
 func writeUOTPacket(w io.Writer, payload []byte) error {
+	_, err := writeUOTPacketInto(w, nil, payload)
+	return err
+}
+
+func writeUOTPacketInto(w io.Writer, buf []byte, payload []byte) ([]byte, error) {
 	if len(payload) > maxUOTPacketSize {
-		return fmt.Errorf("uot packet exceeds %d bytes", maxUOTPacketSize)
+		return buf, fmt.Errorf("uot packet exceeds %d bytes", maxUOTPacketSize)
 	}
 
-	var header [2]byte
-	binary.BigEndian.PutUint16(header[:], uint16(len(payload)))
-	if err := writeAll(w, header[:]); err != nil {
-		return err
+	size := len(payload) + 2
+	if cap(buf) < size {
+		buf = make([]byte, size)
+	} else {
+		buf = buf[:size]
 	}
-	return writeAll(w, payload)
+	binary.BigEndian.PutUint16(buf[:2], uint16(len(payload)))
+	copy(buf[2:], payload)
+	return buf, writeAll(w, buf)
 }
 
 func readUOTPacket(r io.Reader) ([]byte, error) {
@@ -62,7 +78,7 @@ func readUOTPacketInto(r io.Reader, buf []byte) ([]byte, error) {
 	return payload, nil
 }
 
-type udpPacketPeer interface {
+type UDPPacketPeer interface {
 	Close() error
 	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
@@ -70,8 +86,11 @@ type udpPacketPeer interface {
 	WritePacket([]byte) error
 }
 
+type udpPacketPeer = UDPPacketPeer
+
 type udpStreamPeer struct {
-	conn net.Conn
+	conn    net.Conn
+	readBuf []byte
 }
 
 func newUDPStreamPeer(conn net.Conn) udpPacketPeer {
@@ -91,7 +110,10 @@ func (p *udpStreamPeer) SetWriteDeadline(deadline time.Time) error {
 }
 
 func (p *udpStreamPeer) ReadPacket() ([]byte, error) {
-	return readUOTPacket(p.conn)
+	if p.readBuf == nil {
+		p.readBuf = make([]byte, maxUOTPacketSize)
+	}
+	return readUOTPacketInto(p.conn, p.readBuf)
 }
 
 func (p *udpStreamPeer) WritePacket(payload []byte) error {
@@ -99,7 +121,8 @@ func (p *udpStreamPeer) WritePacket(payload []byte) error {
 }
 
 type udpSocketPeer struct {
-	conn *net.UDPConn
+	conn    *net.UDPConn
+	readBuf []byte
 }
 
 func newUDPSocketPeer(conn *net.UDPConn) udpPacketPeer {
@@ -119,12 +142,14 @@ func (p *udpSocketPeer) SetWriteDeadline(deadline time.Time) error {
 }
 
 func (p *udpSocketPeer) ReadPacket() ([]byte, error) {
-	buf := make([]byte, maxUOTPacketSize)
-	n, err := p.conn.Read(buf)
+	if p.readBuf == nil {
+		p.readBuf = make([]byte, maxUOTPacketSize)
+	}
+	n, err := p.conn.Read(p.readBuf)
 	if err != nil {
 		return nil, err
 	}
-	return append([]byte(nil), buf[:n]...), nil
+	return p.readBuf[:n], nil
 }
 
 func (p *udpSocketPeer) WritePacket(payload []byte) error {

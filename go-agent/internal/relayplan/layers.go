@@ -6,18 +6,8 @@ import (
 	"strings"
 )
 
-func NormalizeLayers(chain []int, layers [][]int) [][]int {
-	if len(layers) > 0 {
-		return cloneLayers(layers)
-	}
-	if len(chain) == 0 {
-		return nil
-	}
-	out := make([][]int, 0, len(chain))
-	for _, id := range chain {
-		out = append(out, []int{id})
-	}
-	return out
+func NormalizeLayers(_ []int, layers [][]int) [][]int {
+	return cloneLayers(layers)
 }
 
 func ExpandPaths(layers [][]int, maxPaths int) ([][]int, error) {
@@ -27,52 +17,103 @@ func ExpandPaths(layers [][]int, maxPaths int) ([][]int, error) {
 	if maxPaths <= 0 {
 		return nil, fmt.Errorf("max relay paths must be positive")
 	}
-	paths := [][]int{{}}
 	for layerIndex, layer := range layers {
 		if len(layer) == 0 {
 			return nil, fmt.Errorf("relay layer %d is empty", layerIndex)
 		}
-		next := make([][]int, 0, len(paths)*len(layer))
-		for _, path := range paths {
-			for _, id := range layer {
-				candidate := append(append([]int(nil), path...), id)
-				if hasDuplicate(candidate) {
-					return nil, fmt.Errorf("relay path contains duplicate listener id %d", id)
-				}
-				next = append(next, candidate)
-				if len(next) > maxPaths {
-					return nil, fmt.Errorf("relay paths exceed maximum %d", maxPaths)
-				}
-			}
+	}
+	total := 1
+	for _, layer := range layers {
+		if total <= maxPaths && total > maxPaths/len(layer) {
+			total = maxPaths + 1
+			break
 		}
-		paths = next
+		total *= len(layer)
+	}
+	capacity := total
+	if capacity > maxPaths {
+		capacity = maxPaths + 1
+	}
+	paths := make([][]int, 0, capacity)
+	current := make([]int, len(layers))
+	seen := make(map[int]struct{}, len(layers))
+	var walk func(int) error
+	walk = func(layerIndex int) error {
+		if layerIndex == len(layers) {
+			path := append([]int(nil), current...)
+			paths = append(paths, path)
+			if len(paths) > maxPaths {
+				return fmt.Errorf("relay paths exceed maximum %d", maxPaths)
+			}
+			return nil
+		}
+		for _, id := range layers[layerIndex] {
+			if _, ok := seen[id]; ok {
+				return fmt.Errorf("relay path contains duplicate listener id %d", id)
+			}
+			seen[id] = struct{}{}
+			current[layerIndex] = id
+			if err := walk(layerIndex + 1); err != nil {
+				return err
+			}
+			delete(seen, id)
+		}
+		return nil
+	}
+	if err := walk(0); err != nil {
+		return nil, err
 	}
 	return paths, nil
 }
 
 func PathKey(prefix string, path []int, target string) string {
-	parts := make([]string, 0, len(path))
-	for _, id := range path {
-		parts = append(parts, strconv.Itoa(id))
+	target = strings.TrimSpace(target)
+	var builder strings.Builder
+	builder.Grow(len(prefix) + len(target) + pathStringLen(path) + len("||"))
+	builder.WriteString(prefix)
+	builder.WriteByte('|')
+	writePathIDs(&builder, path)
+	builder.WriteByte('|')
+	builder.WriteString(target)
+	return builder.String()
+}
+
+func pathStringLen(path []int) int {
+	if len(path) == 0 {
+		return 0
 	}
-	return prefix + "|" + strings.Join(parts, "-") + "|" + strings.TrimSpace(target)
+	size := len(path) - 1
+	for _, id := range path {
+		size += intStringLen(id)
+	}
+	return size
+}
+
+func writePathIDs(builder *strings.Builder, path []int) {
+	var scratch [20]byte
+	for i, id := range path {
+		if i > 0 {
+			builder.WriteByte('-')
+		}
+		builder.Write(strconv.AppendInt(scratch[:0], int64(id), 10))
+	}
+}
+
+func intStringLen(value int) int {
+	var scratch [20]byte
+	return len(strconv.AppendInt(scratch[:0], int64(value), 10))
 }
 
 func cloneLayers(layers [][]int) [][]int {
-	out := make([][]int, len(layers))
-	for i, layer := range layers {
-		out[i] = append([]int(nil), layer...)
+	out := make([][]int, 0, len(layers))
+	for _, layer := range layers {
+		if len(layer) == 0 {
+			continue
+		}
+		out = append(out, append([]int(nil), layer...))
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
-}
-
-func hasDuplicate(path []int) bool {
-	seen := make(map[int]struct{}, len(path))
-	for _, id := range path {
-		if _, ok := seen[id]; ok {
-			return true
-		}
-		seen[id] = struct{}{}
-	}
-	return false
 }

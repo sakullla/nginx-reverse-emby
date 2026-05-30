@@ -125,7 +125,7 @@ const backends = computed(() => {
       .map((b) => String(b?.url || '').trim())
       .filter(Boolean)
   }
-  return props.rule.backend_url ? [String(props.rule.backend_url).trim()] : []
+  return []
 })
 
 const backendLabel = computed(() => {

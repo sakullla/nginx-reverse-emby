@@ -10,18 +10,16 @@ function read(name) {
   return fs.readFileSync(path.join(__dirname, name), 'utf8')
 }
 
-describe('relay layer compatibility fields', () => {
-  it('sends one compatible HTTP relay path in legacy relay_chain', () => {
+describe('relay layer payloads', () => {
+  it('sends HTTP relay layers without legacy relay_chain', () => {
     const source = read('RuleForm.vue')
-    expect(source).toMatch(/const id = Number\(layer\[0\]\)/)
-    expect(source).toMatch(/result\.push\(id\)/)
-    expect(source).not.toMatch(/result\.push\(\.\.\.layer\.map/)
+    expect(source).toMatch(/relay_layers:\s*Array\.isArray\(form\.value\.relay_layers\)/)
+    expect(source).not.toMatch(/relay_chain:\s*flattenRelayLayers\(form\.value\.relay_layers\)/)
   })
 
-  it('sends one compatible L4 relay path in legacy relay_chain', () => {
+  it('sends L4 relay layers without legacy relay_chain', () => {
     const source = read('L4RuleForm.vue')
-    expect(source).toMatch(/const id = Number\(layer\[0\]\)/)
-    expect(source).toMatch(/result\.push\(id\)/)
-    expect(source).not.toMatch(/result\.push\(\.\.\.layer\.map/)
+    expect(source).toMatch(/relay_layers:\s*Array\.isArray\(form\.value\.relay_layers\)/)
+    expect(source).not.toMatch(/relay_chain:\s*flattenRelayLayers\(form\.value\.relay_layers\)/)
   })
 })

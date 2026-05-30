@@ -48,6 +48,7 @@
 `harness.go` 支持这些环境变量：
 
 - `HARNESS_RTT_ITERATIONS`
+- `HARNESS_BENCHMARKS`：逗号分隔，只跑指定项，例如 `relay_a_to_b_c1,relay_a_to_b_c8`
 - `HARNESS_C1_BYTES`
 - `HARNESS_C1_DURATION_SECONDS`
 - `HARNESS_C8_BYTES_PER_CONN`
@@ -65,9 +66,9 @@
 `run.ps1` 另外支持这些宿主机环境变量：
 
 - `NRE_TRAFFIC_STATS_ENABLED`：传给所有 agent/relay 容器，默认 `true`；设为 `false` 可对比流量统计开销
-- `HARNESS_DELAY_CLI_TO_A_MS`
-- `HARNESS_DELAY_A_TO_RELAY_MS`
-- `HARNESS_NETEM_DELAY_MS`
+- `HARNESS_DELAY_CLI_TO_A_MS`：默认 `30`；设为 `0` 可关闭 `CLI -> A` 链路延迟
+- `HARNESS_DELAY_A_TO_RELAY_MS`：默认 `10`；设为 `0` 可关闭 `A -> Relay` 链路延迟
+- `HARNESS_NETEM_DELAY_MS`：兼容旧参数；未设置 `HARNESS_DELAY_A_TO_RELAY_MS` 时覆盖 `A -> Relay` 默认值
 - `HARNESS_AGENT_HEARTBEAT_INTERVAL`
 
 `run.ps1` 还支持这些开关：
@@ -86,16 +87,23 @@ $env:HARNESS_C8_DURATION_SECONDS = 30
 
 ## 真实链路复现
 
-如果要本机模拟：
+脚本默认模拟：
 
 - `CLI -> A` 单向 `30ms`
 - `A -> Relay B` 单向 `10ms`
 
-可以这样跑：
+直接运行即可：
 
 ```powershell
-$env:HARNESS_DELAY_CLI_TO_A_MS = 30
-$env:HARNESS_DELAY_A_TO_RELAY_MS = 10
+./scripts/relay-perf/run.ps1
+```
+
+如果需要无延迟局域网基线，可以这样跑：
+
+```powershell
+$env:HARNESS_DELAY_CLI_TO_A_MS = 0
+$env:HARNESS_DELAY_A_TO_RELAY_MS = 0
+$env:HARNESS_PRE_MEASURE_DELAY_MS = 0
 ./scripts/relay-perf/run.ps1
 ```
 
@@ -105,9 +113,9 @@ $env:HARNESS_DELAY_A_TO_RELAY_MS = 10
 - `agent-a` 和 `relay-b` 的 `a_relay` 接口加 `10ms`
 - `relay-b -> agent-b -> backend-b` 保持本地低延迟
 
-检测到任一延迟变量时，脚本会自动设置 `HARNESS_PRE_MEASURE_DELAY_MS=8000`，给 `tc` 安装和规则下发留时间；也可以手动覆盖。
+默认或显式启用任一延迟时，脚本会自动设置 `HARNESS_PRE_MEASURE_DELAY_MS=8000`，给 `tc` 安装和规则下发留时间；也可以手动覆盖。
 
-`HARNESS_NETEM_DELAY_MS` 保留为兼容参数；如果没设置 `HARNESS_DELAY_A_TO_RELAY_MS`，它会退化为对 `A <-> Relay` 链路注入同样的单向延迟。
+`HARNESS_NETEM_DELAY_MS` 保留为兼容参数；如果没设置 `HARNESS_DELAY_A_TO_RELAY_MS`，它会覆盖 `A <-> Relay` 链路的默认单向延迟。
 
 ## 结果解释
 
@@ -151,5 +159,5 @@ $env:HARNESS_DELAY_A_TO_RELAY_MS = 10
 排查高延迟下的 speedtest 回退时，优先比较：
 
 - 不加链路时延时的局域网吞吐
-- 加 `HARNESS_DELAY_CLI_TO_A_MS=30` 和 `HARNESS_DELAY_A_TO_RELAY_MS=10` 后 `relay_a_to_b_c1` 的跌幅
+- 默认链路延迟下 `relay_a_to_b_c1` / `relay_a_to_b_c8` 的跌幅
 - 不同版本在同一链路时延模型下的 `relay_a_to_b_c1` / `relay_a_to_b_c8`

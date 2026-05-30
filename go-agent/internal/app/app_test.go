@@ -214,19 +214,32 @@ func extractPrivateField(t *testing.T, target any, name string) reflect.Value {
 
 func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing.T) {
 	tests := []struct {
-		name         string
-		http3Enabled bool
-		expectedCaps []string
+		name              string
+		http3Enabled      bool
+		wireGuardEnabled  bool
+		wireGuardExplicit bool
+		expectedCaps      []string
 	}{
 		{
-			name:         "http3 disabled",
-			http3Enabled: false,
-			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"},
+			name:              "http3 disabled",
+			http3Enabled:      false,
+			wireGuardEnabled:  true,
+			wireGuardExplicit: true,
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles"},
 		},
 		{
-			name:         "http3 enabled",
-			http3Enabled: true,
-			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "http3_ingress"},
+			name:              "http3 enabled",
+			http3Enabled:      true,
+			wireGuardEnabled:  true,
+			wireGuardExplicit: true,
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress"},
+		},
+		{
+			name:              "wireguard disabled",
+			http3Enabled:      false,
+			wireGuardEnabled:  false,
+			wireGuardExplicit: true,
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles"},
 		},
 	}
 
@@ -256,6 +269,8 @@ func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing
 				DataDir:           t.TempDir(),
 				HeartbeatInterval: 100 * time.Millisecond,
 				HTTP3Enabled:      tc.http3Enabled,
+				WireGuardEnabled:  tc.wireGuardEnabled,
+				WireGuardExplicit: tc.wireGuardExplicit,
 			}
 			app, err := New(cfg)
 			if err != nil {
@@ -386,16 +401,15 @@ func TestRunPersistsDesiredSnapshot(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         31,
@@ -464,7 +478,7 @@ func TestRunPersistsAppliedSnapshotAfterSuccessfulSync(t *testing.T) {
 		Revision:       4,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://old.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -477,7 +491,7 @@ func TestRunPersistsAppliedSnapshotAfterSuccessfulSync(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL:   "http://edge.example.test:18080",
-			BackendURL:    "http://127.0.0.1:8096",
+			Backends:      []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			ProxyRedirect: true,
 			Revision:      4,
 		}},
@@ -527,16 +541,15 @@ func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
 		Revision:       4,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://applied.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     1,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   1,
 		}},
 	}
 	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
@@ -547,7 +560,7 @@ func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
 		Revision:       4,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://desired.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 		L4Rules: previousApplied.L4Rules,
@@ -560,12 +573,11 @@ func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
 		DesiredVersion: "next",
 		Revision:       5,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9100,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9101,
-			Revision:     2,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9100,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9101}},
+			Revision:   2,
 		}},
 	}
 	client := newTestSyncClient(nil, syncResponse{snapshot: synced})
@@ -658,6 +670,121 @@ func TestMergeSnapshotPayloadAppliesExplicitEmptyAgentConfig(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotPayloadAppliesExplicitEmptyWireGuardProfiles(t *testing.T) {
+	previous := Snapshot{
+		DesiredVersion: "previous",
+		Revision:       7,
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:         41,
+			AgentID:    "remote-leaked",
+			Name:       "leaked",
+			PrivateKey: "leaked-private-key",
+			Enabled:    true,
+			Revision:   7,
+		}},
+	}
+	var next Snapshot
+	if err := json.Unmarshal([]byte(`{"desired_version":"cleanup","desired_revision":8,"wireguard_profiles":[]}`), &next); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	merged := mergeSnapshotPayload(next, previous)
+
+	if merged.WireGuardProfiles == nil {
+		t.Fatal("WireGuardProfiles = nil, want explicit empty slice")
+	}
+	if len(merged.WireGuardProfiles) != 0 {
+		t.Fatalf("WireGuardProfiles = %+v, want cleared", merged.WireGuardProfiles)
+	}
+}
+
+func TestMergeSnapshotPayloadAppliesExplicitEmptyEgressProfiles(t *testing.T) {
+	previous := Snapshot{
+		DesiredVersion: "previous",
+		Revision:       7,
+		EgressProfiles: []model.EgressProfile{{
+			ID:       41,
+			Name:     "stale",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 7,
+		}},
+	}
+	var next Snapshot
+	if err := json.Unmarshal([]byte(`{"desired_version":"cleanup","desired_revision":8,"egress_profiles":[]}`), &next); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	merged := mergeSnapshotPayload(next, previous)
+
+	if merged.EgressProfiles == nil {
+		t.Fatal("EgressProfiles = nil, want explicit empty slice")
+	}
+	if len(merged.EgressProfiles) != 0 {
+		t.Fatalf("EgressProfiles = %+v, want cleared", merged.EgressProfiles)
+	}
+}
+
+func TestRunAppliesExplicitEmptyWireGuardProfilesToClearStaleProfiles(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+	previous := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       7,
+		RelayListeners: []model.RelayListener{},
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:         41,
+			AgentID:    "remote-leaked",
+			Name:       "leaked",
+			PrivateKey: "leaked-private-key",
+			Enabled:    true,
+			Revision:   7,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion:    "cleanup",
+		Revision:          8,
+		RelayListeners:    []model.RelayListener{},
+		WireGuardProfiles: []model.WireGuardProfile{},
+	}})
+	relayApplier := &testWireGuardRelayApplier{}
+	app := newAppWithDeps(cfg, mem, client, nil, nil, relayApplier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if applied.WireGuardProfiles == nil || len(applied.WireGuardProfiles) != 0 {
+		t.Fatalf("applied WireGuardProfiles = %+v, want explicit empty slice", applied.WireGuardProfiles)
+	}
+	calls := relayApplier.wireGuardCalls()
+	if len(calls) == 0 {
+		t.Fatal("ApplyWithWireGuardProfiles was not called")
+	}
+	lastCall := calls[len(calls)-1]
+	if lastCall.profiles == nil || len(lastCall.profiles) != 0 {
+		t.Fatalf("applied relay WireGuard profiles = %+v, want explicit empty slice", lastCall.profiles)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *testing.T) {
 	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
@@ -666,7 +793,7 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 		Revision:       7,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -688,7 +815,7 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://broken.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 	}})
@@ -768,7 +895,7 @@ func TestAppRollsBackRuntimeAndPersistsLastSyncError(t *testing.T) {
 		Revision:       7,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -790,7 +917,7 @@ func TestAppRollsBackRuntimeAndPersistsLastSyncError(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://next.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 	}
@@ -988,7 +1115,7 @@ func TestRunDoesNotAdvancePersistedRuntimeStateWhenSaveAppliedSnapshotFails(t *t
 		Revision:       7,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -1010,7 +1137,7 @@ func TestRunDoesNotAdvancePersistedRuntimeStateWhenSaveAppliedSnapshotFails(t *t
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://next.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 	}})
@@ -1069,7 +1196,7 @@ func TestRunDoesNotAdvancePersistedStateOrHeartbeatRevisionWhenRollbackFailsAfte
 		Revision:       7,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -1093,7 +1220,7 @@ func TestRunDoesNotAdvancePersistedStateOrHeartbeatRevisionWhenRollbackFailsAfte
 				Revision:       9,
 				Rules: []model.HTTPRule{{
 					FrontendURL: "http://next.example.test:18080",
-					BackendURL:  "http://127.0.0.1:8096",
+					Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 					Revision:    2,
 				}},
 			},
@@ -1451,7 +1578,7 @@ func TestPerformSyncRelayListenerChangeReappliesHTTPRelayAndL4FromUnifiedSnapsho
 			Backends: []model.HTTPBackend{
 				{URL: "http://10.0.0.10:8096"},
 			},
-			RelayChain: []int{51},
+			RelayLayers: [][]int{{51}},
 		}},
 		L4Rules: []model.L4Rule{{
 			Protocol:   "tcp",
@@ -1460,7 +1587,7 @@ func TestPerformSyncRelayListenerChangeReappliesHTTPRelayAndL4FromUnifiedSnapsho
 			Backends: []model.L4Backend{
 				{Host: "10.0.0.20", Port: 9000},
 			},
-			RelayChain: []int{51},
+			RelayLayers: [][]int{{51}},
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         51,
@@ -1552,6 +1679,30 @@ type relayApplyCall struct {
 	listeners []model.RelayListener
 }
 
+type relayWireGuardApplyCall struct {
+	listeners []model.RelayListener
+	profiles  []model.WireGuardProfile
+}
+
+type relayEgressApplyCall struct {
+	listeners      []model.RelayListener
+	profiles       []model.WireGuardProfile
+	egressProfiles []model.EgressProfile
+}
+
+type l4WireGuardApplyCall struct {
+	rules     []model.L4Rule
+	listeners []model.RelayListener
+	profiles  []model.WireGuardProfile
+}
+
+type l4EgressApplyCall struct {
+	rules             []model.L4Rule
+	listeners         []model.RelayListener
+	wireGuardProfiles []model.WireGuardProfile
+	egressProfiles    []model.EgressProfile
+}
+
 type updateCall struct {
 	desiredVersion string
 	pkg            model.VersionPackage
@@ -1559,6 +1710,13 @@ type updateCall struct {
 
 type httpApplyCall struct {
 	rules []model.HTTPRule
+}
+
+type httpEgressApplyCall struct {
+	rules             []model.HTTPRule
+	listeners         []model.RelayListener
+	wireGuardProfiles []model.WireGuardProfile
+	egressProfiles    []model.EgressProfile
 }
 
 type testCertificateApplier struct {
@@ -1644,6 +1802,72 @@ func (a *testL4Applier) Close() error {
 	return nil
 }
 
+type testWireGuardL4Applier struct {
+	testL4Applier
+	wgMu    sync.Mutex
+	wgCalls []l4WireGuardApplyCall
+}
+
+func (a *testWireGuardL4Applier) ApplyWithRelayAndWireGuardProfiles(_ context.Context, rules []model.L4Rule, listeners []model.RelayListener, profiles []model.WireGuardProfile) error {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	var copiedRules []model.L4Rule
+	if rules != nil {
+		copiedRules = make([]model.L4Rule, len(rules))
+		copy(copiedRules, rules)
+	}
+	var copiedListeners []model.RelayListener
+	if listeners != nil {
+		copiedListeners = make([]model.RelayListener, len(listeners))
+		copy(copiedListeners, listeners)
+	}
+	var copiedProfiles []model.WireGuardProfile
+	if profiles != nil {
+		copiedProfiles = make([]model.WireGuardProfile, len(profiles))
+		copy(copiedProfiles, profiles)
+	}
+	a.wgCalls = append(a.wgCalls, l4WireGuardApplyCall{
+		rules:     copiedRules,
+		listeners: copiedListeners,
+		profiles:  copiedProfiles,
+	})
+	return a.applyErr
+}
+
+func (a *testWireGuardL4Applier) wireGuardCalls() []l4WireGuardApplyCall {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	out := make([]l4WireGuardApplyCall, len(a.wgCalls))
+	copy(out, a.wgCalls)
+	return out
+}
+
+type testEgressL4Applier struct {
+	testWireGuardL4Applier
+	egressMu    sync.Mutex
+	egressCalls []l4EgressApplyCall
+}
+
+func (a *testEgressL4Applier) ApplyWithRelayWireGuardAndEgressProfiles(_ context.Context, rules []model.L4Rule, listeners []model.RelayListener, wireGuardProfiles []model.WireGuardProfile, egressProfiles []model.EgressProfile) error {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	a.egressCalls = append(a.egressCalls, l4EgressApplyCall{
+		rules:             append([]model.L4Rule(nil), rules...),
+		listeners:         append([]model.RelayListener(nil), listeners...),
+		wireGuardProfiles: append([]model.WireGuardProfile(nil), wireGuardProfiles...),
+		egressProfiles:    append([]model.EgressProfile(nil), egressProfiles...),
+	})
+	return a.applyErr
+}
+
+func (a *testEgressL4Applier) egressProfileCalls() []l4EgressApplyCall {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	out := make([]l4EgressApplyCall, len(a.egressCalls))
+	copy(out, a.egressCalls)
+	return out
+}
+
 type testRelayApplier struct {
 	mu       sync.Mutex
 	calls    []relayApplyCall
@@ -1674,6 +1898,80 @@ func (a *testRelayApplier) snapshotCalls() []relayApplyCall {
 
 func (a *testRelayApplier) Close() error {
 	return nil
+}
+
+type testWireGuardRelayApplier struct {
+	testRelayApplier
+	wgMu    sync.Mutex
+	wgCalls []relayWireGuardApplyCall
+}
+
+func (a *testWireGuardRelayApplier) ApplyWithWireGuardProfiles(_ context.Context, listeners []model.RelayListener, profiles []model.WireGuardProfile) error {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	var copiedListeners []model.RelayListener
+	if listeners != nil {
+		copiedListeners = make([]model.RelayListener, len(listeners))
+		copy(copiedListeners, listeners)
+	}
+	var copiedProfiles []model.WireGuardProfile
+	if profiles != nil {
+		copiedProfiles = make([]model.WireGuardProfile, len(profiles))
+		copy(copiedProfiles, profiles)
+	}
+	a.wgCalls = append(a.wgCalls, relayWireGuardApplyCall{
+		listeners: copiedListeners,
+		profiles:  copiedProfiles,
+	})
+	return a.applyErr
+}
+
+func (a *testWireGuardRelayApplier) wireGuardCalls() []relayWireGuardApplyCall {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
+	out := make([]relayWireGuardApplyCall, len(a.wgCalls))
+	copy(out, a.wgCalls)
+	return out
+}
+
+type testEgressRelayApplier struct {
+	testRelayApplier
+	egressMu    sync.Mutex
+	egressCalls []relayEgressApplyCall
+}
+
+func (a *testEgressRelayApplier) ApplyWithWireGuardAndEgressProfiles(_ context.Context, listeners []model.RelayListener, profiles []model.WireGuardProfile, egressProfiles []model.EgressProfile) error {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	var copiedListeners []model.RelayListener
+	if listeners != nil {
+		copiedListeners = make([]model.RelayListener, len(listeners))
+		copy(copiedListeners, listeners)
+	}
+	var copiedProfiles []model.WireGuardProfile
+	if profiles != nil {
+		copiedProfiles = make([]model.WireGuardProfile, len(profiles))
+		copy(copiedProfiles, profiles)
+	}
+	var copiedEgress []model.EgressProfile
+	if egressProfiles != nil {
+		copiedEgress = make([]model.EgressProfile, len(egressProfiles))
+		copy(copiedEgress, egressProfiles)
+	}
+	a.egressCalls = append(a.egressCalls, relayEgressApplyCall{
+		listeners:      copiedListeners,
+		profiles:       copiedProfiles,
+		egressProfiles: copiedEgress,
+	})
+	return a.applyErr
+}
+
+func (a *testEgressRelayApplier) egressSnapshotCalls() []relayEgressApplyCall {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	out := make([]relayEgressApplyCall, len(a.egressCalls))
+	copy(out, a.egressCalls)
+	return out
 }
 
 type testHTTPApplier struct {
@@ -1716,6 +2014,32 @@ func (a *testHTTPApplier) snapshotCalls() []httpApplyCall {
 
 func (a *testHTTPApplier) Close() error {
 	return nil
+}
+
+type testEgressHTTPApplier struct {
+	testHTTPApplier
+	egressMu    sync.Mutex
+	egressCalls []httpEgressApplyCall
+}
+
+func (a *testEgressHTTPApplier) ApplyWithRelayWireGuardAndEgressProfiles(_ context.Context, rules []model.HTTPRule, listeners []model.RelayListener, wireGuardProfiles []model.WireGuardProfile, egressProfiles []model.EgressProfile) error {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	a.egressCalls = append(a.egressCalls, httpEgressApplyCall{
+		rules:             append([]model.HTTPRule(nil), rules...),
+		listeners:         append([]model.RelayListener(nil), listeners...),
+		wireGuardProfiles: append([]model.WireGuardProfile(nil), wireGuardProfiles...),
+		egressProfiles:    append([]model.EgressProfile(nil), egressProfiles...),
+	})
+	return a.applyErr
+}
+
+func (a *testEgressHTTPApplier) egressProfileCalls() []httpEgressApplyCall {
+	a.egressMu.Lock()
+	defer a.egressMu.Unlock()
+	out := make([]httpEgressApplyCall, len(a.egressCalls))
+	copy(out, a.egressCalls)
+	return out
 }
 
 type testTrafficBlockHTTPApplier struct {
@@ -1844,6 +2168,19 @@ func (a *orderedL4Applier) Apply(_ context.Context, _ []model.L4Rule) error {
 }
 
 func (a *orderedL4Applier) Close() error {
+	return nil
+}
+
+type orderedHTTPApplier struct {
+	recorder *orderedApplyRecorder
+}
+
+func (a *orderedHTTPApplier) Apply(_ context.Context, _ []model.HTTPRule) error {
+	a.recorder.add("http")
+	return nil
+}
+
+func (a *orderedHTTPApplier) Close() error {
 	return nil
 }
 
@@ -2273,17 +2610,16 @@ func TestPerformSyncUpdatesRuntimeTrafficBlockStateFromAgentConfigOnlyChange(t *
 		Rules: []model.HTTPRule{{
 			ID:          1,
 			FrontendURL: "http://frontend.example",
-			BackendURL:  "http://backend.example",
+			Backends:    []model.HTTPBackend{{URL: "http://backend.example"}},
 			Enabled:     true,
 		}},
 		L4Rules: []model.L4Rule{{
-			ID:           2,
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   19000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 19001,
-			Enabled:      true,
+			ID:         2,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 19000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 19001}},
+			Enabled:    true,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         3,
@@ -2661,7 +2997,7 @@ func TestPerformSyncKeepsTrafficStatsIntervalWhenLaterActivationFails(t *testing
 		},
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://stable.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    1,
 		}},
 	}
@@ -2686,7 +3022,7 @@ func TestPerformSyncKeepsTrafficStatsIntervalWhenLaterActivationFails(t *testing
 		},
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://next.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 	}
@@ -2832,16 +3168,15 @@ func TestRunHydratesManagedCertificatesFromStoredAppliedSnapshot(t *testing.T) {
 		Revision:       5,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "https://frontend.example.com",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    2,
 		}},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         31,
@@ -3123,7 +3458,7 @@ func TestRunAppliesHTTPRulesFromSyncedSnapshot(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL:   "http://edge.example.test:18080",
-			BackendURL:    "http://127.0.0.1:8096",
+			Backends:      []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			ProxyRedirect: true,
 			Revision:      4,
 		}},
@@ -3162,7 +3497,7 @@ func TestRunHydratesHTTPRulesFromStoredAppliedSnapshot(t *testing.T) {
 		Revision:       5,
 		Rules: []model.HTTPRule{{
 			FrontendURL:      "http://edge.example.test:18080",
-			BackendURL:       "http://127.0.0.1:8096",
+			Backends:         []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			PassProxyHeaders: true,
 			Revision:         4,
 		}},
@@ -3175,7 +3510,7 @@ func TestRunHydratesHTTPRulesFromStoredAppliedSnapshot(t *testing.T) {
 		Revision:       9,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://desired.example.test:28080",
-			BackendURL:  "http://127.0.0.1:8097",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8097"}},
 			Revision:    9,
 		}},
 	}); err != nil {
@@ -3216,7 +3551,7 @@ func TestRunDoesNotApplyHTTPWhenHeartbeatOmitsPayload(t *testing.T) {
 		Revision:       5,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://edge.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    4,
 		}},
 	}
@@ -3266,7 +3601,7 @@ func TestRunAppliesExplicitEmptyHTTPRules(t *testing.T) {
 		Revision:       5,
 		Rules: []model.HTTPRule{{
 			FrontendURL: "http://edge.example.test:18080",
-			BackendURL:  "http://127.0.0.1:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 			Revision:    4,
 		}},
 	}
@@ -3378,12 +3713,11 @@ func TestRunAppliesL4RulesFromSyncedSnapshot(t *testing.T) {
 		DesiredVersion: "2.0",
 		Revision:       9,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 	}
 	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
@@ -3419,12 +3753,11 @@ func TestRunHydratesL4RulesFromStoredAppliedSnapshot(t *testing.T) {
 		DesiredVersion: "stored",
 		Revision:       5,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 	}
 	if err := mem.SaveAppliedSnapshot(stored); err != nil {
@@ -3434,12 +3767,11 @@ func TestRunHydratesL4RulesFromStoredAppliedSnapshot(t *testing.T) {
 		DesiredVersion: "desired",
 		Revision:       9,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.2",
-			ListenPort:   9900,
-			UpstreamHost: "127.0.0.2",
-			UpstreamPort: 9901,
-			Revision:     9,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.2",
+			ListenPort: 9900,
+			Backends:   []model.L4Backend{{Host: "127.0.0.2", Port: 9901}},
+			Revision:   9,
 		}},
 	}); err != nil {
 		t.Fatalf("failed to seed desired snapshot: %v", err)
@@ -3463,6 +3795,224 @@ func TestRunHydratesL4RulesFromStoredAppliedSnapshot(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls[0].rules, stored.L4Rules) {
 		t.Fatalf("unexpected hydrated l4 rules: %+v", calls[0].rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+	}
+	desired := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 0,
+			ListenMode: "wireguard",
+			Backends:   []model.L4Backend{},
+			Revision:   218,
+		}},
+		RelayListeners:      []model.RelayListener{},
+		WireGuardProfiles:   []model.WireGuardProfile{},
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	l4Applier := &testL4Applier{}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	calls := l4Applier.snapshotCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected one startup l4 apply call, got %d", len(calls))
+	}
+	if !reflect.DeepEqual(calls[0].rules, desired.L4Rules) {
+		t.Fatalf("unexpected hydrated l4 rules: %+v", calls[0].rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunDoesNotHydratePartialAppliedSnapshotFromNewerDesiredSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+	}
+	desired := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       6,
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 0,
+			ListenMode: "wireguard",
+			Backends:   []model.L4Backend{},
+			Revision:   6,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
+	l4Applier := &testL4Applier{}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	if calls := l4Applier.snapshotCalls(); len(calls) != 0 {
+		t.Fatalf("expected no l4 hydration from newer desired snapshot, got %+v", calls)
+	}
+
+	persisted, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if persisted.L4Rules != nil {
+		t.Fatalf("expected applied snapshot to stay partial, got %+v", persisted.L4Rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunDoesNotHydrateNewerAppliedSnapshotFromOlderDesiredSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       222,
+	}
+	desired := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   218,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	l4Applier := &testL4Applier{}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+	if calls := l4Applier.snapshotCalls(); len(calls) != 0 {
+		t.Fatalf("expected no l4 hydration from older desired snapshot, got %+v", calls)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunPersistsHydratedAppliedL4RulesFromDesiredSnapshotOnStartup(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+	}
+	desired := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       221,
+		L4Rules: []model.L4Rule{{
+			ID:         45,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 0,
+			ListenMode: "wireguard",
+			Backends:   []model.L4Backend{},
+			Revision:   218,
+		}},
+		RelayListeners:      []model.RelayListener{},
+		WireGuardProfiles:   []model.WireGuardProfile{},
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
+	l4Applier := &testL4Applier{applyErr: nil}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	appliedAfter, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(appliedAfter.L4Rules, desired.L4Rules) {
+		t.Fatalf("expected hydrated applied l4 rules to be persisted, got %+v", appliedAfter.L4Rules)
 	}
 
 	cancel()
@@ -3606,8 +4156,8 @@ func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChange
 				Host: "remote-backend.example.test",
 				Port: 26966,
 			}},
-			RelayChain: []int{5},
-			Revision:   5,
+			RelayLayers: [][]int{{5}},
+			Revision:    5,
 		}},
 		RelayListeners: []model.RelayListener{
 			{
@@ -3683,17 +4233,33 @@ func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChange
 	}
 }
 
-func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
+func TestSnapshotActivatorAppliesRulesBeforeRelayListeners(t *testing.T) {
 	recorder := &orderedApplyRecorder{}
-	app := newAppWithDeps(
+	app := newAppWithHTTPDeps(
 		Config{AgentID: "local-agent"},
 		store.NewInMemory(),
 		newTestSyncClient(nil, syncResponse{}),
+		&orderedHTTPApplier{recorder: recorder},
 		&orderedCertificateApplier{recorder: recorder},
 		&orderedL4Applier{recorder: recorder},
 		&orderedRelayApplier{recorder: recorder},
 	)
 
+	previous := Snapshot{
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://handoff.internal",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			Enabled:     true,
+			Revision:    1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9444,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9445}},
+			Revision:   1,
+		}},
+	}
 	next := Snapshot{
 		Certificates: []model.ManagedCertificateBundle{{
 			ID:       10,
@@ -3716,14 +4282,58 @@ func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
 			}},
 			Revision: 1,
 		}},
+		Rules: []model.HTTPRule{},
 		L4Rules: []model.L4Rule{{
-			Protocol:     "udp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   5300,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 5301,
-			RelayChain:   []int{51},
-			Revision:     1,
+			Protocol:    "udp",
+			ListenHost:  "127.0.0.1",
+			ListenPort:  5300,
+			Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: 5301}},
+			RelayLayers: [][]int{{51}},
+			Revision:    1,
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	if got := recorder.snapshot(); !reflect.DeepEqual(got, []string{"cert", "http", "l4", "relay"}) {
+		t.Fatalf("apply order = %v, want [cert http l4 relay]", got)
+	}
+}
+
+func TestSnapshotActivatorPassesWireGuardProfilesToRelayApplier(t *testing.T) {
+	relayApplier := &testWireGuardRelayApplier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		nil,
+		relayApplier,
+	)
+
+	profileID := 9
+	next := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:      profileID,
+			Enabled: true,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:                 51,
+			AgentID:            "local-agent",
+			Name:               "relay-hop",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         9443,
+			Enabled:            true,
+			TLSMode:            "pin_only",
+			TransportMode:      relay.ListenerTransportModeWireGuard,
+			WireGuardProfileID: &profileID,
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin",
+			}},
+			Revision: 1,
 		}},
 	}
 
@@ -3731,8 +4341,389 @@ func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
 		t.Fatalf("snapshotActivator returned error: %v", err)
 	}
 
-	if got := recorder.snapshot(); !reflect.DeepEqual(got, []string{"cert", "relay", "l4"}) {
-		t.Fatalf("apply order = %v, want [cert relay l4]", got)
+	calls := relayApplier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithWireGuardProfiles calls = %d, want 1", len(calls))
+	}
+	if len(calls[0].profiles) != 1 || calls[0].profiles[0].ID != profileID {
+		t.Fatalf("wireguard profiles passed to relay applier = %+v", calls[0].profiles)
+	}
+	if len(calls[0].listeners) != 1 || calls[0].listeners[0].ID != 51 {
+		t.Fatalf("relay listeners passed to relay applier = %+v", calls[0].listeners)
+	}
+}
+
+func TestSnapshotActivatorRefreshesRelayWireGuardProfilesWhenListenersUnchanged(t *testing.T) {
+	relayApplier := &testWireGuardRelayApplier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		nil,
+		relayApplier,
+	)
+
+	profileID := 9
+	previous := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:       profileID,
+			Enabled:  true,
+			Revision: 1,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:                 51,
+			AgentID:            "local-agent",
+			Name:               "relay-hop",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         9443,
+			Enabled:            true,
+			TLSMode:            "pin_only",
+			TransportMode:      relay.ListenerTransportModeWireGuard,
+			WireGuardProfileID: &profileID,
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin",
+			}},
+			Revision: 1,
+		}},
+	}
+	next := previous
+	next.WireGuardProfiles = append([]model.WireGuardProfile(nil), previous.WireGuardProfiles...)
+	next.WireGuardProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := relayApplier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithWireGuardProfiles calls = %d, want 1 after profile-only change", len(calls))
+	}
+	if calls[0].profiles[0].Revision != 2 {
+		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)
+	}
+}
+
+func TestSnapshotActivatorRefreshesRelayEgressProfilesWhenListenersUnchanged(t *testing.T) {
+	relayApplier := &testEgressRelayApplier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		nil,
+		relayApplier,
+	)
+
+	previous := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       7,
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:            51,
+			AgentID:       "local-agent",
+			Name:          "relay-hop",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    9443,
+			Enabled:       true,
+			TLSMode:       "pin_only",
+			TransportMode: relay.ListenerTransportModeTLSTCP,
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin",
+			}},
+			Revision: 1,
+		}},
+	}
+	next := previous
+	next.EgressProfiles = append([]model.EgressProfile(nil), previous.EgressProfiles...)
+	next.EgressProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := relayApplier.egressSnapshotCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithWireGuardAndEgressProfiles calls = %d, want 1 after egress profile-only change", len(calls))
+	}
+	if len(calls[0].egressProfiles) != 1 || calls[0].egressProfiles[0].Revision != 2 {
+		t.Fatalf("egress profiles passed to relay applier = %+v", calls[0].egressProfiles)
+	}
+	if len(calls[0].listeners) != 1 || calls[0].listeners[0].ID != 51 {
+		t.Fatalf("relay listeners passed to relay applier = %+v", calls[0].listeners)
+	}
+}
+
+func TestSnapshotActivatorPassesWireGuardProfilesToL4Applier(t *testing.T) {
+	l4Applier := &testWireGuardL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 9
+	next := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:       profileID,
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:           "tcp",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         8443,
+			ListenMode:         "wireguard",
+			WireGuardProfileID: &profileID,
+			Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			Revision:           1,
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles calls = %d, want 1", len(calls))
+	}
+	if len(calls[0].profiles) != 1 || calls[0].profiles[0].ID != profileID {
+		t.Fatalf("wireguard profiles passed to l4 applier = %+v", calls[0].profiles)
+	}
+}
+
+func TestSnapshotActivatorRefreshesL4WireGuardProfilesWhenRulesUnchanged(t *testing.T) {
+	l4Applier := &testWireGuardL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 9
+	previous := Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{{
+			ID:       profileID,
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:           "tcp",
+			ListenHost:         "127.0.0.1",
+			ListenPort:         8443,
+			ListenMode:         "wireguard",
+			WireGuardProfileID: &profileID,
+			Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			Revision:           1,
+		}},
+	}
+	next := previous
+	next.WireGuardProfiles = append([]model.WireGuardProfile(nil), previous.WireGuardProfiles...)
+	next.WireGuardProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.wireGuardCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayAndWireGuardProfiles calls = %d, want 1 after profile-only change", len(calls))
+	}
+	if calls[0].profiles[0].Revision != 2 {
+		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)
+	}
+}
+
+func TestSnapshotActivatorPassesEgressProfilesToL4Applier(t *testing.T) {
+	l4Applier := &testEgressL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 17
+	next := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       profileID,
+			Name:     "socks exit",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:        "tcp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      8443,
+			Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			EgressProfileID: &profileID,
+			Revision:        1,
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.egressProfileCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1", len(calls))
+	}
+	if len(calls[0].egressProfiles) != 1 || calls[0].egressProfiles[0].ID != profileID {
+		t.Fatalf("egress profiles passed to l4 applier = %+v", calls[0].egressProfiles)
+	}
+}
+
+func TestSnapshotActivatorRefreshesL4EgressProfilesWhenRulesUnchanged(t *testing.T) {
+	l4Applier := &testEgressL4Applier{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		nil,
+		l4Applier,
+		nil,
+	)
+
+	profileID := 17
+	previous := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       profileID,
+			Name:     "socks exit",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:        "tcp",
+			ListenHost:      "127.0.0.1",
+			ListenPort:      8443,
+			Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
+			EgressProfileID: &profileID,
+			Revision:        1,
+		}},
+	}
+	next := previous
+	next.EgressProfiles = append([]model.EgressProfile(nil), previous.EgressProfiles...)
+	next.EgressProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := l4Applier.egressProfileCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1 after profile-only change", len(calls))
+	}
+	if calls[0].egressProfiles[0].Revision != 2 {
+		t.Fatalf("egress profile revision = %d, want 2", calls[0].egressProfiles[0].Revision)
+	}
+}
+
+func TestSnapshotActivatorPassesEgressProfilesToHTTPApplier(t *testing.T) {
+	httpApplier := &testEgressHTTPApplier{}
+	app := newAppWithHTTPDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		httpApplier,
+		nil,
+		nil,
+		nil,
+	)
+
+	profileID := 27
+	next := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       profileID,
+			Name:     "socks exit",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		Rules: []model.HTTPRule{{
+			FrontendURL:     "http://media.example.test",
+			Backends:        []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			EgressProfileID: &profileID,
+			Revision:        1,
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := httpApplier.egressProfileCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1", len(calls))
+	}
+	if len(calls[0].egressProfiles) != 1 || calls[0].egressProfiles[0].ID != profileID {
+		t.Fatalf("egress profiles passed to http applier = %+v", calls[0].egressProfiles)
+	}
+}
+
+func TestSnapshotActivatorRefreshesHTTPEgressProfilesWhenRulesUnchanged(t *testing.T) {
+	httpApplier := &testEgressHTTPApplier{}
+	app := newAppWithHTTPDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		httpApplier,
+		nil,
+		nil,
+		nil,
+	)
+
+	profileID := 27
+	previous := Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       profileID,
+			Name:     "socks exit",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		Rules: []model.HTTPRule{{
+			FrontendURL:     "http://media.example.test",
+			Backends:        []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			EgressProfileID: &profileID,
+			Revision:        1,
+		}},
+	}
+	next := previous
+	next.EgressProfiles = append([]model.EgressProfile(nil), previous.EgressProfiles...)
+	next.EgressProfiles[0].Revision = 2
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	calls := httpApplier.egressProfileCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1 after profile-only change", len(calls))
+	}
+	if calls[0].egressProfiles[0].Revision != 2 {
+		t.Fatalf("egress profile revision = %d, want 2", calls[0].egressProfiles[0].Revision)
 	}
 }
 
@@ -3801,12 +4792,11 @@ func TestRunAppliesExplicitEmptyL4Rules(t *testing.T) {
 		DesiredVersion: "stored",
 		Revision:       5,
 		L4Rules: []model.L4Rule{{
-			Protocol:     "tcp",
-			ListenHost:   "127.0.0.1",
-			ListenPort:   9000,
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: 9001,
-			Revision:     4,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Revision:   4,
 		}},
 	}
 	if err := mem.SaveAppliedSnapshot(stored); err != nil {
@@ -3916,8 +4906,8 @@ func TestRunClearsStoredL4RulesWhenRelayListenersAreExplicitlyCleared(t *testing
 				Host: "remote-backend.example.test",
 				Port: 26966,
 			}},
-			RelayChain: []int{5},
-			Revision:   5,
+			RelayLayers: [][]int{{5}},
+			Revision:    5,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         5,

@@ -55,6 +55,24 @@ vi.mock('../hooks/useRelayListeners', () => ({
   useUpdateRelayListener: () => ({ mutate: vi.fn() })
 }))
 
+vi.mock('../components/L4RuleForm.vue', () => ({
+  default: {
+    name: 'L4RuleForm',
+    props: ['initialData', 'agentId', 'l4Rules'],
+    emits: ['success'],
+    template: '<div class="l4-rule-form-stub" :data-l4-rules-count="(l4Rules || []).length"></div>'
+  }
+}))
+
+vi.mock('../components/base/BaseModal.vue', () => ({
+  default: {
+    name: 'BaseModal',
+    props: ['modelValue', 'title', 'size', 'closeOnClickModal'],
+    emits: ['update:modelValue'],
+    template: '<div class="base-modal-stub"><slot /></div>'
+  }
+}))
+
 vi.mock('../hooks/useDiagnostics', () => ({
   useDiagnosticTask: () => ({ data: { value: null } }),
   useDiagnoseRule: () => ({ mutateAsync: vi.fn() }),
@@ -80,10 +98,8 @@ async function mountPage(component) {
       plugins: [[VueQueryPlugin, { queryClient: createQueryClient() }]],
       stubs: {
         AgentPicker: true,
-        BaseModal: true,
         DeleteConfirmDialog: true,
         RuleForm: true,
-        L4RuleForm: true,
         RelayListenerForm: true,
         RuleDiagnosticModal: true,
         RouterLink: true
@@ -112,8 +128,8 @@ beforeEach(() => {
   selectedAgentId = 'edge-1'
   systemInfo = { traffic_stats_enabled: true }
   agentsData = [{ id: 'edge-1', name: 'edge-1', desired_revision: 1, current_revision: 1, last_apply_status: 'success' }]
-  rulesData = [{ id: 7, frontend_url: 'https://app.example.test', backend_url: 'http://origin.example.test', enabled: true }]
-  l4RulesData = [{ id: 9, name: 'tcp-app', protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 443, upstream_host: '10.0.0.1', upstream_port: 443, enabled: true }]
+  rulesData = [{ id: 7, frontend_url: 'https://app.example.test', backends: [{ url: 'http://origin.example.test' }], enabled: true }]
+  l4RulesData = [{ id: 9, name: 'tcp-app', protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 443, backends: [{ host: '10.0.0.1', port: 443 }], enabled: true }]
   relayListenersData = [{ id: 11, name: 'relay-main', enabled: true, public_host: 'relay.example.test', public_port: 8443, listen_host: '0.0.0.0', listen_port: 8443 }]
   vi.clearAllMocks()
   apiCalls.fetchTrafficSummary.mockResolvedValue({
@@ -144,6 +160,16 @@ describe('rule list traffic usage', () => {
     expect(wrapper.text()).toContain('用量 12.0 KiB')
     expect(wrapper.text()).toContain('入 4.00 KiB')
     expect(wrapper.text()).toContain('出 8.00 KiB')
+  })
+
+  it('passes current L4 rules into the add and edit forms', async () => {
+    const { default: L4RulesPage } = await import('./L4RulesPage.vue')
+
+    const wrapper = await mountPage(L4RulesPage)
+
+    const formStub = wrapper.find('.l4-rule-form-stub')
+    expect(formStub.exists()).toBe(true)
+    expect(formStub.attributes('data-l4-rules-count')).toBe('1')
   })
 
   it('renders relay listener accounted usage from traffic summary', async () => {

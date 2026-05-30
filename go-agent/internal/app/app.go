@@ -3,12 +3,10 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"reflect"
 	stdruntime "runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +15,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
@@ -37,13 +33,6 @@ type SyncRequest = agentsync.SyncRequest
 type SyncClient interface {
 	Sync(context.Context, SyncRequest) (Snapshot, error)
 }
-
-const (
-	runtimeMetaTrafficStatsInterval       = "traffic_stats_interval"
-	runtimeMetaLastTrafficStatsReportUnix = "last_traffic_stats_report_unix"
-	runtimeMetaTrafficBlocked             = "traffic_blocked"
-	runtimeMetaTrafficBlockReason         = "traffic_block_reason"
-)
 
 type CertificateApplier interface {
 	Apply(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
@@ -66,8 +55,20 @@ type HTTPRelayAwareApplier interface {
 	ApplyWithRelay(context.Context, []model.HTTPRule, []model.RelayListener) error
 }
 
+type HTTPWireGuardAwareApplier interface {
+	ApplyWithRelayAndWireGuardProfiles(context.Context, []model.HTTPRule, []model.RelayListener, []model.WireGuardProfile) error
+}
+
+type HTTPEgressAwareApplier interface {
+	ApplyWithRelayWireGuardAndEgressProfiles(context.Context, []model.HTTPRule, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
+}
+
 type L4RelayAwareApplier interface {
 	ApplyWithRelay(context.Context, []model.L4Rule, []model.RelayListener) error
+}
+
+type L4EgressAwareApplier interface {
+	ApplyWithRelayWireGuardAndEgressProfiles(context.Context, []model.L4Rule, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
 }
 
 type Updater interface {
@@ -94,6 +95,7 @@ type App struct {
 	httpProber                    *diagnostics.HTTPProber
 	tcpProber                     *diagnostics.TCPProber
 	hostTrafficCollector          hostTrafficCollector
+	wireGuardRuntime              *sharedWireGuardRuntime
 	relayTimeoutReset             func()
 	closeOnce                     sync.Once
 	syncMu                        sync.Mutex
@@ -102,6 +104,10 @@ type App struct {
 
 func advertisedCapabilities(cfg Config) []string {
 	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"}
+	if cfg.WireGuardModuleEnabled() {
+		capabilities = append(capabilities, "wireguard")
+	}
+	capabilities = append(capabilities, "egress_profiles")
 	if cfg.HTTP3Enabled {
 		capabilities = append(capabilities, "http3_ingress")
 	}
@@ -131,6 +137,9 @@ func normalizeConstructorConfig(cfg Config) Config {
 	}
 	if !cfg.TrafficStatsExplicit {
 		cfg.TrafficStatsEnabled = defaults.TrafficStatsEnabled
+	}
+	if !cfg.WireGuardExplicit {
+		cfg.WireGuardEnabled = defaults.WireGuardEnabled
 	}
 
 	return cfg
@@ -181,8 +190,9 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpManager := newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg)
-	l4Manager := newL4RuntimeManagerWithRelayAndConfig(certManager, cfg)
+	wireGuardRuntime := newSharedWireGuardRuntime()
+	httpManager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(certManager, cfg.HTTP3Enabled, cfg, wireGuardRuntime, false)
+	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
 	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	taskClient := agenttask.NewClient(agenttask.ClientConfig{
@@ -203,7 +213,7 @@ func New(cfg Config) (*App, error) {
 		httpManager,
 		certManager,
 		l4Manager,
-		newRelayRuntimeManager(certManager),
+		newRelayRuntimeManagerWithWireGuard(certManager, wireGuardRuntime),
 		agentupdate.NewManager(
 			cfg.DataDir,
 			executablePath,
@@ -216,6 +226,7 @@ func New(cfg Config) (*App, error) {
 	)
 	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
 	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
+	app.wireGuardRuntime = wireGuardRuntime
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil
@@ -328,12 +339,21 @@ func (a *App) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := a.runtime.Apply(ctx, Snapshot{}, applied); err != nil {
+	hydratedApplied := a.hydrateAppliedSnapshotFromDesired(applied)
+	if err := a.runtime.Apply(ctx, Snapshot{}, hydratedApplied); err != nil {
 		log.Printf("[agent] startup runtime hydration error at revision %d: %v", applied.Revision, err)
 		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
-	} else if err := a.persistTrafficStatsInterval(applied.AgentConfig.TrafficStatsInterval); err != nil {
-		log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", applied.Revision, err)
-		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
+	} else {
+		if !reflect.DeepEqual(applied, hydratedApplied) {
+			if err := a.store.SaveAppliedSnapshot(hydratedApplied); err != nil {
+				log.Printf("[agent] startup applied snapshot hydration save error at revision %d: %v", hydratedApplied.Revision, err)
+				_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
+			}
+		}
+		if err := a.persistTrafficStatsInterval(hydratedApplied.AgentConfig.TrafficStatsInterval); err != nil {
+			log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", hydratedApplied.Revision, err)
+			_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
+		}
 	}
 
 	if err := a.performSync(ctx); err != nil {
@@ -368,6 +388,40 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
+func (a *App) hydrateAppliedSnapshotFromDesired(applied Snapshot) Snapshot {
+	if a == nil || a.store == nil || runtimePayloadComplete(applied) {
+		return applied
+	}
+	desired, err := a.store.LoadDesiredSnapshot()
+	if err != nil || !desiredCanHydrateApplied(applied, desired) {
+		return applied
+	}
+	return mergeSnapshotPayload(applied, desired)
+}
+
+func desiredCanHydrateApplied(applied, desired Snapshot) bool {
+	if desired.Revision == 0 && desired.DesiredVersion == "" {
+		return false
+	}
+	if applied.Revision != desired.Revision {
+		return false
+	}
+	if applied.DesiredVersion != "" && desired.DesiredVersion != "" && applied.DesiredVersion != desired.DesiredVersion {
+		return false
+	}
+	return true
+}
+
+func runtimePayloadComplete(snapshot Snapshot) bool {
+	return snapshot.Rules != nil &&
+		snapshot.L4Rules != nil &&
+		snapshot.RelayListeners != nil &&
+		snapshot.WireGuardProfiles != nil &&
+		snapshot.EgressProfiles != nil &&
+		snapshot.Certificates != nil &&
+		snapshot.CertificatePolicies != nil
+}
+
 func (a *App) Close() error {
 	if a == nil {
 		return nil
@@ -397,494 +451,6 @@ func (a *App) SyncNow(ctx context.Context) error {
 	return a.performSync(ctx)
 }
 
-func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, error) {
-	req := SyncRequest{CurrentRevision: int(applied.Revision)}
-	a.pendingTrafficStatsReportUnix = ""
-
-	state, err := a.store.LoadRuntimeState()
-	if err != nil {
-		return SyncRequest{}, err
-	}
-	meta := ensureMetadata(state.Metadata)
-	req.LastApplyRevision = int(parseInt64(meta["last_apply_revision"], applied.Revision))
-	req.LastApplyStatus = strings.TrimSpace(meta["last_apply_status"])
-	req.LastApplyMessage = meta["last_apply_message"]
-	if req.LastApplyStatus == "" {
-		req.LastApplyStatus = "success"
-	}
-	if !traffic.Enabled() {
-		req.Stats = map[string]any{}
-		req.StatsPresent = true
-	} else if now := time.Now(); shouldReportTrafficStats(meta, now) {
-		stats := traffic.SnapshotNonZero()
-		if hostStats, err := a.hostTrafficSnapshot(); err != nil {
-			log.Printf("[agent] host traffic snapshot error: %v", err)
-		} else if hostStats != nil {
-			stats = mergeTrafficStats(stats, hostStats)
-		}
-		if stats != nil {
-			req.Stats = stats
-			req.StatsPresent = true
-			if hasTrafficStatsInterval(meta) {
-				a.pendingTrafficStatsReportUnix = strconv.FormatInt(now.Unix(), 10)
-			}
-		}
-	}
-
-	if reporter, ok := a.certApplier.(ManagedCertificateReporter); ok {
-		reports, err := reporter.ManagedCertificateReports(ctx)
-		if err != nil {
-			return SyncRequest{}, err
-		}
-		req.ManagedCertificateReports = reports
-	}
-
-	return req, nil
-}
-
-func (a *App) hostTrafficSnapshot() (map[string]any, error) {
-	if a.hostTrafficCollector == nil {
-		return nil, nil
-	}
-	snapshot, err := a.hostTrafficCollector.Snapshot()
-	if err != nil {
-		return nil, err
-	}
-	if snapshot.Total.RXBytes == 0 && snapshot.Total.TXBytes == 0 && len(snapshot.Interfaces) == 0 {
-		return nil, nil
-	}
-	return snapshot.Payload(), nil
-}
-
-func mergeTrafficStats(base, extra map[string]any) map[string]any {
-	if extra == nil {
-		return base
-	}
-	if base == nil {
-		base = map[string]any{}
-	}
-	baseTraffic, _ := base["traffic"].(map[string]any)
-	if baseTraffic == nil {
-		baseTraffic = map[string]any{}
-		base["traffic"] = baseTraffic
-	}
-	extraTraffic, _ := extra["traffic"].(map[string]any)
-	for key, value := range extraTraffic {
-		baseTraffic[key] = value
-	}
-	return base
-}
-
-func shouldReportTrafficStats(meta map[string]string, now time.Time) bool {
-	interval, err := time.ParseDuration(strings.TrimSpace(meta[runtimeMetaTrafficStatsInterval]))
-	if err != nil || interval <= 0 {
-		return true
-	}
-	lastReportUnix, err := strconv.ParseInt(strings.TrimSpace(meta[runtimeMetaLastTrafficStatsReportUnix]), 10, 64)
-	if err != nil || lastReportUnix <= 0 {
-		return true
-	}
-	return !now.Before(time.Unix(lastReportUnix, 0).Add(interval))
-}
-
-func hasTrafficStatsInterval(meta map[string]string) bool {
-	interval, err := time.ParseDuration(strings.TrimSpace(meta[runtimeMetaTrafficStatsInterval]))
-	return err == nil && interval > 0
-}
-
-func (a *App) persistTrafficStatsInterval(raw string) error {
-	state, err := a.store.LoadRuntimeState()
-	if err != nil {
-		return err
-	}
-	state.Metadata = ensureMetadata(state.Metadata)
-	if err := setTrafficStatsIntervalMetadata(state.Metadata, raw); err != nil {
-		return err
-	}
-	return a.store.SaveRuntimeState(state)
-}
-
-func parseTrafficStatsInterval(raw string) (string, error) {
-	interval := strings.TrimSpace(raw)
-	if interval == "" {
-		return "", nil
-	}
-	parsed, err := time.ParseDuration(interval)
-	if err != nil {
-		return "", fmt.Errorf("traffic_stats_interval: %w", err)
-	}
-	if parsed <= 0 {
-		return "", fmt.Errorf("traffic_stats_interval must be positive")
-	}
-	return interval, nil
-}
-
-func setTrafficStatsIntervalMetadata(meta map[string]string, raw string) error {
-	interval, err := parseTrafficStatsInterval(raw)
-	if err != nil {
-		return err
-	}
-	if interval == "" {
-		delete(meta, runtimeMetaTrafficStatsInterval)
-		return nil
-	}
-	meta[runtimeMetaTrafficStatsInterval] = interval
-	return nil
-}
-
-func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
-	snapshot, err := a.syncClient.Sync(ctx, req)
-	if err != nil {
-		log.Printf("[agent] sync error: %v", err)
-		return a.recordRuntimeError(err)
-	}
-	if req.Stats != nil && a.pendingTrafficStatsReportUnix != "" {
-		if err := a.persistLastTrafficStatsReportUnix(a.pendingTrafficStatsReportUnix); err != nil {
-			return a.recordRuntimeError(err)
-		}
-		a.pendingTrafficStatsReportUnix = ""
-	}
-	existingDesired, err := a.store.LoadDesiredSnapshot()
-	if err != nil {
-		return a.recordRuntimeError(err)
-	}
-	persistedSnapshot := mergeSnapshotPayload(snapshot, existingDesired)
-	if err := a.store.SaveDesiredSnapshot(persistedSnapshot); err != nil {
-		return a.recordRuntimeError(err)
-	}
-	if err := a.handlePendingUpdate(ctx, persistedSnapshot); err != nil {
-		return err
-	}
-	previousApplied := a.runtime.ActiveSnapshot()
-	candidateApplied := mergeSnapshotPayload(snapshot, previousApplied)
-	if err := a.runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
-		log.Printf("[agent] runtime apply error at revision %d: %v", candidateApplied.Revision, err)
-		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		return a.recordRuntimeErrorWithRevision(err, candidateApplied.Revision)
-	}
-	if err := a.store.SaveAppliedSnapshot(candidateApplied); err != nil {
-		log.Printf("[agent] save applied snapshot error at revision %d: %v", candidateApplied.Revision, err)
-		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
-	}
-	if err := a.persistRuntimeState(true); err != nil {
-		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		_ = a.store.SaveAppliedSnapshot(previousApplied)
-		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
-	}
-	return nil
-}
-
-func (a *App) recordRuntimeError(syncErr error) error {
-	return a.recordRuntimeErrorWithRevision(syncErr, a.runtime.ActiveSnapshot().Revision)
-}
-
-func (a *App) persistLastTrafficStatsReportUnix(timestamp string) error {
-	state, err := a.store.LoadRuntimeState()
-	if err != nil {
-		return err
-	}
-	state.Metadata = ensureMetadata(state.Metadata)
-	state.Metadata[runtimeMetaLastTrafficStatsReportUnix] = timestamp
-	return a.store.SaveRuntimeState(state)
-}
-
-func (a *App) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {
-	state, err := a.runtimeStateForPersistence()
-	if err != nil {
-		return syncErr
-	}
-	state.Metadata = ensureMetadata(state.Metadata)
-	state.Metadata["last_sync_error"] = syncErr.Error()
-	setApplyMetadata(state.Metadata, revision, "error", syncErr.Error())
-	if err := a.store.SaveRuntimeState(state); err != nil {
-		return syncErr
-	}
-	return syncErr
-}
-
-func (a *App) persistRuntimeState(clearLastSyncError bool) error {
-	state, err := a.runtimeStateForPersistence()
-	if err != nil {
-		return err
-	}
-	state.Metadata = ensureMetadata(state.Metadata)
-	setApplyMetadata(state.Metadata, a.runtime.ActiveSnapshot().Revision, "success", "")
-	activeConfig := a.runtime.ActiveSnapshot().AgentConfig
-	if err := setTrafficStatsIntervalMetadata(state.Metadata, activeConfig.TrafficStatsInterval); err != nil {
-		return err
-	}
-	setTrafficBlockedMetadata(state.Metadata, activeConfig)
-	if clearLastSyncError {
-		delete(state.Metadata, "last_sync_error")
-	}
-	if err := a.store.SaveRuntimeState(state); err != nil {
-		return err
-	}
-	return nil
-}
-
-func setTrafficBlockedMetadata(meta map[string]string, cfg model.AgentConfig) {
-	if cfg.TrafficBlocked {
-		meta[runtimeMetaTrafficBlocked] = "true"
-	} else {
-		meta[runtimeMetaTrafficBlocked] = "false"
-	}
-	if strings.TrimSpace(cfg.TrafficBlockReason) == "" {
-		delete(meta, runtimeMetaTrafficBlockReason)
-		return
-	}
-	meta[runtimeMetaTrafficBlockReason] = cfg.TrafficBlockReason
-}
-
-func (a *App) recordPersistedRuntimeError(syncErr error) error {
-	state, err := a.store.LoadRuntimeState()
-	if err != nil {
-		return syncErr
-	}
-	currentRevision := parseInt64(state.Metadata["current_revision"], state.CurrentRevision)
-	return a.recordPersistedRuntimeErrorWithRevision(syncErr, currentRevision)
-}
-
-func (a *App) recordPersistedRuntimeErrorWithRevision(syncErr error, revision int64) error {
-	state, err := a.store.LoadRuntimeState()
-	if err != nil {
-		return syncErr
-	}
-	state.Metadata = ensureMetadata(state.Metadata)
-	state.Metadata["last_sync_error"] = syncErr.Error()
-	setApplyMetadata(state.Metadata, revision, "error", syncErr.Error())
-	if err := a.store.SaveRuntimeState(state); err != nil {
-		return syncErr
-	}
-	return syncErr
-}
-
-func ensureMetadata(meta map[string]string) map[string]string {
-	if meta == nil {
-		return make(map[string]string)
-	}
-	return meta
-}
-
-func setApplyMetadata(meta map[string]string, revision int64, status string, message string) {
-	meta["last_apply_revision"] = strconv.FormatInt(revision, 10)
-	meta["last_apply_status"] = status
-	meta["last_apply_message"] = message
-}
-
-func parseInt64(raw string, fallback int64) int64 {
-	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-	if err != nil {
-		return fallback
-	}
-	return value
-}
-
-func (a *App) runtimeStateForPersistence() (store.RuntimeState, error) {
-	existing, err := a.store.LoadRuntimeState()
-	if err != nil {
-		return store.RuntimeState{}, err
-	}
-
-	current := a.runtime.State()
-	state := existing
-	state.Status = current.Status
-	state.CurrentRevision = current.CurrentRevision
-	state.Metadata = ensureMetadata(existing.Metadata)
-	for key, value := range current.Metadata {
-		state.Metadata[key] = value
-	}
-	return state, nil
-}
-
-func (a *App) applyManagedCertificates(ctx context.Context, snapshot Snapshot) error {
-	if a.certApplier == nil {
-		return nil
-	}
-	if snapshot.Certificates == nil && snapshot.CertificatePolicies == nil {
-		return nil
-	}
-	return a.certApplier.Apply(ctx, snapshot.Certificates, snapshot.CertificatePolicies)
-}
-
-func (a *App) applyHTTPRules(ctx context.Context, snapshot Snapshot) error {
-	if a.httpApplier == nil || snapshot.Rules == nil {
-		return nil
-	}
-	if relayAware, ok := a.httpApplier.(HTTPRelayAwareApplier); ok {
-		return relayAware.ApplyWithRelay(ctx, snapshot.Rules, snapshot.RelayListeners)
-	}
-	return a.httpApplier.Apply(ctx, snapshot.Rules)
-}
-
-func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
-	merged := next
-	if next.VersionPackage == nil {
-		merged.VersionPackage = previous.VersionPackage
-	}
-	if !next.HasAgentConfig() {
-		merged.AgentConfig = previous.AgentConfig
-	}
-	if next.Rules == nil {
-		merged.Rules = previous.Rules
-	}
-	if next.L4Rules == nil {
-		merged.L4Rules = previous.L4Rules
-	}
-	if next.RelayListeners == nil {
-		merged.RelayListeners = previous.RelayListeners
-	}
-	if next.Certificates == nil {
-		merged.Certificates = previous.Certificates
-	}
-	if next.CertificatePolicies == nil {
-		merged.CertificatePolicies = previous.CertificatePolicies
-	}
-	return merged
-}
-
-func (a *App) rollbackRuntime(ctx context.Context, previousApplied, targetApplied Snapshot) {
-	if reflect.DeepEqual(previousApplied, targetApplied) {
-		return
-	}
-	_ = a.runtime.Rollback(ctx, previousApplied, targetApplied)
-}
-
-func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
-	if a.l4Applier == nil || snapshot.L4Rules == nil {
-		return nil
-	}
-	if relayAware, ok := a.l4Applier.(L4RelayAwareApplier); ok {
-		return relayAware.ApplyWithRelay(ctx, snapshot.L4Rules, snapshot.RelayListeners)
-	}
-	return a.l4Applier.Apply(ctx, snapshot.L4Rules)
-}
-
-func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error {
-	if a.relayApplier == nil || snapshot.RelayListeners == nil {
-		return nil
-	}
-	return a.relayApplier.Apply(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName))
-}
-
-func (a *App) snapshotActivator() agentruntime.Activator {
-	handlers := a.snapshotActivationHandlers()
-	certActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
-		ActivateManagedCertificates: handlers.ActivateManagedCertificates,
-	})
-	configActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
-		ActivateAgentConfig: handlers.ActivateAgentConfig,
-	})
-	rulesActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
-		ActivateHTTPRules: handlers.ActivateHTTPRules,
-		ActivateL4Rules:   handlers.ActivateL4Rules,
-	})
-	relayActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
-		ActivateRelayListeners: handlers.ActivateRelayListeners,
-	})
-
-	return func(ctx context.Context, previous, next model.Snapshot) error {
-		if err := certActivator(ctx, previous, next); err != nil {
-			return err
-		}
-		if err := configActivator(ctx, previous, next); err != nil {
-			return err
-		}
-
-		localPrevious := previous
-		localPrevious.RelayListeners = localRelayListeners(previous.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
-		localNext := next
-		localNext.RelayListeners = localRelayListeners(next.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
-
-		if err := relayActivator(ctx, localPrevious, localNext); err != nil {
-			return err
-		}
-
-		return rulesActivator(ctx, previous, next)
-	}
-}
-
-func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandlers {
-	return agentruntime.SnapshotActivationHandlers{
-		ActivateAgentConfig: func(_ context.Context, cfg model.AgentConfig) error {
-			if _, err := parseTrafficStatsInterval(cfg.TrafficStatsInterval); err != nil {
-				return err
-			}
-			if cfg.TrafficStatsEnabled != nil {
-				traffic.SetEnabled(*cfg.TrafficStatsEnabled)
-			}
-			relay.SetOutboundProxyURL(cfg.OutboundProxyURL)
-			a.updateTrafficBlockState(cfg)
-			return nil
-		},
-		ActivateManagedCertificates: func(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
-			return a.applyManagedCertificates(ctx, Snapshot{
-				Certificates:        bundles,
-				CertificatePolicies: policies,
-			})
-		},
-		ActivateHTTPRules: func(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener) error {
-			return a.applyHTTPRules(ctx, Snapshot{
-				Rules:          rules,
-				RelayListeners: relayListeners,
-			})
-		},
-		ActivateRelayListeners: func(ctx context.Context, relayListeners []model.RelayListener) error {
-			return a.applyRelayListeners(ctx, Snapshot{
-				RelayListeners: relayListeners,
-			})
-		},
-		ActivateL4Rules: func(ctx context.Context, rules []model.L4Rule, relayListeners []model.RelayListener) error {
-			return a.applyL4Rules(ctx, Snapshot{
-				L4Rules:        rules,
-				RelayListeners: relayListeners,
-			})
-		},
-	}
-}
-
-func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {
-	if a == nil {
-		return
-	}
-	blocked := cfg.TrafficBlocked
-	reason := cfg.TrafficBlockReason
-	if manager, ok := a.httpApplier.(interface {
-		UpdateTrafficBlockState(proxy.TrafficBlockState)
-	}); ok {
-		manager.UpdateTrafficBlockState(proxy.TrafficBlockState{Blocked: blocked, Reason: reason})
-	}
-	if manager, ok := a.l4Applier.(interface {
-		UpdateTrafficBlockState(l4.TrafficBlockState)
-	}); ok {
-		manager.UpdateTrafficBlockState(l4.TrafficBlockState{Blocked: blocked, Reason: reason})
-	}
-	if manager, ok := a.relayApplier.(interface {
-		UpdateTrafficBlockState(relay.TrafficBlockState)
-	}); ok {
-		manager.UpdateTrafficBlockState(relay.TrafficBlockState{Blocked: blocked, Reason: reason})
-	}
-}
-
-func localRelayListeners(listeners []model.RelayListener, agentID, agentName string) []model.RelayListener {
-	if listeners == nil {
-		return nil
-	}
-	identity := strings.TrimSpace(agentID)
-	fallback := strings.TrimSpace(agentName)
-	if identity == "" && fallback == "" {
-		return listeners
-	}
-	filtered := make([]model.RelayListener, 0, len(listeners))
-	for _, listener := range listeners {
-		if listener.AgentID == identity || (identity == "" && listener.AgentID == fallback) || listener.AgentID == fallback {
-			filtered = append(filtered, listener)
-		}
-	}
-	return filtered
-}
-
 func (a *App) closeLocalRuntimes() {
 	if closer, ok := a.certApplier.(certCloser); ok {
 		_ = closer.Close()
@@ -897,6 +463,10 @@ func (a *App) closeLocalRuntimes() {
 	}
 	if a.l4Applier != nil {
 		_ = a.l4Applier.Close()
+	}
+	if a.wireGuardRuntime != nil {
+		_ = a.wireGuardRuntime.Close()
+		a.wireGuardRuntime = nil
 	}
 	if a.relayTimeoutReset != nil {
 		a.relayTimeoutReset()

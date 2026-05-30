@@ -56,7 +56,7 @@ func TestRuntimeActivatesHTTPRelayAndL4FromOneSnapshot(t *testing.T) {
 			Backends: []model.HTTPBackend{
 				{URL: "http://10.0.0.10:8096"},
 			},
-			RelayChain: []int{1},
+			RelayLayers: [][]int{{1}},
 		}},
 		L4Rules: []model.L4Rule{{
 			Protocol:   "tcp",
@@ -65,7 +65,7 @@ func TestRuntimeActivatesHTTPRelayAndL4FromOneSnapshot(t *testing.T) {
 			Backends: []model.L4Backend{
 				{Host: "10.0.0.20", Port: 9000},
 			},
-			RelayChain: []int{1},
+			RelayLayers: [][]int{{1}},
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         1,
@@ -139,7 +139,7 @@ func TestRuntimeSkipsHTTPAndL4ForUnrelatedRelayListenerChanges(t *testing.T) {
 		DesiredVersion: "v1",
 		Revision:       1,
 		Rules: []model.HTTPRule{{
-			RelayChain: []int{1},
+			RelayLayers: [][]int{{1}},
 		}},
 		L4Rules: []model.L4Rule{{
 			Protocol:   "tcp",
@@ -148,7 +148,7 @@ func TestRuntimeSkipsHTTPAndL4ForUnrelatedRelayListenerChanges(t *testing.T) {
 			Backends: []model.L4Backend{
 				{Host: "10.0.0.20", Port: 9000},
 			},
-			RelayChain: []int{1},
+			RelayLayers: [][]int{{1}},
 		}},
 		RelayListeners: []model.RelayListener{
 			{

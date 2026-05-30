@@ -102,6 +102,33 @@ func TestLoadFromEnvTrafficStatsEnabledDefaultsTrue(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvWireGuardEnabledDefaultsTrue(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.WireGuardEnabled {
+		t.Fatal("expected WireGuardEnabled to default true")
+	}
+}
+
+func TestLoadFromEnvWireGuardEnabledParsesFalse(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_WIREGUARD_ENABLED", "false")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.WireGuardEnabled {
+		t.Fatal("expected WireGuardEnabled to be false")
+	}
+}
+
 func TestLoadFromEnvTrafficStatsEnabledParsesFalse(t *testing.T) {
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "secret")
@@ -141,6 +168,20 @@ func TestLoadFromEnvRejectsInvalidTrafficStatsEnabled(t *testing.T) {
 		t.Fatal("expected invalid NRE_TRAFFIC_STATS_ENABLED error")
 	}
 	if !strings.Contains(err.Error(), "NRE_TRAFFIC_STATS_ENABLED") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidWireGuardEnabled(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_WIREGUARD_ENABLED", "maybe")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid NRE_WIREGUARD_ENABLED error")
+	}
+	if !strings.Contains(err.Error(), "NRE_WIREGUARD_ENABLED") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -613,7 +613,7 @@ function firstHttpBackend(rule) {
     const first = String(rule.backends[0]?.url || '').trim()
     if (first) return first
   }
-  return String(rule?.backend_url || '').trim()
+  return ''
 }
 
 function formatHttpBackend(rule) {
@@ -627,9 +627,6 @@ function firstL4Backend(rule) {
   if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
     const backend = rule.backends[0]
     if (backend?.host && backend?.port) return `${backend.host}:${backend.port}`
-  }
-  if (rule?.upstream_host && rule?.upstream_port) {
-    return `${rule.upstream_host}:${rule.upstream_port}`
   }
   return ''
 }
