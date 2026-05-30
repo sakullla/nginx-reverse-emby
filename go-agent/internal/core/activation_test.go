@@ -222,6 +222,83 @@ func TestSnapshotActivatorRefreshesHTTPAndL4ForWireGuardAndEgressChanges(t *test
 	}
 }
 
+func TestSnapshotActivatorRefreshesHTTPAndL4ForProfileOnlyChanges(t *testing.T) {
+	egressID := 7
+	for _, tt := range []struct {
+		name string
+		next func(model.Snapshot) model.Snapshot
+	}{
+		{
+			name: "wireguard",
+			next: func(snapshot model.Snapshot) model.Snapshot {
+				snapshot.WireGuardProfiles = []model.WireGuardProfile{{ID: 1, Revision: 2}}
+				return snapshot
+			},
+		},
+		{
+			name: "egress",
+			next: func(snapshot model.Snapshot) model.Snapshot {
+				snapshot.EgressProfiles = []model.EgressProfile{{ID: egressID, Revision: 2}}
+				return snapshot
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var httpCalls int
+			var l4Calls int
+
+			activator := NewSnapshotActivator("agent-a", "alpha", SnapshotActivationHandlers{
+				ActivateHTTPRules: func(_ context.Context, input SnapshotHTTPInput) error {
+					httpCalls++
+					if tt.name == "wireguard" && (len(input.WireGuardProfiles) != 1 || input.WireGuardProfiles[0].Revision != 2) {
+						t.Fatalf("http wireguard profiles = %+v", input.WireGuardProfiles)
+					}
+					if tt.name == "egress" && (len(input.EgressProfiles) != 1 || input.EgressProfiles[0].Revision != 2) {
+						t.Fatalf("http egress profiles = %+v", input.EgressProfiles)
+					}
+					return nil
+				},
+				ActivateL4Rules: func(_ context.Context, input SnapshotL4Input) error {
+					l4Calls++
+					if tt.name == "wireguard" && (len(input.WireGuardProfiles) != 1 || input.WireGuardProfiles[0].Revision != 2) {
+						t.Fatalf("l4 wireguard profiles = %+v", input.WireGuardProfiles)
+					}
+					if tt.name == "egress" && (len(input.EgressProfiles) != 1 || input.EgressProfiles[0].Revision != 2) {
+						t.Fatalf("l4 egress profiles = %+v", input.EgressProfiles)
+					}
+					return nil
+				},
+			})
+
+			previous := model.Snapshot{
+				Rules: []model.HTTPRule{{
+					ID:                    1,
+					WireGuardEntryEnabled: true,
+					EgressProfileID:       &egressID,
+				}},
+				L4Rules: []model.L4Rule{{
+					ID:              1,
+					ListenMode:      "wireguard",
+					EgressProfileID: &egressID,
+				}},
+				WireGuardProfiles: []model.WireGuardProfile{{ID: 1, Revision: 1}},
+				EgressProfiles:    []model.EgressProfile{{ID: egressID, Revision: 1}},
+			}
+
+			if err := activator(context.Background(), previous, tt.next(previous)); err != nil {
+				t.Fatalf("activator returned error: %v", err)
+			}
+
+			if httpCalls != 1 {
+				t.Fatalf("http calls = %d, want 1", httpCalls)
+			}
+			if l4Calls != 1 {
+				t.Fatalf("l4 calls = %d, want 1", l4Calls)
+			}
+		})
+	}
+}
+
 func TestSnapshotActivatorRefreshesRelayForWireGuardChangesAndFiltersLocalListeners(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
@@ -280,6 +357,39 @@ func TestSnapshotActivatorRefreshesRelayForWireGuardChangesAndFiltersLocalListen
 				t.Fatalf("egress profiles = %+v", got.EgressProfiles)
 			}
 		})
+	}
+}
+
+func TestSnapshotActivatorRefreshesRelayForEgressOnlyLocalListenerChanges(t *testing.T) {
+	var relayCalls int
+	var got SnapshotRelayInput
+	activator := NewSnapshotActivator("agent-a", "alpha", SnapshotActivationHandlers{
+		ActivateRelayListeners: func(_ context.Context, input SnapshotRelayInput) error {
+			relayCalls++
+			got = input
+			return nil
+		},
+	})
+
+	previous := model.Snapshot{
+		RelayListeners: []model.RelayListener{{ID: 1, AgentID: "agent-a"}},
+		EgressProfiles: []model.EgressProfile{{ID: 1, Revision: 1}},
+	}
+	next := previous
+	next.EgressProfiles = []model.EgressProfile{{ID: 1, Revision: 2}}
+
+	if err := activator(context.Background(), previous, next); err != nil {
+		t.Fatalf("activator returned error: %v", err)
+	}
+
+	if relayCalls != 1 {
+		t.Fatalf("relay calls = %d, want 1", relayCalls)
+	}
+	if len(got.RelayListeners) != 1 || got.RelayListeners[0].ID != 1 {
+		t.Fatalf("relay listeners = %+v, want local listener", got.RelayListeners)
+	}
+	if len(got.EgressProfiles) != 1 || got.EgressProfiles[0].Revision != 2 {
+		t.Fatalf("egress profiles = %+v", got.EgressProfiles)
 	}
 }
 

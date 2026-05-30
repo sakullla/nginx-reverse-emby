@@ -5,11 +5,15 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
+
+const socks5UDPTestTimeout = time.Second
 
 func TestFinalHopDialerDelegatesWireGuardProfilesToProvider(t *testing.T) {
 	t.Parallel()
@@ -31,6 +35,36 @@ func TestFinalHopDialerDelegatesWireGuardProfilesToProvider(t *testing.T) {
 	}
 	if runtime.network != "tcp" || runtime.address != "10.0.0.10:443" {
 		t.Fatalf("runtime dial = %s %s, want tcp target", runtime.network, runtime.address)
+	}
+}
+
+func TestFinalHopDialerUDPEgressPreservesTargetForSOCKS5(t *testing.T) {
+	proxyAddr, packetCh := startObservingSOCKS5UDPProxy(t)
+	profileID := 17
+	dialer := NewFinalHopDialer([]model.EgressProfile{{
+		ID:       profileID,
+		Name:     "socks-udp",
+		Type:     "socks",
+		ProxyURL: "socks5h://" + proxyAddr,
+		Enabled:  true,
+	}}, nil)
+
+	peer, err := dialer.OpenUDP(context.Background(), "backend.example:5300", &profileID)
+	if err != nil {
+		t.Fatalf("OpenUDP() error = %v", err)
+	}
+	defer peer.Close()
+
+	if err := peer.WritePacket([]byte("ping")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+
+	packet := waitForSOCKS5UDPPacket(t, packetCh)
+	if packet.Target != "backend.example:5300" {
+		t.Fatalf("SOCKS5 UDP target = %q, want backend.example:5300", packet.Target)
+	}
+	if string(packet.Payload) != "ping" {
+		t.Fatalf("SOCKS5 UDP payload = %q, want ping", string(packet.Payload))
 	}
 }
 
@@ -148,3 +182,87 @@ func (f *recordingFactory) Create(_ context.Context, cfg basewireguard.Config) (
 }
 
 const wireGuardTestKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan proxyproto.SOCKS5UDPPacket) {
+	t.Helper()
+
+	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp proxy: %v", err)
+	}
+	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		_ = tcpLn.Close()
+		t.Fatalf("listen udp proxy: %v", err)
+	}
+
+	packetCh := make(chan proxyproto.SOCKS5UDPPacket, 1)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		defer close(packetCh)
+
+		client, err := tcpLn.Accept()
+		if err != nil {
+			return
+		}
+		defer client.Close()
+		if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Errorf("set tcp deadline: %v", err)
+			return
+		}
+		req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+		if err != nil {
+			t.Errorf("ReadClientRequest() error = %v", err)
+			return
+		}
+		if req.Protocol != "socks5-udp" {
+			t.Errorf("req.Protocol = %q, want socks5-udp", req.Protocol)
+			return
+		}
+		if err := proxyproto.WriteClientRequestSuccessWithBind(client, req, udpLn.LocalAddr()); err != nil {
+			t.Errorf("WriteClientRequestSuccessWithBind() error = %v", err)
+			return
+		}
+
+		buf := make([]byte, 64*1024)
+		n, _, err := udpLn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		packet, err := proxyproto.ParseSOCKS5UDPPacket(buf[:n])
+		if err != nil {
+			t.Errorf("ParseSOCKS5UDPPacket() error = %v", err)
+			return
+		}
+		packetCh <- packet
+	}()
+
+	t.Cleanup(func() {
+		_ = tcpLn.Close()
+		_ = udpLn.Close()
+		select {
+		case <-done:
+		case <-time.After(socks5UDPTestTimeout):
+			t.Fatal("timed out waiting for SOCKS5 UDP proxy goroutine")
+		}
+	})
+
+	return tcpLn.Addr().String(), packetCh
+}
+
+func waitForSOCKS5UDPPacket(t *testing.T, packetCh <-chan proxyproto.SOCKS5UDPPacket) proxyproto.SOCKS5UDPPacket {
+	t.Helper()
+
+	select {
+	case packet, ok := <-packetCh:
+		if !ok {
+			t.Fatal("SOCKS5 UDP proxy closed before packet was observed")
+		}
+		return packet
+	case <-time.After(socks5UDPTestTimeout):
+		t.Fatal("timed out waiting for SOCKS5 UDP packet")
+		return proxyproto.SOCKS5UDPPacket{}
+	}
+}

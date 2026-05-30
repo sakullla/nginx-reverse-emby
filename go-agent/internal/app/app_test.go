@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,7 +17,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
@@ -32,7 +29,6 @@ import (
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
-	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
 func TestNewBuildsRealWiring(t *testing.T) {
@@ -565,345 +561,12 @@ func TestRunKeepsRunningWhenAppliedSnapshotExists(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
+	waitForSyncReturns(t, client, 1, time.Second)
 
 	cancel()
 
 	if err := <-done; err != nil {
 		t.Fatalf("expected nil after cancellation, got %v", err)
-	}
-}
-
-func TestRunPersistsDesiredSnapshot(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
-	mem := store.NewInMemory()
-	expected := Snapshot{
-		DesiredVersion: "2.0",
-		Revision:       9,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "https://frontend.example.com",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    2,
-		}},
-		L4Rules: []model.L4Rule{{
-			Protocol:   "tcp",
-			ListenHost: "127.0.0.1",
-			ListenPort: 9000,
-			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
-			Revision:   4,
-		}},
-		RelayListeners: []model.RelayListener{{
-			ID:         31,
-			AgentID:    "remote-agent-5",
-			Name:       "relay-a",
-			ListenHost: "127.0.0.1",
-			ListenPort: 9443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: "pin-value",
-			}},
-			Revision: 7,
-		}},
-		Certificates: []model.ManagedCertificateBundle{{
-			ID:       21,
-			Domain:   "sync.example.com",
-			Revision: 3,
-			CertPEM:  "CERTIFICATE",
-			KeyPEM:   "PRIVATEKEY",
-		}},
-		CertificatePolicies: []model.ManagedCertificatePolicy{{
-			ID:              21,
-			Domain:          "sync.example.com",
-			Enabled:         true,
-			Scope:           "domain",
-			IssuerMode:      "local_http01",
-			Status:          "issued",
-			Revision:        3,
-			Usage:           "relay_ca",
-			CertificateType: "internal_ca",
-			SelfSigned:      true,
-		}},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
-	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	waitForCalls(t, client, 1, time.Second)
-
-	snap, err := mem.LoadDesiredSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load desired snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(snap, expected) {
-		t.Fatalf("expected desired snapshot %+v, got %+v", expected, snap)
-	}
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestRunPersistsAppliedSnapshotAfterSuccessfulSync(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
-	mem := store.NewInMemory()
-	previousApplied := Snapshot{
-		DesiredVersion: "1.0",
-		Revision:       4,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://old.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    1,
-		}},
-	}
-	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-
-	expected := Snapshot{
-		DesiredVersion: "2.0",
-		Revision:       9,
-		Rules: []model.HTTPRule{{
-			FrontendURL:   "http://edge.example.test:18080",
-			Backends:      []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			ProxyRedirect: true,
-			Revision:      4,
-		}},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
-	httpApplier := &testHTTPApplier{}
-	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	waitForCalls(t, client, 1, time.Second)
-
-	applied, err := mem.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(applied, expected) {
-		t.Fatalf("expected applied snapshot %+v, got %+v", expected, applied)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.CurrentRevision != expected.Revision {
-		t.Fatalf("expected current revision %d, got %d", expected.Revision, state.CurrentRevision)
-	}
-	if state.Metadata["current_revision"] != "9" {
-		t.Fatalf("expected metadata current_revision 9, got %q", state.Metadata["current_revision"])
-	}
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
-	mem := store.NewInMemory()
-	previousApplied := Snapshot{
-		DesiredVersion: "applied",
-		Revision:       4,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://applied.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    1,
-		}},
-		L4Rules: []model.L4Rule{{
-			Protocol:   "tcp",
-			ListenHost: "127.0.0.1",
-			ListenPort: 9000,
-			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9001}},
-			Revision:   1,
-		}},
-	}
-	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	previousDesired := Snapshot{
-		DesiredVersion: "desired",
-		Revision:       4,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://desired.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    2,
-		}},
-		L4Rules: previousApplied.L4Rules,
-	}
-	if err := mem.SaveDesiredSnapshot(previousDesired); err != nil {
-		t.Fatalf("failed to seed desired snapshot: %v", err)
-	}
-
-	synced := Snapshot{
-		DesiredVersion: "next",
-		Revision:       5,
-		L4Rules: []model.L4Rule{{
-			Protocol:   "tcp",
-			ListenHost: "127.0.0.1",
-			ListenPort: 9100,
-			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9101}},
-			Revision:   2,
-		}},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: synced})
-	httpApplier := &testHTTPApplier{}
-	l4Applier := &testL4Applier{}
-	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, l4Applier, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	waitForCalls(t, client, 1, time.Second)
-
-	if calls := httpApplier.snapshotCalls(); len(calls) != 1 {
-		t.Fatalf("expected only startup http apply call for omitted http payload, got %d", len(calls))
-	}
-
-	l4Calls := l4Applier.snapshotCalls()
-	if len(l4Calls) != 2 {
-		t.Fatalf("expected startup and sync l4 apply calls, got %d", len(l4Calls))
-	}
-	if !reflect.DeepEqual(l4Calls[1].rules, synced.L4Rules) {
-		t.Fatalf("unexpected synced l4 rules: %+v", l4Calls[1].rules)
-	}
-
-	desired, err := mem.LoadDesiredSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load desired snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(desired.Rules, previousDesired.Rules) {
-		t.Fatalf("expected desired http rules preserved from previous desired snapshot, got %+v", desired.Rules)
-	}
-
-	applied, err := mem.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(applied.Rules, previousApplied.Rules) {
-		t.Fatalf("expected applied http rules preserved from previous applied snapshot, got %+v", applied.Rules)
-	}
-	if !reflect.DeepEqual(applied.L4Rules, synced.L4Rules) {
-		t.Fatalf("expected applied l4 rules updated from sync payload, got %+v", applied.L4Rules)
-	}
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestMergeSnapshotPayloadPreservesOmittedAgentConfig(t *testing.T) {
-	previous := Snapshot{
-		DesiredVersion: "previous",
-		Revision:       4,
-		AgentConfig: model.AgentConfig{
-			OutboundProxyURL: "socks://127.0.0.1:1080",
-		},
-	}
-	var next Snapshot
-	if err := json.Unmarshal([]byte(`{"desired_version":"next","desired_revision":4}`), &next); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
-	}
-
-	merged := mergeSnapshotPayload(next, previous)
-
-	if merged.AgentConfig.OutboundProxyURL != "socks://127.0.0.1:1080" {
-		t.Fatalf("AgentConfig.OutboundProxyURL = %q", merged.AgentConfig.OutboundProxyURL)
-	}
-}
-
-func TestMergeSnapshotPayloadAppliesExplicitEmptyAgentConfig(t *testing.T) {
-	previous := Snapshot{
-		DesiredVersion: "previous",
-		Revision:       4,
-		AgentConfig: model.AgentConfig{
-			OutboundProxyURL: "socks://127.0.0.1:1080",
-		},
-	}
-	var next Snapshot
-	if err := json.Unmarshal([]byte(`{"desired_version":"next","desired_revision":4,"agent_config":{}}`), &next); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
-	}
-
-	merged := mergeSnapshotPayload(next, previous)
-
-	if merged.AgentConfig.OutboundProxyURL != "" {
-		t.Fatalf("AgentConfig.OutboundProxyURL = %q, want cleared", merged.AgentConfig.OutboundProxyURL)
-	}
-}
-
-func TestMergeSnapshotPayloadAppliesExplicitEmptyWireGuardProfiles(t *testing.T) {
-	previous := Snapshot{
-		DesiredVersion: "previous",
-		Revision:       7,
-		WireGuardProfiles: []model.WireGuardProfile{{
-			ID:         41,
-			AgentID:    "remote-leaked",
-			Name:       "leaked",
-			PrivateKey: "leaked-private-key",
-			Enabled:    true,
-			Revision:   7,
-		}},
-	}
-	var next Snapshot
-	if err := json.Unmarshal([]byte(`{"desired_version":"cleanup","desired_revision":8,"wireguard_profiles":[]}`), &next); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
-	}
-
-	merged := mergeSnapshotPayload(next, previous)
-
-	if merged.WireGuardProfiles == nil {
-		t.Fatal("WireGuardProfiles = nil, want explicit empty slice")
-	}
-	if len(merged.WireGuardProfiles) != 0 {
-		t.Fatalf("WireGuardProfiles = %+v, want cleared", merged.WireGuardProfiles)
-	}
-}
-
-func TestMergeSnapshotPayloadAppliesExplicitEmptyEgressProfiles(t *testing.T) {
-	previous := Snapshot{
-		DesiredVersion: "previous",
-		Revision:       7,
-		EgressProfiles: []model.EgressProfile{{
-			ID:       41,
-			Name:     "stale",
-			Type:     "socks",
-			ProxyURL: "socks5://127.0.0.1:1080",
-			Enabled:  true,
-			Revision: 7,
-		}},
-	}
-	var next Snapshot
-	if err := json.Unmarshal([]byte(`{"desired_version":"cleanup","desired_revision":8,"egress_profiles":[]}`), &next); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
-	}
-
-	merged := mergeSnapshotPayload(next, previous)
-
-	if merged.EgressProfiles == nil {
-		t.Fatal("EgressProfiles = nil, want explicit empty slice")
-	}
-	if len(merged.EgressProfiles) != 0 {
-		t.Fatalf("EgressProfiles = %+v, want cleared", merged.EgressProfiles)
 	}
 }
 
@@ -942,98 +605,16 @@ func TestRunAppliesExplicitEmptyWireGuardProfilesToClearStaleProfiles(t *testing
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	applied, err := mem.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
+	applied := waitForAppliedSnapshot(t, time.Second, mem, func(snapshot Snapshot) bool {
+		return snapshot.WireGuardProfiles != nil && len(snapshot.WireGuardProfiles) == 0
+	})
 	if applied.WireGuardProfiles == nil || len(applied.WireGuardProfiles) != 0 {
 		t.Fatalf("applied WireGuardProfiles = %+v, want explicit empty slice", applied.WireGuardProfiles)
 	}
-	calls := relayApplier.wireGuardCalls()
-	if len(calls) == 0 {
-		t.Fatal("ApplyWithWireGuardProfiles was not called")
-	}
+	calls := waitForObservedCalls(t, time.Second, relayApplier.wireGuardCalls, 1, "relay WireGuard apply")
 	lastCall := calls[len(calls)-1]
 	if lastCall.profiles == nil || len(lastCall.profiles) != 0 {
 		t.Fatalf("applied relay WireGuard profiles = %+v, want explicit empty slice", lastCall.profiles)
-	}
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *testing.T) {
-	cfg := Config{HeartbeatInterval: time.Hour}
-	mem := store.NewInMemory()
-	previousApplied := Snapshot{
-		DesiredVersion: "stable",
-		Revision:       7,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://stable.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    1,
-		}},
-	}
-	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: previousApplied.Revision,
-		Metadata: map[string]string{
-			"current_revision": "7",
-			"foo":              "bar",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
-		DesiredVersion: "broken",
-		Revision:       9,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://broken.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    2,
-		}},
-	}})
-	httpApplier := &testHTTPApplier{
-		applyErr:   errors.New("http apply failed"),
-		failOnCall: 2,
-	}
-	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	waitForCalls(t, client, 1, time.Second)
-
-	applied, err := mem.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(applied, previousApplied) {
-		t.Fatalf("expected applied snapshot to stay unchanged on failure, got %+v", applied)
-	}
-
-	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "http apply failed")
-	if state.CurrentRevision != previousApplied.Revision {
-		t.Fatalf("expected current revision %d after failed apply, got %d", previousApplied.Revision, state.CurrentRevision)
-	}
-	if state.Metadata["current_revision"] != "7" {
-		t.Fatalf("expected metadata current_revision 7 after failed apply, got %q", state.Metadata["current_revision"])
-	}
-	if state.Metadata["last_apply_revision"] != "9" || state.Metadata["last_apply_status"] != "error" {
-		t.Fatalf("expected attempted apply revision/status recorded, got %v", state.Metadata)
-	}
-	if state.Metadata["foo"] != "bar" {
-		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
 	}
 
 	cancel()
@@ -1058,7 +639,7 @@ func TestRunClosesCertificateApplierOnShutdown(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
+	waitForSyncReturns(t, client, 1, time.Second)
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("run returned error: %v", err)
@@ -1068,690 +649,8 @@ func TestRunClosesCertificateApplierOnShutdown(t *testing.T) {
 	}
 }
 
-func TestAppRollsBackRuntimeAndPersistsLastSyncError(t *testing.T) {
-	cfg := Config{HeartbeatInterval: time.Hour}
-	mem := store.NewInMemory()
-	previousApplied := Snapshot{
-		DesiredVersion: "stable",
-		Revision:       7,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://stable.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    1,
-		}},
-	}
-	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: previousApplied.Revision,
-		Metadata: map[string]string{
-			"current_revision": "7",
-			"foo":              "bar",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	nextSnapshot := Snapshot{
-		DesiredVersion: "next",
-		Revision:       9,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://next.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    2,
-		}},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: nextSnapshot})
-	httpApplier := &testHTTPApplier{
-		applyErr:   errors.New("activation failed"),
-		failOnCall: 2,
-	}
-	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
-
-	ctx := context.Background()
-	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
-		t.Fatalf("failed to seed runtime: %v", err)
-	}
-
-	if err := app.performSync(ctx); err == nil || err.Error() != "activation failed" {
-		t.Fatalf("expected activation failure, got %v", err)
-	}
-
-	calls := httpApplier.snapshotCalls()
-	if len(calls) != 3 {
-		t.Fatalf("expected startup, failed apply, and rollback apply calls, got %d", len(calls))
-	}
-	if !reflect.DeepEqual(calls[2].rules, previousApplied.Rules) {
-		t.Fatalf("expected rollback call to restore previous rules, got %+v", calls[2].rules)
-	}
-
-	applied, err := mem.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(applied, previousApplied) {
-		t.Fatalf("expected applied snapshot unchanged after failed activation, got %+v", applied)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.CurrentRevision != previousApplied.Revision {
-		t.Fatalf("expected persisted current revision %d, got %d", previousApplied.Revision, state.CurrentRevision)
-	}
-	if state.Metadata["current_revision"] != "7" {
-		t.Fatalf("expected persisted metadata current_revision 7, got %q", state.Metadata["current_revision"])
-	}
-	if state.Metadata["last_sync_error"] != "activation failed" {
-		t.Fatalf("expected activation failure metadata, got %v", state.Metadata)
-	}
-	if state.Metadata["foo"] != "bar" {
-		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
-	}
-}
-
-func TestRunPersistsExplicitEmptyCertificatePayloads(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
-	mem := store.NewInMemory()
-	expected := Snapshot{
-		DesiredVersion:      "2.0",
-		Revision:            10,
-		Certificates:        []model.ManagedCertificateBundle{},
-		CertificatePolicies: []model.ManagedCertificatePolicy{},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
-	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	waitForCalls(t, client, 1, time.Second)
-
-	snap, err := mem.LoadDesiredSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load desired snapshot: %v", err)
-	}
-	if snap.Certificates == nil || len(snap.Certificates) != 0 {
-		t.Fatalf("expected explicit empty certificates slice, got %+v", snap.Certificates)
-	}
-	if snap.CertificatePolicies == nil || len(snap.CertificatePolicies) != 0 {
-		t.Fatalf("expected explicit empty certificate policies slice, got %+v", snap.CertificatePolicies)
-	}
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
-	mem := store.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	state := store.RuntimeState{
-		Metadata: map[string]string{
-			"current_revision": "7",
-			"foo":              "bar",
-		},
-	}
-	if err := mem.SaveRuntimeState(state); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient([]syncResponse{
-		{err: errors.New("boom")},
-		{snapshot: Snapshot{DesiredVersion: "new"}},
-	}, syncResponse{})
-	releaseSecondSync := client.blockFromCall(2)
-
-	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	waitForCalls(t, client, 1, time.Second)
-	current := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "boom")
-	if current.Metadata["last_sync_error"] != "boom" {
-		t.Fatalf("expected failure metadata, got %v", current.Metadata)
-	}
-	if current.Metadata["foo"] != "bar" {
-		t.Fatalf("expected other metadata preserved, got %v", current.Metadata)
-	}
-
-	close(releaseSecondSync)
-	waitForCalls(t, client, 2, time.Second)
-	waitForRuntimeState(t, time.Second, func() bool {
-		updated, err := mem.LoadRuntimeState()
-		if err != nil {
-			t.Fatalf("failed to load runtime state: %v", err)
-		}
-		current = updated
-		_, ok := current.Metadata["last_sync_error"]
-		return !ok
-	}, func() string {
-		return "expected failure metadata cleared"
-	})
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
-	inner := store.NewInMemory()
-	fs := &failingStore{delegate: inner, failOnNthSave: 2}
-	if err := fs.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := fs.SaveRuntimeState(store.RuntimeState{
-		Metadata: map[string]string{"current_revision": "1"},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
-	releaseThirdSync := client.blockFromCall(3)
-	app := newAppWithDeps(cfg, fs, client, nil, nil, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	waitForRequest(t, client, time.Second)  // initial request
-	waitForCalls(t, client, 2, time.Second) // second request triggers failure
-
-	state := waitForLastSyncError(t, time.Second, fs.LoadRuntimeState, "persistence fail")
-	if state.Metadata["last_sync_error"] != "persistence fail" {
-		t.Fatalf("expected persistence failure metadata, got %v", state.Metadata)
-	}
-
-	close(releaseThirdSync)
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestRunDoesNotAdvancePersistedRuntimeStateWhenSaveAppliedSnapshotFails(t *testing.T) {
-	cfg := Config{HeartbeatInterval: time.Hour}
-	inner := store.NewInMemory()
-	fs := &failingStore{delegate: inner, failOnNthAppliedSave: 2}
-
-	previousApplied := Snapshot{
-		DesiredVersion: "stable",
-		Revision:       7,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://stable.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    1,
-		}},
-	}
-	if err := fs.SaveAppliedSnapshot(previousApplied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := fs.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: previousApplied.Revision,
-		Metadata: map[string]string{
-			"current_revision": "7",
-			"foo":              "bar",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
-		DesiredVersion: "next",
-		Revision:       9,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://next.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    2,
-		}},
-	}})
-	httpApplier := &testHTTPApplier{}
-	app := newAppWithHTTPDeps(cfg, fs, client, httpApplier, nil, nil, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	waitForCalls(t, client, 1, time.Second)
-
-	applied, err := fs.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(applied, previousApplied) {
-		t.Fatalf("expected applied snapshot unchanged after applied persistence failure, got %+v", applied)
-	}
-
-	state, err := fs.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.CurrentRevision != previousApplied.Revision {
-		t.Fatalf("expected persisted current revision %d, got %d", previousApplied.Revision, state.CurrentRevision)
-	}
-	if state.Metadata["current_revision"] != "7" {
-		t.Fatalf("expected persisted metadata current_revision 7, got %q", state.Metadata["current_revision"])
-	}
-	if state.Metadata["last_sync_error"] != "applied persistence fail" {
-		t.Fatalf("expected applied persistence error metadata, got %v", state.Metadata)
-	}
-	if state.Metadata["last_apply_revision"] != "9" || state.Metadata["last_apply_status"] != "error" {
-		t.Fatalf("expected attempted apply revision/status recorded, got %v", state.Metadata)
-	}
-	if state.Metadata["foo"] != "bar" {
-		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
-	}
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
-func TestRunDoesNotAdvancePersistedStateOrHeartbeatRevisionWhenRollbackFailsAfterSaveAppliedSnapshotFailure(t *testing.T) {
-	cfg := Config{HeartbeatInterval: time.Hour}
-	inner := store.NewInMemory()
-	fs := &failingStore{delegate: inner, failOnNthAppliedSave: 2}
-
-	previousApplied := Snapshot{
-		DesiredVersion: "stable",
-		Revision:       7,
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://stable.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    1,
-		}},
-	}
-	if err := fs.SaveAppliedSnapshot(previousApplied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := fs.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: previousApplied.Revision,
-		Metadata: map[string]string{
-			"current_revision": "7",
-			"foo":              "bar",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient([]syncResponse{
-		{
-			snapshot: Snapshot{
-				DesiredVersion: "next",
-				Revision:       9,
-				Rules: []model.HTTPRule{{
-					FrontendURL: "http://next.example.test:18080",
-					Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-					Revision:    2,
-				}},
-			},
-		},
-		{snapshot: Snapshot{DesiredVersion: "steady", Revision: 7}},
-	}, syncResponse{})
-	httpApplier := &testHTTPApplier{
-		applyErr:   errors.New("rollback failed"),
-		failOnCall: 3,
-	}
-	app := newAppWithHTTPDeps(cfg, fs, client, httpApplier, nil, nil, nil)
-	ctx := context.Background()
-	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
-		t.Fatalf("failed to seed runtime: %v", err)
-	}
-
-	if err := app.performSync(ctx); err == nil || err.Error() != "applied persistence fail" {
-		t.Fatalf("expected applied persistence failure, got %v", err)
-	}
-
-	req1 := waitForRequest(t, client, time.Second)
-	if req1.CurrentRevision != 7 {
-		t.Fatalf("expected first request revision 7, got %d", req1.CurrentRevision)
-	}
-
-	applied, err := fs.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(applied, previousApplied) {
-		t.Fatalf("expected applied snapshot unchanged after rollback failure, got %+v", applied)
-	}
-
-	state, err := fs.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.CurrentRevision != previousApplied.Revision {
-		t.Fatalf("expected persisted current revision %d, got %d", previousApplied.Revision, state.CurrentRevision)
-	}
-	if state.Metadata["current_revision"] != "7" {
-		t.Fatalf("expected persisted metadata current_revision 7, got %q", state.Metadata["current_revision"])
-	}
-	if state.Metadata["last_sync_error"] != "applied persistence fail" {
-		t.Fatalf("expected applied persistence error metadata, got %v", state.Metadata)
-	}
-
-	if err := app.performSync(ctx); err != nil {
-		t.Fatalf("second performSync returned error: %v", err)
-	}
-
-	req2 := waitForRequest(t, client, time.Second)
-	if req2.CurrentRevision != 7 {
-		t.Fatalf("expected next heartbeat revision to stay fail-closed at 7, got %d", req2.CurrentRevision)
-	}
-}
-
-func TestPerformSyncTriggersUpdaterWhenDesiredVersionPackageIsPresent(t *testing.T) {
-	cfg := Config{CurrentVersion: "1.0.0"}
-	mem := store.NewInMemory()
-	previousApplied := Snapshot{
-		DesiredVersion: "1.0.0",
-		Revision:       7,
-	}
-	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: previousApplied.Revision,
-		Metadata: map[string]string{
-			"current_revision": "7",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
-		DesiredVersion: "2.0.0",
-		Revision:       9,
-		VersionPackage: &model.VersionPackage{
-			Platform: "linux-amd64",
-			URL:      "https://example.com/nre-agent",
-			SHA256:   "abc123",
-		},
-	}})
-	updater := &testUpdater{}
-	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
-	app.updater = updater
-
-	ctx := context.Background()
-	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
-		t.Fatalf("failed to seed runtime: %v", err)
-	}
-
-	if err := app.performSync(ctx); !errors.Is(err, agentupdate.ErrRestartRequested) {
-		t.Fatalf("expected restart request, got %v", err)
-	}
-
-	req := waitForRequest(t, client, time.Second)
-	if req.CurrentRevision != 7 {
-		t.Fatalf("expected heartbeat request to report current revision 7, got %d", req.CurrentRevision)
-	}
-
-	if len(updater.calls) != 1 {
-		t.Fatalf("expected one updater call, got %d", len(updater.calls))
-	}
-	if updater.calls[0].desiredVersion != "2.0.0" {
-		t.Fatalf("expected updater desired version 2.0.0, got %q", updater.calls[0].desiredVersion)
-	}
-	if !reflect.DeepEqual(updater.calls[0].pkg, model.VersionPackage{
-		Platform: "linux-amd64",
-		URL:      "https://example.com/nre-agent",
-		SHA256:   "abc123",
-	}) {
-		t.Fatalf("unexpected updater package: %+v", updater.calls[0].pkg)
-	}
-
-	applied, err := mem.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(applied, previousApplied) {
-		t.Fatalf("expected applied snapshot unchanged while handoff is pending, got %+v", applied)
-	}
-	desired, err := mem.LoadDesiredSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load desired snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(desired.VersionPackage, &model.VersionPackage{
-		Platform: "linux-amd64",
-		URL:      "https://example.com/nre-agent",
-		SHA256:   "abc123",
-	}) {
-		t.Fatalf("expected desired snapshot to retain version package, got %+v", desired.VersionPackage)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.CurrentRevision != previousApplied.Revision {
-		t.Fatalf("expected current revision to remain %d, got %d", previousApplied.Revision, state.CurrentRevision)
-	}
-}
-
-func TestHandlePendingUpdateUsesSHAFallbackWhenDesiredVersionEmpty(t *testing.T) {
-	cfg := Config{
-		CurrentVersion:       "",
-		RuntimePackageSHA256: "old-sha",
-	}
-	mem := store.NewInMemory()
-	app := newAppWithDeps(cfg, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
-	updater := &testUpdater{}
-	app.updater = updater
-
-	err := app.handlePendingUpdate(context.Background(), Snapshot{
-		DesiredVersion: "",
-		VersionPackage: &model.VersionPackage{
-			URL:    "https://example.com/nre-agent",
-			SHA256: "new-sha",
-		},
-	})
-	if !errors.Is(err, agentupdate.ErrRestartRequested) {
-		t.Fatalf("expected restart request, got %v", err)
-	}
-	if len(updater.calls) != 1 {
-		t.Fatalf("expected one updater call, got %d", len(updater.calls))
-	}
-}
-
-func TestHandlePendingUpdateSkipsSHAFallbackWhenSHAAlreadyMatches(t *testing.T) {
-	cfg := Config{
-		CurrentVersion:       "",
-		RuntimePackageSHA256: "same-sha",
-	}
-	mem := store.NewInMemory()
-	app := newAppWithDeps(cfg, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
-	updater := &testUpdater{}
-	app.updater = updater
-
-	err := app.handlePendingUpdate(context.Background(), Snapshot{
-		DesiredVersion: "",
-		VersionPackage: &model.VersionPackage{
-			URL:    "https://example.com/nre-agent",
-			SHA256: "same-sha",
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if len(updater.calls) != 0 {
-		t.Fatalf("expected no updater call, got %d", len(updater.calls))
-	}
-}
-
-func TestHandlePendingUpdateIgnoresDesiredVersionWhenPackageSHAAlreadyMatches(t *testing.T) {
-	cfg := Config{
-		CurrentVersion:       "1.0.0",
-		RuntimePackageSHA256: "same-sha",
-	}
-	mem := store.NewInMemory()
-	app := newAppWithDeps(cfg, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
-	updater := &testUpdater{}
-	app.updater = updater
-
-	err := app.handlePendingUpdate(context.Background(), Snapshot{
-		DesiredVersion: "2.0.0",
-		VersionPackage: &model.VersionPackage{
-			URL:    "https://example.com/nre-agent",
-			SHA256: "same-sha",
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if len(updater.calls) != 0 {
-		t.Fatalf("expected no updater call, got %d", len(updater.calls))
-	}
-}
-
-func TestHandlePendingUpdateUsesPackageSHAWhenDesiredVersionMatchesCurrentVersion(t *testing.T) {
-	cfg := Config{
-		CurrentVersion:       "1.0.0",
-		RuntimePackageSHA256: "old-sha",
-	}
-	mem := store.NewInMemory()
-	app := newAppWithDeps(cfg, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
-	updater := &testUpdater{}
-	app.updater = updater
-
-	err := app.handlePendingUpdate(context.Background(), Snapshot{
-		DesiredVersion: "1.0.0",
-		VersionPackage: &model.VersionPackage{
-			URL:    "https://example.com/nre-agent",
-			SHA256: "new-sha",
-		},
-	})
-	if !errors.Is(err, agentupdate.ErrRestartRequested) {
-		t.Fatalf("expected restart request, got %v", err)
-	}
-	if len(updater.calls) != 1 {
-		t.Fatalf("expected one updater call, got %d", len(updater.calls))
-	}
-}
-
-func TestPerformSyncUpdaterStageFailureRecordsErrorWithoutFalseStateAdvance(t *testing.T) {
-	cfg := Config{CurrentVersion: "1.0.0"}
-	mem := store.NewInMemory()
-	previousApplied := Snapshot{
-		DesiredVersion: "1.0.0",
-		Revision:       7,
-	}
-	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: previousApplied.Revision,
-		Metadata: map[string]string{
-			"current_revision": "7",
-			"foo":              "bar",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient([]syncResponse{
-		{snapshot: Snapshot{
-			DesiredVersion: "2.0.0",
-			Revision:       9,
-			VersionPackage: &model.VersionPackage{
-				Platform: "linux-amd64",
-				URL:      "https://example.com/nre-agent",
-				SHA256:   "abc123",
-			},
-		}},
-		{snapshot: Snapshot{DesiredVersion: "2.0.0", Revision: 9}},
-	}, syncResponse{})
-	updater := &testUpdater{stageErr: errors.New("stage failed")}
-	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
-	app.updater = updater
-
-	ctx := context.Background()
-	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
-		t.Fatalf("failed to seed runtime: %v", err)
-	}
-
-	if err := app.performSync(ctx); err == nil || err.Error() != "stage failed" {
-		t.Fatalf("expected staging failure, got %v", err)
-	}
-
-	req1 := waitForRequest(t, client, time.Second)
-	if req1.CurrentRevision != 7 {
-		t.Fatalf("expected first request revision 7, got %d", req1.CurrentRevision)
-	}
-
-	applied, err := mem.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(applied, previousApplied) {
-		t.Fatalf("expected applied snapshot unchanged after staging failure, got %+v", applied)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.CurrentRevision != previousApplied.Revision {
-		t.Fatalf("expected persisted current revision %d, got %d", previousApplied.Revision, state.CurrentRevision)
-	}
-	if state.Metadata["current_revision"] != "7" {
-		t.Fatalf("expected persisted metadata current_revision 7, got %q", state.Metadata["current_revision"])
-	}
-	if state.Metadata["last_sync_error"] != "stage failed" {
-		t.Fatalf("expected staging failure metadata, got %v", state.Metadata)
-	}
-	if state.Metadata["foo"] != "bar" {
-		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
-	}
-
-	desired, err := mem.LoadDesiredSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load desired snapshot: %v", err)
-	}
-	if !reflect.DeepEqual(desired.VersionPackage, &model.VersionPackage{
-		Platform: "linux-amd64",
-		URL:      "https://example.com/nre-agent",
-		SHA256:   "abc123",
-	}) {
-		t.Fatalf("expected desired snapshot to persist version package across failures, got %+v", desired.VersionPackage)
-	}
-
-	if err := app.performSync(ctx); err == nil || err.Error() != "stage failed" {
-		t.Fatalf("expected second staging failure retry, got %v", err)
-	}
-
-	req2 := waitForRequest(t, client, time.Second)
-	if req2.CurrentRevision != 7 {
-		t.Fatalf("expected next heartbeat revision to stay fail-closed at 7, got %d", req2.CurrentRevision)
-	}
-	if len(updater.calls) != 2 {
-		t.Fatalf("expected updater retry on omitted package fields, got %d calls", len(updater.calls))
-	}
-}
-
-func TestPerformSyncRelayListenerChangeReappliesHTTPRelayAndL4FromUnifiedSnapshotActivation(t *testing.T) {
-	cfg := Config{HeartbeatInterval: time.Hour}
-	mem := store.NewInMemory()
-
-	previousApplied := Snapshot{
+func TestSnapshotActivatorRelayListenerChangeReappliesHTTPRelayAndL4(t *testing.T) {
+	previous := Snapshot{
 		DesiredVersion: "stable",
 		Revision:       7,
 		Rules: []model.HTTPRule{{
@@ -1787,57 +686,33 @@ func TestPerformSyncRelayListenerChangeReappliesHTTPRelayAndL4FromUnifiedSnapsho
 			}},
 		}},
 	}
-	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
+	next := previous
+	next.Revision = 8
+	next.RelayListeners = append([]model.RelayListener(nil), previous.RelayListeners...)
+	next.RelayListeners[0].PublicPort = 39443
 
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
-		DesiredVersion: "stable",
-		Revision:       8,
-		RelayListeners: []model.RelayListener{{
-			ID:         51,
-			AgentID:    "agent-a",
-			Name:       "relay-a",
-			ListenHost: "127.0.0.1",
-			BindHosts:  []string{"127.0.0.1"},
-			ListenPort: 9443,
-			PublicHost: "relay-a.example.com",
-			PublicPort: 39443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: "pin-value",
-			}},
-		}},
-	}})
 	httpApplier := &testHTTPApplier{}
 	l4Applier := &testL4Applier{}
 	relayApplier := &testRelayApplier{}
-	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, l4Applier, relayApplier)
+	app := newAppWithHTTPDeps(Config{}, store.NewInMemory(), newTestSyncClient(nil, syncResponse{}), httpApplier, nil, l4Applier, relayApplier)
 
-	ctx := context.Background()
-	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
-		t.Fatalf("failed to seed runtime: %v", err)
-	}
-
-	if err := app.performSync(ctx); err != nil {
-		t.Fatalf("performSync returned error: %v", err)
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
 	}
 
 	httpCalls := httpApplier.snapshotCalls()
-	if len(httpCalls) != 2 {
-		t.Fatalf("expected startup and relay-change http apply calls, got %d", len(httpCalls))
+	if len(httpCalls) != 1 {
+		t.Fatalf("expected relay-change http apply call, got %d", len(httpCalls))
 	}
 	l4Calls := l4Applier.snapshotCalls()
-	if len(l4Calls) != 2 {
-		t.Fatalf("expected startup and relay-change l4 apply calls, got %d", len(l4Calls))
+	if len(l4Calls) != 1 {
+		t.Fatalf("expected relay-change l4 apply call, got %d", len(l4Calls))
 	}
 	relayCalls := relayApplier.snapshotCalls()
-	if len(relayCalls) != 2 {
-		t.Fatalf("expected startup and relay-change relay apply calls, got %d", len(relayCalls))
+	if len(relayCalls) != 1 {
+		t.Fatalf("expected relay-change relay apply call, got %d", len(relayCalls))
 	}
-	if got := relayCalls[1].listeners[0].PublicPort; got != 39443 {
+	if got := relayCalls[0].listeners[0].PublicPort; got != 39443 {
 		t.Fatalf("expected updated relay listener to be applied, got public_port=%d", got)
 	}
 }
@@ -1882,11 +757,6 @@ type l4EgressApplyCall struct {
 	listeners         []model.RelayListener
 	wireGuardProfiles []model.WireGuardProfile
 	egressProfiles    []model.EgressProfile
-}
-
-type updateCall struct {
-	desiredVersion string
-	pkg            model.VersionPackage
 }
 
 type httpApplyCall struct {
@@ -2307,105 +1177,6 @@ func (a *testTrafficBlockRelayApplier) resetApplyCalls() {
 	a.testRelayApplier.calls = nil
 }
 
-type orderedApplyRecorder struct {
-	mu    sync.Mutex
-	calls []string
-}
-
-func (r *orderedApplyRecorder) add(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, name)
-}
-
-func (r *orderedApplyRecorder) snapshot() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]string, len(r.calls))
-	copy(out, r.calls)
-	return out
-}
-
-type orderedCertificateApplier struct {
-	recorder *orderedApplyRecorder
-}
-
-func (a *orderedCertificateApplier) Apply(_ context.Context, _ []model.ManagedCertificateBundle, _ []model.ManagedCertificatePolicy) error {
-	a.recorder.add("cert")
-	return nil
-}
-
-func (a *orderedCertificateApplier) Close() error {
-	return nil
-}
-
-type orderedL4Applier struct {
-	recorder *orderedApplyRecorder
-}
-
-func (a *orderedL4Applier) Apply(_ context.Context, _ []model.L4Rule) error {
-	a.recorder.add("l4")
-	return nil
-}
-
-func (a *orderedL4Applier) Close() error {
-	return nil
-}
-
-type orderedHTTPApplier struct {
-	recorder *orderedApplyRecorder
-}
-
-func (a *orderedHTTPApplier) Apply(_ context.Context, _ []model.HTTPRule) error {
-	a.recorder.add("http")
-	return nil
-}
-
-func (a *orderedHTTPApplier) Close() error {
-	return nil
-}
-
-type orderedRelayApplier struct {
-	recorder *orderedApplyRecorder
-}
-
-func (a *orderedRelayApplier) Apply(_ context.Context, _ []model.RelayListener) error {
-	a.recorder.add("relay")
-	return nil
-}
-
-func (a *orderedRelayApplier) Close() error {
-	return nil
-}
-
-type testUpdater struct {
-	calls       []updateCall
-	stagedPath  string
-	stageErr    error
-	activateErr error
-}
-
-func (u *testUpdater) Stage(_ context.Context, pkg model.VersionPackage) (string, error) {
-	u.calls = append(u.calls, updateCall{
-		pkg: pkg,
-	})
-	if u.stageErr != nil {
-		return "", u.stageErr
-	}
-	if u.stagedPath == "" {
-		u.stagedPath = "staged/nre-agent"
-	}
-	return u.stagedPath, nil
-}
-
-func (u *testUpdater) Activate(_ string, desiredVersion string) error {
-	if len(u.calls) == 0 {
-		u.calls = append(u.calls, updateCall{})
-	}
-	u.calls[len(u.calls)-1].desiredVersion = desiredVersion
-	return u.activateErr
-}
-
 type testSyncClient struct {
 	mu        sync.Mutex
 	responses []syncResponse
@@ -2469,7 +1240,9 @@ func waitForRequest(t *testing.T, client *testSyncClient, timeout time.Duration)
 	return SyncRequest{}
 }
 
-func waitForCalls(t *testing.T, client *testSyncClient, target int, timeout time.Duration) {
+// waitForSyncReturns only proves the fake client returned. Use observable
+// applier/store waits for assertions about work performed after Sync returns.
+func waitForSyncReturns(t *testing.T, client *testSyncClient, target int, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if int(atomic.LoadInt32(&client.doneCount)) >= target {
@@ -2478,6 +1251,62 @@ func waitForCalls(t *testing.T, client *testSyncClient, target int, timeout time
 		time.Sleep(1 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d sync calls", target)
+}
+
+func waitForObservedCalls[T any](t *testing.T, timeout time.Duration, load func() []T, target int, description string) []T {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var calls []T
+	for time.Now().Before(deadline) {
+		calls = load()
+		if len(calls) >= target {
+			return calls
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s calls: got %d, want at least %d", description, len(calls), target)
+	return nil
+}
+
+func waitForDesiredSnapshot(t *testing.T, timeout time.Duration, st store.Store, predicate func(Snapshot) bool) Snapshot {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var snapshot Snapshot
+	for time.Now().Before(deadline) {
+		current, err := st.LoadDesiredSnapshot()
+		if err != nil {
+			t.Fatalf("failed to load desired snapshot: %v", err)
+		}
+		snapshot = current
+		if predicate(current) {
+			return current
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for desired snapshot, last snapshot: %+v", snapshot)
+	return Snapshot{}
+}
+
+func waitForAppliedSnapshot(t *testing.T, timeout time.Duration, st store.Store, predicate func(Snapshot) bool) Snapshot {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var snapshot Snapshot
+	for time.Now().Before(deadline) {
+		current, err := st.LoadAppliedSnapshot()
+		if err != nil {
+			t.Fatalf("failed to load applied snapshot: %v", err)
+		}
+		snapshot = current
+		if predicate(current) {
+			return current
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for applied snapshot, last snapshot: %+v", snapshot)
+	return Snapshot{}
 }
 
 func waitForRuntimeState(t *testing.T, timeout time.Duration, predicate func() bool, failureMessage func() string) {
@@ -2507,831 +1336,6 @@ func waitForLastSyncError(t *testing.T, timeout time.Duration, load func() (stor
 	})
 
 	return state
-}
-
-func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T) {
-	traffic.Reset()
-	traffic.AddHTTP(11, 22)
-	t.Cleanup(traffic.Reset)
-
-	cfg := Config{CurrentVersion: "1.0.0"}
-	mem := store.NewInMemory()
-	applied := Snapshot{
-		DesiredVersion: "1.0.0",
-		Revision:       7,
-	}
-	if err := mem.SaveAppliedSnapshot(applied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: applied.Revision,
-		Metadata: map[string]string{
-			"current_revision":    "7",
-			"last_apply_revision": "6",
-			"last_apply_status":   "error",
-			"last_apply_message":  "previous apply failed",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
-	applier := &testCertificateApplier{
-		reports: []model.ManagedCertificateReport{{
-			ID:           21,
-			Domain:       "sync.example.com",
-			Status:       "active",
-			MaterialHash: "hash-21",
-		}},
-	}
-	app := newAppWithDeps(cfg, mem, client, applier, nil, nil)
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	req := waitForRequest(t, client, time.Second)
-	if req.CurrentRevision != 7 {
-		t.Fatalf("CurrentRevision = %d", req.CurrentRevision)
-	}
-	if req.LastApplyRevision != 6 || req.LastApplyStatus != "error" || req.LastApplyMessage != "previous apply failed" {
-		t.Fatalf("unexpected apply metadata in sync request: %+v", req)
-	}
-	if req.Stats == nil {
-		t.Fatal("expected traffic stats in sync request")
-	}
-	if !req.StatsPresent {
-		t.Fatal("StatsPresent = false, want true when non-empty traffic stats are sent")
-	}
-	trafficStats, ok := req.Stats["traffic"].(map[string]any)
-	if !ok {
-		t.Fatalf("traffic stats missing in sync request: %+v", req.Stats)
-	}
-	total, ok := trafficStats["total"].(map[string]uint64)
-	if !ok {
-		t.Fatalf("total traffic stats missing in sync request: %+v", trafficStats)
-	}
-	if total["rx_bytes"] != 11 || total["tx_bytes"] != 22 {
-		t.Fatalf("unexpected traffic totals: %+v", total)
-	}
-	if len(req.ManagedCertificateReports) != 1 || req.ManagedCertificateReports[0].ID != 21 {
-		t.Fatalf("unexpected managed certificate reports in sync request: %+v", req.ManagedCertificateReports)
-	}
-}
-
-func TestPerformSyncOmitsZeroOnlyTrafficStats(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(true)
-	t.Cleanup(func() {
-		traffic.SetEnabled(true)
-		traffic.Reset()
-	})
-
-	cfg := Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}
-	mem := store.NewInMemory()
-	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
-	if err := mem.SaveAppliedSnapshot(applied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
-	app := newAppWithDeps(cfg, mem, client, &testCertificateApplier{}, nil, nil)
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	req := waitForRequest(t, client, time.Second)
-	if req.Stats != nil {
-		t.Fatalf("Stats = %#v, want nil before traffic is recorded", req.Stats)
-	}
-}
-
-func TestPerformSyncIncludesHostTrafficStats(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(true)
-	t.Cleanup(func() {
-		traffic.SetEnabled(true)
-		traffic.Reset()
-	})
-
-	cfg := Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}
-	mem := store.NewInMemory()
-	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
-	if err := mem.SaveAppliedSnapshot(applied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
-	app := newAppWithDeps(cfg, mem, client, &testCertificateApplier{}, nil, nil)
-	app.hostTrafficCollector = &stubHostTrafficCollector{
-		snapshot: hosttraffic.Snapshot{
-			BootID: "boot-123",
-			Total:  hosttraffic.Counters{RXBytes: 1000, TXBytes: 2000},
-			Interfaces: map[string]hosttraffic.Counters{
-				"eth0": {RXBytes: 900, TXBytes: 1800},
-			},
-		},
-	}
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	req := waitForRequest(t, client, time.Second)
-	trafficStats, ok := req.Stats["traffic"].(map[string]any)
-	if !ok {
-		t.Fatalf("traffic stats missing in sync request: %+v", req.Stats)
-	}
-	host, ok := trafficStats["host"].(map[string]any)
-	if !ok {
-		t.Fatalf("host traffic stats missing in sync request: %+v", trafficStats)
-	}
-	total, ok := host["total"].(map[string]any)
-	if !ok {
-		t.Fatalf("host total traffic stats missing in sync request: %+v", host)
-	}
-	if total["rx_bytes"] != uint64(1000) || total["tx_bytes"] != uint64(2000) {
-		t.Fatalf("unexpected host total stats: %+v", total)
-	}
-	if host["boot_id"] != "boot-123" {
-		t.Fatalf("host boot_id = %#v, want boot-123", host["boot_id"])
-	}
-	iface, ok := host["interfaces"].(map[string]any)
-	if !ok {
-		t.Fatalf("host interfaces missing in sync request: %+v", host)
-	}
-	eth0, ok := iface["eth0"].(map[string]any)
-	if !ok {
-		t.Fatalf("eth0 host interface missing in sync request: %+v", iface)
-	}
-	if eth0["rx_bytes"] != uint64(900) || eth0["tx_bytes"] != uint64(1800) {
-		t.Fatalf("unexpected eth0 host interface stats: %+v", eth0)
-	}
-}
-
-type stubHostTrafficCollector struct {
-	snapshot hosttraffic.Snapshot
-}
-
-func (s *stubHostTrafficCollector) Snapshot() (hosttraffic.Snapshot, error) {
-	return s.snapshot, nil
-}
-
-func TestPerformSyncOmitsStatsWhenTrafficStatsDisabled(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(false)
-	t.Cleanup(func() {
-		traffic.SetEnabled(true)
-		traffic.Reset()
-	})
-	traffic.AddHTTP(11, 22)
-
-	cfg := Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: false}
-	mem := store.NewInMemory()
-	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
-	if err := mem.SaveAppliedSnapshot(applied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
-	app := newAppWithDeps(cfg, mem, client, &testCertificateApplier{}, nil, nil)
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	req := waitForRequest(t, client, time.Second)
-	if req.Stats == nil {
-		t.Fatal("Stats = nil, want explicit empty stats when traffic stats disabled")
-	}
-	if len(req.Stats) != 0 {
-		t.Fatalf("Stats = %#v, want explicit empty stats when traffic stats disabled", req.Stats)
-	}
-	if !req.StatsPresent {
-		t.Fatal("StatsPresent = false, want true when traffic stats disabled")
-	}
-}
-
-func TestPerformSyncAppliesTrafficStatsDisabledFromAgentConfig(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(true)
-	t.Cleanup(func() {
-		traffic.SetEnabled(true)
-		traffic.Reset()
-	})
-	traffic.AddHTTP(11, 22)
-
-	trafficStatsEnabled := false
-	mem := store.NewInMemory()
-	next := Snapshot{
-		DesiredVersion: "next",
-		Revision:       7,
-		AgentConfig: model.AgentConfig{
-			TrafficStatsEnabled: &trafficStatsEnabled,
-		},
-	}
-	client := newTestSyncClient([]syncResponse{{snapshot: next}}, syncResponse{snapshot: next})
-	app := newAppWithDeps(Config{}, mem, client, nil, nil, nil)
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-	if traffic.Enabled() {
-		t.Fatal("traffic.Enabled() = true, want false after agent config disables stats")
-	}
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("second performSync() error = %v", err)
-	}
-	_ = waitForRequest(t, client, time.Second)
-	req := waitForRequest(t, client, time.Second)
-	if req.Stats == nil || len(req.Stats) != 0 || !req.StatsPresent {
-		t.Fatalf("Stats = %#v StatsPresent=%v, want explicit empty stats after traffic disabled", req.Stats, req.StatsPresent)
-	}
-}
-
-func TestPerformSyncStoresTrafficBlockedStateFromAgentConfig(t *testing.T) {
-	mem := store.NewInMemory()
-	next := Snapshot{
-		DesiredVersion: "next",
-		Revision:       7,
-		AgentConfig: model.AgentConfig{
-			TrafficBlocked:     true,
-			TrafficBlockReason: "monthly quota exceeded",
-		},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: next})
-	app := newAppWithDeps(Config{}, mem, client, nil, nil, nil)
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.Metadata[runtimeMetaTrafficBlocked] != "true" {
-		t.Fatalf("traffic_blocked = %q, want true", state.Metadata[runtimeMetaTrafficBlocked])
-	}
-	if state.Metadata[runtimeMetaTrafficBlockReason] != "monthly quota exceeded" {
-		t.Fatalf("traffic_block_reason = %q", state.Metadata[runtimeMetaTrafficBlockReason])
-	}
-}
-
-func TestPerformSyncUpdatesRuntimeTrafficBlockStateFromAgentConfigOnlyChange(t *testing.T) {
-	mem := store.NewInMemory()
-	previous := Snapshot{
-		DesiredVersion: "current",
-		Revision:       6,
-		AgentConfig: model.AgentConfig{
-			TrafficBlocked: false,
-		},
-		Rules: []model.HTTPRule{{
-			ID:          1,
-			FrontendURL: "http://frontend.example",
-			Backends:    []model.HTTPBackend{{URL: "http://backend.example"}},
-			Enabled:     true,
-		}},
-		L4Rules: []model.L4Rule{{
-			ID:         2,
-			Protocol:   "tcp",
-			ListenHost: "127.0.0.1",
-			ListenPort: 19000,
-			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 19001}},
-			Enabled:    true,
-		}},
-		RelayListeners: []model.RelayListener{{
-			ID:         3,
-			AgentID:    "agent-a",
-			Name:       "relay-a",
-			ListenHost: "127.0.0.1",
-			BindHosts:  []string{"127.0.0.1"},
-			ListenPort: 19443,
-			PublicHost: "127.0.0.1",
-			PublicPort: 19443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet: []model.RelayPin{{
-				Type:  "spki_sha256",
-				Value: "cGlubmVk",
-			}},
-		}},
-	}
-	if err := mem.SaveAppliedSnapshot(previous); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-
-	next := previous
-	next.Revision = 7
-	next.AgentConfig.TrafficBlocked = true
-	next.AgentConfig.TrafficBlockReason = "monthly quota exceeded"
-	client := newTestSyncClient(nil, syncResponse{snapshot: next})
-	httpApplier := &testTrafficBlockHTTPApplier{}
-	l4Applier := &testTrafficBlockL4Applier{}
-	relayApplier := &testTrafficBlockRelayApplier{}
-	app := newAppWithHTTPDeps(Config{}, mem, client, httpApplier, nil, l4Applier, relayApplier)
-
-	if err := app.runtime.Apply(context.Background(), Snapshot{}, previous); err != nil {
-		t.Fatalf("failed to seed runtime: %v", err)
-	}
-	httpApplier.resetApplyCalls()
-	l4Applier.resetApplyCalls()
-	relayApplier.resetApplyCalls()
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	if got := httpApplier.applyCount(); got != 0 {
-		t.Fatalf("http Apply calls = %d, want 0 for agent_config-only change", got)
-	}
-	if got := l4Applier.applyCount(); got != 0 {
-		t.Fatalf("l4 Apply calls = %d, want 0 for agent_config-only change", got)
-	}
-	if got := relayApplier.applyCount(); got != 0 {
-		t.Fatalf("relay Apply calls = %d, want 0 for agent_config-only change", got)
-	}
-	if got := httpApplier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
-		t.Fatalf("http block state = %+v", got)
-	}
-	if got := l4Applier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
-		t.Fatalf("l4 block state = %+v", got)
-	}
-	if got := relayApplier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
-		t.Fatalf("relay block state = %+v", got)
-	}
-}
-
-func TestPerformSyncClearsTrafficBlockedStateFromAgentConfig(t *testing.T) {
-	mem := store.NewInMemory()
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		Metadata: map[string]string{
-			runtimeMetaTrafficBlocked:     "true",
-			runtimeMetaTrafficBlockReason: "monthly quota exceeded",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-	next := Snapshot{
-		DesiredVersion: "next",
-		Revision:       8,
-		AgentConfig: model.AgentConfig{
-			TrafficBlocked: false,
-		},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: next})
-	app := newAppWithDeps(Config{}, mem, client, nil, nil, nil)
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.Metadata[runtimeMetaTrafficBlocked] != "false" {
-		t.Fatalf("traffic_blocked = %q, want false", state.Metadata[runtimeMetaTrafficBlocked])
-	}
-	if state.Metadata[runtimeMetaTrafficBlockReason] != "" {
-		t.Fatalf("traffic_block_reason = %q, want cleared", state.Metadata[runtimeMetaTrafficBlockReason])
-	}
-}
-
-func TestSyncRequestSuppressesStatsBeforeTrafficStatsInterval(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(true)
-	t.Cleanup(func() {
-		traffic.SetEnabled(true)
-		traffic.Reset()
-	})
-	traffic.AddHTTP(11, 22)
-
-	mem := store.NewInMemory()
-	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
-	if err := mem.SaveAppliedSnapshot(applied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		Metadata: map[string]string{
-			runtimeMetaTrafficStatsInterval:       "1h",
-			runtimeMetaLastTrafficStatsReportUnix: strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10),
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, newTestSyncClient(nil, syncResponse{}), &testCertificateApplier{}, nil, nil)
-	req, err := app.syncRequest(context.Background(), applied)
-	if err != nil {
-		t.Fatalf("syncRequest() error = %v", err)
-	}
-
-	if req.Stats != nil {
-		t.Fatalf("Stats = %#v, want nil before traffic stats interval elapses", req.Stats)
-	}
-	if req.StatsPresent {
-		t.Fatal("StatsPresent = true, want false before traffic stats interval elapses")
-	}
-}
-
-func TestPerformSyncIncludesStatsAfterTrafficStatsInterval(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(true)
-	t.Cleanup(func() {
-		traffic.SetEnabled(true)
-		traffic.Reset()
-	})
-	traffic.AddHTTP(11, 22)
-
-	mem := store.NewInMemory()
-	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
-	if err := mem.SaveAppliedSnapshot(applied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		Metadata: map[string]string{
-			runtimeMetaTrafficStatsInterval:       "1s",
-			runtimeMetaLastTrafficStatsReportUnix: strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10),
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
-	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, client, &testCertificateApplier{}, nil, nil)
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	req := waitForRequest(t, client, time.Second)
-	if req.Stats == nil {
-		t.Fatal("Stats = nil, want traffic stats after traffic stats interval elapses")
-	}
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	reportedAt := parseInt64(state.Metadata[runtimeMetaLastTrafficStatsReportUnix], 0)
-	if reportedAt == 0 {
-		t.Fatalf("last_traffic_stats_report_unix not persisted: %v", state.Metadata)
-	}
-	if time.Since(time.Unix(reportedAt, 0)) > time.Minute {
-		t.Fatalf("last_traffic_stats_report_unix = %d, want recent timestamp", reportedAt)
-	}
-}
-
-func TestSyncRequestThenSyncOncePersistsTrafficStatsReportTimestamp(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(true)
-	t.Cleanup(func() {
-		traffic.SetEnabled(true)
-		traffic.Reset()
-	})
-	traffic.AddHTTP(11, 22)
-
-	mem := store.NewInMemory()
-	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
-	if err := mem.SaveAppliedSnapshot(applied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	lastReportedAt := time.Now().Add(-time.Hour).Unix()
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		Metadata: map[string]string{
-			runtimeMetaTrafficStatsInterval:       "1s",
-			runtimeMetaLastTrafficStatsReportUnix: strconv.FormatInt(lastReportedAt, 10),
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
-	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, client, &testCertificateApplier{}, nil, nil)
-	req, err := app.syncRequest(context.Background(), applied)
-	if err != nil {
-		t.Fatalf("syncRequest() error = %v", err)
-	}
-	if req.Stats == nil {
-		t.Fatal("Stats = nil, want traffic stats after traffic stats interval elapses")
-	}
-
-	if err := app.syncOnce(context.Background(), req); err != nil {
-		t.Fatalf("syncOnce() error = %v", err)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	reportedAt := parseInt64(state.Metadata[runtimeMetaLastTrafficStatsReportUnix], 0)
-	if reportedAt <= lastReportedAt {
-		t.Fatalf("last_traffic_stats_report_unix = %d, want after %d", reportedAt, lastReportedAt)
-	}
-}
-
-func TestPerformSyncDoesNotUpdateTrafficStatsReportTimestampOnSyncFailure(t *testing.T) {
-	traffic.Reset()
-	traffic.SetEnabled(true)
-	t.Cleanup(func() {
-		traffic.SetEnabled(true)
-		traffic.Reset()
-	})
-	traffic.AddHTTP(11, 22)
-
-	mem := store.NewInMemory()
-	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
-	if err := mem.SaveAppliedSnapshot(applied); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	lastReportedAt := time.Now().Add(-time.Hour).Unix()
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		Metadata: map[string]string{
-			runtimeMetaTrafficStatsInterval:       "1s",
-			runtimeMetaLastTrafficStatsReportUnix: strconv.FormatInt(lastReportedAt, 10),
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
-	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, client, &testCertificateApplier{}, nil, nil)
-
-	if err := app.performSync(context.Background()); err == nil || err.Error() != "heartbeat failed" {
-		t.Fatalf("performSync() error = %v, want heartbeat failed", err)
-	}
-	req := waitForRequest(t, client, time.Second)
-	if req.Stats == nil {
-		t.Fatal("Stats = nil, want traffic stats included in failed heartbeat request")
-	}
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.Metadata[runtimeMetaLastTrafficStatsReportUnix] != strconv.FormatInt(lastReportedAt, 10) {
-		t.Fatalf("last_traffic_stats_report_unix = %q, want unchanged %d", state.Metadata[runtimeMetaLastTrafficStatsReportUnix], lastReportedAt)
-	}
-}
-
-func TestPerformSyncPersistsTrafficStatsIntervalAfterSuccessfulApply(t *testing.T) {
-	mem := store.NewInMemory()
-	next := Snapshot{
-		DesiredVersion: "next",
-		Revision:       7,
-		AgentConfig: model.AgentConfig{
-			TrafficStatsInterval: "30s",
-		},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: next})
-	app := newAppWithDeps(Config{}, mem, client, nil, nil, nil)
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.Metadata[runtimeMetaTrafficStatsInterval] != "30s" {
-		t.Fatalf("traffic_stats_interval = %q, want 30s", state.Metadata[runtimeMetaTrafficStatsInterval])
-	}
-}
-
-func TestPerformSyncPersistsApplyStateAndTrafficStatsIntervalInOneRuntimeStateSave(t *testing.T) {
-	inner := store.NewInMemory()
-	fs := &failingStore{delegate: inner, failOnNthRuntimeSave: 3}
-	previous := Snapshot{
-		DesiredVersion: "stable",
-		Revision:       7,
-		AgentConfig: model.AgentConfig{
-			TrafficStatsInterval: "30s",
-		},
-	}
-	if err := fs.SaveAppliedSnapshot(previous); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := fs.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: previous.Revision,
-		Metadata: map[string]string{
-			"current_revision":                    "7",
-			"last_sync_error":                     "previous failure",
-			runtimeMetaTrafficStatsInterval:       "30s",
-			runtimeMetaLastTrafficStatsReportUnix: "123",
-			"unrelated":                           "preserved",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	next := Snapshot{
-		DesiredVersion: "next",
-		Revision:       9,
-		AgentConfig: model.AgentConfig{
-			TrafficStatsInterval: "5m",
-		},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: next})
-	app := newAppWithDeps(Config{CurrentVersion: "1.0.0"}, fs, client, nil, nil, nil)
-	if err := app.runtime.Apply(context.Background(), Snapshot{}, previous); err != nil {
-		t.Fatalf("failed to seed runtime: %v", err)
-	}
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	state, err := fs.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.CurrentRevision != 9 || state.Metadata["current_revision"] != "9" {
-		t.Fatalf("current revision state = %d/%q, want 9", state.CurrentRevision, state.Metadata["current_revision"])
-	}
-	if state.Metadata[runtimeMetaTrafficStatsInterval] != "5m" {
-		t.Fatalf("traffic_stats_interval = %q, want 5m", state.Metadata[runtimeMetaTrafficStatsInterval])
-	}
-	if state.Metadata[runtimeMetaLastTrafficStatsReportUnix] != "123" {
-		t.Fatalf("last traffic report metadata changed: %v", state.Metadata)
-	}
-	if state.Metadata["unrelated"] != "preserved" {
-		t.Fatalf("unrelated metadata not preserved: %v", state.Metadata)
-	}
-	if _, ok := state.Metadata["last_sync_error"]; ok {
-		t.Fatalf("last_sync_error not cleared after successful apply: %v", state.Metadata)
-	}
-}
-
-func TestPerformSyncClearsTrafficStatsIntervalInSuccessfulRuntimeStateSave(t *testing.T) {
-	mem := store.NewInMemory()
-	previous := Snapshot{
-		DesiredVersion: "stable",
-		Revision:       7,
-		AgentConfig: model.AgentConfig{
-			TrafficStatsInterval: "30s",
-		},
-	}
-	if err := mem.SaveAppliedSnapshot(previous); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: previous.Revision,
-		Metadata: map[string]string{
-			"current_revision":              "7",
-			runtimeMetaTrafficStatsInterval: "30s",
-			"unrelated":                     "preserved",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	var next Snapshot
-	if err := json.Unmarshal([]byte(`{
-		"desired_version":"next",
-		"desired_revision":9,
-		"agent_config":{}
-	}`), &next); err != nil {
-		t.Fatalf("failed to decode next snapshot: %v", err)
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: next})
-	app := newAppWithDeps(Config{CurrentVersion: "1.0.0"}, mem, client, nil, nil, nil)
-	if err := app.runtime.Apply(context.Background(), Snapshot{}, previous); err != nil {
-		t.Fatalf("failed to seed runtime: %v", err)
-	}
-
-	if err := app.performSync(context.Background()); err != nil {
-		t.Fatalf("performSync() error = %v", err)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if _, ok := state.Metadata[runtimeMetaTrafficStatsInterval]; ok {
-		t.Fatalf("traffic_stats_interval not cleared: %v", state.Metadata)
-	}
-	if state.Metadata["unrelated"] != "preserved" {
-		t.Fatalf("unrelated metadata not preserved: %v", state.Metadata)
-	}
-}
-
-func TestPerformSyncKeepsTrafficStatsIntervalWhenLaterActivationFails(t *testing.T) {
-	mem := store.NewInMemory()
-	previous := Snapshot{
-		DesiredVersion: "stable",
-		Revision:       7,
-		AgentConfig: model.AgentConfig{
-			TrafficStatsInterval: "30s",
-		},
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://stable.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    1,
-		}},
-	}
-	if err := mem.SaveAppliedSnapshot(previous); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		CurrentRevision: previous.Revision,
-		Metadata: map[string]string{
-			"current_revision":              "7",
-			runtimeMetaTrafficStatsInterval: "30s",
-		},
-	}); err != nil {
-		t.Fatalf("failed to seed runtime state: %v", err)
-	}
-
-	next := Snapshot{
-		DesiredVersion: "next",
-		Revision:       9,
-		AgentConfig: model.AgentConfig{
-			TrafficStatsInterval: "5m",
-		},
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://next.example.test:18080",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Revision:    2,
-		}},
-	}
-	client := newTestSyncClient(nil, syncResponse{snapshot: next})
-	httpApplier := &testHTTPApplier{
-		applyErr:   errors.New("http apply failed"),
-		failOnCall: 1,
-	}
-	app := newAppWithHTTPDeps(Config{CurrentVersion: "1.0.0"}, mem, client, httpApplier, nil, nil, nil)
-
-	if err := app.performSync(context.Background()); err == nil || err.Error() != "http apply failed" {
-		t.Fatalf("performSync() error = %v, want http apply failed", err)
-	}
-
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if state.Metadata[runtimeMetaTrafficStatsInterval] != "30s" {
-		t.Fatalf("traffic_stats_interval = %q, want previous 30s after failed activation", state.Metadata[runtimeMetaTrafficStatsInterval])
-	}
-}
-
-func TestRuntimeActivationRejectsInvalidTrafficStatsInterval(t *testing.T) {
-	tests := []struct {
-		name     string
-		interval string
-	}{
-		{name: "malformed", interval: "not-a-duration"},
-		{name: "zero", interval: "0s"},
-		{name: "negative", interval: "-1s"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			mem := store.NewInMemory()
-			app := newAppWithDeps(Config{}, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
-			next := Snapshot{
-				DesiredVersion: "next",
-				Revision:       7,
-				AgentConfig: model.AgentConfig{
-					TrafficStatsInterval: tc.interval,
-				},
-			}
-
-			err := app.runtime.Apply(context.Background(), Snapshot{}, next)
-			if err == nil {
-				t.Fatal("Apply() error = nil, want invalid traffic stats interval error")
-			}
-			if !strings.Contains(err.Error(), "traffic_stats_interval") {
-				t.Fatalf("Apply() error = %v, want traffic_stats_interval context", err)
-			}
-		})
-	}
-}
-
-func TestRuntimeActivationDoesNotMutateOutboundProxyForInvalidTrafficStatsInterval(t *testing.T) {
-	previousProxy := relay.OutboundProxyURL()
-	relay.SetOutboundProxyURL("socks://127.0.0.1:1080")
-	t.Cleanup(func() {
-		relay.SetOutboundProxyURL(previousProxy)
-	})
-
-	mem := store.NewInMemory()
-	app := newAppWithDeps(Config{}, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
-	next := Snapshot{
-		DesiredVersion: "next",
-		Revision:       7,
-		AgentConfig: model.AgentConfig{
-			OutboundProxyURL:     "socks://127.0.0.1:2080",
-			TrafficStatsInterval: "not-a-duration",
-		},
-	}
-
-	if err := app.runtime.Apply(context.Background(), Snapshot{}, next); err == nil {
-		t.Fatal("Apply() error = nil, want invalid traffic stats interval error")
-	}
-	if got := relay.OutboundProxyURL(); got != "socks://127.0.0.1:1080" {
-		t.Fatalf("OutboundProxyURL() = %q, want previous proxy preserved", got)
-	}
 }
 
 func TestRunAppliesManagedCertificatesFromSyncedSnapshot(t *testing.T) {
@@ -3370,9 +1374,7 @@ func TestRunAppliesManagedCertificatesFromSyncedSnapshot(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := applier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, applier.snapshotCalls, 1, "certificate apply")
 	if len(calls) != 1 {
 		t.Fatalf("expected one certificate apply call, got %d", len(calls))
 	}
@@ -3476,12 +1478,7 @@ func TestRunHydratesManagedCertificatesFromStoredAppliedSnapshot(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := applier.snapshotCalls()
-	if len(calls) < 1 {
-		t.Fatal("expected at least one certificate apply call")
-	}
+	calls := waitForObservedCalls(t, time.Second, applier.snapshotCalls, 1, "certificate hydration")
 	if !reflect.DeepEqual(calls[0].bundles, stored.Certificates) {
 		t.Fatalf("unexpected hydrated bundles: %+v", calls[0].bundles)
 	}
@@ -3512,8 +1509,15 @@ func TestRunDoesNotApplyManagedCertificatesWhenHeartbeatOmitsPayload(t *testing.
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
+	waitForRuntimeState(t, time.Second, func() bool {
+		state, err := mem.LoadRuntimeState()
+		if err != nil {
+			t.Fatalf("failed to load runtime state: %v", err)
+		}
+		return state.CurrentRevision == 7
+	}, func() string {
+		return "expected runtime state to advance to revision 7"
+	})
 	if calls := applier.snapshotCalls(); len(calls) != 0 {
 		t.Fatalf("expected no certificate apply calls for omitted payload, got %d", len(calls))
 	}
@@ -3576,19 +1580,30 @@ func TestRunPreservesStoredManagedCertificatePayloadWhenHeartbeatOmitsFields(t *
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := applier.snapshotCalls()
-	if len(calls) < 1 {
-		t.Fatal("expected startup hydration call")
-	}
+	calls := waitForObservedCalls(t, time.Second, applier.snapshotCalls, 1, "certificate hydration")
 	if len(calls) != 1 {
 		t.Fatalf("expected only startup hydration call when heartbeat omits payload, got %d", len(calls))
 	}
 
-	persisted, err := mem.LoadDesiredSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load desired snapshot: %v", err)
+	persisted := waitForDesiredSnapshot(t, time.Second, mem, func(snapshot Snapshot) bool {
+		return snapshot.DesiredVersion == "ok" && snapshot.Revision == 7 &&
+			reflect.DeepEqual(snapshot.Certificates, stored.Certificates) &&
+			reflect.DeepEqual(snapshot.CertificatePolicies, stored.CertificatePolicies) &&
+			reflect.DeepEqual(snapshot.Rules, stored.Rules) &&
+			reflect.DeepEqual(snapshot.L4Rules, stored.L4Rules) &&
+			reflect.DeepEqual(snapshot.RelayListeners, stored.RelayListeners)
+	})
+	waitForRuntimeState(t, time.Second, func() bool {
+		state, err := mem.LoadRuntimeState()
+		if err != nil {
+			t.Fatalf("failed to load runtime state: %v", err)
+		}
+		return state.CurrentRevision == 7
+	}, func() string {
+		return "expected runtime state to advance to revision 7"
+	})
+	if calls := applier.snapshotCalls(); len(calls) != 1 {
+		t.Fatalf("expected only startup hydration call when heartbeat omits payload, got %d", len(calls))
 	}
 	if !reflect.DeepEqual(persisted.Certificates, stored.Certificates) {
 		t.Fatalf("expected stored certificates to be preserved, got %+v", persisted.Certificates)
@@ -3632,8 +1647,6 @@ func TestRunRecordsCertificateApplyFailuresInRuntimeState(t *testing.T) {
 	go func() {
 		done <- app.Run(ctx)
 	}()
-
-	waitForCalls(t, client, 1, time.Second)
 
 	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "cert apply failed")
 	if state.Metadata["last_sync_error"] != "cert apply failed" {
@@ -3702,9 +1715,7 @@ func TestRunAppliesHTTPRulesFromSyncedSnapshot(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := httpApplier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, httpApplier.snapshotCalls, 1, "http apply")
 	if len(calls) != 1 {
 		t.Fatalf("expected one http apply call, got %d", len(calls))
 	}
@@ -3756,9 +1767,7 @@ func TestRunHydratesHTTPRulesFromStoredAppliedSnapshot(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := httpApplier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, httpApplier.snapshotCalls, 1, "http hydration")
 	if len(calls) != 1 {
 		t.Fatalf("expected one startup http apply call, got %d", len(calls))
 	}
@@ -3801,16 +1810,26 @@ func TestRunDoesNotApplyHTTPWhenHeartbeatOmitsPayload(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := httpApplier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, httpApplier.snapshotCalls, 1, "http hydration")
 	if len(calls) != 1 {
 		t.Fatalf("expected only startup hydration call when heartbeat omits http rules, got %d", len(calls))
 	}
 
-	persisted, err := mem.LoadDesiredSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load desired snapshot: %v", err)
+	persisted := waitForDesiredSnapshot(t, time.Second, mem, func(snapshot Snapshot) bool {
+		return snapshot.DesiredVersion == "ok" && snapshot.Revision == 7 &&
+			reflect.DeepEqual(snapshot.Rules, stored.Rules)
+	})
+	waitForRuntimeState(t, time.Second, func() bool {
+		state, err := mem.LoadRuntimeState()
+		if err != nil {
+			t.Fatalf("failed to load runtime state: %v", err)
+		}
+		return state.CurrentRevision == 7
+	}, func() string {
+		return "expected runtime state to advance to revision 7"
+	})
+	if calls := httpApplier.snapshotCalls(); len(calls) != 1 {
+		t.Fatalf("expected only startup hydration call when heartbeat omits http rules, got %d", len(calls))
 	}
 	if !reflect.DeepEqual(persisted.Rules, stored.Rules) {
 		t.Fatalf("expected stored http rules to be preserved, got %+v", persisted.Rules)
@@ -3852,9 +1871,7 @@ func TestRunAppliesExplicitEmptyHTTPRules(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := httpApplier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, httpApplier.snapshotCalls, 2, "http clear")
 	if len(calls) != 2 {
 		t.Fatalf("expected startup and clear http apply calls, got %d", len(calls))
 	}
@@ -3888,8 +1905,6 @@ func TestRunRecordsHTTPApplyFailuresInRuntimeState(t *testing.T) {
 	go func() {
 		done <- app.Run(ctx)
 	}()
-
-	waitForCalls(t, client, 1, time.Second)
 
 	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "http apply failed")
 	if state.Metadata["last_sync_error"] != "http apply failed" {
@@ -3959,9 +1974,7 @@ func TestRunAppliesL4RulesFromSyncedSnapshot(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := l4Applier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, l4Applier.snapshotCalls, 1, "l4 apply")
 	if len(calls) != 1 {
 		t.Fatalf("expected one l4 apply call, got %d", len(calls))
 	}
@@ -4016,9 +2029,7 @@ func TestRunHydratesL4RulesFromStoredAppliedSnapshot(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := l4Applier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, l4Applier.snapshotCalls, 1, "l4 hydration")
 	if len(calls) != 1 {
 		t.Fatalf("expected one startup l4 apply call, got %d", len(calls))
 	}
@@ -4073,9 +2084,7 @@ func TestRunHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := l4Applier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, l4Applier.snapshotCalls, 1, "l4 hydration")
 	if len(calls) != 1 {
 		t.Fatalf("expected one startup l4 apply call, got %d", len(calls))
 	}
@@ -4126,7 +2135,7 @@ func TestRunDoesNotHydratePartialAppliedSnapshotFromNewerDesiredSnapshot(t *test
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
+	waitForSyncReturns(t, client, 1, time.Second)
 
 	if calls := l4Applier.snapshotCalls(); len(calls) != 0 {
 		t.Fatalf("expected no l4 hydration from newer desired snapshot, got %+v", calls)
@@ -4182,7 +2191,7 @@ func TestRunDoesNotHydrateNewerAppliedSnapshotFromOlderDesiredSnapshot(t *testin
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
+	waitForSyncReturns(t, client, 1, time.Second)
 	if calls := l4Applier.snapshotCalls(); len(calls) != 0 {
 		t.Fatalf("expected no l4 hydration from older desired snapshot, got %+v", calls)
 	}
@@ -4234,12 +2243,9 @@ func TestRunPersistsHydratedAppliedL4RulesFromDesiredSnapshotOnStartup(t *testin
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	appliedAfter, err := mem.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
+	appliedAfter := waitForAppliedSnapshot(t, time.Second, mem, func(snapshot Snapshot) bool {
+		return reflect.DeepEqual(snapshot.L4Rules, desired.L4Rules)
+	})
 	if !reflect.DeepEqual(appliedAfter.L4Rules, desired.L4Rules) {
 		t.Fatalf("expected hydrated applied l4 rules to be persisted, got %+v", appliedAfter.L4Rules)
 	}
@@ -4281,9 +2287,7 @@ func TestRunAppliesRelayListenersFromSyncedSnapshot(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := relayApplier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, relayApplier.snapshotCalls, 1, "relay apply")
 	if len(calls) != 1 {
 		t.Fatalf("expected one relay apply call, got %d", len(calls))
 	}
@@ -4352,9 +2356,7 @@ func TestRunHydratesRelayListenersFromStoredAppliedSnapshot(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := relayApplier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, relayApplier.snapshotCalls, 1, "relay hydration")
 	if len(calls) != 1 {
 		t.Fatalf("expected one startup relay apply call, got %d", len(calls))
 	}
@@ -4441,14 +2443,7 @@ func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChange
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	relayCalls := relayApplier.snapshotCalls()
+	relayCalls := waitForObservedCalls(t, time.Second, relayApplier.snapshotCalls, 1, "relay hydration")
 	if len(relayCalls) != 1 {
 		t.Fatalf("expected only startup local relay hydration, got %d calls: %+v", len(relayCalls), relayCalls)
 	}
@@ -4456,78 +2451,134 @@ func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChange
 		t.Fatalf("expected only local relay listener to be applied, got %+v", relayCalls[0].listeners)
 	}
 
-	l4Calls := l4Applier.snapshotCalls()
+	l4Calls := waitForObservedCalls(t, time.Second, l4Applier.snapshotCalls, 2, "l4 remote relay refresh")
 	if len(l4Calls) != 2 {
 		t.Fatalf("expected startup hydration and remote relay-triggered l4 refresh, got %d calls", len(l4Calls))
 	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
 }
 
-func TestSnapshotActivatorAppliesRulesBeforeRelayListeners(t *testing.T) {
-	recorder := &orderedApplyRecorder{}
-	app := newAppWithHTTPDeps(
-		Config{AgentID: "local-agent"},
-		store.NewInMemory(),
-		newTestSyncClient(nil, syncResponse{}),
-		&orderedHTTPApplier{recorder: recorder},
-		&orderedCertificateApplier{recorder: recorder},
-		&orderedL4Applier{recorder: recorder},
-		&orderedRelayApplier{recorder: recorder},
-	)
+func TestSnapshotActivatorAppliesTrafficStatsEnabledFromAgentConfig(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
 
-	previous := Snapshot{
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://handoff.internal",
-			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			Enabled:     true,
-			Revision:    1,
-		}},
-		L4Rules: []model.L4Rule{{
-			Protocol:   "tcp",
-			ListenHost: "127.0.0.1",
-			ListenPort: 9444,
-			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9445}},
-			Revision:   1,
-		}},
-	}
+	app := newAppWithDeps(Config{}, store.NewInMemory(), newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
+	disabled := false
+	previous := Snapshot{}
 	next := Snapshot{
-		Certificates: []model.ManagedCertificateBundle{{
-			ID:       10,
-			Domain:   "relay.internal.test",
-			CertPEM:  "cert",
-			KeyPEM:   "key",
-			Revision: 1,
-		}},
-		RelayListeners: []model.RelayListener{{
-			ID:         51,
-			AgentID:    "local-agent",
-			Name:       "relay-hop",
-			ListenHost: "127.0.0.1",
-			ListenPort: 9443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: "pin",
-			}},
-			Revision: 1,
-		}},
-		Rules: []model.HTTPRule{},
-		L4Rules: []model.L4Rule{{
-			Protocol:    "udp",
-			ListenHost:  "127.0.0.1",
-			ListenPort:  5300,
-			Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: 5301}},
-			RelayLayers: [][]int{{51}},
-			Revision:    1,
-		}},
+		AgentConfig: model.AgentConfig{
+			TrafficStatsEnabled: &disabled,
+		},
 	}
 
 	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
 		t.Fatalf("snapshotActivator returned error: %v", err)
 	}
+	if traffic.Enabled() {
+		t.Fatal("traffic.Enabled() = true, want false")
+	}
 
-	if got := recorder.snapshot(); !reflect.DeepEqual(got, []string{"cert", "http", "l4", "relay"}) {
-		t.Fatalf("apply order = %v, want [cert http l4 relay]", got)
+	enabled := true
+	previous = next
+	next.AgentConfig.TrafficStatsEnabled = &enabled
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error while enabling stats: %v", err)
+	}
+	if !traffic.Enabled() {
+		t.Fatal("traffic.Enabled() = false, want true")
+	}
+}
+
+func TestSnapshotActivatorUpdatesTrafficBlockStateFromAgentConfigOnlyChange(t *testing.T) {
+	previous := Snapshot{
+		AgentConfig: model.AgentConfig{
+			TrafficBlocked: false,
+		},
+		Rules: []model.HTTPRule{{
+			ID:          1,
+			FrontendURL: "http://frontend.example",
+			Backends:    []model.HTTPBackend{{URL: "http://backend.example"}},
+			Enabled:     true,
+		}},
+		L4Rules: []model.L4Rule{{
+			ID:         2,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 19000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 19001}},
+			Enabled:    true,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         3,
+			AgentID:    "agent-a",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			BindHosts:  []string{"127.0.0.1"},
+			ListenPort: 19443,
+			PublicHost: "127.0.0.1",
+			PublicPort: 19443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "spki_sha256",
+				Value: "cGlubmVk",
+			}},
+		}},
+	}
+	next := previous
+	next.AgentConfig.TrafficBlocked = true
+	next.AgentConfig.TrafficBlockReason = "monthly quota exceeded"
+
+	httpApplier := &testTrafficBlockHTTPApplier{}
+	l4Applier := &testTrafficBlockL4Applier{}
+	relayApplier := &testTrafficBlockRelayApplier{}
+	app := newAppWithHTTPDeps(Config{}, store.NewInMemory(), newTestSyncClient(nil, syncResponse{}), httpApplier, nil, l4Applier, relayApplier)
+
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	if got := httpApplier.applyCount(); got != 0 {
+		t.Fatalf("http Apply calls = %d, want 0 for agent_config-only change", got)
+	}
+	if got := l4Applier.applyCount(); got != 0 {
+		t.Fatalf("l4 Apply calls = %d, want 0 for agent_config-only change", got)
+	}
+	if got := relayApplier.applyCount(); got != 0 {
+		t.Fatalf("relay Apply calls = %d, want 0 for agent_config-only change", got)
+	}
+	if got := httpApplier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
+		t.Fatalf("http block state = %+v", got)
+	}
+	if got := l4Applier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
+		t.Fatalf("l4 block state = %+v", got)
+	}
+	if got := relayApplier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
+		t.Fatalf("relay block state = %+v", got)
+	}
+
+	previous = next
+	next.AgentConfig.TrafficBlocked = false
+	next.AgentConfig.TrafficBlockReason = ""
+	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
+		t.Fatalf("snapshotActivator returned error while clearing block state: %v", err)
+	}
+	if got := httpApplier.blockState(); got.Blocked != false || got.Reason != "" {
+		t.Fatalf("http cleared block state = %+v", got)
+	}
+	if got := l4Applier.blockState(); got.Blocked != false || got.Reason != "" {
+		t.Fatalf("l4 cleared block state = %+v", got)
+	}
+	if got := relayApplier.blockState(); got.Blocked != false || got.Reason != "" {
+		t.Fatalf("relay cleared block state = %+v", got)
 	}
 }
 
@@ -4582,113 +2633,6 @@ func TestSnapshotActivatorPassesWireGuardProfilesToRelayApplier(t *testing.T) {
 	}
 }
 
-func TestSnapshotActivatorRefreshesRelayWireGuardProfilesWhenListenersUnchanged(t *testing.T) {
-	relayApplier := &testWireGuardRelayApplier{}
-	app := newAppWithDeps(
-		Config{AgentID: "local-agent"},
-		store.NewInMemory(),
-		newTestSyncClient(nil, syncResponse{}),
-		nil,
-		nil,
-		relayApplier,
-	)
-
-	profileID := 9
-	previous := Snapshot{
-		WireGuardProfiles: []model.WireGuardProfile{{
-			ID:       profileID,
-			Enabled:  true,
-			Revision: 1,
-		}},
-		RelayListeners: []model.RelayListener{{
-			ID:                 51,
-			AgentID:            "local-agent",
-			Name:               "relay-hop",
-			ListenHost:         "127.0.0.1",
-			ListenPort:         9443,
-			Enabled:            true,
-			TLSMode:            "pin_only",
-			TransportMode:      relay.ListenerTransportModeWireGuard,
-			WireGuardProfileID: &profileID,
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: "pin",
-			}},
-			Revision: 1,
-		}},
-	}
-	next := previous
-	next.WireGuardProfiles = append([]model.WireGuardProfile(nil), previous.WireGuardProfiles...)
-	next.WireGuardProfiles[0].Revision = 2
-
-	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
-		t.Fatalf("snapshotActivator returned error: %v", err)
-	}
-
-	calls := relayApplier.wireGuardCalls()
-	if len(calls) != 1 {
-		t.Fatalf("ApplyWithWireGuardProfiles calls = %d, want 1 after profile-only change", len(calls))
-	}
-	if calls[0].profiles[0].Revision != 2 {
-		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)
-	}
-}
-
-func TestSnapshotActivatorRefreshesRelayEgressProfilesWhenListenersUnchanged(t *testing.T) {
-	relayApplier := &testEgressRelayApplier{}
-	app := newAppWithDeps(
-		Config{AgentID: "local-agent"},
-		store.NewInMemory(),
-		newTestSyncClient(nil, syncResponse{}),
-		nil,
-		nil,
-		relayApplier,
-	)
-
-	previous := Snapshot{
-		EgressProfiles: []model.EgressProfile{{
-			ID:       7,
-			Type:     "socks",
-			ProxyURL: "socks5://127.0.0.1:1080",
-			Enabled:  true,
-			Revision: 1,
-		}},
-		RelayListeners: []model.RelayListener{{
-			ID:            51,
-			AgentID:       "local-agent",
-			Name:          "relay-hop",
-			ListenHost:    "127.0.0.1",
-			ListenPort:    9443,
-			Enabled:       true,
-			TLSMode:       "pin_only",
-			TransportMode: relay.ListenerTransportModeTLSTCP,
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: "pin",
-			}},
-			Revision: 1,
-		}},
-	}
-	next := previous
-	next.EgressProfiles = append([]model.EgressProfile(nil), previous.EgressProfiles...)
-	next.EgressProfiles[0].Revision = 2
-
-	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
-		t.Fatalf("snapshotActivator returned error: %v", err)
-	}
-
-	calls := relayApplier.egressSnapshotCalls()
-	if len(calls) != 1 {
-		t.Fatalf("ApplyWithWireGuardAndEgressProfiles calls = %d, want 1 after egress profile-only change", len(calls))
-	}
-	if len(calls[0].egressProfiles) != 1 || calls[0].egressProfiles[0].Revision != 2 {
-		t.Fatalf("egress profiles passed to relay applier = %+v", calls[0].egressProfiles)
-	}
-	if len(calls[0].listeners) != 1 || calls[0].listeners[0].ID != 51 {
-		t.Fatalf("relay listeners passed to relay applier = %+v", calls[0].listeners)
-	}
-}
-
 func TestSnapshotActivatorPassesWireGuardProfilesToL4Applier(t *testing.T) {
 	l4Applier := &testWireGuardL4Applier{}
 	app := newAppWithDeps(
@@ -4728,51 +2672,6 @@ func TestSnapshotActivatorPassesWireGuardProfilesToL4Applier(t *testing.T) {
 	}
 	if len(calls[0].profiles) != 1 || calls[0].profiles[0].ID != profileID {
 		t.Fatalf("wireguard profiles passed to l4 applier = %+v", calls[0].profiles)
-	}
-}
-
-func TestSnapshotActivatorRefreshesL4WireGuardProfilesWhenRulesUnchanged(t *testing.T) {
-	l4Applier := &testWireGuardL4Applier{}
-	app := newAppWithDeps(
-		Config{AgentID: "local-agent"},
-		store.NewInMemory(),
-		newTestSyncClient(nil, syncResponse{}),
-		nil,
-		l4Applier,
-		nil,
-	)
-
-	profileID := 9
-	previous := Snapshot{
-		WireGuardProfiles: []model.WireGuardProfile{{
-			ID:       profileID,
-			Enabled:  true,
-			Revision: 1,
-		}},
-		L4Rules: []model.L4Rule{{
-			Protocol:           "tcp",
-			ListenHost:         "127.0.0.1",
-			ListenPort:         8443,
-			ListenMode:         "wireguard",
-			WireGuardProfileID: &profileID,
-			Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
-			Revision:           1,
-		}},
-	}
-	next := previous
-	next.WireGuardProfiles = append([]model.WireGuardProfile(nil), previous.WireGuardProfiles...)
-	next.WireGuardProfiles[0].Revision = 2
-
-	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
-		t.Fatalf("snapshotActivator returned error: %v", err)
-	}
-
-	calls := l4Applier.wireGuardCalls()
-	if len(calls) != 1 {
-		t.Fatalf("ApplyWithRelayAndWireGuardProfiles calls = %d, want 1 after profile-only change", len(calls))
-	}
-	if calls[0].profiles[0].Revision != 2 {
-		t.Fatalf("wireguard profile revision = %d, want 2", calls[0].profiles[0].Revision)
 	}
 }
 
@@ -4820,53 +2719,6 @@ func TestSnapshotActivatorPassesEgressProfilesToL4Applier(t *testing.T) {
 	}
 }
 
-func TestSnapshotActivatorRefreshesL4EgressProfilesWhenRulesUnchanged(t *testing.T) {
-	l4Applier := &testEgressL4Applier{}
-	app := newAppWithDeps(
-		Config{AgentID: "local-agent"},
-		store.NewInMemory(),
-		newTestSyncClient(nil, syncResponse{}),
-		nil,
-		l4Applier,
-		nil,
-	)
-
-	profileID := 17
-	previous := Snapshot{
-		EgressProfiles: []model.EgressProfile{{
-			ID:       profileID,
-			Name:     "socks exit",
-			Type:     "socks",
-			ProxyURL: "socks5://127.0.0.1:1080",
-			Enabled:  true,
-			Revision: 1,
-		}},
-		L4Rules: []model.L4Rule{{
-			Protocol:        "tcp",
-			ListenHost:      "127.0.0.1",
-			ListenPort:      8443,
-			Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: 9443}},
-			EgressProfileID: &profileID,
-			Revision:        1,
-		}},
-	}
-	next := previous
-	next.EgressProfiles = append([]model.EgressProfile(nil), previous.EgressProfiles...)
-	next.EgressProfiles[0].Revision = 2
-
-	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
-		t.Fatalf("snapshotActivator returned error: %v", err)
-	}
-
-	calls := l4Applier.egressProfileCalls()
-	if len(calls) != 1 {
-		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1 after profile-only change", len(calls))
-	}
-	if calls[0].egressProfiles[0].Revision != 2 {
-		t.Fatalf("egress profile revision = %d, want 2", calls[0].egressProfiles[0].Revision)
-	}
-}
-
 func TestSnapshotActivatorPassesEgressProfilesToHTTPApplier(t *testing.T) {
 	httpApplier := &testEgressHTTPApplier{}
 	app := newAppWithHTTPDeps(
@@ -4910,52 +2762,6 @@ func TestSnapshotActivatorPassesEgressProfilesToHTTPApplier(t *testing.T) {
 	}
 }
 
-func TestSnapshotActivatorRefreshesHTTPEgressProfilesWhenRulesUnchanged(t *testing.T) {
-	httpApplier := &testEgressHTTPApplier{}
-	app := newAppWithHTTPDeps(
-		Config{AgentID: "local-agent"},
-		store.NewInMemory(),
-		newTestSyncClient(nil, syncResponse{}),
-		httpApplier,
-		nil,
-		nil,
-		nil,
-	)
-
-	profileID := 27
-	previous := Snapshot{
-		EgressProfiles: []model.EgressProfile{{
-			ID:       profileID,
-			Name:     "socks exit",
-			Type:     "socks",
-			ProxyURL: "socks5://127.0.0.1:1080",
-			Enabled:  true,
-			Revision: 1,
-		}},
-		Rules: []model.HTTPRule{{
-			FrontendURL:     "http://media.example.test",
-			Backends:        []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-			EgressProfileID: &profileID,
-			Revision:        1,
-		}},
-	}
-	next := previous
-	next.EgressProfiles = append([]model.EgressProfile(nil), previous.EgressProfiles...)
-	next.EgressProfiles[0].Revision = 2
-
-	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
-		t.Fatalf("snapshotActivator returned error: %v", err)
-	}
-
-	calls := httpApplier.egressProfileCalls()
-	if len(calls) != 1 {
-		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1 after profile-only change", len(calls))
-	}
-	if calls[0].egressProfiles[0].Revision != 2 {
-		t.Fatalf("egress profile revision = %d, want 2", calls[0].egressProfiles[0].Revision)
-	}
-}
-
 func TestRunDoesNotApplyL4WhenHeartbeatOmitsPayload(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
@@ -4973,8 +2779,15 @@ func TestRunDoesNotApplyL4WhenHeartbeatOmitsPayload(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
+	waitForRuntimeState(t, time.Second, func() bool {
+		state, err := mem.LoadRuntimeState()
+		if err != nil {
+			t.Fatalf("failed to load runtime state: %v", err)
+		}
+		return state.CurrentRevision == 7
+	}, func() string {
+		return "expected runtime state to advance to revision 7"
+	})
 	if calls := l4Applier.snapshotCalls(); len(calls) != 0 {
 		t.Fatalf("expected no l4 apply calls for omitted payload, got %d", len(calls))
 	}
@@ -5002,8 +2815,15 @@ func TestRunDoesNotApplyRelayWhenHeartbeatOmitsPayload(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
+	waitForRuntimeState(t, time.Second, func() bool {
+		state, err := mem.LoadRuntimeState()
+		if err != nil {
+			t.Fatalf("failed to load runtime state: %v", err)
+		}
+		return state.CurrentRevision == 7
+	}, func() string {
+		return "expected runtime state to advance to revision 7"
+	})
 	if calls := relayApplier.snapshotCalls(); len(calls) != 0 {
 		t.Fatalf("expected no relay apply calls for omitted payload, got %d", len(calls))
 	}
@@ -5046,9 +2866,7 @@ func TestRunAppliesExplicitEmptyL4Rules(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := l4Applier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, l4Applier.snapshotCalls, 2, "l4 clear")
 	if len(calls) != 2 {
 		t.Fatalf("expected startup and clear l4 apply calls, got %d", len(calls))
 	}
@@ -5101,9 +2919,7 @@ func TestRunAppliesExplicitEmptyRelayListeners(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
-	calls := relayApplier.snapshotCalls()
+	calls := waitForObservedCalls(t, time.Second, relayApplier.snapshotCalls, 2, "relay clear")
 	if len(calls) != 2 {
 		t.Fatalf("expected startup and clear relay apply calls, got %d", len(calls))
 	}
@@ -5172,13 +2988,10 @@ func TestRunClearsStoredL4RulesWhenRelayListenersAreExplicitlyCleared(t *testing
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-	waitForCalls(t, client, 2, time.Second)
-
-	applied, err := mem.LoadAppliedSnapshot()
-	if err != nil {
-		t.Fatalf("failed to load applied snapshot: %v", err)
-	}
+	applied := waitForAppliedSnapshot(t, time.Second, mem, func(snapshot Snapshot) bool {
+		return snapshot.L4Rules != nil && len(snapshot.L4Rules) == 0 &&
+			snapshot.RelayListeners != nil && len(snapshot.RelayListeners) == 0
+	})
 	if applied.L4Rules == nil || len(applied.L4Rules) != 0 {
 		t.Fatalf("expected applied l4 rules cleared, got %+v", applied.L4Rules)
 	}
@@ -5221,8 +3034,6 @@ func TestRunRecordsL4ApplyFailuresInRuntimeState(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForCalls(t, client, 1, time.Second)
-
 	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "l4 apply failed")
 	if state.Metadata["last_sync_error"] != "l4 apply failed" {
 		t.Fatalf("expected l4 apply failure metadata, got %v", state.Metadata)
@@ -5254,8 +3065,6 @@ func TestRunRecordsRelayApplyFailuresInRuntimeState(t *testing.T) {
 	go func() {
 		done <- app.Run(ctx)
 	}()
-
-	waitForCalls(t, client, 1, time.Second)
 
 	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "relay apply failed")
 	if state.Metadata["last_sync_error"] != "relay apply failed" {
@@ -5358,50 +3167,4 @@ func TestAppCloseResetsRelayTimeoutOverridesWithoutRun(t *testing.T) {
 	if resetCalls != 1 {
 		t.Fatalf("relay timeout reset calls after second Close() = %d", resetCalls)
 	}
-}
-
-type failingStore struct {
-	delegate             store.Store
-	failOnNthSave        int
-	saveCount            int
-	failOnNthAppliedSave int
-	appliedSaveCount     int
-	failOnNthRuntimeSave int
-	runtimeSaveCount     int
-}
-
-func (f *failingStore) SaveDesiredSnapshot(snapshot Snapshot) error {
-	f.saveCount++
-	if f.failOnNthSave > 0 && f.saveCount == f.failOnNthSave {
-		return errors.New("persistence fail")
-	}
-	return f.delegate.SaveDesiredSnapshot(snapshot)
-}
-
-func (f *failingStore) LoadDesiredSnapshot() (Snapshot, error) {
-	return f.delegate.LoadDesiredSnapshot()
-}
-
-func (f *failingStore) SaveAppliedSnapshot(snapshot Snapshot) error {
-	f.appliedSaveCount++
-	if f.failOnNthAppliedSave > 0 && f.appliedSaveCount == f.failOnNthAppliedSave {
-		return errors.New("applied persistence fail")
-	}
-	return f.delegate.SaveAppliedSnapshot(snapshot)
-}
-
-func (f *failingStore) LoadAppliedSnapshot() (Snapshot, error) {
-	return f.delegate.LoadAppliedSnapshot()
-}
-
-func (f *failingStore) SaveRuntimeState(state store.RuntimeState) error {
-	f.runtimeSaveCount++
-	if f.failOnNthRuntimeSave > 0 && f.runtimeSaveCount == f.failOnNthRuntimeSave {
-		return errors.New("runtime persistence fail")
-	}
-	return f.delegate.SaveRuntimeState(state)
-}
-
-func (f *failingStore) LoadRuntimeState() (store.RuntimeState, error) {
-	return f.delegate.LoadRuntimeState()
 }
