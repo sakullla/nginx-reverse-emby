@@ -2248,6 +2248,112 @@ func TestL4RuntimeManagerAppliesWireGuardEgressProfilesFromInlineConfig(t *testi
 	}
 }
 
+func TestL4RuntimeManagerIgnoresUnusedInvalidWireGuardEgressProfile(t *testing.T) {
+	created := 0
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
+		created++
+		return &testAppWireGuardRuntime{}, nil
+	})
+	defer manager.Close()
+
+	err := manager.ApplyWithRelayWireGuardAndEgressProfiles(
+		context.Background(),
+		[]model.L4Rule{{
+			ID:         1,
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: pickFreeTCPPort(t),
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+		}},
+		nil,
+		nil,
+		[]model.EgressProfile{{
+			ID:              79,
+			Name:            "unused-invalid-wg",
+			Type:            "wireguard",
+			Enabled:         true,
+			WireGuardConfig: nil,
+		}},
+	)
+	if err != nil {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles() error = %v, want unused wireguard egress ignored", err)
+	}
+	if created != 0 {
+		t.Fatalf("wireguard runtime creations = %d, want unused profile skipped", created)
+	}
+}
+
+func TestLocalL4EgressProfilesIncludesUsedProfile(t *testing.T) {
+	profileID := 80
+	otherID := 81
+	rule := model.L4Rule{EgressProfileID: &profileID}
+	profiles := []model.EgressProfile{
+		validAppWireGuardEgressProfile(otherID),
+		validAppWireGuardEgressProfile(profileID),
+	}
+
+	got := localL4EgressProfiles([]model.L4Rule{rule}, profiles)
+	if len(got) != 1 || got[0].ID != profileID {
+		t.Fatalf("localL4EgressProfiles() = %+v, want only used profile %d", got, profileID)
+	}
+}
+
+func TestL4RuntimeManagerDoesNotPrepareRelayRoutedWireGuardEgressProfile(t *testing.T) {
+	created := 0
+	manager := newL4RuntimeManagerWithRelay(&testRelayTLSProvider{})
+	manager.egressWireGuard = newEgressWireGuardRuntime(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
+		created++
+		return &testAppWireGuardRuntime{}, nil
+	})
+	defer manager.Close()
+
+	profileID := 82
+	rule := model.L4Rule{
+		ID:              1,
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      pickFreeTCPPort(t),
+		Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
+		RelayLayers:     [][]int{{41}},
+		EgressProfileID: &profileID,
+	}
+	relayListener := model.RelayListener{
+		ID:         41,
+		AgentID:    "remote-agent",
+		Name:       "relay-hop",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		PublicHost: "127.0.0.1",
+		PublicPort: pickFreeTCPPort(t),
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: "pin",
+		}},
+	}
+
+	err := manager.ApplyWithRelayWireGuardAndEgressProfiles(
+		context.Background(),
+		[]model.L4Rule{rule},
+		[]model.RelayListener{relayListener},
+		nil,
+		[]model.EgressProfile{{
+			ID:              profileID,
+			Name:            "relay-routed-invalid-wg",
+			Type:            "wireguard",
+			Enabled:         true,
+			WireGuardConfig: nil,
+		}},
+	)
+	if err != nil {
+		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles() error = %v, want relay-routed egress profile skipped", err)
+	}
+	if created != 0 {
+		t.Fatalf("wireguard runtime creations = %d, want relay-routed profile skipped", created)
+	}
+}
+
 func TestL4RuntimeManagerRejectsUnpreparedWireGuardEgressProfiles(t *testing.T) {
 	profileID := 78
 	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {

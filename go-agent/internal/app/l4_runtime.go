@@ -14,6 +14,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
 )
 
 type l4RuntimeManager struct {
@@ -102,11 +103,12 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	localEgressProfiles := localL4EgressProfiles(rules, egressProfiles)
 	if len(rules) == 0 {
 		if err := m.applyWireGuardProfilesLocked(ctx, wireGuardProfiles); err != nil {
 			return err
 		}
-		if err := m.applyEgressWireGuardProfilesLocked(ctx, egressProfiles); err != nil {
+		if err := m.applyEgressWireGuardProfilesLocked(ctx, localEgressProfiles); err != nil {
 			return err
 		}
 		if m.server != nil {
@@ -123,7 +125,7 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 	if err != nil {
 		return err
 	}
-	egressTransaction, egressProvider, err := m.prepareEgressWireGuardProfilesLocked(ctx, egressProfiles)
+	egressTransaction, egressProvider, err := m.prepareEgressWireGuardProfilesLocked(ctx, localEgressProfiles)
 	if err != nil {
 		if transaction != nil {
 			transaction.Rollback()
@@ -168,7 +170,7 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 				transaction = nil
 			}
 			if egressTransaction != nil {
-				m.egressWireGuard.Commit(egressTransaction, egressProfiles)
+				m.egressWireGuard.Commit(egressTransaction, localEgressProfiles)
 				egressTransaction = nil
 			}
 			_ = previous.Close()
@@ -219,7 +221,7 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 		transaction = nil
 	}
 	if egressTransaction != nil {
-		m.egressWireGuard.Commit(egressTransaction, egressProfiles)
+		m.egressWireGuard.Commit(egressTransaction, localEgressProfiles)
 		egressTransaction = nil
 	}
 	m.server = server
@@ -278,6 +280,32 @@ func (m *l4RuntimeManager) storeLastAppliedInputsLocked(rules []model.L4Rule, re
 	m.lastRules = cloneL4Rules(rules)
 	m.lastRelayListeners = cloneRelayListeners(relayListeners)
 	m.lastEgressProfiles = cloneEgressProfiles(egressProfiles)
+}
+
+func localL4EgressProfiles(rules []model.L4Rule, profiles []model.EgressProfile) []model.EgressProfile {
+	if profiles == nil {
+		return nil
+	}
+	if len(rules) == 0 || len(profiles) == 0 {
+		return []model.EgressProfile{}
+	}
+	referenced := make(map[int]struct{})
+	for _, rule := range rules {
+		if relayroute.UsesRelay(nil, rule.RelayLayers) || rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+			continue
+		}
+		referenced[*rule.EgressProfileID] = struct{}{}
+	}
+	if len(referenced) == 0 {
+		return []model.EgressProfile{}
+	}
+	out := make([]model.EgressProfile, 0, len(referenced))
+	for _, profile := range profiles {
+		if _, ok := referenced[profile.ID]; ok {
+			out = append(out, profile)
+		}
+	}
+	return out
 }
 
 func l4ServerBindingKeys(server *l4.Server) []string {
