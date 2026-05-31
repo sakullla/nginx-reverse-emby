@@ -163,6 +163,37 @@ func TestRegistryRollsBackPreparedTransactionsInReverseOrder(t *testing.T) {
 	}
 }
 
+func TestRegistryRollsBackPreparedTransactionsWhenLaterApplyFails(t *testing.T) {
+	registry := module.NewRegistry()
+	events := []string{}
+	applyErr := errors.New("apply failed")
+	mustRegister(t, registry, &transactionalRecordingModule{
+		recordingModule: recordingModule{name: "first"},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			events = append(events, "prepare:first")
+			return module.TransactionFuncs{
+				CommitFunc:   func() error { events = append(events, "commit:first"); return nil },
+				RollbackFunc: func() error { events = append(events, "rollback:first"); return nil },
+			}, nil
+		},
+	})
+	mustRegister(t, registry, &recordingModule{
+		name: "second",
+		apply: func(context.Context, module.ApplyRequest) error {
+			events = append(events, "apply:second")
+			return applyErr
+		},
+	})
+
+	err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{})
+	if !errors.Is(err, applyErr) {
+		t.Fatalf("Apply() error = %v, want wrapped applyErr", err)
+	}
+	if got, want := strings.Join(events, ","), "prepare:first,apply:second,rollback:first"; got != want {
+		t.Fatalf("events = %s, want %s", got, want)
+	}
+}
+
 func TestRegistryCommitsPreparedTransactionsInOrder(t *testing.T) {
 	registry := module.NewRegistry()
 	events := []string{}
