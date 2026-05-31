@@ -193,6 +193,40 @@ func TestRegistryCommitsPreparedTransactionsInOrder(t *testing.T) {
 	}
 }
 
+func TestRegistryRollsBackPreparedTransactionsWhenCommitFails(t *testing.T) {
+	registry := module.NewRegistry()
+	events := []string{}
+	commitErr := errors.New("commit failed")
+	mustRegister(t, registry, &transactionalRecordingModule{
+		recordingModule: recordingModule{name: "first"},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			events = append(events, "prepare:first")
+			return module.TransactionFuncs{
+				CommitFunc:   func() error { events = append(events, "commit:first"); return nil },
+				RollbackFunc: func() error { events = append(events, "rollback:first"); return nil },
+			}, nil
+		},
+	})
+	mustRegister(t, registry, &transactionalRecordingModule{
+		recordingModule: recordingModule{name: "second"},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			events = append(events, "prepare:second")
+			return module.TransactionFuncs{
+				CommitFunc:   func() error { events = append(events, "commit:second"); return commitErr },
+				RollbackFunc: func() error { events = append(events, "rollback:second"); return nil },
+			}, nil
+		},
+	})
+
+	err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{})
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("Apply() error = %v, want wrapped commitErr", err)
+	}
+	if got, want := strings.Join(events, ","), "prepare:first,prepare:second,commit:first,commit:second,rollback:second,rollback:first"; got != want {
+		t.Fatalf("events = %s, want %s", got, want)
+	}
+}
+
 type fakeTLSMaterial struct{}
 
 type recordingModule struct {

@@ -29,7 +29,11 @@ func NewRegistry() *Registry {
 	return &Registry{byName: make(map[string]Module)}
 }
 
-func (r *Registry) Register(module Module) error {
+func (r *Registry) Register(candidate any) error {
+	module, err := adaptModule(candidate)
+	if err != nil {
+		return err
+	}
 	name, err := validateModule(module)
 	if err != nil {
 		return err
@@ -62,11 +66,11 @@ func (r *Registry) Names() []string {
 	return names
 }
 
-func (r *Registry) Capabilities(snapshot SnapshotView) []Capability {
+func (r *Registry) Capabilities() []Capability {
 	modules := r.Modules()
 	var capabilities []Capability
 	for _, module := range modules {
-		for _, capability := range module.Capabilities(snapshot) {
+		for _, capability := range module.Capabilities(SnapshotView{}) {
 			capabilities = append(capabilities, cloneCapability(capability))
 		}
 	}
@@ -136,6 +140,9 @@ func (r *Registry) OrderedModules() ([]Module, error) {
 }
 
 func (r *Registry) Apply(ctx context.Context, previous, next model.Snapshot) error {
+	if r == nil {
+		return nil
+	}
 	ordered, err := r.OrderedModules()
 	if err != nil {
 		return err
@@ -169,8 +176,45 @@ func (r *Registry) Apply(ctx context.Context, previous, next model.Snapshot) err
 	}
 	for _, transaction := range transactions {
 		if err := transaction.Commit(); err != nil {
-			return fmt.Errorf("commit module transaction: %w", err)
+			return rollbackPrepared(transactions, fmt.Errorf("commit module transaction: %w", err))
 		}
+	}
+	r.providers = providers
+	return nil
+}
+
+func (r *Registry) StartAll(ctx context.Context, snapshot model.Snapshot) error {
+	if r == nil {
+		return nil
+	}
+	ordered, err := r.OrderedModules()
+	if err != nil {
+		return err
+	}
+	providers := newProviderSet()
+	for _, module := range ordered {
+		if err := module.RegisterProviders(providers); err != nil {
+			return fmt.Errorf("module %s register providers: %w", strings.TrimSpace(module.Name()), err)
+		}
+	}
+	if err := validateRequiredProviders(ordered, providers); err != nil {
+		return err
+	}
+
+	request := ApplyRequest{Next: snapshot, Providers: providers}
+	var started []Module
+	for _, module := range ordered {
+		if err := module.Apply(ctx, request); err != nil {
+			errs := []error{fmt.Errorf("module %s start: %w", strings.TrimSpace(module.Name()), err)}
+			for i := len(started) - 1; i >= 0; i-- {
+				startedModule := started[i]
+				if stopErr := startedModule.Stop(ctx); stopErr != nil {
+					errs = append(errs, fmt.Errorf("rollback module %s stop: %w", strings.TrimSpace(startedModule.Name()), stopErr))
+				}
+			}
+			return errors.Join(errs...)
+		}
+		started = append(started, module)
 	}
 	r.providers = providers
 	return nil
@@ -233,6 +277,47 @@ func validateModule(module Module) (string, error) {
 		return "", err
 	}
 	return descriptor.Name, nil
+}
+
+func adaptModule(candidate any) (Module, error) {
+	if candidate == nil {
+		return nil, fmt.Errorf("%w: nil module", ErrInvalidModule)
+	}
+	if module, ok := candidate.(Module); ok {
+		return module, nil
+	}
+	if module, ok := candidate.(LegacyModule); ok {
+		return legacyModuleAdapter{module: module}, nil
+	}
+	return nil, fmt.Errorf("%w: unsupported module %T", ErrInvalidModule, candidate)
+}
+
+type legacyModuleAdapter struct {
+	module LegacyModule
+}
+
+func (a legacyModuleAdapter) Name() string { return a.module.Name() }
+
+func (a legacyModuleAdapter) Descriptor() ModuleDescriptor {
+	return ModuleDescriptor{Name: a.Name()}
+}
+
+func (a legacyModuleAdapter) RegisterProviders(ProviderRegistry) error { return nil }
+
+func (a legacyModuleAdapter) Capabilities(SnapshotView) []Capability {
+	return a.module.Capabilities()
+}
+
+func (a legacyModuleAdapter) Apply(ctx context.Context, req ApplyRequest) error {
+	return a.module.Start(ctx, req.Next)
+}
+
+func (a legacyModuleAdapter) Stop(ctx context.Context) error {
+	return a.module.Stop(ctx)
+}
+
+func (a legacyModuleAdapter) Unwrap() any {
+	return a.module
 }
 
 func validateDescriptor(module Module) (ModuleDescriptor, error) {

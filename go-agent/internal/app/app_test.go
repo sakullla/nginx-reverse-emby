@@ -384,9 +384,12 @@ func TestDiagnoseSnapshotAppliesSnapshotCertificatesBeforeTaskHandling(t *testin
 	}
 }
 
-func registryModuleByName(registry *agentmodule.Registry, name string) agentmodule.Module {
+func registryModuleByName(registry *agentmodule.Registry, name string) any {
 	for _, mod := range registry.Modules() {
 		if mod.Name() == name {
+			if unwrapper, ok := mod.(interface{ Unwrap() any }); ok {
+				return unwrapper.Unwrap()
+			}
 			return mod
 		}
 	}
