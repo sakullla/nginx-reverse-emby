@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 type resumableResponse struct {

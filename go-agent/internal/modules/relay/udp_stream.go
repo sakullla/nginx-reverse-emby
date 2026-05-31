@@ -4,7 +4,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func listenerUsesEarlyWindowMask(listener Listener) bool {

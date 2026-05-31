@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic/hosttraffic"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
@@ -231,7 +231,7 @@ func TestReporterPendingTimestampPersistsOnlyAfterSuccessfulSync(t *testing.T) {
 
 func TestModuleExposesTrafficStatsCapability(t *testing.T) {
 	module := NewModule()
-	capabilities := module.Capabilities()
+	capabilities := module.Capabilities(model.Snapshot{})
 	want := []string{"traffic_stats"}
 	var got []string
 	for _, capability := range capabilities {

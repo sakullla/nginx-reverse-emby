@@ -4,7 +4,7 @@ import (
 	"io"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/stream"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 const relayTrafficFlushThreshold uint64 = 32 * 1024

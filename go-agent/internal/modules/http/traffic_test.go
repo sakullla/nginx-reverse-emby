@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func TestHTTPReturns429WhenTrafficBlocked(t *testing.T) {

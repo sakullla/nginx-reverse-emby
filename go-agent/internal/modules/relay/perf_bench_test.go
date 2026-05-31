@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func BenchmarkTLSTCPLogicalStreamReadFrom1MiB(b *testing.B) {

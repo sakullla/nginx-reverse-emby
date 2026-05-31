@@ -28,11 +28,11 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
@@ -100,7 +100,7 @@ func TestNewEmbeddedAppliesTrafficStatsToggle(t *testing.T) {
 	}
 }
 
-func TestNewEmbeddedConfiguresHostTrafficCollector(t *testing.T) {
+func TestNewEmbeddedConfiguresTrafficModule(t *testing.T) {
 	app, err := NewEmbedded(Config{
 		AgentID:              "local",
 		AgentName:            "local",
@@ -117,8 +117,8 @@ func TestNewEmbeddedConfiguresHostTrafficCollector(t *testing.T) {
 			t.Fatalf("Close() error = %v", err)
 		}
 	})
-	if app.hostTrafficCollector == nil {
-		t.Fatal("hostTrafficCollector = nil")
+	if app.trafficModule == nil {
+		t.Fatal("trafficModule = nil")
 	}
 }
 

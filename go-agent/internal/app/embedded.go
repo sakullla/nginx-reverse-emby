@@ -3,14 +3,13 @@ package app
 import (
 	"errors"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
@@ -22,7 +21,6 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	}
 
 	cfg = normalizeConstructorConfig(cfg)
-	traffic.SetEnabled(cfg.TrafficStatsEnabled)
 
 	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
@@ -53,7 +51,12 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	diagnosticModule := modulediagnostics.NewModule()
 	egressModule := moduleegress.NewModule(nil)
 	relayModule := relay.NewModule(relay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName})
-	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, l4Module, relayModule, wireGuardRuntime)
+	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
+		Interfaces: cfg.TrafficInterfaces,
+		Enabled:    cfg.TrafficStatsEnabled,
+		EnabledSet: true,
+	})
+	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, l4Module, relayModule, trafficModule, wireGuardRuntime)
 	if err != nil {
 		_ = wireGuardRuntime.Close()
 		return nil, err
@@ -71,13 +74,13 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	)
 	app.certModule = certModule
 	app.setDiagnosticModule(diagnosticModule)
-	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
 	app.moduleRegistry = moduleRegistry
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	app.egressModule = egressModule
 	app.httpModule = httpModule
 	app.l4Module = l4Module
 	app.relayModule = relayModule
+	app.trafficModule = trafficModule
 	app.relayApplier = relayModule
 	app.wireGuardRuntime = wireGuardRuntime
 	app.relayTimeoutReset = resetRelayTimeouts

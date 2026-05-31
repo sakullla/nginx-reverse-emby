@@ -72,6 +72,7 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 			module.ProviderFinalHopDialer,
 			module.ProviderEgressResolver,
 			module.ProviderEgressOverlayRuntime,
+			module.ProviderTrafficSink,
 		},
 	}
 }
@@ -99,6 +100,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if m == nil {
 		return nil, nil
 	}
+	currentBlockState := m.syncTrafficBlockState(req.Providers)
 	if l4EffectiveInputsEqual(req.Previous, req.Next) {
 		return module.TransactionFuncs{}, nil
 	}
@@ -107,7 +109,6 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	m.mu.Lock()
 	oldServer := m.server
 	rollbackState := m.committedRuntimeStateLocked()
-	currentBlockState := m.currentTrafficBlockStateLocked()
 	m.mu.Unlock()
 
 	rules := cloneL4Rules(req.Next.L4Rules)

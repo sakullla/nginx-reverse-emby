@@ -3,7 +3,7 @@ package relay
 import (
 	"net"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func pipeBothWays(left, right net.Conn, recorder *traffic.Recorder) {

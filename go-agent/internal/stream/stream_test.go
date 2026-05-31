@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 type readerFromBuffer struct {

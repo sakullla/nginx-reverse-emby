@@ -12,7 +12,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 const relayQUICALPN = "nre-relay-quic/1"

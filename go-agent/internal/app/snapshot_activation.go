@@ -12,8 +12,8 @@ import (
 	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 func (a *App) applyManagedCertificates(ctx context.Context, snapshot Snapshot) error {
@@ -150,11 +150,13 @@ func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next 
 		if _, err := parseTrafficStatsInterval(next.AgentConfig.TrafficStatsInterval); err != nil {
 			return err
 		}
-		if next.AgentConfig.TrafficStatsEnabled != nil {
-			traffic.SetEnabled(*next.AgentConfig.TrafficStatsEnabled)
+		if a.trafficModule == nil {
+			if next.AgentConfig.TrafficStatsEnabled != nil {
+				traffic.SetEnabled(*next.AgentConfig.TrafficStatsEnabled)
+			}
+			a.updateTrafficBlockState(next.AgentConfig)
 		}
 		relay.SetOutboundProxyURL(next.AgentConfig.OutboundProxyURL)
-		a.updateTrafficBlockState(next.AgentConfig)
 	}
 	if a.certModule == nil && certificatesChanged(previous, next) {
 		if err := a.applyManagedCertificates(ctx, Snapshot{

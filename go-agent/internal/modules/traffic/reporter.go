@@ -8,8 +8,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
-	agenttraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic/hosttraffic"
 )
 
 const (
@@ -46,10 +45,10 @@ func NewReporter(cfg ReporterConfig) *Reporter {
 		logf:            cfg.Logf,
 	}
 	if reporter.enabled == nil {
-		reporter.enabled = agenttraffic.Enabled
+		reporter.enabled = Enabled
 	}
 	if reporter.snapshotNonZero == nil {
-		reporter.snapshotNonZero = agenttraffic.SnapshotNonZero
+		reporter.snapshotNonZero = SnapshotNonZero
 	}
 	if reporter.now == nil {
 		reporter.now = time.Now

@@ -46,7 +46,7 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 		Name:     m.Name(),
 		Provides: []module.ProviderRef{ProviderRuntime, module.ProviderDiagnosticsRelaySource},
 		Requires: []module.ProviderRef{module.ProviderTLSMaterial},
-		Optional: []module.ProviderRef{module.ProviderOverlayRuntime, module.ProviderFinalHopDialer},
+		Optional: []module.ProviderRef{module.ProviderOverlayRuntime, module.ProviderFinalHopDialer, module.ProviderTrafficSink},
 	}
 }
 
@@ -76,6 +76,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if m == nil {
 		return nil, nil
 	}
+	m.syncTrafficBlockState(req.Providers)
 	tlsMaterial, _ := req.Providers.Resolve(module.ProviderTLSMaterial)
 	overlay, _ := req.Providers.Resolve(module.ProviderOverlayRuntime)
 	finalHop, _ := req.Providers.Resolve(module.ProviderFinalHopDialer)

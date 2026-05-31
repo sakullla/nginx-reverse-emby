@@ -16,7 +16,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 type Server struct {

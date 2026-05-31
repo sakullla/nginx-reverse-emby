@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func TestPipeBothWaysRecordsRelayTraffic(t *testing.T) {

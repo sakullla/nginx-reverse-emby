@@ -33,7 +33,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func TestNewBuildsRealWiring(t *testing.T) {

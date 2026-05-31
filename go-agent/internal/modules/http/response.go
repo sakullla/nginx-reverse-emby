@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/stream"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.Recorder) (int64, error) {

@@ -12,7 +12,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
@@ -28,7 +27,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
@@ -78,38 +76,34 @@ type Updater interface {
 	Activate(stagedPath string, desiredVersion string) error
 }
 
-type hostTrafficCollector interface {
-	Snapshot() (hosttraffic.Snapshot, error)
-}
-
 type App struct {
-	cfg                  Config
-	syncClient           SyncClient
-	store                store.Store
-	httpApplier          HTTPApplier
-	certApplier          CertificateApplier
-	l4Applier            L4Applier
-	relayApplier         RelayApplier
-	updater              Updater
-	runtime              *agentruntime.Runtime
-	taskClient           *agenttask.Client
-	hostTrafficCollector hostTrafficCollector
-	moduleRegistry       *agentmodule.Registry
-	certModule           *modulecerts.Module
-	diagnosticModule     *modulediagnostics.Module
-	egressModule         *moduleegress.Module
-	httpModule           *modulehttp.Module
-	l4Module             *modulel4.Module
-	relayModule          *modulerelay.Module
-	wireGuardRuntime     *modulewireguard.Runtime
-	relayTimeoutReset    func()
-	pendingSyncMetadata  map[string]string
-	closeOnce            sync.Once
-	syncMu               sync.Mutex
+	cfg                 Config
+	syncClient          SyncClient
+	store               store.Store
+	httpApplier         HTTPApplier
+	certApplier         CertificateApplier
+	l4Applier           L4Applier
+	relayApplier        RelayApplier
+	updater             Updater
+	runtime             *agentruntime.Runtime
+	taskClient          *agenttask.Client
+	moduleRegistry      *agentmodule.Registry
+	certModule          *modulecerts.Module
+	diagnosticModule    *modulediagnostics.Module
+	egressModule        *moduleegress.Module
+	httpModule          *modulehttp.Module
+	l4Module            *modulel4.Module
+	relayModule         *modulerelay.Module
+	trafficModule       *moduletraffic.Module
+	wireGuardRuntime    *modulewireguard.Runtime
+	relayTimeoutReset   func()
+	pendingSyncMetadata map[string]string
+	closeOnce           sync.Once
+	syncMu              sync.Mutex
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	registry, err := newAppModuleRegistry(cfg, nil, nil, nil, newHTTPModuleFromConfig(cfg), newL4ModuleFromConfig(cfg), nil, nil)
+	registry, err := newAppModuleRegistry(cfg, nil, nil, nil, newHTTPModuleFromConfig(cfg), newL4ModuleFromConfig(cfg), nil, moduletraffic.NewModule(), nil)
 	if err != nil {
 		return nil
 	}
@@ -181,7 +175,6 @@ func newL4ModuleFromConfig(cfg Config) *modulel4.Module {
 
 func New(cfg Config) (*App, error) {
 	cfg = normalizeConstructorConfig(cfg)
-	traffic.SetEnabled(cfg.TrafficStatsEnabled)
 
 	resetRelayTimeouts := modulerelay.ConfigureTimeouts(modulerelay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
@@ -215,7 +208,12 @@ func New(cfg Config) (*App, error) {
 	diagnosticModule := modulediagnostics.NewModule()
 	egressModule := moduleegress.NewModule(nil)
 	relayModule := modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName})
-	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, l4Module, relayModule, wireGuardRuntime)
+	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
+		Interfaces: cfg.TrafficInterfaces,
+		Enabled:    cfg.TrafficStatsEnabled,
+		EnabledSet: true,
+	})
+	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, l4Module, relayModule, trafficModule, wireGuardRuntime)
 	if err != nil {
 		_ = wireGuardRuntime.Close()
 		return nil, err
@@ -268,13 +266,13 @@ func New(cfg Config) (*App, error) {
 	)
 	app.certModule = certModule
 	app.setDiagnosticModule(diagnosticModule)
-	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
 	app.moduleRegistry = moduleRegistry
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	app.egressModule = egressModule
 	app.httpModule = httpModule
 	app.l4Module = l4Module
 	app.relayModule = relayModule
+	app.trafficModule = trafficModule
 	app.relayApplier = relayModule
 	app.wireGuardRuntime = wireGuardRuntime
 	app.relayTimeoutReset = resetRelayTimeouts
@@ -290,6 +288,7 @@ func newAppModuleRegistry(
 	httpModule *modulehttp.Module,
 	l4Module *modulel4.Module,
 	relayModule *modulerelay.Module,
+	trafficModule *moduletraffic.Module,
 	wireGuardRuntime *modulewireguard.Runtime,
 ) (*agentmodule.Registry, error) {
 	registry := agentmodule.NewRegistry()
@@ -328,8 +327,10 @@ func newAppModuleRegistry(
 			return nil, err
 		}
 	}
-	if err := registry.Register(moduletraffic.NewModule()); err != nil {
-		return nil, err
+	if trafficModule != nil {
+		if err := registry.Register(trafficModule); err != nil {
+			return nil, err
+		}
 	}
 	return registry, nil
 }
