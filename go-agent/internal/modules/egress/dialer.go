@@ -7,13 +7,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 )
 
 type Dialer struct {
-	Resolver       Resolver
+	Resolver       ProfileResolver
 	OverlayRuntime module.OverlayRuntime
+}
+
+type ProfileResolver interface {
+	Resolve(id *int, network string) (model.EgressProfile, bool, error)
 }
 
 func (d Dialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, error) {

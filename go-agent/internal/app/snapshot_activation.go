@@ -10,8 +10,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
@@ -170,7 +170,7 @@ func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next 
 			return err
 		}
 	}
-	if httpActivationNeeded(previous, next) {
+	if a.httpModule == nil && httpActivationNeeded(previous, next) {
 		if err := a.applyHTTPRules(ctx, Snapshot{
 			Rules:             next.Rules,
 			RelayListeners:    next.RelayListeners,
@@ -306,9 +306,12 @@ func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {
 	blocked := cfg.TrafficBlocked
 	reason := cfg.TrafficBlockReason
 	if manager, ok := a.httpApplier.(interface {
-		UpdateTrafficBlockState(proxy.TrafficBlockState)
+		UpdateTrafficBlockState(modulehttp.TrafficBlockState)
 	}); ok {
-		manager.UpdateTrafficBlockState(proxy.TrafficBlockState{Blocked: blocked, Reason: reason})
+		manager.UpdateTrafficBlockState(modulehttp.TrafficBlockState{Blocked: blocked, Reason: reason})
+	}
+	if a.httpModule != nil {
+		a.httpModule.UpdateTrafficBlockState(modulehttp.TrafficBlockState{Blocked: blocked, Reason: reason})
 	}
 	if manager, ok := a.l4Applier.(interface {
 		UpdateTrafficBlockState(l4.TrafficBlockState)

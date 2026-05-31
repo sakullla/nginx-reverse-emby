@@ -1,4 +1,4 @@
-package proxy
+package http
 
 import "github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 

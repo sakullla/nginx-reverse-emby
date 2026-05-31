@@ -48,15 +48,15 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	}
 
 	wireGuardRuntime := newSharedWireGuardRuntime()
-	httpManager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(certManager, cfg.HTTP3Enabled, cfg, wireGuardRuntime, false)
+	httpModule := newHTTPModuleFromConfig(cfg)
 	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
-	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
+	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpModule, l4Manager)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	certModule := modulecerts.NewModule(certManager)
 	diagnosticModule := modulediagnostics.NewModule(diagnosticHandler, httpProber, tcpProber)
 	egressModule := moduleegress.NewModule(nil)
 	relayModule := relay.NewModule(relay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName})
-	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, relayModule, wireGuardRuntime)
+	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, relayModule, wireGuardRuntime)
 	if err != nil {
 		_ = wireGuardRuntime.Close()
 		return nil, err
@@ -65,7 +65,7 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		cfg,
 		st,
 		client,
-		httpManager,
+		nil,
 		certManager,
 		l4Manager,
 		nil,
@@ -78,6 +78,7 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	app.moduleRegistry = moduleRegistry
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	app.egressModule = egressModule
+	app.httpModule = httpModule
 	app.relayModule = relayModule
 	app.relayApplier = relayModule
 	app.wireGuardRuntime = wireGuardRuntime

@@ -26,8 +26,8 @@ import (
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
@@ -54,8 +54,8 @@ func TestNewBuildsRealWiring(t *testing.T) {
 	if app.syncClient == nil {
 		t.Fatal("expected sync client to be initialized")
 	}
-	if app.httpApplier == nil {
-		t.Fatal("expected http applier to be initialized")
+	if app.httpModule == nil {
+		t.Fatal("expected http module to be initialized")
 	}
 	if app.certApplier == nil {
 		t.Fatal("expected certificate applier to be initialized")
@@ -79,19 +79,19 @@ func TestNewRegistersModulesWhenDependenciesExist(t *testing.T) {
 			name:              "explicit enabled",
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			wantNames:         []string{"certs", "diagnostics", "egress", "wireguard", "relay", "traffic"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "http", "wireguard", "relay", "traffic"},
 		},
 		{
 			name:              "implicit default",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: false,
-			wantNames:         []string{"certs", "diagnostics", "egress", "wireguard", "relay", "traffic"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "http", "wireguard", "relay", "traffic"},
 		},
 		{
 			name:              "explicit disabled",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: true,
-			wantNames:         []string{"certs", "diagnostics", "egress", "relay", "traffic"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "http", "relay", "traffic"},
 		},
 	}
 
@@ -236,9 +236,9 @@ func TestNewSharesRuntimeBackendCachesWithDiagnosticTaskHandler(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	httpManager, ok := app.httpApplier.(*httpRuntimeManager)
-	if !ok {
-		t.Fatalf("httpApplier type = %T", app.httpApplier)
+	httpManager := app.httpModule
+	if httpManager == nil {
+		t.Fatal("httpModule = nil")
 	}
 	l4Manager, ok := app.l4Applier.(*l4RuntimeManager)
 	if !ok {
@@ -254,7 +254,7 @@ func TestNewSharesRuntimeBackendCachesWithDiagnosticTaskHandler(t *testing.T) {
 	httpDiagnosticCache := extractPrivateField(t, httpProber.Interface(), "cache").Interface()
 	tcpDiagnosticCache := extractPrivateField(t, tcpProber.Interface(), "cache").Interface()
 
-	if httpDiagnosticCache != httpManager.cache {
+	if httpDiagnosticCache != httpManager.Cache() {
 		t.Fatal("http diagnostic prober does not share the runtime backend cache")
 	}
 	if tcpDiagnosticCache != l4Manager.cache {
@@ -1286,16 +1286,16 @@ func (a *testEgressHTTPApplier) egressProfileCalls() []httpEgressApplyCall {
 type testTrafficBlockHTTPApplier struct {
 	testHTTPApplier
 	mu    sync.Mutex
-	state proxy.TrafficBlockState
+	state modulehttp.TrafficBlockState
 }
 
-func (a *testTrafficBlockHTTPApplier) UpdateTrafficBlockState(state proxy.TrafficBlockState) {
+func (a *testTrafficBlockHTTPApplier) UpdateTrafficBlockState(state modulehttp.TrafficBlockState) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.state = state
 }
 
-func (a *testTrafficBlockHTTPApplier) blockState() proxy.TrafficBlockState {
+func (a *testTrafficBlockHTTPApplier) blockState() modulehttp.TrafficBlockState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.state

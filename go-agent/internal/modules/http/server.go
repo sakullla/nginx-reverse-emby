@@ -1,4 +1,4 @@
-package proxy
+package http
 
 import (
 	"context"
@@ -38,6 +38,8 @@ type Providers struct {
 	WireGuard      relay.WireGuardRuntimeProvider
 	EgressProfiles []model.EgressProfile
 	EgressOverlay  module.OverlayRuntime
+	EgressResolver module.EgressResolver
+	FinalHopDialer relay.FinalHopDialer
 }
 
 type routeEntry struct {
@@ -88,7 +90,8 @@ func newServerWithResilience(
 	for _, relayListener := range relayListeners {
 		relayListenersByID[relayListener.ID] = relayListener
 	}
-	egressDialer := moduleegress.Dialer{Resolver: moduleegress.NewResolver(providers.EgressProfiles), OverlayRuntime: providers.EgressOverlay}
+	egressResolver := egressResolverFromProviders(providers)
+	egressDialer := moduleegress.Dialer{Resolver: egressResolver, OverlayRuntime: providers.EgressOverlay}
 	directInteractiveTransport, directBulkTransport := NewClassedDirectTransports(sharedTransport)
 	for _, rule := range listener.Rules {
 		hostKey := HostFromRule(rule)
@@ -106,7 +109,7 @@ func newServerWithResilience(
 		var relayInteractiveTransport *http.Transport
 		var relayBulkTransport *http.Transport
 		if ruleUsesRelay(rule) {
-			relayTransport, relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, sharedTransport, backendCache)
+			relayTransport, relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, providers.FinalHopDialer, sharedTransport, backendCache)
 			if err != nil {
 				return nil, err
 			}
@@ -144,6 +147,21 @@ func newServerWithResilience(
 	}
 
 	return s, nil
+}
+
+func egressResolverFromProviders(providers Providers) moduleegress.ProfileResolver {
+	if providers.EgressResolver != nil {
+		return moduleEgressResolver{resolver: providers.EgressResolver}
+	}
+	return moduleegress.NewResolver(providers.EgressProfiles)
+}
+
+type moduleEgressResolver struct {
+	resolver module.EgressResolver
+}
+
+func (r moduleEgressResolver) Resolve(id *int, network string) (model.EgressProfile, bool, error) {
+	return r.resolver.Resolve(id, network)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {

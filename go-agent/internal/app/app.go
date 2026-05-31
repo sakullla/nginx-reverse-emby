@@ -19,6 +19,7 @@ import (
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
@@ -104,6 +105,7 @@ type App struct {
 	certModule           *modulecerts.Module
 	diagnosticModule     *modulediagnostics.Module
 	egressModule         *moduleegress.Module
+	httpModule           *modulehttp.Module
 	relayModule          *modulerelay.Module
 	wireGuardRuntime     *modulewireguard.Runtime
 	relayTimeoutReset    func()
@@ -113,11 +115,15 @@ type App struct {
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	registry, err := newAppModuleRegistry(cfg, nil, nil, nil, nil, nil)
+	registry, err := newAppModuleRegistry(cfg, nil, nil, nil, newHTTPModuleFromConfig(cfg), nil, nil)
 	if err != nil {
 		return nil
 	}
 	return core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: registry})
+}
+
+func newHTTPModuleFromConfigWithTLS(cfg Config, _ modulehttp.TLSMaterialProvider) *modulehttp.Module {
+	return newHTTPModuleFromConfig(cfg)
 }
 
 func normalizeConstructorConfig(cfg Config) Config {
@@ -151,6 +157,27 @@ func normalizeConstructorConfig(cfg Config) Config {
 	return cfg
 }
 
+func newHTTPModuleFromConfig(cfg Config) *modulehttp.Module {
+	return modulehttp.NewModule(modulehttp.Config{
+		AgentID:      cfg.AgentID,
+		HTTP3Enabled: cfg.HTTP3Enabled,
+		Transport: modulehttp.TransportOptions{
+			DialTimeout:           cfg.HTTPTransport.DialTimeout,
+			TLSHandshakeTimeout:   cfg.HTTPTransport.TLSHandshakeTimeout,
+			ResponseHeaderTimeout: cfg.HTTPTransport.ResponseHeaderTimeout,
+			IdleConnTimeout:       cfg.HTTPTransport.IdleConnTimeout,
+			KeepAlive:             cfg.HTTPTransport.KeepAlive,
+			MaxConnsPerHost:       cfg.HTTPTransport.MaxConnsPerHost,
+		},
+		Resilience: modulehttp.StreamResilienceOptions{
+			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
+			ResumeMaxAttempts:        cfg.HTTPResilience.ResumeMaxAttempts,
+			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
+		},
+		BackendFailures: backendCacheConfigFromAppConfig(cfg),
+	})
+}
+
 func New(cfg Config) (*App, error) {
 	cfg = normalizeConstructorConfig(cfg)
 	traffic.SetEnabled(cfg.TrafficStatsEnabled)
@@ -181,15 +208,15 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	wireGuardRuntime := newSharedWireGuardRuntime()
-	httpManager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(certManager, cfg.HTTP3Enabled, cfg, wireGuardRuntime, false)
+	httpModule := newHTTPModuleFromConfig(cfg)
 	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
-	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
+	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpModule, l4Manager)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	certModule := modulecerts.NewModule(certManager)
 	diagnosticModule := modulediagnostics.NewModule(diagnosticHandler, httpProber, tcpProber)
 	egressModule := moduleegress.NewModule(nil)
 	relayModule := modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName})
-	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, relayModule, wireGuardRuntime)
+	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, relayModule, wireGuardRuntime)
 	if err != nil {
 		_ = wireGuardRuntime.Close()
 		return nil, err
@@ -226,7 +253,7 @@ func New(cfg Config) (*App, error) {
 		cfg,
 		st,
 		client,
-		httpManager,
+		nil,
 		certManager,
 		l4Manager,
 		nil,
@@ -246,6 +273,7 @@ func New(cfg Config) (*App, error) {
 	app.moduleRegistry = moduleRegistry
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	app.egressModule = egressModule
+	app.httpModule = httpModule
 	app.relayModule = relayModule
 	app.relayApplier = relayModule
 	app.wireGuardRuntime = wireGuardRuntime
@@ -259,6 +287,7 @@ func newAppModuleRegistry(
 	certModule *modulecerts.Module,
 	diagnosticModule *modulediagnostics.Module,
 	egressModule *moduleegress.Module,
+	httpModule *modulehttp.Module,
 	relayModule *modulerelay.Module,
 	wireGuardRuntime *modulewireguard.Runtime,
 ) (*agentmodule.Registry, error) {
@@ -275,6 +304,11 @@ func newAppModuleRegistry(
 	}
 	if egressModule != nil {
 		if err := registry.Register(egressModule); err != nil {
+			return nil, err
+		}
+	}
+	if httpModule != nil {
+		if err := registry.Register(httpModule); err != nil {
 			return nil, err
 		}
 	}
@@ -368,10 +402,10 @@ func newAppWithAllDeps(
 	return app
 }
 
-func newRuntimeDiagnosticProbers(relayProvider modulerelay.TLSMaterialProvider, httpApplier HTTPApplier, l4Applier L4Applier) (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
+func newRuntimeDiagnosticProbers(relayProvider modulerelay.TLSMaterialProvider, httpModule *modulehttp.Module, l4Applier L4Applier) (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
 	httpCfg := diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: relayProvider}
-	if manager, ok := httpApplier.(*httpRuntimeManager); ok {
-		httpCfg.Cache = manager.cache
+	if httpModule != nil {
+		httpCfg.Cache = httpModule.Cache()
 	}
 	tcpCfg := diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: relayProvider}
 	if manager, ok := l4Applier.(*l4RuntimeManager); ok {

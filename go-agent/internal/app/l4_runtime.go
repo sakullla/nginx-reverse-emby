@@ -449,3 +449,10 @@ func (m *l4RuntimeManager) Close() error {
 	}
 	return firstErr
 }
+
+func (m *l4RuntimeManager) Cache() *backends.Cache {
+	if m == nil {
+		return nil
+	}
+	return m.cache
+}

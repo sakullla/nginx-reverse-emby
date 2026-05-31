@@ -1,4 +1,4 @@
-package proxy
+package http
 
 import (
 	"context"
@@ -27,6 +27,9 @@ func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, pa
 	if len(req.Options) > 0 {
 		options = req.Options[0]
 	}
+	if options.WireGuardProvider == nil {
+		options.WireGuardProvider = relay.DefaultWireGuardRuntimeProvider()
+	}
 	return relay.DialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, options)
 }
 
@@ -34,6 +37,7 @@ func newRelayTransports(
 	rule model.HTTPRule,
 	relayListenersByID map[int]model.RelayListener,
 	provider RelayMaterialProvider,
+	finalHopDialer relay.FinalHopDialer,
 	base *http.Transport,
 	cache *backends.Cache,
 ) (*http.Transport, *http.Transport, *http.Transport, error) {
@@ -44,6 +48,7 @@ func newRelayTransports(
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	_ = finalHopDialer
 	racer := newRelayPathRacer(provider, cache)
 	dial := func(ctx context.Context, network, addr string, class upstream.TrafficClass) (net.Conn, error) {
 		target := dialAddressFromContext(ctx, addr)

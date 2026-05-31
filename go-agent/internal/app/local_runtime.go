@@ -10,28 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 )
-
-type proxyTrafficBlockStateValue struct {
-	value atomic.Value
-}
-
-func (v *proxyTrafficBlockStateValue) Store(state proxy.TrafficBlockState) {
-	v.value.Store(state)
-}
-
-func (v *proxyTrafficBlockStateValue) Load() proxy.TrafficBlockState {
-	if v == nil {
-		return proxy.TrafficBlockState{}
-	}
-	if raw := v.value.Load(); raw != nil {
-		if state, ok := raw.(proxy.TrafficBlockState); ok {
-			return state
-		}
-	}
-	return proxy.TrafficBlockState{}
-}
 
 type l4TrafficBlockStateValue struct {
 	value atomic.Value
@@ -112,23 +91,6 @@ func flattenRelayLayers(layers [][]int) []int {
 
 func l4RuleUsesWireGuard(rule model.L4Rule) bool {
 	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
-}
-
-func httpBindingsOverlap(left, right []string) bool {
-	if len(left) == 0 || len(right) == 0 {
-		return false
-	}
-
-	seen := make(map[string]struct{}, len(left))
-	for _, binding := range left {
-		seen[binding] = struct{}{}
-	}
-	for _, binding := range right {
-		if _, ok := seen[binding]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func backendCacheConfigFromAppConfig(cfg Config) backends.Config {
