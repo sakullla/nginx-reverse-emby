@@ -45,7 +45,6 @@ func (a *App) syncController() *core.SyncController {
 		Updater:              a.updater,
 		Traffic:              moduletraffic.NewReporter(moduletraffic.ReporterConfig{HostSnapshotter: a.hostTrafficCollector}),
 		CurrentPackageSHA256: a.cfg.RuntimePackageSHA256,
-		Modules:              a.moduleRegistry,
 	}
 	if reporter, ok := a.certApplier.(core.ManagedCertificateReporter); ok {
 		controller.CertReports = reporter

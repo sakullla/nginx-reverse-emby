@@ -52,11 +52,6 @@ type ManagedCertificateReporter interface {
 	ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error)
 }
 
-type ModuleLifecycle interface {
-	Apply(context.Context, model.Snapshot, model.Snapshot) error
-	StopAll(context.Context) error
-}
-
 type SyncController struct {
 	Store                store.Store
 	Runtime              *agentruntime.Runtime
@@ -64,7 +59,6 @@ type SyncController struct {
 	Updater              Updater
 	Traffic              TrafficReporter
 	CertReports          ManagedCertificateReporter
-	Modules              ModuleLifecycle
 	CurrentPackageSHA256 string
 }
 

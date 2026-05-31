@@ -333,26 +333,6 @@ func TestSyncControllerApplyFailureRollsRuntimeBackAndRecordsCandidateError(t *t
 	}
 }
 
-func TestSyncControllerDoesNotStartModulesOutsideRuntimeApply(t *testing.T) {
-	st := newSyncControllerStore()
-	rt := agentruntime.New()
-	lifecycle := &syncControllerModuleLifecycle{}
-	controller := &SyncController{
-		Store:      st,
-		Runtime:    rt,
-		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 8}},
-		Modules:    lifecycle,
-	}
-
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err != nil {
-		t.Fatalf("PerformSync() error = %v", err)
-	}
-
-	if len(lifecycle.appliedRevisions) != 0 {
-		t.Fatalf("applied module revisions = %+v, want none from sync controller", lifecycle.appliedRevisions)
-	}
-}
-
 func TestSyncControllerModuleApplyFailureFromRuntimeRollsRuntimeBackAndRecordsCandidateError(t *testing.T) {
 	st := newSyncControllerStore()
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
@@ -1106,21 +1086,6 @@ type syncControllerCertificateReporter struct {
 
 func (r syncControllerCertificateReporter) ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error) {
 	return append([]model.ManagedCertificateReport(nil), r.reports...), r.err
-}
-
-type syncControllerModuleLifecycle struct {
-	appliedRevisions []int64
-	applyErr         error
-	stopErr          error
-}
-
-func (l *syncControllerModuleLifecycle) Apply(_ context.Context, _ model.Snapshot, next model.Snapshot) error {
-	l.appliedRevisions = append(l.appliedRevisions, next.Revision)
-	return l.applyErr
-}
-
-func (l *syncControllerModuleLifecycle) StopAll(context.Context) error {
-	return l.stopErr
 }
 
 type syncControllerStore struct {
