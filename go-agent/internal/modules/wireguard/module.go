@@ -18,6 +18,10 @@ func NewModule(runtime *Runtime) *Module {
 	return &Module{runtime: runtime}
 }
 
+func NewManagedModule(factory Factory) *Module {
+	return NewModule(NewRuntime(factory))
+}
+
 func (m *Module) Name() string {
 	return "wireguard"
 }

@@ -46,17 +46,15 @@ func (a *App) syncController() *core.SyncController {
 		Traffic:              a.trafficReporter(),
 		CurrentPackageSHA256: a.cfg.RuntimePackageSHA256,
 	}
-	if reporter, ok := a.certApplier.(core.ManagedCertificateReporter); ok {
-		controller.CertReports = reporter
-	}
+	controller.CertReports = a.certReports
 	return controller
 }
 
 func (a *App) trafficReporter() core.TrafficReporter {
-	if a == nil || a.trafficModule == nil {
+	if a == nil || a.trafficReports == nil {
 		return moduletraffic.NewReporter(moduletraffic.ReporterConfig{})
 	}
-	return a.trafficModule
+	return a.trafficReports
 }
 
 func mergeTrafficStats(base, extra map[string]any) map[string]any {

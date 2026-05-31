@@ -24,6 +24,14 @@ func NewModule(manager Applier) *Module {
 	return &Module{manager: manager}
 }
 
+func NewManagedModule(dataDir string, opts ...Option) (*Module, error) {
+	manager, err := NewManager(dataDir, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return NewModule(manager), nil
+}
+
 func (m *Module) Name() string {
 	return "certs"
 }
