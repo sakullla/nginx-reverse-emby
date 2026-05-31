@@ -76,7 +76,8 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if m == nil {
 		return nil, nil
 	}
-	m.syncTrafficBlockState(req.Providers)
+	currentBlockState := m.trafficBlockStateFromProvider(req.Providers)
+	previousBlockState := m.currentTrafficBlockState()
 	tlsMaterial, _ := req.Providers.Resolve(module.ProviderTLSMaterial)
 	overlay, _ := req.Providers.Resolve(module.ProviderOverlayRuntime)
 	finalHop, _ := req.Providers.Resolve(module.ProviderFinalHopDialer)
@@ -89,7 +90,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	nextListeners := localRelayListeners(req.Next.RelayListeners, m.agentID, m.agentName)
 	previousListeners := localRelayListeners(req.Previous.RelayListeners, m.agentID, m.agentName)
 	if relayEffectiveInputsEqual(previousListeners, nextListeners, req.Previous, req.Next) {
-		return module.TransactionFuncs{}, nil
+		return m.trafficBlockStateTransaction(previousBlockState, currentBlockState), nil
 	}
 	closeFirst := bindingKeysOverlap(serverBindingKeys(oldRuntime), relayListenerBindingKeys(nextListeners))
 	oldClosed := false
@@ -109,12 +110,16 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		}
 		return nil, err
 	}
+	if nextRuntime != nil {
+		nextRuntime.SetTrafficBlockState(currentBlockState)
+	}
 
 	committed := false
 	return module.TransactionFuncs{
 		CommitFunc: func() error {
 			m.mu.Lock()
 			m.runtime = nextRuntime
+			m.blockState.Store(currentBlockState)
 			m.mu.Unlock()
 			if oldRuntime != nil && !oldClosed {
 				if err := oldRuntime.Close(); err != nil {
@@ -130,6 +135,9 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 				firstErr = nextRuntime.Close()
 			}
 			if oldClosed || committed {
+				if committed {
+					m.blockState.Store(previousBlockState)
+				}
 				if err := restoreOverlayForRollback(ctx, previousListeners, overlay); err != nil && firstErr == nil {
 					firstErr = err
 				}

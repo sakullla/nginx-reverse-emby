@@ -2,6 +2,7 @@ package traffic_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -72,3 +73,62 @@ func TestModuleApplyOwnsTrafficEnabledAndBlockState(t *testing.T) {
 		t.Fatalf("TrafficBlockState() = %+v, want normalized blocked state", got)
 	}
 }
+
+func TestModuleRollsBackTrafficStateWhenLaterModuleFails(t *testing.T) {
+	trafficmodule.SetEnabled(true)
+	t.Cleanup(func() {
+		trafficmodule.SetEnabled(true)
+		trafficmodule.Reset()
+	})
+	disabled := false
+	mod := trafficmodule.NewModule()
+	registry := module.NewRegistry()
+	mustRegisterTrafficTestModule(t, registry, mod)
+	mustRegisterTrafficTestModule(t, registry, trafficCommitFailingModule{name: "after-traffic", err: errors.New("later commit failed")})
+
+	err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{AgentConfig: model.AgentConfig{
+		TrafficStatsEnabled: &disabled,
+		TrafficBlocked:      true,
+		TrafficBlockReason:  "monthly quota exceeded",
+	}})
+	if err == nil {
+		t.Fatal("Apply() error = nil, want later commit failure")
+	}
+
+	if !trafficmodule.Enabled() {
+		t.Fatal("traffic enabled = false after rollback, want previous true")
+	}
+	if got := mod.TrafficBlockState(); got.Blocked || got.Reason != "" {
+		t.Fatalf("TrafficBlockState() after rollback = %+v, want previous unblocked state", got)
+	}
+}
+
+func mustRegisterTrafficTestModule(t *testing.T, registry *module.Registry, candidate any) {
+	t.Helper()
+	if err := registry.Register(candidate); err != nil {
+		t.Fatalf("Register(%T) error = %v", candidate, err)
+	}
+}
+
+type trafficCommitFailingModule struct {
+	name string
+	err  error
+}
+
+func (m trafficCommitFailingModule) Name() string { return m.name }
+
+func (m trafficCommitFailingModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name}
+}
+
+func (trafficCommitFailingModule) RegisterProviders(module.ProviderRegistry) error { return nil }
+
+func (trafficCommitFailingModule) Capabilities(module.SnapshotView) []module.Capability { return nil }
+
+func (m trafficCommitFailingModule) Apply(context.Context, module.ApplyRequest) error { return nil }
+
+func (m trafficCommitFailingModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	return module.TransactionFuncs{CommitFunc: func() error { return m.err }}, nil
+}
+
+func (trafficCommitFailingModule) Stop(context.Context) error { return nil }

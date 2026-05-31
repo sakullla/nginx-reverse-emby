@@ -100,9 +100,10 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if m == nil {
 		return nil, nil
 	}
-	currentBlockState := m.syncTrafficBlockState(req.Providers)
+	currentBlockState := m.trafficBlockStateFromProvider(req.Providers)
+	previousBlockState := m.currentTrafficBlockStateLocked()
 	if l4EffectiveInputsEqual(req.Previous, req.Next) {
-		return module.TransactionFuncs{}, nil
+		return m.trafficBlockStateTransaction(previousBlockState, currentBlockState), nil
 	}
 	providers := m.runtimeProviders(req.Providers, req.Next.EgressProfiles)
 
@@ -122,6 +123,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 				m.mu.Lock()
 				previous := m.server
 				m.server = nil
+				m.blockState.Store(currentBlockState)
 				m.storeLastAppliedStateLocked(runtimeState{})
 				committed = true
 				m.mu.Unlock()
@@ -180,6 +182,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 			m.mu.Lock()
 			previous := m.server
 			m.server = nextServer
+			m.blockState.Store(currentBlockState)
 			m.storeLastAppliedStateLocked(runtimeState{
 				rules:          rules,
 				relayListeners: relayListeners,
@@ -287,6 +290,7 @@ func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, cl
 	if len(state.rules) == 0 {
 		m.mu.Lock()
 		m.server = nil
+		m.blockState.Store(state.blockState)
 		m.storeLastAppliedStateLocked(state)
 		m.mu.Unlock()
 		return nil
@@ -320,6 +324,7 @@ func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, cl
 	m.mu.Lock()
 	previous := m.server
 	m.server = server
+	m.blockState.Store(state.blockState)
 	m.storeLastAppliedStateLocked(state)
 	m.mu.Unlock()
 	if previous != nil && previous != server {
