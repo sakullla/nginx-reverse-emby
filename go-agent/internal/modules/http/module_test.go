@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -108,6 +109,85 @@ func TestModuleUsesEgressOwnedOverlayForWireGuardEgressProfiles(t *testing.T) {
 		t.Fatalf("created WireGuard runtimes = %d, want 1", factory.createdCount())
 	}
 	assertHTTPBody(t, port, "edge.example.test:"+port, "via-wg-egress")
+}
+
+func TestModuleConsumesFinalHopDialerForEgressProfiles(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("via-final-hop"))
+	}))
+	defer backend.Close()
+
+	profileID := 89
+	port := pickFreeTCPPort(t)
+	unusedProxyPort := pickFreeTCPPort(t)
+	finalHop := &recordingFinalHopDialer{}
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: staticTLSMaterial{}})
+	mustRegister(t, registry, staticProviderModule{name: "final-hop", provides: module.ProviderFinalHopDialer, provider: finalHop})
+	mustRegister(t, registry, httpmodule.NewModule(httpmodule.Config{}))
+
+	next := model.Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:       profileID,
+			Name:     "socks-via-final-hop",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:" + unusedProxyPort,
+			Enabled:  true,
+		}},
+		Rules: []model.HTTPRule{{
+			ID:              3,
+			FrontendURL:     "http://edge.example.test:" + port,
+			Backends:        []model.HTTPBackend{{URL: backend.URL}},
+			EgressProfileID: &profileID,
+			Enabled:         true,
+		}},
+	}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	assertHTTPBody(t, port, "edge.example.test:"+port, "via-final-hop")
+
+	target, gotProfileID := finalHop.lastTCP()
+	if gotProfileID != profileID {
+		t.Fatalf("final hop profile id = %d, want %d", gotProfileID, profileID)
+	}
+	if strings.TrimSpace(target) == "" {
+		t.Fatal("final hop target was empty")
+	}
+}
+
+func TestModuleConsumesPendingEgressFinalHopDialerDuringRegistryApply(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("via-pending-final-hop"))
+	}))
+	defer backend.Close()
+
+	profileID := 90
+	port := pickFreeTCPPort(t)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: staticTLSMaterial{}})
+	mustRegister(t, registry, moduleegress.NewModule(nil))
+	mustRegister(t, registry, httpmodule.NewModule(httpmodule.Config{}))
+
+	next := model.Snapshot{
+		EgressProfiles: []model.EgressProfile{{
+			ID:      profileID,
+			Name:    "pending-direct-final-hop",
+			Type:    "direct",
+			Enabled: true,
+		}},
+		Rules: []model.HTTPRule{{
+			ID:              4,
+			FrontendURL:     "http://edge.example.test:" + port,
+			Backends:        []model.HTTPBackend{{URL: backend.URL}},
+			EgressProfileID: &profileID,
+			Enabled:         true,
+		}},
+	}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	assertHTTPBody(t, port, "edge.example.test:"+port, "via-pending-final-hop")
 }
 
 type staticTLSMaterial struct{}
@@ -261,4 +341,34 @@ func (*recordingWireGuardRuntime) ListenTransparentUDP(context.Context, string) 
 
 func (*recordingWireGuardRuntime) Close() error {
 	return nil
+}
+
+type recordingFinalHopDialer struct {
+	mu        sync.Mutex
+	tcpTarget string
+	tcpID     int
+}
+
+func (d *recordingFinalHopDialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, error) {
+	var profileID int
+	if id != nil {
+		profileID = *id
+	}
+	d.mu.Lock()
+	d.tcpTarget = target
+	d.tcpID = profileID
+	d.mu.Unlock()
+
+	var dialer net.Dialer
+	return dialer.DialContext(ctx, "tcp", target)
+}
+
+func (*recordingFinalHopDialer) OpenUDP(context.Context, string, *int) (module.UDPPeer, error) {
+	return nil, fmt.Errorf("unexpected OpenUDP")
+}
+
+func (d *recordingFinalHopDialer) lastTCP() (string, int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.tcpTarget, d.tcpID
 }

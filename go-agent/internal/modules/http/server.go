@@ -126,6 +126,11 @@ func newServerWithResilience(
 				if err != nil {
 					return nil, err
 				}
+				if providers.FinalHopDialer != nil {
+					configureEgressTransportWithFinalHop(transport, rule, egressDialer, providers.FinalHopDialer)
+					configureEgressTransportWithFinalHop(entryDirectInteractiveTransport, rule, egressDialer, providers.FinalHopDialer)
+					configureEgressTransportWithFinalHop(entryDirectBulkTransport, rule, egressDialer, providers.FinalHopDialer)
+				}
 			}
 		}
 

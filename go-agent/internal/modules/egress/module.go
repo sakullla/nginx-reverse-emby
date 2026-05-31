@@ -122,7 +122,7 @@ func (t *egressTransaction) RegisterProviders(reg module.ProviderRegistry) error
 	if t == nil {
 		return nil
 	}
-	if err := reg.Provide(module.ProviderFinalHopDialer, moduleFinalHopDialer{module: t.module}); err != nil {
+	if err := reg.Provide(module.ProviderFinalHopDialer, preparedFinalHopDialer{dialer: Dialer{Resolver: t.resolver, OverlayRuntime: t.overlayRuntime}}); err != nil {
 		return err
 	}
 	if err := reg.Provide(module.ProviderEgressResolver, t.resolver); err != nil {
@@ -201,6 +201,22 @@ func (d moduleFinalHopDialer) DialTCP(ctx context.Context, target string, id *in
 
 func (d moduleFinalHopDialer) OpenUDP(ctx context.Context, target string, id *int) (module.UDPPeer, error) {
 	return d.module.OpenUDP(ctx, target, id)
+}
+
+type preparedFinalHopDialer struct {
+	dialer Dialer
+}
+
+func (d preparedFinalHopDialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, error) {
+	return d.dialer.DialTCP(ctx, target, id)
+}
+
+func (d preparedFinalHopDialer) OpenUDP(ctx context.Context, target string, id *int) (module.UDPPeer, error) {
+	conn, err := d.dialer.DialUDP(ctx, target, id)
+	if err != nil {
+		return nil, err
+	}
+	return udpPacketConn{conn: conn, target: target}, nil
 }
 
 func (m *Module) currentDialer() Dialer {

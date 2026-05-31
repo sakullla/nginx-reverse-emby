@@ -66,7 +66,12 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 		Name:     m.Name(),
 		Provides: []module.ProviderRef{module.ProviderDiagnosticsHTTPSource},
 		Requires: []module.ProviderRef{module.ProviderTLSMaterial},
-		Optional: []module.ProviderRef{module.ProviderOverlayRuntime, module.ProviderFinalHopDialer, module.ProviderEgressResolver},
+		Optional: []module.ProviderRef{
+			module.ProviderOverlayRuntime,
+			module.ProviderEgressOverlayRuntime,
+			module.ProviderFinalHopDialer,
+			module.ProviderEgressResolver,
+		},
 	}
 }
 

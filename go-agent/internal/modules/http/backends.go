@@ -14,6 +14,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
@@ -248,13 +249,21 @@ func newEgressTransport(rule model.HTTPRule, dialer moduleegress.Dialer, base *h
 }
 
 func configureEgressTransport(transport *http.Transport, rule model.HTTPRule, dialer moduleegress.Dialer) {
+	configureEgressTransportWithFinalHop(transport, rule, dialer, nil)
+}
+
+func configureEgressTransportWithFinalHop(transport *http.Transport, rule model.HTTPRule, dialer moduleegress.Dialer, finalHopDialer relay.FinalHopDialer) {
 	if transport == nil {
 		return
 	}
 	transport.DialTLS = nil
 	transport.DialTLSContext = nil
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		return dialer.DialTCP(ctx, dialAddressFromContext(ctx, address), rule.EgressProfileID)
+		target := dialAddressFromContext(ctx, address)
+		if finalHopDialer != nil && rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			return finalHopDialer.DialTCP(ctx, target, rule.EgressProfileID)
+		}
+		return dialer.DialTCP(ctx, target, rule.EgressProfileID)
 	}
 }
 
