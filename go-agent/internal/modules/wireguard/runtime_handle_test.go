@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard/wgnetstack"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard/wgnetstack"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -39,7 +39,7 @@ func TestManagerReusesSameFingerprintRuntime(t *testing.T) {
 		t.Fatalf("created runtimes = %d, want 1", len(factory.created))
 	}
 	if first.closed {
-		t.Fatal("runtime was closed despite matching fingerprint")
+		t.Fatal("RuntimeHandle was closed despite matching fingerprint")
 	}
 }
 
@@ -53,15 +53,15 @@ func TestManagerRetriesPendingEndpointResolutionForSameFingerprint(t *testing.T)
 	profile := validProfile()
 	firstPending := true
 	secondPending := false
-	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
-		runtime := factory.newRuntime(cfg)
+	factory.createFunc = func(_ context.Context, cfg Config) (RuntimeHandle, error) {
+		RuntimeHandle := factory.newRuntime(cfg)
 		if len(factory.created) == 1 {
-			runtime.endpointResolutionPending = firstPending
+			RuntimeHandle.endpointResolutionPending = firstPending
 		}
 		if len(factory.created) == 2 {
-			runtime.endpointResolutionPending = secondPending
+			RuntimeHandle.endpointResolutionPending = secondPending
 		}
-		return runtime, nil
+		return RuntimeHandle, nil
 	}
 
 	if err := manager.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
@@ -75,14 +75,14 @@ func TestManagerRetriesPendingEndpointResolutionForSameFingerprint(t *testing.T)
 		t.Fatalf("created runtimes = %d, want retry after pending endpoint resolution", len(factory.created))
 	}
 	if !first.closed {
-		t.Fatal("pending runtime was not closed after endpoint resolution recovered")
+		t.Fatal("pending RuntimeHandle was not closed after endpoint resolution recovered")
 	}
 	got, ok := manager.Runtime(profile.ID)
 	if !ok {
-		t.Fatal("manager has no runtime after endpoint resolution retry")
+		t.Fatal("manager has no RuntimeHandle after endpoint resolution retry")
 	}
 	if got != factory.created[1] {
-		t.Fatal("manager did not replace pending runtime after endpoint resolution recovered")
+		t.Fatal("manager did not replace pending RuntimeHandle after endpoint resolution recovered")
 	}
 }
 
@@ -101,18 +101,18 @@ func TestManagerAppliesEnabledBootstrapProfileWithoutPeers(t *testing.T) {
 	if len(factory.created) != 1 {
 		t.Fatalf("created runtimes = %d, want 1", len(factory.created))
 	}
-	runtime, ok := manager.RuntimeForAgent(profile.AgentID, profile.ID)
-	if !ok || runtime == nil {
-		t.Fatalf("RuntimeForAgent() = %v, %v; want bootstrap runtime", runtime, ok)
+	RuntimeHandle, ok := manager.RuntimeForAgent(profile.AgentID, profile.ID)
+	if !ok || RuntimeHandle == nil {
+		t.Fatalf("RuntimeForAgent() = %v, %v; want bootstrap RuntimeHandle", RuntimeHandle, ok)
 	}
 }
 
 func TestNetstackRuntimeListenTCPAcceptsWildcardAddress(t *testing.T) {
-	runtime := newTestNetstackRuntime(t)
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntime(t)
+	defer RuntimeHandle.Close()
 
 	const listenPort = 18443
-	ln, err := runtime.ListenTCP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
+	ln, err := RuntimeHandle.ListenTCP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
 	if err != nil {
 		t.Fatalf("ListenTCP wildcard error = %v", err)
 	}
@@ -159,11 +159,11 @@ func TestWireGuardHeapScavengeNeededAfterHeapExpansion(t *testing.T) {
 }
 
 func TestNetstackRuntimeTransparentTCPAcceptsNonLocalDestination(t *testing.T) {
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
 	const listenPort = 18443
-	ln, err := runtime.ListenTCP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
+	ln, err := RuntimeHandle.ListenTCP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
 	if err != nil {
 		t.Fatalf("ListenTCP wildcard error = %v", err)
 	}
@@ -184,7 +184,7 @@ func TestNetstackRuntimeTransparentTCPAcceptsNonLocalDestination(t *testing.T) {
 	originalDstIP := netip.MustParseAddr("203.0.113.36")
 	const clientPort = 40123
 	const clientSeq = 1000
-	injectIPv4TCPPacket(t, runtime, tcpPacket{
+	injectIPv4TCPPacket(t, RuntimeHandle, tcpPacket{
 		src:     clientIP,
 		dst:     originalDstIP,
 		srcPort: clientPort,
@@ -193,7 +193,7 @@ func TestNetstackRuntimeTransparentTCPAcceptsNonLocalDestination(t *testing.T) {
 		flags:   header.TCPFlagSyn,
 	})
 
-	synAck := readOutboundIPv4TCPPacket(t, runtime)
+	synAck := readOutboundIPv4TCPPacket(t, RuntimeHandle)
 	if synAck.src != originalDstIP || synAck.dst != clientIP {
 		t.Fatalf("SYN-ACK addresses = %s -> %s, want %s -> %s", synAck.src, synAck.dst, originalDstIP, clientIP)
 	}
@@ -204,7 +204,7 @@ func TestNetstackRuntimeTransparentTCPAcceptsNonLocalDestination(t *testing.T) {
 		t.Fatalf("SYN-ACK flags = %v, want SYN|ACK", synAck.flags)
 	}
 
-	injectIPv4TCPPacket(t, runtime, tcpPacket{
+	injectIPv4TCPPacket(t, RuntimeHandle, tcpPacket{
 		src:     clientIP,
 		dst:     originalDstIP,
 		srcPort: clientPort,
@@ -227,10 +227,10 @@ func TestNetstackRuntimeTransparentTCPAcceptsNonLocalDestination(t *testing.T) {
 }
 
 func TestNetstackRuntimeTransparentTCPAcceptsAnyDestinationPort(t *testing.T) {
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
-	ln, err := runtime.ListenTransparentTCP(context.Background())
+	ln, err := RuntimeHandle.ListenTransparentTCP(context.Background())
 	if err != nil {
 		t.Fatalf("ListenTransparentTCP() error = %v", err)
 	}
@@ -252,7 +252,7 @@ func TestNetstackRuntimeTransparentTCPAcceptsAnyDestinationPort(t *testing.T) {
 	const originalDstPort = 28443
 	const clientPort = 40126
 	const clientSeq = 1000
-	injectIPv4TCPPacket(t, runtime, tcpPacket{
+	injectIPv4TCPPacket(t, RuntimeHandle, tcpPacket{
 		src:     clientIP,
 		dst:     originalDstIP,
 		srcPort: clientPort,
@@ -261,7 +261,7 @@ func TestNetstackRuntimeTransparentTCPAcceptsAnyDestinationPort(t *testing.T) {
 		flags:   header.TCPFlagSyn,
 	})
 
-	synAck := readOutboundIPv4TCPPacket(t, runtime)
+	synAck := readOutboundIPv4TCPPacket(t, RuntimeHandle)
 	if synAck.src != originalDstIP || synAck.dst != clientIP {
 		t.Fatalf("SYN-ACK addresses = %s -> %s, want %s -> %s", synAck.src, synAck.dst, originalDstIP, clientIP)
 	}
@@ -272,7 +272,7 @@ func TestNetstackRuntimeTransparentTCPAcceptsAnyDestinationPort(t *testing.T) {
 		t.Fatalf("SYN-ACK flags = %v, want SYN|ACK", synAck.flags)
 	}
 
-	injectIPv4TCPPacket(t, runtime, tcpPacket{
+	injectIPv4TCPPacket(t, RuntimeHandle, tcpPacket{
 		src:     clientIP,
 		dst:     originalDstIP,
 		srcPort: clientPort,
@@ -295,12 +295,12 @@ func TestNetstackRuntimeTransparentTCPAcceptsAnyDestinationPort(t *testing.T) {
 }
 
 func TestNetstackRuntimeDialContextReachesSameRuntimeTCPListener(t *testing.T) {
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
 	const listenPort = 18447
 	listenAddr := net.JoinHostPort("10.99.0.1", strconv.Itoa(listenPort))
-	ln, err := runtime.ListenTCP(context.Background(), listenAddr)
+	ln, err := RuntimeHandle.ListenTCP(context.Background(), listenAddr)
 	if err != nil {
 		t.Fatalf("ListenTCP() error = %v", err)
 	}
@@ -333,7 +333,7 @@ func TestNetstackRuntimeDialContextReachesSameRuntimeTCPListener(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	conn, err := runtime.DialContext(ctx, "tcp", listenAddr)
+	conn, err := RuntimeHandle.DialContext(ctx, "tcp", listenAddr)
 	if err != nil {
 		t.Fatalf("DialContext() error = %v", err)
 	}
@@ -357,10 +357,10 @@ func TestNetstackRuntimeDialContextReachesSameRuntimeTCPListener(t *testing.T) {
 }
 
 func TestNetstackRuntimeTransparentTCPDoesNotHijackSameRuntimeTCPListener(t *testing.T) {
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
-	transparentListener, err := runtime.ListenTransparentTCP(context.Background())
+	transparentListener, err := RuntimeHandle.ListenTransparentTCP(context.Background())
 	if err != nil {
 		t.Fatalf("ListenTransparentTCP() error = %v", err)
 	}
@@ -368,7 +368,7 @@ func TestNetstackRuntimeTransparentTCPDoesNotHijackSameRuntimeTCPListener(t *tes
 
 	const listenPort = 18449
 	listenAddr := net.JoinHostPort("10.99.0.1", strconv.Itoa(listenPort))
-	ln, err := runtime.ListenTCP(context.Background(), listenAddr)
+	ln, err := RuntimeHandle.ListenTCP(context.Background(), listenAddr)
 	if err != nil {
 		t.Fatalf("ListenTCP() error = %v", err)
 	}
@@ -401,7 +401,7 @@ func TestNetstackRuntimeTransparentTCPDoesNotHijackSameRuntimeTCPListener(t *tes
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	conn, err := runtime.DialContext(ctx, "tcp", listenAddr)
+	conn, err := RuntimeHandle.DialContext(ctx, "tcp", listenAddr)
 	if err != nil {
 		t.Fatalf("DialContext() error = %v", err)
 	}
@@ -425,11 +425,11 @@ func TestNetstackRuntimeTransparentTCPDoesNotHijackSameRuntimeTCPListener(t *tes
 }
 
 func TestNetstackRuntimeListenUDPAcceptsWildcardAddress(t *testing.T) {
-	runtime := newTestNetstackRuntime(t)
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntime(t)
+	defer RuntimeHandle.Close()
 
 	const listenPort = 18444
-	conn, err := runtime.ListenUDP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
+	conn, err := RuntimeHandle.ListenUDP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
 	if err != nil {
 		t.Fatalf("ListenUDP wildcard error = %v", err)
 	}
@@ -445,12 +445,12 @@ func TestNetstackRuntimeListenUDPAcceptsWildcardAddress(t *testing.T) {
 }
 
 func TestNetstackRuntimeDialContextReachesSameRuntimeUDPListener(t *testing.T) {
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
 	const listenPort = 18448
 	listenAddr := net.JoinHostPort("10.99.0.1", strconv.Itoa(listenPort))
-	server, err := runtime.ListenUDP(context.Background(), listenAddr)
+	server, err := RuntimeHandle.ListenUDP(context.Background(), listenAddr)
 	if err != nil {
 		t.Fatalf("ListenUDP() error = %v", err)
 	}
@@ -461,7 +461,7 @@ func TestNetstackRuntimeDialContextReachesSameRuntimeUDPListener(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	client, err := runtime.DialContext(ctx, "udp", listenAddr)
+	client, err := RuntimeHandle.DialContext(ctx, "udp", listenAddr)
 	if err != nil {
 		t.Fatalf("DialContext(udp) error = %v", err)
 	}
@@ -494,10 +494,10 @@ func TestNetstackRuntimeDialContextReachesSameRuntimeUDPListener(t *testing.T) {
 }
 
 func TestNetstackRuntimeTransparentUDPDoesNotHijackSameRuntimeUDPListener(t *testing.T) {
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
-	transparentConn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	transparentConn, err := RuntimeHandle.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
 	if err != nil {
 		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
 	}
@@ -505,7 +505,7 @@ func TestNetstackRuntimeTransparentUDPDoesNotHijackSameRuntimeUDPListener(t *tes
 
 	const listenPort = 18450
 	listenAddr := net.JoinHostPort("10.99.0.1", strconv.Itoa(listenPort))
-	server, err := runtime.ListenUDP(context.Background(), listenAddr)
+	server, err := RuntimeHandle.ListenUDP(context.Background(), listenAddr)
 	if err != nil {
 		t.Fatalf("ListenUDP() error = %v", err)
 	}
@@ -516,7 +516,7 @@ func TestNetstackRuntimeTransparentUDPDoesNotHijackSameRuntimeUDPListener(t *tes
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	client, err := runtime.DialContext(ctx, "udp", listenAddr)
+	client, err := RuntimeHandle.DialContext(ctx, "udp", listenAddr)
 	if err != nil {
 		t.Fatalf("DialContext(udp) error = %v", err)
 	}
@@ -549,18 +549,18 @@ func TestNetstackRuntimeTransparentUDPDoesNotHijackSameRuntimeUDPListener(t *tes
 }
 
 func TestNetstackRuntimeReadTransparentUDPPacketReportsOriginalDestination(t *testing.T) {
-	runtime, cleanup := newRuntimeTestHarness(t)
+	RuntimeHandle, cleanup := newRuntimeTestHarness(t)
 	defer cleanup()
 
 	listenAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.1"), Port: 18445}
-	conn, err := runtime.ListenTransparentUDP(context.Background(), listenAddr.String())
+	conn, err := RuntimeHandle.ListenTransparentUDP(context.Background(), listenAddr.String())
 	if err != nil {
 		t.Fatalf("ListenTransparentUDP() error = %v", err)
 	}
 	defer conn.Close()
 
 	clientAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40124}
-	injectIPv4UDPPacket(t, runtime, udpPacket{
+	injectIPv4UDPPacket(t, RuntimeHandle, udpPacket{
 		src:     netip.MustParseAddr(clientAddr.IP.String()),
 		dst:     netip.MustParseAddr(listenAddr.IP.String()),
 		srcPort: uint16(clientAddr.Port),
@@ -584,11 +584,11 @@ func TestNetstackRuntimeReadTransparentUDPPacketReportsOriginalDestination(t *te
 }
 
 func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(t *testing.T) {
-	runtime, cleanup := newRuntimeTestHarness(t)
+	RuntimeHandle, cleanup := newRuntimeTestHarness(t)
 	defer cleanup()
 
 	listenPort := 18446
-	wildcardConn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
+	wildcardConn, err := RuntimeHandle.ListenTransparentUDP(context.Background(), net.JoinHostPort("", strconv.Itoa(listenPort)))
 	if err != nil {
 		t.Fatalf("ListenTransparentUDP(wildcard) error = %v", err)
 	}
@@ -596,7 +596,7 @@ func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(
 
 	clientAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40125}
 	targetAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.46"), Port: listenPort}
-	injectIPv4UDPPacket(t, runtime, udpPacket{
+	injectIPv4UDPPacket(t, RuntimeHandle, udpPacket{
 		src:     netip.MustParseAddr(clientAddr.IP.String()),
 		dst:     netip.MustParseAddr(targetAddr.IP.String()),
 		srcPort: uint16(clientAddr.Port),
@@ -617,7 +617,7 @@ func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(
 		writeErr <- wildcardConn.WritePacket([]byte("pong"), packet.Peer, packet.OriginalDst)
 	}()
 
-	reply := readOutboundIPv4UDPPacket(t, runtime)
+	reply := readOutboundIPv4UDPPacket(t, RuntimeHandle)
 	if err := <-writeErr; err != nil {
 		t.Fatalf("WritePacket() error = %v", err)
 	}
@@ -633,10 +633,10 @@ func TestNetstackRuntimeTransparentUDPReplyPreservesOriginalDestinationAsSource(
 }
 
 func TestNetstackRuntimeTransparentUDPReplyDoesNotCaptureLaterPacketsToSameDestination(t *testing.T) {
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
-	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	conn, err := RuntimeHandle.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
 	if err != nil {
 		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
 	}
@@ -644,7 +644,7 @@ func TestNetstackRuntimeTransparentUDPReplyDoesNotCaptureLaterPacketsToSameDesti
 
 	firstClient := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40129}
 	targetAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.53"), Port: 53}
-	injectIPv4UDPPacket(t, runtime, udpPacket{
+	injectIPv4UDPPacket(t, RuntimeHandle, udpPacket{
 		src:     netip.MustParseAddr(firstClient.IP.String()),
 		dst:     netip.MustParseAddr(targetAddr.IP.String()),
 		srcPort: uint16(firstClient.Port),
@@ -662,10 +662,10 @@ func TestNetstackRuntimeTransparentUDPReplyDoesNotCaptureLaterPacketsToSameDesti
 	if err := conn.WritePacket([]byte("first reply"), first.Peer, first.OriginalDst); err != nil {
 		t.Fatalf("WritePacket(first reply) error = %v", err)
 	}
-	_ = readOutboundIPv4UDPPacket(t, runtime)
+	_ = readOutboundIPv4UDPPacket(t, RuntimeHandle)
 
 	secondClient := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40130}
-	injectIPv4UDPPacket(t, runtime, udpPacket{
+	injectIPv4UDPPacket(t, RuntimeHandle, udpPacket{
 		src:     netip.MustParseAddr(secondClient.IP.String()),
 		dst:     netip.MustParseAddr(targetAddr.IP.String()),
 		srcPort: uint16(secondClient.Port),
@@ -686,10 +686,10 @@ func TestNetstackRuntimeTransparentUDPReplyDoesNotCaptureLaterPacketsToSameDesti
 }
 
 func TestNetstackRuntimeTransparentUDPWriteAfterCloseReturnsClosed(t *testing.T) {
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
-	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	conn, err := RuntimeHandle.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
 	if err != nil {
 		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
 	}
@@ -705,10 +705,10 @@ func TestNetstackRuntimeTransparentUDPWriteAfterCloseReturnsClosed(t *testing.T)
 }
 
 func TestNetstackRuntimeTransparentUDPPortZeroCapturesAnyDestinationPort(t *testing.T) {
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
-	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	conn, err := RuntimeHandle.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
 	if err != nil {
 		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
 	}
@@ -716,7 +716,7 @@ func TestNetstackRuntimeTransparentUDPPortZeroCapturesAnyDestinationPort(t *test
 
 	clientAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40127}
 	targetAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.47"), Port: 28553}
-	injectIPv4UDPPacket(t, runtime, udpPacket{
+	injectIPv4UDPPacket(t, RuntimeHandle, udpPacket{
 		src:     netip.MustParseAddr(clientAddr.IP.String()),
 		dst:     netip.MustParseAddr(targetAddr.IP.String()),
 		srcPort: uint16(clientAddr.Port),
@@ -746,10 +746,10 @@ func TestNetstackRuntimeTransparentUDPPortZeroCleansIdleForwardedFlows(t *testin
 		forwardedUDPFlowIdleTimeout = previousTimeout
 	})
 
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	defer RuntimeHandle.Close()
 
-	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	conn, err := RuntimeHandle.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
 	if err != nil {
 		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
 	}
@@ -761,7 +761,7 @@ func TestNetstackRuntimeTransparentUDPPortZeroCleansIdleForwardedFlows(t *testin
 
 	clientAddr := &net.UDPAddr{IP: net.ParseIP("10.99.0.2"), Port: 40128}
 	targetAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.48"), Port: 28554}
-	injectIPv4UDPPacket(t, runtime, udpPacket{
+	injectIPv4UDPPacket(t, RuntimeHandle, udpPacket{
 		src:     netip.MustParseAddr(clientAddr.IP.String()),
 		dst:     netip.MustParseAddr(targetAddr.IP.String()),
 		srcPort: uint16(clientAddr.Port),
@@ -785,17 +785,17 @@ func TestNetstackRuntimeDNSLookupSendsUDPAfterWarmupFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateNetTUN() error = %v", err)
 	}
-	runtime := newNetstackRuntime(tunDevice, tnet, gstack, nil)
-	defer runtime.Close()
+	RuntimeHandle := newNetstackRuntime(tunDevice, tnet, gstack, nil)
+	defer RuntimeHandle.Close()
 
-	warmupConn, err := runtime.DialContext(context.Background(), "udp", "1.1.1.1:53")
+	warmupConn, err := RuntimeHandle.DialContext(context.Background(), "udp", "1.1.1.1:53")
 	if err != nil {
 		t.Fatalf("warmup DialContext(udp) error = %v", err)
 	}
 	if _, err := warmupConn.Write(wireGuardDNSWarmupQuery()); err != nil {
 		t.Fatalf("warmup Write() error = %v", err)
 	}
-	warmup := readOutboundIPv4UDPPacket(t, runtime)
+	warmup := readOutboundIPv4UDPPacket(t, RuntimeHandle)
 	if warmup.dst != netip.MustParseAddr("1.1.1.1") || warmup.dstPort != 53 {
 		t.Fatalf("warmup UDP packet = %s:%d -> %s:%d, want DNS target", warmup.src, warmup.srcPort, warmup.dst, warmup.dstPort)
 	}
@@ -807,14 +807,14 @@ func TestNetstackRuntimeDNSLookupSendsUDPAfterWarmupFlow(t *testing.T) {
 	defer cancel()
 	dialDone := make(chan error, 1)
 	go func() {
-		conn, err := runtime.DialContext(ctx, "tcp", "www.apple.com:80")
+		conn, err := RuntimeHandle.DialContext(ctx, "tcp", "www.apple.com:80")
 		if conn != nil {
 			_ = conn.Close()
 		}
 		dialDone <- err
 	}()
 
-	query := readOutboundIPv4UDPPacket(t, runtime)
+	query := readOutboundIPv4UDPPacket(t, RuntimeHandle)
 	if query.dst != netip.MustParseAddr("1.1.1.1") || query.dstPort != 53 {
 		t.Fatalf("lookup UDP packet = %s:%d -> %s:%d, want DNS target", query.src, query.srcPort, query.dst, query.dstPort)
 	}
@@ -825,68 +825,68 @@ func TestNetstackRuntimeDNSLookupSendsUDPAfterWarmupFlow(t *testing.T) {
 }
 
 func TestNewTestNetstackRuntimeProvidesExplicitStack(t *testing.T) {
-	runtime := newTestNetstackRuntime(t)
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntime(t)
+	defer RuntimeHandle.Close()
 
-	if runtime.stack == nil {
-		t.Fatal("runtime stack is nil")
+	if RuntimeHandle.stack == nil {
+		t.Fatal("RuntimeHandle stack is nil")
 	}
-	if runtime.net == nil {
-		t.Fatal("runtime net is nil")
+	if RuntimeHandle.net == nil {
+		t.Fatal("RuntimeHandle net is nil")
 	}
 }
 
 func TestNetstackRuntimeDoesNotInstallTransparentHandlersUntilTransparentListen(t *testing.T) {
-	runtime := newTestNetstackRuntime(t)
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntime(t)
+	defer RuntimeHandle.Close()
 
-	if runtime.tcpHandlerInstalled {
+	if RuntimeHandle.tcpHandlerInstalled {
 		t.Fatal("tcp transparent handler installed before ListenTransparentTCP")
 	}
-	if runtime.udpHandlerInstalled {
+	if RuntimeHandle.udpHandlerInstalled {
 		t.Fatal("udp transparent handler installed before wildcard ListenTransparentUDP")
 	}
 
-	tcpListener, err := runtime.ListenTransparentTCP(context.Background())
+	tcpListener, err := RuntimeHandle.ListenTransparentTCP(context.Background())
 	if err != nil {
 		t.Fatalf("ListenTransparentTCP() error = %v", err)
 	}
 	defer tcpListener.Close()
-	if !runtime.tcpHandlerInstalled {
+	if !RuntimeHandle.tcpHandlerInstalled {
 		t.Fatal("tcp transparent handler was not installed by ListenTransparentTCP")
 	}
-	if runtime.udpHandlerInstalled {
+	if RuntimeHandle.udpHandlerInstalled {
 		t.Fatal("udp transparent handler installed before wildcard ListenTransparentUDP")
 	}
 
-	udpConn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
+	udpConn, err := RuntimeHandle.ListenTransparentUDP(context.Background(), net.JoinHostPort("", "0"))
 	if err != nil {
 		t.Fatalf("ListenTransparentUDP(:0) error = %v", err)
 	}
 	defer udpConn.Close()
-	if !runtime.udpHandlerInstalled {
+	if !RuntimeHandle.udpHandlerInstalled {
 		t.Fatal("udp transparent handler was not installed by wildcard ListenTransparentUDP")
 	}
 }
 
 func TestNetstackRuntimePortSpecificTransparentUDPDoesNotInstallWildcardHandler(t *testing.T) {
-	runtime := newTestNetstackRuntime(t)
-	defer runtime.Close()
+	RuntimeHandle := newTestNetstackRuntime(t)
+	defer RuntimeHandle.Close()
 
-	conn, err := runtime.ListenTransparentUDP(context.Background(), net.JoinHostPort("10.99.0.1", "18451"))
+	conn, err := RuntimeHandle.ListenTransparentUDP(context.Background(), net.JoinHostPort("10.99.0.1", "18451"))
 	if err != nil {
 		t.Fatalf("ListenTransparentUDP(port-specific) error = %v", err)
 	}
 	defer conn.Close()
-	if runtime.udpHandlerInstalled {
+	if RuntimeHandle.udpHandlerInstalled {
 		t.Fatal("udp wildcard transparent handler installed for port-specific transparent UDP")
 	}
 }
 
 func TestNetstackRuntimeListenTransparentUDPRejectsMissingStack(t *testing.T) {
-	runtime := &netstackRuntime{}
+	RuntimeHandle := &netstackRuntime{}
 
-	_, err := runtime.ListenTransparentUDP(context.Background(), "127.0.0.1:18080")
+	_, err := RuntimeHandle.ListenTransparentUDP(context.Background(), "127.0.0.1:18080")
 	if err == nil {
 		t.Fatal("ListenTransparentUDP() error = nil, want missing stack error")
 	}
@@ -915,14 +915,14 @@ func TestManagerKeepsSameProfileIDForDifferentAgents(t *testing.T) {
 
 	localRuntime, ok := manager.RuntimeForAgent("local", localProfile.ID)
 	if !ok {
-		t.Fatal("local runtime not found")
+		t.Fatal("local RuntimeHandle not found")
 	}
 	remoteRuntime, ok := manager.RuntimeForAgent("remote", remoteProfile.ID)
 	if !ok {
-		t.Fatal("remote runtime not found")
+		t.Fatal("remote RuntimeHandle not found")
 	}
 	if localRuntime == remoteRuntime {
-		t.Fatal("same numeric profile ID on different agents reused one runtime")
+		t.Fatal("same numeric profile ID on different agents reused one RuntimeHandle")
 	}
 }
 
@@ -948,25 +948,25 @@ func TestManagerPrepareKeepsSameProfileIDForDifferentAgents(t *testing.T) {
 
 	localRuntime, ok := transaction.RuntimeForAgent("local", localProfile.ID)
 	if !ok {
-		t.Fatal("local transaction runtime not found")
+		t.Fatal("local transaction RuntimeHandle not found")
 	}
 	remoteRuntime, ok := transaction.RuntimeForAgent("remote", remoteProfile.ID)
 	if !ok {
-		t.Fatal("remote transaction runtime not found")
+		t.Fatal("remote transaction RuntimeHandle not found")
 	}
 	if localRuntime == remoteRuntime {
-		t.Fatal("same numeric profile ID on different agents reused one transaction runtime")
+		t.Fatal("same numeric profile ID on different agents reused one transaction RuntimeHandle")
 	}
 
 	transaction.Commit()
 
 	committedLocalRuntime, ok := manager.RuntimeForAgent("local", localProfile.ID)
 	if !ok {
-		t.Fatal("committed local runtime not found")
+		t.Fatal("committed local RuntimeHandle not found")
 	}
 	committedRemoteRuntime, ok := manager.RuntimeForAgent("remote", remoteProfile.ID)
 	if !ok {
-		t.Fatal("committed remote runtime not found")
+		t.Fatal("committed remote RuntimeHandle not found")
 	}
 	if committedLocalRuntime != localRuntime || committedRemoteRuntime != remoteRuntime {
 		t.Fatal("commit did not preserve agent-qualified runtimes")
@@ -992,11 +992,11 @@ func TestManagerPrepareCommitPreservesExistingSameProfileIDForDifferentAgents(t 
 	}
 	initialLocalRuntime, ok := manager.RuntimeForAgent("local", localProfile.ID)
 	if !ok {
-		t.Fatal("initial local runtime not found")
+		t.Fatal("initial local RuntimeHandle not found")
 	}
 	initialRemoteRuntime, ok := manager.RuntimeForAgent("remote", remoteProfile.ID)
 	if !ok {
-		t.Fatal("initial remote runtime not found")
+		t.Fatal("initial remote RuntimeHandle not found")
 	}
 
 	localProfile.Peers[0].Endpoint = "local.example.com:51821"
@@ -1008,40 +1008,40 @@ func TestManagerPrepareCommitPreservesExistingSameProfileIDForDifferentAgents(t 
 
 	preparedLocalRuntime, ok := transaction.RuntimeForAgent("local", localProfile.ID)
 	if !ok {
-		t.Fatal("prepared local runtime not found")
+		t.Fatal("prepared local RuntimeHandle not found")
 	}
 	preparedRemoteRuntime, ok := transaction.RuntimeForAgent("remote", remoteProfile.ID)
 	if !ok {
-		t.Fatal("prepared remote runtime not found")
+		t.Fatal("prepared remote RuntimeHandle not found")
 	}
 	if preparedLocalRuntime == initialLocalRuntime {
-		t.Fatal("prepared local runtime reused stale runtime after config change")
+		t.Fatal("prepared local RuntimeHandle reused stale RuntimeHandle after config change")
 	}
 	if preparedRemoteRuntime != initialRemoteRuntime {
-		t.Fatal("prepared remote runtime did not reuse unchanged remote runtime")
+		t.Fatal("prepared remote RuntimeHandle did not reuse unchanged remote RuntimeHandle")
 	}
 
 	transaction.Commit()
 
 	committedLocalRuntime, ok := manager.RuntimeForAgent("local", localProfile.ID)
 	if !ok {
-		t.Fatal("committed local runtime not found")
+		t.Fatal("committed local RuntimeHandle not found")
 	}
 	committedRemoteRuntime, ok := manager.RuntimeForAgent("remote", remoteProfile.ID)
 	if !ok {
-		t.Fatal("committed remote runtime not found")
+		t.Fatal("committed remote RuntimeHandle not found")
 	}
 	if committedLocalRuntime != preparedLocalRuntime {
-		t.Fatal("commit did not keep prepared local runtime")
+		t.Fatal("commit did not keep prepared local RuntimeHandle")
 	}
 	if committedRemoteRuntime != initialRemoteRuntime {
-		t.Fatal("commit dropped unchanged remote runtime with colliding profile ID")
+		t.Fatal("commit dropped unchanged remote RuntimeHandle with colliding profile ID")
 	}
 	if !initialLocalRuntime.(*fakeRuntime).closed {
-		t.Fatal("stale local runtime was not closed")
+		t.Fatal("stale local RuntimeHandle was not closed")
 	}
 	if initialRemoteRuntime.(*fakeRuntime).closed {
-		t.Fatal("unchanged remote runtime with colliding profile ID was closed")
+		t.Fatal("unchanged remote RuntimeHandle with colliding profile ID was closed")
 	}
 }
 
@@ -1066,7 +1066,7 @@ func TestManagerReplacesChangedConfigRuntime(t *testing.T) {
 		t.Fatalf("created runtimes = %d, want 2", len(factory.created))
 	}
 	if !first.closed {
-		t.Fatal("stale runtime was not closed")
+		t.Fatal("stale RuntimeHandle was not closed")
 	}
 }
 
@@ -1094,7 +1094,7 @@ func TestManagerCreatesReplacementBeforeClosingExistingRuntime(t *testing.T) {
 		t.Fatalf("events = %v, want replacement create before close", factory.events)
 	}
 	if !first.closed {
-		t.Fatal("stale runtime was not closed")
+		t.Fatal("stale RuntimeHandle was not closed")
 	}
 }
 
@@ -1118,14 +1118,14 @@ func TestManagerPreservesExistingRuntimeAfterReplacementCreateFails(t *testing.T
 		t.Fatalf("Apply(changed) error = %v, want bind failed", err)
 	}
 	if first.closed {
-		t.Fatal("existing runtime was closed after replacement creation failed")
+		t.Fatal("existing RuntimeHandle was closed after replacement creation failed")
 	}
 	got, ok := manager.Runtime(profile.ID)
 	if !ok {
-		t.Fatal("existing runtime was unregistered after replacement creation failed")
+		t.Fatal("existing RuntimeHandle was unregistered after replacement creation failed")
 	}
 	if got != first {
-		t.Fatal("manager did not preserve the original runtime after replacement creation failed")
+		t.Fatal("manager did not preserve the original RuntimeHandle after replacement creation failed")
 	}
 }
 
@@ -1136,7 +1136,7 @@ func TestManagerPreflightsAndRollsBackSamePortReplacementFailure(t *testing.T) {
 	var replacementAttempts int
 	var rollback *fakeRuntime
 	factory := &recordingFactory{}
-	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+	factory.createFunc = func(_ context.Context, cfg Config) (RuntimeHandle, error) {
 		switch cfg.Peers[0].Endpoint {
 		case "peer.example.com:51820":
 			return factory.newRuntime(cfg), nil
@@ -1165,7 +1165,7 @@ func TestManagerPreflightsAndRollsBackSamePortReplacementFailure(t *testing.T) {
 	}
 	first := factory.created[0]
 
-	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+	factory.createFunc = func(_ context.Context, cfg Config) (RuntimeHandle, error) {
 		switch cfg.Peers[0].Endpoint {
 		case "peer.example.com:51821":
 			replacementAttempts++
@@ -1189,17 +1189,17 @@ func TestManagerPreflightsAndRollsBackSamePortReplacementFailure(t *testing.T) {
 		t.Fatalf("preflight calls = %d, want 1", preflightCalls)
 	}
 	if !first.closed {
-		t.Fatal("existing same-port runtime was not closed before replacement retry")
+		t.Fatal("existing same-port RuntimeHandle was not closed before replacement retry")
 	}
 	if rollback == nil || rollback.closed {
-		t.Fatalf("rollback runtime = %+v, want active rollback", rollback)
+		t.Fatalf("rollback RuntimeHandle = %+v, want active rollback", rollback)
 	}
 	got, ok := manager.Runtime(profile.ID)
 	if !ok {
-		t.Fatal("manager has no runtime after same-port replacement failure")
+		t.Fatal("manager has no RuntimeHandle after same-port replacement failure")
 	}
 	if got != rollback {
-		t.Fatal("manager did not restore the previous runtime after same-port replacement failure")
+		t.Fatal("manager did not restore the previous RuntimeHandle after same-port replacement failure")
 	}
 }
 
@@ -1224,7 +1224,7 @@ func TestManagerPrepareRetriesSamePortReplacementAfterClosingExistingRuntime(t *
 	}
 	first := factory.created[0]
 
-	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+	factory.createFunc = func(_ context.Context, cfg Config) (RuntimeHandle, error) {
 		if cfg.Peers[0].Endpoint != "peer.example.com:51821" {
 			return nil, fmt.Errorf("unexpected endpoint %q", cfg.Peers[0].Endpoint)
 		}
@@ -1248,17 +1248,17 @@ func TestManagerPrepareRetriesSamePortReplacementAfterClosingExistingRuntime(t *
 		t.Fatalf("replacement attempts = %d, want 2", replacementAttempts)
 	}
 	if !first.closed {
-		t.Fatal("existing same-port runtime was not closed before replacement retry")
+		t.Fatal("existing same-port RuntimeHandle was not closed before replacement retry")
 	}
 	prepared, ok := transaction.Runtime(profile.ID)
 	if !ok {
-		t.Fatal("prepared transaction has no runtime")
+		t.Fatal("prepared transaction has no RuntimeHandle")
 	}
 	if prepared == first {
-		t.Fatal("prepared transaction reused the closed runtime")
+		t.Fatal("prepared transaction reused the closed RuntimeHandle")
 	}
 	if got, ok := manager.Runtime(profile.ID); !ok || got != prepared {
-		t.Fatal("manager did not expose prepared same-port runtime before commit")
+		t.Fatal("manager did not expose prepared same-port RuntimeHandle before commit")
 	}
 }
 
@@ -1280,7 +1280,7 @@ func TestManagerPrepareRollbackRestoresSamePortReplacement(t *testing.T) {
 	}
 	first := factory.created[0]
 
-	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+	factory.createFunc = func(_ context.Context, cfg Config) (RuntimeHandle, error) {
 		switch cfg.Peers[0].Endpoint {
 		case "peer.example.com:51821":
 			replacementAttempts++
@@ -1302,26 +1302,26 @@ func TestManagerPrepareRollbackRestoresSamePortReplacement(t *testing.T) {
 	}
 	prepared, ok := transaction.Runtime(profile.ID)
 	if !ok {
-		t.Fatal("prepared transaction has no runtime")
+		t.Fatal("prepared transaction has no RuntimeHandle")
 	}
 
 	transaction.Rollback()
 
 	if !first.closed {
-		t.Fatal("original runtime was not closed during same-port replacement")
+		t.Fatal("original RuntimeHandle was not closed during same-port replacement")
 	}
 	if preparedRuntime, ok := prepared.(*fakeRuntime); !ok || !preparedRuntime.closed {
-		t.Fatalf("prepared runtime closed = %v, want true", ok && preparedRuntime.closed)
+		t.Fatalf("prepared RuntimeHandle closed = %v, want true", ok && preparedRuntime.closed)
 	}
 	if rollback == nil || rollback.closed {
-		t.Fatalf("rollback runtime = %+v, want active rollback", rollback)
+		t.Fatalf("rollback RuntimeHandle = %+v, want active rollback", rollback)
 	}
 	got, ok := manager.Runtime(profile.ID)
 	if !ok {
-		t.Fatal("manager has no runtime after prepared transaction rollback")
+		t.Fatal("manager has no RuntimeHandle after prepared transaction rollback")
 	}
 	if got != rollback {
-		t.Fatal("manager did not restore previous runtime after prepared transaction rollback")
+		t.Fatal("manager did not restore previous RuntimeHandle after prepared transaction rollback")
 	}
 }
 
@@ -1347,7 +1347,7 @@ func TestManagerPrepareFailureAfterSamePortReplacementRestoresOldRuntime(t *test
 	}
 	first := factory.created[0]
 
-	factory.createFunc = func(_ context.Context, cfg Config) (Runtime, error) {
+	factory.createFunc = func(_ context.Context, cfg Config) (RuntimeHandle, error) {
 		switch cfg.ID {
 		case firstProfile.ID:
 			switch cfg.Peers[0].Endpoint {
@@ -1376,17 +1376,17 @@ func TestManagerPrepareFailureAfterSamePortReplacementRestoresOldRuntime(t *test
 	}
 
 	if !first.closed {
-		t.Fatal("original runtime was not closed during same-port replacement")
+		t.Fatal("original RuntimeHandle was not closed during same-port replacement")
 	}
 	if rollback == nil || rollback.closed {
-		t.Fatalf("rollback runtime = %+v, want active rollback", rollback)
+		t.Fatalf("rollback RuntimeHandle = %+v, want active rollback", rollback)
 	}
 	got, ok := manager.Runtime(firstProfile.ID)
 	if !ok {
-		t.Fatal("manager has no runtime after later profile prepare failure")
+		t.Fatal("manager has no RuntimeHandle after later profile prepare failure")
 	}
 	if got != rollback {
-		t.Fatal("manager did not restore previous runtime after later profile prepare failure")
+		t.Fatal("manager did not restore previous RuntimeHandle after later profile prepare failure")
 	}
 }
 
@@ -1410,10 +1410,10 @@ func TestManagerClosesUnusedRuntime(t *testing.T) {
 		t.Fatalf("Apply(remove) error = %v", err)
 	}
 	if !firstRuntime.closed {
-		t.Fatal("unused runtime was not closed")
+		t.Fatal("unused RuntimeHandle was not closed")
 	}
 	if secondRuntime.closed {
-		t.Fatal("active runtime was closed")
+		t.Fatal("active RuntimeHandle was closed")
 	}
 }
 
@@ -1436,7 +1436,7 @@ func TestManagerDisablesProfile(t *testing.T) {
 		t.Fatalf("created runtimes = %d, want 1", len(factory.created))
 	}
 	if !factory.created[0].closed {
-		t.Fatal("runtime was not closed after disable")
+		t.Fatal("RuntimeHandle was not closed after disable")
 	}
 }
 
@@ -1568,12 +1568,12 @@ func TestWarmWireGuardRuntimeWritesUDPProbeToFirstReachableDNSTarget(t *testing.
 		t.Fatalf("NormalizeConfig() error = %v", err)
 	}
 	conn := &recordingConn{}
-	runtime := &warmupRuntime{conn: conn}
+	RuntimeHandle := &warmupRuntime{conn: conn}
 
-	warmWireGuardRuntime(context.Background(), runtime, cfg)
+	warmWireGuardRuntime(context.Background(), RuntimeHandle, cfg)
 
-	if len(runtime.dials) != 1 || runtime.dials[0] != "udp 10.8.0.1:53" {
-		t.Fatalf("warmup dials = %#v, want udp DNS target", runtime.dials)
+	if len(RuntimeHandle.dials) != 1 || RuntimeHandle.dials[0] != "udp 10.8.0.1:53" {
+		t.Fatalf("warmup dials = %#v, want udp DNS target", RuntimeHandle.dials)
 	}
 	if len(conn.writes) == 0 || string(conn.writes[:2]) != "\x12\x34" {
 		t.Fatalf("warmup write = %x, want DNS probe payload", conn.writes)
@@ -1587,12 +1587,12 @@ func TestNetstackRuntimeCloseIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	closer := &countingCloser{}
-	runtime := &netstackRuntime{tun: closer}
+	RuntimeHandle := &netstackRuntime{tun: closer}
 
-	if err := runtime.Close(); err != nil {
+	if err := RuntimeHandle.Close(); err != nil {
 		t.Fatalf("Close(first) error = %v", err)
 	}
-	if err := runtime.Close(); err != nil {
+	if err := RuntimeHandle.Close(); err != nil {
 		t.Fatalf("Close(second) error = %v", err)
 	}
 	if closer.count != 1 {
@@ -1632,7 +1632,7 @@ type udpPacket struct {
 	payload          []byte
 }
 
-func injectIPv4TCPPacket(t *testing.T, runtime *netstackRuntime, pkt tcpPacket) {
+func injectIPv4TCPPacket(t *testing.T, RuntimeHandle *netstackRuntime, pkt tcpPacket) {
 	t.Helper()
 
 	const totalLen = header.IPv4MinimumSize + header.TCPMinimumSize
@@ -1662,26 +1662,26 @@ func injectIPv4TCPPacket(t *testing.T, runtime *netstackRuntime, pkt tcpPacket) 
 	xsum := header.PseudoHeaderChecksum(header.TCPProtocolNumber, srcAddr, dstAddr, header.TCPMinimumSize)
 	tcpHeader.SetChecksum(^tcpHeader.CalculateChecksum(xsum))
 
-	writer, ok := runtime.tun.(interface {
+	writer, ok := RuntimeHandle.tun.(interface {
 		Write([][]byte, int) (int, error)
 	})
 	if !ok {
-		t.Fatalf("runtime tun does not support packet injection: %T", runtime.tun)
+		t.Fatalf("RuntimeHandle tun does not support packet injection: %T", RuntimeHandle.tun)
 	}
 	if _, err := writer.Write([][]byte{raw}, 0); err != nil {
 		t.Fatalf("inject TCP packet error = %v", err)
 	}
 }
 
-func injectIPv4UDPPacket(t *testing.T, runtime *netstackRuntime, pkt udpPacket) {
+func injectIPv4UDPPacket(t *testing.T, RuntimeHandle *netstackRuntime, pkt udpPacket) {
 	t.Helper()
 
 	raw := encodeIPv4UDPPacket(t, pkt)
-	writer, ok := runtime.tun.(interface {
+	writer, ok := RuntimeHandle.tun.(interface {
 		Write([][]byte, int) (int, error)
 	})
 	if !ok {
-		t.Fatalf("runtime tun does not support packet injection: %T", runtime.tun)
+		t.Fatalf("RuntimeHandle tun does not support packet injection: %T", RuntimeHandle.tun)
 	}
 	if _, err := writer.Write([][]byte{raw}, 0); err != nil {
 		t.Fatalf("inject UDP packet error = %v", err)
@@ -1718,14 +1718,14 @@ func encodeIPv4UDPPacket(t *testing.T, pkt udpPacket) []byte {
 	return raw
 }
 
-func readOutboundIPv4TCPPacket(t *testing.T, runtime *netstackRuntime) tcpPacket {
+func readOutboundIPv4TCPPacket(t *testing.T, RuntimeHandle *netstackRuntime) tcpPacket {
 	t.Helper()
 
-	reader, ok := runtime.tun.(interface {
+	reader, ok := RuntimeHandle.tun.(interface {
 		Read([][]byte, []int, int) (int, error)
 	})
 	if !ok {
-		t.Fatalf("runtime tun does not support packet reads: %T", runtime.tun)
+		t.Fatalf("RuntimeHandle tun does not support packet reads: %T", RuntimeHandle.tun)
 	}
 	type result struct {
 		packet tcpPacket
@@ -1770,14 +1770,14 @@ func readOutboundIPv4TCPPacket(t *testing.T, runtime *netstackRuntime) tcpPacket
 	panic("unreachable")
 }
 
-func readOutboundIPv4UDPPacket(t *testing.T, runtime *netstackRuntime) udpPacket {
+func readOutboundIPv4UDPPacket(t *testing.T, RuntimeHandle *netstackRuntime) udpPacket {
 	t.Helper()
 
-	reader, ok := runtime.tun.(interface {
+	reader, ok := RuntimeHandle.tun.(interface {
 		Read([][]byte, []int, int) (int, error)
 	})
 	if !ok {
-		t.Fatalf("runtime tun does not support packet reads: %T", runtime.tun)
+		t.Fatalf("RuntimeHandle tun does not support packet reads: %T", RuntimeHandle.tun)
 	}
 	type result struct {
 		packet udpPacket
@@ -1860,8 +1860,8 @@ func waitForForwardedUDPConnCount(t *testing.T, conn *netstackForwardedUDPConn, 
 func newRuntimeTestHarness(t *testing.T) (*netstackRuntime, func()) {
 	t.Helper()
 
-	runtime := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
-	return runtime, func() { _ = runtime.Close() }
+	RuntimeHandle := newTestNetstackRuntimeWithAddresses(t, []netip.Addr{netip.MustParseAddr("10.99.0.1")})
+	return RuntimeHandle, func() { _ = RuntimeHandle.Close() }
 }
 
 type recordingFactory struct {
@@ -1869,10 +1869,10 @@ type recordingFactory struct {
 	runtimeByProfileID map[int]*fakeRuntime
 	events             []string
 	createErr          error
-	createFunc         func(context.Context, Config) (Runtime, error)
+	createFunc         func(context.Context, Config) (RuntimeHandle, error)
 }
 
-func (f *recordingFactory) Create(ctx context.Context, cfg Config) (Runtime, error) {
+func (f *recordingFactory) Create(ctx context.Context, cfg Config) (RuntimeHandle, error) {
 	f.events = append(f.events, "create:"+strconv.Itoa(cfg.ID))
 	if f.createFunc != nil {
 		return f.createFunc(ctx, cfg)
@@ -1891,12 +1891,12 @@ func (f *recordingFactory) newRuntime(cfg Config) *fakeRuntime {
 	if len(cfg.Peers) > 0 {
 		endpoint = cfg.Peers[0].Endpoint
 	}
-	runtime := &fakeRuntime{profileID: cfg.ID, endpoint: endpoint, onClose: func(profileID int) {
+	RuntimeHandle := &fakeRuntime{profileID: cfg.ID, endpoint: endpoint, onClose: func(profileID int) {
 		f.events = append(f.events, "close:"+strconv.Itoa(profileID))
 	}}
-	f.created = append(f.created, runtime)
-	f.runtimeByProfileID[cfg.ID] = runtime
-	return runtime
+	f.created = append(f.created, RuntimeHandle)
+	f.runtimeByProfileID[cfg.ID] = RuntimeHandle
+	return RuntimeHandle
 }
 
 type fakeRuntime struct {

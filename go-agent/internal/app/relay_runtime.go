@@ -10,9 +10,9 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 type relayRuntimeManager struct {
@@ -20,7 +20,7 @@ type relayRuntimeManager struct {
 	server             *relay.Server
 	provider           relay.TLSMaterialProvider
 	wireGuardRuntime   *modulewireguard.Runtime
-	wireGuardProvider  relay.WireGuardRuntimeProvider
+	wireGuardProvider  relayWireGuardProvider
 	egressWireGuard    *egressWireGuardRuntime
 	egressModule       *moduleegress.Module
 	ownsWireGuard      bool
@@ -45,7 +45,7 @@ func newRelayRuntimeManagerWithWireGuardAndEgressModule(provider relay.TLSMateri
 		egressModule = moduleegress.NewModule(nil)
 	}
 	owns := len(ownsWireGuard) > 0 && ownsWireGuard[0]
-	runtimeProvider := wireGuardRuntime.Provider()
+	runtimeProvider := newWireGuardRuntimeProvider(wireGuardRuntime, "")
 	relay.SetDefaultWireGuardRuntimeProvider(runtimeProvider)
 	return &relayRuntimeManager{
 		provider:          provider,
@@ -244,11 +244,11 @@ func (m *relayRuntimeManager) storeLastAppliedInputsLocked(listeners []model.Rel
 	m.lastEgressProfiles = cloneEgressProfiles(egressProfiles)
 }
 
-func relayFinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relay.WireGuardRuntimeProvider) relay.FinalHopDialer {
+func relayFinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relayWireGuardProvider) relay.FinalHopDialer {
 	return moduleegress.NewFinalHopDialer(profiles, wireGuardProvider)
 }
 
-func (m *relayRuntimeManager) relayFinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relay.WireGuardRuntimeProvider) relay.FinalHopDialer {
+func (m *relayRuntimeManager) relayFinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relayWireGuardProvider) relay.FinalHopDialer {
 	if m != nil && m.egressModule != nil {
 		return m.egressModule.FinalHopDialer(profiles, wireGuardProvider)
 	}
@@ -489,7 +489,7 @@ func cloneIntLayers(layers [][]int) [][]int {
 	return cloned
 }
 
-func (m *relayRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+func (m *relayRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, relayWireGuardProvider, error) {
 	if m.wireGuardRuntime == nil || profiles == nil {
 		return nil, m.wireGuardProvider, nil
 	}
@@ -500,7 +500,7 @@ func (m *relayRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context
 	if transaction == nil {
 		return nil, m.wireGuardProvider, nil
 	}
-	return transaction, m.wireGuardRuntime.TransactionProvider(transaction, profiles), nil
+	return transaction, wireGuardTransactionProvider{transaction: transaction, profiles: profiles}, nil
 }
 
 func (m *relayRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) error {
@@ -510,7 +510,7 @@ func (m *relayRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Con
 	return m.egressWireGuard.Apply(ctx, profiles)
 }
 
-func (m *relayRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+func (m *relayRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*wireguard.Transaction, relayWireGuardProvider, error) {
 	if m.egressWireGuard == nil || profiles == nil {
 		return nil, nil, nil
 	}

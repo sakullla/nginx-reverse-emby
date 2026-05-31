@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 func TestRelayRuntimeManagerAppliesWireGuardEgressProfilesFromInlineConfig(t *testing.T) {
@@ -21,7 +21,7 @@ func TestRelayRuntimeManagerAppliesWireGuardEgressProfilesFromInlineConfig(t *te
 		},
 	}
 	manager := newRelayRuntimeManager(provider)
-	manager.egressWireGuard = newEgressWireGuardRuntime(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+	manager.egressWireGuard = newEgressWireGuardRuntime(func(_ context.Context, cfg wireguard.Config) (wireguard.RuntimeHandle, error) {
 		created = append(created, cfg)
 		return &testAppWireGuardRuntime{}, nil
 	})
@@ -78,11 +78,11 @@ func TestRelayRuntimeManagerRollsBackEgressWireGuardBeforeRestoringPreviousServe
 		}
 	}
 
-	manager := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return wireGuardRuntime, nil
 	}))
 	egressRuntimeCreations := 0
-	manager.egressWireGuard = newEgressWireGuardRuntime(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager.egressWireGuard = newEgressWireGuardRuntime(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		runtime := &testAppWireGuardRuntime{}
 		egressRuntimeCreations++
 		if egressRuntimeCreations == 2 {

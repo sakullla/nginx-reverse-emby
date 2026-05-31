@@ -9,11 +9,10 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 type httpRuntimeManager struct {
@@ -22,7 +21,7 @@ type httpRuntimeManager struct {
 	provider           proxy.TLSMaterialProvider
 	wireGuardRuntime   *modulewireguard.Runtime
 	egressWireGuard    *egressWireGuardRuntime
-	wireGuardProvider  relay.WireGuardRuntimeProvider
+	wireGuardProvider  relayWireGuardProvider
 	ownsWireGuard      bool
 	cache              *backends.Cache
 	transport          *http.Transport
@@ -73,7 +72,7 @@ func newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(provider proxy.TLSMater
 		provider:          provider,
 		wireGuardRuntime:  wireGuardRuntime,
 		egressWireGuard:   newEgressWireGuardRuntime(nil),
-		wireGuardProvider: wireGuardRuntime.ProviderForAgent(cfg.AgentID),
+		wireGuardProvider: newWireGuardRuntimeProvider(wireGuardRuntime, cfg.AgentID),
 		ownsWireGuard:     owns,
 		cache:             backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
 		transport:         transport,
@@ -324,7 +323,7 @@ func (m *httpRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, p
 	return m.wireGuardRuntime.Apply(ctx, profiles)
 }
 
-func (m *httpRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+func (m *httpRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, relayWireGuardProvider, error) {
 	if m.wireGuardRuntime == nil || profiles == nil {
 		return nil, m.wireGuardProvider, nil
 	}
@@ -335,7 +334,7 @@ func (m *httpRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context,
 	if transaction == nil {
 		return nil, m.wireGuardProvider, nil
 	}
-	return transaction, m.wireGuardRuntime.TransactionProviderForAgent(transaction, m.localAgentID, profiles), nil
+	return transaction, wireGuardTransactionProvider{transaction: transaction, agentID: m.localAgentID, profiles: profiles}, nil
 }
 
 func (m *httpRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) error {
@@ -345,7 +344,7 @@ func (m *httpRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Cont
 	return m.egressWireGuard.Apply(ctx, profiles)
 }
 
-func (m *httpRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*wireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+func (m *httpRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*wireguard.Transaction, relayWireGuardProvider, error) {
 	if m.egressWireGuard == nil || profiles == nil {
 		return nil, nil, nil
 	}

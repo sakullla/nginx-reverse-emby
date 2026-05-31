@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard/wgnetstack"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard/wgnetstack"
 	"golang.zx2c4.com/wireguard/device"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -45,7 +45,7 @@ type TransparentUDPConn interface {
 	WritePacket(payload []byte, peer *net.UDPAddr, source string) error
 }
 
-type Runtime interface {
+type RuntimeHandle interface {
 	DialContext(ctx context.Context, network string, address string) (net.Conn, error)
 	ListenTCP(ctx context.Context, address string) (net.Listener, error)
 	ListenTransparentTCP(ctx context.Context) (net.Listener, error)
@@ -58,7 +58,7 @@ type endpointResolutionState interface {
 	EndpointResolutionPending() bool
 }
 
-type Factory func(context.Context, Config) (Runtime, error)
+type Factory func(context.Context, Config) (RuntimeHandle, error)
 
 type Preflight func(context.Context, Config) error
 
@@ -80,7 +80,7 @@ type Transaction struct {
 	mu                     sync.Mutex
 	manager                *Manager
 	candidates             map[runtimeKey]*runtimeEntry
-	newRuntimes            []Runtime
+	newRuntimes            []RuntimeHandle
 	closeFirstReplacements []runtimeReplacement
 	committed              bool
 	rolledBack             bool
@@ -94,13 +94,13 @@ type runtimeKey struct {
 type runtimeEntry struct {
 	fingerprint string
 	config      Config
-	runtime     Runtime
+	runtime     RuntimeHandle
 }
 
 func NewManager(options ManagerOptions) *Manager {
 	factory := options.Factory
 	if factory == nil {
-		factory = NewRuntime
+		factory = NewRuntimeHandle
 	}
 	preflight := options.Preflight
 	if preflight == nil {
@@ -142,14 +142,14 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 		}
 
 		if existing, ok := m.runtimes[key]; ok {
-			runtime, err := m.factory(ctx, cfg)
+			handle, err := m.factory(ctx, cfg)
 			if err == nil {
 				replacements = append(replacements, runtimeReplacement{
 					key:         key,
 					profileID:   profile.ID,
 					fingerprint: fingerprint,
 					config:      cloneConfig(cfg),
-					runtime:     runtime,
+					runtime:     handle,
 					existing:    existing,
 				})
 				continue
@@ -172,7 +172,7 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 			})
 			continue
 		}
-		runtime, err := m.factory(ctx, cfg)
+		handle, err := m.factory(ctx, cfg)
 		if err != nil {
 			closeReplacementRuntimes(replacements)
 			return fmt.Errorf("wireguard profile %d runtime: %w", profile.ID, err)
@@ -182,7 +182,7 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 			profileID:   profile.ID,
 			fingerprint: fingerprint,
 			config:      cloneConfig(cfg),
-			runtime:     runtime,
+			runtime:     handle,
 		})
 	}
 
@@ -195,7 +195,7 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 			_ = replacement.existing.runtime.Close()
 			delete(m.runtimes, replacement.key)
 		}
-		runtime, err := m.factory(ctx, replacement.config)
+		handle, err := m.factory(ctx, replacement.config)
 		if err != nil {
 			rollbackErr := m.rollbackCloseFirstReplacement(ctx, replacement)
 			if appliedRollbackErr := m.rollbackCloseFirstReplacements(ctx, closeFirstApplied); rollbackErr == nil {
@@ -207,7 +207,7 @@ func (m *Manager) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 			}
 			return fmt.Errorf("wireguard profile %d runtime: %w", replacement.profileID, err)
 		}
-		replacement.runtime = runtime
+		replacement.runtime = handle
 		m.runtimes[replacement.key] = &runtimeEntry{
 			fingerprint: replacement.fingerprint,
 			config:      cloneConfig(replacement.config),
@@ -260,12 +260,12 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 	defer m.mu.Unlock()
 
 	candidates := make(map[runtimeKey]*runtimeEntry, len(profiles))
-	var newRuntimes []Runtime
+	var newRuntimes []RuntimeHandle
 	var closeFirstReplacements []runtimeReplacement
 
 	closeNewRuntimes := func() {
-		for _, runtime := range newRuntimes {
-			_ = runtime.Close()
+		for _, rt := range newRuntimes {
+			_ = rt.Close()
 		}
 	}
 	rollbackPrepared := func() error {
@@ -307,7 +307,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 		}
 
 		existing, hasExisting := m.runtimes[key]
-		runtime, err := m.factory(ctx, cfg)
+		handle, err := m.factory(ctx, cfg)
 		if err != nil {
 			if !hasExisting || !sameListenPort(existing.config.ListenPort, cfg.ListenPort) || !isListenPortConflict(err) {
 				return nil, wrapPrepareError(profile.ID, "runtime", err)
@@ -317,7 +317,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 			}
 			_ = existing.runtime.Close()
 			delete(m.runtimes, key)
-			runtime, err = m.factory(ctx, cfg)
+			handle, err = m.factory(ctx, cfg)
 			if err != nil {
 				rollbackErr := m.rollbackCloseFirstReplacement(ctx, runtimeReplacement{
 					key:       key,
@@ -338,7 +338,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 				profileID:          profile.ID,
 				fingerprint:        fingerprint,
 				config:             cloneConfig(cfg),
-				runtime:            runtime,
+				runtime:            handle,
 				existing:           existing,
 				requiresCloseFirst: true,
 			}
@@ -346,20 +346,20 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 			candidates[key] = &runtimeEntry{
 				fingerprint: fingerprint,
 				config:      cloneConfig(cfg),
-				runtime:     runtime,
+				runtime:     handle,
 			}
 			m.runtimes[key] = &runtimeEntry{
 				fingerprint: fingerprint,
 				config:      cloneConfig(cfg),
-				runtime:     runtime,
+				runtime:     handle,
 			}
 			continue
 		}
-		newRuntimes = append(newRuntimes, runtime)
+		newRuntimes = append(newRuntimes, handle)
 		candidates[key] = &runtimeEntry{
 			fingerprint: fingerprint,
 			config:      cloneConfig(cfg),
-			runtime:     runtime,
+			runtime:     handle,
 		}
 	}
 
@@ -371,11 +371,11 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 	}, nil
 }
 
-func (t *Transaction) Runtime(profileID int) (Runtime, bool) {
+func (t *Transaction) Runtime(profileID int) (RuntimeHandle, bool) {
 	return t.RuntimeForAgent("", profileID)
 }
 
-func (t *Transaction) RuntimeForAgent(agentID string, profileID int) (Runtime, bool) {
+func (t *Transaction) RuntimeForAgent(agentID string, profileID int) (RuntimeHandle, bool) {
 	if t == nil {
 		return nil, false
 	}
@@ -438,13 +438,13 @@ func (t *Transaction) Rollback() {
 		return
 	}
 	t.rolledBack = true
-	newRuntimes := append([]Runtime(nil), t.newRuntimes...)
+	newRuntimes := append([]RuntimeHandle(nil), t.newRuntimes...)
 	closeFirstReplacements := append([]runtimeReplacement(nil), t.closeFirstReplacements...)
 	manager := t.manager
 	t.mu.Unlock()
 
-	for _, runtime := range newRuntimes {
-		_ = runtime.Close()
+	for _, rt := range newRuntimes {
+		_ = rt.Close()
 	}
 	if manager != nil {
 		manager.mu.Lock()
@@ -458,7 +458,7 @@ type runtimeReplacement struct {
 	profileID          int
 	fingerprint        string
 	config             Config
-	runtime            Runtime
+	runtime            RuntimeHandle
 	existing           *runtimeEntry
 	requiresCloseFirst bool
 }
@@ -472,7 +472,7 @@ func sameListenPort(existingPort, nextPort int) bool {
 	return existingPort > 0 && existingPort == nextPort
 }
 
-func runtimeEndpointResolutionPending(runtime Runtime) bool {
+func runtimeEndpointResolutionPending(runtime RuntimeHandle) bool {
 	state, ok := runtime.(endpointResolutionState)
 	return ok && state.EndpointResolutionPending()
 }
@@ -605,11 +605,11 @@ func clonePeerConfigs(peers []PeerConfig) []PeerConfig {
 	return cloned
 }
 
-func (m *Manager) Runtime(profileID int) (Runtime, bool) {
+func (m *Manager) Runtime(profileID int) (RuntimeHandle, bool) {
 	return m.RuntimeForAgent("", profileID)
 }
 
-func (m *Manager) RuntimeForAgent(agentID string, profileID int) (Runtime, bool) {
+func (m *Manager) RuntimeForAgent(agentID string, profileID int) (RuntimeHandle, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -665,40 +665,40 @@ type netstackRuntime struct {
 	closed                    bool
 }
 
-func NewRuntime(ctx context.Context, cfg Config) (Runtime, error) {
+func NewRuntimeHandle(ctx context.Context, cfg Config) (RuntimeHandle, error) {
 	tunDevice, tnet, gstack, err := wgnetstack.CreateNetTUN(cfg.AddressAddrs, cfg.DNSAddrs, cfg.MTU)
 	if err != nil {
 		return nil, err
 	}
 
 	dev := device.NewDevice(tunDevice, newWireGuardBind(cfg.BindAddresses), device.NewLogger(device.LogLevelSilent, "wireguard: "))
-	runtime := newNetstackRuntime(tunDevice, tnet, gstack, dev)
-	runtime.releaseScavenger = retainWireGuardMemoryScavenger()
+	rt := newNetstackRuntime(tunDevice, tnet, gstack, dev)
+	rt.releaseScavenger = retainWireGuardMemoryScavenger()
 	ipc, endpointResolutionPending, err := ipcConfig(ctx, cfg, lookupEndpointIP)
 	if err != nil {
-		runtime.Close()
+		rt.Close()
 		return nil, err
 	}
-	runtime.endpointResolutionPending = endpointResolutionPending
+	rt.endpointResolutionPending = endpointResolutionPending
 	if err := dev.IpcSet(ipc); err != nil {
-		runtime.Close()
+		rt.Close()
 		return nil, err
 	}
 	if err := dev.Up(); err != nil {
-		runtime.Close()
+		rt.Close()
 		return nil, err
 	}
-	startWireGuardRuntimeWarmup(runtime, cfg)
-	return runtime, nil
+	startWireGuardRuntimeWarmup(rt, cfg)
+	return rt, nil
 }
 
 func newNetstackRuntime(tunDevice interface{ Close() error }, tnet wgnetstack.RuntimeNet, gstack *stack.Stack, dev *device.Device) *netstackRuntime {
-	runtime := &netstackRuntime{net: tnet, stack: gstack, device: dev, tun: tunDevice}
+	rt := &netstackRuntime{net: tnet, stack: gstack, device: dev, tun: tunDevice}
 	if gstack != nil {
-		runtime.tcp = newTransparentTCPDispatcher(gstack)
-		runtime.udp = newTransparentUDPDispatcher(gstack)
+		rt.tcp = newTransparentTCPDispatcher(gstack)
+		rt.udp = newTransparentUDPDispatcher(gstack)
 	}
-	return runtime
+	return rt
 }
 
 func (r *netstackRuntime) EndpointResolutionPending() bool {
@@ -712,7 +712,7 @@ func (r *netstackRuntime) EndpointResolutionPending() bool {
 
 const wireGuardRuntimeWarmupTimeout = 2 * time.Second
 
-func startWireGuardRuntimeWarmup(rt Runtime, cfg Config) {
+func startWireGuardRuntimeWarmup(rt RuntimeHandle, cfg Config) {
 	if len(wireGuardWarmupTargets(cfg)) == 0 {
 		return
 	}
@@ -721,7 +721,7 @@ func startWireGuardRuntimeWarmup(rt Runtime, cfg Config) {
 	warmWireGuardRuntime(ctx, rt, cfg)
 }
 
-func warmWireGuardRuntime(ctx context.Context, rt Runtime, cfg Config) {
+func warmWireGuardRuntime(ctx context.Context, rt RuntimeHandle, cfg Config) {
 	for _, target := range wireGuardWarmupTargets(cfg) {
 		conn, err := rt.DialContext(ctx, "udp", target)
 		if err != nil {

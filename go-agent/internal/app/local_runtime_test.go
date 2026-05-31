@@ -27,12 +27,12 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
@@ -507,7 +507,7 @@ func TestL4RuntimeManagerAppliesWireGuardProfilesBeforeStartingL4(t *testing.T) 
 			return net.Listen("tcp", "127.0.0.1:0")
 		},
 	}
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.RuntimeHandle, error) {
 		events = append(events, fmt.Sprintf("apply:%d", cfg.ID))
 		return runtime, nil
 	})
@@ -536,7 +536,7 @@ func TestL4RuntimeManagerAppliesWireGuardProfilesBeforeStartingL4(t *testing.T) 
 
 func TestSnapshotActivatorSharedWireGuardRuntimeAppliesRelayAndL4ProfileOnce(t *testing.T) {
 	createCount := 0
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		createCount++
 		return &testAppWireGuardRuntime{
 			onListenTCP: func(context.Context, string) (net.Listener, error) {
@@ -595,7 +595,7 @@ func TestSnapshotActivatorSharedWireGuardRuntimeAppliesRelayAndL4ProfileOnce(t *
 
 func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing.T) {
 	localRuntime := &testAppWireGuardRuntime{}
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return localRuntime, nil
 	})
 	defer shared.Close()
@@ -626,7 +626,7 @@ func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing
 			WireGuardProfileID: &remoteProfileID,
 		},
 	}
-	provider := shared.ProviderForAgent("wg-relay-caller")
+	provider := newWireGuardRuntimeProvider(shared, "wg-relay-caller")
 	runtime, ok := relay.ResolveWireGuardRuntimeForHop(provider, hop)
 	if !ok {
 		t.Fatal("ResolveWireGuardRuntimeForHop() ok = false, want local caller runtime")
@@ -656,7 +656,7 @@ func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing
 
 func TestWireGuardProviderDoesNotFallbackAcrossAgentsForScopedLookup(t *testing.T) {
 	otherRuntime := &testAppWireGuardRuntime{}
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return otherRuntime, nil
 	})
 	defer shared.Close()
@@ -688,7 +688,7 @@ func TestWireGuardProviderDoesNotFallbackAcrossAgentsForScopedLookup(t *testing.
 }
 
 func TestL4RuntimeManagerPreservesRunningServerOnMissingWireGuardProfileReconfigure(t *testing.T) {
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return &testAppWireGuardRuntime{
 			onListenTCP: func(context.Context, string) (net.Listener, error) {
 				return net.Listen("tcp", "127.0.0.1:0")
@@ -732,7 +732,7 @@ func TestL4RuntimeManagerPreservesRunningServerOnMissingWireGuardProfileReconfig
 func TestL4RuntimeManagerPreservesRunningServerOnReplacementWireGuardListenFailure(t *testing.T) {
 	listenErr := fmt.Errorf("wireguard listen failed")
 	failListen := false
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return &testAppWireGuardRuntime{
 			onListenTCP: func(context.Context, string) (net.Listener, error) {
 				if failListen {
@@ -781,7 +781,7 @@ func TestL4RuntimeManagerRollsBackWireGuardProfilesWhenReplacementStartFails(t *
 	listenErr := fmt.Errorf("wireguard listen failed")
 	failListen := false
 	var runtimes []*testAppWireGuardRuntime
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		runtime := newListeningTestAppWireGuardRuntime(&failListen, listenErr)
 		runtimes = append(runtimes, runtime)
 		return runtime, nil
@@ -837,7 +837,7 @@ func TestL4RuntimeManagerUsesLocalAgentWireGuardProfileWhenIDsOverlap(t *testing
 	localAgentID := "local-agent"
 	var localListenCalls int
 	var remoteListenCalls int
-	manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(nil, Config{AgentID: localAgentID}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(nil, Config{AgentID: localAgentID}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.RuntimeHandle, error) {
 		runtime := &testAppWireGuardRuntime{}
 		switch cfg.AgentID {
 		case localAgentID:
@@ -889,7 +889,7 @@ func TestL4RuntimeManagerUsesLocalAgentWireGuardProfileWhenIDsOverlap(t *testing
 func TestL4RuntimeManagerRejectsCrossAgentWireGuardRuntimeForScopedLookup(t *testing.T) {
 	localAgentID := "local-agent"
 	var listenCalls int
-	manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(nil, Config{AgentID: localAgentID}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(nil, Config{AgentID: localAgentID}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.RuntimeHandle, error) {
 		if cfg.AgentID != "remote-relay" {
 			return nil, fmt.Errorf("unexpected wireguard profile agent %q", cfg.AgentID)
 		}
@@ -927,7 +927,7 @@ func TestL4RuntimeManagerRestoresServerAfterPreparedSamePortWireGuardFailure(t *
 	listenErr := fmt.Errorf("wireguard listen failed")
 	var runtimes []*testAppWireGuardRuntime
 	factoryCalls := 0
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.RuntimeHandle, error) {
 		factoryCalls++
 		if factoryCalls == 2 {
 			return nil, fmt.Errorf("address already in use")
@@ -1030,7 +1030,7 @@ func TestL4RuntimeManagerRestoresServerAfterBindConflictRetryFailure(t *testing.
 
 func TestL4RuntimeManagerRetriesTransientWireGuardPortInUseAfterClosingPreviousServer(t *testing.T) {
 	runtime := &transientPortInUseWireGuardRuntime{}
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return runtime, nil
 	})
 	defer manager.Close()
@@ -1070,7 +1070,7 @@ func TestL4RuntimeManagerRetriesTransientWireGuardPortInUseAfterClosingPreviousS
 
 func TestL4RuntimeManagerRecreatesWireGuardRuntimeWhenClosedListenerPortRemainsInUse(t *testing.T) {
 	var runtimes []*stickyPortInUseWireGuardRuntime
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		runtime := &stickyPortInUseWireGuardRuntime{}
 		runtimes = append(runtimes, runtime)
 		return runtime, nil
@@ -1113,7 +1113,7 @@ func TestL4RuntimeManagerRecreatesWireGuardRuntimeWhenClosedListenerPortRemainsI
 }
 
 func TestL4RuntimeManagerPreservesRunningServerOnEmptyRulesBadWireGuardProfile(t *testing.T) {
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return &testAppWireGuardRuntime{}, nil
 	})
 	defer manager.Close()
@@ -1179,7 +1179,7 @@ func TestHTTPRuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing
 
 func TestHTTPRuntimeManagerCloseClosesOwnedWireGuardRuntime(t *testing.T) {
 	var created []*testAppWireGuardRuntime
-	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		runtime := newListeningTestAppWireGuardRuntime(nil, nil)
 		created = append(created, runtime)
 		return runtime, nil
@@ -1217,7 +1217,7 @@ func TestHTTPRuntimeManagerCloseClosesOwnedWireGuardRuntime(t *testing.T) {
 
 func TestHTTPRuntimeManagerSkipsPublicHTTPSBindingForWireGuardEntry(t *testing.T) {
 	var runtimes []*testAppWireGuardRuntime
-	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		runtime := newListeningTestAppWireGuardRuntime(nil, nil)
 		runtimes = append(runtimes, runtime)
 		return runtime, nil
@@ -1268,7 +1268,7 @@ func TestHTTPRuntimeManagerKeepsWireGuardEntryActiveWhenFrontendURLIsHTTPS(t *te
 		activeWireGuardPorts = make(map[int]bool)
 		runtimes             []*testAppWireGuardRuntime
 	)
-	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+	manager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(nil, false, Config{}, newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.RuntimeHandle, error) {
 		mu.Lock()
 		if activeWireGuardPorts[cfg.ListenPort] {
 			mu.Unlock()
@@ -1741,7 +1741,7 @@ func TestHTTPRuntimeManagerDoesNotRequireWireGuardEgressConfigForEmptyRules(t *t
 func TestHTTPRuntimeManagerClosesWireGuardEgressWhenLocalReferenceRemoved(t *testing.T) {
 	var created []*testAppWireGuardRuntime
 	manager := newHTTPRuntimeManagerWithTLS(&testHTTPRelayRuntimeProvider{})
-	manager.egressWireGuard = newEgressWireGuardRuntime(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager.egressWireGuard = newEgressWireGuardRuntime(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		runtime := &testAppWireGuardRuntime{}
 		created = append(created, runtime)
 		return runtime, nil
@@ -1778,7 +1778,7 @@ func TestHTTPRuntimeManagerClosesWireGuardEgressWhenLocalReferenceRemoved(t *tes
 func TestHTTPRuntimeManagerAppliesWireGuardEgressForEmptyRelayLayers(t *testing.T) {
 	var created []*testAppWireGuardRuntime
 	manager := newHTTPRuntimeManagerWithTLS(&testHTTPRelayRuntimeProvider{})
-	manager.egressWireGuard = newEgressWireGuardRuntime(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager.egressWireGuard = newEgressWireGuardRuntime(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		runtime := &testAppWireGuardRuntime{
 			onDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 				var dialer net.Dialer
@@ -1928,7 +1928,7 @@ func TestRelayRuntimeManagerPreservesRunningServerOnWireGuardApplyFailure(t *tes
 		},
 	}
 	applyErr := fmt.Errorf("wireguard apply failed")
-	manager := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return nil, applyErr
 	}))
 	defer manager.Close()
@@ -1959,7 +1959,7 @@ func TestRelayRuntimeManagerPreservesRunningServerOnWireGuardApplyFailure(t *tes
 
 func TestRelayRuntimeManagerDoesNotReplaceUnchangedWireGuardProfilesWithoutLocalListeners(t *testing.T) {
 	created := 0
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		created++
 		return &testAppWireGuardRuntime{}, nil
 	})
@@ -1999,7 +1999,7 @@ func TestRelayRuntimeManagerDoesNotReplaceUnchangedWireGuardProfilesWithoutLocal
 
 func TestRelayRuntimeManagerAppliesWireGuardProfilesWithoutLocalListeners(t *testing.T) {
 	created := 0
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		created++
 		return &testAppWireGuardRuntime{}, nil
 	})
@@ -2025,7 +2025,7 @@ func TestRelayRuntimeManagerAppliesWireGuardProfilesWithoutLocalListeners(t *tes
 func TestL4RuntimeManagerReplacesWireGuardTransparentServerWithoutClosingNewListener(t *testing.T) {
 	var current *trackingListener
 	var listeners []*trackingListener
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return &testAppWireGuardRuntime{
 			onListenTransparentTCP: func(context.Context) (net.Listener, error) {
 				if current == nil || current.closed {
@@ -2096,7 +2096,7 @@ func TestL4RuntimeManagerReplacesWireGuardTransparentServerWithoutClosingNewList
 func TestL4RuntimeManagerReplacesWireGuardTransparentUDPServerWithoutClosingNewListener(t *testing.T) {
 	var current *trackingTransparentUDPConn
 	var listeners []*trackingTransparentUDPConn
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return &testAppWireGuardRuntime{
 			onListenTransparentUDP: func(context.Context, string) (wireguard.TransparentUDPConn, error) {
 				if current == nil || current.closed {
@@ -2211,7 +2211,7 @@ func TestCloneEgressProfilesDeepCopiesWireGuardConfig(t *testing.T) {
 
 func TestL4RuntimeManagerAppliesWireGuardEgressProfilesFromInlineConfig(t *testing.T) {
 	var created []wireguard.Config
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.RuntimeHandle, error) {
 		created = append(created, cfg)
 		return &testAppWireGuardRuntime{}, nil
 	})
@@ -2250,7 +2250,7 @@ func TestL4RuntimeManagerAppliesWireGuardEgressProfilesFromInlineConfig(t *testi
 
 func TestL4RuntimeManagerRejectsUnpreparedWireGuardEgressProfiles(t *testing.T) {
 	profileID := 78
-	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newL4RuntimeManagerWithWireGuardFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return nil, fmt.Errorf("egress wg runtime failed")
 	})
 	defer manager.Close()
@@ -2282,7 +2282,7 @@ func TestRelayRuntimeManagerPreservesRunningServerOnReplacementWireGuardListenFa
 	}
 	listenErr := fmt.Errorf("wireguard listen failed")
 	failListen := false
-	manager := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	manager := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		return &testAppWireGuardRuntime{
 			onListenTCP: func(context.Context, string) (net.Listener, error) {
 				if failListen {
@@ -2328,7 +2328,7 @@ func TestRelayRuntimeManagerRollsBackWireGuardProfilesWhenReplacementStartFails(
 	listenErr := fmt.Errorf("wireguard listen failed")
 	failListen := false
 	var runtimes []*testAppWireGuardRuntime
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.Runtime, error) {
+	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
 		runtime := newListeningTestAppWireGuardRuntime(&failListen, listenErr)
 		runtimes = append(runtimes, runtime)
 		return runtime, nil
@@ -2387,7 +2387,7 @@ func TestRelayRuntimeManagerRestoresServerAfterPreparedSamePortWireGuardFailure(
 	listenErr := fmt.Errorf("wireguard listen failed")
 	var runtimes []*testAppWireGuardRuntime
 	factoryCalls := 0
-	shared := newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.Runtime, error) {
+	shared := newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.RuntimeHandle, error) {
 		factoryCalls++
 		if factoryCalls == 2 {
 			return nil, fmt.Errorf("address already in use")

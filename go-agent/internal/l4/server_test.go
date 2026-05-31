@@ -25,11 +25,11 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 type fakeL4RelayPathDialer struct {

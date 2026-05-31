@@ -9,10 +9,10 @@ import (
 	baseegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 type Module struct {
@@ -27,7 +27,15 @@ func (m *Module) Name() string {
 	return "egress"
 }
 
-func (m *Module) Capabilities() []module.Capability {
+func (m *Module) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.Name()}
+}
+
+func (m *Module) RegisterProviders(module.ProviderRegistry) error {
+	return nil
+}
+
+func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
 	return []module.Capability{{Name: "egress_profiles", Enabled: true}}
 }
 
@@ -36,6 +44,10 @@ func (m *Module) Health(context.Context) module.Health {
 }
 
 func (m *Module) Start(context.Context, model.Snapshot) error {
+	return nil
+}
+
+func (m *Module) Apply(context.Context, module.ApplyRequest) error {
 	return nil
 }
 
@@ -135,9 +147,9 @@ func (r *WireGuardRuntime) Prepare(ctx context.Context, profiles []model.EgressP
 		return nil, nil, err
 	}
 	if transaction == nil {
-		return nil, egressWireGuardRuntimeProvider{provider: r.runtime.Provider()}, nil
+		return nil, egressWireGuardRuntimeProvider{runtime: r.runtime}, nil
 	}
-	return transaction, egressWireGuardRuntimeProvider{provider: r.runtime.TransactionProvider(transaction, wireGuardProfiles)}, nil
+	return transaction, egressWireGuardRuntimeProvider{transaction: transaction}, nil
 }
 
 func (r *WireGuardRuntime) Commit(transaction *basewireguard.Transaction, profiles []model.EgressProfile) {
@@ -158,18 +170,22 @@ func (r *WireGuardRuntime) Provider() relay.WireGuardRuntimeProvider {
 	if r == nil || r.runtime == nil {
 		return nil
 	}
-	return egressWireGuardRuntimeProvider{provider: r.runtime.Provider()}
+	return egressWireGuardRuntimeProvider{runtime: r.runtime}
 }
 
 type egressWireGuardRuntimeProvider struct {
-	provider relay.WireGuardRuntimeProvider
+	runtime     *modulewireguard.Runtime
+	transaction *basewireguard.Transaction
 }
 
 func (p egressWireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
-	if p.provider == nil {
-		return nil, false
+	if p.transaction != nil {
+		return p.transaction.Runtime(profileID)
 	}
-	return p.provider.WireGuardRuntime(profileID)
+	if p.runtime != nil {
+		return p.runtime.Runtime(profileID)
+	}
+	return nil, false
 }
 
 func WireGuardProfiles(profiles []model.EgressProfile) []model.WireGuardProfile {

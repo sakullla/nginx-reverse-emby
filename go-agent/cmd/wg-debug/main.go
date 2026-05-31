@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 )
 
 func main() {
@@ -63,7 +63,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	rt, err := wireguard.NewRuntime(ctx, cfg)
+	rt, err := wireguard.NewRuntimeHandle(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "start userspace WireGuard runtime: %v\n", err)
 		os.Exit(1)
@@ -297,11 +297,11 @@ func (p *udpDelayProxy) delayedWrite(packet []byte, dst *net.UDPAddr) {
 	_, _ = p.conn.WriteToUDP(packet, dst)
 }
 
-func measureTCP(ctx context.Context, rt wireguard.Runtime, target string, count int, timeout time.Duration) {
+func measureTCP(ctx context.Context, rt wireguard.RuntimeHandle, target string, count int, timeout time.Duration) {
 	measureTCPWithLabel(ctx, rt, "tcp", target, count, timeout)
 }
 
-func measureTCPWithLabel(ctx context.Context, rt wireguard.Runtime, label string, target string, count int, timeout time.Duration) {
+func measureTCPWithLabel(ctx context.Context, rt wireguard.RuntimeHandle, label string, target string, count int, timeout time.Duration) {
 	for i := 0; i < count; i++ {
 		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 		start := time.Now()
@@ -317,7 +317,7 @@ func measureTCPWithLabel(ctx context.Context, rt wireguard.Runtime, label string
 	}
 }
 
-func measureHTTP(ctx context.Context, rt wireguard.Runtime, target string, count int, timeout time.Duration, resolveWithSystemDNS bool) {
+func measureHTTP(ctx context.Context, rt wireguard.RuntimeHandle, target string, count int, timeout time.Duration, resolveWithSystemDNS bool) {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			trace := httptrace.ContextClientTrace(ctx)

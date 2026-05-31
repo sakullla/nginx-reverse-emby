@@ -7,14 +7,13 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
 func TestRuntimePrepareCommitAndRollback(t *testing.T) {
 	t.Parallel()
 
-	factory := &recordingFactory{}
+	factory := &moduleRecordingFactory{}
 	runtime := NewRuntime(factory.Create)
 	defer runtime.Close()
 
@@ -77,10 +76,10 @@ func TestRuntimePrepareCommitAndRollback(t *testing.T) {
 	}
 }
 
-func TestRuntimeProviderFiltersByLocalAgentIDAndRoutesRelayHop(t *testing.T) {
+func TestRuntimeProviderFiltersByLocalAgentID(t *testing.T) {
 	t.Parallel()
 
-	factory := &recordingFactory{}
+	factory := &moduleRecordingFactory{}
 	runtime := NewRuntime(factory.Create)
 	defer runtime.Close()
 
@@ -100,26 +99,16 @@ func TestRuntimeProviderFiltersByLocalAgentIDAndRoutesRelayHop(t *testing.T) {
 	}
 
 	provider := runtime.ProviderForAgent("local-agent")
-	hop := relay.Hop{
-		Address: "10.10.0.5:443",
-		Listener: model.RelayListener{
-			AgentID: "local-agent",
-		},
-	}
-	hopProvider, ok := provider.(relay.HopWireGuardRuntimeProvider)
-	if !ok {
-		t.Fatalf("ProviderForAgent() does not implement HopWireGuardRuntimeProvider: %T", provider)
-	}
-	gotHop, ok := hopProvider.WireGuardRuntimeForHop(hop)
-	if !ok || gotHop != factory.created[0] {
-		t.Fatalf("WireGuardRuntimeForHop() = %v, %v; want local runtime via route match", gotHop, ok)
+	gotProvider, ok := provider.WireGuardRuntime(local.ID)
+	if !ok || gotProvider != factory.created[0] {
+		t.Fatalf("ProviderForAgent(local).WireGuardRuntime() = %v, %v; want local runtime", gotProvider, ok)
 	}
 }
 
 func TestRuntimeCloseDelegatesToUnderlyingManager(t *testing.T) {
 	t.Parallel()
 
-	factory := &recordingFactory{}
+	factory := &moduleRecordingFactory{}
 	runtime := NewRuntime(factory.Create)
 
 	if err := runtime.Apply(context.Background(), []model.WireGuardProfile{
@@ -145,11 +134,11 @@ func TestRuntimeCloseDelegatesToUnderlyingManager(t *testing.T) {
 func TestModuleExposesWireGuardCapabilityAndDelegatesLifecycle(t *testing.T) {
 	t.Parallel()
 
-	factory := &recordingFactory{}
+	factory := &moduleRecordingFactory{}
 	runtime := NewRuntime(factory.Create)
 	mod := NewModule(runtime)
 
-	caps := mod.Capabilities()
+	caps := mod.Capabilities(model.Snapshot{})
 	if len(caps) != 1 || caps[0].Name != "wireguard" || !caps[0].Enabled {
 		t.Fatalf("Capabilities() = %+v, want wireguard capability", caps)
 	}
@@ -171,30 +160,65 @@ func TestModuleExposesWireGuardCapabilityAndDelegatesLifecycle(t *testing.T) {
 	}
 }
 
+func TestModulePublishesOverlayRuntimeProvider(t *testing.T) {
+	t.Parallel()
+
+	factory := &moduleRecordingFactory{}
+	runtime := NewRuntime(factory.Create)
+	mod := NewModule(runtime)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+
+	next := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{
+		testWireGuardProfile(9, "local", "peer.example.com:51820", "127.0.0.1/32"),
+	}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	provider, ok := registry.Resolve(module.ProviderOverlayRuntime)
+	if !ok {
+		t.Fatal("overlay.runtime provider missing")
+	}
+	overlay, ok := provider.(module.OverlayRuntime)
+	if !ok {
+		t.Fatalf("overlay provider type = %T, want module.OverlayRuntime", provider)
+	}
+	if _, err := overlay.DialContext(context.Background(), "local", 9, "tcp", "127.0.0.1:80"); err != errRecordingRuntimeDial {
+		t.Fatalf("DialContext() error = %v, want %v", err, errRecordingRuntimeDial)
+	}
+}
+
+func mustRegister(t *testing.T, registry *module.Registry, mod module.Module) {
+	t.Helper()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+}
+
 func testWireGuardProfile(id int, agentID string, endpoint string, allowedIPs ...string) model.WireGuardProfile {
 	return model.WireGuardProfile{
 		ID:         id,
 		AgentID:    agentID,
 		Name:       "wireguard",
-		Mode:       basewireguard.ModeGenericWireGuard,
+		Mode:       ModeGenericWireGuard,
 		PrivateKey: wireGuardTestKey,
 		Addresses:  []string{"10.10.0.2/32"},
 		Peers: []model.WireGuardPeer{{
 			Name:       "peer",
 			PublicKey:  wireGuardTestKey,
-			Endpoint:    endpoint,
-			AllowedIPs:  append([]string(nil), allowedIPs...),
-			Reserved:    nil,
+			Endpoint:   endpoint,
+			AllowedIPs: append([]string(nil), allowedIPs...),
+			Reserved:   nil,
 		}},
 		Enabled: true,
 	}
 }
 
-type recordingFactory struct {
+type moduleRecordingFactory struct {
 	created []*recordingRuntime
 }
 
-func (f *recordingFactory) Create(context.Context, basewireguard.Config) (basewireguard.Runtime, error) {
+func (f *moduleRecordingFactory) Create(context.Context, Config) (RuntimeHandle, error) {
 	runtime := &recordingRuntime{}
 	f.created = append(f.created, runtime)
 	return runtime, nil
@@ -205,8 +229,10 @@ type recordingRuntime struct {
 	closeCount int
 }
 
+var errRecordingRuntimeDial = errors.New("recording dial")
+
 func (r *recordingRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
-	return nil, errors.New("not implemented")
+	return nil, errRecordingRuntimeDial
 }
 
 func (r *recordingRuntime) ListenTCP(context.Context, string) (net.Listener, error) {
@@ -221,7 +247,7 @@ func (r *recordingRuntime) ListenUDP(context.Context, string) (net.PacketConn, e
 	return nil, errors.New("not implemented")
 }
 
-func (r *recordingRuntime) ListenTransparentUDP(context.Context, string) (basewireguard.TransparentUDPConn, error) {
+func (r *recordingRuntime) ListenTransparentUDP(context.Context, string) (TransparentUDPConn, error) {
 	return nil, errors.New("not implemented")
 }
 

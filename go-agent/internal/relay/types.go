@@ -7,7 +7,7 @@ import (
 	"net"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 )
 
 type Listener = model.RelayListener

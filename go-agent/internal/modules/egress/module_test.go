@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 const socks5UDPTestTimeout = time.Second
@@ -97,7 +97,7 @@ func TestModuleIdentityAndCapabilityAreStable(t *testing.T) {
 	if got := mod.Name(); got != "egress" {
 		t.Fatalf("Name() = %q, want egress", got)
 	}
-	caps := mod.Capabilities()
+	caps := mod.Capabilities(model.Snapshot{})
 	if len(caps) != 1 || caps[0].Name != "egress_profiles" || !caps[0].Enabled {
 		t.Fatalf("Capabilities() = %+v, want egress_profiles capability", caps)
 	}
@@ -174,7 +174,7 @@ type recordingFactory struct {
 	runtimes []*recordingWireGuardRuntime
 }
 
-func (f *recordingFactory) Create(_ context.Context, cfg basewireguard.Config) (basewireguard.Runtime, error) {
+func (f *recordingFactory) Create(_ context.Context, cfg basewireguard.Config) (basewireguard.RuntimeHandle, error) {
 	runtime := &recordingWireGuardRuntime{}
 	f.configs = append(f.configs, cfg)
 	f.runtimes = append(f.runtimes, runtime)

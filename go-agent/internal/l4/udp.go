@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 const udpPacketBufferSize = 64 * 1024

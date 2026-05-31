@@ -6,8 +6,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 )
 
 type egressWireGuardRuntime = moduleegress.WireGuardRuntime
@@ -28,7 +27,7 @@ func cloneEgressProfiles(profiles []model.EgressProfile) []model.EgressProfile {
 	return moduleegress.CloneProfiles(profiles)
 }
 
-func validateEgressWireGuardReferences(rules []model.L4Rule, egressProfiles []model.EgressProfile, provider relay.WireGuardRuntimeProvider) error {
+func validateEgressWireGuardReferences(rules []model.L4Rule, egressProfiles []model.EgressProfile, provider relayWireGuardProvider) error {
 	resolver := egressProfileByID(egressProfiles)
 	for _, rule := range rules {
 		if len(rule.RelayLayers) > 0 || rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {

@@ -8,19 +8,17 @@ import (
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/wireguard"
 )
 
 type Runtime struct {
-	mu      sync.RWMutex
-	manager *basewireguard.Manager
+	mu       sync.RWMutex
+	manager  *Manager
 	profiles []model.WireGuardProfile
 }
 
-func NewRuntime(factory basewireguard.Factory) *Runtime {
+func NewRuntime(factory Factory) *Runtime {
 	return &Runtime{
-		manager: basewireguard.NewManager(basewireguard.ManagerOptions{Factory: factory}),
+		manager: NewManager(ManagerOptions{Factory: factory}),
 	}
 }
 
@@ -35,7 +33,7 @@ func (r *Runtime) Apply(ctx context.Context, profiles []model.WireGuardProfile) 
 	return nil
 }
 
-func (r *Runtime) Prepare(ctx context.Context, profiles []model.WireGuardProfile) (*basewireguard.Transaction, error) {
+func (r *Runtime) Prepare(ctx context.Context, profiles []model.WireGuardProfile) (*Transaction, error) {
 	if r == nil || r.manager == nil {
 		return nil, nil
 	}
@@ -53,21 +51,21 @@ func (r *Runtime) Recreate(ctx context.Context, profiles []model.WireGuardProfil
 	return nil
 }
 
-func (r *Runtime) Runtime(profileID int) (basewireguard.Runtime, bool) {
+func (r *Runtime) Runtime(profileID int) (RuntimeHandle, bool) {
 	if r == nil || r.manager == nil {
 		return nil, false
 	}
 	return r.manager.Runtime(profileID)
 }
 
-func (r *Runtime) RuntimeForAgent(agentID string, profileID int) (basewireguard.Runtime, bool) {
+func (r *Runtime) RuntimeForAgent(agentID string, profileID int) (RuntimeHandle, bool) {
 	if r == nil || r.manager == nil {
 		return nil, false
 	}
 	return r.manager.RuntimeForAgent(agentID, profileID)
 }
 
-func (r *Runtime) Commit(transaction *basewireguard.Transaction, profiles []model.WireGuardProfile) {
+func (r *Runtime) Commit(transaction *Transaction, profiles []model.WireGuardProfile) {
 	if transaction == nil {
 		return
 	}
@@ -82,19 +80,23 @@ func (r *Runtime) Close() error {
 	return r.manager.Close()
 }
 
-func (r *Runtime) Provider() relay.WireGuardRuntimeProvider {
+func (r *Runtime) Provider() wireGuardRuntimeProvider {
 	return NewRuntimeProvider(r, "")
 }
 
-func (r *Runtime) ProviderForAgent(agentID string) relay.WireGuardRuntimeProvider {
+func (r *Runtime) OverlayProvider() any {
+	return overlayRuntimeProvider{runtime: r}
+}
+
+func (r *Runtime) ProviderForAgent(agentID string) wireGuardRuntimeProvider {
 	return NewRuntimeProvider(r, agentID)
 }
 
-func (r *Runtime) TransactionProvider(transaction *basewireguard.Transaction, profiles []model.WireGuardProfile) relay.WireGuardRuntimeProvider {
+func (r *Runtime) TransactionProvider(transaction *Transaction, profiles []model.WireGuardProfile) wireGuardTransactionProvider {
 	return NewTransactionProvider(transaction, "", profiles)
 }
 
-func (r *Runtime) TransactionProviderForAgent(transaction *basewireguard.Transaction, agentID string, profiles []model.WireGuardProfile) relay.WireGuardRuntimeProvider {
+func (r *Runtime) TransactionProviderForAgent(transaction *Transaction, agentID string, profiles []model.WireGuardProfile) wireGuardTransactionProvider {
 	return NewTransactionProvider(transaction, agentID, profiles)
 }
 
@@ -116,19 +118,23 @@ func (r *Runtime) profileSnapshot() []model.WireGuardProfile {
 	return CloneWireGuardProfiles(r.profiles)
 }
 
+func (r *Runtime) Profiles() []model.WireGuardProfile {
+	return r.profileSnapshot()
+}
+
 type wireGuardRuntimeProvider struct {
 	runtime *Runtime
 	agentID string
 }
 
-func NewRuntimeProvider(runtime *Runtime, agentID string) relay.WireGuardRuntimeProvider {
+func NewRuntimeProvider(runtime *Runtime, agentID string) wireGuardRuntimeProvider {
 	return wireGuardRuntimeProvider{
 		runtime: runtime,
 		agentID: strings.TrimSpace(agentID),
 	}
 }
 
-func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (RuntimeHandle, bool) {
 	if p.runtime == nil {
 		return nil, false
 	}
@@ -146,7 +152,7 @@ func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGua
 	return runtime, true
 }
 
-func (p wireGuardRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
+func (p wireGuardRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (RuntimeHandle, bool) {
 	if p.runtime == nil {
 		return nil, false
 	}
@@ -157,33 +163,13 @@ func (p wireGuardRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profi
 	return runtime, true
 }
 
-func (p wireGuardRuntimeProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {
-	if p.runtime == nil {
-		return nil, false
-	}
-	if hop.Listener.WireGuardProfileID != nil && *hop.Listener.WireGuardProfileID > 0 {
-		if runtime, ok := p.WireGuardRuntimeForAgent(hop.Listener.AgentID, *hop.Listener.WireGuardProfileID); ok {
-			return runtime, true
-		}
-	}
-	profile, ok := wireGuardProfileForRelayHop(p.runtime.profileSnapshot(), p.agentID, hop)
-	if !ok {
-		return nil, false
-	}
-	runtime, ok := p.runtime.RuntimeForAgent(profile.AgentID, profile.ID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
 type wireGuardTransactionProvider struct {
-	transaction *basewireguard.Transaction
+	transaction *Transaction
 	agentID     string
 	profiles    []model.WireGuardProfile
 }
 
-func NewTransactionProvider(transaction *basewireguard.Transaction, agentID string, profiles []model.WireGuardProfile) relay.WireGuardRuntimeProvider {
+func NewTransactionProvider(transaction *Transaction, agentID string, profiles []model.WireGuardProfile) wireGuardTransactionProvider {
 	return wireGuardTransactionProvider{
 		transaction: transaction,
 		agentID:     strings.TrimSpace(agentID),
@@ -191,7 +177,7 @@ func NewTransactionProvider(transaction *basewireguard.Transaction, agentID stri
 	}
 }
 
-func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (RuntimeHandle, bool) {
 	if p.transaction == nil {
 		return nil, false
 	}
@@ -209,7 +195,7 @@ func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (relay.Wir
 	return runtime, true
 }
 
-func (p wireGuardTransactionProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
+func (p wireGuardTransactionProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (RuntimeHandle, bool) {
 	if p.transaction == nil {
 		return nil, false
 	}
@@ -220,57 +206,7 @@ func (p wireGuardTransactionProvider) WireGuardRuntimeForAgent(agentID string, p
 	return runtime, true
 }
 
-func (p wireGuardTransactionProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {
-	if p.transaction == nil {
-		return nil, false
-	}
-	if hop.Listener.WireGuardProfileID != nil && *hop.Listener.WireGuardProfileID > 0 {
-		if runtime, ok := p.WireGuardRuntimeForAgent(hop.Listener.AgentID, *hop.Listener.WireGuardProfileID); ok {
-			return runtime, true
-		}
-	}
-	profile, ok := wireGuardProfileForRelayHop(p.profiles, p.agentID, hop)
-	if !ok {
-		return nil, false
-	}
-	runtime, ok := p.transaction.RuntimeForAgent(profile.AgentID, profile.ID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-func wireGuardProfileForRelayHop(profiles []model.WireGuardProfile, localAgentID string, hop relay.Hop) (model.WireGuardProfile, bool) {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(hop.Address))
-	if err != nil {
-		return model.WireGuardProfile{}, false
-	}
-	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
-	if err != nil {
-		return model.WireGuardProfile{}, false
-	}
-	localAgentID = strings.TrimSpace(localAgentID)
-
-	var found model.WireGuardProfile
-	for _, profile := range profiles {
-		if !profile.Enabled {
-			continue
-		}
-		if localAgentID != "" && strings.TrimSpace(profile.AgentID) != localAgentID {
-			continue
-		}
-		if !wireGuardProfileRoutesRelayHop(profile, addr) {
-			continue
-		}
-		if found.ID != 0 {
-			return model.WireGuardProfile{}, false
-		}
-		found = profile
-	}
-	return found, found.ID != 0
-}
-
-func wireGuardProfileRoutesRelayHop(profile model.WireGuardProfile, addr netip.Addr) bool {
+func WireGuardProfileRoutesRelayHop(profile model.WireGuardProfile, addr netip.Addr) bool {
 	for _, peer := range profile.Peers {
 		for _, allowed := range peer.AllowedIPs {
 			prefix, err := netip.ParsePrefix(strings.TrimSpace(allowed))
@@ -306,4 +242,51 @@ func CloneWireGuardProfiles(profiles []model.WireGuardProfile) []model.WireGuard
 		}
 	}
 	return cloned
+}
+
+type overlayRuntimeProvider struct {
+	runtime *Runtime
+}
+
+func (p overlayRuntimeProvider) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
+	runtime, err := p.runtimeForAgent(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.DialContext(ctx, network, address)
+}
+
+func (p overlayRuntimeProvider) ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error) {
+	runtime, err := p.runtimeForAgent(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenTCP(ctx, address)
+}
+
+func (p overlayRuntimeProvider) ListenTransparentTCP(ctx context.Context, agentID string, profileID int) (net.Listener, error) {
+	runtime, err := p.runtimeForAgent(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenTransparentTCP(ctx)
+}
+
+func (p overlayRuntimeProvider) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
+	runtime, err := p.runtimeForAgent(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenUDP(ctx, address)
+}
+
+func (p overlayRuntimeProvider) runtimeForAgent(agentID string, profileID int) (RuntimeHandle, error) {
+	if p.runtime == nil {
+		return nil, net.ErrClosed
+	}
+	runtime, ok := p.runtime.RuntimeForAgent(agentID, profileID)
+	if !ok {
+		return nil, net.ErrClosed
+	}
+	return runtime, nil
 }
