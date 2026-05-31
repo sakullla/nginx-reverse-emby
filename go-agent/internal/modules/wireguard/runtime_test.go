@@ -3,7 +3,9 @@ package wireguard
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
+	"reflect"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -29,10 +31,9 @@ func TestRuntimePrepareCommitAndRollback(t *testing.T) {
 		t.Fatalf("created runtimes = %d, want 1", len(factory.created))
 	}
 
-	provider := runtime.ProviderForAgent("local-agent")
-	got, ok := provider.WireGuardRuntime(initial.ID)
+	got, ok := runtime.RuntimeForAgent("local-agent", initial.ID)
 	if !ok || got != factory.created[0] {
-		t.Fatalf("ProviderForAgent(initial) = %v, %v; want initial runtime", got, ok)
+		t.Fatalf("RuntimeForAgent(initial) = %v, %v; want initial runtime", got, ok)
 	}
 
 	tx, err := runtime.Prepare(context.Background(), []model.WireGuardProfile{updated})
@@ -43,8 +44,7 @@ func TestRuntimePrepareCommitAndRollback(t *testing.T) {
 		t.Fatalf("created runtimes = %d, want 2", len(factory.created))
 	}
 
-	txProvider := runtime.TransactionProviderForAgent(tx, "local-agent", []model.WireGuardProfile{updated})
-	candidate, ok := txProvider.WireGuardRuntime(updated.ID)
+	candidate, ok := tx.RuntimeForAgent("local-agent", updated.ID)
 	if !ok || candidate != factory.created[1] {
 		t.Fatalf("transaction provider runtime = %v, %v; want candidate runtime", candidate, ok)
 	}
@@ -53,9 +53,9 @@ func TestRuntimePrepareCommitAndRollback(t *testing.T) {
 	if !factory.created[1].closed {
 		t.Fatal("candidate runtime was not closed on rollback")
 	}
-	got, ok = runtime.ProviderForAgent("local-agent").WireGuardRuntime(initial.ID)
+	got, ok = runtime.RuntimeForAgent("local-agent", initial.ID)
 	if !ok || got != factory.created[0] {
-		t.Fatalf("ProviderForAgent(after rollback) = %v, %v; want original runtime", got, ok)
+		t.Fatalf("RuntimeForAgent(after rollback) = %v, %v; want original runtime", got, ok)
 	}
 
 	tx, err = runtime.Prepare(context.Background(), []model.WireGuardProfile{updated})
@@ -70,9 +70,9 @@ func TestRuntimePrepareCommitAndRollback(t *testing.T) {
 	if !factory.created[0].closed {
 		t.Fatal("original runtime was not closed on commit")
 	}
-	got, ok = runtime.ProviderForAgent("local-agent").WireGuardRuntime(updated.ID)
+	got, ok = runtime.RuntimeForAgent("local-agent", updated.ID)
 	if !ok || got != factory.created[2] {
-		t.Fatalf("ProviderForAgent(after commit) = %v, %v; want committed runtime", got, ok)
+		t.Fatalf("RuntimeForAgent(after commit) = %v, %v; want committed runtime", got, ok)
 	}
 }
 
@@ -98,10 +98,9 @@ func TestRuntimeProviderFiltersByLocalAgentID(t *testing.T) {
 		t.Fatalf("RuntimeForAgent(local) = %v, %v; want local runtime", got, ok)
 	}
 
-	provider := runtime.ProviderForAgent("local-agent")
-	gotProvider, ok := provider.WireGuardRuntime(local.ID)
+	gotProvider, ok := runtime.RuntimeForAgent("local-agent", local.ID)
 	if !ok || gotProvider != factory.created[0] {
-		t.Fatalf("ProviderForAgent(local).WireGuardRuntime() = %v, %v; want local runtime", gotProvider, ok)
+		t.Fatalf("RuntimeForAgent(local) = %v, %v; want local runtime", gotProvider, ok)
 	}
 }
 
@@ -188,6 +187,51 @@ func TestModulePublishesOverlayRuntimeProvider(t *testing.T) {
 	}
 }
 
+func TestModulePublishesTransparentListenerProvider(t *testing.T) {
+	t.Parallel()
+
+	factory := &moduleRecordingFactory{}
+	runtime := NewRuntime(factory.Create)
+	mod := NewModule(runtime)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+
+	next := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{
+		testWireGuardProfile(9, "local", "peer.example.com:51820", "127.0.0.1/32"),
+	}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	provider, ok := registry.Resolve(module.ProviderTransparentListener)
+	if !ok {
+		t.Fatal("transparent.listener provider missing")
+	}
+	listener, ok := provider.(module.TransparentListener)
+	if !ok {
+		t.Fatalf("transparent listener provider type = %T, want module.TransparentListener", provider)
+	}
+	if _, err := listener.ListenTransparentTCP(context.Background(), "local", 9); err != errRecordingTransparentTCP {
+		t.Fatalf("ListenTransparentTCP() error = %v, want %v", err, errRecordingTransparentTCP)
+	}
+	udpConn, err := listener.ListenTransparentUDP(context.Background(), "local", 9, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenTransparentUDP() error = %v", err)
+	}
+	packet, err := udpConn.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+	if packet.OriginalDst != "127.0.0.1:53" || string(packet.Payload) != "payload" {
+		t.Fatalf("ReadPacket() = %+v, want original dst and payload", packet)
+	}
+	if err := udpConn.WritePacket([]byte("reply"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}, "127.0.0.1:5300"); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+	if !reflect.DeepEqual(factory.created[0].udp.writes, [][]byte{[]byte("reply")}) {
+		t.Fatalf("udp writes = %#v, want reply", factory.created[0].udp.writes)
+	}
+}
+
 func mustRegister(t *testing.T, registry *module.Registry, mod module.Module) {
 	t.Helper()
 	if err := registry.Register(mod); err != nil {
@@ -227,9 +271,11 @@ func (f *moduleRecordingFactory) Create(context.Context, Config) (RuntimeHandle,
 type recordingRuntime struct {
 	closed     bool
 	closeCount int
+	udp        *recordingTransparentUDPConn
 }
 
 var errRecordingRuntimeDial = errors.New("recording dial")
+var errRecordingTransparentTCP = errors.New("recording transparent tcp")
 
 func (r *recordingRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, errRecordingRuntimeDial
@@ -240,7 +286,7 @@ func (r *recordingRuntime) ListenTCP(context.Context, string) (net.Listener, err
 }
 
 func (r *recordingRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
-	return nil, errors.New("not implemented")
+	return nil, errRecordingTransparentTCP
 }
 
 func (r *recordingRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
@@ -248,7 +294,14 @@ func (r *recordingRuntime) ListenUDP(context.Context, string) (net.PacketConn, e
 }
 
 func (r *recordingRuntime) ListenTransparentUDP(context.Context, string) (TransparentUDPConn, error) {
-	return nil, errors.New("not implemented")
+	r.udp = &recordingTransparentUDPConn{
+		packets: []TransparentUDPPacket{{
+			Peer:        &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53},
+			OriginalDst: "127.0.0.1:53",
+			Payload:     []byte("payload"),
+		}},
+	}
+	return r.udp, nil
 }
 
 func (r *recordingRuntime) Close() error {
@@ -258,3 +311,26 @@ func (r *recordingRuntime) Close() error {
 }
 
 const wireGuardTestKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+type recordingTransparentUDPConn struct {
+	packets []TransparentUDPPacket
+	writes  [][]byte
+}
+
+func (c *recordingTransparentUDPConn) Close() error { return nil }
+
+func (c *recordingTransparentUDPConn) LocalAddr() net.Addr { return &net.UDPAddr{} }
+
+func (c *recordingTransparentUDPConn) ReadPacket() (TransparentUDPPacket, error) {
+	if len(c.packets) == 0 {
+		return TransparentUDPPacket{}, io.EOF
+	}
+	packet := c.packets[0]
+	c.packets = c.packets[1:]
+	return packet, nil
+}
+
+func (c *recordingTransparentUDPConn) WritePacket(payload []byte, peer *net.UDPAddr, source string) error {
+	c.writes = append(c.writes, append([]byte(nil), payload...))
+	return nil
+}

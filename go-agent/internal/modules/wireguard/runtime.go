@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
 type Runtime struct {
@@ -80,24 +81,12 @@ func (r *Runtime) Close() error {
 	return r.manager.Close()
 }
 
-func (r *Runtime) Provider() wireGuardRuntimeProvider {
-	return NewRuntimeProvider(r, "")
-}
-
 func (r *Runtime) OverlayProvider() any {
 	return overlayRuntimeProvider{runtime: r}
 }
 
-func (r *Runtime) ProviderForAgent(agentID string) wireGuardRuntimeProvider {
-	return NewRuntimeProvider(r, agentID)
-}
-
-func (r *Runtime) TransactionProvider(transaction *Transaction, profiles []model.WireGuardProfile) wireGuardTransactionProvider {
-	return NewTransactionProvider(transaction, "", profiles)
-}
-
-func (r *Runtime) TransactionProviderForAgent(transaction *Transaction, agentID string, profiles []model.WireGuardProfile) wireGuardTransactionProvider {
-	return NewTransactionProvider(transaction, agentID, profiles)
+func (r *Runtime) TransparentListenerProvider() any {
+	return transparentListenerProvider{runtime: r}
 }
 
 func (r *Runtime) storeProfiles(profiles []model.WireGuardProfile) {
@@ -120,90 +109,6 @@ func (r *Runtime) profileSnapshot() []model.WireGuardProfile {
 
 func (r *Runtime) Profiles() []model.WireGuardProfile {
 	return r.profileSnapshot()
-}
-
-type wireGuardRuntimeProvider struct {
-	runtime *Runtime
-	agentID string
-}
-
-func NewRuntimeProvider(runtime *Runtime, agentID string) wireGuardRuntimeProvider {
-	return wireGuardRuntimeProvider{
-		runtime: runtime,
-		agentID: strings.TrimSpace(agentID),
-	}
-}
-
-func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (RuntimeHandle, bool) {
-	if p.runtime == nil {
-		return nil, false
-	}
-	if p.agentID != "" {
-		runtime, ok := p.runtime.RuntimeForAgent(p.agentID, profileID)
-		if ok {
-			return runtime, true
-		}
-		return nil, false
-	}
-	runtime, ok := p.runtime.Runtime(profileID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-func (p wireGuardRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (RuntimeHandle, bool) {
-	if p.runtime == nil {
-		return nil, false
-	}
-	runtime, ok := p.runtime.RuntimeForAgent(agentID, profileID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-type wireGuardTransactionProvider struct {
-	transaction *Transaction
-	agentID     string
-	profiles    []model.WireGuardProfile
-}
-
-func NewTransactionProvider(transaction *Transaction, agentID string, profiles []model.WireGuardProfile) wireGuardTransactionProvider {
-	return wireGuardTransactionProvider{
-		transaction: transaction,
-		agentID:     strings.TrimSpace(agentID),
-		profiles:    CloneWireGuardProfiles(profiles),
-	}
-}
-
-func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (RuntimeHandle, bool) {
-	if p.transaction == nil {
-		return nil, false
-	}
-	if p.agentID != "" {
-		runtime, ok := p.transaction.RuntimeForAgent(p.agentID, profileID)
-		if ok {
-			return runtime, true
-		}
-		return nil, false
-	}
-	runtime, ok := p.transaction.Runtime(profileID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
-}
-
-func (p wireGuardTransactionProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (RuntimeHandle, bool) {
-	if p.transaction == nil {
-		return nil, false
-	}
-	runtime, ok := p.transaction.RuntimeForAgent(agentID, profileID)
-	if !ok {
-		return nil, false
-	}
-	return runtime, true
 }
 
 func WireGuardProfileRoutesRelayHop(profile model.WireGuardProfile, addr netip.Addr) bool {
@@ -264,14 +169,6 @@ func (p overlayRuntimeProvider) ListenTCP(ctx context.Context, agentID string, p
 	return runtime.ListenTCP(ctx, address)
 }
 
-func (p overlayRuntimeProvider) ListenTransparentTCP(ctx context.Context, agentID string, profileID int) (net.Listener, error) {
-	runtime, err := p.runtimeForAgent(agentID, profileID)
-	if err != nil {
-		return nil, err
-	}
-	return runtime.ListenTransparentTCP(ctx)
-}
-
 func (p overlayRuntimeProvider) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
 	runtime, err := p.runtimeForAgent(agentID, profileID)
 	if err != nil {
@@ -289,4 +186,60 @@ func (p overlayRuntimeProvider) runtimeForAgent(agentID string, profileID int) (
 		return nil, net.ErrClosed
 	}
 	return runtime, nil
+}
+
+type transparentListenerProvider struct {
+	runtime *Runtime
+}
+
+func (p transparentListenerProvider) ListenTransparentTCP(ctx context.Context, agentID string, profileID int) (net.Listener, error) {
+	runtime, err := p.runtimeForAgent(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenTransparentTCP(ctx)
+}
+
+func (p transparentListenerProvider) ListenTransparentUDP(ctx context.Context, agentID string, profileID int, address string) (module.TransparentUDPConn, error) {
+	runtime, err := p.runtimeForAgent(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := runtime.ListenTransparentUDP(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	return transparentUDPConnAdapter{conn: conn}, nil
+}
+
+func (p transparentListenerProvider) runtimeForAgent(agentID string, profileID int) (RuntimeHandle, error) {
+	return overlayRuntimeProvider{runtime: p.runtime}.runtimeForAgent(agentID, profileID)
+}
+
+type transparentUDPConnAdapter struct {
+	conn TransparentUDPConn
+}
+
+func (c transparentUDPConnAdapter) Close() error {
+	return c.conn.Close()
+}
+
+func (c transparentUDPConnAdapter) LocalAddr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+func (c transparentUDPConnAdapter) ReadPacket() (module.TransparentUDPPacket, error) {
+	packet, err := c.conn.ReadPacket()
+	if err != nil {
+		return module.TransparentUDPPacket{}, err
+	}
+	return module.TransparentUDPPacket{
+		Peer:        packet.Peer,
+		OriginalDst: packet.OriginalDst,
+		Payload:     append([]byte(nil), packet.Payload...),
+	}, nil
+}
+
+func (c transparentUDPConnAdapter) WritePacket(payload []byte, peer *net.UDPAddr, source string) error {
+	return c.conn.WritePacket(payload, peer, source)
 }

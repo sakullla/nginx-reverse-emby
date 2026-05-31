@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
@@ -15,7 +14,7 @@ func newSharedWireGuardRuntime() *modulewireguard.Runtime {
 	return modulewireguard.NewRuntime(nil)
 }
 
-func newSharedWireGuardRuntimeWithFactory(factory basewireguard.Factory) *modulewireguard.Runtime {
+func newSharedWireGuardRuntimeWithFactory(factory modulewireguard.Factory) *modulewireguard.Runtime {
 	return modulewireguard.NewRuntime(factory)
 }
 
@@ -73,17 +72,26 @@ func (p wireGuardRuntimeProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.W
 }
 
 type wireGuardTransactionProvider struct {
-	transaction *basewireguard.Transaction
+	transaction *modulewireguard.Transaction
 	agentID     string
 	profiles    []model.WireGuardProfile
 }
 
 func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
-	return modulewireguard.NewTransactionProvider(p.transaction, p.agentID, p.profiles).WireGuardRuntime(profileID)
+	if p.transaction == nil {
+		return nil, false
+	}
+	if p.agentID != "" {
+		return p.transaction.RuntimeForAgent(p.agentID, profileID)
+	}
+	return p.transaction.Runtime(profileID)
 }
 
 func (p wireGuardTransactionProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
-	return modulewireguard.NewTransactionProvider(p.transaction, p.agentID, p.profiles).WireGuardRuntimeForAgent(agentID, profileID)
+	if p.transaction == nil {
+		return nil, false
+	}
+	return p.transaction.RuntimeForAgent(agentID, profileID)
 }
 
 func (p wireGuardTransactionProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {

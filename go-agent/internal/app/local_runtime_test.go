@@ -667,7 +667,7 @@ func TestWireGuardProviderDoesNotFallbackAcrossAgentsForScopedLookup(t *testing.
 		t.Fatalf("Apply() error = %v", err)
 	}
 
-	provider := shared.ProviderForAgent("local-agent")
+	provider := newWireGuardRuntimeProvider(shared, "local-agent")
 	if runtime, ok := provider.WireGuardRuntime(profile.ID); ok {
 		t.Fatalf("WireGuardRuntime() returned %p from another agent, want missing scoped runtime", runtime)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"net"
 )
 
@@ -31,8 +32,25 @@ type HostTLSMaterial interface {
 type OverlayRuntime interface {
 	DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error)
 	ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error)
-	ListenTransparentTCP(ctx context.Context, agentID string, profileID int) (net.Listener, error)
 	ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error)
+}
+
+type TransparentUDPPacket struct {
+	Peer        *net.UDPAddr
+	OriginalDst string
+	Payload     []byte
+}
+
+type TransparentUDPConn interface {
+	io.Closer
+	LocalAddr() net.Addr
+	ReadPacket() (TransparentUDPPacket, error)
+	WritePacket(payload []byte, peer *net.UDPAddr, source string) error
+}
+
+type TransparentListener interface {
+	ListenTransparentTCP(ctx context.Context, agentID string, profileID int) (net.Listener, error)
+	ListenTransparentUDP(ctx context.Context, agentID string, profileID int, address string) (TransparentUDPConn, error)
 }
 
 type FinalHopDialer interface {

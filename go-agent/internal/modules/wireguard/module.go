@@ -33,7 +33,7 @@ func (m *Module) RegisterProviders(reg module.ProviderRegistry) error {
 	if err := reg.Provide(module.ProviderOverlayRuntime, m.runtime.OverlayProvider()); err != nil {
 		return err
 	}
-	return reg.Provide(module.ProviderTransparentListener, m.runtime.OverlayProvider())
+	return reg.Provide(module.ProviderTransparentListener, m.runtime.TransparentListenerProvider())
 }
 
 func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
