@@ -797,6 +797,7 @@ watch(
 
 watch(frontendProtocol, (protocol) => {
   form.value.frontend_url = buildUrl(protocol, getUrlHost(form.value.frontend_url))
+  updateAutoTags()
 })
 
 watch(
@@ -922,7 +923,15 @@ function normalizeCustomHeaders(value) {
 
 function handleFrontendHostInput(host) {
   const h = String(host || '').trim()
-  form.value.frontend_url = h ? buildUrl(frontendProtocol.value, h) : ''
+  if (!h) {
+    form.value.frontend_url = ''
+  } else if (/^https?:\/\/.+/.test(h)) {
+    const parsed = parseUrl(h)
+    frontendProtocol.value = parsed.protocol
+    form.value.frontend_url = h
+  } else {
+    form.value.frontend_url = buildUrl(frontendProtocol.value, h)
+  }
   errors.value.frontend_url = ''
   errors.value.submit = ''
   updateAutoTags()
@@ -931,7 +940,15 @@ function handleFrontendHostInput(host) {
 function handleBackendHostInput(index, host) {
   const backend = form.value.backends[index]
   const h = String(host || '').trim()
-  backend.url = h ? buildUrl(backend._protocol, h) : ''
+  if (!h) {
+    backend.url = ''
+  } else if (/^https?:\/\/.+/.test(h)) {
+    const parsed = parseUrl(h)
+    backend._protocol = parsed.protocol
+    backend.url = h
+  } else {
+    backend.url = buildUrl(backend._protocol, h)
+  }
   errors.value.backend = ''
   errors.value.submit = ''
 }
