@@ -848,6 +848,117 @@ func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddre
 	}
 }
 
+func TestTCPProberDiagnosePassesEgressProfileToRelayFinalHop(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 412, "relay-egress.internal.test")
+	egressProfileID := 77
+
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		return []string{target}, nil
+	}
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if len(opts) == 0 || opts[0].EgressProfileID == nil || *opts[0].EgressProfileID != egressProfileID {
+			return nil, relay.DialResult{}, fmt.Errorf("missing egress profile option for relay final hop: %+v", opts)
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:              412,
+		Protocol:        "tcp",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      9552,
+		RelayLayers:     [][]int{{412}},
+		EgressProfileID: &egressProfileID,
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{relayListener})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if report.Summary.Succeeded != 1 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+}
+
+func TestTCPProberDiagnoseTransparentFinalHopWithoutBackends(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 413, "relay-transparent.internal.test")
+	egressProfileID := 78
+
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		if target != "0.0.0.0:0" {
+			t.Fatalf("target = %q, want transparent final-hop placeholder", target)
+		}
+		return []string{target}, nil
+	}
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if target != "0.0.0.0:0" {
+			t.Fatalf("target = %q, want transparent final-hop placeholder", target)
+		}
+		if len(opts) == 0 || opts[0].EgressProfileID == nil || *opts[0].EgressProfileID != egressProfileID {
+			return nil, relay.DialResult{}, fmt.Errorf("missing egress profile option for transparent final hop: %+v", opts)
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:                   413,
+		Protocol:             "tcp",
+		ListenHost:           "0.0.0.0",
+		ListenPort:           0,
+		ListenMode:           "wireguard",
+		WireGuardInboundMode: "transparent",
+		RelayLayers:          [][]int{{413}},
+		EgressProfileID:      &egressProfileID,
+	}, []model.RelayListener{relayListener})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if report.Summary.Succeeded != 1 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+}
+
 func TestTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()

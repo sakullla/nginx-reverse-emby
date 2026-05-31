@@ -206,6 +206,18 @@ func TestRelayMetadataCarriesEgressProfileIDOnly(t *testing.T) {
 	}
 }
 
+func TestRelayProbeMetadataCarriesEgressProfileID(t *testing.T) {
+	profileID := 23
+	metadata := relayProbeMetadata("tcp", DialOptions{EgressProfileID: &profileID})
+
+	if got := metadata[relayMetadataProbeNetwork]; got != "tcp" {
+		t.Fatalf("probe network metadata = %#v, want tcp", got)
+	}
+	if got := metadata["egress_profile_id"]; got != 23 {
+		t.Fatalf("egress_profile_id metadata = %#v, want 23", got)
+	}
+}
+
 func TestNormalizeListenerDerivesBindAndPublicFields(t *testing.T) {
 	t.Parallel()
 

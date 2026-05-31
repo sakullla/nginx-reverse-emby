@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
@@ -133,7 +134,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 		if err != nil {
 			return Report{}, err
 		}
-		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", probeTarget, paths, p.relayProvider, p.cache, reportCache)
+		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", probeTarget, paths, p.relayProvider, p.cache, reportCache, l4RelayDialOptions(rule))
 		if err != nil {
 			return Report{}, err
 		}
@@ -168,6 +169,7 @@ func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayL
 		Network: "tcp",
 		Target:  candidate.address,
 		Paths:   requestPaths,
+		Options: []relay.DialOptions{l4RelayDialOptions(rule)},
 	})
 	if err != nil {
 		return nil, "", nil, err
@@ -178,6 +180,20 @@ func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayL
 func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]tcpProbeCandidate, error) {
 	rawBackends := rule.Backends
 	if len(rawBackends) == 0 {
+		if tcpRuleUsesRuntimeFinalHop(rule) {
+			address := net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
+			return []tcpProbeCandidate{{
+				address:         address,
+				backendLabel:    address,
+				configuredLabel: address,
+				groupKey:        "tcp:" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort)),
+				resolvedCandidates: []tcpResolvedCandidate{{
+					label:   address,
+					address: address,
+				}},
+				relayProbeTarget: address,
+			}}, nil
+		}
 		return nil, fmt.Errorf("at least one backend is required for %s:%d", rule.ListenHost, rule.ListenPort)
 	}
 
@@ -353,6 +369,28 @@ func tcpRelayProbeTarget(candidate tcpProbeCandidate) string {
 
 func ruleUsesL4Relay(rule model.L4Rule) bool {
 	return len(rule.RelayLayers) > 0
+}
+
+func tcpRuleUsesRuntimeFinalHop(rule model.L4Rule) bool {
+	protocol := rule.Protocol
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	return strings.EqualFold(strings.TrimSpace(protocol), "tcp") &&
+		strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
+		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent")
+}
+
+func l4RelayDialOptions(rule model.L4Rule) relay.DialOptions {
+	return relay.DialOptions{EgressProfileID: cloneOptionalInt(rule.EgressProfileID)}
+}
+
+func cloneOptionalInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func tcpProbeLabelForAddress(candidate tcpProbeCandidate, address string) string {

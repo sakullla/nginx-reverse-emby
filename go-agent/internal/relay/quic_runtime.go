@@ -138,7 +138,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		return
 	}
 	if strings.EqualFold(request.Kind, relayOpenKindProbe) {
-		timings, err := s.probeRelayPath(s.ctx, relayProbeNetworkFromMetadata(request.Metadata), request.Target, request.Chain)
+		timings, err := s.probeRelayPath(s.ctx, relayProbeNetworkFromMetadata(request.Metadata), request.Target, request.Chain, relayDialOptionsFromMetadata(request.Kind, request.Metadata))
 		if err != nil {
 			_ = withFrameDeadline(clientConn, func() error {
 				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})

@@ -25,15 +25,19 @@ func resolveDiagnosticRelayPaths(ruleLabel string, chain []int, layers [][]int, 
 	return relayroute.ResolvePaths(ruleLabel, chain, layers, relayListeners, target)
 }
 
-func probeDiagnosticRelayPaths(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache, preferenceCache *backends.Cache) ([]RelayPathReport, []int, error) {
+func probeDiagnosticRelayPaths(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache, preferenceCache *backends.Cache, opts ...relay.DialOptions) ([]RelayPathReport, []int, error) {
 	if len(paths) == 0 {
 		return nil, nil, nil
 	}
 	if provider == nil {
 		return nil, nil, fmt.Errorf("relay provider is required")
 	}
+	options := relay.DialOptions{}
+	if len(opts) > 0 {
+		options = cloneRelayDialOptions(opts[0])
+	}
 
-	reports := probeDiagnosticRelayPathReports(ctx, network, target, paths, provider)
+	reports := probeDiagnosticRelayPathReports(ctx, network, target, paths, provider, options)
 	reportsByPath := make(map[string]int, len(paths))
 	for index, report := range reports {
 		reportsByPath[relayPathReportKey(report.Path)] = index
@@ -41,7 +45,7 @@ func probeDiagnosticRelayPaths(ctx context.Context, network string, target strin
 
 	selectedIndex := preferredRelayPathIndex(target, paths, preferenceCache, reportsByPath, reports)
 	if selectedIndex < 0 {
-		selectedIndex = diagnosticSelectedRelayPathIndex(ctx, network, target, paths, provider, cache, reportsByPath, reports)
+		selectedIndex = diagnosticSelectedRelayPathIndex(ctx, network, target, paths, provider, cache, reportsByPath, reports, options)
 	}
 	if selectedIndex < 0 {
 		return reports, nil, nil
@@ -50,7 +54,17 @@ func probeDiagnosticRelayPaths(ctx context.Context, network string, target strin
 	return reports, append([]int(nil), reports[selectedIndex].Path...), nil
 }
 
-func probeDiagnosticRelayPathReports(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider) []RelayPathReport {
+func cloneRelayDialOptions(options relay.DialOptions) relay.DialOptions {
+	return relay.DialOptions{
+		InitialPayload:    append([]byte(nil), options.InitialPayload...),
+		TrafficClass:      options.TrafficClass,
+		OutboundProxyURL:  options.OutboundProxyURL,
+		EgressProfileID:   cloneOptionalInt(options.EgressProfileID),
+		WireGuardProvider: options.WireGuardProvider,
+	}
+}
+
+func probeDiagnosticRelayPathReports(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, options relay.DialOptions) []RelayPathReport {
 	reports := make([]RelayPathReport, len(paths))
 	concurrency := 3
 	if concurrency > len(paths) {
@@ -70,16 +84,16 @@ func probeDiagnosticRelayPathReports(ctx context.Context, network string, target
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			reports[index] = probeDiagnosticRelayPathReport(ctx, network, target, path, provider)
+			reports[index] = probeDiagnosticRelayPathReport(ctx, network, target, path, provider, options)
 		}()
 	}
 	wg.Wait()
 	return reports
 }
 
-func probeDiagnosticRelayPathReport(ctx context.Context, network string, target string, path relayplan.Path, provider relay.TLSMaterialProvider) RelayPathReport {
+func probeDiagnosticRelayPathReport(ctx context.Context, network string, target string, path relayplan.Path, provider relay.TLSMaterialProvider, options relay.DialOptions) RelayPathReport {
 	startedAt := time.Now()
-	conn, dialResult, err := diagnosticRelayDialWithResult(ctx, network, target, path.Hops, provider)
+	conn, dialResult, err := diagnosticRelayDialWithResult(ctx, network, target, path.Hops, provider, options)
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -91,7 +105,7 @@ func probeDiagnosticRelayPathReport(ctx context.Context, network string, target 
 	reportTarget := resolveProbeAddress(target, dialResult.SelectedAddress)
 	var probeTimings []relay.ProbeTiming
 	if success {
-		if timings, probeErr := diagnosticRelayProbePath(ctx, network, reportTarget, path.Hops, provider); probeErr == nil {
+		if timings, probeErr := diagnosticRelayProbePath(ctx, network, reportTarget, path.Hops, provider, options); probeErr == nil {
 			probeTimings = timings
 		}
 	}
@@ -143,12 +157,13 @@ func preferredRelayPathIndex(target string, paths []relayplan.Path, cache *backe
 	return -1
 }
 
-func diagnosticSelectedRelayPathIndex(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache, reportsByPath map[string]int, reports []RelayPathReport) int {
+func diagnosticSelectedRelayPathIndex(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache, reportsByPath map[string]int, reports []RelayPathReport, options relay.DialOptions) int {
 	racer := relayplan.Racer{Dialer: diagnosticRelayReportPathDialer{provider: provider}, Cache: cache, Concurrency: 3, MaxPaths: 32}
 	result, err := racer.Race(ctx, relayplan.Request{
 		Network: network,
 		Target:  target,
 		Paths:   paths,
+		Options: []relay.DialOptions{options},
 	})
 	if result.Conn != nil {
 		_ = result.Conn.Close()

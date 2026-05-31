@@ -22,7 +22,7 @@ type ProbeTiming struct {
 	LatencyMS    float64 `json:"latency_ms,omitempty"`
 }
 
-func ProbePath(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) ([]ProbeTiming, error) {
+func ProbePath(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) ([]ProbeTiming, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
@@ -32,13 +32,17 @@ func ProbePath(ctx context.Context, network, target string, chain []Hop, provide
 	if !strings.EqualFold(network, "tcp") {
 		return nil, fmt.Errorf("unsupported network %q", network)
 	}
+	options := DialOptions{}
+	if len(opts) > 0 {
+		options = opts[0].clone()
+	}
 
 	firstLatency, err := probeRelayHop(ctx, chain[0], provider)
 	if err != nil {
 		return nil, err
 	}
 	timings := []ProbeTiming{relayListenerProbeTiming(chain[0], firstLatency)}
-	downstream, err := probeRelayDownstream(ctx, network, target, chain, provider)
+	downstream, err := probeRelayDownstream(ctx, network, target, chain, provider, options)
 	if err != nil {
 		return nil, err
 	}
@@ -46,14 +50,14 @@ func ProbePath(ctx context.Context, network, target string, chain []Hop, provide
 	return timings, nil
 }
 
-func (s *Server) probeRelayPath(ctx context.Context, network, target string, chain []Hop) ([]ProbeTiming, error) {
+func (s *Server) probeRelayPath(ctx context.Context, network, target string, chain []Hop, options DialOptions) ([]ProbeTiming, error) {
 	if len(chain) > 0 {
 		firstLatency, err := probeRelayHop(ctx, chain[0], s.provider)
 		if err != nil {
 			return nil, err
 		}
 		timings := []ProbeTiming{relayListenerProbeTiming(chain[0], firstLatency)}
-		downstream, err := probeRelayDownstream(ctx, network, target, chain, s.provider)
+		downstream, err := probeRelayDownstream(ctx, network, target, chain, s.provider, options)
 		if err != nil {
 			return nil, err
 		}
@@ -71,7 +75,7 @@ func (s *Server) probeRelayPath(ctx context.Context, network, target string, cha
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
 	startedAt := time.Now()
-	conn, selectedAddress, err := selector.dialTCP(ctx, target, DialOptions{})
+	conn, selectedAddress, err := selector.dialTCP(ctx, target, options)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +95,7 @@ func probeRelayHop(ctx context.Context, hop Hop, provider TLSMaterialProvider) (
 	return time.Since(startedAt), nil
 }
 
-func probeRelayDownstream(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) ([]ProbeTiming, error) {
+func probeRelayDownstream(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) ([]ProbeTiming, error) {
 	if len(chain) == 0 {
 		return nil, nil
 	}
@@ -99,7 +103,7 @@ func probeRelayDownstream(ctx context.Context, network, target string, chain []H
 		Kind:     relayOpenKindProbe,
 		Target:   target,
 		Chain:    append([]Hop(nil), chain[1:]...),
-		Metadata: relayProbeMetadata(network),
+		Metadata: relayProbeMetadata(network, options),
 	})
 	if err != nil {
 		return nil, err
@@ -197,8 +201,17 @@ func probeRelayRequestTLSTCPMux(ctx context.Context, hop Hop, provider TLSMateri
 	}, nil
 }
 
-func relayProbeMetadata(network string) map[string]any {
-	return map[string]any{relayMetadataProbeNetwork: strings.ToLower(strings.TrimSpace(network))}
+func relayProbeMetadata(network string, opts ...DialOptions) map[string]any {
+	options := DialOptions{}
+	if len(opts) > 0 {
+		options = opts[0].clone()
+	}
+	metadata := relayMetadataForDialOptions(network, options)
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	metadata[relayMetadataProbeNetwork] = strings.ToLower(strings.TrimSpace(network))
+	return metadata
 }
 
 func relayProbeNetworkFromMetadata(metadata map[string]any) string {

@@ -126,7 +126,7 @@ func TestProbeDiagnosticRelayPathsFallsBackWhenFirstPathTimesOut(t *testing.T) {
 		_ = server.Close()
 		return client, relay.DialResult{SelectedAddress: target}, nil
 	}
-	diagnosticRelayProbePath = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]relay.ProbeTiming, error) {
+	diagnosticRelayProbePath = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) ([]relay.ProbeTiming, error) {
 		return []relay.ProbeTiming{{ToListenerID: 602, LatencyMS: 1.2}, {LatencyMS: 2.4}}, nil
 	}
 

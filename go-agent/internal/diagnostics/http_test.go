@@ -888,7 +888,7 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 		}
 		return conn, relay.DialResult{SelectedAddress: target}, nil
 	}
-	diagnosticRelayProbePath = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]relay.ProbeTiming, error) {
+	diagnosticRelayProbePath = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) ([]relay.ProbeTiming, error) {
 		return []relay.ProbeTiming{
 			{ToListenerID: chain[0].Listener.ID, LatencyMS: 7.1},
 			{To: target, LatencyMS: 11.2},
@@ -975,7 +975,7 @@ func TestHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops(t *test
 		}
 		return conn, relay.DialResult{SelectedAddress: target}, nil
 	}
-	diagnosticRelayProbePath = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]relay.ProbeTiming, error) {
+	diagnosticRelayProbePath = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) ([]relay.ProbeTiming, error) {
 		return nil, fmt.Errorf("probe unavailable")
 	}
 

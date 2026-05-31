@@ -1507,7 +1507,7 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogicalStream, request relayOpenFrame) {
 	options := relayDialOptionsFromMetadata(request.Kind, request.Metadata)
 	if strings.EqualFold(request.Kind, relayOpenKindProbe) {
-		timings, err := s.server.probeRelayPath(s.server.ctx, relayProbeNetworkFromMetadata(request.Metadata), request.Target, request.Chain)
+		timings, err := s.server.probeRelayPath(s.server.ctx, relayProbeNetworkFromMetadata(request.Metadata), request.Target, request.Chain, options)
 		if err != nil {
 			_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
 			s.tunnel.removeStream(stream.streamID)

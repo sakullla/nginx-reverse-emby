@@ -33,6 +33,7 @@ var diagnosticRelayProbePath = func(
 	target string,
 	chain []relay.Hop,
 	provider relay.TLSMaterialProvider,
+	opts ...relay.DialOptions,
 ) ([]relay.ProbeTiming, error) {
-	return relay.ProbePath(ctx, network, target, chain, provider)
+	return relay.ProbePath(ctx, network, target, chain, provider, opts...)
 }
