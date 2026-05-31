@@ -26,6 +26,12 @@ func TestNetTunBatchSizeUsesConfiguredBatchSize(t *testing.T) {
 	}
 }
 
+func TestNetTunBatchSizeAllowsMobileTrafficBursts(t *testing.T) {
+	if netTunBatchSize < 256 {
+		t.Fatalf("netTunBatchSize = %d, want at least 256", netTunBatchSize)
+	}
+}
+
 func TestNetTunChannelQueueSizeIsBounded(t *testing.T) {
 	if got, wantMax := netTunChannelQueueSize, 256; got > wantMax {
 		t.Fatalf("netTunChannelQueueSize = %d, want <= %d", got, wantMax)
@@ -354,6 +360,39 @@ func TestNetTunWriteNotifyDrainsQueuedOutboundBatch(t *testing.T) {
 		if got := string(bufs[i][:sizes[i]]); got != want {
 			t.Fatalf("packet %d = %q, want %q", i, got, want)
 		}
+	}
+}
+
+func TestNetTunWriteNotifyDoesNotBlockWhenOutboundQueueIsFull(t *testing.T) {
+	tun := &netTun{
+		ep:             channel.New(netTunChannelQueueSize, 1280, ""),
+		incomingPacket: make(chan *stack.PacketBuffer, 1),
+		localAddresses: map[netip.Addr]struct{}{},
+	}
+	tun.incomingPacket <- stack.NewPacketBuffer(stack.PacketBufferOptions{
+		Payload: buffer.MakeWithData([]byte("queued")),
+	})
+
+	var packets stack.PacketBufferList
+	packets.PushBack(stack.NewPacketBuffer(stack.PacketBufferOptions{
+		Payload: buffer.MakeWithData([]byte("overflow")),
+	}))
+	defer packets.DecRef()
+
+	if written, tcpipErr := tun.ep.WritePackets(packets); tcpipErr != nil || written != 1 {
+		t.Fatalf("WritePackets() = %d, %v; want 1, nil", written, tcpipErr)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		tun.WriteNotify()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("WriteNotify blocked after outbound packet queue filled")
 	}
 }
 

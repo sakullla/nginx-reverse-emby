@@ -61,7 +61,7 @@ type dnsCacheEntry struct {
 
 type Net netTun
 
-const netTunBatchSize = 32
+const netTunBatchSize = 256
 const netTunChannelQueueSize = 256
 const netTunTCPDefaultBufferSize = 2 << 20
 const netTunTCPMaxBufferSize = 4 << 20
@@ -254,7 +254,11 @@ func (tun *netTun) WriteNotify() {
 			continue
 		}
 
-		tun.incomingPacket <- pkt
+		select {
+		case tun.incomingPacket <- pkt:
+		default:
+			pkt.DecRef()
+		}
 	}
 }
 
