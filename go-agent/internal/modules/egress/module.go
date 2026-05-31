@@ -44,7 +44,7 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 }
 
 func (m *Module) RegisterProviders(reg module.ProviderRegistry) error {
-	if err := reg.Provide(module.ProviderFinalHopDialer, m); err != nil {
+	if err := reg.Provide(module.ProviderFinalHopDialer, moduleFinalHopDialer{module: m}); err != nil {
 		return err
 	}
 	return reg.Provide(module.ProviderEgressResolver, m)
@@ -71,16 +71,7 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	}
 
 	var overlayRuntime module.OverlayRuntime
-	if req.Providers != nil {
-		if provider, ok := req.Providers.Resolve(module.ProviderOverlayRuntime); ok {
-			runtime, ok := provider.(module.OverlayRuntime)
-			if !ok {
-				return fmt.Errorf("provider %s has type %T, want module.OverlayRuntime", module.ProviderOverlayRuntime, provider)
-			}
-			overlayRuntime = runtime
-		}
-	}
-	if overlayRuntime == nil && m != nil && m.wireGuardRuntime != nil {
+	if m != nil && m.wireGuardRuntime != nil {
 		overlayRuntime = m.wireGuardRuntime.Provider()
 	}
 	if m == nil {
@@ -128,6 +119,18 @@ func (m *Module) OpenUDP(ctx context.Context, target string, id *int) (relay.UDP
 		return nil, err
 	}
 	return udpPacketConn{conn: conn, target: target}, nil
+}
+
+type moduleFinalHopDialer struct {
+	module *Module
+}
+
+func (d moduleFinalHopDialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, error) {
+	return d.module.DialTCP(ctx, target, id)
+}
+
+func (d moduleFinalHopDialer) OpenUDP(ctx context.Context, target string, id *int) (any, error) {
+	return d.module.OpenUDP(ctx, target, id)
 }
 
 func (m *Module) currentDialer() Dialer {

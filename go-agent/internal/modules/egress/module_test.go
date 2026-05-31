@@ -11,7 +11,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 const socks5UDPTestTimeout = time.Second
@@ -24,15 +23,19 @@ func TestModulePublishesFinalHopDialerAndResolver(t *testing.T) {
 	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
-	if _, ok := registry.Resolve(module.ProviderFinalHopDialer); !ok {
+	provider, ok := registry.Resolve(module.ProviderFinalHopDialer)
+	if !ok {
 		t.Fatal("finalhop.dialer provider missing")
+	}
+	if _, ok := provider.(module.FinalHopDialer); !ok {
+		t.Fatalf("finalhop.dialer provider type = %T, want module.FinalHopDialer", provider)
 	}
 	if _, ok := registry.Resolve(module.ProviderEgressResolver); !ok {
 		t.Fatal("egress.resolver provider missing")
 	}
 }
 
-func TestModuleFinalHopDialerUsesOverlayRuntimeProviderForWireGuardEgress(t *testing.T) {
+func TestModuleFinalHopDialerUsesInlineWireGuardRuntimeWhenExternalOverlayExists(t *testing.T) {
 	profileID := 23
 	overlay := &recordingOverlayRuntime{}
 	factory := &recordingFactory{}
@@ -49,9 +52,9 @@ func TestModuleFinalHopDialerUsesOverlayRuntimeProviderForWireGuardEgress(t *tes
 	if !ok {
 		t.Fatal("finalhop.dialer provider missing")
 	}
-	dialer, ok := provider.(relay.FinalHopDialer)
+	dialer, ok := provider.(module.FinalHopDialer)
 	if !ok {
-		t.Fatalf("finalhop.dialer provider type = %T, want relay.FinalHopDialer", provider)
+		t.Fatalf("finalhop.dialer provider type = %T, want module.FinalHopDialer", provider)
 	}
 
 	conn, err := dialer.DialTCP(context.Background(), "10.0.0.10:443", &profileID)
@@ -60,11 +63,14 @@ func TestModuleFinalHopDialerUsesOverlayRuntimeProviderForWireGuardEgress(t *tes
 	}
 	_ = conn.Close()
 
-	if overlay.profileID != profileID {
-		t.Fatalf("overlay profileID = %d, want %d", overlay.profileID, profileID)
+	if overlay.profileID != 0 {
+		t.Fatalf("external overlay profileID = %d, want no dial", overlay.profileID)
 	}
-	if overlay.network != "tcp" || overlay.address != "10.0.0.10:443" {
-		t.Fatalf("overlay dial = %s %s, want tcp target", overlay.network, overlay.address)
+	if len(factory.runtimes) != 1 {
+		t.Fatalf("created inline runtimes = %d, want 1", len(factory.runtimes))
+	}
+	if factory.runtimes[0].network != "tcp" || factory.runtimes[0].address != "10.0.0.10:443" {
+		t.Fatalf("inline runtime dial = %s %s, want tcp target", factory.runtimes[0].network, factory.runtimes[0].address)
 	}
 }
 
