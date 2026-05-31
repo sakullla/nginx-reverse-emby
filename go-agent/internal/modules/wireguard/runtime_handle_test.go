@@ -1257,8 +1257,8 @@ func TestManagerPrepareRetriesSamePortReplacementAfterClosingExistingRuntime(t *
 	if prepared == first {
 		t.Fatal("prepared transaction reused the closed RuntimeHandle")
 	}
-	if got, ok := manager.Runtime(profile.ID); !ok || got != prepared {
-		t.Fatal("manager did not expose prepared same-port RuntimeHandle before commit")
+	if got, ok := manager.Runtime(profile.ID); ok && got == prepared {
+		t.Fatal("manager exposed prepared same-port RuntimeHandle before commit")
 	}
 }
 

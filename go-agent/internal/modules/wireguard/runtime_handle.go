@@ -351,11 +351,6 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 				config:      cloneConfig(cfg),
 				runtime:     handle,
 			}
-			m.runtimes[key] = &runtimeEntry{
-				fingerprint: fingerprint,
-				config:      cloneConfig(cfg),
-				runtime:     handle,
-			}
 			continue
 		}
 		newRuntimes = append(newRuntimes, handle)
@@ -497,7 +492,7 @@ func (t *Transaction) Rollback() {
 				break
 			}
 		}
-		if usedByCloseFirst {
+		if usedByCloseFirst && !previousRestored {
 			continue
 		}
 		_ = candidate.runtime.Close()

@@ -233,6 +233,71 @@ func TestCommittedProviderDoesNotExposePendingCandidateDuringPrepare(t *testing.
 	}
 }
 
+func TestCommittedProviderDoesNotExposeCloseFirstCandidateDuringPrepare(t *testing.T) {
+	factory := &closeFirstRecordingFactory{}
+	runtime := &Runtime{manager: NewManager(ManagerOptions{
+		Factory:   factory.Create,
+		Preflight: func(context.Context, Config) error { return nil },
+	})}
+	mod := NewModule(runtime)
+	committedProviders := testProviderRegistry{}
+	if err := mod.RegisterProviders(committedProviders); err != nil {
+		t.Fatalf("RegisterProviders() error = %v", err)
+	}
+	committedOverlay, ok := committedProviders[module.ProviderOverlayRuntime].(module.OverlayRuntime)
+	if !ok {
+		t.Fatalf("committed overlay provider type = %T, want module.OverlayRuntime", committedProviders[module.ProviderOverlayRuntime])
+	}
+
+	previousProfile := testWireGuardProfile(33, "local", "peer.example.com:51820", "127.0.0.1/32")
+	previousProfile.ListenPort = 51933
+	previous := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{previousProfile}}
+	if err := mod.Apply(context.Background(), module.ApplyRequest{Next: previous}); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	if len(factory.created) != 1 {
+		t.Fatalf("created runtimes after initial apply = %d, want 1", len(factory.created))
+	}
+
+	nextProfile := testWireGuardProfile(33, "local", "peer.example.com:51821", "127.0.0.2/32")
+	nextProfile.ListenPort = previousProfile.ListenPort
+	next := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{nextProfile}}
+	tx, err := mod.Prepare(context.Background(), module.ApplyRequest{Previous: previous, Next: next})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	defer tx.Rollback()
+	if len(factory.created) != 2 {
+		t.Fatalf("created runtimes after close-first prepare = %d, want committed plus candidate", len(factory.created))
+	}
+
+	_, _ = committedOverlay.DialContext(context.Background(), "local", 33, "tcp", "127.0.0.1:80")
+	if factory.created[1].dialCount != 0 {
+		t.Fatalf("candidate runtime dial count through committed provider = %d, want 0", factory.created[1].dialCount)
+	}
+
+	pendingProviders := testProviderRegistry{}
+	providerTx, ok := tx.(interface {
+		RegisterProviders(module.ProviderRegistry) error
+	})
+	if !ok {
+		t.Fatal("wireguard transaction does not register transaction-local providers")
+	}
+	if err := providerTx.RegisterProviders(pendingProviders); err != nil {
+		t.Fatalf("transaction RegisterProviders() error = %v", err)
+	}
+	pendingOverlay, ok := pendingProviders[module.ProviderOverlayRuntime].(module.OverlayRuntime)
+	if !ok {
+		t.Fatalf("pending overlay provider type = %T, want module.OverlayRuntime", pendingProviders[module.ProviderOverlayRuntime])
+	}
+	if _, err := pendingOverlay.DialContext(context.Background(), "local", 33, "tcp", "127.0.0.1:80"); err != errRecordingRuntimeDial {
+		t.Fatalf("pending overlay DialContext() error = %v, want %v", err, errRecordingRuntimeDial)
+	}
+	if factory.created[1].dialCount != 1 {
+		t.Fatalf("candidate runtime dial count through pending provider = %d, want 1", factory.created[1].dialCount)
+	}
+}
+
 func TestTransactionLocalProviderExposesCandidateDuringRegistryApply(t *testing.T) {
 	factory := &moduleRecordingFactory{}
 	registry := module.NewRegistry()
@@ -527,6 +592,13 @@ func (m committedProviderProbeFailingModule) Prepare(context.Context, module.App
 }
 func (committedProviderProbeFailingModule) Stop(context.Context) error { return nil }
 
+type testProviderRegistry map[module.ProviderRef]any
+
+func (r testProviderRegistry) Provide(ref module.ProviderRef, provider any) error {
+	r[ref] = provider
+	return nil
+}
+
 func testWireGuardProfile(id int, agentID string, endpoint string, allowedIPs ...string) model.WireGuardProfile {
 	return model.WireGuardProfile{
 		ID:         id,
@@ -551,6 +623,21 @@ type moduleRecordingFactory struct {
 }
 
 func (f *moduleRecordingFactory) Create(context.Context, Config) (RuntimeHandle, error) {
+	runtime := &recordingRuntime{}
+	f.created = append(f.created, runtime)
+	return runtime, nil
+}
+
+type closeFirstRecordingFactory struct {
+	created           []*recordingRuntime
+	failedReplacement bool
+}
+
+func (f *closeFirstRecordingFactory) Create(_ context.Context, cfg Config) (RuntimeHandle, error) {
+	if cfg.ID == 33 && cfg.Peers[0].EndpointPort == 51821 && !f.failedReplacement {
+		f.failedReplacement = true
+		return nil, errors.New("address already in use")
+	}
 	runtime := &recordingRuntime{}
 	f.created = append(f.created, runtime)
 	return runtime, nil
