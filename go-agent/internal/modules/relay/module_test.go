@@ -151,6 +151,55 @@ func TestModuleApplyNoopsWhenEffectiveInputsUnchanged(t *testing.T) {
 	}
 }
 
+func TestModuleApplyUpdatesOutboundProxyURLFromAgentConfig(t *testing.T) {
+	previousProxy := relaymodule.OutboundProxyURL()
+	t.Cleanup(func() { relaymodule.SetOutboundProxyURL(previousProxy) })
+	relaymodule.SetOutboundProxyURL("")
+
+	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &fakeTLSMaterialProvider{}})
+	mustRegister(t, registry, mod)
+
+	next := model.Snapshot{AgentConfig: model.AgentConfig{OutboundProxyURL: "socks://127.0.0.1:1080"}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if got := relaymodule.OutboundProxyURL(); got != "socks://127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL() = %q, want snapshot outbound proxy", got)
+	}
+}
+
+func TestModuleRollbackRestoresOutboundProxyURLAfterLaterCommitFailure(t *testing.T) {
+	previousGlobalProxy := relaymodule.OutboundProxyURL()
+	t.Cleanup(func() { relaymodule.SetOutboundProxyURL(previousGlobalProxy) })
+	relaymodule.SetOutboundProxyURL("")
+
+	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &fakeTLSMaterialProvider{}})
+	mustRegister(t, registry, mod)
+
+	previous := model.Snapshot{AgentConfig: model.AgentConfig{OutboundProxyURL: "socks://127.0.0.1:1080"}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	if got := relaymodule.OutboundProxyURL(); got != "socks://127.0.0.1:1080" {
+		t.Fatalf("initial OutboundProxyURL() = %q, want previous snapshot proxy", got)
+	}
+
+	failErr := errors.New("later commit failed")
+	mustRegister(t, registry, commitFailingModule{name: "later-transaction", err: failErr})
+	next := model.Snapshot{AgentConfig: model.AgentConfig{OutboundProxyURL: "socks://127.0.0.1:2080"}}
+	err := registry.Apply(context.Background(), previous, next)
+	if !errors.Is(err, failErr) {
+		t.Fatalf("Apply() error = %v, want later commit failure", err)
+	}
+	if got := relaymodule.OutboundProxyURL(); got != "socks://127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL() after rollback = %q, want previous snapshot proxy", got)
+	}
+}
+
 func TestModuleRollbackRestoresPreviousRuntimeAfterSameAddressPrepare(t *testing.T) {
 	firstCertificateID := 1
 	secondCertificateID := 2

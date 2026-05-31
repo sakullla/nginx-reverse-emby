@@ -78,6 +78,8 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	}
 	currentBlockState := m.trafficBlockStateFromProvider(req.Providers)
 	previousBlockState := m.currentTrafficBlockState()
+	previousOutboundProxyURL := OutboundProxyURL()
+	nextOutboundProxyURL := strings.TrimSpace(req.Next.AgentConfig.OutboundProxyURL)
 	tlsMaterial, _ := req.Providers.Resolve(module.ProviderTLSMaterial)
 	overlay, _ := req.Providers.Resolve(module.ProviderOverlayRuntime)
 	finalHop, _ := req.Providers.Resolve(module.ProviderFinalHopDialer)
@@ -90,7 +92,10 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	nextListeners := localRelayListeners(req.Next.RelayListeners, m.agentID, m.agentName)
 	previousListeners := localRelayListeners(req.Previous.RelayListeners, m.agentID, m.agentName)
 	if relayEffectiveInputsEqual(previousListeners, nextListeners, req.Previous, req.Next) {
-		return m.trafficBlockStateTransaction(previousBlockState, currentBlockState), nil
+		return combineRelayTransactions(
+			m.trafficBlockStateTransaction(previousBlockState, currentBlockState),
+			outboundProxyURLTransaction(previousOutboundProxyURL, nextOutboundProxyURL),
+		), nil
 	}
 	closeFirst := bindingKeysOverlap(serverBindingKeys(oldRuntime), relayListenerBindingKeys(nextListeners))
 	oldClosed := false
@@ -121,12 +126,13 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 			m.runtime = nextRuntime
 			m.blockState.Store(currentBlockState)
 			m.mu.Unlock()
+			SetOutboundProxyURL(nextOutboundProxyURL)
+			committed = true
 			if oldRuntime != nil && !oldClosed {
 				if err := oldRuntime.Close(); err != nil {
 					return err
 				}
 			}
-			committed = true
 			return nil
 		},
 		RollbackFunc: func() error {
@@ -137,6 +143,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 			if oldClosed || committed {
 				if committed {
 					m.blockState.Store(previousBlockState)
+					SetOutboundProxyURL(previousOutboundProxyURL)
 				}
 				if err := restoreOverlayForRollback(ctx, previousListeners, overlay); err != nil && firstErr == nil {
 					firstErr = err
@@ -245,6 +252,53 @@ func relayEffectiveInputsEqual(previousListeners, nextListeners []model.RelayLis
 		return false
 	}
 	return true
+}
+
+func outboundProxyURLTransaction(previous, next string) module.ModuleTransaction {
+	previous = strings.TrimSpace(previous)
+	next = strings.TrimSpace(next)
+	if previous == next {
+		return module.TransactionFuncs{}
+	}
+	return module.TransactionFuncs{
+		CommitFunc: func() error {
+			SetOutboundProxyURL(next)
+			return nil
+		},
+		RollbackFunc: func() error {
+			SetOutboundProxyURL(previous)
+			return nil
+		},
+	}
+}
+
+func combineRelayTransactions(transactions ...module.ModuleTransaction) module.ModuleTransaction {
+	return module.TransactionFuncs{
+		CommitFunc: func() error {
+			for _, transaction := range transactions {
+				if transaction == nil {
+					continue
+				}
+				if err := transaction.Commit(); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		RollbackFunc: func() error {
+			var firstErr error
+			for i := len(transactions) - 1; i >= 0; i-- {
+				transaction := transactions[i]
+				if transaction == nil {
+					continue
+				}
+				if err := transaction.Rollback(); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+			return firstErr
+		},
+	}
 }
 
 type rollbackOverlayRestorer interface {
