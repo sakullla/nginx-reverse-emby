@@ -51,6 +51,16 @@ func assertBackupSkippedConflictReason(t *testing.T, result BackupImportResult, 
 	t.Fatalf("missing skipped conflict item kind=%q key=%q reason=%q in %+v", kind, key, reason, result.Report.SkippedConflict)
 }
 
+func assertBackupSkippedMissingMaterialReason(t *testing.T, result BackupImportResult, kind string, key string, reason string) {
+	t.Helper()
+	for _, item := range result.Report.SkippedMissingMaterial {
+		if item.Kind == kind && item.Key == key && item.Reason == reason {
+			return
+		}
+	}
+	t.Fatalf("missing skipped missing material item kind=%q key=%q reason=%q in %+v", kind, key, reason, result.Report.SkippedMissingMaterial)
+}
+
 func TestBackupManifestRoundTripShape(t *testing.T) {
 	manifest := BackupManifest{
 		PackageVersion:       BackupPackageVersion,
@@ -7540,5 +7550,177 @@ func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenExistingRelayCertDe
 	}
 	if !certificateChainUsesRelayCA(currentLeaf, currentCA) {
 		t.Fatal("target relay leaf is no longer verifiable with target relay CA")
+	}
+}
+
+func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenMaterialMissing(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+
+	sourceCA, err := generateInternalCAMaterial(relayCADomainIdentity)
+	if err != nil {
+		t.Fatalf("generate source relay CA: %v", err)
+	}
+	sourceCA.ID = 1
+	sourceLeaf, err := generateRelayLeafMaterial("listener.source-missing-ca.relay.internal", sourceCA, "source-missing-ca.example.com")
+	if err != nil {
+		t.Fatalf("generate source relay leaf: %v", err)
+	}
+	sourceLeaf.ID = 11
+	sourcePins, err := deriveRelayPinSetFromCertificate(sourceLeaf.CertPEM)
+	if err != nil {
+		t.Fatalf("derive source relay pin: %v", err)
+	}
+
+	if err := sourceStore.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{
+		managedCertificateToRow(ManagedCertificate{
+			ID:              1,
+			Domain:          relayCADomainIdentity,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  []string{"local"},
+			Status:          "active",
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+			Tags:            []string{systemRelayCATag, systemTag},
+			Revision:        1,
+		}),
+		managedCertificateToRow(ManagedCertificate{
+			ID:              11,
+			Domain:          sourceLeaf.Domain,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  []string{"local"},
+			Status:          "active",
+			Usage:           "relay_tunnel",
+			CertificateType: "internal_ca",
+			SelfSigned:      false,
+			Tags:            autoRelayListenerCertificateTags(31, "local"),
+			Revision:        2,
+		}),
+	}); err != nil {
+		t.Fatalf("SaveManagedCertificates(source) error = %v", err)
+	}
+	if err := sourceStore.SaveManagedCertificateMaterial(ctx, relayCADomainIdentity, sourceCA); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial(source CA) error = %v", err)
+	}
+	if err := sourceStore.SaveManagedCertificateMaterial(ctx, sourceLeaf.Domain, sourceLeaf); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial(source leaf) error = %v", err)
+	}
+	if err := sourceStore.SaveRelayListeners(ctx, "local", []storage.RelayListenerRow{{
+		ID:                      31,
+		AgentID:                 "local",
+		Name:                    "source-missing-ca",
+		ListenHost:              "127.0.0.1",
+		BindHostsJSON:           `["127.0.0.1"]`,
+		ListenPort:              7443,
+		PublicHost:              "source-missing-ca.example.com",
+		PublicPort:              7443,
+		Enabled:                 true,
+		CertificateID:           backupIntPtr(11),
+		TLSMode:                 "pin_and_ca",
+		TransportMode:           "tls_tcp",
+		ObfsMode:                "off",
+		PinSetJSON:              marshalJSON(sourcePins, "[]"),
+		TrustedCACertificateIDs: `[1]`,
+		AllowSelfSigned:         true,
+		TagsJSON:                `[]`,
+		Revision:                3,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(source) error = %v", err)
+	}
+
+	targetCA, err := generateInternalCAMaterial(relayCADomainIdentity)
+	if err != nil {
+		t.Fatalf("generate target relay CA: %v", err)
+	}
+	if err := targetStore.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{
+		managedCertificateToRow(ManagedCertificate{
+			ID:              1,
+			Domain:          relayCADomainIdentity,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  []string{"local"},
+			Status:          "active",
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+			Tags:            []string{systemRelayCATag, systemTag},
+			Revision:        1,
+		}),
+	}); err != nil {
+		t.Fatalf("SaveManagedCertificates(target) error = %v", err)
+	}
+	if err := targetStore.SaveManagedCertificateMaterial(ctx, relayCADomainIdentity, targetCA); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial(target CA) error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(cfg, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	bundle, err := decodeBackupBundle(archive)
+	if err != nil {
+		t.Fatalf("decodeBackupBundle() error = %v", err)
+	}
+	materials := make([]BackupCertificateFile, 0, len(bundle.Materials))
+	for _, material := range bundle.Materials {
+		if strings.TrimSpace(material.Domain) == relayCADomainIdentity {
+			continue
+		}
+		materials = append(materials, material)
+	}
+	bundle.Materials = materials
+	archive, err = encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	targetSvc := NewBackupService(cfg, targetStore)
+	preview, err := targetSvc.Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	if preview.Summary.SkippedMissingMaterial.Certificates != 1 || preview.Summary.Imported.Certificates != 1 || preview.Summary.SkippedInvalid.RelayListeners != 1 {
+		t.Fatalf("preview summary = %+v", preview.Summary)
+	}
+	assertBackupSkippedMissingMaterialReason(t, preview, "certificate", relayCADomainIdentity, "certificate material missing from backup")
+	assertBackupSkippedInvalidReason(t, preview, "relay_listener", "local|source-missing-ca", "referenced trusted CA certificate was not imported")
+
+	result, err := targetSvc.Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.SkippedMissingMaterial.Certificates != 1 || result.Summary.Imported.Certificates != 1 || result.Summary.SkippedInvalid.RelayListeners != 1 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+	assertBackupSkippedMissingMaterialReason(t, result, "certificate", relayCADomainIdentity, "certificate material missing from backup")
+	assertBackupSkippedInvalidReason(t, result, "relay_listener", "local|source-missing-ca", "referenced trusted CA certificate was not imported")
+
+	currentCA, ok, err := targetStore.LoadManagedCertificateMaterial(ctx, relayCADomainIdentity)
+	if err != nil {
+		t.Fatalf("LoadManagedCertificateMaterial(target CA) error = %v", err)
+	}
+	if !ok {
+		t.Fatal("target relay CA material missing")
+	}
+	if currentCA.CertPEM != targetCA.CertPEM || currentCA.KeyPEM != targetCA.KeyPEM {
+		t.Fatal("target relay CA material was replaced")
 	}
 }
