@@ -43,6 +43,7 @@ type Module struct {
 	lastRules          []model.HTTPRule
 	lastRelayListeners []model.RelayListener
 	lastEgressProfiles []model.EgressProfile
+	lastProviders      Providers
 }
 
 func NewModule(cfg Config) *Module {
@@ -112,6 +113,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 
 	m.mu.Lock()
 	oldRuntime := m.runtime
+	rollbackState := m.committedRuntimeStateLocked()
 	currentBlockState := m.currentTrafficBlockStateLocked()
 	m.mu.Unlock()
 
@@ -120,15 +122,23 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	egressProfiles := cloneEgressProfiles(req.Next.EgressProfiles)
 
 	if len(rules) == 0 {
+		committed := false
 		return module.TransactionFuncs{
 			CommitFunc: func() error {
 				m.mu.Lock()
 				previous := m.runtime
 				m.runtime = nil
-				m.storeLastAppliedInputsLocked(nil, nil, nil)
+				m.storeLastAppliedStateLocked(runtimeState{})
+				committed = true
 				m.mu.Unlock()
 				if previous != nil {
 					return previous.Close()
+				}
+				return nil
+			},
+			RollbackFunc: func() error {
+				if committed {
+					return m.restoreRuntimeState(ctx, rollbackState, true)
 				}
 				return nil
 			},
@@ -151,7 +161,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	nextRuntime, err := StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 	if err != nil {
 		if oldClosed {
-			if restoreErr := m.restorePreviousRuntime(ctx, providers, true); restoreErr != nil {
+			if restoreErr := m.restoreRuntimeState(ctx, rollbackState, true); restoreErr != nil {
 				return nil, fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 		}
@@ -165,14 +175,20 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 			m.mu.Lock()
 			previous := m.runtime
 			m.runtime = nextRuntime
-			m.storeLastAppliedInputsLocked(rules, relayListeners, egressProfiles)
+			m.storeLastAppliedStateLocked(runtimeState{
+				rules:          rules,
+				relayListeners: relayListeners,
+				egressProfiles: egressProfiles,
+				providers:      snapshotProviders(providers, egressProfiles),
+				blockState:     currentBlockState,
+			})
+			committed = true
 			m.mu.Unlock()
 			if previous != nil && !oldClosed {
 				if err := previous.Close(); err != nil {
 					return err
 				}
 			}
-			committed = true
 			return nil
 		},
 		RollbackFunc: func() error {
@@ -181,7 +197,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 				firstErr = nextRuntime.Close()
 			}
 			if oldClosed || committed {
-				if err := m.restorePreviousRuntime(ctx, providers, true); err != nil && firstErr == nil {
+				if err := m.restoreRuntimeState(ctx, rollbackState, true); err != nil && firstErr == nil {
 					firstErr = err
 				}
 			}
@@ -217,30 +233,48 @@ func (m *Module) runtimeProviders(resolver module.ProviderResolver, egressProfil
 	return provider, nil
 }
 
-func (m *Module) restorePreviousRuntime(ctx context.Context, providers Providers, rebuild bool) error {
+type runtimeState struct {
+	rules          []model.HTTPRule
+	relayListeners []model.RelayListener
+	egressProfiles []model.EgressProfile
+	providers      Providers
+	blockState     TrafficBlockState
+}
+
+func (m *Module) committedRuntimeStateLocked() runtimeState {
+	return runtimeState{
+		rules:          cloneHTTPRules(m.lastRules),
+		relayListeners: cloneRelayListeners(m.lastRelayListeners),
+		egressProfiles: cloneEgressProfiles(m.lastEgressProfiles),
+		providers:      cloneProviders(m.lastProviders),
+		blockState:     m.currentTrafficBlockStateLocked(),
+	}
+}
+
+func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, closeCurrent bool) error {
 	m.mu.Lock()
-	lastRules := cloneHTTPRules(m.lastRules)
-	lastRelayListeners := cloneRelayListeners(m.lastRelayListeners)
-	lastEgressProfiles := cloneEgressProfiles(m.lastEgressProfiles)
 	abandoned := m.runtime
-	blockState := m.currentTrafficBlockStateLocked()
-	if rebuild && abandoned != nil {
-		_ = abandoned.Close()
+	if closeCurrent && abandoned != nil {
 		m.runtime = nil
 	}
 	m.mu.Unlock()
+	if closeCurrent && abandoned != nil {
+		_ = abandoned.Close()
+	}
 
-	if len(lastRules) == 0 {
+	if len(state.rules) == 0 {
 		m.mu.Lock()
 		m.runtime = nil
+		m.storeLastAppliedStateLocked(state)
 		m.mu.Unlock()
 		return nil
 	}
-	if providers.EgressResolver == nil && len(providers.EgressProfiles) == 0 {
-		providers.EgressProfiles = lastEgressProfiles
+	providers := snapshotProviders(state.providers, state.egressProfiles)
+	if err := restoreEgressOverlayForRollback(ctx, state.rules, providers.EgressOverlay); err != nil {
+		return err
 	}
 	runtime, err := retryRuntimeBindConflict(ctx, func() (*Runtime, error) {
-		return StartWithResourcesAndOptions(ctx, lastRules, lastRelayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
+		return StartWithResourcesAndOptions(ctx, state.rules, state.relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 	})
 	if err != nil {
 		if m.activeRuntime() != nil && isRuntimeBindConflict(err) {
@@ -248,12 +282,14 @@ func (m *Module) restorePreviousRuntime(ctx context.Context, providers Providers
 		}
 		return err
 	}
-	runtime.SetTrafficBlockState(blockState)
+	runtime.SetTrafficBlockState(state.blockState)
 	m.mu.Lock()
+	previous := m.runtime
 	m.runtime = runtime
+	m.storeLastAppliedStateLocked(state)
 	m.mu.Unlock()
-	if abandoned != nil && abandoned != runtime {
-		_ = abandoned.Close()
+	if previous != nil && previous != runtime {
+		_ = previous.Close()
 	}
 	return nil
 }
@@ -339,10 +375,11 @@ func (m *Module) ActiveRuntimeForTest() *Runtime {
 	return m.runtime
 }
 
-func (m *Module) storeLastAppliedInputsLocked(rules []model.HTTPRule, relayListeners []model.RelayListener, egressProfiles []model.EgressProfile) {
-	m.lastRules = cloneHTTPRules(rules)
-	m.lastRelayListeners = cloneRelayListeners(relayListeners)
-	m.lastEgressProfiles = cloneEgressProfiles(egressProfiles)
+func (m *Module) storeLastAppliedStateLocked(state runtimeState) {
+	m.lastRules = cloneHTTPRules(state.rules)
+	m.lastRelayListeners = cloneRelayListeners(state.relayListeners)
+	m.lastEgressProfiles = cloneEgressProfiles(state.egressProfiles)
+	m.lastProviders = snapshotProviders(state.providers, state.egressProfiles)
 }
 
 func httpEffectiveInputsEqual(previous, next model.Snapshot) bool {
@@ -432,6 +469,44 @@ func cloneIntLayers(layers [][]int) [][]int {
 
 func cloneEgressProfiles(profiles []model.EgressProfile) []model.EgressProfile {
 	return moduleegress.CloneProfiles(profiles)
+}
+
+func cloneProviders(providers Providers) Providers {
+	providers.EgressProfiles = cloneEgressProfiles(providers.EgressProfiles)
+	return providers
+}
+
+func snapshotProviders(providers Providers, egressProfiles []model.EgressProfile) Providers {
+	providers = cloneProviders(providers)
+	profiles := cloneEgressProfiles(egressProfiles)
+	providers.EgressProfiles = profiles
+	providers.EgressResolver = nil
+	providers.FinalHopDialer = moduleegress.NewFinalHopDialer(profiles, providers.EgressOverlay)
+	return providers
+}
+
+type rollbackOverlayRestorer interface {
+	RestorePreviousRuntimeForRollback(context.Context) error
+}
+
+func restoreEgressOverlayForRollback(ctx context.Context, rules []model.HTTPRule, overlay any) error {
+	if !hasEgressWireGuardRule(rules) {
+		return nil
+	}
+	restorer, ok := overlay.(rollbackOverlayRestorer)
+	if !ok || restorer == nil {
+		return nil
+	}
+	return restorer.RestorePreviousRuntimeForRollback(ctx)
+}
+
+func hasEgressWireGuardRule(rules []model.HTTPRule) bool {
+	for _, rule := range rules {
+		if rule.Enabled && rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func overlayRuntimeFromProvider(provider any) module.OverlayRuntime {

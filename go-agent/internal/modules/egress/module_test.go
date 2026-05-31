@@ -149,6 +149,74 @@ func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
 	}
 }
 
+func TestPreparedEgressOverlayProviderRestoresCommittedRollbackRuntime(t *testing.T) {
+	factory := &recordingFactory{}
+	mod := NewModule(factory.Create)
+
+	profileID := 63
+	previous := model.Snapshot{
+		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)},
+		Rules: []model.HTTPRule{{
+			ID:              1,
+			FrontendURL:     "http://edge.example.test",
+			Backends:        []model.HTTPBackend{{URL: "http://backend.example.test"}},
+			EgressProfileID: &profileID,
+			Enabled:         true,
+		}},
+	}
+	if err := mod.Apply(context.Background(), module.ApplyRequest{Next: previous}); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	previousRuntime := factory.runtimes[0]
+
+	next := previous
+	next.EgressProfiles = []model.EgressProfile{validWireGuardEgressProfile(profileID)}
+	next.EgressProfiles[0].Revision = 2
+	next.EgressProfiles[0].WireGuardConfig.Addresses = []string{"10.31.0.1/24"}
+	tx, err := mod.Prepare(context.Background(), module.ApplyRequest{Previous: previous, Next: next})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	reg := testProviderRegistry{providers: make(map[module.ProviderRef]any)}
+	providerTx, ok := tx.(interface {
+		RegisterProviders(module.ProviderRegistry) error
+	})
+	if !ok {
+		t.Fatal("transaction does not register providers")
+	}
+	if err := providerTx.RegisterProviders(reg); err != nil {
+		t.Fatalf("RegisterProviders() error = %v", err)
+	}
+	overlay, ok := reg.providers[module.ProviderEgressOverlayRuntime].(interface {
+		module.OverlayRuntime
+		RestorePreviousRuntimeForRollback(context.Context) error
+	})
+	if !ok {
+		t.Fatalf("overlay provider type = %T, want overlay rollback provider", reg.providers[module.ProviderEgressOverlayRuntime])
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	if len(factory.runtimes) < 2 || factory.runtimes[1] == previousRuntime {
+		t.Fatal("commit did not replace WireGuard runtime")
+	}
+	if err := overlay.RestorePreviousRuntimeForRollback(context.Background()); err != nil {
+		t.Fatalf("RestorePreviousRuntimeForRollback() error = %v", err)
+	}
+	conn, err := overlay.DialContext(context.Background(), "", 63, "tcp", "10.0.0.10:443")
+	if err != nil {
+		t.Fatalf("DialContext() after restore error = %v", err)
+	}
+	_ = conn.Close()
+	if len(factory.runtimes) < 3 {
+		t.Fatalf("factory runtimes = %d, want rollback runtime", len(factory.runtimes))
+	}
+	rollbackRuntime := factory.runtimes[2]
+	if rollbackRuntime.network != "tcp" || rollbackRuntime.address != "10.0.0.10:443" {
+		t.Fatalf("rollback runtime dial = %s %s, want tcp target", rollbackRuntime.network, rollbackRuntime.address)
+	}
+}
+
 func TestFinalHopDialerDelegatesWireGuardProfilesToOverlayRuntime(t *testing.T) {
 	t.Parallel()
 
@@ -306,6 +374,15 @@ func (f *recordingFactory) Create(_ context.Context, cfg basewireguard.Config) (
 	f.configs = append(f.configs, cfg)
 	f.runtimes = append(f.runtimes, runtime)
 	return runtime, nil
+}
+
+type testProviderRegistry struct {
+	providers map[module.ProviderRef]any
+}
+
+func (r testProviderRegistry) Provide(ref module.ProviderRef, provider any) error {
+	r.providers[ref] = provider
+	return nil
 }
 
 const wireGuardTestKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="

@@ -21,6 +21,7 @@ type Module struct {
 	profiles         []model.EgressProfile
 	resolver         Resolver
 	overlayRuntime   module.OverlayRuntime
+	rollback         *modulewireguard.Transaction
 }
 
 func NewModule(factory ...modulewireguard.Factory) *Module {
@@ -116,6 +117,7 @@ type egressTransaction struct {
 	profiles             []model.EgressProfile
 	resolver             Resolver
 	overlayRuntime       module.OverlayRuntime
+	committed            bool
 }
 
 func (t *egressTransaction) RegisterProviders(reg module.ProviderRegistry) error {
@@ -128,7 +130,7 @@ func (t *egressTransaction) RegisterProviders(reg module.ProviderRegistry) error
 	if err := reg.Provide(module.ProviderEgressResolver, t.resolver); err != nil {
 		return err
 	}
-	return reg.Provide(module.ProviderEgressOverlayRuntime, t.overlayRuntime)
+	return reg.Provide(module.ProviderEgressOverlayRuntime, preparedEgressOverlayProvider{transaction: t})
 }
 
 func (t *egressTransaction) Commit() error {
@@ -143,15 +145,26 @@ func (t *egressTransaction) Commit() error {
 	t.module.profiles = t.profiles
 	t.module.resolver = t.resolver
 	t.module.overlayRuntime = t.overlayRuntime
+	t.module.rollback = t.wireGuardTransaction
+	t.committed = true
 	t.module.mu.Unlock()
 	return nil
 }
 
 func (t *egressTransaction) Rollback() error {
-	if t == nil || t.wireGuardTransaction == nil {
+	if t == nil {
 		return nil
 	}
-	t.wireGuardTransaction.Rollback()
+	if t.wireGuardTransaction != nil {
+		t.wireGuardTransaction.Rollback()
+	}
+	if t.module != nil {
+		t.module.mu.Lock()
+		if t.module.rollback == t.wireGuardTransaction {
+			t.module.rollback = nil
+		}
+		t.module.mu.Unlock()
+	}
 	return nil
 }
 
@@ -219,6 +232,51 @@ func (d preparedFinalHopDialer) OpenUDP(ctx context.Context, target string, id *
 	return udpPacketConn{conn: conn, target: target}, nil
 }
 
+type preparedEgressOverlayProvider struct {
+	transaction *egressTransaction
+}
+
+func (p preparedEgressOverlayProvider) RestorePreviousRuntimeForRollback(ctx context.Context) error {
+	if p.transaction == nil || p.transaction.module == nil {
+		return nil
+	}
+	return egressOverlayProvider{module: p.transaction.module}.RestorePreviousRuntimeForRollback(ctx)
+}
+
+func (p preparedEgressOverlayProvider) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
+	overlay := p.overlayRuntime()
+	if overlay == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profileID)
+	}
+	return overlay.DialContext(ctx, agentID, profileID, network, address)
+}
+
+func (p preparedEgressOverlayProvider) ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error) {
+	overlay := p.overlayRuntime()
+	if overlay == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profileID)
+	}
+	return overlay.ListenTCP(ctx, agentID, profileID, address)
+}
+
+func (p preparedEgressOverlayProvider) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
+	overlay := p.overlayRuntime()
+	if overlay == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profileID)
+	}
+	return overlay.ListenUDP(ctx, agentID, profileID, address)
+}
+
+func (p preparedEgressOverlayProvider) overlayRuntime() module.OverlayRuntime {
+	if p.transaction == nil {
+		return nil
+	}
+	if p.transaction.committed && p.transaction.module != nil {
+		return p.transaction.module.EgressOverlayRuntime()
+	}
+	return p.transaction.overlayRuntime
+}
+
 func (m *Module) currentDialer() Dialer {
 	if m == nil {
 		return Dialer{Resolver: NewResolver(nil)}
@@ -241,6 +299,19 @@ func (m *Module) EgressOverlayRuntime() module.OverlayRuntime {
 
 type egressOverlayProvider struct {
 	module *Module
+}
+
+func (p egressOverlayProvider) RestorePreviousRuntimeForRollback(ctx context.Context) error {
+	if p.module == nil || p.module.wireGuardRuntime == nil {
+		return nil
+	}
+	p.module.mu.RLock()
+	rollback := p.module.rollback
+	p.module.mu.RUnlock()
+	if rollback == nil {
+		return nil
+	}
+	return rollback.RestorePrevious(ctx)
 }
 
 func (p egressOverlayProvider) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
