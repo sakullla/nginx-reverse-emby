@@ -314,11 +314,7 @@ func (s *Server) startUDPListener(rule model.L4Rule) error {
 }
 
 func (s *Server) startWireGuardTransparentUDPListener(rule model.L4Rule) error {
-	runtime, err := s.wireGuardRuntime(rule)
-	if err != nil {
-		return err
-	}
-	conn, err := runtime.ListenTransparentUDP(s.ctx, l4ListenAddress(rule))
+	conn, err := s.listenTransparentOverlayUDP(rule, l4ListenAddress(rule))
 	if err != nil {
 		return err
 	}
@@ -332,11 +328,7 @@ func (s *Server) startWireGuardTransparentUDPListener(rule model.L4Rule) error {
 
 func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, error) {
 	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		runtime, err := s.wireGuardRuntime(rule)
-		if err != nil {
-			return nil, err
-		}
-		conn, err := runtime.ListenUDP(s.ctx, addrStr)
+		conn, err := s.listenOverlayUDP(rule, addrStr)
 		if err != nil {
 			return nil, err
 		}

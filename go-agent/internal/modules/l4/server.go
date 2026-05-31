@@ -28,13 +28,11 @@ type RelayMaterialProvider interface {
 	relay.TLSMaterialProvider
 }
 
-type overlayRuntimeProvider interface {
-	WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool)
-}
-
 type serverOptions struct {
 	cache                *backends.Cache
-	overlayProvider      overlayRuntimeProvider
+	localAgentID         string
+	overlayRuntime       module.OverlayRuntime
+	transparentListener  module.TransparentListener
 	egressOverlayRuntime module.OverlayRuntime
 	egressResolver       moduleegress.ProfileResolver
 	finalHopDialer       relay.FinalHopDialer
@@ -60,13 +58,15 @@ type Server struct {
 	udpSessionIdleTimeout time.Duration
 	upstreamScore         *upstream.ScoreStore
 
-	relayListenersByID map[int]model.RelayListener
-	relayProvider      RelayMaterialProvider
-	relayPathDialer    relayplan.Dialer
-	overlayProvider    overlayRuntimeProvider
-	finalHopDialer     relay.FinalHopDialer
-	egressDialer       moduleegress.Dialer
-	tcpDialer          func(context.Context, string, string) (net.Conn, error)
+	relayListenersByID  map[int]model.RelayListener
+	relayProvider       RelayMaterialProvider
+	relayPathDialer     relayplan.Dialer
+	localAgentID        string
+	overlayRuntime      module.OverlayRuntime
+	transparentListener module.TransparentListener
+	finalHopDialer      relay.FinalHopDialer
+	egressDialer        moduleegress.Dialer
+	tcpDialer           func(context.Context, string, string) (net.Conn, error)
 
 	tcpMu    sync.Mutex
 	tcpConns map[net.Conn]struct{}
@@ -101,9 +101,9 @@ func NewServerWithProviders(
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
-	overlayProvider overlayRuntimeProvider,
+	overlayRuntime module.OverlayRuntime,
 ) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{overlayProvider: overlayProvider})
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{overlayRuntime: overlayRuntime})
 }
 
 func NewServerWithEgressProfiles(
@@ -132,7 +132,9 @@ func NewServerWithResourcesAndProviders(
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
-	overlayProvider overlayRuntimeProvider,
+	overlayRuntime module.OverlayRuntime,
+	transparentListener module.TransparentListener,
+	localAgentID string,
 	egressOverlayRuntime module.OverlayRuntime,
 	egressResolver moduleegress.ProfileResolver,
 	finalHopDialer relay.FinalHopDialer,
@@ -140,7 +142,9 @@ func NewServerWithResourcesAndProviders(
 ) (*Server, error) {
 	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{
 		cache:                cache,
-		overlayProvider:      overlayProvider,
+		localAgentID:         localAgentID,
+		overlayRuntime:       overlayRuntime,
+		transparentListener:  transparentListener,
 		egressOverlayRuntime: egressOverlayRuntime,
 		egressResolver:       egressResolver,
 		finalHopDialer:       finalHopDialer,
@@ -181,8 +185,10 @@ func newServerWithOptions(
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
-		relayPathDialer:       relayPathDialer{provider: relayProvider, overlayProvider: options.overlayProvider},
-		overlayProvider:       options.overlayProvider,
+		relayPathDialer:       relayPathDialer{provider: relayProvider, overlayRuntime: options.overlayRuntime, transparentListener: options.transparentListener, overlayAgentID: options.localAgentID},
+		localAgentID:          strings.TrimSpace(options.localAgentID),
+		overlayRuntime:        options.overlayRuntime,
+		transparentListener:   options.transparentListener,
 		finalHopDialer:        options.finalHopDialer,
 		egressDialer:          moduleegress.Dialer{Resolver: options.egressResolver, OverlayRuntime: options.egressOverlayRuntime},
 		tcpDialer:             (&net.Dialer{}).DialContext,

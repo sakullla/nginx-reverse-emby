@@ -33,14 +33,7 @@ func (s *Server) startTCPListener(rule model.L4Rule) error {
 
 func (s *Server) listenTCP(rule model.L4Rule, addr string) (net.Listener, error) {
 	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		runtime, err := s.wireGuardRuntime(rule)
-		if err != nil {
-			return nil, err
-		}
-		if isWireGuardTransparentForwardRule(rule) && rule.ListenPort == 0 {
-			return runtime.ListenTransparentTCP(s.ctx)
-		}
-		return runtime.ListenTCP(s.ctx, addr)
+		return s.listenOverlayTCP(rule, addr)
 	}
 	return net.Listen("tcp", addr)
 }

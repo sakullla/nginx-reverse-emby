@@ -1459,7 +1459,7 @@ func TestWireGuardListenMissingProviderReturnsError(t *testing.T) {
 		WireGuardProfileID: &profileID,
 		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
 	}}, nil, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "wireguard runtime provider") {
+	if err == nil || !strings.Contains(err.Error(), "overlay runtime provider") {
 		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
 	}
 }
@@ -2839,7 +2839,7 @@ func TestDialProxyEntryWireGuardEgressUsesRelayLayers(t *testing.T) {
 			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
 		},
 		relayPathDialer: dialer,
-		overlayProvider: fakeL4WireGuardProvider{
+		overlayRuntime: fakeL4OverlayRuntime{
 			runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 		},
 	}

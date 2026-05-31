@@ -154,7 +154,9 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	nextServer, err := retryRuntimeBindConflict(ctx, func() (*Server, error) {
 		return newServerWithOptions(ctx, rules, relayListeners, providers.Relay, serverOptions{
 			cache:                m.cache,
-			overlayProvider:      providers.overlayRelayProvider(m.localAgentID),
+			localAgentID:         m.localAgentID,
+			overlayRuntime:       providers.Overlay,
+			transparentListener:  providers.TransparentListener,
 			egressOverlayRuntime: providers.EgressOverlay,
 			egressResolver:       providers.egressResolver(),
 			finalHopDialer:       providers.FinalHopDialer,
@@ -295,7 +297,9 @@ func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, cl
 	server, err := retryRuntimeBindConflict(ctx, func() (*Server, error) {
 		return newServerWithOptions(ctx, state.rules, state.relayListeners, providers.Relay, serverOptions{
 			cache:                m.cache,
-			overlayProvider:      providers.overlayRelayProvider(m.localAgentID),
+			localAgentID:         m.localAgentID,
+			overlayRuntime:       providers.Overlay,
+			transparentListener:  providers.TransparentListener,
 			egressOverlayRuntime: providers.EgressOverlay,
 			egressResolver:       providers.egressResolver(),
 			finalHopDialer:       providers.FinalHopDialer,
@@ -633,88 +637,6 @@ func (d moduleFinalHopDialer) DialTCP(ctx context.Context, target string, profil
 
 func (d moduleFinalHopDialer) OpenUDP(ctx context.Context, target string, profileID *int) (relay.UDPPacketPeer, error) {
 	return d.dialer.OpenUDP(ctx, target, profileID)
-}
-
-func (p Providers) overlayRelayProvider(agentID string) overlayRuntimeProvider {
-	if p.Overlay == nil && p.TransparentListener == nil {
-		return nil
-	}
-	return moduleOverlayRuntimeProvider{
-		overlay:     p.Overlay,
-		transparent: p.TransparentListener,
-		agentID:     strings.TrimSpace(agentID),
-	}
-}
-
-type moduleOverlayRuntimeProvider struct {
-	overlay     module.OverlayRuntime
-	transparent module.TransparentListener
-	agentID     string
-}
-
-func (p moduleOverlayRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
-	return p.WireGuardRuntimeForAgent(p.agentID, profileID)
-}
-
-func (p moduleOverlayRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
-	if p.overlay == nil && p.transparent == nil || profileID <= 0 {
-		return nil, false
-	}
-	return moduleOverlayWireGuardRuntime{
-		overlay:     p.overlay,
-		transparent: p.transparent,
-		agentID:     strings.TrimSpace(agentID),
-		profileID:   profileID,
-	}, true
-}
-
-func (p moduleOverlayRuntimeProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {
-	if hop.Listener.WireGuardProfileID == nil || *hop.Listener.WireGuardProfileID <= 0 {
-		return nil, false
-	}
-	return p.WireGuardRuntimeForAgent(hop.Listener.AgentID, *hop.Listener.WireGuardProfileID)
-}
-
-type moduleOverlayWireGuardRuntime struct {
-	overlay     module.OverlayRuntime
-	transparent module.TransparentListener
-	agentID     string
-	profileID   int
-}
-
-func (r moduleOverlayWireGuardRuntime) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {
-	if r.overlay == nil {
-		return nil, fmt.Errorf("overlay runtime provider is required")
-	}
-	return r.overlay.DialContext(ctx, r.agentID, r.profileID, network, address)
-}
-
-func (r moduleOverlayWireGuardRuntime) ListenTCP(ctx context.Context, address string) (net.Listener, error) {
-	if r.overlay == nil {
-		return nil, fmt.Errorf("overlay runtime provider is required")
-	}
-	return r.overlay.ListenTCP(ctx, r.agentID, r.profileID, address)
-}
-
-func (r moduleOverlayWireGuardRuntime) ListenTransparentTCP(ctx context.Context) (net.Listener, error) {
-	if r.transparent == nil {
-		return nil, fmt.Errorf("transparent listener provider is required")
-	}
-	return r.transparent.ListenTransparentTCP(ctx, r.agentID, r.profileID)
-}
-
-func (r moduleOverlayWireGuardRuntime) ListenUDP(ctx context.Context, address string) (net.PacketConn, error) {
-	if r.overlay == nil {
-		return nil, fmt.Errorf("overlay runtime provider is required")
-	}
-	return r.overlay.ListenUDP(ctx, r.agentID, r.profileID, address)
-}
-
-func (r moduleOverlayWireGuardRuntime) ListenTransparentUDP(ctx context.Context, address string) (module.TransparentUDPConn, error) {
-	if r.transparent == nil {
-		return nil, fmt.Errorf("transparent listener provider is required")
-	}
-	return r.transparent.ListenTransparentUDP(ctx, r.agentID, r.profileID, address)
 }
 
 func retryRuntimeBindConflict[T any](ctx context.Context, start func() (T, error)) (T, error) {

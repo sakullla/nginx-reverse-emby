@@ -228,7 +228,7 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 	previous := m.server
 	overlappingBindings := previous != nil && bindingKeysOverlap(l4ServerBindingKeys(previous), l4RuleBindingKeys(rules))
 	if previous != nil && !overlappingBindings {
-		server, err := l4.NewServerWithResourcesAndProviders(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, moduleegress.NewResolver(egressProfiles), moduleegress.NewFinalHopDialer(egressProfiles, egressProvider), egressProfiles)
+		server, err := newCompatL4Server(ctx, rules, relayListeners, m.provider, m.cache, provider, m.localAgentID, egressProvider, egressProfiles)
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
 			if transaction != nil {
@@ -257,7 +257,7 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 		m.server = nil
 	}
 	server, err := retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
-		return l4.NewServerWithResourcesAndProviders(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, moduleegress.NewResolver(egressProfiles), moduleegress.NewFinalHopDialer(egressProfiles, egressProvider), egressProfiles)
+		return newCompatL4Server(ctx, rules, relayListeners, m.provider, m.cache, provider, m.localAgentID, egressProvider, egressProfiles)
 	})
 	if err != nil && previous != nil && m.canRecreateWireGuardRuntimeForBindConflict(err, rules, wireGuardProfiles) {
 		if transaction != nil {
@@ -269,7 +269,7 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 		} else {
 			provider = m.wireGuardProvider
 			server, err = retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
-				return l4.NewServerWithResourcesAndProviders(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, moduleegress.NewResolver(egressProfiles), moduleegress.NewFinalHopDialer(egressProfiles, egressProvider), egressProfiles)
+				return newCompatL4Server(ctx, rules, relayListeners, m.provider, m.cache, provider, m.localAgentID, egressProvider, egressProfiles)
 			})
 		}
 	}
@@ -325,7 +325,7 @@ func (m *l4RuntimeManager) restorePreviousServerLocked(ctx context.Context) erro
 		return nil
 	}
 	server, err := retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
-		return l4.NewServerWithResourcesAndProviders(ctx, m.lastRules, m.lastRelayListeners, m.provider, m.cache, m.wireGuardProvider, m.egressWireGuard.Provider(), moduleegress.NewResolver(m.lastEgressProfiles), moduleegress.NewFinalHopDialer(m.lastEgressProfiles, m.egressWireGuard.Provider()), m.lastEgressProfiles)
+		return newCompatL4Server(ctx, m.lastRules, m.lastRelayListeners, m.provider, m.cache, m.wireGuardProvider, m.localAgentID, m.egressWireGuard.Provider(), m.lastEgressProfiles)
 	})
 	if err != nil {
 		if m.server != nil && isRuntimeBindConflict(err) {
@@ -340,6 +340,101 @@ func (m *l4RuntimeManager) restorePreviousServerLocked(ctx context.Context) erro
 		_ = abandoned.Close()
 	}
 	return nil
+}
+
+func newCompatL4Server(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	relayProvider relay.TLSMaterialProvider,
+	cache *backends.Cache,
+	wireGuardProvider relayWireGuardProvider,
+	localAgentID string,
+	egressProvider module.OverlayRuntime,
+	egressProfiles []model.EgressProfile,
+) (*l4.Server, error) {
+	overlay, transparent := compatL4OverlayProviders(wireGuardProvider)
+	return l4.NewServerWithResourcesAndProviders(
+		ctx,
+		rules,
+		relayListeners,
+		relayProvider,
+		cache,
+		overlay,
+		transparent,
+		localAgentID,
+		egressProvider,
+		moduleegress.NewResolver(egressProfiles),
+		moduleegress.NewFinalHopDialer(egressProfiles, egressProvider),
+		egressProfiles,
+	)
+}
+
+func compatL4OverlayProviders(provider relayWireGuardProvider) (module.OverlayRuntime, module.TransparentListener) {
+	if provider == nil {
+		return nil, nil
+	}
+	overlay := compatL4OverlayProvider{provider: provider}
+	return overlay, overlay
+}
+
+type compatL4OverlayProvider struct {
+	provider relayWireGuardProvider
+}
+
+func (p compatL4OverlayProvider) runtime(agentID string, profileID int) (relay.WireGuardRuntime, error) {
+	if agentProvider, ok := any(p.provider).(interface {
+		WireGuardRuntimeForAgent(string, int) (relay.WireGuardRuntime, bool)
+	}); ok && strings.TrimSpace(agentID) != "" {
+		if runtime, ok := agentProvider.WireGuardRuntimeForAgent(agentID, profileID); ok && runtime != nil {
+			return runtime, nil
+		}
+	}
+	runtime, ok := p.provider.WireGuardRuntime(profileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard profile %d runtime not found", profileID)
+	}
+	return runtime, nil
+}
+
+func (p compatL4OverlayProvider) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
+	runtime, err := p.runtime(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.DialContext(ctx, network, address)
+}
+
+func (p compatL4OverlayProvider) ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error) {
+	runtime, err := p.runtime(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenTCP(ctx, address)
+}
+
+func (p compatL4OverlayProvider) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
+	runtime, err := p.runtime(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenUDP(ctx, address)
+}
+
+func (p compatL4OverlayProvider) ListenTransparentTCP(ctx context.Context, agentID string, profileID int) (net.Listener, error) {
+	runtime, err := p.runtime(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenTransparentTCP(ctx)
+}
+
+func (p compatL4OverlayProvider) ListenTransparentUDP(ctx context.Context, agentID string, profileID int, address string) (module.TransparentUDPConn, error) {
+	runtime, err := p.runtime(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenTransparentUDP(ctx, address)
 }
 
 func (m *l4RuntimeManager) storeLastAppliedInputsLocked(rules []model.L4Rule, relayListeners []model.RelayListener, egressProfiles []model.EgressProfile) {

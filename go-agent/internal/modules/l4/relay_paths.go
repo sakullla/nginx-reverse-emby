@@ -10,14 +10,17 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 )
 
 type relayPathDialer struct {
-	provider        RelayMaterialProvider
-	overlayProvider overlayRuntimeProvider
+	provider            RelayMaterialProvider
+	overlayRuntime      module.OverlayRuntime
+	transparentListener module.TransparentListener
+	overlayAgentID      string
 }
 
 func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
@@ -25,10 +28,14 @@ func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, pa
 	if len(req.Options) > 0 {
 		options = req.Options[0]
 	}
-	if options.WireGuardProvider == nil {
-		if d.overlayProvider != nil {
-			options.WireGuardProvider = relayOverlayProvider{provider: d.overlayProvider}
-		}
+	if options.OverlayRuntime == nil {
+		options.OverlayRuntime = d.overlayRuntime
+	}
+	if options.TransparentListener == nil {
+		options.TransparentListener = d.transparentListener
+	}
+	if strings.TrimSpace(options.OverlayAgentID) == "" {
+		options.OverlayAgentID = d.overlayAgentID
 	}
 	return relay.DialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, options)
 }
@@ -168,7 +175,7 @@ func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOp
 	}
 	dialer := s.relayPathDialer
 	if dialer == nil {
-		dialer = relayPathDialer{provider: s.relayProvider, overlayProvider: s.overlayProvider}
+		dialer = relayPathDialer{provider: s.relayProvider, overlayRuntime: s.overlayRuntime, transparentListener: s.transparentListener, overlayAgentID: s.localAgentID}
 	}
 	racer := relayplan.Racer{Dialer: dialer, Cache: s.cache, Concurrency: 3, MaxPaths: 32}
 	result, err := racer.Race(s.ctx, relayplan.Request{
@@ -221,29 +228,50 @@ func ruleUsesRelay(rule model.L4Rule) bool {
 	return relayroute.UsesRelay(nil, rule.RelayLayers)
 }
 
-func (s *Server) wireGuardRuntime(rule model.L4Rule) (relay.WireGuardRuntime, error) {
+func (s *Server) overlayProfileID(rule model.L4Rule) (int, error) {
 	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
-		return nil, fmt.Errorf("wireguard_profile_id is required")
+		return 0, fmt.Errorf("wireguard_profile_id is required")
 	}
-	if s.overlayProvider == nil {
-		return nil, fmt.Errorf("wireguard runtime provider is required")
-	}
-	runtime, ok := s.overlayProvider.WireGuardRuntime(*rule.WireGuardProfileID)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard profile %d runtime not found", *rule.WireGuardProfileID)
-	}
-	return runtime, nil
+	return *rule.WireGuardProfileID, nil
 }
 
-type relayOverlayProvider struct {
-	provider overlayRuntimeProvider
+func (s *Server) listenOverlayTCP(rule model.L4Rule, address string) (net.Listener, error) {
+	profileID, err := s.overlayProfileID(rule)
+	if err != nil {
+		return nil, err
+	}
+	if isWireGuardTransparentForwardRule(rule) && rule.ListenPort == 0 {
+		if s.transparentListener == nil {
+			return nil, fmt.Errorf("transparent listener provider is required")
+		}
+		return s.transparentListener.ListenTransparentTCP(s.ctx, s.localAgentID, profileID)
+	}
+	if s.overlayRuntime == nil {
+		return nil, fmt.Errorf("overlay runtime provider is required")
+	}
+	return s.overlayRuntime.ListenTCP(s.ctx, s.localAgentID, profileID, address)
 }
 
-func (p relayOverlayProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
-	if p.provider == nil {
-		return nil, false
+func (s *Server) listenOverlayUDP(rule model.L4Rule, address string) (net.PacketConn, error) {
+	profileID, err := s.overlayProfileID(rule)
+	if err != nil {
+		return nil, err
 	}
-	return p.provider.WireGuardRuntime(profileID)
+	if s.overlayRuntime == nil {
+		return nil, fmt.Errorf("overlay runtime provider is required")
+	}
+	return s.overlayRuntime.ListenUDP(s.ctx, s.localAgentID, profileID, address)
+}
+
+func (s *Server) listenTransparentOverlayUDP(rule model.L4Rule, address string) (module.TransparentUDPConn, error) {
+	profileID, err := s.overlayProfileID(rule)
+	if err != nil {
+		return nil, err
+	}
+	if s.transparentListener == nil {
+		return nil, fmt.Errorf("transparent listener provider is required")
+	}
+	return s.transparentListener.ListenTransparentUDP(s.ctx, s.localAgentID, profileID, address)
 }
 
 func l4ListenAddress(rule model.L4Rule) string {

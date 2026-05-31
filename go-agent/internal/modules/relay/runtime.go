@@ -10,15 +10,19 @@ import (
 	"sync"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type DialOptions struct {
-	InitialPayload    []byte
-	TrafficClass      upstream.TrafficClass
-	OutboundProxyURL  string
-	EgressProfileID   *int
-	WireGuardProvider WireGuardRuntimeProvider
+	InitialPayload      []byte
+	TrafficClass        upstream.TrafficClass
+	OutboundProxyURL    string
+	EgressProfileID     *int
+	OverlayRuntime      module.OverlayRuntime
+	TransparentListener module.TransparentListener
+	OverlayAgentID      string
+	WireGuardProvider   WireGuardRuntimeProvider
 }
 
 type FinalHopDialer interface {
@@ -44,18 +48,24 @@ func (o DialOptions) clone() DialOptions {
 	}
 	if len(o.InitialPayload) == 0 {
 		return DialOptions{
-			TrafficClass:      o.TrafficClass,
-			OutboundProxyURL:  o.OutboundProxyURL,
-			EgressProfileID:   egressProfileID,
-			WireGuardProvider: o.WireGuardProvider,
+			TrafficClass:        o.TrafficClass,
+			OutboundProxyURL:    o.OutboundProxyURL,
+			EgressProfileID:     egressProfileID,
+			OverlayRuntime:      o.OverlayRuntime,
+			TransparentListener: o.TransparentListener,
+			OverlayAgentID:      o.OverlayAgentID,
+			WireGuardProvider:   o.WireGuardProvider,
 		}
 	}
 	return DialOptions{
-		InitialPayload:    append([]byte(nil), o.InitialPayload...),
-		TrafficClass:      o.TrafficClass,
-		OutboundProxyURL:  o.OutboundProxyURL,
-		EgressProfileID:   egressProfileID,
-		WireGuardProvider: o.WireGuardProvider,
+		InitialPayload:      append([]byte(nil), o.InitialPayload...),
+		TrafficClass:        o.TrafficClass,
+		OutboundProxyURL:    o.OutboundProxyURL,
+		EgressProfileID:     egressProfileID,
+		OverlayRuntime:      o.OverlayRuntime,
+		TransparentListener: o.TransparentListener,
+		OverlayAgentID:      o.OverlayAgentID,
+		WireGuardProvider:   o.WireGuardProvider,
 	}
 }
 

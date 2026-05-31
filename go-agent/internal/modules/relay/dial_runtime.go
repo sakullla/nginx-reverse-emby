@@ -41,6 +41,7 @@ func (s *Server) openUpstream(network, target string, chain []Hop, options DialO
 
 func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, options DialOptions) (net.Conn, DialResult, error) {
 	if len(chain) > 0 {
+		options.applyOverlayRuntimeProvider()
 		if options.WireGuardProvider == nil {
 			options.WireGuardProvider = s.wireGuardProvider
 		}
@@ -75,6 +76,7 @@ func (s *Server) openUDPPeerWithResult(target string, chain []Hop) (udpPacketPee
 
 func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, options DialOptions) (udpPacketPeer, string, error) {
 	if len(chain) > 0 {
+		options.applyOverlayRuntimeProvider()
 		if options.WireGuardProvider == nil {
 			options.WireGuardProvider = s.wireGuardProvider
 		}
@@ -127,6 +129,7 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	if len(opts) > 0 {
 		options = opts[0].clone()
 	}
+	options.applyOverlayRuntimeProvider()
 	if options.WireGuardProvider == nil {
 		options.WireGuardProvider = DefaultWireGuardRuntimeProvider()
 	}
@@ -238,6 +241,7 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 
 func ResolveCandidatesWithOptions(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) ([]string, error) {
 	options = options.clone()
+	options.applyOverlayRuntimeProvider()
 	if options.WireGuardProvider == nil {
 		options.WireGuardProvider = DefaultWireGuardRuntimeProvider()
 	}
