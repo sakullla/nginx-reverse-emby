@@ -154,7 +154,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	nextServer, err := retryRuntimeBindConflict(ctx, func() (*Server, error) {
 		return newServerWithOptions(ctx, rules, relayListeners, providers.Relay, serverOptions{
 			cache:                m.cache,
-			wireGuardProvider:    providers.overlayRelayProvider(m.localAgentID),
+			overlayProvider:      providers.overlayRelayProvider(m.localAgentID),
 			egressOverlayRuntime: providers.EgressOverlay,
 			egressResolver:       providers.egressResolver(),
 			finalHopDialer:       providers.FinalHopDialer,
@@ -295,7 +295,7 @@ func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, cl
 	server, err := retryRuntimeBindConflict(ctx, func() (*Server, error) {
 		return newServerWithOptions(ctx, state.rules, state.relayListeners, providers.Relay, serverOptions{
 			cache:                m.cache,
-			wireGuardProvider:    providers.overlayRelayProvider(m.localAgentID),
+			overlayProvider:      providers.overlayRelayProvider(m.localAgentID),
 			egressOverlayRuntime: providers.EgressOverlay,
 			egressResolver:       providers.egressResolver(),
 			finalHopDialer:       providers.FinalHopDialer,
@@ -635,7 +635,7 @@ func (d moduleFinalHopDialer) OpenUDP(ctx context.Context, target string, profil
 	return d.dialer.OpenUDP(ctx, target, profileID)
 }
 
-func (p Providers) overlayRelayProvider(agentID string) relay.WireGuardRuntimeProvider {
+func (p Providers) overlayRelayProvider(agentID string) overlayRuntimeProvider {
 	if p.Overlay == nil && p.TransparentListener == nil {
 		return nil
 	}

@@ -16,8 +16,8 @@ import (
 )
 
 type relayPathDialer struct {
-	provider          RelayMaterialProvider
-	wireGuardProvider relay.WireGuardRuntimeProvider
+	provider        RelayMaterialProvider
+	overlayProvider overlayRuntimeProvider
 }
 
 func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
@@ -26,7 +26,9 @@ func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, pa
 		options = req.Options[0]
 	}
 	if options.WireGuardProvider == nil {
-		options.WireGuardProvider = d.wireGuardProvider
+		if d.overlayProvider != nil {
+			options.WireGuardProvider = relayOverlayProvider{provider: d.overlayProvider}
+		}
 	}
 	return relay.DialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, options)
 }
@@ -166,7 +168,7 @@ func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOp
 	}
 	dialer := s.relayPathDialer
 	if dialer == nil {
-		dialer = relayPathDialer{provider: s.relayProvider, wireGuardProvider: s.wireGuardProvider}
+		dialer = relayPathDialer{provider: s.relayProvider, overlayProvider: s.overlayProvider}
 	}
 	racer := relayplan.Racer{Dialer: dialer, Cache: s.cache, Concurrency: 3, MaxPaths: 32}
 	result, err := racer.Race(s.ctx, relayplan.Request{
@@ -223,14 +225,25 @@ func (s *Server) wireGuardRuntime(rule model.L4Rule) (relay.WireGuardRuntime, er
 	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
 		return nil, fmt.Errorf("wireguard_profile_id is required")
 	}
-	if s.wireGuardProvider == nil {
+	if s.overlayProvider == nil {
 		return nil, fmt.Errorf("wireguard runtime provider is required")
 	}
-	runtime, ok := s.wireGuardProvider.WireGuardRuntime(*rule.WireGuardProfileID)
+	runtime, ok := s.overlayProvider.WireGuardRuntime(*rule.WireGuardProfileID)
 	if !ok || runtime == nil {
 		return nil, fmt.Errorf("wireguard profile %d runtime not found", *rule.WireGuardProfileID)
 	}
 	return runtime, nil
+}
+
+type relayOverlayProvider struct {
+	provider overlayRuntimeProvider
+}
+
+func (p relayOverlayProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+	if p.provider == nil {
+		return nil, false
+	}
+	return p.provider.WireGuardRuntime(profileID)
 }
 
 func l4ListenAddress(rule model.L4Rule) string {

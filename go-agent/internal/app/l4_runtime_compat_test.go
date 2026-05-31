@@ -12,6 +12,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
@@ -227,7 +228,7 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 	previous := m.server
 	overlappingBindings := previous != nil && bindingKeysOverlap(l4ServerBindingKeys(previous), l4RuleBindingKeys(rules))
 	if previous != nil && !overlappingBindings {
-		server, err := l4.NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, egressProfiles)
+		server, err := l4.NewServerWithResourcesAndProviders(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, moduleegress.NewResolver(egressProfiles), moduleegress.NewFinalHopDialer(egressProfiles, egressProvider), egressProfiles)
 		if err == nil {
 			server.SetTrafficBlockState(m.currentTrafficBlockState())
 			if transaction != nil {
@@ -256,7 +257,7 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 		m.server = nil
 	}
 	server, err := retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
-		return l4.NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, egressProfiles)
+		return l4.NewServerWithResourcesAndProviders(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, moduleegress.NewResolver(egressProfiles), moduleegress.NewFinalHopDialer(egressProfiles, egressProvider), egressProfiles)
 	})
 	if err != nil && previous != nil && m.canRecreateWireGuardRuntimeForBindConflict(err, rules, wireGuardProfiles) {
 		if transaction != nil {
@@ -268,7 +269,7 @@ func (m *l4RuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(
 		} else {
 			provider = m.wireGuardProvider
 			server, err = retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
-				return l4.NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, egressProfiles)
+				return l4.NewServerWithResourcesAndProviders(ctx, rules, relayListeners, m.provider, m.cache, provider, egressProvider, moduleegress.NewResolver(egressProfiles), moduleegress.NewFinalHopDialer(egressProfiles, egressProvider), egressProfiles)
 			})
 		}
 	}
@@ -324,7 +325,7 @@ func (m *l4RuntimeManager) restorePreviousServerLocked(ctx context.Context) erro
 		return nil
 	}
 	server, err := retryRuntimeBindConflict(ctx, func() (*l4.Server, error) {
-		return l4.NewServerWithResourcesWireGuardAndEgressRuntime(ctx, m.lastRules, m.lastRelayListeners, m.provider, m.cache, m.wireGuardProvider, m.egressWireGuard.Provider(), m.lastEgressProfiles)
+		return l4.NewServerWithResourcesAndProviders(ctx, m.lastRules, m.lastRelayListeners, m.provider, m.cache, m.wireGuardProvider, m.egressWireGuard.Provider(), moduleegress.NewResolver(m.lastEgressProfiles), moduleegress.NewFinalHopDialer(m.lastEgressProfiles, m.egressWireGuard.Provider()), m.lastEgressProfiles)
 	})
 	if err != nil {
 		if m.server != nil && isRuntimeBindConflict(err) {

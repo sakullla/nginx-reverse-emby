@@ -2684,7 +2684,7 @@ func TestSnapshotActivatorUpdatesTrafficBlockStateFromAgentConfigOnlyChange(t *t
 	}
 }
 
-func TestSnapshotActivatorPassesWireGuardProfilesToL4Applier(t *testing.T) {
+func TestSnapshotActivatorAppliesL4RulesWithoutWireGuardProfiles(t *testing.T) {
 	l4Applier := &testWireGuardL4Applier{}
 	app := newAppWithDeps(
 		Config{AgentID: "local-agent"},
@@ -2717,16 +2717,16 @@ func TestSnapshotActivatorPassesWireGuardProfilesToL4Applier(t *testing.T) {
 		t.Fatalf("snapshotActivator returned error: %v", err)
 	}
 
-	calls := l4Applier.wireGuardCalls()
+	calls := l4Applier.snapshotCalls()
 	if len(calls) != 1 {
-		t.Fatalf("ApplyWithRelayAndWireGuardProfiles calls = %d, want 1", len(calls))
+		t.Fatalf("Apply calls = %d, want 1", len(calls))
 	}
-	if len(calls[0].profiles) != 1 || calls[0].profiles[0].ID != profileID {
-		t.Fatalf("wireguard profiles passed to l4 applier = %+v", calls[0].profiles)
+	if len(l4Applier.wireGuardCalls()) != 0 {
+		t.Fatal("snapshotActivator should not call legacy wireguard-aware L4 apply")
 	}
 }
 
-func TestSnapshotActivatorPassesEgressProfilesToL4Applier(t *testing.T) {
+func TestSnapshotActivatorAppliesL4RulesWithoutEgressProfiles(t *testing.T) {
 	l4Applier := &testEgressL4Applier{}
 	app := newAppWithDeps(
 		Config{AgentID: "local-agent"},
@@ -2761,12 +2761,14 @@ func TestSnapshotActivatorPassesEgressProfilesToL4Applier(t *testing.T) {
 		t.Fatalf("snapshotActivator returned error: %v", err)
 	}
 
-	calls := l4Applier.egressProfileCalls()
-	if len(calls) != 1 {
-		t.Fatalf("ApplyWithRelayWireGuardAndEgressProfiles calls = %d, want 1", len(calls))
+	if len(l4Applier.snapshotCalls()) != 1 {
+		t.Fatalf("Apply calls = %d, want 1", len(l4Applier.snapshotCalls()))
 	}
-	if len(calls[0].egressProfiles) != 1 || calls[0].egressProfiles[0].ID != profileID {
-		t.Fatalf("egress profiles passed to l4 applier = %+v", calls[0].egressProfiles)
+	if len(l4Applier.wireGuardCalls()) != 0 {
+		t.Fatal("snapshotActivator should not call legacy wireguard-aware L4 apply")
+	}
+	if len(l4Applier.egressProfileCalls()) != 0 {
+		t.Fatal("snapshotActivator should not call legacy egress-aware L4 apply")
 	}
 }
 

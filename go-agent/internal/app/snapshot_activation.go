@@ -50,12 +50,6 @@ func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
 	if a.l4Applier == nil || snapshot.L4Rules == nil {
 		return nil
 	}
-	if egressAware, ok := a.l4Applier.(L4EgressAwareApplier); ok {
-		return egressAware.ApplyWithRelayWireGuardAndEgressProfiles(ctx, snapshot.L4Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles, snapshot.EgressProfiles)
-	}
-	if wireGuardAware, ok := a.l4Applier.(L4WireGuardAwareApplier); ok {
-		return wireGuardAware.ApplyWithRelayAndWireGuardProfiles(ctx, snapshot.L4Rules, snapshot.RelayListeners, snapshot.WireGuardProfiles)
-	}
 	if relayAware, ok := a.l4Applier.(L4RelayAwareApplier); ok {
 		return relayAware.ApplyWithRelay(ctx, snapshot.L4Rules, snapshot.RelayListeners)
 	}
@@ -182,10 +176,8 @@ func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next 
 	}
 	if a.l4Module == nil && l4ActivationNeeded(previous, next) {
 		if err := a.applyL4Rules(ctx, Snapshot{
-			L4Rules:           next.L4Rules,
-			RelayListeners:    next.RelayListeners,
-			WireGuardProfiles: next.WireGuardProfiles,
-			EgressProfiles:    next.EgressProfiles,
+			L4Rules:        next.L4Rules,
+			RelayListeners: next.RelayListeners,
 		}); err != nil {
 			return err
 		}

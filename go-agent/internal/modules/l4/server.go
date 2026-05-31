@@ -28,9 +28,13 @@ type RelayMaterialProvider interface {
 	relay.TLSMaterialProvider
 }
 
+type overlayRuntimeProvider interface {
+	WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool)
+}
+
 type serverOptions struct {
 	cache                *backends.Cache
-	wireGuardProvider    relay.WireGuardRuntimeProvider
+	overlayProvider      overlayRuntimeProvider
 	egressOverlayRuntime module.OverlayRuntime
 	egressResolver       moduleegress.ProfileResolver
 	finalHopDialer       relay.FinalHopDialer
@@ -59,7 +63,7 @@ type Server struct {
 	relayListenersByID map[int]model.RelayListener
 	relayProvider      RelayMaterialProvider
 	relayPathDialer    relayplan.Dialer
-	wireGuardProvider  relay.WireGuardRuntimeProvider
+	overlayProvider    overlayRuntimeProvider
 	finalHopDialer     relay.FinalHopDialer
 	egressDialer       moduleegress.Dialer
 	tcpDialer          func(context.Context, string, string) (net.Conn, error)
@@ -92,6 +96,16 @@ func NewServer(
 	return NewServerWithResources(ctx, rules, relayListeners, relayProvider, nil)
 }
 
+func NewServerWithProviders(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	relayProvider RelayMaterialProvider,
+	overlayProvider overlayRuntimeProvider,
+) (*Server, error) {
+	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{overlayProvider: overlayProvider})
+}
+
 func NewServerWithEgressProfiles(
 	ctx context.Context,
 	rules []model.L4Rule,
@@ -100,16 +114,6 @@ func NewServerWithEgressProfiles(
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
 	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{egressProfiles: egressProfiles})
-}
-
-func NewServerWithWireGuardProvider(
-	ctx context.Context,
-	rules []model.L4Rule,
-	relayListeners []model.RelayListener,
-	relayProvider RelayMaterialProvider,
-	wireGuardProvider relay.WireGuardRuntimeProvider,
-) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{wireGuardProvider: wireGuardProvider})
 }
 
 func NewServerWithResources(
@@ -122,43 +126,24 @@ func NewServerWithResources(
 	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{cache: cache})
 }
 
-func NewServerWithResourcesAndWireGuardProvider(
+func NewServerWithResourcesAndProviders(
 	ctx context.Context,
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
-	wireGuardProvider relay.WireGuardRuntimeProvider,
-) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{cache: cache, wireGuardProvider: wireGuardProvider})
-}
-
-func NewServerWithResourcesWireGuardAndEgressProfiles(
-	ctx context.Context,
-	rules []model.L4Rule,
-	relayListeners []model.RelayListener,
-	relayProvider RelayMaterialProvider,
-	cache *backends.Cache,
-	wireGuardProvider relay.WireGuardRuntimeProvider,
-	egressProfiles []model.EgressProfile,
-) (*Server, error) {
-	return NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider, nil, egressProfiles)
-}
-
-func NewServerWithResourcesWireGuardAndEgressRuntime(
-	ctx context.Context,
-	rules []model.L4Rule,
-	relayListeners []model.RelayListener,
-	relayProvider RelayMaterialProvider,
-	cache *backends.Cache,
-	wireGuardProvider relay.WireGuardRuntimeProvider,
+	overlayProvider overlayRuntimeProvider,
 	egressOverlayRuntime module.OverlayRuntime,
+	egressResolver moduleegress.ProfileResolver,
+	finalHopDialer relay.FinalHopDialer,
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
 	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{
 		cache:                cache,
-		wireGuardProvider:    wireGuardProvider,
+		overlayProvider:      overlayProvider,
 		egressOverlayRuntime: egressOverlayRuntime,
+		egressResolver:       egressResolver,
+		finalHopDialer:       finalHopDialer,
 		egressProfiles:       egressProfiles,
 	})
 }
@@ -196,8 +181,8 @@ func newServerWithOptions(
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
-		relayPathDialer:       relayPathDialer{provider: relayProvider, wireGuardProvider: options.wireGuardProvider},
-		wireGuardProvider:     options.wireGuardProvider,
+		relayPathDialer:       relayPathDialer{provider: relayProvider, overlayProvider: options.overlayProvider},
+		overlayProvider:       options.overlayProvider,
 		finalHopDialer:        options.finalHopDialer,
 		egressDialer:          moduleegress.Dialer{Resolver: options.egressResolver, OverlayRuntime: options.egressOverlayRuntime},
 		tcpDialer:             (&net.Dialer{}).DialContext,

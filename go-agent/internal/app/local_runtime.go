@@ -17,10 +17,6 @@ type RelayApplier interface {
 	Close() error
 }
 
-type L4WireGuardAwareApplier interface {
-	ApplyWithRelayAndWireGuardProfiles(context.Context, []model.L4Rule, []model.RelayListener, []model.WireGuardProfile) error
-}
-
 func l4RuleUsesWireGuard(rule model.L4Rule) bool {
 	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
 }

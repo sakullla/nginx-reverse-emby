@@ -2839,7 +2839,7 @@ func TestDialProxyEntryWireGuardEgressUsesRelayLayers(t *testing.T) {
 			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
 		},
 		relayPathDialer: dialer,
-		wireGuardProvider: fakeL4WireGuardProvider{
+		overlayProvider: fakeL4WireGuardProvider{
 			runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 		},
 	}
