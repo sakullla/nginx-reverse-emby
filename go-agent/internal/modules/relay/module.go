@@ -103,14 +103,18 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		return nil, err
 	}
 
+	committed := false
 	return module.TransactionFuncs{
 		CommitFunc: func() error {
 			m.mu.Lock()
 			m.runtime = nextRuntime
 			m.mu.Unlock()
 			if oldRuntime != nil && !oldClosed {
-				return oldRuntime.Close()
+				if err := oldRuntime.Close(); err != nil {
+					return err
+				}
 			}
+			committed = true
 			return nil
 		},
 		RollbackFunc: func() error {
@@ -118,7 +122,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 			if nextRuntime != nil {
 				firstErr = nextRuntime.Close()
 			}
-			if oldClosed {
+			if oldClosed || committed {
 				if err := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, finalHop); err != nil && firstErr == nil {
 					firstErr = err
 				}

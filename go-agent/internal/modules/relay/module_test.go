@@ -150,6 +150,44 @@ func TestModuleRollbackRestoresPreviousRuntimeAfterSameAddressPrepare(t *testing
 	}
 }
 
+func TestModuleRollbackAfterCommitRestoresPreviousRuntime(t *testing.T) {
+	firstCertificateID := 1
+	secondCertificateID := 2
+	firstCert := mustIssueTestTLSCertificate(t)
+	secondCert := mustIssueTestTLSCertificate(t)
+	tlsProvider := fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{
+		firstCertificateID:  firstCert,
+		secondCertificateID: secondCert,
+	}}
+	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: tlsProvider})
+	mustRegister(t, registry, mod)
+
+	firstPort := pickFreeTCPPort(t)
+	secondPort := pickFreeTCPPort(t)
+	previous := model.Snapshot{RelayListeners: []model.RelayListener{testRelayListener(41, "agent-a", "node-a", firstPort, firstCertificateID)}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+
+	failErr := errors.New("later commit failed")
+	mustRegister(t, registry, commitFailingModule{name: "later-transaction", err: failErr})
+	next := model.Snapshot{RelayListeners: []model.RelayListener{testRelayListener(42, "agent-a", "node-a", secondPort, secondCertificateID)}}
+	err := registry.Apply(context.Background(), previous, next)
+	if !errors.Is(err, failErr) {
+		t.Fatalf("Apply() error = %v, want later commit failure", err)
+	}
+
+	restored := dialServedCertificate(t, firstPort)
+	if !certificateDEREqual(restored, firstCert) {
+		t.Fatal("post-commit rollback did not restore the previous relay runtime")
+	}
+	if _, err := tls.DialWithDialer(&net.Dialer{Timeout: 50 * time.Millisecond}, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(secondPort)), &tls.Config{InsecureSkipVerify: true}); err == nil {
+		t.Fatal("post-commit rollback left the replacement relay runtime serving")
+	}
+}
+
 type fakeTLSMaterialProvider struct {
 	certificates map[int]tls.Certificate
 }
@@ -218,6 +256,27 @@ func (failingModule) Capabilities(module.SnapshotView) []module.Capability {
 }
 func (m failingModule) Apply(context.Context, module.ApplyRequest) error { return m.err }
 func (failingModule) Stop(context.Context) error                         { return nil }
+
+type commitFailingModule struct {
+	name string
+	err  error
+}
+
+func (m commitFailingModule) Name() string { return m.name }
+
+func (m commitFailingModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name}
+}
+
+func (commitFailingModule) RegisterProviders(module.ProviderRegistry) error { return nil }
+func (commitFailingModule) Capabilities(module.SnapshotView) []module.Capability {
+	return nil
+}
+func (commitFailingModule) Apply(context.Context, module.ApplyRequest) error { return nil }
+func (m commitFailingModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	return module.TransactionFuncs{CommitFunc: func() error { return m.err }}, nil
+}
+func (commitFailingModule) Stop(context.Context) error { return nil }
 
 func mustRegister(t *testing.T, registry *module.Registry, mod any) {
 	t.Helper()
