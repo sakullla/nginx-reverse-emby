@@ -29,7 +29,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -371,7 +371,7 @@ func TestL4TCPWireGuardEgressProfileUsesEgressRuntimeProvider(t *testing.T) {
 		Backends:        []model.L4Backend{{Host: "127.0.0.1", Port: backend.Port()}},
 		EgressProfileID: &profileID,
 	}}, nil, nil, nil,
-		fakeL4WireGuardProvider{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: ordinaryRuntime}},
+		fakeL4OverlayProvider{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: ordinaryRuntime}},
 		fakeL4OverlayRuntime{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: egressRuntime}},
 		[]model.EgressProfile{{
 			ID:              profileID,
@@ -984,7 +984,7 @@ func TestWireGuardTCPListenUsesRuntimeListenTCPWithSelectedHost(t *testing.T) {
 	}
 	profileID := 9
 	listenPort := pickFreeTCPPort(t)
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:            "tcp",
 		ListenHost:          "127.0.0.1",
 		ListenPort:          listenPort,
@@ -992,11 +992,11 @@ func TestWireGuardTCPListenUsesRuntimeListenTCPWithSelectedHost(t *testing.T) {
 		WireGuardProfileID:  &profileID,
 		WireGuardListenHost: "10.64.0.2",
 		Backends:            []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
-	}}, nil, nil, fakeL4WireGuardProvider{
+	}}, nil, nil, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 
@@ -1018,18 +1018,18 @@ func TestWireGuardTCPListenFallsBackToListenHost(t *testing.T) {
 	}
 	profileID := 9
 	listenPort := pickFreeTCPPort(t)
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:           "tcp",
 		ListenHost:         "127.0.0.1",
 		ListenPort:         listenPort,
 		ListenMode:         "wireguard",
 		WireGuardProfileID: &profileID,
 		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
-	}}, nil, nil, fakeL4WireGuardProvider{
+	}}, nil, nil, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 
@@ -1059,7 +1059,7 @@ func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *tes
 			return ln, nil
 		},
 	}
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "tcp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           0,
@@ -1068,11 +1068,11 @@ func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *tes
 		WireGuardProfileID:   &profileID,
 		WireGuardListenHost:  "10.64.0.2",
 		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: backend.Port()}},
-	}}, nil, nil, fakeL4WireGuardProvider{
+	}}, nil, nil, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 
@@ -1132,7 +1132,7 @@ func TestWireGuardTransparentTCPInboundWithRelayEgressUsesRuntimeWildcardListene
 			return net.Listen("tcp", "127.0.0.1:0")
 		},
 	}
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "tcp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           0,
@@ -1151,11 +1151,11 @@ func TestWireGuardTransparentTCPInboundWithRelayEgressUsesRuntimeWildcardListene
 		TLSMode:       "pin_only",
 		PinSet:        []model.RelayPin{{Type: "sha256", Value: "pin101"}},
 		TransportMode: "tls_tcp",
-	}}, &testL4RelayProvider{}, fakeL4WireGuardProvider{
+	}}, &testL4RelayProvider{}, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 	if calls := runtime.listenTransparentTCPCalls(); calls != 1 {
@@ -1174,7 +1174,7 @@ func TestWireGuardTransparentTCPInboundWithPortUsesRuntimeListenTCP(t *testing.T
 		},
 	}
 	listenPort := pickFreeTCPPort(t)
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "tcp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           listenPort,
@@ -1183,11 +1183,11 @@ func TestWireGuardTransparentTCPInboundWithPortUsesRuntimeListenTCP(t *testing.T
 		WireGuardProfileID:   &profileID,
 		WireGuardListenHost:  "10.64.0.2",
 		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
-	}}, nil, nil, fakeL4WireGuardProvider{
+	}}, nil, nil, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 
@@ -1212,7 +1212,7 @@ func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 	}
 	profileID := 9
 	listenPort := pickFreeUDPPort(t)
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:            "udp",
 		ListenHost:          "127.0.0.1",
 		ListenPort:          listenPort,
@@ -1220,11 +1220,11 @@ func TestWireGuardUDPListenUsesRuntimeListenUDPWithSelectedHost(t *testing.T) {
 		WireGuardProfileID:  &profileID,
 		WireGuardListenHost: "10.64.0.2",
 		Backends:            []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeUDPPort(t)}},
-	}}, nil, nil, fakeL4WireGuardProvider{
+	}}, nil, nil, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 
@@ -1246,7 +1246,7 @@ func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 			return transparentConn, nil
 		},
 	}
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "udp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           0,
@@ -1255,11 +1255,11 @@ func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 		WireGuardProfileID:   &profileID,
 		WireGuardListenHost:  "10.64.0.2",
 		Backends:             []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeUDPPort(t)}},
-	}}, nil, nil, fakeL4WireGuardProvider{
+	}}, nil, nil, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 
@@ -1284,18 +1284,18 @@ func TestWireGuardTransparentUDPInboundWithProxyEgressAccepted(t *testing.T) {
 			return transparentConn, nil
 		},
 	}
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "udp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           0,
 		ListenMode:           "wireguard",
 		WireGuardInboundMode: "transparent",
 		WireGuardProfileID:   &profileID,
-	}}, nil, nil, fakeL4WireGuardProvider{
+	}}, nil, nil, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 	calls := runtime.listenTransparentUDPCalls()
@@ -1333,18 +1333,18 @@ func TestWireGuardTransparentUDPInboundUsesOriginalDestinationAsTarget(t *testin
 			return transparentConn, nil
 		},
 	}
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "udp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           listenPort,
 		ListenMode:           "wireguard",
 		WireGuardInboundMode: "transparent",
 		WireGuardProfileID:   &profileID,
-	}}, nil, nil, fakeL4WireGuardProvider{
+	}}, nil, nil, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 
@@ -1392,18 +1392,18 @@ func TestWireGuardTransparentUDPRepliesPreserveOriginalDestinationSource(t *test
 			return transparentConn, nil
 		},
 	}
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:             "udp",
 		ListenHost:           "0.0.0.0",
 		ListenPort:           listenPort,
 		ListenMode:           "wireguard",
 		WireGuardInboundMode: "transparent",
 		WireGuardProfileID:   &profileID,
-	}}, nil, nil, fakeL4WireGuardProvider{
+	}}, nil, nil, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: runtime},
 	})
 	if err != nil {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 	defer srv.Close()
 
@@ -1451,7 +1451,7 @@ func TestWireGuardTransparentUDPRepliesPreserveOriginalDestinationSource(t *test
 
 func TestWireGuardListenMissingProviderReturnsError(t *testing.T) {
 	profileID := 9
-	_, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	_, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:           "tcp",
 		ListenHost:         "127.0.0.1",
 		ListenPort:         pickFreeTCPPort(t),
@@ -1460,7 +1460,7 @@ func TestWireGuardListenMissingProviderReturnsError(t *testing.T) {
 		Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
 	}}, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "overlay runtime provider") {
-		t.Fatalf("NewServerWithWireGuardProvider() error = %v", err)
+		t.Fatalf("NewServerWithOverlayProvider() error = %v", err)
 	}
 }
 
@@ -3327,7 +3327,7 @@ func TestTCPRelayProxyDefersHostnameResolutionToRealRelayRuntime(t *testing.T) {
 	}
 }
 
-func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
+func TestTCPRelayProxyUsesInjectedOverlayProviderForRelayPath(t *testing.T) {
 	upstream := newTCPEchoListener(t)
 	defer upstream.Close()
 
@@ -3356,9 +3356,9 @@ func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
 			return (&net.Dialer{}).DialContext(ctx, network, fmt.Sprintf("127.0.0.1:%d", relayPublicPort))
 		},
 	}
-	oldDefaultProvider := relay.DefaultWireGuardRuntimeProvider()
-	relay.SetDefaultWireGuardRuntimeProvider(nil)
-	defer relay.SetDefaultWireGuardRuntimeProvider(oldDefaultProvider)
+	oldDefaultProvider := relay.DefaultOverlayRuntimeProvider()
+	relay.SetDefaultOverlayRuntimeProvider(nil)
+	defer relay.SetDefaultOverlayRuntimeProvider(oldDefaultProvider)
 
 	certificateID := 510
 	relayListener := model.RelayListener{
@@ -3382,13 +3382,13 @@ func TestTCPRelayProxyUsesInjectedWireGuardProviderForRelayPath(t *testing.T) {
 	}
 
 	listenPort := pickFreeTCPPort(t)
-	srv, err := NewServerWithWireGuardProvider(context.Background(), []model.L4Rule{{
+	srv, err := NewServerWithOverlayProvider(context.Background(), []model.L4Rule{{
 		Protocol:    "tcp",
 		ListenHost:  "127.0.0.1",
 		ListenPort:  listenPort,
 		Backends:    []model.L4Backend{{Host: "127.0.0.1", Port: upstream.Port()}},
 		RelayLayers: [][]int{{relayListener.ID}},
-	}}, []model.RelayListener{relayListener}, provider, fakeL4WireGuardProvider{
+	}}, []model.RelayListener{relayListener}, provider, fakeL4OverlayProvider{
 		runtimes: map[int]*fakeL4WireGuardRuntime{profileID: wgRuntime},
 	})
 	if err != nil {
@@ -5280,11 +5280,11 @@ func (p *runtimeL4RelayProvider) TrustedCAPool(_ context.Context, _ []int) (*x50
 	return x509.NewCertPool(), nil
 }
 
-type fakeL4WireGuardProvider struct {
+type fakeL4OverlayProvider struct {
 	runtimes map[int]*fakeL4WireGuardRuntime
 }
 
-func (p fakeL4WireGuardProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+func (p fakeL4OverlayProvider) OverlayRuntime(profileID int) (relay.WireGuardRuntime, bool) {
 	runtime, ok := p.runtimes[profileID]
 	if !ok {
 		return nil, false

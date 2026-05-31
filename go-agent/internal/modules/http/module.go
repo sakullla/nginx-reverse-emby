@@ -221,7 +221,7 @@ func (m *Module) runtimeProviders(resolver module.ProviderResolver, egressProfil
 	}
 	overlayProvider, _ := resolver.Resolve(module.ProviderOverlayRuntime)
 	if overlay := overlayRuntimeFromProvider(overlayProvider); overlay != nil {
-		provider.WireGuard = moduleOverlayRuntimeProvider{overlay: overlay}
+		provider.OverlayProvider = moduleOverlayRuntimeProvider{overlay: overlay}
 	}
 	egressOverlayProvider, _ := resolver.Resolve(module.ProviderEgressOverlayRuntime)
 	if overlay := overlayRuntimeFromProvider(egressOverlayProvider); overlay != nil {
@@ -548,22 +548,22 @@ type moduleOverlayRuntimeProvider struct {
 	overlay module.OverlayRuntime
 }
 
-func (p moduleOverlayRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
-	return p.WireGuardRuntimeForAgent("", profileID)
+func (p moduleOverlayRuntimeProvider) OverlayRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+	return p.OverlayRuntimeForAgent("", profileID)
 }
 
-func (p moduleOverlayRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
+func (p moduleOverlayRuntimeProvider) OverlayRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
 	if p.overlay == nil || profileID <= 0 {
 		return nil, false
 	}
 	return moduleOverlayWireGuardRuntime{overlay: p.overlay, agentID: strings.TrimSpace(agentID), profileID: profileID}, true
 }
 
-func (p moduleOverlayRuntimeProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {
+func (p moduleOverlayRuntimeProvider) OverlayRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {
 	if hop.Listener.WireGuardProfileID == nil || *hop.Listener.WireGuardProfileID <= 0 {
 		return nil, false
 	}
-	return p.WireGuardRuntimeForAgent(hop.Listener.AgentID, *hop.Listener.WireGuardProfileID)
+	return p.OverlayRuntimeForAgent(hop.Listener.AgentID, *hop.Listener.WireGuardProfileID)
 }
 
 type moduleOverlayWireGuardRuntime struct {

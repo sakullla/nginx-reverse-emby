@@ -56,11 +56,11 @@ func probeDiagnosticRelayPaths(ctx context.Context, network string, target strin
 
 func cloneRelayDialOptions(options relay.DialOptions) relay.DialOptions {
 	return relay.DialOptions{
-		InitialPayload:    append([]byte(nil), options.InitialPayload...),
-		TrafficClass:      options.TrafficClass,
-		OutboundProxyURL:  options.OutboundProxyURL,
-		EgressProfileID:   cloneOptionalInt(options.EgressProfileID),
-		WireGuardProvider: options.WireGuardProvider,
+		InitialPayload:   append([]byte(nil), options.InitialPayload...),
+		TrafficClass:     options.TrafficClass,
+		OutboundProxyURL: options.OutboundProxyURL,
+		EgressProfileID:  cloneOptionalInt(options.EgressProfileID),
+		OverlayProvider:  options.OverlayProvider,
 	}
 }
 

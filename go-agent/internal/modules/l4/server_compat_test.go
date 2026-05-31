@@ -11,12 +11,12 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
-func NewServerWithWireGuardProvider(
+func NewServerWithOverlayProvider(
 	ctx context.Context,
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
-	wireGuardProvider relay.WireGuardRuntimeProvider,
+	wireGuardProvider relay.OverlayRuntimeProvider,
 ) (*Server, error) {
 	overlay, transparent := testWireGuardOverlayProviders(wireGuardProvider)
 	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{
@@ -25,13 +25,13 @@ func NewServerWithWireGuardProvider(
 	})
 }
 
-func NewServerWithResourcesAndWireGuardProvider(
+func NewServerWithResourcesAndOverlayProvider(
 	ctx context.Context,
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
-	wireGuardProvider relay.WireGuardRuntimeProvider,
+	wireGuardProvider relay.OverlayRuntimeProvider,
 ) (*Server, error) {
 	overlay, transparent := testWireGuardOverlayProviders(wireGuardProvider)
 	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{
@@ -47,7 +47,7 @@ func NewServerWithResourcesWireGuardAndEgressProfiles(
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
-	wireGuardProvider relay.WireGuardRuntimeProvider,
+	wireGuardProvider relay.OverlayRuntimeProvider,
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
 	return NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider, nil, egressProfiles)
@@ -59,7 +59,7 @@ func NewServerWithResourcesWireGuardAndEgressRuntime(
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
-	wireGuardProvider relay.WireGuardRuntimeProvider,
+	wireGuardProvider relay.OverlayRuntimeProvider,
 	egressOverlayRuntime module.OverlayRuntime,
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
@@ -74,10 +74,10 @@ func NewServerWithResourcesWireGuardAndEgressRuntime(
 }
 
 type testWireGuardOverlayProvider struct {
-	provider relay.WireGuardRuntimeProvider
+	provider relay.OverlayRuntimeProvider
 }
 
-func testWireGuardOverlayProviders(provider relay.WireGuardRuntimeProvider) (module.OverlayRuntime, module.TransparentListener) {
+func testWireGuardOverlayProviders(provider relay.OverlayRuntimeProvider) (module.OverlayRuntime, module.TransparentListener) {
 	if provider == nil {
 		return nil, nil
 	}
@@ -86,7 +86,7 @@ func testWireGuardOverlayProviders(provider relay.WireGuardRuntimeProvider) (mod
 }
 
 func (p testWireGuardOverlayProvider) runtime(agentID string, profileID int) (relay.WireGuardRuntime, error) {
-	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
+	runtime, ok := relay.ResolveOverlayRuntime(p.provider, agentID, profileID)
 	if !ok || runtime == nil {
 		return nil, fmt.Errorf("wireguard profile %d runtime not found", profileID)
 	}

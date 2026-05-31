@@ -22,7 +22,7 @@ type DialOptions struct {
 	OverlayRuntime      module.OverlayRuntime
 	TransparentListener module.TransparentListener
 	OverlayAgentID      string
-	WireGuardProvider   WireGuardRuntimeProvider
+	OverlayProvider     OverlayRuntimeProvider
 }
 
 type FinalHopDialer interface {
@@ -36,8 +36,8 @@ type DialResult struct {
 }
 
 type StartOptions struct {
-	WireGuardProvider WireGuardRuntimeProvider
-	FinalHopDialer    FinalHopDialer
+	OverlayProvider OverlayRuntimeProvider
+	FinalHopDialer  FinalHopDialer
 }
 
 func (o DialOptions) clone() DialOptions {
@@ -54,7 +54,7 @@ func (o DialOptions) clone() DialOptions {
 			OverlayRuntime:      o.OverlayRuntime,
 			TransparentListener: o.TransparentListener,
 			OverlayAgentID:      o.OverlayAgentID,
-			WireGuardProvider:   o.WireGuardProvider,
+			OverlayProvider:     o.OverlayProvider,
 		}
 	}
 	return DialOptions{
@@ -65,16 +65,16 @@ func (o DialOptions) clone() DialOptions {
 		OverlayRuntime:      o.OverlayRuntime,
 		TransparentListener: o.TransparentListener,
 		OverlayAgentID:      o.OverlayAgentID,
-		WireGuardProvider:   o.WireGuardProvider,
+		OverlayProvider:     o.OverlayProvider,
 	}
 }
 
 type Server struct {
-	ctx               context.Context
-	cancel            context.CancelFunc
-	provider          TLSMaterialProvider
-	wireGuardProvider WireGuardRuntimeProvider
-	finalHopSelector  *finalHopSelector
+	ctx              context.Context
+	cancel           context.CancelFunc
+	provider         TLSMaterialProvider
+	overlayProvider  OverlayRuntimeProvider
+	finalHopSelector *finalHopSelector
 
 	wg sync.WaitGroup
 
@@ -96,10 +96,10 @@ func Start(ctx context.Context, listeners []Listener, provider TLSMaterialProvid
 func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMaterialProvider, options StartOptions) (*Server, error) {
 	runtimeCtx, cancel := context.WithCancel(ctx)
 	server := &Server{
-		ctx:               runtimeCtx,
-		cancel:            cancel,
-		provider:          provider,
-		wireGuardProvider: options.WireGuardProvider,
+		ctx:             runtimeCtx,
+		cancel:          cancel,
+		provider:        provider,
+		overlayProvider: options.OverlayProvider,
 		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
 			FinalHopDialer: options.FinalHopDialer,
 		}),
@@ -186,10 +186,10 @@ func (s *Server) listenWireGuardTCP(listener Listener, addr string) (net.Listene
 	if listener.WireGuardProfileID == nil || *listener.WireGuardProfileID <= 0 {
 		return nil, fmt.Errorf("wireguard_profile_id is required for wireguard transport")
 	}
-	if s.wireGuardProvider == nil {
+	if s.overlayProvider == nil {
 		return nil, fmt.Errorf("wireguard runtime provider is required")
 	}
-	runtime, ok := ResolveWireGuardRuntime(s.wireGuardProvider, listener.AgentID, *listener.WireGuardProfileID)
+	runtime, ok := ResolveOverlayRuntime(s.overlayProvider, listener.AgentID, *listener.WireGuardProfileID)
 	if !ok || runtime == nil {
 		return nil, fmt.Errorf("wireguard profile %d runtime not found", *listener.WireGuardProfileID)
 	}

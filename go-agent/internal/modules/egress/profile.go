@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 )
 
 type Resolver struct {

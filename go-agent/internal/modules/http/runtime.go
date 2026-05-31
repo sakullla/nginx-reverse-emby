@@ -242,13 +242,13 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 			if err != nil {
 				return nil, err
 			}
-			if providers.WireGuard == nil {
-				return nil, fmt.Errorf("http rule %q: wireguard runtime provider is required", rule.FrontendURL)
+			if providers.OverlayProvider == nil {
+				return nil, fmt.Errorf("http rule %q: overlay runtime provider is required", rule.FrontendURL)
 			}
 			if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
 				return nil, fmt.Errorf("http rule %q: wireguard_profile_id is required", rule.FrontendURL)
 			}
-			if runtime, ok := relay.ResolveWireGuardRuntime(providers.WireGuard, rule.AgentID, *rule.WireGuardProfileID); !ok || runtime == nil {
+			if runtime, ok := relay.ResolveOverlayRuntime(providers.OverlayProvider, rule.AgentID, *rule.WireGuardProfileID); !ok || runtime == nil {
 				return nil, fmt.Errorf("http rule %q: wireguard profile %d runtime not found", rule.FrontendURL, *rule.WireGuardProfileID)
 			}
 			if _, ok := groups[wgSpec.key]; !ok {
@@ -299,10 +299,10 @@ func listenRuntimeSpecTCP(ctx context.Context, spec runtimeListenerSpec, provide
 	if spec.wireGuardProfileID == nil {
 		return net.Listen("tcp", spec.address)
 	}
-	if providers.WireGuard == nil {
-		return nil, fmt.Errorf("wireguard runtime provider is required")
+	if providers.OverlayProvider == nil {
+		return nil, fmt.Errorf("overlay runtime provider is required")
 	}
-	runtime, ok := relay.ResolveWireGuardRuntime(providers.WireGuard, spec.wireGuardAgentID, *spec.wireGuardProfileID)
+	runtime, ok := relay.ResolveOverlayRuntime(providers.OverlayProvider, spec.wireGuardAgentID, *spec.wireGuardProfileID)
 	if !ok || runtime == nil {
 		return nil, fmt.Errorf("wireguard profile %d runtime not found", *spec.wireGuardProfileID)
 	}

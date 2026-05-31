@@ -10,7 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 )
 
 const socks5UDPTestTimeout = time.Second

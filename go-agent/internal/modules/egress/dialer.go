@@ -9,7 +9,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 )
 
 type Dialer struct {

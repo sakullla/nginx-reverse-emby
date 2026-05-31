@@ -162,7 +162,7 @@ func TestHTTPRuntimeUsesWireGuardListenerForInnerEntry(t *testing.T) {
 		WireGuardProfileID:       &profileID,
 		WireGuardEntryListenHost: "127.0.0.1",
 		WireGuardEntryListenPort: wireGuardPort,
-	}}, nil, Providers{WireGuard: fakeHTTPWireGuardProvider{runtimes: map[int]*fakeHTTPWireGuardRuntime{profileID: wgRuntime}}})
+	}}, nil, Providers{OverlayProvider: fakeHTTPOverlayProvider{runtimes: map[int]*fakeHTTPWireGuardRuntime{profileID: wgRuntime}}})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -209,7 +209,7 @@ func TestHTTPRuntimeUsesRuleAgentForWireGuardEntryRuntime(t *testing.T) {
 			return net.Listen("tcp", address)
 		},
 	}
-	provider := &fakeAgentHTTPWireGuardProvider{
+	provider := &fakeAgentHTTPOverlayProvider{
 		runtimes: map[string]map[int]*fakeHTTPWireGuardRuntime{
 			"local":  {profileID: localRuntime},
 			"remote": {profileID: remoteRuntime},
@@ -225,7 +225,7 @@ func TestHTTPRuntimeUsesRuleAgentForWireGuardEntryRuntime(t *testing.T) {
 		WireGuardProfileID:       &profileID,
 		WireGuardEntryListenHost: "127.0.0.1",
 		WireGuardEntryListenPort: wireGuardPort,
-	}}, nil, Providers{WireGuard: provider})
+	}}, nil, Providers{OverlayProvider: provider})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -244,7 +244,7 @@ func TestHTTPRuntimeUsesRuleAgentForWireGuardEntryRuntime(t *testing.T) {
 
 func TestHTTPRuntimeWireGuardEntryBindingKeysIncludeRuleAgent(t *testing.T) {
 	profileID := 7
-	provider := &fakeAgentHTTPWireGuardProvider{
+	provider := &fakeAgentHTTPOverlayProvider{
 		runtimes: map[string]map[int]*fakeHTTPWireGuardRuntime{
 			"local":  {profileID: {}},
 			"remote": {profileID: {}},
@@ -271,7 +271,7 @@ func TestHTTPRuntimeWireGuardEntryBindingKeysIncludeRuleAgent(t *testing.T) {
 		},
 	}
 
-	keys, err := BindingKeys(context.Background(), rules, nil, Providers{WireGuard: provider})
+	keys, err := BindingKeys(context.Background(), rules, nil, Providers{OverlayProvider: provider})
 	if err != nil {
 		t.Fatalf("BindingKeys() error = %v", err)
 	}
@@ -325,16 +325,16 @@ func isAddressInUseError(err error) bool {
 	return errors.As(err, &errno) && errno == syscall.EADDRINUSE
 }
 
-type fakeHTTPWireGuardProvider struct {
+type fakeHTTPOverlayProvider struct {
 	runtimes map[int]*fakeHTTPWireGuardRuntime
 }
 
-func (p fakeHTTPWireGuardProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+func (p fakeHTTPOverlayProvider) OverlayRuntime(profileID int) (relay.WireGuardRuntime, bool) {
 	runtime, ok := p.runtimes[profileID]
 	return runtime, ok
 }
 
-type fakeAgentHTTPWireGuardProvider struct {
+type fakeAgentHTTPOverlayProvider struct {
 	runtimes      map[string]map[int]*fakeHTTPWireGuardRuntime
 	legacyCalls   int
 	agentCalls    int
@@ -342,13 +342,13 @@ type fakeAgentHTTPWireGuardProvider struct {
 	lastProfileID int
 }
 
-func (p *fakeAgentHTTPWireGuardProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+func (p *fakeAgentHTTPOverlayProvider) OverlayRuntime(profileID int) (relay.WireGuardRuntime, bool) {
 	p.legacyCalls++
 	runtime, ok := p.runtimes["local"][profileID]
 	return runtime, ok
 }
 
-func (p *fakeAgentHTTPWireGuardProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
+func (p *fakeAgentHTTPOverlayProvider) OverlayRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
 	p.agentCalls++
 	p.lastAgentID = agentID
 	p.lastProfileID = profileID

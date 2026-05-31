@@ -15,7 +15,7 @@ import (
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 

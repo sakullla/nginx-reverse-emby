@@ -462,22 +462,22 @@ func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMa
 
 func dialRelayRawTCP(ctx context.Context, hop Hop, options DialOptions) (net.Conn, error) {
 	if normalizeListenerTransportModeValue(hop.Listener.TransportMode) == ListenerTransportModeWireGuard {
-		if options.WireGuardProvider == nil {
-			options.WireGuardProvider = DefaultWireGuardRuntimeProvider()
+		if options.OverlayProvider == nil {
+			options.OverlayProvider = DefaultOverlayRuntimeProvider()
 		}
-		return dialRelayWireGuardTCP(ctx, hop, options.WireGuardProvider)
+		return dialRelayWireGuardTCP(ctx, hop, options.OverlayProvider)
 	}
 	return dialRelayTCPWithProxy(ctx, hop.Address, hop.Listener, options.OutboundProxyURL)
 }
 
-func dialRelayWireGuardTCP(ctx context.Context, hop Hop, provider WireGuardRuntimeProvider) (net.Conn, error) {
+func dialRelayWireGuardTCP(ctx context.Context, hop Hop, provider OverlayRuntimeProvider) (net.Conn, error) {
 	if hop.Listener.WireGuardProfileID == nil || *hop.Listener.WireGuardProfileID <= 0 {
 		return nil, fmt.Errorf("wireguard_profile_id is required for wireguard transport")
 	}
 	if provider == nil {
 		return nil, fmt.Errorf("wireguard runtime provider is required")
 	}
-	runtime, ok := ResolveWireGuardRuntimeForHop(provider, hop)
+	runtime, ok := ResolveOverlayRuntimeForHop(provider, hop)
 	if !ok || runtime == nil {
 		return nil, fmt.Errorf("wireguard profile %d runtime not found", *hop.Listener.WireGuardProfileID)
 	}

@@ -33,48 +33,48 @@ type WireGuardRuntime interface {
 	ListenTransparentUDP(ctx context.Context, address string) (module.TransparentUDPConn, error)
 }
 
-type WireGuardRuntimeProvider interface {
-	WireGuardRuntime(profileID int) (WireGuardRuntime, bool)
+type OverlayRuntimeProvider interface {
+	OverlayRuntime(profileID int) (WireGuardRuntime, bool)
 }
 
-type AgentWireGuardRuntimeProvider interface {
-	WireGuardRuntimeProvider
-	WireGuardRuntimeForAgent(agentID string, profileID int) (WireGuardRuntime, bool)
+type AgentOverlayRuntimeProvider interface {
+	OverlayRuntimeProvider
+	OverlayRuntimeForAgent(agentID string, profileID int) (WireGuardRuntime, bool)
 }
 
-type HopWireGuardRuntimeProvider interface {
-	WireGuardRuntimeForHop(hop Hop) (WireGuardRuntime, bool)
+type HopOverlayRuntimeProvider interface {
+	OverlayRuntimeForHop(hop Hop) (WireGuardRuntime, bool)
 }
 
-func ResolveWireGuardRuntime(provider WireGuardRuntimeProvider, agentID string, profileID int) (WireGuardRuntime, bool) {
+func ResolveOverlayRuntime(provider OverlayRuntimeProvider, agentID string, profileID int) (WireGuardRuntime, bool) {
 	if provider == nil {
 		return nil, false
 	}
-	if agentProvider, ok := provider.(AgentWireGuardRuntimeProvider); ok && agentID != "" {
-		return agentProvider.WireGuardRuntimeForAgent(agentID, profileID)
+	if agentProvider, ok := provider.(AgentOverlayRuntimeProvider); ok && agentID != "" {
+		return agentProvider.OverlayRuntimeForAgent(agentID, profileID)
 	}
-	return provider.WireGuardRuntime(profileID)
+	return provider.OverlayRuntime(profileID)
 }
 
-func ResolveWireGuardRuntimeForHop(provider WireGuardRuntimeProvider, hop Hop) (WireGuardRuntime, bool) {
+func ResolveOverlayRuntimeForHop(provider OverlayRuntimeProvider, hop Hop) (WireGuardRuntime, bool) {
 	if provider == nil || hop.Listener.WireGuardProfileID == nil || *hop.Listener.WireGuardProfileID <= 0 {
 		return nil, false
 	}
-	runtime, ok := ResolveWireGuardRuntime(provider, hop.Listener.AgentID, *hop.Listener.WireGuardProfileID)
+	runtime, ok := ResolveOverlayRuntime(provider, hop.Listener.AgentID, *hop.Listener.WireGuardProfileID)
 	if ok {
 		return runtime, true
 	}
-	if hopProvider, ok := provider.(HopWireGuardRuntimeProvider); ok {
-		return hopProvider.WireGuardRuntimeForHop(hop)
+	if hopProvider, ok := provider.(HopOverlayRuntimeProvider); ok {
+		return hopProvider.OverlayRuntimeForHop(hop)
 	}
 	return nil, false
 }
 
 func (o *DialOptions) applyOverlayRuntimeProvider() {
-	if o == nil || o.WireGuardProvider != nil || o.OverlayRuntime == nil {
+	if o == nil || o.OverlayProvider != nil || o.OverlayRuntime == nil {
 		return
 	}
-	o.WireGuardProvider = overlayRuntimeProvider{
+	o.OverlayProvider = overlayRuntimeProvider{
 		overlay:     o.OverlayRuntime,
 		transparent: o.TransparentListener,
 		agentID:     strings.TrimSpace(o.OverlayAgentID),
@@ -87,11 +87,11 @@ type overlayRuntimeProvider struct {
 	agentID     string
 }
 
-func (p overlayRuntimeProvider) WireGuardRuntime(profileID int) (WireGuardRuntime, bool) {
-	return p.WireGuardRuntimeForAgent(p.agentID, profileID)
+func (p overlayRuntimeProvider) OverlayRuntime(profileID int) (WireGuardRuntime, bool) {
+	return p.OverlayRuntimeForAgent(p.agentID, profileID)
 }
 
-func (p overlayRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (WireGuardRuntime, bool) {
+func (p overlayRuntimeProvider) OverlayRuntimeForAgent(agentID string, profileID int) (WireGuardRuntime, bool) {
 	if p.overlay == nil || profileID <= 0 {
 		return nil, false
 	}
@@ -103,11 +103,11 @@ func (p overlayRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profile
 	}, true
 }
 
-func (p overlayRuntimeProvider) WireGuardRuntimeForHop(hop Hop) (WireGuardRuntime, bool) {
+func (p overlayRuntimeProvider) OverlayRuntimeForHop(hop Hop) (WireGuardRuntime, bool) {
 	if hop.Listener.WireGuardProfileID == nil || *hop.Listener.WireGuardProfileID <= 0 {
 		return nil, false
 	}
-	return p.WireGuardRuntimeForAgent(hop.Listener.AgentID, *hop.Listener.WireGuardProfileID)
+	return p.OverlayRuntimeForAgent(hop.Listener.AgentID, *hop.Listener.WireGuardProfileID)
 }
 
 type overlayRuntime struct {

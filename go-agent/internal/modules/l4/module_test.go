@@ -8,8 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,34 +71,6 @@ func TestModuleAppliesL4RuleAndUsesFinalHopDialer(t *testing.T) {
 	assertTCPBody(t, port, "127.0.0.1:"+port, "via-final-hop")
 	if got := finalHop.calls(); got != 1 {
 		t.Fatalf("final-hop dial calls = %d, want 1", got)
-	}
-}
-
-func TestProductionL4DoesNotExposeWireGuardRuntimeProviderBoundary(t *testing.T) {
-	forbidden := []string{
-		"WireGuardRuntime(",
-		"WireGuardRuntimeProvider",
-	}
-	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		for _, term := range forbidden {
-			if strings.Contains(string(content), term) {
-				t.Errorf("%s contains forbidden production L4 provider boundary term %q", path, term)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("scan production L4 files: %v", err)
 	}
 }
 

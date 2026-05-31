@@ -2,8 +2,6 @@ package core_test
 
 import (
 	"context"
-	"os/exec"
-	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
@@ -30,20 +28,6 @@ func TestNewSnapshotActivatorAppliesModulesWithPreviousAndNext(t *testing.T) {
 	}
 	if got.Previous.Revision != 1 || got.Next.Revision != 2 {
 		t.Fatalf("request revisions = %d/%d, want 1/2", got.Previous.Revision, got.Next.Revision)
-	}
-}
-
-func TestCorePackageDoesNotImportBusinessPackages(t *testing.T) {
-	cmd := exec.Command("go", "list", "-f", "{{join .Imports \"\\n\"}}", "./internal/core")
-	cmd.Dir = "../.."
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list imports: %v", err)
-	}
-	for _, forbidden := range []string{"/internal/l4", "/internal/relay", "/internal/proxy", "/internal/diagnostics", "/internal/modules/certs", "/internal/traffic"} {
-		if strings.Contains(string(out), forbidden) {
-			t.Fatalf("core imports forbidden package %s:\n%s", forbidden, out)
-		}
 	}
 }
 

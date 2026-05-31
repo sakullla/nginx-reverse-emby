@@ -33,13 +33,13 @@ type RelayMaterialProvider interface {
 }
 
 type Providers struct {
-	TLS            TLSMaterialProvider
-	Relay          RelayMaterialProvider
-	WireGuard      relay.WireGuardRuntimeProvider
-	EgressProfiles []model.EgressProfile
-	EgressOverlay  module.OverlayRuntime
-	EgressResolver module.EgressResolver
-	FinalHopDialer relay.FinalHopDialer
+	TLS             TLSMaterialProvider
+	Relay           RelayMaterialProvider
+	OverlayProvider relay.OverlayRuntimeProvider
+	EgressProfiles  []model.EgressProfile
+	EgressOverlay   module.OverlayRuntime
+	EgressResolver  module.EgressResolver
+	FinalHopDialer  relay.FinalHopDialer
 }
 
 type routeEntry struct {
