@@ -14,7 +14,7 @@ Parent-level assets such as `panel/`, `scripts/`, `Dockerfile`, and `docker-comp
 ## Build, Test, and Development Commands
 - `make test` or `go test ./...` - run the full Go agent test suite.
 - `make run` or `go run ./cmd/nre-agent` - run the agent locally.
-- `go test ./internal/relay ./internal/proxy` - run focused package tests while iterating.
+- `go test ./internal/modules/relay ./internal/proxy` - run focused package tests while iterating.
 - `go test -run TestName ./internal/package` - run a single test by name.
 - From the repo root, `docker build -t nginx-reverse-emby .` validates image-impacting changes.
 

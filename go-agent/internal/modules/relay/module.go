@@ -128,6 +128,9 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 				firstErr = nextRuntime.Close()
 			}
 			if oldClosed || committed {
+				if err := restoreOverlayForRollback(ctx, previousListeners, overlay); err != nil && firstErr == nil {
+					firstErr = err
+				}
 				if err := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, finalHop); err != nil && firstErr == nil {
 					firstErr = err
 				}
@@ -232,6 +235,30 @@ func relayEffectiveInputsEqual(previousListeners, nextListeners []model.RelayLis
 		return false
 	}
 	return true
+}
+
+type rollbackOverlayRestorer interface {
+	RestorePreviousRuntimeForRollback(context.Context) error
+}
+
+func restoreOverlayForRollback(ctx context.Context, listeners []model.RelayListener, overlay any) error {
+	if !hasWireGuardRelayListener(listeners) {
+		return nil
+	}
+	restorer, ok := overlay.(rollbackOverlayRestorer)
+	if !ok || restorer == nil {
+		return nil
+	}
+	return restorer.RestorePreviousRuntimeForRollback(ctx)
+}
+
+func hasWireGuardRelayListener(listeners []model.RelayListener) bool {
+	for _, listener := range listeners {
+		if listener.Enabled && strings.EqualFold(strings.TrimSpace(listener.TransportMode), ListenerTransportModeWireGuard) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateRelayListeners(ctx context.Context, listeners []model.RelayListener, provider TLSMaterialProvider) error {

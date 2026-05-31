@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -232,7 +233,7 @@ func TestModulePrepareUsesPendingWireGuardOverlayRuntime(t *testing.T) {
 	cert := mustIssueTestTLSCertificate(t)
 	tlsProvider := fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{certificateID: cert}}
 	wireGuardRuntime := modulewireguard.NewRuntime(func(context.Context, modulewireguard.Config) (modulewireguard.RuntimeHandle, error) {
-		return relayWireGuardRuntime{}, nil
+		return &relayWireGuardRuntime{}, nil
 	})
 	defer wireGuardRuntime.Close()
 	relayModule := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
@@ -253,6 +254,54 @@ func TestModulePrepareUsesPendingWireGuardOverlayRuntime(t *testing.T) {
 	}
 	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
 		t.Fatalf("Apply() error = %v", err)
+	}
+}
+
+func TestModuleRollbackRestoresWireGuardRelayOnPreviousOverlayRuntime(t *testing.T) {
+	certificateID := 1
+	cert := mustIssueTestTLSCertificate(t)
+	tlsProvider := fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{certificateID: cert}}
+	wireGuardRuntime := modulewireguard.NewRuntime(func(_ context.Context, cfg modulewireguard.Config) (modulewireguard.RuntimeHandle, error) {
+		return &relayWireGuardRuntime{profileID: cfg.ID}, nil
+	})
+	defer wireGuardRuntime.Close()
+	relayModule := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &tlsProvider})
+	mustRegister(t, registry, modulewireguard.NewModule(wireGuardRuntime))
+	mustRegister(t, registry, relayModule)
+
+	profileID := 92
+	port := pickFreeTCPPort(t)
+	listener := testRelayListener(92, "agent-a", "node-a", port, certificateID)
+	listener.TransportMode = relaymodule.ListenerTransportModeWireGuard
+	listener.WireGuardProfileID = &profileID
+	previous := model.Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{testWireGuardProfile(profileID, "agent-a")},
+		RelayListeners:    []model.RelayListener{listener},
+	}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	if got := dialServedCertificate(t, port); !certificateDEREqual(got, cert) {
+		t.Fatal("initial WireGuard relay listener did not serve expected certificate")
+	}
+
+	failErr := errors.New("later commit failed")
+	mustRegister(t, registry, commitFailingModule{name: "later-transaction", err: failErr})
+	nextProfile := testWireGuardProfile(profileID, "agent-a")
+	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
+	next := model.Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{nextProfile},
+		RelayListeners:    []model.RelayListener{listener},
+	}
+	err := registry.Apply(context.Background(), previous, next)
+	if !errors.Is(err, failErr) {
+		t.Fatalf("Apply() error = %v, want later commit failure", err)
+	}
+
+	if got := dialServedCertificate(t, port); !certificateDEREqual(got, cert) {
+		t.Fatal("rollback did not restore WireGuard relay listener on the previous overlay runtime")
 	}
 }
 
@@ -348,29 +397,58 @@ func (m commitFailingModule) Prepare(context.Context, module.ApplyRequest) (modu
 }
 func (commitFailingModule) Stop(context.Context) error { return nil }
 
-type relayWireGuardRuntime struct{}
+type relayWireGuardRuntime struct {
+	mu        sync.Mutex
+	profileID int
+	closed    bool
+	listeners []net.Listener
+}
 
-func (relayWireGuardRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
+func (*relayWireGuardRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, fmt.Errorf("unexpected wireguard dial")
 }
 
-func (relayWireGuardRuntime) ListenTCP(_ context.Context, address string) (net.Listener, error) {
-	return net.Listen("tcp", address)
+func (r *relayWireGuardRuntime) ListenTCP(_ context.Context, address string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		_ = ln.Close()
+		return nil, net.ErrClosed
+	}
+	r.listeners = append(r.listeners, ln)
+	return ln, nil
 }
 
-func (relayWireGuardRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
+func (*relayWireGuardRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
 	return nil, fmt.Errorf("unexpected transparent tcp listen")
 }
 
-func (relayWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
+func (*relayWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
 	return nil, fmt.Errorf("unexpected udp listen")
 }
 
-func (relayWireGuardRuntime) ListenTransparentUDP(context.Context, string) (modulewireguard.TransparentUDPConn, error) {
+func (*relayWireGuardRuntime) ListenTransparentUDP(context.Context, string) (modulewireguard.TransparentUDPConn, error) {
 	return nil, fmt.Errorf("unexpected transparent udp listen")
 }
 
-func (relayWireGuardRuntime) Close() error { return nil }
+func (r *relayWireGuardRuntime) Close() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
+	r.closed = true
+	listeners := append([]net.Listener(nil), r.listeners...)
+	r.mu.Unlock()
+	for _, ln := range listeners {
+		_ = ln.Close()
+	}
+	return nil
+}
 
 func mustRegister(t *testing.T, registry *module.Registry, mod any) {
 	t.Helper()

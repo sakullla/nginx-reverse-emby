@@ -9,8 +9,9 @@ import (
 )
 
 type Module struct {
-	runtime *Runtime
-	pending *Transaction
+	runtime  *Runtime
+	pending  *Transaction
+	rollback *Transaction
 }
 
 func NewModule(runtime *Runtime) *Module {
@@ -76,6 +77,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		return nil, nil
 	}
 	m.pending = transaction
+	m.rollback = nil
 	profiles := CloneWireGuardProfiles(req.Next.WireGuardProfiles)
 	previousProfiles := m.runtime.Profiles()
 	committed := false
@@ -86,6 +88,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 			if m.pending == transaction {
 				m.pending = nil
 			}
+			m.rollback = transaction
 			return nil
 		},
 		RollbackFunc: func() error {
@@ -95,6 +98,9 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 			}
 			if m.pending == transaction {
 				m.pending = nil
+			}
+			if m.rollback == transaction {
+				m.rollback = nil
 			}
 			return nil
 		},
@@ -124,8 +130,28 @@ func (m *Module) runtimeForAgent(agentID string, profileID int) (RuntimeHandle, 
 	return runtime, nil
 }
 
+func (m *Module) restorePreviousRuntimeForRollback(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	if m.pending != nil {
+		return m.pending.RestorePrevious(ctx)
+	}
+	if m.rollback != nil {
+		return m.rollback.RestorePrevious(ctx)
+	}
+	return nil
+}
+
 type moduleOverlayProvider struct {
 	module *Module
+}
+
+func (p moduleOverlayProvider) RestorePreviousRuntimeForRollback(ctx context.Context) error {
+	if p.module == nil {
+		return nil
+	}
+	return p.module.restorePreviousRuntimeForRollback(ctx)
 }
 
 func (p moduleOverlayProvider) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {

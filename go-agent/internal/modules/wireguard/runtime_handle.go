@@ -85,6 +85,7 @@ type Transaction struct {
 	closeFirstReplacements []runtimeReplacement
 	committed              bool
 	rolledBack             bool
+	previousRestored       bool
 }
 
 type runtimeKey struct {
@@ -395,6 +396,32 @@ func (t *Transaction) RuntimeForAgent(agentID string, profileID int) (RuntimeHan
 	return entry.runtime, true
 }
 
+func (t *Transaction) RestorePrevious(ctx context.Context) error {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	if t.rolledBack {
+		t.mu.Unlock()
+		return nil
+	}
+	previous := cloneRuntimeEntries(t.previous)
+	manager := t.manager
+	t.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	if err := manager.restoreRuntimeEntries(ctx, previous); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	if !t.rolledBack {
+		t.previousRestored = true
+	}
+	t.mu.Unlock()
+	return nil
+}
+
 func (t *Transaction) HasCloseFirstReplacements() bool {
 	if t == nil {
 		return false
@@ -441,6 +468,7 @@ func (t *Transaction) Rollback() {
 		return
 	}
 	committed := t.committed
+	previousRestored := t.previousRestored
 	t.rolledBack = true
 	previous := cloneRuntimeEntries(t.previous)
 	candidates := cloneRuntimeEntries(t.candidates)
@@ -451,24 +479,9 @@ func (t *Transaction) Rollback() {
 
 	if committed {
 		if manager != nil {
-			manager.mu.Lock()
-			defer manager.mu.Unlock()
-			for _, current := range manager.runtimes {
-				_ = current.runtime.Close()
+			if !previousRestored {
+				_ = manager.restoreRuntimeEntries(context.Background(), previous)
 			}
-			restored := make(map[runtimeKey]*runtimeEntry, len(previous))
-			for key, entry := range previous {
-				runtime, err := manager.factory(context.Background(), entry.config)
-				if err != nil {
-					continue
-				}
-				restored[key] = &runtimeEntry{
-					fingerprint: entry.fingerprint,
-					config:      cloneConfig(entry.config),
-					runtime:     runtime,
-				}
-			}
-			manager.runtimes = restored
 		}
 		return
 	}
@@ -489,11 +502,46 @@ func (t *Transaction) Rollback() {
 		}
 		_ = candidate.runtime.Close()
 	}
-	if manager != nil {
+	if manager != nil && !previousRestored {
 		manager.mu.Lock()
 		defer manager.mu.Unlock()
 		_ = manager.rollbackCloseFirstReplacements(context.Background(), closeFirstReplacements)
 	}
+}
+
+func (m *Manager) restoreRuntimeEntries(ctx context.Context, previous map[runtimeKey]*runtimeEntry) error {
+	if m == nil {
+		return nil
+	}
+	restored := make(map[runtimeKey]*runtimeEntry, len(previous))
+	for key, entry := range previous {
+		if entry == nil {
+			continue
+		}
+		runtime, err := m.factory(ctx, entry.config)
+		if err != nil {
+			for _, restoredEntry := range restored {
+				_ = restoredEntry.runtime.Close()
+			}
+			return err
+		}
+		restored[key] = &runtimeEntry{
+			fingerprint: entry.fingerprint,
+			config:      cloneConfig(entry.config),
+			runtime:     runtime,
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, current := range m.runtimes {
+		if restoredEntry, ok := restored[key]; ok && restoredEntry.runtime == current.runtime {
+			continue
+		}
+		_ = current.runtime.Close()
+	}
+	m.runtimes = restored
+	return nil
 }
 
 type runtimeReplacement struct {
