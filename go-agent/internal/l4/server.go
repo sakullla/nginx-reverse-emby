@@ -139,7 +139,7 @@ func NewServerWithResourcesWireGuardAndEgressProfiles(
 	wireGuardProvider relay.WireGuardRuntimeProvider,
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
-	return NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider, overlayRuntimeFromWireGuardProvider(wireGuardProvider), egressProfiles)
+	return NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider, nil, egressProfiles)
 }
 
 func NewServerWithResourcesWireGuardAndEgressRuntime(
@@ -234,41 +234,6 @@ func newServerWithOptions(
 		}
 	}
 	return s, nil
-}
-
-type wireGuardProviderOverlayRuntime struct {
-	provider relay.WireGuardRuntimeProvider
-}
-
-func overlayRuntimeFromWireGuardProvider(provider relay.WireGuardRuntimeProvider) module.OverlayRuntime {
-	if provider == nil {
-		return nil
-	}
-	return wireGuardProviderOverlayRuntime{provider: provider}
-}
-
-func (p wireGuardProviderOverlayRuntime) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
-	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
-	}
-	return runtime.DialContext(ctx, network, address)
-}
-
-func (p wireGuardProviderOverlayRuntime) ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error) {
-	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
-	}
-	return runtime.ListenTCP(ctx, address)
-}
-
-func (p wireGuardProviderOverlayRuntime) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
-	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
-	}
-	return runtime.ListenUDP(ctx, address)
 }
 
 func (s *Server) currentTrafficBlockState() TrafficBlockState {

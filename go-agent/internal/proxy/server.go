@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -34,12 +33,11 @@ type RelayMaterialProvider interface {
 }
 
 type Providers struct {
-	TLS             TLSMaterialProvider
-	Relay           RelayMaterialProvider
-	WireGuard       relay.WireGuardRuntimeProvider
-	EgressProfiles  []model.EgressProfile
-	EgressWireGuard relay.WireGuardRuntimeProvider
-	EgressOverlay   module.OverlayRuntime
+	TLS            TLSMaterialProvider
+	Relay          RelayMaterialProvider
+	WireGuard      relay.WireGuardRuntimeProvider
+	EgressProfiles []model.EgressProfile
+	EgressOverlay  module.OverlayRuntime
 }
 
 type routeEntry struct {
@@ -90,7 +88,7 @@ func newServerWithResilience(
 	for _, relayListener := range relayListeners {
 		relayListenersByID[relayListener.ID] = relayListener
 	}
-	egressDialer := moduleegress.Dialer{Resolver: moduleegress.NewResolver(providers.EgressProfiles), OverlayRuntime: providers.egressOverlayRuntime()}
+	egressDialer := moduleegress.Dialer{Resolver: moduleegress.NewResolver(providers.EgressProfiles), OverlayRuntime: providers.EgressOverlay}
 	directInteractiveTransport, directBulkTransport := NewClassedDirectTransports(sharedTransport)
 	for _, rule := range listener.Rules {
 		hostKey := HostFromRule(rule)
@@ -146,44 +144,6 @@ func newServerWithResilience(
 	}
 
 	return s, nil
-}
-
-func (p Providers) egressOverlayRuntime() module.OverlayRuntime {
-	if p.EgressOverlay != nil {
-		return p.EgressOverlay
-	}
-	if p.EgressWireGuard == nil {
-		return nil
-	}
-	return wireGuardProviderOverlayRuntime{provider: p.EgressWireGuard}
-}
-
-type wireGuardProviderOverlayRuntime struct {
-	provider relay.WireGuardRuntimeProvider
-}
-
-func (p wireGuardProviderOverlayRuntime) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
-	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
-	}
-	return runtime.DialContext(ctx, network, address)
-}
-
-func (p wireGuardProviderOverlayRuntime) ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error) {
-	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
-	}
-	return runtime.ListenTCP(ctx, address)
-}
-
-func (p wireGuardProviderOverlayRuntime) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
-	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
-	}
-	return runtime.ListenUDP(ctx, address)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {

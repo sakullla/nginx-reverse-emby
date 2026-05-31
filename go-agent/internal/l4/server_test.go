@@ -371,7 +371,7 @@ func TestL4TCPWireGuardEgressProfileUsesEgressRuntimeProvider(t *testing.T) {
 		EgressProfileID: &profileID,
 	}}, nil, nil, nil,
 		fakeL4WireGuardProvider{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: ordinaryRuntime}},
-		overlayRuntimeFromWireGuardProvider(fakeL4WireGuardProvider{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: egressRuntime}}),
+		fakeL4OverlayRuntime{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: egressRuntime}},
 		[]model.EgressProfile{{
 			ID:              profileID,
 			Type:            "wireguard",
@@ -5289,6 +5289,34 @@ func (p fakeL4WireGuardProvider) WireGuardRuntime(profileID int) (relay.WireGuar
 		return nil, false
 	}
 	return runtime, true
+}
+
+type fakeL4OverlayRuntime struct {
+	runtimes map[int]*fakeL4WireGuardRuntime
+}
+
+func (p fakeL4OverlayRuntime) DialContext(ctx context.Context, _ string, profileID int, network string, address string) (net.Conn, error) {
+	runtime, ok := p.runtimes[profileID]
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
+	}
+	return runtime.DialContext(ctx, network, address)
+}
+
+func (p fakeL4OverlayRuntime) ListenTCP(ctx context.Context, _ string, profileID int, address string) (net.Listener, error) {
+	runtime, ok := p.runtimes[profileID]
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
+	}
+	return runtime.ListenTCP(ctx, address)
+}
+
+func (p fakeL4OverlayRuntime) ListenUDP(ctx context.Context, _ string, profileID int, address string) (net.PacketConn, error) {
+	runtime, ok := p.runtimes[profileID]
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
+	}
+	return runtime.ListenUDP(ctx, address)
 }
 
 type fakeL4WireGuardDialCall struct {
