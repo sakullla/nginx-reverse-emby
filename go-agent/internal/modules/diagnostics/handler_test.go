@@ -1,4 +1,4 @@
-package task
+package diagnostics
 
 import (
 	"context"
@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
 func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T) {
@@ -30,15 +30,15 @@ func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T)
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
 	}
 
-	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{
+	handler := NewDiagnosticHandler(mem, NewHTTPProber(HTTPProberConfig{
 		Attempts:   2,
 		Timeout:    time.Second,
 		HTTPClient: server.Client(),
-	}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{}))
+	}), NewTCPProber(TCPProberConfig{}))
 
-	result, err := handler.HandleTask(context.Background(), TaskMessage{
+	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
 		TaskID:     "task-1",
-		TaskType:   TaskTypeDiagnoseHTTPRule,
+		TaskType:   task.TaskTypeDiagnoseHTTPRule,
 		RawPayload: map[string]any{"rule_id": 7},
 	})
 	if err != nil {
@@ -79,15 +79,15 @@ func TestDiagnosticHandlerReturnsPerBackendResults(t *testing.T) {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
 	}
 
-	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{
+	handler := NewDiagnosticHandler(mem, NewHTTPProber(HTTPProberConfig{
 		Attempts:   5,
 		Timeout:    time.Second,
 		HTTPClient: backendA.Client(),
-	}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{}))
+	}), NewTCPProber(TCPProberConfig{}))
 
-	result, err := handler.HandleTask(context.Background(), TaskMessage{
+	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
 		TaskID:     "task-17",
-		TaskType:   TaskTypeDiagnoseHTTPRule,
+		TaskType:   task.TaskTypeDiagnoseHTTPRule,
 		RawPayload: map[string]any{"rule_id": 17},
 	})
 	if err != nil {
@@ -128,15 +128,15 @@ func TestDiagnosticHandlerSerializesAdaptiveBackendFactors(t *testing.T) {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
 	}
 
-	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{
+	handler := NewDiagnosticHandler(mem, NewHTTPProber(HTTPProberConfig{
 		Attempts:   1,
 		Timeout:    time.Second,
 		HTTPClient: backendA.Client(),
-	}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{}))
+	}), NewTCPProber(TCPProberConfig{}))
 
-	result, err := handler.HandleTask(context.Background(), TaskMessage{
+	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
 		TaskID:     "task-18",
-		TaskType:   TaskTypeDiagnoseHTTPRule,
+		TaskType:   task.TaskTypeDiagnoseHTTPRule,
 		RawPayload: map[string]any{"rule_id": 18},
 	})
 	if err != nil {
@@ -171,16 +171,16 @@ func TestDiagnosticHandlerUsesFiveHTTPSamplesByDefault(t *testing.T) {
 
 	handler := NewDiagnosticHandler(
 		mem,
-		diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{
+		NewHTTPProber(HTTPProberConfig{
 			Timeout:    time.Second,
 			HTTPClient: server.Client(),
 		}),
-		diagnostics.NewTCPProber(diagnostics.TCPProberConfig{}),
+		NewTCPProber(TCPProberConfig{}),
 	)
 
-	result, err := handler.HandleTask(context.Background(), TaskMessage{
+	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
 		TaskID:     "task-27",
-		TaskType:   TaskTypeDiagnoseHTTPRule,
+		TaskType:   task.TaskTypeDiagnoseHTTPRule,
 		RawPayload: map[string]any{"rule_id": 27},
 	})
 	if err != nil {
@@ -226,14 +226,14 @@ func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
 		t.Fatalf("SaveDesiredSnapshot() error = %v", err)
 	}
 
-	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{
+	handler := NewDiagnosticHandler(mem, NewHTTPProber(HTTPProberConfig{}), NewTCPProber(TCPProberConfig{
 		Attempts: 1,
 		Timeout:  time.Second,
 	}))
 
-	result, err := handler.HandleTask(context.Background(), TaskMessage{
+	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
 		TaskID:     "task-2",
-		TaskType:   TaskTypeDiagnoseL4TCPRule,
+		TaskType:   task.TaskTypeDiagnoseL4TCPRule,
 		RawPayload: map[string]any{"rule_id": 9},
 	})
 	if err != nil {
@@ -305,14 +305,14 @@ func TestDiagnosticHandlerReturnsPerBackendResultsForL4Rules(t *testing.T) {
 		t.Fatalf("SaveDesiredSnapshot() error = %v", err)
 	}
 
-	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{
+	handler := NewDiagnosticHandler(mem, NewHTTPProber(HTTPProberConfig{}), NewTCPProber(TCPProberConfig{
 		Attempts: 5,
 		Timeout:  time.Second,
 	}))
 
-	result, err := handler.HandleTask(context.Background(), TaskMessage{
+	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
 		TaskID:     "task-19",
-		TaskType:   TaskTypeDiagnoseL4TCPRule,
+		TaskType:   task.TaskTypeDiagnoseL4TCPRule,
 		RawPayload: map[string]any{"rule_id": 19},
 	})
 	if err != nil {
@@ -371,14 +371,14 @@ func TestDiagnosticHandlerHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *te
 		t.Fatalf("SaveDesiredSnapshot() error = %v", err)
 	}
 
-	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{
+	handler := NewDiagnosticHandler(mem, NewHTTPProber(HTTPProberConfig{}), NewTCPProber(TCPProberConfig{
 		Attempts: 1,
 		Timeout:  time.Second,
 	}))
 
-	result, err := handler.HandleTask(context.Background(), TaskMessage{
+	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
 		TaskID:     "task-45",
-		TaskType:   TaskTypeDiagnoseL4TCPRule,
+		TaskType:   task.TaskTypeDiagnoseL4TCPRule,
 		RawPayload: map[string]any{"rule_id": 45},
 	})
 	if err != nil {
@@ -413,14 +413,14 @@ func TestDiagnosticHandlerDoesNotHydrateMissingAppliedRulesFromNewerDesiredSnaps
 		t.Fatalf("SaveDesiredSnapshot() error = %v", err)
 	}
 
-	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{
+	handler := NewDiagnosticHandler(mem, NewHTTPProber(HTTPProberConfig{}), NewTCPProber(TCPProberConfig{
 		Attempts: 1,
 		Timeout:  time.Second,
 	}))
 
-	_, err := handler.HandleTask(context.Background(), TaskMessage{
+	_, err := handler.HandleTask(context.Background(), task.TaskMessage{
 		TaskID:     "task-45",
-		TaskType:   TaskTypeDiagnoseL4TCPRule,
+		TaskType:   task.TaskTypeDiagnoseL4TCPRule,
 		RawPayload: map[string]any{"rule_id": 45},
 	})
 	if err == nil {
@@ -432,23 +432,23 @@ func TestDiagnosticHandlerDoesNotHydrateMissingAppliedRulesFromNewerDesiredSnaps
 }
 
 func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
-	report := diagnostics.Report{
+	report := Report{
 		Kind:   "http",
 		RuleID: 29,
-		Summary: diagnostics.Summary{
+		Summary: Summary{
 			Sent:      1,
 			Succeeded: 1,
 			Quality:   "极佳",
 		},
-		Backends: []diagnostics.BackendReport{{
+		Backends: []BackendReport{{
 			Backend: "http://backend.example.test/healthz",
 			Address: "",
-			Summary: diagnostics.Summary{
+			Summary: Summary{
 				Sent:      1,
 				Succeeded: 1,
 				Quality:   "极佳",
 			},
-			Adaptive: &diagnostics.AdaptiveSummary{
+			Adaptive: &AdaptiveSummary{
 				Preferred:        true,
 				Reason:           "performance_higher",
 				State:            "recovering",
@@ -457,15 +457,15 @@ func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
 				Outlier:          true,
 				TrafficShareHint: "recovery",
 			},
-			Children: []diagnostics.BackendReport{{
+			Children: []BackendReport{{
 				Backend: "http://backend.example.test/healthz [10.0.0.10:443]",
 				Address: "10.0.0.10:443",
-				Summary: diagnostics.Summary{
+				Summary: Summary{
 					Sent:      1,
 					Succeeded: 1,
 					Quality:   "极佳",
 				},
-				Adaptive: &diagnostics.AdaptiveSummary{
+				Adaptive: &AdaptiveSummary{
 					State:            "warm",
 					SampleConfidence: 1,
 					SlowStartActive:  false,
@@ -531,20 +531,20 @@ func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
 }
 
 func TestReportToMapIncludesRelayPathHops(t *testing.T) {
-	report := diagnostics.Report{
+	report := Report{
 		Kind:   "http",
 		RuleID: 7,
-		Summary: diagnostics.Summary{
+		Summary: Summary{
 			Sent:      1,
 			Succeeded: 1,
 			Quality:   "good",
 		},
-		RelayPaths: []diagnostics.RelayPathReport{{
+		RelayPaths: []RelayPathReport{{
 			Path:      []int{1, 4},
 			Selected:  true,
 			Success:   true,
 			LatencyMS: 42.7,
-			Hops: []diagnostics.RelayHopReport{{
+			Hops: []RelayHopReport{{
 				From:         "client",
 				ToListenerID: 1,
 				LatencyMS:    12.1,
@@ -555,7 +555,7 @@ func TestReportToMapIncludesRelayPathHops(t *testing.T) {
 	}
 
 	payload := reportToMap(report)
-	relayPaths, ok := payload["relay_paths"].([]diagnostics.RelayPathReport)
+	relayPaths, ok := payload["relay_paths"].([]RelayPathReport)
 	if !ok || len(relayPaths) != 1 {
 		t.Fatalf("relay_paths = %#v", payload["relay_paths"])
 	}
@@ -569,11 +569,11 @@ func TestReportToMapIncludesRelayPathHops(t *testing.T) {
 }
 
 func TestReportToMapOmitsSustainedThroughputWhenAdaptiveSummaryHasNoThroughput(t *testing.T) {
-	report := diagnostics.Report{
+	report := Report{
 		Kind: "l4_tcp",
-		Backends: []diagnostics.BackendReport{{
+		Backends: []BackendReport{{
 			Backend: "127.0.0.1:9001",
-			Adaptive: &diagnostics.AdaptiveSummary{
+			Adaptive: &AdaptiveSummary{
 				LatencyMS:        12,
 				PerformanceScore: 0.8,
 			},
@@ -595,11 +595,11 @@ func TestReportToMapOmitsSustainedThroughputWhenAdaptiveSummaryHasNoThroughput(t
 }
 
 func TestReportToMapSerializesSustainedThroughputForHTTP(t *testing.T) {
-	report := diagnostics.Report{
+	report := Report{
 		Kind: "http",
-		Backends: []diagnostics.BackendReport{{
+		Backends: []BackendReport{{
 			Backend: "http://backend.example.test/healthz",
-			Adaptive: &diagnostics.AdaptiveSummary{
+			Adaptive: &AdaptiveSummary{
 				SustainedThroughputBps: 4 * 1024 * 1024,
 			},
 		}},
@@ -620,11 +620,11 @@ func TestReportToMapSerializesSustainedThroughputForHTTP(t *testing.T) {
 }
 
 func TestReportToMapOmitsHTTPOnlyAdaptiveFieldsForL4(t *testing.T) {
-	report := diagnostics.Report{
+	report := Report{
 		Kind: "l4_tcp",
-		Backends: []diagnostics.BackendReport{{
+		Backends: []BackendReport{{
 			Backend: "127.0.0.1:9001",
-			Adaptive: &diagnostics.AdaptiveSummary{
+			Adaptive: &AdaptiveSummary{
 				Reason:           "performance_higher",
 				LatencyMS:        12,
 				PerformanceScore: 0.8,

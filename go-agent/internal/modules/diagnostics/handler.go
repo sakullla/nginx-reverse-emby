@@ -1,22 +1,22 @@
-package task
+package diagnostics
 
 import (
 	"context"
 	"fmt"
 	"strconv"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
 type DiagnosticHandler struct {
 	store      store.Store
-	httpProber *diagnostics.HTTPProber
-	tcpProber  *diagnostics.TCPProber
+	httpProber *HTTPProber
+	tcpProber  *TCPProber
 }
 
-func NewDiagnosticHandler(st store.Store, httpProber *diagnostics.HTTPProber, tcpProber *diagnostics.TCPProber) *DiagnosticHandler {
+func NewDiagnosticHandler(st store.Store, httpProber *HTTPProber, tcpProber *TCPProber) *DiagnosticHandler {
 	return &DiagnosticHandler{
 		store:      st,
 		httpProber: httpProber,
@@ -24,7 +24,7 @@ func NewDiagnosticHandler(st store.Store, httpProber *diagnostics.HTTPProber, tc
 	}
 }
 
-func (h *DiagnosticHandler) HandleTask(ctx context.Context, task TaskMessage) (map[string]any, error) {
+func (h *DiagnosticHandler) HandleTask(ctx context.Context, msg task.TaskMessage) (map[string]any, error) {
 	if h == nil || h.store == nil {
 		return nil, fmt.Errorf("diagnostic handler store is required")
 	}
@@ -33,13 +33,13 @@ func (h *DiagnosticHandler) HandleTask(ctx context.Context, task TaskMessage) (m
 		return nil, err
 	}
 
-	ruleID, err := taskRuleID(task.RawPayload)
+	ruleID, err := taskRuleID(msg.RawPayload)
 	if err != nil {
 		return nil, err
 	}
 
-	switch task.TaskType {
-	case TaskTypeDiagnoseHTTPRule:
+	switch msg.TaskType {
+	case task.TaskTypeDiagnoseHTTPRule:
 		if h.httpProber == nil {
 			return nil, fmt.Errorf("http prober is required")
 		}
@@ -52,7 +52,7 @@ func (h *DiagnosticHandler) HandleTask(ctx context.Context, task TaskMessage) (m
 			return nil, err
 		}
 		return reportToMap(report), nil
-	case TaskTypeDiagnoseL4TCPRule:
+	case task.TaskTypeDiagnoseL4TCPRule:
 		if h.tcpProber == nil {
 			return nil, fmt.Errorf("tcp prober is required")
 		}
@@ -66,7 +66,7 @@ func (h *DiagnosticHandler) HandleTask(ctx context.Context, task TaskMessage) (m
 		}
 		return reportToMap(report), nil
 	default:
-		return nil, fmt.Errorf("unsupported task type %q", task.TaskType)
+		return nil, fmt.Errorf("unsupported task type %q", msg.TaskType)
 	}
 }
 
@@ -158,7 +158,7 @@ func findL4Rule(rules []model.L4Rule, ruleID int) (model.L4Rule, error) {
 	return model.L4Rule{}, fmt.Errorf("l4 rule %d not found", ruleID)
 }
 
-func reportToMap(report diagnostics.Report) map[string]any {
+func reportToMap(report Report) map[string]any {
 	backends := make([]map[string]any, 0, len(report.Backends))
 	for _, backend := range report.Backends {
 		backends = append(backends, backendReportToMap(report.Kind, backend))
@@ -188,7 +188,7 @@ func reportToMap(report diagnostics.Report) map[string]any {
 	return payload
 }
 
-func backendReportToMap(kind string, backend diagnostics.BackendReport) map[string]any {
+func backendReportToMap(kind string, backend BackendReport) map[string]any {
 	payload := map[string]any{
 		"backend": backend.Backend,
 		"address": backend.Address,

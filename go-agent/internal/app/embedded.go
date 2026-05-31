@@ -10,7 +10,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
@@ -50,10 +49,8 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	wireGuardRuntime := newSharedWireGuardRuntime()
 	httpModule := newHTTPModuleFromConfig(cfg)
 	l4Module := newL4ModuleFromConfig(cfg)
-	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpModule, l4Module)
-	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	certModule := modulecerts.NewModule(certManager)
-	diagnosticModule := modulediagnostics.NewModule(diagnosticHandler, httpProber, tcpProber)
+	diagnosticModule := modulediagnostics.NewModule()
 	egressModule := moduleegress.NewModule(nil)
 	relayModule := relay.NewModule(relay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName})
 	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, l4Module, relayModule, wireGuardRuntime)

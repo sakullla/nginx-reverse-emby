@@ -5,9 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
+	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
-	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
+	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
@@ -29,11 +29,6 @@ func DiagnoseSnapshot(ctx context.Context, dataDir string, snapshot Snapshot, re
 	}
 	defer cleanup()
 
-	mem := agentstore.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
-		return nil, err
-	}
-
 	certManager, err := modulecerts.NewManager(dataDir, modulecerts.WithLocalAgent(true), modulecerts.WithNodeRole("master"))
 	if err != nil {
 		return nil, err
@@ -43,13 +38,25 @@ func DiagnoseSnapshot(ctx context.Context, dataDir string, snapshot Snapshot, re
 		return nil, err
 	}
 
-	handler := task.NewDiagnosticHandler(
-		mem,
-		diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: certManager}),
-		diagnostics.NewTCPProber(diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: certManager}),
-	)
-	return handler.HandleTask(ctx, task.TaskMessage{
+	mod := modulediagnostics.NewModule()
+	if err := mod.Apply(ctx, agentmodule.ApplyRequest{
+		Next: snapshot,
+		Providers: diagnosticProviderResolver{
+			agentmodule.ProviderDiagnosticsRelaySource: certManager,
+			agentmodule.ProviderTLSMaterial:            certManager,
+		},
+	}); err != nil {
+		return nil, err
+	}
+	return mod.HandleTask(ctx, task.TaskMessage{
 		TaskType:   req.TaskType,
 		RawPayload: map[string]any{"rule_id": req.RuleID},
 	})
+}
+
+type diagnosticProviderResolver map[agentmodule.ProviderRef]any
+
+func (r diagnosticProviderResolver) Resolve(ref agentmodule.ProviderRef) (any, bool) {
+	provider, ok := r[ref]
+	return provider, ok
 }

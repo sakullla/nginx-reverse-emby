@@ -10,10 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
@@ -95,9 +93,6 @@ type App struct {
 	updater              Updater
 	runtime              *agentruntime.Runtime
 	taskClient           *agenttask.Client
-	diagnosticHandler    *agenttask.DiagnosticHandler
-	httpProber           *diagnostics.HTTPProber
-	tcpProber            *diagnostics.TCPProber
 	hostTrafficCollector hostTrafficCollector
 	moduleRegistry       *agentmodule.Registry
 	certModule           *modulecerts.Module
@@ -216,10 +211,8 @@ func New(cfg Config) (*App, error) {
 	wireGuardRuntime := newSharedWireGuardRuntime()
 	httpModule := newHTTPModuleFromConfig(cfg)
 	l4Module := newL4ModuleFromConfig(cfg)
-	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpModule, l4Module)
-	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	certModule := modulecerts.NewModule(certManager)
-	diagnosticModule := modulediagnostics.NewModule(diagnosticHandler, httpProber, tcpProber)
+	diagnosticModule := modulediagnostics.NewModule()
 	egressModule := moduleegress.NewModule(nil)
 	relayModule := modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName})
 	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, l4Module, relayModule, wireGuardRuntime)
@@ -363,6 +356,13 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 	return capabilities
 }
 
+type diagnosticProviderResolver map[agentmodule.ProviderRef]any
+
+func (r diagnosticProviderResolver) Resolve(ref agentmodule.ProviderRef) (any, bool) {
+	provider, ok := r[ref]
+	return provider, ok
+}
+
 func newAppWithDeps(
 	cfg Config,
 	st store.Store,
@@ -415,40 +415,11 @@ func newAppWithAllDeps(
 	return app
 }
 
-func newRuntimeDiagnosticProbers(relayProvider modulerelay.TLSMaterialProvider, httpModule *modulehttp.Module, l4Source any) (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
-	httpCfg := diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: relayProvider}
-	if httpModule != nil {
-		httpCfg.Cache = httpModule.Cache()
-	}
-	tcpCfg := diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: relayProvider}
-	if source, ok := l4Source.(interface{ Cache() *backends.Cache }); ok {
-		tcpCfg.Cache = source.Cache()
-	}
-	return diagnostics.NewHTTPProber(httpCfg), diagnostics.NewTCPProber(tcpCfg)
-}
-
-func (a *App) setDiagnostics(handler *agenttask.DiagnosticHandler, httpProber *diagnostics.HTTPProber, tcpProber *diagnostics.TCPProber) {
-	a.setDiagnosticModule(modulediagnostics.NewModule(handler, httpProber, tcpProber))
-}
-
 func (a *App) setDiagnosticModule(diagnosticModule *modulediagnostics.Module) {
 	if a == nil {
 		return
 	}
 	a.diagnosticModule = diagnosticModule
-	if diagnosticModule == nil {
-		a.diagnosticHandler = nil
-		a.httpProber = nil
-		a.tcpProber = nil
-		return
-	}
-	if handler, ok := diagnosticModule.Handler().(*agenttask.DiagnosticHandler); ok {
-		a.diagnosticHandler = handler
-	} else {
-		a.diagnosticHandler = nil
-	}
-	a.httpProber = diagnosticModule.HTTPProber()
-	a.tcpProber = diagnosticModule.TCPProber()
 }
 
 func (a *App) Diagnose(ctx context.Context, taskType string, ruleID int) (map[string]any, error) {
@@ -462,39 +433,47 @@ func (a *App) Diagnose(ctx context.Context, taskType string, ruleID int) (map[st
 	if a.diagnosticModule != nil && a.diagnosticModule.Handler() != nil {
 		return a.diagnosticModule.HandleTask(ctx, msg)
 	}
-	if a.diagnosticHandler == nil {
-		return nil, errors.New("diagnostic handler is not configured")
-	}
-	return a.diagnosticHandler.HandleTask(ctx, msg)
+	return nil, errors.New("diagnostic handler is not configured")
 }
 
 func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType string, ruleID int) (map[string]any, error) {
-	httpProber, tcpProber := a.diagnosticProbers()
-	if httpProber == nil || tcpProber == nil {
-		return nil, errors.New("diagnostic handler is not configured")
-	}
 	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
 		return nil, err
 	}
-	mem := store.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
+	diagnosticModule := modulediagnostics.NewModule()
+	if err := diagnosticModule.Apply(ctx, agentmodule.ApplyRequest{
+		Next:      snapshot,
+		Providers: a.diagnosticProviderResolver(),
+	}); err != nil {
 		return nil, err
 	}
-	handler := agenttask.NewDiagnosticHandler(mem, httpProber, tcpProber)
-	return handler.HandleTask(ctx, agenttask.TaskMessage{
+	return diagnosticModule.HandleTask(ctx, agenttask.TaskMessage{
 		TaskType:   taskType,
 		RawPayload: map[string]any{"rule_id": ruleID},
 	})
 }
 
-func (a *App) diagnosticProbers() (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
+func (a *App) diagnosticProviderResolver() agentmodule.ProviderResolver {
+	providers := diagnosticProviderResolver{}
 	if a == nil {
-		return nil, nil
+		return providers
 	}
-	if a.diagnosticModule != nil {
-		return a.diagnosticModule.HTTPProber(), a.diagnosticModule.TCPProber()
+	if a.httpModule != nil {
+		providers[agentmodule.ProviderDiagnosticsHTTPSource] = a.httpModule
 	}
-	return a.httpProber, a.tcpProber
+	if a.l4Module != nil {
+		providers[agentmodule.ProviderDiagnosticsL4Source] = a.l4Module
+	}
+	if a.relayModule != nil {
+		providers[agentmodule.ProviderDiagnosticsRelaySource] = a.relayModule
+	}
+	if a.certApplier != nil {
+		providers[agentmodule.ProviderTLSMaterial] = a.certApplier
+		if _, ok := providers[agentmodule.ProviderDiagnosticsRelaySource]; !ok {
+			providers[agentmodule.ProviderDiagnosticsRelaySource] = a.certApplier
+		}
+	}
+	return providers
 }
 
 func (a *App) Run(ctx context.Context) error {

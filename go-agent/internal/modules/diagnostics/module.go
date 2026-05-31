@@ -2,10 +2,14 @@ package diagnostics
 
 import (
 	"context"
+	"errors"
+	"sync"
 
-	basediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
@@ -14,35 +18,82 @@ type Handler interface {
 }
 
 type Module struct {
+	mu sync.RWMutex
+
 	handler    Handler
-	httpProber *basediagnostics.HTTPProber
-	tcpProber  *basediagnostics.TCPProber
+	httpProber *HTTPProber
+	tcpProber  *TCPProber
 }
 
-func NewModule(handler Handler, httpProber *basediagnostics.HTTPProber, tcpProber *basediagnostics.TCPProber) *Module {
-	return &Module{
-		handler:    handler,
-		httpProber: httpProber,
-		tcpProber:  tcpProber,
-	}
+func NewModule() *Module {
+	return &Module{}
 }
 
 func (m *Module) Name() string {
 	return "diagnostics"
 }
 
-func (m *Module) Capabilities() []module.Capability {
+func (m *Module) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{
+		Name: m.Name(),
+		Optional: []module.ProviderRef{
+			module.ProviderDiagnosticsHTTPSource,
+			module.ProviderDiagnosticsL4Source,
+			module.ProviderDiagnosticsRelaySource,
+		},
+	}
+}
+
+func (m *Module) RegisterProviders(module.ProviderRegistry) error {
+	return nil
+}
+
+func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
 	return []module.Capability{{Name: "diagnostics", Enabled: true}}
 }
 
 func (m *Module) Health(context.Context) module.Health {
-	if m == nil || m.handler == nil {
+	if m == nil || m.Handler() == nil {
 		return module.Health{Status: "degraded", Message: "diagnostic handler is not configured"}
 	}
 	return module.Health{Status: "healthy"}
 }
 
-func (m *Module) Start(context.Context, model.Snapshot) error {
+func (m *Module) Start(ctx context.Context, snapshot model.Snapshot) error {
+	return m.Apply(ctx, module.ApplyRequest{Next: snapshot})
+}
+
+func (m *Module) Apply(_ context.Context, req module.ApplyRequest) error {
+	if m == nil {
+		return nil
+	}
+
+	relayProvider := relayProviderFromResolver(req.Providers)
+	httpProber := NewHTTPProber(HTTPProberConfig{
+		Attempts:      5,
+		Cache:         diagnosticsCache(req.Providers, module.ProviderDiagnosticsHTTPSource),
+		RelayProvider: relayProvider,
+	})
+	tcpProber := NewTCPProber(TCPProberConfig{
+		Attempts:      5,
+		Cache:         diagnosticsCache(req.Providers, module.ProviderDiagnosticsL4Source),
+		RelayProvider: relayProvider,
+	})
+
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(req.Next); err != nil {
+		return err
+	}
+	if err := mem.SaveDesiredSnapshot(req.Next); err != nil {
+		return err
+	}
+	handler := NewDiagnosticHandler(mem, httpProber, tcpProber)
+
+	m.mu.Lock()
+	m.handler = handler
+	m.httpProber = httpProber
+	m.tcpProber = tcpProber
+	m.mu.Unlock()
 	return nil
 }
 
@@ -54,26 +105,66 @@ func (m *Module) Handler() Handler {
 	if m == nil {
 		return nil
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.handler
 }
 
-func (m *Module) HTTPProber() *basediagnostics.HTTPProber {
+func (m *Module) HTTPProber() *HTTPProber {
 	if m == nil {
 		return nil
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.httpProber
 }
 
-func (m *Module) TCPProber() *basediagnostics.TCPProber {
+func (m *Module) TCPProber() *TCPProber {
 	if m == nil {
 		return nil
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.tcpProber
 }
 
 func (m *Module) HandleTask(ctx context.Context, msg task.TaskMessage) (map[string]any, error) {
-	if m == nil || m.handler == nil {
-		return nil, nil
+	handler := m.Handler()
+	if handler == nil {
+		return nil, errors.New("diagnostic handler is not configured")
 	}
-	return m.handler.HandleTask(ctx, msg)
+	return handler.HandleTask(ctx, msg)
+}
+
+type diagnosticsCacheSource interface {
+	Cache() *backends.Cache
+}
+
+func diagnosticsCache(resolver module.ProviderResolver, ref module.ProviderRef) *backends.Cache {
+	if resolver == nil {
+		return nil
+	}
+	provider, _ := resolver.Resolve(ref)
+	source, ok := provider.(diagnosticsCacheSource)
+	if !ok || source == nil {
+		return nil
+	}
+	return source.Cache()
+}
+
+func relayProviderFromResolver(resolver module.ProviderResolver) relay.TLSMaterialProvider {
+	if resolver == nil {
+		return nil
+	}
+	if provider, _ := resolver.Resolve(module.ProviderDiagnosticsRelaySource); provider != nil {
+		if relayProvider, ok := provider.(relay.TLSMaterialProvider); ok {
+			return relayProvider
+		}
+	}
+	if provider, _ := resolver.Resolve(module.ProviderTLSMaterial); provider != nil {
+		if relayProvider, ok := provider.(relay.TLSMaterialProvider); ok {
+			return relayProvider
+		}
+	}
+	return nil
 }

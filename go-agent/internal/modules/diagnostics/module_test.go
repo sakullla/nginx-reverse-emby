@@ -2,69 +2,98 @@ package diagnostics
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"testing"
 
-	basediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-func TestModuleExposesHandlerAndProbers(t *testing.T) {
+func TestModuleDescriptorUsesDiagnosticsSources(t *testing.T) {
 	t.Parallel()
 
-	handler := &recordingHandler{}
-	httpProber := basediagnostics.NewHTTPProber(basediagnostics.HTTPProberConfig{})
-	tcpProber := basediagnostics.NewTCPProber(basediagnostics.TCPProberConfig{})
-	mod := NewModule(handler, httpProber, tcpProber)
+	mod := NewModule()
+	descriptor := mod.Descriptor()
 
-	if got := mod.Name(); got != "diagnostics" {
-		t.Fatalf("Name() = %q, want diagnostics", got)
+	if descriptor.Name != "diagnostics" {
+		t.Fatalf("Name = %q, want diagnostics", descriptor.Name)
 	}
-	if got := mod.Handler(); got != handler {
-		t.Fatalf("Handler() = %T, want original handler", got)
+	wantOptional := []module.ProviderRef{
+		module.ProviderDiagnosticsHTTPSource,
+		module.ProviderDiagnosticsL4Source,
+		module.ProviderDiagnosticsRelaySource,
 	}
-	if got := mod.HTTPProber(); got != httpProber {
-		t.Fatal("HTTPProber() did not return original prober")
+	if !reflect.DeepEqual(descriptor.Optional, wantOptional) {
+		t.Fatalf("Optional = %+v, want %+v", descriptor.Optional, wantOptional)
 	}
-	if got := mod.TCPProber(); got != tcpProber {
-		t.Fatal("TCPProber() did not return original prober")
+	if len(descriptor.Provides) != 0 || len(descriptor.Requires) != 0 {
+		t.Fatalf("descriptor = %+v, want no provides/requires", descriptor)
 	}
 }
 
-func TestModuleHandleTaskDelegatesToHandler(t *testing.T) {
+func TestModuleBuildsHandlerFromDiagnosticSourceProviders(t *testing.T) {
 	t.Parallel()
 
-	wantErr := errors.New("diagnostic failed")
-	handler := &recordingHandler{
-		result: map[string]any{"kind": "http", "rule_id": 7},
-		err:    wantErr,
-	}
-	mod := NewModule(handler, nil, nil)
-	msg := task.TaskMessage{
-		TaskType:   task.TaskTypeDiagnoseHTTPRule,
-		RawPayload: map[string]any{"rule_id": 7},
-	}
+	mod := NewModule()
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "http-source", provides: module.ProviderDiagnosticsHTTPSource, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, staticProviderModule{name: "l4-source", provides: module.ProviderDiagnosticsL4Source, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, staticProviderModule{name: "relay-source", provides: module.ProviderDiagnosticsRelaySource, provider: staticRelaySource{}})
+	mustRegister(t, registry, mod)
 
-	got, err := mod.HandleTask(context.Background(), msg)
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("HandleTask() error = %v, want %v", err, wantErr)
+	if err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
 	}
-	if !reflect.DeepEqual(got, handler.result) {
-		t.Fatalf("HandleTask() = %+v, want %+v", got, handler.result)
+	if mod.Handler() == nil {
+		t.Fatal("Handler() = nil, want diagnostics handler assembled from providers")
 	}
-	if !reflect.DeepEqual(handler.msg, msg) {
-		t.Fatalf("delegated task = %+v, want %+v", handler.msg, msg)
+	if mod.HTTPProber() == nil {
+		t.Fatal("HTTPProber() = nil")
+	}
+	if mod.TCPProber() == nil {
+		t.Fatal("TCPProber() = nil")
 	}
 }
 
-type recordingHandler struct {
-	msg    task.TaskMessage
-	result map[string]any
-	err    error
+type staticDiagnosticSource struct {
+	cache *backends.Cache
 }
 
-func (h *recordingHandler) HandleTask(_ context.Context, msg task.TaskMessage) (map[string]any, error) {
-	h.msg = msg
-	return h.result, h.err
+func (s staticDiagnosticSource) Cache() *backends.Cache {
+	if s.cache != nil {
+		return s.cache
+	}
+	return backends.NewCache(backends.Config{})
+}
+
+type staticRelaySource struct{}
+
+type staticProviderModule struct {
+	name     string
+	provides module.ProviderRef
+	provider any
+}
+
+func (m staticProviderModule) Name() string { return m.name }
+
+func (m staticProviderModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name, Provides: []module.ProviderRef{m.provides}}
+}
+
+func (m staticProviderModule) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(m.provides, m.provider)
+}
+
+func (m staticProviderModule) Capabilities(module.SnapshotView) []module.Capability { return nil }
+
+func (m staticProviderModule) Apply(context.Context, module.ApplyRequest) error { return nil }
+
+func (m staticProviderModule) Stop(context.Context) error { return nil }
+
+func mustRegister(t *testing.T, registry *module.Registry, candidate any) {
+	t.Helper()
+	if err := registry.Register(candidate); err != nil {
+		t.Fatalf("Register(%T) error = %v", candidate, err)
+	}
 }

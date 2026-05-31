@@ -19,7 +19,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
@@ -148,15 +147,6 @@ func TestNewUsesRegisteredAdapterModulesAsAppDependencies(t *testing.T) {
 	if _, ok := app.certApplier.(*modulecerts.Manager); !ok {
 		t.Fatalf("certApplier = %T, want cert manager", app.certApplier)
 	}
-	if app.diagnosticHandler != diagnosticModule.Handler() {
-		t.Fatal("diagnostic handler does not come from retained diagnostic module")
-	}
-	if app.httpProber != diagnosticModule.HTTPProber() {
-		t.Fatal("http prober does not come from retained diagnostic module")
-	}
-	if app.tcpProber != diagnosticModule.TCPProber() {
-		t.Fatal("tcp prober does not come from retained diagnostic module")
-	}
 	relayModule := extractPrivateField(t, app, "relayModule").Interface().(*relay.Module)
 	if app.relayApplier != relayModule {
 		t.Fatal("relay applier does not come from retained relay module")
@@ -252,11 +242,17 @@ func TestNewSharesRuntimeBackendCachesWithDiagnosticTaskHandler(t *testing.T) {
 		t.Fatal("expected task client")
 	}
 
-	handler := extractPrivateField(t, app.taskClient, "cfg").FieldByName("Handler")
-	httpProber := extractPrivateField(t, handler.Interface(), "httpProber")
-	tcpProber := extractPrivateField(t, handler.Interface(), "tcpProber")
-	httpDiagnosticCache := extractPrivateField(t, httpProber.Interface(), "cache").Interface()
-	tcpDiagnosticCache := extractPrivateField(t, tcpProber.Interface(), "cache").Interface()
+	if err := app.moduleRegistry.Apply(context.Background(), Snapshot{}, Snapshot{}); err != nil {
+		t.Fatalf("module registry Apply() error = %v", err)
+	}
+
+	httpProber := app.diagnosticModule.HTTPProber()
+	tcpProber := app.diagnosticModule.TCPProber()
+	if httpProber == nil || tcpProber == nil {
+		t.Fatal("diagnostic probers were not assembled")
+	}
+	httpDiagnosticCache := extractPrivateField(t, httpProber, "cache").Interface()
+	tcpDiagnosticCache := extractPrivateField(t, tcpProber, "cache").Interface()
 
 	if httpDiagnosticCache != httpManager.Cache() {
 		t.Fatal("http diagnostic prober does not share the runtime backend cache")
@@ -267,25 +263,33 @@ func TestNewSharesRuntimeBackendCachesWithDiagnosticTaskHandler(t *testing.T) {
 }
 
 func TestDiagnoseUsesDiagnosticModuleHandler(t *testing.T) {
-	handler := &recordingModuleDiagnosticHandler{
-		result: map[string]any{"kind": "http", "rule_id": 77},
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	diagnosticModule := modulediagnostics.NewModule()
+	if err := diagnosticModule.Apply(context.Background(), agentmodule.ApplyRequest{
+		Next: Snapshot{
+			Rules: []model.HTTPRule{{
+				ID:          77,
+				FrontendURL: "http://frontend.example.test",
+				Backends:    []model.HTTPBackend{{URL: backend.URL}},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("diagnostic module Apply() error = %v", err)
 	}
 	app := &App{
-		diagnosticModule: modulediagnostics.NewModule(handler, nil, nil),
+		diagnosticModule: diagnosticModule,
 	}
 
 	got, err := app.Diagnose(context.Background(), agenttask.TaskTypeDiagnoseHTTPRule, 77)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
 	}
-	if !reflect.DeepEqual(got, handler.result) {
-		t.Fatalf("Diagnose() = %+v, want %+v", got, handler.result)
-	}
-	if handler.msg.TaskType != agenttask.TaskTypeDiagnoseHTTPRule {
-		t.Fatalf("diagnostic task type = %q", handler.msg.TaskType)
-	}
-	if gotRuleID := handler.msg.RawPayload["rule_id"]; gotRuleID != 77 {
-		t.Fatalf("diagnostic rule_id = %+v, want 77", gotRuleID)
+	if got["kind"] != "http" || got["rule_id"] != 77 {
+		t.Fatalf("Diagnose() = %+v, want http report for rule 77", got)
 	}
 }
 
@@ -296,11 +300,8 @@ func TestDiagnoseSnapshotUsesDiagnosticModuleProbers(t *testing.T) {
 	defer backend.Close()
 
 	app := &App{
-		diagnosticModule: modulediagnostics.NewModule(
-			nil,
-			diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{Attempts: 1}),
-			diagnostics.NewTCPProber(diagnostics.TCPProberConfig{Attempts: 1}),
-		),
+		httpModule: newHTTPModuleFromConfig(Config{}),
+		l4Module:   newL4ModuleFromConfig(Config{}),
 	}
 	snapshot := Snapshot{
 		Rules: []model.HTTPRule{{
@@ -317,16 +318,6 @@ func TestDiagnoseSnapshotUsesDiagnosticModuleProbers(t *testing.T) {
 	if got["kind"] != "http" || got["rule_id"] != 88 {
 		t.Fatalf("DiagnoseSnapshot() = %+v, want http report for rule 88", got)
 	}
-}
-
-type recordingModuleDiagnosticHandler struct {
-	msg    agenttask.TaskMessage
-	result map[string]any
-}
-
-func (h *recordingModuleDiagnosticHandler) HandleTask(_ context.Context, msg agenttask.TaskMessage) (map[string]any, error) {
-	h.msg = msg
-	return h.result, nil
 }
 
 type appLifecycleModule struct {
@@ -376,11 +367,6 @@ func TestDiagnoseSnapshotAppliesSnapshotCertificatesBeforeTaskHandling(t *testin
 	mem := store.NewInMemory()
 	certApplier := &testCertificateApplier{applyErr: errors.New("certificate apply failed")}
 	app := newAppWithDeps(Config{}, mem, newTestSyncClient(nil, syncResponse{}), certApplier, nil, nil)
-	app.setDiagnostics(
-		agenttask.NewDiagnosticHandler(mem, nil, nil),
-		diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{}),
-		diagnostics.NewTCPProber(diagnostics.TCPProberConfig{}),
-	)
 	snapshot := Snapshot{
 		Certificates: []model.ManagedCertificateBundle{{
 			ID:      7,
