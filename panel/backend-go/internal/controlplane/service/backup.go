@@ -1222,6 +1222,70 @@ func (s *backupService) importCertificates(ctx context.Context, existing []stora
 			key = fmt.Sprintf("#%d", item.ID)
 		}
 		if existingCert, ok := existingByDomain[item.Domain]; ok {
+			if isSystemRelayCACertificate(existingCert) && isSystemRelayCACertificate(item) {
+				targetIDs, ok := remapAgentIDs(item.TargetAgentIDs, agentIDMap)
+				if !ok {
+					result.addSkippedInvalid("certificate", key, "certificate references unknown agent")
+					continue
+				}
+				material, hasMaterial := materialByDomain[item.Domain]
+				if !hasMaterial || strings.TrimSpace(material.CertPEM) == "" || strings.TrimSpace(material.KeyPEM) == "" {
+					result.addSkippedMissingMaterial("certificate", key, "certificate material missing from backup")
+					continue
+				}
+				input := ManagedCertificateInput{
+					Domain:          backupStringPtr(item.Domain),
+					Enabled:         backupBoolPtr(item.Enabled),
+					Scope:           backupStringPtr(item.Scope),
+					IssuerMode:      backupStringPtr(item.IssuerMode),
+					TargetAgentIDs:  &targetIDs,
+					Status:          backupStringPtr(item.Status),
+					LastIssueAt:     backupStringPtr(item.LastIssueAt),
+					LastError:       backupStringPtr(item.LastError),
+					MaterialHash:    backupStringPtr(item.MaterialHash),
+					AgentReports:    &item.AgentReports,
+					ACMEInfo:        &item.ACMEInfo,
+					Tags:            &item.Tags,
+					Usage:           backupStringPtr(item.Usage),
+					CertificateType: backupStringPtr(item.CertificateType),
+					SelfSigned:      backupBoolPtr(item.SelfSigned),
+				}
+				normalized, err := normalizeManagedCertificateInput(input, existingCert, existingCert.ID, s.cfg.LocalAgentID, true)
+				if err != nil {
+					result.addSkippedInvalid("certificate", key, err.Error())
+					continue
+				}
+				normalized.ID = existingCert.ID
+				normalized.TargetAgentIDs = targetIDs
+				normalized.Revision = allocator.AllocateRevisionForTargets(targetIDs, maxRevision)
+				if normalized.Revision > maxRevision {
+					maxRevision = normalized.Revision
+				}
+				for _, targetID := range targetIDs {
+					recordModifiedAgentRevision(modifiedAgents, targetID, normalized.Revision)
+				}
+				normalized.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(material.CertPEM), strings.TrimSpace(material.KeyPEM))
+				replaced := false
+				for index, row := range nextRows {
+					if row.ID == existingCert.ID {
+						nextRows[index] = managedCertificateToRow(normalized)
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					nextRows = append(nextRows, managedCertificateToRow(normalized))
+				}
+				existingByDomain[normalized.Domain] = normalized
+				certIDMap[item.ID] = existingCert.ID
+				pendingMaterials = append(pendingMaterials, BackupCertificateFile{
+					Domain:  normalized.Domain,
+					CertPEM: material.CertPEM,
+					KeyPEM:  material.KeyPEM,
+				})
+				result.addImported("certificate", key)
+				continue
+			}
 			certIDMap[item.ID] = existingCert.ID
 			result.addSkippedConflict("certificate", key, "certificate domain already exists")
 			continue
