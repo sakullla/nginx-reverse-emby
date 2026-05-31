@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 func TestConnUDPUpstreamReusesReadBuffer(t *testing.T) {

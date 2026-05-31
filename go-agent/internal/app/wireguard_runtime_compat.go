@@ -1,13 +1,15 @@
 package app
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 func newSharedWireGuardRuntime() *modulewireguard.Runtime {
@@ -42,17 +44,27 @@ func (p wireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGua
 	if p.runtime == nil {
 		return nil, false
 	}
+	var runtime modulewireguard.RuntimeHandle
 	if p.agentID != "" {
-		return p.runtime.RuntimeForAgent(p.agentID, profileID)
+		runtime, _ = p.runtime.RuntimeForAgent(p.agentID, profileID)
+	} else {
+		runtime, _ = p.runtime.Runtime(profileID)
 	}
-	return p.runtime.Runtime(profileID)
+	if runtime == nil {
+		return nil, false
+	}
+	return wireGuardRuntimeHandleAdapter{runtime: runtime}, true
 }
 
 func (p wireGuardRuntimeProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
 	if p.runtime == nil {
 		return nil, false
 	}
-	return p.runtime.RuntimeForAgent(agentID, profileID)
+	runtime, ok := p.runtime.RuntimeForAgent(agentID, profileID)
+	if !ok || runtime == nil {
+		return nil, false
+	}
+	return wireGuardRuntimeHandleAdapter{runtime: runtime}, true
 }
 
 func (p wireGuardRuntimeProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {
@@ -68,7 +80,11 @@ func (p wireGuardRuntimeProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.W
 	if !ok {
 		return nil, false
 	}
-	return p.runtime.RuntimeForAgent(profile.AgentID, profile.ID)
+	runtime, ok := p.runtime.RuntimeForAgent(profile.AgentID, profile.ID)
+	if !ok || runtime == nil {
+		return nil, false
+	}
+	return wireGuardRuntimeHandleAdapter{runtime: runtime}, true
 }
 
 type wireGuardTransactionProvider struct {
@@ -81,17 +97,27 @@ func (p wireGuardTransactionProvider) WireGuardRuntime(profileID int) (relay.Wir
 	if p.transaction == nil {
 		return nil, false
 	}
+	var runtime modulewireguard.RuntimeHandle
 	if p.agentID != "" {
-		return p.transaction.RuntimeForAgent(p.agentID, profileID)
+		runtime, _ = p.transaction.RuntimeForAgent(p.agentID, profileID)
+	} else {
+		runtime, _ = p.transaction.Runtime(profileID)
 	}
-	return p.transaction.Runtime(profileID)
+	if runtime == nil {
+		return nil, false
+	}
+	return wireGuardRuntimeHandleAdapter{runtime: runtime}, true
 }
 
 func (p wireGuardTransactionProvider) WireGuardRuntimeForAgent(agentID string, profileID int) (relay.WireGuardRuntime, bool) {
 	if p.transaction == nil {
 		return nil, false
 	}
-	return p.transaction.RuntimeForAgent(agentID, profileID)
+	runtime, ok := p.transaction.RuntimeForAgent(agentID, profileID)
+	if !ok || runtime == nil {
+		return nil, false
+	}
+	return wireGuardRuntimeHandleAdapter{runtime: runtime}, true
 }
 
 func (p wireGuardTransactionProvider) WireGuardRuntimeForHop(hop relay.Hop) (relay.WireGuardRuntime, bool) {
@@ -107,7 +133,67 @@ func (p wireGuardTransactionProvider) WireGuardRuntimeForHop(hop relay.Hop) (rel
 	if !ok {
 		return nil, false
 	}
-	return p.transaction.RuntimeForAgent(profile.AgentID, profile.ID)
+	runtime, ok := p.transaction.RuntimeForAgent(profile.AgentID, profile.ID)
+	if !ok || runtime == nil {
+		return nil, false
+	}
+	return wireGuardRuntimeHandleAdapter{runtime: runtime}, true
+}
+
+type wireGuardRuntimeHandleAdapter struct {
+	runtime modulewireguard.RuntimeHandle
+}
+
+func (a wireGuardRuntimeHandleAdapter) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {
+	return a.runtime.DialContext(ctx, network, address)
+}
+
+func (a wireGuardRuntimeHandleAdapter) ListenTCP(ctx context.Context, address string) (net.Listener, error) {
+	return a.runtime.ListenTCP(ctx, address)
+}
+
+func (a wireGuardRuntimeHandleAdapter) ListenTransparentTCP(ctx context.Context) (net.Listener, error) {
+	return a.runtime.ListenTransparentTCP(ctx)
+}
+
+func (a wireGuardRuntimeHandleAdapter) ListenUDP(ctx context.Context, address string) (net.PacketConn, error) {
+	return a.runtime.ListenUDP(ctx, address)
+}
+
+func (a wireGuardRuntimeHandleAdapter) ListenTransparentUDP(ctx context.Context, address string) (module.TransparentUDPConn, error) {
+	conn, err := a.runtime.ListenTransparentUDP(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	return wireGuardTransparentUDPConnAdapter{conn: conn}, nil
+}
+
+type wireGuardTransparentUDPConnAdapter struct {
+	conn modulewireguard.TransparentUDPConn
+}
+
+func (a wireGuardTransparentUDPConnAdapter) Close() error {
+	return a.conn.Close()
+}
+
+func (a wireGuardTransparentUDPConnAdapter) LocalAddr() net.Addr {
+	return a.conn.LocalAddr()
+}
+
+func (a wireGuardTransparentUDPConnAdapter) ReadPacket() (module.TransparentUDPPacket, error) {
+	packet, err := a.conn.ReadPacket()
+	if err != nil {
+		return module.TransparentUDPPacket{}, err
+	}
+	return module.TransparentUDPPacket{
+		Peer:        packet.Peer,
+		OriginalDst: packet.OriginalDst,
+		Payload:     packet.Payload,
+	}, nil
+}
+
+func (a wireGuardTransparentUDPConnAdapter) WritePacket(payload []byte, peer *net.UDPAddr, source string) error {
+	return a.conn.WritePacket(payload, peer, source)
 }
 
 func wireGuardProfileForRelayHop(profiles []model.WireGuardProfile, localAgentID string, hop relay.Hop) (model.WireGuardProfile, bool) {

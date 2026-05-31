@@ -2,16 +2,16 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
@@ -63,16 +63,16 @@ func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
 }
 
 func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error {
-	if a.relayApplier == nil || (snapshot.RelayListeners == nil && snapshot.WireGuardProfiles == nil && snapshot.EgressProfiles == nil) {
+	if a.relayApplier == nil || snapshot.RelayListeners == nil {
 		return nil
 	}
-	if egressAware, ok := a.relayApplier.(RelayEgressAwareApplier); ok {
-		return egressAware.ApplyWithWireGuardAndEgressProfiles(ctx, snapshot.RelayListeners, snapshot.WireGuardProfiles, snapshot.EgressProfiles)
+	applier, ok := a.relayApplier.(interface {
+		Apply(context.Context, []model.RelayListener) error
+	})
+	if !ok {
+		return fmt.Errorf("relay applier %T does not support legacy apply", a.relayApplier)
 	}
-	if relayWireGuardApplier, ok := a.relayApplier.(RelayWireGuardApplier); ok {
-		return relayWireGuardApplier.ApplyWithWireGuardProfiles(ctx, snapshot.RelayListeners, snapshot.WireGuardProfiles)
-	}
-	return a.relayApplier.Apply(ctx, snapshot.RelayListeners)
+	return applier.Apply(ctx, snapshot.RelayListeners)
 }
 
 func (a *App) snapshotActivator() agentruntime.Activator {
@@ -107,7 +107,10 @@ func applyRegistryExceptCerts(ctx context.Context, registry *agentmodule.Registr
 	}
 	filtered := agentmodule.NewRegistry()
 	for _, mod := range registry.Modules() {
-		if _, ok := mod.(*modulecerts.Module); ok {
+		if certs, ok := mod.(*modulecerts.Module); ok {
+			if err := filtered.Register(certsProviderModule{module: certs}); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := filtered.Register(mod); err != nil {
@@ -115,6 +118,37 @@ func applyRegistryExceptCerts(ctx context.Context, registry *agentmodule.Registr
 		}
 	}
 	return filtered.Apply(ctx, previous, next)
+}
+
+type certsProviderModule struct {
+	module *modulecerts.Module
+}
+
+func (m certsProviderModule) Name() string {
+	return "certs-provider"
+}
+
+func (m certsProviderModule) Descriptor() agentmodule.ModuleDescriptor {
+	return agentmodule.ModuleDescriptor{
+		Name:     m.Name(),
+		Provides: []agentmodule.ProviderRef{agentmodule.ProviderTLSMaterial},
+	}
+}
+
+func (m certsProviderModule) RegisterProviders(reg agentmodule.ProviderRegistry) error {
+	return m.module.RegisterProviders(reg)
+}
+
+func (certsProviderModule) Capabilities(agentmodule.SnapshotView) []agentmodule.Capability {
+	return nil
+}
+
+func (certsProviderModule) Apply(context.Context, agentmodule.ApplyRequest) error {
+	return nil
+}
+
+func (certsProviderModule) Stop(context.Context) error {
+	return nil
 }
 
 func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next model.Snapshot) error {
@@ -157,16 +191,8 @@ func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next 
 		}
 	}
 
-	localPrevious := previous
-	localPrevious.RelayListeners = localRelayListeners(previous.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
-	localNext := next
-	localNext.RelayListeners = localRelayListeners(next.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
-	if relayActivationNeeded(localPrevious, localNext, previous, next) {
-		if err := a.applyRelayListeners(ctx, Snapshot{
-			RelayListeners:    localNext.RelayListeners,
-			WireGuardProfiles: next.WireGuardProfiles,
-			EgressProfiles:    next.EgressProfiles,
-		}); err != nil {
+	if a.relayModule == nil && relayActivationNeeded(previous, next) {
+		if err := a.applyRelayListeners(ctx, Snapshot{RelayListeners: next.RelayListeners}); err != nil {
 			return err
 		}
 	}
@@ -196,10 +222,8 @@ func l4ActivationNeeded(previous, next model.Snapshot) bool {
 		l4EgressInputsChanged(next.L4Rules, previous.EgressProfiles, next.EgressProfiles)
 }
 
-func relayActivationNeeded(localPrevious, localNext, previous, next model.Snapshot) bool {
-	return relay.ListenersChanged(localPrevious.RelayListeners, localNext.RelayListeners) ||
-		!reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles) ||
-		(len(localNext.RelayListeners) > 0 && !reflect.DeepEqual(previous.EgressProfiles, next.EgressProfiles))
+func relayActivationNeeded(previous, next model.Snapshot) bool {
+	return relay.ListenersChanged(previous.RelayListeners, next.RelayListeners)
 }
 
 func l4WireGuardInputsChanged(rules []model.L4Rule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
@@ -273,24 +297,6 @@ func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.R
 		}
 	}
 	return model.RelayListener{}, false
-}
-
-func localRelayListeners(listeners []model.RelayListener, agentID, agentName string) []model.RelayListener {
-	if listeners == nil {
-		return nil
-	}
-	identity := strings.TrimSpace(agentID)
-	fallback := strings.TrimSpace(agentName)
-	if identity == "" && fallback == "" {
-		return listeners
-	}
-	filtered := make([]model.RelayListener, 0, len(listeners))
-	for _, listener := range listeners {
-		if listener.AgentID == identity || (identity == "" && listener.AgentID == fallback) || listener.AgentID == fallback {
-			filtered = append(filtered, listener)
-		}
-	}
-	return filtered
 }
 
 func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {

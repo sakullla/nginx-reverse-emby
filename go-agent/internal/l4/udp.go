@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
@@ -80,7 +80,7 @@ func (l packetUDPListener) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error
 }
 
 type wireGuardTransparentUDPListener struct {
-	wireguard.TransparentUDPConn
+	module.TransparentUDPConn
 }
 
 func (l wireGuardTransparentUDPListener) ReadFrom([]byte) (int, net.Addr, error) {
@@ -376,7 +376,7 @@ func (s *Server) wireGuardTransparentUDPReadLoop(conn wireGuardTransparentUDPLis
 			return
 		}
 		s.wg.Add(1)
-		go func(packet wireguard.TransparentUDPPacket) {
+		go func(packet module.TransparentUDPPacket) {
 			defer s.wg.Done()
 			s.proxyWireGuardTransparentUDPPacket(conn, rule, packet)
 		}(packet)
@@ -434,7 +434,7 @@ func (s *Server) proxySOCKS5UDPPacket(listener udpListener, rule model.L4Rule, p
 	s.markUDPSessionWrite(session.key)
 }
 
-func (s *Server) proxyWireGuardTransparentUDPPacket(listener udpListener, rule model.L4Rule, packet wireguard.TransparentUDPPacket) {
+func (s *Server) proxyWireGuardTransparentUDPPacket(listener udpListener, rule model.L4Rule, packet module.TransparentUDPPacket) {
 	target := strings.TrimSpace(packet.OriginalDst)
 	if target == "" {
 		return

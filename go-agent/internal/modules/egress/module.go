@@ -10,9 +10,9 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 type Module struct {

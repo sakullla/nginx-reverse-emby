@@ -4,7 +4,7 @@ import (
 	"context"
 	"net"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 var diagnosticRelayDialWithResult = func(

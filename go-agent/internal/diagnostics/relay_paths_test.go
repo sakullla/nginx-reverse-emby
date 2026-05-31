@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 func TestRelayPathHopReportsMarksOnlyMatchedFailedRelayHop(t *testing.T) {

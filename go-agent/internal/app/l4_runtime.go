@@ -12,9 +12,9 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
 )
 
 type l4RuntimeManager struct {

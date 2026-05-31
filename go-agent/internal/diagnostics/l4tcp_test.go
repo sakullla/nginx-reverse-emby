@@ -10,8 +10,8 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
@@ -950,6 +950,61 @@ func TestTCPProberDiagnoseTransparentFinalHopWithoutBackends(t *testing.T) {
 		WireGuardInboundMode: "transparent",
 		RelayLayers:          [][]int{{413}},
 		EgressProfileID:      &egressProfileID,
+	}, []model.RelayListener{relayListener})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if report.Summary.Succeeded != 1 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+}
+
+func TestTCPProberDiagnoseSOCKS5RelayFinalHopWithoutBackends(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 414, "relay-socks.internal.test")
+	egressProfileID := 79
+
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		if target != "0.0.0.0:0" {
+			t.Fatalf("target = %q, want socks5 final-hop placeholder", target)
+		}
+		return []string{target}, nil
+	}
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if target != "0.0.0.0:0" {
+			t.Fatalf("target = %q, want socks5 final-hop placeholder", target)
+		}
+		if len(opts) == 0 || opts[0].EgressProfileID == nil || *opts[0].EgressProfileID != egressProfileID {
+			return nil, relay.DialResult{}, fmt.Errorf("missing egress profile option for socks5 final hop: %+v", opts)
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:              414,
+		Protocol:        "socks5",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      0,
+		RelayLayers:     [][]int{{414}},
+		EgressProfileID: &egressProfileID,
 	}, []model.RelayListener{relayListener})
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)

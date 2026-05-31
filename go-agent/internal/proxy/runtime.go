@@ -15,7 +15,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 type Runtime struct {

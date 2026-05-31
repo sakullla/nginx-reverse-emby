@@ -19,10 +19,10 @@ import (
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
@@ -104,6 +104,7 @@ type App struct {
 	certModule           *modulecerts.Module
 	diagnosticModule     *modulediagnostics.Module
 	egressModule         *moduleegress.Module
+	relayModule          *modulerelay.Module
 	wireGuardRuntime     *modulewireguard.Runtime
 	relayTimeoutReset    func()
 	pendingSyncMetadata  map[string]string
@@ -112,7 +113,7 @@ type App struct {
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	registry, err := newAppModuleRegistry(cfg, nil, nil, nil, nil)
+	registry, err := newAppModuleRegistry(cfg, nil, nil, nil, nil, nil)
 	if err != nil {
 		return nil
 	}
@@ -154,7 +155,7 @@ func New(cfg Config) (*App, error) {
 	cfg = normalizeConstructorConfig(cfg)
 	traffic.SetEnabled(cfg.TrafficStatsEnabled)
 
-	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
+	resetRelayTimeouts := modulerelay.ConfigureTimeouts(modulerelay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
 		HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
 		FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
@@ -187,7 +188,8 @@ func New(cfg Config) (*App, error) {
 	certModule := modulecerts.NewModule(certManager)
 	diagnosticModule := modulediagnostics.NewModule(diagnosticHandler, httpProber, tcpProber)
 	egressModule := moduleegress.NewModule(nil)
-	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, wireGuardRuntime)
+	relayModule := modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName})
+	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, relayModule, wireGuardRuntime)
 	if err != nil {
 		_ = wireGuardRuntime.Close()
 		return nil, err
@@ -227,7 +229,7 @@ func New(cfg Config) (*App, error) {
 		httpManager,
 		certManager,
 		l4Manager,
-		newRelayRuntimeManagerWithWireGuardAndEgressModule(certManager, wireGuardRuntime, egressModule, false),
+		nil,
 		agentupdate.NewManager(
 			cfg.DataDir,
 			executablePath,
@@ -244,6 +246,8 @@ func New(cfg Config) (*App, error) {
 	app.moduleRegistry = moduleRegistry
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	app.egressModule = egressModule
+	app.relayModule = relayModule
+	app.relayApplier = relayModule
 	app.wireGuardRuntime = wireGuardRuntime
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
@@ -255,6 +259,7 @@ func newAppModuleRegistry(
 	certModule *modulecerts.Module,
 	diagnosticModule *modulediagnostics.Module,
 	egressModule *moduleegress.Module,
+	relayModule *modulerelay.Module,
 	wireGuardRuntime *modulewireguard.Runtime,
 ) (*agentmodule.Registry, error) {
 	registry := agentmodule.NewRegistry()
@@ -275,6 +280,11 @@ func newAppModuleRegistry(
 	}
 	if cfg.WireGuardModuleEnabled() {
 		if err := registry.Register(modulewireguard.NewModule(wireGuardRuntime)); err != nil {
+			return nil, err
+		}
+	}
+	if relayModule != nil {
+		if err := registry.Register(relayModule); err != nil {
 			return nil, err
 		}
 	}
@@ -358,7 +368,7 @@ func newAppWithAllDeps(
 	return app
 }
 
-func newRuntimeDiagnosticProbers(relayProvider relay.TLSMaterialProvider, httpApplier HTTPApplier, l4Applier L4Applier) (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
+func newRuntimeDiagnosticProbers(relayProvider modulerelay.TLSMaterialProvider, httpApplier HTTPApplier, l4Applier L4Applier) (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
 	httpCfg := diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: relayProvider}
 	if manager, ok := httpApplier.(*httpRuntimeManager); ok {
 		httpCfg.Cache = manager.cache

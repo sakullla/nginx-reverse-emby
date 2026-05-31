@@ -15,8 +15,8 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 func TestHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {

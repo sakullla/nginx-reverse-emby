@@ -5,7 +5,10 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
@@ -49,6 +52,15 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
 	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
+	certModule := modulecerts.NewModule(certManager)
+	diagnosticModule := modulediagnostics.NewModule(diagnosticHandler, httpProber, tcpProber)
+	egressModule := moduleegress.NewModule(nil)
+	relayModule := relay.NewModule(relay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName})
+	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, relayModule, wireGuardRuntime)
+	if err != nil {
+		_ = wireGuardRuntime.Close()
+		return nil, err
+	}
 	app := newAppWithAllDeps(
 		cfg,
 		st,
@@ -56,12 +68,18 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		httpManager,
 		certManager,
 		l4Manager,
-		newRelayRuntimeManagerWithWireGuard(certManager, wireGuardRuntime),
+		nil,
 		nil,
 		nil,
 	)
-	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
+	app.certModule = certModule
+	app.setDiagnosticModule(diagnosticModule)
 	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
+	app.moduleRegistry = moduleRegistry
+	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
+	app.egressModule = egressModule
+	app.relayModule = relayModule
+	app.relayApplier = relayModule
 	app.wireGuardRuntime = wireGuardRuntime
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false

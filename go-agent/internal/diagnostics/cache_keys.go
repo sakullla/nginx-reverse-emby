@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 func diagnosticAddressKey(relayChain []int, address string) string {

@@ -9,8 +9,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 type proxyTrafficBlockStateValue struct {
@@ -53,42 +53,13 @@ func (v *l4TrafficBlockStateValue) Load() l4.TrafficBlockState {
 	return l4.TrafficBlockState{}
 }
 
-type relayTrafficBlockStateValue struct {
-	value atomic.Value
-}
-
-func (v *relayTrafficBlockStateValue) Store(state relay.TrafficBlockState) {
-	v.value.Store(state)
-}
-
-func (v *relayTrafficBlockStateValue) Load() relay.TrafficBlockState {
-	if v == nil {
-		return relay.TrafficBlockState{}
-	}
-	if raw := v.value.Load(); raw != nil {
-		if state, ok := raw.(relay.TrafficBlockState); ok {
-			return state
-		}
-	}
-	return relay.TrafficBlockState{}
-}
-
 type L4Applier interface {
 	Apply(context.Context, []model.L4Rule) error
 	Close() error
 }
 
 type RelayApplier interface {
-	Apply(context.Context, []model.RelayListener) error
 	Close() error
-}
-
-type RelayWireGuardApplier interface {
-	ApplyWithWireGuardProfiles(context.Context, []model.RelayListener, []model.WireGuardProfile) error
-}
-
-type RelayEgressAwareApplier interface {
-	ApplyWithWireGuardAndEgressProfiles(context.Context, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
 }
 
 type L4WireGuardAwareApplier interface {
@@ -141,27 +112,6 @@ func flattenRelayLayers(layers [][]int) []int {
 
 func l4RuleUsesWireGuard(rule model.L4Rule) bool {
 	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
-}
-
-func validateRelayListeners(ctx context.Context, listeners []model.RelayListener, provider relay.TLSMaterialProvider) error {
-	if provider == nil {
-		return fmt.Errorf("tls material provider is required")
-	}
-	for _, listener := range listeners {
-		if !listener.Enabled {
-			continue
-		}
-		if err := relay.ValidateListener(listener); err != nil {
-			return fmt.Errorf("relay listener %d: %w", listener.ID, err)
-		}
-		if listener.CertificateID == nil {
-			return fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
-		}
-		if _, err := provider.ServerCertificate(ctx, *listener.CertificateID); err != nil {
-			return fmt.Errorf("relay listener %d: %w", listener.ID, err)
-		}
-	}
-	return nil
 }
 
 func httpBindingsOverlap(left, right []string) bool {

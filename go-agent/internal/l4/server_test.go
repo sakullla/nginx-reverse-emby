@@ -25,10 +25,11 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -1241,7 +1242,7 @@ func TestWireGuardTransparentUDPInboundAccepted(t *testing.T) {
 	profileID := 9
 	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: 0})
 	runtime := &fakeL4WireGuardRuntime{
-		listenTransparentUDP: func(_ context.Context, address string) (wireguard.TransparentUDPConn, error) {
+		listenTransparentUDP: func(_ context.Context, address string) (module.TransparentUDPConn, error) {
 			return transparentConn, nil
 		},
 	}
@@ -1279,7 +1280,7 @@ func TestWireGuardTransparentUDPInboundWithProxyEgressAccepted(t *testing.T) {
 	profileID := 9
 	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: 0})
 	runtime := &fakeL4WireGuardRuntime{
-		listenTransparentUDP: func(_ context.Context, address string) (wireguard.TransparentUDPConn, error) {
+		listenTransparentUDP: func(_ context.Context, address string) (module.TransparentUDPConn, error) {
 			return transparentConn, nil
 		},
 	}
@@ -1328,7 +1329,7 @@ func TestWireGuardTransparentUDPInboundUsesOriginalDestinationAsTarget(t *testin
 	listenPort := pickFreeUDPPort(t)
 	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: listenPort})
 	runtime := &fakeL4WireGuardRuntime{
-		listenTransparentUDP: func(_ context.Context, address string) (wireguard.TransparentUDPConn, error) {
+		listenTransparentUDP: func(_ context.Context, address string) (module.TransparentUDPConn, error) {
 			return transparentConn, nil
 		},
 	}
@@ -1349,7 +1350,7 @@ func TestWireGuardTransparentUDPInboundUsesOriginalDestinationAsTarget(t *testin
 
 	peer := &net.UDPAddr{IP: net.ParseIP("10.64.0.9"), Port: 53000}
 	payload := []byte("transparent udp target")
-	transparentConn.inject(wireguard.TransparentUDPPacket{
+	transparentConn.inject(module.TransparentUDPPacket{
 		Peer:        peer,
 		OriginalDst: upstreamTarget,
 		Payload:     payload,
@@ -1387,7 +1388,7 @@ func TestWireGuardTransparentUDPRepliesPreserveOriginalDestinationSource(t *test
 	listenPort := pickFreeUDPPort(t)
 	transparentConn := newFakeTransparentUDPConn(&net.UDPAddr{IP: net.ParseIP("10.64.0.2"), Port: listenPort})
 	runtime := &fakeL4WireGuardRuntime{
-		listenTransparentUDP: func(_ context.Context, address string) (wireguard.TransparentUDPConn, error) {
+		listenTransparentUDP: func(_ context.Context, address string) (module.TransparentUDPConn, error) {
 			return transparentConn, nil
 		},
 	}
@@ -1419,7 +1420,7 @@ func TestWireGuardTransparentUDPRepliesPreserveOriginalDestinationSource(t *test
 
 	peer := &net.UDPAddr{IP: net.ParseIP("10.64.0.9"), Port: 53000}
 	originalDst := upstreamConn.LocalAddr().String()
-	transparentConn.inject(wireguard.TransparentUDPPacket{
+	transparentConn.inject(module.TransparentUDPPacket{
 		Peer:        peer,
 		OriginalDst: originalDst,
 		Payload:     []byte("ping"),
@@ -5335,7 +5336,7 @@ type fakeL4WireGuardRuntime struct {
 	listenTCP              func(context.Context, string) (net.Listener, error)
 	listenTransparentTCP   func(context.Context) (net.Listener, error)
 	listenUDP              func(context.Context, string) (wireguard.PacketConn, error)
-	listenTransparentUDP   func(context.Context, string) (wireguard.TransparentUDPConn, error)
+	listenTransparentUDP   func(context.Context, string) (module.TransparentUDPConn, error)
 }
 
 func (r *fakeL4WireGuardRuntime) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -5378,7 +5379,7 @@ func (r *fakeL4WireGuardRuntime) ListenUDP(ctx context.Context, address string) 
 	return nil, fmt.Errorf("unexpected wireguard ListenUDP call")
 }
 
-func (r *fakeL4WireGuardRuntime) ListenTransparentUDP(ctx context.Context, address string) (wireguard.TransparentUDPConn, error) {
+func (r *fakeL4WireGuardRuntime) ListenTransparentUDP(ctx context.Context, address string) (module.TransparentUDPConn, error) {
 	r.mu.Lock()
 	r.listenTransparentUDPOn = append(r.listenTransparentUDPOn, address)
 	r.mu.Unlock()
@@ -5420,7 +5421,7 @@ func (r *fakeL4WireGuardRuntime) listenTransparentUDPCalls() []string {
 
 type fakeTransparentUDPConn struct {
 	localAddr *net.UDPAddr
-	packets   chan wireguard.TransparentUDPPacket
+	packets   chan module.TransparentUDPPacket
 	writes    []transparentUDPWrite
 	closed    chan struct{}
 	mu        sync.Mutex
@@ -5436,7 +5437,7 @@ type transparentUDPWrite struct {
 func newFakeTransparentUDPConn(localAddr *net.UDPAddr) *fakeTransparentUDPConn {
 	return &fakeTransparentUDPConn{
 		localAddr: localAddr,
-		packets:   make(chan wireguard.TransparentUDPPacket, 8),
+		packets:   make(chan module.TransparentUDPPacket, 8),
 		closed:    make(chan struct{}),
 	}
 }
@@ -5450,12 +5451,12 @@ func (c *fakeTransparentUDPConn) LocalAddr() net.Addr {
 	return c.localAddr
 }
 
-func (c *fakeTransparentUDPConn) ReadPacket() (wireguard.TransparentUDPPacket, error) {
+func (c *fakeTransparentUDPConn) ReadPacket() (module.TransparentUDPPacket, error) {
 	select {
 	case packet := <-c.packets:
 		return packet, nil
 	case <-c.closed:
-		return wireguard.TransparentUDPPacket{}, io.EOF
+		return module.TransparentUDPPacket{}, io.EOF
 	}
 }
 
@@ -5470,7 +5471,7 @@ func (c *fakeTransparentUDPConn) WritePacket(payload []byte, peer *net.UDPAddr, 
 	return nil
 }
 
-func (c *fakeTransparentUDPConn) inject(packet wireguard.TransparentUDPPacket) {
+func (c *fakeTransparentUDPConn) inject(packet module.TransparentUDPPacket) {
 	select {
 	case c.packets <- packet:
 	case <-c.closed:

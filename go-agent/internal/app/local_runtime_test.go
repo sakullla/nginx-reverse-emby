@@ -27,9 +27,9 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
@@ -148,9 +148,9 @@ func TestNewEmbeddedSharesWireGuardRuntimeAcrossHTTPAndL4AndRelay(t *testing.T) 
 	if !ok {
 		t.Fatalf("l4Applier type = %T, want *l4RuntimeManager", app.l4Applier)
 	}
-	relayManager, ok := app.relayApplier.(*relayRuntimeManager)
+	relayModule, ok := app.relayApplier.(*relay.Module)
 	if !ok {
-		t.Fatalf("relayApplier type = %T, want *relayRuntimeManager", app.relayApplier)
+		t.Fatalf("relayApplier type = %T, want *relay.Module", app.relayApplier)
 	}
 
 	if httpManager.wireGuardRuntime != app.wireGuardRuntime {
@@ -159,8 +159,8 @@ func TestNewEmbeddedSharesWireGuardRuntimeAcrossHTTPAndL4AndRelay(t *testing.T) 
 	if l4Manager.wireGuardRuntime != app.wireGuardRuntime {
 		t.Fatal("l4 manager does not share app WireGuard runtime")
 	}
-	if relayManager.wireGuardRuntime != app.wireGuardRuntime {
-		t.Fatal("relay manager does not share app WireGuard runtime")
+	if relayModule != app.relayModule {
+		t.Fatal("relay applier does not use app relay module")
 	}
 }
 
@@ -534,65 +534,6 @@ func TestL4RuntimeManagerAppliesWireGuardProfilesBeforeStartingL4(t *testing.T) 
 	}
 }
 
-func TestSnapshotActivatorSharedWireGuardRuntimeAppliesRelayAndL4ProfileOnce(t *testing.T) {
-	createCount := 0
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
-		createCount++
-		return &testAppWireGuardRuntime{
-			onListenTCP: func(context.Context, string) (net.Listener, error) {
-				return net.Listen("tcp", "127.0.0.1:0")
-			},
-		}, nil
-	})
-	defer shared.Close()
-
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			1: mustIssueTestTLSCertificate(t),
-		},
-	}
-	relayManager := newRelayRuntimeManagerWithWireGuard(provider, shared)
-	defer relayManager.Close()
-	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(provider, Config{}, shared)
-	defer l4Manager.Close()
-	app := newAppWithHTTPDeps(
-		Config{AgentID: "agent-a", AgentName: "agent-a"},
-		store.NewInMemory(),
-		staticSyncClient{},
-		nil,
-		nil,
-		l4Manager,
-		relayManager,
-	)
-
-	profileID := 9
-	profile := validAppWireGuardProfile(profileID)
-	relayListener := runtimeTestRelayListener(pickFreeTCPPort(t), 1)
-	relayListener.TransportMode = relay.ListenerTransportModeWireGuard
-	relayListener.WireGuardProfileID = &profileID
-
-	l4Port := pickFreeTCPPort(t)
-	snapshot := Snapshot{
-		RelayListeners:    []model.RelayListener{relayListener},
-		WireGuardProfiles: []model.WireGuardProfile{profile},
-		L4Rules: []model.L4Rule{{
-			Protocol:           "tcp",
-			ListenHost:         "127.0.0.1",
-			ListenPort:         l4Port,
-			ListenMode:         "wireguard",
-			WireGuardProfileID: &profileID,
-			Backends:           []model.L4Backend{{Host: "127.0.0.1", Port: pickFreeTCPPort(t)}},
-		}},
-	}
-	if err := app.snapshotActivator()(context.Background(), Snapshot{}, snapshot); err != nil {
-		t.Fatalf("snapshotActivator() error = %v", err)
-	}
-
-	if createCount != 1 {
-		t.Fatalf("wireguard runtime creations = %d, want 1", createCount)
-	}
-}
-
 func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing.T) {
 	localRuntime := &testAppWireGuardRuntime{}
 	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
@@ -631,8 +572,11 @@ func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing
 	if !ok {
 		t.Fatal("ResolveWireGuardRuntimeForHop() ok = false, want local caller runtime")
 	}
-	if runtime != localRuntime {
-		t.Fatalf("ResolveWireGuardRuntimeForHop() runtime = %p, want local runtime %p", runtime, localRuntime)
+	localRuntime.onDialContext = func(context.Context, string, string) (net.Conn, error) {
+		return nil, fmt.Errorf("dialed local runtime")
+	}
+	if _, err := runtime.DialContext(context.Background(), "tcp", "10.71.0.1:7443"); err == nil || !strings.Contains(err.Error(), "dialed local runtime") {
+		t.Fatalf("ResolveWireGuardRuntimeForHop() runtime did not delegate to local runtime: %v", err)
 	}
 
 	transaction, err := shared.Prepare(context.Background(), []model.WireGuardProfile{profile})
@@ -649,8 +593,8 @@ func TestWireGuardProviderResolvesRemoteRelayHopThroughLocalPeerRoute(t *testing
 	if !ok {
 		t.Fatal("ResolveWireGuardRuntimeForHop(transaction) ok = false, want local caller runtime")
 	}
-	if runtime != localRuntime {
-		t.Fatalf("ResolveWireGuardRuntimeForHop(transaction) runtime = %p, want local runtime %p", runtime, localRuntime)
+	if _, err := runtime.DialContext(context.Background(), "tcp", "10.71.0.1:7443"); err == nil || !strings.Contains(err.Error(), "dialed local runtime") {
+		t.Fatalf("ResolveWireGuardRuntimeForHop(transaction) runtime did not delegate to local runtime: %v", err)
 	}
 }
 
@@ -1826,202 +1770,6 @@ func (p *testHTTPRelayRuntimeProvider) TrustedCAPool(context.Context, []int) (*x
 	return x509.NewCertPool(), nil
 }
 
-func TestRelayRuntimeManagerPreservesRunningServerOnInvalidListenerReconfigure(t *testing.T) {
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			1: mustIssueTestTLSCertificate(t),
-		},
-	}
-	manager := newRelayRuntimeManager(provider)
-	ctx := context.Background()
-	listenPort := pickFreeTCPPort(t)
-
-	initial := runtimeTestRelayListener(listenPort, 1)
-	if err := manager.Apply(ctx, []model.RelayListener{initial}); err != nil {
-		t.Fatalf("failed to apply initial relay runtime: %v", err)
-	}
-	waitForPortState(t, listenPort, true)
-
-	original := manager.server
-	bad := initial
-	bad.PinSet = nil
-
-	err := manager.Apply(ctx, []model.RelayListener{bad})
-	if err == nil || err.Error() != "relay listener 31: pin_only requires pin_set" {
-		t.Fatalf("expected invalid relay listener error, got %v", err)
-	}
-	if manager.server != original {
-		t.Fatal("expected existing relay runtime to be preserved on listener validation failure")
-	}
-	waitForPortState(t, listenPort, true)
-
-	if err := manager.Close(); err != nil {
-		t.Fatalf("failed to close relay manager: %v", err)
-	}
-	waitForPortState(t, listenPort, false)
-}
-
-func TestRelayRuntimeManagerCloseKeepsNewerDefaultWireGuardProvider(t *testing.T) {
-	oldDefaultProvider := relay.DefaultWireGuardRuntimeProvider()
-	defer relay.SetDefaultWireGuardRuntimeProvider(oldDefaultProvider)
-
-	provider := &testRelayTLSProvider{}
-	first := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntime(), true)
-	second := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntime(), true)
-	secondProvider := relay.DefaultWireGuardRuntimeProvider()
-	if secondProvider == nil {
-		t.Fatal("expected second relay manager to install default wireguard provider")
-	}
-
-	if err := first.Close(); err != nil {
-		t.Fatalf("first Close() error = %v", err)
-	}
-	if got := relay.DefaultWireGuardRuntimeProvider(); got != secondProvider {
-		t.Fatalf("default wireguard provider changed after closing first manager: got %T want second provider", got)
-	}
-
-	if err := second.Close(); err != nil {
-		t.Fatalf("second Close() error = %v", err)
-	}
-}
-
-func TestRelayRuntimeManagerPreservesRunningServerOnMissingCertificateReconfigure(t *testing.T) {
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			1: mustIssueTestTLSCertificate(t),
-		},
-	}
-	manager := newRelayRuntimeManager(provider)
-	ctx := context.Background()
-	listenPort := pickFreeTCPPort(t)
-
-	initial := runtimeTestRelayListener(listenPort, 1)
-	if err := manager.Apply(ctx, []model.RelayListener{initial}); err != nil {
-		t.Fatalf("failed to apply initial relay runtime: %v", err)
-	}
-	waitForPortState(t, listenPort, true)
-
-	original := manager.server
-	missingCertID := 2
-	bad := initial
-	bad.CertificateID = &missingCertID
-
-	err := manager.Apply(ctx, []model.RelayListener{bad})
-	if err == nil || err.Error() != "relay listener 31: certificate 2 not found" {
-		t.Fatalf("expected missing certificate error, got %v", err)
-	}
-	if manager.server != original {
-		t.Fatal("expected existing relay runtime to be preserved on missing certificate")
-	}
-	waitForPortState(t, listenPort, true)
-
-	if err := manager.Close(); err != nil {
-		t.Fatalf("failed to close relay manager: %v", err)
-	}
-	waitForPortState(t, listenPort, false)
-}
-
-func TestRelayRuntimeManagerPreservesRunningServerOnWireGuardApplyFailure(t *testing.T) {
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			1: mustIssueTestTLSCertificate(t),
-		},
-	}
-	applyErr := fmt.Errorf("wireguard apply failed")
-	manager := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
-		return nil, applyErr
-	}))
-	defer manager.Close()
-
-	ctx := context.Background()
-	listenPort := pickFreeTCPPort(t)
-	initial := runtimeTestRelayListener(listenPort, 1)
-	if err := manager.Apply(ctx, []model.RelayListener{initial}); err != nil {
-		t.Fatalf("failed to apply initial relay runtime: %v", err)
-	}
-	waitForPortState(t, listenPort, true)
-
-	original := manager.server
-	profileID := 9
-	reconfigured := initial
-	reconfigured.Revision++
-	reconfigured.TransportMode = relay.ListenerTransportModeWireGuard
-	reconfigured.WireGuardProfileID = &profileID
-	err := manager.ApplyWithWireGuardProfiles(ctx, []model.RelayListener{reconfigured}, []model.WireGuardProfile{validAppWireGuardProfile(profileID)})
-	if err == nil || !strings.Contains(err.Error(), applyErr.Error()) {
-		t.Fatalf("expected wireguard apply error, got %v", err)
-	}
-	if manager.server != original {
-		t.Fatal("expected existing relay runtime to be preserved on wireguard apply failure")
-	}
-	waitForPortState(t, listenPort, true)
-}
-
-func TestRelayRuntimeManagerDoesNotReplaceUnchangedWireGuardProfilesWithoutLocalListeners(t *testing.T) {
-	created := 0
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
-		created++
-		return &testAppWireGuardRuntime{}, nil
-	})
-	defer shared.Close()
-
-	profileID := 9
-	profile := validAppWireGuardProfile(profileID)
-	if err := shared.Apply(context.Background(), []model.WireGuardProfile{profile}); err != nil {
-		t.Fatalf("failed to seed shared wireguard runtime: %v", err)
-	}
-	runtime, ok := shared.Runtime(profileID)
-	if !ok {
-		t.Fatal("expected seeded wireguard runtime")
-	}
-	if created != 1 {
-		t.Fatalf("wireguard runtime creations after seed = %d, want 1", created)
-	}
-
-	manager := newRelayRuntimeManagerWithWireGuard(&testRelayTLSProvider{}, shared, false)
-	defer manager.Close()
-
-	if err := manager.ApplyWithWireGuardProfiles(context.Background(), nil, []model.WireGuardProfile{profile}); err != nil {
-		t.Fatalf("ApplyWithWireGuardProfiles() error = %v", err)
-	}
-
-	got, ok := shared.Runtime(profileID)
-	if !ok {
-		t.Fatal("expected wireguard runtime to remain registered")
-	}
-	if got != runtime {
-		t.Fatal("relay apply without local listeners replaced the shared wireguard runtime")
-	}
-	if created != 1 {
-		t.Fatalf("wireguard runtime creations after relay apply = %d, want 1", created)
-	}
-}
-
-func TestRelayRuntimeManagerAppliesWireGuardProfilesWithoutLocalListeners(t *testing.T) {
-	created := 0
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
-		created++
-		return &testAppWireGuardRuntime{}, nil
-	})
-	defer shared.Close()
-
-	profileID := 9
-	profile := validAppWireGuardProfile(profileID)
-	manager := newRelayRuntimeManagerWithWireGuard(&testRelayTLSProvider{}, shared, false)
-	defer manager.Close()
-
-	if err := manager.ApplyWithWireGuardProfiles(context.Background(), nil, []model.WireGuardProfile{profile}); err != nil {
-		t.Fatalf("ApplyWithWireGuardProfiles() error = %v", err)
-	}
-
-	if _, ok := shared.RuntimeForAgent(profile.AgentID, profileID); !ok {
-		t.Fatal("expected wireguard runtime to be registered without local relay listeners")
-	}
-	if created != 1 {
-		t.Fatalf("wireguard runtime creations = %d, want 1", created)
-	}
-}
-
 func TestL4RuntimeManagerReplacesWireGuardTransparentServerWithoutClosingNewListener(t *testing.T) {
 	var current *trackingListener
 	var listeners []*trackingListener
@@ -2380,213 +2128,6 @@ func TestL4RuntimeManagerRejectsUnpreparedWireGuardEgressProfiles(t *testing.T) 
 	}
 }
 
-func TestRelayRuntimeManagerPreservesRunningServerOnReplacementWireGuardListenFailure(t *testing.T) {
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			1: mustIssueTestTLSCertificate(t),
-		},
-	}
-	listenErr := fmt.Errorf("wireguard listen failed")
-	failListen := false
-	manager := newRelayRuntimeManagerWithWireGuard(provider, newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
-		return &testAppWireGuardRuntime{
-			onListenTCP: func(context.Context, string) (net.Listener, error) {
-				if failListen {
-					return nil, listenErr
-				}
-				return net.Listen("tcp", "127.0.0.1:0")
-			},
-		}, nil
-	}))
-	defer manager.Close()
-
-	ctx := context.Background()
-	listenPort := pickFreeTCPPort(t)
-	initial := runtimeTestRelayListener(listenPort, 1)
-	if err := manager.Apply(ctx, []model.RelayListener{initial}); err != nil {
-		t.Fatalf("failed to apply initial relay runtime: %v", err)
-	}
-	waitForPortState(t, listenPort, true)
-
-	original := manager.server
-	profileID := 14
-	reconfigured := runtimeTestRelayListener(pickFreeTCPPort(t), 1)
-	reconfigured.Revision = initial.Revision + 1
-	reconfigured.TransportMode = relay.ListenerTransportModeWireGuard
-	reconfigured.WireGuardProfileID = &profileID
-	failListen = true
-	err := manager.ApplyWithWireGuardProfiles(ctx, []model.RelayListener{reconfigured}, []model.WireGuardProfile{validAppWireGuardProfile(profileID)})
-	if err == nil || !strings.Contains(err.Error(), listenErr.Error()) {
-		t.Fatalf("expected wireguard listen error, got %v", err)
-	}
-	if manager.server != original {
-		t.Fatal("expected existing relay runtime to be preserved on replacement startup failure")
-	}
-	waitForPortState(t, listenPort, true)
-}
-
-func TestRelayRuntimeManagerRollsBackWireGuardProfilesWhenReplacementStartFails(t *testing.T) {
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			1: mustIssueTestTLSCertificate(t),
-		},
-	}
-	listenErr := fmt.Errorf("wireguard listen failed")
-	failListen := false
-	var runtimes []*testAppWireGuardRuntime
-	shared := newSharedWireGuardRuntimeWithFactory(func(context.Context, wireguard.Config) (wireguard.RuntimeHandle, error) {
-		runtime := newListeningTestAppWireGuardRuntime(&failListen, listenErr)
-		runtimes = append(runtimes, runtime)
-		return runtime, nil
-	})
-	manager := newRelayRuntimeManagerWithWireGuard(provider, shared)
-	defer manager.Close()
-
-	ctx := context.Background()
-	profileID := 16
-	listenPort := pickFreeTCPPort(t)
-	initialProfile := validAppWireGuardProfile(profileID)
-	initial := runtimeTestRelayListener(listenPort, 1)
-	initial.TransportMode = relay.ListenerTransportModeWireGuard
-	initial.WireGuardProfileID = &profileID
-	if err := manager.ApplyWithWireGuardProfiles(ctx, []model.RelayListener{initial}, []model.WireGuardProfile{initialProfile}); err != nil {
-		t.Fatalf("failed to apply initial relay runtime: %v", err)
-	}
-	waitForPortState(t, listenPort, true)
-	original := manager.server
-	originalRuntime := runtimes[0]
-
-	nextProfile := initialProfile
-	nextProfile.Revision++
-	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
-	reconfigured := runtimeTestRelayListener(pickFreeTCPPort(t), 1)
-	reconfigured.Revision = initial.Revision + 1
-	reconfigured.TransportMode = relay.ListenerTransportModeWireGuard
-	reconfigured.WireGuardProfileID = &profileID
-	failListen = true
-	err := manager.ApplyWithWireGuardProfiles(ctx, []model.RelayListener{reconfigured}, []model.WireGuardProfile{nextProfile})
-	if err == nil || !strings.Contains(err.Error(), listenErr.Error()) {
-		t.Fatalf("expected wireguard listen error, got %v", err)
-	}
-	if manager.server != original {
-		t.Fatal("expected existing relay runtime to be preserved on replacement startup failure")
-	}
-	if originalRuntime.closed {
-		t.Fatal("expected original wireguard runtime to remain active after replacement startup failure")
-	}
-	got, ok := manager.wireGuardRuntime.Runtime(profileID)
-	if !ok {
-		t.Fatal("expected original wireguard profile runtime to remain registered")
-	}
-	if got != originalRuntime {
-		t.Fatal("expected wireguard manager to retain original profile runtime after replacement startup failure")
-	}
-	waitForPortState(t, listenPort, true)
-}
-
-func TestRelayRuntimeManagerRestoresServerAfterPreparedSamePortWireGuardFailure(t *testing.T) {
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			1: mustIssueTestTLSCertificate(t),
-		},
-	}
-	listenErr := fmt.Errorf("wireguard listen failed")
-	var runtimes []*testAppWireGuardRuntime
-	factoryCalls := 0
-	shared := newSharedWireGuardRuntimeWithFactory(func(_ context.Context, cfg wireguard.Config) (wireguard.RuntimeHandle, error) {
-		factoryCalls++
-		if factoryCalls == 2 {
-			return nil, fmt.Errorf("address already in use")
-		}
-		failListen := cfg.Peers[0].Endpoint == "127.0.0.1:51821"
-		runtime := newListeningTestAppWireGuardRuntime(&failListen, listenErr)
-		runtimes = append(runtimes, runtime)
-		return runtime, nil
-	})
-	manager := newRelayRuntimeManagerWithWireGuard(provider, shared)
-	defer manager.Close()
-
-	ctx := context.Background()
-	profileID := 18
-	listenPort := pickFreeTCPPort(t)
-	profile := validAppWireGuardProfile(profileID)
-	initial := runtimeTestRelayListener(listenPort, 1)
-	initial.TransportMode = relay.ListenerTransportModeWireGuard
-	initial.WireGuardProfileID = &profileID
-	if err := manager.ApplyWithWireGuardProfiles(ctx, []model.RelayListener{initial}, []model.WireGuardProfile{profile}); err != nil {
-		t.Fatalf("failed to apply initial relay runtime: %v", err)
-	}
-	waitForPortState(t, listenPort, true)
-	originalServer := manager.server
-	originalRuntime := runtimes[0]
-
-	nextProfile := profile
-	nextProfile.Revision++
-	nextProfile.Peers[0].Endpoint = "127.0.0.1:51821"
-	err := manager.ApplyWithWireGuardProfiles(ctx, []model.RelayListener{initial}, []model.WireGuardProfile{nextProfile})
-	if err == nil || !strings.Contains(err.Error(), listenErr.Error()) {
-		t.Fatalf("expected wireguard listen error, got %v", err)
-	}
-	if manager.server == nil {
-		t.Fatal("expected relay server to be restored after failed prepared wireguard switch")
-	}
-	if !originalRuntime.closed {
-		t.Fatal("expected original wireguard runtime object to be closed during same-port replacement")
-	}
-	got, ok := manager.wireGuardRuntime.Runtime(profileID)
-	if !ok {
-		t.Fatal("expected wireguard profile runtime to be restored")
-	}
-	if got == originalRuntime {
-		t.Fatal("expected wireguard rollback to create a replacement runtime object")
-	}
-	if manager.server == originalServer {
-		t.Fatal("expected relay server to be rebuilt because original server depended on closed wireguard runtime")
-	}
-	waitForPortState(t, listenPort, true)
-}
-
-func TestRelayRuntimeManagerRestoresServerAfterBindConflictRetryFailure(t *testing.T) {
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			1: mustIssueTestTLSCertificate(t),
-		},
-	}
-	manager := newRelayRuntimeManager(provider)
-	defer manager.Close()
-
-	ctx := context.Background()
-	listenPort := pickFreeTCPPort(t)
-	initial := runtimeTestRelayListener(listenPort, 1)
-	if err := manager.Apply(ctx, []model.RelayListener{initial}); err != nil {
-		t.Fatalf("failed to apply initial relay runtime: %v", err)
-	}
-	waitForPortState(t, listenPort, true)
-	original := manager.server
-
-	occupiedPort := pickFreeTCPPort(t)
-	occupier, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(occupiedPort)))
-	if err != nil {
-		t.Fatalf("failed to occupy retry-failure port: %v", err)
-	}
-	defer occupier.Close()
-	second := runtimeTestRelayListener(occupiedPort, 1)
-	second.ID = initial.ID + 1
-	second.Name = "relay-b"
-
-	err = manager.Apply(ctx, []model.RelayListener{initial, second})
-	if err == nil {
-		t.Fatal("expected same-port relay retry failure")
-	}
-	if manager.server == nil {
-		t.Fatal("expected relay server to be restored after bind-conflict retry failure")
-	}
-	if manager.server == original {
-		t.Fatal("expected relay server to be rebuilt after bind-conflict fallback closed the original")
-	}
-	waitForPortState(t, listenPort, true)
-}
-
 func TestBindingKeysOverlapTreatsWildcardHostsAsSamePortOverlap(t *testing.T) {
 	port := strconv.Itoa(pickFreeTCPPort(t))
 	tests := []struct {
@@ -2771,87 +2312,6 @@ func TestRelayBindingKeysNamespaceWireGuardTransport(t *testing.T) {
 	if bindingKeysOverlap([]string{"wireguard:10:tcp:" + net.JoinHostPort("10.8.0.1", strconv.Itoa(port))}, wireGuard) {
 		t.Fatalf("did not expect different WireGuard profile binding to overlap %v", wireGuard)
 	}
-}
-
-func TestRelayRuntimeManagerReappliesQUICListenerOnSameUDPPort(t *testing.T) {
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			1: mustIssueTestTLSCertificate(t),
-		},
-	}
-	manager := newRelayRuntimeManager(provider)
-	ctx := context.Background()
-	listenPort := pickFreeUDPPort(t)
-
-	initial := runtimeTestRelayListener(listenPort, 1)
-	initial.TransportMode = relay.ListenerTransportModeQUIC
-	initial.ObfsMode = relay.RelayObfsModeOff
-	if err := manager.Apply(ctx, []model.RelayListener{initial}); err != nil {
-		t.Fatalf("failed to apply initial quic relay runtime: %v", err)
-	}
-
-	reconfigured := initial
-	reconfigured.AllowTransportFallback = true
-	reconfigured.Revision++
-	if err := manager.Apply(ctx, []model.RelayListener{reconfigured}); err != nil {
-		t.Fatalf("failed to reapply quic relay runtime on same port: %v", err)
-	}
-
-	if err := manager.Close(); err != nil {
-		t.Fatalf("failed to close relay manager: %v", err)
-	}
-}
-
-func TestApplyRelayListenersAcceptsAutoDerivedPinAndCA(t *testing.T) {
-	backendAddr, stopBackend := startRuntimeTestTCPEchoServer(t)
-	defer stopBackend()
-
-	certificateID := 1
-	caID := 101
-	cert, parsed := mustIssueParsedTestTLSCertificate(t)
-	provider := &testRelayTLSProvider{
-		certificates: map[int]tls.Certificate{
-			certificateID: cert,
-		},
-		caCertificates: map[int][]*x509.Certificate{
-			caID: {parsed},
-		},
-	}
-	manager := newRelayRuntimeManager(provider)
-	ctx := context.Background()
-	listenPort := pickFreeTCPPort(t)
-
-	listener := runtimeTestRelayListener(listenPort, certificateID)
-	listener.TLSMode = "pin_and_ca"
-	listener.PinSet = []model.RelayPin{{
-		Type:  "spki_sha256",
-		Value: runtimeTestSPKIPin(t, parsed),
-	}}
-	listener.TrustedCACertificateIDs = []int{caID}
-	listener.AllowSelfSigned = true
-
-	if err := manager.Apply(ctx, []model.RelayListener{listener}); err != nil {
-		t.Fatalf("failed to apply auto-derived relay listener: %v", err)
-	}
-	waitForPortState(t, listenPort, true)
-
-	hop := relay.Hop{
-		Address:  fmt.Sprintf("%s:%d", listener.ListenHost, listener.ListenPort),
-		Listener: listener,
-	}
-	conn, err := relay.Dial(ctx, "tcp", backendAddr, []relay.Hop{hop}, provider)
-	if err != nil {
-		t.Fatalf("failed to dial through applied relay listener: %v", err)
-	}
-	runtimeTestAssertRoundTrip(t, conn, []byte("auto-derived-relay"))
-	if err := conn.Close(); err != nil {
-		t.Fatalf("failed to close relay connection: %v", err)
-	}
-
-	if err := manager.Close(); err != nil {
-		t.Fatalf("failed to close relay manager: %v", err)
-	}
-	waitForPortState(t, listenPort, false)
 }
 
 func TestNewEmbeddedRoundTripsL4ThroughManagedRelayListener(t *testing.T) {

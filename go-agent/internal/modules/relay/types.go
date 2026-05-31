@@ -7,7 +7,7 @@ import (
 	"net"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
 type Listener = model.RelayListener
@@ -28,7 +28,7 @@ type WireGuardRuntime interface {
 	ListenTCP(ctx context.Context, address string) (net.Listener, error)
 	ListenTransparentTCP(ctx context.Context) (net.Listener, error)
 	ListenUDP(ctx context.Context, address string) (net.PacketConn, error)
-	ListenTransparentUDP(ctx context.Context, address string) (wireguard.TransparentUDPConn, error)
+	ListenTransparentUDP(ctx context.Context, address string) (module.TransparentUDPConn, error)
 }
 
 type WireGuardRuntimeProvider interface {

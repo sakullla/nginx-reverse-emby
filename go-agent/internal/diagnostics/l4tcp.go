@@ -10,8 +10,8 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 type TCPProberConfig struct {
@@ -376,7 +376,11 @@ func tcpRuleUsesRuntimeFinalHop(rule model.L4Rule) bool {
 	if protocol == "" {
 		protocol = "tcp"
 	}
-	return strings.EqualFold(strings.TrimSpace(protocol), "tcp") &&
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == "socks5" && ruleUsesL4Relay(rule) && rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+		return true
+	}
+	return protocol == "tcp" &&
 		strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
 		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent")
 }

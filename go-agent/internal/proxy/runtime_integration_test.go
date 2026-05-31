@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
@@ -384,7 +384,7 @@ func (r *fakeHTTPWireGuardRuntime) ListenUDP(context.Context, string) (net.Packe
 	return nil, fmt.Errorf("unexpected WireGuard ListenUDP call")
 }
 
-func (r *fakeHTTPWireGuardRuntime) ListenTransparentUDP(context.Context, string) (wireguard.TransparentUDPConn, error) {
+func (r *fakeHTTPWireGuardRuntime) ListenTransparentUDP(context.Context, string) (module.TransparentUDPConn, error) {
 	return nil, fmt.Errorf("unexpected WireGuard ListenTransparentUDP call")
 }
 

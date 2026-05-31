@@ -26,7 +26,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
@@ -3491,7 +3491,7 @@ func (r *fakeWireGuardRuntime) ListenUDP(ctx context.Context, address string) (n
 	return nil, fmt.Errorf("wireguard udp listen not configured")
 }
 
-func (r *fakeWireGuardRuntime) ListenTransparentUDP(context.Context, string) (wireguard.TransparentUDPConn, error) {
+func (r *fakeWireGuardRuntime) ListenTransparentUDP(context.Context, string) (module.TransparentUDPConn, error) {
 	return nil, fmt.Errorf("wireguard transparent udp listen not configured")
 }
 

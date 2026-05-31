@@ -26,8 +26,8 @@ import (
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
@@ -79,19 +79,19 @@ func TestNewRegistersModulesWhenDependenciesExist(t *testing.T) {
 			name:              "explicit enabled",
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			wantNames:         []string{"certs", "diagnostics", "egress", "wireguard", "traffic"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "wireguard", "relay", "traffic"},
 		},
 		{
 			name:              "implicit default",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: false,
-			wantNames:         []string{"certs", "diagnostics", "egress", "wireguard", "traffic"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "wireguard", "relay", "traffic"},
 		},
 		{
 			name:              "explicit disabled",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: true,
-			wantNames:         []string{"certs", "diagnostics", "egress", "traffic"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "relay", "traffic"},
 		},
 	}
 
@@ -156,10 +156,9 @@ func TestNewUsesRegisteredAdapterModulesAsAppDependencies(t *testing.T) {
 	if app.tcpProber != diagnosticModule.TCPProber() {
 		t.Fatal("tcp prober does not come from retained diagnostic module")
 	}
-	if relayManager, ok := app.relayApplier.(*relayRuntimeManager); !ok {
-		t.Fatalf("relayApplier = %T, want relayRuntimeManager", app.relayApplier)
-	} else if got := extractPrivateField(t, relayManager, "egressModule").Interface().(*moduleegress.Module); got != egressModule {
-		t.Fatal("relay manager does not use retained egress module")
+	relayModule := extractPrivateField(t, app, "relayModule").Interface().(*relay.Module)
+	if app.relayApplier != relayModule {
+		t.Fatal("relay applier does not come from retained relay module")
 	}
 
 	if got := registryModuleByName(registry, "certs"); got != certModule {
@@ -170,6 +169,9 @@ func TestNewUsesRegisteredAdapterModulesAsAppDependencies(t *testing.T) {
 	}
 	if got := registryModuleByName(registry, "egress"); got != egressModule {
 		t.Fatal("registry egress module is not the retained egress module")
+	}
+	if got := registryModuleByName(registry, "relay"); got != relayModule {
+		t.Fatal("registry relay module is not the retained relay module")
 	}
 }
 
@@ -469,21 +471,21 @@ func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing
 			http3Enabled:      false,
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "managed_certs", "diagnostics", "egress_profiles", "wireguard", "traffic_stats"},
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "managed_certs", "diagnostics", "egress_profiles", "wireguard", "relay", "traffic_stats"},
 		},
 		{
 			name:              "http3 enabled",
 			http3Enabled:      true,
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "http3_ingress", "managed_certs", "diagnostics", "egress_profiles", "wireguard", "traffic_stats"},
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "http3_ingress", "managed_certs", "diagnostics", "egress_profiles", "wireguard", "relay", "traffic_stats"},
 		},
 		{
 			name:              "wireguard disabled",
 			http3Enabled:      false,
 			wireGuardEnabled:  false,
 			wireGuardExplicit: true,
-			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "managed_certs", "diagnostics", "egress_profiles", "traffic_stats"},
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "managed_certs", "diagnostics", "egress_profiles", "relay", "traffic_stats"},
 		},
 	}
 
@@ -776,59 +778,6 @@ func TestRunKeepsRunningWhenAppliedSnapshotExists(t *testing.T) {
 
 	if err := <-done; err != nil {
 		t.Fatalf("expected nil after cancellation, got %v", err)
-	}
-}
-
-func TestRunAppliesExplicitEmptyWireGuardProfilesToClearStaleProfiles(t *testing.T) {
-	cfg := Config{HeartbeatInterval: time.Hour}
-	mem := store.NewInMemory()
-	previous := Snapshot{
-		DesiredVersion: "stored",
-		Revision:       7,
-		RelayListeners: []model.RelayListener{},
-		WireGuardProfiles: []model.WireGuardProfile{{
-			ID:         41,
-			AgentID:    "remote-leaked",
-			Name:       "leaked",
-			PrivateKey: "leaked-private-key",
-			Enabled:    true,
-			Revision:   7,
-		}},
-	}
-	if err := mem.SaveAppliedSnapshot(previous); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
-		DesiredVersion:    "cleanup",
-		Revision:          8,
-		RelayListeners:    []model.RelayListener{},
-		WireGuardProfiles: []model.WireGuardProfile{},
-	}})
-	relayApplier := &testWireGuardRelayApplier{}
-	app := newAppWithDeps(cfg, mem, client, nil, nil, relayApplier)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	applied := waitForAppliedSnapshot(t, time.Second, mem, func(snapshot Snapshot) bool {
-		return snapshot.WireGuardProfiles != nil && len(snapshot.WireGuardProfiles) == 0
-	})
-	if applied.WireGuardProfiles == nil || len(applied.WireGuardProfiles) != 0 {
-		t.Fatalf("applied WireGuardProfiles = %+v, want explicit empty slice", applied.WireGuardProfiles)
-	}
-	calls := waitForObservedCalls(t, time.Second, relayApplier.wireGuardCalls, 1, "relay WireGuard apply")
-	lastCall := calls[len(calls)-1]
-	if lastCall.profiles == nil || len(lastCall.profiles) != 0 {
-		t.Fatalf("applied relay WireGuard profiles = %+v, want explicit empty slice", lastCall.profiles)
-	}
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
 	}
 }
 
@@ -2611,98 +2560,6 @@ func TestRunHydratesRelayListenersFromStoredAppliedSnapshot(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChanges(t *testing.T) {
-	cfg := Config{
-		AgentID:           "local-agent",
-		HeartbeatInterval: time.Hour,
-	}
-	mem := store.NewInMemory()
-	stored := Snapshot{
-		DesiredVersion: "stored",
-		Revision:       5,
-		L4Rules: []model.L4Rule{{
-			Protocol:   "tcp",
-			ListenHost: "127.0.0.1",
-			ListenPort: 50381,
-			Backends: []model.L4Backend{{
-				Host: "remote-backend.example.test",
-				Port: 26966,
-			}},
-			RelayLayers: [][]int{{5}},
-			Revision:    5,
-		}},
-		RelayListeners: []model.RelayListener{
-			{
-				ID:         4,
-				AgentID:    "local-agent",
-				Name:       "local-relay",
-				ListenHost: "0.0.0.0",
-				ListenPort: 443,
-				Enabled:    true,
-				TLSMode:    "pin_only",
-				PinSet: []model.RelayPin{{
-					Type:  "sha256",
-					Value: "local-pin",
-				}},
-				Revision: 5,
-			},
-			{
-				ID:         5,
-				AgentID:    "remote-agent",
-				Name:       "remote-hop",
-				ListenHost: "relay.remote.example",
-				ListenPort: 2443,
-				PublicHost: "relay.remote.example",
-				PublicPort: 2443,
-				Enabled:    true,
-				TLSMode:    "pin_only",
-				PinSet: []model.RelayPin{{
-					Type:  "sha256",
-					Value: "remote-pin",
-				}},
-				Revision: 5,
-			},
-		},
-	}
-	if err := mem.SaveAppliedSnapshot(stored); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
-
-	next := stored
-	next.DesiredVersion = "2.0"
-	next.Revision = 6
-	next.RelayListeners = append([]model.RelayListener(nil), stored.RelayListeners...)
-	next.RelayListeners[1].PublicPort = 3443
-	client := newTestSyncClient(nil, syncResponse{snapshot: next})
-	l4Applier := &testL4Applier{}
-	relayApplier := &testRelayApplier{}
-	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, relayApplier)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Run(ctx)
-	}()
-
-	relayCalls := waitForObservedCalls(t, time.Second, relayApplier.snapshotCalls, 1, "relay hydration")
-	if len(relayCalls) != 1 {
-		t.Fatalf("expected only startup local relay hydration, got %d calls: %+v", len(relayCalls), relayCalls)
-	}
-	if len(relayCalls[0].listeners) != 1 || relayCalls[0].listeners[0].ID != 4 {
-		t.Fatalf("expected only local relay listener to be applied, got %+v", relayCalls[0].listeners)
-	}
-
-	l4Calls := waitForObservedCalls(t, time.Second, l4Applier.snapshotCalls, 2, "l4 remote relay refresh")
-	if len(l4Calls) != 2 {
-		t.Fatalf("expected startup hydration and remote relay-triggered l4 refresh, got %d calls", len(l4Calls))
-	}
-
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-}
-
 func TestSnapshotActivatorAppliesTrafficStatsEnabledFromAgentConfig(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
@@ -2820,57 +2677,6 @@ func TestSnapshotActivatorUpdatesTrafficBlockStateFromAgentConfigOnlyChange(t *t
 	}
 	if got := relayApplier.blockState(); got.Blocked != false || got.Reason != "" {
 		t.Fatalf("relay cleared block state = %+v", got)
-	}
-}
-
-func TestSnapshotActivatorPassesWireGuardProfilesToRelayApplier(t *testing.T) {
-	relayApplier := &testWireGuardRelayApplier{}
-	app := newAppWithDeps(
-		Config{AgentID: "local-agent"},
-		store.NewInMemory(),
-		newTestSyncClient(nil, syncResponse{}),
-		nil,
-		nil,
-		relayApplier,
-	)
-
-	profileID := 9
-	next := Snapshot{
-		WireGuardProfiles: []model.WireGuardProfile{{
-			ID:      profileID,
-			Enabled: true,
-		}},
-		RelayListeners: []model.RelayListener{{
-			ID:                 51,
-			AgentID:            "local-agent",
-			Name:               "relay-hop",
-			ListenHost:         "127.0.0.1",
-			ListenPort:         9443,
-			Enabled:            true,
-			TLSMode:            "pin_only",
-			TransportMode:      relay.ListenerTransportModeWireGuard,
-			WireGuardProfileID: &profileID,
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: "pin",
-			}},
-			Revision: 1,
-		}},
-	}
-
-	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
-		t.Fatalf("snapshotActivator returned error: %v", err)
-	}
-
-	calls := relayApplier.wireGuardCalls()
-	if len(calls) != 1 {
-		t.Fatalf("ApplyWithWireGuardProfiles calls = %d, want 1", len(calls))
-	}
-	if len(calls[0].profiles) != 1 || calls[0].profiles[0].ID != profileID {
-		t.Fatalf("wireguard profiles passed to relay applier = %+v", calls[0].profiles)
-	}
-	if len(calls[0].listeners) != 1 || calls[0].listeners[0].ID != 51 {
-		t.Fatalf("relay listeners passed to relay applier = %+v", calls[0].listeners)
 	}
 }
 
