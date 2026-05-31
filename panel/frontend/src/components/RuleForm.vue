@@ -868,7 +868,7 @@ function createBackend(data = {}) {
   return {
     id: `http-backend-${Date.now()}-${backendIdCounter++}`,
     url,
-    _protocol: hasProtocol ? parsed.protocol : 'http://'
+    _protocol: hasProtocol ? parsed.protocol : 'https://'
   }
 }
 
