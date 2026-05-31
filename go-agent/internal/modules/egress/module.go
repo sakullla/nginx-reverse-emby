@@ -9,7 +9,6 @@ import (
 	baseegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
@@ -19,7 +18,7 @@ type Module struct {
 	wireGuardRuntime *WireGuardRuntime
 }
 
-func NewModule(factory basewireguard.Factory) *Module {
+func NewModule(factory modulewireguard.Factory) *Module {
 	return &Module{wireGuardRuntime: NewWireGuardRuntime(factory)}
 }
 
@@ -122,7 +121,7 @@ type WireGuardRuntime struct {
 	runtime *modulewireguard.Runtime
 }
 
-func NewWireGuardRuntime(factory basewireguard.Factory) *WireGuardRuntime {
+func NewWireGuardRuntime(factory modulewireguard.Factory) *WireGuardRuntime {
 	return &WireGuardRuntime{runtime: modulewireguard.NewRuntime(factory)}
 }
 
@@ -137,7 +136,7 @@ func (r *WireGuardRuntime) Apply(ctx context.Context, profiles []model.EgressPro
 	return r.runtime.Apply(ctx, WireGuardProfiles(profiles))
 }
 
-func (r *WireGuardRuntime) Prepare(ctx context.Context, profiles []model.EgressProfile) (*basewireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+func (r *WireGuardRuntime) Prepare(ctx context.Context, profiles []model.EgressProfile) (*modulewireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
 	if r == nil || r.runtime == nil {
 		return nil, nil, nil
 	}
@@ -152,7 +151,7 @@ func (r *WireGuardRuntime) Prepare(ctx context.Context, profiles []model.EgressP
 	return transaction, egressWireGuardRuntimeProvider{transaction: transaction}, nil
 }
 
-func (r *WireGuardRuntime) Commit(transaction *basewireguard.Transaction, profiles []model.EgressProfile) {
+func (r *WireGuardRuntime) Commit(transaction *modulewireguard.Transaction, profiles []model.EgressProfile) {
 	if r == nil || r.runtime == nil || transaction == nil {
 		return
 	}
@@ -175,7 +174,7 @@ func (r *WireGuardRuntime) Provider() relay.WireGuardRuntimeProvider {
 
 type egressWireGuardRuntimeProvider struct {
 	runtime     *modulewireguard.Runtime
-	transaction *basewireguard.Transaction
+	transaction *modulewireguard.Transaction
 }
 
 func (p egressWireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
@@ -205,7 +204,7 @@ func WireGuardProfile(profile model.EgressProfile) model.WireGuardProfile {
 		return model.WireGuardProfile{
 			ID:       profile.ID,
 			Name:     profile.Name,
-			Mode:     basewireguard.ModeGenericWireGuard,
+			Mode:     modulewireguard.ModeGenericWireGuard,
 			Enabled:  profile.Enabled,
 			Revision: profile.Revision,
 		}
@@ -213,7 +212,7 @@ func WireGuardProfile(profile model.EgressProfile) model.WireGuardProfile {
 	return model.WireGuardProfile{
 		ID:         profile.ID,
 		Name:       profile.Name,
-		Mode:       basewireguard.ModeGenericWireGuard,
+		Mode:       modulewireguard.ModeGenericWireGuard,
 		PrivateKey: cfg.PrivateKey,
 		Addresses:  append([]string(nil), cfg.Addresses...),
 		Peers:      cloneWireGuardPeers(cfg.Peers),

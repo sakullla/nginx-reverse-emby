@@ -10,7 +10,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
@@ -201,7 +200,7 @@ func (m *relayRuntimeManager) canRecreateWireGuardRuntimeForBindConflict(err err
 	return false
 }
 
-func (m *relayRuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **wireguard.Transaction, egressTransaction **wireguard.Transaction) error {
+func (m *relayRuntimeManager) rollbackWireGuardAndRestorePreviousServerLocked(ctx context.Context, transaction **modulewireguard.Transaction, egressTransaction **modulewireguard.Transaction) error {
 	if transaction != nil && *transaction != nil {
 		(*transaction).Rollback()
 		*transaction = nil
@@ -489,7 +488,7 @@ func cloneIntLayers(layers [][]int) [][]int {
 	return cloned
 }
 
-func (m *relayRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*wireguard.Transaction, relayWireGuardProvider, error) {
+func (m *relayRuntimeManager) prepareWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) (*modulewireguard.Transaction, relayWireGuardProvider, error) {
 	if m.wireGuardRuntime == nil || profiles == nil {
 		return nil, m.wireGuardProvider, nil
 	}
@@ -510,7 +509,7 @@ func (m *relayRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Con
 	return m.egressWireGuard.Apply(ctx, profiles)
 }
 
-func (m *relayRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*wireguard.Transaction, relayWireGuardProvider, error) {
+func (m *relayRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*modulewireguard.Transaction, relayWireGuardProvider, error) {
 	if m.egressWireGuard == nil || profiles == nil {
 		return nil, nil, nil
 	}
