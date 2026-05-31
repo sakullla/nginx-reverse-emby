@@ -25,6 +25,12 @@ type Module struct {
 	tcpProber  *TCPProber
 }
 
+type diagnosticsState struct {
+	handler    Handler
+	httpProber *HTTPProber
+	tcpProber  *TCPProber
+}
+
 func NewModule() *Module {
 	return &Module{}
 }
@@ -63,11 +69,41 @@ func (m *Module) Start(ctx context.Context, snapshot model.Snapshot) error {
 	return m.Apply(ctx, module.ApplyRequest{Next: snapshot})
 }
 
-func (m *Module) Apply(_ context.Context, req module.ApplyRequest) error {
+func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
+	tx, err := m.Prepare(ctx, req)
+	if err != nil || tx == nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (m *Module) Prepare(_ context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
 	if m == nil {
-		return nil
+		return nil, nil
 	}
 
+	next, err := buildDiagnosticsState(req)
+	if err != nil {
+		return nil, err
+	}
+	previous := m.committedState()
+	committed := false
+	return module.TransactionFuncs{
+		CommitFunc: func() error {
+			m.installState(next)
+			committed = true
+			return nil
+		},
+		RollbackFunc: func() error {
+			if committed {
+				m.installState(previous)
+			}
+			return nil
+		},
+	}, nil
+}
+
+func buildDiagnosticsState(req module.ApplyRequest) (diagnosticsState, error) {
 	relayProvider := relayProviderFromResolver(req.Providers)
 	httpProber := NewHTTPProber(HTTPProberConfig{
 		Attempts:      5,
@@ -82,19 +118,31 @@ func (m *Module) Apply(_ context.Context, req module.ApplyRequest) error {
 
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(req.Next); err != nil {
-		return err
+		return diagnosticsState{}, err
 	}
 	if err := mem.SaveDesiredSnapshot(req.Next); err != nil {
-		return err
+		return diagnosticsState{}, err
 	}
 	handler := NewDiagnosticHandler(mem, httpProber, tcpProber)
+	return diagnosticsState{handler: handler, httpProber: httpProber, tcpProber: tcpProber}, nil
+}
 
+func (m *Module) committedState() diagnosticsState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return diagnosticsState{
+		handler:    m.handler,
+		httpProber: m.httpProber,
+		tcpProber:  m.tcpProber,
+	}
+}
+
+func (m *Module) installState(state diagnosticsState) {
 	m.mu.Lock()
-	m.handler = handler
-	m.httpProber = httpProber
-	m.tcpProber = tcpProber
+	m.handler = state.handler
+	m.httpProber = state.httpProber
+	m.tcpProber = state.tcpProber
 	m.mu.Unlock()
-	return nil
 }
 
 func (m *Module) Stop(context.Context) error {

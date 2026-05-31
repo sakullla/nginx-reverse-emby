@@ -433,7 +433,7 @@ func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType 
 	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
 		return nil, err
 	}
-	diagnosticModule, err := a.configuredDiagnosticModule(ctx, snapshot)
+	diagnosticModule, err := a.snapshotDiagnosticModule(ctx, snapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -446,11 +446,11 @@ func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType 
 	})
 }
 
-func (a *App) configuredDiagnosticModule(ctx context.Context, snapshot Snapshot) (*modulediagnostics.Module, error) {
-	if a == nil || a.diagnosticModule == nil {
+func (a *App) snapshotDiagnosticModule(ctx context.Context, snapshot Snapshot) (*modulediagnostics.Module, error) {
+	if a == nil {
 		return nil, nil
 	}
-	if a.diagnosticModule.HTTPProber() != nil && a.diagnosticModule.TCPProber() != nil {
+	if a.diagnosticModule != nil && a.diagnosticModule.HTTPProber() != nil && a.diagnosticModule.TCPProber() != nil {
 		return a.diagnosticModule, nil
 	}
 	if a.moduleRegistry == nil {
@@ -460,13 +460,14 @@ func (a *App) configuredDiagnosticModule(ctx context.Context, snapshot Snapshot)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.diagnosticModule.Apply(ctx, agentmodule.ApplyRequest{
+	diagnosticModule := modulediagnostics.NewModule()
+	if err := diagnosticModule.Apply(ctx, agentmodule.ApplyRequest{
 		Next:      snapshot,
 		Providers: providers,
 	}); err != nil {
 		return nil, err
 	}
-	return a.diagnosticModule, nil
+	return diagnosticModule, nil
 }
 
 func (a *App) Run(ctx context.Context) error {

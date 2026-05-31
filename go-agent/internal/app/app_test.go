@@ -357,6 +357,35 @@ func TestDiagnoseSnapshotUsesRegistryDiagnosticSources(t *testing.T) {
 	}
 }
 
+func TestDiagnoseSnapshotDoesNotConfigureRetainedDiagnosticsModule(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	diagnosticModule := modulediagnostics.NewModule()
+	registry := agentmodule.NewRegistry()
+	mustRegisterAppModule(t, registry, diagnosticModule)
+	app := &App{diagnosticModule: diagnosticModule, moduleRegistry: registry}
+	snapshot := Snapshot{
+		Rules: []model.HTTPRule{{
+			ID:          90,
+			FrontendURL: "http://frontend.example.test",
+			Backends:    []model.HTTPBackend{{URL: backend.URL}},
+		}},
+	}
+
+	if _, err := app.DiagnoseSnapshot(context.Background(), snapshot, agenttask.TaskTypeDiagnoseHTTPRule, 90); err != nil {
+		t.Fatalf("DiagnoseSnapshot() error = %v", err)
+	}
+	if diagnosticModule.Handler() != nil {
+		t.Fatal("DiagnoseSnapshot configured retained diagnostics handler")
+	}
+	if diagnosticModule.HTTPProber() != nil || diagnosticModule.TCPProber() != nil {
+		t.Fatal("DiagnoseSnapshot configured retained diagnostics probers")
+	}
+}
+
 type appLifecycleModule struct {
 	name   string
 	starts []int64
