@@ -45,3 +45,30 @@ func TestModuleDescriptorProvidesTrafficSink(t *testing.T) {
 		t.Fatalf("Descriptor().Provides = %+v, want traffic sink provider", descriptor.Provides)
 	}
 }
+
+func TestModuleApplyOwnsTrafficEnabledAndBlockState(t *testing.T) {
+	trafficmodule.SetEnabled(true)
+	t.Cleanup(func() {
+		trafficmodule.SetEnabled(true)
+		trafficmodule.Reset()
+	})
+	disabled := false
+	mod := trafficmodule.NewModule()
+
+	if err := mod.Apply(context.Background(), module.ApplyRequest{
+		Next: model.Snapshot{AgentConfig: model.AgentConfig{
+			TrafficStatsEnabled: &disabled,
+			TrafficBlocked:      true,
+			TrafficBlockReason:  " monthly quota exceeded ",
+		}},
+	}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if trafficmodule.Enabled() {
+		t.Fatal("traffic enabled = true, want traffic module to disable stats")
+	}
+	if got := mod.TrafficBlockState(); !got.Blocked || got.Reason != "monthly quota exceeded" {
+		t.Fatalf("TrafficBlockState() = %+v, want normalized blocked state", got)
+	}
+}

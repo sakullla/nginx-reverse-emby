@@ -9,10 +9,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
-	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 )
 
@@ -150,12 +148,6 @@ func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next 
 		if _, err := parseTrafficStatsInterval(next.AgentConfig.TrafficStatsInterval); err != nil {
 			return err
 		}
-		if a.trafficModule == nil {
-			if next.AgentConfig.TrafficStatsEnabled != nil {
-				traffic.SetEnabled(*next.AgentConfig.TrafficStatsEnabled)
-			}
-			a.updateTrafficBlockState(next.AgentConfig)
-		}
 		relay.SetOutboundProxyURL(next.AgentConfig.OutboundProxyURL)
 	}
 	if a.certModule == nil && certificatesChanged(previous, next) {
@@ -291,33 +283,4 @@ func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.R
 		}
 	}
 	return model.RelayListener{}, false
-}
-
-func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {
-	if a == nil {
-		return
-	}
-	blocked := cfg.TrafficBlocked
-	reason := cfg.TrafficBlockReason
-	if manager, ok := a.httpApplier.(interface {
-		UpdateTrafficBlockState(modulehttp.TrafficBlockState)
-	}); ok {
-		manager.UpdateTrafficBlockState(modulehttp.TrafficBlockState{Blocked: blocked, Reason: reason})
-	}
-	if a.httpModule != nil {
-		a.httpModule.UpdateTrafficBlockState(modulehttp.TrafficBlockState{Blocked: blocked, Reason: reason})
-	}
-	if manager, ok := a.l4Applier.(interface {
-		UpdateTrafficBlockState(modulel4.TrafficBlockState)
-	}); ok {
-		manager.UpdateTrafficBlockState(modulel4.TrafficBlockState{Blocked: blocked, Reason: reason})
-	}
-	if a.l4Module != nil {
-		a.l4Module.UpdateTrafficBlockState(modulel4.TrafficBlockState{Blocked: blocked, Reason: reason})
-	}
-	if manager, ok := a.relayApplier.(interface {
-		UpdateTrafficBlockState(relay.TrafficBlockState)
-	}); ok {
-		manager.UpdateTrafficBlockState(relay.TrafficBlockState{Blocked: blocked, Reason: reason})
-	}
 }

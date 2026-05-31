@@ -29,11 +29,11 @@ import (
 	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func TestNewBuildsRealWiring(t *testing.T) {
@@ -2655,7 +2655,7 @@ func TestRunHydratesRelayListenersFromStoredAppliedSnapshot(t *testing.T) {
 	}
 }
 
-func TestSnapshotActivatorAppliesTrafficStatsEnabledFromAgentConfig(t *testing.T) {
+func TestSnapshotActivatorDoesNotOwnTrafficStatsEnabledFallback(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	t.Cleanup(func() {
@@ -2675,22 +2675,12 @@ func TestSnapshotActivatorAppliesTrafficStatsEnabledFromAgentConfig(t *testing.T
 	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
 		t.Fatalf("snapshotActivator returned error: %v", err)
 	}
-	if traffic.Enabled() {
-		t.Fatal("traffic.Enabled() = true, want false")
-	}
-
-	enabled := true
-	previous = next
-	next.AgentConfig.TrafficStatsEnabled = &enabled
-	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
-		t.Fatalf("snapshotActivator returned error while enabling stats: %v", err)
-	}
 	if !traffic.Enabled() {
-		t.Fatal("traffic.Enabled() = false, want true")
+		t.Fatal("traffic.Enabled() = false, want app not to own traffic stats toggle")
 	}
 }
 
-func TestSnapshotActivatorUpdatesTrafficBlockStateFromAgentConfigOnlyChange(t *testing.T) {
+func TestSnapshotActivatorDoesNotPushTrafficBlockStateCallbacks(t *testing.T) {
 	previous := Snapshot{
 		AgentConfig: model.AgentConfig{
 			TrafficBlocked: false,
@@ -2748,30 +2738,14 @@ func TestSnapshotActivatorUpdatesTrafficBlockStateFromAgentConfigOnlyChange(t *t
 	if got := relayApplier.applyCount(); got != 0 {
 		t.Fatalf("relay Apply calls = %d, want 0 for agent_config-only change", got)
 	}
-	if got := httpApplier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
-		t.Fatalf("http block state = %+v", got)
+	if got := httpApplier.blockState(); got.Blocked || got.Reason != "" {
+		t.Fatalf("http block state = %+v, want app not to push callback state", got)
 	}
-	if got := l4Applier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
-		t.Fatalf("l4 block state = %+v", got)
+	if got := l4Applier.blockState(); got.Blocked || got.Reason != "" {
+		t.Fatalf("l4 block state = %+v, want app not to push callback state", got)
 	}
-	if got := relayApplier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
-		t.Fatalf("relay block state = %+v", got)
-	}
-
-	previous = next
-	next.AgentConfig.TrafficBlocked = false
-	next.AgentConfig.TrafficBlockReason = ""
-	if err := app.snapshotActivator()(context.Background(), previous, next); err != nil {
-		t.Fatalf("snapshotActivator returned error while clearing block state: %v", err)
-	}
-	if got := httpApplier.blockState(); got.Blocked != false || got.Reason != "" {
-		t.Fatalf("http cleared block state = %+v", got)
-	}
-	if got := l4Applier.blockState(); got.Blocked != false || got.Reason != "" {
-		t.Fatalf("l4 cleared block state = %+v", got)
-	}
-	if got := relayApplier.blockState(); got.Blocked != false || got.Reason != "" {
-		t.Fatalf("relay cleared block state = %+v", got)
+	if got := relayApplier.blockState(); got.Blocked || got.Reason != "" {
+		t.Fatalf("relay block state = %+v, want app not to push callback state", got)
 	}
 }
 
