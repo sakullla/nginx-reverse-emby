@@ -15,6 +15,8 @@ import (
 
 const socks5UDPTestTimeout = time.Second
 
+var _ module.EgressResolver = (*Module)(nil)
+
 func TestModulePublishesFinalHopDialerAndResolver(t *testing.T) {
 	mod := NewModule(nil)
 	registry := module.NewRegistry()
@@ -30,8 +32,21 @@ func TestModulePublishesFinalHopDialerAndResolver(t *testing.T) {
 	if _, ok := provider.(module.FinalHopDialer); !ok {
 		t.Fatalf("finalhop.dialer provider type = %T, want module.FinalHopDialer", provider)
 	}
-	if _, ok := registry.Resolve(module.ProviderEgressResolver); !ok {
+	resolverProvider, ok := registry.Resolve(module.ProviderEgressResolver)
+	if !ok {
 		t.Fatal("egress.resolver provider missing")
+	}
+	resolver, ok := resolverProvider.(module.EgressResolver)
+	if !ok {
+		t.Fatalf("egress.resolver provider type = %T, want module.EgressResolver", resolverProvider)
+	}
+	profileID := 11
+	profile, found, err := resolver.Resolve(&profileID, "tcp")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if !found || profile.ID != profileID || profile.Type != "direct" {
+		t.Fatalf("Resolve() = %+v, %v; want direct profile %d", profile, found, profileID)
 	}
 }
 
