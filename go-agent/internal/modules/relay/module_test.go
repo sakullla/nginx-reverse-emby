@@ -19,6 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	relaymodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 )
 
 func TestModuleAppliesLocalRelayListenersAndConsumesProviders(t *testing.T) {
@@ -188,6 +189,35 @@ func TestModuleRollbackAfterCommitRestoresPreviousRuntime(t *testing.T) {
 	}
 }
 
+func TestModulePrepareUsesPendingWireGuardOverlayRuntime(t *testing.T) {
+	certificateID := 1
+	cert := mustIssueTestTLSCertificate(t)
+	tlsProvider := fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{certificateID: cert}}
+	wireGuardRuntime := modulewireguard.NewRuntime(func(context.Context, modulewireguard.Config) (modulewireguard.RuntimeHandle, error) {
+		return relayWireGuardRuntime{}, nil
+	})
+	defer wireGuardRuntime.Close()
+	relayModule := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: tlsProvider})
+	mustRegister(t, registry, modulewireguard.NewModule(wireGuardRuntime))
+	mustRegister(t, registry, relayModule)
+
+	profileID := 91
+	next := model.Snapshot{
+		WireGuardProfiles: []model.WireGuardProfile{testWireGuardProfile(profileID, "agent-a")},
+		RelayListeners: []model.RelayListener{func() model.RelayListener {
+			listener := testRelayListener(91, "agent-a", "node-a", pickFreeTCPPort(t), certificateID)
+			listener.TransportMode = relaymodule.ListenerTransportModeWireGuard
+			listener.WireGuardProfileID = &profileID
+			return listener
+		}()},
+	}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+}
+
 type fakeTLSMaterialProvider struct {
 	certificates map[int]tls.Certificate
 }
@@ -278,6 +308,30 @@ func (m commitFailingModule) Prepare(context.Context, module.ApplyRequest) (modu
 }
 func (commitFailingModule) Stop(context.Context) error { return nil }
 
+type relayWireGuardRuntime struct{}
+
+func (relayWireGuardRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, fmt.Errorf("unexpected wireguard dial")
+}
+
+func (relayWireGuardRuntime) ListenTCP(_ context.Context, address string) (net.Listener, error) {
+	return net.Listen("tcp", address)
+}
+
+func (relayWireGuardRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
+	return nil, fmt.Errorf("unexpected transparent tcp listen")
+}
+
+func (relayWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
+	return nil, fmt.Errorf("unexpected udp listen")
+}
+
+func (relayWireGuardRuntime) ListenTransparentUDP(context.Context, string) (modulewireguard.TransparentUDPConn, error) {
+	return nil, fmt.Errorf("unexpected transparent udp listen")
+}
+
+func (relayWireGuardRuntime) Close() error { return nil }
+
 func mustRegister(t *testing.T, registry *module.Registry, mod any) {
 	t.Helper()
 	if err := registry.Register(mod); err != nil {
@@ -302,6 +356,26 @@ func testRelayListener(id int, agentID string, agentName string, port int, certi
 		Revision: 1,
 	}
 }
+
+func testWireGuardProfile(id int, agentID string) model.WireGuardProfile {
+	return model.WireGuardProfile{
+		ID:         id,
+		AgentID:    agentID,
+		Name:       "wg",
+		Mode:       modulewireguard.ModeGenericWireGuard,
+		PrivateKey: wireGuardTestKey,
+		Addresses:  []string{"10.90.0.2/32"},
+		Peers: []model.WireGuardPeer{{
+			Name:       "peer",
+			PublicKey:  wireGuardTestKey,
+			Endpoint:   "127.0.0.1:51820",
+			AllowedIPs: []string{"10.90.0.0/24"},
+		}},
+		Enabled: true,
+	}
+}
+
+const wireGuardTestKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 func dialServedCertificate(t *testing.T, port int) tls.Certificate {
 	t.Helper()

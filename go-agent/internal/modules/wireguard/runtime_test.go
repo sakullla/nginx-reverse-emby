@@ -187,6 +187,31 @@ func TestModulePublishesOverlayRuntimeProvider(t *testing.T) {
 	}
 }
 
+func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
+	factory := &moduleRecordingFactory{}
+	runtime := NewRuntime(factory.Create)
+	mod := NewModule(runtime)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+	mustRegister(t, registry, failingModule{name: "later", err: errors.New("later apply failed")})
+
+	next := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{
+		testWireGuardProfile(10, "local", "peer.example.com:51820", "127.0.0.1/32"),
+	}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err == nil {
+		t.Fatal("Apply() error = nil, want later module failure")
+	}
+	if got, ok := runtime.RuntimeForAgent("local", 10); ok || got != nil {
+		t.Fatalf("RuntimeForAgent() = %v, %v; want state not advanced after rollback", got, ok)
+	}
+	if len(factory.created) != 1 {
+		t.Fatalf("created runtimes = %d, want 1 prepared runtime", len(factory.created))
+	}
+	if !factory.created[0].closed {
+		t.Fatal("prepared runtime was not closed on rollback")
+	}
+}
+
 func TestModulePublishesTransparentListenerProvider(t *testing.T) {
 	t.Parallel()
 
@@ -238,6 +263,24 @@ func mustRegister(t *testing.T, registry *module.Registry, mod module.Module) {
 		t.Fatalf("Register() error = %v", err)
 	}
 }
+
+type failingModule struct {
+	name string
+	err  error
+}
+
+func (m failingModule) Name() string { return m.name }
+
+func (m failingModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name}
+}
+
+func (failingModule) RegisterProviders(module.ProviderRegistry) error { return nil }
+func (failingModule) Capabilities(module.SnapshotView) []module.Capability {
+	return nil
+}
+func (m failingModule) Apply(context.Context, module.ApplyRequest) error { return m.err }
+func (failingModule) Stop(context.Context) error                         { return nil }
 
 func testWireGuardProfile(id int, agentID string, endpoint string, allowedIPs ...string) model.WireGuardProfile {
 	return model.WireGuardProfile{
