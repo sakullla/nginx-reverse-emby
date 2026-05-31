@@ -26,6 +26,13 @@ func TestNetTunBatchSizeUsesConfiguredBatchSize(t *testing.T) {
 	}
 }
 
+func TestNetTunBatchSizeUsesConservativeWireGuardReadBatch(t *testing.T) {
+	tun := &netTun{}
+	if got, want := tun.BatchSize(), 32; got != want {
+		t.Fatalf("BatchSize() = %d, want %d", got, want)
+	}
+}
+
 func TestNetTunBatchSizeStaysWithinWireGuardBindLimit(t *testing.T) {
 	tun := &netTun{}
 	if got, wantMax := tun.BatchSize(), 128; got > wantMax {

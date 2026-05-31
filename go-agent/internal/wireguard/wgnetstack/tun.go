@@ -61,7 +61,7 @@ type dnsCacheEntry struct {
 
 type Net netTun
 
-const netTunBatchSize = 128
+const netTunBatchSize = 32
 const netTunOutboundQueueSize = 256
 const netTunChannelQueueSize = 256
 const netTunTCPDefaultBufferSize = 2 << 20
