@@ -26,9 +26,39 @@ func TestNetTunBatchSizeUsesConfiguredBatchSize(t *testing.T) {
 	}
 }
 
+func TestNetTunBatchSizeUsesConservativeWireGuardReadBatch(t *testing.T) {
+	tun := &netTun{}
+	if got, want := tun.BatchSize(), 32; got != want {
+		t.Fatalf("BatchSize() = %d, want %d", got, want)
+	}
+}
+
+func TestNetTunBatchSizeStaysWithinWireGuardBindLimit(t *testing.T) {
+	tun := &netTun{}
+	if got, wantMax := tun.BatchSize(), 128; got > wantMax {
+		t.Fatalf("BatchSize() = %d, want <= %d", got, wantMax)
+	}
+}
+
 func TestNetTunChannelQueueSizeIsBounded(t *testing.T) {
 	if got, wantMax := netTunChannelQueueSize, 256; got > wantMax {
 		t.Fatalf("netTunChannelQueueSize = %d, want <= %d", got, wantMax)
+	}
+}
+
+func TestNetTunOutboundQueueAllowsMobileTrafficBursts(t *testing.T) {
+	dev, _, _, err := CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.99.0.1")}, nil, 1280)
+	if err != nil {
+		t.Fatalf("CreateNetTUN() error = %v", err)
+	}
+	defer dev.Close()
+
+	tun, ok := dev.(*netTun)
+	if !ok {
+		t.Fatalf("CreateNetTUN() device type = %T, want *netTun", dev)
+	}
+	if got, wantMin := cap(tun.incomingPacket), 256; got < wantMin {
+		t.Fatalf("incomingPacket capacity = %d, want >= %d", got, wantMin)
 	}
 }
 
@@ -354,6 +384,39 @@ func TestNetTunWriteNotifyDrainsQueuedOutboundBatch(t *testing.T) {
 		if got := string(bufs[i][:sizes[i]]); got != want {
 			t.Fatalf("packet %d = %q, want %q", i, got, want)
 		}
+	}
+}
+
+func TestNetTunWriteNotifyDoesNotBlockWhenOutboundQueueIsFull(t *testing.T) {
+	tun := &netTun{
+		ep:             channel.New(netTunChannelQueueSize, 1280, ""),
+		incomingPacket: make(chan *stack.PacketBuffer, 1),
+		localAddresses: map[netip.Addr]struct{}{},
+	}
+	tun.incomingPacket <- stack.NewPacketBuffer(stack.PacketBufferOptions{
+		Payload: buffer.MakeWithData([]byte("queued")),
+	})
+
+	var packets stack.PacketBufferList
+	packets.PushBack(stack.NewPacketBuffer(stack.PacketBufferOptions{
+		Payload: buffer.MakeWithData([]byte("overflow")),
+	}))
+	defer packets.DecRef()
+
+	if written, tcpipErr := tun.ep.WritePackets(packets); tcpipErr != nil || written != 1 {
+		t.Fatalf("WritePackets() = %d, %v; want 1, nil", written, tcpipErr)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		tun.WriteNotify()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("WriteNotify blocked after outbound packet queue filled")
 	}
 }
 
