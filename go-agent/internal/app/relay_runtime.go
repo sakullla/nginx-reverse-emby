@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
@@ -243,15 +244,15 @@ func (m *relayRuntimeManager) storeLastAppliedInputsLocked(listeners []model.Rel
 	m.lastEgressProfiles = cloneEgressProfiles(egressProfiles)
 }
 
-func relayFinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relayWireGuardProvider) relay.FinalHopDialer {
-	return moduleegress.NewFinalHopDialer(profiles, wireGuardProvider)
+func relayFinalHopDialer(profiles []model.EgressProfile, overlayRuntime module.OverlayRuntime) relay.FinalHopDialer {
+	return moduleegress.NewFinalHopDialer(profiles, overlayRuntime)
 }
 
-func (m *relayRuntimeManager) relayFinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relayWireGuardProvider) relay.FinalHopDialer {
+func (m *relayRuntimeManager) relayFinalHopDialer(profiles []model.EgressProfile, overlayRuntime module.OverlayRuntime) relay.FinalHopDialer {
 	if m != nil && m.egressModule != nil {
-		return m.egressModule.FinalHopDialer(profiles, wireGuardProvider)
+		return m.egressModule.FinalHopDialer(profiles, overlayRuntime)
 	}
-	return relayFinalHopDialer(profiles, wireGuardProvider)
+	return relayFinalHopDialer(profiles, overlayRuntime)
 }
 
 func (m *relayRuntimeManager) applyWireGuardProfilesLocked(ctx context.Context, profiles []model.WireGuardProfile) error {
@@ -509,7 +510,7 @@ func (m *relayRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Con
 	return m.egressWireGuard.Apply(ctx, profiles)
 }
 
-func (m *relayRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*modulewireguard.Transaction, relayWireGuardProvider, error) {
+func (m *relayRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*modulewireguard.Transaction, module.OverlayRuntime, error) {
 	if m.egressWireGuard == nil || profiles == nil {
 		return nil, nil, nil
 	}

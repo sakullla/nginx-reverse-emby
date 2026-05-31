@@ -128,12 +128,8 @@ func (s *Server) validateLocalEgressProfile(rule model.L4Rule) error {
 	if !strings.EqualFold(strings.TrimSpace(profile.Type), "wireguard") {
 		return nil
 	}
-	if s.egressDialer.WireGuardProvider == nil {
+	if s.egressDialer.OverlayRuntime == nil {
 		return fmt.Errorf("wireguard runtime provider is required for egress profile %d", profile.ID)
-	}
-	runtime, ok := s.egressDialer.WireGuardProvider.WireGuardRuntime(profile.ID)
-	if !ok || runtime == nil {
-		return fmt.Errorf("wireguard egress profile %d runtime not found", profile.ID)
 	}
 	return err
 }

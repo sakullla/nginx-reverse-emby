@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 type Dialer struct {
-	Resolver          Resolver
-	WireGuardProvider relay.WireGuardRuntimeProvider
+	Resolver       Resolver
+	OverlayRuntime module.OverlayRuntime
 }
 
 func (d Dialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, error) {
@@ -29,11 +29,11 @@ func (d Dialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, 
 	case "socks", "http":
 		return proxyproto.Dial(ctx, profile.ProxyURL, target)
 	case "wireguard":
-		runtime, err := d.wireGuardRuntime(profile.ID)
+		runtime, err := d.overlayRuntime(profile.ID)
 		if err != nil {
 			return nil, err
 		}
-		return runtime.DialContext(ctx, "tcp", target)
+		return runtime.DialContext(ctx, "", profile.ID, "tcp", target)
 	default:
 		return nil, fmt.Errorf("unsupported egress profile type %q", profile.Type)
 	}
@@ -58,11 +58,11 @@ func (d Dialer) DialUDP(ctx context.Context, target string, id *int) (proxyproto
 	case "http":
 		return nil, fmt.Errorf("UDP egress profile %d type http is unsupported", profile.ID)
 	case "wireguard":
-		runtime, err := d.wireGuardRuntime(profile.ID)
+		runtime, err := d.overlayRuntime(profile.ID)
 		if err != nil {
 			return nil, err
 		}
-		conn, err := runtime.DialContext(ctx, "udp", target)
+		conn, err := runtime.DialContext(ctx, "", profile.ID, "udp", target)
 		if err != nil {
 			return nil, err
 		}
@@ -72,15 +72,11 @@ func (d Dialer) DialUDP(ctx context.Context, target string, id *int) (proxyproto
 	}
 }
 
-func (d Dialer) wireGuardRuntime(profileID int) (relay.WireGuardRuntime, error) {
-	if d.WireGuardProvider == nil {
+func (d Dialer) overlayRuntime(profileID int) (module.OverlayRuntime, error) {
+	if d.OverlayRuntime == nil {
 		return nil, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profileID)
 	}
-	runtime, ok := d.WireGuardProvider.WireGuardRuntime(profileID)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
-	}
-	return runtime, nil
+	return d.OverlayRuntime, nil
 }
 
 type netUDPPacketConn struct {

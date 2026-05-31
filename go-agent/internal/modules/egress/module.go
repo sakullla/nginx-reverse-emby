@@ -2,11 +2,12 @@ package egress
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
-	baseegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
@@ -15,11 +16,19 @@ import (
 )
 
 type Module struct {
+	mu               sync.RWMutex
 	wireGuardRuntime *WireGuardRuntime
+	profiles         []model.EgressProfile
+	resolver         Resolver
+	overlayRuntime   module.OverlayRuntime
 }
 
-func NewModule(factory modulewireguard.Factory) *Module {
-	return &Module{wireGuardRuntime: NewWireGuardRuntime(factory)}
+func NewModule(factory ...modulewireguard.Factory) *Module {
+	var create modulewireguard.Factory
+	if len(factory) > 0 {
+		create = factory[0]
+	}
+	return &Module{wireGuardRuntime: NewWireGuardRuntime(create)}
 }
 
 func (m *Module) Name() string {
@@ -27,11 +36,18 @@ func (m *Module) Name() string {
 }
 
 func (m *Module) Descriptor() module.ModuleDescriptor {
-	return module.ModuleDescriptor{Name: m.Name()}
+	return module.ModuleDescriptor{
+		Name:     m.Name(),
+		Provides: []module.ProviderRef{module.ProviderFinalHopDialer, module.ProviderEgressResolver},
+		Optional: []module.ProviderRef{module.ProviderOverlayRuntime},
+	}
 }
 
-func (m *Module) RegisterProviders(module.ProviderRegistry) error {
-	return nil
+func (m *Module) RegisterProviders(reg module.ProviderRegistry) error {
+	if err := reg.Provide(module.ProviderFinalHopDialer, m); err != nil {
+		return err
+	}
+	return reg.Provide(module.ProviderEgressResolver, m)
 }
 
 func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
@@ -46,7 +62,35 @@ func (m *Module) Start(context.Context, model.Snapshot) error {
 	return nil
 }
 
-func (m *Module) Apply(context.Context, module.ApplyRequest) error {
+func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
+	profiles := CloneProfiles(req.Next.EgressProfiles)
+	if m != nil && m.wireGuardRuntime != nil {
+		if err := m.wireGuardRuntime.Apply(ctx, profiles); err != nil {
+			return err
+		}
+	}
+
+	var overlayRuntime module.OverlayRuntime
+	if req.Providers != nil {
+		if provider, ok := req.Providers.Resolve(module.ProviderOverlayRuntime); ok {
+			runtime, ok := provider.(module.OverlayRuntime)
+			if !ok {
+				return fmt.Errorf("provider %s has type %T, want module.OverlayRuntime", module.ProviderOverlayRuntime, provider)
+			}
+			overlayRuntime = runtime
+		}
+	}
+	if overlayRuntime == nil && m != nil && m.wireGuardRuntime != nil {
+		overlayRuntime = m.wireGuardRuntime.Provider()
+	}
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	m.profiles = profiles
+	m.resolver = NewResolver(profiles)
+	m.overlayRuntime = overlayRuntime
+	m.mu.Unlock()
 	return nil
 }
 
@@ -64,21 +108,53 @@ func (m *Module) WireGuardRuntime() *WireGuardRuntime {
 	return m.wireGuardRuntime
 }
 
-func (m *Module) FinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relay.WireGuardRuntimeProvider) relay.FinalHopDialer {
-	return NewFinalHopDialer(profiles, wireGuardProvider)
+func (m *Module) Resolve(id *int, network string) (model.EgressProfile, bool, error) {
+	if m == nil {
+		return NewResolver(nil).Resolve(id, network)
+	}
+	m.mu.RLock()
+	resolver := m.resolver
+	m.mu.RUnlock()
+	return resolver.Resolve(id, network)
 }
 
-func NewFinalHopDialer(profiles []model.EgressProfile, wireGuardProvider relay.WireGuardRuntimeProvider) relay.FinalHopDialer {
+func (m *Module) DialTCP(ctx context.Context, target string, id *int) (net.Conn, error) {
+	return m.currentDialer().DialTCP(ctx, target, id)
+}
+
+func (m *Module) OpenUDP(ctx context.Context, target string, id *int) (relay.UDPPacketPeer, error) {
+	conn, err := m.currentDialer().DialUDP(ctx, target, id)
+	if err != nil {
+		return nil, err
+	}
+	return udpPacketConn{conn: conn, target: target}, nil
+}
+
+func (m *Module) currentDialer() Dialer {
+	if m == nil {
+		return Dialer{Resolver: NewResolver(nil)}
+	}
+	m.mu.RLock()
+	dialer := Dialer{Resolver: m.resolver, OverlayRuntime: m.overlayRuntime}
+	m.mu.RUnlock()
+	return dialer
+}
+
+func (m *Module) FinalHopDialer(profiles []model.EgressProfile, overlayRuntime module.OverlayRuntime) relay.FinalHopDialer {
+	return NewFinalHopDialer(profiles, overlayRuntime)
+}
+
+func NewFinalHopDialer(profiles []model.EgressProfile, overlayRuntime module.OverlayRuntime) relay.FinalHopDialer {
 	return finalHopDialer{
-		dialer: baseegress.Dialer{
-			Resolver:          baseegress.NewResolver(profiles),
-			WireGuardProvider: wireGuardProvider,
+		dialer: Dialer{
+			Resolver:       NewResolver(profiles),
+			OverlayRuntime: overlayRuntime,
 		},
 	}
 }
 
 type finalHopDialer struct {
-	dialer baseegress.Dialer
+	dialer Dialer
 }
 
 func (d finalHopDialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, error) {
@@ -136,7 +212,7 @@ func (r *WireGuardRuntime) Apply(ctx context.Context, profiles []model.EgressPro
 	return r.runtime.Apply(ctx, WireGuardProfiles(profiles))
 }
 
-func (r *WireGuardRuntime) Prepare(ctx context.Context, profiles []model.EgressProfile) (*modulewireguard.Transaction, relay.WireGuardRuntimeProvider, error) {
+func (r *WireGuardRuntime) Prepare(ctx context.Context, profiles []model.EgressProfile) (*modulewireguard.Transaction, module.OverlayRuntime, error) {
 	if r == nil || r.runtime == nil {
 		return nil, nil, nil
 	}
@@ -146,9 +222,9 @@ func (r *WireGuardRuntime) Prepare(ctx context.Context, profiles []model.EgressP
 		return nil, nil, err
 	}
 	if transaction == nil {
-		return nil, egressWireGuardRuntimeProvider{runtime: r.runtime}, nil
+		return nil, egressOverlayRuntime{runtime: r.runtime}, nil
 	}
-	return transaction, egressWireGuardRuntimeProvider{transaction: transaction}, nil
+	return transaction, egressOverlayRuntime{transaction: transaction}, nil
 }
 
 func (r *WireGuardRuntime) Commit(transaction *modulewireguard.Transaction, profiles []model.EgressProfile) {
@@ -165,26 +241,56 @@ func (r *WireGuardRuntime) Close() error {
 	return r.runtime.Close()
 }
 
-func (r *WireGuardRuntime) Provider() relay.WireGuardRuntimeProvider {
+func (r *WireGuardRuntime) Provider() module.OverlayRuntime {
 	if r == nil || r.runtime == nil {
 		return nil
 	}
-	return egressWireGuardRuntimeProvider{runtime: r.runtime}
+	return egressOverlayRuntime{runtime: r.runtime}
 }
 
-type egressWireGuardRuntimeProvider struct {
+type egressOverlayRuntime struct {
 	runtime     *modulewireguard.Runtime
 	transaction *modulewireguard.Transaction
 }
 
-func (p egressWireGuardRuntimeProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
+func (p egressOverlayRuntime) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
+	runtime, err := p.runtimeForAgent(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.DialContext(ctx, network, address)
+}
+
+func (p egressOverlayRuntime) ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error) {
+	runtime, err := p.runtimeForAgent(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenTCP(ctx, address)
+}
+
+func (p egressOverlayRuntime) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
+	runtime, err := p.runtimeForAgent(agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.ListenUDP(ctx, address)
+}
+
+func (p egressOverlayRuntime) runtimeForAgent(agentID string, profileID int) (modulewireguard.RuntimeHandle, error) {
 	if p.transaction != nil {
-		return p.transaction.Runtime(profileID)
+		if runtime, ok := p.transaction.RuntimeForAgent(agentID, profileID); ok && runtime != nil {
+			return runtime, nil
+		}
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
 	}
 	if p.runtime != nil {
-		return p.runtime.Runtime(profileID)
+		if runtime, ok := p.runtime.RuntimeForAgent(agentID, profileID); ok && runtime != nil {
+			return runtime, nil
+		}
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
 	}
-	return nil, false
+	return nil, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profileID)
 }
 
 func WireGuardProfiles(profiles []model.EgressProfile) []model.WireGuardProfile {

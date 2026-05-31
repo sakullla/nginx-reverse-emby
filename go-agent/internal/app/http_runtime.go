@@ -9,6 +9,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayroute"
@@ -147,7 +148,7 @@ func (m *httpRuntimeManager) ApplyWithRelayWireGuardAndEgressProfiles(ctx contex
 	}
 	providers.WireGuard = wireGuardProvider
 	providers.EgressProfiles = egressProfiles
-	providers.EgressWireGuard = egressProvider
+	providers.EgressOverlay = egressProvider
 
 	bindings, err := proxy.BindingKeys(ctx, rules, relayListeners, providers)
 	if err != nil {
@@ -244,7 +245,7 @@ func (m *httpRuntimeManager) restorePreviousRuntimeLocked(ctx context.Context, r
 	}
 	providers.WireGuard = m.wireGuardProvider
 	providers.EgressProfiles = m.lastEgressProfiles
-	providers.EgressWireGuard = m.egressWireGuard.Provider()
+	providers.EgressOverlay = m.egressWireGuard.Provider()
 	runtime, err := retryRuntimeBindConflict(ctx, func() (*proxy.Runtime, error) {
 		return proxy.StartWithResourcesAndOptions(ctx, m.lastRules, m.lastRelayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 	})
@@ -343,7 +344,7 @@ func (m *httpRuntimeManager) applyEgressWireGuardProfilesLocked(ctx context.Cont
 	return m.egressWireGuard.Apply(ctx, profiles)
 }
 
-func (m *httpRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*modulewireguard.Transaction, relayWireGuardProvider, error) {
+func (m *httpRuntimeManager) prepareEgressWireGuardProfilesLocked(ctx context.Context, profiles []model.EgressProfile) (*modulewireguard.Transaction, module.OverlayRuntime, error) {
 	if m.egressWireGuard == nil || profiles == nil {
 		return nil, nil, nil
 	}

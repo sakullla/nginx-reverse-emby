@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
@@ -230,7 +230,7 @@ func NewSharedTransport() *http.Transport {
 	return transport
 }
 
-func newEgressTransports(rule model.HTTPRule, dialer egress.Dialer, base *http.Transport) (*http.Transport, *http.Transport, *http.Transport, error) {
+func newEgressTransports(rule model.HTTPRule, dialer moduleegress.Dialer, base *http.Transport) (*http.Transport, *http.Transport, *http.Transport, error) {
 	transport, err := newEgressTransport(rule, dialer, base)
 	if err != nil {
 		return nil, nil, nil, err
@@ -241,13 +241,13 @@ func newEgressTransports(rule model.HTTPRule, dialer egress.Dialer, base *http.T
 	return transport, interactive, bulk, nil
 }
 
-func newEgressTransport(rule model.HTTPRule, dialer egress.Dialer, base *http.Transport) (*http.Transport, error) {
+func newEgressTransport(rule model.HTTPRule, dialer moduleegress.Dialer, base *http.Transport) (*http.Transport, error) {
 	transport := cloneTransport(base)
 	configureEgressTransport(transport, rule, dialer)
 	return transport, nil
 }
 
-func configureEgressTransport(transport *http.Transport, rule model.HTTPRule, dialer egress.Dialer) {
+func configureEgressTransport(transport *http.Transport, rule model.HTTPRule, dialer moduleegress.Dialer) {
 	if transport == nil {
 		return
 	}
@@ -258,12 +258,12 @@ func configureEgressTransport(transport *http.Transport, rule model.HTTPRule, di
 	}
 }
 
-func validateHTTPRuleEgressProfile(rule model.HTTPRule, dialer egress.Dialer) error {
+func validateHTTPRuleEgressProfile(rule model.HTTPRule, dialer moduleegress.Dialer) error {
 	_, err := httpRuleEgressProfile(rule, dialer)
 	return err
 }
 
-func httpRuleEgressProfile(rule model.HTTPRule, dialer egress.Dialer) (model.EgressProfile, error) {
+func httpRuleEgressProfile(rule model.HTTPRule, dialer moduleegress.Dialer) (model.EgressProfile, error) {
 	if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
 		return model.EgressProfile{Type: "direct", Enabled: true}, nil
 	}
@@ -274,12 +274,8 @@ func httpRuleEgressProfile(rule model.HTTPRule, dialer egress.Dialer) (model.Egr
 	if !strings.EqualFold(strings.TrimSpace(profile.Type), "wireguard") {
 		return profile, nil
 	}
-	if dialer.WireGuardProvider == nil {
+	if dialer.OverlayRuntime == nil {
 		return model.EgressProfile{}, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profile.ID)
-	}
-	runtime, ok := dialer.WireGuardProvider.WireGuardRuntime(profile.ID)
-	if !ok || runtime == nil {
-		return model.EgressProfile{}, fmt.Errorf("wireguard egress profile %d runtime not found", profile.ID)
 	}
 	return profile, nil
 }

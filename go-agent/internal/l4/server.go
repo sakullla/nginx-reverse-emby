@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
@@ -28,10 +29,10 @@ type RelayMaterialProvider interface {
 }
 
 type serverOptions struct {
-	cache                   *backends.Cache
-	wireGuardProvider       relay.WireGuardRuntimeProvider
-	egressWireGuardProvider relay.WireGuardRuntimeProvider
-	egressProfiles          []model.EgressProfile
+	cache                *backends.Cache
+	wireGuardProvider    relay.WireGuardRuntimeProvider
+	egressOverlayRuntime module.OverlayRuntime
+	egressProfiles       []model.EgressProfile
 }
 
 type Server struct {
@@ -57,7 +58,7 @@ type Server struct {
 	relayProvider      RelayMaterialProvider
 	relayPathDialer    relayplan.Dialer
 	wireGuardProvider  relay.WireGuardRuntimeProvider
-	egressDialer       egress.Dialer
+	egressDialer       moduleegress.Dialer
 	tcpDialer          func(context.Context, string, string) (net.Conn, error)
 
 	tcpMu    sync.Mutex
@@ -138,7 +139,7 @@ func NewServerWithResourcesWireGuardAndEgressProfiles(
 	wireGuardProvider relay.WireGuardRuntimeProvider,
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
-	return NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider, wireGuardProvider, egressProfiles)
+	return NewServerWithResourcesWireGuardAndEgressRuntime(ctx, rules, relayListeners, relayProvider, cache, wireGuardProvider, overlayRuntimeFromWireGuardProvider(wireGuardProvider), egressProfiles)
 }
 
 func NewServerWithResourcesWireGuardAndEgressRuntime(
@@ -148,14 +149,14 @@ func NewServerWithResourcesWireGuardAndEgressRuntime(
 	relayProvider RelayMaterialProvider,
 	cache *backends.Cache,
 	wireGuardProvider relay.WireGuardRuntimeProvider,
-	egressWireGuardProvider relay.WireGuardRuntimeProvider,
+	egressOverlayRuntime module.OverlayRuntime,
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
 	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{
-		cache:                   cache,
-		wireGuardProvider:       wireGuardProvider,
-		egressWireGuardProvider: egressWireGuardProvider,
-		egressProfiles:          egressProfiles,
+		cache:                cache,
+		wireGuardProvider:    wireGuardProvider,
+		egressOverlayRuntime: egressOverlayRuntime,
+		egressProfiles:       egressProfiles,
 	})
 }
 
@@ -191,7 +192,7 @@ func newServerWithOptions(
 		relayProvider:         relayProvider,
 		relayPathDialer:       relayPathDialer{provider: relayProvider, wireGuardProvider: options.wireGuardProvider},
 		wireGuardProvider:     options.wireGuardProvider,
-		egressDialer:          egress.Dialer{Resolver: egress.NewResolver(options.egressProfiles), WireGuardProvider: options.egressWireGuardProvider},
+		egressDialer:          moduleegress.Dialer{Resolver: moduleegress.NewResolver(options.egressProfiles), OverlayRuntime: options.egressOverlayRuntime},
 		tcpDialer:             (&net.Dialer{}).DialContext,
 	}
 	for _, rule := range rules {
@@ -233,6 +234,41 @@ func newServerWithOptions(
 		}
 	}
 	return s, nil
+}
+
+type wireGuardProviderOverlayRuntime struct {
+	provider relay.WireGuardRuntimeProvider
+}
+
+func overlayRuntimeFromWireGuardProvider(provider relay.WireGuardRuntimeProvider) module.OverlayRuntime {
+	if provider == nil {
+		return nil
+	}
+	return wireGuardProviderOverlayRuntime{provider: provider}
+}
+
+func (p wireGuardProviderOverlayRuntime) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
+	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
+	}
+	return runtime.DialContext(ctx, network, address)
+}
+
+func (p wireGuardProviderOverlayRuntime) ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error) {
+	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
+	}
+	return runtime.ListenTCP(ctx, address)
+}
+
+func (p wireGuardProviderOverlayRuntime) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
+	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
+	}
+	return runtime.ListenUDP(ctx, address)
 }
 
 func (s *Server) currentTrafficBlockState() TrafficBlockState {

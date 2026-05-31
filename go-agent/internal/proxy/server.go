@@ -6,14 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
@@ -37,6 +39,7 @@ type Providers struct {
 	WireGuard       relay.WireGuardRuntimeProvider
 	EgressProfiles  []model.EgressProfile
 	EgressWireGuard relay.WireGuardRuntimeProvider
+	EgressOverlay   module.OverlayRuntime
 }
 
 type routeEntry struct {
@@ -87,7 +90,7 @@ func newServerWithResilience(
 	for _, relayListener := range relayListeners {
 		relayListenersByID[relayListener.ID] = relayListener
 	}
-	egressDialer := egress.Dialer{Resolver: egress.NewResolver(providers.EgressProfiles), WireGuardProvider: providers.EgressWireGuard}
+	egressDialer := moduleegress.Dialer{Resolver: moduleegress.NewResolver(providers.EgressProfiles), OverlayRuntime: providers.egressOverlayRuntime()}
 	directInteractiveTransport, directBulkTransport := NewClassedDirectTransports(sharedTransport)
 	for _, rule := range listener.Rules {
 		hostKey := HostFromRule(rule)
@@ -143,6 +146,44 @@ func newServerWithResilience(
 	}
 
 	return s, nil
+}
+
+func (p Providers) egressOverlayRuntime() module.OverlayRuntime {
+	if p.EgressOverlay != nil {
+		return p.EgressOverlay
+	}
+	if p.EgressWireGuard == nil {
+		return nil
+	}
+	return wireGuardProviderOverlayRuntime{provider: p.EgressWireGuard}
+}
+
+type wireGuardProviderOverlayRuntime struct {
+	provider relay.WireGuardRuntimeProvider
+}
+
+func (p wireGuardProviderOverlayRuntime) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
+	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
+	}
+	return runtime.DialContext(ctx, network, address)
+}
+
+func (p wireGuardProviderOverlayRuntime) ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error) {
+	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
+	}
+	return runtime.ListenTCP(ctx, address)
+}
+
+func (p wireGuardProviderOverlayRuntime) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
+	runtime, ok := relay.ResolveWireGuardRuntime(p.provider, agentID, profileID)
+	if !ok || runtime == nil {
+		return nil, fmt.Errorf("wireguard egress profile %d runtime not found", profileID)
+	}
+	return runtime.ListenUDP(ctx, address)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 )
@@ -27,7 +28,7 @@ func cloneEgressProfiles(profiles []model.EgressProfile) []model.EgressProfile {
 	return moduleegress.CloneProfiles(profiles)
 }
 
-func validateEgressWireGuardReferences(rules []model.L4Rule, egressProfiles []model.EgressProfile, provider relayWireGuardProvider) error {
+func validateEgressWireGuardReferences(rules []model.L4Rule, egressProfiles []model.EgressProfile, provider module.OverlayRuntime) error {
 	resolver := egressProfileByID(egressProfiles)
 	for _, rule := range rules {
 		if len(rule.RelayLayers) > 0 || rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
@@ -39,10 +40,6 @@ func validateEgressWireGuardReferences(rules []model.L4Rule, egressProfiles []mo
 		}
 		if provider == nil {
 			return fmt.Errorf("wireguard runtime provider is required for egress profile %d", profile.ID)
-		}
-		runtime, ok := provider.WireGuardRuntime(profile.ID)
-		if !ok || runtime == nil {
-			return fmt.Errorf("wireguard egress profile %d runtime not found", profile.ID)
 		}
 	}
 	return nil

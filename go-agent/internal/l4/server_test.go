@@ -371,7 +371,7 @@ func TestL4TCPWireGuardEgressProfileUsesEgressRuntimeProvider(t *testing.T) {
 		EgressProfileID: &profileID,
 	}}, nil, nil, nil,
 		fakeL4WireGuardProvider{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: ordinaryRuntime}},
-		fakeL4WireGuardProvider{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: egressRuntime}},
+		overlayRuntimeFromWireGuardProvider(fakeL4WireGuardProvider{runtimes: map[int]*fakeL4WireGuardRuntime{profileID: egressRuntime}}),
 		[]model.EgressProfile{{
 			ID:              profileID,
 			Type:            "wireguard",

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
@@ -15,14 +16,43 @@ import (
 
 const socks5UDPTestTimeout = time.Second
 
-func TestFinalHopDialerDelegatesWireGuardProfilesToProvider(t *testing.T) {
-	t.Parallel()
-
-	profileID := 23
-	runtime := &recordingWireGuardRuntime{}
-	provider := &recordingProvider{runtimes: map[int]relay.WireGuardRuntime{profileID: runtime}}
+func TestModulePublishesFinalHopDialerAndResolver(t *testing.T) {
 	mod := NewModule(nil)
-	dialer := mod.FinalHopDialer([]model.EgressProfile{validWireGuardEgressProfile(profileID)}, provider)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+	next := model.Snapshot{EgressProfiles: []model.EgressProfile{{ID: 11, Type: "direct", Enabled: true}}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if _, ok := registry.Resolve(module.ProviderFinalHopDialer); !ok {
+		t.Fatal("finalhop.dialer provider missing")
+	}
+	if _, ok := registry.Resolve(module.ProviderEgressResolver); !ok {
+		t.Fatal("egress.resolver provider missing")
+	}
+}
+
+func TestModuleFinalHopDialerUsesOverlayRuntimeProviderForWireGuardEgress(t *testing.T) {
+	profileID := 23
+	overlay := &recordingOverlayRuntime{}
+	factory := &recordingFactory{}
+	egressModule := NewModule(factory.Create)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, &overlayRuntimeModule{runtime: overlay})
+	mustRegister(t, registry, egressModule)
+
+	next := model.Snapshot{EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	provider, ok := registry.Resolve(module.ProviderFinalHopDialer)
+	if !ok {
+		t.Fatal("finalhop.dialer provider missing")
+	}
+	dialer, ok := provider.(relay.FinalHopDialer)
+	if !ok {
+		t.Fatalf("finalhop.dialer provider type = %T, want relay.FinalHopDialer", provider)
+	}
 
 	conn, err := dialer.DialTCP(context.Background(), "10.0.0.10:443", &profileID)
 	if err != nil {
@@ -30,11 +60,33 @@ func TestFinalHopDialerDelegatesWireGuardProfilesToProvider(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	if provider.lookups[0] != profileID {
-		t.Fatalf("provider lookups = %+v, want profile %d", provider.lookups, profileID)
+	if overlay.profileID != profileID {
+		t.Fatalf("overlay profileID = %d, want %d", overlay.profileID, profileID)
 	}
-	if runtime.network != "tcp" || runtime.address != "10.0.0.10:443" {
-		t.Fatalf("runtime dial = %s %s, want tcp target", runtime.network, runtime.address)
+	if overlay.network != "tcp" || overlay.address != "10.0.0.10:443" {
+		t.Fatalf("overlay dial = %s %s, want tcp target", overlay.network, overlay.address)
+	}
+}
+
+func TestFinalHopDialerDelegatesWireGuardProfilesToOverlayRuntime(t *testing.T) {
+	t.Parallel()
+
+	profileID := 23
+	overlay := &recordingOverlayRuntime{}
+	mod := NewModule(nil)
+	dialer := mod.FinalHopDialer([]model.EgressProfile{validWireGuardEgressProfile(profileID)}, overlay)
+
+	conn, err := dialer.DialTCP(context.Background(), "10.0.0.10:443", &profileID)
+	if err != nil {
+		t.Fatalf("DialTCP() error = %v", err)
+	}
+	_ = conn.Close()
+
+	if overlay.profileID != profileID {
+		t.Fatalf("overlay profileID = %d, want %d", overlay.profileID, profileID)
+	}
+	if overlay.network != "tcp" || overlay.address != "10.0.0.10:443" {
+		t.Fatalf("overlay dial = %s %s, want tcp target", overlay.network, overlay.address)
 	}
 }
 
@@ -85,8 +137,13 @@ func TestWireGuardRuntimeAppliesInlineEgressProfiles(t *testing.T) {
 	if cfg.ID != 41 || cfg.Name != "egress-wg" || cfg.PrivateKey != wireGuardTestKey {
 		t.Fatalf("wireguard config = %+v, want converted egress profile", cfg.WireGuardProfile)
 	}
-	if got, ok := runtime.Provider().WireGuardRuntime(41); !ok || got != factory.runtimes[0] {
-		t.Fatalf("Provider().WireGuardRuntime(41) = %v, %v; want created runtime", got, ok)
+	conn, err := runtime.Provider().DialContext(context.Background(), "", 41, "tcp", "10.0.0.10:443")
+	if err != nil {
+		t.Fatalf("Provider().DialContext() error = %v", err)
+	}
+	_ = conn.Close()
+	if factory.runtimes[0].network != "tcp" || factory.runtimes[0].address != "10.0.0.10:443" {
+		t.Fatalf("provider runtime dial = %s %s, want tcp target", factory.runtimes[0].network, factory.runtimes[0].address)
 	}
 }
 
@@ -123,17 +180,6 @@ func validWireGuardEgressProfile(id int) model.EgressProfile {
 			}},
 		},
 	}
-}
-
-type recordingProvider struct {
-	runtimes map[int]relay.WireGuardRuntime
-	lookups  []int
-}
-
-func (p *recordingProvider) WireGuardRuntime(profileID int) (relay.WireGuardRuntime, bool) {
-	p.lookups = append(p.lookups, profileID)
-	runtime, ok := p.runtimes[profileID]
-	return runtime, ok
 }
 
 type recordingWireGuardRuntime struct {
@@ -265,4 +311,68 @@ func waitForSOCKS5UDPPacket(t *testing.T, packetCh <-chan proxyproto.SOCKS5UDPPa
 		t.Fatal("timed out waiting for SOCKS5 UDP packet")
 		return proxyproto.SOCKS5UDPPacket{}
 	}
+}
+
+func mustRegister(t *testing.T, registry *module.Registry, mod module.Module) {
+	t.Helper()
+
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("Register(%s) error = %v", mod.Name(), err)
+	}
+}
+
+type overlayRuntimeModule struct {
+	runtime module.OverlayRuntime
+}
+
+func (m *overlayRuntimeModule) Name() string {
+	return "overlay"
+}
+
+func (m *overlayRuntimeModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{
+		Name:     m.Name(),
+		Provides: []module.ProviderRef{module.ProviderOverlayRuntime},
+	}
+}
+
+func (m *overlayRuntimeModule) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(module.ProviderOverlayRuntime, m.runtime)
+}
+
+func (m *overlayRuntimeModule) Capabilities(module.SnapshotView) []module.Capability {
+	return nil
+}
+
+func (m *overlayRuntimeModule) Apply(context.Context, module.ApplyRequest) error {
+	return nil
+}
+
+func (m *overlayRuntimeModule) Stop(context.Context) error {
+	return nil
+}
+
+type recordingOverlayRuntime struct {
+	agentID   string
+	profileID int
+	network   string
+	address   string
+}
+
+func (r *recordingOverlayRuntime) DialContext(_ context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
+	r.agentID = agentID
+	r.profileID = profileID
+	r.network = network
+	r.address = address
+	left, right := net.Pipe()
+	_ = right.Close()
+	return left, nil
+}
+
+func (r *recordingOverlayRuntime) ListenTCP(context.Context, string, int, string) (net.Listener, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *recordingOverlayRuntime) ListenUDP(context.Context, string, int, string) (net.PacketConn, error) {
+	return nil, errors.New("not implemented")
 }
