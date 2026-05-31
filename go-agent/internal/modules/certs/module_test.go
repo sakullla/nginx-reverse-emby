@@ -56,8 +56,12 @@ func TestModuleSkipsUnchangedCertificatePayload(t *testing.T) {
 func TestModuleDoesNotPublishTLSMaterialForPlainApplier(t *testing.T) {
 	t.Parallel()
 
+	mod := NewModule(&recordingApplier{})
+	if providesTLSMaterial(mod.Descriptor()) {
+		t.Fatal("descriptor claims tls.material for applier without TLS material")
+	}
 	registry := module.NewRegistry()
-	mustRegister(t, registry, NewModule(&recordingApplier{}))
+	mustRegister(t, registry, mod)
 
 	if err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{}); err != nil {
 		t.Fatalf("Apply() error = %v", err)
@@ -215,4 +219,13 @@ func mustRegister(t *testing.T, registry *module.Registry, mod *Module) {
 	if err := registry.Register(mod); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
+}
+
+func providesTLSMaterial(descriptor module.ModuleDescriptor) bool {
+	for _, provider := range descriptor.Provides {
+		if provider == module.ProviderTLSMaterial {
+			return true
+		}
+	}
+	return false
 }

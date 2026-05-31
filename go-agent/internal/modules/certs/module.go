@@ -29,10 +29,13 @@ func (m *Module) Name() string {
 }
 
 func (m *Module) Descriptor() module.ModuleDescriptor {
-	return module.ModuleDescriptor{
-		Name:     m.Name(),
-		Provides: []module.ProviderRef{module.ProviderTLSMaterial},
+	descriptor := module.ModuleDescriptor{Name: m.Name()}
+	if m != nil {
+		if _, ok := m.manager.(module.TLSMaterial); ok {
+			descriptor.Provides = []module.ProviderRef{module.ProviderTLSMaterial}
+		}
 	}
+	return descriptor
 }
 
 func (m *Module) RegisterProviders(reg module.ProviderRegistry) error {
