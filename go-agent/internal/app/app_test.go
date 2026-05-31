@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -25,6 +26,7 @@ import (
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
@@ -343,6 +345,25 @@ func (m *appLifecycleModule) Stop(context.Context) error {
 	return nil
 }
 
+type appCapabilityModule struct {
+	name         string
+	capabilities []agentmodule.Capability
+}
+
+func (m appCapabilityModule) Name() string { return m.name }
+
+func (m appCapabilityModule) Capabilities() []agentmodule.Capability {
+	return append([]agentmodule.Capability(nil), m.capabilities...)
+}
+
+func (m appCapabilityModule) Health(context.Context) agentmodule.Health {
+	return agentmodule.Health{Status: "healthy"}
+}
+
+func (m appCapabilityModule) Start(context.Context, model.Snapshot) error { return nil }
+
+func (m appCapabilityModule) Stop(context.Context) error { return nil }
+
 func TestDiagnoseSnapshotAppliesSnapshotCertificatesBeforeTaskHandling(t *testing.T) {
 	mem := store.NewInMemory()
 	certApplier := &testCertificateApplier{applyErr: errors.New("certificate apply failed")}
@@ -381,6 +402,23 @@ func TestDiagnoseSnapshotAppliesSnapshotCertificatesBeforeTaskHandling(t *testin
 	}
 	if len(calls[0].policies) != 1 || calls[0].policies[0].ID != 7 {
 		t.Fatalf("certificate policies = %+v", calls[0].policies)
+	}
+}
+
+func TestAppCapabilitySourceUsesRegisteredModuleCapabilities(t *testing.T) {
+	registry := agentmodule.NewRegistry()
+	if err := registry.Register(appCapabilityModule{name: "wireguard", capabilities: []agentmodule.Capability{{Name: "wireguard", Enabled: true}}}); err != nil {
+		t.Fatalf("Register(wireguard) error = %v", err)
+	}
+	if err := registry.Register(appCapabilityModule{name: "egress", capabilities: []agentmodule.Capability{{Name: "egress_profiles", Enabled: true}}}); err != nil {
+		t.Fatalf("Register(egress) error = %v", err)
+	}
+
+	cfg := Config{WireGuardEnabled: false, WireGuardExplicit: true}
+	got := core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: registry})
+	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("CapabilityNames() = %+v, want %+v", got, want)
 	}
 }
 
@@ -429,21 +467,21 @@ func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing
 			http3Enabled:      false,
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "managed_certs", "diagnostics", "traffic_stats"},
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "managed_certs", "diagnostics", "egress_profiles", "wireguard", "traffic_stats"},
 		},
 		{
 			name:              "http3 enabled",
 			http3Enabled:      true,
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress", "managed_certs", "diagnostics", "traffic_stats"},
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "http3_ingress", "managed_certs", "diagnostics", "egress_profiles", "wireguard", "traffic_stats"},
 		},
 		{
 			name:              "wireguard disabled",
 			http3Enabled:      false,
 			wireGuardEnabled:  false,
 			wireGuardExplicit: true,
-			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles", "managed_certs", "diagnostics", "traffic_stats"},
+			expectedCaps:      []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "managed_certs", "diagnostics", "egress_profiles", "traffic_stats"},
 		},
 	}
 
@@ -591,6 +629,7 @@ func TestRunStartsAndStopsModuleRegistry(t *testing.T) {
 		t.Fatalf("Register(second) error = %v", err)
 	}
 	app.moduleRegistry = registry
+	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -606,7 +645,7 @@ func TestRunStartsAndStopsModuleRegistry(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if !reflect.DeepEqual(first.starts, []int64{5}) || !reflect.DeepEqual(second.starts, []int64{5}) {
-		t.Fatalf("module starts first=%+v second=%+v, want revision 5", first.starts, second.starts)
+		t.Fatalf("module starts first=%+v second=%+v, want exactly one revision 5 apply", first.starts, second.starts)
 	}
 	if first.stops != 1 || second.stops != 1 {
 		t.Fatalf("module stops first=%d second=%d, want 1 each", first.stops, second.stops)

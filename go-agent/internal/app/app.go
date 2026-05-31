@@ -297,20 +297,11 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 		{Name: "l4", Enabled: true},
 		{Name: "relay_quic", Enabled: true},
 	}
-	if s.cfg.WireGuardModuleEnabled() {
-		capabilities = append(capabilities, agentmodule.Capability{Name: "wireguard", Enabled: true})
-	}
-	capabilities = append(capabilities, agentmodule.Capability{Name: "egress_profiles", Enabled: true})
 	if s.cfg.HTTP3Enabled {
 		capabilities = append(capabilities, agentmodule.Capability{Name: "http3_ingress", Enabled: true})
 	}
 	if s.registry != nil {
-		for _, capability := range s.registry.Capabilities(snapshot) {
-			if capability.Name == "wireguard" || capability.Name == "egress_profiles" {
-				continue
-			}
-			capabilities = append(capabilities, capability)
-		}
+		capabilities = append(capabilities, s.registry.Capabilities(snapshot)...)
 	}
 	return capabilities
 }
@@ -474,12 +465,6 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		if err := a.persistTrafficStatsInterval(hydratedApplied.AgentConfig.TrafficStatsInterval); err != nil {
 			log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", hydratedApplied.Revision, err)
-			_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
-		}
-		if err := a.applyModules(ctx, Snapshot{}, hydratedApplied); err != nil {
-			// Preserve startup hydration compatibility: record module startup
-			// errors, then let the first sync attempt recover or fail normally.
-			log.Printf("[agent] startup module lifecycle error at revision %d: %v", hydratedApplied.Revision, err)
 			_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
 		}
 	}
