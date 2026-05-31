@@ -187,6 +187,119 @@ func TestModulePublishesOverlayRuntimeProvider(t *testing.T) {
 	}
 }
 
+func TestCommittedProviderDoesNotExposePendingCandidateDuringPrepare(t *testing.T) {
+	factory := &moduleRecordingFactory{}
+	runtime := NewRuntime(factory.Create)
+	mod := NewModule(runtime)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+
+	previous := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{
+		testWireGuardProfile(30, "local", "peer.example.com:51820", "127.0.0.1/32"),
+	}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	provider, ok := registry.Resolve(module.ProviderOverlayRuntime)
+	if !ok {
+		t.Fatal("overlay.runtime provider missing")
+	}
+	overlay, ok := provider.(module.OverlayRuntime)
+	if !ok {
+		t.Fatalf("overlay provider type = %T, want module.OverlayRuntime", provider)
+	}
+
+	next := previous
+	next.WireGuardProfiles = []model.WireGuardProfile{
+		testWireGuardProfile(30, "local", "peer.example.com:51821", "127.0.0.2/32"),
+	}
+	tx, err := mod.Prepare(context.Background(), module.ApplyRequest{Previous: previous, Next: next})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	defer tx.Rollback()
+	if len(factory.created) != 2 {
+		t.Fatalf("created runtimes = %d, want committed plus candidate", len(factory.created))
+	}
+
+	if _, err := overlay.DialContext(context.Background(), "local", 30, "tcp", "127.0.0.1:80"); err != errRecordingRuntimeDial {
+		t.Fatalf("DialContext() error = %v, want %v", err, errRecordingRuntimeDial)
+	}
+	if factory.created[0].dialCount != 1 {
+		t.Fatalf("committed runtime dial count = %d, want 1", factory.created[0].dialCount)
+	}
+	if factory.created[1].dialCount != 0 {
+		t.Fatalf("candidate runtime dial count = %d, want 0", factory.created[1].dialCount)
+	}
+}
+
+func TestTransactionLocalProviderExposesCandidateDuringRegistryApply(t *testing.T) {
+	factory := &moduleRecordingFactory{}
+	registry := module.NewRegistry()
+	mustRegister(t, registry, NewModule(NewRuntime(factory.Create)))
+	mustRegister(t, registry, &overlayPreparingConsumerModule{profileID: 31, agentID: "local"})
+
+	next := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{
+		testWireGuardProfile(31, "local", "peer.example.com:51820", "127.0.0.1/32"),
+	}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if len(factory.created) != 1 {
+		t.Fatalf("created runtimes = %d, want 1 candidate", len(factory.created))
+	}
+	if factory.created[0].dialCount != 1 {
+		t.Fatalf("candidate runtime dial count = %d, want 1", factory.created[0].dialCount)
+	}
+}
+
+func TestLaterCommitFailureDoesNotExposeCandidateThroughCommittedProvider(t *testing.T) {
+	factory := &moduleRecordingFactory{}
+	registry := module.NewRegistry()
+	mustRegister(t, registry, NewModule(NewRuntime(factory.Create)))
+
+	previous := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{
+		testWireGuardProfile(32, "local", "peer.example.com:51820", "127.0.0.1/32"),
+	}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	provider, ok := registry.Resolve(module.ProviderOverlayRuntime)
+	if !ok {
+		t.Fatal("overlay.runtime provider missing")
+	}
+	overlay, ok := provider.(module.OverlayRuntime)
+	if !ok {
+		t.Fatalf("overlay provider type = %T, want module.OverlayRuntime", provider)
+	}
+	failErr := errors.New("later commit failed")
+	mustRegister(t, registry, committedProviderProbeFailingModule{
+		name:      "later",
+		err:       failErr,
+		provider:  overlay,
+		agentID:   "local",
+		profileID: 32,
+	})
+
+	next := previous
+	next.WireGuardProfiles = []model.WireGuardProfile{
+		testWireGuardProfile(32, "local", "peer.example.com:51821", "127.0.0.2/32"),
+	}
+	err := registry.Apply(context.Background(), previous, next)
+	if !errors.Is(err, failErr) {
+		t.Fatalf("Apply() error = %v, want later commit failure", err)
+	}
+	if len(factory.created) != 2 {
+		t.Fatalf("created runtimes = %d, want committed plus candidate", len(factory.created))
+	}
+	if factory.created[0].dialCount != 1 {
+		t.Fatalf("committed runtime dial count = %d, want 1", factory.created[0].dialCount)
+	}
+	if factory.created[1].dialCount != 0 {
+		t.Fatalf("candidate runtime dial count = %d, want 0", factory.created[1].dialCount)
+	}
+}
+
 func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
 	factory := &moduleRecordingFactory{}
 	runtime := NewRuntime(factory.Create)
@@ -244,8 +357,8 @@ func TestModuleRollbackAfterCommitRestoresPreviousRuntime(t *testing.T) {
 	if !ok {
 		t.Fatal("previous runtime missing after committed rollback")
 	}
-	if restored == original {
-		t.Fatal("rollback reused the closed original runtime instead of rebuilding previous runtime")
+	if restored != original {
+		t.Fatal("rollback replaced the live original runtime instead of preserving previous runtime")
 	}
 	if got, ok := runtime.RuntimeForAgent("local", 21); ok || got != nil {
 		t.Fatalf("next runtime remained after committed rollback: %v, %v", got, ok)
@@ -347,6 +460,73 @@ func (m commitFailingModule) Prepare(context.Context, module.ApplyRequest) (modu
 }
 func (commitFailingModule) Stop(context.Context) error { return nil }
 
+type overlayPreparingConsumerModule struct {
+	profileID int
+	agentID   string
+}
+
+func (*overlayPreparingConsumerModule) Name() string { return "overlay-consumer" }
+
+func (m *overlayPreparingConsumerModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.Name(), Requires: []module.ProviderRef{module.ProviderOverlayRuntime}}
+}
+
+func (*overlayPreparingConsumerModule) RegisterProviders(module.ProviderRegistry) error { return nil }
+func (*overlayPreparingConsumerModule) Capabilities(module.SnapshotView) []module.Capability {
+	return nil
+}
+func (*overlayPreparingConsumerModule) Apply(context.Context, module.ApplyRequest) error { return nil }
+func (*overlayPreparingConsumerModule) Stop(context.Context) error                       { return nil }
+
+func (m *overlayPreparingConsumerModule) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
+	provider, ok := req.Providers.Resolve(module.ProviderOverlayRuntime)
+	if !ok {
+		return nil, errors.New("overlay.runtime provider missing")
+	}
+	overlay, ok := provider.(module.OverlayRuntime)
+	if !ok {
+		return nil, errors.New("overlay.runtime provider has wrong type")
+	}
+	_, err := overlay.DialContext(ctx, m.agentID, m.profileID, "tcp", "127.0.0.1:80")
+	if !errors.Is(err, errRecordingRuntimeDial) {
+		return nil, err
+	}
+	return module.TransactionFuncs{}, nil
+}
+
+type committedProviderProbeFailingModule struct {
+	name      string
+	err       error
+	provider  module.OverlayRuntime
+	agentID   string
+	profileID int
+}
+
+func (m committedProviderProbeFailingModule) Name() string { return m.name }
+
+func (m committedProviderProbeFailingModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name}
+}
+
+func (committedProviderProbeFailingModule) RegisterProviders(module.ProviderRegistry) error {
+	return nil
+}
+func (committedProviderProbeFailingModule) Capabilities(module.SnapshotView) []module.Capability {
+	return nil
+}
+func (committedProviderProbeFailingModule) Apply(context.Context, module.ApplyRequest) error {
+	return nil
+}
+func (m committedProviderProbeFailingModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	return module.TransactionFuncs{
+		CommitFunc: func() error {
+			_, _ = m.provider.DialContext(context.Background(), m.agentID, m.profileID, "tcp", "127.0.0.1:80")
+			return m.err
+		},
+	}, nil
+}
+func (committedProviderProbeFailingModule) Stop(context.Context) error { return nil }
+
 func testWireGuardProfile(id int, agentID string, endpoint string, allowedIPs ...string) model.WireGuardProfile {
 	return model.WireGuardProfile{
 		ID:         id,
@@ -379,6 +559,7 @@ func (f *moduleRecordingFactory) Create(context.Context, Config) (RuntimeHandle,
 type recordingRuntime struct {
 	closed     bool
 	closeCount int
+	dialCount  int
 	udp        *recordingTransparentUDPConn
 }
 
@@ -386,6 +567,7 @@ var errRecordingRuntimeDial = errors.New("recording dial")
 var errRecordingTransparentTCP = errors.New("recording transparent tcp")
 
 func (r *recordingRuntime) DialContext(context.Context, string, string) (net.Conn, error) {
+	r.dialCount++
 	return nil, errRecordingRuntimeDial
 }
 

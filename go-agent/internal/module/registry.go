@@ -177,6 +177,17 @@ func (r *Registry) Apply(ctx context.Context, previous, next model.Snapshot) err
 			return rollbackPrepared(transactions, fmt.Errorf("commit module transaction: %w", err))
 		}
 	}
+	for i := len(transactions) - 1; i >= 0; i-- {
+		finalizer, ok := transactions[i].(interface {
+			FinalizeCommit() error
+		})
+		if !ok {
+			continue
+		}
+		if err := finalizer.FinalizeCommit(); err != nil {
+			return rollbackPrepared(transactions, fmt.Errorf("finalize module transaction: %w", err))
+		}
+	}
 	r.providers = providers
 	return nil
 }
