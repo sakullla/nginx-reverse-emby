@@ -259,4 +259,3 @@ func proxyAddressFamily(info proxyInfo) (string, net.IP, net.IP, error) {
 
 	return "", nil, nil, fmt.Errorf("proxy protocol requires matching ip families")
 }
-

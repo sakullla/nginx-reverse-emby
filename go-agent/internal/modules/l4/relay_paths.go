@@ -110,6 +110,9 @@ func (s *Server) dialTCPLocalEgress(rule model.L4Rule, target string) (net.Conn,
 	if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
 		return s.dialTCPDirect(target)
 	}
+	if s.finalHopDialer != nil {
+		return s.finalHopDialer.DialTCP(s.ctx, target, rule.EgressProfileID)
+	}
 	return s.egressDialer.DialTCP(s.ctx, target, rule.EgressProfileID)
 }
 

@@ -21,8 +21,8 @@ func ValidateRule(rule Rule) error {
 	if strings.TrimSpace(rule.ListenHost) == "" {
 		return fmt.Errorf("listen_host is required")
 	}
-	if rule.ListenPort < 0 || rule.ListenPort > 65535 || (rule.ListenPort == 0 && !isWireGuardTransparentForwardRule(rule)) {
-		return fmt.Errorf("listen_port must be between 1 and 65535")
+	if rule.ListenPort < 0 || rule.ListenPort > 65535 {
+		return fmt.Errorf("listen_port must be between 0 and 65535")
 	}
 
 	listenMode := strings.ToLower(strings.TrimSpace(rule.ListenMode))

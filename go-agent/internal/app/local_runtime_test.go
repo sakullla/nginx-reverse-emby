@@ -122,7 +122,7 @@ func TestNewEmbeddedConfiguresHostTrafficCollector(t *testing.T) {
 	}
 }
 
-func TestNewEmbeddedSharesWireGuardRuntimeAcrossHTTPAndL4AndRelay(t *testing.T) {
+func TestNewEmbeddedSharesWireGuardRuntimeAcrossModules(t *testing.T) {
 	app, err := NewEmbedded(Config{
 		AgentID:   "local",
 		AgentName: "local",
@@ -143,18 +143,14 @@ func TestNewEmbeddedSharesWireGuardRuntimeAcrossHTTPAndL4AndRelay(t *testing.T) 
 	if app.httpModule == nil {
 		t.Fatal("app.httpModule = nil")
 	}
-	l4Manager, ok := app.l4Applier.(*l4RuntimeManager)
-	if !ok {
-		t.Fatalf("l4Applier type = %T, want *l4RuntimeManager", app.l4Applier)
+	if app.l4Module == nil {
+		t.Fatal("app.l4Module = nil")
 	}
 	relayModule, ok := app.relayApplier.(*relay.Module)
 	if !ok {
 		t.Fatalf("relayApplier type = %T, want *relay.Module", app.relayApplier)
 	}
 
-	if l4Manager.wireGuardRuntime != app.wireGuardRuntime {
-		t.Fatal("l4 manager does not share app WireGuard runtime")
-	}
 	if relayModule != app.relayModule {
 		t.Fatal("relay applier does not use app relay module")
 	}

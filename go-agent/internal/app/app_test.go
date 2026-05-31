@@ -20,13 +20,13 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
@@ -60,8 +60,8 @@ func TestNewBuildsRealWiring(t *testing.T) {
 	if app.certApplier == nil {
 		t.Fatal("expected certificate applier to be initialized")
 	}
-	if app.l4Applier == nil {
-		t.Fatal("expected l4 applier to be initialized")
+	if app.l4Module == nil {
+		t.Fatal("expected l4 module to be initialized")
 	}
 	if app.relayApplier == nil {
 		t.Fatal("expected relay applier to be initialized")
@@ -79,19 +79,19 @@ func TestNewRegistersModulesWhenDependenciesExist(t *testing.T) {
 			name:              "explicit enabled",
 			wireGuardEnabled:  true,
 			wireGuardExplicit: true,
-			wantNames:         []string{"certs", "diagnostics", "egress", "http", "wireguard", "relay", "traffic"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "http", "wireguard", "relay", "l4", "traffic"},
 		},
 		{
 			name:              "implicit default",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: false,
-			wantNames:         []string{"certs", "diagnostics", "egress", "http", "wireguard", "relay", "traffic"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "http", "wireguard", "relay", "l4", "traffic"},
 		},
 		{
 			name:              "explicit disabled",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: true,
-			wantNames:         []string{"certs", "diagnostics", "egress", "http", "relay", "traffic"},
+			wantNames:         []string{"certs", "diagnostics", "egress", "http", "relay", "l4", "traffic"},
 		},
 	}
 
@@ -143,6 +143,7 @@ func TestNewUsesRegisteredAdapterModulesAsAppDependencies(t *testing.T) {
 	certModule := extractPrivateField(t, app, "certModule").Interface().(*modulecerts.Module)
 	diagnosticModule := extractPrivateField(t, app, "diagnosticModule").Interface().(*modulediagnostics.Module)
 	egressModule := extractPrivateField(t, app, "egressModule").Interface().(*moduleegress.Module)
+	l4Module := extractPrivateField(t, app, "l4Module").Interface().(*l4.Module)
 
 	if _, ok := app.certApplier.(*modulecerts.Manager); !ok {
 		t.Fatalf("certApplier = %T, want cert manager", app.certApplier)
@@ -172,6 +173,9 @@ func TestNewUsesRegisteredAdapterModulesAsAppDependencies(t *testing.T) {
 	}
 	if got := registryModuleByName(registry, "relay"); got != relayModule {
 		t.Fatal("registry relay module is not the retained relay module")
+	}
+	if got := registryModuleByName(registry, "l4"); got != l4Module {
+		t.Fatal("registry l4 module is not the retained l4 module")
 	}
 }
 
@@ -240,9 +244,9 @@ func TestNewSharesRuntimeBackendCachesWithDiagnosticTaskHandler(t *testing.T) {
 	if httpManager == nil {
 		t.Fatal("httpModule = nil")
 	}
-	l4Manager, ok := app.l4Applier.(*l4RuntimeManager)
-	if !ok {
-		t.Fatalf("l4Applier type = %T", app.l4Applier)
+	l4Module := app.l4Module
+	if l4Module == nil {
+		t.Fatal("l4Module = nil")
 	}
 	if app.taskClient == nil {
 		t.Fatal("expected task client")
@@ -257,7 +261,7 @@ func TestNewSharesRuntimeBackendCachesWithDiagnosticTaskHandler(t *testing.T) {
 	if httpDiagnosticCache != httpManager.Cache() {
 		t.Fatal("http diagnostic prober does not share the runtime backend cache")
 	}
-	if tcpDiagnosticCache != l4Manager.cache {
+	if tcpDiagnosticCache != l4Module.Cache() {
 		t.Fatal("tcp diagnostic prober does not share the runtime backend cache")
 	}
 }

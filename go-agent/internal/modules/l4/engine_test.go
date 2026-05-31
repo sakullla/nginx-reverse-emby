@@ -235,7 +235,7 @@ func TestValidateRuleAllowsWireGuardTransparentPortZeroWithRelayAndEgressProfile
 	}
 }
 
-func TestValidateRuleRejectsPortZeroOutsideWireGuardTransparent(t *testing.T) {
+func TestValidateRuleAllowsEphemeralListenPort(t *testing.T) {
 	profileID := 7
 	tests := []struct {
 		name string
@@ -265,9 +265,8 @@ func TestValidateRuleRejectsPortZeroOutsideWireGuardTransparent(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateRule(tc.rule)
-			if err == nil || !strings.Contains(err.Error(), "listen_port") {
-				t.Fatalf("ValidateRule() error = %v, want listen_port validation", err)
+			if err := ValidateRule(tc.rule); err != nil {
+				t.Fatalf("ValidateRule() error = %v", err)
 			}
 		})
 	}

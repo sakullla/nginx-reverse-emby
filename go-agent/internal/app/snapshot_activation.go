@@ -6,11 +6,11 @@ import (
 	"reflect"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
+	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
@@ -180,7 +180,7 @@ func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next 
 			return err
 		}
 	}
-	if l4ActivationNeeded(previous, next) {
+	if a.l4Module == nil && l4ActivationNeeded(previous, next) {
 		if err := a.applyL4Rules(ctx, Snapshot{
 			L4Rules:           next.L4Rules,
 			RelayListeners:    next.RelayListeners,
@@ -217,7 +217,7 @@ func httpActivationNeeded(previous, next model.Snapshot) bool {
 
 func l4ActivationNeeded(previous, next model.Snapshot) bool {
 	return !reflect.DeepEqual(previous.L4Rules, next.L4Rules) ||
-		l4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners) ||
+		modulel4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners) ||
 		l4WireGuardInputsChanged(next.L4Rules, previous.WireGuardProfiles, next.WireGuardProfiles) ||
 		l4EgressInputsChanged(next.L4Rules, previous.EgressProfiles, next.EgressProfiles)
 }
@@ -314,9 +314,12 @@ func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {
 		a.httpModule.UpdateTrafficBlockState(modulehttp.TrafficBlockState{Blocked: blocked, Reason: reason})
 	}
 	if manager, ok := a.l4Applier.(interface {
-		UpdateTrafficBlockState(l4.TrafficBlockState)
+		UpdateTrafficBlockState(modulel4.TrafficBlockState)
 	}); ok {
-		manager.UpdateTrafficBlockState(l4.TrafficBlockState{Blocked: blocked, Reason: reason})
+		manager.UpdateTrafficBlockState(modulel4.TrafficBlockState{Blocked: blocked, Reason: reason})
+	}
+	if a.l4Module != nil {
+		a.l4Module.UpdateTrafficBlockState(modulel4.TrafficBlockState{Blocked: blocked, Reason: reason})
 	}
 	if manager, ok := a.relayApplier.(interface {
 		UpdateTrafficBlockState(relay.TrafficBlockState)

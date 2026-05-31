@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
@@ -20,6 +21,7 @@ import (
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
+	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
@@ -106,6 +108,7 @@ type App struct {
 	diagnosticModule     *modulediagnostics.Module
 	egressModule         *moduleegress.Module
 	httpModule           *modulehttp.Module
+	l4Module             *modulel4.Module
 	relayModule          *modulerelay.Module
 	wireGuardRuntime     *modulewireguard.Runtime
 	relayTimeoutReset    func()
@@ -115,7 +118,7 @@ type App struct {
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	registry, err := newAppModuleRegistry(cfg, nil, nil, nil, newHTTPModuleFromConfig(cfg), nil, nil)
+	registry, err := newAppModuleRegistry(cfg, nil, nil, nil, newHTTPModuleFromConfig(cfg), newL4ModuleFromConfig(cfg), nil, nil)
 	if err != nil {
 		return nil
 	}
@@ -178,6 +181,13 @@ func newHTTPModuleFromConfig(cfg Config) *modulehttp.Module {
 	})
 }
 
+func newL4ModuleFromConfig(cfg Config) *modulel4.Module {
+	return modulel4.NewModule(modulel4.Config{
+		AgentID:         cfg.AgentID,
+		BackendFailures: backendCacheConfigFromAppConfig(cfg),
+	})
+}
+
 func New(cfg Config) (*App, error) {
 	cfg = normalizeConstructorConfig(cfg)
 	traffic.SetEnabled(cfg.TrafficStatsEnabled)
@@ -209,14 +219,14 @@ func New(cfg Config) (*App, error) {
 	}
 	wireGuardRuntime := newSharedWireGuardRuntime()
 	httpModule := newHTTPModuleFromConfig(cfg)
-	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
-	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpModule, l4Manager)
+	l4Module := newL4ModuleFromConfig(cfg)
+	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpModule, l4Module)
 	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	certModule := modulecerts.NewModule(certManager)
 	diagnosticModule := modulediagnostics.NewModule(diagnosticHandler, httpProber, tcpProber)
 	egressModule := moduleegress.NewModule(nil)
 	relayModule := modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName})
-	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, relayModule, wireGuardRuntime)
+	moduleRegistry, err := newAppModuleRegistry(cfg, certModule, diagnosticModule, egressModule, httpModule, l4Module, relayModule, wireGuardRuntime)
 	if err != nil {
 		_ = wireGuardRuntime.Close()
 		return nil, err
@@ -255,7 +265,7 @@ func New(cfg Config) (*App, error) {
 		client,
 		nil,
 		certManager,
-		l4Manager,
+		nil,
 		nil,
 		agentupdate.NewManager(
 			cfg.DataDir,
@@ -274,6 +284,7 @@ func New(cfg Config) (*App, error) {
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	app.egressModule = egressModule
 	app.httpModule = httpModule
+	app.l4Module = l4Module
 	app.relayModule = relayModule
 	app.relayApplier = relayModule
 	app.wireGuardRuntime = wireGuardRuntime
@@ -288,6 +299,7 @@ func newAppModuleRegistry(
 	diagnosticModule *modulediagnostics.Module,
 	egressModule *moduleegress.Module,
 	httpModule *modulehttp.Module,
+	l4Module *modulel4.Module,
 	relayModule *modulerelay.Module,
 	wireGuardRuntime *modulewireguard.Runtime,
 ) (*agentmodule.Registry, error) {
@@ -319,6 +331,11 @@ func newAppModuleRegistry(
 	}
 	if relayModule != nil {
 		if err := registry.Register(relayModule); err != nil {
+			return nil, err
+		}
+	}
+	if l4Module != nil {
+		if err := registry.Register(l4Module); err != nil {
 			return nil, err
 		}
 	}
@@ -402,14 +419,14 @@ func newAppWithAllDeps(
 	return app
 }
 
-func newRuntimeDiagnosticProbers(relayProvider modulerelay.TLSMaterialProvider, httpModule *modulehttp.Module, l4Applier L4Applier) (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
+func newRuntimeDiagnosticProbers(relayProvider modulerelay.TLSMaterialProvider, httpModule *modulehttp.Module, l4Source any) (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
 	httpCfg := diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: relayProvider}
 	if httpModule != nil {
 		httpCfg.Cache = httpModule.Cache()
 	}
 	tcpCfg := diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: relayProvider}
-	if manager, ok := l4Applier.(*l4RuntimeManager); ok {
-		tcpCfg.Cache = manager.cache
+	if source, ok := l4Source.(interface{ Cache() *backends.Cache }); ok {
+		tcpCfg.Cache = source.Cache()
 	}
 	return diagnostics.NewHTTPProber(httpCfg), diagnostics.NewTCPProber(tcpCfg)
 }

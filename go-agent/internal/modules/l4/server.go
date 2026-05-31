@@ -32,6 +32,8 @@ type serverOptions struct {
 	cache                *backends.Cache
 	wireGuardProvider    relay.WireGuardRuntimeProvider
 	egressOverlayRuntime module.OverlayRuntime
+	egressResolver       moduleegress.ProfileResolver
+	finalHopDialer       relay.FinalHopDialer
 	egressProfiles       []model.EgressProfile
 }
 
@@ -58,6 +60,7 @@ type Server struct {
 	relayProvider      RelayMaterialProvider
 	relayPathDialer    relayplan.Dialer
 	wireGuardProvider  relay.WireGuardRuntimeProvider
+	finalHopDialer     relay.FinalHopDialer
 	egressDialer       moduleegress.Dialer
 	tcpDialer          func(context.Context, string, string) (net.Conn, error)
 
@@ -175,6 +178,9 @@ func newServerWithOptions(
 	if options.cache == nil {
 		options.cache = backends.NewCache(backends.Config{})
 	}
+	if options.egressResolver == nil {
+		options.egressResolver = moduleegress.NewResolver(options.egressProfiles)
+	}
 	s := &Server{
 		ctx:                   ctx,
 		cancel:                cancel,
@@ -192,7 +198,8 @@ func newServerWithOptions(
 		relayProvider:         relayProvider,
 		relayPathDialer:       relayPathDialer{provider: relayProvider, wireGuardProvider: options.wireGuardProvider},
 		wireGuardProvider:     options.wireGuardProvider,
-		egressDialer:          moduleegress.Dialer{Resolver: moduleegress.NewResolver(options.egressProfiles), OverlayRuntime: options.egressOverlayRuntime},
+		finalHopDialer:        options.finalHopDialer,
+		egressDialer:          moduleegress.Dialer{Resolver: options.egressResolver, OverlayRuntime: options.egressOverlayRuntime},
 		tcpDialer:             (&net.Dialer{}).DialContext,
 	}
 	for _, rule := range rules {

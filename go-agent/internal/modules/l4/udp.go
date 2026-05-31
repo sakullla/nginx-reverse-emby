@@ -191,6 +191,28 @@ func (u *connUDPUpstream) WritePacket(payload []byte) error {
 	return err
 }
 
+type finalHopUDPUpstream struct {
+	peer relay.UDPPacketPeer
+}
+
+func (u *finalHopUDPUpstream) Close() error { return u.peer.Close() }
+func (u *finalHopUDPUpstream) SetReadDeadline(t time.Time) error {
+	return u.peer.SetReadDeadline(t)
+}
+func (u *finalHopUDPUpstream) SetWriteDeadline(t time.Time) error {
+	return u.peer.SetWriteDeadline(t)
+}
+func (u *finalHopUDPUpstream) ReadPacket() (udpUpstreamPacket, error) {
+	payload, err := u.peer.ReadPacket()
+	if err != nil {
+		return udpUpstreamPacket{}, err
+	}
+	return udpUpstreamPacket{payload: payload}, nil
+}
+func (u *finalHopUDPUpstream) WritePacket(payload []byte) error {
+	return u.peer.WritePacket(payload)
+}
+
 type proxyUDPUpstream struct {
 	association *proxyproto.UDPAssociation
 	target      string
@@ -617,6 +639,13 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 	targetAddress := candidate.address
 	if !ruleUsesRelay(rule) {
 		if rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
+			if s.finalHopDialer != nil {
+				peer, err := s.finalHopDialer.OpenUDP(s.ctx, targetAddress, rule.EgressProfileID)
+				if err != nil {
+					return nil, err
+				}
+				return &finalHopUDPUpstream{peer: peer}, nil
+			}
 			conn, err := s.egressDialer.DialUDP(s.ctx, targetAddress, rule.EgressProfileID)
 			if err != nil {
 				return nil, err

@@ -187,6 +187,13 @@ func relayListenerBindingProtocol(transportMode string) string {
 	return "tcp"
 }
 
+func valueOrZeroWireGuardProfileID(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
 func cloneL4Rules(rules []model.L4Rule) []model.L4Rule {
 	if rules == nil {
 		return nil
