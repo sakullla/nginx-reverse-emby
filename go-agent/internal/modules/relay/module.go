@@ -79,30 +79,51 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	overlay, _ := req.Providers.Resolve(module.ProviderOverlayRuntime)
 	finalHop, _ := req.Providers.Resolve(module.ProviderFinalHopDialer)
 
-	nextRuntime, err := m.buildRuntime(ctx, req.Next, tlsMaterial, overlay, finalHop)
-	if err != nil {
-		return nil, err
-	}
-
 	m.mu.Lock()
 	oldRuntime := m.runtime
 	m.mu.Unlock()
+
+	nextListeners := localRelayListeners(req.Next.RelayListeners, m.agentID, m.agentName)
+	closeFirst := bindingKeysOverlap(serverBindingKeys(oldRuntime), relayListenerBindingKeys(nextListeners))
+	oldClosed := false
+	if closeFirst && oldRuntime != nil {
+		if err := oldRuntime.Close(); err != nil {
+			return nil, err
+		}
+		oldClosed = true
+	}
+
+	nextRuntime, err := m.buildRuntimeForListeners(ctx, nextListeners, tlsMaterial, overlay, finalHop)
+	if err != nil {
+		if oldClosed {
+			if restoreErr := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, finalHop); restoreErr != nil {
+				return nil, fmt.Errorf("%w; restore failed: %v", err, restoreErr)
+			}
+		}
+		return nil, err
+	}
 
 	return module.TransactionFuncs{
 		CommitFunc: func() error {
 			m.mu.Lock()
 			m.runtime = nextRuntime
 			m.mu.Unlock()
-			if oldRuntime != nil {
+			if oldRuntime != nil && !oldClosed {
 				return oldRuntime.Close()
 			}
 			return nil
 		},
 		RollbackFunc: func() error {
+			var firstErr error
 			if nextRuntime != nil {
-				return nextRuntime.Close()
+				firstErr = nextRuntime.Close()
 			}
-			return nil
+			if oldClosed {
+				if err := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, finalHop); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+			return firstErr
 		},
 	}, nil
 }
@@ -130,6 +151,10 @@ func (m *Module) Close() error {
 
 func (m *Module) buildRuntime(ctx context.Context, snapshot model.Snapshot, tlsMaterial any, overlay any, finalHop any) (*Server, error) {
 	listeners := localRelayListeners(snapshot.RelayListeners, m.agentID, m.agentName)
+	return m.buildRuntimeForListeners(ctx, listeners, tlsMaterial, overlay, finalHop)
+}
+
+func (m *Module) buildRuntimeForListeners(ctx context.Context, listeners []model.RelayListener, tlsMaterial any, overlay any, finalHop any) (*Server, error) {
 	if len(listeners) == 0 {
 		return nil, nil
 	}
@@ -155,6 +180,17 @@ func (m *Module) buildRuntime(ctx context.Context, snapshot model.Snapshot, tlsM
 	return server, nil
 }
 
+func (m *Module) restoreRuntime(ctx context.Context, snapshot model.Snapshot, tlsMaterial any, overlay any, finalHop any) error {
+	restored, err := m.buildRuntime(ctx, snapshot, tlsMaterial, overlay, finalHop)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.runtime = restored
+	m.mu.Unlock()
+	return nil
+}
+
 func localRelayListeners(listeners []model.RelayListener, agentID, agentName string) []model.RelayListener {
 	if listeners == nil {
 		return nil
@@ -166,7 +202,10 @@ func localRelayListeners(listeners []model.RelayListener, agentID, agentName str
 	}
 	filtered := make([]model.RelayListener, 0, len(listeners))
 	for _, listener := range listeners {
-		if listener.AgentID == identity || (identity == "" && listener.AgentID == fallback) || listener.AgentID == fallback {
+		listenerAgentID := strings.TrimSpace(listener.AgentID)
+		listenerAgentName := strings.TrimSpace(listener.AgentName)
+		if (identity != "" && (listenerAgentID == identity || listenerAgentName == identity)) ||
+			(fallback != "" && (listenerAgentID == fallback || listenerAgentName == fallback)) {
 			filtered = append(filtered, listener)
 		}
 	}
@@ -329,6 +368,127 @@ func relayListenerBindingKeys(listeners []model.RelayListener) []string {
 		}
 	}
 	return keys
+}
+
+func serverBindingKeys(server *Server) []string {
+	if server == nil {
+		return nil
+	}
+	return server.BindingKeys()
+}
+
+func bindingKeysOverlap(left, right []string) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return false
+	}
+	for _, leftBinding := range left {
+		leftKey, ok := parseBindingKey(leftBinding)
+		if !ok {
+			continue
+		}
+		for _, rightBinding := range right {
+			rightKey, ok := parseBindingKey(rightBinding)
+			if !ok {
+				continue
+			}
+			if leftKey.overlaps(rightKey) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type bindingKey struct {
+	namespace string
+	protocol  string
+	host      string
+	port      string
+	wildcard  bool
+}
+
+func parseBindingKey(raw string) (bindingKey, bool) {
+	protocol, address, ok := strings.Cut(raw, ":")
+	if !ok {
+		return bindingKey{}, false
+	}
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == "" {
+		return bindingKey{}, false
+	}
+	namespace := "host"
+	if protocol == "wireguard" {
+		profileID, rest, ok := strings.Cut(address, ":")
+		if !ok || strings.TrimSpace(profileID) == "" {
+			return bindingKey{}, false
+		}
+		protocol, address, ok = strings.Cut(rest, ":")
+		if !ok {
+			return bindingKey{}, false
+		}
+		protocol = strings.ToLower(strings.TrimSpace(protocol))
+		if protocol == "" {
+			return bindingKey{}, false
+		}
+		namespace = "wireguard:" + strings.TrimSpace(profileID)
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" {
+		return bindingKey{}, false
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	return bindingKey{
+		namespace: namespace,
+		protocol:  protocol,
+		host:      normalizeBindingHost(host),
+		port:      port,
+		wildcard:  bindingHostIsWildcard(host),
+	}, true
+}
+
+func (k bindingKey) overlaps(other bindingKey) bool {
+	if k.namespace != other.namespace || k.protocol != other.protocol || k.port != other.port {
+		return false
+	}
+	if k.host == other.host || k.wildcard || other.wildcard {
+		return true
+	}
+	return bindingHostsEquivalent(k.host, other.host)
+}
+
+func normalizeBindingHost(host string) string {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return strings.ToLower(host)
+}
+
+func bindingHostsEquivalent(left, right string) bool {
+	left = strings.ToLower(strings.TrimSpace(left))
+	right = strings.ToLower(strings.TrimSpace(right))
+	if left == right {
+		return true
+	}
+	if left == "localhost" && isLoopbackBindingHost(right) {
+		return true
+	}
+	if right == "localhost" && isLoopbackBindingHost(left) {
+		return true
+	}
+	return false
+}
+
+func isLoopbackBindingHost(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func bindingHostIsWildcard(host string) bool {
+	if strings.TrimSpace(host) == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }
 
 func relayModuleValueOrZero(value *int) int {
