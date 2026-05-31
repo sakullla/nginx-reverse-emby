@@ -229,13 +229,18 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	previewAgentRowsByID := previewAgentRows(bundle.Agents, agentIDMap, existingByName, existingByID, s.cfg)
 	previewCapabilityStore := previewAgentCapabilityStore{rows: previewAgentRowsByID}
 	certIDMap := previewCertificateIDMap(bundle.Certificates, bundle.Agents, existingCertRows, agentIDMap, existingByName, existingByID, s.cfg)
-	existingCertDomains := map[string]struct{}{}
+	existingCertsByDomain := map[string]ManagedCertificate{}
 	for _, row := range existingCertRows {
-		existingCertDomains[strings.TrimSpace(row.Domain)] = struct{}{}
+		cert := managedCertificateFromRow(row)
+		existingCertsByDomain[strings.TrimSpace(cert.Domain)] = cert
 	}
 	for _, item := range bundle.Certificates {
 		key := strings.TrimSpace(item.Domain)
-		if _, exists := existingCertDomains[key]; exists {
+		if existingCert, exists := existingCertsByDomain[key]; exists {
+			if isSystemRelayCACertificate(existingCert) && isSystemRelayCACertificate(item) {
+				result.addImported("certificate", key)
+				continue
+			}
 			result.addSkippedConflict("certificate", key, "certificate domain already exists")
 			continue
 		}
@@ -1255,6 +1260,7 @@ func (s *backupService) importCertificates(ctx context.Context, existing []stora
 					result.addSkippedInvalid("certificate", key, err.Error())
 					continue
 				}
+				normalized = canonicalizeSystemRelayCACertificate(normalized)
 				normalized.ID = existingCert.ID
 				normalized.TargetAgentIDs = targetIDs
 				normalized.Revision = allocator.AllocateRevisionForTargets(targetIDs, maxRevision)

@@ -1205,25 +1205,11 @@ func (s *relayService) buildCanonicalGlobalRelayCA(existing ManagedCertificate, 
 	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
 		targetAgentIDs = []string{strings.TrimSpace(s.cfg.LocalAgentID)}
 	}
-	return ManagedCertificate{
-		ID:              certID,
-		Domain:          relayCADomainIdentity,
-		Enabled:         true,
-		Scope:           "domain",
-		IssuerMode:      "local_http01",
-		TargetAgentIDs:  targetAgentIDs,
-		Status:          existing.Status,
-		LastIssueAt:     existing.LastIssueAt,
-		LastError:       existing.LastError,
-		MaterialHash:    existing.MaterialHash,
-		AgentReports:    existing.AgentReports,
-		ACMEInfo:        existing.ACMEInfo,
-		Tags:            normalizeTags([]string{systemRelayCATag, systemTag}),
-		Usage:           "relay_ca",
-		CertificateType: "internal_ca",
-		SelfSigned:      true,
-		Revision:        existing.Revision,
-	}
+	cert := canonicalizeSystemRelayCACertificate(existing)
+	cert.ID = certID
+	cert.TargetAgentIDs = targetAgentIDs
+	cert.Revision = existing.Revision
+	return cert
 }
 
 func managedCertificateInvariantFieldsEqual(left ManagedCertificate, right ManagedCertificate) bool {

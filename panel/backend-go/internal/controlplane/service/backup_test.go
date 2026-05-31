@@ -7189,15 +7189,15 @@ func TestBackupServiceImportReplacesExistingSystemRelayCAMaterial(t *testing.T) 
 		managedCertificateToRow(ManagedCertificate{
 			ID:              10,
 			Domain:          relayCADomainIdentity,
-			Enabled:         true,
+			Enabled:         false,
 			Scope:           "domain",
 			IssuerMode:      "local_http01",
 			TargetAgentIDs:  []string{"edge-a"},
 			Status:          "active",
-			Usage:           "relay_ca",
+			Usage:           "https",
 			CertificateType: "internal_ca",
-			SelfSigned:      true,
-			Tags:            []string{systemRelayCATag, systemTag},
+			SelfSigned:      false,
+			Tags:            []string{"legacy"},
 			Revision:        1,
 		}),
 		managedCertificateToRow(ManagedCertificate{
@@ -7275,18 +7275,46 @@ func TestBackupServiceImportReplacesExistingSystemRelayCAMaterial(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Export() error = %v", err)
 	}
-	if _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Import(ctx, archive); err != nil {
+	targetSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore)
+	preview, err := targetSvc.Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+	if preview.Summary.Imported.Certificates != 2 || preview.Summary.SkippedConflict.Certificates != 0 {
+		t.Fatalf("preview certificate summary = %+v", preview.Summary)
+	}
+	if _, err := targetSvc.Import(ctx, archive); err != nil {
 		t.Fatalf("Import() error = %v", err)
 	}
 
-	importedCA, ok, err := targetStore.LoadManagedCertificateMaterial(ctx, relayCADomainIdentity)
+	certs, err := targetStore.ListManagedCertificates(ctx)
+	if err != nil {
+		t.Fatalf("ListManagedCertificates(target) error = %v", err)
+	}
+	importedCARow, ok := findRelayCACertificate(certs)
+	if !ok {
+		t.Fatal("imported relay CA not found")
+	}
+	if importedCARow.Domain != relayCADomainIdentity || importedCARow.Usage != "relay_ca" || importedCARow.CertificateType != "internal_ca" {
+		t.Fatalf("importedCA = %+v", importedCARow)
+	}
+	if !importedCARow.Enabled || !importedCARow.SelfSigned {
+		t.Fatalf("importedCA flags = %+v", importedCARow)
+	}
+	for _, expectedTag := range []string{systemRelayCATag, systemTag} {
+		if !containsString(importedCARow.Tags, expectedTag) {
+			t.Fatalf("importedCA.Tags = %+v", importedCARow.Tags)
+		}
+	}
+
+	importedCAMaterial, ok, err := targetStore.LoadManagedCertificateMaterial(ctx, relayCADomainIdentity)
 	if err != nil {
 		t.Fatalf("LoadManagedCertificateMaterial(imported CA) error = %v", err)
 	}
 	if !ok {
 		t.Fatal("imported relay CA material missing")
 	}
-	if importedCA.CertPEM != sourceCA.CertPEM || importedCA.KeyPEM != sourceCA.KeyPEM {
+	if importedCAMaterial.CertPEM != sourceCA.CertPEM || importedCAMaterial.KeyPEM != sourceCA.KeyPEM {
 		t.Fatal("target relay CA material was not replaced with backup relay CA material")
 	}
 	importedLeaf, ok, err := targetStore.LoadManagedCertificateMaterial(ctx, sourceLeaf.Domain)
@@ -7296,7 +7324,7 @@ func TestBackupServiceImportReplacesExistingSystemRelayCAMaterial(t *testing.T) 
 	if !ok {
 		t.Fatal("imported relay leaf material missing")
 	}
-	if !certificateChainUsesRelayCA(importedLeaf, importedCA) {
+	if !certificateChainUsesRelayCA(importedLeaf, importedCAMaterial) {
 		t.Fatal("imported relay leaf is not verifiable with imported relay CA")
 	}
 }

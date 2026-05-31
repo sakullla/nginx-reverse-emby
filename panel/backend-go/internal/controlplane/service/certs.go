@@ -1747,6 +1747,18 @@ func isSystemRelayCACertificate(cert ManagedCertificate) bool {
 	return cert.Usage == "relay_ca" || usesReservedRelayCAIdentity(cert)
 }
 
+func canonicalizeSystemRelayCACertificate(cert ManagedCertificate) ManagedCertificate {
+	cert.Domain = relayCADomainIdentity
+	cert.Enabled = true
+	cert.Scope = "domain"
+	cert.IssuerMode = "local_http01"
+	cert.Tags = normalizeTags([]string{systemRelayCATag, systemTag})
+	cert.Usage = "relay_ca"
+	cert.CertificateType = "internal_ca"
+	cert.SelfSigned = true
+	return cert
+}
+
 func usesReservedRelayCATags(tags []string) bool {
 	if containsString(tags, systemRelayCATag) {
 		return true
