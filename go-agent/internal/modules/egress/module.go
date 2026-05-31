@@ -80,6 +80,13 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if m == nil {
 		return nil, nil
 	}
+	m.mu.RLock()
+	previousProfiles := CloneProfiles(m.profiles)
+	previousResolver := m.resolver
+	previousOverlayRuntime := m.overlayRuntime
+	previousRollback := m.rollback
+	m.mu.RUnlock()
+
 	profiles := CloneProfiles(req.Next.EgressProfiles)
 	runtimeProfiles := referencedEgressProfiles(req.Next)
 
@@ -101,30 +108,41 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	}
 
 	return &egressTransaction{
-		module:               m,
-		wireGuardTransaction: wireGuardTransaction,
-		runtimeProfiles:      runtimeProfiles,
-		profiles:             profiles,
-		resolver:             NewResolver(profiles),
-		overlayRuntime:       overlayRuntime,
+		module:                 m,
+		wireGuardTransaction:   wireGuardTransaction,
+		runtimeProfiles:        runtimeProfiles,
+		profiles:               profiles,
+		resolver:               NewResolver(profiles),
+		overlayRuntime:         overlayRuntime,
+		previousProfiles:       previousProfiles,
+		previousResolver:       previousResolver,
+		previousOverlayRuntime: previousOverlayRuntime,
+		previousRollback:       previousRollback,
 	}, nil
 }
 
 type egressTransaction struct {
-	module               *Module
-	wireGuardTransaction *modulewireguard.Transaction
-	runtimeProfiles      []model.EgressProfile
-	profiles             []model.EgressProfile
-	resolver             Resolver
-	overlayRuntime       module.OverlayRuntime
-	committed            bool
+	module                 *Module
+	wireGuardTransaction   *modulewireguard.Transaction
+	runtimeProfiles        []model.EgressProfile
+	profiles               []model.EgressProfile
+	resolver               Resolver
+	overlayRuntime         module.OverlayRuntime
+	previousProfiles       []model.EgressProfile
+	previousResolver       Resolver
+	previousOverlayRuntime module.OverlayRuntime
+	previousRollback       *modulewireguard.Transaction
+	committed              bool
 }
 
 func (t *egressTransaction) RegisterProviders(reg module.ProviderRegistry) error {
 	if t == nil {
 		return nil
 	}
-	if err := reg.Provide(module.ProviderFinalHopDialer, preparedFinalHopDialer{dialer: Dialer{Resolver: t.resolver, OverlayRuntime: t.overlayRuntime}}); err != nil {
+	if err := reg.Provide(module.ProviderFinalHopDialer, preparedFinalHopDialer{
+		dialer:         Dialer{Resolver: t.resolver, OverlayRuntime: t.overlayRuntime},
+		rollbackDialer: Dialer{Resolver: t.previousResolver, OverlayRuntime: t.previousOverlayRuntime},
+	}); err != nil {
 		return err
 	}
 	if err := reg.Provide(module.ProviderEgressResolver, t.resolver); err != nil {
@@ -160,7 +178,12 @@ func (t *egressTransaction) Rollback() error {
 	}
 	if t.module != nil {
 		t.module.mu.Lock()
-		if t.module.rollback == t.wireGuardTransaction {
+		if t.committed {
+			t.module.profiles = CloneProfiles(t.previousProfiles)
+			t.module.resolver = t.previousResolver
+			t.module.overlayRuntime = t.previousOverlayRuntime
+			t.module.rollback = t.previousRollback
+		} else if t.module.rollback == t.wireGuardTransaction {
 			t.module.rollback = nil
 		}
 		t.module.mu.Unlock()
@@ -217,7 +240,8 @@ func (d moduleFinalHopDialer) OpenUDP(ctx context.Context, target string, id *in
 }
 
 type preparedFinalHopDialer struct {
-	dialer Dialer
+	dialer         Dialer
+	rollbackDialer Dialer
 }
 
 func (d preparedFinalHopDialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, error) {
@@ -230,6 +254,10 @@ func (d preparedFinalHopDialer) OpenUDP(ctx context.Context, target string, id *
 		return nil, err
 	}
 	return udpPacketConn{conn: conn, target: target}, nil
+}
+
+func (d preparedFinalHopDialer) PreviousFinalHopDialerForRollback() any {
+	return preparedFinalHopDialer{dialer: d.rollbackDialer}
 }
 
 type preparedEgressOverlayProvider struct {

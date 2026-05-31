@@ -217,6 +217,74 @@ func TestPreparedEgressOverlayProviderRestoresCommittedRollbackRuntime(t *testin
 	}
 }
 
+func TestModuleRollbackAfterCommitRestoresCommittedProvidersAndOverlayState(t *testing.T) {
+	factory := &recordingFactory{}
+	mod := NewModule(factory.Create)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+
+	previousProfileID := 71
+	nextProfileID := 72
+	previous := model.Snapshot{
+		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(previousProfileID)},
+		Rules: []model.HTTPRule{{
+			ID:              1,
+			FrontendURL:     "http://previous.example.test",
+			Backends:        []model.HTTPBackend{{URL: "http://backend.example.test"}},
+			EgressProfileID: &previousProfileID,
+			Enabled:         true,
+		}},
+	}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+
+	failErr := errors.New("later commit failed")
+	mustRegister(t, registry, commitFailingModule{name: "later-transaction", err: failErr})
+	next := model.Snapshot{
+		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(nextProfileID)},
+		Rules: []model.HTTPRule{{
+			ID:              2,
+			FrontendURL:     "http://next.example.test",
+			Backends:        []model.HTTPBackend{{URL: "http://backend.example.test"}},
+			EgressProfileID: &nextProfileID,
+			Enabled:         true,
+		}},
+	}
+	err := registry.Apply(context.Background(), previous, next)
+	if !errors.Is(err, failErr) {
+		t.Fatalf("Apply() error = %v, want later commit failure", err)
+	}
+
+	resolver := module.EgressResolver(mod)
+	profile, found, err := resolver.Resolve(&previousProfileID, "tcp")
+	if err != nil {
+		t.Fatalf("Resolve(previous) error = %v", err)
+	}
+	if !found || profile.ID != previousProfileID {
+		t.Fatalf("Resolve(previous) = %+v, %v; want profile %d", profile, found, previousProfileID)
+	}
+	if _, _, err := resolver.Resolve(&nextProfileID, "tcp"); err == nil {
+		t.Fatal("Resolve(next) error = nil, want rolled-back resolver")
+	}
+
+	finalHop := module.FinalHopDialer(moduleFinalHopDialer{module: mod})
+	conn, err := finalHop.DialTCP(context.Background(), "10.0.0.10:443", &previousProfileID)
+	if err != nil {
+		t.Fatalf("DialTCP(previous) error = %v", err)
+	}
+	_ = conn.Close()
+	assertLastRuntimeDial(t, factory, previousProfileID, "tcp", "10.0.0.10:443")
+
+	overlay := module.OverlayRuntime(egressOverlayProvider{module: mod})
+	conn, err = overlay.DialContext(context.Background(), "", previousProfileID, "tcp", "10.0.0.20:443")
+	if err != nil {
+		t.Fatalf("overlay DialContext(previous) error = %v", err)
+	}
+	_ = conn.Close()
+	assertLastRuntimeDial(t, factory, previousProfileID, "tcp", "10.0.0.20:443")
+}
+
 func TestFinalHopDialerDelegatesWireGuardProfilesToOverlayRuntime(t *testing.T) {
 	t.Parallel()
 
@@ -332,6 +400,7 @@ func validWireGuardEgressProfile(id int) model.EgressProfile {
 }
 
 type recordingWireGuardRuntime struct {
+	cfg     basewireguard.Config
 	network string
 	address string
 }
@@ -370,10 +439,24 @@ type recordingFactory struct {
 }
 
 func (f *recordingFactory) Create(_ context.Context, cfg basewireguard.Config) (basewireguard.RuntimeHandle, error) {
-	runtime := &recordingWireGuardRuntime{}
+	runtime := &recordingWireGuardRuntime{cfg: cfg}
 	f.configs = append(f.configs, cfg)
 	f.runtimes = append(f.runtimes, runtime)
 	return runtime, nil
+}
+
+func assertLastRuntimeDial(t *testing.T, factory *recordingFactory, profileID int, network string, address string) {
+	t.Helper()
+	if len(factory.runtimes) == 0 {
+		t.Fatal("no WireGuard runtimes were created")
+	}
+	runtime := factory.runtimes[len(factory.runtimes)-1]
+	if runtime.cfg.ID != profileID {
+		t.Fatalf("last runtime profile ID = %d, want %d", runtime.cfg.ID, profileID)
+	}
+	if runtime.network != network || runtime.address != address {
+		t.Fatalf("last runtime dial = %s %s, want %s %s", runtime.network, runtime.address, network, address)
+	}
 }
 
 type testProviderRegistry struct {
@@ -498,6 +581,31 @@ func (m failingModule) Apply(context.Context, module.ApplyRequest) error {
 }
 
 func (m failingModule) Stop(context.Context) error { return nil }
+
+type commitFailingModule struct {
+	name string
+	err  error
+}
+
+func (m commitFailingModule) Name() string { return m.name }
+
+func (m commitFailingModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name}
+}
+
+func (m commitFailingModule) RegisterProviders(module.ProviderRegistry) error { return nil }
+
+func (m commitFailingModule) Capabilities(module.SnapshotView) []module.Capability {
+	return nil
+}
+
+func (m commitFailingModule) Apply(context.Context, module.ApplyRequest) error { return nil }
+
+func (m commitFailingModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	return module.TransactionFuncs{CommitFunc: func() error { return m.err }}, nil
+}
+
+func (m commitFailingModule) Stop(context.Context) error { return nil }
 
 type overlayRuntimeModule struct {
 	runtime module.OverlayRuntime

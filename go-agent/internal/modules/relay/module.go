@@ -79,6 +79,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	tlsMaterial, _ := req.Providers.Resolve(module.ProviderTLSMaterial)
 	overlay, _ := req.Providers.Resolve(module.ProviderOverlayRuntime)
 	finalHop, _ := req.Providers.Resolve(module.ProviderFinalHopDialer)
+	rollbackFinalHop := finalHopProviderForRollback(finalHop)
 
 	m.mu.Lock()
 	oldRuntime := m.runtime
@@ -101,7 +102,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	nextRuntime, err := m.buildRuntimeForListeners(ctx, nextListeners, tlsMaterial, overlay, finalHop)
 	if err != nil {
 		if oldClosed {
-			if restoreErr := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, finalHop); restoreErr != nil {
+			if restoreErr := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, rollbackFinalHop); restoreErr != nil {
 				return nil, fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 		}
@@ -131,7 +132,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 				if err := restoreOverlayForRollback(ctx, previousListeners, overlay); err != nil && firstErr == nil {
 					firstErr = err
 				}
-				if err := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, finalHop); err != nil && firstErr == nil {
+				if err := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, rollbackFinalHop); err != nil && firstErr == nil {
 					firstErr = err
 				}
 			}
@@ -312,6 +313,22 @@ func finalHopDialerFromProvider(provider any) FinalHopDialer {
 		return moduleFinalHopDialer{dialer: dialer}
 	}
 	return nil
+}
+
+type rollbackFinalHopProvider interface {
+	PreviousFinalHopDialerForRollback() any
+}
+
+func finalHopProviderForRollback(provider any) any {
+	rollbackProvider, ok := provider.(rollbackFinalHopProvider)
+	if !ok || rollbackProvider == nil {
+		return provider
+	}
+	previous := rollbackProvider.PreviousFinalHopDialerForRollback()
+	if previous == nil {
+		return provider
+	}
+	return previous
 }
 
 type moduleFinalHopDialer struct {
