@@ -7468,10 +7468,10 @@ func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenExistingRelayCertDe
 			IssuerMode:      "local_http01",
 			TargetAgentIDs:  []string{"local"},
 			Status:          "active",
-			Usage:           "relay_tunnel",
-			CertificateType: "internal_ca",
+			Usage:           "mixed",
+			CertificateType: "uploaded",
 			SelfSigned:      false,
-			Tags:            autoRelayListenerCertificateTags(41, "local"),
+			Tags:            []string{"manual-relay-cert"},
 			Revision:        2,
 		}),
 	}); err != nil {

@@ -1463,7 +1463,7 @@ func (s *backupService) systemRelayCAReplacementBlocked(ctx context.Context, exi
 
 	for _, row := range existing {
 		cert := managedCertificateFromRow(row)
-		if cert.ID == existingCert.ID || cert.Usage != "relay_tunnel" || cert.CertificateType != "internal_ca" {
+		if cert.ID == existingCert.ID {
 			continue
 		}
 		material, ok, err := s.store.LoadManagedCertificateMaterial(ctx, cert.Domain)
