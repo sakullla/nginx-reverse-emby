@@ -333,7 +333,7 @@ func TestSyncControllerApplyFailureRollsRuntimeBackAndRecordsCandidateError(t *t
 	}
 }
 
-func TestSyncControllerStartsModulesAfterRuntimeApply(t *testing.T) {
+func TestSyncControllerDoesNotStartModulesOutsideRuntimeApply(t *testing.T) {
 	st := newSyncControllerStore()
 	rt := agentruntime.New()
 	lifecycle := &syncControllerModuleLifecycle{}
@@ -348,32 +348,36 @@ func TestSyncControllerStartsModulesAfterRuntimeApply(t *testing.T) {
 		t.Fatalf("PerformSync() error = %v", err)
 	}
 
-	if !reflect.DeepEqual(lifecycle.startedRevisions, []int64{8}) {
-		t.Fatalf("started module revisions = %+v, want [8]", lifecycle.startedRevisions)
+	if len(lifecycle.appliedRevisions) != 0 {
+		t.Fatalf("applied module revisions = %+v, want none from sync controller", lifecycle.appliedRevisions)
 	}
 }
 
-func TestSyncControllerModuleStartFailureRollsRuntimeBackAndRecordsCandidateError(t *testing.T) {
+func TestSyncControllerModuleApplyFailureFromRuntimeRollsRuntimeBackAndRecordsCandidateError(t *testing.T) {
 	st := newSyncControllerStore()
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
 	if err := st.SaveAppliedSnapshot(previous); err != nil {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
 	}
-	rt := agentruntime.New()
+	applyErr := errors.New("module apply failed")
+	rt := agentruntime.NewWithActivator(func(_ context.Context, _, next model.Snapshot) error {
+		if next.Revision == 9 {
+			return applyErr
+		}
+		return nil
+	})
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
-	startErr := errors.New("module start failed")
 	controller := &SyncController{
 		Store:      st,
 		Runtime:    rt,
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
-		Modules:    &syncControllerModuleLifecycle{startErr: startErr},
 	}
 
 	err := controller.PerformSync(context.Background(), agentsync.SyncRequest{})
-	if !errors.Is(err, startErr) {
-		t.Fatalf("PerformSync() error = %v, want %v", err, startErr)
+	if !errors.Is(err, applyErr) {
+		t.Fatalf("PerformSync() error = %v, want %v", err, applyErr)
 	}
 	if active := rt.ActiveSnapshot(); !reflect.DeepEqual(active, previous) {
 		t.Fatalf("active snapshot = %+v, want previous %+v", active, previous)
@@ -383,29 +387,31 @@ func TestSyncControllerModuleStartFailureRollsRuntimeBackAndRecordsCandidateErro
 		t.Fatalf("LoadRuntimeState() error = %v", err)
 	}
 	if state.Metadata["last_apply_revision"] != "9" || state.Metadata["last_apply_status"] != "error" {
-		t.Fatalf("apply metadata = %+v, want module start failure at revision 9", state.Metadata)
+		t.Fatalf("apply metadata = %+v, want module apply failure at revision 9", state.Metadata)
 	}
 }
 
-func TestSyncControllerReportsModuleRestoreFailureDuringRollback(t *testing.T) {
+func TestSyncControllerReportsRuntimeRollbackFailure(t *testing.T) {
 	st := newSyncControllerStore()
 	st.failOnAppliedSave = 2
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
 	if err := st.SaveAppliedSnapshot(previous); err != nil {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
 	}
-	rt := agentruntime.New()
+	restoreErr := errors.New("module restore failed")
+	rt := agentruntime.NewWithActivator(func(_ context.Context, previous, next model.Snapshot) error {
+		if previous.Revision == 9 && next.Revision == 7 {
+			return restoreErr
+		}
+		return nil
+	})
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
-	restoreErr := errors.New("module restore failed")
 	controller := &SyncController{
 		Store:      st,
 		Runtime:    rt,
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
-		Modules: &syncControllerModuleLifecycle{
-			startErrsByRevision: map[int64]error{7: restoreErr},
-		},
 	}
 
 	err := controller.PerformSync(context.Background(), agentsync.SyncRequest{})
@@ -1103,19 +1109,18 @@ func (r syncControllerCertificateReporter) ManagedCertificateReports(context.Con
 }
 
 type syncControllerModuleLifecycle struct {
-	startedRevisions    []int64
-	startErr            error
-	startErrsByRevision map[int64]error
+	appliedRevisions []int64
+	applyErr         error
+	stopErr          error
 }
 
-func (l *syncControllerModuleLifecycle) StartAll(_ context.Context, snapshot model.Snapshot) error {
-	l.startedRevisions = append(l.startedRevisions, snapshot.Revision)
-	if l.startErrsByRevision != nil {
-		if err := l.startErrsByRevision[snapshot.Revision]; err != nil {
-			return err
-		}
-	}
-	return l.startErr
+func (l *syncControllerModuleLifecycle) Apply(_ context.Context, _ model.Snapshot, next model.Snapshot) error {
+	l.appliedRevisions = append(l.appliedRevisions, next.Revision)
+	return l.applyErr
+}
+
+func (l *syncControllerModuleLifecycle) StopAll(context.Context) error {
+	return l.stopErr
 }
 
 type syncControllerStore struct {

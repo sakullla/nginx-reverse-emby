@@ -5,28 +5,18 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-func TestCapabilitiesPreserveExistingAdvertisedValues(t *testing.T) {
-	cfg := config.Default()
-	cfg.WireGuardEnabled = true
-	cfg.WireGuardExplicit = true
-	cfg.HTTP3Enabled = true
-
-	got := CapabilityNames(cfg, nil)
-	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("CapabilityNames() = %+v, want %+v", got, want)
+func TestCapabilitiesAreEmptyWithoutRegisteredModules(t *testing.T) {
+	got := CapabilityNames(nil)
+	if len(got) != 0 {
+		t.Fatalf("CapabilityNames() = %+v, want empty", got)
 	}
 }
 
 func TestCapabilitiesAppendModuleCapabilitiesInRegistryOrder(t *testing.T) {
-	cfg := config.Default()
-	cfg.WireGuardEnabled = false
-	cfg.WireGuardExplicit = true
 	registry := module.NewRegistry()
 	_ = registry.Register(staticModule{name: "traffic", capabilities: []module.Capability{
 		{Name: "traffic_stats", Enabled: true},
@@ -37,8 +27,8 @@ func TestCapabilitiesAppendModuleCapabilitiesInRegistryOrder(t *testing.T) {
 		{Name: "managed_certs", Enabled: true},
 	}})
 
-	got := CapabilityNames(cfg, registry)
-	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles", "traffic_stats", "managed_certs"}
+	got := CapabilityNames(registry)
+	want := []string{"traffic_stats", "managed_certs"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("CapabilityNames() = %+v, want %+v", got, want)
 	}

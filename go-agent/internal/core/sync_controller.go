@@ -53,7 +53,8 @@ type ManagedCertificateReporter interface {
 }
 
 type ModuleLifecycle interface {
-	StartAll(context.Context, model.Snapshot) error
+	Apply(context.Context, model.Snapshot, model.Snapshot) error
+	StopAll(context.Context) error
 }
 
 type SyncController struct {
@@ -148,14 +149,6 @@ func (c *SyncController) PerformSyncPlan(ctx context.Context, plan SyncPlan) err
 		log.Printf("[agent] runtime apply error at revision %d: %v", candidateApplied.Revision, err)
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		return c.recordRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidateApplied.Revision)
-	}
-	if c.Modules != nil {
-		if err := c.Modules.StartAll(ctx, candidateApplied); err != nil {
-			moduleErr := fmt.Errorf("module lifecycle start revision %d: %w", candidateApplied.Revision, err)
-			log.Printf("[agent] module lifecycle error at revision %d: %v", candidateApplied.Revision, err)
-			rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
-			return c.recordRuntimeErrorWithRevision(errors.Join(moduleErr, rollbackErr), candidateApplied.Revision)
-		}
 	}
 	if err := c.Store.SaveAppliedSnapshot(candidateApplied); err != nil {
 		log.Printf("[agent] save applied snapshot error at revision %d: %v", candidateApplied.Revision, err)
@@ -299,11 +292,6 @@ func (c *SyncController) rollbackRuntime(ctx context.Context, previousApplied, t
 	var errs []error
 	if err := c.Runtime.Rollback(ctx, previousApplied, targetApplied); err != nil {
 		errs = append(errs, fmt.Errorf("runtime rollback: %w", err))
-	}
-	if c.Modules != nil {
-		if err := c.Modules.StartAll(ctx, targetApplied); err != nil {
-			errs = append(errs, fmt.Errorf("module restore revision %d: %w", targetApplied.Revision, err))
-		}
 	}
 	return errors.Join(errs...)
 }

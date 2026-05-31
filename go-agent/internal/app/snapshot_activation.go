@@ -2,10 +2,13 @@ package app
 
 import (
 	"context"
+	"reflect"
+	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
@@ -72,52 +75,200 @@ func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error 
 }
 
 func (a *App) snapshotActivator() agentruntime.Activator {
-	return core.NewSnapshotActivator(a.cfg.AgentID, a.cfg.AgentName, a.snapshotActivationHandlers())
+	return core.NewSnapshotActivator(snapshotModuleApplier{app: a, registry: a.moduleRegistry})
 }
 
-func (a *App) snapshotActivationHandlers() core.SnapshotActivationHandlers {
-	return core.SnapshotActivationHandlers{
-		ActivateAgentConfig: func(_ context.Context, cfg model.AgentConfig) error {
-			if _, err := parseTrafficStatsInterval(cfg.TrafficStatsInterval); err != nil {
-				return err
-			}
-			if cfg.TrafficStatsEnabled != nil {
-				traffic.SetEnabled(*cfg.TrafficStatsEnabled)
-			}
-			relay.SetOutboundProxyURL(cfg.OutboundProxyURL)
-			a.updateTrafficBlockState(cfg)
-			return nil
-		},
-		ActivateManagedCertificates: func(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
-			return a.applyManagedCertificates(ctx, Snapshot{
-				Certificates:        bundles,
-				CertificatePolicies: policies,
-			})
-		},
-		ActivateHTTPRules: func(ctx context.Context, input core.SnapshotHTTPInput) error {
-			return a.applyHTTPRules(ctx, Snapshot{
-				Rules:             input.Rules,
-				RelayListeners:    input.RelayListeners,
-				WireGuardProfiles: input.WireGuardProfiles,
-				EgressProfiles:    input.EgressProfiles,
-			})
-		},
-		ActivateRelayListeners: func(ctx context.Context, input core.SnapshotRelayInput) error {
-			return a.applyRelayListeners(ctx, Snapshot{
-				RelayListeners:    input.RelayListeners,
-				WireGuardProfiles: input.WireGuardProfiles,
-				EgressProfiles:    input.EgressProfiles,
-			})
-		},
-		ActivateL4Rules: func(ctx context.Context, input core.SnapshotL4Input) error {
-			return a.applyL4Rules(ctx, Snapshot{
-				L4Rules:           input.Rules,
-				RelayListeners:    input.RelayListeners,
-				WireGuardProfiles: input.WireGuardProfiles,
-				EgressProfiles:    input.EgressProfiles,
-			})
-		},
+type snapshotModuleApplier struct {
+	app      *App
+	registry *agentmodule.Registry
+}
+
+func (a snapshotModuleApplier) Apply(ctx context.Context, previous, next model.Snapshot) error {
+	if a.app != nil {
+		if err := a.app.applyLegacySnapshotActivation(ctx, previous, next); err != nil {
+			return err
+		}
 	}
+	if a.registry != nil {
+		return a.registry.Apply(ctx, previous, next)
+	}
+	return nil
+}
+
+func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next model.Snapshot) error {
+	if agentConfigChanged(previous, next) {
+		if _, err := parseTrafficStatsInterval(next.AgentConfig.TrafficStatsInterval); err != nil {
+			return err
+		}
+		if next.AgentConfig.TrafficStatsEnabled != nil {
+			traffic.SetEnabled(*next.AgentConfig.TrafficStatsEnabled)
+		}
+		relay.SetOutboundProxyURL(next.AgentConfig.OutboundProxyURL)
+		a.updateTrafficBlockState(next.AgentConfig)
+	}
+	if certificatesChanged(previous, next) {
+		if err := a.applyManagedCertificates(ctx, Snapshot{
+			Certificates:        next.Certificates,
+			CertificatePolicies: next.CertificatePolicies,
+		}); err != nil {
+			return err
+		}
+	}
+	if httpActivationNeeded(previous, next) {
+		if err := a.applyHTTPRules(ctx, Snapshot{
+			Rules:             next.Rules,
+			RelayListeners:    next.RelayListeners,
+			WireGuardProfiles: next.WireGuardProfiles,
+			EgressProfiles:    next.EgressProfiles,
+		}); err != nil {
+			return err
+		}
+	}
+	if l4ActivationNeeded(previous, next) {
+		if err := a.applyL4Rules(ctx, Snapshot{
+			L4Rules:           next.L4Rules,
+			RelayListeners:    next.RelayListeners,
+			WireGuardProfiles: next.WireGuardProfiles,
+			EgressProfiles:    next.EgressProfiles,
+		}); err != nil {
+			return err
+		}
+	}
+
+	localPrevious := previous
+	localPrevious.RelayListeners = localRelayListeners(previous.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
+	localNext := next
+	localNext.RelayListeners = localRelayListeners(next.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
+	if relayActivationNeeded(localPrevious, localNext, previous, next) {
+		if err := a.applyRelayListeners(ctx, Snapshot{
+			RelayListeners:    localNext.RelayListeners,
+			WireGuardProfiles: next.WireGuardProfiles,
+			EgressProfiles:    next.EgressProfiles,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func certificatesChanged(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.Certificates, next.Certificates) ||
+		!reflect.DeepEqual(previous.CertificatePolicies, next.CertificatePolicies)
+}
+
+func agentConfigChanged(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.AgentConfig, next.AgentConfig)
+}
+
+func httpActivationNeeded(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.Rules, next.Rules) ||
+		httpRelayInputsChanged(next.Rules, previous.RelayListeners, next.RelayListeners) ||
+		httpWireGuardInputsChanged(next.Rules, previous.WireGuardProfiles, next.WireGuardProfiles) ||
+		httpEgressInputsChanged(next.Rules, previous.EgressProfiles, next.EgressProfiles)
+}
+
+func l4ActivationNeeded(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.L4Rules, next.L4Rules) ||
+		l4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners) ||
+		l4WireGuardInputsChanged(next.L4Rules, previous.WireGuardProfiles, next.WireGuardProfiles) ||
+		l4EgressInputsChanged(next.L4Rules, previous.EgressProfiles, next.EgressProfiles)
+}
+
+func relayActivationNeeded(localPrevious, localNext, previous, next model.Snapshot) bool {
+	return relay.ListenersChanged(localPrevious.RelayListeners, localNext.RelayListeners) ||
+		!reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles) ||
+		(len(localNext.RelayListeners) > 0 && !reflect.DeepEqual(previous.EgressProfiles, next.EgressProfiles))
+}
+
+func l4WireGuardInputsChanged(rules []model.L4Rule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
+	for _, rule := range rules {
+		if !l4RuleUsesWireGuard(rule) {
+			continue
+		}
+		return !reflect.DeepEqual(previousProfiles, nextProfiles)
+	}
+	return false
+}
+
+func l4EgressInputsChanged(rules []model.L4Rule, previousProfiles, nextProfiles []model.EgressProfile) bool {
+	for _, rule := range rules {
+		if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+			continue
+		}
+		return !reflect.DeepEqual(previousProfiles, nextProfiles)
+	}
+	return false
+}
+
+func httpWireGuardInputsChanged(rules []model.HTTPRule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
+	for _, rule := range rules {
+		if rule.WireGuardEntryEnabled {
+			return !reflect.DeepEqual(previousProfiles, nextProfiles)
+		}
+	}
+	return false
+}
+
+func httpEgressInputsChanged(rules []model.HTTPRule, previousProfiles, nextProfiles []model.EgressProfile) bool {
+	for _, rule := range rules {
+		if rule.EgressProfileID == nil || *rule.EgressProfileID <= 0 {
+			continue
+		}
+		return !reflect.DeepEqual(previousProfiles, nextProfiles)
+	}
+	return false
+}
+
+func httpRelayInputsChanged(rules []model.HTTPRule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {
+	for _, rule := range rules {
+		for _, layer := range rule.RelayLayers {
+			for _, listenerID := range layer {
+				if relayListenerChangedByID(listenerID, previousRelayListeners, nextRelayListeners) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func relayListenerChangedByID(listenerID int, previous, next []model.RelayListener) bool {
+	previousListener, previousOK := relayListenerByID(listenerID, previous)
+	nextListener, nextOK := relayListenerByID(listenerID, next)
+	if previousOK != nextOK {
+		return true
+	}
+	if !previousOK {
+		return false
+	}
+	return !reflect.DeepEqual(previousListener, nextListener)
+}
+
+func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.RelayListener, bool) {
+	for _, listener := range listeners {
+		if listener.ID == listenerID {
+			return listener, true
+		}
+	}
+	return model.RelayListener{}, false
+}
+
+func localRelayListeners(listeners []model.RelayListener, agentID, agentName string) []model.RelayListener {
+	if listeners == nil {
+		return nil
+	}
+	identity := strings.TrimSpace(agentID)
+	fallback := strings.TrimSpace(agentName)
+	if identity == "" && fallback == "" {
+		return listeners
+	}
+	filtered := make([]model.RelayListener, 0, len(listeners))
+	for _, listener := range listeners {
+		if listener.AgentID == identity || (identity == "" && listener.AgentID == fallback) || listener.AgentID == fallback {
+			filtered = append(filtered, listener)
+		}
+	}
+	return filtered
 }
 
 func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {

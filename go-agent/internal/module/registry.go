@@ -66,11 +66,11 @@ func (r *Registry) Names() []string {
 	return names
 }
 
-func (r *Registry) Capabilities() []Capability {
+func (r *Registry) Capabilities(snapshot SnapshotView) []Capability {
 	modules := r.Modules()
 	var capabilities []Capability
 	for _, module := range modules {
-		for _, capability := range module.Capabilities(SnapshotView{}) {
+		for _, capability := range module.Capabilities(snapshot) {
 			capabilities = append(capabilities, cloneCapability(capability))
 		}
 	}

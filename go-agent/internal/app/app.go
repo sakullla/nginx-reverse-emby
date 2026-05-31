@@ -113,7 +113,11 @@ type App struct {
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	return core.CapabilityNames(cfg, nil)
+	registry, err := newAppModuleRegistry(cfg, nil, nil, nil, nil)
+	if err != nil {
+		return nil
+	}
+	return core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: registry})
 }
 
 func normalizeConstructorConfig(cfg Config) Config {
@@ -189,7 +193,7 @@ func New(cfg Config) (*App, error) {
 		_ = wireGuardRuntime.Close()
 		return nil, err
 	}
-	capabilities := core.CapabilityNames(cfg, moduleRegistry)
+	capabilities := core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: moduleRegistry})
 	client := agentsync.NewClient(agentsync.ClientConfig{
 		MasterURL:      cfg.MasterURL,
 		AgentToken:     cfg.AgentToken,
@@ -238,6 +242,7 @@ func New(cfg Config) (*App, error) {
 	app.setDiagnosticModule(diagnosticModule)
 	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
 	app.moduleRegistry = moduleRegistry
+	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	app.egressModule = egressModule
 	app.wireGuardRuntime = wireGuardRuntime
 	app.relayTimeoutReset = resetRelayTimeouts
@@ -277,6 +282,37 @@ func newAppModuleRegistry(
 		return nil, err
 	}
 	return registry, nil
+}
+
+type appCapabilitySource struct {
+	cfg      Config
+	registry *agentmodule.Registry
+}
+
+func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []agentmodule.Capability {
+	capabilities := []agentmodule.Capability{
+		{Name: "http_rules", Enabled: true},
+		{Name: "cert_install", Enabled: true},
+		{Name: "local_acme", Enabled: true},
+		{Name: "l4", Enabled: true},
+		{Name: "relay_quic", Enabled: true},
+	}
+	if s.cfg.WireGuardModuleEnabled() {
+		capabilities = append(capabilities, agentmodule.Capability{Name: "wireguard", Enabled: true})
+	}
+	capabilities = append(capabilities, agentmodule.Capability{Name: "egress_profiles", Enabled: true})
+	if s.cfg.HTTP3Enabled {
+		capabilities = append(capabilities, agentmodule.Capability{Name: "http3_ingress", Enabled: true})
+	}
+	if s.registry != nil {
+		for _, capability := range s.registry.Capabilities(snapshot) {
+			if capability.Name == "wireguard" || capability.Name == "egress_profiles" {
+				continue
+			}
+			capabilities = append(capabilities, capability)
+		}
+	}
+	return capabilities
 }
 
 func newAppWithDeps(
@@ -440,7 +476,7 @@ func (a *App) Run(ctx context.Context) error {
 			log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", hydratedApplied.Revision, err)
 			_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
 		}
-		if err := a.startModules(ctx, hydratedApplied); err != nil {
+		if err := a.applyModules(ctx, Snapshot{}, hydratedApplied); err != nil {
 			// Preserve startup hydration compatibility: record module startup
 			// errors, then let the first sync attempt recover or fail normally.
 			log.Printf("[agent] startup module lifecycle error at revision %d: %v", hydratedApplied.Revision, err)
@@ -544,11 +580,11 @@ func (a *App) SyncNow(ctx context.Context) error {
 	return a.performSync(ctx)
 }
 
-func (a *App) startModules(ctx context.Context, snapshot Snapshot) error {
+func (a *App) applyModules(ctx context.Context, previous, snapshot Snapshot) error {
 	if a == nil || a.moduleRegistry == nil {
 		return nil
 	}
-	return a.moduleRegistry.StartAll(ctx, snapshot)
+	return a.moduleRegistry.Apply(ctx, previous, snapshot)
 }
 
 func (a *App) closeLocalRuntimes() {
