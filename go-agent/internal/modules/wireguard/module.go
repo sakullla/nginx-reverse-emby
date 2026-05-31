@@ -182,6 +182,13 @@ type moduleTransparentListenerProvider struct {
 	module *Module
 }
 
+func (p moduleTransparentListenerProvider) RestorePreviousRuntimeForRollback(ctx context.Context) error {
+	if p.module == nil {
+		return nil
+	}
+	return p.module.restorePreviousRuntimeForRollback(ctx)
+}
+
 func (p moduleTransparentListenerProvider) ListenTransparentTCP(ctx context.Context, agentID string, profileID int) (net.Listener, error) {
 	runtime, err := p.module.runtimeForAgent(agentID, profileID)
 	if err != nil {

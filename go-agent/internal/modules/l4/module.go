@@ -291,6 +291,9 @@ func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, cl
 		return nil
 	}
 	providers := snapshotProviders(state.providers, state.egressProfiles)
+	if err := restoreOverlayProvidersForRollback(ctx, state.rules, providers); err != nil {
+		return err
+	}
 	if err := restoreEgressOverlayForRollback(ctx, state.rules, providers.EgressOverlay); err != nil {
 		return err
 	}
@@ -582,7 +585,9 @@ func snapshotProviders(providers Providers, egressProfiles []model.EgressProfile
 	profiles := cloneEgressProfiles(egressProfiles)
 	providers.EgressProfiles = profiles
 	providers.EgressResolver = nil
-	providers.FinalHopDialer = moduleegress.NewFinalHopDialer(profiles, providers.EgressOverlay)
+	if providers.FinalHopDialer == nil {
+		providers.FinalHopDialer = moduleegress.NewFinalHopDialer(profiles, providers.EgressOverlay)
+	}
 	return providers
 }
 
@@ -597,15 +602,53 @@ type rollbackOverlayRestorer interface {
 	RestorePreviousRuntimeForRollback(context.Context) error
 }
 
-func restoreEgressOverlayForRollback(ctx context.Context, rules []model.L4Rule, overlay any) error {
-	if !hasEgressProfileRule(rules) {
+func restoreOverlayProvidersForRollback(ctx context.Context, rules []model.L4Rule, providers Providers) error {
+	if !hasOverlayListenRule(rules) {
 		return nil
 	}
-	restorer, ok := overlay.(rollbackOverlayRestorer)
+	if err := restoreProviderForRollback(ctx, providers.Overlay); err != nil {
+		return err
+	}
+	if sameProvider(providers.Overlay, providers.TransparentListener) {
+		return nil
+	}
+	return restoreProviderForRollback(ctx, providers.TransparentListener)
+}
+
+func restoreProviderForRollback(ctx context.Context, provider any) error {
+	restorer, ok := provider.(rollbackOverlayRestorer)
 	if !ok || restorer == nil {
 		return nil
 	}
 	return restorer.RestorePreviousRuntimeForRollback(ctx)
+}
+
+func sameProvider(left, right any) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	leftValue := reflect.ValueOf(left)
+	rightValue := reflect.ValueOf(right)
+	if leftValue.Type() != rightValue.Type() || !leftValue.Type().Comparable() {
+		return false
+	}
+	return leftValue.Interface() == rightValue.Interface()
+}
+
+func hasOverlayListenRule(rules []model.L4Rule) bool {
+	for _, rule := range rules {
+		if rule.Enabled && l4RuleUsesOverlay(rule) {
+			return true
+		}
+	}
+	return false
+}
+
+func restoreEgressOverlayForRollback(ctx context.Context, rules []model.L4Rule, overlay any) error {
+	if !hasEgressProfileRule(rules) {
+		return nil
+	}
+	return restoreProviderForRollback(ctx, overlay)
 }
 
 func hasEgressProfileRule(rules []model.L4Rule) bool {
