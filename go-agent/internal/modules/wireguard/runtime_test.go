@@ -212,6 +212,50 @@ func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
 	}
 }
 
+func TestModuleRollbackAfterCommitRestoresPreviousRuntime(t *testing.T) {
+	factory := &moduleRecordingFactory{}
+	runtime := NewRuntime(factory.Create)
+	mod := NewModule(runtime)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+
+	previous := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{
+		testWireGuardProfile(20, "local", "peer.example.com:51820", "127.0.0.1/32"),
+	}}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	original, ok := runtime.RuntimeForAgent("local", 20)
+	if !ok {
+		t.Fatal("initial runtime missing")
+	}
+
+	failErr := errors.New("later commit failed")
+	mustRegister(t, registry, commitFailingModule{name: "later-transaction", err: failErr})
+	next := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{
+		testWireGuardProfile(21, "local", "peer.example.com:51821", "127.0.0.2/32"),
+	}}
+	err := registry.Apply(context.Background(), previous, next)
+	if !errors.Is(err, failErr) {
+		t.Fatalf("Apply() error = %v, want later commit failure", err)
+	}
+
+	restored, ok := runtime.RuntimeForAgent("local", 20)
+	if !ok {
+		t.Fatal("previous runtime missing after committed rollback")
+	}
+	if restored == original {
+		t.Fatal("rollback reused the closed original runtime instead of rebuilding previous runtime")
+	}
+	if got, ok := runtime.RuntimeForAgent("local", 21); ok || got != nil {
+		t.Fatalf("next runtime remained after committed rollback: %v, %v", got, ok)
+	}
+	profiles := runtime.Profiles()
+	if len(profiles) != 1 || profiles[0].ID != 20 {
+		t.Fatalf("profiles after committed rollback = %+v, want previous profile", profiles)
+	}
+}
+
 func TestModulePublishesTransparentListenerProvider(t *testing.T) {
 	t.Parallel()
 
@@ -281,6 +325,27 @@ func (failingModule) Capabilities(module.SnapshotView) []module.Capability {
 }
 func (m failingModule) Apply(context.Context, module.ApplyRequest) error { return m.err }
 func (failingModule) Stop(context.Context) error                         { return nil }
+
+type commitFailingModule struct {
+	name string
+	err  error
+}
+
+func (m commitFailingModule) Name() string { return m.name }
+
+func (m commitFailingModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name}
+}
+
+func (commitFailingModule) RegisterProviders(module.ProviderRegistry) error { return nil }
+func (commitFailingModule) Capabilities(module.SnapshotView) []module.Capability {
+	return nil
+}
+func (commitFailingModule) Apply(context.Context, module.ApplyRequest) error { return nil }
+func (m commitFailingModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	return module.TransactionFuncs{CommitFunc: func() error { return m.err }}, nil
+}
+func (commitFailingModule) Stop(context.Context) error { return nil }
 
 func testWireGuardProfile(id int, agentID string, endpoint string, allowedIPs ...string) model.WireGuardProfile {
 	return model.WireGuardProfile{

@@ -31,7 +31,7 @@ func TestModuleAppliesLocalRelayListenersAndConsumesProviders(t *testing.T) {
 	}
 	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
 	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: tlsProvider})
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &tlsProvider})
 	mustRegister(t, registry, staticProviderModule{name: "egress", provides: module.ProviderFinalHopDialer, provider: fakeFinalHopDialer{}})
 	mustRegister(t, registry, mod)
 
@@ -64,7 +64,7 @@ func TestModuleAppliesListenerMatchedByAgentName(t *testing.T) {
 	}
 	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
 	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: tlsProvider})
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &tlsProvider})
 	mustRegister(t, registry, mod)
 
 	port := pickFreeTCPPort(t)
@@ -90,7 +90,7 @@ func TestModuleReappliesSameAddressRelayListener(t *testing.T) {
 	}}
 	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
 	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: tlsProvider})
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &tlsProvider})
 	mustRegister(t, registry, mod)
 
 	port := pickFreeTCPPort(t)
@@ -112,6 +112,44 @@ func TestModuleReappliesSameAddressRelayListener(t *testing.T) {
 	}
 }
 
+func TestModuleApplyNoopsWhenEffectiveInputsUnchanged(t *testing.T) {
+	certificateID := 1
+	cert := mustIssueTestTLSCertificate(t)
+	tlsProvider := fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{certificateID: cert}}
+	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &tlsProvider})
+	mustRegister(t, registry, mod)
+
+	port := pickFreeTCPPort(t)
+	previous := model.Snapshot{
+		RelayListeners: []model.RelayListener{testRelayListener(51, "agent-a", "node-a", port, certificateID)},
+		EgressProfiles: []model.EgressProfile{{ID: 1, Name: "direct", Type: "direct", Enabled: true}},
+	}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	got := dialServedCertificate(t, port)
+	if !certificateDEREqual(got, cert) {
+		t.Fatal("initial relay listener did not serve expected certificate")
+	}
+	initialLookups := tlsProvider.lookups
+
+	next := previous
+	next.Rules = []model.HTTPRule{{ID: 99, FrontendURL: "http://example.test"}}
+	if err := registry.Apply(context.Background(), previous, next); err != nil {
+		t.Fatalf("unchanged relay Apply() error = %v", err)
+	}
+	if tlsProvider.lookups != initialLookups {
+		t.Fatalf("unchanged relay inputs looked up TLS material %d times after initial apply, want %d", tlsProvider.lookups, initialLookups)
+	}
+
+	got = dialServedCertificate(t, port)
+	if !certificateDEREqual(got, cert) {
+		t.Fatal("unchanged relay inputs should keep the active listener serving")
+	}
+}
+
 func TestModuleRollbackRestoresPreviousRuntimeAfterSameAddressPrepare(t *testing.T) {
 	firstCertificateID := 1
 	secondCertificateID := 2
@@ -123,7 +161,7 @@ func TestModuleRollbackRestoresPreviousRuntimeAfterSameAddressPrepare(t *testing
 	}}
 	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
 	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: tlsProvider})
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &tlsProvider})
 	mustRegister(t, registry, mod)
 
 	port := pickFreeTCPPort(t)
@@ -162,7 +200,7 @@ func TestModuleRollbackAfterCommitRestoresPreviousRuntime(t *testing.T) {
 	}}
 	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
 	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: tlsProvider})
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &tlsProvider})
 	mustRegister(t, registry, mod)
 
 	firstPort := pickFreeTCPPort(t)
@@ -199,7 +237,7 @@ func TestModulePrepareUsesPendingWireGuardOverlayRuntime(t *testing.T) {
 	defer wireGuardRuntime.Close()
 	relayModule := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
 	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: tlsProvider})
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &tlsProvider})
 	mustRegister(t, registry, modulewireguard.NewModule(wireGuardRuntime))
 	mustRegister(t, registry, relayModule)
 
@@ -220,14 +258,16 @@ func TestModulePrepareUsesPendingWireGuardOverlayRuntime(t *testing.T) {
 
 type fakeTLSMaterialProvider struct {
 	certificates map[int]tls.Certificate
+	lookups      int
 }
 
-func (p fakeTLSMaterialProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
+func (p *fakeTLSMaterialProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
+	p.lookups++
 	cert := p.certificates[certificateID]
 	return &cert, nil
 }
 
-func (fakeTLSMaterialProvider) TrustedCAPool(context.Context, []int) (*x509.CertPool, error) {
+func (*fakeTLSMaterialProvider) TrustedCAPool(context.Context, []int) (*x509.CertPool, error) {
 	return nil, nil
 }
 

@@ -77,9 +77,12 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	}
 	m.pending = transaction
 	profiles := CloneWireGuardProfiles(req.Next.WireGuardProfiles)
+	previousProfiles := m.runtime.Profiles()
+	committed := false
 	return module.TransactionFuncs{
 		CommitFunc: func() error {
 			m.runtime.Commit(transaction, profiles)
+			committed = true
 			if m.pending == transaction {
 				m.pending = nil
 			}
@@ -87,6 +90,9 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		},
 		RollbackFunc: func() error {
 			transaction.Rollback()
+			if committed {
+				m.runtime.storeProfiles(previousProfiles)
+			}
 			if m.pending == transaction {
 				m.pending = nil
 			}

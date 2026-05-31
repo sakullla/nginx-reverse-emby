@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +85,10 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	m.mu.Unlock()
 
 	nextListeners := localRelayListeners(req.Next.RelayListeners, m.agentID, m.agentName)
+	previousListeners := localRelayListeners(req.Previous.RelayListeners, m.agentID, m.agentName)
+	if relayEffectiveInputsEqual(previousListeners, nextListeners, req.Previous, req.Next) {
+		return module.TransactionFuncs{}, nil
+	}
 	closeFirst := bindingKeysOverlap(serverBindingKeys(oldRuntime), relayListenerBindingKeys(nextListeners))
 	oldClosed := false
 	if closeFirst && oldRuntime != nil {
@@ -214,6 +219,19 @@ func localRelayListeners(listeners []model.RelayListener, agentID, agentName str
 		}
 	}
 	return cloneRelayListeners(filtered)
+}
+
+func relayEffectiveInputsEqual(previousListeners, nextListeners []model.RelayListener, previous, next model.Snapshot) bool {
+	if !reflect.DeepEqual(previousListeners, nextListeners) {
+		return false
+	}
+	if !reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles) {
+		return false
+	}
+	if len(nextListeners) > 0 && !reflect.DeepEqual(previous.EgressProfiles, next.EgressProfiles) {
+		return false
+	}
+	return true
 }
 
 func validateRelayListeners(ctx context.Context, listeners []model.RelayListener, provider TLSMaterialProvider) error {

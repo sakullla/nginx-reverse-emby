@@ -79,6 +79,7 @@ type Manager struct {
 type Transaction struct {
 	mu                     sync.Mutex
 	manager                *Manager
+	previous               map[runtimeKey]*runtimeEntry
 	candidates             map[runtimeKey]*runtimeEntry
 	newRuntimes            []RuntimeHandle
 	closeFirstReplacements []runtimeReplacement
@@ -260,6 +261,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 	defer m.mu.Unlock()
 
 	candidates := make(map[runtimeKey]*runtimeEntry, len(profiles))
+	previous := cloneRuntimeEntries(m.runtimes)
 	var newRuntimes []RuntimeHandle
 	var closeFirstReplacements []runtimeReplacement
 
@@ -365,6 +367,7 @@ func (m *Manager) Prepare(ctx context.Context, profiles []model.WireGuardProfile
 
 	return &Transaction{
 		manager:                m,
+		previous:               previous,
 		candidates:             candidates,
 		newRuntimes:            newRuntimes,
 		closeFirstReplacements: closeFirstReplacements,
@@ -433,18 +436,58 @@ func (t *Transaction) Rollback() {
 		return
 	}
 	t.mu.Lock()
-	if t.committed || t.rolledBack {
+	if t.rolledBack {
 		t.mu.Unlock()
 		return
 	}
+	committed := t.committed
 	t.rolledBack = true
+	previous := cloneRuntimeEntries(t.previous)
+	candidates := cloneRuntimeEntries(t.candidates)
 	newRuntimes := append([]RuntimeHandle(nil), t.newRuntimes...)
 	closeFirstReplacements := append([]runtimeReplacement(nil), t.closeFirstReplacements...)
 	manager := t.manager
 	t.mu.Unlock()
 
+	if committed {
+		if manager != nil {
+			manager.mu.Lock()
+			defer manager.mu.Unlock()
+			for _, current := range manager.runtimes {
+				_ = current.runtime.Close()
+			}
+			restored := make(map[runtimeKey]*runtimeEntry, len(previous))
+			for key, entry := range previous {
+				runtime, err := manager.factory(context.Background(), entry.config)
+				if err != nil {
+					continue
+				}
+				restored[key] = &runtimeEntry{
+					fingerprint: entry.fingerprint,
+					config:      cloneConfig(entry.config),
+					runtime:     runtime,
+				}
+			}
+			manager.runtimes = restored
+		}
+		return
+	}
+
 	for _, rt := range newRuntimes {
 		_ = rt.Close()
+	}
+	for _, candidate := range candidates {
+		usedByCloseFirst := false
+		for _, replacement := range closeFirstReplacements {
+			if replacement.runtime == candidate.runtime {
+				usedByCloseFirst = true
+				break
+			}
+		}
+		if usedByCloseFirst {
+			continue
+		}
+		_ = candidate.runtime.Close()
 	}
 	if manager != nil {
 		manager.mu.Lock()
