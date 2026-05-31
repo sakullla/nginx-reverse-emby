@@ -42,23 +42,33 @@
         <!-- 前端地址 -->
         <div class="form-group form-group--block">
           <label for="frontend-url" class="form-label form-label--required">前端访问地址</label>
-          <div class="input-wrapper">
-            <span class="input-wrapper__icon">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="2" y1="12" x2="22" y2="12"/>
-                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-              </svg>
-            </span>
-            <input
-              id="frontend-url"
-              v-model="form.frontend_url"
-              type="text"
-              class="input"
-              :class="{ 'input--error': errors.frontend_url }"
-              placeholder="例如：https://emby.yourdomain.com"
-              @input="handleFrontendUrlInput"
+          <div class="protocol-input-group">
+            <select
+              v-model="frontendProtocol"
+              class="input input--protocol"
             >
+              <option value="https://">https://</option>
+              <option value="http://">http://</option>
+            </select>
+            <div class="input-wrapper protocol-input-group__host">
+              <span class="input-wrapper__icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="2" y1="12" x2="22" y2="12"/>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                </svg>
+              </span>
+              <input
+                id="frontend-url"
+                :value="getUrlHost(form.frontend_url)"
+                type="text"
+                class="input"
+                :class="{ 'input--error': errors.frontend_url }"
+                placeholder="例如：emby.yourdomain.com"
+                @input="handleFrontendHostInput($event.target.value)"
+                @paste="handleFrontendPaste"
+              >
+            </div>
           </div>
           <p v-if="errors.frontend_url" class="form-error">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -68,34 +78,6 @@
             </svg>
             {{ errors.frontend_url }}
           </p>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">负载均衡策略</label>
-          <div class="select-wrapper">
-            <select v-model="form.load_balancing.strategy" class="input">
-              <option value="adaptive">自适应 (Adaptive)</option>
-              <option value="round_robin">轮询 (Round Robin)</option>
-              <option value="random">随机 (Random)</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">出口 Profile</label>
-          <div class="select-wrapper">
-            <select
-              v-model.number="form.egress_profile_id"
-              name="egress-profile"
-              class="input"
-              @change="errors.submit = ''"
-            >
-              <option :value="0">Direct</option>
-              <option v-for="profile in enabledEgressProfiles" :key="profile.id" :value="Number(profile.id)">
-                {{ profile.name || profile.id }} ({{ profile.type }})
-              </option>
-            </select>
-          </div>
         </div>
 
         <div class="form-group form-group--block">
@@ -114,13 +96,13 @@
                 'backend-item--dragging': dragState.from === index,
                 'backend-item--drag-over': dragState.to === index && dragState.from !== index
               }"
-              draggable="true"
+              :draggable="form.backends.length > 1"
               @dragstart="onDragStart(index)"
               @dragover.prevent="onDragOver(index)"
               @drop="onDrop(index)"
               @dragend="onDragEnd"
             >
-              <div class="backend-drag-handle" title="拖动排序">
+              <div v-if="form.backends.length > 1" class="backend-drag-handle" title="拖动排序">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="9" cy="5" r="1"/>
                   <circle cx="9" cy="12" r="1"/>
@@ -130,24 +112,35 @@
                   <circle cx="15" cy="19" r="1"/>
                 </svg>
               </div>
-              <div class="input-wrapper backend-item__input">
-                <span class="input-wrapper__icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-                    <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-                    <line x1="6" y1="6" x2="6.01" y2="6"/>
-                    <line x1="6" y1="18" x2="6.01" y2="18"/>
-                  </svg>
-                </span>
-                <input
-                  :id="index === 0 ? 'backend-url' : undefined"
-                  v-model="backend.url"
-                  type="text"
-                  class="input"
-                  :class="{ 'input--error': errors.backend }"
-                  placeholder="例如：http://192.168.1.100:8096"
-                  @input="handleBackendUrlInput"
+              <div class="protocol-input-group backend-item__input">
+                <select
+                  :value="backend._protocol"
+                  class="input input--protocol"
+                  @change="handleBackendProtocolChange(backend, $event.target.value)"
                 >
+                  <option value="https://">https://</option>
+                  <option value="http://">http://</option>
+                </select>
+                <div class="input-wrapper protocol-input-group__host">
+                  <span class="input-wrapper__icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+                      <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+                      <line x1="6" y1="6" x2="6.01" y2="6"/>
+                      <line x1="6" y1="18" x2="6.01" y2="18"/>
+                    </svg>
+                  </span>
+                  <input
+                    :id="index === 0 ? 'backend-url' : undefined"
+                    :value="getUrlHost(backend.url)"
+                    type="text"
+                    class="input"
+                    :class="{ 'input--error': errors.backend }"
+                    placeholder="例如：192.168.1.100:8096"
+                    @input="handleBackendHostInput(index, $event.target.value)"
+                    @paste="handleBackendPaste(index, $event)"
+                  >
+                </div>
               </div>
               <button
                 v-if="form.backends.length > 1"
@@ -260,7 +253,7 @@
         <div class="section-header">
           <div>
             <h3 class="section-title">代理行为</h3>
-            <p class="section-description">控制代理过程中的重定向和客户端 IP 透传行为</p>
+            <p class="section-description">控制代理过程中的出口路径、负载均衡、重定向和客户端 IP 透传行为</p>
           </div>
         </div>
 
@@ -300,6 +293,36 @@
             <line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
           <span>当前全局配置已禁用透传客户端 IP，此开关仅展示规则保存值，不会生效</span>
+        </div>
+
+        <div class="behavior-item">
+          <label class="behavior-item__label">出口 Profile</label>
+          <div class="select-wrapper">
+            <select
+              v-model.number="form.egress_profile_id"
+              name="egress-profile"
+              class="input"
+              @change="errors.submit = ''"
+            >
+              <option :value="0">Direct</option>
+              <option v-for="profile in enabledEgressProfiles" :key="profile.id" :value="Number(profile.id)">
+                {{ profile.name || profile.id }} ({{ profile.type }})
+              </option>
+            </select>
+          </div>
+          <p class="behavior-item__help">出口 Profile 决定 Agent 访问后端服务器时走直连、代理或 WireGuard，不影响用户访问前端地址</p>
+        </div>
+
+        <div class="behavior-item">
+          <label class="behavior-item__label">负载均衡策略</label>
+          <div class="select-wrapper">
+            <select v-model="form.load_balancing.strategy" class="input">
+              <option value="adaptive">自适应 (Adaptive)</option>
+              <option value="round_robin">轮询 (Round Robin)</option>
+              <option value="random">随机 (Random)</option>
+            </select>
+          </div>
+          <p class="behavior-item__help">自适应根据后端响应时间动态分配流量，轮询按顺序循环分发，随机则均匀随机选择</p>
         </div>
       </div>
 
@@ -660,6 +683,7 @@ const errors = ref({
   submit: ''
 })
 const dragState = ref({ from: -1, to: -1 })
+const frontendProtocol = ref('https://')
 
 function onDragStart(index) {
   dragState.value = { from: index, to: index }
@@ -765,9 +789,16 @@ watch(
     errors.value.wireguard_profile_id = ''
     errors.value.submit = ''
     activeTab.value = 'basic'
+    const parsed = parseUrl(form.value.frontend_url)
+    frontendProtocol.value = parsed.protocol
   },
   { immediate: true }
 )
+
+watch(frontendProtocol, (protocol) => {
+  form.value.frontend_url = buildUrl(protocol, getUrlHost(form.value.frontend_url))
+  updateAutoTags()
+})
 
 watch(
   () => form.value.wireguard_entry_enabled,
@@ -831,9 +862,13 @@ function selectFirstEnabledWireGuardProfile() {
 }
 
 function createBackend(data = {}) {
+  const url = String(data?.url || '').trim()
+  const parsed = parseUrl(url)
+  const hasProtocol = /^https?:\/\//i.test(url)
   return {
     id: `http-backend-${Date.now()}-${backendIdCounter++}`,
-    url: String(data?.url || '').trim()
+    url,
+    _protocol: hasProtocol ? parsed.protocol : 'https://'
   }
 }
 
@@ -887,15 +922,103 @@ function normalizeCustomHeaders(value) {
   }))
 }
 
-function handleFrontendUrlInput() {
+function handleFrontendHostInput(host) {
+  const h = String(host || '').trim()
+  if (!h) {
+    form.value.frontend_url = ''
+  } else if (/^https?:\/\/.+/i.test(h)) {
+    const parsed = parseUrl(h)
+    frontendProtocol.value = parsed.protocol
+    form.value.frontend_url = h
+  } else {
+    form.value.frontend_url = buildUrl(frontendProtocol.value, h)
+  }
   errors.value.frontend_url = ''
   errors.value.submit = ''
   updateAutoTags()
 }
 
-function handleBackendUrlInput() {
+function handleBackendHostInput(index, host) {
+  const backend = form.value.backends[index]
+  const h = String(host || '').trim()
+  if (!h) {
+    backend.url = ''
+  } else if (/^https?:\/\/.+/i.test(h)) {
+    const parsed = parseUrl(h)
+    backend._protocol = parsed.protocol
+    backend.url = h
+  } else {
+    backend.url = buildUrl(backend._protocol, h)
+  }
   errors.value.backend = ''
   errors.value.submit = ''
+}
+
+function handleBackendProtocolChange(backend, protocol) {
+  backend._protocol = protocol
+  backend.url = buildUrl(protocol, getUrlHost(backend.url))
+}
+
+function handleFrontendPaste(event) {
+  const pasted = (event.clipboardData || window.clipboardData).getData('text').trim()
+  const parsed = parseUrl(pasted)
+  if (parsed.protocol !== 'https://' || pasted.startsWith('https://')) {
+    event.preventDefault()
+    frontendProtocol.value = parsed.protocol
+    form.value.frontend_url = pasted
+    errors.value.frontend_url = ''
+    errors.value.submit = ''
+    updateAutoTags()
+  }
+}
+
+function handleBackendPaste(index, event) {
+  const pasted = (event.clipboardData || window.clipboardData).getData('text').trim()
+  const parsed = parseUrl(pasted)
+  if (parsed.protocol !== 'https://' || pasted.startsWith('https://')) {
+    event.preventDefault()
+    const backend = form.value.backends[index]
+    backend._protocol = parsed.protocol
+    backend.url = pasted
+    errors.value.backend = ''
+    errors.value.submit = ''
+  }
+}
+
+// URL 工具函数
+function parseUrl(url, defaultProtocol = 'https://') {
+  const s = String(url || '').trim()
+  const lower = s.toLowerCase()
+  if (lower.startsWith('https://')) {
+    return { protocol: 'https://', host: s.slice(8) }
+  }
+  if (lower.startsWith('http://')) {
+    return { protocol: 'http://', host: s.slice(7) }
+  }
+  return { protocol: defaultProtocol, host: s }
+}
+
+function getUrlProtocol(url, defaultProtocol = 'https://') {
+  return parseUrl(url, defaultProtocol).protocol
+}
+
+function getUrlHost(url) {
+  return parseUrl(url).host
+}
+
+function setUrlProtocol(url, protocol, defaultProtocol = 'https://') {
+  const host = getUrlHost(url)
+  return buildUrl(protocol, host)
+}
+
+function setUrlHost(url, host, defaultProtocol = 'https://') {
+  const protocol = getUrlProtocol(url, defaultProtocol)
+  return buildUrl(protocol, host)
+}
+
+function buildUrl(protocol, host) {
+  const h = String(host || '').trim()
+  return h ? protocol + h : ''
 }
 
 function addBackend() {
@@ -906,7 +1029,8 @@ function removeBackend(index) {
   if (form.value.backends.length > 1) {
     form.value.backends.splice(index, 1)
   }
-  handleBackendUrlInput()
+  errors.value.backend = ''
+  errors.value.submit = ''
 }
 
 function addTag() {
@@ -1340,6 +1464,30 @@ async function handleSubmit() {
   gap: var(--space-2);
 }
 
+/* 代理行为统一卡片条目 */
+.behavior-item {
+  padding: 10px var(--space-3);
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-default);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.behavior-item__label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+}
+
+.behavior-item__help {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
 .form-tab-panel .toggle--card {
   padding: 10px var(--space-3);
   background: var(--color-bg-surface);
@@ -1450,6 +1598,28 @@ async function handleSubmit() {
 
 .input-wrapper .input {
   padding-left: var(--space-10);
+}
+
+/* 协议前缀 + 地址输入组合 */
+.protocol-input-group {
+  display: flex;
+  gap: var(--space-2);
+  align-items: stretch;
+}
+
+.input--protocol {
+  width: auto;
+  min-width: 86px;
+  flex-shrink: 0;
+  padding-left: var(--space-2);
+  padding-right: var(--space-2);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.protocol-input-group__host {
+  flex: 1;
+  min-width: 0;
 }
 
 .backends-header {
@@ -2106,6 +2276,15 @@ async function handleSubmit() {
   .headers-table__cell .input {
     background: var(--color-bg-subtle);
   }
+
+  .protocol-input-group {
+    gap: var(--space-1);
+  }
+
+  .input--protocol {
+    min-width: 76px;
+    font-size: 12px;
+  }
 }
 
 /* iPhone 优化 */
@@ -2188,6 +2367,17 @@ async function handleSubmit() {
   .btn--full {
     padding: var(--space-3);
     font-size: var(--text-sm);
+  }
+
+  .protocol-input-group {
+    gap: var(--space-1);
+  }
+
+  .input--protocol {
+    min-width: 72px;
+    font-size: 12px;
+    padding-left: 6px;
+    padding-right: 6px;
   }
 }
 
