@@ -58,6 +58,48 @@ func TestRegistryOrdersModulesByRequiredProviders(t *testing.T) {
 	}
 }
 
+func TestRegistryStopsModulesInReverseDependencyOrder(t *testing.T) {
+	registry := module.NewRegistry()
+	events := []string{}
+	mustRegister(t, registry, &recordingModule{
+		name:     "http",
+		requires: []module.ProviderRef{module.ProviderTLSMaterial},
+		apply: func(context.Context, module.ApplyRequest) error {
+			events = append(events, "apply:http")
+			return nil
+		},
+		stop: func(context.Context) error {
+			events = append(events, "stop:http")
+			return nil
+		},
+	})
+	mustRegister(t, registry, &recordingModule{
+		name:     "certs",
+		provides: []module.ProviderRef{module.ProviderTLSMaterial},
+		register: func(reg module.ProviderRegistry) error {
+			return reg.Provide(module.ProviderTLSMaterial, fakeTLSMaterial{})
+		},
+		apply: func(context.Context, module.ApplyRequest) error {
+			events = append(events, "apply:certs")
+			return nil
+		},
+		stop: func(context.Context) error {
+			events = append(events, "stop:certs")
+			return nil
+		},
+	})
+
+	if err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if err := registry.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll() error = %v", err)
+	}
+	if got, want := strings.Join(events, ","), "apply:certs,apply:http,stop:http,stop:certs"; got != want {
+		t.Fatalf("events = %s, want %s", got, want)
+	}
+}
+
 func TestRegistryRejectsMissingRequiredProvider(t *testing.T) {
 	registry := module.NewRegistry()
 	mustRegister(t, registry, &recordingModule{
@@ -267,6 +309,7 @@ type recordingModule struct {
 	optional []module.ProviderRef
 	register func(module.ProviderRegistry) error
 	apply    func(context.Context, module.ApplyRequest) error
+	stop     func(context.Context) error
 }
 
 func (m *recordingModule) Name() string { return m.name }
@@ -298,7 +341,12 @@ func (m *recordingModule) Apply(ctx context.Context, req module.ApplyRequest) er
 	return m.apply(ctx, req)
 }
 
-func (m *recordingModule) Stop(context.Context) error { return nil }
+func (m *recordingModule) Stop(ctx context.Context) error {
+	if m.stop == nil {
+		return nil
+	}
+	return m.stop(ctx)
+}
 
 type transactionalRecordingModule struct {
 	recordingModule

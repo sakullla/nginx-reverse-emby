@@ -187,6 +187,7 @@ func (r *Registry) StartAll(ctx context.Context, snapshot model.Snapshot) error 
 	if r == nil {
 		return nil
 	}
+	// Migration shim for legacy modules until callers move to Apply.
 	ordered, err := r.OrderedModules()
 	if err != nil {
 		return err
@@ -231,9 +232,13 @@ func (r *Registry) StopAll(ctx context.Context) error {
 	if r == nil {
 		return nil
 	}
+	ordered, err := r.OrderedModules()
+	if err != nil {
+		return err
+	}
 	var firstErr error
-	for i := len(r.modules) - 1; i >= 0; i-- {
-		module := r.modules[i]
+	for i := len(ordered) - 1; i >= 0; i-- {
+		module := ordered[i]
 		if err := module.Stop(ctx); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("module %s stop: %w", strings.TrimSpace(module.Name()), err)
 		}
