@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -299,9 +301,12 @@ func TestDiagnoseSnapshotUsesDiagnosticModuleProbers(t *testing.T) {
 	}))
 	defer backend.Close()
 
+	diagnosticModule := modulediagnostics.NewModule()
+	registry := agentmodule.NewRegistry()
+	mustRegisterAppModule(t, registry, diagnosticModule)
 	app := &App{
-		httpModule: newHTTPModuleFromConfig(Config{}),
-		l4Module:   newL4ModuleFromConfig(Config{}),
+		diagnosticModule: diagnosticModule,
+		moduleRegistry:   registry,
 	}
 	snapshot := Snapshot{
 		Rules: []model.HTTPRule{{
@@ -317,6 +322,38 @@ func TestDiagnoseSnapshotUsesDiagnosticModuleProbers(t *testing.T) {
 	}
 	if got["kind"] != "http" || got["rule_id"] != 88 {
 		t.Fatalf("DiagnoseSnapshot() = %+v, want http report for rule 88", got)
+	}
+}
+
+func TestDiagnoseSnapshotUsesRegistryDiagnosticSources(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	cache.MarkFailure(backend.Listener.Addr().String())
+
+	registry := agentmodule.NewRegistry()
+	mustRegisterAppModule(t, registry, appProviderModule{
+		name:     "http-diagnostics-source",
+		provides: agentmodule.ProviderDiagnosticsHTTPSource,
+		provider: appDiagnosticSource{cache: cache},
+	})
+	diagnosticModule := modulediagnostics.NewModule()
+	mustRegisterAppModule(t, registry, diagnosticModule)
+	app := &App{diagnosticModule: diagnosticModule, moduleRegistry: registry}
+	snapshot := Snapshot{
+		Rules: []model.HTTPRule{{
+			ID:          89,
+			FrontendURL: "http://frontend.example.test",
+			Backends:    []model.HTTPBackend{{URL: backend.URL}},
+		}},
+	}
+
+	_, err := app.DiagnoseSnapshot(context.Background(), snapshot, agenttask.TaskTypeDiagnoseHTTPRule, 89)
+	if err == nil || !strings.Contains(err.Error(), "no healthy backend candidates") {
+		t.Fatalf("DiagnoseSnapshot() error = %v, want registry cache source backoff to remove candidates", err)
 	}
 }
 
@@ -362,6 +399,45 @@ func (m appCapabilityModule) Health(context.Context) agentmodule.Health {
 func (m appCapabilityModule) Start(context.Context, model.Snapshot) error { return nil }
 
 func (m appCapabilityModule) Stop(context.Context) error { return nil }
+
+type appProviderModule struct {
+	name     string
+	provides agentmodule.ProviderRef
+	provider any
+}
+
+func (m appProviderModule) Name() string { return m.name }
+
+func (m appProviderModule) Descriptor() agentmodule.ModuleDescriptor {
+	return agentmodule.ModuleDescriptor{Name: m.name, Provides: []agentmodule.ProviderRef{m.provides}}
+}
+
+func (m appProviderModule) RegisterProviders(reg agentmodule.ProviderRegistry) error {
+	return reg.Provide(m.provides, m.provider)
+}
+
+func (m appProviderModule) Capabilities(agentmodule.SnapshotView) []agentmodule.Capability {
+	return nil
+}
+
+func (m appProviderModule) Apply(context.Context, agentmodule.ApplyRequest) error { return nil }
+
+func (m appProviderModule) Stop(context.Context) error { return nil }
+
+type appDiagnosticSource struct {
+	cache *backends.Cache
+}
+
+func (s appDiagnosticSource) Cache() *backends.Cache {
+	return s.cache
+}
+
+func mustRegisterAppModule(t *testing.T, registry *agentmodule.Registry, candidate any) {
+	t.Helper()
+	if err := registry.Register(candidate); err != nil {
+		t.Fatalf("Register(%T) error = %v", candidate, err)
+	}
+}
 
 func TestDiagnoseSnapshotAppliesSnapshotCertificatesBeforeTaskHandling(t *testing.T) {
 	mem := store.NewInMemory()

@@ -143,17 +143,8 @@ func (r *Registry) Apply(ctx context.Context, previous, next model.Snapshot) err
 	if r == nil {
 		return nil
 	}
-	ordered, err := r.OrderedModules()
+	ordered, providers, err := r.registeredProviderSet()
 	if err != nil {
-		return err
-	}
-	providers := newProviderSet()
-	for _, module := range ordered {
-		if err := module.RegisterProviders(providers); err != nil {
-			return fmt.Errorf("module %s register providers: %w", strings.TrimSpace(module.Name()), err)
-		}
-	}
-	if err := validateRequiredProviders(ordered, providers); err != nil {
 		return err
 	}
 
@@ -208,17 +199,8 @@ func (r *Registry) StartAll(ctx context.Context, snapshot model.Snapshot) error 
 		return nil
 	}
 	// Migration shim for legacy modules until callers move to Apply.
-	ordered, err := r.OrderedModules()
+	ordered, providers, err := r.registeredProviderSet()
 	if err != nil {
-		return err
-	}
-	providers := newProviderSet()
-	for _, module := range ordered {
-		if err := module.RegisterProviders(providers); err != nil {
-			return fmt.Errorf("module %s register providers: %w", strings.TrimSpace(module.Name()), err)
-		}
-	}
-	if err := validateRequiredProviders(ordered, providers); err != nil {
 		return err
 	}
 
@@ -239,6 +221,35 @@ func (r *Registry) StartAll(ctx context.Context, snapshot model.Snapshot) error 
 	}
 	r.providers = providers
 	return nil
+}
+
+func (r *Registry) ProviderResolver() (ProviderResolver, error) {
+	if r == nil {
+		providers := newProviderSet()
+		return providers, nil
+	}
+	_, providers, err := r.registeredProviderSet()
+	if err != nil {
+		return nil, err
+	}
+	return providers, nil
+}
+
+func (r *Registry) registeredProviderSet() ([]Module, providerSet, error) {
+	ordered, err := r.OrderedModules()
+	if err != nil {
+		return nil, providerSet{}, err
+	}
+	providers := newProviderSet()
+	for _, module := range ordered {
+		if err := module.RegisterProviders(providers); err != nil {
+			return nil, providerSet{}, fmt.Errorf("module %s register providers: %w", strings.TrimSpace(module.Name()), err)
+		}
+	}
+	if err := validateRequiredProviders(ordered, providers); err != nil {
+		return nil, providerSet{}, err
+	}
+	return ordered, providers, nil
 }
 
 func (r *Registry) Resolve(ref ProviderRef) (any, bool) {

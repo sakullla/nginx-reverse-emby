@@ -356,13 +356,6 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 	return capabilities
 }
 
-type diagnosticProviderResolver map[agentmodule.ProviderRef]any
-
-func (r diagnosticProviderResolver) Resolve(ref agentmodule.ProviderRef) (any, bool) {
-	provider, ok := r[ref]
-	return provider, ok
-}
-
 func newAppWithDeps(
 	cfg Config,
 	st store.Store,
@@ -440,40 +433,40 @@ func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType 
 	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
 		return nil, err
 	}
-	diagnosticModule := modulediagnostics.NewModule()
-	if err := diagnosticModule.Apply(ctx, agentmodule.ApplyRequest{
-		Next:      snapshot,
-		Providers: a.diagnosticProviderResolver(),
-	}); err != nil {
+	diagnosticModule, err := a.configuredDiagnosticModule(ctx, snapshot)
+	if err != nil {
 		return nil, err
 	}
-	return diagnosticModule.HandleTask(ctx, agenttask.TaskMessage{
+	if diagnosticModule == nil {
+		return nil, errors.New("diagnostic handler is not configured")
+	}
+	return diagnosticModule.HandleSnapshotTask(ctx, snapshot, agenttask.TaskMessage{
 		TaskType:   taskType,
 		RawPayload: map[string]any{"rule_id": ruleID},
 	})
 }
 
-func (a *App) diagnosticProviderResolver() agentmodule.ProviderResolver {
-	providers := diagnosticProviderResolver{}
-	if a == nil {
-		return providers
+func (a *App) configuredDiagnosticModule(ctx context.Context, snapshot Snapshot) (*modulediagnostics.Module, error) {
+	if a == nil || a.diagnosticModule == nil {
+		return nil, nil
 	}
-	if a.httpModule != nil {
-		providers[agentmodule.ProviderDiagnosticsHTTPSource] = a.httpModule
+	if a.diagnosticModule.HTTPProber() != nil && a.diagnosticModule.TCPProber() != nil {
+		return a.diagnosticModule, nil
 	}
-	if a.l4Module != nil {
-		providers[agentmodule.ProviderDiagnosticsL4Source] = a.l4Module
+	if a.moduleRegistry == nil {
+		return a.diagnosticModule, nil
 	}
-	if a.relayModule != nil {
-		providers[agentmodule.ProviderDiagnosticsRelaySource] = a.relayModule
+	providers, err := a.moduleRegistry.ProviderResolver()
+	if err != nil {
+		return nil, err
 	}
-	if a.certApplier != nil {
-		providers[agentmodule.ProviderTLSMaterial] = a.certApplier
-		if _, ok := providers[agentmodule.ProviderDiagnosticsRelaySource]; !ok {
-			providers[agentmodule.ProviderDiagnosticsRelaySource] = a.certApplier
-		}
+	if err := a.diagnosticModule.Apply(ctx, agentmodule.ApplyRequest{
+		Next:      snapshot,
+		Providers: providers,
+	}); err != nil {
+		return nil, err
 	}
-	return providers
+	return a.diagnosticModule, nil
 }
 
 func (a *App) Run(ctx context.Context) error {

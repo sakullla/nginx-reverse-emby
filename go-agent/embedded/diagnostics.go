@@ -34,29 +34,21 @@ func DiagnoseSnapshot(ctx context.Context, dataDir string, snapshot Snapshot, re
 		return nil, err
 	}
 	defer certManager.Close()
-	if err := certManager.Apply(ctx, snapshot.Certificates, snapshot.CertificatePolicies); err != nil {
+
+	registry := agentmodule.NewRegistry()
+	certModule := modulecerts.NewModule(certManager)
+	mod := modulediagnostics.NewModule()
+	if err := registry.Register(certModule); err != nil {
 		return nil, err
 	}
-
-	mod := modulediagnostics.NewModule()
-	if err := mod.Apply(ctx, agentmodule.ApplyRequest{
-		Next: snapshot,
-		Providers: diagnosticProviderResolver{
-			agentmodule.ProviderDiagnosticsRelaySource: certManager,
-			agentmodule.ProviderTLSMaterial:            certManager,
-		},
-	}); err != nil {
+	if err := registry.Register(mod); err != nil {
+		return nil, err
+	}
+	if err := registry.Apply(ctx, Snapshot{}, snapshot); err != nil {
 		return nil, err
 	}
 	return mod.HandleTask(ctx, task.TaskMessage{
 		TaskType:   req.TaskType,
 		RawPayload: map[string]any{"rule_id": req.RuleID},
 	})
-}
-
-type diagnosticProviderResolver map[agentmodule.ProviderRef]any
-
-func (r diagnosticProviderResolver) Resolve(ref agentmodule.ProviderRef) (any, bool) {
-	provider, ok := r[ref]
-	return provider, ok
 }

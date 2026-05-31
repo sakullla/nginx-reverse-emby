@@ -136,6 +136,25 @@ func (m *Module) HandleTask(ctx context.Context, msg task.TaskMessage) (map[stri
 	return handler.HandleTask(ctx, msg)
 }
 
+func (m *Module) HandleSnapshotTask(ctx context.Context, snapshot model.Snapshot, msg task.TaskMessage) (map[string]any, error) {
+	if m == nil {
+		return nil, errors.New("diagnostic handler is not configured")
+	}
+	httpProber := m.HTTPProber()
+	tcpProber := m.TCPProber()
+	if httpProber == nil || tcpProber == nil {
+		return nil, errors.New("diagnostic handler is not configured")
+	}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
+		return nil, err
+	}
+	if err := mem.SaveDesiredSnapshot(snapshot); err != nil {
+		return nil, err
+	}
+	return NewDiagnosticHandler(mem, httpProber, tcpProber).HandleTask(ctx, msg)
+}
+
 type diagnosticsCacheSource interface {
 	Cache() *backends.Cache
 }

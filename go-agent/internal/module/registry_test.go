@@ -300,6 +300,35 @@ func TestRegistryRollsBackPreparedTransactionsWhenCommitFails(t *testing.T) {
 	}
 }
 
+func TestRegistryProviderResolverRegistersProvidersWithoutApplyingModules(t *testing.T) {
+	registry := module.NewRegistry()
+	provider := &fakeTLSMaterial{}
+	applied := false
+	mustRegister(t, registry, &recordingModule{
+		name:     "provider",
+		provides: []module.ProviderRef{module.ProviderTLSMaterial},
+		register: func(reg module.ProviderRegistry) error {
+			return reg.Provide(module.ProviderTLSMaterial, provider)
+		},
+		apply: func(context.Context, module.ApplyRequest) error {
+			applied = true
+			return nil
+		},
+	})
+
+	resolver, err := registry.ProviderResolver()
+	if err != nil {
+		t.Fatalf("ProviderResolver() error = %v", err)
+	}
+	got, ok := resolver.Resolve(module.ProviderTLSMaterial)
+	if !ok || got != provider {
+		t.Fatalf("Resolve(tls.material) = %T/%v, want provider", got, ok)
+	}
+	if applied {
+		t.Fatal("ProviderResolver() applied module runtime")
+	}
+}
+
 type fakeTLSMaterial struct{}
 
 type recordingModule struct {
