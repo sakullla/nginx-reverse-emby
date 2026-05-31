@@ -1,4 +1,4 @@
-package module
+package module_test
 
 import (
 	"context"
@@ -8,191 +8,248 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-type testModule struct {
-	name         string
-	capabilities []Capability
-	health       Health
-	startErr     error
-	stopErr      error
-	starts       int
-	stops        int
-	events       *[]string
-}
-
-func (m *testModule) Name() string { return m.name }
-
-func (m *testModule) Capabilities() []Capability {
-	return append([]Capability(nil), m.capabilities...)
-}
-
-func (m *testModule) Health(context.Context) Health { return m.health }
-
-func (m *testModule) Start(context.Context, model.Snapshot) error {
-	m.starts++
-	if m.events != nil {
-		*m.events = append(*m.events, "start:"+strings.TrimSpace(m.name))
-	}
-	return m.startErr
-}
-
-func (m *testModule) Stop(context.Context) error {
-	m.stops++
-	if m.events != nil {
-		*m.events = append(*m.events, "stop:"+strings.TrimSpace(m.name))
-	}
-	return m.stopErr
-}
-
-func TestRegistryOrdersModulesAndAggregatesCapabilities(t *testing.T) {
-	registry := NewRegistry()
-	if err := registry.Register(&testModule{name: "traffic", capabilities: []Capability{{Name: "traffic_stats"}}}); err != nil {
-		t.Fatalf("Register traffic: %v", err)
-	}
-	if err := registry.Register(&testModule{name: "wireguard", capabilities: []Capability{{Name: "wireguard"}}}); err != nil {
-		t.Fatalf("Register wireguard: %v", err)
-	}
-
-	if got, want := registry.Names(), []string{"traffic", "wireguard"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Names() = %+v, want %+v", got, want)
-	}
-	if got, want := capabilityNames(registry.Capabilities()), []string{"traffic_stats", "wireguard"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Capabilities() = %+v, want %+v", got, want)
-	}
-}
-
-func TestRegistryRejectsNilBlankAndDuplicateNames(t *testing.T) {
-	registry := NewRegistry()
-	if err := registry.Register(nil); !errors.Is(err, ErrInvalidModule) {
+func TestRegistryRejectsInvalidDescriptors(t *testing.T) {
+	registry := module.NewRegistry()
+	if err := registry.Register(nil); !errors.Is(err, module.ErrInvalidModule) {
 		t.Fatalf("nil Register() error = %v, want ErrInvalidModule", err)
 	}
-	if err := registry.Register(&testModule{name: " \t\n "}); !errors.Is(err, ErrInvalidModule) {
+	if err := registry.Register(&recordingModule{name: " \t\n "}); !errors.Is(err, module.ErrInvalidModule) {
 		t.Fatalf("blank Register() error = %v, want ErrInvalidModule", err)
 	}
-	if err := registry.Register(&testModule{name: "wireguard"}); err != nil {
-		t.Fatalf("Register wireguard: %v", err)
+	if err := registry.Register(&recordingModule{name: "certs"}); err != nil {
+		t.Fatalf("Register certs: %v", err)
 	}
-	if err := registry.Register(&testModule{name: " WireGuard "}); !errors.Is(err, ErrDuplicateModule) {
+	if err := registry.Register(&recordingModule{name: " Certs "}); !errors.Is(err, module.ErrDuplicateModule) {
 		t.Fatalf("duplicate Register() error = %v, want ErrDuplicateModule", err)
 	}
 }
 
-func TestRegistryReturnsDefensiveSlices(t *testing.T) {
-	registry := NewRegistry()
-	first := &testModule{name: "certs", capabilities: []Capability{{Name: "cert_install", Metadata: map[string]string{"scope": "local"}}}}
-	second := &testModule{name: "traffic", capabilities: []Capability{{Name: "traffic_stats"}}}
-	if err := registry.Register(first); err != nil {
-		t.Fatalf("Register certs: %v", err)
-	}
-	if err := registry.Register(second); err != nil {
-		t.Fatalf("Register traffic: %v", err)
-	}
+func TestRegistryOrdersModulesByRequiredProviders(t *testing.T) {
+	registry := module.NewRegistry()
+	events := []string{}
+	mustRegister(t, registry, &recordingModule{
+		name:     "http",
+		requires: []module.ProviderRef{module.ProviderTLSMaterial},
+		apply: func(context.Context, module.ApplyRequest) error {
+			events = append(events, "http")
+			return nil
+		},
+	})
+	mustRegister(t, registry, &recordingModule{
+		name:     "certs",
+		provides: []module.ProviderRef{module.ProviderTLSMaterial},
+		register: func(reg module.ProviderRegistry) error {
+			return reg.Provide(module.ProviderTLSMaterial, fakeTLSMaterial{})
+		},
+		apply: func(context.Context, module.ApplyRequest) error {
+			events = append(events, "certs")
+			return nil
+		},
+	})
 
-	modules := registry.Modules()
-	modules[0] = second
-	if got, want := registry.Names(), []string{"certs", "traffic"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Names() after mutating Modules() = %+v, want %+v", got, want)
+	if err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
 	}
-
-	names := registry.Names()
-	names[0] = "changed"
-	if got, want := registry.Names(), []string{"certs", "traffic"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Names() after mutating Names() = %+v, want %+v", got, want)
-	}
-
-	capabilities := registry.Capabilities()
-	capabilities[0].Name = "changed"
-	if got, want := capabilityNames(registry.Capabilities()), []string{"cert_install", "traffic_stats"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Capabilities() after mutating result = %+v, want %+v", got, want)
-	}
-
-	capabilities = registry.Capabilities()
-	capabilities[0].Metadata["scope"] = "changed"
-	got := registry.Capabilities()
-	if got[0].Metadata["scope"] != "local" {
-		t.Fatalf("Capabilities()[0].Metadata after mutating result = %+v, want original metadata", got[0].Metadata)
+	if got, want := strings.Join(events, ","), "certs,http"; got != want {
+		t.Fatalf("apply order = %s, want %s", got, want)
 	}
 }
 
-func TestRegistryStartAllStartsInRegistrationOrderRollsBackAndWrapsErrors(t *testing.T) {
-	var events []string
-	startErr := errors.New("cannot start")
-	first := &testModule{name: "certs", events: &events}
-	second := &testModule{name: " traffic ", startErr: startErr, events: &events}
-	third := &testModule{name: "wireguard", events: &events}
-	registry := NewRegistry()
-	_ = registry.Register(first)
-	_ = registry.Register(second)
-	_ = registry.Register(third)
-
-	err := registry.StartAll(context.Background(), model.Snapshot{Revision: 7})
-	if !errors.Is(err, startErr) {
-		t.Fatalf("StartAll() error = %v, want wrapped startErr", err)
-	}
-	if err == nil || !strings.Contains(err.Error(), "module traffic start") {
-		t.Fatalf("StartAll() error = %v, want module name context", err)
-	}
-	if got, want := events, []string{"start:certs", "start:traffic", "stop:certs"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("start events = %+v, want %+v", got, want)
-	}
-	if third.starts != 0 {
-		t.Fatalf("third starts = %d, want 0 after earlier error", third.starts)
+func TestRegistryRejectsMissingRequiredProvider(t *testing.T) {
+	registry := module.NewRegistry()
+	mustRegister(t, registry, &recordingModule{
+		name:     "http",
+		requires: []module.ProviderRef{module.ProviderTLSMaterial},
+	})
+	err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{})
+	if !errors.Is(err, module.ErrMissingProvider) {
+		t.Fatalf("Apply() error = %v, want ErrMissingProvider", err)
 	}
 }
 
-func TestRegistryStartAllIncludesRollbackErrorWithoutHidingStartError(t *testing.T) {
-	var events []string
-	startErr := errors.New("cannot start")
-	rollbackErr := errors.New("cannot roll back")
-	first := &testModule{name: "certs", stopErr: rollbackErr, events: &events}
-	second := &testModule{name: "traffic", startErr: startErr, events: &events}
-	registry := NewRegistry()
-	_ = registry.Register(first)
-	_ = registry.Register(second)
-
-	err := registry.StartAll(context.Background(), model.Snapshot{})
-	if !errors.Is(err, startErr) {
-		t.Fatalf("StartAll() error = %v, want wrapped startErr", err)
+func TestRegistryResolvesRegisteredProviders(t *testing.T) {
+	registry := module.NewRegistry()
+	provider := fakeTLSMaterial{}
+	mustRegister(t, registry, &recordingModule{
+		name:     "certs",
+		provides: []module.ProviderRef{module.ProviderTLSMaterial},
+		register: func(reg module.ProviderRegistry) error {
+			return reg.Provide(module.ProviderTLSMaterial, provider)
+		},
+	})
+	if err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
 	}
-	if !errors.Is(err, rollbackErr) {
-		t.Fatalf("StartAll() error = %v, want wrapped rollbackErr", err)
+	got, ok := registry.Resolve(module.ProviderTLSMaterial)
+	if !ok {
+		t.Fatal("Resolve() ok = false, want true")
 	}
-	if err == nil || !strings.Contains(err.Error(), "module traffic start") || !strings.Contains(err.Error(), "rollback module certs stop") {
-		t.Fatalf("StartAll() error = %v, want start and rollback context", err)
-	}
-	if got, want := events, []string{"start:certs", "start:traffic", "stop:certs"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("events = %+v, want %+v", got, want)
+	if !reflect.DeepEqual(got, provider) {
+		t.Fatalf("Resolve() = %#v, want %#v", got, provider)
 	}
 }
 
-func TestRegistryStopAllStopsInReverseOrderAndWrapsErrors(t *testing.T) {
-	var events []string
-	stopErr := errors.New("cannot stop")
-	first := &testModule{name: "certs", events: &events}
-	second := &testModule{name: " traffic ", stopErr: stopErr, events: &events}
-	third := &testModule{name: "wireguard", events: &events}
-	registry := NewRegistry()
-	_ = registry.Register(first)
-	_ = registry.Register(second)
-	_ = registry.Register(third)
+func TestRegistryRejectsDuplicateProvider(t *testing.T) {
+	registry := module.NewRegistry()
+	mustRegister(t, registry, &recordingModule{
+		name:     "certs-a",
+		provides: []module.ProviderRef{module.ProviderTLSMaterial},
+		register: func(reg module.ProviderRegistry) error {
+			return reg.Provide(module.ProviderTLSMaterial, fakeTLSMaterial{})
+		},
+	})
+	mustRegister(t, registry, &recordingModule{
+		name:     "certs-b",
+		provides: []module.ProviderRef{module.ProviderTLSMaterial},
+		register: func(reg module.ProviderRegistry) error {
+			return reg.Provide(module.ProviderTLSMaterial, fakeTLSMaterial{})
+		},
+	})
 
-	err := registry.StopAll(context.Background())
-	if !errors.Is(err, stopErr) {
-		t.Fatalf("StopAll() error = %v, want wrapped stopErr", err)
-	}
-	if err == nil || !strings.Contains(err.Error(), "module traffic stop") {
-		t.Fatalf("StopAll() error = %v, want module name context", err)
-	}
-	if got, want := events, []string{"stop:wireguard", "stop:traffic", "stop:certs"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("stop events = %+v, want %+v", got, want)
+	err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{})
+	if !errors.Is(err, module.ErrDuplicateProvider) {
+		t.Fatalf("Apply() error = %v, want ErrDuplicateProvider", err)
 	}
 }
 
-func capabilityNames(capabilities []Capability) []string {
-	names := make([]string, 0, len(capabilities))
-	for _, capability := range capabilities {
-		names = append(names, capability.Name)
+func TestRegistryRejectsProviderDependencyCycle(t *testing.T) {
+	registry := module.NewRegistry()
+	mustRegister(t, registry, &recordingModule{
+		name:     "first",
+		provides: []module.ProviderRef{"provider.first"},
+		requires: []module.ProviderRef{"provider.second"},
+	})
+	mustRegister(t, registry, &recordingModule{
+		name:     "second",
+		provides: []module.ProviderRef{"provider.second"},
+		requires: []module.ProviderRef{"provider.first"},
+	})
+
+	err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{})
+	if !errors.Is(err, module.ErrProviderCycle) {
+		t.Fatalf("Apply() error = %v, want ErrProviderCycle", err)
 	}
-	return names
+}
+
+func TestRegistryRollsBackPreparedTransactionsInReverseOrder(t *testing.T) {
+	registry := module.NewRegistry()
+	events := []string{}
+	mustRegister(t, registry, &transactionalRecordingModule{
+		recordingModule: recordingModule{name: "first"},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			events = append(events, "prepare:first")
+			return module.TransactionFuncs{
+				CommitFunc:   func() error { events = append(events, "commit:first"); return nil },
+				RollbackFunc: func() error { events = append(events, "rollback:first"); return nil },
+			}, nil
+		},
+	})
+	mustRegister(t, registry, &transactionalRecordingModule{
+		recordingModule: recordingModule{name: "second"},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			events = append(events, "prepare:second")
+			return nil, errors.New("boom")
+		},
+	})
+
+	if err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{}); err == nil {
+		t.Fatal("Apply() error = nil, want failure")
+	}
+	if got, want := strings.Join(events, ","), "prepare:first,prepare:second,rollback:first"; got != want {
+		t.Fatalf("events = %s, want %s", got, want)
+	}
+}
+
+func TestRegistryCommitsPreparedTransactionsInOrder(t *testing.T) {
+	registry := module.NewRegistry()
+	events := []string{}
+	mustRegister(t, registry, &transactionalRecordingModule{
+		recordingModule: recordingModule{name: "first"},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			events = append(events, "prepare:first")
+			return module.TransactionFuncs{
+				CommitFunc: func() error { events = append(events, "commit:first"); return nil },
+			}, nil
+		},
+	})
+	mustRegister(t, registry, &transactionalRecordingModule{
+		recordingModule: recordingModule{name: "second"},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			events = append(events, "prepare:second")
+			return module.TransactionFuncs{
+				CommitFunc: func() error { events = append(events, "commit:second"); return nil },
+			}, nil
+		},
+	})
+
+	if err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if got, want := strings.Join(events, ","), "prepare:first,prepare:second,commit:first,commit:second"; got != want {
+		t.Fatalf("events = %s, want %s", got, want)
+	}
+}
+
+type fakeTLSMaterial struct{}
+
+type recordingModule struct {
+	name     string
+	provides []module.ProviderRef
+	requires []module.ProviderRef
+	optional []module.ProviderRef
+	register func(module.ProviderRegistry) error
+	apply    func(context.Context, module.ApplyRequest) error
+}
+
+func (m *recordingModule) Name() string { return m.name }
+
+func (m *recordingModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{
+		Name:     m.name,
+		Provides: append([]module.ProviderRef(nil), m.provides...),
+		Requires: append([]module.ProviderRef(nil), m.requires...),
+		Optional: append([]module.ProviderRef(nil), m.optional...),
+	}
+}
+
+func (m *recordingModule) RegisterProviders(reg module.ProviderRegistry) error {
+	if m.register == nil {
+		return nil
+	}
+	return m.register(reg)
+}
+
+func (m *recordingModule) Capabilities(module.SnapshotView) []module.Capability {
+	return nil
+}
+
+func (m *recordingModule) Apply(ctx context.Context, req module.ApplyRequest) error {
+	if m.apply == nil {
+		return nil
+	}
+	return m.apply(ctx, req)
+}
+
+func (m *recordingModule) Stop(context.Context) error { return nil }
+
+type transactionalRecordingModule struct {
+	recordingModule
+	prepare func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error)
+}
+
+func (m *transactionalRecordingModule) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
+	if m.prepare == nil {
+		return nil, nil
+	}
+	return m.prepare(ctx, req)
+}
+
+func mustRegister(t *testing.T, registry *module.Registry, mod module.Module) {
+	t.Helper()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("Register(%s): %v", mod.Name(), err)
+	}
 }
