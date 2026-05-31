@@ -39,7 +39,6 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 	return module.ModuleDescriptor{
 		Name:     m.Name(),
 		Provides: []module.ProviderRef{module.ProviderFinalHopDialer, module.ProviderEgressResolver},
-		Optional: []module.ProviderRef{module.ProviderOverlayRuntime},
 	}
 }
 
@@ -63,25 +62,80 @@ func (m *Module) Start(context.Context, model.Snapshot) error {
 }
 
 func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
+	transaction, err := m.Prepare(ctx, req)
+	if err != nil {
+		return err
+	}
+	if transaction == nil {
+		return nil
+	}
+	return transaction.Commit()
+}
+
+func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
+	if m == nil {
+		return nil, nil
+	}
 	profiles := CloneProfiles(req.Next.EgressProfiles)
-	if m != nil && m.wireGuardRuntime != nil {
-		if err := m.wireGuardRuntime.Apply(ctx, profiles); err != nil {
-			return err
+	runtimeProfiles := referencedEgressProfiles(req.Next)
+
+	var wireGuardTransaction *modulewireguard.Transaction
+	if m.wireGuardRuntime != nil {
+		transaction, _, err := m.wireGuardRuntime.Prepare(ctx, runtimeProfiles)
+		if err != nil {
+			return nil, err
 		}
+		wireGuardTransaction = transaction
 	}
 
 	var overlayRuntime module.OverlayRuntime
-	if m != nil && m.wireGuardRuntime != nil {
+	if m.wireGuardRuntime != nil {
 		overlayRuntime = m.wireGuardRuntime.Provider()
 	}
-	if m == nil {
+	if wireGuardTransaction != nil {
+		overlayRuntime = egressOverlayRuntime{transaction: wireGuardTransaction}
+	}
+
+	return &egressTransaction{
+		module:               m,
+		wireGuardTransaction: wireGuardTransaction,
+		runtimeProfiles:      runtimeProfiles,
+		profiles:             profiles,
+		resolver:             NewResolver(profiles),
+		overlayRuntime:       overlayRuntime,
+	}, nil
+}
+
+type egressTransaction struct {
+	module               *Module
+	wireGuardTransaction *modulewireguard.Transaction
+	runtimeProfiles      []model.EgressProfile
+	profiles             []model.EgressProfile
+	resolver             Resolver
+	overlayRuntime       module.OverlayRuntime
+}
+
+func (t *egressTransaction) Commit() error {
+	if t == nil || t.module == nil {
 		return nil
 	}
-	m.mu.Lock()
-	m.profiles = profiles
-	m.resolver = NewResolver(profiles)
-	m.overlayRuntime = overlayRuntime
-	m.mu.Unlock()
+	if t.wireGuardTransaction != nil && t.module.wireGuardRuntime != nil {
+		t.module.wireGuardRuntime.Commit(t.wireGuardTransaction, t.runtimeProfiles)
+		t.overlayRuntime = t.module.wireGuardRuntime.Provider()
+	}
+	t.module.mu.Lock()
+	t.module.profiles = t.profiles
+	t.module.resolver = t.resolver
+	t.module.overlayRuntime = t.overlayRuntime
+	t.module.mu.Unlock()
+	return nil
+}
+
+func (t *egressTransaction) Rollback() error {
+	if t == nil || t.wireGuardTransaction == nil {
+		return nil
+	}
+	t.wireGuardTransaction.Rollback()
 	return nil
 }
 
@@ -129,7 +183,7 @@ func (d moduleFinalHopDialer) DialTCP(ctx context.Context, target string, id *in
 	return d.module.DialTCP(ctx, target, id)
 }
 
-func (d moduleFinalHopDialer) OpenUDP(ctx context.Context, target string, id *int) (any, error) {
+func (d moduleFinalHopDialer) OpenUDP(ctx context.Context, target string, id *int) (module.UDPPeer, error) {
 	return d.module.OpenUDP(ctx, target, id)
 }
 
@@ -194,6 +248,37 @@ func (c udpPacketConn) ReadPacket() ([]byte, error) {
 
 func (c udpPacketConn) WritePacket(payload []byte) error {
 	return c.conn.WritePacket(c.target, payload)
+}
+
+func referencedEgressProfiles(snapshot model.Snapshot) []model.EgressProfile {
+	references := referencedEgressProfileIDs(snapshot)
+	if len(references) == 0 {
+		return nil
+	}
+	out := make([]model.EgressProfile, 0, len(references))
+	for _, profile := range snapshot.EgressProfiles {
+		if _, ok := references[profile.ID]; ok {
+			out = append(out, profile)
+		}
+	}
+	return out
+}
+
+func referencedEgressProfileIDs(snapshot model.Snapshot) map[int]struct{} {
+	references := make(map[int]struct{})
+	add := func(id *int) {
+		if id == nil || *id <= 0 {
+			return
+		}
+		references[*id] = struct{}{}
+	}
+	for _, rule := range snapshot.Rules {
+		add(rule.EgressProfileID)
+	}
+	for _, rule := range snapshot.L4Rules {
+		add(rule.EgressProfileID)
+	}
+	return references
 }
 
 type WireGuardRuntime struct {

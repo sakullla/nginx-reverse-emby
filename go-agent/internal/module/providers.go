@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"io"
 	"net"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -57,9 +58,17 @@ type TransparentListener interface {
 
 type FinalHopDialer interface {
 	DialTCP(ctx context.Context, target string, profileID *int) (net.Conn, error)
-	OpenUDP(ctx context.Context, target string, profileID *int) (any, error)
+	OpenUDP(ctx context.Context, target string, profileID *int) (UDPPeer, error)
 }
 
 type EgressResolver interface {
 	Resolve(id *int, network string) (model.EgressProfile, bool, error)
+}
+
+type UDPPeer interface {
+	Close() error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+	ReadPacket() ([]byte, error)
+	WritePacket([]byte) error
 }

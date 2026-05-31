@@ -16,6 +16,8 @@ import (
 const socks5UDPTestTimeout = time.Second
 
 var _ module.EgressResolver = (*Module)(nil)
+var _ module.TransactionalModule = (*Module)(nil)
+var _ module.UDPPeer = udpPacketConn{}
 
 func TestModulePublishesFinalHopDialerAndResolver(t *testing.T) {
 	mod := NewModule(nil)
@@ -59,7 +61,10 @@ func TestModuleFinalHopDialerUsesInlineWireGuardRuntimeWhenExternalOverlayExists
 	mustRegister(t, registry, &overlayRuntimeModule{runtime: overlay})
 	mustRegister(t, registry, egressModule)
 
-	next := model.Snapshot{EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)}}
+	next := model.Snapshot{
+		Rules:          []model.HTTPRule{{EgressProfileID: intPtr(profileID)}},
+		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)},
+	}
 	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
@@ -86,6 +91,61 @@ func TestModuleFinalHopDialerUsesInlineWireGuardRuntimeWhenExternalOverlayExists
 	}
 	if factory.runtimes[0].network != "tcp" || factory.runtimes[0].address != "10.0.0.10:443" {
 		t.Fatalf("inline runtime dial = %s %s, want tcp target", factory.runtimes[0].network, factory.runtimes[0].address)
+	}
+}
+
+func TestModuleApplyIgnoresUnusedInvalidWireGuardEgressProfile(t *testing.T) {
+	mod := NewModule(nil)
+	next := model.Snapshot{EgressProfiles: []model.EgressProfile{{
+		ID:              51,
+		Name:            "unused-invalid",
+		Type:            "wireguard",
+		Enabled:         true,
+		WireGuardConfig: &model.EgressWireGuardConfig{PrivateKey: "not-a-valid-key"},
+	}}}
+
+	if err := mod.Apply(context.Background(), module.ApplyRequest{Next: next}); err != nil {
+		t.Fatalf("Apply() error = %v, want nil for unused invalid wireguard egress profile", err)
+	}
+}
+
+func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
+	mod := NewModule(nil)
+	previous := model.Snapshot{EgressProfiles: []model.EgressProfile{{
+		ID:      61,
+		Name:    "previous",
+		Type:    "direct",
+		Enabled: true,
+	}}}
+	if err := mod.Apply(context.Background(), module.ApplyRequest{Next: previous}); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+	mustRegister(t, registry, failingModule{name: "later"})
+
+	next := model.Snapshot{EgressProfiles: []model.EgressProfile{{
+		ID:      62,
+		Name:    "next",
+		Type:    "direct",
+		Enabled: true,
+	}}}
+	if err := registry.Apply(context.Background(), previous, next); err == nil {
+		t.Fatal("registry.Apply() error = nil, want later module failure")
+	}
+
+	previousID := 61
+	profile, found, err := mod.Resolve(&previousID, "tcp")
+	if err != nil {
+		t.Fatalf("Resolve(previous) error = %v", err)
+	}
+	if !found || profile.ID != previousID {
+		t.Fatalf("Resolve(previous) = %+v, %v; want profile %d", profile, found, previousID)
+	}
+	nextID := 62
+	if _, _, err := mod.Resolve(&nextID, "tcp"); err == nil {
+		t.Fatal("Resolve(next) error = nil, want state not advanced")
 	}
 }
 
@@ -341,6 +401,26 @@ func mustRegister(t *testing.T, registry *module.Registry, mod module.Module) {
 		t.Fatalf("Register(%s) error = %v", mod.Name(), err)
 	}
 }
+
+type failingModule struct {
+	name string
+}
+
+func (m failingModule) Name() string { return m.name }
+
+func (m failingModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name}
+}
+
+func (m failingModule) RegisterProviders(module.ProviderRegistry) error { return nil }
+
+func (m failingModule) Capabilities(module.SnapshotView) []module.Capability { return nil }
+
+func (m failingModule) Apply(context.Context, module.ApplyRequest) error {
+	return errors.New("later module failed")
+}
+
+func (m failingModule) Stop(context.Context) error { return nil }
 
 type overlayRuntimeModule struct {
 	runtime module.OverlayRuntime
