@@ -134,6 +134,84 @@ func TestModuleRollbackAfterDisablePreservesCommittedCounters(t *testing.T) {
 	}
 }
 
+func TestModuleRollbackAfterDisableKeepsLiveScopedRecordersAttached(t *testing.T) {
+	tests := []struct {
+		name        string
+		newRecorder func(int) interface {
+			Add(int64, int64)
+			Flush()
+		}
+		bucket string
+	}{
+		{
+			name: "http rule",
+			newRecorder: func(id int) interface {
+				Add(int64, int64)
+				Flush()
+			} {
+				return trafficmodule.NewHTTPRuleRecorder(id)
+			},
+			bucket: "http_rules",
+		},
+		{
+			name: "l4 rule",
+			newRecorder: func(id int) interface {
+				Add(int64, int64)
+				Flush()
+			} {
+				return trafficmodule.NewL4RuleRecorder(id)
+			},
+			bucket: "l4_rules",
+		},
+		{
+			name: "relay listener",
+			newRecorder: func(id int) interface {
+				Add(int64, int64)
+				Flush()
+			} {
+				return trafficmodule.NewRelayListenerRecorder(id)
+			},
+			bucket: "relay_listeners",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			trafficmodule.Reset()
+			trafficmodule.SetEnabled(true)
+			t.Cleanup(func() {
+				trafficmodule.SetEnabled(true)
+				trafficmodule.Reset()
+			})
+			disabled := false
+			recorder := tc.newRecorder(41)
+			recorder.Add(3, 4)
+			recorder.Flush()
+
+			mod := trafficmodule.NewModule()
+			registry := module.NewRegistry()
+			mustRegisterTrafficTestModule(t, registry, mod)
+			mustRegisterTrafficTestModule(t, registry, trafficCommitFailingModule{name: "after-traffic", err: errors.New("later commit failed")})
+
+			err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{AgentConfig: model.AgentConfig{
+				TrafficStatsEnabled: &disabled,
+			}})
+			if err == nil {
+				t.Fatal("Apply() error = nil, want later commit failure")
+			}
+
+			recorder.Add(5, 6)
+			recorder.Flush()
+
+			stats := trafficmodule.Snapshot()["traffic"].(map[string]any)
+			scoped := stats[tc.bucket].(map[string]map[string]uint64)["41"]
+			if scoped["rx_bytes"] != 8 || scoped["tx_bytes"] != 10 {
+				t.Fatalf("%s[41] after rollback = %+v, want live recorder to stay attached", tc.bucket, scoped)
+			}
+		})
+	}
+}
+
 func mustRegisterTrafficTestModule(t *testing.T, registry *module.Registry, candidate any) {
 	t.Helper()
 	if err := registry.Register(candidate); err != nil {

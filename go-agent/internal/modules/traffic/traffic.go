@@ -324,8 +324,23 @@ func snapshotKeyedCounterState(k *keyedCounters) map[int]counterSnapshot {
 func restoreKeyedCounterState(k *keyedCounters, state map[int]counterSnapshot) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.byID = make(map[int]*counters, len(state))
+	if k.byID == nil {
+		k.byID = make(map[int]*counters, len(state))
+	}
+	remaining := make(map[int]counterSnapshot, len(state))
 	for id, snapshot := range state {
+		remaining[id] = snapshot
+	}
+	for id, counter := range k.byID {
+		snapshot, ok := remaining[id]
+		if !ok {
+			restoreCounterStateValue(counter, counterSnapshot{})
+			continue
+		}
+		restoreCounterStateValue(counter, snapshot)
+		delete(remaining, id)
+	}
+	for id, snapshot := range remaining {
 		counter := &counters{}
 		restoreCounterStateValue(counter, snapshot)
 		k.byID[id] = counter
