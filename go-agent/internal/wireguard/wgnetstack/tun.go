@@ -61,7 +61,8 @@ type dnsCacheEntry struct {
 
 type Net netTun
 
-const netTunBatchSize = 256
+const netTunBatchSize = 128
+const netTunOutboundQueueSize = 256
 const netTunChannelQueueSize = 256
 const netTunTCPDefaultBufferSize = 2 << 20
 const netTunTCPMaxBufferSize = 4 << 20
@@ -77,7 +78,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
 		ep:             channel.New(netTunChannelQueueSize, uint32(mtu), ""),
 		stack:          stack.New(opts),
 		events:         make(chan tun.Event, 10),
-		incomingPacket: make(chan *stack.PacketBuffer, netTunBatchSize),
+		incomingPacket: make(chan *stack.PacketBuffer, netTunOutboundQueueSize),
 		dnsServers:     dnsServers,
 		localAddresses: make(map[netip.Addr]struct{}, len(localAddresses)),
 		mtu:            mtu,

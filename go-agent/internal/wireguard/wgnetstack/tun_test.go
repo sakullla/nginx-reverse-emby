@@ -26,15 +26,32 @@ func TestNetTunBatchSizeUsesConfiguredBatchSize(t *testing.T) {
 	}
 }
 
-func TestNetTunBatchSizeAllowsMobileTrafficBursts(t *testing.T) {
-	if netTunBatchSize < 256 {
-		t.Fatalf("netTunBatchSize = %d, want at least 256", netTunBatchSize)
+func TestNetTunBatchSizeStaysWithinWireGuardBindLimit(t *testing.T) {
+	tun := &netTun{}
+	if got, wantMax := tun.BatchSize(), 128; got > wantMax {
+		t.Fatalf("BatchSize() = %d, want <= %d", got, wantMax)
 	}
 }
 
 func TestNetTunChannelQueueSizeIsBounded(t *testing.T) {
 	if got, wantMax := netTunChannelQueueSize, 256; got > wantMax {
 		t.Fatalf("netTunChannelQueueSize = %d, want <= %d", got, wantMax)
+	}
+}
+
+func TestNetTunOutboundQueueAllowsMobileTrafficBursts(t *testing.T) {
+	dev, _, _, err := CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.99.0.1")}, nil, 1280)
+	if err != nil {
+		t.Fatalf("CreateNetTUN() error = %v", err)
+	}
+	defer dev.Close()
+
+	tun, ok := dev.(*netTun)
+	if !ok {
+		t.Fatalf("CreateNetTUN() device type = %T, want *netTun", dev)
+	}
+	if got, wantMin := cap(tun.incomingPacket), 256; got < wantMin {
+		t.Fatalf("incomingPacket capacity = %d, want >= %d", got, wantMin)
 	}
 }
 
