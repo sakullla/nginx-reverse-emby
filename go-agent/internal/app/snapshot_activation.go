@@ -9,6 +9,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
@@ -84,15 +85,36 @@ type snapshotModuleApplier struct {
 }
 
 func (a snapshotModuleApplier) Apply(ctx context.Context, previous, next model.Snapshot) error {
+	if a.app != nil && a.app.certModule != nil {
+		if err := a.app.certModule.Apply(ctx, agentmodule.ApplyRequest{Previous: previous, Next: next}); err != nil {
+			return err
+		}
+	}
 	if a.app != nil {
 		if err := a.app.applyLegacySnapshotActivation(ctx, previous, next); err != nil {
 			return err
 		}
 	}
 	if a.registry != nil {
-		return a.registry.Apply(ctx, previous, next)
+		return applyRegistryExceptCerts(ctx, a.registry, previous, next)
 	}
 	return nil
+}
+
+func applyRegistryExceptCerts(ctx context.Context, registry *agentmodule.Registry, previous, next model.Snapshot) error {
+	if registry == nil {
+		return nil
+	}
+	filtered := agentmodule.NewRegistry()
+	for _, mod := range registry.Modules() {
+		if _, ok := mod.(*modulecerts.Module); ok {
+			continue
+		}
+		if err := filtered.Register(mod); err != nil {
+			return err
+		}
+	}
+	return filtered.Apply(ctx, previous, next)
 }
 
 func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next model.Snapshot) error {

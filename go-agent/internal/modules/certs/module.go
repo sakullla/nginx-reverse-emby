@@ -2,6 +2,7 @@ package certs
 
 import (
 	"context"
+	"reflect"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
@@ -38,7 +39,11 @@ func (m *Module) RegisterProviders(reg module.ProviderRegistry) error {
 	if m == nil || m.manager == nil {
 		return nil
 	}
-	return reg.Provide(module.ProviderTLSMaterial, m.manager)
+	tlsMaterial, ok := m.manager.(module.TLSMaterial)
+	if !ok {
+		return nil
+	}
+	return reg.Provide(module.ProviderTLSMaterial, tlsMaterial)
 }
 
 func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
@@ -63,6 +68,10 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 		return nil
 	}
 	if req.Next.Certificates == nil && req.Next.CertificatePolicies == nil {
+		return nil
+	}
+	if reflect.DeepEqual(req.Previous.Certificates, req.Next.Certificates) &&
+		reflect.DeepEqual(req.Previous.CertificatePolicies, req.Next.CertificatePolicies) {
 		return nil
 	}
 	return m.manager.Apply(ctx, req.Next.Certificates, req.Next.CertificatePolicies)

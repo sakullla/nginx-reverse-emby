@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -677,6 +679,81 @@ func TestSnapshotActivatorAppliesCertificatesThroughRegistryOnlyWhenCertModuleRe
 	}
 }
 
+func TestSnapshotActivatorAppliesCertModuleBeforeLegacyConsumers(t *testing.T) {
+	var order []string
+	certApplier := &orderingCertificateApplier{
+		onApply: func() {
+			order = append(order, "cert")
+		},
+	}
+	httpApplier := &testHTTPApplier{
+		onApply: func() {
+			order = append(order, "http")
+		},
+	}
+	l4Applier := &testL4Applier{
+		onApply: func() {
+			order = append(order, "l4")
+		},
+	}
+	relayApplier := &testRelayApplier{
+		onApply: func() {
+			order = append(order, "relay")
+		},
+	}
+	app := newAppWithHTTPDeps(Config{AgentID: "agent-a", AgentName: "agent-a"}, store.NewInMemory(), newTestSyncClient(nil, syncResponse{}), httpApplier, certApplier, l4Applier, relayApplier)
+	certModule := modulecerts.NewModule(certApplier)
+	registry := agentmodule.NewRegistry()
+	if err := registry.Register(certModule); err != nil {
+		t.Fatalf("Register(certs) error = %v", err)
+	}
+	app.certModule = certModule
+	app.moduleRegistry = registry
+
+	certID := 7
+	next := Snapshot{
+		Certificates: []model.ManagedCertificateBundle{{ID: certID}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:      certID,
+			Enabled: true,
+		}},
+		Rules: []model.HTTPRule{{
+			FrontendURL: "https://media.example.test",
+			Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			Enabled:     true,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 19000,
+			Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: 9000}},
+			Enabled:    true,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:            51,
+			AgentID:       "agent-a",
+			Name:          "relay-a",
+			ListenHost:    "127.0.0.1",
+			BindHosts:     []string{"127.0.0.1"},
+			ListenPort:    9443,
+			PublicHost:    "relay-a.example.test",
+			PublicPort:    29443,
+			Enabled:       true,
+			CertificateID: &certID,
+			TLSMode:       "managed",
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator() error = %v", err)
+	}
+
+	want := []string{"cert", "http", "l4", "relay"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("activation order = %v, want %v", order, want)
+	}
+}
+
 func TestRunKeepsRunningWhenAppliedSnapshotExists(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
@@ -953,15 +1030,39 @@ func (a *testCertificateApplier) closeCount() int {
 	return a.closed
 }
 
+type orderingCertificateApplier struct {
+	testCertificateApplier
+	onApply func()
+}
+
+func (a *orderingCertificateApplier) Apply(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
+	if a.onApply != nil {
+		a.onApply()
+	}
+	return a.testCertificateApplier.Apply(ctx, bundles, policies)
+}
+
+func (a *orderingCertificateApplier) ServerCertificate(context.Context, int) (*tls.Certificate, error) {
+	return nil, nil
+}
+
+func (a *orderingCertificateApplier) TrustedCAPool(context.Context, []int) (*x509.CertPool, error) {
+	return nil, nil
+}
+
 type testL4Applier struct {
 	mu       sync.Mutex
 	calls    []l4ApplyCall
 	applyErr error
+	onApply  func()
 }
 
 func (a *testL4Applier) Apply(_ context.Context, rules []model.L4Rule) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.onApply != nil {
+		a.onApply()
+	}
 	var copied []model.L4Rule
 	if rules != nil {
 		copied = make([]model.L4Rule, len(rules))
@@ -1055,11 +1156,15 @@ type testRelayApplier struct {
 	mu       sync.Mutex
 	calls    []relayApplyCall
 	applyErr error
+	onApply  func()
 }
 
 func (a *testRelayApplier) Apply(_ context.Context, listeners []model.RelayListener) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.onApply != nil {
+		a.onApply()
+	}
 	var copied []model.RelayListener
 	if listeners != nil {
 		copied = make([]model.RelayListener, len(listeners))
@@ -1162,11 +1267,15 @@ type testHTTPApplier struct {
 	calls      []httpApplyCall
 	applyErr   error
 	failOnCall int
+	onApply    func()
 }
 
 func (a *testHTTPApplier) Apply(_ context.Context, rules []model.HTTPRule) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.onApply != nil {
+		a.onApply()
+	}
 	var copied []model.HTTPRule
 	if rules != nil {
 		copied = make([]model.HTTPRule, len(rules))

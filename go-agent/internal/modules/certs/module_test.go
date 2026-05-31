@@ -2,6 +2,8 @@ package certs
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"reflect"
 	"testing"
@@ -30,6 +32,38 @@ func TestModuleAppliesSnapshotCertificatesAndPublishesTLSMaterial(t *testing.T) 
 	}
 	if _, ok := registry.Resolve(module.ProviderTLSMaterial); !ok {
 		t.Fatal("tls.material provider not registered")
+	}
+}
+
+func TestModuleSkipsUnchangedCertificatePayload(t *testing.T) {
+	t.Parallel()
+
+	manager := newRecordingCertManager()
+	mod := NewModule(manager)
+	snapshot := model.Snapshot{
+		Certificates:        []model.ManagedCertificateBundle{{ID: 7}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{ID: 8}},
+	}
+
+	if err := mod.Apply(context.Background(), module.ApplyRequest{Previous: snapshot, Next: snapshot}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if manager.applyCalls != 0 {
+		t.Fatalf("apply calls = %d, want 0", manager.applyCalls)
+	}
+}
+
+func TestModuleDoesNotPublishTLSMaterialForPlainApplier(t *testing.T) {
+	t.Parallel()
+
+	registry := module.NewRegistry()
+	mustRegister(t, registry, NewModule(&recordingApplier{}))
+
+	if err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if _, ok := registry.Resolve(module.ProviderTLSMaterial); ok {
+		t.Fatal("tls.material provider registered for applier without TLS material")
 	}
 }
 
@@ -152,6 +186,7 @@ func (c *recordingCloser) Close() error {
 
 type recordingCertManager struct {
 	recordingApplier
+	applyCalls      int
 	appliedBundles  int
 	appliedPolicies int
 }
@@ -161,9 +196,18 @@ func newRecordingCertManager() *recordingCertManager {
 }
 
 func (m *recordingCertManager) Apply(_ context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
+	m.applyCalls++
 	m.appliedBundles = len(bundles)
 	m.appliedPolicies = len(policies)
 	return m.recordingApplier.Apply(context.Background(), bundles, policies)
+}
+
+func (m *recordingCertManager) ServerCertificate(context.Context, int) (*tls.Certificate, error) {
+	return nil, nil
+}
+
+func (m *recordingCertManager) TrustedCAPool(context.Context, []int) (*x509.CertPool, error) {
+	return nil, nil
 }
 
 func mustRegister(t *testing.T, registry *module.Registry, mod *Module) {
