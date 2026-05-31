@@ -103,6 +103,37 @@ func TestModuleRollsBackTrafficStateWhenLaterModuleFails(t *testing.T) {
 	}
 }
 
+func TestModuleRollbackAfterDisablePreservesCommittedCounters(t *testing.T) {
+	trafficmodule.Reset()
+	trafficmodule.SetEnabled(true)
+	trafficmodule.AddHTTP(11, 22)
+	t.Cleanup(func() {
+		trafficmodule.SetEnabled(true)
+		trafficmodule.Reset()
+	})
+	disabled := false
+	mod := trafficmodule.NewModule()
+	registry := module.NewRegistry()
+	mustRegisterTrafficTestModule(t, registry, mod)
+	mustRegisterTrafficTestModule(t, registry, trafficCommitFailingModule{name: "after-traffic", err: errors.New("later commit failed")})
+
+	err := registry.Apply(context.Background(), model.Snapshot{}, model.Snapshot{AgentConfig: model.AgentConfig{
+		TrafficStatsEnabled: &disabled,
+	}})
+	if err == nil {
+		t.Fatal("Apply() error = nil, want later commit failure")
+	}
+
+	if !trafficmodule.Enabled() {
+		t.Fatal("traffic enabled = false after rollback, want previous true")
+	}
+	stats := trafficmodule.Snapshot()["traffic"].(map[string]any)
+	total := stats["total"].(map[string]uint64)
+	if total["rx_bytes"] != 11 || total["tx_bytes"] != 22 {
+		t.Fatalf("traffic total after rollback = %+v, want committed counters preserved", total)
+	}
+}
+
 func mustRegisterTrafficTestModule(t *testing.T, registry *module.Registry, candidate any) {
 	t.Helper()
 	if err := registry.Register(candidate); err != nil {

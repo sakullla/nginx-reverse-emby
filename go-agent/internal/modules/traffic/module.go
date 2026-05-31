@@ -148,6 +148,8 @@ type transaction struct {
 	nextEnabled    bool
 	nextMeta       map[string]string
 	nextBlockState BlockState
+
+	rollbackCounters *counterState
 }
 
 func (tx *transaction) RegisterProviders(reg module.ProviderRegistry) error {
@@ -158,6 +160,10 @@ func (tx *transaction) Commit() error {
 	if tx == nil || tx.module == nil {
 		return nil
 	}
+	if tx.previousEnabled && !tx.nextEnabled {
+		state := snapshotCounterState()
+		tx.rollbackCounters = &state
+	}
 	tx.module.installState(tx.nextEnabled, tx.nextMeta, tx.nextBlockState)
 	return nil
 }
@@ -167,6 +173,9 @@ func (tx *transaction) Rollback() error {
 		return nil
 	}
 	tx.module.installState(tx.previousEnabled, tx.previousMeta, tx.previousBlockState)
+	if tx.rollbackCounters != nil {
+		restoreCounterState(*tx.rollbackCounters)
+	}
 	return nil
 }
 

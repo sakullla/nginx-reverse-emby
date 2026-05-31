@@ -13,6 +13,20 @@ type counters struct {
 	tx atomic.Uint64
 }
 
+type counterSnapshot struct {
+	rx uint64
+	tx uint64
+}
+
+type counterState struct {
+	http           counterSnapshot
+	l4             counterSnapshot
+	relay          counterSnapshot
+	httpRules      map[int]counterSnapshot
+	l4Rules        map[int]counterSnapshot
+	relayListeners map[int]counterSnapshot
+}
+
 type Recorder struct {
 	counter    *counters
 	scoped     *counters
@@ -194,6 +208,30 @@ func Reset() {
 	relayListenerCounters.reset()
 }
 
+func snapshotCounterState() counterState {
+	if Enabled() {
+		recorderRegistry.flushDirty()
+	}
+	return counterState{
+		http:           snapshotCounterStateValue(&httpCounters),
+		l4:             snapshotCounterStateValue(&l4Counters),
+		relay:          snapshotCounterStateValue(&relayCounters),
+		httpRules:      snapshotKeyedCounterState(&httpRuleCounters),
+		l4Rules:        snapshotKeyedCounterState(&l4RuleCounters),
+		relayListeners: snapshotKeyedCounterState(&relayListenerCounters),
+	}
+}
+
+func restoreCounterState(state counterState) {
+	recorderRegistry.clear()
+	restoreCounterStateValue(&httpCounters, state.http)
+	restoreCounterStateValue(&l4Counters, state.l4)
+	restoreCounterStateValue(&relayCounters, state.relay)
+	restoreKeyedCounterState(&httpRuleCounters, state.httpRules)
+	restoreKeyedCounterState(&l4RuleCounters, state.l4Rules)
+	restoreKeyedCounterState(&relayListenerCounters, state.relayListeners)
+}
+
 type recorderSet struct {
 	mu        sync.RWMutex
 	recorders map[*Recorder]struct{}
@@ -257,6 +295,40 @@ func (k *keyedCounters) reset() {
 	for _, counter := range k.byID {
 		counter.rx.Store(0)
 		counter.tx.Store(0)
+	}
+}
+
+func snapshotCounterStateValue(counter *counters) counterSnapshot {
+	return counterSnapshot{rx: counter.rx.Load(), tx: counter.tx.Load()}
+}
+
+func restoreCounterStateValue(counter *counters, state counterSnapshot) {
+	counter.rx.Store(state.rx)
+	counter.tx.Store(state.tx)
+}
+
+func snapshotKeyedCounterState(k *keyedCounters) map[int]counterSnapshot {
+	out := map[int]counterSnapshot{}
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	for id, counter := range k.byID {
+		state := snapshotCounterStateValue(counter)
+		if state.rx == 0 && state.tx == 0 {
+			continue
+		}
+		out[id] = state
+	}
+	return out
+}
+
+func restoreKeyedCounterState(k *keyedCounters, state map[int]counterSnapshot) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.byID = make(map[int]*counters, len(state))
+	for id, snapshot := range state {
+		counter := &counters{}
+		restoreCounterStateValue(counter, snapshot)
+		k.byID[id] = counter
 	}
 }
 
