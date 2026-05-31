@@ -197,18 +197,18 @@ func (m *Module) runtimeProviders(resolver module.ProviderResolver, egressProfil
 	overlayProvider, _ := resolver.Resolve(module.ProviderOverlayRuntime)
 	if overlay := overlayRuntimeFromProvider(overlayProvider); overlay != nil {
 		provider.WireGuard = moduleOverlayRuntimeProvider{overlay: overlay}
+	}
+	egressOverlayProvider, _ := resolver.Resolve(module.ProviderEgressOverlayRuntime)
+	if overlay := overlayRuntimeFromProvider(egressOverlayProvider); overlay != nil {
+		provider.EgressOverlay = overlay
+	} else if overlay := overlayRuntimeFromProvider(overlayProvider); overlay != nil {
 		provider.EgressOverlay = overlay
 	}
 	finalHopProvider, _ := resolver.Resolve(module.ProviderFinalHopDialer)
 	if dialer := finalHopDialerFromProvider(finalHopProvider); dialer != nil {
 		provider.FinalHopDialer = dialer
 	}
-	egressResolverProvider, _ := resolver.Resolve(module.ProviderEgressResolver)
-	if egressResolver, ok := egressResolverProvider.(module.EgressResolver); ok && egressResolver != nil {
-		provider.EgressResolver = egressResolver
-	} else {
-		provider.EgressProfiles = egressProfiles
-	}
+	provider.EgressProfiles = egressProfiles
 	return provider, nil
 }
 

@@ -17,6 +17,7 @@ const (
 	ProviderTransparentListener    ProviderRef = "transparent.listener"
 	ProviderFinalHopDialer         ProviderRef = "finalhop.dialer"
 	ProviderEgressResolver         ProviderRef = "egress.resolver"
+	ProviderEgressOverlayRuntime   ProviderRef = "egress.overlay.runtime"
 	ProviderTrafficSink            ProviderRef = "traffic.sink"
 	ProviderDiagnosticsHTTPSource  ProviderRef = "diagnostics.http.source"
 	ProviderDiagnosticsL4Source    ProviderRef = "diagnostics.l4.source"

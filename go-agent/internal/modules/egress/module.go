@@ -38,7 +38,7 @@ func (m *Module) Name() string {
 func (m *Module) Descriptor() module.ModuleDescriptor {
 	return module.ModuleDescriptor{
 		Name:     m.Name(),
-		Provides: []module.ProviderRef{module.ProviderFinalHopDialer, module.ProviderEgressResolver},
+		Provides: []module.ProviderRef{module.ProviderFinalHopDialer, module.ProviderEgressResolver, module.ProviderEgressOverlayRuntime},
 	}
 }
 
@@ -46,7 +46,10 @@ func (m *Module) RegisterProviders(reg module.ProviderRegistry) error {
 	if err := reg.Provide(module.ProviderFinalHopDialer, moduleFinalHopDialer{module: m}); err != nil {
 		return err
 	}
-	return reg.Provide(module.ProviderEgressResolver, m)
+	if err := reg.Provide(module.ProviderEgressResolver, m); err != nil {
+		return err
+	}
+	return reg.Provide(module.ProviderEgressOverlayRuntime, egressOverlayProvider{module: m})
 }
 
 func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
@@ -113,6 +116,19 @@ type egressTransaction struct {
 	profiles             []model.EgressProfile
 	resolver             Resolver
 	overlayRuntime       module.OverlayRuntime
+}
+
+func (t *egressTransaction) RegisterProviders(reg module.ProviderRegistry) error {
+	if t == nil {
+		return nil
+	}
+	if err := reg.Provide(module.ProviderFinalHopDialer, moduleFinalHopDialer{module: t.module}); err != nil {
+		return err
+	}
+	if err := reg.Provide(module.ProviderEgressResolver, t.resolver); err != nil {
+		return err
+	}
+	return reg.Provide(module.ProviderEgressOverlayRuntime, t.overlayRuntime)
 }
 
 func (t *egressTransaction) Commit() error {
@@ -195,6 +211,44 @@ func (m *Module) currentDialer() Dialer {
 	dialer := Dialer{Resolver: m.resolver, OverlayRuntime: m.overlayRuntime}
 	m.mu.RUnlock()
 	return dialer
+}
+
+func (m *Module) EgressOverlayRuntime() module.OverlayRuntime {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	overlay := m.overlayRuntime
+	m.mu.RUnlock()
+	return overlay
+}
+
+type egressOverlayProvider struct {
+	module *Module
+}
+
+func (p egressOverlayProvider) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
+	overlay := p.module.EgressOverlayRuntime()
+	if overlay == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profileID)
+	}
+	return overlay.DialContext(ctx, agentID, profileID, network, address)
+}
+
+func (p egressOverlayProvider) ListenTCP(ctx context.Context, agentID string, profileID int, address string) (net.Listener, error) {
+	overlay := p.module.EgressOverlayRuntime()
+	if overlay == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profileID)
+	}
+	return overlay.ListenTCP(ctx, agentID, profileID, address)
+}
+
+func (p egressOverlayProvider) ListenUDP(ctx context.Context, agentID string, profileID int, address string) (net.PacketConn, error) {
+	overlay := p.module.EgressOverlayRuntime()
+	if overlay == nil {
+		return nil, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profileID)
+	}
+	return overlay.ListenUDP(ctx, agentID, profileID, address)
 }
 
 func (m *Module) FinalHopDialer(profiles []model.EgressProfile, overlayRuntime module.OverlayRuntime) relay.FinalHopDialer {

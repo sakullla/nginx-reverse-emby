@@ -167,6 +167,13 @@ func (r *Registry) Apply(ctx context.Context, previous, next model.Snapshot) err
 			}
 			if transaction != nil {
 				transactions = append(transactions, transaction)
+				if providerTransaction, ok := transaction.(interface {
+					RegisterProviders(ProviderRegistry) error
+				}); ok {
+					if err := providerTransaction.RegisterProviders(replacingProviderRegistry{ProviderRegistry: providers}); err != nil {
+						return rollbackPrepared(transactions, fmt.Errorf("module %s register prepared providers: %w", strings.TrimSpace(module.Name()), err))
+					}
+				}
 			}
 			continue
 		}
@@ -181,6 +188,19 @@ func (r *Registry) Apply(ctx context.Context, previous, next model.Snapshot) err
 	}
 	r.providers = providers
 	return nil
+}
+
+type replacingProviderRegistry struct {
+	ProviderRegistry
+}
+
+func (r replacingProviderRegistry) Provide(ref ProviderRef, provider any) error {
+	if replacer, ok := r.ProviderRegistry.(interface {
+		Replace(ProviderRef, any) error
+	}); ok {
+		return replacer.Replace(ref, provider)
+	}
+	return r.ProviderRegistry.Provide(ref, provider)
 }
 
 func (r *Registry) StartAll(ctx context.Context, snapshot model.Snapshot) error {
@@ -260,6 +280,14 @@ func (s providerSet) Provide(ref ProviderRef, provider any) error {
 	}
 	if _, exists := s.providers[ref]; exists {
 		return fmt.Errorf("%w: %s", ErrDuplicateProvider, ref)
+	}
+	s.providers[ref] = provider
+	return nil
+}
+
+func (s providerSet) Replace(ref ProviderRef, provider any) error {
+	if strings.TrimSpace(string(ref)) == "" {
+		return fmt.Errorf("%w: blank provider ref", ErrInvalidModule)
 	}
 	s.providers[ref] = provider
 	return nil
