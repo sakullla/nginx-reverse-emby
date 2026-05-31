@@ -142,8 +142,8 @@ func TestNewUsesRegisteredAdapterModulesAsAppDependencies(t *testing.T) {
 	diagnosticModule := extractPrivateField(t, app, "diagnosticModule").Interface().(*modulediagnostics.Module)
 	egressModule := extractPrivateField(t, app, "egressModule").Interface().(*moduleegress.Module)
 
-	if app.certApplier != certModule {
-		t.Fatalf("certApplier = %T, want retained cert module", app.certApplier)
+	if _, ok := app.certApplier.(*modulecerts.Manager); !ok {
+		t.Fatalf("certApplier = %T, want cert manager", app.certApplier)
 	}
 	if app.diagnosticHandler != diagnosticModule.Handler() {
 		t.Fatal("diagnostic handler does not come from retained diagnostic module")
@@ -649,6 +649,31 @@ func TestRunStartsAndStopsModuleRegistry(t *testing.T) {
 	}
 	if first.stops != 1 || second.stops != 1 {
 		t.Fatalf("module stops first=%d second=%d, want 1 each", first.stops, second.stops)
+	}
+}
+
+func TestSnapshotActivatorAppliesCertificatesThroughRegistryOnlyWhenCertModuleRegistered(t *testing.T) {
+	certApplier := &testCertificateApplier{}
+	app := newAppWithDeps(Config{}, store.NewInMemory(), newTestSyncClient(nil, syncResponse{}), certApplier, nil, nil)
+	certModule := modulecerts.NewModule(certApplier)
+	registry := agentmodule.NewRegistry()
+	if err := registry.Register(certModule); err != nil {
+		t.Fatalf("Register(certs) error = %v", err)
+	}
+	app.certModule = certModule
+	app.moduleRegistry = registry
+
+	next := Snapshot{
+		Certificates:        []model.ManagedCertificateBundle{{ID: 7}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{ID: 7}},
+	}
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator() error = %v", err)
+	}
+
+	calls := certApplier.snapshotCalls()
+	if len(calls) != 1 {
+		t.Fatalf("certificate apply calls = %d, want 1", len(calls))
 	}
 }
 

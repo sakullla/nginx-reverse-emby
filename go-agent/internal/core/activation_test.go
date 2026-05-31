@@ -40,7 +40,7 @@ func TestCorePackageDoesNotImportBusinessPackages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list imports: %v", err)
 	}
-	for _, forbidden := range []string{"/internal/l4", "/internal/relay", "/internal/proxy", "/internal/wireguard", "/internal/egress", "/internal/diagnostics", "/internal/certs", "/internal/traffic"} {
+	for _, forbidden := range []string{"/internal/l4", "/internal/relay", "/internal/proxy", "/internal/wireguard", "/internal/egress", "/internal/diagnostics", "/internal/modules/certs", "/internal/traffic"} {
 		if strings.Contains(string(out), forbidden) {
 			t.Fatalf("core imports forbidden package %s:\n%s", forbidden, out)
 		}

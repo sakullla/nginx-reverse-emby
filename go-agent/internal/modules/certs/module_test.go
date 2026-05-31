@@ -7,7 +7,31 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
+
+func TestModuleAppliesSnapshotCertificatesAndPublishesTLSMaterial(t *testing.T) {
+	t.Parallel()
+
+	manager := newRecordingCertManager()
+	mod := NewModule(manager)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+
+	next := model.Snapshot{
+		Certificates:        []model.ManagedCertificateBundle{{ID: 7}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{ID: 8}},
+	}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if manager.appliedBundles != 1 || manager.appliedPolicies != 1 {
+		t.Fatalf("applied bundles/policies = %d/%d, want 1/1", manager.appliedBundles, manager.appliedPolicies)
+	}
+	if _, ok := registry.Resolve(module.ProviderTLSMaterial); !ok {
+		t.Fatal("tls.material provider not registered")
+	}
+}
 
 func TestModuleApplyDelegatesManagedCertificatePayload(t *testing.T) {
 	t.Parallel()
@@ -27,7 +51,12 @@ func TestModuleApplyDelegatesManagedCertificatePayload(t *testing.T) {
 		Usage:   "relay_server",
 	}}
 
-	if err := mod.Apply(context.Background(), bundles, policies); err != nil {
+	if err := mod.Apply(context.Background(), module.ApplyRequest{
+		Next: model.Snapshot{
+			Certificates:        bundles,
+			CertificatePolicies: policies,
+		},
+	}); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
 	if !reflect.DeepEqual(applier.bundles, bundles) {
@@ -81,7 +110,7 @@ func TestModuleIdentityAndCapabilityAreStable(t *testing.T) {
 	if got := mod.Name(); got != "certs" {
 		t.Fatalf("Name() = %q, want certs", got)
 	}
-	caps := mod.Capabilities()
+	caps := mod.Capabilities(model.Snapshot{})
 	if len(caps) != 1 || caps[0].Name != "managed_certs" || !caps[0].Enabled {
 		t.Fatalf("Capabilities() = %+v, want managed_certs capability", caps)
 	}
@@ -119,4 +148,27 @@ type recordingCloser struct {
 func (c *recordingCloser) Close() error {
 	c.closeCalls++
 	return nil
+}
+
+type recordingCertManager struct {
+	recordingApplier
+	appliedBundles  int
+	appliedPolicies int
+}
+
+func newRecordingCertManager() *recordingCertManager {
+	return &recordingCertManager{}
+}
+
+func (m *recordingCertManager) Apply(_ context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
+	m.appliedBundles = len(bundles)
+	m.appliedPolicies = len(policies)
+	return m.recordingApplier.Apply(context.Background(), bundles, policies)
+}
+
+func mustRegister(t *testing.T, registry *module.Registry, mod *Module) {
+	t.Helper()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
 }

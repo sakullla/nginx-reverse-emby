@@ -3,8 +3,8 @@ package app
 import (
 	"errors"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
+	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
@@ -35,10 +35,10 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		}
 	}()
 
-	certManager, err := certs.NewManager(
+	certManager, err := modulecerts.NewManager(
 		cfg.DataDir,
-		certs.WithNodeRole("master"),
-		certs.WithLocalAgent(true),
+		modulecerts.WithNodeRole("master"),
+		modulecerts.WithLocalAgent(true),
 	)
 	if err != nil {
 		return nil, err

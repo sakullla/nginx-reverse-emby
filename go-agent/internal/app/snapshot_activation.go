@@ -106,7 +106,7 @@ func (a *App) applyLegacySnapshotActivation(ctx context.Context, previous, next 
 		relay.SetOutboundProxyURL(next.AgentConfig.OutboundProxyURL)
 		a.updateTrafficBlockState(next.AgentConfig)
 	}
-	if certificatesChanged(previous, next) {
+	if a.certModule == nil && certificatesChanged(previous, next) {
 		if err := a.applyManagedCertificates(ctx, Snapshot{
 			Certificates:        next.Certificates,
 			CertificatePolicies: next.CertificatePolicies,

@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
+	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
@@ -34,7 +34,7 @@ func DiagnoseSnapshot(ctx context.Context, dataDir string, snapshot Snapshot, re
 		return nil, err
 	}
 
-	certManager, err := certs.NewManager(dataDir, certs.WithLocalAgent(true), certs.WithNodeRole("master"))
+	certManager, err := modulecerts.NewManager(dataDir, modulecerts.WithLocalAgent(true), modulecerts.WithNodeRole("master"))
 	if err != nil {
 		return nil, err
 	}

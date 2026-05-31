@@ -16,23 +16,37 @@ type Reporter interface {
 }
 
 type Module struct {
-	applier Applier
+	manager Applier
 }
 
-func NewModule(applier Applier) *Module {
-	return &Module{applier: applier}
+func NewModule(manager Applier) *Module {
+	return &Module{manager: manager}
 }
 
 func (m *Module) Name() string {
 	return "certs"
 }
 
-func (m *Module) Capabilities() []module.Capability {
+func (m *Module) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{
+		Name:     m.Name(),
+		Provides: []module.ProviderRef{module.ProviderTLSMaterial},
+	}
+}
+
+func (m *Module) RegisterProviders(reg module.ProviderRegistry) error {
+	if m == nil || m.manager == nil {
+		return nil
+	}
+	return reg.Provide(module.ProviderTLSMaterial, m.manager)
+}
+
+func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
 	return []module.Capability{{Name: "managed_certs", Enabled: true}}
 }
 
 func (m *Module) Health(context.Context) module.Health {
-	if m == nil || m.applier == nil {
+	if m == nil || m.manager == nil {
 		return module.Health{Status: "degraded", Message: "certificate applier is not configured"}
 	}
 	return module.Health{Status: "healthy"}
@@ -44,18 +58,21 @@ func (m *Module) Start(context.Context, model.Snapshot) error {
 
 func (m *Module) Stop(context.Context) error { return m.Close() }
 
-func (m *Module) Apply(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
-	if m == nil || m.applier == nil {
+func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
+	if m == nil || m.manager == nil {
 		return nil
 	}
-	return m.applier.Apply(ctx, bundles, policies)
+	if req.Next.Certificates == nil && req.Next.CertificatePolicies == nil {
+		return nil
+	}
+	return m.manager.Apply(ctx, req.Next.Certificates, req.Next.CertificatePolicies)
 }
 
 func (m *Module) ManagedCertificateReports(ctx context.Context) ([]model.ManagedCertificateReport, error) {
-	if m == nil || m.applier == nil {
+	if m == nil || m.manager == nil {
 		return nil, nil
 	}
-	reporter, ok := m.applier.(Reporter)
+	reporter, ok := m.manager.(Reporter)
 	if !ok {
 		return nil, nil
 	}
@@ -63,10 +80,10 @@ func (m *Module) ManagedCertificateReports(ctx context.Context) ([]model.Managed
 }
 
 func (m *Module) Close() error {
-	if m == nil || m.applier == nil {
+	if m == nil || m.manager == nil {
 		return nil
 	}
-	closer, ok := m.applier.(interface{ Close() error })
+	closer, ok := m.manager.(interface{ Close() error })
 	if !ok {
 		return nil
 	}

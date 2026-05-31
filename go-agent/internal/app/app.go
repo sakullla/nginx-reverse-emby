@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
@@ -172,7 +171,7 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	certManager, err := certs.NewManager(cfg.DataDir)
+	certManager, err := modulecerts.NewManager(cfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +225,7 @@ func New(cfg Config) (*App, error) {
 		st,
 		client,
 		httpManager,
-		certModule,
+		certManager,
 		l4Manager,
 		newRelayRuntimeManagerWithWireGuardAndEgressModule(certManager, wireGuardRuntime, egressModule, false),
 		agentupdate.NewManager(
@@ -239,6 +238,7 @@ func New(cfg Config) (*App, error) {
 		),
 		taskClient,
 	)
+	app.certModule = certModule
 	app.setDiagnosticModule(diagnosticModule)
 	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
 	app.moduleRegistry = moduleRegistry
@@ -353,9 +353,6 @@ func newAppWithAllDeps(
 		relayApplier: relayApplier,
 		updater:      updater,
 		taskClient:   taskClient,
-	}
-	if certModule, ok := certApplier.(*modulecerts.Module); ok {
-		app.certModule = certModule
 	}
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	return app
