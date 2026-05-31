@@ -71,6 +71,24 @@ function mountEditForm(initialData) {
   })
 }
 
+async function setFrontendUrl(wrapper, url) {
+  const s = String(url || '').trim()
+  const protocol = s.startsWith('http://') ? 'http://' : 'https://'
+  const host = s.startsWith('https://') ? s.slice(8) : s.startsWith('http://') ? s.slice(7) : s
+  const protocolSelects = wrapper.findAll('select.input--protocol')
+  await protocolSelects[0].setValue(protocol)
+  await wrapper.get('#frontend-url').setValue(host)
+}
+
+async function setBackendUrl(wrapper, url) {
+  const s = String(url || '').trim()
+  const protocol = s.startsWith('http://') ? 'http://' : 'https://'
+  const host = s.startsWith('https://') ? s.slice(8) : s.startsWith('http://') ? s.slice(7) : s
+  const protocolSelects = wrapper.findAll('select.input--protocol')
+  await protocolSelects[1].setValue(protocol)
+  await wrapper.get('#backend-url').setValue(host)
+}
+
 describe('RuleForm WireGuard entry', () => {
   beforeEach(() => {
     mocks.createMutateAsync.mockReset()
@@ -82,8 +100,8 @@ describe('RuleForm WireGuard entry', () => {
   it('derives WireGuard entry host from the selected profile', async () => {
     const wrapper = mountForm()
 
-    await wrapper.get('#frontend-url').setValue('https://app.example.test')
-    await wrapper.get('#backend-url').setValue('http://origin.example.test:8096')
+    await setFrontendUrl(wrapper, 'https://app.example.test')
+    await setBackendUrl(wrapper, 'http://origin.example.test:8096')
     await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
     const wireGuardToggle = wrapper.findAll('label.toggle')
       .find((item) => item.text().includes('启用内网 IP 访问入口'))
@@ -109,8 +127,9 @@ describe('RuleForm WireGuard entry', () => {
   it('submits selected HTTP egress profile id', async () => {
     const wrapper = mountForm()
 
-    await wrapper.get('#frontend-url').setValue('https://app.example.test')
-    await wrapper.get('#backend-url').setValue('http://origin.example.test:8096')
+    await setFrontendUrl(wrapper, 'https://app.example.test')
+    await setBackendUrl(wrapper, 'http://origin.example.test:8096')
+    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
     await wrapper.get('select[name="egress-profile"]').setValue('17')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -122,11 +141,27 @@ describe('RuleForm WireGuard entry', () => {
     })
   })
 
+  it('places HTTP egress profile in advanced proxy behavior with backend relationship help', async () => {
+    const wrapper = mountForm()
+
+    const basicAddressCard = wrapper.findAll('.settings-card')
+      .find((item) => item.text().includes('地址配置'))
+    expect(basicAddressCard.find('select[name="egress-profile"]').exists()).toBe(false)
+
+    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
+    const proxyBehaviorCard = wrapper.findAll('.settings-card')
+      .find((item) => item.text().includes('代理行为'))
+
+    expect(proxyBehaviorCard.find('select[name="egress-profile"]').exists()).toBe(true)
+    expect(proxyBehaviorCard.text()).toContain('出口 Profile 决定 Agent 访问后端服务器时走直连、代理或 WireGuard，不影响用户访问前端地址')
+  })
+
   it('submits direct HTTP egress without profile id', async () => {
     const wrapper = mountForm()
 
-    await wrapper.get('#frontend-url').setValue('https://app.example.test')
-    await wrapper.get('#backend-url').setValue('http://origin.example.test:8096')
+    await setFrontendUrl(wrapper, 'https://app.example.test')
+    await setBackendUrl(wrapper, 'http://origin.example.test:8096')
+    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
     await wrapper.get('select[name="egress-profile"]').setValue('0')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -144,6 +179,7 @@ describe('RuleForm WireGuard entry', () => {
       enabled: true
     })
 
+    await wrapper.findAll('.form-tabs__btn')[1].trigger('click')
     await wrapper.get('select[name="egress-profile"]').setValue('0')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
