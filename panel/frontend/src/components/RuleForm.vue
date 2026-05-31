@@ -863,11 +863,12 @@ function selectFirstEnabledWireGuardProfile() {
 
 function createBackend(data = {}) {
   const url = String(data?.url || '').trim()
-  const hasProtocol = url.startsWith('http://') || url.startsWith('https://')
+  const parsed = parseUrl(url)
+  const hasProtocol = /^https?:\/\//i.test(url)
   return {
     id: `http-backend-${Date.now()}-${backendIdCounter++}`,
     url,
-    _protocol: hasProtocol ? parseUrl(url).protocol : 'https://'
+    _protocol: hasProtocol ? parsed.protocol : 'http://'
   }
 }
 
@@ -925,7 +926,7 @@ function handleFrontendHostInput(host) {
   const h = String(host || '').trim()
   if (!h) {
     form.value.frontend_url = ''
-  } else if (/^https?:\/\/.+/.test(h)) {
+  } else if (/^https?:\/\/.+/i.test(h)) {
     const parsed = parseUrl(h)
     frontendProtocol.value = parsed.protocol
     form.value.frontend_url = h
@@ -942,7 +943,7 @@ function handleBackendHostInput(index, host) {
   const h = String(host || '').trim()
   if (!h) {
     backend.url = ''
-  } else if (/^https?:\/\/.+/.test(h)) {
+  } else if (/^https?:\/\/.+/i.test(h)) {
     const parsed = parseUrl(h)
     backend._protocol = parsed.protocol
     backend.url = h
@@ -987,10 +988,11 @@ function handleBackendPaste(index, event) {
 // URL 工具函数
 function parseUrl(url, defaultProtocol = 'https://') {
   const s = String(url || '').trim()
-  if (s.startsWith('https://')) {
+  const lower = s.toLowerCase()
+  if (lower.startsWith('https://')) {
     return { protocol: 'https://', host: s.slice(8) }
   }
-  if (s.startsWith('http://')) {
+  if (lower.startsWith('http://')) {
     return { protocol: 'http://', host: s.slice(7) }
   }
   return { protocol: defaultProtocol, host: s }
