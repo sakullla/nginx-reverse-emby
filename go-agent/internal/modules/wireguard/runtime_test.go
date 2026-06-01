@@ -145,8 +145,8 @@ func TestModuleExposesWireGuardCapabilityAndDelegatesLifecycle(t *testing.T) {
 	snapshot := model.Snapshot{WireGuardProfiles: []model.WireGuardProfile{
 		testWireGuardProfile(7, "local-agent", "peer.example.com:51820", "10.10.0.0/24"),
 	}}
-	if err := mod.Start(context.Background(), snapshot); err != nil {
-		t.Fatalf("Start() error = %v", err)
+	if err := mod.Apply(context.Background(), module.ApplyRequest{Next: snapshot}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
 	}
 	if len(factory.created) != 1 {
 		t.Fatalf("created runtimes = %d, want 1", len(factory.created))

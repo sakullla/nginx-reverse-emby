@@ -61,17 +61,6 @@ func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
 	return []module.Capability{{Name: "managed_certs", Enabled: true}}
 }
 
-func (m *Module) Health(context.Context) module.Health {
-	if m == nil || m.manager == nil {
-		return module.Health{Status: "degraded", Message: "certificate applier is not configured"}
-	}
-	return module.Health{Status: "healthy"}
-}
-
-func (m *Module) Start(context.Context, model.Snapshot) error {
-	return nil
-}
-
 func (m *Module) Stop(context.Context) error { return m.Close() }
 
 func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {

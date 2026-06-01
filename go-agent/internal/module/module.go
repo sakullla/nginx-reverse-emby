@@ -14,11 +14,6 @@ type Capability struct {
 	Metadata map[string]string
 }
 
-type Health struct {
-	Status  string
-	Message string
-}
-
 type ModuleDescriptor struct {
 	Name     string
 	Provides []ProviderRef

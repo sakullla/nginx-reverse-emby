@@ -56,14 +56,6 @@ func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
 	return []module.Capability{{Name: "egress_profiles", Enabled: true}}
 }
 
-func (m *Module) Health(context.Context) module.Health {
-	return module.Health{Status: "healthy"}
-}
-
-func (m *Module) Start(context.Context, model.Snapshot) error {
-	return nil
-}
-
 func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	transaction, err := m.Prepare(ctx, req)
 	if err != nil {

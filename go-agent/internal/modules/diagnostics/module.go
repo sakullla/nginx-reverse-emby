@@ -56,17 +56,6 @@ func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
 	return []module.Capability{{Name: "diagnostics", Enabled: true}}
 }
 
-func (m *Module) Health(context.Context) module.Health {
-	if m == nil || m.Handler() == nil {
-		return module.Health{Status: "degraded", Message: "diagnostic handler is not configured"}
-	}
-	return module.Health{Status: "healthy"}
-}
-
-func (m *Module) Start(ctx context.Context, snapshot model.Snapshot) error {
-	return m.Apply(ctx, module.ApplyRequest{Next: snapshot})
-}
-
 func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	tx, err := m.Prepare(ctx, req)
 	if err != nil || tx == nil {

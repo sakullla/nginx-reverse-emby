@@ -48,17 +48,6 @@ func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
 	return []module.Capability{{Name: "wireguard", Enabled: true}}
 }
 
-func (m *Module) Health(context.Context) module.Health {
-	if m == nil || m.runtime == nil {
-		return module.Health{Status: "degraded", Message: "wireguard runtime is not configured"}
-	}
-	return module.Health{Status: "healthy"}
-}
-
-func (m *Module) Start(ctx context.Context, snapshot model.Snapshot) error {
-	return m.Apply(ctx, module.ApplyRequest{Next: snapshot})
-}
-
 func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	transaction, err := m.Prepare(ctx, req)
 	if err != nil {

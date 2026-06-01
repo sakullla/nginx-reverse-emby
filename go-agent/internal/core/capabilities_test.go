@@ -52,8 +52,6 @@ func (m staticModule) Capabilities(module.SnapshotView) []module.Capability {
 	return append([]module.Capability(nil), m.capabilities...)
 }
 
-func (m staticModule) Health(context.Context) module.Health { return module.Health{} }
-
 func (m staticModule) Apply(context.Context, module.ApplyRequest) error { return nil }
 
 func (m staticModule) Stop(context.Context) error { return nil }
