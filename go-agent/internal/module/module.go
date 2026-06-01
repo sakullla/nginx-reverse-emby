@@ -51,14 +51,6 @@ type Module interface {
 	Stop(context.Context) error
 }
 
-type LegacyModule interface {
-	Name() string
-	Capabilities() []Capability
-	Health(context.Context) Health
-	Start(context.Context, model.Snapshot) error
-	Stop(context.Context) error
-}
-
 type TransactionalModule interface {
 	Module
 	Prepare(context.Context, ApplyRequest) (ModuleTransaction, error)

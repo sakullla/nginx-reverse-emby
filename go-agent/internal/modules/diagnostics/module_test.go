@@ -175,9 +175,9 @@ func (m staticProviderModule) Apply(context.Context, module.ApplyRequest) error 
 
 func (m staticProviderModule) Stop(context.Context) error { return nil }
 
-func mustRegister(t *testing.T, registry *module.Registry, candidate any) {
+func mustRegister(t *testing.T, registry *module.Registry, candidate module.Module) {
 	t.Helper()
 	if err := registry.Register(candidate); err != nil {
-		t.Fatalf("Register(%T) error = %v", candidate, err)
+		t.Fatalf("Register(%s) error = %v", candidate.Name(), err)
 	}
 }

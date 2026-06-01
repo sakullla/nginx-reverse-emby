@@ -152,7 +152,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		Enabled:    cfg.TrafficStatsEnabled,
 		EnabledSet: true,
 	})
-	registry, err := newAppModuleRegistry([]any{
+	registry, err := newAppModuleRegistry([]agentmodule.Module{
 		certModule,
 		diagnosticModule,
 		moduleegress.NewModule(nil),
@@ -174,7 +174,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 }
 
 func newCapabilityModuleRegistry(cfg Config) (*agentmodule.Registry, error) {
-	return newAppModuleRegistry([]any{
+	return newAppModuleRegistry([]agentmodule.Module{
 		modulecerts.NewModule(nil),
 		modulediagnostics.NewModule(),
 		moduleegress.NewModule(nil),
@@ -186,7 +186,7 @@ func newCapabilityModuleRegistry(cfg Config) (*agentmodule.Registry, error) {
 	})
 }
 
-func configuredWireGuardModule(cfg Config) any {
+func configuredWireGuardModule(cfg Config) agentmodule.Module {
 	if !cfg.WireGuardModuleEnabled() {
 		return nil
 	}
@@ -269,7 +269,7 @@ func New(cfg Config) (*App, error) {
 	return app, nil
 }
 
-func newAppModuleRegistry(modules []any) (*agentmodule.Registry, error) {
+func newAppModuleRegistry(modules []agentmodule.Module) (*agentmodule.Registry, error) {
 	registry := agentmodule.NewRegistry()
 	for _, mod := range modules {
 		if mod == nil {

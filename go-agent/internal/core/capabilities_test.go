@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
@@ -41,12 +40,22 @@ type staticModule struct {
 
 func (m staticModule) Name() string { return m.name }
 
-func (m staticModule) Capabilities() []module.Capability {
+func (m staticModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name}
+}
+
+func (m staticModule) RegisterProviders(module.ProviderRegistry) error {
+	return nil
+}
+
+func (m staticModule) Capabilities(module.SnapshotView) []module.Capability {
 	return append([]module.Capability(nil), m.capabilities...)
 }
 
 func (m staticModule) Health(context.Context) module.Health { return module.Health{} }
 
-func (m staticModule) Start(context.Context, model.Snapshot) error { return nil }
+func (m staticModule) Apply(context.Context, module.ApplyRequest) error { return nil }
 
 func (m staticModule) Stop(context.Context) error { return nil }
+
+var _ module.Module = staticModule{}

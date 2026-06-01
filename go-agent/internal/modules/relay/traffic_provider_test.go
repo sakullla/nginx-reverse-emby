@@ -105,10 +105,10 @@ func (p relayTrafficStateProvider) TrafficBlockState() TrafficBlockState {
 	return p.state
 }
 
-func mustRegisterRelayProviderTestModule(t *testing.T, registry *module.Registry, candidate any) {
+func mustRegisterRelayProviderTestModule(t *testing.T, registry *module.Registry, candidate module.Module) {
 	t.Helper()
 	if err := registry.Register(candidate); err != nil {
-		t.Fatalf("Register(%T) error = %v", candidate, err)
+		t.Fatalf("Register(%s) error = %v", candidate.Name(), err)
 	}
 }
 

@@ -102,10 +102,10 @@ func (p l4TrafficStateProvider) TrafficBlockState() TrafficBlockState {
 	return p.state
 }
 
-func mustRegisterL4ProviderTestModule(t *testing.T, registry *module.Registry, candidate any) {
+func mustRegisterL4ProviderTestModule(t *testing.T, registry *module.Registry, candidate module.Module) {
 	t.Helper()
 	if err := registry.Register(candidate); err != nil {
-		t.Fatalf("Register(%T) error = %v", candidate, err)
+		t.Fatalf("Register(%s) error = %v", candidate.Name(), err)
 	}
 }
 

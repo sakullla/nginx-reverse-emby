@@ -208,9 +208,9 @@ func (m internalCommitFailingModule) Prepare(context.Context, module.ApplyReques
 
 func (internalCommitFailingModule) Stop(context.Context) error { return nil }
 
-func mustRegisterInternal(t *testing.T, registry *module.Registry, mod any) {
+func mustRegisterInternal(t *testing.T, registry *module.Registry, mod module.Module) {
 	t.Helper()
 	if err := registry.Register(mod); err != nil {
-		t.Fatalf("Register(%T) error = %v", mod, err)
+		t.Fatalf("Register(%s) error = %v", mod.Name(), err)
 	}
 }

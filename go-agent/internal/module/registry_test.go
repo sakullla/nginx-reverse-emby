@@ -341,6 +341,8 @@ type recordingModule struct {
 	stop     func(context.Context) error
 }
 
+var _ module.Module = (*recordingModule)(nil)
+
 func (m *recordingModule) Name() string { return m.name }
 
 func (m *recordingModule) Descriptor() module.ModuleDescriptor {

@@ -240,10 +240,10 @@ func TestModuleRollbackAfterDisableKeepsLiveScopedRecordersAttached(t *testing.T
 	}
 }
 
-func mustRegisterTrafficTestModule(t *testing.T, registry *module.Registry, candidate any) {
+func mustRegisterTrafficTestModule(t *testing.T, registry *module.Registry, candidate module.Module) {
 	t.Helper()
 	if err := registry.Register(candidate); err != nil {
-		t.Fatalf("Register(%T) error = %v", candidate, err)
+		t.Fatalf("Register(%s) error = %v", candidate.Name(), err)
 	}
 }
 

@@ -557,10 +557,10 @@ func stringSlicesEqual(left, right []string) bool {
 	return true
 }
 
-func mustRegister(t *testing.T, registry *module.Registry, mod any) {
+func mustRegister(t *testing.T, registry *module.Registry, mod module.Module) {
 	t.Helper()
 	if err := registry.Register(mod); err != nil {
-		t.Fatalf("Register(%T) error = %v", mod, err)
+		t.Fatalf("Register(%s) error = %v", mod.Name(), err)
 	}
 }
 

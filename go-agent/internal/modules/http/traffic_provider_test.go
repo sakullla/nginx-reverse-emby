@@ -105,10 +105,10 @@ func (p httpTrafficStateProvider) TrafficBlockState() TrafficBlockState {
 	return p.state
 }
 
-func mustRegisterHTTPProviderTestModule(t *testing.T, registry *module.Registry, candidate any) {
+func mustRegisterHTTPProviderTestModule(t *testing.T, registry *module.Registry, candidate module.Module) {
 	t.Helper()
 	if err := registry.Register(candidate); err != nil {
-		t.Fatalf("Register(%T) error = %v", candidate, err)
+		t.Fatalf("Register(%s) error = %v", candidate.Name(), err)
 	}
 }
 

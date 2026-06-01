@@ -228,10 +228,10 @@ func (s appDiagnosticSource) Cache() *model.Cache {
 	return s.cache
 }
 
-func mustRegisterAppModule(t *testing.T, registry *agentmodule.Registry, candidate any) {
+func mustRegisterAppModule(t *testing.T, registry *agentmodule.Registry, candidate agentmodule.Module) {
 	t.Helper()
 	if err := registry.Register(candidate); err != nil {
-		t.Fatalf("Register(%T) error = %v", candidate, err)
+		t.Fatalf("Register(%s) error = %v", candidate.Name(), err)
 	}
 }
 
