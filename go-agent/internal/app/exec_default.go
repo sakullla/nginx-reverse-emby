@@ -1,13 +1,13 @@
 //go:build !linux
 
-package platform
+package app
 
 import "fmt"
 
-func ServiceUnitName() string {
+func serviceUnitName() string {
 	return "nginx-reverse-emby-agent"
 }
 
-func ExecReplacement(binary string, argv []string, env []string) error {
+func execReplacement(binary string, argv []string, env []string) error {
 	return fmt.Errorf("exec replacement is only supported on linux")
 }

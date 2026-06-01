@@ -14,7 +14,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/stream"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -236,11 +235,11 @@ func l4RecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
 }
 
 func copyL4TCP(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic.Recorder) (int64, error) {
-	direction := stream.DirectionTX
+	direction := traffic.DirectionTX
 	if rxDirection {
-		direction = stream.DirectionRX
+		direction = traffic.DirectionRX
 	}
-	wrapped := stream.NewTrafficWriterFlushBelow(dst, direction, l4RecorderOrAggregate(recorder), 32*1024)
+	wrapped := traffic.NewTrafficWriterFlushBelow(dst, direction, l4RecorderOrAggregate(recorder), 32*1024)
 	return copyPreferReaderFrom(wrapped, src)
 }
 

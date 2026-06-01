@@ -1,4 +1,4 @@
-package update
+package core
 
 import (
 	"context"
@@ -21,7 +21,7 @@ func TestStageUpdateVerifiesHash(t *testing.T) {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 
-	mgr := NewManager(dir, filepath.Join(dir, "current-agent"), nil, nil, nil, nil)
+	mgr := NewUpdateManager(dir, filepath.Join(dir, "current-agent"), nil, nil, nil, nil)
 	_, err := mgr.Stage(context.Background(), model.VersionPackage{
 		URL:    fileURL(sourcePath),
 		SHA256: "deadbeef",
@@ -39,7 +39,7 @@ func TestStageWritesExecutableFile(t *testing.T) {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 
-	mgr := NewManager(dir, filepath.Join(dir, "current-agent"), nil, nil, nil, nil)
+	mgr := NewUpdateManager(dir, filepath.Join(dir, "current-agent"), nil, nil, nil, nil)
 	stagedPath, err := mgr.Stage(context.Background(), model.VersionPackage{
 		URL:      fileURL(sourcePath),
 		SHA256:   sumSHA256(payload),
@@ -87,7 +87,7 @@ func TestActivatePromotesAndExecsReplacement(t *testing.T) {
 	var gotBinary string
 	var gotArgv []string
 	var gotEnv []string
-	mgr := NewManager(
+	mgr := NewUpdateManager(
 		dir,
 		targetPath,
 		[]string{"old-binary", "--flag"},
@@ -139,7 +139,7 @@ func TestActivatePreservesExistingVersionWhenDesiredVersionEmpty(t *testing.T) {
 	}
 
 	var gotEnv []string
-	mgr := NewManager(
+	mgr := NewUpdateManager(
 		dir,
 		targetPath,
 		[]string{"old-binary"},

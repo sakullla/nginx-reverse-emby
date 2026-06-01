@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/stream"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
@@ -127,12 +126,12 @@ func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
 }
 
 func copySwitchProtocolTraffic(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic.Recorder) (int64, error) {
-	direction := stream.DirectionTX
+	direction := traffic.DirectionTX
 	if rxDirection {
-		direction = stream.DirectionRX
+		direction = traffic.DirectionRX
 	}
-	writer := stream.NewTrafficWriter(dst, direction, httpRecorderOrAggregate(recorder), 0)
-	return stream.CopyGeneric(writer, src)
+	writer := traffic.NewTrafficWriter(dst, direction, httpRecorderOrAggregate(recorder), 0)
+	return traffic.CopyGeneric(writer, src)
 }
 
 const httpResponseTrafficFlushThreshold uint64 = 64 * 1024

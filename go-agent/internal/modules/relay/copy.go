@@ -3,32 +3,31 @@ package relay
 import (
 	"io"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/stream"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 const relayTrafficFlushThreshold uint64 = 32 * 1024
 
 func copyPreferReaderFrom(dst io.Writer, src io.Reader) (int64, error) {
-	return stream.CopyPreferReaderFrom(dst, src)
+	return traffic.CopyPreferReaderFrom(dst, src)
 }
 
 func copyGeneric(dst io.Writer, src io.Reader) (int64, error) {
-	return stream.CopyGeneric(dst, src)
+	return traffic.CopyGeneric(dst, src)
 }
 
 func copyRelayTraffic(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic.Recorder) (int64, error) {
-	direction := stream.DirectionTX
+	direction := traffic.DirectionTX
 	if rxDirection {
-		direction = stream.DirectionRX
+		direction = traffic.DirectionRX
 	}
-	writer := stream.NewTrafficWriterFlushBelow(dst, direction, recorder, relayTrafficFlushThreshold)
+	writer := traffic.NewTrafficWriterFlushBelow(dst, direction, recorder, relayTrafficFlushThreshold)
 	var n int64
 	var err error
 	if shouldUseRelayDestinationReadFrom(dst) {
 		n, err = writer.ReadFrom(src)
 	} else {
-		n, err = stream.CopyPreferReaderFrom(writer, src)
+		n, err = traffic.CopyPreferReaderFrom(writer, src)
 	}
 	writer.FlushTraffic()
 	return n, err

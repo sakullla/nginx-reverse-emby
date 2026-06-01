@@ -12,8 +12,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
 const (
@@ -52,7 +50,7 @@ type ManagedCertificateReporter interface {
 }
 
 type SyncController struct {
-	Store                store.Store
+	Store                Store
 	Runtime              *Runtime
 	SyncClient           SyncClient
 	Updater              Updater
@@ -250,7 +248,7 @@ func SetTrafficBlockedMetadata(meta map[string]string, cfg model.AgentConfig) {
 }
 
 func (c *SyncController) handlePendingUpdate(ctx context.Context, snapshot model.Snapshot) error {
-	if !agentupdate.HasValidPackage(snapshot.VersionPackage) {
+	if !HasValidPackage(snapshot.VersionPackage) {
 		return nil
 	}
 	desiredSHA := strings.TrimSpace(snapshot.VersionPackage.SHA256)
@@ -270,12 +268,12 @@ func (c *SyncController) handlePendingUpdate(ctx context.Context, snapshot model
 		return c.recordRuntimeError(err)
 	}
 	if err := c.Updater.Activate(stagedPath, snapshot.DesiredVersion); err != nil {
-		if errors.Is(err, agentupdate.ErrRestartRequested) {
+		if errors.Is(err, ErrRestartRequested) {
 			return err
 		}
 		return c.recordRuntimeError(err)
 	}
-	return agentupdate.ErrRestartRequested
+	return ErrRestartRequested
 }
 
 func (c *SyncController) rollbackRuntime(ctx context.Context, previousApplied, targetApplied model.Snapshot) error {
@@ -351,10 +349,10 @@ func (c *SyncController) persistRuntimeState(clearLastSyncError bool) error {
 	return c.Store.SaveRuntimeState(state)
 }
 
-func (c *SyncController) runtimeStateForPersistence() (store.RuntimeState, error) {
+func (c *SyncController) runtimeStateForPersistence() (RuntimeState, error) {
 	existing, err := c.Store.LoadRuntimeState()
 	if err != nil {
-		return store.RuntimeState{}, err
+		return RuntimeState{}, err
 	}
 
 	current := c.Runtime.State()

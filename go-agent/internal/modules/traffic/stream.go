@@ -1,11 +1,9 @@
-package stream
+package traffic
 
 import (
 	"io"
 	"net"
 	"sync"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 type Direction int
@@ -64,17 +62,17 @@ type readerFromWithProgress interface {
 type TrafficWriter struct {
 	dst       io.Writer
 	direction Direction
-	recorder  *traffic.Recorder
+	recorder  *Recorder
 	threshold uint64
 	policy    FlushPolicy
 	pending   uint64
 }
 
-func NewTrafficWriter(dst io.Writer, direction Direction, recorder *traffic.Recorder, threshold uint64) *TrafficWriter {
+func NewTrafficWriter(dst io.Writer, direction Direction, recorder *Recorder, threshold uint64) *TrafficWriter {
 	return &TrafficWriter{dst: dst, direction: direction, recorder: recorder, threshold: threshold, policy: FlushAtOrAboveThreshold}
 }
 
-func NewTrafficWriterFlushBelow(dst io.Writer, direction Direction, recorder *traffic.Recorder, threshold uint64) *TrafficWriter {
+func NewTrafficWriterFlushBelow(dst io.Writer, direction Direction, recorder *Recorder, threshold uint64) *TrafficWriter {
 	return &TrafficWriter{dst: dst, direction: direction, recorder: recorder, threshold: threshold, policy: FlushAtOrBelowThreshold}
 }
 
@@ -159,10 +157,10 @@ func (w *TrafficWriter) shouldFlush() bool {
 type TrafficReadCloser struct {
 	io.ReadCloser
 	direction Direction
-	recorder  *traffic.Recorder
+	recorder  *Recorder
 }
 
-func NewTrafficReadCloser(delegate io.ReadCloser, direction Direction, recorder *traffic.Recorder) *TrafficReadCloser {
+func NewTrafficReadCloser(delegate io.ReadCloser, direction Direction, recorder *Recorder) *TrafficReadCloser {
 	return &TrafficReadCloser{ReadCloser: delegate, direction: direction, recorder: recorder}
 }
 

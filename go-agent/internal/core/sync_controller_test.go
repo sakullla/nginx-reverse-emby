@@ -10,8 +10,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
 func TestSyncControllerSuccessfulSyncPersistsSnapshotsRuntimeStateAndClearsLastSyncError(t *testing.T) {
@@ -20,7 +18,7 @@ func TestSyncControllerSuccessfulSyncPersistsSnapshotsRuntimeStateAndClearsLastS
 	if err := st.SaveAppliedSnapshot(previous); err != nil {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
 	}
-	if err := st.SaveRuntimeState(store.RuntimeState{
+	if err := st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: previous.Revision,
 		Metadata: map[string]string{
 			"current_revision": "7",
@@ -87,7 +85,7 @@ func TestSyncControllerSuccessfulSyncPersistsSnapshotsRuntimeStateAndClearsLastS
 func TestSyncControllerBuildSyncPlanIncludesApplyStatusStatsAndCertificateReports(t *testing.T) {
 	st := newSyncControllerStore()
 	applied := model.Snapshot{DesiredVersion: "1.0.0", Revision: 7}
-	if err := st.SaveRuntimeState(store.RuntimeState{
+	if err := st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: applied.Revision,
 		Metadata: map[string]string{
 			"last_apply_revision": "6",
@@ -221,7 +219,7 @@ func TestSyncControllerSyncFailureRecordsRuntimeErrorAndSuccessClearsIt(t *testi
 	st := newSyncControllerStore()
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
 	_ = st.SaveAppliedSnapshot(previous)
-	_ = st.SaveRuntimeState(store.RuntimeState{Metadata: map[string]string{"foo": "bar"}})
+	_ = st.SaveRuntimeState(RuntimeState{Metadata: map[string]string{"foo": "bar"}})
 	rt := NewRuntime()
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
@@ -259,7 +257,7 @@ func TestSyncControllerDesiredSnapshotSaveFailureRecordsRuntimeError(t *testing.
 	st.failOnDesiredSave = 1
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
 	_ = st.SaveAppliedSnapshot(previous)
-	_ = st.SaveRuntimeState(store.RuntimeState{Metadata: map[string]string{"foo": "bar"}})
+	_ = st.SaveRuntimeState(RuntimeState{Metadata: map[string]string{"foo": "bar"}})
 	rt := NewRuntime()
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
@@ -290,7 +288,7 @@ func TestSyncControllerApplyFailureRollsRuntimeBackAndRecordsCandidateError(t *t
 	st := newSyncControllerStore()
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
 	_ = st.SaveAppliedSnapshot(previous)
-	_ = st.SaveRuntimeState(store.RuntimeState{
+	_ = st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7"},
 	})
@@ -413,7 +411,7 @@ func TestSyncControllerAppliedSnapshotSaveFailureRollsRuntimeBackAndRecordsPersi
 	if err := st.SaveAppliedSnapshot(previous); err != nil {
 		t.Fatalf("seed applied: %v", err)
 	}
-	_ = st.SaveRuntimeState(store.RuntimeState{
+	_ = st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7", "foo": "bar"},
 	})
@@ -456,7 +454,7 @@ func TestSyncControllerAppliedSnapshotSaveFailureRecordsPersistedErrorWhenRollba
 	if err := st.SaveAppliedSnapshot(previous); err != nil {
 		t.Fatalf("seed applied: %v", err)
 	}
-	_ = st.SaveRuntimeState(store.RuntimeState{
+	_ = st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7", "foo": "bar"},
 	})
@@ -508,7 +506,7 @@ func TestSyncControllerRuntimeStateSaveFailureRollsRuntimeBackAndRestoresPreviou
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
 	next := model.Snapshot{DesiredVersion: "next", Revision: 9}
 	_ = st.SaveAppliedSnapshot(previous)
-	_ = st.SaveRuntimeState(store.RuntimeState{
+	_ = st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7"},
 	})
@@ -540,7 +538,7 @@ func TestSyncControllerClearsTrafficStatsIntervalAfterSuccessfulApply(t *testing
 	st := newSyncControllerStore()
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7, AgentConfig: model.AgentConfig{TrafficStatsInterval: "30s"}}
 	_ = st.SaveAppliedSnapshot(previous)
-	_ = st.SaveRuntimeState(store.RuntimeState{
+	_ = st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7", "traffic_stats_interval": "30s"},
 	})
@@ -608,7 +606,7 @@ func TestSyncControllerPersistsTrafficBlockedStateFromAgentConfig(t *testing.T) 
 
 func TestSyncControllerClearsTrafficBlockedStateFromAgentConfig(t *testing.T) {
 	st := newSyncControllerStore()
-	if err := st.SaveRuntimeState(store.RuntimeState{
+	if err := st.SaveRuntimeState(RuntimeState{
 		Metadata: map[string]string{
 			"traffic_blocked":      "true",
 			"traffic_block_reason": "monthly quota exceeded",
@@ -647,7 +645,7 @@ func TestSyncControllerKeepsTrafficStatsIntervalWhenActivationFails(t *testing.T
 	st := newSyncControllerStore()
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7, AgentConfig: model.AgentConfig{TrafficStatsInterval: "30s"}}
 	_ = st.SaveAppliedSnapshot(previous)
-	_ = st.SaveRuntimeState(store.RuntimeState{
+	_ = st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7", "traffic_stats_interval": "30s"},
 	})
@@ -687,7 +685,7 @@ func TestSyncControllerValidUpdatePackageReturnsRestartWithoutApplyingSnapshot(t
 	st := newSyncControllerStore()
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
 	_ = st.SaveAppliedSnapshot(previous)
-	_ = st.SaveRuntimeState(store.RuntimeState{
+	_ = st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7"},
 	})
@@ -700,7 +698,7 @@ func TestSyncControllerValidUpdatePackageReturnsRestartWithoutApplyingSnapshot(t
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
-	updater := &syncControllerUpdater{activateErr: agentupdate.ErrRestartRequested}
+	updater := &syncControllerUpdater{activateErr: ErrRestartRequested}
 	controller := &SyncController{
 		Store:                st,
 		Runtime:              rt,
@@ -709,7 +707,7 @@ func TestSyncControllerValidUpdatePackageReturnsRestartWithoutApplyingSnapshot(t
 		CurrentPackageSHA256: "old-sha",
 	}
 
-	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); !errors.Is(err, agentupdate.ErrRestartRequested) {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); !errors.Is(err, ErrRestartRequested) {
 		t.Fatalf("PerformSync() error = %v, want ErrRestartRequested", err)
 	}
 	if updater.stageCalls != 1 || updater.activateCalls != 1 {
@@ -777,7 +775,7 @@ func TestSyncControllerHandlePendingUpdateUsesPackageSHAFallbacks(t *testing.T) 
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			updater := &syncControllerUpdater{activateErr: agentupdate.ErrRestartRequested}
+			updater := &syncControllerUpdater{activateErr: ErrRestartRequested}
 			controller := &SyncController{
 				Store:                newSyncControllerStore(),
 				Runtime:              NewRuntime(),
@@ -787,7 +785,7 @@ func TestSyncControllerHandlePendingUpdateUsesPackageSHAFallbacks(t *testing.T) 
 
 			err := controller.HandlePendingUpdate(context.Background(), tt.snapshot)
 			if tt.wantStage {
-				if !errors.Is(err, agentupdate.ErrRestartRequested) {
+				if !errors.Is(err, ErrRestartRequested) {
 					t.Fatalf("HandlePendingUpdate() error = %v, want ErrRestartRequested", err)
 				}
 				if updater.stageCalls != 1 {
@@ -809,7 +807,7 @@ func TestSyncControllerUpdaterStageFailureRecordsErrorAndRetriesPersistedPackage
 	st := newSyncControllerStore()
 	previous := model.Snapshot{DesiredVersion: "1.0.0", Revision: 7}
 	_ = st.SaveAppliedSnapshot(previous)
-	_ = st.SaveRuntimeState(store.RuntimeState{
+	_ = st.SaveRuntimeState(RuntimeState{
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7", "foo": "bar"},
 	})
@@ -866,7 +864,7 @@ func TestSyncControllerUpdaterStageFailureRecordsErrorAndRetriesPersistedPackage
 
 func TestSyncControllerBuildSyncPlanCarriesRuntimeMetadata(t *testing.T) {
 	st := newSyncControllerStore()
-	_ = st.SaveRuntimeState(store.RuntimeState{
+	_ = st.SaveRuntimeState(RuntimeState{
 		Metadata: map[string]string{"traffic_stats_interval": "1s"},
 	})
 	reportMetadata := map[string]string{"last_traffic_stats_report_unix": "123"}
@@ -1090,7 +1088,7 @@ func (r syncControllerCertificateReporter) ManagedCertificateReports(context.Con
 type syncControllerStore struct {
 	desired           model.Snapshot
 	applied           model.Snapshot
-	runtime           store.RuntimeState
+	runtime           RuntimeState
 	desiredSaveCount  int
 	appliedSaveCount  int
 	runtimeSaveCount  int
@@ -1129,7 +1127,7 @@ func (s *syncControllerStore) LoadAppliedSnapshot() (model.Snapshot, error) {
 	return s.applied, nil
 }
 
-func (s *syncControllerStore) SaveRuntimeState(state store.RuntimeState) error {
+func (s *syncControllerStore) SaveRuntimeState(state RuntimeState) error {
 	s.runtimeSaveCount++
 	if s.failOnRuntimeSave > 0 && s.runtimeSaveCount == s.failOnRuntimeSave {
 		return errors.New("runtime state persistence fail")
@@ -1138,11 +1136,11 @@ func (s *syncControllerStore) SaveRuntimeState(state store.RuntimeState) error {
 	return nil
 }
 
-func (s *syncControllerStore) LoadRuntimeState() (store.RuntimeState, error) {
+func (s *syncControllerStore) LoadRuntimeState() (RuntimeState, error) {
 	return copySyncControllerRuntimeState(s.runtime), nil
 }
 
-func copySyncControllerRuntimeState(state store.RuntimeState) store.RuntimeState {
+func copySyncControllerRuntimeState(state RuntimeState) RuntimeState {
 	copied := state
 	if state.Metadata != nil {
 		copied.Metadata = make(map[string]string, len(state.Metadata))

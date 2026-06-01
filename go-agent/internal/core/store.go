@@ -1,4 +1,4 @@
-package store
+package core
 
 import (
 	stdsync "sync"
@@ -59,7 +59,7 @@ func (s *InMemory) SaveRuntimeState(state RuntimeState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	copyState := state
-	copyState.Metadata = copyMetadata(state.Metadata)
+	copyState.Metadata = copyStoreMetadata(state.Metadata)
 	s.runtime = copyState
 	return nil
 }
@@ -68,11 +68,11 @@ func (s *InMemory) LoadRuntimeState() (RuntimeState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := s.runtime
-	result.Metadata = copyMetadata(result.Metadata)
+	result.Metadata = copyStoreMetadata(result.Metadata)
 	return result, nil
 }
 
-func copyMetadata(src map[string]string) map[string]string {
+func copyStoreMetadata(src map[string]string) map[string]string {
 	if src == nil {
 		return nil
 	}

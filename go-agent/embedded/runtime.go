@@ -9,8 +9,8 @@ import (
 
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 type Snapshot = model.Snapshot
@@ -95,15 +95,15 @@ type Runtime struct {
 
 const stateRootDir = "embedded-agent-state"
 
-var newPersistentStore = func(dataDir string, sink StateSink) (agentstore.Store, error) {
-	delegate, err := agentstore.NewFilesystem(filepath.Join(dataDir, stateRootDir))
+var newPersistentStore = func(dataDir string, sink StateSink) (agentcore.Store, error) {
+	delegate, err := agentcore.NewFilesystem(filepath.Join(dataDir, stateRootDir))
 	if err != nil {
 		return nil, err
 	}
 	return &persistentBridgeStore{delegate: delegate, sink: sink}, nil
 }
 
-var newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+var newEmbeddedApp = func(cfg agentapp.Config, st agentcore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
 	return agentapp.NewEmbedded(cfg, st, client)
 }
 
@@ -218,7 +218,7 @@ func (a syncClientAdapter) Sync(ctx context.Context, request agentapp.SyncReques
 }
 
 type persistentBridgeStore struct {
-	delegate agentstore.Store
+	delegate agentcore.Store
 	sink     StateSink
 }
 

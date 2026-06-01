@@ -1,4 +1,4 @@
-package update
+package core
 
 import (
 	"errors"

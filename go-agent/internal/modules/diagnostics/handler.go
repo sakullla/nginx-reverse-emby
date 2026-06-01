@@ -6,17 +6,17 @@ import (
 	"strconv"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 type DiagnosticHandler struct {
-	store      store.Store
+	store      core.Store
 	httpProber *HTTPProber
 	tcpProber  *TCPProber
 }
 
-func NewDiagnosticHandler(st store.Store, httpProber *HTTPProber, tcpProber *TCPProber) *DiagnosticHandler {
+func NewDiagnosticHandler(st core.Store, httpProber *HTTPProber, tcpProber *TCPProber) *DiagnosticHandler {
 	return &DiagnosticHandler{
 		store:      st,
 		httpProber: httpProber,

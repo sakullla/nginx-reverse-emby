@@ -15,10 +15,10 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 func TestNewBuildsControlPlaneWiring(t *testing.T) {
@@ -41,7 +41,7 @@ func TestNewBuildsControlPlaneWiring(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = app.Close() })
 
-	if _, ok := app.store.(*store.Filesystem); !ok {
+	if _, ok := app.store.(*core.Filesystem); !ok {
 		t.Fatalf("store = %T, want filesystem store", app.store)
 	}
 	if app.syncClient == nil {
@@ -172,7 +172,7 @@ func TestRunReturnsInitialSyncErrorWhenNoAppliedSnapshot(t *testing.T) {
 	errSync := errors.New("sync failed")
 	app := newAppWithAllDeps(
 		Config{},
-		store.NewInMemory(),
+		core.NewInMemory(),
 		syncClientFunc(func(context.Context, SyncRequest) (Snapshot, error) {
 			return Snapshot{}, errSync
 		}),

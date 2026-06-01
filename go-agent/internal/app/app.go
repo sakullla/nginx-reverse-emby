@@ -24,13 +24,10 @@ import (
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
 type Config = config.Config
-type Snapshot = store.Snapshot
+type Snapshot = core.Snapshot
 type SyncRequest = control.SyncRequest
 
 type SyncClient interface {
@@ -45,7 +42,7 @@ type Updater interface {
 type App struct {
 	cfg                 Config
 	syncClient          SyncClient
-	store               store.Store
+	store               core.Store
 	updater             Updater
 	runtime             *core.Runtime
 	taskClient          *control.TaskClient
@@ -215,7 +212,7 @@ func New(cfg Config) (*App, error) {
 		}
 	}()
 
-	st, err := store.NewFilesystem(cfg.DataDir)
+	st, err := core.NewFilesystem(cfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -259,12 +256,12 @@ func New(cfg Config) (*App, error) {
 		cfg,
 		st,
 		client,
-		agentupdate.NewManager(
+		core.NewUpdateManager(
 			cfg.DataDir,
 			executablePath,
 			os.Args,
 			os.Environ(),
-			platform.ExecReplacement,
+			execReplacement,
 			nil,
 		),
 		taskClient,
@@ -312,7 +309,7 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 
 func newAppWithAllDeps(
 	cfg Config,
-	st store.Store,
+	st core.Store,
 	client SyncClient,
 	updater Updater,
 	taskClient *control.TaskClient,
@@ -431,7 +428,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	if err := a.performSync(ctx); err != nil {
-		if errors.Is(err, agentupdate.ErrRestartRequested) {
+		if errors.Is(err, core.ErrRestartRequested) {
 			return nil
 		}
 		if applied.DesiredVersion == "" && applied.Revision == 0 {
@@ -455,7 +452,7 @@ func (a *App) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := a.performSync(ctx); errors.Is(err, agentupdate.ErrRestartRequested) {
+			if err := a.performSync(ctx); errors.Is(err, core.ErrRestartRequested) {
 				return nil
 			}
 		}

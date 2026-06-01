@@ -1,4 +1,4 @@
-package update
+package core
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 
 type ExecFunc func(binary string, argv []string, env []string) error
 
-type Manager struct {
+type UpdateManager struct {
 	root           string
 	executablePath string
 	argv           []string
@@ -26,11 +26,11 @@ type Manager struct {
 	httpClient     *http.Client
 }
 
-func NewManager(root, executablePath string, argv, env []string, execFn ExecFunc, httpClient *http.Client) *Manager {
+func NewUpdateManager(root, executablePath string, argv, env []string, execFn ExecFunc, httpClient *http.Client) *UpdateManager {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &Manager{
+	return &UpdateManager{
 		root:           root,
 		executablePath: executablePath,
 		argv:           append([]string(nil), argv...),
@@ -40,7 +40,7 @@ func NewManager(root, executablePath string, argv, env []string, execFn ExecFunc
 	}
 }
 
-func (m *Manager) Stage(ctx context.Context, pkg model.VersionPackage) (string, error) {
+func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (string, error) {
 	if strings.TrimSpace(pkg.URL) == "" {
 		return "", fmt.Errorf("version package url is required")
 	}
@@ -98,7 +98,7 @@ func (m *Manager) Stage(ctx context.Context, pkg model.VersionPackage) (string, 
 	return stagedPath, nil
 }
 
-func (m *Manager) Activate(stagedPath string, desiredVersion string) error {
+func (m *UpdateManager) Activate(stagedPath string, desiredVersion string) error {
 	if m.execFn == nil {
 		return fmt.Errorf("exec function is required")
 	}
@@ -119,7 +119,7 @@ func (m *Manager) Activate(stagedPath string, desiredVersion string) error {
 	return m.execFn(m.executablePath, m.resolveArgv(), env)
 }
 
-func (m *Manager) resolveArgv() []string {
+func (m *UpdateManager) resolveArgv() []string {
 	if len(m.argv) == 0 {
 		return []string{m.executablePath}
 	}
@@ -128,7 +128,7 @@ func (m *Manager) resolveArgv() []string {
 	return argv
 }
 
-func (m *Manager) openPackage(ctx context.Context, rawURL string) (io.ReadCloser, error) {
+func (m *UpdateManager) openPackage(ctx context.Context, rawURL string) (io.ReadCloser, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err

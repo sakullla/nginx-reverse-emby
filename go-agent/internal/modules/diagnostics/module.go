@@ -7,10 +7,10 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 type Handler interface {
@@ -116,7 +116,7 @@ func buildDiagnosticsState(req module.ApplyRequest) (diagnosticsState, error) {
 		RelayProvider: relayProvider,
 	})
 
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(req.Next); err != nil {
 		return diagnosticsState{}, err
 	}
@@ -193,7 +193,7 @@ func (m *Module) HandleSnapshotTask(ctx context.Context, snapshot model.Snapshot
 	if httpProber == nil || tcpProber == nil {
 		return nil, errors.New("diagnostic handler is not configured")
 	}
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
 		return nil, err
 	}

@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 )
 
 const DefaultMaxPaths = 32

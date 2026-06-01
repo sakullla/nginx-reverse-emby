@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T) {
@@ -19,7 +19,7 @@ func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T)
 	}))
 	defer server.Close()
 
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(model.Snapshot{
 		Rules: []model.HTTPRule{{
 			ID:          7,
@@ -64,7 +64,7 @@ func TestDiagnosticHandlerReturnsPerBackendResults(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(model.Snapshot{
 		Rules: []model.HTTPRule{{
 			ID:          17,
@@ -113,7 +113,7 @@ func TestDiagnosticHandlerSerializesAdaptiveBackendFactors(t *testing.T) {
 	}))
 	defer backendB.Close()
 
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(model.Snapshot{
 		Rules: []model.HTTPRule{{
 			ID:          18,
@@ -158,7 +158,7 @@ func TestDiagnosticHandlerUsesFiveHTTPSamplesByDefault(t *testing.T) {
 	}))
 	defer server.Close()
 
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(model.Snapshot{
 		Rules: []model.HTTPRule{{
 			ID:          27,
@@ -212,7 +212,7 @@ func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
 		}
 	}()
 
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	addr := ln.Addr().(*net.TCPAddr)
 	if err := mem.SaveDesiredSnapshot(model.Snapshot{
 		L4Rules: []model.L4Rule{{
@@ -288,7 +288,7 @@ func TestDiagnosticHandlerReturnsPerBackendResultsForL4Rules(t *testing.T) {
 	addrA := lnA.Addr().(*net.TCPAddr)
 	addrB := lnB.Addr().(*net.TCPAddr)
 
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	if err := mem.SaveDesiredSnapshot(model.Snapshot{
 		L4Rules: []model.L4Rule{{
 			ID:         19,
@@ -349,7 +349,7 @@ func TestDiagnosticHandlerHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *te
 	}()
 	addr := ln.Addr().(*net.TCPAddr)
 
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(model.Snapshot{
 		Revision:       224,
 		DesiredVersion: "stored",
@@ -391,7 +391,7 @@ func TestDiagnosticHandlerHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *te
 }
 
 func TestDiagnosticHandlerDoesNotHydrateMissingAppliedRulesFromNewerDesiredSnapshot(t *testing.T) {
-	mem := store.NewInMemory()
+	mem := core.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(model.Snapshot{
 		Revision:       224,
 		DesiredVersion: "stored",

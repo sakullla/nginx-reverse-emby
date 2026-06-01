@@ -12,7 +12,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic/hosttraffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 const (
@@ -178,8 +177,8 @@ func TestReporterOnlyAddsLastReportMetadataWhenIntervalActiveAndStatsReported(t 
 
 func TestReporterPendingTimestampPersistsOnlyAfterSuccessfulSync(t *testing.T) {
 	lastReportedAt := fixedTrafficReportTime().Add(-time.Hour).Unix()
-	st := store.NewInMemory()
-	if err := st.SaveRuntimeState(store.RuntimeState{Metadata: map[string]string{
+	st := core.NewInMemory()
+	if err := st.SaveRuntimeState(core.RuntimeState{Metadata: map[string]string{
 		testRuntimeMetaTrafficStatsInterval:       "1s",
 		testRuntimeMetaLastTrafficStatsReportUnix: strconv.FormatInt(lastReportedAt, 10),
 	}}); err != nil {

@@ -3,12 +3,12 @@ package app
 import (
 	"errors"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
-func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
+func NewEmbedded(cfg Config, st core.Store, client SyncClient) (*App, error) {
 	if st == nil {
 		return nil, errors.New("store is required")
 	}
