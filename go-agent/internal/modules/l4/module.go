@@ -3,19 +3,17 @@ package l4
 import (
 	"context"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 	"net"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 )
 
 const runtimeBindRetryTimeout = 2 * time.Second
@@ -23,14 +21,14 @@ const runtimeBindRetryInterval = 25 * time.Millisecond
 
 type Config struct {
 	AgentID         string
-	BackendFailures backends.Config
+	BackendFailures model.BackendCacheConfig
 }
 
 type Module struct {
 	mu sync.Mutex
 
 	server       *Server
-	cache        *backends.Cache
+	cache        *model.Cache
 	localAgentID string
 	blockState   trafficBlockStateValue
 
@@ -52,7 +50,7 @@ type Providers struct {
 
 func NewModule(cfg Config) *Module {
 	return &Module{
-		cache:        backends.NewCache(cfg.BackendFailures),
+		cache:        model.NewCache(cfg.BackendFailures),
 		localAgentID: strings.TrimSpace(cfg.AgentID),
 	}
 }
@@ -380,7 +378,7 @@ func (m *Module) currentTrafficBlockStateLocked() TrafficBlockState {
 	return m.blockState.Load()
 }
 
-func (m *Module) Cache() *backends.Cache {
+func (m *Module) Cache() *model.Cache {
 	if m == nil {
 		return nil
 	}

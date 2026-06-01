@@ -13,6 +13,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"io"
 	"math/big"
 	"net"
@@ -22,13 +27,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 )
 
 type fakeL4RelayPathDialer struct {
@@ -1994,7 +1992,7 @@ func TestTCPDirectProxySupportsHostnameBackend(t *testing.T) {
 func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -2021,7 +2019,7 @@ func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
 	listenPort := pickFreeTCPPort(t)
 	scope := "tcp:" + net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort))
 	targetAddress := upstreamLn.Addr().String()
-	backendKey := backends.BackendObservationKey(scope, backends.StableBackendID(targetAddress))
+	backendKey := model.BackendObservationKey(scope, model.StableBackendID(targetAddress))
 
 	cache.MarkFailure(targetAddress)
 	cache.ObserveBackendFailure(backendKey)
@@ -2066,7 +2064,7 @@ func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
 	for time.Now().Before(deadline) {
 		resolved := cache.Summary(targetAddress)
 		backend := cache.Summary(backendKey)
-		if resolved.RecentSucceeded > 0 && backend.State == backends.ObservationStateWarm && backend.SlowStartActive {
+		if resolved.RecentSucceeded > 0 && backend.State == model.ObservationStateWarm && backend.SlowStartActive {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -2079,7 +2077,7 @@ func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
 
 func TestObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -2088,7 +2086,7 @@ func TestObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
 	scope := "tcp:0.0.0.0:9550"
 	candidate := l4Candidate{
 		address:               "203.0.113.10:9001",
-		backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID("203.0.113.10:9001")),
+		backendObservationKey: model.BackendObservationKey(scope, model.StableBackendID("203.0.113.10:9001")),
 	}
 
 	for i := 0; i < 3; i++ {
@@ -2358,7 +2356,7 @@ func TestAdaptiveUDPReplyTimeoutKeepsRelaySessionOnStaticTimeoutPath(t *testing.
 
 func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			switch host {
 			case "warm.example":
@@ -2382,7 +2380,7 @@ func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T)
 
 	scope := "tcp:0.0.0.0:9443"
 	for i := 0; i < 4; i++ {
-		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, backends.StableBackendID("warm.example:9001")), 20*time.Millisecond, 200*time.Millisecond, 512*1024)
+		cache.ObserveBackendSuccess(model.BackendObservationKey(scope, model.StableBackendID("warm.example:9001")), 20*time.Millisecond, 200*time.Millisecond, 512*1024)
 	}
 
 	candidates, err := l4Candidates(context.Background(), cache, model.L4Rule{
@@ -2406,7 +2404,7 @@ func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T)
 func TestL4CandidatesAdaptivePromotesRecoveredResolvedCandidateOnlyDuringSlowStart(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			switch host {
 			case "dual.example":
@@ -2467,14 +2465,14 @@ func TestL4CandidatesAdaptivePromotesRecoveredResolvedCandidateOnlyDuringSlowSta
 	}
 
 	summary := cache.Summary(recoveredAddress)
-	if summary.State != backends.ObservationStateWarm || !summary.SlowStartActive {
+	if summary.State != model.ObservationStateWarm || !summary.SlowStartActive {
 		t.Fatalf("Summary = %+v", summary)
 	}
 }
 
 func TestL4CandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			switch host {
 			case "resolved.example":
@@ -2498,7 +2496,7 @@ func TestL4CandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 		cache.ObserveTransferSuccess(fastLowerThroughput, 10*time.Millisecond, 350*time.Millisecond, 512*1024)
 	}
 
-	resolved, err := cache.Resolve(context.Background(), backends.Endpoint{Host: "resolved.example", Port: 9001})
+	resolved, err := cache.Resolve(context.Background(), model.Endpoint{Host: "resolved.example", Port: 9001})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -2528,7 +2526,7 @@ func TestL4CandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 
 func TestL4CandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -2537,18 +2535,18 @@ func TestL4CandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 	scope := "tcp:0.0.0.0:9447"
 	slowHighThroughput := "127.0.0.91:9001"
 	fastLowerThroughput := "127.0.0.90:9001"
-	slowBackendID := backends.StableBackendID(slowHighThroughput)
-	fastBackendID := backends.StableBackendID(fastLowerThroughput)
+	slowBackendID := model.StableBackendID(slowHighThroughput)
+	fastBackendID := model.StableBackendID(fastLowerThroughput)
 	for i := 0; i < 3; i++ {
-		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, slowBackendID), 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
-		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, fastBackendID), 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+		cache.ObserveBackendSuccess(model.BackendObservationKey(scope, slowBackendID), 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveBackendSuccess(model.BackendObservationKey(scope, fastBackendID), 10*time.Millisecond, 350*time.Millisecond, 512*1024)
 	}
 
-	placeholders := []backends.Candidate{
+	placeholders := []model.Candidate{
 		{Address: slowBackendID},
 		{Address: fastBackendID},
 	}
-	if got := cache.Order(scope, backends.StrategyAdaptive, placeholders); got[0].Address != slowBackendID {
+	if got := cache.Order(scope, model.StrategyAdaptive, placeholders); got[0].Address != slowBackendID {
 		t.Fatalf("fixture must diverge under throughput-aware placeholder ordering: %+v", got)
 	}
 
@@ -2574,7 +2572,7 @@ func TestL4CandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 }
 
 func TestL4CandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 
 	candidates, err := l4Candidates(context.Background(), cache, model.L4Rule{
 		Protocol:   "tcp",
@@ -2598,7 +2596,7 @@ func TestL4CandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing
 
 func TestL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	resolverCalls := 0
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			resolverCalls++
 			return nil, fmt.Errorf("unexpected resolve %q", host)
@@ -2632,7 +2630,7 @@ func TestL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 }
 
 func TestL4CandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	rule := model.L4Rule{
 		Protocol:   "tcp",
 		ListenHost: "0.0.0.0",
@@ -2646,7 +2644,7 @@ func TestL4CandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
 			Port: 9001,
 		}},
 	}
-	cache.MarkFailure(backends.RelayBackoffKey([]int{201, 301}, "relay-upstream.example:9001"))
+	cache.MarkFailure(model.RelayBackoffKey([]int{201, 301}, "relay-upstream.example:9001"))
 
 	candidates, err := l4Candidates(context.Background(), cache, rule)
 	if err != nil {
@@ -2661,7 +2659,7 @@ func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	srv := &Server{
 		ctx:   ctx,
 		cache: cache,
@@ -2695,7 +2693,7 @@ func TestDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	dialer := &fakeL4RelayPathDialer{conn: clientConn}
 	srv := &Server{
 		ctx:   context.Background(),
-		cache: backends.NewCache(backends.Config{}),
+		cache: model.NewCache(model.BackendCacheConfig{}),
 		now:   time.Now,
 		relayListenersByID: map[int]model.RelayListener{
 			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
@@ -2735,7 +2733,7 @@ func TestDialTCPUpstreamWireGuardTransparentDirectUsesClientLocalAddr(t *testing
 	dialed := make(chan string, 1)
 	srv := &Server{
 		ctx:   context.Background(),
-		cache: backends.NewCache(backends.Config{}),
+		cache: model.NewCache(model.BackendCacheConfig{}),
 		now:   time.Now,
 		tcpDialer: func(_ context.Context, network, address string) (net.Conn, error) {
 			if network != "tcp" {
@@ -2786,7 +2784,7 @@ func TestDialTCPUpstreamWireGuardTransparentRelayUsesClientLocalAddr(t *testing.
 	dialer := &fakeL4RelayPathDialer{conn: upstream}
 	srv := &Server{
 		ctx:   context.Background(),
-		cache: backends.NewCache(backends.Config{}),
+		cache: model.NewCache(model.BackendCacheConfig{}),
 		now:   time.Now,
 		relayListenersByID: map[int]model.RelayListener{
 			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
@@ -2830,7 +2828,7 @@ func TestDialProxyEntryWireGuardEgressUsesRelayLayers(t *testing.T) {
 	runtime := &fakeL4WireGuardRuntime{}
 	srv := &Server{
 		ctx:   context.Background(),
-		cache: backends.NewCache(backends.Config{}),
+		cache: model.NewCache(model.BackendCacheConfig{}),
 		now:   time.Now,
 		relayListenersByID: map[int]model.RelayListener{
 			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
@@ -2872,7 +2870,7 @@ func TestDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
 	dialer := &fakeL4RelayPathDialer{conn: upstream}
 	srv := &Server{
 		ctx:   context.Background(),
-		cache: backends.NewCache(backends.Config{}),
+		cache: model.NewCache(model.BackendCacheConfig{}),
 		now:   time.Now,
 		relayListenersByID: map[int]model.RelayListener{
 			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
@@ -2918,7 +2916,7 @@ func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
 	dialer := &fakeL4RelayPathDialer{}
 	srv := &Server{
 		ctx:   context.Background(),
-		cache: backends.NewCache(backends.Config{}),
+		cache: model.NewCache(model.BackendCacheConfig{}),
 		now:   time.Now,
 		relayListenersByID: map[int]model.RelayListener{
 			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
@@ -2996,7 +2994,7 @@ func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
 
 func TestDialTCPUpstreamRelayLayersFailureDoesNotMarkAggregateBackoff(t *testing.T) {
 	dialer := &fakeL4RelayPathDialer{}
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	srv := &Server{
 		ctx:   context.Background(),
 		cache: cache,
@@ -3019,7 +3017,7 @@ func TestDialTCPUpstreamRelayLayersFailureDoesNotMarkAggregateBackoff(t *testing
 	if err == nil {
 		t.Fatal("dialTCPUpstream() error = nil")
 	}
-	aggregateKey := backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "backend.example:9001")
+	aggregateKey := model.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "backend.example:9001")
 	if cache.IsInBackoff(aggregateKey) {
 		t.Fatalf("aggregate relay layer key %q was marked in backoff after path-level failures", aggregateKey)
 	}
@@ -3034,7 +3032,7 @@ func TestDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T) {
 	dialer := &fakeL4RelayPathDialer{conn: clientConn}
 	srv := &Server{
 		ctx:   context.Background(),
-		cache: backends.NewCache(backends.Config{}),
+		cache: model.NewCache(model.BackendCacheConfig{}),
 		now:   time.Now,
 		relayListenersByID: map[int]model.RelayListener{
 			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
@@ -3100,7 +3098,7 @@ func TestDialUDPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	dialer := &fakeL4RelayPathDialer{conn: clientConn}
 	srv := &Server{
 		ctx:   context.Background(),
-		cache: backends.NewCache(backends.Config{}),
+		cache: model.NewCache(model.BackendCacheConfig{}),
 		now:   time.Now,
 		relayListenersByID: map[int]model.RelayListener{
 			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
@@ -3286,7 +3284,7 @@ func TestTCPRelayProxyDefersHostnameResolutionToRealRelayRuntime(t *testing.T) {
 	}
 	defer relayServer.Close()
 
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			t.Fatalf("origin runtime unexpectedly resolved backend host %q", host)
 			return nil, fmt.Errorf("unexpected resolver host %q", host)

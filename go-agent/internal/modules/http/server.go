@@ -5,18 +5,16 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"log"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
+	"log"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
 )
 
 type Server struct {
@@ -45,7 +43,7 @@ type Providers struct {
 type routeEntry struct {
 	rule                       model.HTTPRule
 	backends                   []httpBackend
-	backendCache               *backends.Cache
+	backendCache               *model.Cache
 	transport                  *http.Transport
 	directInteractiveTransport *http.Transport
 	directBulkTransport        *http.Transport
@@ -63,7 +61,7 @@ type httpBackend struct {
 }
 
 func NewServer(listener model.HTTPListener) *Server {
-	server, _ := newServer(listener, nil, Providers{}, backends.NewCache(backends.Config{}), NewSharedTransport())
+	server, _ := newServer(listener, nil, Providers{}, model.NewCache(model.BackendCacheConfig{}), NewSharedTransport())
 	return server
 }
 
@@ -71,7 +69,7 @@ func newServer(
 	listener model.HTTPListener,
 	relayListeners []model.RelayListener,
 	providers Providers,
-	backendCache *backends.Cache,
+	backendCache *model.Cache,
 	sharedTransport *http.Transport,
 ) (*Server, error) {
 	return newServerWithResilience(listener, relayListeners, providers, backendCache, sharedTransport, StreamResilienceOptions{})
@@ -81,7 +79,7 @@ func newServerWithResilience(
 	listener model.HTTPListener,
 	relayListeners []model.RelayListener,
 	providers Providers,
-	backendCache *backends.Cache,
+	backendCache *model.Cache,
 	sharedTransport *http.Transport,
 	resilience StreamResilienceOptions,
 ) (*Server, error) {
@@ -253,7 +251,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
 			backoffAddr := actualDialAddress
 			if ruleUsesRelay(e.rule) {
-				backoffAddr = backends.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, actualDialAddress)
+				backoffAddr = model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, actualDialAddress)
 			}
 			if e.backendCache.IsInBackoff(backoffAddr) {
 				break

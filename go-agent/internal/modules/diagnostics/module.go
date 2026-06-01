@@ -3,14 +3,12 @@ package diagnostics
 import (
 	"context"
 	"errors"
-	"sync"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"sync"
 )
 
 type Handler interface {
@@ -204,10 +202,10 @@ func (m *Module) HandleSnapshotTask(ctx context.Context, snapshot model.Snapshot
 }
 
 type diagnosticsCacheSource interface {
-	Cache() *backends.Cache
+	Cache() *model.Cache
 }
 
-func diagnosticsCache(resolver module.ProviderResolver, ref module.ProviderRef) *backends.Cache {
+func diagnosticsCache(resolver module.ProviderResolver, ref module.ProviderRef) *model.Cache {
 	if resolver == nil {
 		return nil
 	}

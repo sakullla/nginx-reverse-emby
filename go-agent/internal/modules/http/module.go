@@ -3,19 +3,17 @@ package http
 import (
 	"context"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 	"net"
 	stdhttp "net/http"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 )
 
 const runtimeBindRetryTimeout = 2 * time.Second
@@ -26,14 +24,14 @@ type Config struct {
 	HTTP3Enabled    bool
 	Transport       TransportOptions
 	Resilience      StreamResilienceOptions
-	BackendFailures backends.Config
+	BackendFailures model.BackendCacheConfig
 }
 
 type Module struct {
 	mu sync.Mutex
 
 	runtime      *Runtime
-	cache        *backends.Cache
+	cache        *model.Cache
 	transport    *stdhttp.Transport
 	options      StreamResilienceOptions
 	http3Enabled bool
@@ -50,7 +48,7 @@ func NewModule(cfg Config) *Module {
 	transport := NewSharedTransport()
 	ApplyTransportOptions(transport, cfg.Transport)
 	return &Module{
-		cache:        backends.NewCache(cfg.BackendFailures),
+		cache:        model.NewCache(cfg.BackendFailures),
 		transport:    transport,
 		options:      cfg.Resilience,
 		http3Enabled: cfg.HTTP3Enabled,
@@ -347,7 +345,7 @@ func (m *Module) currentTrafficBlockStateLocked() TrafficBlockState {
 	return m.blockState.Load()
 }
 
-func (m *Module) Cache() *backends.Cache {
+func (m *Module) Cache() *model.Cache {
 	if m == nil {
 		return nil
 	}

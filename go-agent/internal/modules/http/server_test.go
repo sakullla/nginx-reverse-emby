@@ -14,6 +14,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	"io"
 	"math/big"
 	"net"
@@ -26,12 +30,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 type recordingRelayPathDialer struct {
@@ -100,7 +98,7 @@ func TestHTTPMissingEgressProfileFailsStartup(t *testing.T) {
 		FrontendURL:     "http://media.example.test",
 		Backends:        []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
 		EgressProfileID: &profileID,
-	}}, nil, Providers{}, backends.NewCache(backends.Config{}), NewSharedTransport(), false, StreamResilienceOptions{})
+	}}, nil, Providers{}, model.NewCache(model.BackendCacheConfig{}), NewSharedTransport(), false, StreamResilienceOptions{})
 	if err == nil || !strings.Contains(err.Error(), "egress profile 17 not found") {
 		t.Fatalf("StartWithResourcesAndOptions() error = %v, want missing egress profile", err)
 	}
@@ -125,7 +123,7 @@ func TestHTTPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
 		Type:     "socks",
 		ProxyURL: proxyURL,
 		Enabled:  true,
-	}}}, backends.NewCache(backends.Config{}), NewSharedTransport(), StreamResilienceOptions{})
+	}}}, model.NewCache(model.BackendCacheConfig{}), NewSharedTransport(), StreamResilienceOptions{})
 	if err != nil {
 		t.Fatalf("newServerWithResilience() error = %v", err)
 	}
@@ -160,7 +158,7 @@ func TestHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
 		Type:     "http",
 		ProxyURL: proxyURL,
 		Enabled:  true,
-	}}}, backends.NewCache(backends.Config{}), NewSharedTransport(), StreamResilienceOptions{})
+	}}}, model.NewCache(model.BackendCacheConfig{}), NewSharedTransport(), StreamResilienceOptions{})
 	if err != nil {
 		t.Fatalf("newServerWithResilience() error = %v", err)
 	}
@@ -200,7 +198,7 @@ func TestHTTPDirectEgressProfileUsesSharedDirectTransport(t *testing.T) {
 		ID:      profileID,
 		Type:    "direct",
 		Enabled: true,
-	}}}, backends.NewCache(backends.Config{}), sharedTransport, StreamResilienceOptions{})
+	}}}, model.NewCache(model.BackendCacheConfig{}), sharedTransport, StreamResilienceOptions{})
 	if err != nil {
 		t.Fatalf("newServerWithResilience() error = %v", err)
 	}
@@ -525,7 +523,7 @@ func TestServerUsesBackendAuthorityForHTTPSUpstreamsResolvedToIP(t *testing.T) {
 	}()
 
 	backendPort := backendListener.Addr().(*net.TCPAddr).Port
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			if host != backendHost {
 				t.Fatalf("unexpected resolver host %q", host)
@@ -830,7 +828,7 @@ func TestNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
 		}}},
 		nil,
 		Providers{},
-		backends.NewCache(backends.Config{}),
+		model.NewCache(model.BackendCacheConfig{}),
 		shared,
 		StreamResilienceOptions{},
 	)
@@ -880,7 +878,7 @@ func TestNewServerSharesDirectClassedTransportsAcrossDirectRoutes(t *testing.T) 
 		}},
 		nil,
 		Providers{},
-		backends.NewCache(backends.Config{}),
+		model.NewCache(model.BackendCacheConfig{}),
 		shared,
 		StreamResilienceOptions{},
 	)
@@ -929,7 +927,7 @@ func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T
 			PinSet:     []model.RelayPin{{Type: "sha256", Value: "relay-pin"}},
 		}},
 		Providers{Relay: &testRuntimeMaterialProvider{}},
-		backends.NewCache(backends.Config{}),
+		model.NewCache(model.BackendCacheConfig{}),
 		shared,
 		StreamResilienceOptions{},
 	)
@@ -974,7 +972,7 @@ func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T
 }
 
 func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	entry := &routeEntry{
 		rule: model.HTTPRule{
 			FrontendURL: "http://edge.example.test",
@@ -1008,7 +1006,7 @@ func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
 }
 
 func TestRouteEntryCandidatesPreferResolvedAddressWithLowerObservedLatency(t *testing.T) {
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			return []net.IPAddr{
 				{IP: net.ParseIP("127.0.0.10")},
@@ -1046,7 +1044,7 @@ func TestRouteEntryCandidatesPreferResolvedAddressWithLowerObservedLatency(t *te
 }
 
 func TestRouteEntryCandidatesPreserveResolvedOrderWithoutObservations(t *testing.T) {
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			return []net.IPAddr{
 				{IP: net.ParseIP("127.0.0.12")},
@@ -1079,7 +1077,7 @@ func TestRouteEntryCandidatesPreserveResolvedOrderWithoutObservations(t *testing
 }
 
 func TestRouteEntryCandidatesKeepBackoffBeforeLatencyPreference(t *testing.T) {
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			return []net.IPAddr{
 				{IP: net.ParseIP("127.0.0.14")},
@@ -1119,7 +1117,7 @@ func TestRouteEntryCandidatesKeepBackoffBeforeLatencyPreference(t *testing.T) {
 
 func TestRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	resolverCalls := 0
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			resolverCalls++
 			return nil, fmt.Errorf("unexpected resolve %q", host)
@@ -1160,7 +1158,7 @@ func TestRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T)
 }
 
 func TestRouteEntryCandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	target, err := url.Parse("https://relay-target.example:9443")
 	if err != nil {
 		t.Fatalf("url.Parse() error = %v", err)
@@ -1172,7 +1170,7 @@ func TestRouteEntryCandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
 			{201},
 		},
 	}
-	cache.MarkFailure(backends.RelayBackoffKey([]int{101, 201}, "relay-target.example:9443"))
+	cache.MarkFailure(model.RelayBackoffKey([]int{101, 201}, "relay-target.example:9443"))
 
 	entry := &routeEntry{
 		rule: rule,
@@ -1194,7 +1192,7 @@ func TestRouteEntryCandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
 }
 
 func TestRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	rule := model.HTTPRule{
 		FrontendURL: "http://frontend.example",
 		RelayLayers: [][]int{
@@ -1234,11 +1232,11 @@ func TestRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
 	if err == nil {
 		t.Fatal("serveHTTP() error = nil, want truncated response error")
 	}
-	aggregateKey := backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, selectedAddress)
+	aggregateKey := model.RelayBackoffKeyForLayers(nil, rule.RelayLayers, selectedAddress)
 	if cache.IsInBackoff(aggregateKey) {
 		t.Fatalf("aggregate relay layer key %q was marked in backoff", aggregateKey)
 	}
-	selectedKey := backends.RelayBackoffKey(selectedPath, selectedAddress)
+	selectedKey := model.RelayBackoffKey(selectedPath, selectedAddress)
 	if !cache.IsInBackoff(selectedKey) {
 		t.Fatalf("selected relay path key %q was not marked in backoff", selectedKey)
 	}
@@ -1246,7 +1244,7 @@ func TestRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
 
 func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *testing.T) {
 	resolverCalls := 0
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			resolverCalls++
 			return nil, fmt.Errorf("unexpected resolve %q", host)
@@ -1295,7 +1293,7 @@ func TestNewSharedTransportLimitsConcurrentConnectionsPerHost(t *testing.T) {
 }
 
 func TestNewServerUsesFullFrontendURLAsAdaptiveObservationScope(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	transport := NewSharedTransport()
 	server, err := newServer(model.HTTPListener{
 		Rules: []model.HTTPRule{{
@@ -1324,7 +1322,7 @@ func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	defer backend.Close()
 
 	backendURL := mustParseBackendURL(t, backend.URL)
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 
 	entry := &routeEntry{
 		rule: model.HTTPRule{
@@ -1346,7 +1344,7 @@ func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 		t.Fatalf("serveHTTP() error = %v", err)
 	}
 
-	candidates := cache.PreferResolvedCandidates([]backends.Candidate{
+	candidates := cache.PreferResolvedCandidates([]model.Candidate{
 		{Address: "203.0.113.10:80"},
 		{Address: backendURL.Host},
 	})
@@ -1357,7 +1355,7 @@ func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 
 func TestRouteEntryObserveSuccessfulBackendUsesTransferDurationForFutureRanking(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -1371,7 +1369,7 @@ func TestRouteEntryObserveSuccessfulBackendUsesTransferDurationForFutureRanking(
 	cache.ObserveTransferSuccess("203.0.113.21:80", 20*time.Millisecond, 200*time.Millisecond, 1024*1024)
 	cache.ObserveTransferSuccess("203.0.113.21:80", 20*time.Millisecond, 200*time.Millisecond, 512*1024)
 
-	candidates := cache.PreferResolvedCandidates([]backends.Candidate{
+	candidates := cache.PreferResolvedCandidates([]model.Candidate{
 		{Address: "203.0.113.21:80"},
 		{Address: "203.0.113.20:80"},
 	})
@@ -1383,7 +1381,7 @@ func TestRouteEntryObserveSuccessfulBackendUsesTransferDurationForFutureRanking(
 func TestRouteEntryObserveSuccessfulBackendStartsSlowStartAfterRecovery(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -1392,7 +1390,7 @@ func TestRouteEntryObserveSuccessfulBackendStartsSlowStartAfterRecovery(t *testi
 		backendCache: cache,
 	}
 
-	backendKey := backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://backend.example:8096"))
+	backendKey := model.BackendObservationKey("edge.example.test", model.StableBackendID("http://backend.example:8096"))
 	address := "203.0.113.30:8096"
 
 	cache.ObserveBackendFailure(backendKey)
@@ -1401,7 +1399,7 @@ func TestRouteEntryObserveSuccessfulBackendStartsSlowStartAfterRecovery(t *testi
 	entry.observeSuccessfulBackend(httpCandidate{backendObservationKey: backendKey}, nil, address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
 
 	summary := cache.Summary(backendKey)
-	if summary.State != backends.ObservationStateWarm {
+	if summary.State != model.ObservationStateWarm {
 		t.Fatalf("expected warmed backend after recovery successes, got %+v", summary)
 	}
 	if !summary.SlowStartActive {
@@ -1414,7 +1412,7 @@ func TestRouteEntryObserveSuccessfulBackendStartsSlowStartAfterRecovery(t *testi
 
 func TestRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			switch host {
 			case "bulk.example":
@@ -1429,8 +1427,8 @@ func TestRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *te
 			return base
 		},
 	})
-	bulkKey := backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://bulk.example:8096"))
-	fastKey := backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://fast.example:8096"))
+	bulkKey := model.BackendObservationKey("edge.example.test", model.StableBackendID("http://bulk.example:8096"))
+	fastKey := model.BackendObservationKey("edge.example.test", model.StableBackendID("http://fast.example:8096"))
 	cache.ObserveBackendSuccess(bulkKey, 30*time.Millisecond, 100*time.Millisecond, 4*1024*1024)
 	cache.ObserveBackendSuccess(bulkKey, 30*time.Millisecond, 100*time.Millisecond, 4*1024*1024)
 	cache.ObserveBackendSuccess(fastKey, 10*time.Millisecond, 200*time.Millisecond, 64*1024)
@@ -1465,7 +1463,7 @@ func TestRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *te
 
 func TestRouteEntryCandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			switch host {
 			case "warm.example":
@@ -1489,7 +1487,7 @@ func TestRouteEntryCandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *te
 
 	warmBackend := mustParseBackendURL(t, "http://warm.example:8096")
 	coldBackend := mustParseBackendURL(t, "http://cold.example:8096")
-	warmKey := backends.BackendObservationKey("edge.example.test", backends.StableBackendID(warmBackend.String()))
+	warmKey := model.BackendObservationKey("edge.example.test", model.StableBackendID(warmBackend.String()))
 	for i := 0; i < 4; i++ {
 		cache.ObserveBackendSuccess(warmKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
 	}
@@ -1539,7 +1537,7 @@ func TestRouteEntryServeHTTPDoesNotRecordSuccessWhenBodyCopyFails(t *testing.T) 
 	defer broken.Close()
 
 	brokenURL := mustParseBackendURL(t, broken.URL)
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	cache.ObserveSuccess("203.0.113.10:80", 100*time.Millisecond)
 
 	entry := &routeEntry{
@@ -1567,7 +1565,7 @@ func TestRouteEntryServeHTTPDoesNotRecordSuccessWhenBodyCopyFails(t *testing.T) 
 		t.Fatalf("expected startedResponseError, got %v", err)
 	}
 
-	candidates := cache.PreferResolvedCandidates([]backends.Candidate{
+	candidates := cache.PreferResolvedCandidates([]model.Candidate{
 		{Address: "203.0.113.10:80"},
 		{Address: brokenURL.Host},
 	})
@@ -1620,7 +1618,7 @@ func TestPrepareReusableBodyLeavesSingleAttemptRequestsStreaming(t *testing.T) {
 
 func TestRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
 	sentinel := errors.New("synthetic dial error")
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	transport := NewSharedTransport()
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		return nil, sentinel
@@ -1655,7 +1653,7 @@ func TestRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
 }
 
 func TestRouteEntryPropagatesCanceledResolveErrors(t *testing.T) {
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
@@ -1701,7 +1699,7 @@ func TestRouteEntryRetriesUpstreamHeaderTimeouts(t *testing.T) {
 	}))
 	defer good.Close()
 
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	transport := NewSharedTransport()
 	transport.ResponseHeaderTimeout = 50 * time.Millisecond
 	entry := &routeEntry{
@@ -1756,7 +1754,7 @@ func TestRouteEntryRetriesSameBackendOnceBeforeFailingRequest(t *testing.T) {
 	defer flaky.Close()
 
 	backendURL := mustParseBackendURL(t, flaky.URL)
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	entry := &routeEntry{
 		rule: model.HTTPRule{
 			FrontendURL: "http://edge.example.test",
@@ -1792,7 +1790,7 @@ func TestRouteEntryRetriesSameBackendOnceBeforeFailingRequest(t *testing.T) {
 
 func TestRouteEntryMarksRedirectDialAddressInBackoffOnFailure(t *testing.T) {
 	redirectTarget := mustParseBackendURL(t, "http://127.0.0.1:18093")
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			if host != "backend.example" {
 				t.Fatalf("unexpected resolver host %q", host)
@@ -1844,7 +1842,7 @@ func TestRouteEntryMarksRedirectDialAddressInBackoffOnFailure(t *testing.T) {
 
 func TestRouteEntrySkipsRedirectDialAddressAlreadyInBackoff(t *testing.T) {
 	redirectTarget := mustParseBackendURL(t, "http://127.0.0.1:18094")
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			if host != "backend.example" {
 				t.Fatalf("unexpected resolver host %q", host)
@@ -1916,7 +1914,7 @@ func TestRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
 		backends: []httpBackend{
 			{target: backendURL, backendHost: backendURL.Host},
 		},
-		backendCache:   backends.NewCache(backends.Config{}),
+		backendCache:   model.NewCache(model.BackendCacheConfig{}),
 		transport:      NewSharedTransport(),
 		selectionScope: "edge.example.test",
 		resilience: StreamResilienceOptions{
@@ -1991,7 +1989,7 @@ func TestServerDoesNotAppendBadGatewayAfterResumableResponseStarts(t *testing.T)
 		},
 		nil,
 		Providers{},
-		backends.NewCache(backends.Config{}),
+		model.NewCache(model.BackendCacheConfig{}),
 		NewSharedTransport(),
 		StreamResilienceOptions{
 			ResumeEnabled:     true,
@@ -3117,7 +3115,7 @@ func TestStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
 	}
 	defer relayServer.Close()
 
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			t.Fatalf("origin runtime unexpectedly resolved backend host %q", host)
 			return nil, fmt.Errorf("unexpected resolver host %q", host)
@@ -3207,7 +3205,7 @@ func TestStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *testing.T) 
 	}
 	defer relayServer.Close()
 
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	frontendPort := pickFreePort(t)
 	runtime, err := StartWithResources(
 		context.Background(),
@@ -3243,7 +3241,7 @@ func TestStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *testing.T) 
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	selectedAddress := "127.0.0.1:" + backendURL.Port()
-	key := backends.RelayBackoffKey([]int{relayListener.ID}, selectedAddress)
+	key := model.RelayBackoffKey([]int{relayListener.ID}, selectedAddress)
 	if summary := cache.Summary(key); summary.RecentSucceeded != 1 {
 		t.Fatalf("selected resolved candidate summary = %+v, want runtime access success at %s", summary, key)
 	}
@@ -3532,13 +3530,13 @@ func TestResolveRelayPathsExpandsRelayLayers(t *testing.T) {
 }
 
 func TestNewRelayTransportsOrdersPathsByBackendCache(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	target := "backend:443"
 	scope := "relay_path|" + target
 	slowKey := relayplan.PathKey("relay_path", []int{1}, target)
 	fastKey := relayplan.PathKey("relay_path", []int{2}, target)
-	cache.ObserveBackendFailure(backends.BackendObservationKey(scope, slowKey))
-	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, fastKey), 10*time.Millisecond, 10*time.Millisecond, 0)
+	cache.ObserveBackendFailure(model.BackendObservationKey(scope, slowKey))
+	cache.ObserveBackendSuccess(model.BackendObservationKey(scope, fastKey), 10*time.Millisecond, 10*time.Millisecond, 0)
 
 	rule := model.HTTPRule{
 		FrontendURL: "https://frontend.example",
@@ -3733,7 +3731,7 @@ func TestRelayTransportClearsInheritedTLSDialHooks(t *testing.T) {
 }
 
 func TestRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	selectedAddress := "relay-target.example:80"
 	selectedPath := []int{101, 201}
 	var dials atomic.Int32
@@ -3799,11 +3797,11 @@ func TestRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
 	if got := dials.Load(); got != 1 {
 		t.Fatalf("relay transport dials = %d, want second request to reuse first relay connection", got)
 	}
-	aggregateKey := backends.RelayBackoffKeyForLayers(nil, entry.rule.RelayLayers, selectedAddress)
+	aggregateKey := model.RelayBackoffKeyForLayers(nil, entry.rule.RelayLayers, selectedAddress)
 	if cache.IsInBackoff(aggregateKey) {
 		t.Fatalf("aggregate relay layer key %q was marked in backoff", aggregateKey)
 	}
-	selectedKey := backends.RelayBackoffKey(selectedPath, selectedAddress)
+	selectedKey := model.RelayBackoffKey(selectedPath, selectedAddress)
 	if !cache.IsInBackoff(selectedKey) {
 		t.Fatalf("selected relay path key %q was not marked in backoff", selectedKey)
 	}

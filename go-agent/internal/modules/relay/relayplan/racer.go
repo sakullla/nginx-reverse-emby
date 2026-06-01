@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
@@ -49,7 +49,7 @@ type Dialer interface {
 
 type Racer struct {
 	Dialer      Dialer
-	Cache       *backends.Cache
+	Cache       *model.Cache
 	Concurrency int
 	MaxPaths    int
 }
@@ -181,7 +181,7 @@ func (r Racer) orderPaths(req Request) []Path {
 	if r.Cache == nil || len(paths) <= 1 {
 		return paths
 	}
-	candidates := make([]backends.Candidate, 0, len(paths))
+	candidates := make([]model.Candidate, 0, len(paths))
 	pathsByKey := make(map[string]Path, len(paths))
 	for _, path := range paths {
 		key := path.Key
@@ -189,10 +189,10 @@ func (r Racer) orderPaths(req Request) []Path {
 			key = PathKey("relay_path", path.IDs, req.Target)
 		}
 		pathsByKey[key] = path
-		candidates = append(candidates, backends.Candidate{Address: key})
+		candidates = append(candidates, model.Candidate{Address: key})
 	}
 	scope := RelayPathScope(req.Target)
-	ordered := r.Cache.Order(scope, backends.StrategyAdaptive, candidates)
+	ordered := r.Cache.Order(scope, model.StrategyAdaptive, candidates)
 	out := make([]Path, 0, len(ordered))
 	for _, candidate := range ordered {
 		path, ok := pathsByKey[candidate.Address]
@@ -228,7 +228,7 @@ func (r Racer) pathObservationKey(req Request, path Path) string {
 	if strings.TrimSpace(key) == "" {
 		key = PathKey("relay_path", path.IDs, req.Target)
 	}
-	return backends.BackendObservationKey(RelayPathScope(req.Target), key)
+	return model.BackendObservationKey(RelayPathScope(req.Target), key)
 }
 
 func RelayPathScope(target string) string {

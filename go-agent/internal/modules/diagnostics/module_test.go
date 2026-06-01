@@ -5,12 +5,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"reflect"
-	"testing"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	"reflect"
+	"testing"
 )
 
 func TestModuleDescriptorUsesDiagnosticsSources(t *testing.T) {
@@ -106,14 +104,14 @@ func TestModuleRollbackKeepsPreviousCommittedDiagnosticsState(t *testing.T) {
 }
 
 type staticDiagnosticSource struct {
-	cache *backends.Cache
+	cache *model.Cache
 }
 
-func (s staticDiagnosticSource) Cache() *backends.Cache {
+func (s staticDiagnosticSource) Cache() *model.Cache {
 	if s.cache != nil {
 		return s.cache
 	}
-	return backends.NewCache(backends.Config{})
+	return model.NewCache(model.BackendCacheConfig{})
 }
 
 type staticRelaySource struct{}

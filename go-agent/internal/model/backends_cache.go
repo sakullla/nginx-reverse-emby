@@ -1,4 +1,4 @@
-package backends
+package model
 
 import (
 	"context"
@@ -158,7 +158,7 @@ type backendObservationIndexKey struct {
 	backendID string
 }
 
-func NewCache(cfg Config) *Cache {
+func NewCache(cfg BackendCacheConfig) *Cache {
 	resolver := cfg.Resolver
 	if resolver == nil {
 		resolver = net.DefaultResolver

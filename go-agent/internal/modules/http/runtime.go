@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"log"
 	"net"
 	"net/http"
@@ -12,10 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 type Runtime struct {
@@ -63,7 +61,7 @@ func StartWithResources(
 	rules []model.HTTPRule,
 	relayListeners []model.RelayListener,
 	providers Providers,
-	backendCache *backends.Cache,
+	backendCache *model.Cache,
 	sharedTransport *http.Transport,
 	http3Enabled bool,
 ) (*Runtime, error) {
@@ -75,7 +73,7 @@ func StartWithResourcesAndOptions(
 	rules []model.HTTPRule,
 	relayListeners []model.RelayListener,
 	providers Providers,
-	backendCache *backends.Cache,
+	backendCache *model.Cache,
 	sharedTransport *http.Transport,
 	http3Enabled bool,
 	resilience StreamResilienceOptions,
@@ -85,7 +83,7 @@ func StartWithResourcesAndOptions(
 		return nil, err
 	}
 	if backendCache == nil {
-		backendCache = backends.NewCache(backends.Config{})
+		backendCache = model.NewCache(model.BackendCacheConfig{})
 	}
 	if sharedTransport == nil {
 		sharedTransport = NewSharedTransport()

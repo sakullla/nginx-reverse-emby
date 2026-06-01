@@ -1,4 +1,4 @@
-package backends
+package model
 
 import (
 	"context"
@@ -117,7 +117,7 @@ type SelectionConfig struct {
 	Strategy string
 }
 
-type Config struct {
+type BackendCacheConfig struct {
 	Resolver            Resolver
 	Now                 func() time.Time
 	RandomIntn          func(n int) int

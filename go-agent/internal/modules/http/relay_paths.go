@@ -4,17 +4,15 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"strings"
 	"sync"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 )
 
 type relayPathDialer struct {
@@ -38,7 +36,7 @@ func newRelayTransports(
 	provider RelayMaterialProvider,
 	finalHopDialer relay.FinalHopDialer,
 	base *http.Transport,
-	cache *backends.Cache,
+	cache *model.Cache,
 ) (*http.Transport, *http.Transport, *http.Transport, error) {
 	if provider == nil {
 		return nil, nil, nil, fmt.Errorf("http rule %q: relay_layers requires relay tls material provider", rule.FrontendURL)
@@ -71,7 +69,7 @@ func newRelayTransports(
 	return transport, interactive, bulk, nil
 }
 
-func newRelayPathRacer(provider RelayMaterialProvider, cache *backends.Cache) relayplan.Racer {
+func newRelayPathRacer(provider RelayMaterialProvider, cache *model.Cache) relayplan.Racer {
 	return relayplan.Racer{Dialer: relayPathDialer{provider: provider}, Cache: cache, Concurrency: 3, MaxPaths: 32}
 }
 

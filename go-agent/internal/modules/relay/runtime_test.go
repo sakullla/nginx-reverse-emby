@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
@@ -679,7 +678,7 @@ func TestDialWireGuardRelayPreservesHostnameForRuntimeDNS(t *testing.T) {
 		answers: map[string][]net.IPAddr{},
 	}
 	previousCache := relayHopCache
-	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
 	defer func() {
 		relayHopCache = previousCache
 	}()
@@ -2380,7 +2379,7 @@ func TestDialWithResultResolvesEveryRelayHopAddress(t *testing.T) {
 		},
 	}
 	previousCache := relayHopCache
-	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
 	defer func() {
 		relayHopCache = previousCache
 	}()

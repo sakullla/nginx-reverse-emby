@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
@@ -95,7 +94,7 @@ func TestDialQUICResolvesRelayHopAddressThroughCache(t *testing.T) {
 		},
 	}
 	previousCache := relayHopCache
-	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
 	defer func() {
 		relayHopCache = previousCache
 	}()
@@ -129,7 +128,7 @@ func TestDialQUICRelayHopDoesNotBackoffResolvedAddressesOnCallerCancellation(t *
 		},
 	}
 	previousCache := relayHopCache
-	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
 	defer func() {
 		relayHopCache = previousCache
 	}()

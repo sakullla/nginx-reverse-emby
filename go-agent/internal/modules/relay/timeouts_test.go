@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type fakeRelayTCPBufferConn struct {
@@ -270,7 +270,7 @@ func TestDialRelayTCPResolvesHostThroughRelayHopCache(t *testing.T) {
 		},
 	}
 	previousCache := relayHopCache
-	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
 	defer func() {
 		relayHopCache = previousCache
 	}()
@@ -317,7 +317,7 @@ func TestDialRelayTCPTryNextResolvedAddressAfterFailure(t *testing.T) {
 		},
 	}
 	previousCache := relayHopCache
-	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
 	defer func() {
 		relayHopCache = previousCache
 	}()
@@ -359,7 +359,7 @@ func TestDialRelayTCPDoesNotBackoffResolvedAddressesOnCallerCancellation(t *test
 		},
 	}
 	previousCache := relayHopCache
-	relayHopCache = backends.NewCache(backends.Config{Resolver: resolver})
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
 	defer func() {
 		relayHopCache = previousCache
 	}()

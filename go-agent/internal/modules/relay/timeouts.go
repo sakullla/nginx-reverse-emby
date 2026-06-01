@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 var (
@@ -57,7 +57,7 @@ var relayDialContext relayDialContextFunc = func(ctx context.Context, network, a
 	return dialer.DialContext(ctx, network, address)
 }
 
-var relayHopCache = backends.NewCache(backends.Config{})
+var relayHopCache = model.NewCache(model.BackendCacheConfig{})
 
 func newRelayTCPDialer() net.Dialer {
 	var dialer net.Dialer
@@ -172,11 +172,11 @@ func dialRelayHopTCP(ctx context.Context, address string) (net.Conn, error) {
 	return nil, fmt.Errorf("no healthy relay hop candidates for %s", address)
 }
 
-func relayHopCandidatesAvailableForDial(candidates []backends.Candidate) []backends.Candidate {
+func relayHopCandidatesAvailableForDial(candidates []model.Candidate) []model.Candidate {
 	if len(candidates) <= 1 {
 		return candidates
 	}
-	available := make([]backends.Candidate, 0, len(candidates))
+	available := make([]model.Candidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		if !relayHopCandidateInBackoff(candidate.Address) {
 			available = append(available, candidate)
@@ -188,22 +188,22 @@ func relayHopCandidatesAvailableForDial(candidates []backends.Candidate) []backe
 	return available
 }
 
-func resolveRelayHopCandidates(ctx context.Context, address string) ([]backends.Candidate, error) {
+func resolveRelayHopCandidates(ctx context.Context, address string) ([]model.Candidate, error) {
 	cache := relayHopCache
 	if cache == nil {
-		return []backends.Candidate{{Address: address}}, nil
+		return []model.Candidate{{Address: address}}, nil
 	}
 
 	host, portText, err := net.SplitHostPort(address)
 	if err != nil {
-		return []backends.Candidate{{Address: address}}, nil
+		return []model.Candidate{{Address: address}}, nil
 	}
 	port, err := strconv.Atoi(portText)
 	if err != nil || port <= 0 || port > 65535 {
-		return []backends.Candidate{{Address: address}}, nil
+		return []model.Candidate{{Address: address}}, nil
 	}
 
-	candidates, err := cache.Resolve(ctx, backends.Endpoint{Host: host, Port: port})
+	candidates, err := cache.Resolve(ctx, model.Endpoint{Host: host, Port: port})
 	if err != nil {
 		return nil, err
 	}

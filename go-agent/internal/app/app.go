@@ -3,14 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"log"
-	"os"
-	"reflect"
-	stdruntime "runtime"
-	"sync"
-	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -23,6 +15,12 @@ import (
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
+	"log"
+	"os"
+	"reflect"
+	stdruntime "runtime"
+	"sync"
+	"time"
 )
 
 type Config = model.Config
@@ -126,11 +124,11 @@ func newL4ModuleFromConfig(cfg Config) *modulel4.Module {
 	})
 }
 
-func backendCacheConfigFromAppConfig(cfg Config) backends.Config {
+func backendCacheConfigFromAppConfig(cfg Config) model.BackendCacheConfig {
 	if !cfg.HasExplicitBackendFailureOverrides() {
-		return backends.Config{}
+		return model.BackendCacheConfig{}
 	}
-	return backends.Config{
+	return model.BackendCacheConfig{
 		FailureBackoffBase:  cfg.BackendFailures.BackoffBase,
 		FailureBackoffLimit: cfg.BackendFailures.BackoffLimit,
 	}

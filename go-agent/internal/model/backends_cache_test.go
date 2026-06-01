@@ -1,4 +1,4 @@
-package backends
+package model
 
 import (
 	"context"
@@ -22,7 +22,7 @@ func TestCacheResolveUsesFixedDNSCacheTTL(t *testing.T) {
 		},
 	}
 
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Resolver: resolver,
 		Now: func() time.Time {
 			return now
@@ -70,7 +70,7 @@ func TestCacheResolveUsesStaleDNSResultWhenRefreshFails(t *testing.T) {
 		errs: []error{nil, errors.New("dns refresh failed")},
 	}
 
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Resolver: resolver,
 		Now: func() time.Time {
 			return now
@@ -106,7 +106,7 @@ func TestCacheResolveReturnsRefreshErrorAfterStaleDNSWindowExpires(t *testing.T)
 		errs: []error{nil, refreshErr},
 	}
 
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Resolver: resolver,
 		Now: func() time.Time {
 			return now
@@ -127,7 +127,7 @@ func TestCacheResolveReturnsRefreshErrorAfterStaleDNSWindowExpires(t *testing.T)
 func TestCachePruneRemovesExpiredAndInactiveEntries(t *testing.T) {
 	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Resolver: &stubResolver{
 			results: [][]net.IPAddr{
 				{{IP: net.ParseIP("10.0.0.1")}},
@@ -170,7 +170,7 @@ func TestCachePruneRemovesExpiredAndInactiveEntries(t *testing.T) {
 func TestCachePruneKeepsActiveObservationAndBackoff(t *testing.T) {
 	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -200,7 +200,7 @@ func TestCachePruneKeepsActiveObservationAndBackoff(t *testing.T) {
 func TestCachePrunePreservesRecoveryFailureCount(t *testing.T) {
 	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -226,7 +226,7 @@ func TestCachePrunePreservesRecoveryFailureCount(t *testing.T) {
 func TestCacheAutoPrunesOnWriteAfterInterval(t *testing.T) {
 	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -246,7 +246,7 @@ func TestCacheAutoPrunesOnWriteAfterInterval(t *testing.T) {
 }
 
 func TestCacheOrderRoundRobinTracksPerScope(t *testing.T) {
-	cache := NewCache(Config{})
+	cache := NewCache(BackendCacheConfig{})
 	candidates := []Candidate{
 		{Address: "10.0.0.1:80"},
 		{Address: "10.0.0.2:80"},
@@ -274,7 +274,7 @@ func TestCacheOrderRoundRobinTracksPerScope(t *testing.T) {
 
 func TestCacheOrderRandomUsesHook(t *testing.T) {
 	calls := 0
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		RandomIntn: func(n int) int {
 			calls++
 			switch calls {
@@ -309,7 +309,7 @@ func TestCacheOrderRandomUsesHook(t *testing.T) {
 }
 
 func TestCacheOrderRandomSupportsConcurrentCalls(t *testing.T) {
-	cache := NewCache(Config{})
+	cache := NewCache(BackendCacheConfig{})
 	candidates := []Candidate{
 		{Address: "10.0.0.1:80"},
 		{Address: "10.0.0.2:80"},
@@ -336,7 +336,7 @@ func TestCacheOrderRandomSupportsConcurrentCalls(t *testing.T) {
 func TestCacheOrderAdaptiveUsesBackendStabilityBeforePerformance(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -360,7 +360,7 @@ func TestCacheOrderAdaptiveUsesBackendStabilityBeforePerformance(t *testing.T) {
 
 func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -389,7 +389,7 @@ func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 
 func TestCacheOrderAdaptiveAllocations(t *testing.T) {
 	now := time.Date(2026, time.May, 11, 0, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now:        func() time.Time { return now },
 		RandomIntn: func(n int) int { return 0 },
 	})
@@ -413,7 +413,7 @@ func TestCacheOrderAdaptiveAllocations(t *testing.T) {
 
 func TestCacheOrderLatencyOnlyIgnoresBackendThroughput(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -441,7 +441,7 @@ func TestCacheOrderLatencyOnlyIgnoresBackendThroughput(t *testing.T) {
 
 func TestCacheOrderAdaptivePrefersLowerLatencyWhenOnlySmallResponsesExist(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	scope := "http:rule-small-only"
@@ -488,7 +488,7 @@ func TestCacheOrderAdaptivePrefersLowerLatencyWhenOnlySmallResponsesExist(t *tes
 
 func TestCacheOrderAdaptivePrefersBulkCandidateWhenQualifiedThroughputDominates(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	scope := "http:rule-bulk"
@@ -526,7 +526,7 @@ func TestCacheOrderAdaptivePrefersBulkCandidateWhenQualifiedThroughputDominates(
 func TestCacheOrderAdaptiveUsesOnlyRecent24hStability(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -555,7 +555,7 @@ func TestCacheOrderAdaptiveUsesOnlyRecent24hStability(t *testing.T) {
 
 func TestCacheSummaryReportsColdStateAndLowConfidence(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -583,7 +583,7 @@ func TestCacheSummaryReportsColdStateAndLowConfidence(t *testing.T) {
 
 func TestCachePreferResolvedCandidatesExploresColdCandidateWhenBudgetTriggers(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -612,7 +612,7 @@ func TestCachePreferResolvedCandidatesExploresColdCandidateWhenBudgetTriggers(t 
 func TestCacheSummaryReportsRecoveringStateAfterBackoffExpires(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -636,7 +636,7 @@ func TestCacheSummaryReportsRecoveringStateAfterBackoffExpires(t *testing.T) {
 
 func TestCacheSummaryRequiresQualifiedThroughputSamples(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	addr := "10.0.0.40:443"
@@ -658,7 +658,7 @@ func TestCacheSummaryRequiresQualifiedThroughputSamples(t *testing.T) {
 
 func TestCacheSummaryDoesNotPromoteSmallResponsesToQualifiedThroughput(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	addr := "10.0.0.41:443"
@@ -674,7 +674,7 @@ func TestCacheSummaryDoesNotPromoteSmallResponsesToQualifiedThroughput(t *testin
 
 func TestCacheSummaryKeepsMediumOnlyThroughputHidden(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	addr := "10.0.0.42:443"
@@ -693,7 +693,7 @@ func TestCacheSummaryKeepsMediumOnlyThroughputHidden(t *testing.T) {
 
 func TestCacheSummaryReadinessTransitionDoesNotTriggerOutlier(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	addr := "10.0.0.43:443"
@@ -712,7 +712,7 @@ func TestCacheSummaryReadinessTransitionDoesNotTriggerOutlier(t *testing.T) {
 
 func TestCacheSummaryAppliesQualifiedThroughputSampleWeightToEWMA(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	addr := "10.0.0.46:443"
@@ -735,7 +735,7 @@ func TestCacheSummaryAppliesQualifiedThroughputSampleWeightToEWMA(t *testing.T) 
 
 func TestCacheUpwardThroughputJumpDoesNotLatchOutlierWindow(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	addr := "10.0.0.44:443"
@@ -754,7 +754,7 @@ func TestCacheUpwardThroughputJumpDoesNotLatchOutlierWindow(t *testing.T) {
 func TestCacheObserveBackendFailureUsesScopedRecoveryState(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -791,7 +791,7 @@ func TestCacheObserveBackendFailureUsesScopedRecoveryState(t *testing.T) {
 func TestCacheSlowStartWindowUsesBackendObservationPrefix(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -823,7 +823,7 @@ func TestCacheSlowStartWindowUsesBackendObservationPrefix(t *testing.T) {
 func TestCacheObserveBackendFailureEscalatesRepeatedBackoff(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -864,7 +864,7 @@ func TestCacheObserveBackendFailureEscalatesRepeatedBackoff(t *testing.T) {
 func TestCacheObserveBackendSuccessClearsFailureProgression(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -899,7 +899,7 @@ func TestCacheObserveBackendSuccessClearsFailureProgression(t *testing.T) {
 func TestCacheSummaryUsesScopedBackendStateWithoutResolvedInference(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -926,7 +926,7 @@ func TestCacheSummaryUsesScopedBackendStateWithoutResolvedInference(t *testing.T
 
 func TestCachePreferResolvedCandidatesDampensSingleBandwidthSpikeWithConfidence(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -955,7 +955,7 @@ func TestCachePreferResolvedCandidatesDampensSingleBandwidthSpikeWithConfidence(
 func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -978,7 +978,7 @@ func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
 
 func TestCacheSummaryDoesNotMarkOutlierFromSlowSmallResponseAfterQualifiedHistory(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	addr := "10.0.0.45:443"
@@ -1013,7 +1013,7 @@ func TestPerformanceScoreUsesFullThroughputScoreWhenLatencyMissing(t *testing.T)
 
 func TestCachePreferResolvedCandidatesIgnoresUnqualifiedThroughputOutliers(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -1049,7 +1049,7 @@ func TestCachePreferResolvedCandidatesIgnoresUnqualifiedThroughputOutliers(t *te
 
 func TestCachePreferResolvedCandidatesLatencyOnlyIgnoresHTTPThroughput(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	candidates := []Candidate{
@@ -1070,7 +1070,7 @@ func TestCachePreferResolvedCandidatesLatencyOnlyIgnoresHTTPThroughput(t *testin
 
 func TestCachePreferResolvedCandidatesLatencyOnlyIgnoresThroughputOutlierPenalty(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time { return base },
 	})
 	candidates := []Candidate{
@@ -1181,7 +1181,7 @@ func TestCandidateSnapshotStaysLightweight(t *testing.T) {
 }
 
 func TestCacheOrderAdaptivePreservesInputOrderOnTie(t *testing.T) {
-	cache := NewCache(Config{})
+	cache := NewCache(BackendCacheConfig{})
 	scope := "http:rule-adaptive-tie"
 	candidates := []Candidate{
 		{Address: "c"},
@@ -1198,7 +1198,7 @@ func TestCacheOrderAdaptivePreservesInputOrderOnTie(t *testing.T) {
 func TestCacheOrderAdaptiveUsesScopedBackendStateWithoutResolvedOverlay(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -1223,7 +1223,7 @@ func TestCacheOrderAdaptiveUsesScopedBackendStateWithoutResolvedOverlay(t *testi
 
 func TestCacheClonePreservesBackendObservationIndex(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -1252,7 +1252,7 @@ func TestCacheClonePreservesBackendObservationIndex(t *testing.T) {
 func TestCachePruneRemovesBackendObservationIndex(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -1281,7 +1281,7 @@ func TestCachePruneRemovesBackendObservationIndex(t *testing.T) {
 func TestCacheFailureBackoffCapsAndSuccessResetsState(t *testing.T) {
 	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -1364,7 +1364,7 @@ func TestRelayBackoffKeyForLayersAllocations(t *testing.T) {
 }
 
 func TestCacheFailureBackoffUsesConfiguredBaseAndLimit(t *testing.T) {
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		FailureBackoffBase:  500 * time.Millisecond,
 		FailureBackoffLimit: 4 * time.Second,
 	})
@@ -1388,7 +1388,7 @@ func TestCacheFailureBackoffUsesConfiguredBaseAndLimit(t *testing.T) {
 }
 
 func TestCacheObserveSuccessStoresLatencyAndRanksCandidates(t *testing.T) {
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
 		},
@@ -1408,7 +1408,7 @@ func TestCacheObserveSuccessStoresLatencyAndRanksCandidates(t *testing.T) {
 }
 
 func TestCachePreferResolvedCandidatesPreservesInputOrderWithoutObservations(t *testing.T) {
-	cache := NewCache(Config{})
+	cache := NewCache(BackendCacheConfig{})
 	candidates := []Candidate{
 		{Address: "10.0.0.3:443"},
 		{Address: "10.0.0.4:443"},
@@ -1422,7 +1422,7 @@ func TestCachePreferResolvedCandidatesPreservesInputOrderWithoutObservations(t *
 }
 
 func TestCacheMarkFailureDemotesPreferredCandidate(t *testing.T) {
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
 		},
@@ -1443,7 +1443,7 @@ func TestCacheMarkFailureDemotesPreferredCandidate(t *testing.T) {
 }
 
 func TestCachePreferResolvedCandidatesUsesLatencyOverCumulativeSuccesses(t *testing.T) {
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
 		},
@@ -1467,7 +1467,7 @@ func TestCachePreferResolvedCandidatesUsesLatencyOverCumulativeSuccesses(t *test
 func TestCachePreferResolvedCandidatesUsesOnlyRecent24hStability(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
@@ -1493,7 +1493,7 @@ func TestCachePreferResolvedCandidatesUsesOnlyRecent24hStability(t *testing.T) {
 
 func TestCachePreferResolvedCandidatesUsesStabilityBeforeLatency(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -1515,7 +1515,7 @@ func TestCachePreferResolvedCandidatesUsesStabilityBeforeLatency(t *testing.T) {
 
 func TestCachePreferResolvedCandidatesUsesBandwidthAfterStabilityAndLatency(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -1540,7 +1540,7 @@ func TestCachePreferResolvedCandidatesUsesBandwidthAfterStabilityAndLatency(t *t
 
 func TestCachePreferResolvedCandidatesUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},

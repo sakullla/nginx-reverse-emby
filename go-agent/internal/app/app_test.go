@@ -3,6 +3,11 @@ package app
 import (
 	"context"
 	"errors"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,13 +16,6 @@ import (
 	"testing"
 	"time"
 	"unsafe"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 )
 
 func TestNewBuildsControlPlaneWiring(t *testing.T) {
@@ -141,7 +139,7 @@ func TestDiagnoseSnapshotUsesRegistryDiagnosticSources(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	cache.MarkFailure(backend.Listener.Addr().String())
 
 	registry := agentmodule.NewRegistry()
@@ -223,10 +221,10 @@ func (m appProviderModule) Apply(context.Context, agentmodule.ApplyRequest) erro
 func (m appProviderModule) Stop(context.Context) error { return nil }
 
 type appDiagnosticSource struct {
-	cache *backends.Cache
+	cache *model.Cache
 }
 
-func (s appDiagnosticSource) Cache() *backends.Cache {
+func (s appDiagnosticSource) Cache() *model.Cache {
 	return s.cache
 }
 

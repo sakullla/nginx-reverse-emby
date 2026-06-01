@@ -4,17 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 func (e *routeEntry) transportForRequest(req *http.Request) *http.Transport {
@@ -67,7 +65,7 @@ func (e *routeEntry) observeSuccessfulBackend(candidate httpCandidate, req *http
 			if len(selectedPath) == 0 {
 				selectedPath = candidate.relayChain
 			}
-			selectedKey := backends.RelayBackoffKey(selectedPath, selectedAddress)
+			selectedKey := model.RelayBackoffKey(selectedPath, selectedAddress)
 			e.backendCache.ObserveTransferSuccess(selectedKey, headerLatency, transferDuration, bytesTransferred)
 		}
 	}
@@ -87,7 +85,7 @@ func (e *routeEntry) markCandidateFailure(candidate httpCandidate, req *http.Req
 			if len(selectedPath) == 0 {
 				selectedPath = candidate.relayChain
 			}
-			e.backendCache.MarkFailure(backends.RelayBackoffKey(selectedPath, selectedAddress))
+			e.backendCache.MarkFailure(model.RelayBackoffKey(selectedPath, selectedAddress))
 			e.closeRelayIdleConnections()
 			return
 		}
@@ -131,11 +129,11 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		return nil, fmt.Errorf("backend cache is required")
 	}
 
-	placeholders := make([]backends.Candidate, 0, len(e.backends))
+	placeholders := make([]model.Candidate, 0, len(e.backends))
 	indexesByID := make(map[string][]int, len(e.backends))
 	for i := range e.backends {
-		backendID := backends.StableBackendID(e.backends[i].target.String())
-		placeholders = append(placeholders, backends.Candidate{Address: backendID})
+		backendID := model.StableBackendID(e.backends[i].target.String())
+		placeholders = append(placeholders, model.Candidate{Address: backendID})
 		indexesByID[backendID] = append(indexesByID[backendID], i)
 	}
 
@@ -150,11 +148,11 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		backendIndex := indexes[0]
 		indexesByID[ordered.Address] = indexes[1:]
 		backend := e.backends[backendIndex]
-		backendObservationKey := backends.BackendObservationKey(e.selectionScope, backends.StableBackendID(backend.target.String()))
+		backendObservationKey := model.BackendObservationKey(e.selectionScope, model.StableBackendID(backend.target.String()))
 		if ruleUsesRelay(e.rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpBackendDialAddress(backend.target)
-			if e.backendCache.IsInBackoff(backends.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, dialAddress)) {
+			if e.backendCache.IsInBackoff(model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, dialAddress)) {
 				continue
 			}
 			out = append(out, httpCandidate{
@@ -165,7 +163,7 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 			})
 			continue
 		}
-		endpoint := backends.Endpoint{
+		endpoint := model.Endpoint{
 			Host: backend.target.Hostname(),
 			Port: portWithDefault(backend.target),
 		}

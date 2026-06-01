@@ -1,4 +1,4 @@
-package backends
+package model
 
 import (
 	"strconv"
@@ -8,7 +8,7 @@ import (
 
 func BenchmarkCacheOrderAdaptive64Candidates(b *testing.B) {
 	now := time.Date(2026, time.May, 11, 0, 0, 0, 0, time.UTC)
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		Now:        func() time.Time { return now },
 		RandomIntn: func(n int) int { return 0 },
 	})
@@ -30,7 +30,7 @@ func BenchmarkCacheOrderAdaptive64Candidates(b *testing.B) {
 }
 
 func BenchmarkCacheOrderRoundRobin64Candidates(b *testing.B) {
-	cache := NewCache(Config{
+	cache := NewCache(BackendCacheConfig{
 		RandomIntn: func(n int) int { return 0 },
 	})
 	candidates := benchmarkCandidates(64)

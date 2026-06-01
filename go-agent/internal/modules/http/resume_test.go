@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	"io"
 	"net"
 	"net/http"
@@ -11,10 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func TestServeHTTPResumesInterruptedFullBodyTransfer(t *testing.T) {
@@ -841,7 +839,7 @@ func resumableTestRouteEntry(t *testing.T, backendRawURL string) *routeEntry {
 		backends: []httpBackend{
 			{target: backendURL, backendHost: backendURL.Host},
 		},
-		backendCache:   backends.NewCache(backends.Config{}),
+		backendCache:   model.NewCache(model.BackendCacheConfig{}),
 		transport:      NewSharedTransport(),
 		selectionScope: "edge.example.test",
 	}

@@ -3,18 +3,16 @@ package l4
 import (
 	"context"
 	"fmt"
-	"net"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 const (
@@ -27,7 +25,7 @@ type RelayMaterialProvider interface {
 }
 
 type serverOptions struct {
-	cache                *backends.Cache
+	cache                *model.Cache
 	localAgentID         string
 	overlayRuntime       module.OverlayRuntime
 	transparentListener  module.TransparentListener
@@ -43,7 +41,7 @@ type Server struct {
 
 	wg sync.WaitGroup
 
-	cache *backends.Cache
+	cache *model.Cache
 	now   func() time.Time
 
 	tcpListeners          []net.Listener
@@ -119,7 +117,7 @@ func NewServerWithResources(
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
-	cache *backends.Cache,
+	cache *model.Cache,
 ) (*Server, error) {
 	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{cache: cache})
 }
@@ -129,7 +127,7 @@ func NewServerWithResourcesAndProviders(
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
-	cache *backends.Cache,
+	cache *model.Cache,
 	overlayRuntime module.OverlayRuntime,
 	transparentListener module.TransparentListener,
 	localAgentID string,
@@ -163,7 +161,7 @@ func newServerWithOptions(
 		relayListenersByID[listener.ID] = listener
 	}
 	if options.cache == nil {
-		options.cache = backends.NewCache(backends.Config{})
+		options.cache = model.NewCache(model.BackendCacheConfig{})
 	}
 	if options.egressResolver == nil {
 		options.egressResolver = moduleegress.NewResolver(options.egressProfiles)

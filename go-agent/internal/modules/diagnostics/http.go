@@ -3,6 +3,10 @@ package diagnostics
 import (
 	"context"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 	"io"
 	"net"
 	"net/http"
@@ -10,19 +14,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
 )
 
 type HTTPProberConfig struct {
 	Attempts      int
 	Timeout       time.Duration
 	HTTPClient    *http.Client
-	Cache         *backends.Cache
+	Cache         *model.Cache
 	RelayProvider relay.TLSMaterialProvider
 }
 
@@ -30,7 +28,7 @@ type HTTPProber struct {
 	attempts      int
 	timeout       time.Duration
 	httpClient    *http.Client
-	cache         *backends.Cache
+	cache         *model.Cache
 	relayProvider relay.TLSMaterialProvider
 }
 
@@ -51,7 +49,7 @@ func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
 		cfg.HTTPClient = &http.Client{Timeout: cfg.Timeout}
 	}
 	if cfg.Cache == nil {
-		cfg.Cache = backends.NewCache(backends.Config{})
+		cfg.Cache = model.NewCache(model.BackendCacheConfig{})
 	}
 	return &HTTPProber{
 		attempts:      cfg.Attempts,
@@ -124,7 +122,7 @@ type httpProbeCandidate struct {
 	relayPaths            []relayplan.Path
 }
 
-func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) (Sample, []int) {
+func (p *HTTPProber) probeCandidate(ctx context.Context, cache *model.Cache, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) (Sample, []int) {
 	start := time.Now()
 	client, selectedAddress, err := p.clientForCandidate(rule, relayListeners, candidate)
 	if err != nil {
@@ -201,13 +199,13 @@ func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, ru
 	return client.Do(req)
 }
 
-func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPRule) ([]httpProbeCandidate, error) {
+func httpCandidates(ctx context.Context, cache *model.Cache, rule model.HTTPRule) ([]httpProbeCandidate, error) {
 	rawBackends := rule.Backends
 	if len(rawBackends) == 0 {
 		return nil, fmt.Errorf("backends[].url is required")
 	}
 
-	placeholders := make([]backends.Candidate, 0, len(rawBackends))
+	placeholders := make([]model.Candidate, 0, len(rawBackends))
 	indicesByID := make(map[string][]int, len(rawBackends))
 	parsed := make([]*url.URL, 0, len(rawBackends))
 	for i, entry := range rawBackends {
@@ -216,8 +214,8 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 			return nil, err
 		}
 		parsed = append(parsed, target)
-		id := backends.StableBackendID(strings.TrimSpace(entry.URL))
-		placeholders = append(placeholders, backends.Candidate{Address: id})
+		id := model.StableBackendID(strings.TrimSpace(entry.URL))
+		placeholders = append(placeholders, model.Candidate{Address: id})
 		indicesByID[id] = append(indicesByID[id], i)
 	}
 
@@ -237,7 +235,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 		if ruleUsesHTTPRelay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpProbeTargetAddress(target)
-			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, dialAddress)) {
+			if cache.IsInBackoff(model.RelayBackoffKeyForLayers(nil, rule.RelayLayers, dialAddress)) {
 				continue
 			}
 			clone := *target
@@ -249,14 +247,14 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 				targetURL:             &clone,
 				backendLabel:          clone.String(),
 				dialAddress:           dialAddress,
-				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(clone.String())),
+				backendObservationKey: model.BackendObservationKey(scope, model.StableBackendID(clone.String())),
 				configuredURL:         clone.String(),
 				resolvedCandidates:    resolvedChildren,
 				relayProbeTarget:      dialAddress,
 			})
 			continue
 		}
-		endpoint := backends.Endpoint{
+		endpoint := model.Endpoint{
 			Host: target.Hostname(),
 			Port: httpPortWithDefault(target),
 		}
@@ -283,7 +281,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 				targetURL:             &clone,
 				backendLabel:          child.label,
 				dialAddress:           child.dialAddress,
-				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(clone.String())),
+				backendObservationKey: model.BackendObservationKey(scope, model.StableBackendID(clone.String())),
 				configuredURL:         clone.String(),
 				resolvedCandidates:    append([]httpResolvedCandidate(nil), resolvedChildren...),
 			})
@@ -295,12 +293,12 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 	return out, nil
 }
 
-func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCandidate, cache *backends.Cache) []BackendReport {
+func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCandidate, cache *model.Cache) []BackendReport {
 	configuredChildren := make(map[string][]httpResolvedCandidate)
 	configuredKeys := make(map[string]string)
 	configuredRelayChains := make(map[string][]int)
 	configuredChildRelayChains := make(map[string]map[string][]int)
-	configuredSummary := make(map[string]backends.ObservationSummary)
+	configuredSummary := make(map[string]model.ObservationSummary)
 	sharedConfiguredKeys := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		if candidate.configuredURL == "" {
@@ -427,9 +425,9 @@ func httpChildRelayChain(childRelayChains map[string][]int, address string, fall
 	return fallback
 }
 
-func preferredObservationKey(summaries map[string]backends.ObservationSummary) string {
+func preferredObservationKey(summaries map[string]model.ObservationSummary) string {
 	preferred := ""
-	var best backends.ObservationSummary
+	var best model.ObservationSummary
 	for key, summary := range summaries {
 		if preferred == "" || compareObservationSummary(summary, best) > 0 {
 			preferred = key
@@ -439,7 +437,7 @@ func preferredObservationKey(summaries map[string]backends.ObservationSummary) s
 	return preferred
 }
 
-func compareObservationSummary(left, right backends.ObservationSummary) int {
+func compareObservationSummary(left, right model.ObservationSummary) int {
 	if left.InBackoff != right.InBackoff {
 		if !left.InBackoff {
 			return 1
@@ -461,7 +459,7 @@ func compareObservationSummary(left, right backends.ObservationSummary) int {
 	return 0
 }
 
-func observationSummaryHasHistory(summary backends.ObservationSummary) bool {
+func observationSummaryHasHistory(summary model.ObservationSummary) bool {
 	return summary.RecentSucceeded > 0 ||
 		summary.RecentFailed > 0 ||
 		summary.HasLatency ||
@@ -521,7 +519,7 @@ type adaptiveSummaryOptions struct {
 	includeHTTPInsights bool
 }
 
-func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferred bool, reason string, options adaptiveSummaryOptions) *AdaptiveSummary {
+func adaptiveSummaryFromObservation(summary model.ObservationSummary, preferred bool, reason string, options adaptiveSummaryOptions) *AdaptiveSummary {
 	latencyMS := 0.0
 	if summary.HasLatency {
 		latencyMS = roundMetric(float64(summary.Latency) / float64(time.Millisecond))

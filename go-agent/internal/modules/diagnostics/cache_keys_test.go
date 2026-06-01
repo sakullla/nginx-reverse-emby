@@ -4,14 +4,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 func TestMarkDiagnosticAddressFailureUsesRelayScopedKey(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	chain := []int{41}
 	address := "relay-target.example:9443"
-	scopedKey := backends.RelayBackoffKey(chain, address)
+	scopedKey := model.RelayBackoffKey(chain, address)
 
 	markDiagnosticAddressFailure(cache, chain, address)
 
@@ -24,10 +24,10 @@ func TestMarkDiagnosticAddressFailureUsesRelayScopedKey(t *testing.T) {
 }
 
 func TestObserveDiagnosticAddressSuccessUsesRelayScopedKey(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	chain := []int{51}
 	address := "relay-target.example:9001"
-	scopedKey := backends.RelayBackoffKey(chain, address)
+	scopedKey := model.RelayBackoffKey(chain, address)
 
 	markDiagnosticAddressFailure(cache, chain, address)
 	observeDiagnosticAddressSuccess(cache, chain, address, 25*time.Millisecond, 60*time.Millisecond, 128*1024)
@@ -45,10 +45,10 @@ func TestObserveDiagnosticAddressSuccessUsesRelayScopedKey(t *testing.T) {
 }
 
 func TestMarkDiagnosticAddressSuccessUsesRelayScopedKey(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	chain := []int{61}
 	address := "relay-target.example:9002"
-	scopedKey := backends.RelayBackoffKey(chain, address)
+	scopedKey := model.RelayBackoffKey(chain, address)
 
 	markDiagnosticAddressFailure(cache, chain, address)
 	markDiagnosticAddressSuccess(cache, chain, address)

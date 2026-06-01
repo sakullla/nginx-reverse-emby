@@ -3,32 +3,30 @@ package relay
 import (
 	"context"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type finalHopSelectorConfig struct {
-	Resolver       backends.Resolver
+	Resolver       model.Resolver
 	Now            func() time.Time
 	RandomIntn     func(int) int
 	FinalHopDialer FinalHopDialer
 }
 
 type finalHopSelector struct {
-	cache          *backends.Cache
+	cache          *model.Cache
 	now            func() time.Time
 	finalHopDialer FinalHopDialer
 }
 
 func newFinalHopSelector(cfg finalHopSelectorConfig) *finalHopSelector {
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver:   cfg.Resolver,
 		Now:        cfg.Now,
 		RandomIntn: cfg.RandomIntn,
@@ -40,7 +38,7 @@ func newFinalHopSelector(cfg finalHopSelectorConfig) *finalHopSelector {
 	return &finalHopSelector{cache: cache, now: nowFn, finalHopDialer: cfg.FinalHopDialer}
 }
 
-func (s *finalHopSelector) resolvedCandidates(ctx context.Context, target string) ([]backends.Candidate, error) {
+func (s *finalHopSelector) resolvedCandidates(ctx context.Context, target string) ([]model.Candidate, error) {
 	host, portText, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
@@ -49,18 +47,18 @@ func (s *finalHopSelector) resolvedCandidates(ctx context.Context, target string
 	if err != nil {
 		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
 	}
-	var resolved []backends.Candidate
+	var resolved []model.Candidate
 	if literal, address := literalHostCandidate(host, port); literal {
-		resolved = []backends.Candidate{{Address: address}}
+		resolved = []model.Candidate{{Address: address}}
 	} else {
-		resolved, err = s.cache.Resolve(ctx, backends.Endpoint{Host: host, Port: port})
+		resolved, err = s.cache.Resolve(ctx, model.Endpoint{Host: host, Port: port})
 		if err != nil {
 			return nil, err
 		}
 		resolved = s.cache.PreferResolvedCandidatesLatencyOnly(resolved)
 	}
 
-	filtered := make([]backends.Candidate, 0, len(resolved))
+	filtered := make([]model.Candidate, 0, len(resolved))
 	for _, candidate := range resolved {
 		if s.cache.IsInBackoff(candidate.Address) {
 			continue

@@ -3,12 +3,10 @@ package l4
 import (
 	"context"
 	"fmt"
-	"net"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"net"
 )
 
 func NewServerWithOverlayProvider(
@@ -30,7 +28,7 @@ func NewServerWithResourcesAndOverlayProvider(
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
-	cache *backends.Cache,
+	cache *model.Cache,
 	wireGuardProvider relay.OverlayRuntimeProvider,
 ) (*Server, error) {
 	overlay, transparent := testWireGuardOverlayProviders(wireGuardProvider)
@@ -46,7 +44,7 @@ func NewServerWithResourcesWireGuardAndEgressProfiles(
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
-	cache *backends.Cache,
+	cache *model.Cache,
 	wireGuardProvider relay.OverlayRuntimeProvider,
 	egressProfiles []model.EgressProfile,
 ) (*Server, error) {
@@ -58,7 +56,7 @@ func NewServerWithResourcesWireGuardAndEgressRuntime(
 	rules []model.L4Rule,
 	relayListeners []model.RelayListener,
 	relayProvider RelayMaterialProvider,
-	cache *backends.Cache,
+	cache *model.Cache,
 	wireGuardProvider relay.OverlayRuntimeProvider,
 	egressOverlayRuntime module.OverlayRuntime,
 	egressProfiles []model.EgressProfile,

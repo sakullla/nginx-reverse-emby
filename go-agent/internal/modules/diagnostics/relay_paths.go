@@ -3,16 +3,14 @@ package diagnostics
 import (
 	"context"
 	"fmt"
-	"net"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
+	"net"
+	"strings"
+	"sync"
+	"time"
 )
 
 const (
@@ -25,7 +23,7 @@ func resolveDiagnosticRelayPaths(ruleLabel string, chain []int, layers [][]int, 
 	return relayroute.ResolvePaths(ruleLabel, chain, layers, relayListeners, target)
 }
 
-func probeDiagnosticRelayPaths(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache, preferenceCache *backends.Cache, opts ...relay.DialOptions) ([]RelayPathReport, []int, error) {
+func probeDiagnosticRelayPaths(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *model.Cache, preferenceCache *model.Cache, opts ...relay.DialOptions) ([]RelayPathReport, []int, error) {
 	if len(paths) == 0 {
 		return nil, nil, nil
 	}
@@ -121,11 +119,11 @@ func probeDiagnosticRelayPathReport(ctx context.Context, network string, target 
 	return report
 }
 
-func preferredRelayPathIndex(target string, paths []relayplan.Path, cache *backends.Cache, reportsByPath map[string]int, reports []RelayPathReport) int {
+func preferredRelayPathIndex(target string, paths []relayplan.Path, cache *model.Cache, reportsByPath map[string]int, reports []RelayPathReport) int {
 	if cache == nil || len(paths) == 0 {
 		return -1
 	}
-	candidates := make([]backends.Candidate, 0, len(paths))
+	candidates := make([]model.Candidate, 0, len(paths))
 	pathsByKey := make(map[string]relayplan.Path, len(paths))
 	observed := false
 	for _, path := range paths {
@@ -133,17 +131,17 @@ func preferredRelayPathIndex(target string, paths []relayplan.Path, cache *backe
 		if strings.TrimSpace(key) == "" {
 			key = relayplan.PathKey("relay_path", path.IDs, target)
 		}
-		summary := cache.Summary(backends.BackendObservationKey(relayplan.RelayPathScope(target), key))
+		summary := cache.Summary(model.BackendObservationKey(relayplan.RelayPathScope(target), key))
 		if observationSummaryHasHistory(summary) {
 			observed = true
 		}
 		pathsByKey[key] = path
-		candidates = append(candidates, backends.Candidate{Address: key})
+		candidates = append(candidates, model.Candidate{Address: key})
 	}
 	if !observed {
 		return -1
 	}
-	ordered := cache.Order(relayplan.RelayPathScope(target), backends.StrategyAdaptive, candidates)
+	ordered := cache.Order(relayplan.RelayPathScope(target), model.StrategyAdaptive, candidates)
 	for _, candidate := range ordered {
 		path, ok := pathsByKey[candidate.Address]
 		if !ok {
@@ -157,7 +155,7 @@ func preferredRelayPathIndex(target string, paths []relayplan.Path, cache *backe
 	return -1
 }
 
-func diagnosticSelectedRelayPathIndex(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache, reportsByPath map[string]int, reports []RelayPathReport, options relay.DialOptions) int {
+func diagnosticSelectedRelayPathIndex(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *model.Cache, reportsByPath map[string]int, reports []RelayPathReport, options relay.DialOptions) int {
 	racer := relayplan.Racer{Dialer: diagnosticRelayReportPathDialer{provider: provider}, Cache: cache, Concurrency: 3, MaxPaths: 32}
 	result, err := racer.Race(ctx, relayplan.Request{
 		Network: network,

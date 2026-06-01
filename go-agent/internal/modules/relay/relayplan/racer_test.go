@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
@@ -195,7 +195,7 @@ func TestRacerReturnsAggregateErrorWhenAllPathsFail(t *testing.T) {
 func TestRacerTreatsNilSuccessfulConnectionAsFailedAttempt(t *testing.T) {
 	dialer := newFakePathDialer()
 	dialer.set([]int{1}, fakeDialResult{})
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 1, MaxPaths: 8}
 
 	result, err := racer.Race(context.Background(), Request{
@@ -216,7 +216,7 @@ func TestRacerTreatsNilSuccessfulConnectionAsFailedAttempt(t *testing.T) {
 		t.Fatalf("Attempts = %+v, want one failed attempt", result.Attempts)
 	}
 	scope := "relay_path|backend:443"
-	summary := cache.Summary(backends.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")))
+	summary := cache.Summary(model.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")))
 	if summary.RecentFailed != 1 || summary.RecentSucceeded != 0 {
 		t.Fatalf("nil connection summary = %+v, want one failed observation", summary)
 	}
@@ -227,10 +227,10 @@ func TestRacerOrdersPathsByAdaptiveObservations(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
 	dialer.set([]int{2}, fakeDialResult{conn: conn})
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	scope := "relay_path|backend:443"
-	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
-	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, PathKey("relay_path", []int{2}, "backend:443")), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
+	cache.ObserveBackendSuccess(model.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveBackendSuccess(model.BackendObservationKey(scope, PathKey("relay_path", []int{2}, "backend:443")), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
 	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 1, MaxPaths: 8}
 
 	result, err := racer.Race(context.Background(), Request{
@@ -258,9 +258,9 @@ func TestRacerSkipsBackedOffPathsWhenAlternatesAvailable(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
 	dialer.set([]int{2}, fakeDialResult{conn: conn})
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	scope := "relay_path|backend:443"
-	cache.ObserveBackendFailure(backends.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")))
+	cache.ObserveBackendFailure(model.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")))
 	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 3, MaxPaths: 8}
 
 	result, err := racer.Race(context.Background(), Request{
@@ -288,10 +288,10 @@ func TestRacerDialsBackedOffPathsWhenEveryPathBackedOff(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer peer.Close()
 	dialer.set([]int{2}, fakeDialResult{conn: conn})
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	scope := "relay_path|backend:443"
 	for _, ids := range [][]int{{1}, {2}} {
-		cache.ObserveBackendFailure(backends.BackendObservationKey(scope, PathKey("relay_path", ids, "backend:443")))
+		cache.ObserveBackendFailure(model.BackendObservationKey(scope, PathKey("relay_path", ids, "backend:443")))
 	}
 	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 2, MaxPaths: 8}
 
@@ -318,7 +318,7 @@ func TestRacerObservesSuccessfulAndFailedPathAttempts(t *testing.T) {
 	defer peer.Close()
 	dialer.set([]int{1}, fakeDialResult{err: errors.New("first failed")})
 	dialer.set([]int{2}, fakeDialResult{conn: conn, delay: time.Millisecond})
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 1, MaxPaths: 8}
 
 	result, err := racer.Race(context.Background(), Request{
@@ -335,11 +335,11 @@ func TestRacerObservesSuccessfulAndFailedPathAttempts(t *testing.T) {
 	defer result.Conn.Close()
 
 	scope := "relay_path|backend:443"
-	failedSummary := cache.Summary(backends.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")))
+	failedSummary := cache.Summary(model.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")))
 	if failedSummary.RecentFailed != 1 {
 		t.Fatalf("failed path RecentFailed = %d, want 1", failedSummary.RecentFailed)
 	}
-	successSummary := cache.Summary(backends.BackendObservationKey(scope, PathKey("relay_path", []int{2}, "backend:443")))
+	successSummary := cache.Summary(model.BackendObservationKey(scope, PathKey("relay_path", []int{2}, "backend:443")))
 	if successSummary.RecentSucceeded != 1 || !successSummary.HasLatency {
 		t.Fatalf("success path summary = %+v, want observed success with latency", successSummary)
 	}

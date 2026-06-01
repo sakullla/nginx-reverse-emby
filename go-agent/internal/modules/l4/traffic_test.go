@@ -3,15 +3,13 @@ package l4
 import (
 	"bytes"
 	"context"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	"io"
 	"net"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
 
 func TestL4RejectsNewConnectionWhenTrafficBlocked(t *testing.T) {
@@ -485,7 +483,7 @@ func TestRelayTCPInitialPayloadCountsOnlyAsL4RX(t *testing.T) {
 	dialer := &fakeL4RelayPathDialer{conn: upstream}
 	srv := &Server{
 		ctx:   context.Background(),
-		cache: backends.NewCache(backends.Config{}),
+		cache: model.NewCache(model.BackendCacheConfig{}),
 		now:   time.Now,
 		relayListenersByID: map[int]model.RelayListener{
 			2: {

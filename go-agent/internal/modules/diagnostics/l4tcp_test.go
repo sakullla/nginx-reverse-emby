@@ -3,15 +3,13 @@ package diagnostics
 import (
 	"context"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"net"
 	"strconv"
 	"testing"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
@@ -75,7 +73,7 @@ func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts: 1,
 		Timeout:  100 * time.Millisecond,
@@ -97,7 +95,7 @@ func TestTCPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 		t.Fatalf("Summary = %+v", report.Summary)
 	}
 
-	backendKey := backends.BackendObservationKey("tcp:0.0.0.0:9501", backends.StableBackendID("127.0.0.1:1"))
+	backendKey := model.BackendObservationKey("tcp:0.0.0.0:9501", model.StableBackendID("127.0.0.1:1"))
 	if cache.IsInBackoff("127.0.0.1:1") {
 		t.Fatalf("expected diagnostic probes to leave shared backoff state untouched")
 	}
@@ -153,7 +151,7 @@ func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
 	relayListener := newDiagnosticRelayListener(t, provider, 52, "relay.internal.test")
 	stopRelay := startDiagnosticRelayRuntime(t, relayListener, provider)
@@ -237,7 +235,7 @@ func TestTCPProberDiagnoseGroupsResolvedHostnameCandidatesUnderConfiguredBackend
 	defer stopTarget()
 
 	_, port := splitDiagnosticTCPAddr(t, addr)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			if host != "resolved.example" {
 				t.Fatalf("unexpected resolver host %q", host)
@@ -338,14 +336,14 @@ func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 
 	host, port := splitDiagnosticTCPAddr(t, addr)
 	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
 			return now
 		},
 	})
 
 	scope := "tcp:0.0.0.0:9500"
-	backendKey := backends.BackendObservationKey(scope, backends.StableBackendID(net.JoinHostPort(host, strconv.Itoa(port))))
+	backendKey := model.BackendObservationKey(scope, model.StableBackendID(net.JoinHostPort(host, strconv.Itoa(port))))
 	for i := 0; i < 4; i++ {
 		cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
 	}
@@ -373,7 +371,7 @@ func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 	}
 
 	adaptive := report.Backends[0].Adaptive
-	if adaptive.State != backends.ObservationStateRecovering {
+	if adaptive.State != model.ObservationStateRecovering {
 		t.Fatalf("State = %q", adaptive.State)
 	}
 	if adaptive.SampleConfidence != 1 {
@@ -395,9 +393,9 @@ func TestTCPProberDiagnoseOmitsSustainedThroughputFromAdaptiveSummary(t *testing
 	defer stopTarget()
 
 	host, port := splitDiagnosticTCPAddr(t, addr)
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	scope := "tcp:0.0.0.0:9880"
-	backendKey := backends.BackendObservationKey(scope, backends.StableBackendID(net.JoinHostPort(host, strconv.Itoa(port))))
+	backendKey := model.BackendObservationKey(scope, model.StableBackendID(net.JoinHostPort(host, strconv.Itoa(port))))
 	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 100*time.Millisecond, 512*1024)
 	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 100*time.Millisecond, 1024*1024)
 
@@ -430,7 +428,7 @@ func TestTCPProberDiagnoseOmitsSustainedThroughputFromAdaptiveSummary(t *testing
 
 func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -439,8 +437,8 @@ func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
 	scope := "tcp:0.0.0.0:9881"
 	slowBackend := "127.0.0.91:9001"
 	fastBackend := "127.0.0.90:9001"
-	slowKey := backends.BackendObservationKey(scope, backends.StableBackendID(slowBackend))
-	fastKey := backends.BackendObservationKey(scope, backends.StableBackendID(fastBackend))
+	slowKey := model.BackendObservationKey(scope, model.StableBackendID(slowBackend))
+	fastKey := model.BackendObservationKey(scope, model.StableBackendID(fastBackend))
 	for i := 0; i < 3; i++ {
 		cache.ObserveBackendSuccess(slowKey, 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
 		cache.ObserveBackendSuccess(fastKey, 10*time.Millisecond, 350*time.Millisecond, 512*1024)
@@ -485,7 +483,7 @@ func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
 }
 
 func TestTCPAdaptiveReportsPreferScopedBackendHistoryForSingleResolvedChild(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 
 	groupKey := "backend|tcp:0.0.0.0:9551|single.example:9001"
 	configuredLabel := "single.example:9001"
@@ -521,7 +519,7 @@ func TestTCPAdaptiveReportsPreferScopedBackendHistoryForSingleResolvedChild(t *t
 
 func TestTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -578,7 +576,7 @@ func TestTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
 
 func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			switch host {
 			case "resolved.example":
@@ -602,7 +600,7 @@ func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 		cache.ObserveTransferSuccess(fastLowerThroughput, 10*time.Millisecond, 350*time.Millisecond, 512*1024)
 	}
 
-	resolved, err := cache.Resolve(context.Background(), backends.Endpoint{Host: "resolved.example", Port: 9001})
+	resolved, err := cache.Resolve(context.Background(), model.Endpoint{Host: "resolved.example", Port: 9001})
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -633,7 +631,7 @@ func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 
 func TestTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
 			return base
 		},
@@ -642,18 +640,18 @@ func TestTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 	scope := "tcp:0.0.0.0:9504"
 	slowHighThroughput := "127.0.0.91:9001"
 	fastLowerThroughput := "127.0.0.90:9001"
-	slowBackendID := backends.StableBackendID(slowHighThroughput)
-	fastBackendID := backends.StableBackendID(fastLowerThroughput)
+	slowBackendID := model.StableBackendID(slowHighThroughput)
+	fastBackendID := model.StableBackendID(fastLowerThroughput)
 	for i := 0; i < 3; i++ {
-		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, slowBackendID), 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
-		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, fastBackendID), 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+		cache.ObserveBackendSuccess(model.BackendObservationKey(scope, slowBackendID), 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveBackendSuccess(model.BackendObservationKey(scope, fastBackendID), 10*time.Millisecond, 350*time.Millisecond, 512*1024)
 	}
 
-	placeholders := []backends.Candidate{
+	placeholders := []model.Candidate{
 		{Address: slowBackendID},
 		{Address: fastBackendID},
 	}
-	if got := cache.Order(scope, backends.StrategyAdaptive, placeholders); got[0].Address != slowBackendID {
+	if got := cache.Order(scope, model.StrategyAdaptive, placeholders); got[0].Address != slowBackendID {
 		t.Fatalf("fixture must diverge under throughput-aware placeholder ordering: %+v", got)
 	}
 
@@ -682,7 +680,7 @@ func TestTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 }
 
 func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 
 	candidates, err := tcpCandidates(context.Background(), cache, model.L4Rule{
 		ID:         25,
@@ -707,7 +705,7 @@ func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testin
 
 func TestTCPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	resolverCalls := 0
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			resolverCalls++
 			return nil, fmt.Errorf("unexpected resolve %q", host)
@@ -753,7 +751,7 @@ func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddre
 
 	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
 	resolverCalls := 0
-	cache := backends.NewCache(backends.Config{
+	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			resolverCalls++
 			return nil, fmt.Errorf("unexpected local resolve %q", host)
@@ -1166,10 +1164,10 @@ func TestTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *test
 		return conn, relay.DialResult{SelectedAddress: target}, nil
 	}
 
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	target := "relay-target.example:" + strconv.Itoa(actualPort)
 	preferredPathKey := relayplan.PathKey("relay_path", []int{531}, target)
-	cache.ObserveBackendSuccess(backends.BackendObservationKey(relayplan.RelayPathScope(target), preferredPathKey), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveBackendSuccess(model.BackendObservationKey(relayplan.RelayPathScope(target), preferredPathKey), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
 
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts:      1,
@@ -1225,10 +1223,10 @@ func TestTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testin
 		return conn, relay.DialResult{SelectedAddress: target}, nil
 	}
 
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	target := "relay-target.example:" + strconv.Itoa(actualPort)
 	preferredPathKey := relayplan.PathKey("relay_path", []int{551}, target)
-	cache.ObserveBackendSuccess(backends.BackendObservationKey(relayplan.RelayPathScope(target), preferredPathKey), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveBackendSuccess(model.BackendObservationKey(relayplan.RelayPathScope(target), preferredPathKey), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
 
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts:      1,
@@ -1284,7 +1282,7 @@ func TestTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T)
 		return conn, relay.DialResult{SelectedAddress: target}, nil
 	}
 
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts:      1,
 		Timeout:       time.Second,
@@ -1309,8 +1307,8 @@ func TestTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
 	}
-	selectedKey := backends.RelayBackoffKey([]int{522}, target)
-	firstKey := backends.RelayBackoffKey([]int{521}, target)
+	selectedKey := model.RelayBackoffKey([]int{522}, target)
+	firstKey := model.RelayBackoffKey([]int{521}, target)
 	if summary := cache.Summary(selectedKey); summary.RecentSucceeded != 1 {
 		t.Fatalf("selected path summary = %+v, want success at %s", summary, selectedKey)
 	}
@@ -1327,7 +1325,7 @@ func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.
 	defer stopTarget()
 
 	host, port := splitDiagnosticTCPAddr(t, addr)
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts: 1,
 		Timeout:  time.Second,
@@ -1384,8 +1382,8 @@ func TestTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeS
 		return conn, relay.DialResult{SelectedAddress: target}, nil
 	}
 
-	cache := backends.NewCache(backends.Config{})
-	baselineKey := backends.RelayBackoffKey([]int{542}, target)
+	cache := model.NewCache(model.BackendCacheConfig{})
+	baselineKey := model.RelayBackoffKey([]int{542}, target)
 	cache.ObserveTransferSuccess(baselineKey, 40*time.Millisecond, 40*time.Millisecond, 0)
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts:      3,
@@ -1420,7 +1418,7 @@ func TestTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeS
 }
 
 func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 
 	rule := model.L4Rule{
 		ID:          2,
@@ -1434,7 +1432,7 @@ func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 		}},
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "relay-target.example:9001"))
+	cache.MarkFailure(model.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "relay-target.example:9001"))
 
 	candidates, err := tcpCandidates(context.Background(), cache, rule)
 	if err != nil {
@@ -1446,7 +1444,7 @@ func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 }
 
 func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 
 	rule := model.L4Rule{
 		ID:         2,
@@ -1463,7 +1461,7 @@ func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 		}},
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKey([]int{302, 402}, "relay-target.example:9001"))
+	cache.MarkFailure(model.RelayBackoffKey([]int{302, 402}, "relay-target.example:9001"))
 	candidates, err := tcpCandidates(context.Background(), cache, rule)
 	if err != nil {
 		t.Fatalf("tcpCandidates() error = %v", err)
@@ -1472,7 +1470,7 @@ func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 		t.Fatalf("legacy relay backoff key filtered layered candidates: %+v", candidates)
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "relay-target.example:9001"))
+	cache.MarkFailure(model.RelayBackoffKeyForLayers(nil, rule.RelayLayers, "relay-target.example:9001"))
 	candidates, err = tcpCandidates(context.Background(), cache, rule)
 	if err != nil {
 		t.Fatalf("tcpCandidates() error = %v", err)
@@ -1483,7 +1481,7 @@ func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 }
 
 func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
 	relayListener := newDiagnosticRelayListener(t, provider, 342, "relay.internal.test")
 	rule := model.L4Rule{
@@ -1504,7 +1502,7 @@ func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 
 	backedOffAddress := "127.0.0.10:9001"
 	healthyAddress := "127.0.0.11:9001"
-	cache.MarkFailure(backends.RelayBackoffKey([]int{342}, backedOffAddress))
+	cache.MarkFailure(model.RelayBackoffKey([]int{342}, backedOffAddress))
 
 	previousResolveCandidates := diagnosticRelayResolveCandidates
 	t.Cleanup(func() {
@@ -1535,7 +1533,7 @@ func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 		t.Fatalf("resolved candidate address = %q, want %q", hydrated[0].resolvedCandidates[0].address, healthyAddress)
 	}
 
-	cache.MarkFailure(backends.RelayBackoffKey([]int{342}, healthyAddress))
+	cache.MarkFailure(model.RelayBackoffKey([]int{342}, healthyAddress))
 	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
 	if err != nil {
 		t.Fatalf("hydrateRelayCandidates(all backed off) error = %v", err)
@@ -1546,7 +1544,7 @@ func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 }
 
 func TestTCPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T) {
-	cache := backends.NewCache(backends.Config{})
+	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
 	firstRelay := newDiagnosticRelayListener(t, provider, 361, "relay-a.internal.test")
 	secondRelay := newDiagnosticRelayListener(t, provider, 362, "relay-b.internal.test")

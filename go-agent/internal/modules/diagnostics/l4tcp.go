@@ -3,21 +3,19 @@ package diagnostics
 import (
 	"context"
 	"fmt"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"net"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 type TCPProberConfig struct {
 	Attempts      int
 	Timeout       time.Duration
-	Cache         *backends.Cache
+	Cache         *model.Cache
 	Dialer        *net.Dialer
 	RelayProvider relay.TLSMaterialProvider
 }
@@ -25,7 +23,7 @@ type TCPProberConfig struct {
 type TCPProber struct {
 	attempts      int
 	timeout       time.Duration
-	cache         *backends.Cache
+	cache         *model.Cache
 	dialer        *net.Dialer
 	relayProvider relay.TLSMaterialProvider
 }
@@ -56,7 +54,7 @@ func NewTCPProber(cfg TCPProberConfig) *TCPProber {
 		cfg.Timeout = 3 * time.Second
 	}
 	if cfg.Cache == nil {
-		cfg.Cache = backends.NewCache(backends.Config{})
+		cfg.Cache = model.NewCache(model.BackendCacheConfig{})
 	}
 	if cfg.Dialer == nil {
 		cfg.Dialer = &net.Dialer{Timeout: cfg.Timeout}
@@ -177,7 +175,7 @@ func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayL
 	return result.Conn, result.DialResult.SelectedAddress, append([]int(nil), result.Selected.IDs...), nil
 }
 
-func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]tcpProbeCandidate, error) {
+func tcpCandidates(ctx context.Context, cache *model.Cache, rule model.L4Rule) ([]tcpProbeCandidate, error) {
 	rawBackends := rule.Backends
 	if len(rawBackends) == 0 {
 		if tcpRuleUsesRuntimeFinalHop(rule) {
@@ -197,12 +195,12 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		return nil, fmt.Errorf("at least one backend is required for %s:%d", rule.ListenHost, rule.ListenPort)
 	}
 
-	placeholders := make([]backends.Candidate, 0, len(rawBackends))
+	placeholders := make([]model.Candidate, 0, len(rawBackends))
 	indexesByID := make(map[string][]int, len(rawBackends))
 	duplicateCounts := make(map[string]int, len(rawBackends))
 	for i := range rawBackends {
-		id := backends.StableBackendID(net.JoinHostPort(rawBackends[i].Host, strconv.Itoa(rawBackends[i].Port)))
-		placeholders = append(placeholders, backends.Candidate{Address: id})
+		id := model.StableBackendID(net.JoinHostPort(rawBackends[i].Host, strconv.Itoa(rawBackends[i].Port)))
+		placeholders = append(placeholders, model.Candidate{Address: id})
 		indexesByID[id] = append(indexesByID[id], i)
 		duplicateCounts[id]++
 	}
@@ -224,7 +222,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		if ruleUsesL4Relay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			address := configuredAddress
-			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(nil, rule.RelayLayers, address)) {
+			if cache.IsInBackoff(model.RelayBackoffKeyForLayers(nil, rule.RelayLayers, address)) {
 				continue
 			}
 			resolvedCandidates := []tcpResolvedCandidate{{
@@ -242,7 +240,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 			})
 			continue
 		}
-		resolved, err := cache.Resolve(ctx, backends.Endpoint{
+		resolved, err := cache.Resolve(ctx, model.Endpoint{
 			Host: backend.Host,
 			Port: backend.Port,
 		})
@@ -283,9 +281,9 @@ func tcpProbeBackendLabel(address string, backendID string, backendIndex int, du
 
 func tcpProbeObservationKey(scope string, backendID string, backendIndex int, duplicateCount int) string {
 	if duplicateCount <= 1 {
-		return backends.BackendObservationKey(scope, backendID)
+		return model.BackendObservationKey(scope, backendID)
 	}
-	return backends.BackendObservationKey(scope, fmt.Sprintf("%s#%d", backendID, backendIndex+1))
+	return model.BackendObservationKey(scope, fmt.Sprintf("%s#%d", backendID, backendIndex+1))
 }
 
 func (p *TCPProber) hydrateRelayCandidates(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener, candidates []tcpProbeCandidate) ([]tcpProbeCandidate, error) {
@@ -409,7 +407,7 @@ func tcpProbeLabelForAddress(candidate tcpProbeCandidate, address string) string
 	return candidate.backendLabel
 }
 
-func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandidate, cache *backends.Cache) []BackendReport {
+func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandidate, cache *model.Cache) []BackendReport {
 	reportByLabel := make(map[string]BackendReport, len(reports))
 	for _, report := range reports {
 		reportByLabel[report.Backend] = report
@@ -506,7 +504,7 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 		for _, child := range children {
 			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(tcpChildRelayChain(childRelayChains, child.address, relayChain), child.address))
 		}
-		childSummaries := make(map[string]backends.ObservationSummary, len(childSummaryKeys))
+		childSummaries := make(map[string]model.ObservationSummary, len(childSummaryKeys))
 		for _, key := range childSummaryKeys {
 			childSummaries[key] = cache.SummaryLatencyOnly(key)
 		}

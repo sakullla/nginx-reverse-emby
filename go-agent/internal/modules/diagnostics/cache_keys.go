@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
@@ -16,7 +16,7 @@ func diagnosticAddressKey(relayChain []int, address string) string {
 	if len(relayChain) == 0 {
 		return trimmed
 	}
-	return backends.RelayBackoffKey(relayChain, trimmed)
+	return model.RelayBackoffKey(relayChain, trimmed)
 }
 
 func diagnosticRelayChainForObservation(configured []int, candidate []int, selected []int) []int {
@@ -29,20 +29,20 @@ func diagnosticRelayChainForObservation(configured []int, candidate []int, selec
 	return append([]int(nil), configured...)
 }
 
-func markDiagnosticAddressFailure(cache *backends.Cache, relayChain []int, address string) {
+func markDiagnosticAddressFailure(cache *model.Cache, relayChain []int, address string) {
 	markDiagnosticAddressFailureAll(relayChain, address, cache)
 }
 
-func markDiagnosticAddressFailureAll(relayChain []int, address string, caches ...*backends.Cache) {
+func markDiagnosticAddressFailureAll(relayChain []int, address string, caches ...*model.Cache) {
 	key := diagnosticAddressKey(relayChain, address)
 	for _, cache := range uniqueDiagnosticCaches(caches...) {
 		cache.MarkFailure(key)
 	}
 }
 
-func uniqueDiagnosticCaches(caches ...*backends.Cache) []*backends.Cache {
-	seen := make(map[*backends.Cache]struct{}, len(caches))
-	out := make([]*backends.Cache, 0, len(caches))
+func uniqueDiagnosticCaches(caches ...*model.Cache) []*model.Cache {
+	seen := make(map[*model.Cache]struct{}, len(caches))
+	out := make([]*model.Cache, 0, len(caches))
 	for _, cache := range caches {
 		if cache == nil {
 			continue
@@ -56,36 +56,36 @@ func uniqueDiagnosticCaches(caches ...*backends.Cache) []*backends.Cache {
 	return out
 }
 
-func observeDiagnosticAddressSuccess(cache *backends.Cache, relayChain []int, address string, latency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+func observeDiagnosticAddressSuccess(cache *model.Cache, relayChain []int, address string, latency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
 	observeDiagnosticAddressSuccessAll(relayChain, address, latency, totalDuration, bytesTransferred, cache)
 }
 
-func observeDiagnosticAddressSuccessAll(relayChain []int, address string, latency time.Duration, totalDuration time.Duration, bytesTransferred int64, caches ...*backends.Cache) {
+func observeDiagnosticAddressSuccessAll(relayChain []int, address string, latency time.Duration, totalDuration time.Duration, bytesTransferred int64, caches ...*model.Cache) {
 	key := diagnosticAddressKey(relayChain, address)
 	for _, cache := range uniqueDiagnosticCaches(caches...) {
 		cache.ObserveTransferSuccess(key, latency, totalDuration, bytesTransferred)
 	}
 }
 
-func markDiagnosticAddressSuccess(cache *backends.Cache, relayChain []int, address string) {
+func markDiagnosticAddressSuccess(cache *model.Cache, relayChain []int, address string) {
 	markDiagnosticAddressSuccessAll(relayChain, address, cache)
 }
 
-func markDiagnosticAddressSuccessAll(relayChain []int, address string, caches ...*backends.Cache) {
+func markDiagnosticAddressSuccessAll(relayChain []int, address string, caches ...*model.Cache) {
 	key := diagnosticAddressKey(relayChain, address)
 	for _, cache := range uniqueDiagnosticCaches(caches...) {
 		cache.MarkSuccess(key)
 	}
 }
 
-func persistentDiagnosticAddressCaches(runCache *backends.Cache, sharedCache *backends.Cache, relayChain []int) []*backends.Cache {
+func persistentDiagnosticAddressCaches(runCache *model.Cache, sharedCache *model.Cache, relayChain []int) []*model.Cache {
 	if len(relayChain) == 0 {
 		return uniqueDiagnosticCaches(runCache)
 	}
 	return uniqueDiagnosticCaches(runCache, sharedCache)
 }
 
-func relayResolvedAddressBackedOffForAllPaths(cache *backends.Cache, fallbackChain []int, paths []relayplan.Path, address string) bool {
+func relayResolvedAddressBackedOffForAllPaths(cache *model.Cache, fallbackChain []int, paths []relayplan.Path, address string) bool {
 	if cache == nil {
 		return false
 	}
@@ -95,7 +95,7 @@ func relayResolvedAddressBackedOffForAllPaths(cache *backends.Cache, fallbackCha
 	return len(relayPathsAvailableForAddress(cache, fallbackChain, paths, address)) == 0
 }
 
-func relayPathsAvailableForAddress(cache *backends.Cache, fallbackChain []int, paths []relayplan.Path, address string) []relayplan.Path {
+func relayPathsAvailableForAddress(cache *model.Cache, fallbackChain []int, paths []relayplan.Path, address string) []relayplan.Path {
 	if cache == nil {
 		return append([]relayplan.Path(nil), paths...)
 	}
