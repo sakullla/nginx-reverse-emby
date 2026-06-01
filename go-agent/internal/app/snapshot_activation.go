@@ -33,7 +33,3 @@ func (a *App) applyManagedCertificates(ctx context.Context, snapshot Snapshot) e
 	}
 	return nil
 }
-
-func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
-	return core.MergeSnapshotPayload(next, previous)
-}

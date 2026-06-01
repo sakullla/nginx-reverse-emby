@@ -37,20 +37,19 @@ type Updater interface {
 }
 
 type App struct {
-	cfg                 Config
-	syncClient          SyncClient
-	store               core.Store
-	updater             Updater
-	runtime             *core.Runtime
-	taskClient          *control.TaskClient
-	moduleRegistry      *agentmodule.Registry
-	diagnosticModule    *modulediagnostics.Module
-	trafficReports      core.TrafficReporter
-	certReports         core.ManagedCertificateReporter
-	relayTimeoutReset   func()
-	pendingSyncMetadata map[string]string
-	closeOnce           sync.Once
-	syncMu              sync.Mutex
+	cfg               Config
+	syncClient        SyncClient
+	store             core.Store
+	updater           Updater
+	runtime           *core.Runtime
+	taskClient        *control.TaskClient
+	moduleRegistry    *agentmodule.Registry
+	diagnosticModule  *modulediagnostics.Module
+	trafficReports    core.TrafficReporter
+	certReports       core.ManagedCertificateReporter
+	relayTimeoutReset func()
+	closeOnce         sync.Once
+	syncMu            sync.Mutex
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -410,17 +409,17 @@ func (a *App) Run(ctx context.Context) error {
 	hydratedApplied := a.hydrateAppliedSnapshotFromDesired(applied)
 	if err := a.runtime.Apply(ctx, Snapshot{}, hydratedApplied); err != nil {
 		log.Printf("[agent] startup runtime hydration error at revision %d: %v", applied.Revision, err)
-		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
+		_ = a.syncController().RecordRuntimeErrorWithRevision(err, applied.Revision)
 	} else {
 		if !reflect.DeepEqual(applied, hydratedApplied) {
 			if err := a.store.SaveAppliedSnapshot(hydratedApplied); err != nil {
 				log.Printf("[agent] startup applied snapshot hydration save error at revision %d: %v", hydratedApplied.Revision, err)
-				_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
+				_ = a.syncController().RecordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
 			}
 		}
-		if err := a.persistTrafficStatsInterval(hydratedApplied.AgentConfig.TrafficStatsInterval); err != nil {
+		if err := a.syncController().PersistTrafficStatsInterval(hydratedApplied.AgentConfig.TrafficStatsInterval); err != nil {
 			log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", hydratedApplied.Revision, err)
-			_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
+			_ = a.syncController().RecordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
 		}
 	}
 
@@ -464,7 +463,7 @@ func (a *App) hydrateAppliedSnapshotFromDesired(applied Snapshot) Snapshot {
 	if err != nil || !desiredCanHydrateApplied(applied, desired) {
 		return applied
 	}
-	return mergeSnapshotPayload(applied, desired)
+	return core.MergeSnapshotPayload(applied, desired)
 }
 
 func desiredCanHydrateApplied(applied, desired Snapshot) bool {
