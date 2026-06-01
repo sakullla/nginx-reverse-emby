@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/agentutil"
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
 	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -270,13 +271,6 @@ func sanitizeSnapshot(snapshot Snapshot) Snapshot {
 
 func copyRuntimeState(state RuntimeState) RuntimeState {
 	copyValue := state
-	if state.Metadata == nil {
-		return copyValue
-	}
-
-	copyValue.Metadata = make(map[string]string, len(state.Metadata))
-	for key, value := range state.Metadata {
-		copyValue.Metadata[key] = value
-	}
+	copyValue.Metadata = agentutil.CloneStringMap(state.Metadata)
 	return copyValue
 }

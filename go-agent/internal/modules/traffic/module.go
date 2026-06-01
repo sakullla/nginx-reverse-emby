@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/agentutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic/hosttraffic"
@@ -92,7 +93,7 @@ func (m *Module) Prepare(_ context.Context, req module.ApplyRequest) (module.Mod
 	}.Normalized()
 
 	m.mu.RLock()
-	previousMeta := copyStringMap(m.meta)
+	previousMeta := agentutil.CloneStringMap(m.meta)
 	previousBlockState := m.blockState.Load()
 	m.mu.RUnlock()
 	return &transaction{
@@ -114,7 +115,7 @@ func (m *Module) TrafficReport(ctx context.Context, meta map[string]string) (cor
 	if m == nil {
 		return core.TrafficReport{}, nil
 	}
-	effective := copyStringMap(meta)
+	effective := agentutil.CloneStringMap(meta)
 	m.mu.RLock()
 	for key, value := range m.meta {
 		if _, exists := effective[key]; !exists {
@@ -189,17 +190,9 @@ func (tx *transaction) TrafficBlockState() BlockState {
 func (m *Module) installState(enabled bool, meta map[string]string, blockState BlockState) {
 	SetEnabled(enabled)
 	m.mu.Lock()
-	m.meta = copyStringMap(meta)
+	m.meta = agentutil.CloneStringMap(meta)
 	m.blockState.Store(blockState)
 	m.mu.Unlock()
-}
-
-func copyStringMap(src map[string]string) map[string]string {
-	dst := make(map[string]string, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
-	return dst
 }
 
 var _ module.Module = (*Module)(nil)
