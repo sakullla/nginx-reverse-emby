@@ -35,6 +35,34 @@ func TestModuleReportsRuntimeMetadataAfterAppliedTrafficStatsInterval(t *testing
 	}
 }
 
+func TestModuleTrafficReportMergesModuleMetadataWithNilInput(t *testing.T) {
+	mod := trafficmodule.NewModule(trafficmodule.Config{Interfaces: []string{"lo"}})
+	trafficmodule.Reset()
+	trafficmodule.SetEnabled(true)
+	t.Cleanup(func() {
+		trafficmodule.SetEnabled(true)
+		trafficmodule.Reset()
+	})
+	trafficmodule.AddHTTP(1, 2)
+
+	if err := mod.Apply(context.Background(), module.ApplyRequest{
+		Next: model.Snapshot{AgentConfig: model.AgentConfig{TrafficStatsInterval: "5s"}},
+	}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	report, err := mod.TrafficReport(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("TrafficReport() error = %v", err)
+	}
+	if !report.StatsPresent {
+		t.Fatal("StatsPresent = false, want report produced with module metadata")
+	}
+	if report.RuntimeMetadata == nil {
+		t.Fatal("RuntimeMetadata = nil, want last traffic stats report metadata")
+	}
+}
+
 func TestModuleDescriptorProvidesTrafficSink(t *testing.T) {
 	mod := trafficmodule.NewModule()
 

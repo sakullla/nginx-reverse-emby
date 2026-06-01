@@ -115,7 +115,7 @@ func (m *Module) TrafficReport(ctx context.Context, meta map[string]string) (cor
 	if m == nil {
 		return core.TrafficReport{}, nil
 	}
-	effective := agentutil.CloneStringMap(meta)
+	effective := agentutil.EnsureStringMap(agentutil.CloneStringMap(meta))
 	m.mu.RLock()
 	for key, value := range m.meta {
 		if _, exists := effective[key]; !exists {
