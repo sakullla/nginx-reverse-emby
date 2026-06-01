@@ -3,7 +3,6 @@ package core
 import (
 	stdsync "sync"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/agentutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
@@ -60,7 +59,7 @@ func (s *InMemory) SaveRuntimeState(state RuntimeState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	copyState := state
-	copyState.Metadata = agentutil.CloneStringMap(state.Metadata)
+	copyState.Metadata = cloneRuntimeMetadata(state.Metadata)
 	s.runtime = copyState
 	return nil
 }
@@ -69,8 +68,19 @@ func (s *InMemory) LoadRuntimeState() (RuntimeState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := s.runtime
-	result.Metadata = agentutil.CloneStringMap(result.Metadata)
+	result.Metadata = cloneRuntimeMetadata(result.Metadata)
 	return result, nil
+}
+
+func cloneRuntimeMetadata(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func (s *InMemory) SaveSnapshot(snapshot Snapshot) error {

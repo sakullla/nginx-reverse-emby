@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/agentutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -76,7 +75,7 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 		return SyncPlan{}, err
 	}
 	meta := ensureMetadata(state.Metadata)
-	plan.Request.LastApplyRevision = int(agentutil.ParseInt64Default(meta["last_apply_revision"], applied.Revision))
+	plan.Request.LastApplyRevision = int(parseInt64Default(meta["last_apply_revision"], applied.Revision))
 	plan.Request.LastApplyStatus = strings.TrimSpace(meta["last_apply_status"])
 	plan.Request.LastApplyMessage = meta["last_apply_message"]
 	if plan.Request.LastApplyStatus == "" {
@@ -93,7 +92,7 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 			plan.Request.StatsPresent = report.StatsPresent
 		}
 		if len(report.RuntimeMetadata) > 0 {
-			plan.RuntimeMetadata = agentutil.CloneStringMap(report.RuntimeMetadata)
+			plan.RuntimeMetadata = cloneStringMap(report.RuntimeMetadata)
 		}
 	}
 
@@ -368,11 +367,33 @@ func (c *SyncController) runtimeStateForPersistence() (RuntimeState, error) {
 }
 
 func ensureMetadata(meta map[string]string) map[string]string {
-	return agentutil.EnsureStringMap(meta)
+	if meta == nil {
+		return make(map[string]string)
+	}
+	return meta
 }
 
 func setApplyMetadata(meta map[string]string, revision int64, status string, message string) {
 	meta["last_apply_revision"] = strconv.FormatInt(revision, 10)
 	meta["last_apply_status"] = status
 	meta["last_apply_message"] = message
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func parseInt64Default(raw string, fallback int64) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return value
 }

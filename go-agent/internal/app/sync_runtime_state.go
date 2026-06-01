@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/agentutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
@@ -23,14 +22,14 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 		return SyncRequest{}, err
 	}
 	a.syncMu.Lock()
-	a.pendingSyncMetadata = agentutil.CloneStringMap(plan.RuntimeMetadata)
+	a.pendingSyncMetadata = cloneStringMap(plan.RuntimeMetadata)
 	a.syncMu.Unlock()
 	return plan.Request, nil
 }
 
 func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	a.syncMu.Lock()
-	metadata := agentutil.CloneStringMap(a.pendingSyncMetadata)
+	metadata := cloneStringMap(a.pendingSyncMetadata)
 	a.pendingSyncMetadata = nil
 	defer a.syncMu.Unlock()
 	return a.syncController().PerformSyncPlan(ctx, core.SyncPlan{Request: req, RuntimeMetadata: metadata})
@@ -89,5 +88,19 @@ func (a *App) recordRuntimeErrorWithRevision(syncErr error, revision int64) erro
 }
 
 func ensureMetadata(meta map[string]string) map[string]string {
-	return agentutil.EnsureStringMap(meta)
+	if meta == nil {
+		return make(map[string]string)
+	}
+	return meta
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
