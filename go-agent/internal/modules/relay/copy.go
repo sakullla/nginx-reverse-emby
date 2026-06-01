@@ -8,14 +8,6 @@ import (
 
 const relayTrafficFlushThreshold uint64 = 32 * 1024
 
-func copyPreferReaderFrom(dst io.Writer, src io.Reader) (int64, error) {
-	return traffic.CopyPreferReaderFrom(dst, src)
-}
-
-func copyGeneric(dst io.Writer, src io.Reader) (int64, error) {
-	return traffic.CopyGeneric(dst, src)
-}
-
 func copyRelayTraffic(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic.Recorder) (int64, error) {
 	direction := traffic.DirectionTX
 	if rxDirection {

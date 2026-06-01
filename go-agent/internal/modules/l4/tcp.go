@@ -238,7 +238,7 @@ func copyL4TCP(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic
 		direction = traffic.DirectionRX
 	}
 	wrapped := traffic.NewTrafficWriterFlushBelow(dst, direction, l4RecorderOrAggregate(recorder), 32*1024)
-	return copyPreferReaderFrom(wrapped, src)
+	return traffic.CopyPreferReaderFrom(wrapped, src)
 }
 
 func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]byte, io.Reader, error) {
