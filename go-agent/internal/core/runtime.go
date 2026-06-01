@@ -1,4 +1,4 @@
-package runtime
+package core
 
 import (
 	"context"
@@ -19,11 +19,11 @@ type Runtime struct {
 	activator      Activator
 }
 
-func New() *Runtime {
-	return NewWithActivator(nil)
+func NewRuntime() *Runtime {
+	return NewRuntimeWithActivator(nil)
 }
 
-func NewWithActivator(act Activator) *Runtime {
+func NewRuntimeWithActivator(act Activator) *Runtime {
 	if act == nil {
 		act = defaultActivator
 	}
@@ -36,7 +36,7 @@ func NewWithActivator(act Activator) *Runtime {
 }
 
 func newRuntimeWithActivator(act Activator) *Runtime {
-	return NewWithActivator(act)
+	return NewRuntimeWithActivator(act)
 }
 
 func defaultActivator(_ context.Context, previous, next model.Snapshot) error {

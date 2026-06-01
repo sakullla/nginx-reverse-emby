@@ -1,4 +1,4 @@
-package runtime
+package core
 
 import (
 	"context"
@@ -16,7 +16,7 @@ func TestRuntimeApplyInvokesActivatorWithPreviousAndNextSnapshots(t *testing.T) 
 	var gotPrevious model.Snapshot
 	var gotNext model.Snapshot
 	var calls int
-	r := NewWithActivator(func(_ context.Context, previous, next model.Snapshot) error {
+	r := NewRuntimeWithActivator(func(_ context.Context, previous, next model.Snapshot) error {
 		calls++
 		gotPrevious = previous
 		gotNext = next

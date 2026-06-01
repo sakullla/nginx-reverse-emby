@@ -8,10 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
@@ -31,7 +30,7 @@ func TestSyncControllerSuccessfulSyncPersistsSnapshotsRuntimeStateAndClearsLastS
 	}); err != nil {
 		t.Fatalf("SaveRuntimeState() error = %v", err)
 	}
-	rt := agentruntime.New()
+	rt := NewRuntime()
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
@@ -46,7 +45,7 @@ func TestSyncControllerSuccessfulSyncPersistsSnapshotsRuntimeStateAndClearsLastS
 	client := &syncControllerClient{snapshot: next}
 	controller := &SyncController{Store: st, Runtime: rt, SyncClient: client}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{CurrentRevision: 7}); err != nil {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{CurrentRevision: 7}); err != nil {
 		t.Fatalf("PerformSync() error = %v", err)
 	}
 
@@ -170,7 +169,7 @@ func TestSyncControllerMergesOmittedPayloadsAgainstDesiredAndAppliedSnapshots(t 
 	}
 
 	var appliedByRuntime model.Snapshot
-	rt := agentruntime.NewWithActivator(func(_ context.Context, _, next model.Snapshot) error {
+	rt := NewRuntimeWithActivator(func(_ context.Context, _, next model.Snapshot) error {
 		if next.Revision == 5 {
 			appliedByRuntime = next
 		}
@@ -192,7 +191,7 @@ func TestSyncControllerMergesOmittedPayloadsAgainstDesiredAndAppliedSnapshots(t 
 	}
 	controller := &SyncController{Store: st, Runtime: rt, SyncClient: &syncControllerClient{snapshot: synced}}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err != nil {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err != nil {
 		t.Fatalf("PerformSync() error = %v", err)
 	}
 
@@ -223,14 +222,14 @@ func TestSyncControllerSyncFailureRecordsRuntimeErrorAndSuccessClearsIt(t *testi
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
 	_ = st.SaveAppliedSnapshot(previous)
 	_ = st.SaveRuntimeState(store.RuntimeState{Metadata: map[string]string{"foo": "bar"}})
-	rt := agentruntime.New()
+	rt := NewRuntime()
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
 	client := &syncControllerClient{err: errors.New("boom")}
 	controller := &SyncController{Store: st, Runtime: rt, SyncClient: client}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || err.Error() != "boom" {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err == nil || err.Error() != "boom" {
 		t.Fatalf("PerformSync() error = %v, want boom", err)
 	}
 	state, err := st.LoadRuntimeState()
@@ -243,7 +242,7 @@ func TestSyncControllerSyncFailureRecordsRuntimeErrorAndSuccessClearsIt(t *testi
 
 	client.err = nil
 	client.snapshot = model.Snapshot{DesiredVersion: "next", Revision: 8}
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err != nil {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err != nil {
 		t.Fatalf("PerformSync() success error = %v", err)
 	}
 	state, err = st.LoadRuntimeState()
@@ -261,7 +260,7 @@ func TestSyncControllerDesiredSnapshotSaveFailureRecordsRuntimeError(t *testing.
 	previous := model.Snapshot{DesiredVersion: "stable", Revision: 7}
 	_ = st.SaveAppliedSnapshot(previous)
 	_ = st.SaveRuntimeState(store.RuntimeState{Metadata: map[string]string{"foo": "bar"}})
-	rt := agentruntime.New()
+	rt := NewRuntime()
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
@@ -271,7 +270,7 @@ func TestSyncControllerDesiredSnapshotSaveFailureRecordsRuntimeError(t *testing.
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 8}},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || err.Error() != "desired persistence fail" {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err == nil || err.Error() != "desired persistence fail" {
 		t.Fatalf("PerformSync() error = %v, want desired persistence fail", err)
 	}
 
@@ -296,7 +295,7 @@ func TestSyncControllerApplyFailureRollsRuntimeBackAndRecordsCandidateError(t *t
 		Metadata:        map[string]string{"current_revision": "7"},
 	})
 	applyErr := errors.New("activation failed")
-	rt := agentruntime.NewWithActivator(func(_ context.Context, _, next model.Snapshot) error {
+	rt := NewRuntimeWithActivator(func(_ context.Context, _, next model.Snapshot) error {
 		if next.Revision == 9 {
 			return applyErr
 		}
@@ -311,7 +310,7 @@ func TestSyncControllerApplyFailureRollsRuntimeBackAndRecordsCandidateError(t *t
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); !errors.Is(err, applyErr) {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); !errors.Is(err, applyErr) {
 		t.Fatalf("PerformSync() error = %v, want %v", err, applyErr)
 	}
 
@@ -340,7 +339,7 @@ func TestSyncControllerModuleApplyFailureFromRuntimeRollsRuntimeBackAndRecordsCa
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
 	}
 	applyErr := errors.New("module apply failed")
-	rt := agentruntime.NewWithActivator(func(_ context.Context, _, next model.Snapshot) error {
+	rt := NewRuntimeWithActivator(func(_ context.Context, _, next model.Snapshot) error {
 		if next.Revision == 9 {
 			return applyErr
 		}
@@ -355,7 +354,7 @@ func TestSyncControllerModuleApplyFailureFromRuntimeRollsRuntimeBackAndRecordsCa
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
 	}
 
-	err := controller.PerformSync(context.Background(), agentsync.SyncRequest{})
+	err := controller.PerformSync(context.Background(), control.SyncRequest{})
 	if !errors.Is(err, applyErr) {
 		t.Fatalf("PerformSync() error = %v, want %v", err, applyErr)
 	}
@@ -379,7 +378,7 @@ func TestSyncControllerReportsRuntimeRollbackFailure(t *testing.T) {
 		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
 	}
 	restoreErr := errors.New("module restore failed")
-	rt := agentruntime.NewWithActivator(func(_ context.Context, previous, next model.Snapshot) error {
+	rt := NewRuntimeWithActivator(func(_ context.Context, previous, next model.Snapshot) error {
 		if previous.Revision == 9 && next.Revision == 7 {
 			return restoreErr
 		}
@@ -394,7 +393,7 @@ func TestSyncControllerReportsRuntimeRollbackFailure(t *testing.T) {
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
 	}
 
-	err := controller.PerformSync(context.Background(), agentsync.SyncRequest{})
+	err := controller.PerformSync(context.Background(), control.SyncRequest{})
 	if err == nil || !strings.Contains(err.Error(), "applied persistence fail") || !errors.Is(err, restoreErr) {
 		t.Fatalf("PerformSync() error = %v, want applied persistence and module restore errors", err)
 	}
@@ -418,7 +417,7 @@ func TestSyncControllerAppliedSnapshotSaveFailureRollsRuntimeBackAndRecordsPersi
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7", "foo": "bar"},
 	})
-	rt := agentruntime.New()
+	rt := NewRuntime()
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
@@ -428,7 +427,7 @@ func TestSyncControllerAppliedSnapshotSaveFailureRollsRuntimeBackAndRecordsPersi
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || !strings.Contains(err.Error(), "applied persistence fail") {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err == nil || !strings.Contains(err.Error(), "applied persistence fail") {
 		t.Fatalf("PerformSync() error = %v, want applied persistence fail", err)
 	}
 
@@ -462,7 +461,7 @@ func TestSyncControllerAppliedSnapshotSaveFailureRecordsPersistedErrorWhenRollba
 		Metadata:        map[string]string{"current_revision": "7", "foo": "bar"},
 	})
 	rollbackErr := errors.New("rollback failed")
-	rt := agentruntime.NewWithActivator(func(_ context.Context, previous, next model.Snapshot) error {
+	rt := NewRuntimeWithActivator(func(_ context.Context, previous, next model.Snapshot) error {
 		if previous.Revision == 9 && next.Revision == 7 {
 			return rollbackErr
 		}
@@ -477,7 +476,7 @@ func TestSyncControllerAppliedSnapshotSaveFailureRecordsPersistedErrorWhenRollba
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9}},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || !strings.Contains(err.Error(), "applied persistence fail") || !errors.Is(err, rollbackErr) {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err == nil || !strings.Contains(err.Error(), "applied persistence fail") || !errors.Is(err, rollbackErr) {
 		t.Fatalf("PerformSync() error = %v, want applied persistence and rollback errors", err)
 	}
 
@@ -514,7 +513,7 @@ func TestSyncControllerRuntimeStateSaveFailureRollsRuntimeBackAndRestoresPreviou
 		Metadata:        map[string]string{"current_revision": "7"},
 	})
 	st.failOnRuntimeSave = 2
-	rt := agentruntime.New()
+	rt := NewRuntime()
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
@@ -524,7 +523,7 @@ func TestSyncControllerRuntimeStateSaveFailureRollsRuntimeBackAndRestoresPreviou
 		SyncClient: &syncControllerClient{snapshot: next},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || err.Error() != "runtime state persistence fail" {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err == nil || err.Error() != "runtime state persistence fail" {
 		t.Fatalf("PerformSync() error = %v, want runtime state persistence fail", err)
 	}
 
@@ -545,7 +544,7 @@ func TestSyncControllerClearsTrafficStatsIntervalAfterSuccessfulApply(t *testing
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7", "traffic_stats_interval": "30s"},
 	})
-	rt := agentruntime.New()
+	rt := NewRuntime()
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
@@ -559,7 +558,7 @@ func TestSyncControllerClearsTrafficStatsIntervalAfterSuccessfulApply(t *testing
 		SyncClient: &syncControllerClient{snapshot: next},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err != nil {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err != nil {
 		t.Fatalf("PerformSync() error = %v", err)
 	}
 
@@ -577,7 +576,7 @@ func TestSyncControllerClearsTrafficStatsIntervalAfterSuccessfulApply(t *testing
 
 func TestSyncControllerPersistsTrafficBlockedStateFromAgentConfig(t *testing.T) {
 	st := newSyncControllerStore()
-	rt := agentruntime.New()
+	rt := NewRuntime()
 	controller := &SyncController{
 		Store:   st,
 		Runtime: rt,
@@ -591,7 +590,7 @@ func TestSyncControllerPersistsTrafficBlockedStateFromAgentConfig(t *testing.T) 
 		}},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err != nil {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err != nil {
 		t.Fatalf("PerformSync() error = %v", err)
 	}
 
@@ -617,7 +616,7 @@ func TestSyncControllerClearsTrafficBlockedStateFromAgentConfig(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveRuntimeState() error = %v", err)
 	}
-	rt := agentruntime.New()
+	rt := NewRuntime()
 	controller := &SyncController{
 		Store:   st,
 		Runtime: rt,
@@ -628,7 +627,7 @@ func TestSyncControllerClearsTrafficBlockedStateFromAgentConfig(t *testing.T) {
 		}},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err != nil {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err != nil {
 		t.Fatalf("PerformSync() error = %v", err)
 	}
 
@@ -653,7 +652,7 @@ func TestSyncControllerKeepsTrafficStatsIntervalWhenActivationFails(t *testing.T
 		Metadata:        map[string]string{"current_revision": "7", "traffic_stats_interval": "30s"},
 	})
 	applyErr := errors.New("activation failed")
-	rt := agentruntime.NewWithActivator(func(_ context.Context, _, next model.Snapshot) error {
+	rt := NewRuntimeWithActivator(func(_ context.Context, _, next model.Snapshot) error {
 		if next.Revision == 9 {
 			return applyErr
 		}
@@ -668,7 +667,7 @@ func TestSyncControllerKeepsTrafficStatsIntervalWhenActivationFails(t *testing.T
 		SyncClient: &syncControllerClient{snapshot: model.Snapshot{DesiredVersion: "next", Revision: 9, AgentConfig: model.AgentConfig{TrafficStatsInterval: "5m"}}},
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); !errors.Is(err, applyErr) {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); !errors.Is(err, applyErr) {
 		t.Fatalf("PerformSync() error = %v, want %v", err, applyErr)
 	}
 
@@ -692,7 +691,7 @@ func TestSyncControllerValidUpdatePackageReturnsRestartWithoutApplyingSnapshot(t
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7"},
 	})
-	rt := agentruntime.NewWithActivator(func(_ context.Context, _, next model.Snapshot) error {
+	rt := NewRuntimeWithActivator(func(_ context.Context, _, next model.Snapshot) error {
 		if next.Revision == 9 {
 			t.Fatalf("snapshot was applied before update restart")
 		}
@@ -710,7 +709,7 @@ func TestSyncControllerValidUpdatePackageReturnsRestartWithoutApplyingSnapshot(t
 		CurrentPackageSHA256: "old-sha",
 	}
 
-	if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); !errors.Is(err, agentupdate.ErrRestartRequested) {
+	if err := controller.PerformSync(context.Background(), control.SyncRequest{}); !errors.Is(err, agentupdate.ErrRestartRequested) {
 		t.Fatalf("PerformSync() error = %v, want ErrRestartRequested", err)
 	}
 	if updater.stageCalls != 1 || updater.activateCalls != 1 {
@@ -781,7 +780,7 @@ func TestSyncControllerHandlePendingUpdateUsesPackageSHAFallbacks(t *testing.T) 
 			updater := &syncControllerUpdater{activateErr: agentupdate.ErrRestartRequested}
 			controller := &SyncController{
 				Store:                newSyncControllerStore(),
-				Runtime:              agentruntime.New(),
+				Runtime:              NewRuntime(),
 				Updater:              updater,
 				CurrentPackageSHA256: tt.currentSHA,
 			}
@@ -814,7 +813,7 @@ func TestSyncControllerUpdaterStageFailureRecordsErrorAndRetriesPersistedPackage
 		CurrentRevision: previous.Revision,
 		Metadata:        map[string]string{"current_revision": "7", "foo": "bar"},
 	})
-	rt := agentruntime.New()
+	rt := NewRuntime()
 	if err := rt.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
 		t.Fatalf("seed runtime: %v", err)
 	}
@@ -840,7 +839,7 @@ func TestSyncControllerUpdaterStageFailureRecordsErrorAndRetriesPersistedPackage
 	}
 
 	for i := 0; i < 2; i++ {
-		if err := controller.PerformSync(context.Background(), agentsync.SyncRequest{}); err == nil || err.Error() != "stage failed" {
+		if err := controller.PerformSync(context.Background(), control.SyncRequest{}); err == nil || err.Error() != "stage failed" {
 			t.Fatalf("PerformSync(%d) error = %v, want stage failed", i+1, err)
 		}
 	}
@@ -1024,7 +1023,7 @@ type syncControllerClient struct {
 	calls    int
 }
 
-func (c *syncControllerClient) Sync(context.Context, agentsync.SyncRequest) (model.Snapshot, error) {
+func (c *syncControllerClient) Sync(context.Context, control.SyncRequest) (model.Snapshot, error) {
 	c.calls++
 	return c.snapshot, c.err
 }
@@ -1035,7 +1034,7 @@ type syncControllerSequenceClient struct {
 	calls     int
 }
 
-func (c *syncControllerSequenceClient) Sync(context.Context, agentsync.SyncRequest) (model.Snapshot, error) {
+func (c *syncControllerSequenceClient) Sync(context.Context, control.SyncRequest) (model.Snapshot, error) {
 	c.calls++
 	if c.err != nil {
 		return model.Snapshot{}, c.err

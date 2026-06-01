@@ -1,13 +1,13 @@
-//go:build !linux
+//go:build linux
 
-package linux
+package platform
 
-import "fmt"
+import "syscall"
 
 func ServiceUnitName() string {
 	return "nginx-reverse-emby-agent"
 }
 
 func ExecReplacement(binary string, argv []string, env []string) error {
-	return fmt.Errorf("exec replacement is only supported on linux")
+	return syscall.Exec(binary, argv, env)
 }

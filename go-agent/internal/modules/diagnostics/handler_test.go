@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
 func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T) {
@@ -36,9 +36,9 @@ func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T)
 		HTTPClient: server.Client(),
 	}), NewTCPProber(TCPProberConfig{}))
 
-	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
+	result, err := handler.HandleTask(context.Background(), control.TaskMessage{
 		TaskID:     "task-1",
-		TaskType:   task.TaskTypeDiagnoseHTTPRule,
+		TaskType:   control.TaskTypeDiagnoseHTTPRule,
 		RawPayload: map[string]any{"rule_id": 7},
 	})
 	if err != nil {
@@ -85,9 +85,9 @@ func TestDiagnosticHandlerReturnsPerBackendResults(t *testing.T) {
 		HTTPClient: backendA.Client(),
 	}), NewTCPProber(TCPProberConfig{}))
 
-	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
+	result, err := handler.HandleTask(context.Background(), control.TaskMessage{
 		TaskID:     "task-17",
-		TaskType:   task.TaskTypeDiagnoseHTTPRule,
+		TaskType:   control.TaskTypeDiagnoseHTTPRule,
 		RawPayload: map[string]any{"rule_id": 17},
 	})
 	if err != nil {
@@ -134,9 +134,9 @@ func TestDiagnosticHandlerSerializesAdaptiveBackendFactors(t *testing.T) {
 		HTTPClient: backendA.Client(),
 	}), NewTCPProber(TCPProberConfig{}))
 
-	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
+	result, err := handler.HandleTask(context.Background(), control.TaskMessage{
 		TaskID:     "task-18",
-		TaskType:   task.TaskTypeDiagnoseHTTPRule,
+		TaskType:   control.TaskTypeDiagnoseHTTPRule,
 		RawPayload: map[string]any{"rule_id": 18},
 	})
 	if err != nil {
@@ -178,9 +178,9 @@ func TestDiagnosticHandlerUsesFiveHTTPSamplesByDefault(t *testing.T) {
 		NewTCPProber(TCPProberConfig{}),
 	)
 
-	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
+	result, err := handler.HandleTask(context.Background(), control.TaskMessage{
 		TaskID:     "task-27",
-		TaskType:   task.TaskTypeDiagnoseHTTPRule,
+		TaskType:   control.TaskTypeDiagnoseHTTPRule,
 		RawPayload: map[string]any{"rule_id": 27},
 	})
 	if err != nil {
@@ -231,9 +231,9 @@ func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
 		Timeout:  time.Second,
 	}))
 
-	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
+	result, err := handler.HandleTask(context.Background(), control.TaskMessage{
 		TaskID:     "task-2",
-		TaskType:   task.TaskTypeDiagnoseL4TCPRule,
+		TaskType:   control.TaskTypeDiagnoseL4TCPRule,
 		RawPayload: map[string]any{"rule_id": 9},
 	})
 	if err != nil {
@@ -310,9 +310,9 @@ func TestDiagnosticHandlerReturnsPerBackendResultsForL4Rules(t *testing.T) {
 		Timeout:  time.Second,
 	}))
 
-	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
+	result, err := handler.HandleTask(context.Background(), control.TaskMessage{
 		TaskID:     "task-19",
-		TaskType:   task.TaskTypeDiagnoseL4TCPRule,
+		TaskType:   control.TaskTypeDiagnoseL4TCPRule,
 		RawPayload: map[string]any{"rule_id": 19},
 	})
 	if err != nil {
@@ -376,9 +376,9 @@ func TestDiagnosticHandlerHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *te
 		Timeout:  time.Second,
 	}))
 
-	result, err := handler.HandleTask(context.Background(), task.TaskMessage{
+	result, err := handler.HandleTask(context.Background(), control.TaskMessage{
 		TaskID:     "task-45",
-		TaskType:   task.TaskTypeDiagnoseL4TCPRule,
+		TaskType:   control.TaskTypeDiagnoseL4TCPRule,
 		RawPayload: map[string]any{"rule_id": 45},
 	})
 	if err != nil {
@@ -418,9 +418,9 @@ func TestDiagnosticHandlerDoesNotHydrateMissingAppliedRulesFromNewerDesiredSnaps
 		Timeout:  time.Second,
 	}))
 
-	_, err := handler.HandleTask(context.Background(), task.TaskMessage{
+	_, err := handler.HandleTask(context.Background(), control.TaskMessage{
 		TaskID:     "task-45",
-		TaskType:   task.TaskTypeDiagnoseL4TCPRule,
+		TaskType:   control.TaskTypeDiagnoseL4TCPRule,
 		RawPayload: map[string]any{"rule_id": 45},
 	})
 	if err == nil {

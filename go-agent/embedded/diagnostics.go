@@ -5,10 +5,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
 type DiagnosticRequest struct {
@@ -47,7 +47,7 @@ func DiagnoseSnapshot(ctx context.Context, dataDir string, snapshot Snapshot, re
 	if err := registry.Apply(ctx, Snapshot{}, snapshot); err != nil {
 		return nil, err
 	}
-	return mod.HandleTask(ctx, task.TaskMessage{
+	return mod.HandleTask(ctx, control.TaskMessage{
 		TaskType:   req.TaskType,
 		RawPayload: map[string]any{"rule_id": req.RuleID},
 	})

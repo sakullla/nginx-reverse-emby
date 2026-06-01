@@ -1,4 +1,4 @@
-package sync
+package control
 
 import (
 	"bytes"
@@ -119,7 +119,7 @@ func TestHeartbeatSync(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL,
 		AgentToken:     "token",
 		AgentID:        "node",
@@ -310,7 +310,7 @@ func TestHeartbeatSyncSendsExplicitEmptyStats(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL,
 		AgentToken:     "token",
 		AgentID:        "agent",
@@ -357,7 +357,7 @@ func TestHeartbeatSyncSupportsMasterURLWithApiPrefix(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL + "/panel-api",
 		AgentToken:     "token",
 		AgentID:        "node",
@@ -390,7 +390,7 @@ func TestHeartbeatSyncPreservesOmittedCertificatePayloadAsNil(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL,
 		AgentToken:     "token",
 		AgentID:        "node",
@@ -443,7 +443,7 @@ func TestHeartbeatSyncSendsExplicitEmptyApplyFieldsAndCertificateReports(t *test
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL,
 		AgentToken:     "token",
 		AgentID:        "node",
@@ -489,7 +489,7 @@ func TestHeartbeatSyncPreservesExplicitEmptyCertificatePayloads(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL,
 		AgentToken:     "token",
 		AgentID:        "node",
@@ -520,7 +520,7 @@ func TestHeartbeatSyncPreservesExplicitEmptyAgentConfig(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL,
 		AgentToken:     "token",
 		AgentID:        "node",
@@ -554,7 +554,7 @@ func TestHeartbeatSyncBuildsVersionPackageFromLegacyFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL,
 		AgentToken:     "token",
 		AgentID:        "node",
@@ -585,7 +585,7 @@ func TestHeartbeatSyncPreservesVersionPackageMetadata(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL,
 		AgentToken:     "token",
 		AgentID:        "node",
@@ -620,7 +620,7 @@ func TestHeartbeatSyncDecodesTypedHTTPAndL4BackendFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:      server.URL,
 		AgentToken:     "token",
 		AgentID:        "node",
@@ -675,8 +675,8 @@ func TestHeartbeatSyncDecodesTypedHTTPAndL4BackendFields(t *testing.T) {
 	}
 }
 
-func TestNewClientAppliesConfiguredHTTPTransportTimeouts(t *testing.T) {
-	client := NewClient(ClientConfig{
+func TestNewSyncClientAppliesConfiguredHTTPTransportTimeouts(t *testing.T) {
+	client := NewSyncClient(SyncClientConfig{
 		MasterURL:  "https://master.example.com",
 		AgentToken: "token",
 		HTTPTransport: config.HTTPTransportConfig{

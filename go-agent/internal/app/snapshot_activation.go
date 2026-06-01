@@ -6,14 +6,13 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 )
 
-func appSnapshotActivator(registry *agentmodule.Registry) agentruntime.Activator {
+func appSnapshotActivator(registry *agentmodule.Registry) core.Activator {
 	return core.NewSnapshotActivator(registry)
 }
 
-func (a *App) snapshotActivator() agentruntime.Activator {
+func (a *App) snapshotActivator() core.Activator {
 	if a == nil {
 		return appSnapshotActivator(nil)
 	}

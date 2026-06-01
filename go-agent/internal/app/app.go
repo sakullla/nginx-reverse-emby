@@ -12,6 +12,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
@@ -23,17 +24,14 @@ import (
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
-	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
-	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
 type Config = config.Config
 type Snapshot = store.Snapshot
-type SyncRequest = agentsync.SyncRequest
+type SyncRequest = control.SyncRequest
 
 type SyncClient interface {
 	Sync(context.Context, SyncRequest) (Snapshot, error)
@@ -49,8 +47,8 @@ type App struct {
 	syncClient          SyncClient
 	store               store.Store
 	updater             Updater
-	runtime             *agentruntime.Runtime
-	taskClient          *agenttask.Client
+	runtime             *core.Runtime
+	taskClient          *control.TaskClient
 	moduleRegistry      *agentmodule.Registry
 	diagnosticModule    *modulediagnostics.Module
 	trafficReports      core.TrafficReporter
@@ -230,7 +228,7 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	capabilities := core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: modules.registry})
-	client := agentsync.NewClient(agentsync.ClientConfig{
+	client := control.NewSyncClient(control.SyncClientConfig{
 		MasterURL:      cfg.MasterURL,
 		AgentToken:     cfg.AgentToken,
 		AgentID:        cfg.AgentID,
@@ -246,7 +244,7 @@ func New(cfg Config) (*App, error) {
 		},
 		HTTPTransport: cfg.HTTPTransport,
 	}, nil)
-	taskClient := agenttask.NewClient(agenttask.ClientConfig{
+	taskClient := control.NewTaskClient(control.TaskClientConfig{
 		MasterURL:     cfg.MasterURL,
 		AgentToken:    cfg.AgentToken,
 		AgentID:       cfg.AgentID,
@@ -266,7 +264,7 @@ func New(cfg Config) (*App, error) {
 			executablePath,
 			os.Args,
 			os.Environ(),
-			platformlinux.ExecReplacement,
+			platform.ExecReplacement,
 			nil,
 		),
 		taskClient,
@@ -317,7 +315,7 @@ func newAppWithAllDeps(
 	st store.Store,
 	client SyncClient,
 	updater Updater,
-	taskClient *agenttask.Client,
+	taskClient *control.TaskClient,
 ) *App {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = config.Default().HeartbeatInterval
@@ -329,7 +327,7 @@ func newAppWithAllDeps(
 		updater:    updater,
 		taskClient: taskClient,
 	}
-	app.runtime = agentruntime.NewWithActivator(appSnapshotActivator(nil))
+	app.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(nil))
 	return app
 }
 
@@ -341,7 +339,7 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.diagnosticModule = modules.diagnostics
 	a.trafficReports = modules.traffic
 	a.certReports = modules.certReports
-	a.runtime = agentruntime.NewWithActivator(appSnapshotActivator(modules.registry))
+	a.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(modules.registry))
 }
 
 func (a *App) ModuleNames() []string {
@@ -355,7 +353,7 @@ func (a *App) Diagnose(ctx context.Context, taskType string, ruleID int) (map[st
 	if a == nil {
 		return nil, errors.New("diagnostic handler is not configured")
 	}
-	msg := agenttask.TaskMessage{
+	msg := control.TaskMessage{
 		TaskType:   taskType,
 		RawPayload: map[string]any{"rule_id": ruleID},
 	}
@@ -376,7 +374,7 @@ func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType 
 	if diagnosticModule == nil {
 		return nil, errors.New("diagnostic handler is not configured")
 	}
-	return diagnosticModule.HandleSnapshotTask(ctx, snapshot, agenttask.TaskMessage{
+	return diagnosticModule.HandleSnapshotTask(ctx, snapshot, control.TaskMessage{
 		TaskType:   taskType,
 		RawPayload: map[string]any{"rule_id": ruleID},
 	})

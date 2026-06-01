@@ -8,12 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic/hosttraffic"
-	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 )
 
 const (
@@ -193,7 +192,7 @@ func TestReporterPendingTimestampPersistsOnlyAfterSuccessfulSync(t *testing.T) {
 	})
 	controller := &core.SyncController{
 		Store:      st,
-		Runtime:    agentruntime.New(),
+		Runtime:    core.NewRuntime(),
 		SyncClient: trafficSyncClient{err: errors.New("sync failed")},
 		Traffic:    reporter,
 	}
@@ -273,6 +272,6 @@ type trafficSyncClient struct {
 	err      error
 }
 
-func (c trafficSyncClient) Sync(context.Context, agentsync.SyncRequest) (model.Snapshot, error) {
+func (c trafficSyncClient) Sync(context.Context, control.SyncRequest) (model.Snapshot, error) {
 	return c.snapshot, c.err
 }

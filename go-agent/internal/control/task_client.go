@@ -1,4 +1,4 @@
-package task
+package control
 
 import (
 	"bufio"
@@ -9,22 +9,17 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 )
-
-type HTTPTransportConfig = config.HTTPTransportConfig
 
 const maxTaskMessageLineBytes = 4 * 1024 * 1024
 
-type ClientConfig struct {
+type TaskClientConfig struct {
 	MasterURL     string
 	AgentToken    string
 	AgentID       string
@@ -57,53 +52,27 @@ func (e streamStatusError) Error() string {
 	return fmt.Sprintf("task stream failed: %s", e.status)
 }
 
-type Client struct {
-	cfg        ClientConfig
+type TaskClient struct {
+	cfg        TaskClientConfig
 	transport  *http.Transport
 	sessionSeq uint64
 }
 
-func NewClient(cfg ClientConfig) *Client {
+func NewTaskClient(cfg TaskClientConfig) *TaskClient {
 	if cfg.ReconnectWait <= 0 {
 		cfg.ReconnectWait = time.Second
 	}
 	cfg.MasterURL = strings.TrimRight(cfg.MasterURL, "/")
 	cfg.MasterURL = normalizeMasterBaseURL(cfg.MasterURL)
 	if cfg.HTTPClient != nil {
-		return &Client{cfg: cfg}
+		return &TaskClient{cfg: cfg}
 	}
-	transportCfg := config.Default().HTTPTransport
-	if cfg.HTTPTransport.DialTimeout > 0 {
-		transportCfg.DialTimeout = cfg.HTTPTransport.DialTimeout
-	}
-	if cfg.HTTPTransport.TLSHandshakeTimeout > 0 {
-		transportCfg.TLSHandshakeTimeout = cfg.HTTPTransport.TLSHandshakeTimeout
-	}
-	if cfg.HTTPTransport.ResponseHeaderTimeout > 0 {
-		transportCfg.ResponseHeaderTimeout = cfg.HTTPTransport.ResponseHeaderTimeout
-	}
-	if cfg.HTTPTransport.IdleConnTimeout > 0 {
-		transportCfg.IdleConnTimeout = cfg.HTTPTransport.IdleConnTimeout
-	}
-	if cfg.HTTPTransport.KeepAlive > 0 {
-		transportCfg.KeepAlive = cfg.HTTPTransport.KeepAlive
-	}
-	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   transportCfg.DialTimeout,
-			KeepAlive: transportCfg.KeepAlive,
-		}).DialContext,
-		TLSHandshakeTimeout:   transportCfg.TLSHandshakeTimeout,
-		ResponseHeaderTimeout: transportCfg.ResponseHeaderTimeout,
-		IdleConnTimeout:       transportCfg.IdleConnTimeout,
-		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
-	}
+	transport := newHTTPTransport(cfg.HTTPTransport)
 	cfg.HTTPClient = &http.Client{Transport: transport}
-	return &Client{cfg: cfg, transport: transport}
+	return &TaskClient{cfg: cfg, transport: transport}
 }
 
-func (c *Client) Run(ctx context.Context) error {
+func (c *TaskClient) Run(ctx context.Context) error {
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -125,7 +94,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Client) runStreamSession(ctx context.Context) error {
+func (c *TaskClient) runStreamSession(ctx context.Context) error {
 	sessionID := c.nextSessionID()
 	if err := c.probeStreamSession(ctx, sessionID); err != nil {
 		return err
@@ -243,7 +212,7 @@ func (c *Client) runStreamSession(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) probeStreamSession(ctx context.Context, sessionID string) error {
+func (c *TaskClient) probeStreamSession(ctx context.Context, sessionID string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.streamURL(sessionID), nil)
 	if err != nil {
 		return err
@@ -275,7 +244,7 @@ func (c *Client) probeStreamSession(ctx context.Context, sessionID string) error
 	return nil
 }
 
-func (c *Client) runSSESession(ctx context.Context) error {
+func (c *TaskClient) runSSESession(ctx context.Context) error {
 	sessionID := c.nextSessionID()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sessionURL(sessionID), nil)
 	if err != nil {
@@ -328,27 +297,27 @@ func (c *Client) runSSESession(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) sessionURL(sessionID string) string {
+func (c *TaskClient) sessionURL(sessionID string) string {
 	return c.taskEndpointURL("/api/agents/task-session", sessionID)
 }
 
-func (c *Client) streamURL(sessionID string) string {
+func (c *TaskClient) streamURL(sessionID string) string {
 	return c.taskEndpointURL("/api/agents/task-stream", sessionID)
 }
 
-func (c *Client) taskEndpointURL(path string, sessionID string) string {
+func (c *TaskClient) taskEndpointURL(path string, sessionID string) string {
 	values := url.Values{}
 	values.Set("agent_id", c.cfg.AgentID)
 	values.Set("session_id", sessionID)
 	return c.cfg.MasterURL + path + "?" + values.Encode()
 }
 
-func (c *Client) nextSessionID() string {
+func (c *TaskClient) nextSessionID() string {
 	seq := atomic.AddUint64(&c.sessionSeq, 1)
 	return fmt.Sprintf("%s-%d-%d", c.cfg.AgentID, time.Now().UTC().UnixNano(), seq)
 }
 
-func (c *Client) helloMessage(sessionID string) Message {
+func (c *TaskClient) helloMessage(sessionID string) Message {
 	return Message{
 		Type: "hello",
 		Hello: &HelloMessage{
@@ -370,7 +339,7 @@ func newTaskMessageScanner(r io.Reader) *bufio.Scanner {
 	return scanner
 }
 
-func (c *Client) handleSSEEvent(ctx context.Context, eventName string, data string) error {
+func (c *TaskClient) handleSSEEvent(ctx context.Context, eventName string, data string) error {
 	if strings.TrimSpace(eventName) != "task" || strings.TrimSpace(data) == "" {
 		return nil
 	}
@@ -388,7 +357,7 @@ func (c *Client) handleSSEEvent(ctx context.Context, eventName string, data stri
 
 type taskUpdateFunc func(context.Context, string, map[string]any) error
 
-func (c *Client) handleTaskMessage(ctx context.Context, task TaskMessage, update taskUpdateFunc) error {
+func (c *TaskClient) handleTaskMessage(ctx context.Context, task TaskMessage, update taskUpdateFunc) error {
 	if strings.TrimSpace(task.TaskID) == "" || strings.TrimSpace(task.TaskType) == "" {
 		return nil
 	}
@@ -427,7 +396,7 @@ func contextWithTaskDeadline(parent context.Context, rawDeadline string) (contex
 	return context.WithDeadline(parent, deadline)
 }
 
-func (c *Client) postUpdate(ctx context.Context, taskID string, payload map[string]any) error {
+func (c *TaskClient) postUpdate(ctx context.Context, taskID string, payload map[string]any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -454,26 +423,14 @@ func (c *Client) postUpdate(ctx context.Context, taskID string, payload map[stri
 	return nil
 }
 
-func (c *Client) discardConnections() {
+func (c *TaskClient) discardConnections() {
 	if c.transport != nil {
 		c.transport.CloseIdleConnections()
 	}
 }
 
-func (c *Client) updateURL(taskID string) string {
+func (c *TaskClient) updateURL(taskID string) string {
 	return fmt.Sprintf("%s/api/agent-tasks/%s/updates", c.cfg.MasterURL, taskID)
-}
-
-func normalizeMasterBaseURL(raw string) string {
-	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
-	switch {
-	case strings.HasSuffix(trimmed, "/panel-api"):
-		return strings.TrimSuffix(trimmed, "/panel-api")
-	case strings.HasSuffix(trimmed, "/api"):
-		return strings.TrimSuffix(trimmed, "/api")
-	default:
-		return trimmed
-	}
 }
 
 func isStreamUnavailable(err error) bool {

@@ -14,12 +14,11 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
-	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
 func TestNewBuildsControlPlaneWiring(t *testing.T) {
@@ -128,7 +127,7 @@ func TestDiagnoseUsesDiagnosticModuleHandler(t *testing.T) {
 	}
 	app := &App{diagnosticModule: diagnosticModule}
 
-	got, err := app.Diagnose(context.Background(), agenttask.TaskTypeDiagnoseHTTPRule, 77)
+	got, err := app.Diagnose(context.Background(), control.TaskTypeDiagnoseHTTPRule, 77)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
 	}
@@ -163,7 +162,7 @@ func TestDiagnoseSnapshotUsesRegistryDiagnosticSources(t *testing.T) {
 		}},
 	}
 
-	_, err := app.DiagnoseSnapshot(context.Background(), snapshot, agenttask.TaskTypeDiagnoseHTTPRule, 89)
+	_, err := app.DiagnoseSnapshot(context.Background(), snapshot, control.TaskTypeDiagnoseHTTPRule, 89)
 	if err == nil || !strings.Contains(err.Error(), "no healthy backend candidates") {
 		t.Fatalf("DiagnoseSnapshot() error = %v, want registry cache source backoff", err)
 	}
@@ -253,4 +252,4 @@ func extractPrivateTransport(t *testing.T, client any) *http.Transport {
 	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface().(*http.Transport)
 }
 
-var _ SyncClient = (*agentsync.Client)(nil)
+var _ SyncClient = (*control.SyncClient)(nil)

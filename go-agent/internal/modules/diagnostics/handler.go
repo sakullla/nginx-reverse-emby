@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
 type DiagnosticHandler struct {
@@ -24,7 +24,7 @@ func NewDiagnosticHandler(st store.Store, httpProber *HTTPProber, tcpProber *TCP
 	}
 }
 
-func (h *DiagnosticHandler) HandleTask(ctx context.Context, msg task.TaskMessage) (map[string]any, error) {
+func (h *DiagnosticHandler) HandleTask(ctx context.Context, msg control.TaskMessage) (map[string]any, error) {
 	if h == nil || h.store == nil {
 		return nil, fmt.Errorf("diagnostic handler store is required")
 	}
@@ -39,7 +39,7 @@ func (h *DiagnosticHandler) HandleTask(ctx context.Context, msg task.TaskMessage
 	}
 
 	switch msg.TaskType {
-	case task.TaskTypeDiagnoseHTTPRule:
+	case control.TaskTypeDiagnoseHTTPRule:
 		if h.httpProber == nil {
 			return nil, fmt.Errorf("http prober is required")
 		}
@@ -52,7 +52,7 @@ func (h *DiagnosticHandler) HandleTask(ctx context.Context, msg task.TaskMessage
 			return nil, err
 		}
 		return reportToMap(report), nil
-	case task.TaskTypeDiagnoseL4TCPRule:
+	case control.TaskTypeDiagnoseL4TCPRule:
 		if h.tcpProber == nil {
 			return nil, fmt.Errorf("tcp prober is required")
 		}

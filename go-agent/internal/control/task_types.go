@@ -1,4 +1,4 @@
-package task
+package control
 
 const (
 	TaskTypeDiagnoseHTTPRule  = "diagnose_http_rule"

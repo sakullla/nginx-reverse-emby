@@ -1,4 +1,4 @@
-package runtime
+package core
 
 import (
 	"context"
@@ -57,7 +57,7 @@ func TestApplyFailureKeepsPreviousSnapshot(t *testing.T) {
 }
 
 func TestApplySuccessSwapsSnapshot(t *testing.T) {
-	r := New()
+	r := NewRuntime()
 	ctx := context.Background()
 	first := model.Snapshot{
 		DesiredVersion: "stable",
@@ -115,7 +115,7 @@ func TestApplySuccessSwapsSnapshot(t *testing.T) {
 }
 
 func TestApplyPreviousMismatchReportsError(t *testing.T) {
-	r := New()
+	r := NewRuntime()
 	ctx := context.Background()
 	base := model.Snapshot{
 		DesiredVersion: "base",
@@ -176,7 +176,7 @@ func TestApplyPreviousMismatchTreatsAgentConfigAndEgressAsSnapshotPayload(t *tes
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r := New()
+			r := NewRuntime()
 			active := model.Snapshot{DesiredVersion: "active", Revision: 1}
 			if err := r.Apply(context.Background(), model.Snapshot{}, active); err != nil {
 				t.Fatalf("priming apply failed: %v", err)
@@ -194,7 +194,7 @@ func TestApplyPreviousMismatchTreatsAgentConfigAndEgressAsSnapshotPayload(t *tes
 }
 
 func TestStateReturnsMetadataCopy(t *testing.T) {
-	r := New()
+	r := NewRuntime()
 	ctx := context.Background()
 	initial := model.Snapshot{
 		DesiredVersion: "copy",
@@ -278,7 +278,7 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 }
 
 func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
-	r := New()
+	r := NewRuntime()
 	ctx := context.Background()
 	initial := model.Snapshot{
 		DesiredVersion: "copy",
@@ -551,7 +551,7 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 }
 
 func TestApplyMismatchErrorRedactsCertificateMaterial(t *testing.T) {
-	r := New()
+	r := NewRuntime()
 	ctx := context.Background()
 	base := model.Snapshot{
 		DesiredVersion: "base",
@@ -578,7 +578,7 @@ func TestApplyMismatchErrorRedactsCertificateMaterial(t *testing.T) {
 }
 
 func TestActiveSnapshotPreservesExplicitEmptySlices(t *testing.T) {
-	r := New()
+	r := NewRuntime()
 	ctx := context.Background()
 	initial := model.Snapshot{
 		DesiredVersion:      "empty",

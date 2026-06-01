@@ -1,4 +1,4 @@
-package task
+package control
 
 import (
 	"bufio"
@@ -82,7 +82,7 @@ func TestTaskClientReconnectsAndSendsHello(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -152,7 +152,7 @@ func TestTaskClientSupportsMasterURLWithApiPrefix(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL + "/panel-api",
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -240,7 +240,7 @@ func TestTaskClientFallsBackToSSEOnlyWhenStreamUnavailable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -351,7 +351,7 @@ func TestTaskClientFallsBackToSSEWhenOldPanelDoesNotReadStreamBody(t *testing.T)
 	defer server.Close()
 	defer server.CloseClientConnections()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -425,7 +425,7 @@ func TestTaskClientFallsBackToSSEWhenLegacyPanelAuthRouteReturns401(t *testing.T
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -494,7 +494,7 @@ func TestTaskClientDoesNotFallbackToSSEOnStream500(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -532,7 +532,7 @@ func TestTaskClientDoesNotFallbackToSSEOnStream500(t *testing.T) {
 }
 
 func TestTaskClientStreamPostFailureDoesNotBlockOnHelloWriter(t *testing.T) {
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:  "https://panel.example.test",
 		AgentToken: "token",
 		AgentID:    "edge-a",
@@ -591,7 +591,7 @@ func TestIsStreamUnavailableTreatsOnlyProbe401AsUnavailable(t *testing.T) {
 }
 
 func TestClientSendHelloEncodesExpectedMessage(t *testing.T) {
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		AgentID:      "edge-a",
 		AgentName:    "edge-a",
 		Version:      "1.0.0",
@@ -616,7 +616,7 @@ func TestClientSendHelloEncodesExpectedMessage(t *testing.T) {
 }
 
 func TestTaskClientURLsEncodeQueryParameters(t *testing.T) {
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL: "https://panel.example.test",
 		AgentID:   "edge&a + b",
 	})
@@ -685,7 +685,7 @@ func TestTaskClientConsumesTaskEventAndReportsLifecycle(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -826,7 +826,7 @@ func TestTaskClientUsesNDJSONTaskStreamForLifecycleUpdates(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -979,7 +979,7 @@ func TestTaskClientStreamsHelloAfterServerOKBeforeBodyRead(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -1113,7 +1113,7 @@ func TestTaskClientHandlesLargeNDJSONTaskStreamMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -1210,7 +1210,7 @@ func TestTaskClientDoesNotSendExpectHeaderForTaskStream(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:  server.URL,
 		AgentToken: "token",
 		AgentID:    "edge-a",
@@ -1257,7 +1257,7 @@ func TestTaskClientUsesTaskDeadlineForHandlerContext(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -1334,7 +1334,7 @@ func TestTaskClientReportsFailedTaskExecution(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(ClientConfig{
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:     server.URL,
 		AgentToken:    "token",
 		AgentID:       "edge-a",
@@ -1382,8 +1382,8 @@ func TestTaskClientReportsFailedTaskExecution(t *testing.T) {
 	}
 }
 
-func TestNewClientAppliesConfiguredHTTPTransportTimeouts(t *testing.T) {
-	client := NewClient(ClientConfig{
+func TestNewTaskClientAppliesConfiguredHTTPTransportTimeouts(t *testing.T) {
+	client := NewTaskClient(TaskClientConfig{
 		MasterURL:  "https://master.example.com",
 		AgentToken: "token",
 		HTTPTransport: config.HTTPTransportConfig{

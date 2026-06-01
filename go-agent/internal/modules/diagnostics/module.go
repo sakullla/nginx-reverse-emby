@@ -6,15 +6,15 @@ import (
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
 type Handler interface {
-	HandleTask(context.Context, task.TaskMessage) (map[string]any, error)
+	HandleTask(context.Context, control.TaskMessage) (map[string]any, error)
 }
 
 type Module struct {
@@ -176,7 +176,7 @@ func (m *Module) TCPProber() *TCPProber {
 	return m.tcpProber
 }
 
-func (m *Module) HandleTask(ctx context.Context, msg task.TaskMessage) (map[string]any, error) {
+func (m *Module) HandleTask(ctx context.Context, msg control.TaskMessage) (map[string]any, error) {
 	handler := m.Handler()
 	if handler == nil {
 		return nil, errors.New("diagnostic handler is not configured")
@@ -184,7 +184,7 @@ func (m *Module) HandleTask(ctx context.Context, msg task.TaskMessage) (map[stri
 	return handler.HandleTask(ctx, msg)
 }
 
-func (m *Module) HandleSnapshotTask(ctx context.Context, snapshot model.Snapshot, msg task.TaskMessage) (map[string]any, error) {
+func (m *Module) HandleSnapshotTask(ctx context.Context, snapshot model.Snapshot, msg control.TaskMessage) (map[string]any, error) {
 	if m == nil {
 		return nil, errors.New("diagnostic handler is not configured")
 	}

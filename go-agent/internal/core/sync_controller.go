@@ -10,10 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
@@ -25,7 +24,7 @@ const (
 )
 
 type SyncClient interface {
-	Sync(context.Context, agentsync.SyncRequest) (model.Snapshot, error)
+	Sync(context.Context, control.SyncRequest) (model.Snapshot, error)
 }
 
 type Updater interface {
@@ -44,7 +43,7 @@ type TrafficReport struct {
 }
 
 type SyncPlan struct {
-	Request         agentsync.SyncRequest
+	Request         control.SyncRequest
 	RuntimeMetadata map[string]string
 }
 
@@ -54,7 +53,7 @@ type ManagedCertificateReporter interface {
 
 type SyncController struct {
 	Store                store.Store
-	Runtime              *agentruntime.Runtime
+	Runtime              *Runtime
 	SyncClient           SyncClient
 	Updater              Updater
 	Traffic              TrafficReporter
@@ -62,16 +61,16 @@ type SyncController struct {
 	CurrentPackageSHA256 string
 }
 
-func (c *SyncController) BuildSyncRequest(ctx context.Context, applied model.Snapshot) (agentsync.SyncRequest, error) {
+func (c *SyncController) BuildSyncRequest(ctx context.Context, applied model.Snapshot) (control.SyncRequest, error) {
 	plan, err := c.BuildSyncPlan(ctx, applied)
 	if err != nil {
-		return agentsync.SyncRequest{}, err
+		return control.SyncRequest{}, err
 	}
 	return plan.Request, nil
 }
 
 func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapshot) (SyncPlan, error) {
-	plan := SyncPlan{Request: agentsync.SyncRequest{CurrentRevision: int(applied.Revision)}}
+	plan := SyncPlan{Request: control.SyncRequest{CurrentRevision: int(applied.Revision)}}
 
 	state, err := c.Store.LoadRuntimeState()
 	if err != nil {
@@ -110,7 +109,7 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 	return plan, nil
 }
 
-func (c *SyncController) PerformSync(ctx context.Context, req agentsync.SyncRequest) error {
+func (c *SyncController) PerformSync(ctx context.Context, req control.SyncRequest) error {
 	return c.PerformSyncPlan(ctx, SyncPlan{Request: req})
 }
 
