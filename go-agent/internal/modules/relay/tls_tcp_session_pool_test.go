@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func TestTLSTCPLogicalStreamReadConsumesQueuedChunksInOrder(t *testing.T) {
@@ -563,7 +562,7 @@ func TestTLSTCPSessionPoolStripesBusySessions(t *testing.T) {
 	}()
 
 	for i := 0; i < 5; i++ {
-		tunnel, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassUnknown, func(context.Context) (*tlsTCPTunnel, error) {
+		tunnel, release, err := pool.getOrDial(context.Background(), "relay-key", model.TrafficClassUnknown, func(context.Context) (*tlsTCPTunnel, error) {
 			dials++
 			return &tlsTCPTunnel{
 				key:        "relay-key",
@@ -595,10 +594,10 @@ func TestTLSTCPTunnelRejectsInteractiveAdmissionWhenCongested(t *testing.T) {
 	tunnel.queuedWrites.Store(5)
 	tunnel.bufferedBytes.Store(600 << 10)
 
-	if tunnel.canAcceptTrafficClass(upstream.TrafficClassInteractive) {
+	if tunnel.canAcceptTrafficClass(model.TrafficClassInteractive) {
 		t.Fatal("canAcceptTrafficClass(interactive) = true, want false")
 	}
-	if !tunnel.canAcceptTrafficClass(upstream.TrafficClassBulk) {
+	if !tunnel.canAcceptTrafficClass(model.TrafficClassBulk) {
 		t.Fatal("canAcceptTrafficClass(bulk) = false, want true")
 	}
 }
@@ -623,7 +622,7 @@ func TestTLSTCPSessionPoolAvoidsCongestedTunnelForInteractiveTraffic(t *testing.
 	congested.bufferedBytes.Store(600 << 10)
 	pool.sessions["relay-key"] = []*tlsTCPTunnel{congested, idle}
 
-	selected, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassInteractive, func(context.Context) (*tlsTCPTunnel, error) {
+	selected, release, err := pool.getOrDial(context.Background(), "relay-key", model.TrafficClassInteractive, func(context.Context) (*tlsTCPTunnel, error) {
 		t.Fatal("unexpected dial for available non-congested tunnel")
 		return nil, nil
 	})
@@ -656,7 +655,7 @@ func TestTLSTCPSessionPoolReusesLeastLoadedInteractiveWhenCappedTunnelsAreConges
 		}
 	}
 
-	selected, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassInteractive, func(context.Context) (*tlsTCPTunnel, error) {
+	selected, release, err := pool.getOrDial(context.Background(), "relay-key", model.TrafficClassInteractive, func(context.Context) (*tlsTCPTunnel, error) {
 		t.Fatal("unexpected dial beyond session cap")
 		return nil, nil
 	})
@@ -686,7 +685,7 @@ func TestTLSTCPSessionPoolAllowsUnknownWhenCappedTunnelsAreCongested(t *testing.
 		pool.sessions["relay-key"] = append(pool.sessions["relay-key"], tunnel)
 	}
 
-	selected, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassUnknown, func(context.Context) (*tlsTCPTunnel, error) {
+	selected, release, err := pool.getOrDial(context.Background(), "relay-key", model.TrafficClassUnknown, func(context.Context) (*tlsTCPTunnel, error) {
 		t.Fatal("unexpected dial beyond session cap")
 		return nil, nil
 	})
@@ -883,7 +882,7 @@ func TestTLSTCPTunnelKeepsCongestionCountersUntilBlockedWriteFinishes(t *testing
 	}
 
 	<-writer.started
-	if tunnel.canAcceptTrafficClass(upstream.TrafficClassInteractive) {
+	if tunnel.canAcceptTrafficClass(model.TrafficClassInteractive) {
 		close(writer.release)
 		_ = waitTLSTCPWriteRequest(context.Background(), req, tunnel)
 		t.Fatal("canAcceptTrafficClass(interactive) = true while write batch is blocked")

@@ -13,7 +13,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 func TestDialQUICRoundTripTCP(t *testing.T) {
@@ -272,7 +272,7 @@ func TestQUICStreamConnCloseUnblocksLocalRead(t *testing.T) {
 
 func TestDialQUICDoesNotScoreCallerCancellationAsTransportFailure(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
 
@@ -334,7 +334,7 @@ func TestDialQUICDoesNotScoreCallerCancellationAsTransportFailure(t *testing.T) 
 
 func TestDialQUICScoresInternalOpenStreamTimeoutAsTransportFailure(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
 

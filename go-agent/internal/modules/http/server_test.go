@@ -32,7 +32,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type recordingRelayPathDialer struct {
@@ -2996,10 +2995,10 @@ func TestStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) 
 		if !ok {
 			t.Fatalf("relay request metadata missing traffic class: %+v", relayReq.Metadata)
 		}
-		switch upstream.TrafficClass(rawClass) {
-		case upstream.TrafficClassInteractive:
+		switch model.TrafficClass(rawClass) {
+		case model.TrafficClassInteractive:
 			seenInteractive = true
-		case upstream.TrafficClassBulk:
+		case model.TrafficClassBulk:
 			seenBulk = true
 		}
 	}
@@ -3067,8 +3066,8 @@ func TestStartRelayHTTPSmallPostPropagatesInteractiveTrafficClassMetadata(t *tes
 
 	select {
 	case relayReq := <-relayAccepted:
-		if got := upstream.TrafficClass(relayReq.Metadata["traffic_class"].(string)); got != upstream.TrafficClassInteractive {
-			t.Fatalf("traffic class = %q, want %q", got, upstream.TrafficClassInteractive)
+		if got := model.TrafficClass(relayReq.Metadata["traffic_class"].(string)); got != model.TrafficClassInteractive {
+			t.Fatalf("traffic class = %q, want %q", got, model.TrafficClassInteractive)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected relay POST request to traverse relay listener")
@@ -3573,7 +3572,7 @@ func TestNewRelayTransportsOrdersPathsByBackendCache(t *testing.T) {
 func TestNewRelayTransportKeepsHealthyIdleConnections(t *testing.T) {
 	var dials atomic.Int32
 	base := NewSharedTransport()
-	transport := NewRelayTransport(base, func(ctx context.Context, network, address string, class upstream.TrafficClass) (net.Conn, error) {
+	transport := NewRelayTransport(base, func(ctx context.Context, network, address string, class model.TrafficClass) (net.Conn, error) {
 		dials.Add(1)
 		clientConn, serverConn := net.Pipe()
 		listener := newSingleConnListener(serverConn)
@@ -3625,7 +3624,7 @@ func TestRelayTransportSupportsHTTP2HTTPSUpstreamsAndPreservesSelectedPath(t *te
 	selectedAddress := "relay-target.example:443"
 	selectedPath := []int{101, 201}
 	var dials atomic.Int32
-	transport := NewRelayTransport(base, func(ctx context.Context, network, address string, class upstream.TrafficClass) (net.Conn, error) {
+	transport := NewRelayTransport(base, func(ctx context.Context, network, address string, class model.TrafficClass) (net.Conn, error) {
 		dials.Add(1)
 		setSelectedRelaySelection(ctx, selectedAddress, selectedPath)
 		var dialer net.Dialer
@@ -3692,7 +3691,7 @@ func TestRelayTransportClearsInheritedTLSDialHooks(t *testing.T) {
 	selectedAddress := "relay-target.example:443"
 	selectedPath := []int{101, 201}
 	var relayDials atomic.Int32
-	transport := NewRelayTransport(base, func(ctx context.Context, network, address string, class upstream.TrafficClass) (net.Conn, error) {
+	transport := NewRelayTransport(base, func(ctx context.Context, network, address string, class model.TrafficClass) (net.Conn, error) {
 		relayDials.Add(1)
 		setSelectedRelaySelection(ctx, selectedAddress, selectedPath)
 		var dialer net.Dialer
@@ -3739,7 +3738,7 @@ func TestRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
 	selectedPath := []int{101, 201}
 	var dials atomic.Int32
 	var requests atomic.Int32
-	transport := NewRelayTransport(NewSharedTransport(), func(ctx context.Context, network, address string, class upstream.TrafficClass) (net.Conn, error) {
+	transport := NewRelayTransport(NewSharedTransport(), func(ctx context.Context, network, address string, class model.TrafficClass) (net.Conn, error) {
 		dials.Add(1)
 		setSelectedRelaySelection(ctx, selectedAddress, selectedPath)
 		clientConn, serverConn := net.Pipe()

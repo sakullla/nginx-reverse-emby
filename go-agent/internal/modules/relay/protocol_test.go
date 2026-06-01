@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 func TestWriteRelayRequestHandlesShortWrites(t *testing.T) {
@@ -94,21 +94,21 @@ func TestRelayOpenFrameRoundTripsTrafficClassMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readMuxOpenPayload() error = %v", err)
 	}
-	if got := relayTrafficClassFromMetadata(frame.Metadata); got != upstream.TrafficClassBulk {
-		t.Fatalf("relayTrafficClassFromMetadata() = %q, want %q", got, upstream.TrafficClassBulk)
+	if got := relayTrafficClassFromMetadata(frame.Metadata); got != model.TrafficClassBulk {
+		t.Fatalf("relayTrafficClassFromMetadata() = %q, want %q", got, model.TrafficClassBulk)
 	}
 }
 
 func TestDialOptionsCloneInitialPayload(t *testing.T) {
-	opts := DialOptions{InitialPayload: []byte("abc"), TrafficClass: upstream.TrafficClassInteractive}
+	opts := DialOptions{InitialPayload: []byte("abc"), TrafficClass: model.TrafficClassInteractive}
 	clone := opts.clone()
 	opts.InitialPayload[0] = 'z'
 
 	if got := string(clone.InitialPayload); got != "abc" {
 		t.Fatalf("clone.InitialPayload = %q, want %q", got, "abc")
 	}
-	if clone.TrafficClass != upstream.TrafficClassInteractive {
-		t.Fatalf("clone.TrafficClass = %q, want %q", clone.TrafficClass, upstream.TrafficClassInteractive)
+	if clone.TrafficClass != model.TrafficClassInteractive {
+		t.Fatalf("clone.TrafficClass = %q, want %q", clone.TrafficClass, model.TrafficClassInteractive)
 	}
 }
 

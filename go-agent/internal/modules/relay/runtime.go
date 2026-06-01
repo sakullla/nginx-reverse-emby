@@ -10,13 +10,13 @@ import (
 	"sync"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type DialOptions struct {
 	InitialPayload      []byte
-	TrafficClass        upstream.TrafficClass
+	TrafficClass        model.TrafficClass
 	OutboundProxyURL    string
 	EgressProfileID     *int
 	OverlayRuntime      module.OverlayRuntime

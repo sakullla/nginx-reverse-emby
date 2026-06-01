@@ -11,7 +11,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 const udpPacketBufferSize = 64 * 1024
@@ -614,7 +613,7 @@ func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udp
 func (s *Server) dialTargetUDPUpstream(rule model.L4Rule, candidate l4Candidate) (udpUpstream, error) {
 	if ruleUsesRelay(rule) {
 		conn, err := s.dialRelayPath("udp", candidate.address, rule, relay.DialOptions{
-			TrafficClass:    upstream.TrafficClassBulk,
+			TrafficClass:    model.TrafficClassBulk,
 			EgressProfileID: rule.EgressProfileID,
 		})
 		if err != nil {
@@ -658,7 +657,7 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 	}
 
 	upstream, err := s.dialRelayPath("udp", targetAddress, rule, relay.DialOptions{
-		TrafficClass:    upstream.TrafficClassBulk,
+		TrafficClass:    model.TrafficClassBulk,
 		EgressProfileID: rule.EgressProfileID,
 	})
 	if err != nil {
@@ -713,8 +712,8 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 				if s.shouldFailUDPSession(session.key) {
 					if _, ok := session.upstream.(directUDPScoreUpstream); ok && s.upstreamScore != nil {
 						s.upstreamScore.ObserveFailure(
-							upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: session.targetAddr},
-							upstream.FailureTimeout,
+							model.PathKey{Family: model.PathFamilyDirectUDP, Address: session.targetAddr},
+							model.FailureTimeout,
 						)
 					}
 					s.observeCandidateFailure(l4Candidate{
@@ -740,7 +739,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		s.markUDPSessionReply(session.key)
 		if _, ok := session.upstream.(directUDPScoreUpstream); ok && s.upstreamScore != nil {
 			s.upstreamScore.ObserveProbeSuccess(
-				upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: session.targetAddr},
+				model.PathKey{Family: model.PathFamilyDirectUDP, Address: session.targetAddr},
 				0,
 				replyDuration,
 				int64(len(payload)),
@@ -847,12 +846,12 @@ func (s *Server) udpReplyTimeoutForCandidate(candidate l4Candidate) time.Duratio
 	if s.udpReplyTimeout != defaultUDPReplyTimeout {
 		return s.udpReplyTimeout
 	}
-	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: candidate.address}
+	key := model.PathKey{Family: model.PathFamilyDirectUDP, Address: candidate.address}
 	if s.upstreamScore.State(key).ConsecutiveHighSeverity > 0 {
 		return s.udpReplyTimeout
 	}
 	estimate := s.upstreamScore.FirstByteEstimate(key)
-	return upstream.EstimateTimeout(upstream.UDPReplyTimeoutPolicy(), estimate)
+	return model.EstimateTimeout(model.UDPReplyTimeoutPolicy(), estimate)
 }
 
 func (s *Server) shouldExpireUDPSession(key string) bool {

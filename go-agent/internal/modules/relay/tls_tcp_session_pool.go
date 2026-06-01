@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
@@ -186,7 +186,7 @@ func (p *tlsTCPSessionPool) allTunnelsForTest() []*tlsTCPTunnel {
 	return tunnels
 }
 
-func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, class upstream.TrafficClass, dial func(context.Context) (*tlsTCPTunnel, error)) (*tlsTCPTunnel, func(), error) {
+func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, class model.TrafficClass, dial func(context.Context) (*tlsTCPTunnel, error)) (*tlsTCPTunnel, func(), error) {
 	if existing, release := p.reserveExisting(key, class); existing != nil {
 		return existing, release, nil
 	}
@@ -206,7 +206,7 @@ func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, class ups
 	return stored, release, nil
 }
 
-func (p *tlsTCPSessionPool) reserveExisting(key string, class upstream.TrafficClass) (*tlsTCPTunnel, func()) {
+func (p *tlsTCPSessionPool) reserveExisting(key string, class model.TrafficClass) (*tlsTCPTunnel, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -228,7 +228,7 @@ func (p *tlsTCPSessionPool) reserveExisting(key string, class upstream.TrafficCl
 	return least, least.reserveStreamSlot()
 }
 
-func (p *tlsTCPSessionPool) storeOrReserve(key string, class upstream.TrafficClass, tunnel *tlsTCPTunnel) (*tlsTCPTunnel, func()) {
+func (p *tlsTCPSessionPool) storeOrReserve(key string, class model.TrafficClass, tunnel *tlsTCPTunnel) (*tlsTCPTunnel, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -285,7 +285,7 @@ func leastLoadedTLSTCPTunnel(sessions []*tlsTCPTunnel) *tlsTCPTunnel {
 	return least
 }
 
-func acceptableTLSTCPTunnels(sessions []*tlsTCPTunnel, class upstream.TrafficClass) []*tlsTCPTunnel {
+func acceptableTLSTCPTunnels(sessions []*tlsTCPTunnel, class model.TrafficClass) []*tlsTCPTunnel {
 	if !isConservativeInteractiveClass(class) {
 		return sessions
 	}
@@ -395,7 +395,7 @@ func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop,
 		return nil, err
 	}
 
-	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, upstream.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, model.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
 		return dialNewTLSTCPTunnelWithOptions(dialCtx, firstHop, provider, options)
 	})
 	if err != nil {
@@ -903,7 +903,7 @@ func (t *tlsTCPTunnel) reserveStreamSlot() func() {
 	}
 }
 
-func (t *tlsTCPTunnel) canAcceptTrafficClass(class upstream.TrafficClass) bool {
+func (t *tlsTCPTunnel) canAcceptTrafficClass(class model.TrafficClass) bool {
 	if !isConservativeInteractiveClass(class) {
 		return true
 	}
@@ -916,8 +916,8 @@ func (t *tlsTCPTunnel) canAcceptTrafficClass(class upstream.TrafficClass) bool {
 	return true
 }
 
-func isConservativeInteractiveClass(class upstream.TrafficClass) bool {
-	return class == upstream.TrafficClassInteractive
+func isConservativeInteractiveClass(class model.TrafficClass) bool {
+	return class == model.TrafficClassInteractive
 }
 
 func (t *tlsTCPTunnel) registerStream(stream *tlsTCPLogicalStream) {

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type TransportOptions struct {
@@ -72,27 +72,27 @@ func NewClassedDirectTransports(base *http.Transport) (*http.Transport, *http.Tr
 
 func NewClassedRelayTransports(
 	base *http.Transport,
-	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+	dial func(context.Context, string, string, model.TrafficClass) (net.Conn, error),
 ) (*http.Transport, *http.Transport) {
 	interactive, bulk := NewClassedDirectTransports(base)
-	configureRelayTransport(interactive, upstream.TrafficClassInteractive, dial)
-	configureRelayTransport(bulk, upstream.TrafficClassBulk, dial)
+	configureRelayTransport(interactive, model.TrafficClassInteractive, dial)
+	configureRelayTransport(bulk, model.TrafficClassBulk, dial)
 	return interactive, bulk
 }
 
 func NewRelayTransport(
 	base *http.Transport,
-	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+	dial func(context.Context, string, string, model.TrafficClass) (net.Conn, error),
 ) *http.Transport {
 	transport := cloneTransport(base)
-	configureRelayTransport(transport, upstream.TrafficClassUnknown, dial)
+	configureRelayTransport(transport, model.TrafficClassUnknown, dial)
 	return transport
 }
 
 func configureRelayTransport(
 	transport *http.Transport,
-	class upstream.TrafficClass,
-	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+	class model.TrafficClass,
+	dial func(context.Context, string, string, model.TrafficClass) (net.Conn, error),
 ) {
 	if transport == nil {
 		return
@@ -108,8 +108,8 @@ func dialRelayTransportConn(
 	ctx context.Context,
 	network string,
 	address string,
-	class upstream.TrafficClass,
-	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+	class model.TrafficClass,
+	dial func(context.Context, string, string, model.TrafficClass) (net.Conn, error),
 ) (net.Conn, error) {
 	conn, err := dial(ctx, network, address, class)
 	if err != nil {

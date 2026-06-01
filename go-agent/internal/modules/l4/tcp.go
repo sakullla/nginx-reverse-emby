@@ -13,7 +13,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func (s *Server) startTCPListener(rule model.L4Rule) error {
@@ -264,14 +263,14 @@ func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]by
 	return nil, source, nil
 }
 
-func relayTCPDialTrafficClass(initialPayload []byte) upstream.TrafficClass {
+func relayTCPDialTrafficClass(initialPayload []byte) model.TrafficClass {
 	if len(initialPayload) == 0 {
-		return upstream.TrafficClassUnknown
+		return model.TrafficClassUnknown
 	}
 	if len(initialPayload) >= relayInitialPayloadMax {
-		return upstream.TrafficClassBulk
+		return model.TrafficClassBulk
 	}
-	return upstream.ClassifyL4("tcp", int64(len(initialPayload)), 0)
+	return model.ClassifyL4("tcp", int64(len(initialPayload)), 0)
 }
 
 func (s *Server) prepareTCPDownstream(client net.Conn, rule model.L4Rule) (io.Reader, *proxyInfo, error) {

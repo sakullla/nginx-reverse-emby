@@ -1,4 +1,4 @@
-package upstream
+package model
 
 type ResourcePressure string
 

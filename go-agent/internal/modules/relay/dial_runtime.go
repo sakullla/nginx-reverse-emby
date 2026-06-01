@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 var relayOutboundProxyURL atomic.Value
@@ -291,20 +290,20 @@ func requireTLSMaterialProvider(provider TLSMaterialProvider) error {
 	return nil
 }
 
-func relayDialTrafficClass(network string, options DialOptions) upstream.TrafficClass {
+func relayDialTrafficClass(network string, options DialOptions) model.TrafficClass {
 	if options.TrafficClass != "" {
 		return options.TrafficClass
 	}
 	if strings.EqualFold(network, "udp") {
-		return upstream.TrafficClassBulk
+		return model.TrafficClassBulk
 	}
-	return upstream.TrafficClassUnknown
+	return model.TrafficClassUnknown
 }
 
 func relayMetadataForDialOptions(network string, options DialOptions) map[string]any {
 	class := relayDialTrafficClass(network, options)
 	metadata := make(map[string]any)
-	if class != upstream.TrafficClassUnknown {
+	if class != model.TrafficClassUnknown {
 		metadata[relayMetadataTrafficClass] = string(class)
 	}
 	if options.EgressProfileID != nil && *options.EgressProfileID > 0 {
@@ -318,7 +317,7 @@ func relayMetadataForDialOptions(network string, options DialOptions) map[string
 
 func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialOptions {
 	class := relayTrafficClassFromMetadata(metadata)
-	if class == upstream.TrafficClassUnknown {
+	if class == model.TrafficClassUnknown {
 		class = relayDialTrafficClass(network, DialOptions{})
 	}
 	return DialOptions{

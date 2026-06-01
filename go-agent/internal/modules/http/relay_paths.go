@@ -15,7 +15,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type relayPathDialer struct {
@@ -50,7 +49,7 @@ func newRelayTransports(
 	}
 	_ = finalHopDialer
 	racer := newRelayPathRacer(provider, cache)
-	dial := func(ctx context.Context, network, addr string, class upstream.TrafficClass) (net.Conn, error) {
+	dial := func(ctx context.Context, network, addr string, class model.TrafficClass) (net.Conn, error) {
 		target := dialAddressFromContext(ctx, addr)
 		requestPaths := relayroute.ClonePathsWithTarget(paths, target)
 		result, err := racer.Race(ctx, relayplan.Request{

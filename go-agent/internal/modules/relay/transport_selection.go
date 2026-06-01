@@ -6,15 +6,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type relayPathPlanner interface {
-	Plan(input upstream.PlanInput) upstream.PlanResult
+	Plan(input model.PlanInput) model.PlanResult
 }
 
 var relayPlanner relayPathPlanner
-var relayRuntimeScore = upstream.NewScoreStore(time.Now)
+var relayRuntimeScore = model.NewScoreStore(time.Now)
 var relayVerifiedFallbacks = newRelayVerifiedFallbackStore()
 
 const relayQUICProbeInterval = 30 * time.Second
@@ -93,44 +93,44 @@ func chooseRelayTransport(firstHop Hop) string {
 	}
 	planner := relayPlanner
 	if planner == nil {
-		planner = upstream.NewPlanner()
+		planner = model.NewPlanner()
 	}
 	candidates := relayTransportCandidates(firstHop)
 	if len(candidates) == 0 {
 		return baseMode
 	}
-	result := planner.Plan(upstream.PlanInput{
+	result := planner.Plan(model.PlanInput{
 		Paths:            candidates,
-		Class:            upstream.TrafficClassUnknown,
-		ResourcePressure: upstream.ResourcePressureLow,
+		Class:            model.TrafficClassUnknown,
+		ResourcePressure: model.ResourcePressureLow,
 	})
 	if len(result.Ordered) == 0 {
 		return baseMode
 	}
 	switch result.Ordered[0].Key.Family {
-	case upstream.PathFamilyRelayQUIC:
+	case model.PathFamilyRelayQUIC:
 		return ListenerTransportModeQUIC
-	case upstream.PathFamilyRelayTLSTCP:
+	case model.PathFamilyRelayTLSTCP:
 		return ListenerTransportModeTLSTCP
 	}
 	return baseMode
 }
 
-func relayTransportCandidates(firstHop Hop) []upstream.PathSnapshot {
+func relayTransportCandidates(firstHop Hop) []model.PathSnapshot {
 	baseMode := normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
 	if baseMode != ListenerTransportModeQUIC {
-		return []upstream.PathSnapshot{{
-			Key:        upstream.PathKey{Family: upstream.PathFamilyRelayTLSTCP, Address: firstHop.Address},
+		return []model.PathSnapshot{{
+			Key:        model.PathKey{Family: model.PathFamilyRelayTLSTCP, Address: firstHop.Address},
 			Confidence: 1.0,
 		}}
 	}
 
-	quicState := upstream.PathState{}
+	quicState := model.PathState{}
 	quicKey := relayQUICPathKey(firstHop)
 	if relayRuntimeScore != nil {
 		quicState = relayRuntimeScore.State(quicKey)
 	}
-	return []upstream.PathSnapshot{{
+	return []model.PathSnapshot{{
 		Key:        quicKey,
 		Confidence: relayPathConfidence(quicState, false),
 		ProbeOnly:  quicState.ProbeOnly,
@@ -163,7 +163,7 @@ func consumeRelayQUICProbe(firstHop Hop) bool {
 	return relayRuntimeScore.ConsumeProbeOpportunity(key, relayQUICProbeInterval)
 }
 
-func relayPathConfidence(state upstream.PathState, probeDue bool) float64 {
+func relayPathConfidence(state model.PathState, probeDue bool) float64 {
 	if state.ProbeOnly {
 		if probeDue {
 			return 0.31
@@ -173,11 +173,11 @@ func relayPathConfidence(state upstream.PathState, probeDue bool) float64 {
 	return 0.80
 }
 
-func relayQUICPathKey(firstHop Hop) upstream.PathKey {
+func relayQUICPathKey(firstHop Hop) model.PathKey {
 	if sessionKey, err := quicSessionPoolKey(firstHop); err == nil && strings.TrimSpace(sessionKey) != "" {
-		return upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: sessionKey}
+		return model.PathKey{Family: model.PathFamilyRelayQUIC, Address: sessionKey}
 	}
-	return upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address}
+	return model.PathKey{Family: model.PathFamilyRelayQUIC, Address: firstHop.Address}
 }
 
 func relayHopIdentityKey(firstHop Hop) string {
@@ -216,7 +216,7 @@ func observeRelayQUICFailureForHop(firstHop Hop) {
 		return
 	}
 	key := relayQUICPathKey(firstHop)
-	relayRuntimeScore.ObserveFailure(key, upstream.FailureTimeout)
+	relayRuntimeScore.ObserveFailure(key, model.FailureTimeout)
 	relayRuntimeScore.ArmProbe(key, relayQUICProbeInterval)
 }
 
@@ -232,7 +232,7 @@ func observeRelayQUICSuccessForHop(firstHop Hop) {
 	)
 }
 
-func setRelayRuntimeScoreForTest(score *upstream.ScoreStore) func() {
+func setRelayRuntimeScoreForTest(score *model.ScoreStore) func() {
 	prev := relayRuntimeScore
 	relayRuntimeScore = score
 	return func() {

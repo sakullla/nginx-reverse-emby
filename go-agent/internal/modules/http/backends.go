@@ -15,24 +15,23 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func (e *routeEntry) transportForRequest(req *http.Request) *http.Transport {
-	class := upstream.ClassifyHTTPRequest(req)
+	class := model.ClassifyHTTPRequest(req)
 	if ruleUsesRelay(e.rule) {
-		if class == upstream.TrafficClassBulk && e.relayBulkTransport != nil {
+		if class == model.TrafficClassBulk && e.relayBulkTransport != nil {
 			return e.relayBulkTransport
 		}
-		if class == upstream.TrafficClassInteractive && e.relayInteractiveTransport != nil {
+		if class == model.TrafficClassInteractive && e.relayInteractiveTransport != nil {
 			return e.relayInteractiveTransport
 		}
 		return e.transport
 	}
-	if class == upstream.TrafficClassBulk && e.directBulkTransport != nil {
+	if class == model.TrafficClassBulk && e.directBulkTransport != nil {
 		return e.directBulkTransport
 	}
-	if class == upstream.TrafficClassInteractive && e.directInteractiveTransport != nil {
+	if class == model.TrafficClassInteractive && e.directInteractiveTransport != nil {
 		return e.directInteractiveTransport
 	}
 	return e.transport

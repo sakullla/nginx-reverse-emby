@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 const maxRequestSize = 1 << 20
@@ -212,24 +212,24 @@ func writeAll(w io.Writer, payload []byte) error {
 	return nil
 }
 
-func relayTrafficClassFromMetadata(metadata map[string]any) upstream.TrafficClass {
+func relayTrafficClassFromMetadata(metadata map[string]any) model.TrafficClass {
 	if len(metadata) == 0 {
-		return upstream.TrafficClassUnknown
+		return model.TrafficClassUnknown
 	}
 	raw, ok := metadata[relayMetadataTrafficClass]
 	if !ok {
-		return upstream.TrafficClassUnknown
+		return model.TrafficClassUnknown
 	}
 	value, ok := raw.(string)
 	if !ok {
-		return upstream.TrafficClassUnknown
+		return model.TrafficClassUnknown
 	}
-	switch upstream.TrafficClass(strings.ToLower(strings.TrimSpace(value))) {
-	case upstream.TrafficClassInteractive:
-		return upstream.TrafficClassInteractive
-	case upstream.TrafficClassBulk:
-		return upstream.TrafficClassBulk
+	switch model.TrafficClass(strings.ToLower(strings.TrimSpace(value))) {
+	case model.TrafficClassInteractive:
+		return model.TrafficClassInteractive
+	case model.TrafficClassBulk:
+		return model.TrafficClassBulk
 	default:
-		return upstream.TrafficClassUnknown
+		return model.TrafficClassUnknown
 	}
 }

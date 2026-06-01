@@ -27,7 +27,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func TestValidateListener(t *testing.T) {
@@ -1636,7 +1635,7 @@ func TestFinalTargetFailureDoesNotDemoteRelayQUICTransport(t *testing.T) {
 	resetTLSTCPSessionPoolForTest()
 
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
 	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
@@ -1693,7 +1692,7 @@ func TestVerifiedFallbackSurvivesTLSTCPTargetOpenFailureDuringQUICBackoff(t *tes
 	resetTLSTCPSessionPoolForTest()
 
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
 	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
@@ -1721,8 +1720,8 @@ func TestVerifiedFallbackSurvivesTLSTCPTargetOpenFailureDuringQUICBackoff(t *tes
 	defer server.Close()
 
 	key := relayQUICPathKey(hop)
-	score.ObserveFailure(key, upstream.FailureTimeout)
-	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
 	score.ArmProbe(key, relayQUICProbeInterval)
 	markRelayVerifiedFallback(hop)
 
@@ -1745,7 +1744,7 @@ func TestVerifiedFallbackSurvivesTLSTCPFallbackTargetOpenFailureAfterQUICProbe(t
 	resetTLSTCPSessionPoolForTest()
 
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
 	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
@@ -1773,8 +1772,8 @@ func TestVerifiedFallbackSurvivesTLSTCPFallbackTargetOpenFailureAfterQUICProbe(t
 	defer server.Close()
 
 	key := relayQUICPathKey(hop)
-	score.ObserveFailure(key, upstream.FailureTimeout)
-	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
 	score.ArmProbe(key, relayQUICProbeInterval)
 	now = now.Add(relayQUICProbeInterval)
 	markRelayVerifiedFallback(hop)
@@ -2510,14 +2509,14 @@ func TestDialWithResultUsesFallbackAfterQUICProbeDialFails(t *testing.T) {
 	defer server.Close()
 
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	key := relayQUICPathKey(hop)
-	score.ObserveFailure(key, upstream.FailureTimeout)
-	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
 	score.ArmProbe(key, relayQUICProbeInterval)
 	now = now.Add(relayQUICProbeInterval)
 
-	restorePlanner := setRelayPlannerForTest(upstream.NewPlanner())
+	restorePlanner := setRelayPlannerForTest(model.NewPlanner())
 	defer restorePlanner()
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
@@ -2552,7 +2551,7 @@ func TestDialWithResultUsesRuntimeFallbackAfterRepeatedQUICFailures(t *testing.T
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 	resetTLSTCPSessionPoolForTest()
-	restoreScore := setRelayRuntimeScoreForTest(upstream.NewScoreStore(time.Now))
+	restoreScore := setRelayRuntimeScoreForTest(model.NewScoreStore(time.Now))
 	defer restoreScore()
 	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
 	defer restoreFallbacks()
@@ -2613,10 +2612,10 @@ func TestResolveCandidatesDoesNotConsumeQUICProbeWindow(t *testing.T) {
 	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort))
 
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	key := relayQUICPathKey(hop)
-	score.ObserveFailure(key, upstream.FailureTimeout)
-	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
 	score.ArmProbe(key, relayQUICProbeInterval)
 	now = now.Add(relayQUICProbeInterval)
 
@@ -2771,7 +2770,7 @@ func TestResolveCandidatesDoesNotClearRelayVerifiedFallbackState(t *testing.T) {
 
 func TestRelayTransportCandidatesDoesNotAssumeTLSTCPFallbackExistsForQUICHop(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	hop := Hop{
 		Address: "relay.example:443",
 		Listener: Listener{
@@ -2783,8 +2782,8 @@ func TestRelayTransportCandidatesDoesNotAssumeTLSTCPFallbackExistsForQUICHop(t *
 		ServerName: "relay-a.example",
 	}
 	key := relayQUICPathKey(hop)
-	score.ObserveFailure(key, upstream.FailureTimeout)
-	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
 	score.ArmProbe(key, relayQUICProbeInterval)
 
 	restoreScore := setRelayRuntimeScoreForTest(score)
@@ -2796,14 +2795,14 @@ func TestRelayTransportCandidatesDoesNotAssumeTLSTCPFallbackExistsForQUICHop(t *
 	if len(candidates) != 1 {
 		t.Fatalf("len(candidates) = %d, want 1 without verified tls_tcp fallback identity", len(candidates))
 	}
-	if candidates[0].Key.Family != upstream.PathFamilyRelayQUIC {
-		t.Fatalf("candidate family = %q, want %q", candidates[0].Key.Family, upstream.PathFamilyRelayQUIC)
+	if candidates[0].Key.Family != model.PathFamilyRelayQUIC {
+		t.Fatalf("candidate family = %q, want %q", candidates[0].Key.Family, model.PathFamilyRelayQUIC)
 	}
 }
 
 func TestRelayQUICHealthIsScopedPerHopIdentity(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
 	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
@@ -2844,8 +2843,8 @@ func TestRelayQUICHealthIsScopedPerHopIdentity(t *testing.T) {
 
 func TestSelectRelayRuntimeTransportHonorsQUICProbeInterval(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
-	restorePlanner := setRelayPlannerForTest(upstream.NewPlanner())
+	score := model.NewScoreStore(func() time.Time { return now })
+	restorePlanner := setRelayPlannerForTest(model.NewPlanner())
 	defer restorePlanner()
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
@@ -2863,8 +2862,8 @@ func TestSelectRelayRuntimeTransportHonorsQUICProbeInterval(t *testing.T) {
 		ServerName: "relay.example",
 	}
 	key := relayQUICPathKey(hop)
-	score.ObserveFailure(key, upstream.FailureTimeout)
-	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
+	score.ObserveFailure(key, model.FailureTimeout)
 	score.ArmProbe(key, relayQUICProbeInterval)
 
 	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeQUIC {
@@ -2894,7 +2893,7 @@ func TestDialWithResultRecoversQUICAfterProbeSuccesses(t *testing.T) {
 	}()
 
 	now := time.Unix(1700000000, 0)
-	score := upstream.NewScoreStore(func() time.Time { return now })
+	score := model.NewScoreStore(func() time.Time { return now })
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
 	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())

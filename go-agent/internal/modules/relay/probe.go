@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 const (
@@ -181,7 +181,7 @@ func probeRelayRequestTLSTCPMux(ctx context.Context, hop Hop, provider TLSMateri
 	if err != nil {
 		return relayResponse{}, err
 	}
-	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, upstream.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, model.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
 		return dialNewTLSTCPTunnelWithOptions(dialCtx, hop, provider, options)
 	})
 	if err != nil {

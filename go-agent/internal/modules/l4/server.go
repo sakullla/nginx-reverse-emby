@@ -15,7 +15,6 @@ import (
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 const (
@@ -55,7 +54,7 @@ type Server struct {
 	udpAssociations       map[string]udpProxyAssociation
 	udpReplyTimeout       time.Duration
 	udpSessionIdleTimeout time.Duration
-	upstreamScore         *upstream.ScoreStore
+	upstreamScore         *model.ScoreStore
 
 	relayListenersByID  map[int]model.RelayListener
 	relayProvider       RelayMaterialProvider
@@ -180,7 +179,7 @@ func newServerWithOptions(
 		udpAssociations:       make(map[string]udpProxyAssociation),
 		udpReplyTimeout:       defaultUDPReplyTimeout,
 		udpSessionIdleTimeout: 30 * time.Second,
-		upstreamScore:         upstream.NewScoreStore(time.Now),
+		upstreamScore:         model.NewScoreStore(time.Now),
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,

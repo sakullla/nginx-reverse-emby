@@ -29,7 +29,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type fakeL4RelayPathDialer struct {
@@ -2173,7 +2172,7 @@ func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimate(t *testing.T) {
 		t.Fatalf("read udp reply: %v", err)
 	}
 
-	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: upstreamConn.LocalAddr().String()}
+	key := model.PathKey{Family: model.PathFamilyDirectUDP, Address: upstreamConn.LocalAddr().String()}
 	estimate := srv.upstreamScore.FirstByteEstimate(key)
 	if estimate < 200*time.Millisecond {
 		t.Fatalf("FirstByteEstimate() = %s, want recorded direct UDP reply estimate", estimate)
@@ -2183,7 +2182,7 @@ func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimate(t *testing.T) {
 		address:       upstreamConn.LocalAddr().String(),
 		directUDPPath: true,
 	})
-	want := upstream.EstimateTimeout(upstream.UDPReplyTimeoutPolicy(), estimate)
+	want := model.EstimateTimeout(model.UDPReplyTimeoutPolicy(), estimate)
 	if got != want {
 		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want %s", got, want)
 	}
@@ -2247,7 +2246,7 @@ func TestAdaptiveUDPReplyTimeoutRecordsDirectEgressProfileProbeSuccess(t *testin
 		t.Fatalf("read udp reply: %v", err)
 	}
 
-	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: upstreamConn.LocalAddr().String()}
+	key := model.PathKey{Family: model.PathFamilyDirectUDP, Address: upstreamConn.LocalAddr().String()}
 	if estimate := srv.upstreamScore.FirstByteEstimate(key); estimate < 200*time.Millisecond {
 		t.Fatalf("FirstByteEstimate() = %s, want recorded direct egress UDP reply estimate", estimate)
 	}
@@ -2256,9 +2255,9 @@ func TestAdaptiveUDPReplyTimeoutRecordsDirectEgressProfileProbeSuccess(t *testin
 func TestAdaptiveUDPReplyTimeoutRespectsExplicitOverride(t *testing.T) {
 	srv := &Server{
 		udpReplyTimeout: 250 * time.Millisecond,
-		upstreamScore:   upstream.NewScoreStore(func() time.Time { return time.Unix(1700000000, 0) }),
+		upstreamScore:   model.NewScoreStore(func() time.Time { return time.Unix(1700000000, 0) }),
 	}
-	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
+	key := model.PathKey{Family: model.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
 	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
 
 	got := srv.udpReplyTimeoutForCandidate(l4Candidate{
@@ -2273,11 +2272,11 @@ func TestAdaptiveUDPReplyTimeoutRespectsExplicitOverride(t *testing.T) {
 func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimateInTimeoutPath(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	now := base
-	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
+	key := model.PathKey{Family: model.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
 	srv := &Server{
 		now:             func() time.Time { return now },
 		udpReplyTimeout: time.Second,
-		upstreamScore:   upstream.NewScoreStore(func() time.Time { return now }),
+		upstreamScore:   model.NewScoreStore(func() time.Time { return now }),
 		udpSessions: map[string]*udpSession{
 			"peer": {
 				key:            "peer",
@@ -2306,9 +2305,9 @@ func TestAdaptiveUDPReplyTimeoutFallsBackAfterDirectTimeoutFailures(t *testing.T
 	srv := &Server{
 		now:             func() time.Time { return now },
 		udpReplyTimeout: time.Second,
-		upstreamScore:   upstream.NewScoreStore(func() time.Time { return now }),
+		upstreamScore:   model.NewScoreStore(func() time.Time { return now }),
 	}
-	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
+	key := model.PathKey{Family: model.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
 	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
 
 	got := srv.udpReplyTimeoutForCandidate(l4Candidate{
@@ -2319,8 +2318,8 @@ func TestAdaptiveUDPReplyTimeoutFallsBackAfterDirectTimeoutFailures(t *testing.T
 		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want adaptive timeout above default before failures", got)
 	}
 
-	srv.upstreamScore.ObserveFailure(key, upstream.FailureTimeout)
-	srv.upstreamScore.ObserveFailure(key, upstream.FailureTimeout)
+	srv.upstreamScore.ObserveFailure(key, model.FailureTimeout)
+	srv.upstreamScore.ObserveFailure(key, model.FailureTimeout)
 
 	got = srv.udpReplyTimeoutForCandidate(l4Candidate{
 		address:       "127.0.0.1:9000",
@@ -2334,11 +2333,11 @@ func TestAdaptiveUDPReplyTimeoutFallsBackAfterDirectTimeoutFailures(t *testing.T
 func TestAdaptiveUDPReplyTimeoutKeepsRelaySessionOnStaticTimeoutPath(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	now := base
-	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "relay.example:443"}
+	key := model.PathKey{Family: model.PathFamilyDirectUDP, Address: "relay.example:443"}
 	srv := &Server{
 		now:             func() time.Time { return now },
 		udpReplyTimeout: time.Second,
-		upstreamScore:   upstream.NewScoreStore(func() time.Time { return now }),
+		upstreamScore:   model.NewScoreStore(func() time.Time { return now }),
 		udpSessions: map[string]*udpSession{
 			"peer": {
 				key:            "peer",
@@ -3069,7 +3068,7 @@ func TestDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T) {
 
 	conn, _, _, err := srv.dialTCPUpstream(rule, relay.DialOptions{
 		InitialPayload: []byte("hello"),
-		TrafficClass:   upstream.TrafficClassInteractive,
+		TrafficClass:   model.TrafficClassInteractive,
 	})
 	if err != nil {
 		t.Fatalf("dialTCPUpstream() error = %v", err)
@@ -3241,8 +3240,8 @@ func TestTCPRelayProxy(t *testing.T) {
 		if relayReq.Target != upstreamAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
-		if got := relayReq.TrafficClass; got != upstream.TrafficClassUnknown {
-			t.Fatalf("relay traffic class = %q, want %q", got, upstream.TrafficClassUnknown)
+		if got := relayReq.TrafficClass; got != model.TrafficClassUnknown {
+			t.Fatalf("relay traffic class = %q, want %q", got, model.TrafficClassUnknown)
 		}
 		if len(relayReq.InitialData) != 0 {
 			t.Fatalf("initial relay payload = %q, want empty for raw downstream", relayReq.InitialData)
@@ -3494,20 +3493,20 @@ func TestPrefetchRelayInitialPayloadSkipsRawConnWait(t *testing.T) {
 }
 
 func TestRelayTCPDialTrafficClassUsesUnknownWithoutBufferedPayload(t *testing.T) {
-	if got := relayTCPDialTrafficClass(nil); got != upstream.TrafficClassUnknown {
-		t.Fatalf("relayTCPDialTrafficClass(nil) = %q, want %q", got, upstream.TrafficClassUnknown)
+	if got := relayTCPDialTrafficClass(nil); got != model.TrafficClassUnknown {
+		t.Fatalf("relayTCPDialTrafficClass(nil) = %q, want %q", got, model.TrafficClassUnknown)
 	}
 }
 
 func TestRelayTCPDialTrafficClassUsesObservedBufferedPayload(t *testing.T) {
-	if got := relayTCPDialTrafficClass(make([]byte, 128*1024)); got != upstream.TrafficClassBulk {
-		t.Fatalf("relayTCPDialTrafficClass(128KiB) = %q, want %q", got, upstream.TrafficClassBulk)
+	if got := relayTCPDialTrafficClass(make([]byte, 128*1024)); got != model.TrafficClassBulk {
+		t.Fatalf("relayTCPDialTrafficClass(128KiB) = %q, want %q", got, model.TrafficClassBulk)
 	}
 }
 
 func TestRelayTCPDialTrafficClassUsesBulkAtPrefetchCap(t *testing.T) {
-	if got := relayTCPDialTrafficClass(make([]byte, relayInitialPayloadMax)); got != upstream.TrafficClassBulk {
-		t.Fatalf("relayTCPDialTrafficClass(prefetch cap) = %q, want %q", got, upstream.TrafficClassBulk)
+	if got := relayTCPDialTrafficClass(make([]byte, relayInitialPayloadMax)); got != model.TrafficClassBulk {
+		t.Fatalf("relayTCPDialTrafficClass(prefetch cap) = %q, want %q", got, model.TrafficClassBulk)
 	}
 }
 
@@ -5489,7 +5488,7 @@ type l4RelayTestRequest struct {
 	Network      string      `json:"network"`
 	Target       string      `json:"target"`
 	Chain        []relay.Hop `json:"chain,omitempty"`
-	TrafficClass upstream.TrafficClass
+	TrafficClass model.TrafficClass
 	InitialData  []byte `json:"initial_data,omitempty"`
 }
 
@@ -5712,19 +5711,19 @@ func readL4RelayTestRequest(conn net.Conn) (l4RelayTestRequest, uint32, error) {
 	}, frame.StreamID, nil
 }
 
-func relayTrafficClassFromTestMetadata(metadata map[string]any) upstream.TrafficClass {
+func relayTrafficClassFromTestMetadata(metadata map[string]any) model.TrafficClass {
 	if len(metadata) == 0 {
-		return upstream.TrafficClassUnknown
+		return model.TrafficClassUnknown
 	}
 	raw, ok := metadata["traffic_class"]
 	if !ok {
-		return upstream.TrafficClassUnknown
+		return model.TrafficClassUnknown
 	}
 	value, ok := raw.(string)
 	if !ok {
-		return upstream.TrafficClassUnknown
+		return model.TrafficClassUnknown
 	}
-	return upstream.TrafficClass(value)
+	return model.TrafficClass(value)
 }
 
 func writeL4RelayTestResponse(conn net.Conn, payload any) error {
