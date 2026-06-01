@@ -12,7 +12,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -332,8 +331,8 @@ func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, erro
 		if err != nil {
 			return nil, err
 		}
-		if tuner, ok := conn.(netutil.UDPBufferTuner); ok {
-			netutil.TuneUDPBuffers(tuner)
+		if tuner, ok := conn.(model.UDPBufferTuner); ok {
+			model.TuneUDPBuffers(tuner)
 		}
 		if listener, ok := conn.(udpListener); ok {
 			return listener, nil
@@ -349,7 +348,7 @@ func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, erro
 	if err != nil {
 		return nil, err
 	}
-	netutil.TuneUDPBuffers(conn)
+	model.TuneUDPBuffers(conn)
 	return conn, nil
 }
 
@@ -655,7 +654,7 @@ func (s *Server) dialUDPUpstreamCandidate(rule model.L4Rule, candidate l4Candida
 		if err != nil {
 			return nil, err
 		}
-		netutil.TuneUDPBuffers(upstream)
+		model.TuneUDPBuffers(upstream)
 		return &directUDPUpstream{conn: upstream}, nil
 	}
 

@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type DialOption func(*dialOptions)
@@ -127,7 +127,7 @@ func DialUDPWithOptions(ctx context.Context, proxyURL string, opts ...DialOption
 		if err != nil {
 			return nil, err
 		}
-		netutil.TuneUDPBuffers(socket)
+		model.TuneUDPBuffers(socket)
 		socketPeer = &udpSocketPeer{conn: socket}
 		localUDPAddr = socket.LocalAddr().(*net.UDPAddr)
 		packet = socketPeer

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 )
 
 const internalRedirectPathSegment = "/__nre_redirect"
@@ -258,11 +257,11 @@ func parseInternalRedirectTarget(rawPath, frontendBasePath string) (*url.URL, bo
 }
 
 func normalizeHost(value string) string {
-	return netutil.NormalizeHost(value)
+	return model.NormalizeHost(value)
 }
 
 func normalizeURLAuthority(target *url.URL) string {
-	return netutil.URLAuthority(target)
+	return model.URLAuthority(target)
 }
 
 func passProxyHeaders(req *http.Request, incomingHost, incomingScheme string) map[string]string {
@@ -314,7 +313,7 @@ func forwardedPort(host string, req *http.Request, incomingScheme string) string
 }
 
 func clientIP(remoteAddr string) string {
-	return netutil.ClientIP(remoteAddr)
+	return model.ClientIP(remoteAddr)
 }
 
 func requestScheme(req *http.Request) string {

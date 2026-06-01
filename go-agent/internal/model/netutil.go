@@ -1,12 +1,10 @@
-package netutil
+package model
 
 import (
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 const DefaultUDPSocketBufferBytes = 4 << 20
@@ -101,7 +99,7 @@ func ClientIP(remoteAddr string) string {
 	return remoteAddr
 }
 
-func RelayListenerDialEndpoint(listener model.RelayListener) (string, int) {
+func RelayListenerDialEndpoint(listener RelayListener) (string, int) {
 	host := strings.TrimSpace(listener.PublicHost)
 	if host == "" {
 		for _, bindHost := range listener.BindHosts {

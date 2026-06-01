@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	"github.com/quic-go/quic-go/http3"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type http3ServerHandle struct {
@@ -31,8 +31,8 @@ func startHTTP3Server(ctx context.Context, handler http.Handler, spec runtimeLis
 	if err != nil {
 		return nil, err
 	}
-	if tuner, ok := packetConn.(netutil.UDPBufferTuner); ok {
-		netutil.TuneUDPBuffers(tuner)
+	if tuner, ok := packetConn.(model.UDPBufferTuner); ok {
+		model.TuneUDPBuffers(tuner)
 	}
 
 	server := &http3.Server{

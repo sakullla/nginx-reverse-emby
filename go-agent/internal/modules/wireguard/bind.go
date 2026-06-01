@@ -11,7 +11,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.zx2c4.com/wireguard/conn"
@@ -105,7 +105,7 @@ func listenUDPOnHost(network string, host string, port int) (*net.UDPConn, int, 
 		return nil, 0, err
 	}
 	udpConn := packetConn.(*net.UDPConn)
-	netutil.TuneUDPBuffers(udpConn)
+	model.TuneUDPBuffers(udpConn)
 	addr := udpConn.LocalAddr().(*net.UDPAddr)
 	return udpConn, addr.Port, nil
 }

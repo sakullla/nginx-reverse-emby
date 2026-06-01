@@ -15,7 +15,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -369,21 +368,21 @@ func newStartedResponseError(err error) error {
 }
 
 func portWithDefault(target *url.URL) int {
-	return netutil.PortWithDefault(target)
+	return model.PortWithDefault(target)
 }
 
 func addressWithDefaultPort(target *url.URL) string {
-	return netutil.AddressWithDefaultPort(target)
+	return model.AddressWithDefaultPort(target)
 }
 
 func httpBackendDialAddress(target *url.URL) string {
-	return netutil.AddressWithDefaultPort(target)
+	return model.AddressWithDefaultPort(target)
 }
 
 func defaultPort(scheme string) int {
-	return netutil.DefaultPort(scheme)
+	return model.DefaultPort(scheme)
 }
 
 func defaultPortString(scheme string) string {
-	return netutil.DefaultPortString(scheme)
+	return model.DefaultPortString(scheme)
 }

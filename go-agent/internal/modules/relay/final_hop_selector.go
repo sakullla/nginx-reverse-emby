@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type finalHopSelectorConfig struct {
@@ -215,7 +215,7 @@ func (s *finalHopSelector) openFinalHopUDPPeer(ctx context.Context, address stri
 	if err != nil {
 		return nil, err
 	}
-	netutil.TuneUDPBuffers(conn)
+	model.TuneUDPBuffers(conn)
 	return newUDPSocketPeer(conn), nil
 }
 

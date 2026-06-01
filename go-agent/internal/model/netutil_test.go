@@ -1,10 +1,8 @@
-package netutil
+package model
 
 import (
 	"net/url"
 	"testing"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 func TestNormalizeHostTrimsLowercasesAndStripsPort(t *testing.T) {
@@ -40,7 +38,7 @@ func TestAddressWithDefaultPortPreservesExplicitPort(t *testing.T) {
 }
 
 func TestRelayListenerDialEndpointPrefersPublicHostAndPort(t *testing.T) {
-	host, port := RelayListenerDialEndpoint(model.RelayListener{
+	host, port := RelayListenerDialEndpoint(RelayListener{
 		ListenHost: "0.0.0.0",
 		BindHosts:  []string{"127.0.0.1"},
 		ListenPort: 8443,
@@ -53,7 +51,7 @@ func TestRelayListenerDialEndpointPrefersPublicHostAndPort(t *testing.T) {
 }
 
 func TestRelayListenerDialEndpointFallsBackToFirstBindHost(t *testing.T) {
-	host, port := RelayListenerDialEndpoint(model.RelayListener{
+	host, port := RelayListenerDialEndpoint(RelayListener{
 		ListenHost: "0.0.0.0",
 		BindHosts:  []string{" ", "127.0.0.2"},
 		ListenPort: 8443,

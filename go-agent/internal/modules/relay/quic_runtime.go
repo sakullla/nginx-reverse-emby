@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 )
 
 const relayQUICALPN = "nre-relay-quic/1"
@@ -58,7 +58,7 @@ func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listen
 	if err != nil {
 		return nil, err
 	}
-	netutil.TuneUDPBuffers(packetConn)
+	model.TuneUDPBuffers(packetConn)
 	transport := &quic.Transport{Conn: packetConn}
 	ln, err := transport.Listen(tlsConfig, newRelayQUICConfig())
 	if err != nil {

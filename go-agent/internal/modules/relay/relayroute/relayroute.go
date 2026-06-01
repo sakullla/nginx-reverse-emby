@@ -9,7 +9,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netutil"
 )
 
 const DefaultMaxPaths = 32
@@ -100,7 +99,7 @@ func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
 		}
 		return host, listener.ListenPort
 	}
-	return netutil.RelayListenerDialEndpoint(listener)
+	return model.RelayListenerDialEndpoint(listener)
 }
 
 func relayHopServerName(listener model.RelayListener, fallback string) string {
