@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-type HTTPTransportConfig = config.HTTPTransportConfig
+type HTTPTransportConfig = model.HTTPTransportConfig
 
 func normalizeMasterBaseURL(raw string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
@@ -23,8 +23,8 @@ func normalizeMasterBaseURL(raw string) string {
 	}
 }
 
-func resolvedHTTPTransportConfig(cfg config.HTTPTransportConfig) config.HTTPTransportConfig {
-	transportCfg := config.Default().HTTPTransport
+func resolvedHTTPTransportConfig(cfg model.HTTPTransportConfig) model.HTTPTransportConfig {
+	transportCfg := model.Default().HTTPTransport
 	if cfg.DialTimeout > 0 {
 		transportCfg.DialTimeout = cfg.DialTimeout
 	}
@@ -43,7 +43,7 @@ func resolvedHTTPTransportConfig(cfg config.HTTPTransportConfig) config.HTTPTran
 	return transportCfg
 }
 
-func newHTTPTransport(cfg config.HTTPTransportConfig) *http.Transport {
+func newHTTPTransport(cfg model.HTTPTransportConfig) *http.Transport {
 	transportCfg := resolvedHTTPTransportConfig(cfg)
 	return &http.Transport{
 		DialContext: (&net.Dialer{

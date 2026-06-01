@@ -8,7 +8,6 @@ import (
 	"time"
 
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -137,7 +136,7 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 		TrafficStatsExplicit: cfg.TrafficStatsExplicit,
 		WireGuardEnabled:     cfg.WireGuardEnabled,
 		WireGuardExplicit:    cfg.WireGuardExplicit,
-		HTTPTransport: config.HTTPTransportConfig{
+		HTTPTransport: model.HTTPTransportConfig{
 			DialTimeout:           cfg.HTTPTransport.DialTimeout,
 			TLSHandshakeTimeout:   cfg.HTTPTransport.TLSHandshakeTimeout,
 			ResponseHeaderTimeout: cfg.HTTPTransport.ResponseHeaderTimeout,
@@ -145,17 +144,17 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 			KeepAlive:             cfg.HTTPTransport.KeepAlive,
 			MaxConnsPerHost:       cfg.HTTPTransport.MaxConnsPerHost,
 		},
-		HTTPResilience: config.HTTPResilienceConfig{
+		HTTPResilience: model.HTTPResilienceConfig{
 			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
 			ResumeMaxAttempts:        cfg.HTTPResilience.ResumeMaxAttempts,
 			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
 		},
-		BackendFailures: config.BackendFailureConfig{
+		BackendFailures: model.BackendFailureConfig{
 			BackoffBase:  cfg.BackendFailures.BackoffBase,
 			BackoffLimit: cfg.BackendFailures.BackoffLimit,
 		},
 		BackendFailuresExplicit: cfg.BackendFailuresExplicit,
-		RelayTimeouts: config.RelayTimeoutConfig{
+		RelayTimeouts: model.RelayTimeoutConfig{
 			DialTimeout:      cfg.RelayTimeouts.DialTimeout,
 			HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
 			FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,

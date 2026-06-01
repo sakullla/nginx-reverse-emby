@@ -13,7 +13,6 @@ import (
 	"unsafe"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -29,7 +28,7 @@ func TestNewBuildsControlPlaneWiring(t *testing.T) {
 		AgentToken:     "token",
 		CurrentVersion: "0.1.0",
 		DataDir:        t.TempDir(),
-		HTTPTransport: config.HTTPTransportConfig{
+		HTTPTransport: model.HTTPTransportConfig{
 			TLSHandshakeTimeout:   22 * time.Second,
 			ResponseHeaderTimeout: 23 * time.Second,
 		},

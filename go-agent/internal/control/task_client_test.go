@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -1386,7 +1386,7 @@ func TestNewTaskClientAppliesConfiguredHTTPTransportTimeouts(t *testing.T) {
 	client := NewTaskClient(TaskClientConfig{
 		MasterURL:  "https://master.example.com",
 		AgentToken: "token",
-		HTTPTransport: config.HTTPTransportConfig{
+		HTTPTransport: model.HTTPTransportConfig{
 			DialTimeout:           11 * time.Second,
 			TLSHandshakeTimeout:   12 * time.Second,
 			ResponseHeaderTimeout: 13 * time.Second,

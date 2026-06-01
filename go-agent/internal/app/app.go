@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -26,7 +25,7 @@ import (
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 )
 
-type Config = config.Config
+type Config = model.Config
 type Snapshot = core.Snapshot
 type SyncRequest = control.SyncRequest
 
@@ -69,7 +68,7 @@ func newHTTPModuleFromConfigWithTLS(cfg Config, _ modulehttp.TLSMaterialProvider
 }
 
 func normalizeConstructorConfig(cfg Config) Config {
-	defaults := config.Default()
+	defaults := model.Default()
 
 	if cfg.AgentID == "" {
 		cfg.AgentID = defaults.AgentID
@@ -86,7 +85,7 @@ func normalizeConstructorConfig(cfg Config) Config {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = defaults.HeartbeatInterval
 	}
-	if cfg.HTTPResilience == (config.HTTPResilienceConfig{}) {
+	if cfg.HTTPResilience == (model.HTTPResilienceConfig{}) {
 		cfg.HTTPResilience = defaults.HTTPResilience
 	}
 	if !cfg.TrafficStatsExplicit {
@@ -315,7 +314,7 @@ func newAppWithAllDeps(
 	taskClient *control.TaskClient,
 ) *App {
 	if cfg.HeartbeatInterval <= 0 {
-		cfg.HeartbeatInterval = config.Default().HeartbeatInterval
+		cfg.HeartbeatInterval = model.Default().HeartbeatInterval
 	}
 	app := &App{
 		cfg:        cfg,
