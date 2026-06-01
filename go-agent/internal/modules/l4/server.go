@@ -15,7 +15,6 @@ import (
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -280,7 +279,7 @@ func udpAssociationKey(parts ...string) string {
 	return strings.Join(parts, "|")
 }
 
-func (s *Server) registerProxyUDPAssociation(client net.Conn, rule model.L4Rule, req proxyproto.ClientRequest, bindAddr net.Addr) (func(), error) {
+func (s *Server) registerProxyUDPAssociation(client net.Conn, rule model.L4Rule, req model.ClientRequest, bindAddr net.Addr) (func(), error) {
 	if client == nil {
 		return func() {}, nil
 	}

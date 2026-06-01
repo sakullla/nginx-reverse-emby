@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -334,7 +334,7 @@ func dialRelayTCPWithProxy(ctx context.Context, address string, _ Listener, prox
 	dialCtx, cancel := context.WithTimeout(ctx, getRelayDialTimeout())
 	defer cancel()
 
-	conn, err := proxyproto.Dial(dialCtx, proxyURL, address)
+	conn, err := model.Dial(dialCtx, proxyURL, address)
 	if err != nil {
 		return nil, err
 	}

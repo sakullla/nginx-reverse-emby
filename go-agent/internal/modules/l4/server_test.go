@@ -29,7 +29,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -438,7 +437,7 @@ func TestL4ProxyEntrySOCKS5RelayEgress(t *testing.T) {
 	dialer := &fakeL4RelayPathDialer{conn: relayConn}
 	srv.relayPathDialer = dialer
 
-	conn, err := proxyproto.Dial(context.Background(), fmt.Sprintf("socks5://127.0.0.1:%d", listenPort), "example.com:443")
+	conn, err := model.Dial(context.Background(), fmt.Sprintf("socks5://127.0.0.1:%d", listenPort), "example.com:443")
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
 	}
@@ -480,7 +479,7 @@ func TestL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
 	defer srv.Close()
 
 	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port()))
-	conn, err := proxyproto.Dial(context.Background(), fmt.Sprintf("http://127.0.0.1:%d", listenPort), target)
+	conn, err := model.Dial(context.Background(), fmt.Sprintf("http://127.0.0.1:%d", listenPort), target)
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
 	}
@@ -520,7 +519,7 @@ func TestProxyUDPAssociationKeepsSameSourceKeyUntilLastControlSessionCloses(t *t
 		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40002},
 	}
 	bindAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}
-	req := proxyproto.ClientRequest{
+	req := model.ClientRequest{
 		Protocol: "socks5-udp",
 		Host:     "127.0.0.1",
 		Port:     53000,
@@ -567,7 +566,7 @@ func TestProxyUDPAssociationHonorsRequestedEndpoint(t *testing.T) {
 	}
 
 	bindAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}
-	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, model.ClientRequest{
 		Protocol: "socks5-udp",
 		Host:     "127.0.0.1",
 		Port:     53000,
@@ -602,7 +601,7 @@ func TestProxyUDPAssociationUsesClientSourcePortNotRequestedTargetPort(t *testin
 	}
 
 	bindAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1080}
-	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, model.ClientRequest{
 		Protocol: "socks5-udp",
 		Host:     "0.0.0.0",
 		Port:     40001,
@@ -639,7 +638,7 @@ func TestProxyUDPAssociationRejectsDomainSourceHintWithPort(t *testing.T) {
 		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40001},
 	}
 
-	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, model.ClientRequest{
 		Protocol: "socks5-udp",
 		Host:     "example.internal",
 		Port:     53000,
@@ -669,7 +668,7 @@ func TestProxyUDPAssociationAllZeroEndpointLocksToFirstPeer(t *testing.T) {
 		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40001},
 	}
 
-	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, proxyproto.ClientRequest{
+	unregister, err := srv.registerProxyUDPAssociation(wrapped, rule, model.ClientRequest{
 		Protocol: "socks5-udp",
 		Host:     "0.0.0.0",
 		Port:     0,
@@ -723,7 +722,7 @@ func TestSOCKS5UDPAssociateReplyBindsUDPListenEndpoint(t *testing.T) {
 
 	upstreamProxyURL := startL4SOCKS5UDPProxy(t)
 	_ = upstreamProxyURL
-	proxyAssociation, err := proxyproto.DialUDP(context.Background(), upstreamProxyURL)
+	proxyAssociation, err := model.DialUDP(context.Background(), upstreamProxyURL)
 	if err != nil {
 		t.Fatalf("DialUDP() upstream proxy error = %v", err)
 	}
@@ -799,7 +798,7 @@ func TestSOCKS5UDPAssociateReplyBindsUDPListenEndpoint(t *testing.T) {
 	}
 	defer udpConn.Close()
 
-	packet, err := proxyproto.BuildSOCKS5UDPPacket(upstreamConn.LocalAddr().String(), []byte("payload"))
+	packet, err := model.BuildSOCKS5UDPPacket(upstreamConn.LocalAddr().String(), []byte("payload"))
 	if err != nil {
 		t.Fatalf("BuildSOCKS5UDPPacket() error = %v", err)
 	}
@@ -824,7 +823,7 @@ func TestSOCKS5UDPAssociateReplyBindsUDPListenEndpoint(t *testing.T) {
 		srv.udpMu.Unlock()
 		t.Fatalf("read udp reply through returned bind endpoint: %v; sessions=%v", err, sessionErrs)
 	}
-	parsed, err := proxyproto.ParseSOCKS5UDPPacket(reply[:n])
+	parsed, err := model.ParseSOCKS5UDPPacket(reply[:n])
 	if err != nil {
 		t.Fatalf("ParseSOCKS5UDPPacket() reply error = %v", err)
 	}
@@ -852,7 +851,7 @@ func TestProxyUDPUpstreamRejectsUnexpectedReplyTarget(t *testing.T) {
 
 	upstreamProxyURL := startL4SOCKS5UDPProxyWithRewrite(t, unexpectedConn.LocalAddr().String())
 	_ = upstreamProxyURL
-	association, err := proxyproto.DialUDP(context.Background(), upstreamProxyURL)
+	association, err := model.DialUDP(context.Background(), upstreamProxyURL)
 	if err != nil {
 		t.Fatalf("DialUDP() error = %v", err)
 	}
@@ -949,7 +948,7 @@ func TestProxySOCKS5UDPEntryWrapsActualProxyReplyTarget(t *testing.T) {
 	defer udpConn.Close()
 
 	originalTarget := rewrittenTarget
-	packet, err := proxyproto.BuildSOCKS5UDPPacket(originalTarget, []byte("payload"))
+	packet, err := model.BuildSOCKS5UDPPacket(originalTarget, []byte("payload"))
 	if err != nil {
 		t.Fatalf("BuildSOCKS5UDPPacket() error = %v", err)
 	}
@@ -964,7 +963,7 @@ func TestProxySOCKS5UDPEntryWrapsActualProxyReplyTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read udp reply through returned bind endpoint: %v", err)
 	}
-	parsed, err := proxyproto.ParseSOCKS5UDPPacket(reply[:n])
+	parsed, err := model.ParseSOCKS5UDPPacket(reply[:n])
 	if err != nil {
 		t.Fatalf("ParseSOCKS5UDPPacket() reply error = %v", err)
 	}
@@ -4990,7 +4989,7 @@ func TestProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *testing.T) 
 	}
 	defer udpConn.Close()
 
-	packet, err := proxyproto.BuildSOCKS5UDPPacket(upstreamConn.LocalAddr().String(), []byte("ping"))
+	packet, err := model.BuildSOCKS5UDPPacket(upstreamConn.LocalAddr().String(), []byte("ping"))
 	if err != nil {
 		t.Fatalf("BuildSOCKS5UDPPacket() error = %v", err)
 	}
@@ -5050,7 +5049,7 @@ func TestProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read udp reply with association: %v", err)
 	}
-	parsed, err := proxyproto.ParseSOCKS5UDPPacket(reply[:n])
+	parsed, err := model.ParseSOCKS5UDPPacket(reply[:n])
 	if err != nil {
 		t.Fatalf("ParseSOCKS5UDPPacket() reply error = %v", err)
 	}
@@ -5961,17 +5960,17 @@ func startL4ProxyEntryUpstreamProxy(t *testing.T) string {
 			}
 			go func(client net.Conn) {
 				defer client.Close()
-				req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+				req, err := model.ReadClientRequest(context.Background(), client, model.EntryAuth{})
 				if err != nil {
 					return
 				}
 				upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
 				if err != nil {
-					_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+					_ = model.WriteClientRequestFailure(client, req, 0)
 					return
 				}
 				defer upstream.Close()
-				if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+				if err := model.WriteClientRequestSuccess(client, req); err != nil {
 					return
 				}
 				copyTCPPairForTest(client, upstream)
@@ -6000,18 +5999,18 @@ func startRecordingL4EgressProxy(t *testing.T, scheme string) (string, <-chan st
 			}
 			go func(client net.Conn) {
 				defer client.Close()
-				req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+				req, err := model.ReadClientRequest(context.Background(), client, model.EntryAuth{})
 				if err != nil {
 					return
 				}
 				targets <- req.Target
 				upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
 				if err != nil {
-					_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+					_ = model.WriteClientRequestFailure(client, req, 0)
 					return
 				}
 				defer upstream.Close()
-				if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+				if err := model.WriteClientRequestSuccess(client, req); err != nil {
 					return
 				}
 				copyTCPPairForTest(client, upstream)
@@ -6103,7 +6102,7 @@ func serveL4SOCKS5UDPProxyControl(t *testing.T, conn net.Conn) {
 
 func serveL4SOCKS5UDPProxyControlWithRewrite(t *testing.T, conn net.Conn, replyTarget string) {
 	defer conn.Close()
-	req, err := proxyproto.ReadClientRequest(context.Background(), conn, proxyproto.EntryAuth{})
+	req, err := model.ReadClientRequest(context.Background(), conn, model.EntryAuth{})
 	if err != nil || req.Protocol != "socks5-udp" {
 		return
 	}
@@ -6113,7 +6112,7 @@ func serveL4SOCKS5UDPProxyControlWithRewrite(t *testing.T, conn net.Conn, replyT
 		return
 	}
 	defer udpConn.Close()
-	if err := proxyproto.WriteClientRequestSuccessWithBind(conn, req, udpConn.LocalAddr()); err != nil {
+	if err := model.WriteClientRequestSuccessWithBind(conn, req, udpConn.LocalAddr()); err != nil {
 		return
 	}
 	go serveL4SOCKS5UDPProxyRelay(udpConn, replyTarget)
@@ -6127,7 +6126,7 @@ func serveL4SOCKS5UDPProxyRelay(udpConn *net.UDPConn, replyTarget string) {
 		if err != nil {
 			return
 		}
-		packet, err := proxyproto.ParseSOCKS5UDPPacket(buf[:n])
+		packet, err := model.ParseSOCKS5UDPPacket(buf[:n])
 		if err != nil {
 			continue
 		}
@@ -6155,7 +6154,7 @@ func serveL4SOCKS5UDPProxyRelay(udpConn *net.UDPConn, replyTarget string) {
 		if replyTarget != "" {
 			responseTarget = replyTarget
 		}
-		response, err := proxyproto.BuildSOCKS5UDPPacket(responseTarget, reply[:replyN])
+		response, err := model.BuildSOCKS5UDPPacket(responseTarget, reply[:replyN])
 		if err != nil {
 			continue
 		}
@@ -6181,7 +6180,7 @@ func startRejectingL4ProxyEntryUpstreamProxy(t *testing.T) string {
 			go func(client net.Conn) {
 				defer client.Close()
 				_ = client.SetDeadline(time.Now().Add(5 * time.Second))
-				_, _ = proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+				_, _ = model.ReadClientRequest(context.Background(), client, model.EntryAuth{})
 			}(conn)
 		}
 	}()

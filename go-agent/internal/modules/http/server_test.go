@@ -32,7 +32,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -4100,18 +4099,18 @@ func startRecordingHTTPEgressProxy(t *testing.T, scheme string) (string, <-chan 
 			}
 			go func(client net.Conn) {
 				defer client.Close()
-				req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+				req, err := model.ReadClientRequest(context.Background(), client, model.EntryAuth{})
 				if err != nil {
 					return
 				}
 				targets <- req.Target
 				upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
 				if err != nil {
-					_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+					_ = model.WriteClientRequestFailure(client, req, 0)
 					return
 				}
 				defer upstream.Close()
-				if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+				if err := model.WriteClientRequestSuccess(client, req); err != nil {
 					return
 				}
 				copyTCPPairForProxyTest(client, upstream)

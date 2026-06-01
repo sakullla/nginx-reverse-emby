@@ -12,7 +12,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 )
 
 type Module struct {
@@ -396,7 +395,7 @@ func (d finalHopDialer) OpenUDP(ctx context.Context, target string, id *int) (re
 }
 
 type udpPacketConn struct {
-	conn   proxyproto.UDPPacketConn
+	conn   model.UDPPacketConn
 	target string
 }
 

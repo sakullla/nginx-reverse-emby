@@ -11,7 +11,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -213,7 +212,7 @@ func (u *finalHopUDPUpstream) WritePacket(payload []byte) error {
 }
 
 type proxyUDPUpstream struct {
-	association *proxyproto.UDPAssociation
+	association *model.UDPAssociation
 	target      string
 }
 
@@ -239,7 +238,7 @@ func (u *proxyUDPUpstream) WritePacket(payload []byte) error {
 }
 
 type egressUDPUpstream struct {
-	conn   proxyproto.UDPPacketConn
+	conn   model.UDPPacketConn
 	target string
 }
 
@@ -421,7 +420,7 @@ func (s *Server) proxyUDPPacket(listener udpListener, rule model.L4Rule, payload
 }
 
 func (s *Server) proxySOCKS5UDPPacket(listener udpListener, rule model.L4Rule, payload []byte, peer *net.UDPAddr) {
-	packet, err := proxyproto.ParseSOCKS5UDPPacket(payload)
+	packet, err := model.ParseSOCKS5UDPPacket(payload)
 	if err != nil {
 		return
 	}
@@ -758,7 +757,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			if strings.TrimSpace(reply.source) != "" {
 				replyTarget = reply.source
 			}
-			payload, err = proxyproto.BuildSOCKS5UDPPacket(replyTarget, payload)
+			payload, err = model.BuildSOCKS5UDPPacket(replyTarget, payload)
 			if err != nil {
 				return
 			}

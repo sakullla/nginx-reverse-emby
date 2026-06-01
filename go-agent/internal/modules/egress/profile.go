@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 )
 
 type Resolver struct {
@@ -133,13 +132,13 @@ func validateProxyURLPort(port string) error {
 	return nil
 }
 
-func parseProfileProxyURL(profile model.EgressProfile) (proxyproto.ProxyURL, error) {
+func parseProfileProxyURL(profile model.EgressProfile) (model.ProxyURL, error) {
 	if strings.TrimSpace(profile.ProxyURL) == "" {
-		return proxyproto.ProxyURL{}, fmt.Errorf("egress profile %d missing ProxyURL", profile.ID)
+		return model.ProxyURL{}, fmt.Errorf("egress profile %d missing ProxyURL", profile.ID)
 	}
-	proxyURL, err := proxyproto.ParseProxyURL(profile.ProxyURL)
+	proxyURL, err := model.ParseProxyURL(profile.ProxyURL)
 	if err != nil {
-		return proxyproto.ProxyURL{}, fmt.Errorf("egress profile %d invalid proxy URL: %w", profile.ID, err)
+		return model.ProxyURL{}, fmt.Errorf("egress profile %d invalid proxy URL: %w", profile.ID, err)
 	}
 	return proxyURL, nil
 }

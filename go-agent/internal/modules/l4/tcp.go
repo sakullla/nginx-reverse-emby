@@ -13,7 +13,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -133,12 +132,12 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 }
 
 func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, recorder *traffic.Recorder) {
-	auth := proxyproto.EntryAuth{
+	auth := model.EntryAuth{
 		Enabled:  rule.ProxyEntryAuth.Enabled,
 		Username: rule.ProxyEntryAuth.Username,
 		Password: rule.ProxyEntryAuth.Password,
 	}
-	req, err := proxyproto.ReadClientRequest(s.ctx, client, auth)
+	req, err := model.ReadClientRequest(s.ctx, client, auth)
 	if err != nil {
 		return
 	}
@@ -147,11 +146,11 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 		associationAddr := s.proxyUDPAssociationListenAddr(rule, bindAddr)
 		unregister, err := s.registerProxyUDPAssociation(client, rule, req, associationAddr)
 		if err != nil {
-			_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+			_ = model.WriteClientRequestFailure(client, req, 0)
 			return
 		}
 		defer unregister()
-		if err := proxyproto.WriteClientRequestSuccessWithBind(client, req, bindAddr); err != nil {
+		if err := model.WriteClientRequestSuccessWithBind(client, req, bindAddr); err != nil {
 			return
 		}
 		done := make(chan struct{}, 1)
@@ -178,13 +177,13 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 	}
 	upstream, err := s.dialProxyEntryUpstream(rule, req.Target)
 	if err != nil {
-		_ = proxyproto.WriteClientRequestFailure(client, req, http.StatusBadGateway)
+		_ = model.WriteClientRequestFailure(client, req, http.StatusBadGateway)
 		return
 	}
 	s.trackTCPConn(upstream)
 	defer s.untrackTCPConn(upstream)
 	defer upstream.Close()
-	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+	if err := model.WriteClientRequestSuccess(client, req); err != nil {
 		return
 	}
 	if len(req.InitialPayload) > 0 {

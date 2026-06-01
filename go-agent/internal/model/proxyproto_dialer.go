@@ -1,4 +1,4 @@
-package proxyproto
+package model
 
 import (
 	"bufio"
@@ -10,8 +10,6 @@ import (
 	"net"
 	"net/http"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type DialOption func(*dialOptions)
@@ -127,7 +125,7 @@ func DialUDPWithOptions(ctx context.Context, proxyURL string, opts ...DialOption
 		if err != nil {
 			return nil, err
 		}
-		model.TuneUDPBuffers(socket)
+		TuneUDPBuffers(socket)
 		socketPeer = &udpSocketPeer{conn: socket}
 		localUDPAddr = socket.LocalAddr().(*net.UDPAddr)
 		packet = socketPeer

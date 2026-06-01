@@ -9,7 +9,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 )
 
 type Dialer struct {
@@ -32,7 +31,7 @@ func (d Dialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, 
 		var dialer net.Dialer
 		return dialer.DialContext(ctx, "tcp", target)
 	case "socks", "http":
-		return proxyproto.Dial(ctx, profile.ProxyURL, target)
+		return model.Dial(ctx, profile.ProxyURL, target)
 	case "wireguard":
 		runtime, err := d.overlayRuntime(profile.ID)
 		if err != nil {
@@ -44,7 +43,7 @@ func (d Dialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, 
 	}
 }
 
-func (d Dialer) DialUDP(ctx context.Context, target string, id *int) (proxyproto.UDPPacketConn, error) {
+func (d Dialer) DialUDP(ctx context.Context, target string, id *int) (model.UDPPacketConn, error) {
 	profile, _, err := d.Resolver.Resolve(id, "udp")
 	if err != nil {
 		return nil, err
@@ -59,7 +58,7 @@ func (d Dialer) DialUDP(ctx context.Context, target string, id *int) (proxyproto
 		}
 		return &netUDPPacketConn{conn: conn}, nil
 	case "socks":
-		return proxyproto.DialUDP(ctx, profile.ProxyURL)
+		return model.DialUDP(ctx, profile.ProxyURL)
 	case "http":
 		return nil, fmt.Errorf("UDP egress profile %d type http is unsupported", profile.ID)
 	case "wireguard":

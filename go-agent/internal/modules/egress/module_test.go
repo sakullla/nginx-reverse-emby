@@ -10,7 +10,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 )
 
 const socks5UDPTestTimeout = time.Second
@@ -470,7 +469,7 @@ func (r testProviderRegistry) Provide(ref module.ProviderRef, provider any) erro
 
 const wireGuardTestKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan proxyproto.SOCKS5UDPPacket) {
+func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan model.SOCKS5UDPPacket) {
 	t.Helper()
 
 	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -483,7 +482,7 @@ func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan proxyproto.SOCKS
 		t.Fatalf("listen udp proxy: %v", err)
 	}
 
-	packetCh := make(chan proxyproto.SOCKS5UDPPacket, 1)
+	packetCh := make(chan model.SOCKS5UDPPacket, 1)
 	done := make(chan struct{})
 
 	go func() {
@@ -499,7 +498,7 @@ func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan proxyproto.SOCKS
 			t.Errorf("set tcp deadline: %v", err)
 			return
 		}
-		req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+		req, err := model.ReadClientRequest(context.Background(), client, model.EntryAuth{})
 		if err != nil {
 			t.Errorf("ReadClientRequest() error = %v", err)
 			return
@@ -508,7 +507,7 @@ func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan proxyproto.SOCKS
 			t.Errorf("req.Protocol = %q, want socks5-udp", req.Protocol)
 			return
 		}
-		if err := proxyproto.WriteClientRequestSuccessWithBind(client, req, udpLn.LocalAddr()); err != nil {
+		if err := model.WriteClientRequestSuccessWithBind(client, req, udpLn.LocalAddr()); err != nil {
 			t.Errorf("WriteClientRequestSuccessWithBind() error = %v", err)
 			return
 		}
@@ -518,7 +517,7 @@ func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan proxyproto.SOCKS
 		if err != nil {
 			return
 		}
-		packet, err := proxyproto.ParseSOCKS5UDPPacket(buf[:n])
+		packet, err := model.ParseSOCKS5UDPPacket(buf[:n])
 		if err != nil {
 			t.Errorf("ParseSOCKS5UDPPacket() error = %v", err)
 			return
@@ -539,7 +538,7 @@ func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan proxyproto.SOCKS
 	return tcpLn.Addr().String(), packetCh
 }
 
-func waitForSOCKS5UDPPacket(t *testing.T, packetCh <-chan proxyproto.SOCKS5UDPPacket) proxyproto.SOCKS5UDPPacket {
+func waitForSOCKS5UDPPacket(t *testing.T, packetCh <-chan model.SOCKS5UDPPacket) model.SOCKS5UDPPacket {
 	t.Helper()
 
 	select {
@@ -550,7 +549,7 @@ func waitForSOCKS5UDPPacket(t *testing.T, packetCh <-chan proxyproto.SOCKS5UDPPa
 		return packet
 	case <-time.After(socks5UDPTestTimeout):
 		t.Fatal("timed out waiting for SOCKS5 UDP packet")
-		return proxyproto.SOCKS5UDPPacket{}
+		return model.SOCKS5UDPPacket{}
 	}
 }
 

@@ -27,7 +27,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/netproxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -1602,7 +1601,7 @@ func startRelayHTTPConnectProxy(t *testing.T) *relayHTTPConnectProxy {
 
 func (p *relayHTTPConnectProxy) handleConn(client net.Conn) {
 	defer client.Close()
-	req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+	req, err := model.ReadClientRequest(context.Background(), client, model.EntryAuth{})
 	if err != nil {
 		return
 	}
@@ -1612,11 +1611,11 @@ func (p *relayHTTPConnectProxy) handleConn(client net.Conn) {
 
 	upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
 	if err != nil {
-		_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+		_ = model.WriteClientRequestFailure(client, req, 0)
 		return
 	}
 	defer upstream.Close()
-	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+	if err := model.WriteClientRequestSuccess(client, req); err != nil {
 		return
 	}
 	pipeBothWays(client, upstream, nil)
