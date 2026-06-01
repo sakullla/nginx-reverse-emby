@@ -36,6 +36,8 @@ const (
 	backupMaterialPrefix        = "certificate_material"
 )
 
+const backupSystemRelayCAReplacementConflictReason = "existing relay certificates depend on current system relay ca"
+
 type backupService struct {
 	cfg   config.Config
 	store backupStore
@@ -228,14 +230,65 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	}
 	previewAgentRowsByID := previewAgentRows(bundle.Agents, agentIDMap, existingByName, existingByID, s.cfg)
 	previewCapabilityStore := previewAgentCapabilityStore{rows: previewAgentRowsByID}
-	certIDMap := previewCertificateIDMap(bundle.Certificates, bundle.Agents, existingCertRows, agentIDMap, existingByName, existingByID, s.cfg)
-	existingCertDomains := map[string]struct{}{}
+	existingCertsByDomain := map[string]ManagedCertificate{}
 	for _, row := range existingCertRows {
-		existingCertDomains[strings.TrimSpace(row.Domain)] = struct{}{}
+		cert := managedCertificateFromRow(row)
+		existingCertsByDomain[strings.TrimSpace(cert.Domain)] = cert
 	}
+	materialByDomain := make(map[string]BackupCertificateFile, len(bundle.Materials))
+	for _, material := range bundle.Materials {
+		materialByDomain[strings.TrimSpace(material.Domain)] = material
+	}
+	skippedCertificateIDs := map[int]struct{}{}
+	relayCASkippedInvalid := map[int]string{}
+	relayCASkippedMissingMaterial := map[int]string{}
+	blockedCertificateIDs := map[int]struct{}{}
 	for _, item := range bundle.Certificates {
 		key := strings.TrimSpace(item.Domain)
-		if _, exists := existingCertDomains[key]; exists {
+		existingCert, exists := existingCertsByDomain[key]
+		if !exists || !isSystemRelayCACertificate(existingCert) || !isSystemRelayCACertificate(item) {
+			continue
+		}
+		if _, ok := remapAgentIDs(item.TargetAgentIDs, agentIDMap); !ok {
+			relayCASkippedInvalid[item.ID] = "certificate references unknown agent"
+			skippedCertificateIDs[item.ID] = struct{}{}
+			continue
+		}
+		material, hasMaterial := materialByDomain[key]
+		if !hasMaterial || strings.TrimSpace(material.CertPEM) == "" || strings.TrimSpace(material.KeyPEM) == "" {
+			relayCASkippedMissingMaterial[item.ID] = "certificate material missing from backup"
+			skippedCertificateIDs[item.ID] = struct{}{}
+			continue
+		}
+		blocked, err := s.systemRelayCAReplacementBlocked(ctx, existingCertRows, existingCert, material)
+		if err != nil {
+			return BackupImportResult{}, err
+		}
+		if blocked {
+			blockedCertificateIDs[item.ID] = struct{}{}
+			skippedCertificateIDs[item.ID] = struct{}{}
+		}
+	}
+	certIDMap := previewCertificateIDMap(bundle.Certificates, bundle.Agents, existingCertRows, agentIDMap, existingByName, existingByID, s.cfg, skippedCertificateIDs)
+	for _, item := range bundle.Certificates {
+		key := strings.TrimSpace(item.Domain)
+		if existingCert, exists := existingCertsByDomain[key]; exists {
+			if isSystemRelayCACertificate(existingCert) && isSystemRelayCACertificate(item) {
+				if reason, skipped := relayCASkippedInvalid[item.ID]; skipped {
+					result.addSkippedInvalid("certificate", key, reason)
+					continue
+				}
+				if reason, skipped := relayCASkippedMissingMaterial[item.ID]; skipped {
+					result.addSkippedMissingMaterial("certificate", key, reason)
+					continue
+				}
+				if _, blocked := blockedCertificateIDs[item.ID]; blocked {
+					result.addSkippedConflict("certificate", key, backupSystemRelayCAReplacementConflictReason)
+					continue
+				}
+				result.addImported("certificate", key)
+				continue
+			}
 			result.addSkippedConflict("certificate", key, "certificate domain already exists")
 			continue
 		}
@@ -495,7 +548,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	return result, nil
 }
 
-func previewCertificateIDMap(certs []BackupCertificate, agents []BackupAgent, existing []storage.ManagedCertificateRow, agentIDMap map[string]string, existingAgentsByName map[string]storage.AgentRow, existingAgentsByID map[string]storage.AgentRow, cfg config.Config) map[int]int {
+func previewCertificateIDMap(certs []BackupCertificate, agents []BackupAgent, existing []storage.ManagedCertificateRow, agentIDMap map[string]string, existingAgentsByName map[string]storage.AgentRow, existingAgentsByID map[string]storage.AgentRow, cfg config.Config, skippedCertificateIDs map[int]struct{}) map[int]int {
 	certIDMap := map[int]int{}
 	existingByDomain := make(map[string]ManagedCertificate, len(existing))
 	for _, row := range existing {
@@ -506,6 +559,10 @@ func previewCertificateIDMap(certs []BackupCertificate, agents []BackupAgent, ex
 	previewAgentCaps := previewAgentCapabilities(agents, agentIDMap, existingAgentsByName, existingAgentsByID, cfg)
 
 	for _, item := range certs {
+		if _, skipped := skippedCertificateIDs[item.ID]; skipped {
+			delete(certIDMap, item.ID)
+			continue
+		}
 		if existingCert, ok := existingByDomain[item.Domain]; ok {
 			certIDMap[item.ID] = existingCert.ID
 			continue
@@ -1222,6 +1279,83 @@ func (s *backupService) importCertificates(ctx context.Context, existing []stora
 			key = fmt.Sprintf("#%d", item.ID)
 		}
 		if existingCert, ok := existingByDomain[item.Domain]; ok {
+			if isSystemRelayCACertificate(existingCert) && isSystemRelayCACertificate(item) {
+				targetIDs, ok := remapAgentIDs(item.TargetAgentIDs, agentIDMap)
+				if !ok {
+					delete(certIDMap, item.ID)
+					result.addSkippedInvalid("certificate", key, "certificate references unknown agent")
+					continue
+				}
+				material, hasMaterial := materialByDomain[item.Domain]
+				if !hasMaterial || strings.TrimSpace(material.CertPEM) == "" || strings.TrimSpace(material.KeyPEM) == "" {
+					delete(certIDMap, item.ID)
+					result.addSkippedMissingMaterial("certificate", key, "certificate material missing from backup")
+					continue
+				}
+				blocked, err := s.systemRelayCAReplacementBlocked(ctx, existing, existingCert, material)
+				if err != nil {
+					return nil, err
+				}
+				if blocked {
+					delete(certIDMap, item.ID)
+					result.addSkippedConflict("certificate", key, backupSystemRelayCAReplacementConflictReason)
+					continue
+				}
+				input := ManagedCertificateInput{
+					Domain:          backupStringPtr(item.Domain),
+					Enabled:         backupBoolPtr(item.Enabled),
+					Scope:           backupStringPtr(item.Scope),
+					IssuerMode:      backupStringPtr(item.IssuerMode),
+					TargetAgentIDs:  &targetIDs,
+					Status:          backupStringPtr(item.Status),
+					LastIssueAt:     backupStringPtr(item.LastIssueAt),
+					LastError:       backupStringPtr(item.LastError),
+					MaterialHash:    backupStringPtr(item.MaterialHash),
+					AgentReports:    &item.AgentReports,
+					ACMEInfo:        &item.ACMEInfo,
+					Tags:            &item.Tags,
+					Usage:           backupStringPtr(item.Usage),
+					CertificateType: backupStringPtr(item.CertificateType),
+					SelfSigned:      backupBoolPtr(item.SelfSigned),
+				}
+				normalized, err := normalizeManagedCertificateInput(input, existingCert, existingCert.ID, s.cfg.LocalAgentID, true)
+				if err != nil {
+					delete(certIDMap, item.ID)
+					result.addSkippedInvalid("certificate", key, err.Error())
+					continue
+				}
+				normalized = canonicalizeSystemRelayCACertificate(normalized)
+				normalized.ID = existingCert.ID
+				normalized.TargetAgentIDs = targetIDs
+				normalized.Revision = allocator.AllocateRevisionForTargets(targetIDs, maxRevision)
+				if normalized.Revision > maxRevision {
+					maxRevision = normalized.Revision
+				}
+				for _, targetID := range targetIDs {
+					recordModifiedAgentRevision(modifiedAgents, targetID, normalized.Revision)
+				}
+				normalized.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(material.CertPEM), strings.TrimSpace(material.KeyPEM))
+				replaced := false
+				for index, row := range nextRows {
+					if row.ID == existingCert.ID {
+						nextRows[index] = managedCertificateToRow(normalized)
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					nextRows = append(nextRows, managedCertificateToRow(normalized))
+				}
+				existingByDomain[normalized.Domain] = normalized
+				certIDMap[item.ID] = existingCert.ID
+				pendingMaterials = append(pendingMaterials, BackupCertificateFile{
+					Domain:  normalized.Domain,
+					CertPEM: material.CertPEM,
+					KeyPEM:  material.KeyPEM,
+				})
+				result.addImported("certificate", key)
+				continue
+			}
 			certIDMap[item.ID] = existingCert.ID
 			result.addSkippedConflict("certificate", key, "certificate domain already exists")
 			continue
@@ -1313,6 +1447,37 @@ func (s *backupService) importCertificates(ctx context.Context, existing []stora
 		}
 	}
 	return certIDMap, nil
+}
+
+func (s *backupService) systemRelayCAReplacementBlocked(ctx context.Context, existing []storage.ManagedCertificateRow, existingCert ManagedCertificate, incomingMaterial BackupCertificateFile) (bool, error) {
+	currentMaterial, ok, err := s.store.LoadManagedCertificateMaterial(ctx, existingCert.Domain)
+	if err != nil {
+		return false, err
+	}
+	if !ok || strings.TrimSpace(currentMaterial.CertPEM) == "" || strings.TrimSpace(currentMaterial.KeyPEM) == "" {
+		return false, nil
+	}
+	if strings.TrimSpace(currentMaterial.CertPEM) == strings.TrimSpace(incomingMaterial.CertPEM) && strings.TrimSpace(currentMaterial.KeyPEM) == strings.TrimSpace(incomingMaterial.KeyPEM) {
+		return false, nil
+	}
+
+	for _, row := range existing {
+		cert := managedCertificateFromRow(row)
+		if cert.ID == existingCert.ID {
+			continue
+		}
+		material, ok, err := s.store.LoadManagedCertificateMaterial(ctx, cert.Domain)
+		if err != nil {
+			return false, err
+		}
+		if !ok || strings.TrimSpace(material.CertPEM) == "" {
+			continue
+		}
+		if certificateChainUsesRelayCA(material, currentMaterial) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *backupService) importRelayListeners(ctx context.Context, existing []storage.RelayListenerRow, incoming []BackupRelayListener, agentIDMap map[string]string, certIDMap map[int]int, wireGuardProfileIDMap map[string]int, enabledWireGuardProfileIDs map[string]struct{}, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) (map[int]int, error) {
