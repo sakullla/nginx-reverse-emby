@@ -180,11 +180,7 @@ func probeRelayRequestTLSTCPMux(ctx context.Context, hop Hop, provider TLSMateri
 		return relayResponse{}, err
 	}
 	_ = stream.Close()
-	return relayResponse{
-		OK:           result.OK,
-		Error:        result.Error,
-		ProbeTimings: append([]ProbeTiming(nil), result.ProbeTimings...),
-	}, nil
+	return cloneRelayResponse(result), nil
 }
 
 func relayProbeMetadata(network string, opts ...DialOptions) map[string]any {

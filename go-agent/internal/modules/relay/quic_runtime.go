@@ -362,7 +362,7 @@ func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, prov
 		}
 		return nil, err
 	}
-	return append([]string(nil), response.ResolvedCandidates...), nil
+	return cloneRelayResponse(response).ResolvedCandidates, nil
 }
 
 func openQUICStream(ctx context.Context, sessionKey string, dial func(context.Context) (*quic.Conn, error)) (*quic.Conn, *quic.Stream, error) {

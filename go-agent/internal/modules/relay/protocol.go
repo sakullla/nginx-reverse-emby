@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -76,13 +77,7 @@ type relayResponse struct {
 	ProbeTimings       []ProbeTiming `json:"probe_timings,omitempty"`
 }
 
-type muxOpenResult struct {
-	OK                 bool          `json:"ok"`
-	Error              string        `json:"error,omitempty"`
-	SelectedAddress    string        `json:"selected_address,omitempty"`
-	ResolvedCandidates []string      `json:"resolved_candidates,omitempty"`
-	ProbeTimings       []ProbeTiming `json:"probe_timings,omitempty"`
-}
+type muxOpenResult = relayResponse
 
 func writeRelayRequest(w io.Writer, request relayRequest) error {
 	return writeFrame(w, request)
@@ -123,6 +118,12 @@ func relayResponseError(operation string, response relayResponse) error {
 		return fmt.Errorf("%s failed", operation)
 	}
 	return fmt.Errorf("%s failed: %s", operation, response.Error)
+}
+
+func cloneRelayResponse(response relayResponse) relayResponse {
+	response.ResolvedCandidates = slices.Clone(response.ResolvedCandidates)
+	response.ProbeTimings = slices.Clone(response.ProbeTimings)
+	return response
 }
 
 func marshalMuxOpenPayload(frame relayOpenFrame) ([]byte, error) {

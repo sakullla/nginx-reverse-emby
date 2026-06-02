@@ -411,7 +411,7 @@ func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop,
 		return nil, err
 	}
 	_ = stream.Close()
-	return append([]string(nil), result.ResolvedCandidates...), nil
+	return cloneRelayResponse(result).ResolvedCandidates, nil
 }
 
 func dialNewTLSTCPTunnel(ctx context.Context, hop Hop, provider TLSMaterialProvider) (*tlsTCPTunnel, error) {
