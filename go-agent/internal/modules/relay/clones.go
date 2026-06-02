@@ -1,10 +1,10 @@
 package relay
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/moduleutil"
 )
 
 func localRelayListeners(listeners []model.RelayListener, agentID, agentName string) []model.RelayListener {
@@ -29,27 +29,7 @@ func localRelayListeners(listeners []model.RelayListener, agentID, agentName str
 }
 
 func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener {
-	if listeners == nil {
-		return nil
-	}
-	cloned := slices.Clone(listeners)
-	for i, listener := range listeners {
-		cloned[i].BindHosts = slices.Clone(listener.BindHosts)
-		cloned[i].CertificateID = clonePtr(listener.CertificateID)
-		cloned[i].WireGuardProfileID = clonePtr(listener.WireGuardProfileID)
-		cloned[i].PinSet = slices.Clone(listener.PinSet)
-		cloned[i].TrustedCACertificateIDs = slices.Clone(listener.TrustedCACertificateIDs)
-		cloned[i].Tags = slices.Clone(listener.Tags)
-	}
-	return cloned
-}
-
-func clonePtr[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
+	return moduleutil.CloneRelayListeners(listeners)
 }
 
 func relayListenerBindHosts(listener model.RelayListener) []string {

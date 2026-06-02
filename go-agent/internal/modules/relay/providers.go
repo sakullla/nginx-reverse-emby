@@ -16,7 +16,7 @@ func overlayRuntimeFromProvider(provider any) module.OverlayRuntime {
 	return nil
 }
 
-func finalHopDialerFromProvider(provider any) FinalHopDialer {
+func FinalHopDialerFromProvider(provider any) FinalHopDialer {
 	if dialer, ok := provider.(FinalHopDialer); ok {
 		return dialer
 	}
@@ -24,6 +24,10 @@ func finalHopDialerFromProvider(provider any) FinalHopDialer {
 		return moduleFinalHopDialer{dialer: dialer}
 	}
 	return nil
+}
+
+func finalHopDialerFromProvider(provider any) FinalHopDialer {
+	return FinalHopDialerFromProvider(provider)
 }
 
 type rollbackFinalHopProvider interface {

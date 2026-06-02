@@ -31,7 +31,7 @@ func (m *Module) runtimeProviders(resolver module.ProviderResolver, egressProfil
 		provider.EgressOverlay = overlay
 	}
 	finalHopProvider, _ := resolver.Resolve(module.ProviderFinalHopDialer)
-	if dialer := finalHopDialerFromProvider(finalHopProvider); dialer != nil {
+	if dialer := relay.FinalHopDialerFromProvider(finalHopProvider); dialer != nil {
 		provider.FinalHopDialer = dialer
 	}
 	provider.EgressProfiles = egressProfiles
@@ -43,28 +43,6 @@ func overlayRuntimeFromProvider(provider any) module.OverlayRuntime {
 		return overlay
 	}
 	return nil
-}
-
-func finalHopDialerFromProvider(provider any) relay.FinalHopDialer {
-	if dialer, ok := provider.(relay.FinalHopDialer); ok {
-		return dialer
-	}
-	if dialer, ok := provider.(module.FinalHopDialer); ok {
-		return moduleFinalHopDialer{dialer: dialer}
-	}
-	return nil
-}
-
-type moduleFinalHopDialer struct {
-	dialer module.FinalHopDialer
-}
-
-func (d moduleFinalHopDialer) DialTCP(ctx context.Context, target string, profileID *int) (net.Conn, error) {
-	return d.dialer.DialTCP(ctx, target, profileID)
-}
-
-func (d moduleFinalHopDialer) OpenUDP(ctx context.Context, target string, profileID *int) (relay.UDPPacketPeer, error) {
-	return d.dialer.OpenUDP(ctx, target, profileID)
 }
 
 type moduleOverlayRuntimeProvider struct {

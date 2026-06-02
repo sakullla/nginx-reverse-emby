@@ -2,7 +2,6 @@ package l4
 
 import (
 	"context"
-	"net"
 	"reflect"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -55,7 +54,7 @@ func (m *Module) runtimeProviders(resolver module.ProviderResolver, egressProfil
 		}
 	}
 	if finalHop, _ := resolver.Resolve(module.ProviderFinalHopDialer); finalHop != nil {
-		if dialer := finalHopDialerFromProvider(finalHop); dialer != nil {
+		if dialer := relay.FinalHopDialerFromProvider(finalHop); dialer != nil {
 			providers.FinalHopDialer = dialer
 		}
 	}
@@ -132,26 +131,4 @@ func hasEgressProfileRule(rules []model.L4Rule) bool {
 		}
 	}
 	return false
-}
-
-func finalHopDialerFromProvider(provider any) relay.FinalHopDialer {
-	if dialer, ok := provider.(relay.FinalHopDialer); ok {
-		return dialer
-	}
-	if dialer, ok := provider.(module.FinalHopDialer); ok {
-		return moduleFinalHopDialer{dialer: dialer}
-	}
-	return nil
-}
-
-type moduleFinalHopDialer struct {
-	dialer module.FinalHopDialer
-}
-
-func (d moduleFinalHopDialer) DialTCP(ctx context.Context, target string, profileID *int) (net.Conn, error) {
-	return d.dialer.DialTCP(ctx, target, profileID)
-}
-
-func (d moduleFinalHopDialer) OpenUDP(ctx context.Context, target string, profileID *int) (relay.UDPPacketPeer, error) {
-	return d.dialer.OpenUDP(ctx, target, profileID)
 }

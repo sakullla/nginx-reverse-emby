@@ -5,6 +5,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/moduleutil"
 )
 
 func cloneL4Rules(rules []model.L4Rule) []model.L4Rule {
@@ -15,47 +16,16 @@ func cloneL4Rules(rules []model.L4Rule) []model.L4Rule {
 	for i, rule := range rules {
 		cloned[i].Backends = slices.Clone(rule.Backends)
 		cloned[i].RelayChain = slices.Clone(rule.RelayChain)
-		cloned[i].RelayLayers = cloneIntLayers(rule.RelayLayers)
+		cloned[i].RelayLayers = moduleutil.CloneIntLayers(rule.RelayLayers)
 		cloned[i].Tags = slices.Clone(rule.Tags)
-		cloned[i].WireGuardProfileID = clonePtr(rule.WireGuardProfileID)
-		cloned[i].EgressProfileID = clonePtr(rule.EgressProfileID)
+		cloned[i].WireGuardProfileID = moduleutil.ClonePtr(rule.WireGuardProfileID)
+		cloned[i].EgressProfileID = moduleutil.ClonePtr(rule.EgressProfileID)
 	}
 	return cloned
 }
 
 func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener {
-	if listeners == nil {
-		return nil
-	}
-	cloned := slices.Clone(listeners)
-	for i, listener := range listeners {
-		cloned[i].BindHosts = slices.Clone(listener.BindHosts)
-		cloned[i].CertificateID = clonePtr(listener.CertificateID)
-		cloned[i].WireGuardProfileID = clonePtr(listener.WireGuardProfileID)
-		cloned[i].PinSet = slices.Clone(listener.PinSet)
-		cloned[i].TrustedCACertificateIDs = slices.Clone(listener.TrustedCACertificateIDs)
-		cloned[i].Tags = slices.Clone(listener.Tags)
-	}
-	return cloned
-}
-
-func cloneIntLayers(layers [][]int) [][]int {
-	if layers == nil {
-		return nil
-	}
-	cloned := make([][]int, len(layers))
-	for i, layer := range layers {
-		cloned[i] = slices.Clone(layer)
-	}
-	return cloned
-}
-
-func clonePtr[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
+	return moduleutil.CloneRelayListeners(listeners)
 }
 
 func cloneEgressProfiles(profiles []model.EgressProfile) []model.EgressProfile {
