@@ -12,13 +12,6 @@ func appSnapshotActivator(registry *agentmodule.Registry) core.Activator {
 	return core.NewSnapshotActivator(registry)
 }
 
-func (a *App) snapshotActivator() core.Activator {
-	if a == nil {
-		return appSnapshotActivator(nil)
-	}
-	return appSnapshotActivator(a.moduleRegistry)
-}
-
 func (a *App) applyManagedCertificates(ctx context.Context, snapshot Snapshot) error {
 	if a == nil || a.moduleRegistry == nil {
 		return nil

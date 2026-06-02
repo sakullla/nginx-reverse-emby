@@ -78,21 +78,15 @@ func (c *SyncController) recordRuntimeError(syncErr error) error {
 }
 
 func (c *SyncController) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {
-	state, err := c.runtimeStateForPersistence()
-	if err != nil {
-		return syncErr
-	}
-	state.Metadata = ensureMetadata(state.Metadata)
-	state.Metadata["last_sync_error"] = syncErr.Error()
-	setApplyMetadata(state.Metadata, revision, "error", syncErr.Error())
-	if err := c.Store.SaveRuntimeState(state); err != nil {
-		return syncErr
-	}
-	return syncErr
+	return c.recordRuntimeErrorFromState(syncErr, revision, c.runtimeStateForPersistence)
 }
 
 func (c *SyncController) recordPersistedRuntimeErrorWithRevision(syncErr error, revision int64) error {
-	state, err := c.Store.LoadRuntimeState()
+	return c.recordRuntimeErrorFromState(syncErr, revision, c.Store.LoadRuntimeState)
+}
+
+func (c *SyncController) recordRuntimeErrorFromState(syncErr error, revision int64, load func() (RuntimeState, error)) error {
+	state, err := load()
 	if err != nil {
 		return syncErr
 	}

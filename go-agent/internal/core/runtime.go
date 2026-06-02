@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 
@@ -56,26 +57,23 @@ func (r *Runtime) State() model.RuntimeState {
 	defer r.mu.RUnlock()
 
 	stateCopy := r.state
-	if len(stateCopy.Metadata) > 0 {
-		copied := make(map[string]string, len(stateCopy.Metadata))
-		for k, v := range stateCopy.Metadata {
-			copied[k] = v
-		}
-		stateCopy.Metadata = copied
-	} else {
-		stateCopy.Metadata = nil
-	}
-
+	stateCopy.Metadata = cloneStringMap(stateCopy.Metadata)
 	return stateCopy
 }
 
 func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) error {
+	return r.activate(ctx, previous, next, true)
+}
+
+func (r *Runtime) Rollback(ctx context.Context, previous, next model.Snapshot) error {
+	return r.activate(ctx, previous, next, false)
+}
+
+func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, checkPrevious bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	_ = ctx
-
-	if !isZeroSnapshot(previous) && !snapshotEqual(previous, r.activeSnapshot) {
+	if checkPrevious && !isZeroSnapshot(previous) && !snapshotEqual(previous, r.activeSnapshot) {
 		r.state.Status = "error"
 		return fmt.Errorf(
 			"previous snapshot mismatch: expected %s got %s",
@@ -91,19 +89,6 @@ func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) erro
 
 	r.setActiveSnapshotLocked(next)
 
-	return nil
-}
-
-func (r *Runtime) Rollback(ctx context.Context, previous, next model.Snapshot) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if err := r.activator(ctx, previous, next); err != nil {
-		r.state.Status = "error"
-		return err
-	}
-
-	r.setActiveSnapshotLocked(next)
 	return nil
 }
 
@@ -138,159 +123,96 @@ func snapshotEqual(left, right model.Snapshot) bool {
 
 func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
-	if snapshot.AgentConfig.TrafficStatsEnabled != nil {
-		value := *snapshot.AgentConfig.TrafficStatsEnabled
-		cloned.AgentConfig.TrafficStatsEnabled = &value
-	}
-	if snapshot.VersionPackage != nil {
-		copyValue := *snapshot.VersionPackage
-		cloned.VersionPackage = &copyValue
-	}
+	cloned.AgentConfig.TrafficStatsEnabled = clonePtr(snapshot.AgentConfig.TrafficStatsEnabled)
+	cloned.VersionPackage = clonePtr(snapshot.VersionPackage)
 	if snapshot.Rules != nil {
-		cloned.Rules = make([]model.HTTPRule, len(snapshot.Rules))
-		copy(cloned.Rules, snapshot.Rules)
+		cloned.Rules = slices.Clone(snapshot.Rules)
 		for i, rule := range snapshot.Rules {
-			if rule.Backends != nil {
-				cloned.Rules[i].Backends = make([]model.HTTPBackend, len(rule.Backends))
-				copy(cloned.Rules[i].Backends, rule.Backends)
-			}
-			if rule.CustomHeaders != nil {
-				cloned.Rules[i].CustomHeaders = make([]model.HTTPHeader, len(rule.CustomHeaders))
-				copy(cloned.Rules[i].CustomHeaders, rule.CustomHeaders)
-			}
-			if rule.WireGuardProfileID != nil {
-				value := *rule.WireGuardProfileID
-				cloned.Rules[i].WireGuardProfileID = &value
-			}
-			if rule.EgressProfileID != nil {
-				value := *rule.EgressProfileID
-				cloned.Rules[i].EgressProfileID = &value
-			}
-			cloned.Rules[i].RelayChain = append([]int(nil), rule.RelayChain...)
+			cloned.Rules[i].Backends = slices.Clone(rule.Backends)
+			cloned.Rules[i].CustomHeaders = slices.Clone(rule.CustomHeaders)
+			cloned.Rules[i].WireGuardProfileID = clonePtr(rule.WireGuardProfileID)
+			cloned.Rules[i].EgressProfileID = clonePtr(rule.EgressProfileID)
+			cloned.Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 			cloned.Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
-			cloned.Rules[i].Tags = append([]string(nil), rule.Tags...)
+			cloned.Rules[i].Tags = slices.Clone(rule.Tags)
 		}
 	}
 	if snapshot.L4Rules != nil {
-		cloned.L4Rules = make([]model.L4Rule, len(snapshot.L4Rules))
-		copy(cloned.L4Rules, snapshot.L4Rules)
+		cloned.L4Rules = slices.Clone(snapshot.L4Rules)
 		for i, rule := range snapshot.L4Rules {
-			if rule.Backends != nil {
-				cloned.L4Rules[i].Backends = make([]model.L4Backend, len(rule.Backends))
-				copy(cloned.L4Rules[i].Backends, rule.Backends)
-			}
-			if rule.WireGuardProfileID != nil {
-				value := *rule.WireGuardProfileID
-				cloned.L4Rules[i].WireGuardProfileID = &value
-			}
-			if rule.EgressProfileID != nil {
-				value := *rule.EgressProfileID
-				cloned.L4Rules[i].EgressProfileID = &value
-			}
-			cloned.L4Rules[i].RelayChain = append([]int(nil), rule.RelayChain...)
+			cloned.L4Rules[i].Backends = slices.Clone(rule.Backends)
+			cloned.L4Rules[i].WireGuardProfileID = clonePtr(rule.WireGuardProfileID)
+			cloned.L4Rules[i].EgressProfileID = clonePtr(rule.EgressProfileID)
+			cloned.L4Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 			cloned.L4Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
-			cloned.L4Rules[i].Tags = append([]string(nil), rule.Tags...)
+			cloned.L4Rules[i].Tags = slices.Clone(rule.Tags)
 		}
 	}
 	if snapshot.RelayListeners != nil {
-		cloned.RelayListeners = make([]model.RelayListener, len(snapshot.RelayListeners))
-		copy(cloned.RelayListeners, snapshot.RelayListeners)
+		cloned.RelayListeners = slices.Clone(snapshot.RelayListeners)
 		for i, listener := range snapshot.RelayListeners {
-			if listener.BindHosts != nil {
-				cloned.RelayListeners[i].BindHosts = make([]string, len(listener.BindHosts))
-				copy(cloned.RelayListeners[i].BindHosts, listener.BindHosts)
-			}
-			if listener.CertificateID != nil {
-				value := *listener.CertificateID
-				cloned.RelayListeners[i].CertificateID = &value
-			}
-			if listener.WireGuardProfileID != nil {
-				value := *listener.WireGuardProfileID
-				cloned.RelayListeners[i].WireGuardProfileID = &value
-			}
-			if listener.PinSet != nil {
-				cloned.RelayListeners[i].PinSet = make([]model.RelayPin, len(listener.PinSet))
-				copy(cloned.RelayListeners[i].PinSet, listener.PinSet)
-			}
-			if listener.TrustedCACertificateIDs != nil {
-				cloned.RelayListeners[i].TrustedCACertificateIDs = make([]int, len(listener.TrustedCACertificateIDs))
-				copy(cloned.RelayListeners[i].TrustedCACertificateIDs, listener.TrustedCACertificateIDs)
-			}
-			if listener.Tags != nil {
-				cloned.RelayListeners[i].Tags = make([]string, len(listener.Tags))
-				copy(cloned.RelayListeners[i].Tags, listener.Tags)
-			}
+			cloned.RelayListeners[i].BindHosts = slices.Clone(listener.BindHosts)
+			cloned.RelayListeners[i].CertificateID = clonePtr(listener.CertificateID)
+			cloned.RelayListeners[i].WireGuardProfileID = clonePtr(listener.WireGuardProfileID)
+			cloned.RelayListeners[i].PinSet = slices.Clone(listener.PinSet)
+			cloned.RelayListeners[i].TrustedCACertificateIDs = slices.Clone(listener.TrustedCACertificateIDs)
+			cloned.RelayListeners[i].Tags = slices.Clone(listener.Tags)
 		}
 	}
 	if snapshot.WireGuardProfiles != nil {
-		cloned.WireGuardProfiles = make([]model.WireGuardProfile, len(snapshot.WireGuardProfiles))
-		copy(cloned.WireGuardProfiles, snapshot.WireGuardProfiles)
+		cloned.WireGuardProfiles = slices.Clone(snapshot.WireGuardProfiles)
 		for i, profile := range snapshot.WireGuardProfiles {
-			if profile.BindAddresses != nil {
-				cloned.WireGuardProfiles[i].BindAddresses = append([]string(nil), profile.BindAddresses...)
-			}
-			if profile.Addresses != nil {
-				cloned.WireGuardProfiles[i].Addresses = append([]string(nil), profile.Addresses...)
-			}
-			if profile.DNS != nil {
-				cloned.WireGuardProfiles[i].DNS = append([]string(nil), profile.DNS...)
-			}
-			if profile.Tags != nil {
-				cloned.WireGuardProfiles[i].Tags = append([]string(nil), profile.Tags...)
-			}
-			if profile.Peers != nil {
-				cloned.WireGuardProfiles[i].Peers = make([]model.WireGuardPeer, len(profile.Peers))
-				copy(cloned.WireGuardProfiles[i].Peers, profile.Peers)
-				for j, peer := range profile.Peers {
-					if peer.AllowedIPs != nil {
-						cloned.WireGuardProfiles[i].Peers[j].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
-					}
-					if peer.Reserved != nil {
-						cloned.WireGuardProfiles[i].Peers[j].Reserved = append([]byte(nil), peer.Reserved...)
-					}
-				}
-			}
+			cloned.WireGuardProfiles[i].BindAddresses = slices.Clone(profile.BindAddresses)
+			cloned.WireGuardProfiles[i].Addresses = slices.Clone(profile.Addresses)
+			cloned.WireGuardProfiles[i].DNS = slices.Clone(profile.DNS)
+			cloned.WireGuardProfiles[i].Tags = slices.Clone(profile.Tags)
+			cloned.WireGuardProfiles[i].Peers = cloneWireGuardPeers(profile.Peers)
 		}
 	}
 	if snapshot.EgressProfiles != nil {
-		cloned.EgressProfiles = make([]model.EgressProfile, len(snapshot.EgressProfiles))
-		copy(cloned.EgressProfiles, snapshot.EgressProfiles)
+		cloned.EgressProfiles = slices.Clone(snapshot.EgressProfiles)
 		for i, profile := range snapshot.EgressProfiles {
-			if profile.WireGuardConfig == nil {
-				continue
-			}
-			cfg := *profile.WireGuardConfig
-			cfg.Addresses = append([]string(nil), profile.WireGuardConfig.Addresses...)
-			cfg.Peers = make([]model.WireGuardPeer, len(profile.WireGuardConfig.Peers))
-			copy(cfg.Peers, profile.WireGuardConfig.Peers)
-			for j, peer := range profile.WireGuardConfig.Peers {
-				if peer.AllowedIPs != nil {
-					cfg.Peers[j].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
-				}
-				if peer.Reserved != nil {
-					cfg.Peers[j].Reserved = append([]byte(nil), peer.Reserved...)
-				}
-			}
-			cfg.DNS = append([]string(nil), profile.WireGuardConfig.DNS...)
-			cloned.EgressProfiles[i].WireGuardConfig = &cfg
+			cloned.EgressProfiles[i].WireGuardConfig = cloneEgressWireGuardConfig(profile.WireGuardConfig)
 		}
 	}
 	if snapshot.Certificates != nil {
-		cloned.Certificates = make([]model.ManagedCertificateBundle, len(snapshot.Certificates))
-		copy(cloned.Certificates, snapshot.Certificates)
+		cloned.Certificates = slices.Clone(snapshot.Certificates)
 	}
 	if snapshot.CertificatePolicies != nil {
-		cloned.CertificatePolicies = make([]model.ManagedCertificatePolicy, len(snapshot.CertificatePolicies))
+		cloned.CertificatePolicies = slices.Clone(snapshot.CertificatePolicies)
 		for i, policy := range snapshot.CertificatePolicies {
-			clonedPolicy := policy
-			if policy.Tags != nil {
-				clonedPolicy.Tags = make([]string, len(policy.Tags))
-				copy(clonedPolicy.Tags, policy.Tags)
-			}
-			cloned.CertificatePolicies[i] = clonedPolicy
+			cloned.CertificatePolicies[i].Tags = slices.Clone(policy.Tags)
 		}
 	}
 	return cloned
+}
+
+func clonePtr[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneWireGuardPeers(peers []model.WireGuardPeer) []model.WireGuardPeer {
+	cloned := slices.Clone(peers)
+	for i, peer := range peers {
+		cloned[i].AllowedIPs = slices.Clone(peer.AllowedIPs)
+		cloned[i].Reserved = slices.Clone(peer.Reserved)
+	}
+	return cloned
+}
+
+func cloneEgressWireGuardConfig(config *model.EgressWireGuardConfig) *model.EgressWireGuardConfig {
+	if config == nil {
+		return nil
+	}
+	cloned := *config
+	cloned.Addresses = slices.Clone(config.Addresses)
+	cloned.Peers = cloneWireGuardPeers(config.Peers)
+	cloned.DNS = slices.Clone(config.DNS)
+	return &cloned
 }
 
 func cloneRelayLayers(layers [][]int) [][]int {
@@ -299,7 +221,7 @@ func cloneRelayLayers(layers [][]int) [][]int {
 	}
 	cloned := make([][]int, len(layers))
 	for i, layer := range layers {
-		cloned[i] = append([]int(nil), layer...)
+		cloned[i] = slices.Clone(layer)
 	}
 	return cloned
 }

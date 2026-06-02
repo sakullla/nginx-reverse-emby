@@ -519,13 +519,6 @@ func (a *App) SyncNow(ctx context.Context) error {
 	return a.performSync(ctx)
 }
 
-func (a *App) applyModules(ctx context.Context, previous, snapshot Snapshot) error {
-	if a == nil || a.moduleRegistry == nil {
-		return nil
-	}
-	return a.moduleRegistry.Apply(ctx, previous, snapshot)
-}
-
 func (a *App) closeLocalRuntimes() {
 	if a.moduleRegistry != nil {
 		_ = a.moduleRegistry.StopAll(context.Background())
@@ -535,8 +528,4 @@ func (a *App) closeLocalRuntimes() {
 		a.relayTimeoutReset()
 		a.relayTimeoutReset = nil
 	}
-}
-
-func (a *App) handlePendingUpdate(ctx context.Context, snapshot Snapshot) error {
-	return a.syncController().HandlePendingUpdate(ctx, snapshot)
 }
