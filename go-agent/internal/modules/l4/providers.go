@@ -2,11 +2,11 @@ package l4
 
 import (
 	"context"
-	"reflect"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/moduleutil"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
@@ -71,41 +71,17 @@ func (p Providers) egressResolver() moduleegress.ProfileResolver {
 	return moduleegress.NewResolver(p.EgressProfiles)
 }
 
-type rollbackOverlayRestorer interface {
-	RestorePreviousRuntimeForRollback(context.Context) error
-}
-
 func restoreOverlayProvidersForRollback(ctx context.Context, rules []model.L4Rule, providers Providers) error {
 	if !hasOverlayListenRule(rules) {
 		return nil
 	}
-	if err := restoreProviderForRollback(ctx, providers.Overlay); err != nil {
+	if err := moduleutil.RestoreProviderForRollback(ctx, providers.Overlay); err != nil {
 		return err
 	}
-	if sameProvider(providers.Overlay, providers.TransparentListener) {
+	if moduleutil.SameProvider(providers.Overlay, providers.TransparentListener) {
 		return nil
 	}
-	return restoreProviderForRollback(ctx, providers.TransparentListener)
-}
-
-func restoreProviderForRollback(ctx context.Context, provider any) error {
-	restorer, ok := provider.(rollbackOverlayRestorer)
-	if !ok || restorer == nil {
-		return nil
-	}
-	return restorer.RestorePreviousRuntimeForRollback(ctx)
-}
-
-func sameProvider(left, right any) bool {
-	if left == nil || right == nil {
-		return false
-	}
-	leftValue := reflect.ValueOf(left)
-	rightValue := reflect.ValueOf(right)
-	if leftValue.Type() != rightValue.Type() || !leftValue.Type().Comparable() {
-		return false
-	}
-	return leftValue.Interface() == rightValue.Interface()
+	return moduleutil.RestoreProviderForRollback(ctx, providers.TransparentListener)
 }
 
 func hasOverlayListenRule(rules []model.L4Rule) bool {
@@ -121,7 +97,7 @@ func restoreEgressOverlayForRollback(ctx context.Context, rules []model.L4Rule, 
 	if !hasEgressProfileRule(rules) {
 		return nil
 	}
-	return restoreProviderForRollback(ctx, overlay)
+	return moduleutil.RestoreProviderForRollback(ctx, overlay)
 }
 
 func hasEgressProfileRule(rules []model.L4Rule) bool {

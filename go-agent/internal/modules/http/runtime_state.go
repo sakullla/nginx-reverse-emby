@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/moduleutil"
 )
 
 type runtimeState struct {
@@ -69,19 +70,11 @@ func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, cl
 	return nil
 }
 
-type rollbackOverlayRestorer interface {
-	RestorePreviousRuntimeForRollback(context.Context) error
-}
-
 func restoreEgressOverlayForRollback(ctx context.Context, rules []model.HTTPRule, overlay any) error {
 	if !hasEgressWireGuardRule(rules) {
 		return nil
 	}
-	restorer, ok := overlay.(rollbackOverlayRestorer)
-	if !ok || restorer == nil {
-		return nil
-	}
-	return restorer.RestorePreviousRuntimeForRollback(ctx)
+	return moduleutil.RestoreProviderForRollback(ctx, overlay)
 }
 
 func hasEgressWireGuardRule(rules []model.HTTPRule) bool {
