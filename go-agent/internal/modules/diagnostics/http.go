@@ -600,37 +600,23 @@ func (p *HTTPProber) hydrateRelayCandidates(ctx context.Context, rule model.HTTP
 			out = append(out, hydrated)
 			continue
 		}
-		hops := []relay.Hop(nil)
-		if len(paths) > 0 {
-			hops = paths[0].Hops
-		}
-		addresses, err := diagnosticRelayResolveCandidates(ctx, candidate.dialAddress, hops, p.relayProvider)
-		if err == nil && len(addresses) > 0 {
-			hydrated.resolvedCandidates = make([]httpResolvedCandidate, 0, len(addresses))
-			for _, address := range addresses {
-				hydrated.resolvedCandidates = append(hydrated.resolvedCandidates, httpResolvedCandidate{
-					label:       probeBackendLabel(candidate.targetURL, address),
-					dialAddress: address,
+		targets, resolved, err := hydrateDiagnosticRelayResolvedTargets(ctx, p.cache, candidate.dialAddress, hydrated.relayPaths, hydrated.relayChain, p.relayProvider)
+		if err == nil && resolved {
+			keptResolved := make([]httpResolvedCandidate, 0, len(targets))
+			for _, target := range targets {
+				keptResolved = append(keptResolved, httpResolvedCandidate{
+					label:       probeBackendLabel(candidate.targetURL, target.Address),
+					dialAddress: target.Address,
+					relayChain:  target.RelayChain,
 				})
 			}
-			keptResolved := make([]httpResolvedCandidate, 0, len(hydrated.resolvedCandidates))
-			availablePathsByAddress := make(map[string][]relayplan.Path, len(hydrated.resolvedCandidates))
-			for _, resolved := range hydrated.resolvedCandidates {
-				relayChain, availablePaths, ok := relayCandidatePathsForAddress(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.dialAddress)
-				if !ok {
-					continue
-				}
-				availablePathsByAddress[resolved.dialAddress] = availablePaths
-				resolved.relayChain = relayChain
-				keptResolved = append(keptResolved, resolved)
-			}
-			for _, resolved := range keptResolved {
+			for index, resolved := range keptResolved {
 				expanded := hydrated
 				expanded.resolvedCandidates = append([]httpResolvedCandidate(nil), keptResolved...)
 				expanded.backendLabel = resolved.label
 				expanded.dialAddress = resolved.dialAddress
 				expanded.relayChain = append([]int(nil), resolved.relayChain...)
-				expanded.relayPaths = append([]relayplan.Path(nil), availablePathsByAddress[resolved.dialAddress]...)
+				expanded.relayPaths = append([]relayplan.Path(nil), targets[index].RelayPaths...)
 				out = append(out, expanded)
 			}
 			continue

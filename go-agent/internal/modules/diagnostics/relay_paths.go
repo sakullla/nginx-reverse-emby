@@ -23,6 +23,41 @@ func resolveDiagnosticRelayPaths(ruleLabel string, chain []int, layers [][]int, 
 	return relayroute.ResolvePaths(ruleLabel, chain, layers, relayListeners, target)
 }
 
+type diagnosticRelayResolvedTarget struct {
+	Address    string
+	RelayChain []int
+	RelayPaths []relayplan.Path
+}
+
+func hydrateDiagnosticRelayResolvedTargets(ctx context.Context, cache *model.Cache, target string, paths []relayplan.Path, fallbackChain []int, provider relay.TLSMaterialProvider) ([]diagnosticRelayResolvedTarget, bool, error) {
+	if len(paths) > 1 {
+		return nil, false, nil
+	}
+
+	hops := []relay.Hop(nil)
+	if len(paths) > 0 {
+		hops = paths[0].Hops
+	}
+	addresses, err := diagnosticRelayResolveCandidates(ctx, target, hops, provider)
+	if err != nil || len(addresses) == 0 {
+		return nil, false, err
+	}
+
+	targets := make([]diagnosticRelayResolvedTarget, 0, len(addresses))
+	for _, address := range addresses {
+		relayChain, availablePaths, ok := relayCandidatePathsForAddress(cache, fallbackChain, paths, address)
+		if !ok {
+			continue
+		}
+		targets = append(targets, diagnosticRelayResolvedTarget{
+			Address:    address,
+			RelayChain: relayChain,
+			RelayPaths: availablePaths,
+		})
+	}
+	return targets, true, nil
+}
+
 func probeDiagnosticRelayPaths(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *model.Cache, preferenceCache *model.Cache, opts ...relay.DialOptions) ([]RelayPathReport, []int, error) {
 	if len(paths) == 0 {
 		return nil, nil, nil

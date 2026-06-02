@@ -144,6 +144,96 @@ func TestProbeDiagnosticRelayPathsFallsBackWhenFirstPathTimesOut(t *testing.T) {
 	}
 }
 
+func TestHydrateDiagnosticRelayResolvedTargetsFiltersBackoffPaths(t *testing.T) {
+	cache := model.NewCache(model.BackendCacheConfig{})
+	paths := []relayplan.Path{
+		{
+			IDs: []int{701},
+			Hops: []relay.Hop{{
+				Address:  "relay-a.example.invalid:12202",
+				Listener: model.RelayListener{ID: 701, Name: "Relay A"},
+			}},
+			Key: relayplan.PathKey("relay_path", []int{701}, "emby.example.com:443"),
+		},
+	}
+	markDiagnosticAddressFailure(cache, []int{701}, "10.0.0.2:443")
+
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+	})
+	var resolvedTarget string
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		resolvedTarget = target
+		if len(chain) != 1 || chain[0].Listener.ID != 701 {
+			t.Fatalf("chain = %+v", chain)
+		}
+		return []string{"10.0.0.1:443", "10.0.0.2:443"}, nil
+	}
+
+	targets, resolved, err := hydrateDiagnosticRelayResolvedTargets(
+		context.Background(),
+		cache,
+		"emby.example.com:443",
+		paths,
+		[]int{701},
+		newDiagnosticTLSMaterialProvider(),
+	)
+	if err != nil {
+		t.Fatalf("hydrateDiagnosticRelayResolvedTargets() error = %v", err)
+	}
+	if !resolved {
+		t.Fatal("resolved = false")
+	}
+	if resolvedTarget != "emby.example.com:443" {
+		t.Fatalf("resolved target = %q", resolvedTarget)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %+v", targets)
+	}
+	if targets[0].Address != "10.0.0.1:443" {
+		t.Fatalf("target address = %q", targets[0].Address)
+	}
+	if len(targets[0].RelayChain) != 1 || targets[0].RelayChain[0] != 701 {
+		t.Fatalf("relay chain = %+v", targets[0].RelayChain)
+	}
+	if len(targets[0].RelayPaths) != 1 || targets[0].RelayPaths[0].IDs[0] != 701 {
+		t.Fatalf("relay paths = %+v", targets[0].RelayPaths)
+	}
+}
+
+func TestHydrateDiagnosticRelayResolvedTargetsSkipsPreresolveForMultiplePaths(t *testing.T) {
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+	})
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		t.Fatal("diagnosticRelayResolveCandidates should not be called for multiple relay paths")
+		return nil, nil
+	}
+
+	targets, resolved, err := hydrateDiagnosticRelayResolvedTargets(
+		context.Background(),
+		model.NewCache(model.BackendCacheConfig{}),
+		"emby.example.com:443",
+		[]relayplan.Path{
+			{IDs: []int{701}, Hops: []relay.Hop{{Listener: model.RelayListener{ID: 701}}}},
+			{IDs: []int{702}, Hops: []relay.Hop{{Listener: model.RelayListener{ID: 702}}}},
+		},
+		[]int{701},
+		newDiagnosticTLSMaterialProvider(),
+	)
+	if err != nil {
+		t.Fatalf("hydrateDiagnosticRelayResolvedTargets() error = %v", err)
+	}
+	if resolved {
+		t.Fatal("resolved = true")
+	}
+	if len(targets) != 0 {
+		t.Fatalf("targets = %+v", targets)
+	}
+}
+
 func TestRelayPathHopReportsMarksFinalHopFailedWhenTargetConnectFails(t *testing.T) {
 	hops := []relay.Hop{
 		{
