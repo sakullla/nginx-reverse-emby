@@ -1,6 +1,8 @@
 package l4
 
 import (
+	"slices"
+
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 )
@@ -9,21 +11,14 @@ func cloneL4Rules(rules []model.L4Rule) []model.L4Rule {
 	if rules == nil {
 		return nil
 	}
-	cloned := make([]model.L4Rule, len(rules))
+	cloned := slices.Clone(rules)
 	for i, rule := range rules {
-		cloned[i] = rule
-		cloned[i].Backends = append([]model.L4Backend(nil), rule.Backends...)
-		cloned[i].RelayChain = append([]int(nil), rule.RelayChain...)
+		cloned[i].Backends = slices.Clone(rule.Backends)
+		cloned[i].RelayChain = slices.Clone(rule.RelayChain)
 		cloned[i].RelayLayers = cloneIntLayers(rule.RelayLayers)
-		cloned[i].Tags = append([]string(nil), rule.Tags...)
-		if rule.WireGuardProfileID != nil {
-			profileID := *rule.WireGuardProfileID
-			cloned[i].WireGuardProfileID = &profileID
-		}
-		if rule.EgressProfileID != nil {
-			profileID := *rule.EgressProfileID
-			cloned[i].EgressProfileID = &profileID
-		}
+		cloned[i].Tags = slices.Clone(rule.Tags)
+		cloned[i].WireGuardProfileID = clonePtr(rule.WireGuardProfileID)
+		cloned[i].EgressProfileID = clonePtr(rule.EgressProfileID)
 	}
 	return cloned
 }
@@ -32,13 +27,14 @@ func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener 
 	if listeners == nil {
 		return nil
 	}
-	cloned := make([]model.RelayListener, len(listeners))
+	cloned := slices.Clone(listeners)
 	for i, listener := range listeners {
-		cloned[i] = listener
-		cloned[i].BindHosts = append([]string(nil), listener.BindHosts...)
-		cloned[i].PinSet = append([]model.RelayPin(nil), listener.PinSet...)
-		cloned[i].TrustedCACertificateIDs = append([]int(nil), listener.TrustedCACertificateIDs...)
-		cloned[i].Tags = append([]string(nil), listener.Tags...)
+		cloned[i].BindHosts = slices.Clone(listener.BindHosts)
+		cloned[i].CertificateID = clonePtr(listener.CertificateID)
+		cloned[i].WireGuardProfileID = clonePtr(listener.WireGuardProfileID)
+		cloned[i].PinSet = slices.Clone(listener.PinSet)
+		cloned[i].TrustedCACertificateIDs = slices.Clone(listener.TrustedCACertificateIDs)
+		cloned[i].Tags = slices.Clone(listener.Tags)
 	}
 	return cloned
 }
@@ -49,9 +45,17 @@ func cloneIntLayers(layers [][]int) [][]int {
 	}
 	cloned := make([][]int, len(layers))
 	for i, layer := range layers {
-		cloned[i] = append([]int(nil), layer...)
+		cloned[i] = slices.Clone(layer)
 	}
 	return cloned
+}
+
+func clonePtr[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cloneEgressProfiles(profiles []model.EgressProfile) []model.EgressProfile {

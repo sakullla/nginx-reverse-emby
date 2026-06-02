@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -568,9 +569,9 @@ func WireGuardProfile(profile model.EgressProfile) model.WireGuardProfile {
 		Name:       profile.Name,
 		Mode:       modulewireguard.ModeGenericWireGuard,
 		PrivateKey: cfg.PrivateKey,
-		Addresses:  append([]string(nil), cfg.Addresses...),
+		Addresses:  slices.Clone(cfg.Addresses),
 		Peers:      cloneWireGuardPeers(cfg.Peers),
-		DNS:        append([]string(nil), cfg.DNS...),
+		DNS:        slices.Clone(cfg.DNS),
 		MTU:        cfg.MTU,
 		Enabled:    profile.Enabled,
 		Revision:   profile.Revision,
@@ -581,29 +582,32 @@ func CloneProfiles(profiles []model.EgressProfile) []model.EgressProfile {
 	if profiles == nil {
 		return nil
 	}
-	cloned := make([]model.EgressProfile, len(profiles))
+	cloned := slices.Clone(profiles)
 	for i, profile := range profiles {
-		cloned[i] = profile
-		if profile.WireGuardConfig != nil {
-			cfg := *profile.WireGuardConfig
-			cfg.Addresses = append([]string(nil), profile.WireGuardConfig.Addresses...)
-			cfg.Peers = cloneWireGuardPeers(profile.WireGuardConfig.Peers)
-			cfg.DNS = append([]string(nil), profile.WireGuardConfig.DNS...)
-			cloned[i].WireGuardConfig = &cfg
-		}
+		cloned[i].WireGuardConfig = cloneEgressWireGuardConfig(profile.WireGuardConfig)
 	}
 	return cloned
+}
+
+func cloneEgressWireGuardConfig(config *model.EgressWireGuardConfig) *model.EgressWireGuardConfig {
+	if config == nil {
+		return nil
+	}
+	cloned := *config
+	cloned.Addresses = slices.Clone(config.Addresses)
+	cloned.Peers = cloneWireGuardPeers(config.Peers)
+	cloned.DNS = slices.Clone(config.DNS)
+	return &cloned
 }
 
 func cloneWireGuardPeers(peers []model.WireGuardPeer) []model.WireGuardPeer {
 	if peers == nil {
 		return nil
 	}
-	cloned := make([]model.WireGuardPeer, len(peers))
+	cloned := slices.Clone(peers)
 	for i, peer := range peers {
-		cloned[i] = peer
-		cloned[i].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
-		cloned[i].Reserved = append([]byte(nil), peer.Reserved...)
+		cloned[i].AllowedIPs = slices.Clone(peer.AllowedIPs)
+		cloned[i].Reserved = slices.Clone(peer.Reserved)
 	}
 	return cloned
 }

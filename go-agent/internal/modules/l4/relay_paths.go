@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -194,8 +195,8 @@ func cloneRelayPlanPaths(paths []relayplan.Path) []relayplan.Path {
 	cloned := make([]relayplan.Path, len(paths))
 	for i, path := range paths {
 		cloned[i] = path
-		cloned[i].IDs = append([]int(nil), path.IDs...)
-		cloned[i].Hops = append([]relay.Hop(nil), path.Hops...)
+		cloned[i].IDs = slices.Clone(path.IDs)
+		cloned[i].Hops = slices.Clone(path.Hops)
 	}
 	return cloned
 }

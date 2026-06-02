@@ -5,15 +5,17 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 type Runtime struct {
@@ -181,9 +183,7 @@ func (r *Runtime) BindingKeys() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	out := make([]string, len(r.bindings))
-	copy(out, r.bindings)
-	return out
+	return slices.Clone(r.bindings)
 }
 
 func (r *Runtime) SetTrafficBlockState(state TrafficBlockState) {

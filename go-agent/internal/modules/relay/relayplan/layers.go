@@ -2,6 +2,7 @@ package relayplan
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -40,8 +41,7 @@ func ExpandPaths(layers [][]int, maxPaths int) ([][]int, error) {
 	var walk func(int) error
 	walk = func(layerIndex int) error {
 		if layerIndex == len(layers) {
-			path := append([]int(nil), current...)
-			paths = append(paths, path)
+			paths = append(paths, slices.Clone(current))
 			if len(paths) > maxPaths {
 				return fmt.Errorf("relay paths exceed maximum %d", maxPaths)
 			}
@@ -110,7 +110,7 @@ func cloneLayers(layers [][]int) [][]int {
 		if len(layer) == 0 {
 			continue
 		}
-		out = append(out, append([]int(nil), layer...))
+		out = append(out, slices.Clone(layer))
 	}
 	if len(out) == 0 {
 		return nil

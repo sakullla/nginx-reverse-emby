@@ -3,6 +3,7 @@ package relayroute
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -113,8 +114,8 @@ func ClonePaths(paths []relayplan.Path) []relayplan.Path {
 	cloned := make([]relayplan.Path, len(paths))
 	for i, path := range paths {
 		cloned[i] = relayplan.Path{
-			IDs:  append([]int(nil), path.IDs...),
-			Hops: append([]relay.Hop(nil), path.Hops...),
+			IDs:  slices.Clone(path.IDs),
+			Hops: slices.Clone(path.Hops),
 			Key:  path.Key,
 		}
 	}

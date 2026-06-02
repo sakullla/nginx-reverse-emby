@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -133,7 +134,7 @@ func Fingerprint(profile model.WireGuardProfile) (string, error) {
 		Mode:          cfg.Mode,
 		PrivateKey:    base64.StdEncoding.EncodeToString(cfg.PrivateKeyBytes),
 		ListenPort:    cfg.ListenPort,
-		BindAddresses: append([]string(nil), cfg.BindAddresses...),
+		BindAddresses: slices.Clone(cfg.BindAddresses),
 		Addresses:     prefixStrings(cfg.AddressPrefixes),
 		DNS:           addrStrings(cfg.DNSAddrs),
 		MTU:           cfg.MTU,

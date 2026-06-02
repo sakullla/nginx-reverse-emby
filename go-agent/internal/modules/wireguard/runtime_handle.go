@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -649,15 +650,15 @@ func runtimeEntryByProfile(entries map[runtimeKey]*runtimeEntry, agentID string,
 
 func cloneConfig(cfg Config) Config {
 	cloned := cfg
-	cloned.BindAddresses = append([]string(nil), cfg.BindAddresses...)
-	cloned.Addresses = append([]string(nil), cfg.Addresses...)
-	cloned.DNS = append([]string(nil), cfg.DNS...)
+	cloned.BindAddresses = slices.Clone(cfg.BindAddresses)
+	cloned.Addresses = slices.Clone(cfg.Addresses)
+	cloned.DNS = slices.Clone(cfg.DNS)
 	cloned.Peers = clonePeerConfigs(cfg.Peers)
-	cloned.Tags = append([]string(nil), cfg.Tags...)
-	cloned.PrivateKeyBytes = append([]byte(nil), cfg.PrivateKeyBytes...)
-	cloned.AddressPrefixes = append([]netip.Prefix(nil), cfg.AddressPrefixes...)
-	cloned.AddressAddrs = append([]netip.Addr(nil), cfg.AddressAddrs...)
-	cloned.DNSAddrs = append([]netip.Addr(nil), cfg.DNSAddrs...)
+	cloned.Tags = slices.Clone(cfg.Tags)
+	cloned.PrivateKeyBytes = slices.Clone(cfg.PrivateKeyBytes)
+	cloned.AddressPrefixes = slices.Clone(cfg.AddressPrefixes)
+	cloned.AddressAddrs = slices.Clone(cfg.AddressAddrs)
+	cloned.DNSAddrs = slices.Clone(cfg.DNSAddrs)
 	return cloned
 }
 
@@ -680,13 +681,12 @@ func clonePeerConfigs(peers []PeerConfig) []PeerConfig {
 	if len(peers) == 0 {
 		return nil
 	}
-	cloned := make([]PeerConfig, len(peers))
+	cloned := slices.Clone(peers)
 	for i, peer := range peers {
-		cloned[i] = peer
-		cloned[i].AllowedIPs = append([]string(nil), peer.AllowedIPs...)
-		cloned[i].PublicKeyBytes = append([]byte(nil), peer.PublicKeyBytes...)
-		cloned[i].PresharedKeyBytes = append([]byte(nil), peer.PresharedKeyBytes...)
-		cloned[i].AllowedPrefixes = append([]netip.Prefix(nil), peer.AllowedPrefixes...)
+		cloned[i].AllowedIPs = slices.Clone(peer.AllowedIPs)
+		cloned[i].PublicKeyBytes = slices.Clone(peer.PublicKeyBytes)
+		cloned[i].PresharedKeyBytes = slices.Clone(peer.PresharedKeyBytes)
+		cloned[i].AllowedPrefixes = slices.Clone(peer.AllowedPrefixes)
 	}
 	return cloned
 }

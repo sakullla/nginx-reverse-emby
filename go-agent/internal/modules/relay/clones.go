@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -31,15 +32,24 @@ func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener 
 	if listeners == nil {
 		return nil
 	}
-	cloned := make([]model.RelayListener, len(listeners))
+	cloned := slices.Clone(listeners)
 	for i, listener := range listeners {
-		cloned[i] = listener
-		cloned[i].BindHosts = append([]string(nil), listener.BindHosts...)
-		cloned[i].PinSet = append([]model.RelayPin(nil), listener.PinSet...)
-		cloned[i].TrustedCACertificateIDs = append([]int(nil), listener.TrustedCACertificateIDs...)
-		cloned[i].Tags = append([]string(nil), listener.Tags...)
+		cloned[i].BindHosts = slices.Clone(listener.BindHosts)
+		cloned[i].CertificateID = clonePtr(listener.CertificateID)
+		cloned[i].WireGuardProfileID = clonePtr(listener.WireGuardProfileID)
+		cloned[i].PinSet = slices.Clone(listener.PinSet)
+		cloned[i].TrustedCACertificateIDs = slices.Clone(listener.TrustedCACertificateIDs)
+		cloned[i].Tags = slices.Clone(listener.Tags)
 	}
 	return cloned
+}
+
+func clonePtr[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func relayListenerBindHosts(listener model.RelayListener) []string {

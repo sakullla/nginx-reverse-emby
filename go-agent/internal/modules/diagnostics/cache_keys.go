@@ -1,6 +1,7 @@
 package diagnostics
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -21,12 +22,12 @@ func diagnosticAddressKey(relayChain []int, address string) string {
 
 func diagnosticRelayChainForObservation(configured []int, candidate []int, selected []int) []int {
 	if len(selected) > 0 {
-		return append([]int(nil), selected...)
+		return slices.Clone(selected)
 	}
 	if len(candidate) > 0 {
-		return append([]int(nil), candidate...)
+		return slices.Clone(candidate)
 	}
-	return append([]int(nil), configured...)
+	return slices.Clone(configured)
 }
 
 func markDiagnosticAddressFailure(cache *model.Cache, relayChain []int, address string) {
@@ -97,13 +98,13 @@ func relayResolvedAddressBackedOffForAllPaths(cache *model.Cache, fallbackChain 
 
 func relayPathsAvailableForAddress(cache *model.Cache, fallbackChain []int, paths []relayplan.Path, address string) []relayplan.Path {
 	if cache == nil {
-		return append([]relayplan.Path(nil), paths...)
+		return slices.Clone(paths)
 	}
 	if len(paths) == 0 {
 		if cache.IsInBackoff(diagnosticAddressKey(fallbackChain, address)) {
 			return nil
 		}
-		return append([]relayplan.Path(nil), paths...)
+		return slices.Clone(paths)
 	}
 	available := make([]relayplan.Path, 0, len(paths))
 	for _, path := range paths {

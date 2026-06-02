@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 
@@ -133,17 +134,16 @@ func CloneWireGuardProfiles(profiles []model.WireGuardProfile) []model.WireGuard
 	if profiles == nil {
 		return nil
 	}
-	cloned := make([]model.WireGuardProfile, len(profiles))
+	cloned := slices.Clone(profiles)
 	for i, profile := range profiles {
-		cloned[i] = profile
-		cloned[i].BindAddresses = append([]string(nil), profile.BindAddresses...)
-		cloned[i].Addresses = append([]string(nil), profile.Addresses...)
-		cloned[i].DNS = append([]string(nil), profile.DNS...)
-		cloned[i].Tags = append([]string(nil), profile.Tags...)
-		cloned[i].Peers = append([]model.WireGuardPeer(nil), profile.Peers...)
+		cloned[i].BindAddresses = slices.Clone(profile.BindAddresses)
+		cloned[i].Addresses = slices.Clone(profile.Addresses)
+		cloned[i].DNS = slices.Clone(profile.DNS)
+		cloned[i].Tags = slices.Clone(profile.Tags)
+		cloned[i].Peers = slices.Clone(profile.Peers)
 		for j := range cloned[i].Peers {
-			cloned[i].Peers[j].AllowedIPs = append([]string(nil), profile.Peers[j].AllowedIPs...)
-			cloned[i].Peers[j].Reserved = append([]byte(nil), profile.Peers[j].Reserved...)
+			cloned[i].Peers[j].AllowedIPs = slices.Clone(profile.Peers[j].AllowedIPs)
+			cloned[i].Peers[j].Reserved = slices.Clone(profile.Peers[j].Reserved)
 		}
 	}
 	return cloned
