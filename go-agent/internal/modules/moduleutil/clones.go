@@ -2,6 +2,7 @@ package moduleutil
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -39,4 +40,38 @@ func CloneRelayListeners(listeners []model.RelayListener) []model.RelayListener 
 		cloned[i].Tags = slices.Clone(listener.Tags)
 	}
 	return cloned
+}
+
+func CloneHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
+	if rules == nil {
+		return nil
+	}
+	cloned := slices.Clone(rules)
+	for i, rule := range rules {
+		cloned[i].AgentID = strings.TrimSpace(rule.AgentID)
+		cloned[i].Backends = slices.Clone(rule.Backends)
+		cloned[i].CustomHeaders = slices.Clone(rule.CustomHeaders)
+		cloneRuleSharedFields(&cloned[i].RelayChain, &cloned[i].RelayLayers, &cloned[i].Tags, &cloned[i].WireGuardProfileID, &cloned[i].EgressProfileID, rule.RelayChain, rule.RelayLayers, rule.Tags, rule.WireGuardProfileID, rule.EgressProfileID)
+	}
+	return cloned
+}
+
+func CloneL4Rules(rules []model.L4Rule) []model.L4Rule {
+	if rules == nil {
+		return nil
+	}
+	cloned := slices.Clone(rules)
+	for i, rule := range rules {
+		cloned[i].Backends = slices.Clone(rule.Backends)
+		cloneRuleSharedFields(&cloned[i].RelayChain, &cloned[i].RelayLayers, &cloned[i].Tags, &cloned[i].WireGuardProfileID, &cloned[i].EgressProfileID, rule.RelayChain, rule.RelayLayers, rule.Tags, rule.WireGuardProfileID, rule.EgressProfileID)
+	}
+	return cloned
+}
+
+func cloneRuleSharedFields(relayChain *[]int, relayLayers *[][]int, tags *[]string, wireGuardProfileID **int, egressProfileID **int, sourceRelayChain []int, sourceRelayLayers [][]int, sourceTags []string, sourceWireGuardProfileID *int, sourceEgressProfileID *int) {
+	*relayChain = slices.Clone(sourceRelayChain)
+	*relayLayers = CloneIntLayers(sourceRelayLayers)
+	*tags = slices.Clone(sourceTags)
+	*wireGuardProfileID = ClonePtr(sourceWireGuardProfileID)
+	*egressProfileID = ClonePtr(sourceEgressProfileID)
 }

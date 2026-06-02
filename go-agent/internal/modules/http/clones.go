@@ -1,30 +1,13 @@
 package http
 
 import (
-	"slices"
-	"strings"
-
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/moduleutil"
 )
 
 func cloneHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
-	if rules == nil {
-		return nil
-	}
-	cloned := slices.Clone(rules)
-	for i, rule := range rules {
-		cloned[i].AgentID = strings.TrimSpace(rule.AgentID)
-		cloned[i].Backends = slices.Clone(rule.Backends)
-		cloned[i].CustomHeaders = slices.Clone(rule.CustomHeaders)
-		cloned[i].RelayChain = slices.Clone(rule.RelayChain)
-		cloned[i].RelayLayers = moduleutil.CloneIntLayers(rule.RelayLayers)
-		cloned[i].Tags = slices.Clone(rule.Tags)
-		cloned[i].WireGuardProfileID = moduleutil.ClonePtr(rule.WireGuardProfileID)
-		cloned[i].EgressProfileID = moduleutil.ClonePtr(rule.EgressProfileID)
-	}
-	return cloned
+	return moduleutil.CloneHTTPRules(rules)
 }
 
 func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener {
