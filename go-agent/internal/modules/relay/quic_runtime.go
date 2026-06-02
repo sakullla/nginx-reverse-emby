@@ -34,6 +34,10 @@ func (e *relayApplicationError) Error() string {
 	return e.message
 }
 
+func relayApplicationFailure(operation string, response relayResponse) *relayApplicationError {
+	return &relayApplicationError{message: relayResponseError(operation, response).Error()}
+}
+
 type quicStreamConn struct {
 	conn   *quic.Conn
 	stream *quic.Stream
@@ -308,31 +312,14 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		Metadata:    relayMetadataForDialOptions(network, options),
 		InitialData: options.InitialPayload,
 	}
-	if err := withFrameDeadline(conn, func() error {
-		return writeRelayOpenFrame(conn, request)
-	}); err != nil {
-		conn.Close()
-		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
-		return nil, DialResult{}, err
-	}
-
-	var response relayResponse
-	err = withFrameDeadline(conn, func() error {
-		var readErr error
-		response, readErr = readRelayResponse(conn)
-		return readErr
-	})
+	response, err := exchangeRelayOpenFrame(conn, request)
 	if err != nil {
 		conn.Close()
+		if !response.OK {
+			return nil, DialResult{SelectedAddress: response.SelectedAddress}, relayApplicationFailure("relay connection", response)
+		}
 		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
-	}
-	if !response.OK {
-		conn.Close()
-		if response.Error == "" {
-			return nil, DialResult{SelectedAddress: response.SelectedAddress}, &relayApplicationError{message: "relay connection failed"}
-		}
-		return nil, DialResult{SelectedAddress: response.SelectedAddress}, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", response.Error)}
 	}
 	observeRelayQUICSuccessForHop(firstHop)
 
@@ -368,26 +355,12 @@ func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, prov
 		Target: target,
 		Chain:  append([]Hop(nil), chain[1:]...),
 	}
-	if err := withFrameDeadline(conn, func() error {
-		return writeRelayOpenFrame(conn, request)
-	}); err != nil {
-		return nil, err
-	}
-
-	var response relayResponse
-	err = withFrameDeadline(conn, func() error {
-		var readErr error
-		response, readErr = readRelayResponse(conn)
-		return readErr
-	})
+	response, err := exchangeRelayOpenFrame(conn, request)
 	if err != nil {
-		return nil, err
-	}
-	if !response.OK {
-		if response.Error == "" {
-			return nil, fmt.Errorf("relay resolve failed")
+		if !response.OK {
+			return nil, relayResponseError("relay resolve", response)
 		}
-		return nil, fmt.Errorf("relay resolve failed: %s", response.Error)
+		return nil, err
 	}
 	return append([]string(nil), response.ResolvedCandidates...), nil
 }

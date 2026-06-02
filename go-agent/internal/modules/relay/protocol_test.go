@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"strings"
 	"testing"
 
@@ -96,6 +97,67 @@ func TestRelayOpenFrameRoundTripsTrafficClassMetadata(t *testing.T) {
 	}
 	if got := relayTrafficClassFromMetadata(frame.Metadata); got != model.TrafficClassBulk {
 		t.Fatalf("relayTrafficClassFromMetadata() = %q, want %q", got, model.TrafficClassBulk)
+	}
+}
+
+func TestExchangeRelayOpenFrameWritesRequestAndReadsResponse(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	done := make(chan relayOpenFrame, 1)
+	go func() {
+		request, err := readRelayOpenFrame(server)
+		if err != nil {
+			t.Errorf("readRelayOpenFrame() error = %v", err)
+			return
+		}
+		if err := writeRelayResponse(server, relayResponse{OK: true, SelectedAddress: "127.0.0.1:9000"}); err != nil {
+			t.Errorf("writeRelayResponse() error = %v", err)
+			return
+		}
+		done <- request
+	}()
+
+	response, err := exchangeRelayOpenFrame(client, relayOpenFrame{
+		Kind:   "tcp",
+		Target: "example.test:443",
+	})
+	if err != nil {
+		t.Fatalf("exchangeRelayOpenFrame() error = %v", err)
+	}
+	if !response.OK || response.SelectedAddress != "127.0.0.1:9000" {
+		t.Fatalf("response = %+v", response)
+	}
+
+	request := <-done
+	if request.Kind != "tcp" || request.Target != "example.test:443" {
+		t.Fatalf("request = %+v", request)
+	}
+}
+
+func TestExchangeRelayOpenFrameApplicationErrorKeepsResponse(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		_, _ = readRelayOpenFrame(server)
+		_ = writeRelayResponse(server, relayResponse{OK: false, Error: "blocked", SelectedAddress: "127.0.0.1:9001"})
+	}()
+
+	response, err := exchangeRelayOpenFrame(client, relayOpenFrame{
+		Kind:   "tcp",
+		Target: "example.test:443",
+	})
+	if err == nil {
+		t.Fatal("exchangeRelayOpenFrame() error = nil")
+	}
+	if got, want := err.Error(), "relay request failed: blocked"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if response.SelectedAddress != "127.0.0.1:9001" {
+		t.Fatalf("response = %+v", response)
 	}
 }
 

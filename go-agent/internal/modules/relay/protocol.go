@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -93,6 +94,35 @@ func writeRelayResponse(w io.Writer, response relayResponse) error {
 
 func writeRelayOpenFrame(w io.Writer, frame relayOpenFrame) error {
 	return writeFrame(w, frame)
+}
+
+func exchangeRelayOpenFrame(conn net.Conn, frame relayOpenFrame) (relayResponse, error) {
+	if err := withFrameDeadline(conn, func() error {
+		return writeRelayOpenFrame(conn, frame)
+	}); err != nil {
+		return relayResponse{}, err
+	}
+
+	var response relayResponse
+	err := withFrameDeadline(conn, func() error {
+		var readErr error
+		response, readErr = readRelayResponse(conn)
+		return readErr
+	})
+	if err != nil {
+		return relayResponse{}, err
+	}
+	if !response.OK {
+		return response, relayResponseError("relay request", response)
+	}
+	return response, nil
+}
+
+func relayResponseError(operation string, response relayResponse) error {
+	if strings.TrimSpace(response.Error) == "" {
+		return fmt.Errorf("%s failed", operation)
+	}
+	return fmt.Errorf("%s failed: %s", operation, response.Error)
 }
 
 func marshalMuxOpenPayload(frame relayOpenFrame) ([]byte, error) {

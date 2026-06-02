@@ -151,26 +151,12 @@ func probeRelayRequestQUIC(ctx context.Context, hop Hop, provider TLSMaterialPro
 	conn := &quicStreamConn{conn: session, stream: stream}
 	defer conn.Close()
 
-	if err := withFrameDeadline(conn, func() error {
-		return writeRelayOpenFrame(conn, request)
-	}); err != nil {
-		return relayResponse{}, err
-	}
-
-	var response relayResponse
-	err = withFrameDeadline(conn, func() error {
-		var readErr error
-		response, readErr = readRelayResponse(conn)
-		return readErr
-	})
+	response, err := exchangeRelayOpenFrame(conn, request)
 	if err != nil {
-		return relayResponse{}, err
-	}
-	if !response.OK {
-		if response.Error == "" {
-			return relayResponse{}, fmt.Errorf("relay probe failed")
+		if !response.OK {
+			return relayResponse{}, relayResponseError("relay probe", response)
 		}
-		return relayResponse{}, fmt.Errorf("relay probe failed: %s", response.Error)
+		return relayResponse{}, err
 	}
 	return response, nil
 }
