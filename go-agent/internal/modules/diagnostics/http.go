@@ -660,19 +660,12 @@ func (p *HTTPProber) hydrateRelayCandidates(ctx context.Context, rule model.HTTP
 			keptResolved := make([]httpResolvedCandidate, 0, len(hydrated.resolvedCandidates))
 			availablePathsByAddress := make(map[string][]relayplan.Path, len(hydrated.resolvedCandidates))
 			for _, resolved := range hydrated.resolvedCandidates {
-				availablePaths := relayPathsAvailableForAddress(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.dialAddress)
-				if len(hydrated.relayPaths) > 0 && len(availablePaths) == 0 {
-					continue
-				}
-				if len(hydrated.relayPaths) == 0 && relayResolvedAddressBackedOffForAllPaths(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.dialAddress) {
+				relayChain, availablePaths, ok := relayCandidatePathsForAddress(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.dialAddress)
+				if !ok {
 					continue
 				}
 				availablePathsByAddress[resolved.dialAddress] = availablePaths
-				if len(availablePaths) > 0 {
-					resolved.relayChain = append([]int(nil), availablePaths[0].IDs...)
-				} else {
-					resolved.relayChain = append([]int(nil), hydrated.relayChain...)
-				}
+				resolved.relayChain = relayChain
 				keptResolved = append(keptResolved, resolved)
 			}
 			for _, resolved := range keptResolved {

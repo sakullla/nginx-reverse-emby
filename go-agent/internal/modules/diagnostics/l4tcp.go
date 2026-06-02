@@ -327,19 +327,12 @@ func (p *TCPProber) hydrateRelayCandidates(ctx context.Context, rule model.L4Rul
 			keptResolved := make([]tcpResolvedCandidate, 0, len(hydrated.resolvedCandidates))
 			availablePathsByAddress := make(map[string][]relayplan.Path, len(hydrated.resolvedCandidates))
 			for _, resolved := range hydrated.resolvedCandidates {
-				availablePaths := relayPathsAvailableForAddress(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.address)
-				if len(hydrated.relayPaths) > 0 && len(availablePaths) == 0 {
-					continue
-				}
-				if len(hydrated.relayPaths) == 0 && relayResolvedAddressBackedOffForAllPaths(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.address) {
+				relayChain, availablePaths, ok := relayCandidatePathsForAddress(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.address)
+				if !ok {
 					continue
 				}
 				availablePathsByAddress[resolved.address] = availablePaths
-				if len(availablePaths) > 0 {
-					resolved.relayChain = append([]int(nil), availablePaths[0].IDs...)
-				} else {
-					resolved.relayChain = append([]int(nil), hydrated.relayChain...)
-				}
+				resolved.relayChain = relayChain
 				keptResolved = append(keptResolved, resolved)
 			}
 			for _, resolved := range keptResolved {

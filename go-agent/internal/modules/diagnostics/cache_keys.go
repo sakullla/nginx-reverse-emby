@@ -115,3 +115,17 @@ func relayPathsAvailableForAddress(cache *model.Cache, fallbackChain []int, path
 	}
 	return available
 }
+
+func relayCandidatePathsForAddress(cache *model.Cache, fallbackChain []int, paths []relayplan.Path, address string) ([]int, []relayplan.Path, bool) {
+	availablePaths := relayPathsAvailableForAddress(cache, fallbackChain, paths, address)
+	if len(paths) > 0 && len(availablePaths) == 0 {
+		return nil, nil, false
+	}
+	if len(paths) == 0 && relayResolvedAddressBackedOffForAllPaths(cache, fallbackChain, paths, address) {
+		return nil, nil, false
+	}
+	if len(availablePaths) > 0 {
+		return slices.Clone(availablePaths[0].IDs), availablePaths, true
+	}
+	return slices.Clone(fallbackChain), availablePaths, true
+}
