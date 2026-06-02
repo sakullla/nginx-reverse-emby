@@ -468,7 +468,7 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 			if len(children) == 1 && !observationSummaryHasHistory(groupSummary) {
 				relayChain := groupRelayChains[groupKey]
 				childRelayChains := groupChildRelayChains[groupKey]
-				childKey := diagnosticAddressKey(tcpChildRelayChain(childRelayChains, children[0].address, relayChain), children[0].address)
+				childKey := diagnosticAddressKey(diagnosticChildRelayChain(childRelayChains, children[0].address, relayChain), children[0].address)
 				if childSummary := cache.SummaryLatencyOnly(childKey); observationSummaryHasHistory(childSummary) {
 					summary = childSummary
 				}
@@ -495,7 +495,7 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 		relayChain := groupRelayChains[groupKey]
 		childRelayChains := groupChildRelayChains[groupKey]
 		for _, child := range children {
-			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(tcpChildRelayChain(childRelayChains, child.address, relayChain), child.address))
+			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(diagnosticChildRelayChain(childRelayChains, child.address, relayChain), child.address))
 		}
 		childSummaries := make(map[string]model.ObservationSummary, len(childSummaryKeys))
 		for _, key := range childSummaryKeys {
@@ -504,7 +504,7 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 		preferredChildKey := preferredObservationKey(childSummaries)
 		for _, child := range children {
 			childReport := reportByLabel[child.label]
-			childSummaryKey := diagnosticAddressKey(tcpChildRelayChain(childRelayChains, child.address, relayChain), child.address)
+			childSummaryKey := diagnosticAddressKey(diagnosticChildRelayChain(childRelayChains, child.address, relayChain), child.address)
 			childReport.Address = child.address
 			childReport.Adaptive = adaptiveSummaryFromObservation(
 				childSummaries[childSummaryKey],
@@ -519,52 +519,16 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 	return annotated
 }
 
-func tcpChildRelayChain(childRelayChains map[string][]int, address string, fallback []int) []int {
-	if childRelayChains != nil {
-		if chain := childRelayChains[address]; len(chain) > 0 {
-			return chain
-		}
-	}
-	return fallback
-}
-
 func mergeTCPChildSummaries(children []tcpResolvedCandidate, reports map[string]BackendReport) Summary {
-	summary := Summary{Quality: "不可用"}
-	totalLatency := 0.0
-	minLatency := 0.0
-	maxLatency := 0.0
-	successfulChildren := 0
-
+	summaries := make([]Summary, 0, len(children))
 	for _, child := range children {
 		report, ok := reports[child.label]
 		if !ok {
 			continue
 		}
-		summary.Sent += report.Summary.Sent
-		summary.Succeeded += report.Summary.Succeeded
-		summary.Failed += report.Summary.Failed
-		if report.Summary.Succeeded > 0 {
-			successfulChildren++
-			totalLatency += report.Summary.AvgLatencyMS * float64(report.Summary.Succeeded)
-			if successfulChildren == 1 || report.Summary.MinLatencyMS < minLatency {
-				minLatency = report.Summary.MinLatencyMS
-			}
-			if report.Summary.MaxLatencyMS > maxLatency {
-				maxLatency = report.Summary.MaxLatencyMS
-			}
-		}
+		summaries = append(summaries, report.Summary)
 	}
-
-	if summary.Sent > 0 {
-		summary.LossRate = roundMetric(float64(summary.Failed) / float64(summary.Sent))
-	}
-	if summary.Succeeded > 0 {
-		summary.AvgLatencyMS = roundMetric(totalLatency / float64(summary.Succeeded))
-		summary.MinLatencyMS = roundMetric(minLatency)
-		summary.MaxLatencyMS = roundMetric(maxLatency)
-	}
-	summary.Quality = classifyQuality("l4_tcp", summary)
-	return summary
+	return mergeBackendSummaries("l4_tcp", summaries)
 }
 
 func tcpAdaptiveSummaryKey(candidate tcpProbeCandidate) string {

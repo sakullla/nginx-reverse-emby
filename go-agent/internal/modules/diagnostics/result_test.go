@@ -76,3 +76,43 @@ func TestBuildReportIncludesPerBackendSummaries(t *testing.T) {
 		t.Fatalf("second backend summary = %+v", report.Backends[1].Summary)
 	}
 }
+
+func TestMergeBackendSummariesWeightsLatencyBySuccessfulSamples(t *testing.T) {
+	summary := mergeBackendSummaries("http", []Summary{
+		{Sent: 3, Succeeded: 2, Failed: 1, AvgLatencyMS: 20, MinLatencyMS: 10, MaxLatencyMS: 30},
+		{Sent: 2, Succeeded: 1, Failed: 1, AvgLatencyMS: 100, MinLatencyMS: 100, MaxLatencyMS: 100},
+		{Sent: 1, Failed: 1},
+	})
+
+	if summary.Sent != 6 || summary.Succeeded != 3 || summary.Failed != 3 {
+		t.Fatalf("counts = %+v", summary)
+	}
+	if summary.LossRate != 0.5 {
+		t.Fatalf("LossRate = %v", summary.LossRate)
+	}
+	if summary.AvgLatencyMS != 46.7 {
+		t.Fatalf("AvgLatencyMS = %v", summary.AvgLatencyMS)
+	}
+	if summary.MinLatencyMS != 10 || summary.MaxLatencyMS != 100 {
+		t.Fatalf("latency range = %+v", summary)
+	}
+	if summary.Quality != "较差" {
+		t.Fatalf("Quality = %q", summary.Quality)
+	}
+}
+
+func TestMergeBackendSummariesUsesKindQualityThresholds(t *testing.T) {
+	summaries := []Summary{
+		{Sent: 1, Succeeded: 1, AvgLatencyMS: 100, MinLatencyMS: 100, MaxLatencyMS: 100},
+	}
+
+	httpSummary := mergeBackendSummaries("http", summaries)
+	if httpSummary.Quality != "极佳" {
+		t.Fatalf("http quality = %q", httpSummary.Quality)
+	}
+
+	tcpSummary := mergeBackendSummaries("l4_tcp", summaries)
+	if tcpSummary.Quality != "良好" {
+		t.Fatalf("tcp quality = %q", tcpSummary.Quality)
+	}
+}

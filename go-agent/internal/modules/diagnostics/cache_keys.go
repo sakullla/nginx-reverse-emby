@@ -30,6 +30,15 @@ func diagnosticRelayChainForObservation(configured []int, candidate []int, selec
 	return slices.Clone(configured)
 }
 
+func diagnosticChildRelayChain(childRelayChains map[string][]int, address string, fallback []int) []int {
+	if childRelayChains != nil {
+		if chain := childRelayChains[address]; len(chain) > 0 {
+			return chain
+		}
+	}
+	return fallback
+}
+
 func markDiagnosticAddressFailure(cache *model.Cache, relayChain []int, address string) {
 	markDiagnosticAddressFailureAll(relayChain, address, cache)
 }

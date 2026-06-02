@@ -162,6 +162,42 @@ func buildBackendReports(kind string, samples []Sample) []BackendReport {
 	return reports
 }
 
+func mergeBackendSummaries(kind string, summaries []Summary) Summary {
+	merged := Summary{Quality: "不可用"}
+	totalLatency := 0.0
+	minLatency := 0.0
+	maxLatency := 0.0
+	successfulSummaries := 0
+
+	for _, summary := range summaries {
+		merged.Sent += summary.Sent
+		merged.Succeeded += summary.Succeeded
+		merged.Failed += summary.Failed
+		if summary.Succeeded == 0 {
+			continue
+		}
+		successfulSummaries++
+		totalLatency += summary.AvgLatencyMS * float64(summary.Succeeded)
+		if successfulSummaries == 1 || summary.MinLatencyMS < minLatency {
+			minLatency = summary.MinLatencyMS
+		}
+		if summary.MaxLatencyMS > maxLatency {
+			maxLatency = summary.MaxLatencyMS
+		}
+	}
+
+	if merged.Sent > 0 {
+		merged.LossRate = roundMetric(float64(merged.Failed) / float64(merged.Sent))
+	}
+	if merged.Succeeded > 0 {
+		merged.AvgLatencyMS = roundMetric(totalLatency / float64(merged.Succeeded))
+		merged.MinLatencyMS = roundMetric(minLatency)
+		merged.MaxLatencyMS = roundMetric(maxLatency)
+	}
+	merged.Quality = classifyQuality(kind, merged)
+	return merged
+}
+
 func LatencySample(attempt int, backend string, latency time.Duration, statusCode int) Sample {
 	return Sample{
 		Attempt:    attempt,

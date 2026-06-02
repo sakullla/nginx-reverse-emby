@@ -381,13 +381,13 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		relayChain := configuredRelayChains[configured]
 		childRelayChains := configuredChildRelayChains[configured]
 		for _, childAddress := range childAddresses {
-			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(httpChildRelayChain(childRelayChains, childAddress, relayChain), childAddress))
+			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(diagnosticChildRelayChain(childRelayChains, childAddress, relayChain), childAddress))
 		}
 		childSummaries := cache.SummariesWithSharedThroughput(childSummaryKeys)
 		preferredChildKey := preferredObservationKey(childSummaries)
 		for index, child := range children {
 			childReport := reportByLabel[child.label]
-			childSummaryKey := diagnosticAddressKey(httpChildRelayChain(childRelayChains, child.dialAddress, relayChain), child.dialAddress)
+			childSummaryKey := diagnosticAddressKey(diagnosticChildRelayChain(childRelayChains, child.dialAddress, relayChain), child.dialAddress)
 			childSummary, ok := childSummaries[childSummaryKey]
 			if !ok {
 				childSummary = cache.Summary(childSummaryKey)
@@ -414,15 +414,6 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		annotated = append(annotated, parent)
 	}
 	return annotated
-}
-
-func httpChildRelayChain(childRelayChains map[string][]int, address string, fallback []int) []int {
-	if childRelayChains != nil {
-		if chain := childRelayChains[address]; len(chain) > 0 {
-			return chain
-		}
-	}
-	return fallback
 }
 
 func preferredObservationKey(summaries map[string]model.ObservationSummary) string {
@@ -468,50 +459,15 @@ func observationSummaryHasHistory(summary model.ObservationSummary) bool {
 }
 
 func mergeChildSummaries(children []httpResolvedCandidate, reports map[string]BackendReport) Summary {
-	samples := 0
-	succeeded := 0
-	failed := 0
-	totalLatency := 0.0
-	minLatency := 0.0
-	maxLatency := 0.0
-	successfulChildren := 0
-
+	summaries := make([]Summary, 0, len(children))
 	for _, child := range children {
 		report, ok := reports[child.label]
 		if !ok {
 			continue
 		}
-		samples += report.Summary.Sent
-		succeeded += report.Summary.Succeeded
-		failed += report.Summary.Failed
-		if report.Summary.Succeeded > 0 {
-			successfulChildren++
-			totalLatency += report.Summary.AvgLatencyMS * float64(report.Summary.Succeeded)
-			if successfulChildren == 1 || report.Summary.MinLatencyMS < minLatency {
-				minLatency = report.Summary.MinLatencyMS
-			}
-			if report.Summary.MaxLatencyMS > maxLatency {
-				maxLatency = report.Summary.MaxLatencyMS
-			}
-		}
+		summaries = append(summaries, report.Summary)
 	}
-
-	summary := Summary{
-		Sent:      samples,
-		Succeeded: succeeded,
-		Failed:    failed,
-		Quality:   "不可用",
-	}
-	if samples > 0 {
-		summary.LossRate = roundMetric(float64(failed) / float64(samples))
-	}
-	if succeeded > 0 {
-		summary.AvgLatencyMS = roundMetric(totalLatency / float64(succeeded))
-		summary.MinLatencyMS = roundMetric(minLatency)
-		summary.MaxLatencyMS = roundMetric(maxLatency)
-	}
-	summary.Quality = classifyQuality("http", summary)
-	return summary
+	return mergeBackendSummaries("http", summaries)
 }
 
 type adaptiveSummaryOptions struct {
