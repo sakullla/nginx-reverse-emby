@@ -4,7 +4,7 @@
 This directory contains the Go execution-plane agent module for `nginx-reverse-emby`.
 
 - `cmd/nre-agent/` contains the agent entrypoint.
-- `internal/` contains private agent packages, including proxy, relay, diagnostics, runtime, config, certs, task sync, and platform-specific helpers.
+- `internal/` contains private agent packages, including modules/http, relay, diagnostics, runtime, config, certs, task sync, and platform-specific helpers.
 - `embedded/` contains the embedded runtime bridge used by the Go control plane.
 - Tests live beside the packages they cover as `*_test.go` files.
 - `go.mod` and `go.sum` define this module separately from the parent control-plane and frontend code.
@@ -14,7 +14,7 @@ Parent-level assets such as `panel/`, `scripts/`, `Dockerfile`, and `docker-comp
 ## Build, Test, and Development Commands
 - `make test` or `go test ./...` - run the full Go agent test suite.
 - `make run` or `go run ./cmd/nre-agent` - run the agent locally.
-- `go test ./internal/relay ./internal/proxy` - run focused package tests while iterating.
+- `go test ./internal/modules/relay ./internal/modules/http` - run focused package tests while iterating.
 - `go test -run TestName ./internal/package` - run a single test by name.
 - From the repo root, `docker build -t nginx-reverse-emby .` validates image-impacting changes.
 

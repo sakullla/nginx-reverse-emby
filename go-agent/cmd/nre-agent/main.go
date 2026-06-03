@@ -10,11 +10,11 @@ import (
 	"syscall"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 func main() {
-	cfg, err := config.LoadFromEnv()
+	cfg, err := model.LoadFromEnv()
 	if err != nil {
 		log.Fatal(err)
 	}

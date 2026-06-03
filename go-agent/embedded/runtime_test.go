@@ -7,7 +7,7 @@ import (
 	"time"
 
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
-	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
+	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 )
 
 type runtimeTestSource struct {
@@ -140,7 +140,7 @@ func TestNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
 	})
 
 	captured := agentapp.Config{}
-	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+	newEmbeddedApp = func(cfg agentapp.Config, st agentcore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
 		captured = cfg
 		return &agentapp.App{}, nil
 	}
@@ -195,7 +195,7 @@ func TestRuntimeCloseDelegatesToEmbeddedAppCleanup(t *testing.T) {
 	})
 
 	resetCalls := 0
-	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+	newEmbeddedApp = func(cfg agentapp.Config, st agentcore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
 		return runtimeTestEmbeddedApp{
 			closeFn: func() error {
 				resetCalls++
@@ -238,7 +238,7 @@ func TestRuntimeCloseReturnsStableErrorUnderConcurrentCalls(t *testing.T) {
 	release := make(chan struct{})
 	wantErr := errors.New("close failed")
 
-	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+	newEmbeddedApp = func(cfg agentapp.Config, st agentcore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
 		return runtimeTestEmbeddedApp{
 			closeFn: func() error {
 				close(started)

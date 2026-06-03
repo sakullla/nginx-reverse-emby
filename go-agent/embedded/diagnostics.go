@@ -5,10 +5,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
-	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
+	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 )
 
 type DiagnosticRequest struct {
@@ -29,26 +29,25 @@ func DiagnoseSnapshot(ctx context.Context, dataDir string, snapshot Snapshot, re
 	}
 	defer cleanup()
 
-	mem := agentstore.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
-		return nil, err
-	}
-
-	certManager, err := certs.NewManager(dataDir, certs.WithLocalAgent(true), certs.WithNodeRole("master"))
+	certManager, err := modulecerts.NewManager(dataDir, modulecerts.WithLocalAgent(true), modulecerts.WithNodeRole("master"))
 	if err != nil {
 		return nil, err
 	}
 	defer certManager.Close()
-	if err := certManager.Apply(ctx, snapshot.Certificates, snapshot.CertificatePolicies); err != nil {
+
+	registry := agentmodule.NewRegistry()
+	certModule := modulecerts.NewModule(certManager)
+	mod := modulediagnostics.NewModule()
+	if err := registry.Register(certModule); err != nil {
 		return nil, err
 	}
-
-	handler := task.NewDiagnosticHandler(
-		mem,
-		diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: certManager}),
-		diagnostics.NewTCPProber(diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: certManager}),
-	)
-	return handler.HandleTask(ctx, task.TaskMessage{
+	if err := registry.Register(mod); err != nil {
+		return nil, err
+	}
+	if err := registry.Apply(ctx, Snapshot{}, snapshot); err != nil {
+		return nil, err
+	}
+	return mod.HandleTask(ctx, control.TaskMessage{
 		TaskType:   req.TaskType,
 		RawPayload: map[string]any{"rule_id": req.RuleID},
 	})
