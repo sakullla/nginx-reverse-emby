@@ -228,7 +228,24 @@ func relayEffectiveInputsEqual(previousListeners, nextListeners []model.RelayLis
 	if len(nextListeners) > 0 && !reflect.DeepEqual(previous.EgressProfiles, next.EgressProfiles) {
 		return false
 	}
+	if relayListenersIncludeQUIC(nextListeners) &&
+		(!reflect.DeepEqual(previous.Certificates, next.Certificates) ||
+			!reflect.DeepEqual(previous.CertificatePolicies, next.CertificatePolicies)) {
+		return false
+	}
 	return true
+}
+
+func relayListenersIncludeQUIC(listeners []model.RelayListener) bool {
+	for _, listener := range listeners {
+		if !listener.Enabled {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(listener.TransportMode), ListenerTransportModeQUIC) {
+			return true
+		}
+	}
+	return false
 }
 
 func outboundProxyURLTransaction(previous, next string) module.ModuleTransaction {

@@ -6,10 +6,22 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 func appSnapshotActivator(registry *agentmodule.Registry) core.Activator {
-	return core.NewSnapshotActivator(registry)
+	moduleActivator := core.NewSnapshotActivator(registry)
+	return func(ctx context.Context, previous, next Snapshot) error {
+		previousOutboundProxyURL := modulerelay.OutboundProxyURL()
+		if next.HasAgentConfig() {
+			modulerelay.SetOutboundProxyURL(next.AgentConfig.OutboundProxyURL)
+		}
+		if err := moduleActivator(ctx, previous, next); err != nil {
+			modulerelay.SetOutboundProxyURL(previousOutboundProxyURL)
+			return err
+		}
+		return nil
+	}
 }
 
 func (a *App) applyManagedCertificates(ctx context.Context, snapshot Snapshot) error {

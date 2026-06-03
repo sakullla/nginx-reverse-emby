@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	relaymodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
@@ -110,6 +111,45 @@ func TestModuleReappliesSameAddressRelayListener(t *testing.T) {
 	got := dialServedCertificate(t, port)
 	if !certificateDEREqual(got, secondCert) {
 		t.Fatal("same-address relay reapply did not replace the served certificate")
+	}
+}
+
+func TestModuleReappliesRelayListenerWhenCertificateMaterialChanges(t *testing.T) {
+	certificateID := 1
+	firstCert := mustIssueTestTLSCertificate(t)
+	secondCert := mustIssueTestTLSCertificate(t)
+	tlsProvider := fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{
+		certificateID: firstCert,
+	}}
+	mod := relaymodule.NewModule(relaymodule.Config{AgentID: "agent-a", AgentName: "node-a"})
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: &tlsProvider})
+	mustRegister(t, registry, mod)
+
+	port := pickFreeUDPPort(t)
+	listener := testRelayListener(22, "agent-a", "node-a", port, certificateID)
+	listener.TransportMode = relaymodule.ListenerTransportModeQUIC
+	previous := model.Snapshot{
+		RelayListeners: []model.RelayListener{listener},
+		Certificates:   []model.ManagedCertificateBundle{{ID: certificateID, CertPEM: string(firstCert.Certificate[0])}},
+	}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	if got := dialQUICServedCertificate(t, port); !certificateDEREqual(got, firstCert) {
+		t.Fatal("initial QUIC relay listener did not serve expected certificate")
+	}
+
+	tlsProvider.certificates[certificateID] = secondCert
+	next := previous
+	next.Certificates = []model.ManagedCertificateBundle{{ID: certificateID, CertPEM: string(secondCert.Certificate[0])}}
+	if err := registry.Apply(context.Background(), previous, next); err != nil {
+		t.Fatalf("certificate rotation Apply() error = %v", err)
+	}
+
+	got := dialQUICServedCertificate(t, port)
+	if !certificateDEREqual(got, secondCert) {
+		t.Fatal("QUIC relay listener did not reload rotated certificate material for the same certificate ID")
 	}
 }
 
@@ -566,6 +606,31 @@ func dialServedCertificate(t *testing.T, port int) tls.Certificate {
 	return tls.Certificate{}
 }
 
+func dialQUICServedCertificate(t *testing.T, port int) tls.Certificate {
+	t.Helper()
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	var lastErr error
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		conn, err := quic.DialAddr(context.Background(), address, &tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"nre-relay-quic/1"},
+		}, nil)
+		if err != nil {
+			lastErr = err
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		state := conn.ConnectionState()
+		_ = conn.CloseWithError(0, "")
+		if len(state.TLS.PeerCertificates) == 0 {
+			t.Fatal("QUIC relay server did not present a peer certificate")
+		}
+		return tls.Certificate{Certificate: [][]byte{state.TLS.PeerCertificates[0].Raw}}
+	}
+	t.Fatalf("dial QUIC relay listener %s: %v", address, lastErr)
+	return tls.Certificate{}
+}
+
 func certificateDEREqual(left tls.Certificate, right tls.Certificate) bool {
 	if len(left.Certificate) == 0 || len(right.Certificate) == 0 {
 		return false
@@ -581,6 +646,16 @@ func pickFreeTCPPort(t *testing.T) int {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func pickFreeUDPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen free udp port: %v", err)
+	}
+	defer ln.Close()
+	return ln.LocalAddr().(*net.UDPAddr).Port
 }
 
 func mustIssueTestTLSCertificate(t *testing.T) tls.Certificate {

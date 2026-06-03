@@ -8,6 +8,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
+	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -182,11 +183,69 @@ func TestRunReturnsInitialSyncErrorWhenNoAppliedSnapshot(t *testing.T) {
 	}
 }
 
-func TestAdvertisedCapabilitiesIncludeConfiguredModules(t *testing.T) {
+func TestAdvertisedCapabilitiesUsePanelContract(t *testing.T) {
 	got := advertisedCapabilities(Config{WireGuardEnabled: false, WireGuardExplicit: true})
-	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "managed_certs", "diagnostics", "egress_profiles", "relay", "traffic_stats"}
+	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("advertisedCapabilities() = %v, want %v", got, want)
+	}
+}
+
+func TestAdvertisedCapabilitiesIncludeConfiguredOptionalPanelCapabilities(t *testing.T) {
+	got := advertisedCapabilities(Config{HTTP3Enabled: true})
+	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("advertisedCapabilities() = %v, want %v", got, want)
+	}
+}
+
+func TestSnapshotActivatorAppliesOutboundProxyBeforeRegistryModules(t *testing.T) {
+	previousProxy := modulerelay.OutboundProxyURL()
+	t.Cleanup(func() { modulerelay.SetOutboundProxyURL(previousProxy) })
+	modulerelay.SetOutboundProxyURL("socks://127.0.0.1:1080")
+
+	registry := agentmodule.NewRegistry()
+	mustRegisterAppModule(t, registry, appApplyFuncModule{
+		name: "http",
+		apply: func(context.Context, agentmodule.ApplyRequest) error {
+			if got := modulerelay.OutboundProxyURL(); got != "socks://127.0.0.1:2080" {
+				t.Fatalf("OutboundProxyURL() during registry apply = %q, want next snapshot proxy", got)
+			}
+			return nil
+		},
+	})
+	activator := appSnapshotActivator(registry)
+
+	if err := activator(context.Background(),
+		Snapshot{AgentConfig: model.AgentConfig{OutboundProxyURL: "socks://127.0.0.1:1080"}},
+		Snapshot{AgentConfig: model.AgentConfig{OutboundProxyURL: "socks://127.0.0.1:2080"}},
+	); err != nil {
+		t.Fatalf("activator() error = %v", err)
+	}
+}
+
+func TestSnapshotActivatorRestoresOutboundProxyOnRegistryFailure(t *testing.T) {
+	previousProxy := modulerelay.OutboundProxyURL()
+	t.Cleanup(func() { modulerelay.SetOutboundProxyURL(previousProxy) })
+	modulerelay.SetOutboundProxyURL("socks://127.0.0.1:1080")
+
+	failErr := errors.New("module activation failed")
+	registry := agentmodule.NewRegistry()
+	mustRegisterAppModule(t, registry, appApplyFuncModule{
+		name:  "later",
+		apply: func(context.Context, agentmodule.ApplyRequest) error { return failErr },
+	})
+	activator := appSnapshotActivator(registry)
+
+	err := activator(context.Background(),
+		Snapshot{AgentConfig: model.AgentConfig{OutboundProxyURL: "socks://127.0.0.1:1080"}},
+		Snapshot{AgentConfig: model.AgentConfig{OutboundProxyURL: "socks://127.0.0.1:2080"}},
+	)
+	if !errors.Is(err, failErr) {
+		t.Fatalf("activator() error = %v, want %v", err, failErr)
+	}
+	if got := modulerelay.OutboundProxyURL(); got != "socks://127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL() after failed activation = %q, want previous proxy", got)
 	}
 }
 
@@ -219,6 +278,34 @@ func (m appProviderModule) Capabilities(agentmodule.SnapshotView) []agentmodule.
 func (m appProviderModule) Apply(context.Context, agentmodule.ApplyRequest) error { return nil }
 
 func (m appProviderModule) Stop(context.Context) error { return nil }
+
+type appApplyFuncModule struct {
+	name  string
+	apply func(context.Context, agentmodule.ApplyRequest) error
+}
+
+func (m appApplyFuncModule) Name() string { return m.name }
+
+func (m appApplyFuncModule) Descriptor() agentmodule.ModuleDescriptor {
+	return agentmodule.ModuleDescriptor{Name: m.name}
+}
+
+func (m appApplyFuncModule) RegisterProviders(agentmodule.ProviderRegistry) error {
+	return nil
+}
+
+func (m appApplyFuncModule) Capabilities(agentmodule.SnapshotView) []agentmodule.Capability {
+	return nil
+}
+
+func (m appApplyFuncModule) Apply(ctx context.Context, req agentmodule.ApplyRequest) error {
+	if m.apply == nil {
+		return nil
+	}
+	return m.apply(ctx, req)
+}
+
+func (m appApplyFuncModule) Stop(context.Context) error { return nil }
 
 type appDiagnosticSource struct {
 	cache *model.Cache

@@ -53,11 +53,7 @@ type App struct {
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	registry, err := newCapabilityModuleRegistry(cfg)
-	if err != nil {
-		return nil
-	}
-	return core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: registry})
+	return core.CapabilityNames(appCapabilitySource{cfg: cfg})
 }
 
 func newHTTPModuleFromConfigWithTLS(cfg Config, _ modulehttp.TLSMaterialProvider) *modulehttp.Module {
@@ -294,11 +290,12 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 		{Name: "l4", Enabled: true},
 		{Name: "relay_quic", Enabled: true},
 	}
+	if s.cfg.WireGuardModuleEnabled() {
+		capabilities = append(capabilities, agentmodule.Capability{Name: "wireguard", Enabled: true})
+	}
+	capabilities = append(capabilities, agentmodule.Capability{Name: "egress_profiles", Enabled: true})
 	if s.cfg.HTTP3Enabled {
 		capabilities = append(capabilities, agentmodule.Capability{Name: "http3_ingress", Enabled: true})
-	}
-	if s.registry != nil {
-		capabilities = append(capabilities, s.registry.Capabilities(snapshot)...)
 	}
 	return capabilities
 }
