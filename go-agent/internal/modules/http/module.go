@@ -10,7 +10,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayroute"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 type Config struct {
@@ -298,12 +298,36 @@ func httpEffectiveInputsEqual(previous, next model.Snapshot) bool {
 }
 
 func httpRelayInputsEqual(rules []model.HTTPRule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {
+	referencedIDs := httpReferencedRelayListenerIDs(rules)
+	if len(referencedIDs) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(
+		httpRelayListenersByReferencedID(previousRelayListeners, referencedIDs),
+		httpRelayListenersByReferencedID(nextRelayListeners, referencedIDs),
+	)
+}
+
+func httpReferencedRelayListenerIDs(rules []model.HTTPRule) map[int]struct{} {
+	referencedIDs := make(map[int]struct{})
 	for _, rule := range rules {
-		if relayroute.UsesRelay(nil, rule.RelayLayers) {
-			return reflect.DeepEqual(previousRelayListeners, nextRelayListeners)
+		for _, layer := range relayplan.NormalizeLayers(nil, rule.RelayLayers) {
+			for _, listenerID := range layer {
+				referencedIDs[listenerID] = struct{}{}
+			}
 		}
 	}
-	return true
+	return referencedIDs
+}
+
+func httpRelayListenersByReferencedID(listeners []model.RelayListener, referencedIDs map[int]struct{}) map[int]model.RelayListener {
+	out := make(map[int]model.RelayListener, len(referencedIDs))
+	for _, listener := range listeners {
+		if _, ok := referencedIDs[listener.ID]; ok {
+			out[listener.ID] = listener
+		}
+	}
+	return out
 }
 
 func httpOverlayInputsEqual(rules []model.HTTPRule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
