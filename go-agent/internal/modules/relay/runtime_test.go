@@ -1957,6 +1957,121 @@ func TestPinAndCAVerificationWorksWithDerivedRelayMaterial(t *testing.T) {
 	assertRoundTrip(t, conn, []byte("derived-pin-and-ca"))
 }
 
+func TestPinAndCAVerificationAllowsPinnedCertificateWhenServerNameIsIPAddressWithoutIPSAN(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpointWithCert(t, provider, relayEndpointOptions{
+		id:           1,
+		name:         "relay-ip-server-name",
+		tlsMode:      "pin_and_ca",
+		includePin:   true,
+		includeCA:    true,
+		serverName:   "relay.internal.test",
+		certDNSNames: []string{"relay.internal.test"},
+	})
+	hop.ServerName = "203.0.113.10"
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("expected pinned pin_and_ca certificate with trusted CA to succeed despite IP server name: %v", err)
+	}
+	defer conn.Close()
+
+	assertRoundTrip(t, conn, []byte("pin-and-ca-ip-public-host"))
+}
+
+func TestPinAndCAVerificationRejectsIPAddressServerNameMismatch(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpointWithCert(t, provider, relayEndpointOptions{
+		id:         1,
+		name:       "relay-pin-and-ca-ip-mismatch",
+		tlsMode:    "pin_and_ca",
+		includePin: true,
+		includeCA:  true,
+		serverName: "198.51.100.5",
+		certIPs:    []net.IP{net.ParseIP("198.51.100.5")},
+	})
+	hop.ServerName = "203.0.113.10"
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	if _, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider); err == nil {
+		t.Fatal("expected pin_and_ca to reject IP server name mismatch")
+	}
+}
+
+func TestCAOnlyVerificationRejectsIPAddressServerNameWithoutIPSAN(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpointWithCert(t, provider, relayEndpointOptions{
+		id:           1,
+		name:         "relay-ca-ip-server-name",
+		tlsMode:      "ca_only",
+		includeCA:    true,
+		serverName:   "relay.internal.test",
+		certDNSNames: []string{"relay.internal.test"},
+	})
+	hop.ServerName = "203.0.113.10"
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	if _, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider); err == nil {
+		t.Fatal("expected ca_only to reject IP server name when certificate lacks IP SAN")
+	}
+}
+
+func TestPinAndCAVerificationRejectsDNSNameMismatch(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpointWithCert(t, provider, relayEndpointOptions{
+		id:           1,
+		name:         "relay-pin-and-ca-dns-mismatch",
+		tlsMode:      "pin_and_ca",
+		includePin:   true,
+		includeCA:    true,
+		serverName:   "relay.internal.test",
+		certDNSNames: []string{"relay.internal.test"},
+	})
+	hop.ServerName = "other.internal.test"
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	if _, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider); err == nil {
+		t.Fatal("expected pin_and_ca to reject DNS server name mismatch")
+	}
+}
+
 func TestPinOrCAVerificationAcceptsEither(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()

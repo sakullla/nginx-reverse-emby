@@ -77,6 +77,12 @@ func clientTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener
 				if pinErr != nil {
 					return pinErr
 				}
+				if caErr == nil {
+					return nil
+				}
+				if net.ParseIP(serverName) != nil && leafCertificateLacksIPSAN(state.PeerCertificates) {
+					return verifyCertificateAuthorityChain(listener, rootCAs, state.PeerCertificates)
+				}
 				return caErr
 			default:
 				return fmt.Errorf("unsupported tls_mode")
@@ -95,6 +101,13 @@ func verificationServerName(address, override string) (string, error) {
 		return "", fmt.Errorf("invalid relay address %q: %w", address, err)
 	}
 	return host, nil
+}
+
+func leafCertificateLacksIPSAN(peerCertificates []*x509.Certificate) bool {
+	if len(peerCertificates) == 0 || peerCertificates[0] == nil {
+		return false
+	}
+	return len(peerCertificates[0].IPAddresses) == 0
 }
 
 func verifyPinSet(listener Listener, peerCertificates []*x509.Certificate) error {
@@ -119,7 +132,15 @@ func verifyPinSet(listener Listener, peerCertificates []*x509.Certificate) error
 	return fmt.Errorf("pin verification failed")
 }
 
+func verifyCertificateAuthorityChain(listener Listener, rootCAs *x509.CertPool, peerCertificates []*x509.Certificate) error {
+	return verifyCertificateAuthorityWithDNSName(listener, rootCAs, "", peerCertificates)
+}
+
 func verifyCertificateAuthority(listener Listener, rootCAs *x509.CertPool, serverName string, peerCertificates []*x509.Certificate) error {
+	return verifyCertificateAuthorityWithDNSName(listener, rootCAs, serverName, peerCertificates)
+}
+
+func verifyCertificateAuthorityWithDNSName(listener Listener, rootCAs *x509.CertPool, serverName string, peerCertificates []*x509.Certificate) error {
 	if len(listener.TrustedCACertificateIDs) == 0 {
 		return fmt.Errorf("trusted_ca_certificate_ids is required")
 	}
