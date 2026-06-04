@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,12 +104,60 @@ func resolveDialector(driver string, cfg StoreConfig) (gorm.Dialector, error) {
 			if strings.TrimSpace(cfg.DataRoot) == "" {
 				return nil, fmt.Errorf("data root is required for default sqlite DSN")
 			}
-			dsn = filepath.Join(cfg.DataRoot, "panel.db") + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+			dsn = filepath.Join(cfg.DataRoot, "panel.db")
 		}
+		dsn = withSQLiteLockPragmas(dsn)
 		return sqlite.Open(dsn), nil
 	default:
 		return nil, fmt.Errorf("unsupported database driver %q", driver)
 	}
+}
+
+func withSQLiteLockPragmas(dsn string) string {
+	if isSQLiteInMemoryDSN(dsn) {
+		return dsn
+	}
+	lower := strings.ToLower(dsn)
+	pragmas := []string{}
+	if !strings.Contains(lower, "journal_mode") && !isSQLiteReadOnlyDSN(dsn) {
+		pragmas = append(pragmas, "_pragma=journal_mode(WAL)")
+	}
+	if !strings.Contains(lower, "busy_timeout") {
+		pragmas = append(pragmas, "_pragma=busy_timeout(5000)")
+	}
+	if len(pragmas) == 0 {
+		return dsn
+	}
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	if strings.HasSuffix(dsn, "?") || strings.HasSuffix(dsn, "&") {
+		separator = ""
+	}
+	return dsn + separator + strings.Join(pragmas, "&")
+}
+
+func isSQLiteInMemoryDSN(dsn string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(dsn))
+	return trimmed == ":memory:" || strings.HasPrefix(trimmed, "file::memory:")
+}
+
+func isSQLiteReadOnlyDSN(dsn string) bool {
+	queryStart := strings.Index(dsn, "?")
+	if queryStart < 0 || queryStart == len(dsn)-1 {
+		return false
+	}
+	values, err := url.ParseQuery(dsn[queryStart+1:])
+	if err != nil {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(values.Get("mode")))
+	if mode == "ro" {
+		return true
+	}
+	immutable := strings.ToLower(strings.TrimSpace(values.Get("immutable")))
+	return immutable == "1" || immutable == "true"
 }
 
 func (s *GormStore) Close() error {
