@@ -173,6 +173,17 @@ func TestWithSQLiteLockPragmasPreservesExistingQuery(t *testing.T) {
 	}
 }
 
+func TestWithSQLiteLockPragmasIgnoresNonPragmaMatches(t *testing.T) {
+	got := withSQLiteLockPragmas("/tmp/journal_mode/panel.db?label=busy_timeout")
+
+	if !strings.Contains(got, "_pragma=journal_mode(WAL)") {
+		t.Fatalf("DSN = %q, want WAL pragma", got)
+	}
+	if !strings.Contains(got, "_pragma=busy_timeout(5000)") {
+		t.Fatalf("DSN = %q, want busy_timeout pragma", got)
+	}
+}
+
 func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
 	got := withSQLiteLockPragmas("file:/tmp/panel.db?mode=ro")
 

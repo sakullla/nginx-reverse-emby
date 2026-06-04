@@ -117,12 +117,12 @@ func withSQLiteLockPragmas(dsn string) string {
 	if isSQLiteInMemoryDSN(dsn) {
 		return dsn
 	}
-	lower := strings.ToLower(dsn)
+	hasJournalMode, hasBusyTimeout := sqliteLockPragmasConfigured(dsn)
 	pragmas := []string{}
-	if !strings.Contains(lower, "journal_mode") && !isSQLiteReadOnlyDSN(dsn) {
+	if !hasJournalMode && !isSQLiteReadOnlyDSN(dsn) {
 		pragmas = append(pragmas, "_pragma=journal_mode(WAL)")
 	}
-	if !strings.Contains(lower, "busy_timeout") {
+	if !hasBusyTimeout {
 		pragmas = append(pragmas, "_pragma=busy_timeout(5000)")
 	}
 	if len(pragmas) == 0 {
@@ -136,6 +136,30 @@ func withSQLiteLockPragmas(dsn string) string {
 		separator = ""
 	}
 	return dsn + separator + strings.Join(pragmas, "&")
+}
+
+func sqliteLockPragmasConfigured(dsn string) (hasJournalMode bool, hasBusyTimeout bool) {
+	queryStart := strings.Index(dsn, "?")
+	if queryStart < 0 || queryStart == len(dsn)-1 {
+		return false, false
+	}
+	values, err := url.ParseQuery(dsn[queryStart+1:])
+	if err != nil {
+		return false, false
+	}
+	for _, pragma := range values["_pragma"] {
+		name := strings.ToLower(strings.TrimSpace(pragma))
+		if paren := strings.Index(name, "("); paren >= 0 {
+			name = strings.TrimSpace(name[:paren])
+		}
+		switch name {
+		case "journal_mode":
+			hasJournalMode = true
+		case "busy_timeout":
+			hasBusyTimeout = true
+		}
+	}
+	return hasJournalMode, hasBusyTimeout
 }
 
 func isSQLiteInMemoryDSN(dsn string) bool {
