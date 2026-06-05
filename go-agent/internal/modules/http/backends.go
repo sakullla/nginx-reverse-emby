@@ -216,6 +216,7 @@ func NewSharedTransport() *http.Transport {
 	transport.MaxConnsPerHost = 64
 	transport.ReadBufferSize = 32 * 1024
 	transport.WriteBufferSize = 32 * 1024
+	transport.DisableCompression = true
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.ResponseHeaderTimeout = 30 * time.Second
 	transport.ForceAttemptHTTP2 = true
