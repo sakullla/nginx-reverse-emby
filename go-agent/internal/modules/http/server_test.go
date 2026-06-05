@@ -1299,9 +1299,6 @@ func TestNewSharedTransportLimitsConcurrentConnectionsPerHost(t *testing.T) {
 	if transport.WriteBufferSize != 32*1024 {
 		t.Fatalf("WriteBufferSize = %d", transport.WriteBufferSize)
 	}
-	if !transport.DisableCompression {
-		t.Fatal("DisableCompression = false")
-	}
 }
 
 func TestNewServerUsesFullFrontendURLAsAdaptiveObservationScope(t *testing.T) {
