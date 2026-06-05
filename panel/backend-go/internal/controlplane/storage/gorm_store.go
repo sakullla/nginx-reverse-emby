@@ -149,8 +149,8 @@ func sqliteLockPragmasConfigured(dsn string) (hasJournalMode bool, hasBusyTimeou
 	}
 	for _, pragma := range values["_pragma"] {
 		name := strings.ToLower(strings.TrimSpace(pragma))
-		if paren := strings.Index(name, "("); paren >= 0 {
-			name = strings.TrimSpace(name[:paren])
+		if separator := strings.IndexAny(name, "(="); separator >= 0 {
+			name = strings.TrimSpace(name[:separator])
 		}
 		switch name {
 		case "journal_mode":
@@ -163,8 +163,21 @@ func sqliteLockPragmasConfigured(dsn string) (hasJournalMode bool, hasBusyTimeou
 }
 
 func isSQLiteInMemoryDSN(dsn string) bool {
-	trimmed := strings.TrimSpace(strings.ToLower(dsn))
-	return trimmed == ":memory:" || strings.HasPrefix(trimmed, "file::memory:")
+	trimmed := strings.TrimSpace(dsn)
+	lower := strings.ToLower(trimmed)
+	if lower == ":memory:" || strings.HasPrefix(lower, "file::memory:") {
+		return true
+	}
+	queryStart := strings.Index(trimmed, "?")
+	if queryStart < 0 || queryStart == len(trimmed)-1 {
+		return false
+	}
+	values, err := url.ParseQuery(trimmed[queryStart+1:])
+	if err != nil {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(values.Get("mode")))
+	return mode == "memory"
 }
 
 func isSQLiteReadOnlyDSN(dsn string) bool {
