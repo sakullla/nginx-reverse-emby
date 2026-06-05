@@ -173,6 +173,17 @@ func TestWithSQLiteLockPragmasPreservesExistingQuery(t *testing.T) {
 	}
 }
 
+func TestWithSQLiteLockPragmasIgnoresNonPragmaMatches(t *testing.T) {
+	got := withSQLiteLockPragmas("/tmp/journal_mode/panel.db?label=busy_timeout")
+
+	if !strings.Contains(got, "_pragma=journal_mode(WAL)") {
+		t.Fatalf("DSN = %q, want WAL pragma", got)
+	}
+	if !strings.Contains(got, "_pragma=busy_timeout(5000)") {
+		t.Fatalf("DSN = %q, want busy_timeout pragma", got)
+	}
+}
+
 func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
 	got := withSQLiteLockPragmas("file:/tmp/panel.db?mode=ro")
 
@@ -185,15 +196,20 @@ func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
 }
 
 func TestWithSQLiteLockPragmasPreservesExplicitLockPragmas(t *testing.T) {
-	dsn := "/tmp/panel.db?_pragma=journal_mode(TRUNCATE)&_pragma=busy_timeout(10000)"
-
-	if got := withSQLiteLockPragmas(dsn); got != dsn {
-		t.Fatalf("DSN = %q, want %q", got, dsn)
+	for _, dsn := range []string{
+		"/tmp/panel.db?_pragma=journal_mode(TRUNCATE)&_pragma=busy_timeout(10000)",
+		"/tmp/panel.db?_pragma=journal_mode=DELETE&_pragma=busy_timeout=10000",
+	} {
+		t.Run(dsn, func(t *testing.T) {
+			if got := withSQLiteLockPragmas(dsn); got != dsn {
+				t.Fatalf("DSN = %q, want %q", got, dsn)
+			}
+		})
 	}
 }
 
 func TestWithSQLiteLockPragmasSkipsInMemoryDSN(t *testing.T) {
-	for _, dsn := range []string{":memory:", "file::memory:?cache=shared"} {
+	for _, dsn := range []string{":memory:", "file::memory:?cache=shared", "file:memdb1?mode=memory&cache=shared"} {
 		t.Run(dsn, func(t *testing.T) {
 			if got := withSQLiteLockPragmas(dsn); got != dsn {
 				t.Fatalf("DSN = %q, want %q", got, dsn)
