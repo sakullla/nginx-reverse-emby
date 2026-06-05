@@ -212,8 +212,10 @@ func cloneTransport(base *http.Transport) *http.Transport {
 func NewSharedTransport() *http.Transport {
 	transport := cloneDefaultTransport()
 	transport.MaxIdleConns = 256
-	transport.MaxIdleConnsPerHost = 64
-	transport.MaxConnsPerHost = 32
+	transport.MaxIdleConnsPerHost = 128
+	transport.MaxConnsPerHost = 64
+	transport.ReadBufferSize = 32 * 1024
+	transport.WriteBufferSize = 32 * 1024
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.ResponseHeaderTimeout = 30 * time.Second
 	transport.ForceAttemptHTTP2 = true
