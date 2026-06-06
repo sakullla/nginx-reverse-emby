@@ -373,7 +373,7 @@ L4 规则设置 `proxy_egress_mode=wireguard` 时，TCP 代理入口的出站连
 
 ### 前置要求
 
-- Go 1.26.3+
+- Go 1.26.4+
 - Node.js 24+（前端开发）
 - Docker（容器构建）
 

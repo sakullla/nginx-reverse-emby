@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM golang:1.26.3-trixie AS go-builder
+FROM golang:1.26.4-trixie AS go-builder
 WORKDIR /src/go-agent
 COPY go-agent/go.mod go-agent/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/nre-agent ./cmd/nre-agent
 
-FROM golang:1.26.3-trixie AS backend-go-builder
+FROM golang:1.26.4-trixie AS backend-go-builder
 ARG APP_VERSION=dev
 ARG BUILD_TIME=dev
 ARG GO_VERSION=dev
