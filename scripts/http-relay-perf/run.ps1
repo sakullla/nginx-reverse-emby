@@ -88,6 +88,7 @@ if ($delayCliToHttp -gt 0) {
 if ($delayHttpToBackend -gt 0) {
     Apply-NetemDelayOnCIDR -Container 'nre-agent-a' -CIDR '172.31.3.10/24' -DelayMs $delayHttpToBackend
     Apply-NetemDelayOnCIDR -Container 'nre-relay-b' -CIDR '172.31.3.11/24' -DelayMs $delayHttpToBackend
+    Apply-NetemDelayOnCIDR -Container 'nre-relay-c' -CIDR '172.31.3.12/24' -DelayMs $delayHttpToBackend
     Apply-NetemDelayOnCIDR -Container 'nre-backend-b' -CIDR '172.31.3.13/24' -DelayMs $delayHttpToBackend
 }
 
@@ -105,7 +106,7 @@ try {
 
         if (-not $SkipStats) {
             docker stats --no-stream --format '{{.Name}},{{.CPUPerc}},{{.MemUsage}},{{.NetIO}}' `
-                nre-agent-a nre-relay-b nre-backend-b nre-perf 2>$null |
+                nre-agent-a nre-relay-b nre-relay-c nre-backend-b nre-perf 2>$null |
                 ForEach-Object { $statsRows.Add("$(Get-Date -Format o),$_") }
         }
 

@@ -45,15 +45,15 @@ func newRelayTransports(
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	paths = relayroute.ClonePathsWithoutKeys(paths)
 	_ = finalHopDialer
 	racer := newRelayPathRacer(provider, cache)
 	dial := func(ctx context.Context, network, addr string, class model.TrafficClass) (net.Conn, error) {
 		target := dialAddressFromContext(ctx, addr)
-		requestPaths := relayroute.ClonePathsWithTarget(paths, target)
 		result, err := racer.Race(ctx, relayplan.Request{
 			Network: network,
 			Target:  target,
-			Paths:   requestPaths,
+			Paths:   paths,
 			Options: []relay.DialOptions{{
 				TrafficClass:    class,
 				EgressProfileID: rule.EgressProfileID,

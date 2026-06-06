@@ -253,6 +253,37 @@ func TestRacerOrdersPathsByAdaptiveObservations(t *testing.T) {
 	}
 }
 
+func TestRacerOrdersEmptyKeyPathsByRequestTarget(t *testing.T) {
+	dialer := newFakePathDialer()
+	conn, peer := net.Pipe()
+	defer peer.Close()
+	dialer.set([]int{2}, fakeDialResult{conn: conn})
+	cache := model.NewCache(model.BackendCacheConfig{})
+	scope := RelayPathScope("backend:443")
+	cache.ObserveBackendSuccess(model.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveBackendSuccess(model.BackendObservationKey(scope, PathKey("relay_path", []int{2}, "backend:443")), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
+	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 1, MaxPaths: 8}
+
+	result, err := racer.Race(context.Background(), Request{
+		Network: "tcp",
+		Target:  "backend:443",
+		Paths: []Path{
+			{IDs: []int{1}},
+			{IDs: []int{2}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Race() error = %v", err)
+	}
+	defer result.Conn.Close()
+	if !reflect.DeepEqual(result.Selected.IDs, []int{2}) {
+		t.Fatalf("selected path = %#v, want [2]", result.Selected.IDs)
+	}
+	if got := dialer.calledPaths(); len(got) == 0 || !reflect.DeepEqual(got[0], []int{2}) {
+		t.Fatalf("first dialed path = %#v, want [2]", got)
+	}
+}
+
 func TestRacerSkipsBackedOffPathsWhenAlternatesAvailable(t *testing.T) {
 	dialer := newFakePathDialer()
 	conn, peer := net.Pipe()

@@ -19,8 +19,9 @@
 ## 拓扑
 
 - `perf`：mock master + benchmark client
-- `agent-a`：HTTP 反代入口，提供 direct 和 relay 两个 frontend
-- `relay-b`：relay listener
+- `agent-a`：HTTP 反代入口，提供 direct、relay 1-hop、relay 2-hop 三个 frontend
+- `relay-b`：第一跳 relay listener
+- `relay-c`：第二跳 relay listener
 - `backend-b`：HTTP download backend
 
 ## 可调参数
@@ -31,8 +32,11 @@
 - `HARNESS_C8_DURATION_SECONDS`
 - `HARNESS_C8_CONCURRENCY`
 - `HARNESS_RELAY_LAYER_IDS`
+- `HARNESS_RELAY2_LAYER_IDS`
 - `HARNESS_RELAY_PUBLIC_HOST`
 - `HARNESS_RELAY_PUBLIC_PORT`
+- `HARNESS_RELAY2_PUBLIC_HOST`
+- `HARNESS_RELAY2_PUBLIC_PORT`
 - `HARNESS_DELAY_CLI_TO_HTTP_MS`
 - `HARNESS_DELAY_HTTP_TO_BACKEND_MS`
 - `HARNESS_NETEM_DELAY_MS`
