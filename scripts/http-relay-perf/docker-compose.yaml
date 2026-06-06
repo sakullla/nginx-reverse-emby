@@ -1,0 +1,158 @@
+services:
+  perf:
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    image: nre-http-relay-perf-runner:latest
+    container_name: nre-perf
+    working_dir: /work
+    command: ["go", "run", "/work/harness.go"]
+    environment:
+      HARNESS_MODE: bench
+      HARNESS_MASTER_ADDR: ${HARNESS_MASTER_ADDR:-:8080}
+      HARNESS_DIRECT_ADDRESS: ${HARNESS_DIRECT_ADDRESS:-http://172.31.1.10:8081}
+      HARNESS_RELAY_ADDRESS: ${HARNESS_RELAY_ADDRESS:-http://172.31.1.10:8082}
+      HARNESS_BACKEND_URL: ${HARNESS_BACKEND_URL:-http://172.31.3.13:9002}
+      HARNESS_RELAY_PUBLIC_HOST: ${HARNESS_RELAY_PUBLIC_HOST:-172.31.2.11}
+      HARNESS_RELAY_PUBLIC_PORT: ${HARNESS_RELAY_PUBLIC_PORT:-9443}
+      HARNESS_DOWNLOAD_BYTES: ${HARNESS_DOWNLOAD_BYTES:-536870912}
+      HARNESS_C1_DURATION_SECONDS: ${HARNESS_C1_DURATION_SECONDS:-}
+      HARNESS_C8_DURATION_SECONDS: ${HARNESS_C8_DURATION_SECONDS:-}
+      HARNESS_C8_CONCURRENCY: ${HARNESS_C8_CONCURRENCY:-8}
+      HARNESS_BENCHMARKS: ${HARNESS_BENCHMARKS:-}
+      HARNESS_PRE_MEASURE_DELAY_MS: ${HARNESS_PRE_MEASURE_DELAY_MS:-}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 200ms
+      timeout: 200ms
+      retries: 100
+    volumes:
+      - ./harness.go:/work/harness.go:ro
+    cap_add:
+      - NET_ADMIN
+    tmpfs:
+      - /tmp:exec
+    networks:
+      control:
+        ipv4_address: 172.31.0.2
+        aliases:
+          - perf-control
+      front:
+        ipv4_address: 172.31.1.2
+
+  backend-b:
+    image: nre-http-relay-perf-runner:latest
+    container_name: nre-backend-b
+    working_dir: /work
+    command: ["go", "run", "/work/harness.go", "backend"]
+    environment:
+      HARNESS_MODE: backend
+      HARNESS_BACKEND_LISTEN_ADDR: ${HARNESS_BACKEND_LISTEN_ADDR:-:9002}
+    volumes:
+      - ./harness.go:/work/harness.go:ro
+    cap_add:
+      - NET_ADMIN
+    tmpfs:
+      - /tmp:exec
+    networks:
+      backend:
+        ipv4_address: 172.31.3.13
+        aliases:
+          - backend-b-local
+
+  agent-a:
+    build:
+      context: ../..
+      dockerfile: scripts/http-relay-perf/Dockerfile.agent
+    image: nre-agent-http-relay-perf:latest
+    container_name: nre-agent-a
+    environment:
+      NRE_AGENT_ID: agent-a
+      NRE_AGENT_NAME: agent-a
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf-control:8080
+      NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
+      NRE_DATA_DIR: /data
+      NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
+      NRE_HTTP_MAX_CONNS_PER_HOST: ${NRE_HTTP_MAX_CONNS_PER_HOST:-64}
+      NRE_HTTP_IDLE_CONN_TIMEOUT: ${NRE_HTTP_IDLE_CONN_TIMEOUT:-90s}
+      NRE_HTTP_KEEP_ALIVE: ${NRE_HTTP_KEEP_ALIVE:-30s}
+      NRE_HTTP_DIAL_TIMEOUT: ${NRE_HTTP_DIAL_TIMEOUT:-5s}
+      NRE_HTTP_TLS_HANDSHAKE_TIMEOUT: ${NRE_HTTP_TLS_HANDSHAKE_TIMEOUT:-10s}
+      NRE_HTTP_RESPONSE_HEADER_TIMEOUT: ${NRE_HTTP_RESPONSE_HEADER_TIMEOUT:-30s}
+      NRE_RELAY_DIAL_TIMEOUT: ${NRE_RELAY_DIAL_TIMEOUT:-5s}
+      NRE_RELAY_HANDSHAKE_TIMEOUT: ${NRE_RELAY_HANDSHAKE_TIMEOUT:-5s}
+      NRE_RELAY_FRAME_TIMEOUT: ${NRE_RELAY_FRAME_TIMEOUT:-5s}
+      NRE_RELAY_IDLE_TIMEOUT: ${NRE_RELAY_IDLE_TIMEOUT:-2m}
+    depends_on:
+      perf:
+        condition: service_healthy
+      backend-b:
+        condition: service_started
+    cap_add:
+      - NET_ADMIN
+    tmpfs:
+      - /data
+    networks:
+      control:
+        ipv4_address: 172.31.0.10
+      front:
+        ipv4_address: 172.31.1.10
+      relay:
+        ipv4_address: 172.31.2.10
+      backend:
+        ipv4_address: 172.31.3.10
+
+  relay-b:
+    image: nre-agent-http-relay-perf:latest
+    container_name: nre-relay-b
+    environment:
+      NRE_AGENT_ID: relay-b
+      NRE_AGENT_NAME: relay-b
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf-control:8080
+      NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
+      NRE_DATA_DIR: /data
+      NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
+    depends_on:
+      perf:
+        condition: service_healthy
+      backend-b:
+        condition: service_started
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    tmpfs:
+      - /data
+    networks:
+      control:
+        ipv4_address: 172.31.0.11
+      relay:
+        ipv4_address: 172.31.2.11
+      backend:
+        ipv4_address: 172.31.3.11
+
+networks:
+  control:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
+  front:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.1.0/24
+  relay:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.2.0/24
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.3.0/24

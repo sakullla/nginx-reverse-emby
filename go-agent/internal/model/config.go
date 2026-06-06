@@ -82,7 +82,7 @@ func Default() Config {
 			ResponseHeaderTimeout: 30 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 			KeepAlive:             30 * time.Second,
-			MaxConnsPerHost:       32,
+			MaxConnsPerHost:       64,
 		},
 		HTTPResilience: HTTPResilienceConfig{
 			ResumeEnabled:            true,

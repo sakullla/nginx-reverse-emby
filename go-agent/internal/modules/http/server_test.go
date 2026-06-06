@@ -1287,8 +1287,17 @@ func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *t
 func TestNewSharedTransportLimitsConcurrentConnectionsPerHost(t *testing.T) {
 	transport := NewSharedTransport()
 
-	if transport.MaxConnsPerHost != 32 {
+	if transport.MaxConnsPerHost != 64 {
 		t.Fatalf("MaxConnsPerHost = %d", transport.MaxConnsPerHost)
+	}
+	if transport.MaxIdleConnsPerHost != 128 {
+		t.Fatalf("MaxIdleConnsPerHost = %d", transport.MaxIdleConnsPerHost)
+	}
+	if transport.ReadBufferSize != 32*1024 {
+		t.Fatalf("ReadBufferSize = %d", transport.ReadBufferSize)
+	}
+	if transport.WriteBufferSize != 32*1024 {
+		t.Fatalf("WriteBufferSize = %d", transport.WriteBufferSize)
 	}
 }
 

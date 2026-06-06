@@ -350,7 +350,7 @@ func TestLoadFromEnvUsesDefaultNetworkResilienceConfigWhenUnset(t *testing.T) {
 	if cfg.HTTPTransport.KeepAlive != 30*time.Second {
 		t.Fatalf("KeepAlive = %v", cfg.HTTPTransport.KeepAlive)
 	}
-	if cfg.HTTPTransport.MaxConnsPerHost != 32 {
+	if cfg.HTTPTransport.MaxConnsPerHost != 64 {
 		t.Fatalf("MaxConnsPerHost = %d", cfg.HTTPTransport.MaxConnsPerHost)
 	}
 	if !cfg.HTTPResilience.ResumeEnabled {
