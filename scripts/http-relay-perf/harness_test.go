@@ -70,4 +70,14 @@ func TestRunScriptTargetsHTTPRelayPerfContainers(t *testing.T) {
 			t.Fatalf("run.ps1 missing marker %q", want)
 		}
 	}
+
+	for _, want := range []string{
+		"$exitCode =",
+		".State.ExitCode",
+		"exit $exitCode",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("run.ps1 missing exit-code marker %q", want)
+		}
+	}
 }

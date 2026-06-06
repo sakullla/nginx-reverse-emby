@@ -95,6 +95,7 @@ $statsRows = [System.Collections.Generic.List[string]]::new()
 if (-not $SkipStats) {
     $statsRows.Add('ts,name,cpu,mem,net')
 }
+$exitCode = 0
 try {
     while ($true) {
         $running = docker inspect -f '{{.State.Running}}' nre-perf 2>$null
@@ -112,6 +113,10 @@ try {
     }
 
     docker logs nre-perf
+    $exitCode = [int](docker inspect -f '{{.State.ExitCode}}' nre-perf)
+    if ($LASTEXITCODE -ne 0) {
+        $exitCode = $LASTEXITCODE
+    }
 }
 finally {
     if (-not $SkipStats -and $statsRows.Count -gt 0) {
@@ -121,3 +126,5 @@ finally {
         Cleanup
     }
 }
+
+exit $exitCode
