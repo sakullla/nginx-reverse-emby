@@ -400,8 +400,11 @@ npm run test     # 运行测试
 ```bash
 cd go-agent
 go run ./cmd/nre-agent
+make build       # 生成裁剪后的发布二进制
 go test ./...
 ```
+
+默认发布构建不包含 pprof；需要 `NRE_PPROF_ADDR` 时，用 `go run -tags debug ./cmd/nre-agent` 或 `go build -tags debug ./cmd/nre-agent` 启用。
 
 ### Docker 构建
 
