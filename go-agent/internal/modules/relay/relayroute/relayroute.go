@@ -129,3 +129,11 @@ func ClonePathsWithTarget(paths []relayplan.Path, target string) []relayplan.Pat
 	}
 	return cloned
 }
+
+func ClonePathsWithoutKeys(paths []relayplan.Path) []relayplan.Path {
+	cloned := ClonePaths(paths)
+	for i := range cloned {
+		cloned[i].Key = ""
+	}
+	return cloned
+}

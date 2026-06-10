@@ -1,3 +1,3 @@
 module github.com/sakullla/nginx-reverse-emby/scripts/http-relay-perf
 
-go 1.26.3
+go 1.26.4

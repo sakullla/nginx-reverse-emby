@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -132,6 +133,120 @@ func TestHTTPStreamingResponseWriterThrottlesSmallFlushes(t *testing.T) {
 	}
 }
 
+func TestHTTPStreamingResponseWriterUsesDefaultFlushThreshold(t *testing.T) {
+	recorder := newObservedResponseWriter()
+	trafficWriter := newHTTPStreamingResponseWriter(recorder, nil)
+
+	if _, err := trafficWriter.Write([]byte("a")); err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	if got := recorder.flushCount(); got != 1 {
+		t.Fatalf("flushes after first write = %d, want 1", got)
+	}
+
+	const wantThreshold = 64 * 1024
+	if _, err := trafficWriter.Write(bytes.Repeat([]byte("b"), wantThreshold-1)); err != nil {
+		t.Fatalf("Write(bulk) error = %v", err)
+	}
+	if got := recorder.flushCount(); got != 1 {
+		t.Fatalf("flushes before bulk threshold = %d, want 1", got)
+	}
+	if _, err := trafficWriter.Write([]byte("c")); err != nil {
+		t.Fatalf("Write(cross threshold) error = %v", err)
+	}
+	if got := recorder.flushCount(); got != 2 {
+		t.Fatalf("flushes after bulk threshold = %d, want 2", got)
+	}
+}
+
+func TestHTTPResponseTrafficFlushThresholdForKeepsPageLikeResponsesSmall(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *http.Response
+	}{
+		{
+			name: "html",
+			resp: responseForFlushThreshold(http.StatusOK, "text/html; charset=utf-8", 32<<20, nil),
+		},
+		{
+			name: "json",
+			resp: responseForFlushThreshold(http.StatusOK, "application/json", 32<<20, nil),
+		},
+		{
+			name: "javascript",
+			resp: responseForFlushThreshold(http.StatusOK, "application/javascript", 32<<20, nil),
+		},
+		{
+			name: "event stream",
+			resp: responseForFlushThreshold(http.StatusOK, "text/event-stream", 32<<20, nil),
+		},
+		{
+			name: "unknown length json stream",
+			resp: responseForFlushThreshold(http.StatusOK, "application/json", -1, nil),
+		},
+		{
+			name: "upstream disables buffering",
+			resp: responseForFlushThreshold(http.StatusOK, "video/mp4", 32<<20, map[string]string{
+				"X-Accel-Buffering": "no",
+			}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := httpResponseTrafficFlushThresholdFor(tt.resp); got != httpResponseTrafficFlushThreshold {
+				t.Fatalf("threshold = %d, want default %d", got, httpResponseTrafficFlushThreshold)
+			}
+		})
+	}
+}
+
+func TestHTTPResponseTrafficFlushThresholdForUsesBulkThreshold(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *http.Response
+	}{
+		{
+			name: "video",
+			resp: responseForFlushThreshold(http.StatusOK, "video/mp4", 32<<20, nil),
+		},
+		{
+			name: "audio",
+			resp: responseForFlushThreshold(http.StatusOK, "audio/flac", 32<<20, nil),
+		},
+		{
+			name: "octet stream",
+			resp: responseForFlushThreshold(http.StatusOK, "application/octet-stream", 32<<20, nil),
+		},
+		{
+			name: "unknown length octet stream",
+			resp: responseForFlushThreshold(http.StatusOK, "application/octet-stream", -1, nil),
+		},
+		{
+			name: "attachment",
+			resp: responseForFlushThreshold(http.StatusOK, "application/pdf", 32<<20, map[string]string{
+				"Content-Disposition": `attachment; filename="movie.pdf"`,
+			}),
+		},
+		{
+			name: "range response",
+			resp: responseForFlushThreshold(http.StatusPartialContent, "application/octet-stream", 4<<20, nil),
+		},
+		{
+			name: "large byte-range capable binary",
+			resp: responseForFlushThreshold(http.StatusOK, "application/x-iso9660-image", 64<<20, map[string]string{
+				"Accept-Ranges": "bytes",
+			}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := httpResponseTrafficFlushThresholdFor(tt.resp); got != httpResponseBulkTrafficFlushThreshold {
+				t.Fatalf("threshold = %d, want bulk %d", got, httpResponseBulkTrafficFlushThreshold)
+			}
+		})
+	}
+}
+
 func TestHTTPResponseTrafficWriterBuffersSmallWritesUntilFlush(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
@@ -251,6 +366,28 @@ func assertHTTPAggregateTrafficNow(t *testing.T, wantRX, wantTX uint64) {
 	if got["rx_bytes"] != wantRX || got["tx_bytes"] != wantTX {
 		t.Fatalf("http traffic = %+v, want rx %d tx %d", got, wantRX, wantTX)
 	}
+}
+
+func responseForFlushThreshold(status int, contentType string, contentLength int64, headers map[string]string) *http.Response {
+	resp := &http.Response{
+		StatusCode:    status,
+		ContentLength: contentLength,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader("")),
+		Request:       httptest.NewRequest(http.MethodGet, "http://backend.example/resource", nil),
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+	}
+	if contentType != "" {
+		resp.Header.Set("Content-Type", contentType)
+	}
+	if contentLength >= 0 {
+		resp.Header.Set("Content-Length", strconv.FormatInt(contentLength, 10))
+	}
+	for key, value := range headers {
+		resp.Header.Set(key, value)
+	}
+	return resp
 }
 
 func TestPrepareReusableBodyRecordsBufferedRequestBodyInboundTrafficBeforeUpstreamRead(t *testing.T) {

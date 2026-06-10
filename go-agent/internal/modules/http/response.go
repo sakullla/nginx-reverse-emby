@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
@@ -22,7 +24,7 @@ func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.
 	w.WriteHeader(resp.StatusCode)
 	var written int64
 	if resp.Body != nil {
-		trafficWriter := newHTTPStreamingResponseWriter(w, recorder)
+		trafficWriter := newHTTPStreamingResponseWriterWithThreshold(w, recorder, httpResponseTrafficFlushThresholdFor(resp))
 		n, err := io.Copy(trafficWriter, resp.Body)
 		written = n
 		trafficWriter.FlushTraffic()
@@ -134,7 +136,123 @@ func copySwitchProtocolTraffic(dst io.Writer, src io.Reader, rxDirection bool, r
 	return traffic.CopyGeneric(writer, src)
 }
 
-const httpResponseTrafficFlushThreshold uint64 = 64 * 1024
+const (
+	httpResponseTrafficFlushThreshold           uint64 = 64 * 1024
+	httpResponseBulkTrafficFlushThreshold       uint64 = 256 * 1024
+	httpResponseLargeByteRangeContentLengthSize int64  = 16 << 20
+)
+
+func httpResponseTrafficFlushThresholdFor(resp *http.Response) uint64 {
+	if isBulkHTTPResponse(resp) {
+		return httpResponseBulkTrafficFlushThreshold
+	}
+	return httpResponseTrafficFlushThreshold
+}
+
+func isBulkHTTPResponse(resp *http.Response) bool {
+	if resp == nil || responseDisablesBuffering(resp.Header) {
+		return false
+	}
+
+	mediaType := httpResponseMediaType(resp.Header.Get("Content-Type"))
+	if isPageLikeHTTPMediaType(mediaType) || strings.HasPrefix(mediaType, "image/") {
+		return false
+	}
+	if isAttachmentHTTPResponse(resp.Header) || isBulkHTTPMediaType(mediaType) {
+		return true
+	}
+
+	contentLength := httpResponseContentLength(resp)
+	if contentLength < 0 {
+		return false
+	}
+	if resp.StatusCode == http.StatusPartialContent && contentLength >= int64(httpResponseBulkTrafficFlushThreshold) {
+		return true
+	}
+	if acceptsByteRanges(resp.Header) && contentLength >= httpResponseLargeByteRangeContentLengthSize {
+		return true
+	}
+	return false
+}
+
+func responseDisablesBuffering(header http.Header) bool {
+	for _, value := range header.Values("X-Accel-Buffering") {
+		if strings.EqualFold(strings.TrimSpace(value), "no") {
+			return true
+		}
+	}
+	return false
+}
+
+func httpResponseContentLength(resp *http.Response) int64 {
+	if resp.ContentLength >= 0 {
+		return resp.ContentLength
+	}
+	if value := strings.TrimSpace(resp.Header.Get("Content-Length")); value != "" {
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err == nil {
+			return n
+		}
+	}
+	return -1
+}
+
+func httpResponseMediaType(value string) string {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		mediaType, _, _ = strings.Cut(value, ";")
+		mediaType = strings.TrimSpace(mediaType)
+	}
+	return strings.ToLower(mediaType)
+}
+
+func isPageLikeHTTPMediaType(mediaType string) bool {
+	if strings.HasPrefix(mediaType, "text/") {
+		return true
+	}
+	switch mediaType {
+	case "application/ecmascript",
+		"application/javascript",
+		"application/json",
+		"application/problem+json",
+		"application/wasm",
+		"application/x-javascript",
+		"application/x-ndjson",
+		"application/xhtml+xml",
+		"application/xml":
+		return true
+	default:
+		return strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
+	}
+}
+
+func isBulkHTTPMediaType(mediaType string) bool {
+	if strings.HasPrefix(mediaType, "audio/") || strings.HasPrefix(mediaType, "video/") {
+		return true
+	}
+	switch mediaType {
+	case "application/gzip",
+		"application/octet-stream",
+		"application/x-7z-compressed",
+		"application/x-gzip",
+		"application/x-iso9660-image",
+		"application/x-rar-compressed",
+		"application/x-tar",
+		"application/zip":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAttachmentHTTPResponse(header http.Header) bool {
+	disposition, _, err := mime.ParseMediaType(header.Get("Content-Disposition"))
+	if err != nil {
+		disposition, _, _ = strings.Cut(header.Get("Content-Disposition"), ";")
+		disposition = strings.TrimSpace(disposition)
+	}
+	return strings.EqualFold(disposition, "attachment")
+}
 
 func newHTTPResponseTrafficWriter(dst io.Writer, recorder *traffic.Recorder) *httpResponseTrafficWriter {
 	return &httpResponseTrafficWriter{
@@ -163,10 +281,17 @@ func (w *httpResponseTrafficWriter) FlushTraffic() {
 }
 
 func newHTTPStreamingResponseWriter(dst http.ResponseWriter, recorder *traffic.Recorder) *httpStreamingResponseWriter {
+	return newHTTPStreamingResponseWriterWithThreshold(dst, recorder, httpResponseTrafficFlushThreshold)
+}
+
+func newHTTPStreamingResponseWriterWithThreshold(dst http.ResponseWriter, recorder *traffic.Recorder, threshold uint64) *httpStreamingResponseWriter {
+	if threshold == 0 {
+		threshold = httpResponseTrafficFlushThreshold
+	}
 	return &httpStreamingResponseWriter{
 		ResponseWriter: dst,
 		flusher:        newHTTPResponseTrafficFlusher(recorder),
-		threshold:      httpResponseTrafficFlushThreshold,
+		threshold:      threshold,
 	}
 }
 

@@ -27,21 +27,25 @@ import (
 )
 
 type config struct {
-	mode            string
-	masterAddr      string
-	directAddress   string
-	relayAddress    string
-	backendURL      string
-	backendListen   string
-	relayPublicHost string
-	relayPublicPort int
-	relayLayers     [][]int
-	downloadBytes   int64
-	c1Duration      time.Duration
-	c8Duration      time.Duration
-	c8Concurrency   int
-	benchmarkFilter string
-	preMeasureWait  time.Duration
+	mode             string
+	masterAddr       string
+	directAddress    string
+	relayAddress     string
+	relay2Address    string
+	backendURL       string
+	backendListen    string
+	relayPublicHost  string
+	relayPublicPort  int
+	relay2PublicHost string
+	relay2PublicPort int
+	relayLayers      [][]int
+	relay2Layers     [][]int
+	downloadBytes    int64
+	c1Duration       time.Duration
+	c8Duration       time.Duration
+	c8Concurrency    int
+	benchmarkFilter  string
+	preMeasureWait   time.Duration
 }
 
 type benchmarkCase struct {
@@ -158,6 +162,7 @@ func main() {
 
 	waitForHTTP("direct", cfg.directAddress, 45*time.Second)
 	waitForHTTP("relay", cfg.relayAddress, 45*time.Second)
+	waitForHTTP("relay2", cfg.relay2Address, 45*time.Second)
 	if cfg.preMeasureWait > 0 {
 		log.Printf("waiting %s before measurements", cfg.preMeasureWait)
 		time.Sleep(cfg.preMeasureWait)
@@ -170,11 +175,17 @@ func main() {
 		{name: "http_relay_c1", run: func() result {
 			return measureHTTPThroughput("http_relay_c1", cfg.relayAddress, 1, cfg.downloadBytes, cfg.c1Duration)
 		}},
+		{name: "http_relay2_c1", run: func() result {
+			return measureHTTPThroughput("http_relay2_c1", cfg.relay2Address, 1, cfg.downloadBytes, cfg.c1Duration)
+		}},
 		{name: "http_direct_c8", run: func() result {
 			return measureHTTPThroughput("http_direct_c8", cfg.directAddress, cfg.c8Concurrency, cfg.downloadBytes, cfg.c8Duration)
 		}},
 		{name: "http_relay_c8", run: func() result {
 			return measureHTTPThroughput("http_relay_c8", cfg.relayAddress, cfg.c8Concurrency, cfg.downloadBytes, cfg.c8Duration)
+		}},
+		{name: "http_relay2_c8", run: func() result {
+			return measureHTTPThroughput("http_relay2_c8", cfg.relay2Address, cfg.c8Concurrency, cfg.downloadBytes, cfg.c8Duration)
 		}},
 	}
 	selected, err := selectBenchmarks(cfg.benchmarkFilter, benchmarks)
@@ -195,21 +206,25 @@ func main() {
 
 func loadConfig() config {
 	return config{
-		mode:            envString("HARNESS_MODE", "bench"),
-		masterAddr:      envString("HARNESS_MASTER_ADDR", ":8080"),
-		directAddress:   envString("HARNESS_DIRECT_ADDRESS", "http://172.31.1.10:8081"),
-		relayAddress:    envString("HARNESS_RELAY_ADDRESS", "http://172.31.1.10:8082"),
-		backendURL:      envString("HARNESS_BACKEND_URL", "http://172.31.3.13:9002"),
-		backendListen:   envString("HARNESS_BACKEND_LISTEN_ADDR", ":9002"),
-		relayPublicHost: envString("HARNESS_RELAY_PUBLIC_HOST", "172.31.2.11"),
-		relayPublicPort: envInt("HARNESS_RELAY_PUBLIC_PORT", 9443),
-		relayLayers:     envRelayLayers("HARNESS_RELAY_LAYER_IDS", [][]int{{1}}),
-		downloadBytes:   envBytes("HARNESS_DOWNLOAD_BYTES", 512<<20),
-		c1Duration:      envSeconds("HARNESS_C1_DURATION_SECONDS", 0),
-		c8Duration:      envSeconds("HARNESS_C8_DURATION_SECONDS", 0),
-		c8Concurrency:   envInt("HARNESS_C8_CONCURRENCY", 8),
-		benchmarkFilter: envString("HARNESS_BENCHMARKS", ""),
-		preMeasureWait:  time.Duration(envInt("HARNESS_PRE_MEASURE_DELAY_MS", 0)) * time.Millisecond,
+		mode:             envString("HARNESS_MODE", "bench"),
+		masterAddr:       envString("HARNESS_MASTER_ADDR", ":8080"),
+		directAddress:    envString("HARNESS_DIRECT_ADDRESS", "http://172.31.1.10:8081"),
+		relayAddress:     envString("HARNESS_RELAY_ADDRESS", "http://172.31.1.10:8082"),
+		relay2Address:    envString("HARNESS_RELAY2_ADDRESS", "http://172.31.1.10:8083"),
+		backendURL:       envString("HARNESS_BACKEND_URL", "http://172.31.3.13:9002"),
+		backendListen:    envString("HARNESS_BACKEND_LISTEN_ADDR", ":9002"),
+		relayPublicHost:  envString("HARNESS_RELAY_PUBLIC_HOST", "172.31.2.11"),
+		relayPublicPort:  envInt("HARNESS_RELAY_PUBLIC_PORT", 9443),
+		relay2PublicHost: envString("HARNESS_RELAY2_PUBLIC_HOST", "172.31.2.12"),
+		relay2PublicPort: envInt("HARNESS_RELAY2_PUBLIC_PORT", 9444),
+		relayLayers:      envRelayLayers("HARNESS_RELAY_LAYER_IDS", [][]int{{1}}),
+		relay2Layers:     envRelayLayers("HARNESS_RELAY2_LAYER_IDS", [][]int{{1}, {2}}),
+		downloadBytes:    envBytes("HARNESS_DOWNLOAD_BYTES", 512<<20),
+		c1Duration:       envSeconds("HARNESS_C1_DURATION_SECONDS", 0),
+		c8Duration:       envSeconds("HARNESS_C8_DURATION_SECONDS", 0),
+		c8Concurrency:    envInt("HARNESS_C8_CONCURRENCY", 8),
+		benchmarkFilter:  envString("HARNESS_BENCHMARKS", ""),
+		preMeasureWait:   time.Duration(envInt("HARNESS_PRE_MEASURE_DELAY_MS", 0)) * time.Millisecond,
 	}
 }
 
@@ -243,27 +258,33 @@ func selectBenchmarks(filter string, benchmarks []benchmarkCase) ([]benchmarkCas
 }
 
 func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot {
-	listener := newHarnessRelayListener(1, "relay-b", cfg.relayPublicHost, cfg.relayPublicPort, certIDForRelay(1), pin)
-	certID := *listener.CertificateID
-	certs := []certificateBundle{{
-		ID:       certID,
-		Domain:   listener.PublicHost,
-		Revision: 1,
-		CertPEM:  certPEM,
-		KeyPEM:   keyPEM,
-	}}
-	policies := []certificatePolicy{{
-		ID:              certID,
-		Domain:          listener.PublicHost,
-		Enabled:         true,
-		Scope:           "domain",
-		IssuerMode:      "local_http01",
-		Status:          "active",
-		Revision:        1,
-		Usage:           "relay_tunnel",
-		CertificateType: "uploaded",
-		SelfSigned:      true,
-	}}
+	listener1 := newHarnessRelayListener(1, "relay-b", cfg.relayPublicHost, cfg.relayPublicPort, certIDForRelay(1), pin)
+	listener2 := newHarnessRelayListener(2, "relay-c", cfg.relay2PublicHost, cfg.relay2PublicPort, certIDForRelay(2), pin)
+	relayListeners := []relayListener{listener1, listener2}
+	certs := make([]certificateBundle, 0, len(relayListeners))
+	policies := make([]certificatePolicy, 0, len(relayListeners))
+	for _, listener := range relayListeners {
+		certID := *listener.CertificateID
+		certs = append(certs, certificateBundle{
+			ID:       certID,
+			Domain:   listener.PublicHost,
+			Revision: 1,
+			CertPEM:  certPEM,
+			KeyPEM:   keyPEM,
+		})
+		policies = append(policies, certificatePolicy{
+			ID:              certID,
+			Domain:          listener.PublicHost,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Status:          "active",
+			Revision:        1,
+			Usage:           "relay_tunnel",
+			CertificateType: "uploaded",
+			SelfSigned:      true,
+		})
+	}
 
 	return map[string]snapshot{
 		"agent-a": {
@@ -287,8 +308,17 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 					Enabled:     true,
 					Revision:    1,
 				},
+				{
+					ID:          103,
+					AgentID:     "agent-a",
+					FrontendURL: trimHTTPURL(cfg.relay2Address),
+					Backends:    []httpBackend{{URL: trimHTTPURL(cfg.backendURL)}},
+					RelayLayers: cfg.relay2Layers,
+					Enabled:     true,
+					Revision:    1,
+				},
 			},
-			RelayListeners:      []relayListener{listener},
+			RelayListeners:      relayListeners,
 			Certificates:        certs,
 			CertificatePolicies: policies,
 		},
@@ -296,7 +326,15 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 			DesiredVersion:      "perf",
 			DesiredRevision:     1,
 			Rules:               nil,
-			RelayListeners:      []relayListener{listener},
+			RelayListeners:      relayListeners,
+			Certificates:        certs,
+			CertificatePolicies: policies,
+		},
+		"relay-c": {
+			DesiredVersion:      "perf",
+			DesiredRevision:     1,
+			Rules:               nil,
+			RelayListeners:      relayListeners,
 			Certificates:        certs,
 			CertificatePolicies: policies,
 		},

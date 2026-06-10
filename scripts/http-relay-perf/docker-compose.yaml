@@ -12,9 +12,13 @@ services:
       HARNESS_MASTER_ADDR: ${HARNESS_MASTER_ADDR:-:8080}
       HARNESS_DIRECT_ADDRESS: ${HARNESS_DIRECT_ADDRESS:-http://172.31.1.10:8081}
       HARNESS_RELAY_ADDRESS: ${HARNESS_RELAY_ADDRESS:-http://172.31.1.10:8082}
+      HARNESS_RELAY2_ADDRESS: ${HARNESS_RELAY2_ADDRESS:-http://172.31.1.10:8083}
       HARNESS_BACKEND_URL: ${HARNESS_BACKEND_URL:-http://172.31.3.13:9002}
       HARNESS_RELAY_PUBLIC_HOST: ${HARNESS_RELAY_PUBLIC_HOST:-172.31.2.11}
       HARNESS_RELAY_PUBLIC_PORT: ${HARNESS_RELAY_PUBLIC_PORT:-9443}
+      HARNESS_RELAY2_PUBLIC_HOST: ${HARNESS_RELAY2_PUBLIC_HOST:-172.31.2.12}
+      HARNESS_RELAY2_PUBLIC_PORT: ${HARNESS_RELAY2_PUBLIC_PORT:-9444}
+      HARNESS_RELAY2_LAYER_IDS: ${HARNESS_RELAY2_LAYER_IDS:-1;2}
       HARNESS_DOWNLOAD_BYTES: ${HARNESS_DOWNLOAD_BYTES:-536870912}
       HARNESS_C1_DURATION_SECONDS: ${HARNESS_C1_DURATION_SECONDS:-}
       HARNESS_C8_DURATION_SECONDS: ${HARNESS_C8_DURATION_SECONDS:-}
@@ -134,6 +138,38 @@ services:
         ipv4_address: 172.31.2.11
       backend:
         ipv4_address: 172.31.3.11
+
+  relay-c:
+    image: nre-agent-http-relay-perf:latest
+    container_name: nre-relay-c
+    environment:
+      NRE_AGENT_ID: relay-c
+      NRE_AGENT_NAME: relay-c
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf-control:8080
+      NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
+      NRE_DATA_DIR: /data
+      NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
+    depends_on:
+      perf:
+        condition: service_healthy
+      backend-b:
+        condition: service_started
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    tmpfs:
+      - /data
+    networks:
+      control:
+        ipv4_address: 172.31.0.12
+      relay:
+        ipv4_address: 172.31.2.12
+      backend:
+        ipv4_address: 172.31.3.12
 
 networks:
   control:

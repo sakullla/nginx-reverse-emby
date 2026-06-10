@@ -150,3 +150,22 @@ func TestClonePathsWithTargetDoesNotAliasSlices(t *testing.T) {
 		t.Fatalf("cloned key = %q", cloned[0].Key)
 	}
 }
+
+func TestClonePathsWithoutKeysDoesNotAliasSlicesAndClearsKeys(t *testing.T) {
+	paths, err := ResolvePaths("rule", nil, [][]int{{1}}, []model.RelayListener{testListener(1)}, "backend.example:443")
+	if err != nil {
+		t.Fatalf("ResolvePaths() error = %v", err)
+	}
+	cloned := ClonePathsWithoutKeys(paths)
+	cloned[0].IDs[0] = 99
+	cloned[0].Hops[0].Address = "changed"
+	if paths[0].IDs[0] != 1 || paths[0].Hops[0].Address == "changed" {
+		t.Fatalf("ClonePathsWithoutKeys aliases original path: original=%+v cloned=%+v", paths, cloned)
+	}
+	if cloned[0].Key != "" {
+		t.Fatalf("cloned key = %q, want empty", cloned[0].Key)
+	}
+	if paths[0].Key == "" {
+		t.Fatal("original key was cleared")
+	}
+}

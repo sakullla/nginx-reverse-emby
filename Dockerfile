@@ -7,24 +7,25 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM golang:1.26.3-trixie AS go-builder
+FROM golang:1.26.4-trixie AS go-builder
+ARG GO_AGENT_LDFLAGS="-s -w"
 WORKDIR /src/go-agent
 COPY go-agent/go.mod go-agent/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY go-agent/ ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/nre-agent-linux-amd64 ./cmd/nre-agent && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /out/nre-agent-linux-arm64 ./cmd/nre-agent && \
-    CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o /out/nre-agent-darwin-amd64 ./cmd/nre-agent && \
-    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /out/nre-agent-darwin-arm64 ./cmd/nre-agent
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-linux-amd64 ./cmd/nre-agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-linux-arm64 ./cmd/nre-agent && \
+    CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-darwin-amd64 ./cmd/nre-agent && \
+    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-darwin-arm64 ./cmd/nre-agent
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/nre-agent ./cmd/nre-agent
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent ./cmd/nre-agent
 
-FROM golang:1.26.3-trixie AS backend-go-builder
+FROM golang:1.26.4-trixie AS backend-go-builder
 ARG APP_VERSION=dev
 ARG BUILD_TIME=dev
 ARG GO_VERSION=dev
@@ -43,11 +44,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
       -ldflags "-s -w -X main.appVersion=${APP_VERSION} -X main.buildTime=${BUILD_TIME} -X main.goVersion=${GO_VERSION}" \
       -o /out/nre-control-plane ./cmd/nre-control-plane
 
-FROM debian:trixie-slim AS go-agent-runtime
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates; \
-    rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/static-debian12 AS go-agent-runtime
 COPY --from=go-builder /out/nre-agent /usr/local/bin/nre-agent
 ENTRYPOINT ["/usr/local/bin/nre-agent"]
 

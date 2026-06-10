@@ -148,7 +148,9 @@ func TestNewRouterDefaultTrafficServiceUsesConfiguredTimezone(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/traffic-overview", nil)
 	req.Header.Set("X-Panel-Token", "secret")
 	resp := httptest.NewRecorder()
+	requestStart := time.Now()
 	handler.ServeHTTP(resp, req)
+	requestEnd := time.Now()
 
 	if resp.Code != http.StatusOK {
 		t.Fatalf("GET traffic-overview = %d body=%s", resp.Code, resp.Body.String())
@@ -161,9 +163,25 @@ func TestNewRouterDefaultTrafficServiceUsesConfiguredTimezone(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	if len(payload.Agents) != 1 || payload.Agents[0].CycleStart != "2026-05-04T16:00:00Z" {
-		t.Fatalf("agents = %+v, want Asia/Shanghai cycle start", payload.Agents)
+	wantStart := expectedTrafficCycleStartForTest(t, requestStart, "Asia/Shanghai", 5)
+	wantEnd := expectedTrafficCycleStartForTest(t, requestEnd, "Asia/Shanghai", 5)
+	if len(payload.Agents) != 1 || (payload.Agents[0].CycleStart != wantStart && payload.Agents[0].CycleStart != wantEnd) {
+		t.Fatalf("agents = %+v, want Asia/Shanghai cycle start %q", payload.Agents, wantStart)
 	}
+}
+
+func expectedTrafficCycleStartForTest(t *testing.T, now time.Time, timezone string, cycleStartDay int) string {
+	t.Helper()
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		t.Fatalf("LoadLocation(%q) error = %v", timezone, err)
+	}
+	local := now.In(loc)
+	candidate := time.Date(local.Year(), local.Month(), cycleStartDay, 0, 0, 0, 0, loc)
+	if local.Before(candidate) {
+		candidate = candidate.AddDate(0, -1, 0)
+	}
+	return candidate.UTC().Format(time.RFC3339)
 }
 
 func TestNewRouterInjectedCoreServicesWithoutWireGuardDoesNotOpenConfiguredStore(t *testing.T) {

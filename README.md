@@ -373,7 +373,7 @@ L4 规则设置 `proxy_egress_mode=wireguard` 时，TCP 代理入口的出站连
 
 ### 前置要求
 
-- Go 1.26.3+
+- Go 1.26.4+
 - Node.js 24+（前端开发）
 - Docker（容器构建）
 
@@ -400,8 +400,11 @@ npm run test     # 运行测试
 ```bash
 cd go-agent
 go run ./cmd/nre-agent
+make build       # 生成裁剪后的发布二进制
 go test ./...
 ```
+
+默认发布构建不包含 pprof；需要 `NRE_PPROF_ADDR` 时，用 `go run -tags debug ./cmd/nre-agent` 或 `go build -tags debug ./cmd/nre-agent` 启用。
 
 ### Docker 构建
 
