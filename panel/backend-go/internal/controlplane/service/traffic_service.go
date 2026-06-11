@@ -741,16 +741,13 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 	cutoff := storage.TrafficCleanupCutoff{}
 	if policy.HourlyRetentionDays > 0 {
 		cutoff.HourlyBefore = storage.LocalHourStart(now.AddDate(0, 0, -policy.HourlyRetentionDays)).UTC()
-		cycleStart, _ := monthlyCycleWindow(s.now().In(s.tz), policy.CycleStartDay)
-		if cutoff.HourlyBefore.After(cycleStart) {
-			cutoff.HourlyBefore = cycleStart
-		}
 	}
 	if policy.DailyRetentionMonths > 0 {
 		cutoff.DailyBefore = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -policy.DailyRetentionMonths, 0).UTC()
 	}
 	if policy.MonthlyRetentionMonths != nil && *policy.MonthlyRetentionMonths > 0 {
-		cutoff.MonthlyBefore = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, s.tz).AddDate(0, -*policy.MonthlyRetentionMonths, 0).UTC()
+		cycleStart, _ := monthlyCycleWindow(now, policy.CycleStartDay)
+		cutoff.MonthlyBefore = cycleStart.AddDate(0, -*policy.MonthlyRetentionMonths, 0).UTC()
 	}
 	deleted, err := s.store.DeleteTrafficBefore(ctx, agentID, cutoff)
 	if err != nil {
@@ -1495,58 +1492,7 @@ type cycleTrafficStats struct {
 }
 
 func (s *trafficService) cycleStats(ctx context.Context, agentID string, policy TrafficPolicy, start, end time.Time) (cycleTrafficStats, error) {
-	rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
-		AgentID:     agentID,
-		ScopeType:   "host_total",
-		Granularity: "hour",
-		From:        start.UTC(),
-		To:          end.UTC(),
-	})
-	if err != nil {
-		return cycleTrafficStats{}, err
-	}
-	stats := cycleTrafficStats{}
-	hostRows := rows
-	if len(hostRows) == 0 {
-		hostRows, err = s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
-			AgentID:     agentID,
-			ScopeType:   "agent_total",
-			Granularity: "hour",
-			From:        start.UTC(),
-			To:          end.UTC(),
-		})
-		if err != nil {
-			return cycleTrafficStats{}, err
-		}
-	}
-	for _, row := range hostRows {
-		stats.rx += row.RXBytes
-		stats.tx += row.TXBytes
-	}
-	if len(rows) > 0 {
-		firstHostBucket := rows[0].BucketStart
-		for _, row := range rows[1:] {
-			if row.BucketStart.Before(firstHostBucket) {
-				firstHostBucket = row.BucketStart
-			}
-		}
-		agentRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
-			AgentID:     agentID,
-			ScopeType:   "agent_total",
-			Granularity: "hour",
-			From:        start.UTC(),
-			To:          firstHostBucket,
-		})
-		if err != nil {
-			return cycleTrafficStats{}, err
-		}
-		for _, row := range agentRows {
-			stats.rx += row.RXBytes
-			stats.tx += row.TXBytes
-		}
-	}
-	stats.accounted = accountedBytes(policy.Direction, stats.rx, stats.tx)
-	return stats, nil
+	return s.totalStatsForWindow(ctx, agentID, policy, "month", start.UTC(), end.UTC())
 }
 
 func (s *trafficService) defaultTotalScopeType(ctx context.Context, agentID, granularity string, from, to time.Time) string {

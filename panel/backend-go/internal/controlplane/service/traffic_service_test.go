@@ -738,6 +738,38 @@ func TestTrafficServiceSummaryPreservesExistingCycleAgentTotalDuringHostRollout(
 	}
 }
 
+func TestTrafficServiceSummaryPreservesSameMonthAgentTotalDuringHostRollout(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 200},
+		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 10, TXBytes: 20},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	summary, err := svc.Summary(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RXBytes != 110 || summary.TXBytes != 220 || summary.UsedBytes != 330 {
+		t.Fatalf("summary uses %+v, want same-month agent_total before host rollout plus host_total after rollout", summary)
+	}
+}
+
 func TestTrafficServiceSummaryFallsBackToAgentTotalWhenHostTotalOnlyOutsideCycle(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2157,7 +2189,7 @@ func TestTrafficServiceCleanupAllIncludesAgentsWithOnlyTrafficData(t *testing.T)
 	}
 }
 
-func TestTrafficServiceCleanupPreservesCurrentCycleHourlyRows(t *testing.T) {
+func TestTrafficServiceCleanupPreservesCurrentCycleUsageSummary(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2184,8 +2216,8 @@ func TestTrafficServiceCleanupPreservesCurrentCycleHourlyRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.HourlyBefore != "2026-05-01T00:00:00Z" {
-		t.Fatalf("HourlyBefore = %q, want current cycle start", result.HourlyBefore)
+	if result.HourlyBefore != "2026-05-13T12:00:00Z" {
+		t.Fatalf("HourlyBefore = %q, want retention cutoff", result.HourlyBefore)
 	}
 	summary, err := svc.Summary(ctx, "edge-1")
 	if err != nil {
@@ -2193,6 +2225,150 @@ func TestTrafficServiceCleanupPreservesCurrentCycleHourlyRows(t *testing.T) {
 	}
 	if summary.RXBytes != 50 {
 		t.Fatalf("summary.RXBytes = %d, want current cycle rows preserved", summary.RXBytes)
+	}
+}
+
+func TestTrafficServiceCleanupDeletesExpiredHourlyRowsWithinCurrentCycle(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:             "edge-1",
+		Direction:           "both",
+		CycleStartDay:       1,
+		HourlyRetentionDays: 7,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), RXBytes: 20},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	result, err := svc.Cleanup(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HourlyBefore != "2026-05-13T12:00:00Z" {
+		t.Fatalf("HourlyBefore = %q, want retention cutoff", result.HourlyBefore)
+	}
+	rows, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        "2026-05-01T00:00:00Z",
+		To:          "2026-05-21T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].BucketStart != "2026-05-19T10:00:00Z" {
+		t.Fatalf("hourly rows = %+v, want only recent current-cycle bucket", rows)
+	}
+	summary, err := svc.Summary(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RXBytes != 30 {
+		t.Fatalf("summary.RXBytes = %d, want daily/monthly summaries to preserve cycle usage", summary.RXBytes)
+	}
+}
+
+func TestTrafficServiceCleanupDeletesExpiredDailyRowsByRetention(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  30,
+		DailyRetentionMonths: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC), RXBytes: 20},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	result, err := svc.Cleanup(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DailyBefore != "2026-04-20T00:00:00Z" {
+		t.Fatalf("DailyBefore = %q, want retention cutoff", result.DailyBefore)
+	}
+	rows, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "day",
+		From:        "2026-04-01T00:00:00Z",
+		To:          "2026-05-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].BucketStart != "2026-04-25T00:00:00Z" {
+		t.Fatalf("daily rows = %+v, want only row inside retention window", rows)
+	}
+}
+
+func TestTrafficServiceCleanupDeletesExpiredMonthlyRowsByCycleRetention(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	monthlyRetention := 1
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:                "edge-1",
+		Direction:              "both",
+		CycleStartDay:          15,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   1,
+		MonthlyRetentionMonths: &monthlyRetention,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 2, 20, 10, 0, 0, 0, time.UTC), RXBytes: 5},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 3, 20, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC), RXBytes: 20},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	result, err := svc.Cleanup(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MonthlyBefore != "2026-03-15T00:00:00Z" {
+		t.Fatalf("MonthlyBefore = %q, want cycle retention cutoff", result.MonthlyBefore)
+	}
+	rows, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        "2026-03-15T00:00:00Z",
+		To:          "2026-06-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].BucketStart != "2026-03-15T00:00:00Z" || rows[1].BucketStart != "2026-04-15T00:00:00Z" {
+		t.Fatalf("monthly rows = %+v, want retained cycle-month rows from cutoff onward", rows)
 	}
 }
 
