@@ -760,6 +760,35 @@ func (s *GormStore) DeleteTrafficBucketsByAgentInWindow(ctx context.Context, age
 	return deleted, err
 }
 
+func (s *GormStore) RebuildTrafficMonthlySummaries(ctx context.Context, agentID string, from, to time.Time) error {
+	agentID = s.resolveAgentID(agentID)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		policy, err := trafficPolicyForTx(tx, agentID)
+		if err != nil {
+			return err
+		}
+		loc := from.Location()
+		if loc == nil {
+			loc = time.UTC
+		}
+		monthlyFrom := cycleMonthStart(from.In(loc), policy.CycleStartDay)
+		monthlyTo := cycleMonthEnd(to.In(loc), policy.CycleStartDay)
+		if monthlyTo.Equal(monthlyFrom) {
+			monthlyTo = monthlyTo.AddDate(0, 1, 0)
+		}
+		result := tx.Where(
+			"agent_id = ? AND period_start >= ? AND period_start < ?",
+			agentID,
+			formatTrafficTime(monthlyFrom),
+			formatTrafficTime(monthlyTo),
+		).Delete(&AgentTrafficMonthlySummaryRow{})
+		if result.Error != nil {
+			return result.Error
+		}
+		return rebuildMonthlyTrafficBuckets(tx, agentID, monthlyFrom, monthlyTo)
+	})
+}
+
 func (s *GormStore) deleteTrafficByAgentTx(tx *gorm.DB, agentID string) (int64, error) {
 	return deleteTrafficRows(tx, trafficAgentDataModels(), "agent_id = ?", agentID)
 }

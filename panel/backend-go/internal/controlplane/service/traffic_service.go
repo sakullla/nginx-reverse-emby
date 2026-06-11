@@ -63,6 +63,10 @@ type trafficAggregateTrendStore interface {
 	ListTrafficTrendByScopeTypes(context.Context, storage.TrafficBreakdownQuery) ([]storage.TrafficBucketRow, error)
 }
 
+type trafficMonthlySummaryRebuildStore interface {
+	RebuildTrafficMonthlySummaries(context.Context, string, time.Time, time.Time) error
+}
+
 type trafficScopeLookupStore interface {
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
@@ -741,6 +745,16 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 	cutoff := storage.TrafficCleanupCutoff{}
 	if policy.HourlyRetentionDays > 0 {
 		cutoff.HourlyBefore = storage.LocalHourStart(now.AddDate(0, 0, -policy.HourlyRetentionDays)).UTC()
+		cycleStart, cycleEnd := monthlyCycleWindow(now, policy.CycleStartDay)
+		if cutoff.HourlyBefore.After(cycleStart) {
+			protectedStart, ok, err := s.rolloutDayHourlyPreserveStart(ctx, agentID, cycleStart, cycleEnd)
+			if err != nil {
+				return TrafficCleanupResult{}, err
+			}
+			if ok && cutoff.HourlyBefore.After(protectedStart) {
+				cutoff.HourlyBefore = protectedStart
+			}
+		}
 	}
 	if policy.DailyRetentionMonths > 0 {
 		cutoff.DailyBefore = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -policy.DailyRetentionMonths, 0).UTC()
@@ -1307,6 +1321,13 @@ func (s *trafficService) aggregateTopNodes(ctx context.Context, overviewResult T
 }
 
 func (s *trafficService) totalStatsForWindow(ctx context.Context, agentID string, policy TrafficPolicy, granularity string, from, to time.Time) (cycleTrafficStats, error) {
+	if normalizeTrafficGranularity(granularity) == "month" {
+		if rebuildStore, ok := s.store.(trafficMonthlySummaryRebuildStore); ok {
+			if err := rebuildStore.RebuildTrafficMonthlySummaries(ctx, agentID, from, to); err != nil {
+				return cycleTrafficStats{}, err
+			}
+		}
+	}
 	hostRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     agentID,
 		ScopeType:   "host_total",
@@ -1423,6 +1444,52 @@ func (s *trafficService) addLegacyAgentTotalBeforeHostHour(ctx context.Context, 
 	return nil
 }
 
+func (s *trafficService) rolloutDayHourlyPreserveStart(ctx context.Context, agentID string, from, to time.Time) (time.Time, bool, error) {
+	hostDayRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "host_total",
+		Granularity: "day",
+		From:        from.UTC(),
+		To:          to.UTC(),
+	})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(hostDayRows) == 0 {
+		return time.Time{}, false, nil
+	}
+	firstHostDay := firstTrafficBucketStart(hostDayRows)
+	dayEnd := minTrafficTime(periodEnd(firstHostDay, "day", s.tz), to)
+	hostHourRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "host_total",
+		Granularity: "hour",
+		From:        firstHostDay.UTC(),
+		To:          dayEnd.UTC(),
+	})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(hostHourRows) == 0 {
+		return time.Time{}, false, nil
+	}
+	firstHostHour := firstTrafficBucketStart(hostHourRows)
+	agentHourRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        firstHostDay.UTC(),
+		To:          firstHostHour.UTC(),
+	})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(agentHourRows) == 0 {
+		return time.Time{}, false, nil
+	}
+	return firstTrafficBucketStart(agentHourRows), true, nil
+}
+
 func addTrafficRowsToStats(stats *cycleTrafficStats, rows []storage.TrafficBucketRow) {
 	for _, row := range rows {
 		stats.rx += row.RXBytes
@@ -1492,7 +1559,7 @@ type cycleTrafficStats struct {
 }
 
 func (s *trafficService) cycleStats(ctx context.Context, agentID string, policy TrafficPolicy, start, end time.Time) (cycleTrafficStats, error) {
-	return s.totalStatsForWindow(ctx, agentID, policy, "month", start.UTC(), end.UTC())
+	return s.totalStatsForWindow(ctx, agentID, policy, "month", start, end)
 }
 
 func (s *trafficService) defaultTotalScopeType(ctx context.Context, agentID, granularity string, from, to time.Time) string {

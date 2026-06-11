@@ -2279,6 +2279,56 @@ func TestTrafficServiceCleanupDeletesExpiredHourlyRowsWithinCurrentCycle(t *test
 	}
 }
 
+func TestTrafficServiceCleanupPreservesRolloutDayHourlyBucketsNeededForCurrentCycleSummary(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  7,
+		DailyRetentionMonths: 24,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 8, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC), RXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 30},
+		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), RXBytes: 40},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	before, err := svc.Summary(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.RXBytes != 100 {
+		t.Fatalf("summary before cleanup = %+v, want rollout-day bridge included", before)
+	}
+
+	result, err := svc.Cleanup(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HourlyBefore != "2026-05-10T08:00:00Z" {
+		t.Fatalf("HourlyBefore = %q, want preserved rollout-day bridge cutoff", result.HourlyBefore)
+	}
+
+	after, err := svc.Summary(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RXBytes != 100 {
+		t.Fatalf("summary after cleanup = %+v, want rollout-day hourly bridge preserved for current-cycle summary", after)
+	}
+}
+
 func TestTrafficServiceCleanupDeletesExpiredDailyRowsByRetention(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
@@ -2369,6 +2419,59 @@ func TestTrafficServiceCleanupDeletesExpiredMonthlyRowsByCycleRetention(t *testi
 	}
 	if len(rows) != 2 || rows[0].BucketStart != "2026-03-15T00:00:00Z" || rows[1].BucketStart != "2026-04-15T00:00:00Z" {
 		t.Fatalf("monthly rows = %+v, want retained cycle-month rows from cutoff onward", rows)
+	}
+}
+
+func TestTrafficServiceUpdatePolicyRebuildsMonthlySummariesForCycleStartDayChanges(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 5, 10, 0, 0, 0, time.UTC), RXBytes: 50},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), RXBytes: 70},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	before, err := svc.Summary(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.RXBytes != 120 {
+		t.Fatalf("summary before policy change = %+v, want original cycle usage", before)
+	}
+
+	updated, err := svc.UpdatePolicy(ctx, "edge-1", TrafficPolicy{
+		Direction:            "both",
+		CycleStartDay:        15,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CycleStartDay != 15 {
+		t.Fatalf("updated policy = %+v, want cycle_start_day 15", updated)
+	}
+
+	after, err := svc.Summary(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CycleStart != "2026-05-15T00:00:00Z" || after.RXBytes != 70 {
+		t.Fatalf("summary after policy change = %+v, want current-cycle usage rebuilt under new cycle boundary", after)
 	}
 }
 
