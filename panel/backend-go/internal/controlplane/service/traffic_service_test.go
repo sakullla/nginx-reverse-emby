@@ -2652,6 +2652,136 @@ func TestTrafficServiceUpdatePolicyRebuildsRetainedMonthlySummariesBeyondDailyRe
 	}
 }
 
+func TestTrafficServiceUpdatePolicyPreservesRetainedMonthlySummariesWithoutDailySource(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	monthlyRetention := 6
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:                "edge-1",
+		Direction:              "both",
+		CycleStartDay:          1,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   1,
+		MonthlyRetentionMonths: &monthlyRetention,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 2, 20, 10, 0, 0, 0, time.UTC), RXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC), RXBytes: 40},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), RXBytes: 50},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+	if _, err := svc.Cleanup(ctx, "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := svc.UpdatePolicy(ctx, "edge-1", TrafficPolicy{
+		Direction:              "both",
+		CycleStartDay:          15,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   1,
+		MonthlyRetentionMonths: &monthlyRetention,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        "2026-01-01T00:00:00Z",
+		To:          "2026-06-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]uint64{
+		"2026-01-01T00:00:00Z": 10,
+		"2026-02-01T00:00:00Z": 20,
+		"2026-04-15T00:00:00Z": 40,
+		"2026-05-15T00:00:00Z": 50,
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("monthly rows after policy change = %+v, want unrebuildable retained months preserved", rows)
+	}
+	for _, row := range rows {
+		if wantRX, ok := want[row.BucketStart]; !ok || row.RXBytes != wantRX {
+			t.Fatalf("monthly row = %+v, want retained/source-backed rows %+v", row, want)
+		}
+	}
+}
+
+func TestTrafficServiceUpdatePolicyRebuildsPermanentMonthlyHistoryFromAvailableDailyRows(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:                "edge-1",
+		Direction:              "both",
+		CycleStartDay:          1,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   1,
+		MonthlyRetentionMonths: nil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 2, 20, 10, 0, 0, 0, time.UTC), RXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC), RXBytes: 40},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), RXBytes: 50},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	_, err := svc.UpdatePolicy(ctx, "edge-1", TrafficPolicy{
+		Direction:              "both",
+		CycleStartDay:          15,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   1,
+		MonthlyRetentionMonths: nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        "2026-01-01T00:00:00Z",
+		To:          "2026-06-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStarts := []string{
+		"2026-01-15T00:00:00Z",
+		"2026-02-15T00:00:00Z",
+		"2026-04-15T00:00:00Z",
+		"2026-05-15T00:00:00Z",
+	}
+	if len(rows) != len(wantStarts) {
+		t.Fatalf("monthly rows after permanent policy change = %+v, want all daily-backed history rebuilt", rows)
+	}
+	for i, want := range wantStarts {
+		if rows[i].BucketStart != want {
+			t.Fatalf("monthly row %d start = %q, want %q; rows = %+v", i, rows[i].BucketStart, want, rows)
+		}
+	}
+}
+
 func TestTrafficServiceUpdatePolicyRollsBackPolicyWhenMonthlyRebuildFails(t *testing.T) {
 	rebuildErr := errors.New("rebuild failed")
 	store := &failingMonthlyRebuildTrafficStore{
