@@ -68,7 +68,7 @@ type trafficMonthlySummaryRebuildStore interface {
 }
 
 type trafficPolicyMonthlySummaryUpdateStore interface {
-	SaveTrafficPolicyAndRebuildMonthlySummaries(context.Context, storage.AgentTrafficPolicyRow, bool, time.Time, time.Time) error
+	SaveTrafficPolicyAndRebuildMonthlySummaries(context.Context, storage.AgentTrafficPolicyRow, bool, time.Time, time.Time, int) error
 }
 
 type trafficDailySummaryRangeStore interface {
@@ -663,7 +663,7 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 		}
 	}
 	if updateStore, ok := s.store.(trafficPolicyMonthlySummaryUpdateStore); ok {
-		if err := updateStore.SaveTrafficPolicyAndRebuildMonthlySummaries(ctx, row, rebuildMonthlySummaries, rebuildFrom, rebuildTo); err != nil {
+		if err := updateStore.SaveTrafficPolicyAndRebuildMonthlySummaries(ctx, row, rebuildMonthlySummaries, rebuildFrom, rebuildTo, existingRow.CycleStartDay); err != nil {
 			return TrafficPolicy{}, err
 		}
 	} else {

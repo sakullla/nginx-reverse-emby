@@ -2778,6 +2778,67 @@ func TestTrafficServiceUpdatePolicyPreservesPartialMonthlyBytesWithoutDailySourc
 	}
 }
 
+func TestTrafficServiceUpdatePolicyPreservesPartialMonthlyBytesAcrossRepeatedCycleChanges(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	monthlyRetention := 6
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:                "edge-1",
+		Direction:              "both",
+		CycleStartDay:          1,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   1,
+		MonthlyRetentionMonths: &monthlyRetention,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC), RXBytes: 25},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC), RXBytes: 40},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), RXBytes: 50},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+	if _, err := svc.Cleanup(ctx, "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, cycleStartDay := range []int{15, 1} {
+		_, err := svc.UpdatePolicy(ctx, "edge-1", TrafficPolicy{
+			Direction:              "both",
+			CycleStartDay:          cycleStartDay,
+			HourlyRetentionDays:    30,
+			DailyRetentionMonths:   1,
+			MonthlyRetentionMonths: &monthlyRetention,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        "2026-04-01T00:00:00Z",
+		To:          "2026-06-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total uint64
+	for _, row := range rows {
+		total += row.RXBytes
+	}
+	if total != 115 {
+		t.Fatalf("monthly rows after repeated policy changes = %+v, total RX = %d, want retained bytes preserved", rows, total)
+	}
+}
+
 func TestTrafficServiceUpdatePolicyRebuildsPermanentMonthlyHistoryFromAvailableDailyRows(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
@@ -2966,7 +3027,7 @@ type failingMonthlyRebuildTrafficStore struct {
 	transactionUsed bool
 }
 
-func (s *failingMonthlyRebuildTrafficStore) SaveTrafficPolicyAndRebuildMonthlySummaries(ctx context.Context, row storage.AgentTrafficPolicyRow, rebuild bool, from, to time.Time) error {
+func (s *failingMonthlyRebuildTrafficStore) SaveTrafficPolicyAndRebuildMonthlySummaries(ctx context.Context, row storage.AgentTrafficPolicyRow, rebuild bool, from, to time.Time, previousCycleStartDay int) error {
 	s.transactionUsed = true
 	before := s.policy
 	if err := s.SaveTrafficPolicy(ctx, row); err != nil {
