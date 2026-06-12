@@ -1038,9 +1038,20 @@ func rebuildMonthlyTrafficBuckets(tx *gorm.DB, agentID string, from, to time.Tim
 			return err
 		}
 	}
-	for k := range monthlyRows {
+	for k, rebuilt := range monthlyRows {
 		if previousCycleStartDay > 0 {
-			continue
+			var existing AgentTrafficMonthlySummaryRow
+			if err := tx.Model(&AgentTrafficMonthlySummaryRow{}).
+				Where("agent_id = ? AND scope_type = ? AND scope_id = ? AND period_start = ?", k.agentID, k.scopeType, k.scopeID, k.periodStart).
+				Limit(1).
+				Find(&existing).Error; err != nil {
+				return err
+			}
+			if existing.AgentID != "" {
+				rebuilt.RXBytes += retainedMonthlyResidualBytes(existing.RXBytes, rebuilt.RXBytes)
+				rebuilt.TXBytes += retainedMonthlyResidualBytes(existing.TXBytes, rebuilt.TXBytes)
+				monthlyRows[k] = rebuilt
+			}
 		}
 		result := tx.Where(
 			"agent_id = ? AND scope_type = ? AND scope_id = ? AND period_start = ?",
@@ -1075,6 +1086,16 @@ func subtractUint64Floor(value, delta uint64) uint64 {
 		return 0
 	}
 	return value - delta
+}
+
+func retainedMonthlyResidualBytes(existing, rebuilt uint64) uint64 {
+	if existing == rebuilt {
+		return 0
+	}
+	if existing < rebuilt {
+		return existing
+	}
+	return existing - rebuilt
 }
 
 func incrementTrafficHourlyBucket(tx *gorm.DB, row AgentTrafficHourlyBucketRow) error {
