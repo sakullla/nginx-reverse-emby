@@ -611,6 +611,10 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 	if err := s.requireEnabled(); err != nil {
 		return TrafficPolicy{}, err
 	}
+	existingRow, err := s.store.GetTrafficPolicy(ctx, agentID)
+	if err != nil {
+		return TrafficPolicy{}, err
+	}
 	direction, err := normalizeTrafficDirection(input.Direction)
 	if err != nil {
 		return TrafficPolicy{}, err
@@ -643,6 +647,14 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 	}
 	if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
 		return TrafficPolicy{}, err
+	}
+	if existingRow.CycleStartDay != row.CycleStartDay {
+		if rebuildStore, ok := s.store.(trafficMonthlySummaryRebuildStore); ok {
+			rebuildFrom, rebuildTo := s.rebuildableMonthlySummaryWindow(row)
+			if err := rebuildStore.RebuildTrafficMonthlySummaries(ctx, agentID, rebuildFrom, rebuildTo); err != nil {
+				return TrafficPolicy{}, err
+			}
+		}
 	}
 	if err := s.recomputeAgentTrafficBlockState(ctx, agentID); err != nil {
 		return TrafficPolicy{}, err
@@ -1321,13 +1333,6 @@ func (s *trafficService) aggregateTopNodes(ctx context.Context, overviewResult T
 }
 
 func (s *trafficService) totalStatsForWindow(ctx context.Context, agentID string, policy TrafficPolicy, granularity string, from, to time.Time) (cycleTrafficStats, error) {
-	if normalizeTrafficGranularity(granularity) == "month" {
-		if rebuildStore, ok := s.store.(trafficMonthlySummaryRebuildStore); ok {
-			if err := rebuildStore.RebuildTrafficMonthlySummaries(ctx, agentID, from, to); err != nil {
-				return cycleTrafficStats{}, err
-			}
-		}
-	}
 	hostRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     agentID,
 		ScopeType:   "host_total",
@@ -1562,6 +1567,36 @@ func (s *trafficService) cycleStats(ctx context.Context, agentID string, policy 
 	return s.totalStatsForWindow(ctx, agentID, policy, "month", start, end)
 }
 
+func (s *trafficService) rebuildableMonthlySummaryWindow(policyRow storage.AgentTrafficPolicyRow) (time.Time, time.Time) {
+	now := s.now().In(s.tz)
+	_, rebuildTo := monthlyCycleWindow(now, policyRow.CycleStartDay)
+	if policyRow.DailyRetentionMonths <= 0 {
+		rebuildFrom, _ := monthlyCycleWindow(now, policyRow.CycleStartDay)
+		return rebuildFrom, rebuildTo
+	}
+	rebuildFrom := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -policyRow.DailyRetentionMonths, 0)
+	return rebuildFrom, rebuildTo
+}
+
+func (s *trafficService) retainedBreakdownGranularity(policy TrafficPolicy, start time.Time) string {
+	now := s.now().In(s.tz)
+	if policy.HourlyRetentionDays <= 0 {
+		return "hour"
+	}
+	hourlyStart := storage.LocalHourStart(now.AddDate(0, 0, -policy.HourlyRetentionDays)).UTC()
+	if !hourlyStart.After(start.UTC()) {
+		return "hour"
+	}
+	if policy.DailyRetentionMonths <= 0 {
+		return "day"
+	}
+	dailyStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -policy.DailyRetentionMonths, 0).UTC()
+	if !dailyStart.After(start.UTC()) {
+		return "day"
+	}
+	return "month"
+}
+
 func (s *trafficService) defaultTotalScopeType(ctx context.Context, agentID, granularity string, from, to time.Time) string {
 	rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     agentID,
@@ -1592,11 +1627,12 @@ func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, 
 		l4Rules:        []TrafficSummaryBreakdown{},
 		relayListeners: []TrafficSummaryBreakdown{},
 	}
+	granularity := s.retainedBreakdownGranularity(policy, start)
 	for _, scopeType := range []string{"http", "l4", "relay"} {
 		rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 			AgentID:     agentID,
 			ScopeType:   scopeType,
-			Granularity: "hour",
+			Granularity: granularity,
 			From:        start.UTC(),
 			To:          end.UTC(),
 		})
@@ -1611,7 +1647,7 @@ func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, 
 	hostTotalRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     agentID,
 		ScopeType:   "host_total",
-		Granularity: "hour",
+		Granularity: granularity,
 		From:        start.UTC(),
 		To:          end.UTC(),
 	})
@@ -1629,7 +1665,7 @@ func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, 
 		rows, err := breakdownStore.ListTrafficBreakdown(ctx, storage.TrafficTrendQuery{
 			AgentID:     agentID,
 			ScopeType:   scopeType,
-			Granularity: "hour",
+			Granularity: granularity,
 			From:        start.UTC(),
 			To:          end.UTC(),
 		})

@@ -2422,6 +2422,119 @@ func TestTrafficServiceCleanupDeletesExpiredMonthlyRowsByCycleRetention(t *testi
 	}
 }
 
+func TestTrafficServiceAggregateMonthReadPreservesRetainedMonthlyHistoryBeyondDailyRetention(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	monthlyRetention := 6
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:                "edge-1",
+		Direction:              "both",
+		CycleStartDay:          1,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   1,
+		MonthlyRetentionMonths: &monthlyRetention,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 1, 10, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC), RXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 30},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	if _, err := svc.Cleanup(ctx, "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        "2025-12-01T00:00:00Z",
+		To:          "2026-06-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 3 {
+		t.Fatalf("monthly rows before aggregate read = %+v, want retained Jan/Apr/May cycle months", before)
+	}
+
+	aggregate, err := svc.Aggregate(ctx, "edge-1", "month", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aggregate.TopNodes) != 1 || aggregate.TopNodes[0].UsedBytes != 60 {
+		t.Fatalf("Aggregate() = %+v, want retained monthly usage total", aggregate.TopNodes)
+	}
+
+	after, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        "2025-12-01T00:00:00Z",
+		To:          "2026-06-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 3 {
+		t.Fatalf("monthly rows after aggregate read = %+v, want month read to preserve retained history", after)
+	}
+}
+
+func TestTrafficServiceCleanupPreservesCurrentCycleBreakdownsWhenHourlyRetentionIsShorterThanCycle(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  7,
+		DailyRetentionMonths: 24,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 30},
+		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), RXBytes: 40},
+		{AgentID: "edge-1", ScopeType: "http", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "http", BucketStart: time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), RXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), RXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "host_interface", ScopeID: "eth0", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 30},
+		{AgentID: "edge-1", ScopeType: "host_interface", ScopeID: "eth0", BucketStart: time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), RXBytes: 40},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	if _, err := svc.Cleanup(ctx, "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := svc.Summary(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RXBytes != 70 {
+		t.Fatalf("summary.RXBytes = %d, want full-cycle total preserved", summary.RXBytes)
+	}
+	if summary.HostTotal.RXBytes != 70 || summary.HostTotal.AccountedBytes != 70 {
+		t.Fatalf("HostTotal = %+v, want full-cycle host breakdown", summary.HostTotal)
+	}
+	assertSummaryBreakdown(t, summary.Aggregates, "http", "", 30, 0, 30)
+	assertSummaryBreakdown(t, summary.HTTPRules, "http_rule", "11", 30, 0, 30)
+	assertSummaryBreakdown(t, summary.HostInterfaces, "host_interface", "eth0", 70, 0, 70)
+}
+
 func TestTrafficServiceUpdatePolicyRebuildsMonthlySummariesForCycleStartDayChanges(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
