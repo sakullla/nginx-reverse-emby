@@ -2588,6 +2588,102 @@ func TestTrafficServiceUpdatePolicyRebuildsMonthlySummariesForCycleStartDayChang
 	}
 }
 
+func TestTrafficServiceUpdatePolicyRebuildsRetainedMonthlySummariesBeyondDailyRetention(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	monthlyRetention := 6
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:                "edge-1",
+		Direction:              "both",
+		CycleStartDay:          1,
+		HourlyRetentionDays:    180,
+		DailyRetentionMonths:   1,
+		MonthlyRetentionMonths: &monthlyRetention,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 2, 20, 10, 0, 0, 0, time.UTC), RXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC), RXBytes: 40},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), RXBytes: 50},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	_, err := svc.UpdatePolicy(ctx, "edge-1", TrafficPolicy{
+		Direction:              "both",
+		CycleStartDay:          15,
+		HourlyRetentionDays:    180,
+		DailyRetentionMonths:   1,
+		MonthlyRetentionMonths: &monthlyRetention,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := svc.Trend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        "2026-01-01T00:00:00Z",
+		To:          "2026-06-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStarts := []string{
+		"2026-01-15T00:00:00Z",
+		"2026-02-15T00:00:00Z",
+		"2026-04-15T00:00:00Z",
+		"2026-05-15T00:00:00Z",
+	}
+	if len(rows) != len(wantStarts) {
+		t.Fatalf("monthly rows after policy change = %+v, want only retained rows rebuilt to cycle-day 15", rows)
+	}
+	for i, want := range wantStarts {
+		if rows[i].BucketStart != want {
+			t.Fatalf("monthly row %d start = %q, want %q; rows = %+v", i, rows[i].BucketStart, want, rows)
+		}
+	}
+}
+
+func TestTrafficServiceUpdatePolicyRollsBackPolicyWhenMonthlyRebuildFails(t *testing.T) {
+	rebuildErr := errors.New("rebuild failed")
+	store := &failingMonthlyRebuildTrafficStore{
+		fakeTrafficStore: newFakeTrafficStore(),
+		rebuildErr:       rebuildErr,
+	}
+	store.policy = storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, store)
+
+	_, err := svc.UpdatePolicy(context.Background(), "edge-1", TrafficPolicy{
+		Direction:            "both",
+		CycleStartDay:        15,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	})
+	if !errors.Is(err, rebuildErr) {
+		t.Fatalf("UpdatePolicy() error = %v, want rebuild failure", err)
+	}
+	if !store.transactionUsed {
+		t.Fatalf("UpdatePolicy() did not use transactional policy update path")
+	}
+	if store.policy.CycleStartDay != 1 {
+		t.Fatalf("stored policy cycle_start_day = %d, want rollback to 1", store.policy.CycleStartDay)
+	}
+}
+
 type jsonNumber string
 
 func (n jsonNumber) String() string { return string(n) }
@@ -2673,6 +2769,32 @@ func (s *fakeTrafficStore) SaveTrafficPolicy(_ context.Context, row storage.Agen
 	s.writeCount++
 	s.policy = row
 	return nil
+}
+
+type failingMonthlyRebuildTrafficStore struct {
+	*fakeTrafficStore
+	rebuildErr      error
+	transactionUsed bool
+}
+
+func (s *failingMonthlyRebuildTrafficStore) SaveTrafficPolicyAndRebuildMonthlySummaries(ctx context.Context, row storage.AgentTrafficPolicyRow, rebuild bool, from, to time.Time) error {
+	s.transactionUsed = true
+	before := s.policy
+	if err := s.SaveTrafficPolicy(ctx, row); err != nil {
+		s.policy = before
+		return err
+	}
+	if rebuild {
+		if err := s.RebuildTrafficMonthlySummaries(ctx, row.AgentID, from, to); err != nil {
+			s.policy = before
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *failingMonthlyRebuildTrafficStore) RebuildTrafficMonthlySummaries(context.Context, string, time.Time, time.Time) error {
+	return s.rebuildErr
 }
 
 func (s *fakeTrafficStore) ListTrafficPolicies(context.Context) ([]storage.AgentTrafficPolicyRow, error) {

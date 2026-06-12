@@ -67,6 +67,10 @@ type trafficMonthlySummaryRebuildStore interface {
 	RebuildTrafficMonthlySummaries(context.Context, string, time.Time, time.Time) error
 }
 
+type trafficPolicyMonthlySummaryUpdateStore interface {
+	SaveTrafficPolicyAndRebuildMonthlySummaries(context.Context, storage.AgentTrafficPolicyRow, bool, time.Time, time.Time) error
+}
+
 type trafficScopeLookupStore interface {
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
@@ -645,14 +649,25 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 		DailyRetentionMonths:   defaultInt(input.DailyRetentionMonths, 3),
 		MonthlyRetentionMonths: input.MonthlyRetentionMonths,
 	}
-	if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
-		return TrafficPolicy{}, err
+	rebuildMonthlySummaries := existingRow.CycleStartDay != row.CycleStartDay
+	rebuildFrom := time.Time{}
+	rebuildTo := time.Time{}
+	if rebuildMonthlySummaries {
+		rebuildFrom, rebuildTo = s.rebuildableMonthlySummaryWindow(row)
 	}
-	if existingRow.CycleStartDay != row.CycleStartDay {
-		if rebuildStore, ok := s.store.(trafficMonthlySummaryRebuildStore); ok {
-			rebuildFrom, rebuildTo := s.rebuildableMonthlySummaryWindow(row)
-			if err := rebuildStore.RebuildTrafficMonthlySummaries(ctx, agentID, rebuildFrom, rebuildTo); err != nil {
-				return TrafficPolicy{}, err
+	if updateStore, ok := s.store.(trafficPolicyMonthlySummaryUpdateStore); ok {
+		if err := updateStore.SaveTrafficPolicyAndRebuildMonthlySummaries(ctx, row, rebuildMonthlySummaries, rebuildFrom, rebuildTo); err != nil {
+			return TrafficPolicy{}, err
+		}
+	} else {
+		if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
+			return TrafficPolicy{}, err
+		}
+		if rebuildMonthlySummaries {
+			if rebuildStore, ok := s.store.(trafficMonthlySummaryRebuildStore); ok {
+				if err := rebuildStore.RebuildTrafficMonthlySummaries(ctx, agentID, rebuildFrom, rebuildTo); err != nil {
+					return TrafficPolicy{}, err
+				}
 			}
 		}
 	}
@@ -1570,11 +1585,15 @@ func (s *trafficService) cycleStats(ctx context.Context, agentID string, policy 
 func (s *trafficService) rebuildableMonthlySummaryWindow(policyRow storage.AgentTrafficPolicyRow) (time.Time, time.Time) {
 	now := s.now().In(s.tz)
 	_, rebuildTo := monthlyCycleWindow(now, policyRow.CycleStartDay)
-	if policyRow.DailyRetentionMonths <= 0 {
+	retentionMonths := policyRow.DailyRetentionMonths
+	if policyRow.MonthlyRetentionMonths != nil && *policyRow.MonthlyRetentionMonths > retentionMonths {
+		retentionMonths = *policyRow.MonthlyRetentionMonths
+	}
+	if retentionMonths <= 0 {
 		rebuildFrom, _ := monthlyCycleWindow(now, policyRow.CycleStartDay)
 		return rebuildFrom, rebuildTo
 	}
-	rebuildFrom := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -policyRow.DailyRetentionMonths, 0)
+	rebuildFrom := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -retentionMonths, 0)
 	return rebuildFrom, rebuildTo
 }
 
