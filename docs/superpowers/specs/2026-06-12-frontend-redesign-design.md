@@ -12,7 +12,7 @@
 
 1. 提升**组件一致性**（按钮、表单、卡片、弹窗、标签等）。
 2. 改善**间距与排版**（留白、字体层级、页面节奏）。
-3. 为规则、证书、Relay、WireGuard 四类资源增加**卡片 / 列表视图切换**能力。
+3. 为 HTTP 规则、L4 规则、证书、Relay、WireGuard 五类页面增加**卡片 / 列表视图切换**能力。
 
 ---
 
@@ -92,7 +92,6 @@
 | `BaseCard` | 统一卡片容器（圆角、边框、hover、padding），业务卡片只保留内部布局 |
 | `BaseModal` | 统一弹窗容器（header / body / footer），替换现有 modal 实现 |
 | `BaseTable` | 列表视图核心：表头、排序指示、行操作、空状态、加载骨架、响应式横向滚动 |
-| `BaseListItem` | 列表视图中的单行展示（可选，用于非表格型列表） |
 | `BaseEmptyState` | 统一空状态（图标、标题、提示、操作按钮） |
 | `BaseSkeleton` | 统一加载占位 |
 | `BaseErrorState` | 统一错误状态（带重试按钮） |
@@ -223,20 +222,20 @@ filteredRules (computed: search + sort)
 ### Phase 1：基础层（预计 1 个迭代）
 
 1. 整理 `themes.css`、`utilities.css`、`index.css` 边界。
-2. 创建 `components/base/` 下 `BaseButton`、`BaseInput`、`BaseTag`、`BaseCard`、`BaseModal`、`BaseEmptyState`、`BaseSkeleton`。
+2. 创建 `components/base/` 下 `BaseButton`、`BaseInput`、`BaseSearch`、`BaseTag`、`BaseBadge`、`BaseCard`、`BaseModal`、`BaseEmptyState`、`BaseSkeleton`。
 3. 创建 `composables/useViewMode.js`。
 4. 补充对应单元测试。
 
 ### Phase 2：列表视图（预计 1-2 个迭代）
 
-1. 创建 `BaseTable`、`BaseListItem`、`ViewToggle`。
+1. 创建 `BaseTable`、`ViewToggle`。
 2. 在 HTTP 规则页、L4 规则页实现卡片/列表切换。
 3. 在证书页、Relay 监听器页、WireGuard 配置页实现卡片/列表切换。
 4. 补充页面集成测试。
 
 ### Phase 3：页面迁移与打磨（预计 1-2 个迭代）
 
-1. 逐步将现有页面中的 `.btn`、`.input`、`.modal` 等全局 class 替换为 Base 组件。
+1. 逐步将现有页面中的 `.btn`、`.input`、`.modal` 等全局 class 替换为 Base 组件（优先 5 个目标页面，再扩展到其他页面）。
 2. 统一页面容器、标题、页眉、空状态、加载状态的间距与排版。
 3. 修复迁移过程中发现的视觉不一致问题。
 
@@ -275,7 +274,6 @@ panel/frontend/src/
 │   │   ├── BaseCard.vue
 │   │   ├── BaseModal.vue
 │   │   ├── BaseTable.vue
-│   │   ├── BaseListItem.vue
 │   │   ├── BaseEmptyState.vue
 │   │   ├── BaseSkeleton.vue
 │   │   ├── BaseErrorState.vue
