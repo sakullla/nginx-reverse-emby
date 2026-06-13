@@ -19,7 +19,7 @@ ACME_DNS_PROVIDER=cf
 CF_TOKEN=your-cloudflare-api-token
 ```
 
-Cloudflare API Token 需要 `Zone / Zone / Read` 和 `Zone / DNS / Edit` 权限。
+Cloudflare API Token 需要 `Zone / Zone / Read`、`Zone / DNS / Read` 和 `Zone / DNS / Edit` 权限。
 
 不要提交 DNS 令牌或私钥。
 

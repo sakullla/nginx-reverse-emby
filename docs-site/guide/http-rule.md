@@ -80,7 +80,12 @@ Cloudflare API Token 需要配置这些权限：
 | 权限 | 用途 |
 | --- | --- |
 | `Zone / Zone / Read` | 读取域名所属 Zone。 |
+| `Zone / DNS / Read` | 读取 DNS 记录。 |
 | `Zone / DNS / Edit` | 创建和删除证书验证用的 DNS 记录。 |
+
+区域资源选择 **包括 / 特定区域 / 你的域名**，不要给全部区域授权。客户端 IP 地址筛选保持默认即可。
+
+![Cloudflare API Token 权限配置](/screenshots/cloudflare-token-permissions.png)
 
 不要使用 Cloudflare Global API Key，也不要把 `CF_TOKEN` 提交到仓库。它只应该放在服务器上的 Compose 环境变量或安全的 secret 管理里。
 
