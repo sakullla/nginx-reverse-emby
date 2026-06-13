@@ -5,15 +5,13 @@
 
 面向 Emby、Jellyfin 以及 HTTP/TCP 服务的纯 Go 反向代理控制面。典型使用场景是：你有一台优化线路 VPS，想把购买的公费服或加入的公益服 Emby/Jellyfin 反代到自己的域名，减少观看时必须挂代理的问题。
 
-完整中文文档已经迁移到 `docs-site/`：
+完整中文文档站：
 
-- [从 0 到 HTTP 代理](./docs-site/guide/getting-started.md)
-- [Docker Compose 部署](./docs-site/guide/docker-compose.md)
-- [添加 HTTP 规则](./docs-site/guide/http-rule.md)
-- [L4 + Relay 从 0 到可用](./docs-site/guide/l4-relay.md)
-- [架构与特性](./docs-site/reference/architecture.md)
-- [环境变量](./docs-site/reference/environment.md)
-- [备份与恢复](./docs-site/operations/backup-restore.md)
+- [文档首页](https://sakullla.github.io/nginx-reverse-emby/)
+- [从 0 到 HTTP 代理](https://sakullla.github.io/nginx-reverse-emby/guide/getting-started)
+- [Docker Compose 部署](https://sakullla.github.io/nginx-reverse-emby/guide/docker-compose)
+- [添加 HTTP 规则](https://sakullla.github.io/nginx-reverse-emby/guide/http-rule)
+- [L4 + Relay 从 0 到可用](https://sakullla.github.io/nginx-reverse-emby/guide/l4-relay)
 
 ## 快速开始
 
@@ -56,8 +54,6 @@ cd panel/backend-go && go test ./...
 cd go-agent && go test ./...
 docker build -t nginx-reverse-emby .
 ```
-
-更多开发、测试、构建和版本更新说明见 [开发与构建](./docs-site/reference/development.md)。
 
 ## 文档站
 
