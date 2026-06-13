@@ -3,24 +3,24 @@ layout: home
 
 hero:
   name: Nginx-Reverse-Emby
-  text: 纯 Go 反向代理控制面
-  tagline: 用一个轻量面板管理 Emby、Jellyfin、HTTP、L4、Relay、WireGuard、证书和多节点代理规则。
+  text: 新手也能照着部署的反向代理面板
+  tagline: 从 Docker Compose 启动，到在面板里添加 HTTP 规则，把 Emby、Jellyfin 或任意 Web 服务代理出去。
   actions:
     - theme: brand
-      text: 快速开始
+      text: 从 0 到 HTTP 代理
       link: /guide/getting-started
     - theme: alt
-      text: Docker Compose
-      link: /guide/docker-compose
+      text: 添加 HTTP 规则
+      link: /guide/http-rule
     - theme: alt
       text: GitHub
       link: https://github.com/sakullla/nginx-reverse-emby
 
 features:
-  - title: 纯 Go 运行时
-    details: 默认打包运行时中的控制面和执行面不依赖 Nginx。
-  - title: 多节点 Agent
-    details: 远程 Agent 通过心跳从 Master 拉取期望状态，NAT 节点无需开放入站访问。
-  - title: 证书与 Relay
-    details: 在面板中统一管理 ACME 证书、HTTP/L4 代理规则、Relay 传输和 WireGuard Profile。
+  - title: 先跑起来
+    details: 准备服务器、改好 API_TOKEN，然后用 docker compose up -d 启动面板。
+  - title: 再添加规则
+    details: 在真实面板里选择本机 Agent，填写前端访问域名和后端服务地址。
+  - title: 最后验证访问
+    details: 配好 DNS 和端口后，浏览器访问你的域名，确认已经代理到 Emby 或 Jellyfin。
 ---
