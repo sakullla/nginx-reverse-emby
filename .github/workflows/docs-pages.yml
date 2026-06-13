@@ -9,6 +9,9 @@ on:
       - .github/workflows/docs-pages.yml
   workflow_dispatch:
 
+env:
+  PAGES_ENABLEMENT_TOKEN: ${{ secrets.PAGES_ENABLEMENT_TOKEN }}
+
 permissions:
   contents: read
   pages: write
@@ -34,6 +37,13 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          # First-time auto-enablement requires a PAT/GitHub App token with
+          # Pages write + Administration write permissions. If this secret is
+          # not set, enable Pages once in repository Settings -> Pages and set
+          # Source to "GitHub Actions".
+          token: ${{ env.PAGES_ENABLEMENT_TOKEN || github.token }}
+          enablement: ${{ env.PAGES_ENABLEMENT_TOKEN != '' }}
 
       - name: Install dependencies
         working-directory: docs-site
