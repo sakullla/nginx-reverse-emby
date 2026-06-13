@@ -61,33 +61,25 @@ http://<服务器 IP>:8080
 - 源站地址 `origin.emby.example.net` 必须能从这台 VPS 访问。
 - 如果源站本身需要登录、邀请码或 Emby 账号，这些仍然按源站规则处理，反代不会绕过权限。
 
-## 6. 如果要自动签 HTTPS 证书
+## 6. 如果要用 HTTPS
 
-只用 `http://emby.example.com` 测试代理时，不需要 `CF_TOKEN`。
+新手优先使用 HTTP-01 自动签证书，不需要配置 Cloudflare Token。
 
-`CF_TOKEN` 只在你要让面板通过 Cloudflare DNS 自动申请或续期 HTTPS 证书时使用。它不是面板登录令牌，也不会影响 HTTP 规则转发流量。
+把前端访问地址改成：
 
-使用 Cloudflare 时，在 `docker-compose.yaml` 里配置：
-
-```yaml
-environment:
-  ACME_DNS_PROVIDER: cf
-  CF_TOKEN: your-cloudflare-api-token
+```text
+https://emby.example.com
 ```
 
-Cloudflare API Token 需要配置这些权限：
+然后确认这三件事：
 
-| 选择项 | 用途 |
-| --- | --- |
-| `区域 / 区域 / 读取` | 读取域名所属区域。 |
-| `区域 / DNS / 读取` | 读取 DNS 记录。 |
-| `区域 / DNS / 编辑` | 创建和删除证书验证用的 DNS 记录。 |
+- `emby.example.com` 已解析到这台 VPS。
+- VPS 的 `80` 和 `443` 端口都已放行。
+- HTTP 规则保存后，等待本地 Agent 同步并自动申请证书。
 
-区域资源选择 **包括 / 特定区域 / 你的域名**，不要给全部区域授权。客户端 IP 地址筛选保持默认即可。
+HTTP-01 会临时占用 `80` 端口完成域名验证。验证通过后，你就可以用 `https://emby.example.com` 访问自己的 Emby/Jellyfin 入口。
 
-![Cloudflare API Token 权限配置](/screenshots/cloudflare-token-permissions.png)
-
-不要使用 Cloudflare Global API Key，也不要把 `CF_TOKEN` 提交到仓库。它只应该放在服务器上的 Compose 环境变量或安全的 secret 管理里。
+如果你的 VPS 不能开放 `80` 端口，或者要申请通配符证书，再去看 [证书管理](../reference/certificates.md) 里的 DNS 验证。
 
 ## 7. 浏览器验证
 
