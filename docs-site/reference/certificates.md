@@ -19,9 +19,7 @@ ACME_DNS_PROVIDER=cf
 CF_TOKEN=your-cloudflare-api-token
 ```
 
-Cloudflare API Token 最小权限建议为 `Zone / Zone / Read` 和 `Zone / DNS / Edit`，资源范围限制到要签证书的域名所在 Zone。`Zone / DNS / Edit` 用于创建和删除 `_acme-challenge` TXT 记录，`Zone / Zone / Read` 用于定位域名所属 Zone。
-
-也可以把权限拆成两个 token：`CF_TOKEN` 只授予 `Zone / DNS / Edit`，`CLOUDFLARE_ZONE_API_TOKEN` 只授予 `Zone / Zone / Read`。没有配置 `CLOUDFLARE_ZONE_API_TOKEN` 时，系统会用 `CF_TOKEN` 同时完成 Zone 查询和 DNS 修改。`CF_TOKEN`、`CF_DNS_API_TOKEN`、`CLOUDFLARE_DNS_API_TOKEN` 是兼容变量名。
+Cloudflare API Token 需要 `Zone / Zone / Read` 和 `Zone / DNS / Edit` 权限。
 
 不要提交 DNS 令牌或私钥。
 
