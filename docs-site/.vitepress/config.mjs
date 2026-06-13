@@ -10,10 +10,11 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   head: [
-    ['meta', { name: 'theme-color', content: '#2563eb' }]
+    ['meta', { name: 'theme-color', content: '#2563eb' }],
+    ['link', { rel: 'icon', href: `${base}favicon.ico`, sizes: 'any' }]
   ],
   themeConfig: {
-    logo: '/logo.svg',
+    logo: '/favicon.ico',
     siteTitle: 'Nginx-Reverse-Emby',
     search: {
       provider: 'local',
