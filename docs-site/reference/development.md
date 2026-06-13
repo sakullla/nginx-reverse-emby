@@ -1,6 +1,6 @@
 # 开发与构建
 
-本页给项目开发者使用。普通部署用户不需要执行这些命令。
+本页给项目开发者使用，普通部署用户不需要执行这些命令。
 
 ## 前置要求
 
@@ -26,7 +26,7 @@ npm run build
 npm run test
 ```
 
-开发服务器会把 `/panel-api` 代理到控制面。用于截图教程时，应该使用真实控制面服务的生产前端，而不是 Vite mock 数据。
+开发服务器会把 `/panel-api` 代理到控制面。用于截图 / 教程时，应使用真实控制面服务的生产前端，而不是 Vite mock 数据。
 
 ## Go Agent
 
@@ -51,28 +51,26 @@ docker build -t nginx-reverse-emby .
 docker compose up -d
 ```
 
-Dockerfile 使用多阶段构建，会交叉编译 Go agent 到 Linux/macOS 的 AMD64/ARM64 平台。Windows 客户端包不随控制面镜像构建或公开，后续通过 GitHub Release 分发。
+Dockerfile 使用多阶段构建，会交叉编译 Go agent 到 Linux / macOS 的 AMD64 / ARM64 平台。Windows 客户端包不随控制面镜像构建或公开，通过 GitHub Release 分发。
 
 ## 版本更新
 
 `desired_version` 由控制面下发，用于驱动 Go agent 升级：
 
-1. 在控制面为 Agent 或版本策略设置 `desired_version`。
-2. 准备安装包来源。Linux/macOS 可使用控制面公开的 agent 资产，或在版本策略中配置自托管 URL 与 `sha256`。
+1. 在控制面 **版本策略** 页面创建策略，设置通道、`desired_version` 和各平台安装包。
+2. 准备安装包来源：Linux / macOS 可使用控制面公开的 agent 资产，或在策略中配置自托管 URL 与 `sha256`。
 3. Agent 心跳同步时收到 `desired_version`、`version_package` 和 `version_sha256`。
-4. 平台匹配且包信息完整时，Agent 下载、校验并执行更新。
+4. 平台匹配且包信息完整时，Agent 下载、校验 SHA256 并执行更新（原子替换二进制后重启进程）。
 
-未匹配到当前平台的版本包时，控制面保留 `desired_version`，但 Agent 不执行更新。
+未匹配到当前平台的版本包时，控制面保留 `desired_version`，但 Agent 不执行更新。内嵌 local agent 不参与自更新。
 
-## HTTP/Relay 吞吐测试
+## HTTP / Relay 吞吐测试
 
 ```powershell
 ./scripts/http-relay-perf/run.ps1
 ```
 
-这个 harness 用 Docker Compose 跑真实 `nre-agent`，对比 HTTP 直连和 Relay 入口下载吞吐。
-
-默认延迟模型和 `relay-perf` 一致，`CLI -> HTTP` 以及 `HTTP -> backend` 两段都会走 `tc netem`。可用下面的变量覆盖：
+这个 harness 用 Docker Compose 跑真实 `nre-agent`，对比 HTTP 直连和 Relay 入口下载吞吐。默认延迟模型与 `relay-perf` 一致，`CLI -> HTTP` 以及 `HTTP -> backend` 两段都会走 `tc netem`。可用下面的变量覆盖：
 
 ```text
 HARNESS_DELAY_CLI_TO_HTTP_MS

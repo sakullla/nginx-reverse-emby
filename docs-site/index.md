@@ -3,24 +3,48 @@ layout: home
 
 hero:
   name: Nginx-Reverse-Emby
-  text: 用自己的 VPS 反代 Emby 源站
-  tagline: 面向已经有优化线路 VPS、购买或加入公费服/公益服 Emby/Jellyfin 的用户，按教程部署后把观看入口固定到自己的域名。
+  text: 纯 Go 反向代理控制面
+  tagline: 一台优化线路的 VPS、一个可视化面板，把任意 HTTP / HTTPS / TCP / UDP 服务反代到自己的域名。内置 Relay 隧道、WireGuard、ACME 证书、流量额度与多节点管理。
   actions:
     - theme: brand
-      text: 从 0 到 HTTP 代理
-      link: /guide/getting-started
+      text: 快速开始
+      link: /guide/quickstart
     - theme: alt
-      text: 添加 HTTP 规则
+      text: HTTP 反向代理
       link: /guide/http-rule
     - theme: alt
       text: GitHub
       link: https://github.com/sakullla/nginx-reverse-emby
 
 features:
-  - title: 先部署到 VPS
-    details: 准备能访问源站的优化线路 VPS，改好 API_TOKEN，用 Docker Compose 启动控制面和 local 节点。
-  - title: 再添加 HTTP 规则
-    details: 在真实面板里选择 local，填写自己的加速入口域名和公费服/公益服给出的 Emby 源站地址。
-  - title: 最后换入口观看
-    details: 配好 DNS 和端口后，播放器访问你的域名，由 VPS 连接源站，减少观看时必须挂代理的麻烦。
+  - icon: 🚀
+    title: 纯 Go 运行时
+    details: 控制面和执行面都用 Go 实现，不依赖 Nginx。一个 Docker Compose 即可拉起控制面与内嵌 local agent。
+    link: /guide/deploy
+    linkText: 部署方式
+  - icon: 🌐
+    title: HTTP / HTTPS 反代
+    details: 按域名反代 Web 服务，内置中断流恢复、同 backend 重试、302/307 重定向改写与 ACME 自动证书。
+    link: /guide/http-rule
+    linkText: 添加 HTTP 规则
+  - icon: 🔌
+    title: L4 端口转发
+    details: 直接转发 TCP / UDP 端口，支持多后端负载均衡、SOCKS/HTTP 入口、PROXY Protocol 与 WireGuard 监听 / 出口。
+    link: /guide/l4-relay
+    linkText: L4 + Relay
+  - icon: 🛰️
+    title: Relay 隧道
+    details: Agent 到 Agent 的多跳隧道，传输可选 TLS/TCP、QUIC 或 WireGuard，适合把流量经中继节点送抵后端。
+    link: /reference/relay
+    linkText: Relay 参考
+  - icon: 📊
+    title: 流量统计与额度
+    details: 按网卡采集入站 / 出站 / 双向流量，支持月度额度、超额阻断、计费周期与手工校准。
+    link: /reference/traffic
+    linkText: 流量与额度
+  - icon: 🔒
+    title: 证书管理
+    details: HTTP-01 与 Cloudflare DNS-01 自动签发，或手动上传证书；Relay 监听器默认使用自动签发的 Relay CA。
+    link: /guide/certificates
+    linkText: 证书与 HTTPS
 ---

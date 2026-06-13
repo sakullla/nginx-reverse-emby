@@ -55,22 +55,30 @@ export default defineConfig({
     sidebarMenuLabel: '菜单',
     returnToTopLabel: '返回顶部',
     nav: [
-      { text: '新手教程', link: '/guide/getting-started' },
+      { text: '快速开始', link: '/guide/quickstart' },
       { text: 'HTTP 规则', link: '/guide/http-rule' },
       { text: 'L4 + Relay', link: '/guide/l4-relay' },
+      { text: 'WireGuard', link: '/guide/wireguard' },
       { text: '参考', link: '/reference/environment' },
       { text: '运维', link: '/operations/backup-restore' },
       { text: 'GitHub', link: 'https://github.com/sakullla/nginx-reverse-emby' }
     ],
     sidebar: [
       {
-        text: '新手教程',
+        text: '入门',
         items: [
-          { text: '从 0 到 HTTP 代理', link: '/guide/getting-started' },
-          { text: 'Docker Compose 部署', link: '/guide/docker-compose' },
-          { text: '添加 HTTP 规则', link: '/guide/http-rule' },
-          { text: 'L4 + Relay 从 0 到可用', link: '/guide/l4-relay' },
-          { text: 'Agent 接入', link: '/guide/agent' }
+          { text: '快速开始', link: '/guide/quickstart' },
+          { text: '部署', link: '/guide/deploy' },
+          { text: 'Agent 接入', link: '/guide/agent' },
+          { text: '证书与 HTTPS', link: '/guide/certificates' }
+        ]
+      },
+      {
+        text: '规则与路由',
+        items: [
+          { text: 'HTTP 反向代理', link: '/guide/http-rule' },
+          { text: 'L4 规则与 Relay', link: '/guide/l4-relay' },
+          { text: 'WireGuard 隧道', link: '/guide/wireguard' }
         ]
       },
       {
@@ -78,9 +86,8 @@ export default defineConfig({
         items: [
           { text: '架构与特性', link: '/reference/architecture' },
           { text: '环境变量', link: '/reference/environment' },
-          { text: '证书管理', link: '/reference/certificates' },
           { text: 'Relay', link: '/reference/relay' },
-          { text: 'WireGuard', link: '/reference/wireguard' },
+          { text: '流量统计与额度', link: '/reference/traffic' },
           { text: '开发与构建', link: '/reference/development' }
         ]
       },

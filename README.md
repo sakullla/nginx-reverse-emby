@@ -8,10 +8,12 @@
 完整中文文档站：
 
 - [文档首页](https://sakullla.github.io/nginx-reverse-emby/)
-- [从 0 到 HTTP 代理](https://sakullla.github.io/nginx-reverse-emby/guide/getting-started)
-- [Docker Compose 部署](https://sakullla.github.io/nginx-reverse-emby/guide/docker-compose)
-- [添加 HTTP 规则](https://sakullla.github.io/nginx-reverse-emby/guide/http-rule)
-- [L4 + Relay 从 0 到可用](https://sakullla.github.io/nginx-reverse-emby/guide/l4-relay)
+- [快速开始](https://sakullla.github.io/nginx-reverse-emby/guide/quickstart)
+- [部署](https://sakullla.github.io/nginx-reverse-emby/guide/deploy)
+- [HTTP 反向代理](https://sakullla.github.io/nginx-reverse-emby/guide/http-rule)
+- [L4 规则与 Relay](https://sakullla.github.io/nginx-reverse-emby/guide/l4-relay)
+- [WireGuard 隧道](https://sakullla.github.io/nginx-reverse-emby/guide/wireguard)
+- [证书与 HTTPS](https://sakullla.github.io/nginx-reverse-emby/guide/certificates)
 
 ## 快速开始
 
