@@ -29,7 +29,7 @@ environment:
 
 `API_TOKEN` 用于面板访问。`MASTER_REGISTER_TOKEN` 用于 Agent 向 Master 注册。
 
-对于只使用本机代理的新手，`MASTER_REGISTER_TOKEN` 可以先设置成另一个强随机字符串，暂时不需要用到。
+对于只使用 `local` 节点的新手，`MASTER_REGISTER_TOKEN` 可以先设置成另一个强随机字符串，暂时不需要用到。
 
 ## 启动和查看状态
 

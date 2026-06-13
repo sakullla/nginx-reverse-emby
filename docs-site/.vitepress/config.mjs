@@ -56,6 +56,7 @@ export default defineConfig({
     nav: [
       { text: '新手教程', link: '/guide/getting-started' },
       { text: 'HTTP 规则', link: '/guide/http-rule' },
+      { text: 'L4 + Relay', link: '/guide/l4-relay' },
       { text: '参考', link: '/reference/environment' },
       { text: '运维', link: '/operations/backup-restore' },
       { text: 'GitHub', link: 'https://github.com/sakullla/nginx-reverse-emby' }
@@ -67,16 +68,19 @@ export default defineConfig({
           { text: '从 0 到 HTTP 代理', link: '/guide/getting-started' },
           { text: 'Docker Compose 部署', link: '/guide/docker-compose' },
           { text: '添加 HTTP 规则', link: '/guide/http-rule' },
+          { text: 'L4 + Relay 从 0 到可用', link: '/guide/l4-relay' },
           { text: 'Agent 接入', link: '/guide/agent' }
         ]
       },
       {
         text: '参考',
         items: [
+          { text: '架构与特性', link: '/reference/architecture' },
           { text: '环境变量', link: '/reference/environment' },
           { text: '证书管理', link: '/reference/certificates' },
           { text: 'Relay', link: '/reference/relay' },
-          { text: 'WireGuard', link: '/reference/wireguard' }
+          { text: 'WireGuard', link: '/reference/wireguard' },
+          { text: '开发与构建', link: '/reference/development' }
         ]
       },
       {

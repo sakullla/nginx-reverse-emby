@@ -1,15 +1,25 @@
 # 从 0 到 HTTP 代理
 
-这篇是给第一次使用的人看的最短路径：先用 Docker Compose 启动面板，再在面板里添加一条 HTTP 规则，把内网里的 Emby、Jellyfin 或其他 Web 服务代理到公网域名。
+这篇是给第一次使用的人看的最短路径：你已经有一个能直连国内、港澳台或其他优化线路的 VPS，也已经购买或加入了某个公费服、公益服 Emby/Jellyfin，但源站访问慢、绕路，或者每次观看都必须挂梯子。
 
-按这条线走完后，你应该能打开类似 `http://emby.example.com` 或 `https://emby.example.com` 的地址，并访问到后端服务。
+Nginx-Reverse-Emby 要做的事很简单：让你的 VPS 作为中转入口。你访问自己的域名，VPS 再去访问公费服/公益服的 Emby 源站，从而把观看入口固定到你的优化线路上。
+
+按这条线走完后，你应该能打开类似 `http://emby.example.com` 或 `https://emby.example.com` 的地址，并访问到原来的 Emby/Jellyfin 服。
 
 ## 你需要先准备
 
-- 一台 VPS 或家用服务器，已经安装 Docker 和 Docker Compose。
-- 一个可以解析到这台服务器的域名，例如 `emby.example.com`。
-- 后端服务地址，例如 Emby 的 `http://192.168.1.100:8096`。
+- 一台优化线路 VPS，已经安装 Docker 和 Docker Compose。它最好能稳定访问你要反代的 Emby 源站。
+- 一个可以解析到这台 VPS 的域名，例如 `emby.example.com`。
+- 公费服/公益服给你的 Emby/Jellyfin 原始访问地址，例如 `https://origin.emby.example.net`。
 - 一个自己设置的面板登录令牌，也就是 `API_TOKEN`。
+
+先在 VPS 上测试源站能不能通：
+
+```bash
+curl -I https://origin.emby.example.net
+```
+
+如果 VPS 自己都访问不了源站，反代规则创建成功也不能正常播放。
 
 ## 第 1 步：下载 Compose 文件
 
@@ -48,12 +58,12 @@ http://<服务器 IP>:8080
 
 ## 第 4 步：添加 HTTP 规则
 
-进入面板后，打开 **HTTP 规则** 页面，选择本机 Agent，然后添加规则：
+进入面板后，打开 **HTTP 规则** 页面，选择 `local` 节点，然后添加规则：
 
 | 表单项 | 示例 | 说明 |
 | --- | --- | --- |
-| 前端访问地址 | `emby.example.com` | 用户最终访问的域名，需要解析到这台服务器。 |
-| 后端服务器 | `192.168.1.100:8096` | Emby、Jellyfin 或其他 Web 服务的真实地址。 |
+| 前端访问地址 | `emby.example.com` | 你自己访问的加速入口域名，需要解析到这台 VPS。 |
+| 后端服务器 | `origin.emby.example.net` | 公费服/公益服给你的 Emby/Jellyfin 原始地址。 |
 | 启用此规则 | 开启 | 保存后规则才会生效。 |
 
 详细图文步骤见 [添加 HTTP 规则](./http-rule.md)。
@@ -62,9 +72,10 @@ http://<服务器 IP>:8080
 
 确认以下条件后，用浏览器访问你的前端域名：
 
-- 域名 DNS 已解析到运行面板和 local agent 的服务器。
-- 服务器安全组、防火墙已放行你要监听的端口，例如 `80`、`443` 或规则里使用的端口。
-- 后端服务地址能从这台服务器访问。
+- 你的加速域名 DNS 已解析到这台 VPS。
+- VPS 安全组、防火墙已放行你要监听的端口，例如 `80`、`443` 或规则里使用的端口。
+- VPS 能访问公费服/公益服的 Emby 源站。
+- 播放时浏览器、电视盒子或 Emby 客户端填写的是你的加速域名，不再直接填源站地址。
 
 ## 下一步
 
