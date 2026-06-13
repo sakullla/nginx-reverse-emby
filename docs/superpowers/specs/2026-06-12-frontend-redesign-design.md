@@ -1,8 +1,8 @@
 # 前端 Redesign 设计文档
 
-**日期：** 2026-06-12  
+**日期：** 2026-06-12（2026-06-13 复核确认）  
 **主题：** nginx-reverse-emby 控制面板前端视觉优化与列表视图支持  
-**状态：** 已评审，待实现计划
+**状态：** 已确认，待实现计划
 
 ---
 
@@ -78,24 +78,30 @@
   - `utilities.css`：仅存放跨页面工具类（如 `.page-header`、`.card-grid`）。
   - 组件专属样式移到对应 Base 组件的 `<style scoped>`。
 
+### 4.4 与现有代码的衔接
+
+- 当前已有部分 Base 组件：`BaseCard`、`BaseListCard`、`BaseBadge`、`BaseIconButton`、`BaseModal`。它们可直接复用或强化，不必从零重写。
+- `RuleTable.vue` 是 HTTP 规则的早期独立表格实现，样式与交互未与页面集成；本次统一由 `BaseTable` 替代，避免重复实现。
+
 ---
 
 ## 5. Base 组件层
 
 ### 5.1 新增/强化组件
 
-| 组件 | 职责 |
-|------|------|
-| `BaseButton` | 统一按钮 variant（primary / secondary / ghost / danger）、size、loading、disabled |
-| `BaseInput` / `BaseSearch` | 统一输入框、搜索框样式与 focus 状态 |
-| `BaseTag` / `BaseBadge` | 统一标签与状态徽章 |
-| `BaseCard` | 统一卡片容器（圆角、边框、hover、padding），业务卡片只保留内部布局 |
-| `BaseModal` | 统一弹窗容器（header / body / footer），替换现有 modal 实现 |
-| `BaseTable` | 列表视图核心：表头、排序指示、行操作、空状态、加载骨架、响应式横向滚动 |
-| `BaseEmptyState` | 统一空状态（图标、标题、提示、操作按钮） |
-| `BaseSkeleton` | 统一加载占位 |
-| `BaseErrorState` | 统一错误状态（带重试按钮） |
-| `ViewToggle` | 卡片 / 列表切换按钮组 |
+| 组件 | 职责 | 状态 |
+|------|------|------|
+| `BaseButton` | 统一按钮 variant（primary / secondary / ghost / danger）、size、loading、disabled | 新增 |
+| `BaseInput` / `BaseSearch` | 统一输入框、搜索框样式与 focus 状态 | 新增 |
+| `BaseTag` | 统一用户自定义标签（如规则标签） | 新增 |
+| `BaseBadge` | 统一状态徽章（已存在，按需补 variant/size） | 强化 |
+| `BaseCard` | 统一卡片容器（圆角、边框、hover、padding） | 已存在 |
+| `BaseModal` | 统一弹窗容器（header / body / footer） | 已存在 |
+| `BaseTable` | 列表视图核心：表头、排序指示、行操作、空状态、加载骨架、响应式横向滚动 | 新增 |
+| `BaseEmptyState` | 统一空状态（图标、标题、提示、操作按钮） | 新增 |
+| `BaseSkeleton` | 统一加载占位 | 新增 |
+| `BaseErrorState` | 统一错误状态（带重试按钮） | 新增 |
+| `ViewToggle` | 卡片 / 列表切换按钮组 | 新增 |
 
 ### 5.2 组件设计原则
 
@@ -222,14 +228,15 @@ filteredRules (computed: search + sort)
 ### Phase 1：基础层（预计 1 个迭代）
 
 1. 整理 `themes.css`、`utilities.css`、`index.css` 边界。
-2. 创建 `components/base/` 下 `BaseButton`、`BaseInput`、`BaseSearch`、`BaseTag`、`BaseBadge`、`BaseCard`、`BaseModal`、`BaseEmptyState`、`BaseSkeleton`。
-3. 创建 `composables/useViewMode.js`。
-4. 补充对应单元测试。
+2. 创建/强化 `components/base/` 下 `BaseButton`、`BaseInput`、`BaseSearch`、`BaseTag`、`BaseCard`、`BaseModal`、`BaseEmptyState`、`BaseSkeleton`。
+3. 强化已有 `BaseBadge`、`BaseIconButton`（补全 variant/size/loading 状态）。
+4. 创建 `composables/useViewMode.js`。
+5. 补充对应单元测试。
 
 ### Phase 2：列表视图（预计 1-2 个迭代）
 
 1. 创建 `BaseTable`、`ViewToggle`。
-2. 在 HTTP 规则页、L4 规则页实现卡片/列表切换。
+2. 在 HTTP 规则页、L4 规则页实现卡片/列表切换；`RuleTable.vue` 由 `BaseTable` 替代。
 3. 在证书页、Relay 监听器页、WireGuard 配置页实现卡片/列表切换。
 4. 补充页面集成测试。
 
@@ -257,6 +264,7 @@ filteredRules (computed: search + sort)
 | 视图模式持久化 | localStorage / URL query / 后端偏好 | localStorage | 实现简单、无需后端改动 |
 | 列表实现 | 每页独立 / 统一 BaseTable | 统一 BaseTable | 保证一致性和可维护性 |
 | 迁移策略 | 大爆炸 / 分阶段 | 分阶段 | 风险低，可持续交付 |
+| 已有组件处理 | 全部重写 / 复用并强化 | 复用并强化 | BaseListCard、BaseBadge、BaseIconButton、BaseModal 已可用 |
 
 ---
 
@@ -270,23 +278,30 @@ panel/frontend/src/
 │   │   ├── BaseInput.vue
 │   │   ├── BaseSearch.vue
 │   │   ├── BaseTag.vue
-│   │   ├── BaseBadge.vue
-│   │   ├── BaseCard.vue
-│   │   ├── BaseModal.vue
+│   │   ├── BaseBadge.vue     # 已存在，强化
+│   │   ├── BaseCard.vue      # 已存在
+│   │   ├── BaseModal.vue     # 已存在
 │   │   ├── BaseTable.vue
 │   │   ├── BaseEmptyState.vue
 │   │   ├── BaseSkeleton.vue
 │   │   ├── BaseErrorState.vue
 │   │   └── ViewToggle.vue
 │   ├── rules/
-│   │   ├── RuleCard.vue      # 容器改用 BaseCard
-│   │   └── RuleListRow.vue   # 新增
+│   │   ├── RuleCard.vue      # 容器改用 BaseListCard（已用）
+│   │   ├── RuleTable.vue     # 待由 BaseTable 替代/删除
+│   │   └── RuleListRow.vue   # 新增（若需独立行组件）
 │   ├── l4/
-│   │   ├── L4RuleCard.vue    # 容器改用 BaseCard
+│   │   ├── L4RuleCard.vue    # 新增或基于 L4RuleItem 改造
 │   │   └── L4RuleListRow.vue # 新增
 │   ├── certs/
+│   │   ├── CertCard.vue      # 已存在
+│   │   └── CertListRow.vue   # 新增
 │   ├── relay/
+│   │   ├── RelayCard.vue     # 已存在
+│   │   └── RelayListRow.vue  # 新增
 │   └── wireguard/
+│       ├── WireGuardProfileCard.vue # 已存在
+│       └── WireGuardProfileListRow.vue # 新增
 ├── composables/
 │   └── useViewMode.js        # 新增
 ├── styles/
