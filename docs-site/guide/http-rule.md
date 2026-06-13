@@ -61,7 +61,45 @@ http://<服务器 IP>:8080
 - 源站地址 `origin.emby.example.net` 必须能从这台 VPS 访问。
 - 如果源站本身需要登录、邀请码或 Emby 账号，这些仍然按源站规则处理，反代不会绕过权限。
 
-## 6. 浏览器验证
+## 6. 如果要自动签 HTTPS 证书
+
+只用 `http://emby.example.com` 测试代理时，不需要 `CF_TOKEN`。
+
+`CF_TOKEN` 只在你要让面板通过 Cloudflare DNS 自动申请或续期 HTTPS 证书时使用。它的作用是让 ACME 客户端临时创建并删除 `_acme-challenge` TXT 记录，完成 DNS-01 验证。它不是面板登录令牌，也不会影响 HTTP 规则转发流量。
+
+使用 Cloudflare 时，在 `docker-compose.yaml` 里配置：
+
+```yaml
+environment:
+  ACME_DNS_PROVIDER: cf
+  CF_TOKEN: your-cloudflare-api-token
+```
+
+Cloudflare API Token 建议使用最小权限。新手可以创建一个 token，同时授予：
+
+| 权限 | 用途 |
+| --- | --- |
+| `Zone / Zone / Read` | 让 ACME 客户端查到域名属于哪个 Cloudflare Zone。 |
+| `Zone / DNS / Edit` | 创建和删除 `_acme-challenge` TXT 记录。 |
+
+资源范围限制到要签证书的域名所在 Zone，例如只给 `example.com` 这个 Zone 授权。申请 `emby.example.com` 或 `*.example.com` 证书时，token 必须能读到 `example.com` 这个 Zone，并能编辑这个 Zone 的 DNS 记录。
+
+如果你想把权限拆得更细，也可以使用两个 token：
+
+| 环境变量 | 权限 |
+| --- | --- |
+| `CF_TOKEN` | `Zone / DNS / Edit` |
+| `CLOUDFLARE_ZONE_API_TOKEN` | `Zone / Zone / Read` |
+
+没有单独配置 `CLOUDFLARE_ZONE_API_TOKEN` 时，程序会用 `CF_TOKEN` 同时做 Zone 查询和 DNS 记录修改，所以单 token 必须同时具备上面两项权限。
+
+`CF_TOKEN` 也可以写成 `CF_DNS_API_TOKEN` 或 `CLOUDFLARE_DNS_API_TOKEN`，含义相同。文档里统一使用 `CF_TOKEN`，只是为了让 Docker Compose 配置更短。
+
+如果申请证书时报 `failed to find zone`、`403` 或提示无法 list zones，通常是缺少 `Zone / Zone / Read`，或 token 的 Zone 资源范围没有包含这个域名。
+
+不要使用 Cloudflare Global API Key，也不要把 `CF_TOKEN` 提交到仓库。它只应该放在服务器上的 Compose 环境变量或安全的 secret 管理里。
+
+## 7. 浏览器验证
 
 在浏览器打开你的前端访问地址：
 
