@@ -9,13 +9,8 @@ on:
       - .github/workflows/docs-pages.yml
   workflow_dispatch:
 
-env:
-  PAGES_ENABLEMENT_TOKEN: ${{ secrets.PAGES_ENABLEMENT_TOKEN }}
-
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
@@ -35,16 +30,6 @@ jobs:
           cache: npm
           cache-dependency-path: docs-site/package-lock.json
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-        with:
-          # First-time auto-enablement requires a PAT/GitHub App token with
-          # Pages write + Administration write permissions. If this secret is
-          # not set, enable Pages once in repository Settings -> Pages and set
-          # Source to "GitHub Actions".
-          token: ${{ env.PAGES_ENABLEMENT_TOKEN || github.token }}
-          enablement: ${{ env.PAGES_ENABLEMENT_TOKEN != '' }}
-
       - name: Install dependencies
         working-directory: docs-site
         run: npm ci
@@ -53,18 +38,17 @@ jobs:
         working-directory: docs-site
         run: npm run build
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs-site/.vitepress/dist
-
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish to gh-pages branch
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf /tmp/nre-docs-dist
+          cp -R docs-site/.vitepress/dist /tmp/nre-docs-dist
+          git switch --orphan gh-pages
+          git rm -rf .
+          cp -R /tmp/nre-docs-dist/. .
+          touch .nojekyll
+          git add -A
+          git commit -m "deploy docs pages"
+          git push --force origin gh-pages
