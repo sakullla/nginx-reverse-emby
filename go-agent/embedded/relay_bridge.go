@@ -6,7 +6,7 @@ import (
 	"crypto/x509"
 	"net"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 type RelayHop struct {

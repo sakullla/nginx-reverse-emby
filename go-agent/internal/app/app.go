@@ -3,72 +3,32 @@ package app
 import (
 	"context"
 	"errors"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
+	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
+	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
+	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
+	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
+	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"log"
 	"os"
 	"reflect"
 	stdruntime "runtime"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
-	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
-	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
-type Config = config.Config
-type Snapshot = store.Snapshot
-type SyncRequest = agentsync.SyncRequest
+type Config = model.Config
+type Snapshot = core.Snapshot
+type SyncRequest = control.SyncRequest
 
 type SyncClient interface {
 	Sync(context.Context, SyncRequest) (Snapshot, error)
-}
-
-type CertificateApplier interface {
-	Apply(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
-}
-
-type ManagedCertificateReporter interface {
-	ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error)
-}
-
-type HTTPApplier interface {
-	Apply(context.Context, []model.HTTPRule) error
-	Close() error
-}
-
-type certCloser interface {
-	Close() error
-}
-
-type HTTPRelayAwareApplier interface {
-	ApplyWithRelay(context.Context, []model.HTTPRule, []model.RelayListener) error
-}
-
-type HTTPWireGuardAwareApplier interface {
-	ApplyWithRelayAndWireGuardProfiles(context.Context, []model.HTTPRule, []model.RelayListener, []model.WireGuardProfile) error
-}
-
-type HTTPEgressAwareApplier interface {
-	ApplyWithRelayWireGuardAndEgressProfiles(context.Context, []model.HTTPRule, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
-}
-
-type L4RelayAwareApplier interface {
-	ApplyWithRelay(context.Context, []model.L4Rule, []model.RelayListener) error
-}
-
-type L4EgressAwareApplier interface {
-	ApplyWithRelayWireGuardAndEgressProfiles(context.Context, []model.L4Rule, []model.RelayListener, []model.WireGuardProfile, []model.EgressProfile) error
 }
 
 type Updater interface {
@@ -76,46 +36,32 @@ type Updater interface {
 	Activate(stagedPath string, desiredVersion string) error
 }
 
-type hostTrafficCollector interface {
-	Snapshot() (hosttraffic.Snapshot, error)
-}
-
 type App struct {
-	cfg                           Config
-	syncClient                    SyncClient
-	store                         store.Store
-	httpApplier                   HTTPApplier
-	certApplier                   CertificateApplier
-	l4Applier                     L4Applier
-	relayApplier                  RelayApplier
-	updater                       Updater
-	runtime                       *agentruntime.Runtime
-	taskClient                    *agenttask.Client
-	diagnosticHandler             *agenttask.DiagnosticHandler
-	httpProber                    *diagnostics.HTTPProber
-	tcpProber                     *diagnostics.TCPProber
-	hostTrafficCollector          hostTrafficCollector
-	wireGuardRuntime              *sharedWireGuardRuntime
-	relayTimeoutReset             func()
-	closeOnce                     sync.Once
-	syncMu                        sync.Mutex
-	pendingTrafficStatsReportUnix string
+	cfg               Config
+	syncClient        SyncClient
+	store             core.Store
+	updater           Updater
+	runtime           *core.Runtime
+	taskClient        *control.TaskClient
+	moduleRegistry    *agentmodule.Registry
+	diagnosticModule  *modulediagnostics.Module
+	trafficReports    core.TrafficReporter
+	certReports       core.ManagedCertificateReporter
+	relayTimeoutReset func()
+	closeOnce         sync.Once
+	syncMu            sync.Mutex
 }
 
 func advertisedCapabilities(cfg Config) []string {
-	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"}
-	if cfg.WireGuardModuleEnabled() {
-		capabilities = append(capabilities, "wireguard")
-	}
-	capabilities = append(capabilities, "egress_profiles")
-	if cfg.HTTP3Enabled {
-		capabilities = append(capabilities, "http3_ingress")
-	}
-	return capabilities
+	return core.CapabilityNames(appCapabilitySource{cfg: cfg})
+}
+
+func newHTTPModuleFromConfigWithTLS(cfg Config, _ modulehttp.TLSMaterialProvider) *modulehttp.Module {
+	return newHTTPModuleFromConfig(cfg)
 }
 
 func normalizeConstructorConfig(cfg Config) Config {
-	defaults := config.Default()
+	defaults := model.Default()
 
 	if cfg.AgentID == "" {
 		cfg.AgentID = defaults.AgentID
@@ -132,7 +78,7 @@ func normalizeConstructorConfig(cfg Config) Config {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = defaults.HeartbeatInterval
 	}
-	if cfg.HTTPResilience == (config.HTTPResilienceConfig{}) {
+	if cfg.HTTPResilience == (model.HTTPResilienceConfig{}) {
 		cfg.HTTPResilience = defaults.HTTPResilience
 	}
 	if !cfg.TrafficStatsExplicit {
@@ -145,11 +91,107 @@ func normalizeConstructorConfig(cfg Config) Config {
 	return cfg
 }
 
+func newHTTPModuleFromConfig(cfg Config) *modulehttp.Module {
+	return modulehttp.NewModule(modulehttp.Config{
+		AgentID:      cfg.AgentID,
+		HTTP3Enabled: cfg.HTTP3Enabled,
+		Transport: modulehttp.TransportOptions{
+			DialTimeout:           cfg.HTTPTransport.DialTimeout,
+			TLSHandshakeTimeout:   cfg.HTTPTransport.TLSHandshakeTimeout,
+			ResponseHeaderTimeout: cfg.HTTPTransport.ResponseHeaderTimeout,
+			IdleConnTimeout:       cfg.HTTPTransport.IdleConnTimeout,
+			KeepAlive:             cfg.HTTPTransport.KeepAlive,
+			MaxConnsPerHost:       cfg.HTTPTransport.MaxConnsPerHost,
+		},
+		Resilience: modulehttp.StreamResilienceOptions{
+			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
+			ResumeMaxAttempts:        cfg.HTTPResilience.ResumeMaxAttempts,
+			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
+		},
+		BackendFailures: backendCacheConfigFromAppConfig(cfg),
+	})
+}
+
+func newL4ModuleFromConfig(cfg Config) *modulel4.Module {
+	return modulel4.NewModule(modulel4.Config{
+		AgentID:         cfg.AgentID,
+		BackendFailures: backendCacheConfigFromAppConfig(cfg),
+	})
+}
+
+func backendCacheConfigFromAppConfig(cfg Config) model.BackendCacheConfig {
+	if !cfg.HasExplicitBackendFailureOverrides() {
+		return model.BackendCacheConfig{}
+	}
+	return model.BackendCacheConfig{
+		FailureBackoffBase:  cfg.BackendFailures.BackoffBase,
+		FailureBackoffLimit: cfg.BackendFailures.BackoffLimit,
+	}
+}
+
+type configuredModules struct {
+	registry    *agentmodule.Registry
+	diagnostics *modulediagnostics.Module
+	traffic     core.TrafficReporter
+	certReports core.ManagedCertificateReporter
+}
+
+func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (configuredModules, error) {
+	certModule, err := modulecerts.NewManagedModule(cfg.DataDir, certOptions...)
+	if err != nil {
+		return configuredModules{}, err
+	}
+	diagnosticModule := modulediagnostics.NewModule()
+	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
+		Interfaces: cfg.TrafficInterfaces,
+		Enabled:    cfg.TrafficStatsEnabled,
+		EnabledSet: true,
+	})
+	registry, err := newAppModuleRegistry([]agentmodule.Module{
+		certModule,
+		diagnosticModule,
+		moduleegress.NewModule(nil),
+		newHTTPModuleFromConfig(cfg),
+		configuredWireGuardModule(cfg),
+		modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName}),
+		newL4ModuleFromConfig(cfg),
+		trafficModule,
+	})
+	if err != nil {
+		return configuredModules{}, err
+	}
+	return configuredModules{
+		registry:    registry,
+		diagnostics: diagnosticModule,
+		traffic:     trafficModule,
+		certReports: certModule,
+	}, nil
+}
+
+func newCapabilityModuleRegistry(cfg Config) (*agentmodule.Registry, error) {
+	return newAppModuleRegistry([]agentmodule.Module{
+		modulecerts.NewModule(nil),
+		modulediagnostics.NewModule(),
+		moduleegress.NewModule(nil),
+		newHTTPModuleFromConfig(cfg),
+		configuredWireGuardModule(cfg),
+		modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName}),
+		newL4ModuleFromConfig(cfg),
+		moduletraffic.NewModule(),
+	})
+}
+
+func configuredWireGuardModule(cfg Config) agentmodule.Module {
+	if !cfg.WireGuardModuleEnabled() {
+		return nil
+	}
+	return modulewireguard.NewManagedModule(nil)
+}
+
 func New(cfg Config) (*App, error) {
 	cfg = normalizeConstructorConfig(cfg)
-	traffic.SetEnabled(cfg.TrafficStatsEnabled)
 
-	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
+	resetRelayTimeouts := modulerelay.ConfigureTimeouts(modulerelay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
 		HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
 		FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
@@ -162,16 +204,25 @@ func New(cfg Config) (*App, error) {
 		}
 	}()
 
-	st, err := store.NewFilesystem(cfg.DataDir)
+	st, err := core.NewFilesystem(cfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
-	client := agentsync.NewClient(agentsync.ClientConfig{
+	executablePath, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	modules, err := newConfiguredModules(cfg)
+	if err != nil {
+		return nil, err
+	}
+	capabilities := core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: modules.registry})
+	client := control.NewSyncClient(control.SyncClientConfig{
 		MasterURL:      cfg.MasterURL,
 		AgentToken:     cfg.AgentToken,
 		AgentID:        cfg.AgentID,
 		AgentName:      cfg.AgentName,
-		Capabilities:   advertisedCapabilities(cfg),
+		Capabilities:   capabilities,
 		CurrentVersion: cfg.CurrentVersion,
 		Platform:       stdruntime.GOOS + "-" + stdruntime.GOARCH,
 		RuntimePackage: model.RuntimePackage{
@@ -182,152 +233,165 @@ func New(cfg Config) (*App, error) {
 		},
 		HTTPTransport: cfg.HTTPTransport,
 	}, nil)
-	certManager, err := certs.NewManager(cfg.DataDir)
-	if err != nil {
-		return nil, err
-	}
-	executablePath, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	wireGuardRuntime := newSharedWireGuardRuntime()
-	httpManager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(certManager, cfg.HTTP3Enabled, cfg, wireGuardRuntime, false)
-	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
-	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
-	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
-	taskClient := agenttask.NewClient(agenttask.ClientConfig{
+	taskClient := control.NewTaskClient(control.TaskClientConfig{
 		MasterURL:     cfg.MasterURL,
 		AgentToken:    cfg.AgentToken,
 		AgentID:       cfg.AgentID,
 		AgentName:     cfg.AgentName,
 		Version:       cfg.CurrentVersion,
-		Capabilities:  advertisedCapabilities(cfg),
+		Capabilities:  capabilities,
 		ReconnectWait: time.Second,
 		HTTPTransport: cfg.HTTPTransport,
-		Handler:       diagnosticHandler,
+		Handler:       modules.diagnostics,
 	})
 	app := newAppWithAllDeps(
 		cfg,
 		st,
 		client,
-		httpManager,
-		certManager,
-		l4Manager,
-		newRelayRuntimeManagerWithWireGuard(certManager, wireGuardRuntime),
-		agentupdate.NewManager(
+		core.NewUpdateManager(
 			cfg.DataDir,
 			executablePath,
 			os.Args,
 			os.Environ(),
-			platformlinux.ExecReplacement,
+			execReplacement,
 			nil,
 		),
 		taskClient,
 	)
-	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
-	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
-	app.wireGuardRuntime = wireGuardRuntime
+	app.setConfiguredModules(modules)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil
 }
 
-func newAppWithDeps(
-	cfg Config,
-	st store.Store,
-	client SyncClient,
-	certApplier CertificateApplier,
-	l4Applier L4Applier,
-	relayApplier RelayApplier,
-) *App {
-	return newAppWithAllDeps(cfg, st, client, nil, certApplier, l4Applier, relayApplier, nil, nil)
+func newAppModuleRegistry(modules []agentmodule.Module) (*agentmodule.Registry, error) {
+	registry := agentmodule.NewRegistry()
+	for _, mod := range modules {
+		if mod == nil {
+			continue
+		}
+		if err := registry.Register(mod); err != nil {
+			return nil, err
+		}
+	}
+	return registry, nil
 }
 
-func newAppWithHTTPDeps(
-	cfg Config,
-	st store.Store,
-	client SyncClient,
-	httpApplier HTTPApplier,
-	certApplier CertificateApplier,
-	l4Applier L4Applier,
-	relayApplier RelayApplier,
-) *App {
-	return newAppWithAllDeps(cfg, st, client, httpApplier, certApplier, l4Applier, relayApplier, nil, nil)
+type appCapabilitySource struct {
+	cfg      Config
+	registry *agentmodule.Registry
+}
+
+func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []agentmodule.Capability {
+	capabilities := []agentmodule.Capability{
+		{Name: "http_rules", Enabled: true},
+		{Name: "cert_install", Enabled: true},
+		{Name: "local_acme", Enabled: true},
+		{Name: "l4", Enabled: true},
+		{Name: "relay_quic", Enabled: true},
+	}
+	if s.cfg.WireGuardModuleEnabled() {
+		capabilities = append(capabilities, agentmodule.Capability{Name: "wireguard", Enabled: true})
+	}
+	capabilities = append(capabilities, agentmodule.Capability{Name: "egress_profiles", Enabled: true})
+	if s.cfg.HTTP3Enabled {
+		capabilities = append(capabilities, agentmodule.Capability{Name: "http3_ingress", Enabled: true})
+	}
+	return capabilities
 }
 
 func newAppWithAllDeps(
 	cfg Config,
-	st store.Store,
+	st core.Store,
 	client SyncClient,
-	httpApplier HTTPApplier,
-	certApplier CertificateApplier,
-	l4Applier L4Applier,
-	relayApplier RelayApplier,
 	updater Updater,
-	taskClient *agenttask.Client,
+	taskClient *control.TaskClient,
 ) *App {
 	if cfg.HeartbeatInterval <= 0 {
-		cfg.HeartbeatInterval = config.Default().HeartbeatInterval
+		cfg.HeartbeatInterval = model.Default().HeartbeatInterval
 	}
 	app := &App{
-		cfg:          cfg,
-		store:        st,
-		syncClient:   client,
-		httpApplier:  httpApplier,
-		certApplier:  certApplier,
-		l4Applier:    l4Applier,
-		relayApplier: relayApplier,
-		updater:      updater,
-		taskClient:   taskClient,
+		cfg:        cfg,
+		store:      st,
+		syncClient: client,
+		updater:    updater,
+		taskClient: taskClient,
 	}
-	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
+	app.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(nil))
 	return app
 }
 
-func newRuntimeDiagnosticProbers(relayProvider relay.TLSMaterialProvider, httpApplier HTTPApplier, l4Applier L4Applier) (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
-	httpCfg := diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: relayProvider}
-	if manager, ok := httpApplier.(*httpRuntimeManager); ok {
-		httpCfg.Cache = manager.cache
+func (a *App) setConfiguredModules(modules configuredModules) {
+	if a == nil {
+		return
 	}
-	tcpCfg := diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: relayProvider}
-	if manager, ok := l4Applier.(*l4RuntimeManager); ok {
-		tcpCfg.Cache = manager.cache
-	}
-	return diagnostics.NewHTTPProber(httpCfg), diagnostics.NewTCPProber(tcpCfg)
+	a.moduleRegistry = modules.registry
+	a.diagnosticModule = modules.diagnostics
+	a.trafficReports = modules.traffic
+	a.certReports = modules.certReports
+	a.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(modules.registry))
 }
 
-func (a *App) setDiagnostics(handler *agenttask.DiagnosticHandler, httpProber *diagnostics.HTTPProber, tcpProber *diagnostics.TCPProber) {
-	a.diagnosticHandler = handler
-	a.httpProber = httpProber
-	a.tcpProber = tcpProber
+func (a *App) ModuleNames() []string {
+	if a == nil || a.moduleRegistry == nil {
+		return nil
+	}
+	return a.moduleRegistry.Names()
 }
 
 func (a *App) Diagnose(ctx context.Context, taskType string, ruleID int) (map[string]any, error) {
-	if a == nil || a.diagnosticHandler == nil {
+	if a == nil {
 		return nil, errors.New("diagnostic handler is not configured")
 	}
-	return a.diagnosticHandler.HandleTask(ctx, agenttask.TaskMessage{
+	msg := control.TaskMessage{
+		TaskType:   taskType,
+		RawPayload: map[string]any{"rule_id": ruleID},
+	}
+	if a.diagnosticModule != nil && a.diagnosticModule.Handler() != nil {
+		return a.diagnosticModule.HandleTask(ctx, msg)
+	}
+	return nil, errors.New("diagnostic handler is not configured")
+}
+
+func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType string, ruleID int) (map[string]any, error) {
+	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
+		return nil, err
+	}
+	diagnosticModule, err := a.snapshotDiagnosticModule(ctx, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	if diagnosticModule == nil {
+		return nil, errors.New("diagnostic handler is not configured")
+	}
+	return diagnosticModule.HandleSnapshotTask(ctx, snapshot, control.TaskMessage{
 		TaskType:   taskType,
 		RawPayload: map[string]any{"rule_id": ruleID},
 	})
 }
 
-func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType string, ruleID int) (map[string]any, error) {
-	if a == nil || a.httpProber == nil || a.tcpProber == nil {
-		return nil, errors.New("diagnostic handler is not configured")
+func (a *App) snapshotDiagnosticModule(ctx context.Context, snapshot Snapshot) (*modulediagnostics.Module, error) {
+	if a == nil {
+		return nil, nil
 	}
-	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
+	if a.diagnosticModule != nil && a.diagnosticModule.HTTPProber() != nil && a.diagnosticModule.TCPProber() != nil {
+		return a.diagnosticModule, nil
+	}
+	if a.moduleRegistry == nil {
+		return a.diagnosticModule, nil
+	}
+	providers, err := a.moduleRegistry.ProviderResolver()
+	if err != nil {
 		return nil, err
 	}
-	mem := store.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
+	diagnosticModule := modulediagnostics.NewModule()
+	if err := diagnosticModule.Apply(ctx, agentmodule.ApplyRequest{
+		Next:      snapshot,
+		Providers: providers,
+	}); err != nil {
 		return nil, err
 	}
-	handler := agenttask.NewDiagnosticHandler(mem, a.httpProber, a.tcpProber)
-	return handler.HandleTask(ctx, agenttask.TaskMessage{
-		TaskType:   taskType,
-		RawPayload: map[string]any{"rule_id": ruleID},
-	})
+	return diagnosticModule, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -342,22 +406,22 @@ func (a *App) Run(ctx context.Context) error {
 	hydratedApplied := a.hydrateAppliedSnapshotFromDesired(applied)
 	if err := a.runtime.Apply(ctx, Snapshot{}, hydratedApplied); err != nil {
 		log.Printf("[agent] startup runtime hydration error at revision %d: %v", applied.Revision, err)
-		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
+		_ = a.syncController().RecordRuntimeErrorWithRevision(err, applied.Revision)
 	} else {
 		if !reflect.DeepEqual(applied, hydratedApplied) {
 			if err := a.store.SaveAppliedSnapshot(hydratedApplied); err != nil {
 				log.Printf("[agent] startup applied snapshot hydration save error at revision %d: %v", hydratedApplied.Revision, err)
-				_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
+				_ = a.syncController().RecordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
 			}
 		}
-		if err := a.persistTrafficStatsInterval(hydratedApplied.AgentConfig.TrafficStatsInterval); err != nil {
+		if err := a.syncController().PersistTrafficStatsInterval(hydratedApplied.AgentConfig.TrafficStatsInterval); err != nil {
 			log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", hydratedApplied.Revision, err)
-			_ = a.recordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
+			_ = a.syncController().RecordRuntimeErrorWithRevision(err, hydratedApplied.Revision)
 		}
 	}
 
 	if err := a.performSync(ctx); err != nil {
-		if errors.Is(err, agentupdate.ErrRestartRequested) {
+		if errors.Is(err, core.ErrRestartRequested) {
 			return nil
 		}
 		if applied.DesiredVersion == "" && applied.Revision == 0 {
@@ -381,7 +445,7 @@ func (a *App) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := a.performSync(ctx); errors.Is(err, agentupdate.ErrRestartRequested) {
+			if err := a.performSync(ctx); errors.Is(err, core.ErrRestartRequested) {
 				return nil
 			}
 		}
@@ -396,7 +460,7 @@ func (a *App) hydrateAppliedSnapshotFromDesired(applied Snapshot) Snapshot {
 	if err != nil || !desiredCanHydrateApplied(applied, desired) {
 		return applied
 	}
-	return mergeSnapshotPayload(applied, desired)
+	return core.MergeSnapshotPayload(applied, desired)
 }
 
 func desiredCanHydrateApplied(applied, desired Snapshot) bool {
@@ -440,11 +504,12 @@ func (a *App) performSync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req, err := a.syncRequest(ctx, applied)
+	controller := a.syncController()
+	plan, err := controller.BuildSyncPlan(ctx, applied)
 	if err != nil {
 		return err
 	}
-	return a.syncOnce(ctx, req)
+	return controller.PerformSyncPlan(ctx, plan)
 }
 
 func (a *App) SyncNow(ctx context.Context) error {
@@ -452,53 +517,12 @@ func (a *App) SyncNow(ctx context.Context) error {
 }
 
 func (a *App) closeLocalRuntimes() {
-	if closer, ok := a.certApplier.(certCloser); ok {
-		_ = closer.Close()
-	}
-	if a.httpApplier != nil {
-		_ = a.httpApplier.Close()
-	}
-	if a.relayApplier != nil {
-		_ = a.relayApplier.Close()
-	}
-	if a.l4Applier != nil {
-		_ = a.l4Applier.Close()
-	}
-	if a.wireGuardRuntime != nil {
-		_ = a.wireGuardRuntime.Close()
-		a.wireGuardRuntime = nil
+	if a.moduleRegistry != nil {
+		_ = a.moduleRegistry.StopAll(context.Background())
+		a.moduleRegistry = nil
 	}
 	if a.relayTimeoutReset != nil {
 		a.relayTimeoutReset()
 		a.relayTimeoutReset = nil
 	}
-}
-
-func (a *App) handlePendingUpdate(ctx context.Context, snapshot Snapshot) error {
-	if !agentupdate.HasValidPackage(snapshot.VersionPackage) {
-		return nil
-	}
-	desiredSHA := strings.TrimSpace(snapshot.VersionPackage.SHA256)
-	if desiredSHA == "" {
-		return nil
-	}
-	currentSHA := strings.TrimSpace(a.cfg.RuntimePackageSHA256)
-	if currentSHA != "" && strings.EqualFold(currentSHA, desiredSHA) {
-		return nil
-	}
-	if a.updater == nil {
-		return a.recordRuntimeError(errors.New("updater unavailable"))
-	}
-
-	stagedPath, err := a.updater.Stage(ctx, *snapshot.VersionPackage)
-	if err != nil {
-		return a.recordRuntimeError(err)
-	}
-	if err := a.updater.Activate(stagedPath, snapshot.DesiredVersion); err != nil {
-		if errors.Is(err, agentupdate.ErrRestartRequested) {
-			return err
-		}
-		return a.recordRuntimeError(err)
-	}
-	return agentupdate.ErrRestartRequested
 }

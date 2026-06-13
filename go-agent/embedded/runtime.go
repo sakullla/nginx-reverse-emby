@@ -8,9 +8,8 @@ import (
 	"time"
 
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 type Snapshot = model.Snapshot
@@ -95,15 +94,15 @@ type Runtime struct {
 
 const stateRootDir = "embedded-agent-state"
 
-var newPersistentStore = func(dataDir string, sink StateSink) (agentstore.Store, error) {
-	delegate, err := agentstore.NewFilesystem(filepath.Join(dataDir, stateRootDir))
+var newPersistentStore = func(dataDir string, sink StateSink) (agentcore.Store, error) {
+	delegate, err := agentcore.NewFilesystem(filepath.Join(dataDir, stateRootDir))
 	if err != nil {
 		return nil, err
 	}
 	return &persistentBridgeStore{delegate: delegate, sink: sink}, nil
 }
 
-var newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+var newEmbeddedApp = func(cfg agentapp.Config, st agentcore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
 	return agentapp.NewEmbedded(cfg, st, client)
 }
 
@@ -137,7 +136,7 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 		TrafficStatsExplicit: cfg.TrafficStatsExplicit,
 		WireGuardEnabled:     cfg.WireGuardEnabled,
 		WireGuardExplicit:    cfg.WireGuardExplicit,
-		HTTPTransport: config.HTTPTransportConfig{
+		HTTPTransport: model.HTTPTransportConfig{
 			DialTimeout:           cfg.HTTPTransport.DialTimeout,
 			TLSHandshakeTimeout:   cfg.HTTPTransport.TLSHandshakeTimeout,
 			ResponseHeaderTimeout: cfg.HTTPTransport.ResponseHeaderTimeout,
@@ -145,17 +144,17 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 			KeepAlive:             cfg.HTTPTransport.KeepAlive,
 			MaxConnsPerHost:       cfg.HTTPTransport.MaxConnsPerHost,
 		},
-		HTTPResilience: config.HTTPResilienceConfig{
+		HTTPResilience: model.HTTPResilienceConfig{
 			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
 			ResumeMaxAttempts:        cfg.HTTPResilience.ResumeMaxAttempts,
 			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
 		},
-		BackendFailures: config.BackendFailureConfig{
+		BackendFailures: model.BackendFailureConfig{
 			BackoffBase:  cfg.BackendFailures.BackoffBase,
 			BackoffLimit: cfg.BackendFailures.BackoffLimit,
 		},
 		BackendFailuresExplicit: cfg.BackendFailuresExplicit,
-		RelayTimeouts: config.RelayTimeoutConfig{
+		RelayTimeouts: model.RelayTimeoutConfig{
 			DialTimeout:      cfg.RelayTimeouts.DialTimeout,
 			HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
 			FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
@@ -218,7 +217,7 @@ func (a syncClientAdapter) Sync(ctx context.Context, request agentapp.SyncReques
 }
 
 type persistentBridgeStore struct {
-	delegate agentstore.Store
+	delegate agentcore.Store
 	sink     StateSink
 }
 
@@ -271,13 +270,17 @@ func sanitizeSnapshot(snapshot Snapshot) Snapshot {
 
 func copyRuntimeState(state RuntimeState) RuntimeState {
 	copyValue := state
-	if state.Metadata == nil {
-		return copyValue
-	}
-
-	copyValue.Metadata = make(map[string]string, len(state.Metadata))
-	for key, value := range state.Metadata {
-		copyValue.Metadata[key] = value
-	}
+	copyValue.Metadata = cloneRuntimeMetadata(state.Metadata)
 	return copyValue
+}
+
+func cloneRuntimeMetadata(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }

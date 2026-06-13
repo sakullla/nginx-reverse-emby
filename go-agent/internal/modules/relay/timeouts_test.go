@@ -1,0 +1,499 @@
+package relay
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net"
+	"testing"
+	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+)
+
+type fakeRelayTCPBufferConn struct {
+	readBuffer  int
+	writeBuffer int
+	noDelay     bool
+}
+
+func (c *fakeRelayTCPBufferConn) Read(_ []byte) (int, error)         { return 0, io.EOF }
+func (c *fakeRelayTCPBufferConn) Write(p []byte) (int, error)        { return len(p), nil }
+func (c *fakeRelayTCPBufferConn) Close() error                       { return nil }
+func (c *fakeRelayTCPBufferConn) LocalAddr() net.Addr                { return nil }
+func (c *fakeRelayTCPBufferConn) RemoteAddr() net.Addr               { return nil }
+func (c *fakeRelayTCPBufferConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *fakeRelayTCPBufferConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *fakeRelayTCPBufferConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+func (c *fakeRelayTCPBufferConn) SetReadBuffer(bytes int) error {
+	c.readBuffer = bytes
+	return nil
+}
+
+func (c *fakeRelayTCPBufferConn) SetWriteBuffer(bytes int) error {
+	c.writeBuffer = bytes
+	return nil
+}
+
+func (c *fakeRelayTCPBufferConn) SetNoDelay(noDelay bool) error {
+	c.noDelay = noDelay
+	return nil
+}
+
+func TestConfigureTimeoutsOverridesRelayPackageTimeouts(t *testing.T) {
+	reset := ConfigureTimeouts(TimeoutConfig{
+		DialTimeout:      9 * time.Second,
+		HandshakeTimeout: 8 * time.Second,
+		FrameTimeout:     7 * time.Second,
+		IdleTimeout:      6 * time.Second,
+	})
+	defer reset()
+
+	if relayDialTimeout != 9*time.Second {
+		t.Fatalf("relayDialTimeout = %v", relayDialTimeout)
+	}
+	if relayIdleTimeout != 6*time.Second {
+		t.Fatalf("relayIdleTimeout = %v", relayIdleTimeout)
+	}
+}
+
+func TestConfigureTimeoutsAppliesNonZeroValuesAndResets(t *testing.T) {
+	resetBase := ConfigureTimeouts(TimeoutConfig{
+		DialTimeout:      4 * time.Second,
+		HandshakeTimeout: 5 * time.Second,
+		FrameTimeout:     6 * time.Second,
+		IdleTimeout:      7 * time.Second,
+	})
+	defer resetBase()
+
+	reset := ConfigureTimeouts(TimeoutConfig{
+		DialTimeout: 11 * time.Second,
+		IdleTimeout: 13 * time.Second,
+	})
+	if relayDialTimeout != 11*time.Second {
+		t.Fatalf("relayDialTimeout = %v", relayDialTimeout)
+	}
+	if relayHandshakeTimeout != 5*time.Second {
+		t.Fatalf("relayHandshakeTimeout = %v", relayHandshakeTimeout)
+	}
+	if relayFrameTimeout != 6*time.Second {
+		t.Fatalf("relayFrameTimeout = %v", relayFrameTimeout)
+	}
+	if relayIdleTimeout != 13*time.Second {
+		t.Fatalf("relayIdleTimeout = %v", relayIdleTimeout)
+	}
+
+	reset()
+	if relayDialTimeout != 4*time.Second {
+		t.Fatalf("relayDialTimeout after reset = %v", relayDialTimeout)
+	}
+	if relayIdleTimeout != 7*time.Second {
+		t.Fatalf("relayIdleTimeout after reset = %v", relayIdleTimeout)
+	}
+}
+
+func TestConfigureTimeoutsResetDoesNotOverwriteNewerConfiguration(t *testing.T) {
+	resetOuter := ConfigureTimeouts(TimeoutConfig{
+		DialTimeout:      4 * time.Second,
+		HandshakeTimeout: 5 * time.Second,
+		FrameTimeout:     6 * time.Second,
+		IdleTimeout:      7 * time.Second,
+	})
+	defer resetOuter()
+
+	resetInner := ConfigureTimeouts(TimeoutConfig{
+		DialTimeout:      11 * time.Second,
+		HandshakeTimeout: 12 * time.Second,
+		FrameTimeout:     13 * time.Second,
+		IdleTimeout:      14 * time.Second,
+	})
+
+	resetOuter()
+	if relayDialTimeout != 11*time.Second {
+		t.Fatalf("relayDialTimeout after stale reset = %v", relayDialTimeout)
+	}
+	if relayHandshakeTimeout != 12*time.Second {
+		t.Fatalf("relayHandshakeTimeout after stale reset = %v", relayHandshakeTimeout)
+	}
+	if relayFrameTimeout != 13*time.Second {
+		t.Fatalf("relayFrameTimeout after stale reset = %v", relayFrameTimeout)
+	}
+	if relayIdleTimeout != 14*time.Second {
+		t.Fatalf("relayIdleTimeout after stale reset = %v", relayIdleTimeout)
+	}
+
+	resetInner()
+	if relayDialTimeout != 5*time.Second {
+		t.Fatalf("relayDialTimeout after inner reset = %v", relayDialTimeout)
+	}
+	if relayHandshakeTimeout != 5*time.Second {
+		t.Fatalf("relayHandshakeTimeout after inner reset = %v", relayHandshakeTimeout)
+	}
+	if relayFrameTimeout != 5*time.Second {
+		t.Fatalf("relayFrameTimeout after inner reset = %v", relayFrameTimeout)
+	}
+	if relayIdleTimeout != 2*time.Minute {
+		t.Fatalf("relayIdleTimeout after inner reset = %v", relayIdleTimeout)
+	}
+}
+
+func TestTuneBulkRelayConnAppliesReadAndWriteBuffers(t *testing.T) {
+	conn := &fakeRelayTCPBufferConn{}
+
+	tuneBulkRelayConn(conn)
+
+	if conn.readBuffer != relayBulkSocketBufferBytes {
+		t.Fatalf("readBuffer = %d, want %d", conn.readBuffer, relayBulkSocketBufferBytes)
+	}
+	if conn.writeBuffer != relayBulkSocketBufferBytes {
+		t.Fatalf("writeBuffer = %d, want %d", conn.writeBuffer, relayBulkSocketBufferBytes)
+	}
+}
+
+func TestTuneBulkRelayConnIgnoresUnsupportedConnections(t *testing.T) {
+	tuneBulkRelayConn(struct{}{})
+}
+
+func TestIdleDeadlineConnReadFromRefreshesWriteDeadlinePerChunk(t *testing.T) {
+	conn := &recordingBulkConn{}
+	wrapped := &idleDeadlineConn{Conn: conn, timeout: time.Minute}
+
+	n, err := wrapped.ReadFrom(&relayChunkedReader{chunks: [][]byte{
+		[]byte("first"),
+		[]byte("second"),
+	}})
+	if err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if n != int64(len("firstsecond")) {
+		t.Fatalf("ReadFrom() = %d, want %d", n, len("firstsecond"))
+	}
+	if conn.writeDeadlineCalls < 2 {
+		t.Fatalf("SetWriteDeadline calls = %d, want at least 2", conn.writeDeadlineCalls)
+	}
+}
+
+func TestIdleDeadlineConnWriteToRefreshesReadDeadlinePerChunk(t *testing.T) {
+	conn := &recordingBulkConn{readChunks: [][]byte{
+		[]byte("first"),
+		[]byte("second"),
+	}}
+	wrapped := &idleDeadlineConn{Conn: conn, timeout: time.Minute}
+
+	var dst bytes.Buffer
+	n, err := wrapped.WriteTo(&dst)
+	if err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
+	}
+	if n != int64(len("firstsecond")) {
+		t.Fatalf("WriteTo() = %d, want %d", n, len("firstsecond"))
+	}
+	if got := dst.String(); got != "firstsecond" {
+		t.Fatalf("WriteTo() payload = %q, want %q", got, "firstsecond")
+	}
+	if conn.readDeadlineCalls < 2 {
+		t.Fatalf("SetReadDeadline calls = %d, want at least 2", conn.readDeadlineCalls)
+	}
+}
+
+func TestDialTCPDoesNotTuneSocketBuffersForDirectConnections(t *testing.T) {
+	originalDial := relayDialContext
+	conn := &fakeRelayTCPBufferConn{}
+	relayDialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+		if network != "tcp" {
+			t.Fatalf("network = %q, want tcp", network)
+		}
+		if address != "relay.example:443" {
+			t.Fatalf("address = %q, want relay.example:443", address)
+		}
+		return conn, nil
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	got, err := dialTCP(context.Background(), "relay.example:443")
+	if err != nil {
+		t.Fatalf("dialTCP() error = %v", err)
+	}
+	if got != conn {
+		t.Fatalf("dialTCP() returned unexpected connection")
+	}
+	if conn.readBuffer != 0 {
+		t.Fatalf("readBuffer = %d, want 0", conn.readBuffer)
+	}
+	if conn.writeBuffer != 0 {
+		t.Fatalf("writeBuffer = %d, want 0", conn.writeBuffer)
+	}
+}
+
+func TestDialRelayTCPTunesSocketBuffersForRelayConnections(t *testing.T) {
+	originalDial := relayDialContext
+	conn := &fakeRelayTCPBufferConn{}
+	relayDialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+		if network != "tcp" {
+			t.Fatalf("network = %q, want tcp", network)
+		}
+		if address != "127.0.0.1:443" {
+			t.Fatalf("address = %q, want 127.0.0.1:443", address)
+		}
+		return conn, nil
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	got, err := dialRelayTCP(context.Background(), "127.0.0.1:443")
+	if err != nil {
+		t.Fatalf("dialRelayTCP() error = %v", err)
+	}
+	if got != conn {
+		t.Fatalf("dialRelayTCP() returned unexpected connection")
+	}
+	if conn.readBuffer != relayBulkSocketBufferBytes {
+		t.Fatalf("readBuffer = %d, want %d", conn.readBuffer, relayBulkSocketBufferBytes)
+	}
+	if conn.writeBuffer != relayBulkSocketBufferBytes {
+		t.Fatalf("writeBuffer = %d, want %d", conn.writeBuffer, relayBulkSocketBufferBytes)
+	}
+	if !conn.noDelay {
+		t.Fatal("relay TCP connection should enable TCP_NODELAY")
+	}
+}
+
+func TestDialRelayTCPResolvesHostThroughRelayHopCache(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay.example": {{IP: net.ParseIP("203.0.113.10")}},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	originalDial := relayDialContext
+	conn := &fakeRelayTCPBufferConn{}
+	var calls []string
+	relayDialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+		if network != "tcp" {
+			t.Fatalf("network = %q, want tcp", network)
+		}
+		calls = append(calls, address)
+		return conn, nil
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	for i := 0; i < 2; i++ {
+		got, err := dialRelayTCP(context.Background(), "relay.example:9443")
+		if err != nil {
+			t.Fatalf("dialRelayTCP(%d) error = %v", i, err)
+		}
+		if got != conn {
+			t.Fatalf("dialRelayTCP(%d) returned unexpected connection", i)
+		}
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1 cached lookup", resolver.calls)
+	}
+	wantAddress := "203.0.113.10:9443"
+	if len(calls) != 2 || calls[0] != wantAddress || calls[1] != wantAddress {
+		t.Fatalf("dial addresses = %+v, want two calls to %s", calls, wantAddress)
+	}
+}
+
+func TestDialRelayTCPTryNextResolvedAddressAfterFailure(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay.example": {
+				{IP: net.ParseIP("203.0.113.10")},
+				{IP: net.ParseIP("203.0.113.11")},
+			},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	originalDial := relayDialContext
+	conn := &fakeRelayTCPBufferConn{}
+	var calls []string
+	relayDialContext = func(_ context.Context, _ string, address string) (net.Conn, error) {
+		calls = append(calls, address)
+		if address == "203.0.113.10:9443" {
+			return nil, errors.New("first resolved address failed")
+		}
+		return conn, nil
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	got, err := dialRelayTCP(context.Background(), "relay.example:9443")
+	if err != nil {
+		t.Fatalf("dialRelayTCP() error = %v", err)
+	}
+	if got != conn {
+		t.Fatalf("dialRelayTCP() returned unexpected connection")
+	}
+	want := []string{"203.0.113.10:9443", "203.0.113.11:9443"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("dial addresses = %+v, want %+v", calls, want)
+	}
+}
+
+func TestDialRelayTCPDoesNotBackoffResolvedAddressesOnCallerCancellation(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay.example": {
+				{IP: net.ParseIP("203.0.113.10")},
+				{IP: net.ParseIP("203.0.113.11")},
+			},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	originalDial := relayDialContext
+	var calls []string
+	relayDialContext = func(ctx context.Context, _ string, address string) (net.Conn, error) {
+		calls = append(calls, address)
+		return nil, ctx.Err()
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := dialRelayHopTCP(ctx, "relay.example:9443")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("dialRelayHopTCP() error = %v, want context.Canceled", err)
+	}
+	want := []string{"203.0.113.10:9443", "203.0.113.11:9443"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("dial addresses = %+v, want %+v", calls, want)
+	}
+	for _, address := range want {
+		if relayHopCache.IsInBackoff(address) {
+			t.Fatalf("caller cancellation put %s into relay hop backoff", address)
+		}
+	}
+}
+
+func TestRelayTCPDialerEnablesMultipathTCP(t *testing.T) {
+	dialer := newRelayTCPDialer()
+
+	if !dialer.MultipathTCP() {
+		t.Fatal("relay TCP dialer should enable MPTCP")
+	}
+}
+
+func TestRelayTCPListenConfigEnablesMultipathTCP(t *testing.T) {
+	listenConfig := newRelayTCPListenConfig()
+
+	if !listenConfig.MultipathTCP() {
+		t.Fatal("relay TCP listener should enable MPTCP")
+	}
+}
+
+func TestTuneBulkRelayConnEnablesNoDelay(t *testing.T) {
+	conn := &fakeRelayTCPBufferConn{}
+
+	tuneBulkRelayConn(conn)
+
+	if !conn.noDelay {
+		t.Fatal("TCP_NODELAY not enabled")
+	}
+}
+
+type recordingBulkConn struct {
+	readChunks         [][]byte
+	readDeadlineCalls  int
+	writeDeadlineCalls int
+}
+
+func (c *recordingBulkConn) Read(p []byte) (int, error) {
+	if len(c.readChunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := c.readChunks[0]
+	c.readChunks = c.readChunks[1:]
+	return copy(p, chunk), nil
+}
+
+func (c *recordingBulkConn) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (c *recordingBulkConn) Close() error                       { return nil }
+func (c *recordingBulkConn) LocalAddr() net.Addr                { return nil }
+func (c *recordingBulkConn) RemoteAddr() net.Addr               { return nil }
+func (c *recordingBulkConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *recordingBulkConn) SetReadDeadline(_ time.Time) error  { c.readDeadlineCalls++; return nil }
+func (c *recordingBulkConn) SetWriteDeadline(_ time.Time) error { c.writeDeadlineCalls++; return nil }
+
+func (c *recordingBulkConn) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(io.Discard, r)
+}
+
+func (c *recordingBulkConn) WriteTo(w io.Writer) (int64, error) {
+	var total int64
+	for {
+		buf := make([]byte, 1024)
+		n, err := c.Read(buf)
+		if n > 0 {
+			written, writeErr := w.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return total, nil
+			}
+			return total, err
+		}
+	}
+}
+
+type relayChunkedReader struct {
+	chunks [][]byte
+}
+
+func (r *relayChunkedReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := r.chunks[0]
+	r.chunks = r.chunks[1:]
+	return copy(p, chunk), nil
+}
+
+type stubRelayResolver struct {
+	answers map[string][]net.IPAddr
+	calls   int
+}
+
+func (r *stubRelayResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	r.calls++
+	if answers, ok := r.answers[host]; ok {
+		return append([]net.IPAddr(nil), answers...), nil
+	}
+	return nil, errors.New("unexpected host: " + host)
+}

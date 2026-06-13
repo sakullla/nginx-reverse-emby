@@ -662,6 +662,85 @@ func TestIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing
 	assertTrafficBucketAt(t, rows, "edge-1", "agent_total", "", time.Date(2026, 5, 15, 0, 0, 0, 0, shanghai), 200, 20)
 }
 
+func TestRetainedMonthlyResidualBytesReplacesRebuiltTargetRows(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing uint64
+		rebuilt  uint64
+		want     uint64
+	}{
+		{name: "same daily backed row", existing: 40, rebuilt: 40, want: 0},
+		{name: "residual only row smaller than rebuilt", existing: 25, rebuilt: 40, want: 25},
+		{name: "mixed row larger than rebuilt", existing: 65, rebuilt: 40, want: 25},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retainedMonthlyResidualBytes(tc.existing, tc.rebuilt); got != tc.want {
+				t.Fatalf("retainedMonthlyResidualBytes(%d, %d) = %d, want %d", tc.existing, tc.rebuilt, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTrafficPolicyMonthlyRebuildReplacesExistingTargetRow(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	now := nowTrafficTimestamp()
+	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 6,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&AgentTrafficDailySummaryRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		PeriodStart: "2026-01-20T00:00:00Z",
+		RXBytes:     10,
+		UpdatedAt:   now,
+		CreatedAt:   now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&AgentTrafficMonthlySummaryRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		PeriodStart: "2026-01-01T00:00:00Z",
+		RXBytes:     10,
+		UpdatedAt:   now,
+		CreatedAt:   now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SaveTrafficPolicyAndRebuildMonthlySummaries(ctx, AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 6,
+	}, true, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), 15); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "month",
+		From:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:          time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].RXBytes != 10 {
+		t.Fatalf("monthly rows = %+v, want rebuilt target row replaced without double-counting", rows)
+	}
+}
+
 func TestIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()

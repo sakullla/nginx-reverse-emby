@@ -3,15 +3,12 @@ package app
 import (
 	"errors"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
-	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
-func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
+func NewEmbedded(cfg Config, st core.Store, client SyncClient) (*App, error) {
 	if st == nil {
 		return nil, errors.New("store is required")
 	}
@@ -20,7 +17,6 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	}
 
 	cfg = normalizeConstructorConfig(cfg)
-	traffic.SetEnabled(cfg.TrafficStatsEnabled)
 
 	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
@@ -35,34 +31,23 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		}
 	}()
 
-	certManager, err := certs.NewManager(
-		cfg.DataDir,
-		certs.WithNodeRole("master"),
-		certs.WithLocalAgent(true),
+	modules, err := newConfiguredModules(
+		cfg,
+		modulecerts.WithNodeRole("master"),
+		modulecerts.WithLocalAgent(true),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	wireGuardRuntime := newSharedWireGuardRuntime()
-	httpManager := newHTTPRuntimeManagerWithTLSHTTP3ConfigAndWireGuard(certManager, cfg.HTTP3Enabled, cfg, wireGuardRuntime, false)
-	l4Manager := newL4RuntimeManagerWithRelayConfigAndWireGuard(certManager, cfg, wireGuardRuntime)
-	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
-	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	app := newAppWithAllDeps(
 		cfg,
 		st,
 		client,
-		httpManager,
-		certManager,
-		l4Manager,
-		newRelayRuntimeManagerWithWireGuard(certManager, wireGuardRuntime),
 		nil,
 		nil,
 	)
-	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
-	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
-	app.wireGuardRuntime = wireGuardRuntime
+	app.setConfiguredModules(modules)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil

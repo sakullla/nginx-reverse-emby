@@ -87,11 +87,15 @@ func (s *GormStore) GetTrafficPolicy(ctx context.Context, agentID string) (Agent
 func (s *GormStore) SaveTrafficPolicy(ctx context.Context, row AgentTrafficPolicyRow) error {
 	row.AgentID = s.resolveAgentID(row.AgentID)
 	normalizeTrafficPolicyRow(&row)
+	return saveTrafficPolicyTx(s.db.WithContext(ctx), row)
+}
+
+func saveTrafficPolicyTx(tx *gorm.DB, row AgentTrafficPolicyRow) error {
 	if row.CreatedAt == "" {
 		row.CreatedAt = nowTrafficTimestamp()
 	}
 	row.UpdatedAt = nowTrafficTimestamp()
-	return s.db.WithContext(ctx).
+	return tx.
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "agent_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -106,6 +110,20 @@ func (s *GormStore) SaveTrafficPolicy(ctx context.Context, row AgentTrafficPolic
 			}),
 		}).
 		Create(&row).Error
+}
+
+func (s *GormStore) SaveTrafficPolicyAndRebuildMonthlySummaries(ctx context.Context, row AgentTrafficPolicyRow, rebuild bool, from, to time.Time, previousCycleStartDay int) error {
+	row.AgentID = s.resolveAgentID(row.AgentID)
+	normalizeTrafficPolicyRow(&row)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := saveTrafficPolicyTx(tx, row); err != nil {
+			return err
+		}
+		if !rebuild {
+			return nil
+		}
+		return rebuildTrafficMonthlySummariesTx(tx, row.AgentID, from, to, previousCycleStartDay)
+	})
 }
 
 func (s *GormStore) ListTrafficPolicies(ctx context.Context) ([]AgentTrafficPolicyRow, error) {
@@ -521,6 +539,28 @@ func (s *GormStore) ListTrafficTrend(ctx context.Context, query TrafficTrendQuer
 	}
 }
 
+func (s *GormStore) EarliestTrafficDailySummaryStart(ctx context.Context, agentID string) (time.Time, bool, error) {
+	agentID = s.resolveAgentID(agentID)
+	var row AgentTrafficDailySummaryRow
+	err := s.db.WithContext(ctx).
+		Model(&AgentTrafficDailySummaryRow{}).
+		Where("agent_id = ?", agentID).
+		Order("period_start").
+		Limit(1).
+		Find(&row).Error
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if row.AgentID == "" {
+		return time.Time{}, false, nil
+	}
+	start, err := parseTrafficTime(row.PeriodStart)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return start, true, nil
+}
+
 func (s *GormStore) ListTrafficBreakdown(ctx context.Context, query TrafficTrendQuery) ([]TrafficBucketRow, error) {
 	var err error
 	query.AgentID = s.resolveAgentID(query.AgentID)
@@ -760,6 +800,30 @@ func (s *GormStore) DeleteTrafficBucketsByAgentInWindow(ctx context.Context, age
 	return deleted, err
 }
 
+func (s *GormStore) RebuildTrafficMonthlySummaries(ctx context.Context, agentID string, from, to time.Time) error {
+	agentID = s.resolveAgentID(agentID)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return rebuildTrafficMonthlySummariesTx(tx, agentID, from, to, 0)
+	})
+}
+
+func rebuildTrafficMonthlySummariesTx(tx *gorm.DB, agentID string, from, to time.Time, previousCycleStartDay int) error {
+	policy, err := trafficPolicyForTx(tx, agentID)
+	if err != nil {
+		return err
+	}
+	loc := from.Location()
+	if loc == nil {
+		loc = time.UTC
+	}
+	monthlyFrom := cycleMonthStart(from.In(loc), policy.CycleStartDay)
+	monthlyTo := cycleMonthEnd(to.In(loc), policy.CycleStartDay)
+	if monthlyTo.Equal(monthlyFrom) {
+		monthlyTo = monthlyTo.AddDate(0, 1, 0)
+	}
+	return rebuildMonthlyTrafficBuckets(tx, agentID, monthlyFrom, monthlyTo, previousCycleStartDay)
+}
+
 func (s *GormStore) deleteTrafficByAgentTx(tx *gorm.DB, agentID string) (int64, error) {
 	return deleteTrafficRows(tx, trafficAgentDataModels(), "agent_id = ?", agentID)
 }
@@ -831,7 +895,7 @@ func deleteTrafficBucketRowsInWindow(tx *gorm.DB, agentID string, from, to time.
 		}
 		deleted += result.RowsAffected
 	}
-	if err := rebuildMonthlyTrafficBuckets(tx, agentID, monthlyFrom, monthlyTo); err != nil {
+	if err := rebuildMonthlyTrafficBuckets(tx, agentID, monthlyFrom, monthlyTo, 0); err != nil {
 		return 0, err
 	}
 	return deleted, nil
@@ -862,7 +926,7 @@ func normalizeCycleStartDay(day int) int {
 	return day
 }
 
-func rebuildMonthlyTrafficBuckets(tx *gorm.DB, agentID string, from, to time.Time) error {
+func rebuildMonthlyTrafficBuckets(tx *gorm.DB, agentID string, from, to time.Time, previousCycleStartDay int) error {
 	if !tx.Migrator().HasTable(&AgentTrafficDailySummaryRow{}) || !tx.Migrator().HasTable(&AgentTrafficMonthlySummaryRow{}) {
 		return nil
 	}
@@ -883,13 +947,19 @@ func rebuildMonthlyTrafficBuckets(tx *gorm.DB, agentID string, from, to time.Tim
 		scopeID     string
 		periodStart string
 	}
+	type sourceRow struct {
+		row         AgentTrafficDailySummaryRow
+		periodStart time.Time
+	}
 	monthlyRows := map[key]AgentTrafficMonthlySummaryRow{}
+	sourceRows := make([]sourceRow, 0, len(dailyRows))
 	now := nowTrafficTimestamp()
 	for _, daily := range dailyRows {
 		periodStart, err := parseTrafficTime(daily.PeriodStart)
 		if err != nil {
 			return err
 		}
+		sourceRows = append(sourceRows, sourceRow{row: daily, periodStart: periodStart})
 		monthStart := cycleMonthStart(periodStart.In(from.Location()), policy.CycleStartDay)
 		k := key{
 			agentID:     daily.AgentID,
@@ -906,6 +976,94 @@ func rebuildMonthlyTrafficBuckets(tx *gorm.DB, agentID string, from, to time.Tim
 		row.TXBytes += daily.TXBytes
 		monthlyRows[k] = row
 	}
+	residualRows := map[key]AgentTrafficMonthlySummaryRow{}
+	for _, source := range sourceRows {
+		var existing []AgentTrafficMonthlySummaryRow
+		query := tx.Model(&AgentTrafficMonthlySummaryRow{}).
+			Where("agent_id = ? AND scope_type = ? AND scope_id = ?", source.row.AgentID, source.row.ScopeType, source.row.ScopeID)
+		if previousCycleStartDay > 0 {
+			previousMonthStart := cycleMonthStart(source.periodStart.In(from.Location()), previousCycleStartDay)
+			query = query.Where("period_start = ?", formatTrafficTime(previousMonthStart))
+		} else {
+			query = query.Where(
+				"period_start > ? AND period_start <= ?",
+				formatTrafficTime(source.periodStart.AddDate(0, -1, 0)),
+				formatTrafficTime(source.periodStart),
+			)
+		}
+		if err := query.Find(&existing).Error; err != nil {
+			return err
+		}
+		for _, monthly := range existing {
+			k := key{
+				agentID:     monthly.AgentID,
+				scopeType:   monthly.ScopeType,
+				scopeID:     monthly.ScopeID,
+				periodStart: monthly.PeriodStart,
+			}
+			row, ok := residualRows[k]
+			if !ok {
+				row = monthly
+			}
+			row.RXBytes = subtractUint64Floor(row.RXBytes, source.row.RXBytes)
+			row.TXBytes = subtractUint64Floor(row.TXBytes, source.row.TXBytes)
+			residualRows[k] = row
+		}
+	}
+	for k, row := range residualRows {
+		if rebuilt, ok := monthlyRows[k]; ok {
+			rebuilt.RXBytes += row.RXBytes
+			rebuilt.TXBytes += row.TXBytes
+			monthlyRows[k] = rebuilt
+			continue
+		}
+		result := tx.Where(
+			"agent_id = ? AND scope_type = ? AND scope_id = ? AND period_start = ?",
+			k.agentID,
+			k.scopeType,
+			k.scopeID,
+			k.periodStart,
+		).Delete(&AgentTrafficMonthlySummaryRow{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if row.RXBytes == 0 && row.TXBytes == 0 {
+			continue
+		}
+		row.UpdatedAt = now
+		if row.CreatedAt == "" {
+			row.CreatedAt = now
+		}
+		if err := incrementTrafficMonthlySummary(tx, row); err != nil {
+			return err
+		}
+	}
+	for k, rebuilt := range monthlyRows {
+		if previousCycleStartDay > 0 {
+			var existing AgentTrafficMonthlySummaryRow
+			if err := tx.Model(&AgentTrafficMonthlySummaryRow{}).
+				Where("agent_id = ? AND scope_type = ? AND scope_id = ? AND period_start = ?", k.agentID, k.scopeType, k.scopeID, k.periodStart).
+				Limit(1).
+				Find(&existing).Error; err != nil {
+				return err
+			}
+			if existing.AgentID != "" {
+				rebuilt.RXBytes += retainedMonthlyResidualBytes(existing.RXBytes, rebuilt.RXBytes)
+				rebuilt.TXBytes += retainedMonthlyResidualBytes(existing.TXBytes, rebuilt.TXBytes)
+				monthlyRows[k] = rebuilt
+			}
+		}
+		result := tx.Where(
+			"agent_id = ? AND scope_type = ? AND scope_id = ? AND period_start = ?",
+			k.agentID,
+			k.scopeType,
+			k.scopeID,
+			k.periodStart,
+		).Delete(&AgentTrafficMonthlySummaryRow{})
+		if result.Error != nil {
+			return result.Error
+		}
+	}
 	for _, row := range monthlyRows {
 		if err := incrementTrafficMonthlySummary(tx, AgentTrafficMonthlySummaryRow{
 			AgentID:     row.AgentID,
@@ -921,6 +1079,23 @@ func rebuildMonthlyTrafficBuckets(tx *gorm.DB, agentID string, from, to time.Tim
 		}
 	}
 	return nil
+}
+
+func subtractUint64Floor(value, delta uint64) uint64 {
+	if delta >= value {
+		return 0
+	}
+	return value - delta
+}
+
+func retainedMonthlyResidualBytes(existing, rebuilt uint64) uint64 {
+	if existing == rebuilt {
+		return 0
+	}
+	if existing < rebuilt {
+		return existing
+	}
+	return existing - rebuilt
 }
 
 func incrementTrafficHourlyBucket(tx *gorm.DB, row AgentTrafficHourlyBucketRow) error {

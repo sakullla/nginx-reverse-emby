@@ -63,6 +63,18 @@ type trafficAggregateTrendStore interface {
 	ListTrafficTrendByScopeTypes(context.Context, storage.TrafficBreakdownQuery) ([]storage.TrafficBucketRow, error)
 }
 
+type trafficMonthlySummaryRebuildStore interface {
+	RebuildTrafficMonthlySummaries(context.Context, string, time.Time, time.Time) error
+}
+
+type trafficPolicyMonthlySummaryUpdateStore interface {
+	SaveTrafficPolicyAndRebuildMonthlySummaries(context.Context, storage.AgentTrafficPolicyRow, bool, time.Time, time.Time, int) error
+}
+
+type trafficDailySummaryRangeStore interface {
+	EarliestTrafficDailySummaryStart(context.Context, string) (time.Time, bool, error)
+}
+
 type trafficScopeLookupStore interface {
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
@@ -607,6 +619,10 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 	if err := s.requireEnabled(); err != nil {
 		return TrafficPolicy{}, err
 	}
+	existingRow, err := s.store.GetTrafficPolicy(ctx, agentID)
+	if err != nil {
+		return TrafficPolicy{}, err
+	}
 	direction, err := normalizeTrafficDirection(input.Direction)
 	if err != nil {
 		return TrafficPolicy{}, err
@@ -637,8 +653,30 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 		DailyRetentionMonths:   defaultInt(input.DailyRetentionMonths, 3),
 		MonthlyRetentionMonths: input.MonthlyRetentionMonths,
 	}
-	if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
-		return TrafficPolicy{}, err
+	rebuildMonthlySummaries := existingRow.CycleStartDay != row.CycleStartDay
+	rebuildFrom := time.Time{}
+	rebuildTo := time.Time{}
+	if rebuildMonthlySummaries {
+		rebuildFrom, rebuildTo, err = s.rebuildableMonthlySummaryWindow(ctx, row)
+		if err != nil {
+			return TrafficPolicy{}, err
+		}
+	}
+	if updateStore, ok := s.store.(trafficPolicyMonthlySummaryUpdateStore); ok {
+		if err := updateStore.SaveTrafficPolicyAndRebuildMonthlySummaries(ctx, row, rebuildMonthlySummaries, rebuildFrom, rebuildTo, existingRow.CycleStartDay); err != nil {
+			return TrafficPolicy{}, err
+		}
+	} else {
+		if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
+			return TrafficPolicy{}, err
+		}
+		if rebuildMonthlySummaries {
+			if rebuildStore, ok := s.store.(trafficMonthlySummaryRebuildStore); ok {
+				if err := rebuildStore.RebuildTrafficMonthlySummaries(ctx, agentID, rebuildFrom, rebuildTo); err != nil {
+					return TrafficPolicy{}, err
+				}
+			}
+		}
 	}
 	if err := s.recomputeAgentTrafficBlockState(ctx, agentID); err != nil {
 		return TrafficPolicy{}, err
@@ -741,16 +779,23 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 	cutoff := storage.TrafficCleanupCutoff{}
 	if policy.HourlyRetentionDays > 0 {
 		cutoff.HourlyBefore = storage.LocalHourStart(now.AddDate(0, 0, -policy.HourlyRetentionDays)).UTC()
-		cycleStart, _ := monthlyCycleWindow(s.now().In(s.tz), policy.CycleStartDay)
+		cycleStart, cycleEnd := monthlyCycleWindow(now, policy.CycleStartDay)
 		if cutoff.HourlyBefore.After(cycleStart) {
-			cutoff.HourlyBefore = cycleStart
+			protectedStart, ok, err := s.rolloutDayHourlyPreserveStart(ctx, agentID, cycleStart, cycleEnd)
+			if err != nil {
+				return TrafficCleanupResult{}, err
+			}
+			if ok && cutoff.HourlyBefore.After(protectedStart) {
+				cutoff.HourlyBefore = protectedStart
+			}
 		}
 	}
 	if policy.DailyRetentionMonths > 0 {
 		cutoff.DailyBefore = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -policy.DailyRetentionMonths, 0).UTC()
 	}
 	if policy.MonthlyRetentionMonths != nil && *policy.MonthlyRetentionMonths > 0 {
-		cutoff.MonthlyBefore = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, s.tz).AddDate(0, -*policy.MonthlyRetentionMonths, 0).UTC()
+		cycleStart, _ := monthlyCycleWindow(now, policy.CycleStartDay)
+		cutoff.MonthlyBefore = cycleStart.AddDate(0, -*policy.MonthlyRetentionMonths, 0).UTC()
 	}
 	deleted, err := s.store.DeleteTrafficBefore(ctx, agentID, cutoff)
 	if err != nil {
@@ -1426,6 +1471,52 @@ func (s *trafficService) addLegacyAgentTotalBeforeHostHour(ctx context.Context, 
 	return nil
 }
 
+func (s *trafficService) rolloutDayHourlyPreserveStart(ctx context.Context, agentID string, from, to time.Time) (time.Time, bool, error) {
+	hostDayRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "host_total",
+		Granularity: "day",
+		From:        from.UTC(),
+		To:          to.UTC(),
+	})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(hostDayRows) == 0 {
+		return time.Time{}, false, nil
+	}
+	firstHostDay := firstTrafficBucketStart(hostDayRows)
+	dayEnd := minTrafficTime(periodEnd(firstHostDay, "day", s.tz), to)
+	hostHourRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "host_total",
+		Granularity: "hour",
+		From:        firstHostDay.UTC(),
+		To:          dayEnd.UTC(),
+	})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(hostHourRows) == 0 {
+		return time.Time{}, false, nil
+	}
+	firstHostHour := firstTrafficBucketStart(hostHourRows)
+	agentHourRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        firstHostDay.UTC(),
+		To:          firstHostHour.UTC(),
+	})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(agentHourRows) == 0 {
+		return time.Time{}, false, nil
+	}
+	return firstTrafficBucketStart(agentHourRows), true, nil
+}
+
 func addTrafficRowsToStats(stats *cycleTrafficStats, rows []storage.TrafficBucketRow) {
 	for _, row := range rows {
 		stats.rx += row.RXBytes
@@ -1495,58 +1586,52 @@ type cycleTrafficStats struct {
 }
 
 func (s *trafficService) cycleStats(ctx context.Context, agentID string, policy TrafficPolicy, start, end time.Time) (cycleTrafficStats, error) {
-	rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
-		AgentID:     agentID,
-		ScopeType:   "host_total",
-		Granularity: "hour",
-		From:        start.UTC(),
-		To:          end.UTC(),
-	})
-	if err != nil {
-		return cycleTrafficStats{}, err
-	}
-	stats := cycleTrafficStats{}
-	hostRows := rows
-	if len(hostRows) == 0 {
-		hostRows, err = s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
-			AgentID:     agentID,
-			ScopeType:   "agent_total",
-			Granularity: "hour",
-			From:        start.UTC(),
-			To:          end.UTC(),
-		})
-		if err != nil {
-			return cycleTrafficStats{}, err
-		}
-	}
-	for _, row := range hostRows {
-		stats.rx += row.RXBytes
-		stats.tx += row.TXBytes
-	}
-	if len(rows) > 0 {
-		firstHostBucket := rows[0].BucketStart
-		for _, row := range rows[1:] {
-			if row.BucketStart.Before(firstHostBucket) {
-				firstHostBucket = row.BucketStart
+	return s.totalStatsForWindow(ctx, agentID, policy, "month", start, end)
+}
+
+func (s *trafficService) rebuildableMonthlySummaryWindow(ctx context.Context, policyRow storage.AgentTrafficPolicyRow) (time.Time, time.Time, error) {
+	now := s.now().In(s.tz)
+	_, rebuildTo := monthlyCycleWindow(now, policyRow.CycleStartDay)
+	if policyRow.MonthlyRetentionMonths == nil {
+		if rangeStore, ok := s.store.(trafficDailySummaryRangeStore); ok {
+			firstDaily, found, err := rangeStore.EarliestTrafficDailySummaryStart(ctx, policyRow.AgentID)
+			if err != nil {
+				return time.Time{}, time.Time{}, err
+			}
+			if found {
+				return firstDaily.In(s.tz), rebuildTo, nil
 			}
 		}
-		agentRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
-			AgentID:     agentID,
-			ScopeType:   "agent_total",
-			Granularity: "hour",
-			From:        start.UTC(),
-			To:          firstHostBucket,
-		})
-		if err != nil {
-			return cycleTrafficStats{}, err
-		}
-		for _, row := range agentRows {
-			stats.rx += row.RXBytes
-			stats.tx += row.TXBytes
-		}
 	}
-	stats.accounted = accountedBytes(policy.Direction, stats.rx, stats.tx)
-	return stats, nil
+	retentionMonths := policyRow.DailyRetentionMonths
+	if policyRow.MonthlyRetentionMonths != nil && *policyRow.MonthlyRetentionMonths > retentionMonths {
+		retentionMonths = *policyRow.MonthlyRetentionMonths
+	}
+	if retentionMonths <= 0 {
+		rebuildFrom, _ := monthlyCycleWindow(now, policyRow.CycleStartDay)
+		return rebuildFrom, rebuildTo, nil
+	}
+	rebuildFrom := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -retentionMonths, 0)
+	return rebuildFrom, rebuildTo, nil
+}
+
+func (s *trafficService) retainedBreakdownGranularity(policy TrafficPolicy, start time.Time) string {
+	now := s.now().In(s.tz)
+	if policy.HourlyRetentionDays <= 0 {
+		return "hour"
+	}
+	hourlyStart := storage.LocalHourStart(now.AddDate(0, 0, -policy.HourlyRetentionDays)).UTC()
+	if !hourlyStart.After(start.UTC()) {
+		return "hour"
+	}
+	if policy.DailyRetentionMonths <= 0 {
+		return "day"
+	}
+	dailyStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.tz).AddDate(0, -policy.DailyRetentionMonths, 0).UTC()
+	if !dailyStart.After(start.UTC()) {
+		return "day"
+	}
+	return "month"
 }
 
 func (s *trafficService) defaultTotalScopeType(ctx context.Context, agentID, granularity string, from, to time.Time) string {
@@ -1579,11 +1664,12 @@ func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, 
 		l4Rules:        []TrafficSummaryBreakdown{},
 		relayListeners: []TrafficSummaryBreakdown{},
 	}
+	granularity := s.retainedBreakdownGranularity(policy, start)
 	for _, scopeType := range []string{"http", "l4", "relay"} {
 		rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 			AgentID:     agentID,
 			ScopeType:   scopeType,
-			Granularity: "hour",
+			Granularity: granularity,
 			From:        start.UTC(),
 			To:          end.UTC(),
 		})
@@ -1598,7 +1684,7 @@ func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, 
 	hostTotalRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     agentID,
 		ScopeType:   "host_total",
-		Granularity: "hour",
+		Granularity: granularity,
 		From:        start.UTC(),
 		To:          end.UTC(),
 	})
@@ -1616,7 +1702,7 @@ func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, 
 		rows, err := breakdownStore.ListTrafficBreakdown(ctx, storage.TrafficTrendQuery{
 			AgentID:     agentID,
 			ScopeType:   scopeType,
-			Granularity: "hour",
+			Granularity: granularity,
 			From:        start.UTC(),
 			To:          end.UTC(),
 		})

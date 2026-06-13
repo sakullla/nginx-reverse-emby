@@ -172,7 +172,7 @@ NRE_DATABASE_DSN=/opt/nginx-reverse-emby/panel/data/panel.db
 | `NRE_HTTP_RESPONSE_HEADER_TIMEOUT` | `30s` | 等待 upstream 响应头超时 |
 | `NRE_HTTP_IDLE_CONN_TIMEOUT` | `90s` | upstream 空闲连接回收超时 |
 | `NRE_HTTP_KEEP_ALIVE` | `30s` | upstream TCP keepalive 间隔 |
-| `NRE_HTTP_MAX_CONNS_PER_HOST` | `32` | 每个 upstream 主机允许的最大并发连接数，避免海报墙等突发图片请求把单个 Emby 后端打满 |
+| `NRE_HTTP_MAX_CONNS_PER_HOST` | `64` | 每个 upstream 主机允许的最大并发连接数，避免海报墙等突发图片请求把单个 Emby 后端打满 |
 | `NRE_HTTP_STREAM_RESUME_ENABLED` | `true` | 是否启用中断流恢复 |
 | `NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS` | `2` | 单次请求最多追加恢复次数（正整数） |
 | `NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS` | `1` | 同一 backend 额外重试次数。仅对 retry-safe 方法生效，且只在上游返回响应前的可重试 transport/read 错误上触发 |
@@ -373,7 +373,7 @@ L4 规则设置 `proxy_egress_mode=wireguard` 时，TCP 代理入口的出站连
 
 ### 前置要求
 
-- Go 1.26.3+
+- Go 1.26.4+
 - Node.js 24+（前端开发）
 - Docker（容器构建）
 
@@ -400,8 +400,11 @@ npm run test     # 运行测试
 ```bash
 cd go-agent
 go run ./cmd/nre-agent
+make build       # 生成裁剪后的发布二进制
 go test ./...
 ```
+
+默认发布构建不包含 pprof；需要 `NRE_PPROF_ADDR` 时，用 `go run -tags debug ./cmd/nre-agent` 或 `go build -tags debug ./cmd/nre-agent` 启用。
 
 ### Docker 构建
 
@@ -411,6 +414,15 @@ docker compose up -d
 ```
 
 Dockerfile 使用多阶段构建，自动交叉编译 Go agent 到 Linux/macOS 的 AMD64/ARM64 平台。Windows 客户端包不随控制面镜像构建或公开，后续通过 GitHub Release 分发。
+
+### HTTP/Relay 吞吐测试
+
+```powershell
+./scripts/http-relay-perf/run.ps1
+```
+
+这个 harness 用 Docker Compose 跑真实 `nre-agent`，对比 HTTP 直连和 relay 入口的下载吞吐，默认会把 `NRE_HTTP_MAX_CONNS_PER_HOST` 和 `NRE_TRAFFIC_STATS_ENABLED` 一并带进去。
+默认延迟模型和 `relay-perf` 一致，`CLI -> HTTP` 以及 `HTTP -> backend` 两段都会走 `tc netem`，可用 `HARNESS_DELAY_CLI_TO_HTTP_MS`、`HARNESS_DELAY_HTTP_TO_BACKEND_MS` 和 `HARNESS_NETEM_DELAY_MS` 覆盖。
 
 ## 常见问题
 

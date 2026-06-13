@@ -3,18 +3,15 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
-	_ "net/http/pprof"
-	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 func main() {
-	cfg, err := config.LoadFromEnv()
+	cfg, err := model.LoadFromEnv()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -32,18 +29,4 @@ func main() {
 	if err := runtimeApp.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func startPprofServer() {
-	addr := os.Getenv("NRE_PPROF_ADDR")
-	if addr == "" {
-		return
-	}
-
-	go func() {
-		log.Printf("[agent] pprof listening on %s", addr)
-		if err := http.ListenAndServe(addr, nil); err != nil {
-			log.Printf("[agent] pprof server stopped: %v", err)
-		}
-	}()
 }
