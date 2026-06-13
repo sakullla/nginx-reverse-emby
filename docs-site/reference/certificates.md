@@ -6,7 +6,19 @@
 
 ## HTTP 验证
 
-HTTP 验证要求公网可以访问 `80` 端口。
+HTTP 验证也就是 HTTP-01。它适合普通单域名证书，例如：
+
+```text
+https://emby.example.com
+```
+
+使用 HTTP-01 时，需要满足：
+
+- 域名已经解析到承载规则的 VPS。
+- VPS 公网可以访问 `80` 端口。
+- HTTPS 访问还需要放行 `443` 端口。
+
+HTTP 规则保存后，Agent 会在同步配置时自动申请证书；手动重试签发时，也是让 Agent 重新进入待签发状态。
 
 ## DNS 验证
 
@@ -18,6 +30,18 @@ Cloudflare 可通过环境变量配置 DNS 提供商和令牌：
 ACME_DNS_PROVIDER=cf
 CF_TOKEN=your-cloudflare-api-token
 ```
+
+Cloudflare API Token 需要配置这些权限：
+
+| 选择项 | 用途 |
+| --- | --- |
+| `区域 / 区域 / 读取` | 读取域名所属区域。 |
+| `区域 / DNS / 读取` | 读取 DNS 记录。 |
+| `区域 / DNS / 编辑` | 创建和删除证书验证用的 DNS 记录。 |
+
+区域资源选择 **包括 / 特定区域 / 你的域名**。客户端 IP 地址筛选保持默认即可。
+
+![Cloudflare API Token 权限配置](/screenshots/cloudflare-token-permissions.png)
 
 不要提交 DNS 令牌或私钥。
 

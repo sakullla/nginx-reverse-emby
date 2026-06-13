@@ -61,7 +61,27 @@ http://<服务器 IP>:8080
 - 源站地址 `origin.emby.example.net` 必须能从这台 VPS 访问。
 - 如果源站本身需要登录、邀请码或 Emby 账号，这些仍然按源站规则处理，反代不会绕过权限。
 
-## 6. 浏览器验证
+## 6. 如果要用 HTTPS
+
+新手优先使用 HTTP-01 自动签证书，不需要配置 Cloudflare Token。
+
+把前端访问地址改成：
+
+```text
+https://emby.example.com
+```
+
+然后确认这三件事：
+
+- `emby.example.com` 已解析到这台 VPS。
+- VPS 的 `80` 和 `443` 端口都已放行。
+- HTTP 规则保存后，等待本地 Agent 同步并自动申请证书。
+
+HTTP-01 会临时占用 `80` 端口完成域名验证。验证通过后，你就可以用 `https://emby.example.com` 访问自己的 Emby/Jellyfin 入口。
+
+如果你的 VPS 不能开放 `80` 端口，或者要申请通配符证书，再去看 [证书管理](../reference/certificates.md) 里的 DNS 验证。
+
+## 7. 浏览器验证
 
 在浏览器打开你的前端访问地址：
 
