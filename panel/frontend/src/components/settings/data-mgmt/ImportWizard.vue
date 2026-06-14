@@ -1,27 +1,31 @@
 <template>
-  <section class="settings-section">
-    <div class="settings-section__header">
-      <h2 class="settings-section__title">导入备份</h2>
-      <p class="settings-section__desc">从备份文件恢复配置</p>
-    </div>
-    <div class="settings-section__body">
-      <div class="stepper">
-        <div
-          v-for="(step, index) in stepLabels"
-          :key="index"
-          class="stepper__item"
-          :class="{ active: importStep === index + 1, done: importStep > index + 1 }"
-        >
-          <div class="stepper__circle">
-            <span v-if="importStep > index + 1">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
-            </span>
-            <span v-else>{{ index + 1 }}</span>
-          </div>
-          <span class="stepper__label">{{ step }}</span>
-        </div>
+  <div class="import-wizard">
+    <div class="import-wizard__header">
+      <span class="import-wizard__icon">📥</span>
+      <div class="import-wizard__text">
+        <h2 class="import-wizard__title">恢复备份</h2>
+        <p class="import-wizard__desc">从备份文件恢复配置</p>
       </div>
+    </div>
 
+    <div class="stepper">
+      <div
+        v-for="(step, index) in stepLabels"
+        :key="index"
+        class="stepper__item"
+        :class="{ active: importStep === index + 1, done: importStep > index + 1 }"
+      >
+        <div class="stepper__circle">
+          <span v-if="importStep > index + 1">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+          </span>
+          <span v-else>{{ index + 1 }}</span>
+        </div>
+        <span class="stepper__label">{{ step }}</span>
+      </div>
+    </div>
+
+    <div class="import-wizard__body">
       <template v-if="importStep === 1">
         <div
           class="dropzone"
@@ -44,7 +48,7 @@
         </div>
         <div class="import-actions">
           <button class="btn btn--primary" :disabled="previewing || !selectedFileName" @click="handlePreview">
-            {{ previewing ? '分析中...' : '预览导入' }}
+            {{ previewing ? '分析中...' : '预览恢复' }}
           </button>
         </div>
       </template>
@@ -54,7 +58,7 @@
         <div class="import-actions">
           <button class="btn btn--secondary" @click="resetImport">取消</button>
           <button class="btn btn--primary" :disabled="importing" @click="handleConfirmImport">
-            {{ importing ? '导入中...' : '确认导入' }}
+            {{ importing ? '恢复中...' : '确认恢复' }}
           </button>
         </div>
       </template>
@@ -66,7 +70,7 @@
         </div>
       </template>
     </div>
-  </section>
+  </div>
 </template>
 
 <script setup>
@@ -86,7 +90,7 @@ const fileInputRef = ref(null)
 const isDragging = ref(false)
 let selectedFile = null
 
-const stepLabels = ['选择文件', '预览确认', '导入结果']
+const stepLabels = ['选择备份文件', '预览确认', '恢复结果']
 
 function handleFileChange(event) {
   const file = event.target.files?.[0]
@@ -130,11 +134,11 @@ async function handleConfirmImport() {
   importing.value = true
   try {
     importResult.value = await importBackup(selectedFile)
-    messageStore.success('备份导入完成')
+    messageStore.success('备份恢复完成')
     importStep.value = 3
   } catch (error) {
     importResult.value = null
-    messageStore.error(error, '导入备份失败')
+    messageStore.error(error, '恢复备份失败')
   } finally {
     importing.value = false
   }
@@ -151,11 +155,55 @@ function resetImport() {
 </script>
 
 <style scoped>
+.import-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.import-wizard__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.import-wizard__icon {
+  font-size: var(--text-xl);
+  line-height: 1;
+}
+
+.import-wizard__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+}
+
+.import-wizard__title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.import-wizard__desc {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+
+.import-wizard__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
 .stepper {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: var(--space-6);
+  margin-bottom: var(--space-2);
 }
 .stepper__item {
   display: flex;
@@ -168,7 +216,7 @@ function resetImport() {
 .stepper__item:not(:last-child)::after {
   content: '';
   position: absolute;
-  top: 12px;
+  top: 14px;
   right: -50%;
   width: 100%;
   height: 2px;
@@ -177,8 +225,8 @@ function resetImport() {
 }
 .stepper__item.done:not(:last-child)::after { background: var(--color-primary); }
 .stepper__circle {
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
   border-radius: var(--radius-full);
   display: flex;
   align-items: center;
@@ -217,6 +265,16 @@ function resetImport() {
 .text-button { background: none; border: none; color: var(--color-primary); font-size: var(--text-sm); font-weight: var(--font-medium); cursor: pointer; padding: 0; font-family: inherit; }
 .text-button:hover { text-decoration: underline; }
 
-.import-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; }
+.import-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; justify-content: flex-end; }
 .import-actions--center { justify-content: center; }
+
+@media (max-width: 480px) {
+  .stepper__circle {
+    width: 26px;
+    height: 26px;
+  }
+  .stepper__item:not(:last-child)::after {
+    top: 12px;
+  }
+}
 </style>
