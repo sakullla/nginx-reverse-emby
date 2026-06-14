@@ -1,6 +1,6 @@
 # 部署指南
 
-本章介绍如何在你的服务器上安装并运行 nginx-reverse-emby。我们使用 **Docker Compose** 作为推荐部署方式——它会自动拉起控制面板容器，并内置一个 `local` agent，你**不需要**额外安装 Nginx。
+本章介绍如何在你的服务器上安装并运行 nginx-reverse-emby。我们使用 **Docker Compose** 作为推荐部署方式——它会自动拉起面板容器，并内置一个 `local` agent，你**不需要**额外安装 Nginx。
 
 ## 准备工作：创建目录并下载配置文件
 
@@ -36,8 +36,8 @@ environment:
 | 变量 | 是否必填 | 说明 |
 | --- | --- | --- |
 | `API_TOKEN` | **是** | 这是登录 Web 面板和调用 API 的密码。请使用随机生成的强密码（例如 32 位以上、包含大小写字母和数字），**不要**用简单密码。 |
-| `MASTER_REGISTER_TOKEN` | 否 | 其他服务器（Agent）接入控制面板时需要用这个令牌验证身份。如果你只在一台服务器上使用，可以暂时不设置，它会自动回退成 `API_TOKEN` 的值。 |
-| `NRE_TIMEZONE` | 否 | 控制面板的时区设置，影响每日/每月流量统计和计费周期的分界点。默认是 `UTC`，国内用户建议改成 `Asia/Shanghai`。 |
+| `MASTER_REGISTER_TOKEN` | 否 | 其他服务器（Agent）接入面板时需要用这个令牌验证身份。如果你只在一台服务器上使用，可以暂时不设置，它会自动回退成 `API_TOKEN` 的值。 |
+| `NRE_TIMEZONE` | 否 | 面板的时区设置，影响每日/每月流量统计和计费周期的分界点。默认是 `UTC`，国内用户建议改成 `Asia/Shanghai`。 |
 
 如果你想了解更多可配置项，可以查看 [环境变量参考文档](../reference/environment.md)。
 

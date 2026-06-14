@@ -1,6 +1,6 @@
 # Agent 接入指南
 
-Agent 是 nginx-reverse-emby 的执行单元——它们负责在各自的节点上执行你配置的代理规则。Agent 通过**心跳同步**（heartbeat pull）机制从控制面板拉取最新的配置，因此即使在 NAT 或内网环境下，只要 Agent 能主动访问控制面板，就能正常工作，**不需要**控制面板反向连入 Agent。
+Agent 是 nginx-reverse-emby 的执行单元——它们负责在各自的节点上执行你配置的代理规则。Agent 通过**心跳同步**（heartbeat pull）机制从面板拉取最新的配置，因此即使在 NAT 或内网环境下，只要 Agent 能主动访问面板，就能正常工作，**不需要**面板反向连入 Agent。
 
 Docker Compose 默认会启用内嵌的 `local` agent。如果你只在一台 VPS 上做反向代理，通常不需要额外接入其他 Agent。
 
@@ -28,7 +28,7 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
   --install-systemd
 ```
 
-**注意：** 把 `master.example.com:8080` 换成你实际控制面板的地址和端口。
+**注意：** 把 `master.example.com:8080` 换成你实际面板的地址和端口。
 
 ### macOS 系统
 
@@ -38,11 +38,11 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
   --install-launchd
 ```
 
-脚本目前支持 `amd64` 和 `arm64` 两种 CPU 架构，以及 Linux（systemd）和 macOS（launchd）两种服务管理方式。Windows 节点不随控制面板镜像一起发布，接入方式见下文。
+脚本目前支持 `amd64` 和 `arm64` 两种 CPU 架构，以及 Linux（systemd）和 macOS（launchd）两种服务管理方式。Windows 节点不随面板镜像一起发布，接入方式见下文。
 
 ### NAT 环境下的节点
 
-如果你的 Agent 服务器在内网或 NAT 后面（比如家里的路由器后面），也不用担心——因为 Agent 是**主动连接**控制面板，所以只要 Agent 能访问控制面板即可，控制面板不需要向 Agent 发起入站连接。
+如果你的 Agent 服务器在内网或 NAT 后面（比如家里的路由器后面），也不用担心——因为 Agent 是**主动连接**面板，所以只要 Agent 能访问面板即可，面板不需要向 Agent 发起入站连接。
 
 给 NAT 节点命名并打上标签，方便后续管理：
 
@@ -60,8 +60,8 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 
 | 参数 | 说明 |
 | --- | --- |
-| `--register-token` | **必填。** 控制面板的注册令牌，用于验证 Agent 身份。 |
-| `--master-url` | 控制面板的 URL。默认使用脚本内置的地址（即你下载脚本时访问的地址）。 |
+| `--register-token` | **必填。** 面板的注册令牌，用于验证 Agent 身份。 |
+| `--master-url` | 面板的 URL。默认使用脚本内置的地址（即你下载脚本时访问的地址）。 |
 | `--asset-base-url` | Agent 二进制文件的下载基地址。默认使用脚本内置地址。 |
 | `--agent-name` | Agent 的显示名称。默认使用主机名（hostname）。 |
 | `--agent-token` | Agent 的心跳认证令牌。默认会自动生成一个随机值。 |
@@ -76,12 +76,12 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 
 ## Windows 节点
 
-Windows 版本的 Agent 不随控制面板镜像一起构建或发布，预期通过 GitHub Releases 提供客户端安装包：
+Windows 版本的 Agent 不随面板镜像一起构建或发布，预期通过 GitHub Releases 提供客户端安装包：
 
 1. 在 Web 面板的 **节点管理** 页面获取注册令牌（`register token`）。
 2. 前往 GitHub Release 页面下载 Windows 客户端安装包。
-3. 安装后打开客户端，填写控制面板 URL 和注册令牌。
-4. 客户端会自动完成注册、运行，并持续与控制面板保持连接。
+3. 安装后打开客户端，填写面板 URL 和注册令牌。
+4. 客户端会自动完成注册、运行，并持续与面板保持连接。
 
 ## 从旧版 Agent 迁移
 
@@ -97,7 +97,7 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 脚本会自动完成以下操作：
 
 1. 从 `/opt/nginx-reverse-emby-agent`（可用 `--source-dir` 指定其他路径）读取旧版配置。
-2. 复用原来的 `agent_token`，避免在控制面板里重新注册。
+2. 复用原来的 `agent_token`，避免在面板里重新注册。
 3. 切换到新的数据目录 `/var/lib/nre-agent`。
 4. 验证新 Agent 能正常工作后，清理旧的运行时文件和 Nginx 服务。
 
@@ -123,7 +123,7 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s -- uninstall-agent
 ```
 
-**注意：** 卸载脚本只会清理本机上的运行时文件和数据，不会删除控制面板里的 Agent 记录。如果你希望彻底移除，还需要在 Web 面板的 **节点管理** 页面手动删除该节点。
+**注意：** 卸载脚本只会清理本机上的运行时文件和数据，不会删除面板里的 Agent 记录。如果你希望彻底移除，还需要在 Web 面板的 **节点管理** 页面手动删除该节点。
 
 ## Agent 配置变量
 
@@ -134,7 +134,7 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 | `NRE_AGENT_ID` | Agent 的唯一标识符。 |
 | `NRE_AGENT_NAME` | Agent 的显示名称。 |
 | `NRE_AGENT_TOKEN` | Agent 心跳认证令牌（加入时自动生成）。 |
-| `NRE_MASTER_URL` | 控制面板的 URL 地址。 |
+| `NRE_MASTER_URL` | 面板的 URL 地址。 |
 | `NRE_DATA_DIR` | Agent 数据存放目录。 |
 | `NRE_HEARTBEAT_INTERVAL` | 心跳同步的间隔时间。默认每 `10` 秒同步一次。 |
 | `NRE_HTTP3_ENABLED` | 是否启用 HTTP/3 入口支持。 |
