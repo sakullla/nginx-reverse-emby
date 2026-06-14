@@ -47,6 +47,10 @@ docker compose up -d
 
 浏览器访问 `http://<你的 VPS IP>:8080`，输入 `API_TOKEN` 登录。
 
+![登录面板](/screenshots/panel-login.png)
+
+登录后看到的首页：
+
 ![仪表盘首页](/screenshots/panel-dashboard.png)
 
 ## 第二步：添加一条 HTTP 规则
