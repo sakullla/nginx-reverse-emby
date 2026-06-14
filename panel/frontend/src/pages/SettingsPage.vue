@@ -8,15 +8,7 @@
       <SettingsNav v-model:activeTab="activeTab" :tabs="tabs" />
       <div class="settings-content">
         <SettingsGeneral v-if="activeTab === 'appearance'" />
-        <section v-else-if="activeTab === 'system'" class="settings-section">
-          <div class="settings-section__header">
-            <h2 class="settings-section__title">系统信息</h2>
-            <p class="settings-section__desc">角色、本地 Agent、节点与运行状态</p>
-          </div>
-          <div class="settings-section__body">
-            <p class="settings-placeholder">系统信息分区由后续任务提供（占位）。</p>
-          </div>
-        </section>
+        <SettingsSystemInfo v-else-if="activeTab === 'system'" />
         <SettingsDataMgmt v-else-if="activeTab === 'data'" />
         <EgressProfilesPage v-else-if="activeTab === 'egress'" />
         <SettingsAbout v-else-if="activeTab === 'about'" />
@@ -29,6 +21,7 @@
 import { ref } from 'vue'
 import SettingsNav from '../components/settings/SettingsNav.vue'
 import SettingsGeneral from '../components/settings/SettingsGeneral.vue'
+import SettingsSystemInfo from '../components/settings/SettingsSystemInfo.vue'
 import SettingsDataMgmt from '../components/settings/SettingsDataMgmt.vue'
 import SettingsAbout from '../components/settings/SettingsAbout.vue'
 import EgressProfilesPage from './EgressProfilesPage.vue'
