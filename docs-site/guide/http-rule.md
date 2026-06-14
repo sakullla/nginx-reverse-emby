@@ -6,7 +6,7 @@ layout: false
 import { useRouter, withBase } from 'vitepress'
 import { onMounted } from 'vue'
 const router = useRouter()
-onMounted(() => router.go('/guides/http-rules'))
+onMounted(() => router.go(withBase('/guides/http-rules')))
 </script>
 
 <div style="padding: 2rem; font-family: var(--vp-font-family-base);">
