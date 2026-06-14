@@ -21,7 +21,7 @@
 | 变量 | 默认值 | 作用 |
 |------|--------|------|
 | `NRE_PANEL_TOKEN`（别名 `API_TOKEN`） | **必填** | 网页界面和 API 认证的登录令牌。 |
-| `NRE_REGISTER_TOKEN`（别名 `MASTER_REGISTER_TOKEN`、`PANEL_REGISTER_TOKEN`、`API_TOKEN`） | 回退到 `NRE_PANEL_TOKEN` | Agent 向控制面注册时使用的令牌。 |
+| `NRE_REGISTER_TOKEN`（别名 `MASTER_REGISTER_TOKEN`、`PANEL_REGISTER_TOKEN`、`API_TOKEN`） | 未设置时依次尝试 `MASTER_REGISTER_TOKEN`、`PANEL_REGISTER_TOKEN`、`API_TOKEN` | Agent 向控制面注册时使用的令牌。 |
 | `NRE_CONTROL_PLANE_ADDR`（别名 `PANEL_BACKEND_HOST` + `PANEL_BACKEND_PORT`） | `0.0.0.0:8080` | 控制面监听的地址。 |
 | `NRE_CONTROL_PLANE_DATA_DIR`（别名 `PANEL_DATA_ROOT`） | `/opt/nginx-reverse-emby/panel/data` | SQLite 数据库和运行时数据的目录。 |
 | `NRE_FRONTEND_DIST_DIR`（别名 `PANEL_FRONTEND_DIST_DIR`） | `/opt/nginx-reverse-emby/panel/frontend/dist` | 存放构建好的前端文件的目录。 |
