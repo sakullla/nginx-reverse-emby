@@ -71,6 +71,10 @@ http://<服务器 IP>:8080
 设置（通用 / 出口 Profile / 数据管理 / 关于）
 ```
 
+登录后首页大致如下：
+
+![仪表盘首页](/screenshots/panel-dashboard.png)
+
 ## 第 4 步：添加 HTTP 规则
 
 进入 **HTTP 规则**，选择 `local` 节点，点击 **添加规则**：
