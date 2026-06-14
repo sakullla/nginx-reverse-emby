@@ -112,5 +112,18 @@ export default defineConfig({
   },
   markdown: {
     lineNumbers: true
+  },
+  redirects: {
+    '/guide/quickstart': '/getting-started/quickstart',
+    '/guide/deploy': '/getting-started/deploy',
+    '/guide/agent': '/guides/agents',
+    '/guide/certificates': '/guides/certificates',
+    '/guide/http-rule': '/guides/http-rules',
+    '/guide/l4-relay': '/guides/l4-rules',
+    '/guide/wireguard': '/guides/wireguard',
+    '/reference/environment': '/reference/environment-variables',
+    '/reference/relay': '/guides/relay',
+    '/reference/traffic': '/reference/traffic-accounting',
+    '/operations/faq': '/operations/troubleshooting'
   }
 })
