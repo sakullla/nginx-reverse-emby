@@ -1,43 +1,77 @@
 # 开发与构建
 
-本页给项目开发者使用，普通部署用户不需要执行这些命令。
+本页面向希望修改或从源码构建项目的开发者。如果你只是部署，则不需要这些命令。
 
 ## 前置要求
 
-- Go 1.26.4+
-- Node.js 24+
-- Docker
+| 工具 | 最低版本 |
+|------|----------|
+| Go | 1.26.4+ |
+| Node.js | 24+ |
+| Docker | 任何近期版本 |
 
-## 控制面
+## 控制平面（后端）
+
+本地运行 Go 控制平面：
 
 ```bash
 cd panel/backend-go
 go run ./cmd/nre-control-plane
+```
+
+运行测试套件：
+
+```bash
+cd panel/backend-go
 go test ./...
 ```
 
-## 前端
+## 前端（Web UI）
+
+安装依赖并启动开发服务器：
 
 ```bash
 cd panel/frontend
 npm ci
 npm run dev
-npm run build
-npm run test
 ```
 
-开发服务器会把 `/panel-api` 代理到控制面。用于截图 / 教程时，应使用真实控制面服务的生产前端，而不是 Vite mock 数据。
+其他常用命令：
 
-## Go Agent
+| 命令 | 作用 |
+|------|------|
+| `npm run dev` | 启动 Vite 开发服务器，支持热重载。 |
+| `npm run build` | 构建生产包。 |
+| `npm run test` | 运行前端测试套件。 |
+
+开发服务器自动将 `/panel-api` 请求代理到控制平面。对于截图或教程，请使用真实的控制平面配合生产前端构建，而不是使用模拟数据的 Vite 开发服务器。
+
+## Go 代理
+
+本地运行代理：
 
 ```bash
 cd go-agent
 go run ./cmd/nre-agent
+```
+
+构建发布二进制文件：
+
+```bash
+cd go-agent
 make build
+```
+
+运行代理测试：
+
+```bash
+cd go-agent
 go test ./...
 ```
 
-默认发布构建不包含 pprof。需要 `NRE_PPROF_ADDR` 时，用 debug tags 启用：
+### 调试构建（带 pprof）
+
+发布构建不包含 pprof。要启用调试端点（`NRE_PPROF_ADDR`），请使用 debug 标签构建：
 
 ```bash
 go run -tags debug ./cmd/nre-agent
@@ -46,41 +80,47 @@ go build -tags debug ./cmd/nre-agent
 
 ## Docker 构建
 
+构建控制平面镜像并用 Compose 启动：
+
 ```bash
 docker build -t nginx-reverse-emby .
 docker compose up -d
 ```
 
-Dockerfile 使用多阶段构建，会交叉编译 Go agent 到 Linux / macOS 的 AMD64 / ARM64 平台。Windows 客户端包不随控制面镜像构建或公开，通过 GitHub Release 分发。
+Dockerfile 使用多阶段构建，并为 Linux 和 macOS 在 AMD64 和 ARM64 上交叉编译 Go 代理。Windows 代理二进制文件不会构建到控制平面镜像中；它们通过 GitHub Releases 分发。
 
-## 版本更新
+## 代理版本更新
 
-`desired_version` 由控制面下发，用于驱动 Go agent 升级：
+控制平面可以使用 `desired_version` 远程向代理推送新版本：
 
-1. 在控制面 **版本策略** 页面创建策略，设置通道、`desired_version` 和各平台安装包。
-2. 准备安装包来源：Linux / macOS 可使用控制面公开的 agent 资产，或在策略中配置自托管 URL 与 `sha256`。
-3. Agent 心跳同步时收到 `desired_version`、`version_package` 和 `version_sha256`。
-4. 平台匹配且包信息完整时，Agent 下载、校验 SHA256 并执行更新（原子替换二进制后重启进程）。
+| 步骤 | 发生了什么 |
+|------|------------|
+| 1. 创建策略 | 在控制面板的 **版本策略** 页面，创建一个带有频道、`desired_version` 和平台包的策略。 |
+| 2. 准备包 | 对于 Linux/macOS，使用控制平面的公共代理资源或提供带有 `sha256` 的自托管 URL。 |
+| 3. 代理同步 | 每次心跳时，代理接收 `desired_version`、`version_package` 和 `version_sha256`。 |
+| 4. 代理更新 | 如果平台匹配且包信息完整，代理下载包、验证 SHA256 校验和，并执行原子二进制替换后重启进程。 |
 
-未匹配到当前平台的版本包时，控制面保留 `desired_version`，但 Agent 不执行更新。内嵌 local agent 不参与自更新。
+如果没有包匹配代理的平台，控制平面保持分配 `desired_version`，但代理不会更新。主控上的内置 `local` 代理不参与自更新。
 
-## HTTP / Relay 吞吐测试
+## HTTP / 中继性能测试
+
+在 Windows PowerShell 上运行性能测试工具：
 
 ```powershell
 ./scripts/http-relay-perf/run.ps1
 ```
 
-这个 harness 用 Docker Compose 跑真实 `nre-agent`，对比 HTTP 直连和 Relay 入口下载吞吐。默认延迟模型与 `relay-perf` 一致，`CLI -> HTTP` 以及 `HTTP -> backend` 两段都会走 `tc netem`。可用下面的变量覆盖：
+该工具使用 Docker Compose 运行真实的 `nre-agent` 实例，并比较 HTTP 直接访问与中继入站吞吐量。默认情况下，`CLI -> HTTP` 和 `HTTP -> 后端` 两段都使用 `tc netem` 人工延迟。你可以用这些变量覆盖延迟：
 
-```text
-HARNESS_DELAY_CLI_TO_HTTP_MS
-HARNESS_DELAY_HTTP_TO_BACKEND_MS
-HARNESS_NETEM_DELAY_MS
-```
+| 变量 | 说明 |
+|------|------|
+| `HARNESS_DELAY_CLI_TO_HTTP_MS` | 测试客户端到 HTTP 入口点的延迟。 |
+| `HARNESS_DELAY_HTTP_TO_BACKEND_MS` | HTTP 入口点到后端的延迟。 |
+| `HARNESS_NETEM_DELAY_MS` | 全局 netem 延迟覆盖。 |
 
-## 纯 Go 控制面验证
+## 纯 Go 控制平面验证
 
-替换生产镜像前，可先用复制的 `panel/data` 做影子验证：
+在替换生产镜像之前，你可以使用数据副本来验证纯 Go 控制平面：
 
 ```bash
 cd panel/backend-go && go test ./...
@@ -89,8 +129,11 @@ docker build -t nginx-reverse-emby:pure-go --target control-plane-runtime .
 sh scripts/verify-pure-go-master.sh /path/to/copied-panel-data
 ```
 
-验证要点：
+### 验证清单
 
-- `/panel-api/health`、`/panel-api/info`、`/panel-api/agents` 等端点返回 2xx。
-- `/panel-api/agents` 中能看到 `id=local` 且 `is_local=true`。
-- `join-agent.sh` 可以正常下载 Agent 二进制。
+| 检查 | 预期结果 |
+|------|----------|
+| `/panel-api/health` | 返回 HTTP 2xx。 |
+| `/panel-api/info` | 返回 HTTP 2xx。 |
+| `/panel-api/agents` | 返回 HTTP 2xx，并包含一个 `id=local` 且 `is_local=true` 的代理。 |
+| `join-agent.sh` | 可从公共代理资源路由下载。 |
