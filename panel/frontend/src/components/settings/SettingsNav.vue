@@ -1,6 +1,6 @@
 <template>
   <nav class="settings-nav">
-    <div class="settings-nav__label">设置</div>
+    <div class="settings-nav__label">{{ label }}</div>
     <button
       v-for="tab in tabs"
       :key="tab.id"
@@ -8,7 +8,7 @@
       :class="{ active: activeTab === tab.id }"
       @click="$emit('update:activeTab', tab.id)"
     >
-      <span class="settings-nav__icon">{{ tab.icon }}</span>
+      <span v-if="tab.icon" class="settings-nav__icon">{{ tab.icon }}</span>
       <span class="settings-nav__text">{{ tab.label }}</span>
     </button>
   </nav>
@@ -16,51 +16,49 @@
 
 <script setup>
 defineProps({
-  activeTab: { type: String, required: true }
+  activeTab: { type: String, required: true },
+  tabs: { type: Array, required: true },
+  label: { type: String, default: '设置' }
 })
 
 defineEmits(['update:activeTab'])
-
-const tabs = [
-  { id: 'general', icon: '⚙️', label: '通用' },
-  { id: 'egress', icon: '↗', label: 'Egress Profiles' },
-  { id: 'data', icon: '💾', label: '数据管理' },
-  { id: 'about', icon: 'ℹ️', label: '关于' }
-]
 </script>
 
 <style scoped>
 .settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  padding: 1.5rem 0;
-  min-width: 160px;
+  gap: var(--space-1);
+  padding: var(--space-6) 0;
+  min-width: 180px;
   flex-shrink: 0;
 }
 .settings-nav__label {
-  padding: 0 1.25rem 1rem;
-  font-size: 0.8rem;
+  padding: 0 var(--space-5) var(--space-3);
+  font-size: var(--text-xs);
   color: var(--color-text-tertiary);
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  font-weight: 600;
+  letter-spacing: 0.05em;
+  font-weight: var(--font-semibold);
 }
 .settings-nav__item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.55rem 1rem 0.55rem 0.875rem;
-  margin: 0 0.5rem;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-4);
+  margin: 0 var(--space-2);
   border: none;
+  border-left: 3px solid transparent;
   background: none;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-family: inherit;
+  font-size: var(--text-sm);
   color: var(--color-text-secondary);
-  border-radius: 8px;
-  border-left: 3px solid transparent;
-  transition: all 0.15s var(--ease-default);
-  width: calc(100% - 1rem);
+  border-radius: var(--radius-sm);
+  transition: color var(--duration-fast) var(--ease-default),
+              background-color var(--duration-fast) var(--ease-default),
+              border-color var(--duration-fast) var(--ease-default);
+  width: calc(100% - var(--space-4));
   text-align: left;
 }
 .settings-nav__item:hover {
@@ -69,11 +67,11 @@ const tabs = [
 }
 .settings-nav__item.active {
   color: var(--color-primary);
-  font-weight: 600;
+  font-weight: var(--font-semibold);
   border-left-color: var(--color-primary);
   background: var(--color-primary-subtle);
 }
-.settings-nav__icon { font-size: 1rem; }
+.settings-nav__icon { font-size: var(--text-base); line-height: 1; }
 
 @media (max-width: 767px) {
   .settings-nav {
@@ -86,19 +84,18 @@ const tabs = [
   }
   .settings-nav__label { display: none; }
   .settings-nav__item {
-    padding: 0.75rem 1.25rem;
+    padding: var(--space-3) var(--space-5);
     margin: 0;
     width: auto;
     border-left: none;
-    border-radius: 0;
     border-bottom: 2px solid transparent;
+    border-radius: 0;
     white-space: nowrap;
   }
   .settings-nav__item.active {
     border-left-color: transparent;
     border-bottom-color: var(--color-primary);
     background: none;
-    color: var(--color-primary);
   }
 }
 </style>
