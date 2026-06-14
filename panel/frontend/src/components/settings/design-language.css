@@ -1,12 +1,12 @@
 /* =============================================
    设置页设计语言范式（新设计语言先行页）
-   复用 themes.css token（--color-*/--radius-*/--space-*/--text-*/--font-*/--duration-*/--ease-*）。
+   复用 themes.css token（以 --color-、--radius-、--space-、--text-、--font-、--duration-、--ease- 开头的 CSS 变量）。
    本文件为设置页专属样式，由 SettingsPage.vue 引入；设置页各分区复用 .btn--* 与 .settings-section 范式。
    不引入第三方 UI 库；token 驱动以兼容 4 主题（sakura-day/sakura-night/neko-dark/business）。
    ============================================= */
 
 /* === Button 范式 === */
-.btn {
+.settings-page .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -26,35 +26,35 @@
               opacity var(--duration-fast) var(--ease-default);
   white-space: nowrap;
 }
-.btn:hover:not(:disabled) { transform: translateY(-1px); }
-.btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+.settings-page .btn:hover:not(:disabled) { transform: translateY(-1px); }
+.settings-page .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
 
-.btn--primary {
+.settings-page .btn--primary {
   background: var(--color-primary);
   color: var(--color-text-inverse);
   border-color: var(--color-primary);
 }
-.btn--primary:hover:not(:disabled) {
+.settings-page .btn--primary:hover:not(:disabled) {
   background: var(--color-primary-hover);
   border-color: var(--color-primary-hover);
 }
 
-.btn--secondary {
+.settings-page .btn--secondary {
   background: var(--color-bg-subtle);
   color: var(--color-text-primary);
   border-color: var(--color-border-default);
 }
-.btn--secondary:hover:not(:disabled) {
+.settings-page .btn--secondary:hover:not(:disabled) {
   border-color: var(--color-primary);
   color: var(--color-primary);
 }
 
-.btn--danger {
+.settings-page .btn--danger {
   background: var(--color-danger);
   color: var(--color-text-inverse);
   border-color: var(--color-danger);
 }
-.btn--danger:hover:not(:disabled) {
+.settings-page .btn--danger:hover:not(:disabled) {
   background: var(--color-danger);
   filter: brightness(0.94);
 }
