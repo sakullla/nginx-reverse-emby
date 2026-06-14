@@ -3,8 +3,8 @@
     <div class="import-wizard__header">
       <span class="import-wizard__icon">📥</span>
       <div class="import-wizard__text">
-        <h2 class="import-wizard__title">恢复备份</h2>
-        <p class="import-wizard__desc">从备份文件恢复配置</p>
+        <h2 class="import-wizard__title">导入配置</h2>
+        <p class="import-wizard__desc">从配置文件导入面板配置</p>
       </div>
     </div>
 
@@ -38,7 +38,7 @@
           <input ref="fileInputRef" type="file" accept=".tar.gz,.tgz,.gz,application/gzip" class="backup-file-input" @change="handleFileChange">
           <div v-if="!selectedFileName" class="dropzone__placeholder">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-tertiary)" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <p class="dropzone__text">点击或拖拽备份文件到此处</p>
+            <p class="dropzone__text">点击或拖拽配置文件到此处</p>
             <p class="dropzone__hint">支持 .tar.gz, .tgz 格式</p>
           </div>
           <div v-else class="dropzone__file">
@@ -48,7 +48,7 @@
         </div>
         <div class="import-actions">
           <button class="btn btn--primary" :disabled="previewing || !selectedFileName" @click="handlePreview">
-            {{ previewing ? '分析中...' : '预览恢复' }}
+            {{ previewing ? '分析中...' : '预览导入' }}
           </button>
         </div>
       </template>
@@ -58,7 +58,7 @@
         <div class="import-actions">
           <button class="btn btn--secondary" @click="resetImport">取消</button>
           <button class="btn btn--primary" :disabled="importing" @click="handleConfirmImport">
-            {{ importing ? '恢复中...' : '确认恢复' }}
+            {{ importing ? '导入中...' : '确认导入' }}
           </button>
         </div>
       </template>
@@ -90,7 +90,7 @@ const fileInputRef = ref(null)
 const isDragging = ref(false)
 let selectedFile = null
 
-const stepLabels = ['选择备份文件', '预览确认', '恢复结果']
+const stepLabels = ['选择配置文件', '预览确认', '导入结果']
 
 function handleFileChange(event) {
   const file = event.target.files?.[0]
@@ -134,11 +134,11 @@ async function handleConfirmImport() {
   importing.value = true
   try {
     importResult.value = await importBackup(selectedFile)
-    messageStore.success('备份恢复完成')
+    messageStore.success('配置导入完成')
     importStep.value = 3
   } catch (error) {
     importResult.value = null
-    messageStore.error(error, '恢复备份失败')
+    messageStore.error(error, '导入配置失败')
   } finally {
     importing.value = false
   }

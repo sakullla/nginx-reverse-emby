@@ -4,8 +4,8 @@
       <div class="export-panel__title-wrap">
         <span class="export-panel__icon">💾</span>
         <div class="export-panel__text">
-          <h2 class="export-panel__title">备份</h2>
-          <p class="export-panel__desc">选择要备份的资源类型</p>
+          <h2 class="export-panel__title">导出配置</h2>
+          <p class="export-panel__desc">选择要导出的资源类型</p>
         </div>
       </div>
       <button
@@ -84,9 +84,9 @@ const hasAnySelection = computed(() => Object.values(exportSelection.value).some
 const selectedCount = computed(() => Object.values(exportSelection.value).filter(Boolean).length)
 const allSelected = computed(() => exportItems.every(item => exportSelection.value[item.key]))
 const exportButtonText = computed(() => {
-  if (exporting.value) return '备份中...'
-  if (!hasAnySelection.value) return '备份'
-  return allSelected.value ? '一键备份全部' : '备份选中项'
+  if (exporting.value) return '导出中...'
+  if (!hasAnySelection.value) return '导出配置'
+  return allSelected.value ? '导出全部配置' : '导出选中配置'
 })
 
 function selectAll() {
@@ -114,9 +114,9 @@ async function handleExport() {
   try {
     const result = allSelected ? await exportBackup() : await exportBackupSelective(selected)
     downloadBlob(result.blob, result.filename)
-    messageStore.success('备份已导出')
+    messageStore.success('配置已导出')
   } catch (error) {
-    messageStore.error(error, '导出备份失败')
+    messageStore.error(error, '导出配置失败')
   } finally {
     exporting.value = false
   }

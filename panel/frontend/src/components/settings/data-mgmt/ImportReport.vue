@@ -2,7 +2,7 @@
   <div class="import-report">
     <div class="result-summary">
       <div class="result-card">
-        <span class="result-card__label">已恢复</span>
+        <span class="result-card__label">已导入</span>
         <span class="result-card__value result-card__value--ok">{{ summaryTotal(importResult.summary?.imported) }}</span>
       </div>
       <div class="result-card">
@@ -29,7 +29,7 @@
       </div>
     </div>
     <details class="report-details">
-      <summary class="report-details__summary">查看恢复报告</summary>
+      <summary class="report-details__summary">查看导入报告</summary>
       <div class="report-group">
         <div v-for="section in reportSections" :key="section.key" class="report-block">
           <div class="report-block__header">
@@ -64,7 +64,7 @@ const props = defineProps({
 const reportSections = computed(() => {
   const report = props.importResult?.report || {}
   return [
-    { key: 'imported', label: '已恢复', items: report.imported || [] },
+    { key: 'imported', label: '已导入', items: report.imported || [] },
     { key: 'skipped_conflict', label: '冲突跳过', items: report.skipped_conflict || [] },
     { key: 'skipped_invalid', label: '无效跳过', items: report.skipped_invalid || [] },
     { key: 'skipped_missing_material', label: '缺少证书材料跳过', items: report.skipped_missing_material || [] }

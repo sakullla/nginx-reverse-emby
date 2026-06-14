@@ -3,25 +3,56 @@
     <div class="data-mgmt-header">
       <div class="data-mgmt-header__text">
         <h1 class="data-mgmt-header__title">数据管理</h1>
-        <p class="data-mgmt-header__desc">备份或恢复面板配置</p>
-      </div>
-      <div class="data-actions">
-        <button class="btn btn--primary" @click="scrollTo(exportPanelRef)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          备份
-        </button>
-        <button class="btn btn--primary" @click="scrollTo(importWizardRef)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          恢复
-        </button>
+        <p class="data-mgmt-header__desc">导出或导入面板配置</p>
       </div>
     </div>
 
-    <section ref="exportPanelRef" class="settings-section">
-      <ExportPanel :counts="counts" />
-    </section>
-    <section ref="importWizardRef" class="settings-section">
-      <ImportWizard />
+    <section class="settings-section config-io-card">
+      <div class="config-io-tabs" role="tablist">
+        <button
+          id="tab-export"
+          class="config-io-tab"
+          :class="{ active: activeTab === 'export' }"
+          role="tab"
+          :aria-selected="activeTab === 'export'"
+          aria-controls="panel-export"
+          @click="activeTab = 'export'"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          导出配置
+        </button>
+        <button
+          id="tab-import"
+          class="config-io-tab"
+          :class="{ active: activeTab === 'import' }"
+          role="tab"
+          :aria-selected="activeTab === 'import'"
+          aria-controls="panel-import"
+          @click="activeTab = 'import'"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          导入配置
+        </button>
+      </div>
+
+      <div
+        id="panel-export"
+        class="config-io-panel"
+        role="tabpanel"
+        aria-labelledby="tab-export"
+        :hidden="activeTab !== 'export'"
+      >
+        <ExportPanel :counts="counts" />
+      </div>
+      <div
+        id="panel-import"
+        class="config-io-panel"
+        role="tabpanel"
+        aria-labelledby="tab-import"
+        :hidden="activeTab !== 'import'"
+      >
+        <ImportWizard />
+      </div>
     </section>
   </div>
 </template>
@@ -32,14 +63,8 @@ import ExportPanel from './data-mgmt/ExportPanel.vue'
 import ImportWizard from './data-mgmt/ImportWizard.vue'
 import { fetchBackupResourceCounts } from '../../api'
 
-// 数据管理容器：统一获取资源 counts，传给导出/导入子组件
 const counts = ref({ agents: 0, http_rules: 0, l4_rules: 0, relay_listeners: 0, certificates: 0, version_policies: 0 })
-const exportPanelRef = ref(null)
-const importWizardRef = ref(null)
-
-function scrollTo(elRef) {
-  elRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
+const activeTab = ref('export')
 
 onMounted(() => {
   fetchBackupResourceCounts()
@@ -79,30 +104,60 @@ onMounted(() => {
   margin: 0;
 }
 
-.data-actions {
+.config-io-card {
   display: flex;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  flex-shrink: 0;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
 }
 
-.settings-placeholder {
-  margin: 0;
-  padding: var(--space-4);
-  color: var(--color-text-tertiary);
+.config-io-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+}
+
+.config-io-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--color-text-secondary);
   font-size: var(--text-sm);
-  text-align: center;
-  border: 1px dashed var(--color-border-default);
-  border-radius: var(--radius-md);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  font-family: inherit;
+}
+
+.config-io-tab:hover {
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+}
+
+.config-io-tab.active {
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-default);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.config-io-panel {
+  padding: var(--space-5);
+}
+
+.config-io-panel[hidden] {
+  display: none;
 }
 
 @media (max-width: 640px) {
-  .data-mgmt-header {
+  .config-io-tabs {
     flex-direction: column;
-    align-items: stretch;
-  }
-  .data-actions {
-    justify-content: flex-start;
   }
 }
 </style>
