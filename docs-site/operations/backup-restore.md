@@ -70,6 +70,6 @@ docker compose up -d
 ### 在线备份（无需停机）
 
 ```bash
-docker compose exec control-plane sqlite3 /opt/nginx-reverse-emby/panel/data/panel.db ".backup /tmp/panel-backup.db"
-docker compose cp control-plane:/tmp/panel-backup.db ./panel-backup.db
+docker compose exec nginx-reverse-emby sqlite3 /opt/nginx-reverse-emby/panel/data/panel.db ".backup /tmp/panel-backup.db"
+docker compose cp nginx-reverse-emby:/tmp/panel-backup.db ./panel-backup.db
 ```

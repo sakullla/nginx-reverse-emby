@@ -8,12 +8,12 @@
 完整中文文档站：
 
 - [文档首页](https://sakullla.github.io/nginx-reverse-emby/)
-- [快速开始](https://sakullla.github.io/nginx-reverse-emby/guide/quickstart)
-- [部署](https://sakullla.github.io/nginx-reverse-emby/guide/deploy)
-- [HTTP 反向代理](https://sakullla.github.io/nginx-reverse-emby/guide/http-rule)
-- [L4 规则与 Relay](https://sakullla.github.io/nginx-reverse-emby/guide/l4-relay)
-- [WireGuard 隧道](https://sakullla.github.io/nginx-reverse-emby/guide/wireguard)
-- [证书与 HTTPS](https://sakullla.github.io/nginx-reverse-emby/guide/certificates)
+- [快速开始](https://sakullla.github.io/nginx-reverse-emby/getting-started/quickstart)
+- [部署](https://sakullla.github.io/nginx-reverse-emby/getting-started/deploy)
+- [HTTP 反向代理](https://sakullla.github.io/nginx-reverse-emby/guides/http-rules)
+- [L4 端口转发](https://sakullla.github.io/nginx-reverse-emby/guides/l4-rules)
+- [WireGuard 隧道](https://sakullla.github.io/nginx-reverse-emby/guides/wireguard)
+- [证书与 HTTPS](https://sakullla.github.io/nginx-reverse-emby/guides/certificates)
 
 ## 快速开始
 
