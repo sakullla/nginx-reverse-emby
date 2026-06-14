@@ -55,41 +55,50 @@ export default defineConfig({
     sidebarMenuLabel: '菜单',
     returnToTopLabel: '返回顶部',
     nav: [
-      { text: '新手教程', link: '/guide/getting-started' },
-      { text: 'HTTP 规则', link: '/guide/http-rule' },
-      { text: 'L4 + Relay', link: '/guide/l4-relay' },
-      { text: '参考', link: '/reference/environment' },
-      { text: '运维', link: '/operations/backup-restore' },
-      { text: 'GitHub', link: 'https://github.com/sakullla/nginx-reverse-emby' }
+      { text: '新手入门', link: '/getting-started/quickstart' },
+      { text: '操作指南', link: '/guides/http-rules' },
+      { text: '参考',     link: '/reference/architecture' },
+      { text: '运维',     link: '/operations/backup-restore' },
+      { text: 'GitHub',   link: 'https://github.com/sakullla/nginx-reverse-emby' }
     ],
     sidebar: [
       {
-        text: '新手教程',
+        text: '新手入门',
         items: [
-          { text: '从 0 到 HTTP 代理', link: '/guide/getting-started' },
-          { text: 'Docker Compose 部署', link: '/guide/docker-compose' },
-          { text: '添加 HTTP 规则', link: '/guide/http-rule' },
-          { text: 'L4 + Relay 从 0 到可用', link: '/guide/l4-relay' },
-          { text: 'Agent 接入', link: '/guide/agent' }
+          { text: '快速开始',         link: '/getting-started/quickstart' },
+          { text: '部署指南',         link: '/getting-started/deploy' },
+          { text: '核心概念',         link: '/getting-started/core-concepts' },
+        ]
+      },
+      {
+        text: '操作指南',
+        items: [
+          { text: 'HTTP 反向代理',    link: '/guides/http-rules' },
+          { text: 'L4 端口转发',      link: '/guides/l4-rules' },
+          { text: '证书与 HTTPS',     link: '/guides/certificates' },
+          { text: 'Agent 节点管理',   link: '/guides/agents' },
+          { text: 'WireGuard 隧道',   link: '/guides/wireguard' },
+          { text: 'Relay 隧道',       link: '/guides/relay' },
+          { text: '流量额度',         link: '/guides/traffic-quota' },
         ]
       },
       {
         text: '参考',
         items: [
-          { text: '架构与特性', link: '/reference/architecture' },
-          { text: '环境变量', link: '/reference/environment' },
-          { text: '证书管理', link: '/reference/certificates' },
-          { text: 'Relay', link: '/reference/relay' },
-          { text: 'WireGuard', link: '/reference/wireguard' },
-          { text: '开发与构建', link: '/reference/development' }
+          { text: '架构与设计',       link: '/reference/architecture' },
+          { text: '环境变量速查',     link: '/reference/environment-variables' },
+          { text: 'Relay 协议内幕',   link: '/reference/relay-internals' },
+          { text: '流量统计原理',     link: '/reference/traffic-accounting' },
+          { text: '安全最佳实践',     link: '/reference/security' },
+          { text: '开发与构建',       link: '/reference/development' },
         ]
       },
       {
         text: '运维',
         items: [
-          { text: '备份与恢复', link: '/operations/backup-restore' },
-          { text: '迁移', link: '/operations/migration' },
-          { text: '常见问题', link: '/operations/faq' }
+          { text: '备份与恢复',       link: '/operations/backup-restore' },
+          { text: '数据迁移',         link: '/operations/migration' },
+          { text: '排障指南',         link: '/operations/troubleshooting' },
         ]
       }
     ],

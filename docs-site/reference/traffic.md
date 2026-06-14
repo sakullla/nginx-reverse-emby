@@ -6,10 +6,10 @@ layout: false
 import { useRouter, withBase } from 'vitepress'
 import { onMounted } from 'vue'
 const router = useRouter()
-onMounted(() => router.go(withBase('/guides/agents')))
+onMounted(() => router.go(withBase('/reference/traffic-accounting')))
 </script>
 
 <div style="padding: 2rem; font-family: var(--vp-font-family-base);">
   <p>页面已移动。正在跳转…</p>
-  <p>如果没有自动跳转，请点击 <a :href="withBase('/guides/agents')">Agent 节点管理</a>。</p>
+  <p>如果没有自动跳转，请点击 <a :href="withBase('/reference/traffic-accounting')">流量统计原理</a>。</p>
 </div>
