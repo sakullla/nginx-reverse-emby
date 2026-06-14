@@ -1,12 +1,22 @@
-# 环境变量
+# 环境变量速查
 
-本页列出控制面和代理使用的配置变量。时间相关的值使用 Go 的 duration 格式，例如 `500ms`、`5s` 或 `2m`。
+控制面和 Agent 通过环境变量配置。时间值使用 Go duration 格式（`500ms`、`5s`、`2m`）。大多数 `NRE_*` 变量有旧版别名，旧配置可以继续使用。
 
-**别名优先级：** 当一个变量有多个别名时，第一个列出的优先级最高。大多数 `NRE_*` 变量也有旧版别名，因此旧配置可以继续工作。
+## 快速索引
+
+| 你想做的事 | 对应变量 |
+|---|---|
+| 设置面板密码 | `API_TOKEN`（必填） |
+| 设置时区 | `NRE_TIMEZONE`（国内填 `Asia/Shanghai`） |
+| 切换数据库 | `NRE_DATABASE_DRIVER` + `NRE_DATABASE_DSN` |
+| 开启 Cloudflare DNS 验证 | `ACME_DNS_PROVIDER=cf` + `CF_TOKEN` |
+| 关闭 WireGuard | `NRE_WIREGUARD_ENABLED=false` |
+| 关闭流量统计 | `NRE_TRAFFIC_STATS_ENABLED=false` |
+| Agent 注册令牌 | `MASTER_REGISTER_TOKEN` |
 
 ---
 
-## 控制平面 / 通用
+## 控制面
 
 | 变量 | 默认值 | 作用 |
 |------|--------|------|
@@ -59,7 +69,7 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 | `NRE_ACME_DIRECTORY_URL` | Let's Encrypt 生产环境 | ACME 目录 URL。 |
 | `NRE_MANAGED_CERT_RENEW_INTERVAL` | `24h` | 检查证书续期的频率。 |
 
-只有当 `ACME_DNS_PROVIDER=cf` **且** 令牌非空时，DNS-01 才会启用。详情请参阅 [证书与 HTTPS](../guide/certificates.md)。
+只有当 `ACME_DNS_PROVIDER=cf` **且** 令牌非空时，DNS-01 才会启用。详情请参阅 [证书与 HTTPS](../guides/certificates.md)。
 
 ---
 
@@ -83,7 +93,7 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 
 ---
 
-## 中继
+## Relay
 
 | 变量 | 默认值 | 作用 |
 |------|--------|------|
@@ -111,11 +121,11 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 | `NRE_TRAFFIC_CLEANUP_INTERVAL` | `24h` | 清理旧流量历史数据的频率。设置为 `0`、`off` 或 `disabled` 以禁用清理。 |
 | `NRE_TRAFFIC_INTERFACES` | 空 | 要监控的网络接口列表，逗号分隔。空表示所有接口。 |
 
-流量配额模型请参阅 [流量统计与配额](./traffic.md)。
+流量配额模型请参阅 [流量统计原理](./traffic-accounting.md)。
 
 ---
 
-## 代理
+## Agent
 
 | 变量 | 默认值 | 作用 |
 |------|--------|------|
