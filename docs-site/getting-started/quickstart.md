@@ -59,7 +59,7 @@ docker compose up -d
 
 | 字段 | 示例 | 说明 |
 | --- | --- | --- |
-| 入口域名 | `app.example.com` | 你访问用的域名，确保 DNS 已指向 VPS |
+| 入口域名 | `http://app.example.com` | 你访问用的域名，确保 DNS 已指向 VPS。注意：下拉选 `http://`，不要选 `https://` |
 | 后端地址 | `https://origin.example.net` | 真正的服务地址，带协议和端口 |
 | 启用规则 | 开 | 只有开启才会生效 |
 
