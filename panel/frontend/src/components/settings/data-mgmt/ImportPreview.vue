@@ -10,13 +10,18 @@
         <span class="info-value">{{ formatTimestamp(previewResult.manifest?.exported_at) }}</span>
       </div>
     </div>
-    <div class="preview-cards">
-      <div v-for="section in previewSections" :key="section.key" class="preview-card">
-        <div class="preview-card__main">
-          <span class="preview-card__icon">{{ section.icon }}</span>
-          <div class="preview-card__info">
-            <span class="preview-card__name">{{ section.label }}</span>
-            <span class="preview-card__count">共 {{ section.total }} 项</span>
+    <div class="preview-list">
+      <div
+        v-for="section in previewSections"
+        :key="section.key"
+        class="preview-list__item"
+        :class="{ 'preview-list__item--ok': section.imported > 0 }"
+      >
+        <div class="preview-list__main">
+          <span class="preview-list__icon">{{ section.icon }}</span>
+          <div class="preview-list__info">
+            <span class="preview-list__name">{{ section.label }}</span>
+            <span class="preview-list__count">共 {{ section.total }} 项</span>
           </div>
         </div>
         <span :class="section.statusClass">{{ section.statusText }}</span>
@@ -57,6 +62,7 @@ const previewSections = computed(() => {
     if (missing) parts.push(`跳过 ${missing}`)
     return {
       ...t,
+      imported,
       total,
       statusText: total === 0 ? '无' : parts.join(' / '),
       statusClass: imported > 0 ? 'preview-status--ok' : 'preview-status--skip'
@@ -72,17 +78,45 @@ function formatTimestamp(value) {
 </script>
 
 <style scoped>
-.preview-meta { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2-5); }
+.import-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.preview-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
 .preview-meta__item {
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
-  padding: var(--space-2-5) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-surface);
 }
-.info-label { display: block; font-size: var(--text-xs); color: var(--color-text-secondary); margin-bottom: var(--space-1); }
-.info-value { font-size: var(--text-sm); color: var(--color-text-primary); font-weight: var(--font-medium); }
 
-.preview-cards { display: flex; flex-direction: column; gap: var(--space-2); }
-.preview-card {
+.info-label {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+.info-value {
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-weight: var(--font-medium);
+}
+
+.preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.preview-list__item {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -90,14 +124,57 @@ function formatTimestamp(value) {
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   background: var(--color-bg-surface);
+  transition: border-color var(--duration-fast) var(--ease-default),
+              background-color var(--duration-fast) var(--ease-default);
 }
-.preview-card__main { display: flex; align-items: center; gap: var(--space-2-5); }
-.preview-card__icon { font-size: var(--text-lg); }
-.preview-card__info { display: flex; flex-direction: column; gap: 0.1rem; }
-.preview-card__name { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--color-text-primary); }
-.preview-card__count { font-size: var(--text-xs); color: var(--color-text-tertiary); }
-.preview-status--ok { color: var(--color-success); font-size: var(--text-sm); font-weight: var(--font-medium); }
-.preview-status--skip { color: var(--color-text-tertiary); font-size: var(--text-sm); }
 
-@media (max-width: 640px) { .preview-meta { grid-template-columns: 1fr; } }
+.preview-list__item--ok {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.preview-list__main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.preview-list__icon {
+  font-size: var(--text-lg);
+  line-height: 1;
+}
+
+.preview-list__info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.preview-list__name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+}
+
+.preview-list__count {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+
+.preview-status--ok {
+  color: var(--color-success);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+}
+
+.preview-status--skip {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 640px) {
+  .preview-meta {
+    grid-template-columns: 1fr;
+  }
+}
 </style>
