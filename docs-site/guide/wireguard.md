@@ -25,6 +25,8 @@ NRE_WIREGUARD_ENABLED=false
 | DNS | `1.1.1.1` | 接口使用的 DNS。 |
 | Public Endpoint | `vpn.example.com:51820` | 用于生成客户端配置的 Endpoint。 |
 
+![WireGuard Profile 创建表单](/screenshots/panel-wireguard-form.png)
+
 `Addresses` 表示 Agent 主机上 WireGuard UDP socket 的实际监听地址（例如 `192.168.0.109`）；`WG 分配地址` 表示 WireGuard 接口地址或地址池，例如：
 
 ```text

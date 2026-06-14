@@ -26,6 +26,14 @@
 
 对于普通 HTTPS 前端，使用默认的自动签发即可。
 
+证书管理页面如下：
+
+![证书管理列表](/screenshots/panel-certificates.png)
+
+点击 **新建证书** 后，表单如下：
+
+![创建证书表单](/screenshots/panel-certificate-form.png)
+
 ## HTTP-01 验证（推荐入门）
 
 HTTP-01 适合普通单域名证书，例如：

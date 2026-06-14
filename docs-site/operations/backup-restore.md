@@ -6,6 +6,8 @@
 
 在 **设置 → 数据管理** 中操作。
 
+![数据管理](/screenshots/panel-backup-export.png)
+
 ### 导出
 
 勾选要导出的资源（支持全选）：

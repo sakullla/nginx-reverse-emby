@@ -50,6 +50,8 @@ NRE_TRAFFIC_INTERFACES=eth0,eth1
 - **流量趋势**（可按小时 / 日 / 月切换，可选具体节点或全部）。
 - **Top 规则** 与 **Top 节点** 排行。
 
+![仪表盘流量模块](/screenshots/panel-dashboard.png)
+
 ## 手工校准
 
 当物理计数与实际不符（例如更换网卡、重置系统、迁移数据），可在节点上执行校准：设置基线偏移，或清零当前周期数据。校准基线保存在 `traffic_baselines` 中，后续统计以校准后的值为口径。
