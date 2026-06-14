@@ -1,0 +1,59 @@
+name: Docs Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs-site/**
+      - .github/workflows/docs-pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install dependencies
+        working-directory: docs-site
+        run: npm ci
+
+      - name: Build docs
+        working-directory: docs-site
+        run: npm run build
+
+      - name: Publish to gh-pages branch
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf /tmp/nre-docs-dist
+          cp -R docs-site/.vitepress/dist /tmp/nre-docs-dist
+          rm -rf /tmp/nre-gh-pages
+          mkdir /tmp/nre-gh-pages
+          git -C /tmp/nre-gh-pages init
+          git -C /tmp/nre-gh-pages checkout -b gh-pages
+          git -C /tmp/nre-gh-pages config user.name "github-actions[bot]"
+          git -C /tmp/nre-gh-pages config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C /tmp/nre-gh-pages remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          cp -R /tmp/nre-docs-dist/. /tmp/nre-gh-pages/
+          touch /tmp/nre-gh-pages/.nojekyll
+          git -C /tmp/nre-gh-pages add -A
+          git -C /tmp/nre-gh-pages commit -m "deploy docs pages"
+          git -C /tmp/nre-gh-pages push --force origin gh-pages
