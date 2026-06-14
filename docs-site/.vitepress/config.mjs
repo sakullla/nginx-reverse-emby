@@ -59,7 +59,7 @@ export default defineConfig({
       { text: 'HTTP 规则', link: '/guide/http-rule' },
       { text: 'L4 + Relay', link: '/guide/l4-relay' },
       { text: 'WireGuard', link: '/guide/wireguard' },
-      { text: '参考', link: '/reference/environment' },
+      { text: '参考', link: '/reference/architecture' },
       { text: '运维', link: '/operations/backup-restore' },
       { text: 'GitHub', link: 'https://github.com/sakullla/nginx-reverse-emby' }
     ],
