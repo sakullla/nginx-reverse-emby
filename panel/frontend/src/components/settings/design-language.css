@@ -1,0 +1,93 @@
+/* =============================================
+   设置页设计语言范式（新设计语言先行页）
+   复用 themes.css token（--color-*/--radius-*/--space-*/--text-*/--font-*/--duration-*/--ease-*）。
+   本文件为设置页专属样式，由 SettingsPage.vue 引入；设置页各分区复用 .btn--* 与 .settings-section 范式。
+   不引入第三方 UI 库；token 驱动以兼容 4 主题（sakura-day/sakura-night/neko-dark/business）。
+   ============================================= */
+
+/* === Button 范式 === */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1-5);
+  padding: var(--space-2-5) var(--space-4);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  line-height: 1;
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-default),
+              border-color var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default),
+              transform var(--duration-fast) var(--ease-default),
+              opacity var(--duration-fast) var(--ease-default);
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { transform: translateY(-1px); }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+.btn--primary {
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+  border-color: var(--color-primary);
+}
+.btn--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.btn--secondary {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-default);
+}
+.btn--secondary:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.btn--danger {
+  background: var(--color-danger);
+  color: var(--color-text-inverse);
+  border-color: var(--color-danger);
+}
+.btn--danger:hover:not(:disabled) {
+  background: var(--color-danger);
+  filter: brightness(0.94);
+}
+
+/* === Section 范式 === */
+.settings-section {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  transition: box-shadow var(--duration-normal) var(--ease-default);
+}
+.settings-section:hover {
+  box-shadow: var(--shadow-sm);
+}
+.settings-section__header {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.settings-section__title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  margin: 0 0 var(--space-1);
+  color: var(--color-text-primary);
+}
+.settings-section__desc {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+.settings-section__body {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
