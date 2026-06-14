@@ -69,7 +69,8 @@ docker compose up -d
 
 ### 在线备份（无需停机）
 
+`./data` 目录挂载自宿主机，直接对宿主机上的数据库文件执行备份即可：
+
 ```bash
-docker compose exec nginx-reverse-emby sqlite3 /opt/nginx-reverse-emby/panel/data/panel.db ".backup /tmp/panel-backup.db"
-docker compose cp nginx-reverse-emby:/tmp/panel-backup.db ./panel-backup.db
+sqlite3 ./data/panel.db ".backup ./panel-backup.db"
 ```

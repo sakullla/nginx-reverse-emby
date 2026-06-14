@@ -69,7 +69,7 @@ CF_TOKEN=your-cloudflare-api-token
 
 ![Cloudflare API Token 权限](/screenshots/cloudflare-token-permissions.png)
 
-Token 支持多种环境变量名：`CF_TOKEN` > `CLOUDFLARE_DNS_API_TOKEN` > `CF_DNS_API_TOKEN` > `CF_Token`。填任意一个即可。
+Token 支持多种环境变量名，按优先级依次尝试：`CLOUDFLARE_DNS_API_TOKEN` > `CF_DNS_API_TOKEN` > `CF_TOKEN` > `CF_Token`。填任意一个即可，同时设置了多个时优先级高的生效。
 
 ::: warning Token 安全
 CF_TOKEN 能操作 DNS 记录，不要提交到仓库。定期轮换 Token。更多安全建议见 [安全最佳实践](../reference/security.md)。
