@@ -1,22 +1,14 @@
 <template>
   <div class="settings-data-mgmt">
     <ExportPanel :counts="counts" />
-    <!-- 导入向导由 T6 提供（ImportWizard），当前占位 -->
-    <section class="settings-section">
-      <div class="settings-section__header">
-        <h2 class="settings-section__title">导入备份</h2>
-        <p class="settings-section__desc">从备份文件恢复配置</p>
-      </div>
-      <div class="settings-section__body">
-        <p class="settings-placeholder">导入向导由后续任务提供（占位）。</p>
-      </div>
-    </section>
+    <ImportWizard />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import ExportPanel from './data-mgmt/ExportPanel.vue'
+import ImportWizard from './data-mgmt/ImportWizard.vue'
 import { fetchBackupResourceCounts } from '../../api'
 
 // 数据管理容器：统一获取资源 counts，传给导出/导入子组件；导入向导由 T6 提供
