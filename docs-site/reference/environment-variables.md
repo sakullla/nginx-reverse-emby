@@ -21,16 +21,16 @@
 | 变量 | 默认值 | 作用 |
 |------|--------|------|
 | `NRE_PANEL_TOKEN`（别名 `API_TOKEN`） | **必填** | 网页界面和 API 认证的登录令牌。 |
-| `NRE_REGISTER_TOKEN`（别名 `MASTER_REGISTER_TOKEN`、`PANEL_REGISTER_TOKEN`、`API_TOKEN`） | 回退到 `NRE_PANEL_TOKEN` | 代理向主控注册时使用的令牌。 |
-| `NRE_CONTROL_PLANE_ADDR`（别名 `PANEL_BACKEND_HOST` + `PANEL_BACKEND_PORT`） | `0.0.0.0:8080` | 控制平面监听的地址。 |
+| `NRE_REGISTER_TOKEN`（别名 `MASTER_REGISTER_TOKEN`、`PANEL_REGISTER_TOKEN`、`API_TOKEN`） | 回退到 `NRE_PANEL_TOKEN` | Agent 向控制面注册时使用的令牌。 |
+| `NRE_CONTROL_PLANE_ADDR`（别名 `PANEL_BACKEND_HOST` + `PANEL_BACKEND_PORT`） | `0.0.0.0:8080` | 控制面监听的地址。 |
 | `NRE_CONTROL_PLANE_DATA_DIR`（别名 `PANEL_DATA_ROOT`） | `/opt/nginx-reverse-emby/panel/data` | SQLite 数据库和运行时数据的目录。 |
 | `NRE_FRONTEND_DIST_DIR`（别名 `PANEL_FRONTEND_DIST_DIR`） | `/opt/nginx-reverse-emby/panel/frontend/dist` | 存放构建好的前端文件的目录。 |
 | `NRE_PUBLIC_AGENT_ASSETS_DIR`（别名 `PANEL_PUBLIC_AGENT_ASSETS_DIR`） | `/opt/.../public/agent-assets` | 公共代理资源的目录（加入脚本、二进制文件）。 |
-| `NRE_ENABLE_LOCAL_AGENT`（别名 `MASTER_LOCAL_AGENT_ENABLED`） | `true` | 是否在主控节点上运行内置的 `local` 代理。 |
+| `NRE_ENABLE_LOCAL_AGENT`（别名 `MASTER_LOCAL_AGENT_ENABLED`） | `true` | 是否在控制面节点上运行内置的 `local` Agent。 |
 | `NRE_LOCAL_AGENT_ID`（别名 `MASTER_LOCAL_AGENT_ID`） | `local` | 内置本地代理的标识符。 |
 | `NRE_LOCAL_AGENT_NAME`（别名 `MASTER_LOCAL_AGENT_NAME`） | `local` | 内置本地代理的显示名称。 |
 | `NRE_TIMEZONE` | `UTC` | 面板使用的时区（IANA 格式），用于每日/每月流量汇总和计费周期边界。 |
-| `NRE_HEARTBEAT_INTERVAL` | `30s` | 从控制平面角度的心跳间隔。（代理默认是 `10s`；见下面的代理部分。） |
+| `NRE_HEARTBEAT_INTERVAL` | `30s` | 从控制面角度的心跳间隔。（Agent 默认是 `10s`；见下面的 Agent 部分。） |
 | `NRE_PROJECT_URL` | 空 | 项目主页 URL，显示在版本信息中。 |
 
 ---
@@ -73,9 +73,9 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 
 ---
 
-## HTTP 传输（控制平面和代理共享）
+## HTTP 传输（控制面和 Agent 共享）
 
-这些设置控制代理如何连接到上游（后端）服务器。
+这些设置控制 Agent 如何连接到后端服务器。
 
 | 变量 | 默认值 | 作用 |
 |------|--------|------|
@@ -129,14 +129,14 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 
 | 变量 | 默认值 | 作用 |
 |------|--------|------|
-| `NRE_AGENT_ID` | `linux-agent` | 此代理的唯一标识符。 |
-| `NRE_AGENT_NAME` | `linux-agent` | 此代理的人类可读显示名称。 |
-| `NRE_AGENT_TOKEN` | **必填** | 代理用于心跳认证的令牌（注册时生成）。 |
-| `NRE_AGENT_VERSION` | `0.0.0` | 当前代理版本，用于自更新比较。 |
-| `NRE_MASTER_URL` | **必填** | 代理连接的主控控制平面 URL。 |
-| `NRE_DATA_DIR` | `/var/lib/nre-agent` | 代理存储本地数据的目录。 |
-| `NRE_HEARTBEAT_INTERVAL` | `10s` | 代理向主控发送心跳/同步请求的频率。 |
+| `NRE_AGENT_ID` | `linux-agent` | Agent 的唯一标识符。 |
+| `NRE_AGENT_NAME` | `linux-agent` | Agent 的显示名称。 |
+| `NRE_AGENT_TOKEN` | **必填** | Agent 心跳认证令牌（注册时生成）。 |
+| `NRE_AGENT_VERSION` | `0.0.0` | 当前 Agent 版本，用于自更新比较。 |
+| `NRE_MASTER_URL` | **必填** | Agent 连接的控制面 URL。 |
+| `NRE_DATA_DIR` | `/var/lib/nre-agent` | Agent 存储本地数据的目录。 |
+| `NRE_HEARTBEAT_INTERVAL` | `10s` | Agent 向控制面发送心跳/同步请求的频率。 |
 | `NRE_HTTP3_ENABLED` | `false` | 启用 HTTP/3（QUIC）作为入站协议。 |
-| `NRE_TRAFFIC_STATS_ENABLED` | `true` | 在代理端启用流量采集。 |
-| `NRE_WIREGUARD_ENABLED` | `true` | 在代理端启用 WireGuard。 |
+| `NRE_TRAFFIC_STATS_ENABLED` | `true` | 在 Agent 端启用流量采集。 |
+| `NRE_WIREGUARD_ENABLED` | `true` | 在 Agent 端启用 WireGuard。 |
 | `NRE_PPROF_ADDR` | 空 | pprof 调试端点的地址。需要调试构建。 |
