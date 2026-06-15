@@ -47,29 +47,35 @@
 
     <!-- Collapsed navigation with hover popup -->
     <nav class="sidebar__nav sidebar__nav--collapsed" v-show="collapsed">
-      <template v-for="item in singleItems" :key="item.to">
-        <RouterLink :to="item.to" class="sidebar__nav-icon" :title="item.label" :class="{ 'sidebar__nav-icon--active': isItemActive(item) }">
+      <template v-for="item in navItems" :key="item.to || item.label">
+        <RouterLink
+          v-if="item.type === 'item'"
+          :to="item.to"
+          class="sidebar__nav-icon"
+          :title="item.label"
+          :class="{ 'sidebar__nav-icon--active': isItemActive(item) }"
+        >
           <component :is="item.icon" />
         </RouterLink>
-      </template>
 
-      <div v-for="group in groupItems" :key="group.label" class="sidebar__nav-icon-wrap">
-        <div class="sidebar__nav-icon" :class="{ 'sidebar__nav-icon--active': isGroupActive(group) }">
-          <component :is="group.icon" />
+        <div v-else class="sidebar__nav-icon-wrap">
+          <div class="sidebar__nav-icon" :class="{ 'sidebar__nav-icon--active': isGroupActive(item) }">
+            <component :is="item.icon" />
+          </div>
+          <div class="sidebar__hover-popup">
+            <RouterLink
+              v-for="child in item.children"
+              :key="child.to"
+              :to="child.to"
+              class="sidebar__hover-popup__item"
+              :class="{ 'sidebar__hover-popup__item--active': isChildActive(child) }"
+            >
+              <component :is="child.icon" />
+              <span>{{ child.label }}</span>
+            </RouterLink>
+          </div>
         </div>
-        <div class="sidebar__hover-popup">
-          <RouterLink
-            v-for="child in group.children"
-            :key="child.to"
-            :to="child.to"
-            class="sidebar__hover-popup__item"
-            :class="{ 'sidebar__hover-popup__item--active': isChildActive(child) }"
-          >
-            <component :is="child.icon" />
-            <span>{{ child.label }}</span>
-          </RouterLink>
-        </div>
-      </div>
+      </template>
     </nav>
   </aside>
 </template>
@@ -126,9 +132,6 @@ const navItems = [
 const route = useRoute()
 const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
 const openGroups = ref(new Set(JSON.parse(localStorage.getItem('sidebar_open_groups') || '[]')))
-
-const singleItems = computed(() => navItems.filter(i => i.type === 'item'))
-const groupItems = computed(() => navItems.filter(i => i.type === 'group'))
 
 function isItemActive(item) { return item.activeMatch ? item.activeMatch(route.name) : route.path === item.to }
 function isChildActive(child) { return child.activeMatch ? child.activeMatch(route.name) : route.path === child.to }
@@ -441,11 +444,21 @@ watch(() => route.path, openActiveGroups)
   z-index: var(--z-dropdown, 1000);
 }
 
-.sidebar__nav-icon-wrap:hover .sidebar__hover-popup {
+.sidebar__nav-icon-wrap:hover .sidebar__hover-popup,
+.sidebar__hover-popup:hover {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
   transform: translateY(-50%) scale(1);
+}
+
+.sidebar__nav-icon-wrap::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 100%;
+  width: 12px;
+  height: 100%;
 }
 
 .sidebar__hover-popup__item {
