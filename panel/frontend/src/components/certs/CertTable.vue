@@ -21,12 +21,12 @@
           </td>
           <td class="rules-table__mono">{{ cert.domain }}</td>
           <td>
-            <BaseBadge shape="square" tone="primary">{{ getCertificateUsageLabel(cert.usage) }}</BaseBadge>
+            <BaseBadge shape="square" mono tone="primary">{{ getCertificateUsageLabel(cert.usage) }}</BaseBadge>
           </td>
           <td>
-            <BaseBadge shape="square" tone="primary">{{ getCertificateSourceLabel(cert.certificate_type) }}</BaseBadge>
+            <BaseBadge shape="square" mono tone="primary">{{ getCertificateSourceLabel(cert.certificate_type) }}</BaseBadge>
           </td>
-          <td>{{ formatDate(cert.last_issue_at) }}</td>
+          <td class="rules-table__mono">{{ formatDate(cert.last_issue_at) }}</td>
           <td>
             <div class="rules-table__tags">
               <span v-for="tag in (cert.tags || [])" :key="tag" class="tag">{{ tag }}</span>
@@ -99,7 +99,7 @@ defineEmits(['edit', 'delete'])
 .rules-table__actions .btn-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
-.tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
+.tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; font-family: var(--font-mono); }
 tbody tr:nth-child(even):not(.empty-state-row) { background: var(--color-bg-subtle); }
 tbody tr.empty-state-row:hover { background: transparent; }
 .empty-state { text-align: center; padding: 2rem 1rem; color: var(--color-text-tertiary); font-size: 0.875rem; }
