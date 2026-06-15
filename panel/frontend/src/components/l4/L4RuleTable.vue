@@ -53,6 +53,9 @@
             </div>
           </td>
         </tr>
+        <tr v-if="!rules.length" class="empty-state-row">
+          <td :colspan="7" class="empty-state">暂无数据</td>
+        </tr>
       </tbody>
     </table>
   </div>
@@ -97,4 +100,7 @@ defineEmits(['toggle', 'edit', 'delete'])
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
+tbody tr:nth-child(even):not(.empty-state-row) { background: var(--color-bg-subtle); }
+tbody tr.empty-state-row:hover { background: transparent; }
+.empty-state { text-align: center; padding: 2rem 1rem; color: var(--color-text-tertiary); font-size: 0.875rem; }
 </style>

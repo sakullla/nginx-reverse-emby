@@ -49,6 +49,9 @@
             </div>
           </td>
         </tr>
+        <tr v-if="!rules.length" class="empty-state-row">
+          <td :colspan="6" class="empty-state">暂无数据</td>
+        </tr>
       </tbody>
     </table>
   </div>
@@ -105,4 +108,7 @@ defineEmits(['toggle', 'edit', 'delete'])
 .toggle__knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s; }
 .toggle--on .toggle__knob { transform: translateX(18px); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
+tbody tr:nth-child(even):not(.empty-state-row) { background: var(--color-bg-subtle); }
+tbody tr.empty-state-row:hover { background: transparent; }
+.empty-state { text-align: center; padding: 2rem 1rem; color: var(--color-text-tertiary); font-size: 0.875rem; }
 </style>
