@@ -13,6 +13,7 @@
         </p>
       </div>
       <div class="rules-page__header-right">
+        <ViewToggle v-if="agentId && rules.length" v-model:view="view" />
         <div class="search-wrapper" v-if="agentId && rules.length" @click="focusSearch">
           <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input ref="searchInputRef" v-model="searchQuery" name="l4-rule-search" class="search-input" placeholder="搜索协议 / 地址 / 端口 / 标签 / #id=...">
@@ -63,7 +64,7 @@
     </div>
 
     <!-- Rule card grid -->
-    <div v-if="agentId && filteredRules.length" class="rule-grid">
+    <div v-if="agentId && filteredRules.length && view === 'card'" class="rule-grid">
       <L4RuleItem
         v-for="rule in filteredRules"
         :key="rule.id"
@@ -79,6 +80,16 @@
         @traffic-click="openTrendModal"
       />
     </div>
+
+    <!-- Rule list table -->
+    <L4RuleTable
+      v-if="agentId && filteredRules.length && view === 'list'"
+      :rules="filteredRules"
+      :agent="selectedAgent"
+      @edit="startEdit"
+      @toggle="toggleRule"
+      @delete="startDelete"
+    />
 
     <!-- Loading -->
     <div v-if="isLoading" class="rules-page__loading">
@@ -156,11 +167,15 @@ import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
+import ViewToggle from '../components/common/ViewToggle.vue'
+import L4RuleTable from '../components/l4/L4RuleTable.vue'
+import { useViewToggle } from '../composables/useViewToggle'
 import { messageStore } from '../stores/messages'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
+const { view } = useViewToggle('l4rules')
 const agentContext = useAgent()
 const { selectedAgentId } = agentContext
 const systemInfo = agentContext.systemInfo || ref(null)
