@@ -19,9 +19,9 @@
             </button>
           </td>
           <td>
-            <span class="status-badge" :class="`status-badge--${getStatus(rule)}`">
-              {{ getLabel(getStatus(rule)) }}
-            </span>
+            <BaseBadge :tone="getStatusBadge(getStatus(rule)).tone" dot>
+              {{ getStatusBadge(getStatus(rule)).label }}
+            </BaseBadge>
           </td>
           <td class="rules-table__url">{{ rule.frontend_url }}</td>
           <td class="rules-table__url rules-table__url--backend">
@@ -56,20 +56,11 @@
 
 <script setup>
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
-
-const STATUS_LABEL = {
-  active: '生效中',
-  pending: '待同步',
-  failed: '同步失败',
-  disabled: '已禁用',
-}
+import { getStatusBadge } from '../../utils/enumLabels.js'
+import BaseBadge from '../base/BaseBadge.vue'
 
 function getStatus(rule) {
   return getRuleEffectiveStatus(rule, props.agent)
-}
-
-function getLabel(status) {
-  return STATUS_LABEL[status] || '未知'
 }
 
 function httpBackends(rule) {
@@ -114,9 +105,4 @@ defineEmits(['toggle', 'edit', 'delete'])
 .toggle__knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s; }
 .toggle--on .toggle__knob { transform: translateX(18px); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
-.status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-full); font-weight: 500; white-space: nowrap; }
-.status-badge--active { background: rgba(var(--color-success-rgb, 34, 197, 94), 0.1); color: var(--color-success); }
-.status-badge--pending { background: rgba(var(--color-warning-rgb, 245, 158, 11), 0.1); color: var(--color-warning); }
-.status-badge--failed { background: rgba(var(--color-danger-rgb, 239, 68, 68), 0.1); color: var(--color-danger); }
-.status-badge--disabled { background: var(--color-bg-subtle); color: var(--color-text-tertiary); }
 </style>
