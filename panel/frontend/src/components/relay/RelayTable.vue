@@ -1,0 +1,105 @@
+<template>
+  <div class="rule-table">
+    <table class="rules-table">
+      <thead>
+        <tr>
+          <th>状态</th>
+          <th>名称</th>
+          <th>公网端点</th>
+          <th>传输模式</th>
+          <th>TLS</th>
+          <th>标签</th>
+          <th style="width: 80px">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="listener in listeners" :key="listener.id" class="rules-table__row">
+          <td>
+            <span class="status-badge" :class="listener.enabled ? 'status-badge--active' : 'status-badge--disabled'">
+              {{ listener.enabled ? '启用' : '已禁用' }}
+            </span>
+          </td>
+          <td>{{ listener.name || `#${listener.id}` }}</td>
+          <td class="rules-table__mono">{{ formatPublicEndpoint(listener) }}</td>
+          <td>
+            <span class="proto-badge" :class="`proto-badge--${(listener.transport_mode || 'tcp').toLowerCase()}`">
+              {{ transportLabel(listener) }}
+            </span>
+          </td>
+          <td>{{ tlsLabel(listener) }}</td>
+          <td>
+            <div class="rules-table__tags">
+              <span v-for="tag in (listener.tags || [])" :key="tag" class="tag">{{ tag }}</span>
+            </div>
+          </td>
+          <td>
+            <div class="rules-table__actions">
+              <button class="btn-icon" title="编辑" @click="$emit('edit', listener)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </button>
+              <button class="btn-icon btn-icon--danger" title="删除" @click="$emit('delete', listener)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                </svg>
+              </button>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</template>
+
+<script setup>
+const TRANSPORT_LABELS = { quic: 'QUIC', tls: 'TLS/TCP', wireguard: 'WireGuard' }
+
+function transportLabel(l) {
+  return TRANSPORT_LABELS[l.transport_mode] || 'TCP'
+}
+
+function tlsLabel(l) {
+  if (l.tls_mode === 'pin_and_ca') return 'Pin + CA'
+  if (l.tls_mode === 'pin_only') return '仅 Pin'
+  if (l.tls_mode === 'ca_only') return '仅 CA'
+  return '-'
+}
+
+function formatPublicEndpoint(l) {
+  const host = String(l.public_host || '').trim() || (Array.isArray(l.bind_hosts) ? l.bind_hosts[0] : '') || '-'
+  const port = l.public_port || l.listen_port || '-'
+  return `${host}:${port}`
+}
+
+defineProps({
+  listeners: { type: Array, default: () => [] }
+})
+defineEmits(['toggle', 'edit', 'delete'])
+</script>
+
+<style scoped>
+.rule-table { overflow-x: auto; }
+.rules-table { width: 100%; border-collapse: collapse; }
+.rules-table th { text-align: left; padding: 0.75rem 1rem; font-size: 0.75rem; font-weight: 600; color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border-default); }
+.rules-table__row { border-bottom: 1px solid var(--color-border-subtle); }
+.rules-table__row:hover { background: var(--color-bg-hover); }
+.rules-table td { padding: 0.875rem 1rem; vertical-align: middle; }
+.rules-table__mono { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-primary); }
+.rules-table__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.rules-table__actions { display: flex; gap: 0.25rem; }
+.rules-table__actions .btn-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
+.rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
+.rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
+.tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
+.status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-full); font-weight: 500; white-space: nowrap; }
+.status-badge--active { background: rgba(var(--color-success-rgb, 34, 197, 94), 0.1); color: var(--color-success); }
+.status-badge--disabled { background: var(--color-bg-subtle); color: var(--color-text-tertiary); }
+.proto-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-sm); font-weight: 600; font-family: var(--font-mono); }
+.proto-badge--quic { background: rgba(var(--color-primary-rgb, 99, 102, 241), 0.1); color: var(--color-primary); }
+.proto-badge--tls { background: rgba(var(--color-success-rgb, 34, 197, 94), 0.1); color: var(--color-success); }
+.proto-badge--wireguard { background: rgba(var(--color-warning-rgb, 245, 158, 11), 0.1); color: var(--color-warning); }
+.proto-badge--tcp { background: var(--color-bg-subtle); color: var(--color-text-secondary); }
+</style>
