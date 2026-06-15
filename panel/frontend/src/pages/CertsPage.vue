@@ -13,6 +13,7 @@
         </p>
       </div>
       <div class='certs-page__header-right'>
+        <ViewToggle v-if='agentId && certificates.length' v-model:view='view' />
         <div v-if='agentId && certificates.length' class='search-wrapper' @click='focusSearch'>
           <svg class='search-icon-btn' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
             <circle cx='11' cy='11' r='8' />
@@ -56,7 +57,7 @@
       <div class='spinner'></div>
     </div>
 
-    <div v-else-if='certificates.length && filteredCerts.length' class='cert-grid'>
+    <div v-else-if='certificates.length && filteredCerts.length && view === "card"' class='cert-grid'>
       <CertCard
         v-for='cert in filteredCerts'
         :key='cert.id'
@@ -66,6 +67,13 @@
         @issue='issueCert'
       />
     </div>
+
+    <CertTable
+      v-if='agentId && filteredCerts.length && view === "list"'
+      :certificates='filteredCerts'
+      @edit='startEdit'
+      @delete='startDelete'
+    />
 
     <div v-else-if='certificates.length && !filteredCerts.length && !isIdExactMatch' class='certs-page__empty'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
@@ -118,12 +126,16 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import CertCard from '../components/certs/CertCard.vue'
+import ViewToggle from '../components/common/ViewToggle.vue'
+import CertTable from '../components/certs/CertTable.vue'
+import { useViewToggle } from '../composables/useViewToggle'
 import {
   isSystemRelayCA
 } from '../utils/certificateTemplates'
 
 const route = useRoute()
 const router = useRouter()
+const { view } = useViewToggle('certs')
 const agentContext = useAgent()
 const { selectedAgentId } = agentContext
 const { data: agentsData } = useAgents()
