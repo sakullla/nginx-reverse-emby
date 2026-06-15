@@ -15,18 +15,22 @@
       <tbody>
         <tr v-for="rule in rules" :key="rule.id" class="rules-table__row">
           <td>
-            <span class="status-badge" :class="`status-badge--${getStatus(rule)}`">
-              {{ getLabel(getStatus(rule)) }}
-            </span>
+            <BaseBadge :tone="getStatusBadge(getStatus(rule)).tone" dot>
+              {{ getStatusBadge(getStatus(rule)).label }}
+            </BaseBadge>
           </td>
           <td>
-            <span class="proto-badge" :class="`proto-badge--${(rule.protocol || '').toLowerCase()}`">
-              {{ (rule.protocol || 'tcp').toUpperCase() }}
-            </span>
+            <BaseBadge shape="square" mono :tone="getProtocolBadge(rule.protocol).tone">
+              {{ getProtocolBadge(rule.protocol).label }}
+            </BaseBadge>
           </td>
           <td class="rules-table__mono">{{ rule.listen_host }}:{{ rule.listen_port }}</td>
           <td class="rules-table__mono">{{ formatBackend(rule) }}</td>
-          <td>{{ getLBLabel(rule) }}</td>
+          <td>
+            <BaseBadge shape="square" mono :tone="getLBLabel(rule.load_balancing?.strategy).tone">
+              {{ getLBLabel(rule.load_balancing?.strategy).label }}
+            </BaseBadge>
+          </td>
           <td>
             <div class="rules-table__tags">
               <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
@@ -56,25 +60,11 @@
 
 <script setup>
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
-
-const STATUS_LABEL = {
-  active: '生效中',
-  pending: '待同步',
-  failed: '同步失败',
-  disabled: '已禁用',
-}
-const LB_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
+import { getStatusBadge, getProtocolBadge, getLBLabel } from '../../utils/enumLabels.js'
+import BaseBadge from '../base/BaseBadge.vue'
 
 function getStatus(rule) {
   return getRuleEffectiveStatus(rule, props.agent)
-}
-
-function getLabel(status) {
-  return STATUS_LABEL[status] || '未知'
-}
-
-function getLBLabel(rule) {
-  return LB_MAP[rule.load_balancing?.strategy] || 'ADP'
 }
 
 function formatBackend(rule) {
@@ -107,12 +97,4 @@ defineEmits(['toggle', 'edit', 'delete'])
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
-.status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-full); font-weight: 500; white-space: nowrap; }
-.status-badge--active { background: rgba(var(--color-success-rgb, 34, 197, 94), 0.1); color: var(--color-success); }
-.status-badge--pending { background: rgba(var(--color-warning-rgb, 245, 158, 11), 0.1); color: var(--color-warning); }
-.status-badge--failed { background: rgba(var(--color-danger-rgb, 239, 68, 68), 0.1); color: var(--color-danger); }
-.status-badge--disabled { background: var(--color-bg-subtle); color: var(--color-text-tertiary); }
-.proto-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-sm); font-weight: 600; font-family: var(--font-mono); }
-.proto-badge--tcp { background: rgba(var(--color-primary-rgb, 99, 102, 241), 0.1); color: var(--color-primary); }
-.proto-badge--udp { background: rgba(var(--color-warning-rgb, 245, 158, 11), 0.1); color: var(--color-warning); }
 </style>
