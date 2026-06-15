@@ -3,10 +3,11 @@
     <table class="rules-table">
       <thead>
         <tr>
-          <th style="width: 48px"></th>
           <th>状态</th>
-          <th>前端地址</th>
+          <th>协议</th>
+          <th>监听地址</th>
           <th>后端地址</th>
+          <th>负载均衡</th>
           <th>标签</th>
           <th style="width: 80px">操作</th>
         </tr>
@@ -14,19 +15,18 @@
       <tbody>
         <tr v-for="rule in rules" :key="rule.id" class="rules-table__row">
           <td>
-            <button class="toggle" :class="{ 'toggle--on': rule.enabled }" @click="$emit('toggle', rule)">
-              <span class="toggle__knob"></span>
-            </button>
-          </td>
-          <td>
             <span class="status-badge" :class="`status-badge--${getStatus(rule)}`">
               {{ getLabel(getStatus(rule)) }}
             </span>
           </td>
-          <td class="rules-table__url">{{ rule.frontend_url }}</td>
-          <td class="rules-table__url rules-table__url--backend">
-            {{ formatBackend(rule) }}
+          <td>
+            <span class="proto-badge" :class="`proto-badge--${(rule.protocol || '').toLowerCase()}`">
+              {{ (rule.protocol || 'tcp').toUpperCase() }}
+            </span>
           </td>
+          <td class="rules-table__mono">{{ rule.listen_host }}:{{ rule.listen_port }}</td>
+          <td class="rules-table__mono">{{ formatBackend(rule) }}</td>
+          <td>{{ getLBLabel(rule) }}</td>
           <td>
             <div class="rules-table__tags">
               <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
@@ -63,6 +63,7 @@ const STATUS_LABEL = {
   failed: '同步失败',
   disabled: '已禁用',
 }
+const LB_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
 
 function getStatus(rule) {
   return getRuleEffectiveStatus(rule, props.agent)
@@ -72,20 +73,17 @@ function getLabel(status) {
   return STATUS_LABEL[status] || '未知'
 }
 
-function httpBackends(rule) {
-  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
-    return rule.backends
-      .map((backend) => String(backend?.url || '').trim())
-      .filter(Boolean)
-  }
-  return []
+function getLBLabel(rule) {
+  return LB_MAP[rule.load_balancing?.strategy] || 'ADP'
 }
 
 function formatBackend(rule) {
-  const backends = httpBackends(rule)
+  const backends = Array.isArray(rule.backends) ? rule.backends : []
   if (backends.length === 0) return '-'
-  if (backends.length === 1) return backends[0]
-  return `${backends[0]} +${backends.length - 1}`
+  const first = backends[0]
+  const addr = `${first.host}:${first.port}`
+  if (backends.length === 1) return addr
+  return `${addr} +${backends.length - 1}`
 }
 
 const props = defineProps({
@@ -102,21 +100,19 @@ defineEmits(['toggle', 'edit', 'delete'])
 .rules-table__row { border-bottom: 1px solid var(--color-border-subtle); }
 .rules-table__row:hover { background: var(--color-bg-hover); }
 .rules-table td { padding: 0.875rem 1rem; vertical-align: middle; }
-.rules-table__url { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-primary); }
-.rules-table__url--backend { color: var(--color-text-secondary); }
+.rules-table__mono { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-primary); }
 .rules-table__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .rules-table__actions { display: flex; gap: 0.25rem; }
 .rules-table__actions .btn-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
-.toggle { width: 40px; height: 22px; border-radius: 11px; border: none; background: var(--color-bg-subtle); cursor: pointer; position: relative; transition: background 0.2s; padding: 0; }
-.toggle--on { background: var(--color-primary); }
-.toggle__knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s; }
-.toggle--on .toggle__knob { transform: translateX(18px); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
 .status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-full); font-weight: 500; white-space: nowrap; }
 .status-badge--active { background: rgba(var(--color-success-rgb, 34, 197, 94), 0.1); color: var(--color-success); }
 .status-badge--pending { background: rgba(var(--color-warning-rgb, 245, 158, 11), 0.1); color: var(--color-warning); }
 .status-badge--failed { background: rgba(var(--color-danger-rgb, 239, 68, 68), 0.1); color: var(--color-danger); }
 .status-badge--disabled { background: var(--color-bg-subtle); color: var(--color-text-tertiary); }
+.proto-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-sm); font-weight: 600; font-family: var(--font-mono); }
+.proto-badge--tcp { background: rgba(var(--color-primary-rgb, 99, 102, 241), 0.1); color: var(--color-primary); }
+.proto-badge--udp { background: rgba(var(--color-warning-rgb, 245, 158, 11), 0.1); color: var(--color-warning); }
 </style>
