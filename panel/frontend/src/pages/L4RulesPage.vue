@@ -64,7 +64,7 @@
     </div>
 
     <!-- Rule card grid -->
-    <div v-if="agentId && filteredRules.length && view === 'card'" class="rule-grid">
+    <div v-show="agentId && filteredRules.length && view === 'card'" class="rule-grid">
       <L4RuleItem
         v-for="rule in filteredRules"
         :key="rule.id"
@@ -83,7 +83,7 @@
 
     <!-- Rule list table -->
     <L4RuleTable
-      v-if="agentId && filteredRules.length && view === 'list'"
+      v-show="agentId && filteredRules.length && view === 'list'"
       :rules="filteredRules"
       :agent="selectedAgent"
       @edit="startEdit"
@@ -320,4 +320,18 @@ function closeDiagnostic() { showDiagnostic.value = false; diagnosticRule.value 
 .rules-page__prompt, .rules-page__empty, .rules-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 /* Card grid */
 .rule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+.rule-grid,
+.rules-page :deep(.rule-table) {
+  animation: viewToggleIn 200ms var(--ease-default) both;
+}
+@keyframes viewToggleIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rule-grid,
+  .rules-page :deep(.rule-table) {
+    animation: none;
+  }
+}
 </style>

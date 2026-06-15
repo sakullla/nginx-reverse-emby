@@ -66,7 +66,7 @@
     </div>
 
     <!-- Rules card grid -->
-    <div v-if="agentId && filteredRules.length && view === 'card'" class="rule-grid">
+    <div v-show="agentId && filteredRules.length && view === 'card'" class="rule-grid">
       <RuleCard
         v-for="rule in filteredRules"
         :key="rule.id"
@@ -85,7 +85,7 @@
 
     <!-- Rules list table -->
     <RuleTable
-      v-if="agentId && filteredRules.length && view === 'list'"
+      v-show="agentId && filteredRules.length && view === 'list'"
       :rules="filteredRules"
       :agent="selectedAgent"
       @edit="startEdit"
@@ -418,5 +418,20 @@ async function confirmDelete() {
 
 @media (min-width: 1280px) {
   .rule-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+}
+
+.rule-grid,
+.rules-page :deep(.rule-table) {
+  animation: viewToggleIn 200ms var(--ease-default) both;
+}
+@keyframes viewToggleIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rule-grid,
+  .rules-page :deep(.rule-table) {
+    animation: none;
+  }
 }
 </style>

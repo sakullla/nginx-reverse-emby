@@ -39,7 +39,7 @@
         <button class="btn btn--primary" @click="startCreateProfile">创建第一个 Profile</button>
       </div>
 
-      <div v-if="view === 'card'" class="profile-grid">
+      <div v-show="view === 'card'" class="profile-grid">
         <WireGuardProfileCard
           v-for="profile in profiles"
           :key="profile.id"
@@ -52,7 +52,7 @@
       </div>
 
       <WGProfileTable
-        v-if="view === 'list'"
+        v-show="view === 'list'"
         :profiles="profiles"
         @toggle="toggleProfileEnabled"
         @edit="startEditProfile"
@@ -610,6 +610,21 @@ defineExpose({ selectedProfileId })
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--space-4);
+}
+
+.profile-grid,
+.wg-page :deep(.rule-table) {
+  animation: viewToggleIn 200ms var(--ease-default) both;
+}
+@keyframes viewToggleIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .profile-grid,
+  .wg-page :deep(.rule-table) {
+    animation: none;
+  }
 }
 
 .client-view {

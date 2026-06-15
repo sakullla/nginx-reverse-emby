@@ -43,7 +43,7 @@
     </div>
 
     <!-- Listener card grid -->
-    <div v-if='agentId && listeners.length && view === "card"' class='relay-grid'>
+    <div v-show='agentId && listeners.length && view === "card"' class='relay-grid'>
       <RelayCard
         v-for='listener in listeners'
         :key='listener.id'
@@ -59,7 +59,7 @@
 
     <!-- Listener list table -->
     <RelayTable
-      v-if='agentId && listeners.length && view === "list"'
+      v-show='agentId && listeners.length && view === "list"'
       :listeners='listeners'
       @edit='startEdit'
       @toggle='toggleListener'
@@ -284,6 +284,21 @@ function confirmDelete() {
   }
   .relay-page__header {
     margin-bottom: 1rem;
+  }
+}
+
+.relay-grid,
+.relay-page :deep(.rule-table) {
+  animation: viewToggleIn 200ms var(--ease-default) both;
+}
+@keyframes viewToggleIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .relay-grid,
+  .relay-page :deep(.rule-table) {
+    animation: none;
   }
 }
 </style>

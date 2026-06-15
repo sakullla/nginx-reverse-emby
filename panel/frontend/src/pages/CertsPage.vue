@@ -57,7 +57,7 @@
       <div class='spinner'></div>
     </div>
 
-    <div v-else-if='certificates.length && filteredCerts.length && view === "card"' class='cert-grid'>
+    <div v-show='certificates.length && filteredCerts.length && view === "card"' class='cert-grid'>
       <CertCard
         v-for='cert in filteredCerts'
         :key='cert.id'
@@ -69,13 +69,13 @@
     </div>
 
     <CertTable
-      v-if='agentId && filteredCerts.length && view === "list"'
+      v-show='agentId && filteredCerts.length && view === "list"'
       :certificates='filteredCerts'
       @edit='startEdit'
       @delete='startDelete'
     />
 
-    <div v-else-if='certificates.length && !filteredCerts.length && !isIdExactMatch' class='certs-page__empty'>
+    <div v-if='agentId && certificates.length && !filteredCerts.length && !isIdExactMatch' class='certs-page__empty'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
         <circle cx='11' cy='11' r='8' />
         <line x1='21' y1='21' x2='16.65' y2='16.65' />
@@ -83,7 +83,7 @@
       <p>没有匹配的证书</p>
     </div>
 
-    <div v-else class='certs-page__empty'>
+    <div v-if='agentId && !isLoading && !certificates.length' class='certs-page__empty'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
         <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
         <path d='M7 11V7a5 5 0 0 1 10 0v4' />
@@ -224,4 +224,18 @@ function confirmDelete() {
 .certs-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .certs-page__loading, .certs-page__empty, .certs-page__prompt { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+.cert-grid,
+.certs-page :deep(.rule-table) {
+  animation: viewToggleIn 200ms var(--ease-default) both;
+}
+@keyframes viewToggleIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cert-grid,
+  .certs-page :deep(.rule-table) {
+    animation: none;
+  }
+}
 </style>
