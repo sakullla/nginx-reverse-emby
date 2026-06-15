@@ -15,13 +15,17 @@
       <tbody>
         <tr v-for="cert in certificates" :key="cert.id" class="rules-table__row">
           <td>
-            <span class="status-badge" :class="statusClass(cert)">
-              {{ statusLabel(cert) }}
-            </span>
+            <BaseBadge :tone="certStatusBadge(cert).tone" dot>
+              {{ certStatusBadge(cert).label }}
+            </BaseBadge>
           </td>
           <td class="rules-table__mono">{{ cert.domain }}</td>
-          <td>{{ getCertificateUsageLabel(cert.usage) }}</td>
-          <td>{{ getCertificateSourceLabel(cert.certificate_type) }}</td>
+          <td>
+            <BaseBadge shape="square" tone="primary">{{ getCertificateUsageLabel(cert.usage) }}</BaseBadge>
+          </td>
+          <td>
+            <BaseBadge shape="square" tone="primary">{{ getCertificateSourceLabel(cert.certificate_type) }}</BaseBadge>
+          </td>
           <td>{{ formatDate(cert.last_issue_at) }}</td>
           <td>
             <div class="rules-table__tags">
@@ -55,21 +59,17 @@ import {
   getCertificateSourceLabel,
   getCertificateUsageLabel,
 } from '../../utils/certificateTemplates'
+import BaseBadge from '../base/BaseBadge.vue'
 
-const STATUS_MAP = {
-  active: { label: '生效中', cls: 'status-badge--active' },
-  pending: { label: '待签发', cls: 'status-badge--pending' },
-  error: { label: '签发失败', cls: 'status-badge--failed' },
+const CERT_STATUS = {
+  active: { label: '生效中', tone: 'success' },
+  pending: { label: '待签发', tone: 'warning' },
+  error: { label: '签发失败', tone: 'danger' },
 }
 
-function statusLabel(cert) {
-  if (!cert.enabled) return '已禁用'
-  return STATUS_MAP[cert.status]?.label || '未知'
-}
-
-function statusClass(cert) {
-  if (!cert.enabled) return 'status-badge--disabled'
-  return STATUS_MAP[cert.status]?.cls || 'status-badge--disabled'
+function certStatusBadge(cert) {
+  if (!cert.enabled) return { label: '已禁用', tone: 'neutral' }
+  return CERT_STATUS[cert.status] || { label: '未知', tone: 'neutral' }
 }
 
 function formatDate(val) {
@@ -97,9 +97,4 @@ defineEmits(['edit', 'delete'])
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
-.status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-full); font-weight: 500; white-space: nowrap; }
-.status-badge--active { background: rgba(var(--color-success-rgb, 34, 197, 94), 0.1); color: var(--color-success); }
-.status-badge--pending { background: rgba(var(--color-warning-rgb, 245, 158, 11), 0.1); color: var(--color-warning); }
-.status-badge--failed { background: rgba(var(--color-danger-rgb, 239, 68, 68), 0.1); color: var(--color-danger); }
-.status-badge--disabled { background: var(--color-bg-subtle); color: var(--color-text-tertiary); }
 </style>

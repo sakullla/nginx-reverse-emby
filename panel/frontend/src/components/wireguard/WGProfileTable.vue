@@ -15,9 +15,9 @@
       <tbody>
         <tr v-for="profile in profiles" :key="profile.id" class="rules-table__row">
           <td>
-            <span class="status-badge" :class="profile.enabled === false ? 'status-badge--disabled' : 'status-badge--active'">
-              {{ profile.enabled === false ? '停用' : '启用' }}
-            </span>
+            <BaseBadge :tone="getStatusBadge(profile.enabled === false ? 'disabled' : 'active').tone" dot>
+              {{ getStatusBadge(profile.enabled === false ? 'disabled' : 'active').label }}
+            </BaseBadge>
           </td>
           <td>{{ profile.name || `Profile ${profile.id}` }}</td>
           <td class="rules-table__mono">{{ profile.public_endpoint || '-' }}</td>
@@ -51,6 +51,9 @@
 </template>
 
 <script setup>
+import { getStatusBadge } from '../../utils/enumLabels.js'
+import BaseBadge from '../base/BaseBadge.vue'
+
 function clientCount(profile) {
   return Number(profile.client_count || 0)
 }
@@ -75,7 +78,4 @@ defineEmits(['toggle', 'edit', 'delete'])
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
-.status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-full); font-weight: 500; white-space: nowrap; }
-.status-badge--active { background: rgba(var(--color-success-rgb, 34, 197, 94), 0.1); color: var(--color-success); }
-.status-badge--disabled { background: var(--color-bg-subtle); color: var(--color-text-tertiary); }
 </style>

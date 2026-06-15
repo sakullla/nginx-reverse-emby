@@ -15,16 +15,16 @@
       <tbody>
         <tr v-for="listener in listeners" :key="listener.id" class="rules-table__row">
           <td>
-            <span class="status-badge" :class="listener.enabled ? 'status-badge--active' : 'status-badge--disabled'">
-              {{ listener.enabled ? '启用' : '已禁用' }}
-            </span>
+            <BaseBadge :tone="getStatusBadge(listener.enabled ? 'active' : 'disabled').tone" dot>
+              {{ getStatusBadge(listener.enabled ? 'active' : 'disabled').label }}
+            </BaseBadge>
           </td>
           <td>{{ listener.name || `#${listener.id}` }}</td>
           <td class="rules-table__mono">{{ formatPublicEndpoint(listener) }}</td>
           <td>
-            <span class="proto-badge" :class="`proto-badge--${(listener.transport_mode || 'tcp').toLowerCase()}`">
-              {{ transportLabel(listener) }}
-            </span>
+            <BaseBadge shape="square" mono :tone="getTransportBadge(listener.transport_mode).tone">
+              {{ getTransportBadge(listener.transport_mode).label }}
+            </BaseBadge>
           </td>
           <td>{{ tlsLabel(listener) }}</td>
           <td>
@@ -55,11 +55,8 @@
 </template>
 
 <script setup>
-const TRANSPORT_LABELS = { quic: 'QUIC', tls: 'TLS/TCP', wireguard: 'WireGuard' }
-
-function transportLabel(l) {
-  return TRANSPORT_LABELS[l.transport_mode] || 'TCP'
-}
+import { getStatusBadge, getTransportBadge } from '../../utils/enumLabels.js'
+import BaseBadge from '../base/BaseBadge.vue'
 
 function tlsLabel(l) {
   if (l.tls_mode === 'pin_and_ca') return 'Pin + CA'
@@ -94,12 +91,4 @@ defineEmits(['toggle', 'edit', 'delete'])
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
-.status-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-full); font-weight: 500; white-space: nowrap; }
-.status-badge--active { background: rgba(var(--color-success-rgb, 34, 197, 94), 0.1); color: var(--color-success); }
-.status-badge--disabled { background: var(--color-bg-subtle); color: var(--color-text-tertiary); }
-.proto-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-sm); font-weight: 600; font-family: var(--font-mono); }
-.proto-badge--quic { background: rgba(var(--color-primary-rgb, 99, 102, 241), 0.1); color: var(--color-primary); }
-.proto-badge--tls { background: rgba(var(--color-success-rgb, 34, 197, 94), 0.1); color: var(--color-success); }
-.proto-badge--wireguard { background: rgba(var(--color-warning-rgb, 245, 158, 11), 0.1); color: var(--color-warning); }
-.proto-badge--tcp { background: var(--color-bg-subtle); color: var(--color-text-secondary); }
 </style>
