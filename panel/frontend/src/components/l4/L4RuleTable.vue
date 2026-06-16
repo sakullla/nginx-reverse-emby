@@ -3,10 +3,11 @@
     <table class="rules-table">
       <thead>
         <tr>
-          <th style="width: 48px"></th>
           <th>状态</th>
-          <th>前端地址</th>
+          <th>协议</th>
+          <th>监听地址</th>
           <th>后端地址</th>
+          <th>负载均衡</th>
           <th>标签</th>
           <th style="width: 80px">操作</th>
         </tr>
@@ -14,18 +15,21 @@
       <tbody>
         <tr v-for="rule in rules" :key="rule.id" class="rules-table__row">
           <td>
-            <button class="toggle" :class="{ 'toggle--on': rule.enabled }" @click="$emit('toggle', rule)">
-              <span class="toggle__knob"></span>
-            </button>
-          </td>
-          <td>
             <BaseBadge :tone="getStatusBadge(getStatus(rule)).tone" dot>
               {{ getStatusBadge(getStatus(rule)).label }}
             </BaseBadge>
           </td>
-          <td class="rules-table__url">{{ rule.frontend_url }}</td>
-          <td class="rules-table__url rules-table__url--backend">
-            {{ formatBackend(rule) }}
+          <td>
+            <BaseBadge shape="square" mono :tone="getProtocolBadge(rule.protocol).tone">
+              {{ getProtocolBadge(rule.protocol).label }}
+            </BaseBadge>
+          </td>
+          <td class="rules-table__mono">{{ rule.listen_host }}:{{ rule.listen_port }}</td>
+          <td class="rules-table__mono">{{ formatBackend(rule) }}</td>
+          <td>
+            <BaseBadge shape="square" mono :tone="getLBLabel(rule.load_balancing?.strategy).tone">
+              {{ getLBLabel(rule.load_balancing?.strategy).label }}
+            </BaseBadge>
           </td>
           <td>
             <div class="rules-table__tags">
@@ -50,7 +54,7 @@
           </td>
         </tr>
         <tr v-if="!rules.length" class="empty-state-row">
-          <td :colspan="6" class="empty-state">暂无数据</td>
+          <td :colspan="7" class="empty-state">暂无数据</td>
         </tr>
       </tbody>
     </table>
@@ -59,27 +63,20 @@
 
 <script setup>
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
-import { getStatusBadge } from '../../utils/enumLabels.js'
+import { getStatusBadge, getProtocolBadge, getLBLabel } from '../../utils/enumLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
 
 function getStatus(rule) {
   return getRuleEffectiveStatus(rule, props.agent)
 }
 
-function httpBackends(rule) {
-  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
-    return rule.backends
-      .map((backend) => String(backend?.url || '').trim())
-      .filter(Boolean)
-  }
-  return []
-}
-
 function formatBackend(rule) {
-  const backends = httpBackends(rule)
+  const backends = Array.isArray(rule.backends) ? rule.backends : []
   if (backends.length === 0) return '-'
-  if (backends.length === 1) return backends[0]
-  return `${backends[0]} +${backends.length - 1}`
+  const first = backends[0]
+  const addr = `${first.host}:${first.port}`
+  if (backends.length === 1) return addr
+  return `${addr} +${backends.length - 1}`
 }
 
 const props = defineProps({
@@ -96,17 +93,12 @@ defineEmits(['toggle', 'edit', 'delete'])
 .rules-table__row { border-bottom: 1px solid var(--color-border-subtle); }
 .rules-table__row:hover { background: var(--color-bg-hover); }
 .rules-table td { padding: 0.875rem 1rem; vertical-align: middle; }
-.rules-table__url { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-primary); }
-.rules-table__url--backend { color: var(--color-text-secondary); }
+.rules-table__mono { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-primary); }
 .rules-table__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .rules-table__actions { display: flex; gap: 0.25rem; }
 .rules-table__actions .btn-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
-.toggle { width: 40px; height: 22px; border-radius: 11px; border: none; background: var(--color-bg-subtle); cursor: pointer; position: relative; transition: background 0.2s; padding: 0; }
-.toggle--on { background: var(--color-primary); }
-.toggle__knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s; }
-.toggle--on .toggle__knob { transform: translateX(18px); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; font-family: var(--font-mono); }
 tbody tr:nth-child(even):not(.empty-state-row) { background: var(--color-bg-subtle); }
 tbody tr.empty-state-row:hover { background: transparent; }

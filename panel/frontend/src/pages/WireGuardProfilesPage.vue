@@ -8,10 +8,13 @@
         </p>
         <p v-else class="wg-page__subtitle">请先选择一个节点</p>
       </div>
-      <button v-if="agentId && !selectedProfileId" class="btn btn--primary" @click="startCreateProfile">
-        <span>+</span>
-        新建 Profile
-      </button>
+      <div class="wg-page__header-actions">
+        <ViewToggle v-if="agentId && profiles.length && !selectedProfileId" v-model:view="view" />
+        <button v-if="agentId && !selectedProfileId" class="btn btn--primary" @click="startCreateProfile">
+          <span>+</span>
+          新建 Profile
+        </button>
+      </div>
     </div>
 
     <QuickAgentSelect
@@ -36,7 +39,7 @@
         <button class="btn btn--primary" @click="startCreateProfile">创建第一个 Profile</button>
       </div>
 
-      <div v-else class="profile-grid">
+      <div v-show="view === 'card'" class="profile-grid">
         <WireGuardProfileCard
           v-for="profile in profiles"
           :key="profile.id"
@@ -47,6 +50,14 @@
           @delete="deletingProfile = profile"
         />
       </div>
+
+      <WGProfileTable
+        v-show="view === 'list'"
+        :profiles="profiles"
+        @toggle="toggleProfileEnabled"
+        @edit="startEditProfile"
+        @delete="deletingProfile = $event"
+      />
     </template>
 
     <!-- Client Management View -->
@@ -181,6 +192,9 @@ import BaseModal from '../components/base/BaseModal.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import WireGuardProfileCard from '../components/wireguard/WireGuardProfileCard.vue'
+import ViewToggle from '../components/common/ViewToggle.vue'
+import WGProfileTable from '../components/wireguard/WGProfileTable.vue'
+import { useViewToggle } from '../composables/useViewToggle'
 import WireGuardProfileForm from '../components/wireguard/WireGuardProfileForm.vue'
 import WireGuardClientList from '../components/wireguard/WireGuardClientList.vue'
 import WireGuardClientForm from '../components/wireguard/WireGuardClientForm.vue'
@@ -189,6 +203,7 @@ import WireGuardPeerList from '../components/wireguard/WireGuardPeerList.vue'
 
 const route = useRoute()
 const router = useRouter()
+const { view } = useViewToggle('wg-profiles')
 const { selectedAgentId } = useAgent()
 const { data: agentsData } = useAgents()
 
@@ -562,6 +577,11 @@ defineExpose({ selectedProfileId })
   margin-bottom: var(--space-5);
   flex-wrap: wrap;
 }
+.wg-page__header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
 
 .wg-page__title {
   margin: 0 0 var(--space-1);
@@ -590,6 +610,21 @@ defineExpose({ selectedProfileId })
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--space-4);
+}
+
+.profile-grid,
+.wg-page :deep(.rule-table) {
+  animation: viewToggleIn 200ms var(--ease-default) both;
+}
+@keyframes viewToggleIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .profile-grid,
+  .wg-page :deep(.rule-table) {
+    animation: none;
+  }
 }
 
 .client-view {
