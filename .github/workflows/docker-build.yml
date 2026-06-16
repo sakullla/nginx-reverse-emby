@@ -73,7 +73,7 @@ jobs:
           fi
           echo "app_version=${app_version}" >> "${GITHUB_OUTPUT}"
           echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "${GITHUB_OUTPUT}"
-          echo "go_version=go1.26.3" >> "${GITHUB_OUTPUT}"
+          echo "go_version=go1.26.4" >> "${GITHUB_OUTPUT}"
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
