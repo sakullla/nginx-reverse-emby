@@ -2014,6 +2014,20 @@ func TestBundledAgentPackageInfoCachesSHAUntilFileChanges(t *testing.T) {
 	}
 }
 
+func TestBundledAgentPackageInfoRejectsUnsafePlatform(t *testing.T) {
+	assetDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
+		t.Fatalf("WriteFile(agent asset) error = %v", err)
+	}
+
+	if pkg := bundledAgentPackageInfoCached(assetDir, "../linux-amd64", nil, nil); pkg != nil {
+		t.Fatalf("expected unsafe platform to be rejected, got %+v", pkg)
+	}
+	if pkg := bundledAgentPackageInfoCached(assetDir, `linux\amd64`, nil, nil); pkg != nil {
+		t.Fatalf("expected platform with path separator to be rejected, got %+v", pkg)
+	}
+}
+
 func TestAgentServiceHeartbeatNormalizesURLAndIP(t *testing.T) {
 	store := &fakeStore{
 		agents: []storage.AgentRow{{

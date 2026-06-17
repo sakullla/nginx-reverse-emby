@@ -1093,6 +1093,9 @@ func bundledAgentPackageInfoCached(assetRoot string, platform string, mu *sync.M
 	if normalizedPlatform == "" || normalizedRoot == "" {
 		return nil
 	}
+	if !isSafeBundledAgentPlatform(normalizedPlatform) {
+		return nil
+	}
 	filename := "nre-agent-" + normalizedPlatform
 	assetPath := filepath.Join(normalizedRoot, filename)
 	info, err := os.Stat(assetPath)
@@ -1131,6 +1134,23 @@ func bundledAgentPackageInfoCached(assetRoot string, platform string, mu *sync.M
 		mu.Unlock()
 	}
 	return &pkg
+}
+
+func isSafeBundledAgentPlatform(platform string) bool {
+	if platform == "." || platform == ".." || strings.Contains(platform, "..") {
+		return false
+	}
+	for _, r := range platform {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func fileSHA256(path string) (string, error) {

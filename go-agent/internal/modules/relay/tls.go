@@ -55,13 +55,16 @@ func clientTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener
 	}
 
 	return &tls.Config{
+		// codeql[go/disabled-certificate-check]
+		// Relay TLS is verified by pin/CA policy in VerifyConnection.
 		InsecureSkipVerify:          true,
 		MinVersion:                  tls.VersionTLS12,
 		ServerName:                  serverName,
 		DynamicRecordSizingDisabled: true,
 		VerifyConnection: func(state tls.ConnectionState) error {
-			pinErr := verifyPinSet(listener, state.PeerCertificates)
-			caErr := verifyCertificateAuthority(listener, rootCAs, serverName, state.PeerCertificates)
+			peerCertificates := state.PeerCertificates
+			pinErr := verifyPinSet(listener, peerCertificates)
+			caErr := verifyCertificateAuthority(listener, rootCAs, serverName, peerCertificates)
 
 			switch mode {
 			case tlsModePinOnly:
@@ -80,8 +83,8 @@ func clientTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener
 				if caErr == nil {
 					return nil
 				}
-				if net.ParseIP(serverName) != nil && leafCertificateLacksIPSAN(state.PeerCertificates) {
-					return verifyCertificateAuthorityChain(listener, rootCAs, state.PeerCertificates)
+				if net.ParseIP(serverName) != nil && leafCertificateLacksIPSAN(peerCertificates) {
+					return verifyCertificateAuthorityChain(listener, rootCAs, peerCertificates)
 				}
 				return caErr
 			default:

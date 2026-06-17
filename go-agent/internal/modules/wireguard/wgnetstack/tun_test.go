@@ -62,6 +62,12 @@ func TestNetTunOutboundQueueAllowsMobileTrafficBursts(t *testing.T) {
 	}
 }
 
+func TestCreateNetTUNRejectsInvalidMTU(t *testing.T) {
+	if _, _, _, err := CreateNetTUN(nil, nil, -1); err == nil {
+		t.Fatal("expected negative MTU to be rejected")
+	}
+}
+
 func TestConfigureTCPBuffersRaisesNetstackWindowDefaults(t *testing.T) {
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
