@@ -6,6 +6,10 @@ install_dir="${NRE_INSTALL_DIR:-nginx-reverse-emby}"
 image="${NRE_IMAGE:-sakullla/nginx-reverse-emby:latest}"
 timezone="${NRE_TIMEZONE:-Asia/Shanghai}"
 public_url="${NRE_PUBLIC_URL:-}"
+docker_cli_version="${NRE_DOCKER_CLI_VERSION:-29.5.3}"
+docker_compose_version="${NRE_DOCKER_COMPOSE_VERSION:-v5.1.4}"
+panel_health_url="${NRE_PANEL_HEALTH_URL:-http://127.0.0.1:8080/panel-api/info}"
+panel_api_base="${NRE_PANEL_API_BASE:-http://127.0.0.1:8080}"
 
 usage() {
     cat <<'EOF'
@@ -122,29 +126,106 @@ install_docker_compose() {
     say "检测到 Docker 或 Docker Compose 不完整，准备自动安装。"
     echo "脚本会安装 Docker Engine 与 Compose 插件，并可能修改系统软件源。" >&2
 
+    if [ -S /var/run/docker.sock ] && ! command -v docker >/dev/null 2>&1; then
+        say "检测到本机已有 Docker Socket，优先安装 Docker CLI 与 Compose 插件"
+        install_static_docker_client
+        return
+    fi
+
     if command -v apt-get >/dev/null 2>&1; then
         say "使用官方 Docker 安装脚本安装 Docker 与 Compose 插件"
-        ensure_packages curl ca-certificates
-        curl -fsSL https://get.docker.com -o /tmp/nre-get-docker.sh
-        run_as_root sh /tmp/nre-get-docker.sh
+        ensure_packages curl
+        ensure_ca_certificates
+        if curl -fsSL https://get.docker.com -o /tmp/nre-get-docker.sh && run_as_root sh /tmp/nre-get-docker.sh; then
+            :
+        else
+            warn "官方安装脚本失败，改用静态 Docker CLI 与 Compose 插件后备安装。"
+            install_static_docker_client
+        fi
     elif command -v dnf >/dev/null 2>&1; then
-        say "使用 dnf 安装 Docker 与 Compose 插件"
-        run_as_root dnf install -y docker docker-compose-plugin
-        run_as_root systemctl enable --now docker
+        say "使用官方 Docker 安装脚本安装 Docker 与 Compose 插件"
+        ensure_packages curl
+        ensure_ca_certificates
+        if curl -fsSL https://get.docker.com -o /tmp/nre-get-docker.sh && run_as_root sh /tmp/nre-get-docker.sh; then
+            :
+        else
+            warn "官方安装脚本失败，改用 dnf 安装 Docker 客户端与 Compose 插件。"
+            run_as_root dnf install -y docker-cli docker-compose-plugin || install_static_docker_client
+        fi
     elif command -v yum >/dev/null 2>&1; then
-        say "使用 yum 安装 Docker 与 Compose 插件"
-        run_as_root yum install -y docker docker-compose-plugin
-        run_as_root systemctl enable --now docker
+        say "使用官方 Docker 安装脚本安装 Docker 与 Compose 插件"
+        ensure_packages curl
+        ensure_ca_certificates
+        if curl -fsSL https://get.docker.com -o /tmp/nre-get-docker.sh && run_as_root sh /tmp/nre-get-docker.sh; then
+            :
+        else
+            warn "官方安装脚本失败，改用 yum 安装 Docker 客户端与 Compose 插件。"
+            run_as_root yum install -y docker-cli docker-compose-plugin || install_static_docker_client
+        fi
     elif command -v apk >/dev/null 2>&1; then
         say "使用 apk 安装 Docker CLI 与 Compose 插件"
-        run_as_root apk add --no-cache docker-cli docker-cli-compose
+        run_as_root apk add --no-cache docker-cli docker-cli-compose || install_static_docker_client
     else
-        echo "当前系统缺少受支持的软件包管理器，脚本无法自动安装 Docker Compose。" >&2
-        exit 1
+        warn "未发现常见软件包管理器，改用静态 Docker CLI 与 Compose 插件后备安装。"
+        install_static_docker_client
     fi
 
     if command -v systemctl >/dev/null 2>&1; then
         run_as_root systemctl enable --now docker || true
+    fi
+}
+
+install_static_docker_client() {
+    ensure_packages curl tar
+    ensure_ca_certificates
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64|amd64) docker_arch="x86_64"; compose_arch="x86_64" ;;
+        aarch64|arm64) docker_arch="aarch64"; compose_arch="aarch64" ;;
+        armv7l) docker_arch="armhf"; compose_arch="armv7" ;;
+        *) echo "暂不支持自动安装当前 CPU 架构的 Docker CLI：$arch" >&2; exit 1 ;;
+    esac
+
+    tmp_dir="${TMPDIR:-/tmp}/nre-docker-client.$$"
+    mkdir -p "$tmp_dir"
+    cli_url="https://download.docker.com/linux/static/stable/${docker_arch}/docker-${docker_cli_version}.tgz"
+    compose_url="https://github.com/docker/compose/releases/download/${docker_compose_version}/docker-compose-linux-${compose_arch}"
+
+    say "下载 Docker CLI：${cli_url}"
+    curl -fsSL "$cli_url" -o "$tmp_dir/docker.tgz"
+    tar -xzf "$tmp_dir/docker.tgz" -C "$tmp_dir"
+    run_as_root install -m 0755 "$tmp_dir/docker/docker" /usr/local/bin/docker
+
+    say "下载 Docker Compose 插件：${compose_url}"
+    run_as_root mkdir -p /usr/local/lib/docker/cli-plugins
+    curl -fsSL "$compose_url" -o "$tmp_dir/docker-compose"
+    run_as_root install -m 0755 "$tmp_dir/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose
+    rm -rf "$tmp_dir"
+}
+
+install_packages() {
+    [ "$#" -gt 0 ] || return 0
+
+    say "自动安装缺失依赖：$*"
+    if command -v apt-get >/dev/null 2>&1; then
+        apt_log="${TMPDIR:-/tmp}/nre-apt-install.$$"
+        if run_as_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$apt_log" 2>&1 &&
+            run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends -o=Dpkg::Use-Pty=0 "$@" >>"$apt_log" 2>&1; then
+            rm -f "$apt_log"
+        else
+            cat "$apt_log" >&2
+            rm -f "$apt_log"
+            exit 1
+        fi
+    elif command -v dnf >/dev/null 2>&1; then
+        run_as_root dnf install -y "$@"
+    elif command -v yum >/dev/null 2>&1; then
+        run_as_root yum install -y "$@"
+    elif command -v apk >/dev/null 2>&1; then
+        run_as_root apk add --no-cache "$@"
+    else
+        echo "当前系统缺少受支持的软件包管理器，无法自动安装依赖：$*" >&2
+        exit 1
     fi
 }
 
@@ -154,7 +235,7 @@ ensure_packages() {
         if ! command -v "$cmd" >/dev/null 2>&1; then
             pkg="$cmd"
             case "$cmd" in
-                mkdir|cut|tr|od) pkg="coreutils" ;;
+                mkdir|cut|tr|od|install) pkg="coreutils" ;;
             esac
             case " ${missing} " in
                 *" ${pkg} "*) ;;
@@ -164,26 +245,18 @@ ensure_packages() {
     done
     [ -n "$missing" ] || return 0
 
-    say "自动安装缺失依赖：${missing# }"
-    if command -v apt-get >/dev/null 2>&1; then
-        run_as_root apt-get update
-        run_as_root apt-get install -y --no-install-recommends $missing
-    elif command -v dnf >/dev/null 2>&1; then
-        run_as_root dnf install -y $missing
-    elif command -v yum >/dev/null 2>&1; then
-        run_as_root yum install -y $missing
-    elif command -v apk >/dev/null 2>&1; then
-        apk_missing=""
-        for cmd in $missing; do
-            case "$cmd" in
-                od) apk_missing="$apk_missing coreutils" ;;
-                *) apk_missing="$apk_missing $cmd" ;;
-            esac
-        done
-        run_as_root apk add --no-cache $apk_missing
-    else
-        echo "当前系统缺少受支持的软件包管理器，无法自动安装依赖：${missing# }" >&2
-        exit 1
+    # shellcheck disable=SC2086
+    install_packages $missing
+}
+
+ensure_ca_certificates() {
+    if [ -f /etc/ssl/certs/ca-certificates.crt ] || [ -f /etc/pki/tls/certs/ca-bundle.crt ]; then
+        return 0
+    fi
+
+    install_packages ca-certificates
+    if command -v update-ca-certificates >/dev/null 2>&1; then
+        run_as_root update-ca-certificates >/dev/null 2>&1 || true
     fi
 }
 
@@ -215,7 +288,7 @@ compose_cmd() {
 
 ensure_docker_compose() {
     if ! command -v docker >/dev/null 2>&1 || [ -z "$(compose_cmd)" ]; then
-        install_docker_compose
+        install_docker_compose >&2
     fi
 
     compose="$(compose_cmd)"
@@ -261,7 +334,7 @@ env_value() {
 wait_panel_ready() {
     token="$1"
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-        if curl -fsS -H "X-Panel-Token: ${token}" http://127.0.0.1:8080/panel-api/info >/dev/null 2>&1; then
+        if curl -fsS -H "X-Panel-Token: ${token}" "$panel_health_url" >/dev/null 2>&1; then
             return 0
         fi
         sleep 5
@@ -276,16 +349,17 @@ json_escape() {
 create_panel_self_proxy() {
     token="$1"
     domain="$2"
-    frontend="https://${domain}"
+    scheme="${3:-https}"
+    frontend="${scheme}://${domain}"
     payload="$(printf '{"frontend_url":"%s","backends":[{"url":"http://127.0.0.1:8080"}],"tags":["panel","bootstrap"]}' "$(json_escape "$frontend")")"
 
-    say "正在创建面板自代理 HTTPS 规则：${frontend} -> http://127.0.0.1:8080"
+    say "正在创建面板自代理规则：${frontend} -> http://127.0.0.1:8080"
     if curl -fsS \
         -H "Content-Type: application/json" \
         -H "X-Panel-Token: ${token}" \
         -d "$payload" \
-        http://127.0.0.1:8080/panel-api/agents/local/rules >/dev/null; then
-        curl -fsS -X POST -H "X-Panel-Token: ${token}" http://127.0.0.1:8080/panel-api/agents/local/apply >/dev/null 2>&1 || true
+        "${panel_api_base}/panel-api/agents/local/rules" >/dev/null; then
+        curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
         return 0
     fi
     return 1
@@ -383,10 +457,15 @@ else
 fi
 
 if [ -n "$domain" ]; then
-    if create_panel_self_proxy "$api_token" "$domain"; then
+    if create_panel_self_proxy "$api_token" "$domain" "https"; then
         say "面板自代理规则已创建，证书申请可能需要 1-3 分钟"
     else
-        warn "自动创建自代理规则失败。请登录面板后手动添加：前端 https://${domain}，后端 http://127.0.0.1:8080，节点 local。"
+        warn "HTTPS 自代理规则创建失败，通常是域名、DNS、Cloudflare Token 权限或 ACME 校验失败。"
+        if create_panel_self_proxy "$api_token" "$domain" "http"; then
+            warn "已创建 HTTP 后备自代理规则：http://${domain} -> http://127.0.0.1:8080。请修复证书/DNS/Cloudflare 后在面板中改为 HTTPS。"
+        else
+            warn "HTTP 后备规则也创建失败。请登录面板后手动添加：前端 http://${domain}，后端 http://127.0.0.1:8080，节点 local。"
+        fi
     fi
 fi
 
