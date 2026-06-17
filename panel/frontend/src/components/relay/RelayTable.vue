@@ -83,18 +83,17 @@ defineEmits(['toggle', 'edit', 'delete'])
 <style scoped>
 .rule-table { overflow-x: auto; }
 .rules-table { width: 100%; border-collapse: collapse; }
-.rules-table th { text-align: left; padding: 0.75rem 1rem; font-size: 0.75rem; font-weight: 600; color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border-default); }
+.rules-table th { text-align: left; padding: var(--space-3) var(--space-4); font-size: var(--text-xs); font-weight: var(--font-semibold); color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border-subtle); }
 .rules-table__row { border-bottom: 1px solid var(--color-border-subtle); }
-.rules-table__row:hover { background: var(--color-bg-hover); }
-.rules-table td { padding: 0.875rem 1rem; vertical-align: middle; }
+.rules-table__row:hover { background: var(--color-bg-hover); transition: background-color var(--duration-fast) var(--ease-default); }
+.rules-table td { padding: var(--space-3) var(--space-4); vertical-align: middle; }
 .rules-table__mono { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-primary); }
 .rules-table__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .rules-table__actions { display: flex; gap: 0.25rem; }
-.rules-table__actions .btn-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
+.rules-table__actions .btn-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); }
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
-.tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; font-family: var(--font-mono); }
-tbody tr:nth-child(even):not(.empty-state-row) { background: var(--color-bg-subtle); }
+.tag { font-size: var(--text-xs); padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: var(--font-medium); font-family: var(--font-mono); }
 tbody tr.empty-state-row:hover { background: transparent; }
 .empty-state { text-align: center; padding: 2rem 1rem; color: var(--color-text-tertiary); font-size: 0.875rem; }
 </style>
