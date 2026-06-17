@@ -8,6 +8,8 @@
 |---|---|
 | 设置面板密码 | `API_TOKEN`（必填） |
 | 设置时区 | `NRE_TIMEZONE`（国内填 `Asia/Shanghai`） |
+| 设置公网访问地址 | `NRE_PUBLIC_URL` |
+| 设置 HTTP 临时随机面板入口 | `NRE_PANEL_PUBLIC_PATH` |
 | 切换数据库 | `NRE_DATABASE_DRIVER` + `NRE_DATABASE_DSN` |
 | 开启 Cloudflare DNS 验证 | `ACME_DNS_PROVIDER=cf` + `CF_TOKEN` |
 | 关闭 WireGuard | `NRE_WIREGUARD_ENABLED=false` |
@@ -20,9 +22,12 @@
 
 | 变量 | 默认值 | 作用 |
 |------|--------|------|
-| `NRE_PANEL_TOKEN`（别名 `API_TOKEN`） | **必填** | 网页界面和 API 认证的登录令牌。 |
-| `NRE_REGISTER_TOKEN`（别名 `MASTER_REGISTER_TOKEN`、`PANEL_REGISTER_TOKEN`、`API_TOKEN`） | 未设置时依次尝试 `MASTER_REGISTER_TOKEN`、`PANEL_REGISTER_TOKEN`、`API_TOKEN` | Agent 向控制面注册时使用的令牌。 |
+| `NRE_PANEL_TOKEN`（别名 `API_TOKEN`） | **必填** | 网页界面和 API 认证的登录令牌。示例占位值会被拒绝启动。 |
+| `NRE_REGISTER_TOKEN`（别名 `MASTER_REGISTER_TOKEN`、`PANEL_REGISTER_TOKEN`、`API_TOKEN`） | 未设置时依次尝试 `MASTER_REGISTER_TOKEN`、`PANEL_REGISTER_TOKEN`、`API_TOKEN` | Agent 向控制面注册时使用的令牌。示例占位值会被拒绝启动。 |
 | `NRE_CONTROL_PLANE_ADDR`（别名 `PANEL_BACKEND_HOST` + `PANEL_BACKEND_PORT`） | `0.0.0.0:8080` | 控制面监听的地址。 |
+| `NRE_PUBLIC_URL` | 空 | 控制面公网 URL，例如 `https://panel.example.com`。设置后 join script 和 Agent 更新包 URL 会优先使用该值。 |
+| `NRE_PANEL_PUBLIC_PATH` | 空 | 无域名 HTTP 临时部署时的面板入口路径，例如 `/panel-a1b2c3d4`。设置后根路径不再直接服务面板；它不能替代 token 和 HTTPS。 |
+| `NRE_TRUST_FORWARDED_HEADERS` | `false` | 是否信任上游反代设置的 `X-Forwarded-*` 头。仅在反代会清洗并重写这些头时开启。 |
 | `NRE_CONTROL_PLANE_DATA_DIR`（别名 `PANEL_DATA_ROOT`） | `/opt/nginx-reverse-emby/panel/data` | SQLite 数据库和运行时数据的目录。 |
 | `NRE_FRONTEND_DIST_DIR`（别名 `PANEL_FRONTEND_DIST_DIR`） | `/opt/nginx-reverse-emby/panel/frontend/dist` | 存放构建好的前端文件的目录。 |
 | `NRE_PUBLIC_AGENT_ASSETS_DIR`（别名 `PANEL_PUBLIC_AGENT_ASSETS_DIR`） | `/opt/.../public/agent-assets` | 公共代理资源的目录（加入脚本、二进制文件）。 |
@@ -69,7 +74,7 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 | `NRE_ACME_DIRECTORY_URL` | Let's Encrypt 生产环境 | ACME 目录 URL。 |
 | `NRE_MANAGED_CERT_RENEW_INTERVAL` | `24h` | 检查证书续期的频率。 |
 
-只有当 `ACME_DNS_PROVIDER=cf` **且** 令牌非空时，DNS-01 才会启用。详情请参阅 [证书与 HTTPS](../guides/certificates.md)。
+只有当 `ACME_DNS_PROVIDER=cf` **且** 令牌非空时，DNS-01 才会启用。新手建议使用 Cloudflare API Token，不要使用 Global API Key；权限给 `Zone:Read` 和 `DNS:Edit`，Zone Resources 只选择你的域名。详情请参阅 [证书与 HTTPS](../guides/certificates.md)。
 
 ---
 

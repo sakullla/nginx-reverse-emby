@@ -22,6 +22,14 @@ curl -I https://origin.example.net
 在 VPS 上执行：
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | sh
+```
+
+脚本会自动创建目录、生成随机 token 并启动服务。输出里的 `Panel token` 就是登录密码。
+
+也可以手动部署：
+
+```bash
 mkdir -p nginx-reverse-emby && cd nginx-reverse-emby
 curl -O https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/docker-compose.yaml
 mkdir -p data
@@ -45,7 +53,13 @@ environment:
 docker compose up -d
 ```
 
-浏览器访问 `http://<你的 VPS IP>:8080`，输入 `API_TOKEN` 登录。
+默认面板只监听 VPS 本机。先在你的电脑上开 SSH 隧道：
+
+```bash
+ssh -L 8080:127.0.0.1:8080 root@<你的 VPS IP>
+```
+
+浏览器访问 `http://127.0.0.1:8080`，输入 `API_TOKEN` 登录。
 
 ![登录面板](/screenshots/panel-login.png)
 
@@ -67,7 +81,26 @@ docker compose up -d
 
 点击 **创建规则**。`local` Agent 会自动同步配置并开始监听。
 
-## 第三步：验证
+## 第三步：给面板自身启用 HTTPS（推荐）
+
+如果你希望之后通过 HTTPS 打开面板，可以让面板自己代理自己。准备一个面板域名，例如 `panel.example.com`，DNS 指向 VPS，然后在 **流量管理 → HTTP 规则** 创建：
+
+| 字段 | 示例 | 说明 |
+| --- | --- | --- |
+| 入口域名 | `https://panel.example.com` | 面板公网 HTTPS 地址 |
+| 后端地址 | `http://127.0.0.1:8080` | 控制面本机 HTTP 地址 |
+| 启用规则 | 开 | 只有开启才会生效 |
+
+确认 VPS 防火墙放行 80 和 443。规则同步后，local Agent 会自动申请证书并把 `https://panel.example.com` 转回面板。
+
+自代理 HTTPS 可用后，建议在 `docker-compose.yaml` 设置：
+
+```yaml
+environment:
+  NRE_PUBLIC_URL: https://panel.example.com
+```
+
+## 第四步：验证业务反代
 
 浏览器打开 `http://app.example.com`。
 

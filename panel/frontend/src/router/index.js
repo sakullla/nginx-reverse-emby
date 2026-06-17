@@ -88,7 +88,7 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(window.__NRE_PANEL_BASE__ || import.meta.env.BASE_URL || '/'),
   routes
 })
 

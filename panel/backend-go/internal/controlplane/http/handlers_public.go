@@ -25,7 +25,7 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	_, payload.HasAgentURL = body["agent_url"]
 	_, payload.HasTags = body["tags"]
 	_, payload.HasCapabilities = body["capabilities"]
-	payload.LastSeenIP = remoteIPFromRequest(r)
+	payload.LastSeenIP = remoteIPFromRequest(r, d.Config.TrustForwardedHeaders)
 
 	reply, err := d.AgentService.Heartbeat(r.Context(), payload, r.Header.Get("X-Agent-Token"))
 	if err != nil {
@@ -36,14 +36,16 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":   true,
-		"sync": heartbeatSyncPayload(reply, requestBaseURL(r)),
+		"sync": heartbeatSyncPayload(reply, d.requestBaseURL(r)),
 	})
 }
 
-func remoteIPFromRequest(r *http.Request) string {
-	forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
-	if forwarded != "" {
-		return forwarded
+func remoteIPFromRequest(r *http.Request, trustForwardedHeaders bool) string {
+	if trustForwardedHeaders {
+		forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
+		if forwarded != "" {
+			return forwarded
+		}
 	}
 	remoteAddr := strings.TrimSpace(r.RemoteAddr)
 	if remoteAddr == "" {

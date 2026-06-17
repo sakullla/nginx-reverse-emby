@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -31,6 +32,9 @@ type Config struct {
 	DataDir                           string
 	PanelToken                        string
 	RegisterToken                     string
+	PublicURL                         string
+	PanelPublicPath                   string
+	TrustForwardedHeaders             bool
 	FrontendDistDir                   string
 	PublicAgentAssetsDir              string
 	DatabaseDriver                    string
@@ -171,13 +175,41 @@ func LoadFromEnv() (Config, error) {
 	if panelToken == "" {
 		return Config{}, errors.New("NRE_PANEL_TOKEN is required")
 	}
+	if isPlaceholderToken(panelToken) {
+		return Config{}, errors.New("NRE_PANEL_TOKEN must be changed from the example placeholder value")
+	}
 	cfg.PanelToken = panelToken
 
 	registerToken := strings.TrimSpace(firstEnv("NRE_REGISTER_TOKEN", "MASTER_REGISTER_TOKEN", "PANEL_REGISTER_TOKEN", "API_TOKEN"))
 	if registerToken == "" {
 		return Config{}, errors.New("NRE_REGISTER_TOKEN is required")
 	}
+	if isPlaceholderToken(registerToken) {
+		return Config{}, errors.New("NRE_REGISTER_TOKEN must be changed from the example placeholder value")
+	}
 	cfg.RegisterToken = registerToken
+
+	if val := strings.TrimSpace(os.Getenv("NRE_PUBLIC_URL")); val != "" {
+		publicURL, err := normalizePublicURL(val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.PublicURL = publicURL
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_PANEL_PUBLIC_PATH")); val != "" {
+		panelPath, err := normalizePanelPublicPath(val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.PanelPublicPath = panelPath
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_TRUST_FORWARDED_HEADERS")); val != "" {
+		trust, err := parseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_TRUST_FORWARDED_HEADERS: %w", err)
+		}
+		cfg.TrustForwardedHeaders = trust
+	}
 
 	frontendDistDir := strings.TrimSpace(firstEnv("NRE_FRONTEND_DIST_DIR", "PANEL_FRONTEND_DIST_DIR"))
 	if frontendDistDir != "" {
@@ -413,6 +445,82 @@ func splitCommaList(value string) []string {
 		}
 	}
 	return out
+}
+
+func isPlaceholderToken(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "change-this-token",
+		"change-this-register-token",
+		"your-secure-token",
+		"your-register-token",
+		"changeme",
+		"change-me":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizePublicURL(value string) (string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(value), "/")
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid NRE_PUBLIC_URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("invalid NRE_PUBLIC_URL: scheme must be http or https")
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("invalid NRE_PUBLIC_URL: host is required")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid NRE_PUBLIC_URL: query and fragment are not supported")
+	}
+	return trimmed, nil
+}
+
+func normalizePanelPublicPath(value string) (string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(value), "/")
+	if trimmed == "" || trimmed == "/" {
+		return "", nil
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		return "", errors.New("invalid NRE_PANEL_PUBLIC_PATH: path must start with /")
+	}
+	if strings.Contains(trimmed, "?") || strings.Contains(trimmed, "#") {
+		return "", errors.New("invalid NRE_PANEL_PUBLIC_PATH: query and fragment are not supported")
+	}
+	cleaned := pathClean(trimmed)
+	if cleaned != trimmed {
+		return "", errors.New("invalid NRE_PANEL_PUBLIC_PATH: path must be normalized")
+	}
+	for _, reserved := range []string{"/api", "/panel-api", "/agent-api", "/assets"} {
+		if cleaned == reserved || strings.HasPrefix(cleaned, reserved+"/") {
+			return "", fmt.Errorf("invalid NRE_PANEL_PUBLIC_PATH: %s is reserved", reserved)
+		}
+	}
+	return cleaned, nil
+}
+
+func pathClean(value string) string {
+	parts := strings.Split(value, "/")
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(cleaned) > 0 {
+				cleaned = cleaned[:len(cleaned)-1]
+			}
+		default:
+			cleaned = append(cleaned, part)
+		}
+	}
+	if len(cleaned) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(cleaned, "/")
 }
 
 func validateWireGuardAutoAddressPools(pools []string) error {

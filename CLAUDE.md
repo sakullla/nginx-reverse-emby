@@ -89,7 +89,7 @@ Browser
 - certificate/runtime primitives
 - local-agent mode and update plumbing
 
-`deploy.sh`, `conf.d/`, and repo-root `nginx.conf` remain only for legacy standalone Nginx workflows and are not part of the default runtime path.
+`deploy.sh`, `legacy/conf.d/`, and repo-root `nginx.conf` remain only for legacy standalone Nginx workflows and are not part of the default runtime path.
 
 ### Storage Layer
 - **SQLite (default):** Go control-plane storage/runtime metadata

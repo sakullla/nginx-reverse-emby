@@ -18,8 +18,11 @@
 
 ## 面板访问控制
 
-- 面板端口（默认 8080）如果暴露在公网，建议在云防火墙中限制来源 IP。
-- 或者在面板前面加一层反向代理，配上 HTTPS 和 HTTP Basic Auth。
+- 默认 `docker-compose.yaml` 只监听 `127.0.0.1:8080`。首次登录建议通过 SSH 隧道访问 `http://127.0.0.1:8080`。
+- 面板可以给自己提供 HTTPS：登录后创建 `https://panel.example.com -> http://127.0.0.1:8080` 的 HTTP 规则，使用 `local` Agent 自动申请证书并代理回控制面。
+- 面板自身 HTTPS 可用后，设置 `NRE_PUBLIC_URL=https://你的面板域名`，让 join script 和 Agent 更新 URL 使用固定可信地址。
+- 不要把面板 8080 端口直接暴露到公网 HTTP。如果需要公网监听，必须配合防火墙限制来源 IP。
+- 只有在额外使用上游反代，且上游会清洗并重写 `X-Forwarded-*` 头时，才设置 `NRE_TRUST_FORWARDED_HEADERS=true`。
 
 ## 防火墙
 
