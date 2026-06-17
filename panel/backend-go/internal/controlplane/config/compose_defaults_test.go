@@ -124,6 +124,7 @@ func TestBeginnerComposeDeployScriptExists(t *testing.T) {
 		"PANEL_BACKEND_HOST",
 		"random_hex()",
 		"Cloudflare API Token",
+		"区域 / DNS / 读取",
 		"ACME_DNS_PROVIDER",
 		"CF_TOKEN",
 		"NRE_PANEL_PUBLIC_PATH",

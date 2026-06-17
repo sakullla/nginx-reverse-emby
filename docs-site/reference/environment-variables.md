@@ -74,7 +74,7 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 | `NRE_ACME_DIRECTORY_URL` | Let's Encrypt 生产环境 | ACME 目录 URL。 |
 | `NRE_MANAGED_CERT_RENEW_INTERVAL` | `24h` | 检查证书续期的频率。 |
 
-只有当 `ACME_DNS_PROVIDER=cf` **且** 令牌非空时，DNS-01 才会启用。新手建议使用 Cloudflare API Token，不要使用 Global API Key；权限给 `Zone:Read` 和 `DNS:Edit`，Zone Resources 只选择你的域名。详情请参阅 [证书与 HTTPS](../guides/certificates.md)。
+只有当 `ACME_DNS_PROVIDER=cf` **且** 令牌非空时，DNS-01 才会启用。新手建议使用 Cloudflare API Token，不要使用 Global API Key；权限给 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`，Zone Resources 只选择你的域名。详情请参阅 [证书与 HTTPS](../guides/certificates.md)。
 
 ---
 

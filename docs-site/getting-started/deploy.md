@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/sc
 脚本会优先推荐你配置域名和 Cloudflare API Token：
 
 - 已有域名且 DNS 已指向 VPS：输入面板域名，脚本会写入 `NRE_PUBLIC_URL=https://面板域名`，并自动创建 `https://面板域名 -> http://127.0.0.1:8080` 的面板自代理规则。
-- 使用 Cloudflare：建议创建 API Token，不要使用 Global API Key；权限给 `Zone:Read` 和 `DNS:Edit`，Zone Resources 只选择你的域名。
+- 使用 Cloudflare：建议创建 API Token，不要使用 Global API Key；权限给 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`，Zone Resources 只选择你的域名。
 - 暂时没有域名：脚本会提示 HTTP 风险，并生成 `NRE_PANEL_PUBLIC_PATH=/panel-随机字符串` 作为临时面板入口。随机路径不能替代 token 和 HTTPS，只适合临时部署。
 
 可选参数：
@@ -111,7 +111,7 @@ environment:
   CF_TOKEN: <Cloudflare API Token>
 ```
 
-创建 HTTPS 规则时会优先使用 DNS-01 申请证书，不要求 80 端口先能完成 HTTP-01 校验。Token 建议只授予 `Zone:Read` 和 `DNS:Edit`，并限制到当前域名。
+创建 HTTPS 规则时会优先使用 DNS-01 申请证书，不要求 80 端口先能完成 HTTP-01 校验。Token 建议只授予 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`，并限制到当前域名。
 
 ## 为什么用 host 网络？
 

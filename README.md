@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/sc
 ```
 
 脚本会创建目录、生成随机 token、拉取 `docker-compose.yaml` 并启动服务。
-如果系统还没有 Docker Compose，脚本会询问后自动安装。脚本会优先引导你填写 Cloudflare API Token，用域名自动创建 `https://面板域名 -> http://127.0.0.1:8080` 的面板自代理规则并申请证书；没有域名时会提示 HTTP 风险，临时监听 `0.0.0.0:8080` 并生成一个随机面板路径。
+如果系统还没有 Docker Compose，脚本会自动安装。脚本会优先引导你填写 Cloudflare API Token，用域名自动创建 `https://面板域名 -> http://127.0.0.1:8080` 的面板自代理规则并申请证书；Cloudflare Token 权限需要包含 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`。没有域名时会提示 HTTP 风险，临时监听 `0.0.0.0:8080` 并生成一个随机面板路径。
 
 手动部署：
 
