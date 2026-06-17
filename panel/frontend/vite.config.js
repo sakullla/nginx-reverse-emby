@@ -14,6 +14,7 @@ export default defineConfig({
       'src/pages/**/*.test.js',
       'src/api/**/*.test.mjs',
       'src/context/**/*.test.mjs',
+      'src/hooks/**/*.{test,spec}.{js,mjs}',
       'src/utils/**/*.{test,spec}.{js,mjs}'
     ]
   },

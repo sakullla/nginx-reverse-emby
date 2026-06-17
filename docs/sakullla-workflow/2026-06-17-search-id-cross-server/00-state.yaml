@@ -1,0 +1,299 @@
+workflow_id: "2026-06-17-search-id-cross-server"
+workflow_dir: "docs/sakullla-workflow/2026-06-17-search-id-cross-server"
+topic: "search-id-cross-server"
+
+knowledge_context:
+  status: missing
+  last_refresh_request: ""
+  translation_file: "00-knowledge-translation.yaml"
+
+phase: delivery
+
+context_ledger:
+  summary: "全部 5 个 Task 完成。T1: useIdSearch+scrollHighlight（19 tests）。T2: GlobalSearch #id= 分支。T3: 三页面跨 agent #id= 解析+跳转。T4: IdCandidateModal 候选列表 UI（防御性）。T5: 全量构建验证 262 tests ✓。"
+  current_focus: "delivery gate"
+  next_action: "delivery gate → 交付"
+  key_refs:
+    - path: "docs/requirements/2026-06-17-search-id-cross-server.md"
+      note: "需求文档，含 R1-R9 锚点与验收 A1-A6"
+    - path: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/01-exploration.md"
+      note: "代码探索产物"
+    - path: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/02-technical-solution.md"
+      note: "技术方案：#id= 跨服务器直达"
+    - path: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/03-execution-plan.md"
+      note: "执行计划：5 个 Task，T1→T2/T3→T4→T5"
+  open_questions:
+    - "用户确认执行计划后开始执行"
+  updated_by: "plan"
+  updated_at: "2026-06-17"
+
+gates:
+  solution_user_confirmed: confirmed
+  execution_user_confirmed: confirmed
+  delivery_gate: passed
+
+execution_mode:
+  user_preference: balanced
+
+tasks:
+  - id: T1
+    title: "新建 useIdSearch composable + scrollToAndHighlight 工具函数"
+    status: done
+    work:
+      goal: "提供共享的 #id= 解析、跨 agent 记录查找、滚动高亮定位能力"
+      size: S
+      split_reason: ""
+      depends_on: []
+      non_goals: []
+    execution:
+      allowed_files:
+        - panel/frontend/src/hooks/useIdSearch.js
+        - panel/frontend/src/utils/scrollHighlight.js
+      forbidden_files:
+        - panel/frontend/src/pages/*
+        - panel/frontend/src/components/*
+      integration_target: main
+      base_ref: ""
+      commit_policy: per_task
+      verify:
+        commands:
+          - "cd panel/frontend && npx vitest run src/hooks/__tests__/useIdSearch.test.js src/utils/__tests__/scrollHighlight.test.js"
+        evidence: "19 tests passed, build succeeded in 4.28s"
+      tests:
+        unit_test: required
+        responsibility: "parseIdQuery 正则匹配、findRecordInData 跨 agent 查找、scrollToAndHighlight DOM 操作"
+        minimum_command: "cd panel/frontend && npx vitest run src/hooks/__tests__/useIdSearch.test.js src/utils/__tests__/scrollHighlight.test.js"
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: "自包含、边界清晰、verify 可独立跑"
+    result:
+      run_ref: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T1-run.md"
+      commit_ref: "uncommitted:develop-doc"
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T1-run.md#review"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T2
+    title: "全局搜索 #id= 识别与精确过滤"
+    status: done
+    work:
+      goal: "GlobalSearch.vue doSearch 新增 #id= 分支，跨 agent 精确过滤"
+      size: S
+      split_reason: ""
+      depends_on: []
+      non_goals: []
+    execution:
+      allowed_files:
+        - panel/frontend/src/components/GlobalSearch.vue
+      forbidden_files:
+        - panel/frontend/src/pages/*
+        - panel/frontend/src/hooks/*
+      integration_target: main
+      base_ref: ""
+      commit_policy: per_task
+      verify:
+        commands:
+          - "cd panel/frontend && npx vitest run src/components/__tests__/GlobalSearch.test.js"
+        evidence: "262 tests passed, build succeeded in 4.24s"
+      tests:
+        unit_test: required
+        responsibility: "doSearch #id= 分支命中/未命中/跨 agent 数据遍历"
+        minimum_command: "cd panel/frontend && npx vitest run src/components/__tests__/GlobalSearch.test.js"
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: "自包含单文件、边界清晰"
+    result:
+      run_ref: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T2-run.md"
+      commit_ref: "uncommitted:develop-doc"
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T2-run.md"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T3
+    title: "功能页 #id= 跨 agent 解析 + 跳转"
+    status: done
+    work:
+      goal: "RulesPage/L4RulesPage/CertsPage 的 #id= 未命中当前 agent 时跨 agent 搜索并跳转"
+      size: M
+      split_reason: ""
+      depends_on:
+        - T1
+      non_goals: []
+    execution:
+      allowed_files:
+        - panel/frontend/src/pages/RulesPage.vue
+        - panel/frontend/src/pages/L4RulesPage.vue
+        - panel/frontend/src/pages/CertsPage.vue
+      forbidden_files:
+        - panel/frontend/src/components/*
+        - panel/frontend/src/hooks/useIdSearch.js
+        - panel/frontend/src/utils/scrollHighlight.js
+      integration_target: main
+      base_ref: "task:T1"
+      commit_policy: per_task
+      verify:
+        commands:
+          - "cd panel/frontend && npm run build"
+        evidence: ""
+      tests:
+        unit_test: deferred_to_gate
+        responsibility: "T5 验证门覆盖：跨 agent 解析逻辑、跳转参数传递、空状态处理"
+        minimum_command: ""
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: "文件边界清晰，verify 可独立跑"
+    result:
+      run_ref: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T3-run.md"
+      commit_ref: "uncommitted:develop-doc"
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T3-run.md#review"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T4
+    title: "候选列表 UI（防御性）"
+    status: done
+    work:
+      goal: "跨 agent 多命中时弹出候选列表（当前 ID 全局唯一不触发）"
+      size: S
+      split_reason: ""
+      depends_on:
+        - T3
+      non_goals: []
+    execution:
+      allowed_files:
+        - panel/frontend/src/components/IdCandidateModal.vue
+        - panel/frontend/src/pages/RulesPage.vue
+        - panel/frontend/src/pages/L4RulesPage.vue
+        - panel/frontend/src/pages/CertsPage.vue
+      forbidden_files:
+        - panel/frontend/src/hooks/*
+        - panel/frontend/src/utils/*
+        - panel/frontend/src/components/GlobalSearch.vue
+      integration_target: main
+      base_ref: "task:T3"
+      commit_policy: per_task
+      verify:
+        commands:
+          - "cd panel/frontend && npm run build"
+        evidence: ""
+      tests:
+        unit_test: deferred_to_gate
+        responsibility: "T5 验证门覆盖：Modal 渲染、选择回调、跳转逻辑"
+        minimum_command: ""
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: "自包含 UI 组件，边界清晰"
+    result:
+      run_ref: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T4-run.md"
+      commit_ref: "uncommitted:develop-doc"
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T4-run.md#review"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T5
+    title: "构建验证 + 回归"
+    status: done
+    work:
+      goal: "全量构建验证 + 普通搜索/#id=/点击跳转兼容性不退化"
+      size: XS
+      split_reason: ""
+      depends_on:
+        - T2
+        - T4
+      non_goals: []
+    execution:
+      allowed_files: []
+      forbidden_files:
+        - panel/frontend/src/*
+      integration_target: main
+      base_ref: "task:T4"
+      commit_policy: per_task
+      verify:
+        commands:
+          - "cd panel/frontend && npm run build && npm run test"
+        evidence: ""
+      tests:
+        unit_test: required
+        responsibility: "全量构建验证 + 回归测试"
+        minimum_command: "cd panel/frontend && npm run build && npm run test"
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: false
+        reason: "验证任务需全量构建，不适合委派"
+    result:
+      run_ref: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T5-run.md"
+      commit_ref: "verify-only"
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "docs/sakullla-workflow/2026-06-17-search-id-cross-server/task-runs/T5-run.md#review"
+      unresolved: ""
+    blocked_reason: ""
+active_task_id: ""
+
+artifacts:
+  delivery_docs: not_needed
+
+delivery_evidence:
+  compile: ready
+  compile_ref: "npm run build ✓ (4.40s)"
+  test: ready
+  test_ref: "npx vitest run → 47 files, 262 tests ✓"
+  traceability: ready
+  traceability_ref: "R1→T1/T3, R2→T1, R3→T3, R4→T4, R5→T2, R6→T2, R7→T1, R8→T1/T3, R9→T3"
+  checklist: ready
+  checklist_ref: "全部 5 tasks done, build+test green"
+
+delivery:
+  status: done
+  done_at: "2026-06-17"
+
+blocker:
+  active: false
+  kind: ""
+  source_skill: ""
+  resume_skill: ""
+  resume_kind: ""
+  resume_task_id: ""
+  resume_artifact: ""
+  reason: ""
+  clear_rule: ""
+  awaiting_user_action: false
+  user_action_message: ""
+  discussion_draft: ""
+  user_response_summary: ""
+
+worktree:
+  enabled: false
+  requested: false
+  root_path: ""
+  root_kind: auto
+  status: inactive
+  current_task_id: ""
+  current_branch: ""
+  current_path: ""
+  base_branch: ""
+  topic_branch: ""
+  verify_baseline: ""
+  verify_baseline_ref: ""
+  last_prepared_at: ""
+  task_refs: {}
+
+stage_files:
+  00-knowledge-translation.yaml: missing
+  01-exploration.md: exists
+  02-technical-solution.md: exists
+  03-execution-plan.md: exists
+  04-delivery-gate.md: exists

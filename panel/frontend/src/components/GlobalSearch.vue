@@ -81,6 +81,7 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
+import { parseIdQuery } from '../hooks/useIdSearch'
 import * as api from '../api'
 
 // Result type: 'rule' | 'l4' | 'cert'
@@ -182,6 +183,34 @@ async function doSearch(val) {
 
     const q = val.toLowerCase()
     const groupResults = []
+
+    // #id= exact match branch: search across all agents by record id
+    const idQuery = parseIdQuery(val)
+    if (idQuery) {
+      const targetId = idQuery.id
+      for (const agent of agents) {
+        const rules = rulesByAgent[agent.id] || []
+        const l4Rules = l4ByAgent[agent.id] || []
+        const certs = certsByAgent[agent.id] || []
+        const relays = relayByAgent[agent.id] || []
+
+        const matchedRules = rules.filter(r => String(r.id) === targetId)
+          .map(r => ({ ...r, _type: 'rule' }))
+        const matchedL4 = l4Rules.filter(r => String(r.id) === targetId)
+          .map(r => ({ ...r, _type: 'l4' }))
+        const matchedCerts = certs.filter(c => String(c.id) === targetId)
+          .map(c => ({ ...c, _type: 'cert' }))
+        const matchedRelays = relays.filter(r => String(r.id) === targetId)
+          .map(r => ({ ...r, _type: 'relay' }))
+
+        const items = [...matchedRules, ...matchedL4, ...matchedCerts, ...matchedRelays]
+        if (items.length) {
+          groupResults.push(makeResult(null, agent.id, agent.name, agent.status === 'online', items))
+        }
+      }
+      if (currentSearchId === searchId.value) results.value = groupResults
+      return
+    }
 
     // Agent results
     const matchedAgents = agents.filter(a =>
