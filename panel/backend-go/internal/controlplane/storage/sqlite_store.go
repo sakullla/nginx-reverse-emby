@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -551,15 +552,16 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 	}
 
 	desiredRevision := currentState.DesiredRevision
+	lastApplyRevisionInt := boundedIntFromInt64(lastApplyRevision)
 	if lastApplyStatus == "success" {
-		desiredRevision = maxInt(desiredRevision, int(lastApplyRevision))
+		desiredRevision = maxInt(desiredRevision, lastApplyRevisionInt)
 	}
 
 	row := LocalAgentStateRow{
 		ID:                1,
 		DesiredRevision:   desiredRevision,
-		CurrentRevision:   int(runtimeState.CurrentRevision),
-		LastApplyRevision: int(lastApplyRevision),
+		CurrentRevision:   boundedIntFromInt64(runtimeState.CurrentRevision),
+		LastApplyRevision: lastApplyRevisionInt,
 		LastApplyStatus:   lastApplyStatus,
 		LastApplyMessage:  lastApplyMessage,
 		DesiredVersion:    currentState.DesiredVersion,
@@ -913,7 +915,11 @@ func (s *GormStore) CleanupManagedCertificateMaterial(_ context.Context, previou
 		if _, ok := nextDomains[domain]; ok {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(baseDir, domain)); err != nil {
+		certDir := managedCertificateDirectory(baseDir, domain)
+		if certDir == "" {
+			continue
+		}
+		if err := os.RemoveAll(certDir); err != nil {
 			return err
 		}
 	}
@@ -2955,6 +2961,16 @@ func maxInt(values ...int) int {
 	return maxValue
 }
 
+func boundedIntFromInt64(value int64) int {
+	if value <= 0 {
+		return 0
+	}
+	if value > int64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(value)
+}
+
 type managedCertificateMaterial struct {
 	CertPEM string
 	KeyPEM  string
@@ -2974,7 +2990,15 @@ func (s *GormStore) readManagedCertificateMaterial(domain string) (managedCertif
 }
 
 func (s *GormStore) managedCertificateDirectory(domain string) string {
-	return filepath.Join(s.dataRoot, "managed_certificates", normalizeManagedCertificateHost(domain))
+	return managedCertificateDirectory(filepath.Join(s.dataRoot, "managed_certificates"), domain)
+}
+
+func managedCertificateDirectory(baseDir string, domain string) string {
+	safeHost := normalizeManagedCertificateHost(domain)
+	if !isSafeSinglePathComponent(safeHost) {
+		safeHost = "_"
+	}
+	return filepath.Join(baseDir, safeHost)
 }
 
 func normalizeManagedCertificateHost(domain string) string {
@@ -2984,7 +3008,24 @@ func normalizeManagedCertificateHost(domain string) string {
 	}
 	normalized = strings.ReplaceAll(normalized, "*.", "_wildcard_.")
 	replacer := strings.NewReplacer("<", "_", ">", "_", ":", "_", "\"", "_", "/", "_", "\\", "_", "|", "_", "?", "_", "*", "_")
-	return replacer.Replace(normalized)
+	normalized = replacer.Replace(normalized)
+	for strings.Contains(normalized, "..") {
+		normalized = strings.ReplaceAll(normalized, "..", "_")
+	}
+	normalized = strings.Trim(normalized, ". ")
+	if normalized == "" {
+		return "_"
+	}
+	return normalized
+}
+
+func isSafeSinglePathComponent(component string) bool {
+	return component != "" &&
+		component != "." &&
+		component != ".." &&
+		!strings.Contains(component, "..") &&
+		!strings.Contains(component, "/") &&
+		!strings.Contains(component, "\\")
 }
 
 func managedCertificateDomainSet(rows []ManagedCertificateRow) map[string]struct{} {

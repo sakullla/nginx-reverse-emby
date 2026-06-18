@@ -81,8 +81,9 @@ Windows PowerShell：
 cd panel/backend-go && go test ./...
 cd ../../go-agent && go test ./...
 docker build -t nginx-reverse-emby:pure-go --target control-plane-runtime .
-sh scripts/verify-pure-go-master.sh /path/to/copied-panel-data
 ```
+
+启动镜像后逐项核对以下控制面接口（可用 `curl -H "X-Panel-Token: <token>"` 访问）：
 
 | 检查项 | 预期 |
 |--------|------|

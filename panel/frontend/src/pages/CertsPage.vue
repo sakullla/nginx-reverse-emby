@@ -112,11 +112,18 @@
       @confirm='confirmDelete'
       @cancel='deletingCert = null'
     />
+
+    <IdCandidateModal
+      v-model:visible="candidateModalVisible"
+      :id="candidateModalId"
+      :candidates="candidateModalCandidates"
+      @select="handleCandidateSelect"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, ref, watchEffect } from 'vue'
+import { computed, ref, watchEffect, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
@@ -132,6 +139,9 @@ import { useViewToggle } from '../composables/useViewToggle'
 import {
   isSystemRelayCA
 } from '../utils/certificateTemplates'
+import { fetchAllAgentsCertificates } from '../api'
+import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import IdCandidateModal from '../components/IdCandidateModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -184,6 +194,39 @@ const filteredCerts = computed(() => {
     (cert.tags || []).some((tag) => String(tag).toLowerCase().includes(query))
   )
 })
+
+// R3: Cross-agent #id= resolution — if not found in current agent, search all agents
+const _crossSearching = ref(false)
+const candidateModalVisible = ref(false)
+const candidateModalCandidates = ref([])
+const candidateModalId = ref('')
+
+watch([filteredCerts, isLoading], ([result]) => {
+  const idQuery = shouldStartCrossAgentIdSearch({
+    search: searchQuery.value,
+    currentMatches: result,
+    isLoading: isLoading.value,
+    isSearching: _crossSearching.value
+  })
+  if (!idQuery) return
+  const agentIds = allAgents.value.map(a => a.id)
+  if (!agentIds.length) return
+  _crossSearching.value = true
+  candidateModalId.value = idQuery.id
+  fetchAllAgentsCertificates(agentIds).then(allData => {
+    const allMatches = findAllMatchesInAgents({ certificates: allData }, idQuery.id)
+    if (allMatches.length === 1) {
+      router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })
+    } else if (allMatches.length > 1) {
+      candidateModalCandidates.value = allMatches
+      candidateModalVisible.value = true
+    }
+  }).finally(() => { _crossSearching.value = false })
+})
+
+function handleCandidateSelect(candidate) {
+  router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
+}
 
 const activeCount = computed(() => certificates.value.filter((cert) => cert.enabled && cert.status === 'active').length)
 

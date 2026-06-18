@@ -56,6 +56,26 @@ Agent 会在下次心跳同步时开始监听入口域名。如果你选了 HTTP
 
 需要通配符证书或 80 端口不可用？见 [证书与 HTTPS](./certificates.md)。
 
+## 给面板自身代理 HTTPS
+
+默认控制面只监听 `127.0.0.1:8080`。首次通过 SSH 隧道登录后，可以创建一条 HTTP 规则让面板给自己提供 HTTPS：
+
+| 字段 | 示例 |
+| --- | --- |
+| Agent | `local` |
+| 入口域名 | `https://panel.example.com` |
+| 后端地址 | `http://127.0.0.1:8080` |
+| 启用规则 | 开 |
+
+确认 `panel.example.com` 已解析到 VPS，并放行 80/443。规则生效后，访问 `https://panel.example.com` 就会由 local Agent 代理回控制面。
+
+自代理 HTTPS 可用后，在 `docker-compose.yaml` 设置：
+
+```yaml
+environment:
+  NRE_PUBLIC_URL: https://panel.example.com
+```
+
 ## 流式恢复
 
 HTTP 代理内置中断恢复机制：下载或播放中途断流时自动续传。后端需要支持 `Accept-Ranges: bytes` 并返回稳定的 `ETag` 或 `Last-Modified`。

@@ -546,8 +546,8 @@ get_template_content() {
         fi
     else
         local tpl_name=$([[ "$no_tls" == "yes" ]] && echo "p.example.com.no_tls.conf" || echo "p.example.com.conf")
-        log_info "下载模板: $tpl_name (源: $CONF_HOME/conf.d/$tpl_name)..."
-        curl -sL "$CONF_HOME/conf.d/$tpl_name"
+        log_info "下载模板: $tpl_name (源: $CONF_HOME/legacy/conf.d/$tpl_name)..."
+        curl -sL "$CONF_HOME/legacy/conf.d/$tpl_name"
     fi
 }
 

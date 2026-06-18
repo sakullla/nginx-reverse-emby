@@ -112,6 +112,97 @@ func TestLoadFromEnvSupportsLegacyPanelEnvironmentVariables(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvRejectsPlaceholderTokens(t *testing.T) {
+	testCases := []struct {
+		name          string
+		panelToken    string
+		registerToken string
+		wantError     string
+	}{
+		{
+			name:          "panel token",
+			panelToken:    "change-this-token",
+			registerToken: "register-secret",
+			wantError:     "NRE_PANEL_TOKEN",
+		},
+		{
+			name:          "register token",
+			panelToken:    "secret",
+			registerToken: "change-this-register-token",
+			wantError:     "NRE_REGISTER_TOKEN",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NRE_PANEL_TOKEN", tc.panelToken)
+			t.Setenv("NRE_REGISTER_TOKEN", tc.registerToken)
+
+			_, err := LoadFromEnv()
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("LoadFromEnv() error = %v, want %s placeholder rejection", err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestLoadFromEnvParsesPublicURLAndTrustForwardedHeaders(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_PUBLIC_URL", "https://panel.example.com/")
+	t.Setenv("NRE_PANEL_PUBLIC_PATH", "/panel-a1b2c3")
+	t.Setenv("NRE_TRUST_FORWARDED_HEADERS", "true")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.PublicURL != "https://panel.example.com" {
+		t.Fatalf("PublicURL = %q", cfg.PublicURL)
+	}
+	if cfg.PanelPublicPath != "/panel-a1b2c3" {
+		t.Fatalf("PanelPublicPath = %q", cfg.PanelPublicPath)
+	}
+	if !cfg.TrustForwardedHeaders {
+		t.Fatal("TrustForwardedHeaders = false, want true")
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidPublicURL(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_PUBLIC_URL", "javascript:alert(1)")
+
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "NRE_PUBLIC_URL") {
+		t.Fatalf("LoadFromEnv() error = %v, want NRE_PUBLIC_URL validation error", err)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidPanelPublicPath(t *testing.T) {
+	testCases := []string{
+		"panel",
+		"/panel/../admin",
+		"/panel?token=1",
+		"/panel-api/hidden",
+		"/api/hidden",
+		"/assets/panel",
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc, func(t *testing.T) {
+			t.Setenv("NRE_PANEL_TOKEN", "secret")
+			t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+			t.Setenv("NRE_PANEL_PUBLIC_PATH", tc)
+
+			_, err := LoadFromEnv()
+			if err == nil || !strings.Contains(err.Error(), "NRE_PANEL_PUBLIC_PATH") {
+				t.Fatalf("LoadFromEnv() error = %v, want NRE_PANEL_PUBLIC_PATH validation error", err)
+			}
+		})
+	}
+}
+
 func TestLoadFromEnvMissingRequiredEnvVars(t *testing.T) {
 	t.Setenv("NRE_CONTROL_PLANE_ADDR", "0.0.0.0:8080")
 	t.Setenv("NRE_CONTROL_PLANE_DATA_DIR", "/tmp/nre-data")

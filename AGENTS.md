@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The repo ships a Go control-plane container plus the Go `go-agent` execution plane. The active panel runtime is split into `panel/backend-go/` (Go control plane) and `panel/frontend/` (Vue 3 + Vite SPA, source in `src/`). Top-level helper assets live in `scripts/` (join/agent helpers) and `examples/` (optional legacy examples, which may be empty after cleanup). `panel/data/` is runtime state; treat it as local data, not source. `deploy.sh`, `conf.d/`, and repo-root `nginx.conf` are retained for legacy standalone Nginx workflows and are not the default control-plane runtime path.
+The repo ships a Go control-plane container plus the Go `go-agent` execution plane. The active panel runtime is split into `panel/backend-go/` (Go control plane) and `panel/frontend/` (Vue 3 + Vite SPA, source in `src/`). Top-level helper assets live in `scripts/` (join/agent helpers and beginner deployment helpers). `panel/data/` is runtime state; treat it as local data, not source. `deploy.sh`, `legacy/conf.d/`, and repo-root `nginx.conf` are retained for legacy standalone Nginx workflows and are not the default control-plane runtime path.
 
 ## Build, Test, and Development Commands
 - `cd panel/frontend && npm run dev` - start the Vite UI locally.

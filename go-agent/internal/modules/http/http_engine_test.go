@@ -55,6 +55,12 @@ func TestRewriteExternalLocationToProxyPath(t *testing.T) {
 	}
 }
 
+func TestParseInternalRedirectTargetRejectsEncodedSchemeRelativePath(t *testing.T) {
+	if target, ok := parseInternalRedirectTarget("/__nre_redirect/https/streamer.example/%2f%2fevil.example/path", "/"); ok {
+		t.Fatalf("expected unsafe redirect target to be rejected, got %+v", target)
+	}
+}
+
 func TestResolveRelativeLocationUsesCurrentProxyTarget(t *testing.T) {
 	base, err := url.Parse("http://streamer.example/videos/stream.m3u8?sign=old")
 	if err != nil {

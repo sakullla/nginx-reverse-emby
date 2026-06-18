@@ -304,6 +304,8 @@ type httpStreamingResponseWriter struct {
 }
 
 func (w *httpStreamingResponseWriter) Write(p []byte) (int, error) {
+	// codeql[go/reflected-xss]
+	// HTTP reverse proxy response bodies are streamed verbatim from the configured upstream.
 	n, err := w.ResponseWriter.Write(p)
 	if n > 0 {
 		w.pending += uint64(n)
@@ -349,6 +351,8 @@ type httpResponseTrafficResponseWriter struct {
 }
 
 func (w *httpResponseTrafficResponseWriter) Write(p []byte) (int, error) {
+	// codeql[go/reflected-xss]
+	// HTTP reverse proxy response bodies are streamed verbatim from the configured upstream.
 	n, err := w.ResponseWriter.Write(p)
 	if n > 0 {
 		w.flusher.Add(uint64(n), w.threshold)
@@ -423,6 +427,9 @@ func copyProxyResponseHeaders(dst, src http.Header, statusCode int) {
 		for _, value := range values {
 			dst.Add(key, value)
 		}
+	}
+	if dst.Get("X-Content-Type-Options") == "" {
+		dst.Set("X-Content-Type-Options", "nosniff")
 	}
 }
 

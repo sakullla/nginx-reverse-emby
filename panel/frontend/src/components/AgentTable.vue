@@ -84,17 +84,17 @@ function handleRowClick(agent) {
 }
 .agent-table th {
   text-align: left;
-  padding: 0.6rem 1rem;
-  font-size: 0.7rem;
-  font-weight: 600;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
   color: var(--color-text-tertiary);
   border-bottom: 1px solid var(--color-border-subtle);
   white-space: nowrap;
 }
 .agent-table td {
-  padding: 0.75rem 1rem;
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--color-border-subtle);
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   vertical-align: middle;
 }
 .agent-table tr:last-child td {
@@ -109,22 +109,22 @@ function handleRowClick(agent) {
 }
 .agent-cell__name {
   display: block;
-  font-weight: 500;
+  font-weight: var(--font-medium);
   color: var(--color-text-primary);
 }
 .agent-cell__url {
   display: block;
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--color-text-tertiary);
   font-family: var(--font-mono);
 }
 .mode-badge {
-  font-size: 0.75rem;
-  padding: 1px 6px;
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
   background: var(--color-primary-subtle);
   color: var(--color-primary);
   border-radius: var(--radius-full);
-  font-weight: 500;
+  font-weight: var(--font-medium);
 }
 .agent-table__actions {
   display: flex;
@@ -141,7 +141,7 @@ function handleRowClick(agent) {
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--duration-fast) var(--ease-default);
 }
 .agent-table__action:hover {
   background: var(--color-bg-hover);
@@ -155,8 +155,8 @@ function handleRowClick(agent) {
 @media (max-width: 640px) {
   .agent-table th,
   .agent-table td {
-    padding: 0.5rem 0.5rem;
-    font-size: 0.8125rem;
+    padding: var(--space-2) var(--space-2);
+    font-size: var(--text-sm);
   }
   .agent-table th:nth-child(3),
   .agent-table td:nth-child(3),

@@ -150,18 +150,27 @@
       :scope-label="trendModal.scopeLabel"
       :direction="trafficDirection"
     />
+
+    <IdCandidateModal
+      v-model:visible="candidateModalVisible"
+      :id="candidateModalId"
+      :candidates="candidateModalCandidates"
+      @select="handleCandidateSelect"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watchEffect } from 'vue'
+import { ref, computed, watchEffect, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchTrafficSummary } from '../api'
+import { fetchTrafficSummary, fetchAllAgentsRules } from '../api'
+import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import IdCandidateModal from '../components/IdCandidateModal.vue'
 import RuleForm from '../components/RuleForm.vue'
 import RuleCard from '../components/rules/RuleCard.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
@@ -263,6 +272,39 @@ const filteredRules = computed(() => {
     (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
   )
 })
+
+// R3: Cross-agent #id= resolution — if not found in current agent, search all agents
+const _crossSearching = ref(false)
+const candidateModalVisible = ref(false)
+const candidateModalCandidates = ref([])
+const candidateModalId = ref('')
+
+watch([filteredRules, isLoading], ([result]) => {
+  const idQuery = shouldStartCrossAgentIdSearch({
+    search: searchQuery.value,
+    currentMatches: result,
+    isLoading: isLoading.value,
+    isSearching: _crossSearching.value
+  })
+  if (!idQuery) return
+  const agentIds = allAgents.value.map(a => a.id)
+  if (!agentIds.length) return
+  _crossSearching.value = true
+  candidateModalId.value = idQuery.id
+  fetchAllAgentsRules(agentIds).then(allData => {
+    const allMatches = findAllMatchesInAgents({ rules: allData }, idQuery.id)
+    if (allMatches.length === 1) {
+      router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })
+    } else if (allMatches.length > 1) {
+      candidateModalCandidates.value = allMatches
+      candidateModalVisible.value = true
+    }
+  }).finally(() => { _crossSearching.value = false })
+})
+
+function handleCandidateSelect(candidate) {
+  router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
+}
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
 

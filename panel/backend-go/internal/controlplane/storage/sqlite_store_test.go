@@ -6991,6 +6991,15 @@ func (l *schemaTraceLogger) Reset() {
 	l.duplicateRelayColumnStatements = 0
 }
 
+func TestManagedCertificateDirectorySanitizesPathComponents(t *testing.T) {
+	baseDir := t.TempDir()
+	got := managedCertificateDirectory(baseDir, `../../evil\leaf`)
+	want := filepath.Join(baseDir, "____evil_leaf")
+	if got != want {
+		t.Fatalf("managedCertificateDirectory() = %q, want %q", got, want)
+	}
+}
+
 func writeManagedCertificateMaterial(t *testing.T, dataRoot string, domain string, certPEM string, keyPEM string) {
 	t.Helper()
 
