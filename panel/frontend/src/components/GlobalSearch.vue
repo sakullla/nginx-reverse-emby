@@ -192,18 +192,14 @@ async function doSearch(val) {
         const rules = rulesByAgent[agent.id] || []
         const l4Rules = l4ByAgent[agent.id] || []
         const certs = certsByAgent[agent.id] || []
-        const relays = relayByAgent[agent.id] || []
-
         const matchedRules = rules.filter(r => String(r.id) === targetId)
           .map(r => ({ ...r, _type: 'rule' }))
         const matchedL4 = l4Rules.filter(r => String(r.id) === targetId)
           .map(r => ({ ...r, _type: 'l4' }))
         const matchedCerts = certs.filter(c => String(c.id) === targetId)
           .map(c => ({ ...c, _type: 'cert' }))
-        const matchedRelays = relays.filter(r => String(r.id) === targetId)
-          .map(r => ({ ...r, _type: 'relay' }))
 
-        const items = [...matchedRules, ...matchedL4, ...matchedCerts, ...matchedRelays]
+        const items = [...matchedRules, ...matchedL4, ...matchedCerts]
         if (items.length) {
           groupResults.push(makeResult(null, agent.id, agent.name, agent.status === 'online', items))
         }

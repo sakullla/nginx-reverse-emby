@@ -4,6 +4,7 @@
  * 为功能页和全局搜索提供：
  * - parseIdQuery(input): 识别 #id= 语法
  * - findRecordInAgents(allData, id, type): 跨 agent 数据结构中按 id 查找记录
+ * - shouldStartCrossAgentIdSearch(...): 判断是否应启动跨 agent #id= 兜底查找
  */
 
 const ID_QUERY_REGEX = /^#id=(\S+)$/
@@ -19,6 +20,17 @@ export function parseIdQuery(input) {
   const match = raw.match(ID_QUERY_REGEX)
   if (!match) return null
   return { isIdSearch: true, id: match[1] }
+}
+
+/**
+ * 当前 agent 已完成加载且没有本地命中时，才启动跨 agent #id= 兜底查找。
+ */
+export function shouldStartCrossAgentIdSearch({ search, currentMatches, isLoading, isSearching }) {
+  const idQuery = parseIdQuery(search)
+  if (!idQuery) return null
+  if (isLoading || isSearching) return null
+  if ((currentMatches || []).length > 0) return null
+  return idQuery
 }
 
 /**

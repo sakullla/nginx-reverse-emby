@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { parseIdQuery, findRecordInAgents, findAllMatchesInAgents } from '../useIdSearch'
+import {
+  parseIdQuery,
+  findRecordInAgents,
+  findAllMatchesInAgents,
+  shouldStartCrossAgentIdSearch
+} from '../useIdSearch'
 
 describe('parseIdQuery', () => {
   it('parses valid #id= query', () => {
@@ -109,5 +114,35 @@ describe('findAllMatchesInAgents', () => {
   it('returns empty array when no matches', () => {
     const data = { rules: [], l4Rules: [], certificates: [], relayListeners: [] }
     expect(findAllMatchesInAgents(data, '999')).toEqual([])
+  })
+
+})
+
+describe('shouldStartCrossAgentIdSearch', () => {
+  it('waits until the current agent data has finished loading', () => {
+    expect(shouldStartCrossAgentIdSearch({
+      search: '#id=42',
+      currentMatches: [],
+      isLoading: true,
+      isSearching: false
+    })).toBeNull()
+  })
+
+  it('does not search across agents when the current agent already matched', () => {
+    expect(shouldStartCrossAgentIdSearch({
+      search: '#id=42',
+      currentMatches: [{ id: 42 }],
+      isLoading: false,
+      isSearching: false
+    })).toBeNull()
+  })
+
+  it('starts cross-agent lookup for an unloaded local miss after loading completes', () => {
+    expect(shouldStartCrossAgentIdSearch({
+      search: '#id=42',
+      currentMatches: [],
+      isLoading: false,
+      isSearching: false
+    })).toEqual({ isIdSearch: true, id: '42' })
   })
 })

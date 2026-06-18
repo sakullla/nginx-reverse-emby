@@ -169,7 +169,7 @@ import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
 import { fetchTrafficSummary, fetchAllAgentsRules } from '../api'
-import { parseIdQuery, findRecordInAgents, findAllMatchesInAgents } from '../hooks/useIdSearch'
+import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import RuleForm from '../components/RuleForm.vue'
 import RuleCard from '../components/rules/RuleCard.vue'
@@ -279,9 +279,14 @@ const candidateModalVisible = ref(false)
 const candidateModalCandidates = ref([])
 const candidateModalId = ref('')
 
-watch(filteredRules, (result) => {
-  const idQuery = parseIdQuery(searchQuery.value)
-  if (!idQuery || result.length > 0 || _crossSearching.value) return
+watch([filteredRules, isLoading], ([result]) => {
+  const idQuery = shouldStartCrossAgentIdSearch({
+    search: searchQuery.value,
+    currentMatches: result,
+    isLoading: isLoading.value,
+    isSearching: _crossSearching.value
+  })
+  if (!idQuery) return
   const agentIds = allAgents.value.map(a => a.id)
   if (!agentIds.length) return
   _crossSearching.value = true

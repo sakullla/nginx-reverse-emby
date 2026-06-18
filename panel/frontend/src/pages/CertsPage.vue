@@ -140,7 +140,7 @@ import {
   isSystemRelayCA
 } from '../utils/certificateTemplates'
 import { fetchAllAgentsCertificates } from '../api'
-import { parseIdQuery, findRecordInAgents, findAllMatchesInAgents } from '../hooks/useIdSearch'
+import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 
 const route = useRoute()
@@ -201,9 +201,14 @@ const candidateModalVisible = ref(false)
 const candidateModalCandidates = ref([])
 const candidateModalId = ref('')
 
-watch(filteredCerts, (result) => {
-  const idQuery = parseIdQuery(searchQuery.value)
-  if (!idQuery || result.length > 0 || _crossSearching.value) return
+watch([filteredCerts, isLoading], ([result]) => {
+  const idQuery = shouldStartCrossAgentIdSearch({
+    search: searchQuery.value,
+    currentMatches: result,
+    isLoading: isLoading.value,
+    isSearching: _crossSearching.value
+  })
+  if (!idQuery) return
   const agentIds = allAgents.value.map(a => a.id)
   if (!agentIds.length) return
   _crossSearching.value = true
