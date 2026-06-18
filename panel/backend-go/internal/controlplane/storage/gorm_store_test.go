@@ -106,6 +106,27 @@ func TestNewStoreEnablesSQLiteWALForDefaultDSN(t *testing.T) {
 	if journalMode != "wal" {
 		t.Fatalf("journal_mode = %q, want wal", journalMode)
 	}
+	var synchronous int
+	if err := store.db.Raw("PRAGMA synchronous").Scan(&synchronous).Error; err != nil {
+		t.Fatalf("PRAGMA synchronous error = %v", err)
+	}
+	if synchronous != 1 {
+		t.Fatalf("synchronous = %d, want 1 (NORMAL)", synchronous)
+	}
+	var cacheSize int
+	if err := store.db.Raw("PRAGMA cache_size").Scan(&cacheSize).Error; err != nil {
+		t.Fatalf("PRAGMA cache_size error = %v", err)
+	}
+	if cacheSize != -65536 {
+		t.Fatalf("cache_size = %d, want -65536", cacheSize)
+	}
+	var tempStore int
+	if err := store.db.Raw("PRAGMA temp_store").Scan(&tempStore).Error; err != nil {
+		t.Fatalf("PRAGMA temp_store error = %v", err)
+	}
+	if tempStore != 2 {
+		t.Fatalf("temp_store = %d, want 2 (MEMORY)", tempStore)
+	}
 }
 
 func TestResolveDialectorAllowsSQLiteDSNWithoutDataRoot(t *testing.T) {
@@ -157,6 +178,25 @@ func TestNewStoreAppliesSQLiteLockPragmasToExplicitFileDSN(t *testing.T) {
 	if busyTimeout < 5000 {
 		t.Fatalf("busy_timeout = %d, want at least 5000", busyTimeout)
 	}
+	if store.writeDB != nil {
+		t.Fatal("writeDB is open before first write, want lazy writer connection")
+	}
+	if err := store.writeTransaction(t.Context(), func(tx *gorm.DB) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("writeTransaction() error = %v", err)
+	}
+	if store.writeDB == nil {
+		t.Fatal("writeDB is nil, want dedicated sqlite writer connection")
+	}
+	sqlDB, err := store.writeDB.DB()
+	if err != nil {
+		t.Fatalf("writeDB.DB() error = %v", err)
+	}
+	stats := sqlDB.Stats()
+	if stats.MaxOpenConnections != 1 {
+		t.Fatalf("writer MaxOpenConnections = %d, want 1", stats.MaxOpenConnections)
+	}
 }
 
 func TestWithSQLiteLockPragmasPreservesExistingQuery(t *testing.T) {
@@ -171,6 +211,15 @@ func TestWithSQLiteLockPragmasPreservesExistingQuery(t *testing.T) {
 	if !strings.Contains(got, "_pragma=busy_timeout(5000)") {
 		t.Fatalf("DSN = %q, want busy_timeout pragma", got)
 	}
+	if !strings.Contains(got, "_pragma=synchronous(NORMAL)") {
+		t.Fatalf("DSN = %q, want synchronous pragma", got)
+	}
+	if !strings.Contains(got, "_pragma=cache_size(-65536)") {
+		t.Fatalf("DSN = %q, want cache_size pragma", got)
+	}
+	if !strings.Contains(got, "_pragma=temp_store(MEMORY)") {
+		t.Fatalf("DSN = %q, want temp_store pragma", got)
+	}
 }
 
 func TestWithSQLiteLockPragmasIgnoresNonPragmaMatches(t *testing.T) {
@@ -182,6 +231,15 @@ func TestWithSQLiteLockPragmasIgnoresNonPragmaMatches(t *testing.T) {
 	if !strings.Contains(got, "_pragma=busy_timeout(5000)") {
 		t.Fatalf("DSN = %q, want busy_timeout pragma", got)
 	}
+	if !strings.Contains(got, "_pragma=synchronous(NORMAL)") {
+		t.Fatalf("DSN = %q, want synchronous pragma", got)
+	}
+	if !strings.Contains(got, "_pragma=cache_size(-65536)") {
+		t.Fatalf("DSN = %q, want cache_size pragma", got)
+	}
+	if !strings.Contains(got, "_pragma=temp_store(MEMORY)") {
+		t.Fatalf("DSN = %q, want temp_store pragma", got)
+	}
 }
 
 func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
@@ -190,6 +248,15 @@ func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
 	if strings.Contains(strings.ToLower(got), "journal_mode") {
 		t.Fatalf("DSN = %q, want no journal_mode pragma", got)
 	}
+	if strings.Contains(strings.ToLower(got), "synchronous") {
+		t.Fatalf("DSN = %q, want no synchronous pragma", got)
+	}
+	if strings.Contains(strings.ToLower(got), "cache_size") {
+		t.Fatalf("DSN = %q, want no cache_size pragma", got)
+	}
+	if strings.Contains(strings.ToLower(got), "temp_store") {
+		t.Fatalf("DSN = %q, want no temp_store pragma", got)
+	}
 	if !strings.Contains(got, "_pragma=busy_timeout(5000)") {
 		t.Fatalf("DSN = %q, want busy_timeout pragma", got)
 	}
@@ -197,8 +264,8 @@ func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
 
 func TestWithSQLiteLockPragmasPreservesExplicitLockPragmas(t *testing.T) {
 	for _, dsn := range []string{
-		"/tmp/panel.db?_pragma=journal_mode(TRUNCATE)&_pragma=busy_timeout(10000)",
-		"/tmp/panel.db?_pragma=journal_mode=DELETE&_pragma=busy_timeout=10000",
+		"/tmp/panel.db?_pragma=journal_mode(TRUNCATE)&_pragma=busy_timeout(10000)&_pragma=synchronous(FULL)&_pragma=cache_size(-1024)&_pragma=temp_store(FILE)",
+		"/tmp/panel.db?_pragma=journal_mode=DELETE&_pragma=busy_timeout=10000&_pragma=synchronous=FULL&_pragma=cache_size=-1024&_pragma=temp_store=FILE",
 	} {
 		t.Run(dsn, func(t *testing.T) {
 			if got := withSQLiteLockPragmas(dsn); got != dsn {
@@ -213,6 +280,35 @@ func TestWithSQLiteLockPragmasSkipsInMemoryDSN(t *testing.T) {
 		t.Run(dsn, func(t *testing.T) {
 			if got := withSQLiteLockPragmas(dsn); got != dsn {
 				t.Fatalf("DSN = %q, want %q", got, dsn)
+			}
+		})
+	}
+}
+
+func TestWithSQLiteWriterOptionsAddsImmediateTxLock(t *testing.T) {
+	got := withSQLiteWriterOptions("/tmp/panel.db?_pragma=journal_mode(WAL)")
+
+	if !strings.Contains(got, "/tmp/panel.db?_pragma=journal_mode(WAL)") {
+		t.Fatalf("DSN = %q, want original query preserved", got)
+	}
+	if !strings.Contains(got, "_txlock=immediate") {
+		t.Fatalf("DSN = %q, want immediate txlock", got)
+	}
+}
+
+func TestWithSQLiteWriterOptionsPreservesExplicitTxLock(t *testing.T) {
+	dsn := "/tmp/panel.db?_txlock=deferred"
+
+	if got := withSQLiteWriterOptions(dsn); got != dsn {
+		t.Fatalf("DSN = %q, want %q", got, dsn)
+	}
+}
+
+func TestWithSQLiteWriterOptionsSkipsReadOnlyAndInMemoryDSN(t *testing.T) {
+	for _, dsn := range []string{":memory:", "file::memory:?cache=shared", "file:/tmp/panel.db?mode=ro"} {
+		t.Run(dsn, func(t *testing.T) {
+			if got := withSQLiteWriterOptions(dsn); got != "" {
+				t.Fatalf("DSN = %q, want empty writer DSN", got)
 			}
 		})
 	}

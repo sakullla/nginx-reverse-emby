@@ -120,7 +120,7 @@ func saveTrafficPolicyTx(tx *gorm.DB, row AgentTrafficPolicyRow) error {
 func (s *GormStore) SaveTrafficPolicyAndRebuildMonthlySummaries(ctx context.Context, row AgentTrafficPolicyRow, rebuild bool, from, to time.Time, previousCycleStartDay int) error {
 	row.AgentID = s.resolveAgentID(row.AgentID)
 	normalizeTrafficPolicyRow(&row)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if err := saveTrafficPolicyTx(tx, row); err != nil {
 			return err
 		}
@@ -146,7 +146,7 @@ func (s *GormStore) ListTrafficPolicies(ctx context.Context) ([]AgentTrafficPoli
 }
 
 func (s *GormStore) ReplaceTrafficPolicies(ctx context.Context, rows []AgentTrafficPolicyRow) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if err := tx.Where("1 = 1").Delete(&AgentTrafficPolicyRow{}).Error; err != nil {
 			return err
 		}
@@ -252,7 +252,7 @@ func (s *GormStore) ListTrafficAgentIDs(ctx context.Context) ([]string, error) {
 }
 
 func (s *GormStore) ReplaceTrafficBaselines(ctx context.Context, rows []AgentTrafficBaselineRow) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if err := tx.Where("1 = 1").Delete(&AgentTrafficBaselineRow{}).Error; err != nil {
 			return err
 		}
@@ -349,7 +349,7 @@ func (s *GormStore) IngestTrafficCursorDeltasWithEvents(ctx context.Context, row
 		}
 	}()
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		policyCache := map[string]AgentTrafficPolicyRow{}
 		for i, row := range normalized {
 			result, err := ingestTrafficCursorDeltaTx(tx, row.Cursor, bucketStart, row.Event, policyCache)
@@ -395,27 +395,7 @@ func ingestTrafficCursorDeltaTx(tx *gorm.DB, cursor AgentTrafficRawCursorRow, bu
 	}
 	switch {
 	case previousLoaded || err == nil:
-		result.Previous = previous
-		result.FoundPrevious = true
-		bootChanged := isHostTrafficScope(cursor.ScopeType) && strings.TrimSpace(previous.BootID) != "" && strings.TrimSpace(cursor.BootID) != "" && previous.BootID != cursor.BootID
-		if bootChanged {
-			result.DeltaRXBytes = cursor.RXBytes
-			result.CounterReset = true
-		} else if cursor.RXBytes >= previous.RXBytes {
-			result.DeltaRXBytes = cursor.RXBytes - previous.RXBytes
-		} else {
-			result.DeltaRXBytes = cursor.RXBytes
-			result.CounterReset = true
-		}
-		if bootChanged {
-			result.DeltaTXBytes = cursor.TXBytes
-			result.CounterReset = true
-		} else if cursor.TXBytes >= previous.TXBytes {
-			result.DeltaTXBytes = cursor.TXBytes - previous.TXBytes
-		} else {
-			result.DeltaTXBytes = cursor.TXBytes
-			result.CounterReset = true
-		}
+		result = trafficCursorDeltaFromPrevious(cursor, previous)
 	case err == gorm.ErrRecordNotFound:
 		result.DeltaRXBytes = cursor.RXBytes
 		result.DeltaTXBytes = cursor.TXBytes
@@ -426,12 +406,18 @@ func ingestTrafficCursorDeltaTx(tx *gorm.DB, cursor AgentTrafficRawCursorRow, bu
 		seed := cursor
 		seed.RXBytes = 0
 		seed.TXBytes = 0
-		if err := tx.Create(&seed).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error; err != nil {
 			return result, err
 		}
-		previous = seed
-		result.Previous = seed
-		result.FoundPrevious = true
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("agent_id = ? AND scope_type = ? AND scope_id = ?", cursor.AgentID, cursor.ScopeType, cursor.ScopeID).
+			First(&previous).Error; err != nil {
+			return result, err
+		}
+		result = trafficCursorDeltaFromPrevious(cursor, previous)
+	}
+	if !result.FoundPrevious {
+		return result, fmt.Errorf("traffic cursor seed was not found after conflict")
 	}
 	if result.DeltaRXBytes > 0 || result.DeltaTXBytes > 0 {
 		if err := incrementTrafficBucketsTx(tx, TrafficDelta{
@@ -477,6 +463,33 @@ func ingestTrafficCursorDeltaTx(tx *gorm.DB, cursor AgentTrafficRawCursorRow, bu
 	return result, tx.Create(event).Error
 }
 
+func trafficCursorDeltaFromPrevious(cursor, previous AgentTrafficRawCursorRow) TrafficCursorDeltaResult {
+	result := TrafficCursorDeltaResult{
+		Previous:      previous,
+		FoundPrevious: true,
+	}
+	bootChanged := isHostTrafficScope(cursor.ScopeType) && strings.TrimSpace(previous.BootID) != "" && strings.TrimSpace(cursor.BootID) != "" && previous.BootID != cursor.BootID
+	if bootChanged {
+		result.DeltaRXBytes = cursor.RXBytes
+		result.CounterReset = true
+	} else if cursor.RXBytes >= previous.RXBytes {
+		result.DeltaRXBytes = cursor.RXBytes - previous.RXBytes
+	} else {
+		result.DeltaRXBytes = cursor.RXBytes
+		result.CounterReset = true
+	}
+	if bootChanged {
+		result.DeltaTXBytes = cursor.TXBytes
+		result.CounterReset = true
+	} else if cursor.TXBytes >= previous.TXBytes {
+		result.DeltaTXBytes = cursor.TXBytes - previous.TXBytes
+	} else {
+		result.DeltaTXBytes = cursor.TXBytes
+		result.CounterReset = true
+	}
+	return result
+}
+
 func isHostTrafficScope(scopeType string) bool {
 	return scopeType == "host_total" || scopeType == "host_interface"
 }
@@ -501,7 +514,7 @@ func (s *GormStore) IncrementTrafficBuckets(ctx context.Context, delta TrafficDe
 	if err != nil {
 		return err
 	}
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		return incrementTrafficBucketsTx(tx, delta, nil)
 	})
 }
@@ -792,7 +805,7 @@ func (s *GormStore) SaveTrafficEvent(ctx context.Context, row AgentTrafficEventR
 func (s *GormStore) DeleteTrafficBefore(ctx context.Context, agentID string, cutoff TrafficCleanupCutoff) (int64, error) {
 	agentID = s.resolveAgentID(agentID)
 	var deleted int64
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if !cutoff.HourlyBefore.IsZero() {
 			result := tx.Where("agent_id = ? AND bucket_start < ?", agentID, formatTrafficTime(cutoff.HourlyBefore.UTC())).
 				Delete(&AgentTrafficHourlyBucketRow{})
@@ -831,7 +844,7 @@ func (s *GormStore) DeleteTrafficByScope(ctx context.Context, agentID, scopeType
 	scopeID = strings.TrimSpace(scopeID)
 
 	var deleted int64
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		count, err := deleteTrafficRows(tx, trafficScopedDataModels(), "agent_id = ? AND scope_type = ? AND scope_id = ?", agentID, scopeType, scopeID)
 		if err != nil {
 			return err
@@ -845,7 +858,7 @@ func (s *GormStore) DeleteTrafficByScope(ctx context.Context, agentID, scopeType
 func (s *GormStore) DeleteTrafficByAgent(ctx context.Context, agentID string) (int64, error) {
 	agentID = s.resolveAgentID(agentID)
 	var deleted int64
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		count, err := s.deleteTrafficByAgentTx(tx, agentID)
 		if err != nil {
 			return err
@@ -859,7 +872,7 @@ func (s *GormStore) DeleteTrafficByAgent(ctx context.Context, agentID string) (i
 func (s *GormStore) DeleteTrafficBucketsByAgent(ctx context.Context, agentID string) (int64, error) {
 	agentID = s.resolveAgentID(agentID)
 	var deleted int64
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		count, err := deleteTrafficRows(tx, trafficScopedDataModels(), "agent_id = ?", agentID)
 		if err != nil {
 			return err
@@ -873,7 +886,7 @@ func (s *GormStore) DeleteTrafficBucketsByAgent(ctx context.Context, agentID str
 func (s *GormStore) DeleteTrafficBucketsByAgentInWindow(ctx context.Context, agentID string, from, to time.Time) (int64, error) {
 	agentID = s.resolveAgentID(agentID)
 	var deleted int64
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		count, err := deleteTrafficBucketRowsInWindow(tx, agentID, from, to)
 		if err != nil {
 			return err
@@ -886,7 +899,7 @@ func (s *GormStore) DeleteTrafficBucketsByAgentInWindow(ctx context.Context, age
 
 func (s *GormStore) RebuildTrafficMonthlySummaries(ctx context.Context, agentID string, from, to time.Time) error {
 	agentID = s.resolveAgentID(agentID)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		return rebuildTrafficMonthlySummariesTx(tx, agentID, from, to, 0)
 	})
 }
