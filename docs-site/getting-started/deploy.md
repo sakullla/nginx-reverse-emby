@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/sc
 脚本会优先推荐你配置域名和 Cloudflare API Token：
 
 - 已有域名且 DNS 已指向 VPS：输入面板域名，脚本会写入 `NRE_PUBLIC_URL=https://面板域名`，并自动创建 `https://面板域名 -> http://127.0.0.1:8080` 的面板自代理规则。
-- 使用 Cloudflare：建议创建 API Token，不要使用 Global API Key；权限给 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`，Zone Resources 只选择你的域名。
+- 使用 Cloudflare：建议创建 API Token，不要使用 Global API Key；权限给 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`，Zone Resources 只选择你的域名。填入 Token 后脚本会调用 Cloudflare API 在线校验它是否有效，失败时提示原因并允许重新粘贴（网络不可达时自动跳过）。
 - 暂时没有域名：脚本会提示 HTTP 风险，并生成 `NRE_PANEL_PUBLIC_PATH=/panel-随机字符串` 作为临时面板入口。随机路径不能替代 token 和 HTTPS，只适合临时部署。
 
 可选参数：
@@ -23,8 +23,12 @@ curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/sc
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | sh -s -- \
   --dir nginx-reverse-emby \
-  --public-url https://panel.example.com
+  --public-url https://panel.example.com \
+  --cf-token YOUR_CF_TOKEN \
+  --yes
 ```
+
+完整选项：`--dir`、`--image`、`--timezone`、`--public-url`、`--cf-token`、`--non-interactive`（关闭所有提问，用于 CI/cron）、`--yes`（跳过部署前确认）。等价环境变量：`API_TOKEN`、`MASTER_REGISTER_TOKEN`、`CF_TOKEN`、`ACME_DNS_PROVIDER`、`NRE_NONINTERACTIVE=1`。交互提问优先从 `/dev/tty` 读取，所以 `curl ... | sh` 仍能在 SSH 终端里正常弹出提问。
 
 ## 创建目录和下载配置
 

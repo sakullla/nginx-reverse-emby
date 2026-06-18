@@ -24,7 +24,16 @@ curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/sc
 ```
 
 脚本会创建目录、生成随机 token、拉取 `docker-compose.yaml` 并启动服务。
-如果系统还没有 Docker Compose，脚本会自动安装。脚本会优先引导你填写 Cloudflare API Token，用域名自动创建 `https://面板域名 -> http://127.0.0.1:8080` 的面板自代理规则并申请证书；Cloudflare Token 权限需要包含 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`。没有域名时会提示 HTTP 风险，临时监听 `0.0.0.0:8080` 并生成一个随机面板路径。
+如果系统还没有 Docker Compose，脚本会自动安装。脚本会优先引导你填写 Cloudflare API Token，用域名自动创建 `https://面板域名 -> http://127.0.0.1:8080` 的面板自代理规则并申请证书；Cloudflare Token 权限需要包含 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`。填入 Token 时脚本会调用 Cloudflare API 在线校验是否有效，校验失败会提示并允许重新粘贴。没有域名时会提示 HTTP 风险，临时监听 `0.0.0.0:8080` 并生成一个随机面板路径。
+
+非交互部署（CI / 已知所有参数）可跳过提问：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | \
+  sh -s -- --public-url https://panel.example.com --cf-token YOUR_CF_TOKEN --yes --non-interactive
+```
+
+也可改用环境变量 `API_TOKEN`、`MASTER_REGISTER_TOKEN`、`CF_TOKEN`、`NRE_NONINTERACTIVE=1` 达到同样效果。
 
 手动部署：
 
