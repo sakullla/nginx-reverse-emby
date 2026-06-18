@@ -214,34 +214,43 @@ func (s *GormStore) ListTrafficBaselines(ctx context.Context) ([]AgentTrafficBas
 
 func (s *GormStore) ListTrafficAgentIDs(ctx context.Context) ([]string, error) {
 	agentIDs := map[string]struct{}{}
-	collect := func(model any, column string) error {
-		if !s.db.Migrator().HasTable(model) {
-			return nil
-		}
-		var rows []string
-		if err := s.db.WithContext(ctx).Model(model).Distinct(column).Pluck(column, &rows).Error; err != nil {
-			return err
-		}
+	collect := func(rows []string) {
 		for _, row := range rows {
-			agentID := strings.TrimSpace(row)
-			if agentID != "" {
+			if agentID := strings.TrimSpace(row); agentID != "" {
 				agentIDs[agentID] = struct{}{}
 			}
 		}
-		return nil
+	}
+	if s.db.Migrator().HasTable(&AgentRow{}) {
+		var rows []string
+		if err := s.db.WithContext(ctx).Model(&AgentRow{}).Pluck("id", &rows).Error; err != nil {
+			return nil, err
+		}
+		collect(rows)
+	}
+	if s.db.Migrator().HasTable(&AgentTrafficRawCursorRow{}) {
+		var rows []string
+		if err := s.db.WithContext(ctx).Model(&AgentTrafficRawCursorRow{}).Distinct("agent_id").Pluck("agent_id", &rows).Error; err != nil {
+			return nil, err
+		}
+		collect(rows)
 	}
 	for _, source := range []struct {
 		model  any
 		column string
 	}{
-		{model: &AgentTrafficRawCursorRow{}, column: "agent_id"},
 		{model: &AgentTrafficHourlyBucketRow{}, column: "agent_id"},
 		{model: &AgentTrafficDailySummaryRow{}, column: "agent_id"},
 		{model: &AgentTrafficMonthlySummaryRow{}, column: "agent_id"},
 	} {
-		if err := collect(source.model, source.column); err != nil {
+		if !s.db.Migrator().HasTable(source.model) {
+			continue
+		}
+		var rows []string
+		if err := s.db.WithContext(ctx).Model(source.model).Distinct(source.column).Pluck(source.column, &rows).Error; err != nil {
 			return nil, err
 		}
+		collect(rows)
 	}
 	out := make([]string, 0, len(agentIDs))
 	for agentID := range agentIDs {

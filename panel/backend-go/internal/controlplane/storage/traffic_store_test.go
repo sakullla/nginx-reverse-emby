@@ -1471,6 +1471,71 @@ func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
 	assertTrafficAgentRows(t, store, "edge-2", 1)
 }
 
+func TestListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	if err := store.SaveAgent(ctx, AgentRow{ID: "agent-only"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "cursor-only",
+		ScopeType:  "http_rule",
+		ScopeID:    "11",
+		RXBytes:    100,
+		TXBytes:    200,
+		ObservedAt: bucket.Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+		AgentID:     "bucket-only",
+		ScopeType:   "http_rule",
+		ScopeID:     "11",
+		BucketStart: bucket,
+		RXBytes:     100,
+		TXBytes:     200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	agentIDs, err := store.ListTrafficAgentIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"agent-only", "bucket-only", "cursor-only"}
+	if strings.Join(agentIDs, ",") != strings.Join(want, ",") {
+		t.Fatalf("ListTrafficAgentIDs() = %+v, want %+v", agentIDs, want)
+	}
+}
+
+func TestListTrafficAgentIDsFallsBackToBucketsWhenFastSourcesAreEmpty(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+		AgentID:     "bucket-only",
+		ScopeType:   "http_rule",
+		ScopeID:     "11",
+		BucketStart: bucket,
+		RXBytes:     100,
+		TXBytes:     200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	agentIDs, err := store.ListTrafficAgentIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"bucket-only"}
+	if strings.Join(agentIDs, ",") != strings.Join(want, ",") {
+		t.Fatalf("ListTrafficAgentIDs() = %+v, want %+v", agentIDs, want)
+	}
+}
+
 func TestDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
 	store := newTrafficTestStore(t, false)
 	ctx := context.Background()
