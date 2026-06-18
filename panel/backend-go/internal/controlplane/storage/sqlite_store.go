@@ -635,24 +635,77 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 
 func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error {
 	normalizeAgentRow(&row)
+	var current AgentRow
+	if err := s.db.WithContext(ctx).
+		Select(
+			"id",
+			"version",
+			"platform",
+			"runtime_package_version",
+			"runtime_package_platform",
+			"runtime_package_arch",
+			"runtime_package_sha256",
+			"current_revision",
+			"last_apply_revision",
+			"last_apply_status",
+			"last_apply_message",
+			"last_reported_stats",
+			"last_seen_ip",
+		).
+		Where("id = ?", row.ID).
+		Limit(1).
+		Find(&current).Error; err != nil {
+		return err
+	}
+	if current.ID == "" {
+		return s.SaveAgent(ctx, row)
+	}
+	normalizeAgentRow(&current)
+
+	updates := map[string]any{
+		"last_seen_at": row.LastSeenAt,
+	}
+	if current.Version != row.Version {
+		updates["version"] = row.Version
+	}
+	if current.Platform != row.Platform {
+		updates["platform"] = row.Platform
+	}
+	if current.RuntimePackageVersion != row.RuntimePackageVersion {
+		updates["runtime_package_version"] = row.RuntimePackageVersion
+	}
+	if current.RuntimePackagePlatform != row.RuntimePackagePlatform {
+		updates["runtime_package_platform"] = row.RuntimePackagePlatform
+	}
+	if current.RuntimePackageArch != row.RuntimePackageArch {
+		updates["runtime_package_arch"] = row.RuntimePackageArch
+	}
+	if current.RuntimePackageSHA256 != row.RuntimePackageSHA256 {
+		updates["runtime_package_sha256"] = row.RuntimePackageSHA256
+	}
+	if current.CurrentRevision != row.CurrentRevision {
+		updates["current_revision"] = row.CurrentRevision
+	}
+	if current.LastApplyRevision != row.LastApplyRevision {
+		updates["last_apply_revision"] = row.LastApplyRevision
+	}
+	if current.LastApplyStatus != row.LastApplyStatus {
+		updates["last_apply_status"] = row.LastApplyStatus
+	}
+	if current.LastApplyMessage != row.LastApplyMessage {
+		updates["last_apply_message"] = row.LastApplyMessage
+	}
+	if current.LastReportedStatsJSON != row.LastReportedStatsJSON {
+		updates["last_reported_stats"] = row.LastReportedStatsJSON
+	}
+	if current.LastSeenIP != row.LastSeenIP {
+		updates["last_seen_ip"] = row.LastSeenIP
+	}
+
 	return s.db.WithContext(ctx).
 		Model(&AgentRow{}).
 		Where("id = ?", row.ID).
-		Updates(map[string]any{
-			"version":                  row.Version,
-			"platform":                 row.Platform,
-			"runtime_package_version":  row.RuntimePackageVersion,
-			"runtime_package_platform": row.RuntimePackagePlatform,
-			"runtime_package_arch":     row.RuntimePackageArch,
-			"runtime_package_sha256":   row.RuntimePackageSHA256,
-			"current_revision":         row.CurrentRevision,
-			"last_apply_revision":      row.LastApplyRevision,
-			"last_apply_status":        row.LastApplyStatus,
-			"last_apply_message":       row.LastApplyMessage,
-			"last_reported_stats":      row.LastReportedStatsJSON,
-			"last_seen_at":             row.LastSeenAt,
-			"last_seen_ip":             row.LastSeenIP,
-		}).Error
+		Updates(updates).Error
 }
 
 func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {

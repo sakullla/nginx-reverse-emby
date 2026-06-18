@@ -6541,6 +6541,61 @@ func TestStoreLoadAgentSnapshotIncludesEnabledWireGuardProfilesWithRawSecrets(t 
 	}
 }
 
+func TestCleanupSQLiteLegacyLocalAgentStateSkipsDeleteWhenNoLegacyRows(t *testing.T) {
+	db := openTrafficTestGormDB(t)
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+
+	var deleteCount int
+	callbackName := "test:count_legacy_local_agent_state_cleanup_delete"
+	if err := db.Callback().Raw().Before("gorm:raw").Register(callbackName, func(tx *gorm.DB) {
+		if strings.Contains(tx.Statement.SQL.String(), "DELETE FROM local_agent_state WHERE id <> 1") {
+			deleteCount++
+		}
+	}); err != nil {
+		t.Fatalf("register raw callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Raw().Remove(callbackName)
+	})
+
+	if err := cleanupSQLiteLegacyLocalAgentState(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	if deleteCount != 0 {
+		t.Fatalf("legacy local_agent_state cleanup delete count = %d, want 0", deleteCount)
+	}
+}
+
+func TestBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
+	db := openTrafficTestGormDB(t)
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+
+	var updateCount int
+	callbackName := "test:count_agent_default_normalization_updates"
+	if err := db.Callback().Raw().Before("gorm:raw").Register(callbackName, func(tx *gorm.DB) {
+		sql := tx.Statement.SQL.String()
+		if strings.HasPrefix(sql, "UPDATE agents SET ") && strings.Contains(sql, " IS NULL") {
+			updateCount++
+		}
+	}); err != nil {
+		t.Fatalf("register raw callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Raw().Remove(callbackName)
+	})
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	if updateCount != 0 {
+		t.Fatalf("repeated agent default normalization updates = %d, want 0", updateCount)
+	}
+}
+
 func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -6808,6 +6863,57 @@ func TestSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T)
 	}
 	if got.Version != "1.2.3" || got.CurrentRevision != 8 || got.LastApplyStatus != "error" || got.LastReportedStatsJSON == "" || got.LastSeenIP != "10.0.0.1" {
 		t.Fatalf("heartbeat fields not updated: %+v", got)
+	}
+}
+
+func TestSaveAgentHeartbeatOnlyUpdatesChangedColumns(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	row := AgentRow{
+		ID:                     "edge-heartbeat",
+		Name:                   "edge",
+		AgentToken:             "token",
+		Version:                "1.2.3",
+		Platform:               "linux-amd64",
+		RuntimePackageVersion:  "1",
+		RuntimePackagePlatform: "linux",
+		RuntimePackageArch:     "amd64",
+		RuntimePackageSHA256:   "sha256",
+		CurrentRevision:        8,
+		LastApplyRevision:      8,
+		LastApplyStatus:        "success",
+		LastReportedStatsJSON:  `{}`,
+		LastSeenAt:             "2026-06-18T16:00:00Z",
+		LastSeenIP:             "10.0.0.1",
+	}
+	if err := store.SaveAgent(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+
+	var updateSQL string
+	callbackName := "test:capture_agent_heartbeat_update"
+	if err := store.db.Callback().Update().After("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "agents" {
+			updateSQL = tx.Statement.SQL.String()
+		}
+	}); err != nil {
+		t.Fatalf("register update callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.db.Callback().Update().Remove(callbackName)
+	})
+
+	row.LastSeenAt = "2026-06-18T16:00:30Z"
+	if err := store.SaveAgentHeartbeat(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(updateSQL, "`last_seen_at`") {
+		t.Fatalf("heartbeat update SQL = %q, want last_seen_at", updateSQL)
+	}
+	for _, column := range []string{"`version`", "`platform`", "`runtime_package_version`", "`current_revision`", "`last_apply_status`", "`last_reported_stats`"} {
+		if strings.Contains(updateSQL, column) {
+			t.Fatalf("heartbeat update SQL = %q, unexpectedly updated unchanged column %s", updateSQL, column)
+		}
 	}
 }
 

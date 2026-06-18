@@ -228,26 +228,9 @@ func (s *GormStore) ListTrafficAgentIDs(ctx context.Context) ([]string, error) {
 		}
 		collect(rows)
 	}
-	if s.db.Migrator().HasTable(&AgentTrafficRawCursorRow{}) {
+	if s.db.Migrator().HasTable(&AgentTrafficAgentRow{}) {
 		var rows []string
-		if err := s.db.WithContext(ctx).Model(&AgentTrafficRawCursorRow{}).Distinct("agent_id").Pluck("agent_id", &rows).Error; err != nil {
-			return nil, err
-		}
-		collect(rows)
-	}
-	for _, source := range []struct {
-		model  any
-		column string
-	}{
-		{model: &AgentTrafficHourlyBucketRow{}, column: "agent_id"},
-		{model: &AgentTrafficDailySummaryRow{}, column: "agent_id"},
-		{model: &AgentTrafficMonthlySummaryRow{}, column: "agent_id"},
-	} {
-		if !s.db.Migrator().HasTable(source.model) {
-			continue
-		}
-		var rows []string
-		if err := s.db.WithContext(ctx).Model(source.model).Distinct(source.column).Pluck(source.column, &rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Model(&AgentTrafficAgentRow{}).Pluck("agent_id", &rows).Error; err != nil {
 			return nil, err
 		}
 		collect(rows)
@@ -302,9 +285,12 @@ func (s *GormStore) SaveTrafficCursor(ctx context.Context, row AgentTrafficRawCu
 	if err != nil {
 		return err
 	}
-	return s.db.WithContext(ctx).
-		Clauses(clause.OnConflict{UpdateAll: true}).
-		Create(&row).Error
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := ensureTrafficAgentTx(tx, row.AgentID, ""); err != nil {
+			return err
+		}
+		return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error
+	})
 }
 
 func (s *GormStore) IngestTrafficCursorDelta(ctx context.Context, cursor AgentTrafficRawCursorRow, bucketStart time.Time) (TrafficCursorDeltaResult, error) {
@@ -381,6 +367,9 @@ func ingestTrafficCursorDeltaTx(tx *gorm.DB, cursor AgentTrafficRawCursorRow, bu
 	if cursor.ObservedAt == "" {
 		cursor.ObservedAt = formatTrafficTime(bucketStart.UTC())
 	}
+	if err := ensureTrafficAgentTx(tx, cursor.AgentID, cursor.ObservedAt); err != nil {
+		return TrafficCursorDeltaResult{}, err
+	}
 
 	var result TrafficCursorDeltaResult
 	var previous AgentTrafficRawCursorRow
@@ -446,7 +435,7 @@ func ingestTrafficCursorDeltaTx(tx *gorm.DB, cursor AgentTrafficRawCursorRow, bu
 	if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&cursor).Error; err != nil {
 		return result, err
 	}
-	if event == nil || !result.CounterReset {
+	if event == nil || !result.CounterReset || isNoisyHostCounterRollback(cursor, result.Previous) {
 		return result, nil
 	}
 	if event.EventType == "" {
@@ -470,6 +459,13 @@ func ingestTrafficCursorDeltaTx(tx *gorm.DB, cursor AgentTrafficRawCursorRow, bu
 		event.CreatedAt = nowTrafficTimestamp()
 	}
 	return result, tx.Create(event).Error
+}
+
+func isNoisyHostCounterRollback(cursor, previous AgentTrafficRawCursorRow) bool {
+	return isHostTrafficScope(cursor.ScopeType) &&
+		strings.TrimSpace(cursor.BootID) != "" &&
+		previous.BootID == cursor.BootID &&
+		(cursor.RXBytes < previous.RXBytes || cursor.TXBytes < previous.TXBytes)
 }
 
 func trafficCursorDeltaFromPrevious(cursor, previous AgentTrafficRawCursorRow) TrafficCursorDeltaResult {
@@ -531,6 +527,9 @@ func (s *GormStore) IncrementTrafficBuckets(ctx context.Context, delta TrafficDe
 func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta, policyCache map[string]AgentTrafficPolicyRow) error {
 	bucketStart := delta.BucketStart
 	now := nowTrafficTimestamp()
+	if err := ensureTrafficAgentTx(tx, delta.AgentID, now); err != nil {
+		return err
+	}
 
 	if err := incrementTrafficHourlyBucket(tx, AgentTrafficHourlyBucketRow{
 		AgentID:     delta.AgentID,
@@ -944,6 +943,7 @@ func trafficScopedDataModels() []any {
 
 func trafficAgentDataModels() []any {
 	return []any{
+		&AgentTrafficAgentRow{},
 		&AgentTrafficPolicyRow{},
 		&AgentTrafficBaselineRow{},
 		&AgentTrafficRawCursorRow{},
@@ -952,6 +952,29 @@ func trafficAgentDataModels() []any {
 		&AgentTrafficMonthlySummaryRow{},
 		&AgentTrafficEventRow{},
 	}
+}
+
+func ensureTrafficAgentTx(tx *gorm.DB, agentID, observedAt string) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil
+	}
+	now := strings.TrimSpace(observedAt)
+	if now == "" {
+		now = nowTrafficTimestamp()
+	}
+	return tx.
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "agent_id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"updated_at": now,
+			}),
+		}).
+		Create(&AgentTrafficAgentRow{
+			AgentID:   agentID,
+			UpdatedAt: now,
+			CreatedAt: now,
+		}).Error
 }
 
 func deleteTrafficRows(tx *gorm.DB, models []any, query string, args ...any) (int64, error) {
