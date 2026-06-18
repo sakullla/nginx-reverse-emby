@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func TestTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
@@ -1746,6 +1748,44 @@ func TestIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
 	}
 }
 
+func TestIngestTrafficCursorDeltasWithEventsSerializesConcurrentSQLiteWriters(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	start := make(chan struct{})
+	errs := make(chan error, 8)
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			agentID := fmt.Sprintf("edge-%d", i)
+			_, err := store.IngestTrafficCursorDeltasWithEvents(ctx, []TrafficCursorIngestRow{{
+				Cursor: AgentTrafficRawCursorRow{
+					AgentID:    agentID,
+					ScopeType:  "host_total",
+					RXBytes:    uint64(100 + i),
+					TXBytes:    uint64(50 + i),
+					BootID:     "boot-a",
+					ObservedAt: observedAt.Format(time.RFC3339),
+				},
+			}}, observedAt)
+			errs <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1791,6 +1831,136 @@ func TestIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].RXBytes != 100 || rows[0].TXBytes != 50 {
 		t.Fatalf("rows = %+v, want single first-ingest delta", rows)
+	}
+}
+
+func TestIngestTrafficCursorDeltaConcurrentFirstIngestIsIdempotentAcrossStores(t *testing.T) {
+	dataRoot := t.TempDir()
+	storeA, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            dataRoot,
+		LocalAgentID:        "local",
+		TrafficStatsEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore(storeA) error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := storeA.Close(); err != nil {
+			t.Fatalf("storeA.Close() error = %v", err)
+		}
+	})
+	storeB, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            dataRoot,
+		LocalAgentID:        "local",
+		TrafficStatsEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore(storeB) error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := storeB.Close(); err != nil {
+			t.Fatalf("storeB.Close() error = %v", err)
+		}
+	})
+
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 4, 9, 0, 0, 0, time.UTC)
+	cursor := AgentTrafficRawCursorRow{
+		AgentID:    "edge-2",
+		ScopeType:  "http_rule",
+		ScopeID:    "11",
+		RXBytes:    100,
+		TXBytes:    50,
+		ObservedAt: observedAt.Format(time.RFC3339),
+	}
+
+	if err := storeA.writeTransaction(ctx, func(tx *gorm.DB) error {
+		seed := cursor
+		seed.RXBytes = 0
+		seed.TXBytes = 0
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error
+	}); err != nil {
+		t.Fatalf("storeA seed error = %v", err)
+	}
+
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, store := range []*GormStore{storeA, storeB} {
+		wg.Add(1)
+		go func(store *GormStore) {
+			defer wg.Done()
+			<-start
+			_, err := store.IngestTrafficCursorDelta(ctx, cursor, observedAt)
+			errs <- err
+		}(store)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := storeA.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-2",
+		ScopeType:   "http_rule",
+		ScopeID:     "11",
+		Granularity: "hour",
+		From:        observedAt,
+		To:          observedAt.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].RXBytes != 100 || rows[0].TXBytes != 50 {
+		t.Fatalf("rows = %+v, want single first-ingest delta", rows)
+	}
+}
+
+func TestIngestTrafficCursorDeltaFirstIngestReloadsSeedBeforeCounting(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 5, 10, 0, 0, 0, time.UTC)
+	cursor := AgentTrafficRawCursorRow{
+		AgentID:    "edge-3",
+		ScopeType:  "http_rule",
+		ScopeID:    "12",
+		RXBytes:    100,
+		TXBytes:    50,
+		ObservedAt: observedAt.Format(time.RFC3339),
+	}
+
+	if err := store.writeTransaction(ctx, func(tx *gorm.DB) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	const callbackName = "test:rewrite_traffic_cursor_seed"
+	if err := store.writeDB.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		row, ok := tx.Statement.Dest.(*AgentTrafficRawCursorRow)
+		if !ok || row.AgentID != cursor.AgentID || row.ScopeType != cursor.ScopeType || row.ScopeID != cursor.ScopeID {
+			return
+		}
+		if row.RXBytes == 0 && row.TXBytes == 0 {
+			row.RXBytes = 80
+			row.TXBytes = 40
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.writeDB.Callback().Create().Remove(callbackName)
+	})
+
+	result, err := store.IngestTrafficCursorDelta(ctx, cursor, observedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DeltaRXBytes != 20 || result.DeltaTXBytes != 10 {
+		t.Fatalf("result = %+v, want delta from reloaded seed", result)
 	}
 }
 
