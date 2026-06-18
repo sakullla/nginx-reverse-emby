@@ -168,6 +168,44 @@ func TestTrafficServiceIngestHeartbeatParsesCurrentStatsShape(t *testing.T) {
 	assertBucket("relay_listener", "33", 130, 140)
 }
 
+func TestTrafficServiceIngestHeartbeatUsesBatchIngestWithRealStore(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return fixedNow }}, store)
+	stats := AgentStats{"traffic": map[string]any{
+		"total": map[string]any{"rx_bytes": uint64(10), "tx_bytes": uint64(20)},
+		"http":  map[string]uint64{"rx_bytes": 30, "tx_bytes": 40},
+	}}
+
+	if err := svc.IngestHeartbeat(context.Background(), "edge-1", stats); err != nil {
+		t.Fatal(err)
+	}
+
+	agentRows, err := store.ListTrafficTrend(context.Background(), storage.TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        fixedNow.Truncate(time.Hour),
+		To:          fixedNow.Truncate(time.Hour).Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRows, err := store.ListTrafficTrend(context.Background(), storage.TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "http",
+		Granularity: "hour",
+		From:        fixedNow.Truncate(time.Hour),
+		To:          fixedNow.Truncate(time.Hour).Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agentRows) != 1 || agentRows[0].RXBytes != 10 || len(httpRows) != 1 || httpRows[0].RXBytes != 30 {
+		t.Fatalf("agentRows = %+v httpRows = %+v, want batch ingest buckets", agentRows, httpRows)
+	}
+}
+
 func TestTrafficServiceIngestHeartbeatIgnoresDeletedScopedTraffic(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)

@@ -1575,6 +1575,42 @@ func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestIngestTrafficCursorDeltaSkipsCursorWriteWhenCountersUnchanged(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	firstObservedAt := observedAt.Format(time.RFC3339)
+
+	if _, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "host_total",
+		RXBytes:    100,
+		TXBytes:    50,
+		BootID:     "boot-a",
+		ObservedAt: firstObservedAt,
+	}, observedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "host_total",
+		RXBytes:    100,
+		TXBytes:    50,
+		BootID:     "boot-a",
+		ObservedAt: observedAt.Add(time.Minute).Format(time.RFC3339),
+	}, observedAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	cursor, found, err := store.GetTrafficCursor(ctx, "edge-1", "host_total", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || cursor.ObservedAt != firstObservedAt {
+		t.Fatalf("cursor found=%v row=%+v, want unchanged observed_at %q", found, cursor, firstObservedAt)
+	}
+}
+
 func TestIngestTrafficCursorDeltaHostFirstSampleSeedsBaselineOnly(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1654,6 +1690,59 @@ func TestIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
 	}
 	if !found || cursor.BootID != "boot-b" {
 		t.Fatalf("cursor found=%v row=%+v, want boot-b", found, cursor)
+	}
+}
+
+func TestIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	results, err := store.IngestTrafficCursorDeltasWithEvents(ctx, []TrafficCursorIngestRow{
+		{Cursor: AgentTrafficRawCursorRow{
+			AgentID:    "edge-1",
+			ScopeType:  "agent_total",
+			RXBytes:    100,
+			TXBytes:    50,
+			ObservedAt: observedAt.Format(time.RFC3339),
+		}},
+		{Cursor: AgentTrafficRawCursorRow{
+			AgentID:    "edge-1",
+			ScopeType:  "http",
+			RXBytes:    40,
+			TXBytes:    20,
+			ObservedAt: observedAt.Format(time.RFC3339),
+		}},
+	}, observedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].DeltaRXBytes != 100 || results[1].DeltaRXBytes != 40 {
+		t.Fatalf("results = %+v", results)
+	}
+
+	agentRows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        observedAt,
+		To:          observedAt.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "http",
+		Granularity: "hour",
+		From:        observedAt,
+		To:          observedAt.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agentRows) != 1 || agentRows[0].RXBytes != 100 || len(httpRows) != 1 || httpRows[0].RXBytes != 40 {
+		t.Fatalf("agentRows = %+v httpRows = %+v, want batch deltas", agentRows, httpRows)
 	}
 }
 
