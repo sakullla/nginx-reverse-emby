@@ -212,35 +212,26 @@ install_docker_compose() {
         return
     fi
 
-    if command -v apt-get >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
         say "使用官方 Docker 安装脚本安装 Docker 与 Compose 插件"
         ensure_packages curl
         ensure_ca_certificates
-        if curl -fsSL https://get.docker.com -o /tmp/nre-get-docker.sh && run_as_root sh /tmp/nre-get-docker.sh; then
-            :
+        get_docker_sh="${TMPDIR:-/tmp}/nre-get-docker.$$"
+        if curl -fsSL https://get.docker.com -o "$get_docker_sh" && run_as_root sh "$get_docker_sh"; then
+            rm -f "$get_docker_sh"
         else
-            warn "官方安装脚本失败，改用静态 Docker CLI 与 Compose 插件后备安装。"
-            install_static_docker_client
-        fi
-    elif command -v dnf >/dev/null 2>&1; then
-        say "使用官方 Docker 安装脚本安装 Docker 与 Compose 插件"
-        ensure_packages curl
-        ensure_ca_certificates
-        if curl -fsSL https://get.docker.com -o /tmp/nre-get-docker.sh && run_as_root sh /tmp/nre-get-docker.sh; then
-            :
-        else
-            warn "官方安装脚本失败，改用 dnf 安装 Docker 客户端与 Compose 插件。"
-            run_as_root dnf install -y docker-cli docker-compose-plugin || install_static_docker_client
-        fi
-    elif command -v yum >/dev/null 2>&1; then
-        say "使用官方 Docker 安装脚本安装 Docker 与 Compose 插件"
-        ensure_packages curl
-        ensure_ca_certificates
-        if curl -fsSL https://get.docker.com -o /tmp/nre-get-docker.sh && run_as_root sh /tmp/nre-get-docker.sh; then
-            :
-        else
-            warn "官方安装脚本失败，改用 yum 安装 Docker 客户端与 Compose 插件。"
-            run_as_root yum install -y docker-cli docker-compose-plugin || install_static_docker_client
+            rm -f "$get_docker_sh"
+            # 官方脚本失败时：RPM 系优先用包管理器补装客户端，其余回退到静态二进制。
+            if command -v dnf >/dev/null 2>&1; then
+                warn "官方安装脚本失败，改用 dnf 安装 Docker 客户端与 Compose 插件。"
+                run_as_root dnf install -y docker-cli docker-compose-plugin || install_static_docker_client
+            elif command -v yum >/dev/null 2>&1; then
+                warn "官方安装脚本失败，改用 yum 安装 Docker 客户端与 Compose 插件。"
+                run_as_root yum install -y docker-cli docker-compose-plugin || install_static_docker_client
+            else
+                warn "官方安装脚本失败，改用静态 Docker CLI 与 Compose 插件后备安装。"
+                install_static_docker_client
+            fi
         fi
     elif command -v apk >/dev/null 2>&1; then
         say "使用 apk 安装 Docker CLI 与 Compose 插件"
