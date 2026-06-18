@@ -53,6 +53,15 @@ func TestStoreLoadsAgentsAndRulesFromGORMSeededSQLite(t *testing.T) {
 	}
 }
 
+func TestLoadAgentConfigForSnapshotMissingAgentReturnsFalse(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+
+	config, ok := store.loadAgentConfigForSnapshot(t.Context(), "missing-agent")
+	if ok {
+		t.Fatalf("loadAgentConfigForSnapshot() = %+v, true; want false", config)
+	}
+}
+
 func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *testing.T) {
 	dataRoot := t.TempDir()
 
@@ -6712,6 +6721,93 @@ func TestStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
 	}
 	if runtimeState.Metadata["stats"] != `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}` {
 		t.Fatalf("LoadLocalRuntimeState() metadata = %+v", runtimeState.Metadata)
+	}
+}
+
+func TestStoreSaveLocalRuntimeStateSkipsUnchangedWrite(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	runtimeState := RuntimeState{
+		CurrentRevision: 9,
+		Status:          "active",
+		Metadata: map[string]string{
+			"stats": `{"status":"running"}`,
+		},
+	}
+
+	if err := store.SaveLocalRuntimeState(t.Context(), "local", runtimeState); err != nil {
+		t.Fatalf("SaveLocalRuntimeState(first) error = %v", err)
+	}
+
+	var createCount int
+	callbackName := "test:count_unchanged_local_runtime_state_writes"
+	if err := store.db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		switch tx.Statement.Table {
+		case "local_agent_state", "meta":
+			createCount++
+		}
+	}); err != nil {
+		t.Fatalf("register create callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.db.Callback().Create().Remove(callbackName)
+	})
+
+	if err := store.SaveLocalRuntimeState(t.Context(), "local", runtimeState); err != nil {
+		t.Fatalf("SaveLocalRuntimeState(second) error = %v", err)
+	}
+	if createCount != 0 {
+		t.Fatalf("unchanged SaveLocalRuntimeState writes = %d, want 0", createCount)
+	}
+}
+
+func TestSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	if err := store.SaveAgent(ctx, AgentRow{
+		ID:              "edge-heartbeat",
+		Name:            "edge",
+		AgentToken:      "token",
+		DesiredRevision: 7,
+		CurrentRevision: 6,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SaveAgentHeartbeat(ctx, AgentRow{
+		ID:                    "edge-heartbeat",
+		Name:                  "changed-name",
+		AgentToken:            "changed-token",
+		Version:               "1.2.3",
+		Platform:              "linux-amd64",
+		DesiredRevision:       99,
+		CurrentRevision:       8,
+		LastApplyRevision:     8,
+		LastApplyStatus:       "error",
+		LastApplyMessage:      "apply failed",
+		LastReportedStatsJSON: `{"status":"running"}`,
+		LastSeenAt:            "2026-06-18T16:00:00Z",
+		LastSeenIP:            "10.0.0.1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got AgentRow
+	for _, row := range agents {
+		if row.ID == "edge-heartbeat" {
+			got = row
+			break
+		}
+	}
+	if got.Name != "edge" || got.AgentToken != "token" || got.DesiredRevision != 7 {
+		t.Fatalf("config fields overwritten: %+v", got)
+	}
+	if got.Version != "1.2.3" || got.CurrentRevision != 8 || got.LastApplyStatus != "error" || got.LastReportedStatsJSON == "" || got.LastSeenIP != "10.0.0.1" {
+		t.Fatalf("heartbeat fields not updated: %+v", got)
 	}
 }
 

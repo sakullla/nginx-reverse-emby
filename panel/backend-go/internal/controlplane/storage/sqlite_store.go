@@ -89,17 +89,17 @@ func (s *GormStore) GetAgentTrafficState(ctx context.Context, agentID string) (b
 		return false, "", false, nil
 	}
 	var row AgentRow
-	err := s.db.WithContext(ctx).
+	if err := s.db.WithContext(ctx).
 		Select("id", "traffic_blocked", "traffic_block_reason").
 		Where("id = ?", agentID).
-		First(&row).Error
-	if err == nil {
-		return row.TrafficBlocked, defaultString(row.TrafficBlockReason, ""), true, nil
+		Limit(1).
+		Find(&row).Error; err != nil {
+		return false, "", false, err
 	}
-	if err == gorm.ErrRecordNotFound {
+	if row.ID == "" {
 		return false, "", false, nil
 	}
-	return false, "", false, err
+	return row.TrafficBlocked, defaultString(row.TrafficBlockReason, ""), true, nil
 }
 
 func (s *GormStore) SaveAgentTrafficState(ctx context.Context, agentID string, blocked bool, reason string) error {
@@ -344,11 +344,14 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 
 func (s *GormStore) loadAgentConfigForSnapshot(ctx context.Context, agentID string) (AgentConfig, bool) {
 	var row AgentRow
-	err := s.db.WithContext(ctx).
+	if err := s.db.WithContext(ctx).
 		Select("id", "outbound_proxy_url", "traffic_stats_interval", "traffic_blocked", "traffic_block_reason").
 		Where("id = ?", agentID).
-		First(&row).Error
-	if err != nil {
+		Limit(1).
+		Find(&row).Error; err != nil {
+		return AgentConfig{}, false
+	}
+	if row.ID == "" {
 		return AgentConfig{}, false
 	}
 	normalizeAgentRow(&row)
@@ -572,6 +575,20 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 	if err != nil {
 		return err
 	}
+	stateJSONString := string(stateJSON)
+	if localAgentStateRowsEqual(currentState, row) {
+		var existingMeta MetaRow
+		err := s.db.WithContext(ctx).
+			Where("key = ?", localRuntimeStateMetaKey).
+			Limit(1).
+			Find(&existingMeta).Error
+		if err != nil {
+			return err
+		}
+		if existingMeta.Key == localRuntimeStateMetaKey && strings.TrimSpace(existingMeta.Value) == stateJSONString {
+			return nil
+		}
+	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.
@@ -589,9 +606,21 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 			}).
 			Create(&MetaRow{
 				Key:   localRuntimeStateMetaKey,
-				Value: string(stateJSON),
+				Value: stateJSONString,
 			}).Error
 	})
+}
+
+func localAgentStateRowsEqual(a, b LocalAgentStateRow) bool {
+	normalizeLocalAgentStateRow(&a)
+	normalizeLocalAgentStateRow(&b)
+	return a.ID == b.ID &&
+		a.DesiredRevision == b.DesiredRevision &&
+		a.CurrentRevision == b.CurrentRevision &&
+		a.LastApplyRevision == b.LastApplyRevision &&
+		a.LastApplyStatus == b.LastApplyStatus &&
+		a.LastApplyMessage == b.LastApplyMessage &&
+		a.DesiredVersion == b.DesiredVersion
 }
 
 func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
@@ -602,6 +631,28 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 			UpdateAll: true,
 		}).
 		Create(&row).Error
+}
+
+func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error {
+	normalizeAgentRow(&row)
+	return s.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ?", row.ID).
+		Updates(map[string]any{
+			"version":                  row.Version,
+			"platform":                 row.Platform,
+			"runtime_package_version":  row.RuntimePackageVersion,
+			"runtime_package_platform": row.RuntimePackagePlatform,
+			"runtime_package_arch":     row.RuntimePackageArch,
+			"runtime_package_sha256":   row.RuntimePackageSHA256,
+			"current_revision":         row.CurrentRevision,
+			"last_apply_revision":      row.LastApplyRevision,
+			"last_apply_status":        row.LastApplyStatus,
+			"last_apply_message":       row.LastApplyMessage,
+			"last_reported_stats":      row.LastReportedStatsJSON,
+			"last_seen_at":             row.LastSeenAt,
+			"last_seen_ip":             row.LastSeenIP,
+		}).Error
 }
 
 func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
