@@ -781,7 +781,25 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		}
 		issuedMaterial, err := resolveManagedCertificateIssueMaterial(current, issueResult)
 		if err != nil {
-			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
+			// Re-read before recording a post-order validation failure for the same
+			// reason as issuer errors above: the certificate may have been deleted or
+			// edited while ACME was in flight.
+			persistRows, persistErr := s.store.ListManagedCertificates(ctx)
+			if persistErr != nil {
+				return ManagedCertificate{}, persistErr
+			}
+			persistCert, persistIndex, persistFound := findManagedCertificateByID(persistRows, current.ID)
+			if !persistFound {
+				return ManagedCertificate{}, err
+			}
+			if persistCert.Domain != current.Domain || !managedCertificateEligibleForBackgroundIssue(persistCert) {
+				if persistCert.Status == "issuing" && managedCertificateEligibleForBackgroundIssue(persistCert) && attempt == 0 {
+					rows, targetIndex, current, maxRevision = persistRows, persistIndex, persistCert, highestManagedCertificateRevisionForService(persistRows)
+					continue
+				}
+				return persistCert, nil
+			}
+			return s.failManagedCertificateIssue(ctx, persistRows, persistIndex, persistCert, highestManagedCertificateRevisionForService(persistRows), err, false)
 		}
 
 		// Revalidate the certificate row after the (potentially long) ACME order before

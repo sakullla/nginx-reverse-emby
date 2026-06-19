@@ -3954,6 +3954,108 @@ func TestManagedCertificateAsyncSignerRestartsWhenStaleOrderFails(t *testing.T) 
 	}
 }
 
+func TestManagedCertificateAsyncSignerDoesNotPersistStaleMaterialValidationFailure(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              54,
+			Domain:          "deleted-invalid-material.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			54: {
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: "",
+					KeyPEM:  "",
+				},
+			},
+		},
+		onIssue: func(ManagedCertificate) {
+			store.managedCerts = nil
+		},
+	}
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 54); err == nil {
+		t.Fatal("expected signer error for invalid material")
+	}
+	if len(store.managedCerts) != 0 {
+		t.Fatalf("deleted certificate was restored: %+v", store.managedCerts)
+	}
+}
+
+func TestManagedCertificateAsyncSignerRestartsWhenStaleMaterialValidationFails(t *testing.T) {
+	now := time.Date(2026, 4, 11, 6, 7, 8, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "updated-invalid-material.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              55,
+			Domain:          "old-invalid-material.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			55: {
+				Material: storage.ManagedCertificateBundle{},
+			},
+		},
+	}
+	issueDomains := []string{}
+	issuer.onIssue = func(cert ManagedCertificate) {
+		issueDomains = append(issueDomains, cert.Domain)
+		if len(issueDomains) == 1 {
+			updated := managedCertificateFromRow(store.managedCerts[0])
+			updated.Domain = "updated-invalid-material.example.com"
+			updated.Revision = 5
+			store.managedCerts[0] = managedCertificateToRow(updated)
+			issuer.results[55] = managedCertificateRenewalResult{
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "updated-invalid-material-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "updated-invalid-material.example.com",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			}
+		}
+	}
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 55); err != nil {
+		t.Fatalf("signer() error = %v", err)
+	}
+	if got, want := strings.Join(issueDomains, ","), "old-invalid-material.example.com,updated-invalid-material.example.com"; got != want {
+		t.Fatalf("issue domains = %q, want %q", got, want)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "active" || persisted.Domain != "updated-invalid-material.example.com" || persisted.MaterialHash != "updated-invalid-material-hash" {
+		t.Fatalf("persisted certificate = %+v", persisted)
+	}
+}
+
 func TestManagedCertificateRenewalCandidateBackoff(t *testing.T) {
 	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
 	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, &relayCertStore{}, &fakeManagedCertificateRenewalIssuer{})
