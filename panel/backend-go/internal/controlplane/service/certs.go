@@ -750,7 +750,22 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 
 	issueResult, err := issuer.Issue(ctx, current)
 	if err != nil {
-		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
+		// Re-read before recording failure — the ACME order may have taken long
+		// enough that the certificate was concurrently deleted or edited. Using the
+		// stale pre-order snapshot would risk resurrecting a deleted row as "error"
+		// or overwriting a concurrent domain/target/status change.
+		persistRows, persistErr := s.store.ListManagedCertificates(ctx)
+		if persistErr != nil {
+			return ManagedCertificate{}, persistErr
+		}
+		persistCert, persistIndex, persistFound := findManagedCertificateByID(persistRows, current.ID)
+		if !persistFound {
+			return ManagedCertificate{}, err
+		}
+		if persistCert.Status != "issuing" {
+			return persistCert, nil
+		}
+		return s.failManagedCertificateIssue(ctx, persistRows, persistIndex, persistCert, highestManagedCertificateRevisionForService(persistRows), err, false)
 	}
 	issuedMaterial, err := resolveManagedCertificateIssueMaterial(current, issueResult)
 	if err != nil {
