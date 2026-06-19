@@ -67,6 +67,7 @@ var runControlPlaneFromEnv = func() error {
 	if err := initializeControlPlane(ctx, cfg); err != nil {
 		return err
 	}
+	service.ManagedCertificateDispatcher().SetBaseContext(ctx)
 	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
 	startTrafficCleanupLoop(ctx, cfg, nil)
 
@@ -74,6 +75,7 @@ var runControlPlaneFromEnv = func() error {
 	if err != nil {
 		return err
 	}
+	startManagedCertificateIssuanceRecovery(ctx, cfg, nil)
 	if err := application.Run(ctx); err != nil {
 		return err
 	}
@@ -331,6 +333,34 @@ func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config
 			}
 		}
 	}()
+}
+
+var runManagedCertificateIssuanceRecovery = func(ctx context.Context, cfg config.Config) (int, error) {
+	store, err := openConfiguredStore(cfg)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+	return service.ManagedCertificateDispatcher().Recover(ctx, store)
+}
+
+func startManagedCertificateIssuanceRecovery(ctx context.Context, cfg config.Config, logger *log.Logger) {
+	if !cfg.ManagedDNSCertificatesEnabled {
+		return
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+	dispatched, err := runManagedCertificateIssuanceRecovery(ctx, cfg)
+	if err != nil {
+		logger.Printf("[cert] startup issuance recovery failed: %v", err)
+		return
+	}
+	if dispatched > 0 {
+		logger.Printf("[cert] startup issuance recovery re-dispatched %d in-flight certificate(s)", dispatched)
+	}
 }
 
 var runTrafficCleanupPass = func(ctx context.Context, cfg config.Config) error {
