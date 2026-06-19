@@ -833,7 +833,7 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
 				return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
 			}
-			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
+			return s.failManagedCertificateIssue(ctx, persistRows, persistIndex, persistCert, highestManagedCertificateRevisionForService(persistRows), err, false)
 		}
 
 		next := persistCert

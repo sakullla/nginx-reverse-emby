@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -4053,6 +4054,73 @@ func TestManagedCertificateAsyncSignerRestartsWhenStaleMaterialValidationFails(t
 	persisted := managedCertificateFromRow(store.managedCerts[0])
 	if persisted.Status != "active" || persisted.Domain != "updated-invalid-material.example.com" || persisted.MaterialHash != "updated-invalid-material-hash" {
 		t.Fatalf("persisted certificate = %+v", persisted)
+	}
+}
+
+func TestManagedCertificateAsyncSignerRecordsMaterialPersistenceFailureOnFreshRow(t *testing.T) {
+	now := time.Date(2026, 4, 11, 7, 8, 9, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "same-domain-material-failure.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              56,
+			Domain:          "same-domain-material-failure.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+			TagsJSON:        `["old-tag"]`,
+		}},
+		saveMaterialErrs: []error{
+			errors.New("persist failed"),
+		},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			56: {
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "same-domain-material-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "same-domain-material-failure.example.com",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+		onIssue: func(ManagedCertificate) {
+			updated := managedCertificateFromRow(store.managedCerts[0])
+			updated.Tags = []string{"fresh-tag"}
+			updated.Revision = 8
+			store.managedCerts[0] = managedCertificateToRow(updated)
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 56); err == nil {
+		t.Fatal("expected signer error for material persistence failure")
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "error" {
+		t.Fatalf("persisted.Status = %q, want error", persisted.Status)
+	}
+	if !reflect.DeepEqual(persisted.Tags, []string{"fresh-tag"}) {
+		t.Fatalf("persisted.Tags = %+v, want fresh tag", persisted.Tags)
+	}
+	if persisted.Revision != 8 {
+		t.Fatalf("persisted.Revision = %d, want 8", persisted.Revision)
+	}
+	if persisted.RetryCount != 1 || persisted.NextRetryAtUnix <= now.Unix() {
+		t.Fatalf("persisted backoff = %+v", persisted)
 	}
 }
 
