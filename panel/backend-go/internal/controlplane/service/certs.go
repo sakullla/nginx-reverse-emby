@@ -735,101 +735,118 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 	unlock := issuanceLock(current.ID)
 	defer unlock()
 
-	freshRows, err := s.store.ListManagedCertificates(ctx)
-	if err != nil {
-		return ManagedCertificate{}, err
-	}
-	fresh, freshIndex, found := findManagedCertificateByID(freshRows, current.ID)
-	if !found {
-		return ManagedCertificate{}, nil
-	}
-	if !managedCertificateEligibleForBackgroundIssue(fresh) {
-		return fresh, nil
-	}
-	rows, targetIndex, current, maxRevision = freshRows, freshIndex, fresh, highestManagedCertificateRevisionForService(freshRows)
+	// Retry once when a concurrent edit changes the domain/targets while the
+	// ACME order is in flight. The current goroutine already holds the in-flight
+	// slot, so Submit from scheduleManagedCertificateIssue was de-duplicated; we
+	// re-read the updated row under the lock and restart issuance instead.
+	for attempt := 0; attempt < 2; attempt++ {
+		freshRows, err := s.store.ListManagedCertificates(ctx)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		fresh, freshIndex, found := findManagedCertificateByID(freshRows, current.ID)
+		if !found {
+			return ManagedCertificate{}, nil
+		}
+		if !managedCertificateEligibleForBackgroundIssue(fresh) {
+			return fresh, nil
+		}
+		rows, targetIndex, current, maxRevision = freshRows, freshIndex, fresh, highestManagedCertificateRevisionForService(freshRows)
 
-	issueResult, err := issuer.Issue(ctx, current)
-	if err != nil {
-		// Re-read before recording failure — the ACME order may have taken long
-		// enough that the certificate was concurrently deleted or edited. Using the
-		// stale pre-order snapshot would risk resurrecting a deleted row as "error"
-		// or overwriting a concurrent domain/target/status change.
-		persistRows, persistErr := s.store.ListManagedCertificates(ctx)
-		if persistErr != nil {
-			return ManagedCertificate{}, persistErr
+		issueResult, err := issuer.Issue(ctx, current)
+		if err != nil {
+			// Re-read before recording failure — the ACME order may have taken long
+			// enough that the certificate was concurrently deleted or edited. Using the
+			// stale pre-order snapshot would risk resurrecting a deleted row as "error"
+			// or overwriting a concurrent domain/target/status change.
+			persistRows, persistErr := s.store.ListManagedCertificates(ctx)
+			if persistErr != nil {
+				return ManagedCertificate{}, persistErr
+			}
+			persistCert, persistIndex, persistFound := findManagedCertificateByID(persistRows, current.ID)
+			if !persistFound {
+				return ManagedCertificate{}, err
+			}
+			// Only record the failure if the row still matches the order we attempted.
+			// If the domain was changed or the certificate is no longer eligible, the
+			// failure belongs to a stale configuration and must not be applied.
+			if persistCert.Domain != current.Domain || !managedCertificateEligibleForBackgroundIssue(persistCert) {
+				return persistCert, nil
+			}
+			return s.failManagedCertificateIssue(ctx, persistRows, persistIndex, persistCert, highestManagedCertificateRevisionForService(persistRows), err, false)
+		}
+		issuedMaterial, err := resolveManagedCertificateIssueMaterial(current, issueResult)
+		if err != nil {
+			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
+		}
+
+		// Revalidate the certificate row after the (potentially long) ACME order before
+		// writing any material to disk: if the certificate was deleted, disabled, or changed
+		// to another domain while the order was in flight, returning here avoids leaving
+		// orphaned PEM files behind.
+		persistRows, err := s.store.ListManagedCertificates(ctx)
+		if err != nil {
+			return ManagedCertificate{}, err
 		}
 		persistCert, persistIndex, persistFound := findManagedCertificateByID(persistRows, current.ID)
 		if !persistFound {
-			return ManagedCertificate{}, err
+			return ManagedCertificate{}, nil
 		}
-		if persistCert.Status != "issuing" {
+		if persistCert.Status != "issuing" || persistCert.Domain != current.Domain {
+			// A concurrent edit changed the certificate while the ACME order was in
+			// flight. If the row is still eligible, restart issuance with the updated
+			// data instead of leaving the certificate stuck in "issuing".
+			if persistCert.Status == "issuing" && managedCertificateEligibleForBackgroundIssue(persistCert) && attempt == 0 {
+				rows, targetIndex, current, maxRevision = persistRows, persistIndex, persistCert, highestManagedCertificateRevisionForService(persistRows)
+				continue
+			}
 			return persistCert, nil
 		}
-		return s.failManagedCertificateIssue(ctx, persistRows, persistIndex, persistCert, highestManagedCertificateRevisionForService(persistRows), err, false)
-	}
-	issuedMaterial, err := resolveManagedCertificateIssueMaterial(current, issueResult)
-	if err != nil {
-		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
-	}
 
-	// Revalidate the certificate row after the (potentially long) ACME order before
-	// writing any material to disk: if the certificate was deleted, disabled, or changed
-	// to another domain while the order was in flight, returning here avoids leaving
-	// orphaned PEM files behind.
-	persistRows, err := s.store.ListManagedCertificates(ctx)
-	if err != nil {
+		previousMaterial, previousMaterialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
+		if err != nil {
 		return ManagedCertificate{}, err
-	}
-	persistCert, persistIndex, persistFound := findManagedCertificateByID(persistRows, current.ID)
-	if !persistFound {
-		return ManagedCertificate{}, nil
-	}
-	if persistCert.Status != "issuing" || persistCert.Domain != current.Domain {
-		return persistCert, nil
-	}
-
-	previousMaterial, previousMaterialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
-	if err != nil {
-		return ManagedCertificate{}, err
-	}
-	if err := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, issuedMaterial); err != nil {
+		}
+		if err := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, issuedMaterial); err != nil {
 		if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
 			return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
 		}
 		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
-	}
+		}
 
-	next := persistCert
-	next.Status = "active"
-	next.LastIssueAt = issueResult.LastIssueAt
-	if strings.TrimSpace(next.LastIssueAt) == "" {
+		next := persistCert
+		next.Status = "active"
+		next.LastIssueAt = issueResult.LastIssueAt
+		if strings.TrimSpace(next.LastIssueAt) == "" {
 		next.LastIssueAt = s.now().UTC().Format(time.RFC3339)
-	}
-	next.LastError = ""
-	// Success clears any accumulated failure backoff so the next renewal cycle treats this as fresh.
-	next.BackoffClass = ""
-	next.RetryCount = 0
-	next.NextRetryAtUnix = 0
-	next.MaterialHash = issueResult.MaterialHash
-	if strings.TrimSpace(next.MaterialHash) == "" {
+		}
+		next.LastError = ""
+		// Success clears any accumulated failure backoff so the next renewal cycle treats this as fresh.
+		next.BackoffClass = ""
+		next.RetryCount = 0
+		next.NextRetryAtUnix = 0
+		next.MaterialHash = issueResult.MaterialHash
+		if strings.TrimSpace(next.MaterialHash) == "" {
 		next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
-	}
-	next.ACMEInfo = issueResult.ACMEInfo
-	next.Revision = highestManagedCertificateRevisionForService(persistRows) + 1
+		}
+		next.ACMEInfo = issueResult.ACMEInfo
+		next.Revision = highestManagedCertificateRevisionForService(persistRows) + 1
 
-	originalRows := append([]storage.ManagedCertificateRow(nil), persistRows...)
-	persistRows[persistIndex] = managedCertificateToRow(next)
-	if err := s.store.SaveManagedCertificates(ctx, persistRows); err != nil {
+		originalRows := append([]storage.ManagedCertificateRow(nil), persistRows...)
+		persistRows[persistIndex] = managedCertificateToRow(next)
+		if err := s.store.SaveManagedCertificates(ctx, persistRows); err != nil {
 		if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
 			return ManagedCertificate{}, fmt.Errorf("save issued certificate metadata: %w (restore failed: %v)", err, restoreErr)
 		}
 		return ManagedCertificate{}, err
-	}
-	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, persistRows)
-	if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
+		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, persistRows)
+		if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
 		return ManagedCertificate{}, err
+		}
+		return next, nil
 	}
-	return next, nil
+	return ManagedCertificate{}, nil
 }
 
 func (s *certificateService) syncStaticLocalCertificate(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, requestedAgentID string, bumpRevision bool) (ManagedCertificate, error) {
