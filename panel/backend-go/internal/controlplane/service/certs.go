@@ -771,6 +771,10 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 			// If the domain was changed or the certificate is no longer eligible, the
 			// failure belongs to a stale configuration and must not be applied.
 			if persistCert.Domain != current.Domain || !managedCertificateEligibleForBackgroundIssue(persistCert) {
+				if persistCert.Status == "issuing" && managedCertificateEligibleForBackgroundIssue(persistCert) && attempt == 0 {
+					rows, targetIndex, current, maxRevision = persistRows, persistIndex, persistCert, highestManagedCertificateRevisionForService(persistRows)
+					continue
+				}
 				return persistCert, nil
 			}
 			return s.failManagedCertificateIssue(ctx, persistRows, persistIndex, persistCert, highestManagedCertificateRevisionForService(persistRows), err, false)
@@ -805,20 +809,20 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 
 		previousMaterial, previousMaterialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
 		if err != nil {
-		return ManagedCertificate{}, err
+			return ManagedCertificate{}, err
 		}
 		if err := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, issuedMaterial); err != nil {
-		if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
-			return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
-		}
-		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
+			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
+				return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
+			}
+			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
 		}
 
 		next := persistCert
 		next.Status = "active"
 		next.LastIssueAt = issueResult.LastIssueAt
 		if strings.TrimSpace(next.LastIssueAt) == "" {
-		next.LastIssueAt = s.now().UTC().Format(time.RFC3339)
+			next.LastIssueAt = s.now().UTC().Format(time.RFC3339)
 		}
 		next.LastError = ""
 		// Success clears any accumulated failure backoff so the next renewal cycle treats this as fresh.
@@ -827,7 +831,7 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		next.NextRetryAtUnix = 0
 		next.MaterialHash = issueResult.MaterialHash
 		if strings.TrimSpace(next.MaterialHash) == "" {
-		next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
+			next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
 		}
 		next.ACMEInfo = issueResult.ACMEInfo
 		next.Revision = highestManagedCertificateRevisionForService(persistRows) + 1
@@ -835,14 +839,14 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		originalRows := append([]storage.ManagedCertificateRow(nil), persistRows...)
 		persistRows[persistIndex] = managedCertificateToRow(next)
 		if err := s.store.SaveManagedCertificates(ctx, persistRows); err != nil {
-		if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
-			return ManagedCertificate{}, fmt.Errorf("save issued certificate metadata: %w (restore failed: %v)", err, restoreErr)
-		}
-		return ManagedCertificate{}, err
+			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
+				return ManagedCertificate{}, fmt.Errorf("save issued certificate metadata: %w (restore failed: %v)", err, restoreErr)
+			}
+			return ManagedCertificate{}, err
 		}
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, persistRows)
 		if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
-		return ManagedCertificate{}, err
+			return ManagedCertificate{}, err
 		}
 		return next, nil
 	}
@@ -1702,6 +1706,9 @@ func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback Ma
 		CertificateType: certificateType,
 		SelfSigned:      selfSigned,
 		Revision:        fallback.Revision,
+		NextRetryAtUnix: fallback.NextRetryAtUnix,
+		RetryCount:      fallback.RetryCount,
+		BackoffClass:    fallback.BackoffClass,
 	}, nil
 }
 

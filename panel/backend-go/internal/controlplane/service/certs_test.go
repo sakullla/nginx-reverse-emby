@@ -1060,8 +1060,8 @@ func withMasterCFDNSBackgroundSigner(t *testing.T, cfg config.Config, store stor
 	t.Helper()
 	dispatcher := ManagedCertificateDispatcher()
 	dispatcher.SetSignFunc(managedCertificateBackgroundSignerWithIssuer(cfg, func() (storage.Store, error) {
-			return store, nil
-		}, issuer, nil))
+		return store, nil
+	}, issuer, nil))
 	t.Cleanup(func() {
 		dispatcher.Wait()
 		dispatcher.SetSignFunc(nil)
@@ -2950,6 +2950,46 @@ func TestCertificateServiceGlobalUpdatePreservesExplicitEmptyTargetAgentIDs(t *t
 	}
 }
 
+func TestCertificateServiceUpdatePreservesManagedCertificateBackoff(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              98,
+			Domain:          "preserve-backoff.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "error",
+			LastError:       "previous failure",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        7,
+			BackoffClass:    managedCertificateBackoffClassRateLimited,
+			RetryCount:      3,
+			NextRetryAtUnix: now.Unix() + 3600,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	updated, err := svc.Update(context.Background(), "local", 98, ManagedCertificateInput{
+		Tags: &[]string{"ops"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.BackoffClass != managedCertificateBackoffClassRateLimited || updated.RetryCount != 3 || updated.NextRetryAtUnix != now.Unix()+3600 {
+		t.Fatalf("updated backoff fields = %+v", updated)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.BackoffClass != managedCertificateBackoffClassRateLimited || persisted.RetryCount != 3 || persisted.NextRetryAtUnix != now.Unix()+3600 {
+		t.Fatalf("persisted backoff fields = %+v", persisted)
+	}
+}
+
 func TestCertificateServiceDeleteRejectsReferencedAutoRelayListenerCertificate(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
@@ -3847,6 +3887,71 @@ func TestManagedCertificateAsyncSignerSkipsStaleDispatches(t *testing.T) {
 			t.Fatalf("issuer must not run for missing cert, calls = %+v", issuer.calls)
 		}
 	})
+}
+
+func TestManagedCertificateAsyncSignerRestartsWhenStaleOrderFails(t *testing.T) {
+	now := time.Date(2026, 4, 11, 5, 6, 7, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "updated-stale-failure.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              53,
+			Domain:          "old-stale-failure.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			53: {
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "updated-stale-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "updated-stale-failure.example.com",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	issueDomains := []string{}
+	issuer.onIssue = func(cert ManagedCertificate) {
+		issueDomains = append(issueDomains, cert.Domain)
+		if len(issueDomains) == 1 {
+			updated := managedCertificateFromRow(store.managedCerts[0])
+			updated.Domain = "updated-stale-failure.example.com"
+			updated.Revision = 5
+			store.managedCerts[0] = managedCertificateToRow(updated)
+			issuer.errs = map[int]error{53: errors.New("old order failed")}
+			return
+		}
+		issuer.errs = nil
+	}
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 53); err != nil {
+		t.Fatalf("signer() error = %v", err)
+	}
+	if got, want := strings.Join(issueDomains, ","), "old-stale-failure.example.com,updated-stale-failure.example.com"; got != want {
+		t.Fatalf("issue domains = %q, want %q", got, want)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "active" || persisted.Domain != "updated-stale-failure.example.com" || persisted.MaterialHash != "updated-stale-hash" {
+		t.Fatalf("persisted certificate = %+v", persisted)
+	}
+	if persisted.LastError != "" || persisted.RetryCount != 0 || persisted.NextRetryAtUnix != 0 {
+		t.Fatalf("stale failure backoff should not be recorded = %+v", persisted)
+	}
 }
 
 func TestManagedCertificateRenewalCandidateBackoff(t *testing.T) {
