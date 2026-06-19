@@ -1051,7 +1051,27 @@ func TestCertificateServiceIssueLocalHTTP01InternalCAGlobalIssueWithEmptyTargets
 	}
 }
 
-func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisionBump(t *testing.T) {
+// withMasterCFDNSBackgroundSigner wires the process-wide dispatcher to run master_cf_dns
+// issuance against the provided in-memory store using the fake issuer, so tests can exercise the
+// full submit -> dispatch -> background-issue flow. The returned function drains in-flight
+// issuances (call it before asserting final state); t.Cleanup also drains and resets the signer
+// so global dispatcher state never leaks across tests.
+func withMasterCFDNSBackgroundSigner(t *testing.T, cfg config.Config, store storage.Store, issuer managedCertificateRenewalIssuer) func() {
+	t.Helper()
+	dispatcher := ManagedCertificateDispatcher()
+	dispatcher.SetSignFunc(managedCertificateBackgroundSignerWithIssuer(cfg, func() (storage.Store, error) {
+		return store, nil
+	}, issuer))
+	t.Cleanup(func() {
+		dispatcher.Wait()
+		dispatcher.SetSignFunc(nil)
+	})
+	return func() {
+		dispatcher.Wait()
+	}
+}
+
+func TestCertificateServiceCreateMasterCFDNSDispatchesIssuingAsync(t *testing.T) {
 	now := time.Date(2026, 4, 11, 16, 17, 18, 0, time.UTC)
 	ca := mustCreateSelfSignedCA(t, "Create Master CF DNS CA")
 	leaf := mustCreateLeafSignedByCA(t, "create-master.example.com", ca)
@@ -1077,6 +1097,7 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 		LocalAgentID:     "local",
 	}, store, issuer)
 	svc.now = func() time.Time { return now }
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	created, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
 		Domain:          stringPtr("create-master.example.com"),
@@ -1090,22 +1111,29 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	// Submit returns immediately with "issuing"; the ACME order runs in the background goroutine.
+	if created.Status != "issuing" {
+		t.Fatalf("created.Status = %q, want issuing", created.Status)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("created.Revision = %d, want 1", created.Revision)
+	}
+	if len(issuer.calls) != 0 {
+		t.Fatalf("issuer must not be called synchronously on submit, calls = %+v", issuer.calls)
+	}
+
+	drain()
+
 	if len(issuer.calls) != 1 || issuer.calls[0] != 1 {
 		t.Fatalf("issuer calls = %+v", issuer.calls)
 	}
-	if created.Status != "active" {
-		t.Fatalf("created.Status = %q", created.Status)
-	}
-	if created.Revision != 1 {
-		t.Fatalf("created.Revision = %d", created.Revision)
-	}
-	row := managedCertificateFromRow(store.managedCerts[0])
-	if row.Status != "active" || row.Revision != 1 || row.MaterialHash != "issued-hash" {
-		t.Fatalf("saved row = %+v", row)
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" || finalized.Revision != 1 || finalized.MaterialHash != "issued-hash" {
+		t.Fatalf("finalized row = %+v", finalized)
 	}
 }
 
-func TestCertificateServiceUpdateMasterCFDNSEnableTriggersIssue(t *testing.T) {
+func TestCertificateServiceUpdateMasterCFDNSEnableDispatchesIssuingAsync(t *testing.T) {
 	now := time.Date(2026, time.April, 11, 21, 22, 23, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "enable-master.example.test")
 	store := &relayCertStore{
@@ -1144,6 +1172,7 @@ func TestCertificateServiceUpdateMasterCFDNSEnableTriggersIssue(t *testing.T) {
 		LocalAgentID:     "local",
 	}, store, issuer)
 	svc.now = func() time.Time { return now }
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	updated, err := svc.Update(context.Background(), "local", 97, ManagedCertificateInput{
 		Enabled: boolPtr(true),
@@ -1151,21 +1180,30 @@ func TestCertificateServiceUpdateMasterCFDNSEnableTriggersIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
+	if updated.Status != "issuing" {
+		t.Fatalf("updated.Status = %q, want issuing", updated.Status)
+	}
+	if len(issuer.calls) != 0 {
+		t.Fatalf("issuer must not be called synchronously on submit, calls = %+v", issuer.calls)
+	}
+
+	drain()
 
 	if len(issuer.calls) != 1 || issuer.calls[0] != 97 {
 		t.Fatalf("issuer calls = %+v", issuer.calls)
 	}
-	if updated.Status != "active" {
-		t.Fatalf("updated.Status = %q", updated.Status)
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" {
+		t.Fatalf("finalized.Status = %q", finalized.Status)
 	}
-	if updated.LastIssueAt != now.UTC().Format(time.RFC3339) {
-		t.Fatalf("updated.LastIssueAt = %q", updated.LastIssueAt)
+	if finalized.LastIssueAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("finalized.LastIssueAt = %q", finalized.LastIssueAt)
 	}
-	if updated.MaterialHash != "enabled-issue-hash" {
-		t.Fatalf("updated.MaterialHash = %q", updated.MaterialHash)
+	if finalized.MaterialHash != "enabled-issue-hash" {
+		t.Fatalf("finalized.MaterialHash = %q", finalized.MaterialHash)
 	}
-	if updated.Revision != 7 {
-		t.Fatalf("updated.Revision = %d", updated.Revision)
+	if finalized.Revision != 7 {
+		t.Fatalf("finalized.Revision = %d", finalized.Revision)
 	}
 }
 
@@ -1300,29 +1338,37 @@ func TestCertificateServiceIssueMasterCFDNSSuccessPersistsMaterialAndUpdatesStat
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
 	}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	issued, err := svc.Issue(context.Background(), "local", 60)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
-	if issued.Status != "active" {
-		t.Fatalf("issued.Status = %q", issued.Status)
+	if issued.Status != "issuing" {
+		t.Fatalf("issued.Status = %q, want issuing", issued.Status)
 	}
-	if issued.LastIssueAt != "2026-04-11T10:11:12Z" {
-		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
+
+	drain()
+
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" {
+		t.Fatalf("finalized.Status = %q", finalized.Status)
 	}
-	if issued.LastError != "" {
-		t.Fatalf("issued.LastError = %q", issued.LastError)
+	if finalized.LastIssueAt != "2026-04-11T10:11:12Z" {
+		t.Fatalf("finalized.LastIssueAt = %q", finalized.LastIssueAt)
 	}
-	if issued.ACMEInfo.CA != "LetsEncrypt" || issued.ACMEInfo.Renew != "2026-07-10T00:00:00Z" {
-		t.Fatalf("issued.ACMEInfo = %+v", issued.ACMEInfo)
+	if finalized.LastError != "" {
+		t.Fatalf("finalized.LastError = %q", finalized.LastError)
+	}
+	if finalized.ACMEInfo.CA != "LetsEncrypt" || finalized.ACMEInfo.Renew != "2026-07-10T00:00:00Z" {
+		t.Fatalf("finalized.ACMEInfo = %+v", finalized.ACMEInfo)
 	}
 	expectedHash := hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
-	if issued.MaterialHash != expectedHash {
-		t.Fatalf("issued.MaterialHash = %q, want %q", issued.MaterialHash, expectedHash)
+	if finalized.MaterialHash != expectedHash {
+		t.Fatalf("finalized.MaterialHash = %q, want %q", finalized.MaterialHash, expectedHash)
 	}
-	if issued.Revision != 10 {
-		t.Fatalf("issued.Revision = %d", issued.Revision)
+	if finalized.Revision != 10 {
+		t.Fatalf("finalized.Revision = %d", finalized.Revision)
 	}
 	persisted := store.materialsByHost["master-issue-success.example.com"]
 	if persisted.CertPEM != strings.TrimSpace(issuedMaterial.CertPEM) || persisted.KeyPEM != strings.TrimSpace(issuedMaterial.KeyPEM) {
@@ -1364,19 +1410,27 @@ func TestCertificateServiceIssueMasterCFDNSSucceedsWhenRenewIsInFuture(t *testin
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
 	}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	issued, err := svc.Issue(context.Background(), "local", 66)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
-	if issued.Status != "active" {
-		t.Fatalf("issued.Status = %q", issued.Status)
+	if issued.Status != "issuing" {
+		t.Fatalf("issued.Status = %q, want issuing", issued.Status)
 	}
-	if issued.LastIssueAt != "2026-04-11T15:16:17Z" {
-		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
+
+	drain()
+
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" {
+		t.Fatalf("finalized.Status = %q", finalized.Status)
 	}
-	if issued.Revision != 12 {
-		t.Fatalf("issued.Revision = %d", issued.Revision)
+	if finalized.LastIssueAt != "2026-04-11T15:16:17Z" {
+		t.Fatalf("finalized.LastIssueAt = %q", finalized.LastIssueAt)
+	}
+	if finalized.Revision != 12 {
+		t.Fatalf("finalized.Revision = %d", finalized.Revision)
 	}
 }
 
@@ -1404,11 +1458,17 @@ func TestCertificateServiceIssueMasterCFDNSIssuerFailureRecordsErrorState(t *tes
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
 	}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
-	_, err := svc.Issue(context.Background(), "local", 61)
-	if err == nil {
-		t.Fatal("expected Issue() error")
+	issued, err := svc.Issue(context.Background(), "local", 61)
+	if err != nil {
+		t.Fatalf("Issue() submit error = %v", err)
 	}
+	if issued.Status != "issuing" {
+		t.Fatalf("issued.Status = %q, want issuing", issued.Status)
+	}
+
+	drain()
 
 	failed := managedCertificateFromRow(store.managedCerts[0])
 	if failed.Status != "error" {
@@ -1419,6 +1479,15 @@ func TestCertificateServiceIssueMasterCFDNSIssuerFailureRecordsErrorState(t *tes
 	}
 	if failed.Revision != 8 {
 		t.Fatalf("failed.Revision = %d", failed.Revision)
+	}
+	if failed.BackoffClass != managedCertificateBackoffClassPersistent {
+		t.Fatalf("failed.BackoffClass = %q, want %q", failed.BackoffClass, managedCertificateBackoffClassPersistent)
+	}
+	if failed.RetryCount != 1 {
+		t.Fatalf("failed.RetryCount = %d, want 1", failed.RetryCount)
+	}
+	if failed.NextRetryAtUnix <= 0 {
+		t.Fatalf("failed.NextRetryAtUnix = %d, want > 0", failed.NextRetryAtUnix)
 	}
 }
 
@@ -1471,11 +1540,17 @@ func TestCertificateServiceIssueMasterCFDNSMaterialPersistenceFailureRestoresSta
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
 	}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
-	_, err := svc.Issue(context.Background(), "local", 62)
-	if err == nil {
-		t.Fatal("expected Issue() error")
+	submitted, err := svc.Issue(context.Background(), "local", 62)
+	if err != nil {
+		t.Fatalf("Issue() submit error = %v", err)
 	}
+	if submitted.Status != "issuing" {
+		t.Fatalf("submitted.Status = %q, want issuing", submitted.Status)
+	}
+
+	drain()
 
 	failed := managedCertificateFromRow(store.managedCerts[0])
 	if failed.Status != "error" {
@@ -1534,12 +1609,25 @@ func TestCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureW
 		LocalAgentID:     "local",
 	}, store, issuer)
 
-	_, err := svc.Issue(context.Background(), "local", 72)
+	// The async entry point absorbs this error inside the background goroutine, so the
+	// restore-failure contract is asserted directly at the issue body layer.
+	rows := append([]storage.ManagedCertificateRow(nil), store.managedCerts...)
+	current, targetIndex, ok := findManagedCertificateByID(rows, 72)
+	if !ok {
+		t.Fatalf("certificate 72 not found")
+	}
+	maxRevision := 0
+	for _, candidate := range rows {
+		if candidate.Revision > maxRevision {
+			maxRevision = candidate.Revision
+		}
+	}
+	_, err := svc.issueManagedCertificateWithoutRevisionBump(context.Background(), rows, targetIndex, current, maxRevision)
 	if err == nil {
-		t.Fatal("expected Issue() error")
+		t.Fatal("expected issue error")
 	}
 	if !strings.Contains(err.Error(), "restore failed: cleanup failed") {
-		t.Fatalf("Issue() error = %v", err)
+		t.Fatalf("issue error = %v", err)
 	}
 
 	row := managedCertificateFromRow(store.managedCerts[0])
@@ -2006,7 +2094,7 @@ func TestCertificateServiceUploadedLocalHTTP01RequiresCertInstallCapableTargets(
 	}
 }
 
-func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevision(t *testing.T) {
+func TestCertificateServiceCreateMasterCFDNSAsyncIssueFinalizesActive(t *testing.T) {
 	now := time.Date(2026, time.April, 11, 16, 17, 18, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "issued.example.com")
 	store := &relayCertStore{
@@ -2033,6 +2121,7 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 		LocalAgentID:     "local",
 	}, store, issuer)
 	svc.now = func() time.Time { return now }
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	created, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
 		Domain:          stringPtr("issued.example.com"),
@@ -2046,19 +2135,15 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-
-	if created.Status != "active" {
-		t.Fatalf("created.Status = %q", created.Status)
-	}
-	if created.LastIssueAt != "2026-04-11T16:17:18Z" {
-		t.Fatalf("created.LastIssueAt = %q", created.LastIssueAt)
-	}
-	if created.MaterialHash != "issued-hash" {
-		t.Fatalf("created.MaterialHash = %q", created.MaterialHash)
+	if created.Status != "issuing" {
+		t.Fatalf("created.Status = %q, want issuing", created.Status)
 	}
 	if created.Revision != 1 {
-		t.Fatalf("created.Revision = %d", created.Revision)
+		t.Fatalf("created.Revision = %d, want 1", created.Revision)
 	}
+
+	drain()
+
 	if store.saveRuntimeCalls != 1 {
 		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
 	}
@@ -2071,6 +2156,12 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 	persisted := managedCertificateFromRow(store.managedCerts[0])
 	if persisted.Revision != 1 || persisted.Status != "active" {
 		t.Fatalf("persisted = %+v", persisted)
+	}
+	if persisted.LastIssueAt != "2026-04-11T16:17:18Z" {
+		t.Fatalf("persisted.LastIssueAt = %q", persisted.LastIssueAt)
+	}
+	if persisted.MaterialHash != "issued-hash" {
+		t.Fatalf("persisted.MaterialHash = %q", persisted.MaterialHash)
 	}
 }
 
@@ -3364,4 +3455,167 @@ func relayAgentByID(t *testing.T, store *relayCertStore, agentID string) storage
 	}
 	t.Fatalf("agent %q not found in %+v", agentID, store.agents)
 	return storage.AgentRow{}
+}
+
+func TestManagedCertificateBackoffDelay(t *testing.T) {
+	tests := []struct {
+		name       string
+		class      string
+		retryAfter time.Duration
+		retryCount int
+		want       time.Duration
+	}{
+		// transient: base 5s, cap 5m
+		{"transient r1", managedCertificateBackoffClassTransient, 0, 1, 6*time.Second + 250*time.Millisecond},
+		{"transient r2", managedCertificateBackoffClassTransient, 0, 2, 15 * time.Second},
+		{"transient r3", managedCertificateBackoffClassTransient, 0, 3, 35 * time.Second},
+		{"transient r4", managedCertificateBackoffClassTransient, 0, 4, 40 * time.Second},
+		{"transient r6 jitter-capped", managedCertificateBackoffClassTransient, 0, 6, 235 * time.Second},
+		{"transient r7 delay-capped", managedCertificateBackoffClassTransient, 0, 7, 375 * time.Second},
+		// persistent: base 1h, cap 32h
+		{"persistent r1", managedCertificateBackoffClassPersistent, 0, 1, time.Hour + 15*time.Minute},
+		{"persistent r2", managedCertificateBackoffClassPersistent, 0, 2, 3 * time.Hour},
+		{"persistent r4", managedCertificateBackoffClassPersistent, 0, 4, 8 * time.Hour},
+		{"persistent r6 cap-floor", managedCertificateBackoffClassPersistent, 0, 6, 40 * time.Hour},
+		{"persistent r7 cap-floor", managedCertificateBackoffClassPersistent, 0, 7, 40 * time.Hour},
+		// rate_limited: base = max(retryAfter, 1h), cap 32h
+		{"rate_limited retryAfter=0 falls back to 1h", managedCertificateBackoffClassRateLimited, 0, 1, time.Hour + 15*time.Minute},
+		{"rate_limited retryAfter=2h", managedCertificateBackoffClassRateLimited, 2 * time.Hour, 1, 2*time.Hour + 30*time.Minute},
+		{"rate_limited retryAfter=100h capped", managedCertificateBackoffClassRateLimited, 100 * time.Hour, 1, 40 * time.Hour},
+		{"unknown class defaults to persistent curve", "bogus", 0, 1, time.Hour + 15*time.Minute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := managedCertificateBackoffDelay(tc.class, tc.retryAfter, tc.retryCount)
+			if got != tc.want {
+				t.Fatalf("managedCertificateBackoffDelay(%q, %v, %d) = %v, want %v", tc.class, tc.retryAfter, tc.retryCount, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateBackoffClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil defaults to transient", nil, managedCertificateBackoffClassTransient},
+		{"rate limit", errors.New("ACME rate limit exceeded"), managedCertificateBackoffClassRateLimited},
+		{"rate-limit hyphen", errors.New("server rate-limit reached"), managedCertificateBackoffClassRateLimited},
+		{"too many", errors.New("too many failed authorizations"), managedCertificateBackoffClassRateLimited},
+		{"retry-after header", errors.New("429 retry-after: 3600"), managedCertificateBackoffClassRateLimited},
+		{"connection refused is transient", errors.New("dial: connection refused"), managedCertificateBackoffClassTransient},
+		{"i/o timeout is transient", errors.New("read tcp: i/o timeout"), managedCertificateBackoffClassTransient},
+		{"503 is transient", errors.New("upstream returned 503 service unavailable"), managedCertificateBackoffClassTransient},
+		{"dns nxdomain is persistent", errors.New("DNS problem: NXDOMAIN looking up A"), managedCertificateBackoffClassPersistent},
+		{"unauthorized is persistent", errors.New("403 unauthorized"), managedCertificateBackoffClassPersistent},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyManagedCertificateIssueError(tc.err); got != tc.want {
+				t.Fatalf("classifyManagedCertificateIssueError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateBackoffRetryAfterExtraction(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want time.Duration
+	}{
+		{"nil", nil, 0},
+		{"seconds", errors.New("rate limited; retry-after: 120"), 120 * time.Second},
+		{"mixed case and no space", errors.New("Retry-After:3600"), 3600 * time.Second},
+		{"zero ignored", errors.New("retry-after 0"), 0},
+		{"no digits", errors.New("retry-after: later"), 0},
+		{"no header", errors.New("generic acme failure"), 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractManagedCertificateRetryAfter(tc.err); got != tc.want {
+				t.Fatalf("extractManagedCertificateRetryAfter(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateAsyncEligibility(t *testing.T) {
+	base := ManagedCertificate{
+		Status:          "issuing",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "master_cf_dns",
+		CertificateType: "acme",
+	}
+	tests := []struct {
+		name string
+		mut  func(ManagedCertificate) ManagedCertificate
+		want bool
+	}{
+		{"eligible baseline", func(c ManagedCertificate) ManagedCertificate { return c }, true},
+		{"finalized active", func(c ManagedCertificate) ManagedCertificate { c.Status = "active"; return c }, false},
+		{"disabled", func(c ManagedCertificate) ManagedCertificate { c.Enabled = false; return c }, false},
+		{"wildcard scope", func(c ManagedCertificate) ManagedCertificate { c.Scope = "wildcard"; return c }, false},
+		{"local http01 issuer", func(c ManagedCertificate) ManagedCertificate { c.IssuerMode = "local_http01"; return c }, false},
+		{"uploaded type", func(c ManagedCertificate) ManagedCertificate { c.CertificateType = "uploaded"; return c }, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := managedCertificateEligibleForBackgroundIssue(tc.mut(base)); got != tc.want {
+				t.Fatalf("managedCertificateEligibleForBackgroundIssue = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateAsyncSignerSkipsStaleDispatches(t *testing.T) {
+	t.Run("finalized cert left untouched", func(t *testing.T) {
+		issuer := &fakeManagedCertificateRenewalIssuer{
+			results: map[int]managedCertificateRenewalResult{5: {MaterialHash: "should-not-run"}},
+		}
+		store := &relayCertStore{
+			managedCerts: []storage.ManagedCertificateRow{{
+				ID:              5,
+				Domain:          "stale.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "master_cf_dns",
+				CertificateType: "acme",
+				Status:          "active", // already finalized — signer must not re-issue
+				Revision:        3,
+			}},
+		}
+		signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+			return store, nil
+		}, issuer)
+
+		if err := signer(context.Background(), 5); err != nil {
+			t.Fatalf("signer() error = %v", err)
+		}
+		if len(issuer.calls) != 0 {
+			t.Fatalf("issuer must not run for non-issuing cert, calls = %+v", issuer.calls)
+		}
+		persisted := managedCertificateFromRow(store.managedCerts[0])
+		if persisted.Status != "active" || persisted.Revision != 3 {
+			t.Fatalf("stale cert must be left untouched = %+v", persisted)
+		}
+	})
+
+	t.Run("deleted cert is a no-op", func(t *testing.T) {
+		issuer := &fakeManagedCertificateRenewalIssuer{}
+		store := &relayCertStore{managedCerts: nil}
+		signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+			return store, nil
+		}, issuer)
+
+		if err := signer(context.Background(), 99); err != nil {
+			t.Fatalf("signer() error = %v", err)
+		}
+		if len(issuer.calls) != 0 {
+			t.Fatalf("issuer must not run for missing cert, calls = %+v", issuer.calls)
+		}
+	})
 }

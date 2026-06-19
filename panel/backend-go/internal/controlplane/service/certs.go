@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -482,63 +483,11 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 		return ManagedCertificate{}, err
 	}
 	if current.IssuerMode == "master_cf_dns" {
-		if err := s.assertManagedCertificateManualIssueAllowed(current); err != nil {
-			return ManagedCertificate{}, err
-		}
-		issuer := s.renewalIssuer
-		if issuer == nil && s.cfg.ManagedDNSCertificatesEnabled {
-			issuer = newMasterCFDNSManagedCertificateIssuer()
-		}
-		if issuer == nil {
-			return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
-		}
-
-		unlock := issuanceLock(id)
-		defer unlock()
-
-		issueResult, err := issuer.Issue(ctx, current)
-		if err != nil {
-			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, true)
-		}
-		issuedMaterial, err := resolveManagedCertificateIssueMaterial(current, issueResult)
-		if err != nil {
-			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, true)
-		}
-
-		previousMaterial, previousMaterialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
-		if err != nil {
-			return ManagedCertificate{}, err
-		}
-		if err := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, issuedMaterial); err != nil {
-			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
-				return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
-			}
-			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, true)
-		}
-
-		next := current
-		next.Status = "active"
-		next.LastIssueAt = issueResult.LastIssueAt
-		if strings.TrimSpace(next.LastIssueAt) == "" {
-			next.LastIssueAt = s.now().UTC().Format(time.RFC3339)
-		}
-		next.LastError = ""
-		next.MaterialHash = issueResult.MaterialHash
-		if strings.TrimSpace(next.MaterialHash) == "" {
-			next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
-		}
-		next.ACMEInfo = issueResult.ACMEInfo
-		next.Revision = managedCertificateMutationRevision(current, maxRevision, true)
-		originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
-		rows[targetIndex] = managedCertificateToRow(next)
-		if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
-			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
-				return ManagedCertificate{}, fmt.Errorf("save issued certificate metadata: %w (restore failed: %v)", err, restoreErr)
-			}
-			return ManagedCertificate{}, err
-		}
-		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
-		return next, nil
+		// Async issuance: persist "issuing" + revision, dispatch a background signer, and return
+		// immediately so the HTTP request no longer blocks on the ACME order. The dispatcher's
+		// sign function owns issuanceLock and performs the actual issue (see
+		// ManagedCertificateBackgroundSigner / issueManagedCertificateWithoutRevisionBump).
+		return s.scheduleManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, true, nil)
 	}
 	if current.CertificateType == "uploaded" && current.IssuerMode == "local_http01" {
 		return s.syncStaticLocalCertificate(ctx, rows, targetIndex, current, maxRevision, resolvedID, true)
@@ -729,14 +678,10 @@ func (s *certificateService) finishManagedCertificateMutation(ctx context.Contex
 	}
 
 	if current.Enabled && current.Scope == "domain" && current.IssuerMode == "master_cf_dns" && managedCertificateMutationNeedsManagedDNSIssue(previous, current) {
-		issued, err := s.issueManagedCertificateWithoutRevisionBump(ctx, rows, targetIndex, current, maxRevision)
-		if err != nil {
-			return ManagedCertificate{}, err
-		}
-		if err := s.syncManagedCertificateAgentIDs(ctx, removedAgentIDs, issued.Revision); err != nil {
-			return ManagedCertificate{}, err
-		}
-		return issued, nil
+		// Async issuance on Create/Update: persist "issuing" + current revision (no extra bump),
+		// notify removed agents, and dispatch the background signer. The revision bump for the
+		// issued material happens inside the background signer on success.
+		return s.scheduleManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, false, removedAgentIDs)
 	}
 	if current.Enabled && current.IssuerMode == "local_http01" && current.CertificateType == "uploaded" {
 		synced, err := s.syncStaticLocalCertificate(ctx, rows, targetIndex, current, maxRevision, "", false)
@@ -817,6 +762,10 @@ func (s *certificateService) issueManagedCertificateWithoutRevisionBump(ctx cont
 		next.LastIssueAt = s.now().UTC().Format(time.RFC3339)
 	}
 	next.LastError = ""
+	// Success clears any accumulated failure backoff so the next renewal cycle treats this as fresh.
+	next.BackoffClass = ""
+	next.RetryCount = 0
+	next.NextRetryAtUnix = 0
 	next.MaterialHash = issueResult.MaterialHash
 	if strings.TrimSpace(next.MaterialHash) == "" {
 		next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
@@ -1078,6 +1027,9 @@ func (s *certificateService) assertManagedCertificateManualIssueAllowed(cert Man
 	if cert.Scope != "domain" {
 		return fmt.Errorf("%w: only domain certificates can be managed by master", ErrInvalidArgument)
 	}
+	if cert.CertificateType != "acme" {
+		return fmt.Errorf("%w: master_cf_dns only manages acme certificates", ErrInvalidArgument)
+	}
 	if err := assertManagedCertificateTargetingAllowed(s.cfg, cert); err != nil {
 		return err
 	}
@@ -1104,6 +1056,17 @@ func (s *certificateService) failManagedCertificateIssue(ctx context.Context, ro
 	failed.LastError = issueErr.Error()
 	failed.Revision = managedCertificateMutationRevision(current, maxRevision, bumpRevision)
 
+	// Record failure backoff so retries space out and respect Let's Encrypt's
+	// 5-failed-validations-per-hour-per-hostname limit. The class is derived from the error
+	// text (lego's error types are not stable across releases), and the next attempt is
+	// scheduled via exponential backoff capped per class. The renewal loop (cert_renewal.go)
+	// reads NextRetryAtUnix to decide when this certificate is a retry candidate again.
+	class := classifyManagedCertificateIssueError(issueErr)
+	retryAfter := extractManagedCertificateRetryAfter(issueErr)
+	failed.BackoffClass = class
+	failed.RetryCount = current.RetryCount + 1
+	failed.NextRetryAtUnix = s.now().Add(managedCertificateBackoffDelay(class, retryAfter, failed.RetryCount)).Unix()
+
 	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	nextRows[targetIndex] = managedCertificateToRow(failed)
@@ -1112,6 +1075,261 @@ func (s *certificateService) failManagedCertificateIssue(ctx context.Context, ro
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, nextRows)
 	return ManagedCertificate{}, issueErr
+}
+
+// scheduleManagedCertificateIssue persists the certificate as "issuing" with the appropriate
+// revision semantics, notifies removed agents, dispatches a background issuance via the
+// process-wide dispatcher, and returns the issuing certificate. It replaces the historical
+// synchronous master_cf_dns issue path in Create/Update/Issue so those entry points no longer
+// block the HTTP request on the ACME order. All eligibility checks still run synchronously
+// (fail-fast) before anything is persisted. bumpRevision follows the historical per-entry
+// semantics: false for Create/Update (reuse current revision), true for Issue (maxRevision+1).
+func (s *certificateService) scheduleManagedCertificateIssue(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, bumpRevision bool, removedAgentIDs []string) (ManagedCertificate, error) {
+	if err := s.assertCertificateDistributionTargetsAllowed(ctx, current); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.assertManagedCertificateManualIssueAllowed(current); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if !s.managedCertificateIssuerAvailable() {
+		return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
+	}
+
+	scheduled := current
+	scheduled.Status = "issuing"
+	scheduled.LastError = ""
+	// A fresh submit resets any prior failure backoff so the first attempt is immediate.
+	scheduled.BackoffClass = ""
+	scheduled.RetryCount = 0
+	scheduled.NextRetryAtUnix = 0
+	scheduled.Revision = managedCertificateMutationRevision(current, maxRevision, bumpRevision)
+
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	rows[targetIndex] = managedCertificateToRow(scheduled)
+	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
+	if len(removedAgentIDs) > 0 {
+		if err := s.syncManagedCertificateAgentIDs(ctx, removedAgentIDs, scheduled.Revision); err != nil {
+			return ManagedCertificate{}, err
+		}
+	}
+	ManagedCertificateDispatcher().Submit(scheduled.ID)
+	return scheduled, nil
+}
+
+// managedCertificateIssuerAvailable reports whether a master_cf_dns issuer can be constructed
+// for this service: an injected renewal issuer, or the env-configured Cloudflare DNS issuer when
+// ManagedDNSCertificatesEnabled. Used to fail-fast at submit time instead of after dispatch.
+func (s *certificateService) managedCertificateIssuerAvailable() bool {
+	if s.renewalIssuer != nil {
+		return true
+	}
+	return s.cfg.ManagedDNSCertificatesEnabled && newMasterCFDNSManagedCertificateIssuer() != nil
+}
+
+// ManagedCertificateBackgroundSigner returns the background issuance function injected into the
+// process-wide dispatcher. It opens a short-lived store (independent of any HTTP request's store
+// or connection), reloads the certificate, and — if it is still eligible for issuance — runs
+// issueManagedCertificateWithoutRevisionBump, which acquires issuanceLock, performs the ACME
+// issue, and persists the outcome (active on success, error + backoff on failure). The production
+// Cloudflare DNS issuer is built from cfg inside the issue body.
+func ManagedCertificateBackgroundSigner(cfg config.Config, openStore func() (storage.Store, error)) managedCertificateSignFunc {
+	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, nil)
+}
+
+// managedCertificateBackgroundSignerWithIssuer is the testable core: tests inject a fake issuer
+// while production passes nil so the Cloudflare DNS issuer is built from cfg on demand.
+func managedCertificateBackgroundSignerWithIssuer(cfg config.Config, openStore func() (storage.Store, error), issuer managedCertificateRenewalIssuer) managedCertificateSignFunc {
+	return func(ctx context.Context, certID int) error {
+		store, err := openStore()
+		if err != nil {
+			return err
+		}
+		// storage.Store has no Close(); close concrete stores (production *GormStore) when present
+		// while staying compatible with in-memory test stores that omit Close.
+		if closer, ok := store.(interface{ Close() error }); ok {
+			defer func() { _ = closer.Close() }()
+		}
+
+		svc := newCertificateServiceWithRenewal(cfg, store, issuer)
+		rows, err := store.ListManagedCertificates(ctx)
+		if err != nil {
+			return err
+		}
+		current, targetIndex, ok := findManagedCertificateByID(rows, certID)
+		if !ok {
+			// Certificate was deleted while issuance was pending; nothing to do.
+			return nil
+		}
+		if !managedCertificateEligibleForBackgroundIssue(current) {
+			// Status changed (disabled, finalized by another path, etc.); leave it alone.
+			return nil
+		}
+		maxRevision := 0
+		for _, row := range rows {
+			if row.Revision > maxRevision {
+				maxRevision = row.Revision
+			}
+		}
+		_, err = svc.issueManagedCertificateWithoutRevisionBump(ctx, rows, targetIndex, current, maxRevision)
+		return err
+	}
+}
+
+// managedCertificateEligibleForBackgroundIssue reports whether a certificate row should be
+// (re)issued by the background signer. It guards against stale dispatches: only certificates
+// persisted as "issuing" that are still enabled master_cf_dns ACME domain certs proceed.
+func managedCertificateEligibleForBackgroundIssue(cert ManagedCertificate) bool {
+	return cert.Status == "issuing" &&
+		cert.Enabled &&
+		cert.Scope == "domain" &&
+		cert.IssuerMode == "master_cf_dns" &&
+		cert.CertificateType == "acme"
+}
+
+// Failure backoff classes. Defaulting unknown errors to "persistent" keeps retries conservative
+// so transient-looking but actually-durable failures do not burn Let's Encrypt validation quota.
+const (
+	managedCertificateBackoffClassTransient   = "transient"
+	managedCertificateBackoffClassPersistent  = "persistent"
+	managedCertificateBackoffClassRateLimited = "rate_limited"
+
+	managedCertificateBackoffTransientBase  = 5 * time.Second
+	managedCertificateBackoffTransientCap   = 5 * time.Minute
+	managedCertificateBackoffPersistentBase = time.Hour
+	managedCertificateBackoffPersistentCap  = 32 * time.Hour
+	managedCertificateBackoffRateLimitedMin = time.Hour
+	managedCertificateBackoffRateLimitedCap = 32 * time.Hour
+
+	// managedCertificateBackoffMaxShift bounds exponential growth (base<<shift) so delays stay
+	// within class caps and never overflow for large retry counts.
+	managedCertificateBackoffMaxShift = 6
+)
+
+// classifyManagedCertificateIssueError maps an ACME/issuer failure to a backoff class. The
+// heuristic is intentionally string-based because lego's error types are not stable across
+// releases; durable misconfiguration (auth, validation, quota) is treated as persistent so
+// retries do not burn LE's 5-failed-validations/hour/hostname limit.
+func classifyManagedCertificateIssueError(err error) string {
+	if err == nil {
+		return managedCertificateBackoffClassTransient
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "rate-limit") ||
+		strings.Contains(msg, "too many") ||
+		strings.Contains(msg, "retry-after"):
+		return managedCertificateBackoffClassRateLimited
+	case managedCertificateTransientIssueMessage(msg):
+		return managedCertificateBackoffClassTransient
+	default:
+		return managedCertificateBackoffClassPersistent
+	}
+}
+
+func managedCertificateTransientIssueMessage(msg string) bool {
+	markers := []string{
+		"timeout", "timed out", "connection reset", "connection refused",
+		"connection closed", "no such host", "temporary", "i/o timeout",
+		"eof", "server misbehaving", "502", "503", "504", "service unavailable",
+	}
+	for _, marker := range markers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractManagedCertificateRetryAfter best-effort parses an ACME Retry-After value (seconds) from
+// an error message. lego does not reliably surface Retry-After as a structured field across
+// releases, so this scans the error text; callers fall back to the class curve when it returns 0.
+func extractManagedCertificateRetryAfter(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	msg := strings.ToLower(err.Error())
+	idx := strings.Index(msg, "retry-after")
+	if idx < 0 {
+		return 0
+	}
+	rest := strings.TrimLeft(msg[idx+len("retry-after"):], " :=\t")
+	digits := strings.Builder{}
+	for _, r := range rest {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+			continue
+		}
+		break
+	}
+	if digits.Len() == 0 {
+		return 0
+	}
+	seconds, err := strconv.Atoi(digits.String())
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// managedCertificateBackoffDelay computes the delay before the next attempt for a failed
+// issuance. It is a pure function of (class, retryAfter, retryCount) so it is fully testable:
+// exponential growth base<<shift capped per class, plus deterministic jitter (spread by
+// retryCount) so simultaneously-failed certificates do not retry in lockstep without introducing
+// randomness. The renewal loop also serializes retries, bounding herd risk further.
+func managedCertificateBackoffDelay(class string, retryAfter time.Duration, retryCount int) time.Duration {
+	base, capDelay := managedCertificateBackoffClassBaseAndCap(class, retryAfter)
+
+	shift := retryCount - 1
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > managedCertificateBackoffMaxShift {
+		shift = managedCertificateBackoffMaxShift
+	}
+	delay := base << uint(shift)
+	if delay <= 0 || delay > capDelay {
+		delay = capDelay
+	}
+
+	jitter := delay / 4 * time.Duration(managedCertificateBackoffJitterFraction(retryCount))
+	if maxJitter := capDelay / 4; jitter > maxJitter {
+		jitter = maxJitter
+	}
+	return delay + jitter
+}
+
+// managedCertificateBackoffJitterFraction returns 0..3 (quarters of the delay) deterministically
+// from the attempt count, spreading retries without randomness.
+func managedCertificateBackoffJitterFraction(retryCount int) int64 {
+	switch retryCount % 4 {
+	case 1:
+		return 1
+	case 2:
+		return 2
+	case 3:
+		return 3
+	default:
+		return 0
+	}
+}
+
+func managedCertificateBackoffClassBaseAndCap(class string, retryAfter time.Duration) (time.Duration, time.Duration) {
+	switch class {
+	case managedCertificateBackoffClassTransient:
+		return managedCertificateBackoffTransientBase, managedCertificateBackoffTransientCap
+	case managedCertificateBackoffClassRateLimited:
+		base := retryAfter
+		if base <= 0 || base < managedCertificateBackoffRateLimitedMin {
+			base = managedCertificateBackoffRateLimitedMin
+		}
+		return base, managedCertificateBackoffRateLimitedCap
+	default:
+		return managedCertificateBackoffPersistentBase, managedCertificateBackoffPersistentCap
+	}
 }
 
 func (s *certificateService) restoreManagedCertificateMaterialAfterIssueFailure(ctx context.Context, cert ManagedCertificate, previous storage.ManagedCertificateBundle, previousFound bool) error {

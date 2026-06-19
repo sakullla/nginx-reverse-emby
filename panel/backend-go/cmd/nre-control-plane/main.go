@@ -75,6 +75,12 @@ var runControlPlaneFromEnv = func() error {
 	if err != nil {
 		return err
 	}
+	// Wire the background signer before startup recovery so re-dispatched "issuing" certificates
+	// have a real sign function (otherwise Submit is a safe no-op). Each issuance opens a fresh
+	// store, decoupled from the HTTP request or renewal-loop store lifecycles.
+	service.ManagedCertificateDispatcher().SetSignFunc(service.ManagedCertificateBackgroundSigner(cfg, func() (storage.Store, error) {
+		return openConfiguredStore(cfg)
+	}))
 	startManagedCertificateIssuanceRecovery(ctx, cfg, nil)
 	if err := application.Run(ctx); err != nil {
 		return err
