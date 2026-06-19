@@ -1487,9 +1487,16 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 		Usage:           "https",
 	}
 
+	// Failure backoff (R5② / R4): the initial issuance failure records a backoff
+	// window, so a subsequent re-attempt inside that window is deferred. Drive both
+	// managers with a controllable clock so the recreated manager observes a `now`
+	// past the persistent-class backoff window and the re-issuance can proceed,
+	// exercising the account-state reuse this test is about.
+	failureAt := time.Now()
 	initial := mustNewManager(
 		t,
 		dataDir,
+		withNow(func() time.Time { return failureAt }),
 		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
 			return partialStateACMEIssuer{
 				result: acmeIssueResult{
@@ -1514,6 +1521,7 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 	recreated := mustNewManager(
 		t,
 		dataDir,
+		withNow(func() time.Time { return failureAt.Add(2 * time.Hour) }),
 		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
 			return recreatedFake, nil
 		}),
