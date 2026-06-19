@@ -1487,9 +1487,16 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 		Usage:           "https",
 	}
 
+	// Failure backoff (R5② / R4): the initial issuance failure records a backoff
+	// window, so a subsequent re-attempt inside that window is deferred. Drive both
+	// managers with a controllable clock so the recreated manager observes a `now`
+	// past the persistent-class backoff window and the re-issuance can proceed,
+	// exercising the account-state reuse this test is about.
+	failureAt := time.Now()
 	initial := mustNewManager(
 		t,
 		dataDir,
+		withNow(func() time.Time { return failureAt }),
 		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
 			return partialStateACMEIssuer{
 				result: acmeIssueResult{
@@ -1514,6 +1521,7 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 	recreated := mustNewManager(
 		t,
 		dataDir,
+		withNow(func() time.Time { return failureAt.Add(2 * time.Hour) }),
 		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
 			return recreatedFake, nil
 		}),
@@ -1530,6 +1538,57 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 	}
 	if recreatedFake.requests[0].Registration == nil || recreatedFake.requests[0].Registration.URI != registrationResource.URI {
 		t.Fatalf("expected persisted registration, got %+v", recreatedFake.requests[0].Registration)
+	}
+}
+
+// TestManagerApplyRecordsBackoffForNonIssuerFailures pins the fix for non-issuer
+// renewal failures: an error raised OUTSIDE issuer.Issue (here, the issuer
+// factory itself failing) must still record failure backoff, so the certificate
+// is not retried every heartbeat without a backoff window. Before the fix only
+// issuer.Issue errors were recorded in loadOrIssueACMEUnlocked; factory, request,
+// parse and persist failures returned unrecorded.
+func TestManagerApplyRecordsBackoffForNonIssuerFailures(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withNow(func() time.Time { return now }),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return nil, errSyntheticACMEFailure
+		}),
+	)
+	policy := model.ManagedCertificatePolicy{
+		ID:              5801,
+		Domain:          "factory-error.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+	if !errors.Is(err, errSyntheticACMEFailure) {
+		t.Fatalf("expected synthetic acme failure from issuer factory, got %v", err)
+	}
+
+	state, ok, err := manager.loadManagedCertificateState(5801)
+	if err != nil {
+		t.Fatalf("load state failed: %v", err)
+	}
+	if !ok || state.ACME == nil {
+		t.Fatalf("expected managed acme state after non-issuer failure, got ok=%v state=%+v", ok, state)
+	}
+	if got := state.ACME.Renewal.LastAttemptStatus; got != "error" {
+		t.Fatalf("expected non-issuer failure to record last attempt status error, got %q", got)
+	}
+	if got := state.ACME.Renewal.BackoffClass; got == "" {
+		t.Fatal("expected non-issuer failure to record a backoff class; pre-fix only issuer.Issue errors were recorded")
+	}
+	if got := state.ACME.Renewal.BackoffRetryNext; got <= now.Unix() {
+		t.Fatalf("expected non-issuer failure to schedule a future retry, got %d (now=%d)", got, now.Unix())
 	}
 }
 

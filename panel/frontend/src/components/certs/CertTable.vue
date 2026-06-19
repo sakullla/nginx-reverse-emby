@@ -15,9 +15,15 @@
       <tbody>
         <tr v-for="cert in certificates" :key="cert.id" class="rules-table__row">
           <td>
-            <BaseBadge :tone="certStatusBadge(cert).tone" dot>
-              {{ certStatusBadge(cert).label }}
-            </BaseBadge>
+            <div class='rules-table__status-cell'>
+              <BaseBadge :tone="certStatusBadge(cert).tone" dot>
+                {{ certStatusBadge(cert).label }}
+              </BaseBadge>
+              <div v-if='cert.last_error || nextRetryLabel(cert)' class='rules-table__status-detail'>
+                <span v-if='cert.last_error' class='rules-table__error'>{{ cert.last_error }}</span>
+                <span v-if='nextRetryLabel(cert)' class='rules-table__retry'>{{ nextRetryLabel(cert) }}</span>
+              </div>
+            </div>
           </td>
           <td class="rules-table__mono">{{ cert.domain }}</td>
           <td>
@@ -67,6 +73,7 @@ import BaseBadge from '../base/BaseBadge.vue'
 const CERT_STATUS = {
   active: { label: '生效中', tone: 'success' },
   pending: { label: '待签发', tone: 'warning' },
+  issuing: { label: '签发中', tone: 'primary' },
   error: { label: '签发失败', tone: 'danger' },
 }
 
@@ -78,6 +85,25 @@ function certStatusBadge(cert) {
 function formatDate(val) {
   if (!val) return '-'
   try { return new Date(val).toLocaleDateString('zh-CN') } catch { return val }
+}
+
+function nextRetryLabel(cert) {
+  const ts = Number(cert?.next_retry_at_unix)
+  if (!ts || ts <= 0) return ''
+  let formatted
+  try {
+    formatted = new Date(ts * 1000).toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return ''
+  }
+  const retryCount = Number(cert?.retry_count) || 0
+  const countPart = retryCount > 0 ? `（第 ${retryCount} 次）` : ''
+  return `下次重试 ${formatted}${countPart}`
 }
 
 defineProps({
@@ -95,6 +121,10 @@ defineEmits(['edit', 'delete'])
 .rules-table td { padding: var(--space-3) var(--space-4); vertical-align: middle; }
 .rules-table__mono { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-primary); }
 .rules-table__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.rules-table__status-cell { display: flex; flex-direction: column; gap: 0.25rem; }
+.rules-table__status-detail { display: flex; flex-direction: column; gap: 0.125rem; max-width: 220px; }
+.rules-table__error { font-size: 0.6875rem; color: var(--color-danger); line-height: 1.4; word-break: break-all; }
+.rules-table__retry { font-size: 0.6875rem; color: var(--color-text-tertiary); line-height: 1.4; }
 .rules-table__actions { display: flex; gap: 0.25rem; }
 .rules-table__actions .btn-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); }
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }

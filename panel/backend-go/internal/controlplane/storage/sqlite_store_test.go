@@ -4291,6 +4291,102 @@ func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWit
 	}
 }
 
+func TestStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "edge-withhold",
+		Name:            "edge-withhold",
+		AgentToken:      "token-edge-withhold",
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 2,
+		CurrentRevision: 1,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	rows := []ManagedCertificateRow{
+		{
+			ID:              40,
+			Domain:          "issuing.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["edge-withhold"]`,
+			Status:          "issuing",
+			AgentReports:    `{}`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        5,
+		},
+		{
+			ID:              41,
+			Domain:          "agent-issued.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-withhold"]`,
+			Status:          "issuing",
+			AgentReports:    `{}`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        6,
+		},
+	}
+	if err := store.SaveManagedCertificates(t.Context(), rows); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+
+	load := func() Snapshot {
+		t.Helper()
+		snapshot, err := store.LoadAgentSnapshot(t.Context(), "edge-withhold", AgentSnapshotInput{
+			DesiredVersion:  "1.2.3",
+			DesiredRevision: 6,
+			CurrentRevision: 1,
+			Platform:        "linux-amd64",
+		})
+		if err != nil {
+			t.Fatalf("LoadAgentSnapshot() error = %v", err)
+		}
+		return snapshot
+	}
+
+	snapshot := load()
+	if containsPolicyID(snapshot.CertificatePolicies, 40) {
+		t.Fatalf("master_cf_dns policy id 40 must be withheld while it has no material (agents cannot issue it): %+v", snapshot.CertificatePolicies)
+	}
+	if containsCertificateID(snapshot.Certificates, 40) {
+		t.Fatalf("master_cf_dns bundle id 40 must be absent without material: %+v", snapshot.Certificates)
+	}
+	if !containsPolicyID(snapshot.CertificatePolicies, 41) {
+		t.Fatalf("local_http01 policy id 41 must remain published without material (the agent issues it): %+v", snapshot.CertificatePolicies)
+	}
+
+	// Background signer completes: material is written and the row flips to active.
+	writeManagedCertificateMaterial(t, dataRoot, "issuing.example.com", "issued-cert", "issued-key")
+	rows[0].Status = "active"
+	if err := store.SaveManagedCertificates(t.Context(), rows); err != nil {
+		t.Fatalf("SaveManagedCertificates() reactivate error = %v", err)
+	}
+
+	snapshot = load()
+	if !containsPolicyID(snapshot.CertificatePolicies, 40) || !containsCertificateID(snapshot.Certificates, 40) {
+		t.Fatalf("master_cf_dns id 40 must be published once material exists: policies=%+v certs=%+v", snapshot.CertificatePolicies, snapshot.Certificates)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

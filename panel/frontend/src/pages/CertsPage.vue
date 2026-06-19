@@ -5,7 +5,7 @@
         <h1 class='certs-page__title'>证书管理</h1>
         <p class='certs-page__subtitle'>
           <template v-if='agentId'>
-            {{ certificates.length }} 项证书 · {{ activeCount }} 生效中 · 模板优先创建
+            {{ certificates.length }} 项证书 · {{ activeCount }} 生效中<template v-if='issuingCount'> · {{ issuingCount }} 签发中</template> · 模板优先创建
           </template>
           <template v-else>
             请先选择一个节点
@@ -229,6 +229,7 @@ function handleCandidateSelect(candidate) {
 }
 
 const activeCount = computed(() => certificates.value.filter((cert) => cert.enabled && cert.status === 'active').length)
+const issuingCount = computed(() => certificates.value.filter((cert) => cert.status === 'issuing').length)
 
 function issueCert(cert) {
   issueCertificate.mutate(cert.id)

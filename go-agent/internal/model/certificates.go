@@ -61,6 +61,11 @@ type ManagedCertificateACMERenewalState struct {
 	LastAttemptError    string `json:"last_attempt_error,omitempty"`
 	LastAttemptStatus   string `json:"last_attempt_status,omitempty"`
 	LastAttemptNotAfter int64  `json:"last_attempt_not_after,omitempty"`
+	// Failure backoff fields, mirroring the control-plane retry curve (R5② / R4).
+	// Zero values (legacy state) are treated as "no backoff, retry immediately".
+	BackoffClass     string `json:"backoff_class,omitempty"`
+	BackoffRetryNext int64  `json:"backoff_retry_next_unix,omitempty"`
+	BackoffRetryNum  int    `json:"backoff_retry_num,omitempty"`
 }
 
 type ManagedCertificateACMEState struct {

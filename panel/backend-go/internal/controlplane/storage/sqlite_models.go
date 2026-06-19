@@ -184,6 +184,20 @@ type ManagedCertificateRow struct {
 	SelfSigned      bool   `gorm:"column:self_signed"`
 	TagsJSON        string `gorm:"column:tags"`
 	Revision        int    `gorm:"column:revision"`
+	// Failure-backoff fields shared by the async issue path and the periodic renewal
+	// loop (see service.isManagedCertificateRenewalCandidate and
+	// service.applyManagedCertificateRenewalFailureBackoff). Zero values encode the
+	// "no outstanding backoff / retry immediately" contract:
+	//   - NextRetryAtUnix == 0 -> eligible on the next renewal pass or re-dispatch
+	//   - RetryCount == 0      -> no failed attempt recorded yet
+	//   - BackoffClass == ""   -> no active backoff class
+	// Fresh rows, certs that issued/renewed successfully, and pre-migration legacy
+	// rows all carry zero values, so they are treated as healthy and retryable.
+	// On failure the issue/renew paths populate all three together; the renewal
+	// candidate guard treats NextRetryAtUnix > 0 && now < NextRetryAtUnix as "skip".
+	NextRetryAtUnix int64  `gorm:"column:next_retry_at_unix"`
+	RetryCount      int    `gorm:"column:retry_count"`
+	BackoffClass    string `gorm:"column:backoff_class"`
 }
 
 type MetaRow struct {

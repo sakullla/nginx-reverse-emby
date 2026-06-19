@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1051,7 +1052,27 @@ func TestCertificateServiceIssueLocalHTTP01InternalCAGlobalIssueWithEmptyTargets
 	}
 }
 
-func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisionBump(t *testing.T) {
+// withMasterCFDNSBackgroundSigner wires the process-wide dispatcher to run master_cf_dns
+// issuance against the provided in-memory store using the fake issuer, so tests can exercise the
+// full submit -> dispatch -> background-issue flow. The returned function drains in-flight
+// issuances (call it before asserting final state); t.Cleanup also drains and resets the signer
+// so global dispatcher state never leaks across tests.
+func withMasterCFDNSBackgroundSigner(t *testing.T, cfg config.Config, store storage.Store, issuer managedCertificateRenewalIssuer) func() {
+	t.Helper()
+	dispatcher := ManagedCertificateDispatcher()
+	dispatcher.SetSignFunc(managedCertificateBackgroundSignerWithIssuer(cfg, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil))
+	t.Cleanup(func() {
+		dispatcher.Wait()
+		dispatcher.SetSignFunc(nil)
+	})
+	return func() {
+		dispatcher.Wait()
+	}
+}
+
+func TestCertificateServiceCreateMasterCFDNSDispatchesIssuingAsync(t *testing.T) {
 	now := time.Date(2026, 4, 11, 16, 17, 18, 0, time.UTC)
 	ca := mustCreateSelfSignedCA(t, "Create Master CF DNS CA")
 	leaf := mustCreateLeafSignedByCA(t, "create-master.example.com", ca)
@@ -1077,6 +1098,7 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 		LocalAgentID:     "local",
 	}, store, issuer)
 	svc.now = func() time.Time { return now }
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	created, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
 		Domain:          stringPtr("create-master.example.com"),
@@ -1090,22 +1112,29 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	// Submit returns immediately with "issuing"; the ACME order runs in the background goroutine.
+	if created.Status != "issuing" {
+		t.Fatalf("created.Status = %q, want issuing", created.Status)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("created.Revision = %d, want 1", created.Revision)
+	}
+	if len(issuer.calls) != 0 {
+		t.Fatalf("issuer must not be called synchronously on submit, calls = %+v", issuer.calls)
+	}
+
+	drain()
+
 	if len(issuer.calls) != 1 || issuer.calls[0] != 1 {
 		t.Fatalf("issuer calls = %+v", issuer.calls)
 	}
-	if created.Status != "active" {
-		t.Fatalf("created.Status = %q", created.Status)
-	}
-	if created.Revision != 1 {
-		t.Fatalf("created.Revision = %d", created.Revision)
-	}
-	row := managedCertificateFromRow(store.managedCerts[0])
-	if row.Status != "active" || row.Revision != 1 || row.MaterialHash != "issued-hash" {
-		t.Fatalf("saved row = %+v", row)
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" || finalized.Revision != 2 || finalized.MaterialHash != "issued-hash" {
+		t.Fatalf("finalized row = %+v", finalized)
 	}
 }
 
-func TestCertificateServiceUpdateMasterCFDNSEnableTriggersIssue(t *testing.T) {
+func TestCertificateServiceUpdateMasterCFDNSEnableDispatchesIssuingAsync(t *testing.T) {
 	now := time.Date(2026, time.April, 11, 21, 22, 23, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "enable-master.example.test")
 	store := &relayCertStore{
@@ -1144,6 +1173,7 @@ func TestCertificateServiceUpdateMasterCFDNSEnableTriggersIssue(t *testing.T) {
 		LocalAgentID:     "local",
 	}, store, issuer)
 	svc.now = func() time.Time { return now }
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	updated, err := svc.Update(context.Background(), "local", 97, ManagedCertificateInput{
 		Enabled: boolPtr(true),
@@ -1151,21 +1181,30 @@ func TestCertificateServiceUpdateMasterCFDNSEnableTriggersIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
+	if updated.Status != "issuing" {
+		t.Fatalf("updated.Status = %q, want issuing", updated.Status)
+	}
+	if len(issuer.calls) != 0 {
+		t.Fatalf("issuer must not be called synchronously on submit, calls = %+v", issuer.calls)
+	}
+
+	drain()
 
 	if len(issuer.calls) != 1 || issuer.calls[0] != 97 {
 		t.Fatalf("issuer calls = %+v", issuer.calls)
 	}
-	if updated.Status != "active" {
-		t.Fatalf("updated.Status = %q", updated.Status)
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" {
+		t.Fatalf("finalized.Status = %q", finalized.Status)
 	}
-	if updated.LastIssueAt != now.UTC().Format(time.RFC3339) {
-		t.Fatalf("updated.LastIssueAt = %q", updated.LastIssueAt)
+	if finalized.LastIssueAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("finalized.LastIssueAt = %q", finalized.LastIssueAt)
 	}
-	if updated.MaterialHash != "enabled-issue-hash" {
-		t.Fatalf("updated.MaterialHash = %q", updated.MaterialHash)
+	if finalized.MaterialHash != "enabled-issue-hash" {
+		t.Fatalf("finalized.MaterialHash = %q", finalized.MaterialHash)
 	}
-	if updated.Revision != 7 {
-		t.Fatalf("updated.Revision = %d", updated.Revision)
+	if finalized.Revision != 8 {
+		t.Fatalf("finalized.Revision = %d", finalized.Revision)
 	}
 }
 
@@ -1300,29 +1339,37 @@ func TestCertificateServiceIssueMasterCFDNSSuccessPersistsMaterialAndUpdatesStat
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
 	}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	issued, err := svc.Issue(context.Background(), "local", 60)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
-	if issued.Status != "active" {
-		t.Fatalf("issued.Status = %q", issued.Status)
+	if issued.Status != "issuing" {
+		t.Fatalf("issued.Status = %q, want issuing", issued.Status)
 	}
-	if issued.LastIssueAt != "2026-04-11T10:11:12Z" {
-		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
+
+	drain()
+
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" {
+		t.Fatalf("finalized.Status = %q", finalized.Status)
 	}
-	if issued.LastError != "" {
-		t.Fatalf("issued.LastError = %q", issued.LastError)
+	if finalized.LastIssueAt != "2026-04-11T10:11:12Z" {
+		t.Fatalf("finalized.LastIssueAt = %q", finalized.LastIssueAt)
 	}
-	if issued.ACMEInfo.CA != "LetsEncrypt" || issued.ACMEInfo.Renew != "2026-07-10T00:00:00Z" {
-		t.Fatalf("issued.ACMEInfo = %+v", issued.ACMEInfo)
+	if finalized.LastError != "" {
+		t.Fatalf("finalized.LastError = %q", finalized.LastError)
+	}
+	if finalized.ACMEInfo.CA != "LetsEncrypt" || finalized.ACMEInfo.Renew != "2026-07-10T00:00:00Z" {
+		t.Fatalf("finalized.ACMEInfo = %+v", finalized.ACMEInfo)
 	}
 	expectedHash := hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
-	if issued.MaterialHash != expectedHash {
-		t.Fatalf("issued.MaterialHash = %q, want %q", issued.MaterialHash, expectedHash)
+	if finalized.MaterialHash != expectedHash {
+		t.Fatalf("finalized.MaterialHash = %q, want %q", finalized.MaterialHash, expectedHash)
 	}
-	if issued.Revision != 10 {
-		t.Fatalf("issued.Revision = %d", issued.Revision)
+	if finalized.Revision != 10 {
+		t.Fatalf("finalized.Revision = %d", finalized.Revision)
 	}
 	persisted := store.materialsByHost["master-issue-success.example.com"]
 	if persisted.CertPEM != strings.TrimSpace(issuedMaterial.CertPEM) || persisted.KeyPEM != strings.TrimSpace(issuedMaterial.KeyPEM) {
@@ -1364,19 +1411,27 @@ func TestCertificateServiceIssueMasterCFDNSSucceedsWhenRenewIsInFuture(t *testin
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
 	}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	issued, err := svc.Issue(context.Background(), "local", 66)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
-	if issued.Status != "active" {
-		t.Fatalf("issued.Status = %q", issued.Status)
+	if issued.Status != "issuing" {
+		t.Fatalf("issued.Status = %q, want issuing", issued.Status)
 	}
-	if issued.LastIssueAt != "2026-04-11T15:16:17Z" {
-		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
+
+	drain()
+
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" {
+		t.Fatalf("finalized.Status = %q", finalized.Status)
 	}
-	if issued.Revision != 12 {
-		t.Fatalf("issued.Revision = %d", issued.Revision)
+	if finalized.LastIssueAt != "2026-04-11T15:16:17Z" {
+		t.Fatalf("finalized.LastIssueAt = %q", finalized.LastIssueAt)
+	}
+	if finalized.Revision != 12 {
+		t.Fatalf("finalized.Revision = %d", finalized.Revision)
 	}
 }
 
@@ -1404,11 +1459,17 @@ func TestCertificateServiceIssueMasterCFDNSIssuerFailureRecordsErrorState(t *tes
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
 	}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
-	_, err := svc.Issue(context.Background(), "local", 61)
-	if err == nil {
-		t.Fatal("expected Issue() error")
+	issued, err := svc.Issue(context.Background(), "local", 61)
+	if err != nil {
+		t.Fatalf("Issue() submit error = %v", err)
 	}
+	if issued.Status != "issuing" {
+		t.Fatalf("issued.Status = %q, want issuing", issued.Status)
+	}
+
+	drain()
 
 	failed := managedCertificateFromRow(store.managedCerts[0])
 	if failed.Status != "error" {
@@ -1417,8 +1478,17 @@ func TestCertificateServiceIssueMasterCFDNSIssuerFailureRecordsErrorState(t *tes
 	if failed.LastError != "cloudflare issue failed" {
 		t.Fatalf("failed.LastError = %q", failed.LastError)
 	}
-	if failed.Revision != 8 {
+	if failed.Revision != 7 {
 		t.Fatalf("failed.Revision = %d", failed.Revision)
+	}
+	if failed.BackoffClass != managedCertificateBackoffClassPersistent {
+		t.Fatalf("failed.BackoffClass = %q, want %q", failed.BackoffClass, managedCertificateBackoffClassPersistent)
+	}
+	if failed.RetryCount != 1 {
+		t.Fatalf("failed.RetryCount = %d, want 1", failed.RetryCount)
+	}
+	if failed.NextRetryAtUnix <= 0 {
+		t.Fatalf("failed.NextRetryAtUnix = %d, want > 0", failed.NextRetryAtUnix)
 	}
 }
 
@@ -1471,17 +1541,23 @@ func TestCertificateServiceIssueMasterCFDNSMaterialPersistenceFailureRestoresSta
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
 	}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
-	_, err := svc.Issue(context.Background(), "local", 62)
-	if err == nil {
-		t.Fatal("expected Issue() error")
+	submitted, err := svc.Issue(context.Background(), "local", 62)
+	if err != nil {
+		t.Fatalf("Issue() submit error = %v", err)
 	}
+	if submitted.Status != "issuing" {
+		t.Fatalf("submitted.Status = %q, want issuing", submitted.Status)
+	}
+
+	drain()
 
 	failed := managedCertificateFromRow(store.managedCerts[0])
 	if failed.Status != "error" {
 		t.Fatalf("failed.Status = %q", failed.Status)
 	}
-	if failed.Revision != 5 {
+	if failed.Revision != 4 {
 		t.Fatalf("failed.Revision = %d", failed.Revision)
 	}
 	if failed.MaterialHash != previousHash {
@@ -1503,7 +1579,7 @@ func TestCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureW
 			Scope:           "domain",
 			IssuerMode:      "master_cf_dns",
 			TargetAgentIDs:  `["local"]`,
-			Status:          "pending",
+			Status:          "issuing",
 			LastError:       "",
 			MaterialHash:    "",
 			CertificateType: "acme",
@@ -1534,16 +1610,29 @@ func TestCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureW
 		LocalAgentID:     "local",
 	}, store, issuer)
 
-	_, err := svc.Issue(context.Background(), "local", 72)
+	// The async entry point absorbs this error inside the background goroutine, so the
+	// restore-failure contract is asserted directly at the issue body layer.
+	rows := append([]storage.ManagedCertificateRow(nil), store.managedCerts...)
+	current, targetIndex, ok := findManagedCertificateByID(rows, 72)
+	if !ok {
+		t.Fatalf("certificate 72 not found")
+	}
+	maxRevision := 0
+	for _, candidate := range rows {
+		if candidate.Revision > maxRevision {
+			maxRevision = candidate.Revision
+		}
+	}
+	_, err := svc.issueManagedCertificateInBackground(context.Background(), rows, targetIndex, current, maxRevision)
 	if err == nil {
-		t.Fatal("expected Issue() error")
+		t.Fatal("expected issue error")
 	}
 	if !strings.Contains(err.Error(), "restore failed: cleanup failed") {
-		t.Fatalf("Issue() error = %v", err)
+		t.Fatalf("issue error = %v", err)
 	}
 
 	row := managedCertificateFromRow(store.managedCerts[0])
-	if row.Status != "pending" || row.Revision != 6 || row.LastError != "" {
+	if row.Status != "issuing" || row.Revision != 6 || row.LastError != "" {
 		t.Fatalf("row changed unexpectedly after restore failure: %+v", row)
 	}
 	if store.saveManagedCall != 0 {
@@ -2006,7 +2095,7 @@ func TestCertificateServiceUploadedLocalHTTP01RequiresCertInstallCapableTargets(
 	}
 }
 
-func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevision(t *testing.T) {
+func TestCertificateServiceCreateMasterCFDNSAsyncIssueFinalizesActive(t *testing.T) {
 	now := time.Date(2026, time.April, 11, 16, 17, 18, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "issued.example.com")
 	store := &relayCertStore{
@@ -2033,6 +2122,7 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 		LocalAgentID:     "local",
 	}, store, issuer)
 	svc.now = func() time.Time { return now }
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
 
 	created, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
 		Domain:          stringPtr("issued.example.com"),
@@ -2046,19 +2136,15 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-
-	if created.Status != "active" {
-		t.Fatalf("created.Status = %q", created.Status)
-	}
-	if created.LastIssueAt != "2026-04-11T16:17:18Z" {
-		t.Fatalf("created.LastIssueAt = %q", created.LastIssueAt)
-	}
-	if created.MaterialHash != "issued-hash" {
-		t.Fatalf("created.MaterialHash = %q", created.MaterialHash)
+	if created.Status != "issuing" {
+		t.Fatalf("created.Status = %q, want issuing", created.Status)
 	}
 	if created.Revision != 1 {
-		t.Fatalf("created.Revision = %d", created.Revision)
+		t.Fatalf("created.Revision = %d, want 1", created.Revision)
 	}
+
+	drain()
+
 	if store.saveRuntimeCalls != 1 {
 		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
 	}
@@ -2069,8 +2155,239 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 		t.Fatalf("savedRuntimeState = %+v", store.savedRuntimeState)
 	}
 	persisted := managedCertificateFromRow(store.managedCerts[0])
-	if persisted.Revision != 1 || persisted.Status != "active" {
+	if persisted.Revision != 2 || persisted.Status != "active" {
 		t.Fatalf("persisted = %+v", persisted)
+	}
+	if persisted.LastIssueAt != "2026-04-11T16:17:18Z" {
+		t.Fatalf("persisted.LastIssueAt = %q", persisted.LastIssueAt)
+	}
+	if persisted.MaterialHash != "issued-hash" {
+		t.Fatalf("persisted.MaterialHash = %q", persisted.MaterialHash)
+	}
+}
+
+func TestManagedCertificateAsyncIssueBumpsRevisionOnSuccessAndNotifiesAgents(t *testing.T) {
+	issuedMaterial := mustCreateSelfSignedCA(t, "success-bump.example.com")
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["cert_install"]`,
+			DesiredRevision:  0,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			1: {
+				LastIssueAt:  "2026-04-11T16:17:18Z",
+				MaterialHash: "success-bump-hash",
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
+
+	created, err := svc.Create(context.Background(), "", ManagedCertificateInput{
+		Domain:          stringPtr("success-bump.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("master_cf_dns"),
+		TargetAgentIDs:  &[]string{"edge-1"},
+		CertificateType: stringPtr("acme"),
+		Usage:           stringPtr("https"),
+		Enabled:         boolPtr(true),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.Status != "issuing" {
+		t.Fatalf("created.Status = %q, want issuing", created.Status)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("created.Revision = %d, want 1 (issuing must not bump)", created.Revision)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 0 {
+		t.Fatalf("edge-1 desired revision at issuing = %d, want 0 (no premature notification)", got)
+	}
+
+	drain()
+
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" {
+		t.Fatalf("finalized.Status = %q, want active", finalized.Status)
+	}
+	if finalized.Revision != 2 {
+		t.Fatalf("finalized.Revision = %d, want 2 (success must bump)", finalized.Revision)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 2 {
+		t.Fatalf("edge-1 desired revision after success = %d, want 2", got)
+	}
+}
+
+func TestManagedCertificateBackgroundIssueRereadsStateUnderLock(t *testing.T) {
+	issuedMaterial := mustCreateSelfSignedCA(t, "stale-reread.example.com")
+	store := &relayCertStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-1", Name: "Edge 1", CapabilitiesJSON: `["cert_install"]`},
+			{ID: "edge-2", Name: "Edge 2", CapabilitiesJSON: `["cert_install"]`},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              88,
+			Domain:          "stale-reread.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["edge-2"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			88: {
+				LastIssueAt: "2026-04-11T16:17:18Z",
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{}, store, issuer)
+
+	staleRows := []storage.ManagedCertificateRow{{
+		ID:              88,
+		Domain:          "stale-reread.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "master_cf_dns",
+		TargetAgentIDs:  `["edge-1"]`,
+		Status:          "issuing",
+		CertificateType: "acme",
+		Usage:           "https",
+		Revision:        3,
+	}}
+	staleCurrent, staleIndex, ok := findManagedCertificateByID(staleRows, 88)
+	if !ok {
+		t.Fatalf("certificate 88 not found in stale snapshot")
+	}
+
+	out, err := svc.issueManagedCertificateInBackground(context.Background(), staleRows, staleIndex, staleCurrent, 3)
+	if err != nil {
+		t.Fatalf("issueManagedCertificateInBackground() error = %v", err)
+	}
+	if out.Status != "active" {
+		t.Fatalf("out.Status = %q, want active", out.Status)
+	}
+
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "active" {
+		t.Fatalf("persisted.Status = %q, want active", persisted.Status)
+	}
+	if len(persisted.TargetAgentIDs) != 1 || persisted.TargetAgentIDs[0] != "edge-2" {
+		t.Fatalf("persisted.TargetAgentIDs = %+v, want [edge-2]: background issue overwrote a concurrent edit with the stale snapshot", persisted.TargetAgentIDs)
+	}
+	if persisted.Revision != 4 {
+		t.Fatalf("persisted.Revision = %d, want 4 (fresh maxRevision 3 + 1)", persisted.Revision)
+	}
+	if got := relayAgentByID(t, store, "edge-2").DesiredRevision; got != 4 {
+		t.Fatalf("edge-2 desired revision = %d, want 4", got)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 0 {
+		t.Fatalf("edge-1 desired revision = %d, want 0 (stale target must not be notified)", got)
+	}
+}
+
+// TestManagedCertificateBackgroundIssuePreservesConcurrentRetargetDuringACMEOrder
+// targets the long issuer.Issue window: a concurrent Update retargets the
+// certificate AFTER the top-of-function re-read (which still sees [edge-1]) but
+// BEFORE the success-path save. Only a re-read of the persisted row at save time
+// can preserve that retarget; saving the stale snapshot would clobber it.
+func TestManagedCertificateBackgroundIssuePreservesConcurrentRetargetDuringACMEOrder(t *testing.T) {
+	issuedMaterial := mustCreateSelfSignedCA(t, "mid-order-edit.example.com")
+	store := &relayCertStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-1", Name: "Edge 1", CapabilitiesJSON: `["cert_install"]`},
+			{ID: "edge-2", Name: "Edge 2", CapabilitiesJSON: `["cert_install"]`},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              88,
+			Domain:          "mid-order-edit.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["edge-1"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			88: {
+				LastIssueAt: "2026-04-11T16:17:18Z",
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+		onIssue: func(_ ManagedCertificate) {
+			for i := range store.managedCerts {
+				if store.managedCerts[i].ID == 88 {
+					store.managedCerts[i].TargetAgentIDs = `["edge-2"]`
+				}
+			}
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{}, store, issuer)
+
+	staleRows := []storage.ManagedCertificateRow{{
+		ID:              88,
+		Domain:          "mid-order-edit.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "master_cf_dns",
+		TargetAgentIDs:  `["edge-1"]`,
+		Status:          "issuing",
+		CertificateType: "acme",
+		Usage:           "https",
+		Revision:        3,
+	}}
+	staleCurrent, staleIndex, ok := findManagedCertificateByID(staleRows, 88)
+	if !ok {
+		t.Fatalf("certificate 88 not found in stale snapshot")
+	}
+
+	out, err := svc.issueManagedCertificateInBackground(context.Background(), staleRows, staleIndex, staleCurrent, 3)
+	if err != nil {
+		t.Fatalf("issueManagedCertificateInBackground() error = %v", err)
+	}
+	if out.Status != "active" {
+		t.Fatalf("out.Status = %q, want active", out.Status)
+	}
+
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "active" {
+		t.Fatalf("persisted.Status = %q, want active", persisted.Status)
+	}
+	if len(persisted.TargetAgentIDs) != 1 || persisted.TargetAgentIDs[0] != "edge-2" {
+		t.Fatalf("persisted.TargetAgentIDs = %+v, want [edge-2]: success path clobbered a concurrent retarget made during the ACME order with the stale snapshot", persisted.TargetAgentIDs)
+	}
+	if persisted.Revision != 4 {
+		t.Fatalf("persisted.Revision = %d, want 4", persisted.Revision)
+	}
+	if got := relayAgentByID(t, store, "edge-2").DesiredRevision; got != 4 {
+		t.Fatalf("edge-2 desired revision = %d, want 4 (retargeted agent must be notified)", got)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 0 {
+		t.Fatalf("edge-1 desired revision = %d, want 0 (dropped target must not be notified from a stale snapshot)", got)
 	}
 }
 
@@ -2631,6 +2948,46 @@ func TestCertificateServiceGlobalUpdatePreservesExplicitEmptyTargetAgentIDs(t *t
 	row := managedCertificateFromRow(store.managedCerts[0])
 	if len(row.TargetAgentIDs) != 0 {
 		t.Fatalf("row.TargetAgentIDs = %+v", row.TargetAgentIDs)
+	}
+}
+
+func TestCertificateServiceUpdatePreservesManagedCertificateBackoff(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              98,
+			Domain:          "preserve-backoff.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "error",
+			LastError:       "previous failure",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        7,
+			BackoffClass:    managedCertificateBackoffClassRateLimited,
+			RetryCount:      3,
+			NextRetryAtUnix: now.Unix() + 3600,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	updated, err := svc.Update(context.Background(), "local", 98, ManagedCertificateInput{
+		Tags: &[]string{"ops"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.BackoffClass != managedCertificateBackoffClassRateLimited || updated.RetryCount != 3 || updated.NextRetryAtUnix != now.Unix()+3600 {
+		t.Fatalf("updated backoff fields = %+v", updated)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.BackoffClass != managedCertificateBackoffClassRateLimited || persisted.RetryCount != 3 || persisted.NextRetryAtUnix != now.Unix()+3600 {
+		t.Fatalf("persisted backoff fields = %+v", persisted)
 	}
 }
 
@@ -3337,10 +3694,14 @@ type fakeManagedCertificateRenewalIssuer struct {
 	calls   []int
 	results map[int]managedCertificateRenewalResult
 	errs    map[int]error
+	onIssue func(ManagedCertificate)
 }
 
 func (f *fakeManagedCertificateRenewalIssuer) Issue(_ context.Context, cert ManagedCertificate) (managedCertificateRenewalResult, error) {
 	f.calls = append(f.calls, cert.ID)
+	if f.onIssue != nil {
+		f.onIssue(cert)
+	}
 	if err := f.errs[cert.ID]; err != nil {
 		return managedCertificateRenewalResult{}, err
 	}
@@ -3364,4 +3725,639 @@ func relayAgentByID(t *testing.T, store *relayCertStore, agentID string) storage
 	}
 	t.Fatalf("agent %q not found in %+v", agentID, store.agents)
 	return storage.AgentRow{}
+}
+
+func TestManagedCertificateBackoffDelay(t *testing.T) {
+	tests := []struct {
+		name       string
+		class      string
+		retryAfter time.Duration
+		retryCount int
+		want       time.Duration
+	}{
+		// transient: base 5s, cap 5m
+		{"transient r1", managedCertificateBackoffClassTransient, 0, 1, 6*time.Second + 250*time.Millisecond},
+		{"transient r2", managedCertificateBackoffClassTransient, 0, 2, 15 * time.Second},
+		{"transient r3", managedCertificateBackoffClassTransient, 0, 3, 35 * time.Second},
+		{"transient r4", managedCertificateBackoffClassTransient, 0, 4, 40 * time.Second},
+		{"transient r6 jitter-capped", managedCertificateBackoffClassTransient, 0, 6, 235 * time.Second},
+		{"transient r7 delay-capped", managedCertificateBackoffClassTransient, 0, 7, 375 * time.Second},
+		// persistent: base 1h, cap 32h
+		{"persistent r1", managedCertificateBackoffClassPersistent, 0, 1, time.Hour + 15*time.Minute},
+		{"persistent r2", managedCertificateBackoffClassPersistent, 0, 2, 3 * time.Hour},
+		{"persistent r4", managedCertificateBackoffClassPersistent, 0, 4, 8 * time.Hour},
+		{"persistent r6 cap-floor", managedCertificateBackoffClassPersistent, 0, 6, 40 * time.Hour},
+		{"persistent r7 cap-floor", managedCertificateBackoffClassPersistent, 0, 7, 40 * time.Hour},
+		// rate_limited: base = max(retryAfter, 1h), cap 32h
+		{"rate_limited retryAfter=0 falls back to 1h", managedCertificateBackoffClassRateLimited, 0, 1, time.Hour + 15*time.Minute},
+		{"rate_limited retryAfter=2h", managedCertificateBackoffClassRateLimited, 2 * time.Hour, 1, 2*time.Hour + 30*time.Minute},
+		{"rate_limited retryAfter=100h capped", managedCertificateBackoffClassRateLimited, 100 * time.Hour, 1, 40 * time.Hour},
+		{"unknown class defaults to persistent curve", "bogus", 0, 1, time.Hour + 15*time.Minute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := managedCertificateBackoffDelay(tc.class, tc.retryAfter, tc.retryCount)
+			if got != tc.want {
+				t.Fatalf("managedCertificateBackoffDelay(%q, %v, %d) = %v, want %v", tc.class, tc.retryAfter, tc.retryCount, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateBackoffClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil defaults to transient", nil, managedCertificateBackoffClassTransient},
+		{"rate limit", errors.New("ACME rate limit exceeded"), managedCertificateBackoffClassRateLimited},
+		{"rate-limit hyphen", errors.New("server rate-limit reached"), managedCertificateBackoffClassRateLimited},
+		{"too many", errors.New("too many failed authorizations"), managedCertificateBackoffClassRateLimited},
+		{"retry-after header", errors.New("429 retry-after: 3600"), managedCertificateBackoffClassRateLimited},
+		{"connection refused is transient", errors.New("dial: connection refused"), managedCertificateBackoffClassTransient},
+		{"i/o timeout is transient", errors.New("read tcp: i/o timeout"), managedCertificateBackoffClassTransient},
+		{"503 is transient", errors.New("upstream returned 503 service unavailable"), managedCertificateBackoffClassTransient},
+		{"dns nxdomain is persistent", errors.New("DNS problem: NXDOMAIN looking up A"), managedCertificateBackoffClassPersistent},
+		{"unauthorized is persistent", errors.New("403 unauthorized"), managedCertificateBackoffClassPersistent},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyManagedCertificateIssueError(tc.err); got != tc.want {
+				t.Fatalf("classifyManagedCertificateIssueError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateBackoffRetryAfterExtraction(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want time.Duration
+	}{
+		{"nil", nil, 0},
+		{"seconds", errors.New("rate limited; retry-after: 120"), 120 * time.Second},
+		{"mixed case and no space", errors.New("Retry-After:3600"), 3600 * time.Second},
+		{"zero ignored", errors.New("retry-after 0"), 0},
+		{"no digits", errors.New("retry-after: later"), 0},
+		{"no header", errors.New("generic acme failure"), 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractManagedCertificateRetryAfter(tc.err); got != tc.want {
+				t.Fatalf("extractManagedCertificateRetryAfter(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateAsyncEligibility(t *testing.T) {
+	base := ManagedCertificate{
+		Status:          "issuing",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "master_cf_dns",
+		CertificateType: "acme",
+	}
+	tests := []struct {
+		name string
+		mut  func(ManagedCertificate) ManagedCertificate
+		want bool
+	}{
+		{"eligible baseline", func(c ManagedCertificate) ManagedCertificate { return c }, true},
+		{"finalized active", func(c ManagedCertificate) ManagedCertificate { c.Status = "active"; return c }, false},
+		{"disabled", func(c ManagedCertificate) ManagedCertificate { c.Enabled = false; return c }, false},
+		{"wildcard scope", func(c ManagedCertificate) ManagedCertificate { c.Scope = "wildcard"; return c }, false},
+		{"local http01 issuer", func(c ManagedCertificate) ManagedCertificate { c.IssuerMode = "local_http01"; return c }, false},
+		{"uploaded type", func(c ManagedCertificate) ManagedCertificate { c.CertificateType = "uploaded"; return c }, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := managedCertificateEligibleForBackgroundIssue(tc.mut(base)); got != tc.want {
+				t.Fatalf("managedCertificateEligibleForBackgroundIssue = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateAsyncSignerSkipsStaleDispatches(t *testing.T) {
+	t.Run("finalized cert left untouched", func(t *testing.T) {
+		issuer := &fakeManagedCertificateRenewalIssuer{
+			results: map[int]managedCertificateRenewalResult{5: {MaterialHash: "should-not-run"}},
+		}
+		store := &relayCertStore{
+			managedCerts: []storage.ManagedCertificateRow{{
+				ID:              5,
+				Domain:          "stale.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "master_cf_dns",
+				CertificateType: "acme",
+				Status:          "active", // already finalized — signer must not re-issue
+				Revision:        3,
+			}},
+		}
+		signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+			return store, nil
+		}, issuer, nil)
+
+		if err := signer(context.Background(), 5); err != nil {
+			t.Fatalf("signer() error = %v", err)
+		}
+		if len(issuer.calls) != 0 {
+			t.Fatalf("issuer must not run for non-issuing cert, calls = %+v", issuer.calls)
+		}
+		persisted := managedCertificateFromRow(store.managedCerts[0])
+		if persisted.Status != "active" || persisted.Revision != 3 {
+			t.Fatalf("stale cert must be left untouched = %+v", persisted)
+		}
+	})
+
+	t.Run("deleted cert is a no-op", func(t *testing.T) {
+		issuer := &fakeManagedCertificateRenewalIssuer{}
+		store := &relayCertStore{managedCerts: nil}
+		signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+			return store, nil
+		}, issuer, nil)
+
+		if err := signer(context.Background(), 99); err != nil {
+			t.Fatalf("signer() error = %v", err)
+		}
+		if len(issuer.calls) != 0 {
+			t.Fatalf("issuer must not run for missing cert, calls = %+v", issuer.calls)
+		}
+	})
+}
+
+func TestManagedCertificateAsyncSignerRestartsWhenStaleOrderFails(t *testing.T) {
+	now := time.Date(2026, 4, 11, 5, 6, 7, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "updated-stale-failure.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              53,
+			Domain:          "old-stale-failure.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			53: {
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "updated-stale-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "updated-stale-failure.example.com",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	issueDomains := []string{}
+	issuer.onIssue = func(cert ManagedCertificate) {
+		issueDomains = append(issueDomains, cert.Domain)
+		if len(issueDomains) == 1 {
+			updated := managedCertificateFromRow(store.managedCerts[0])
+			updated.Domain = "updated-stale-failure.example.com"
+			updated.Revision = 5
+			store.managedCerts[0] = managedCertificateToRow(updated)
+			issuer.errs = map[int]error{53: errors.New("old order failed")}
+			return
+		}
+		issuer.errs = nil
+	}
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 53); err != nil {
+		t.Fatalf("signer() error = %v", err)
+	}
+	if got, want := strings.Join(issueDomains, ","), "old-stale-failure.example.com,updated-stale-failure.example.com"; got != want {
+		t.Fatalf("issue domains = %q, want %q", got, want)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "active" || persisted.Domain != "updated-stale-failure.example.com" || persisted.MaterialHash != "updated-stale-hash" {
+		t.Fatalf("persisted certificate = %+v", persisted)
+	}
+	if persisted.LastError != "" || persisted.RetryCount != 0 || persisted.NextRetryAtUnix != 0 {
+		t.Fatalf("stale failure backoff should not be recorded = %+v", persisted)
+	}
+}
+
+func TestManagedCertificateAsyncSignerDoesNotPersistStaleMaterialValidationFailure(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              54,
+			Domain:          "deleted-invalid-material.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			54: {
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: "",
+					KeyPEM:  "",
+				},
+			},
+		},
+		onIssue: func(ManagedCertificate) {
+			store.managedCerts = nil
+		},
+	}
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 54); err == nil {
+		t.Fatal("expected signer error for invalid material")
+	}
+	if len(store.managedCerts) != 0 {
+		t.Fatalf("deleted certificate was restored: %+v", store.managedCerts)
+	}
+}
+
+func TestManagedCertificateAsyncSignerRestartsWhenStaleMaterialValidationFails(t *testing.T) {
+	now := time.Date(2026, 4, 11, 6, 7, 8, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "updated-invalid-material.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              55,
+			Domain:          "old-invalid-material.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			55: {
+				Material: storage.ManagedCertificateBundle{},
+			},
+		},
+	}
+	issueDomains := []string{}
+	issuer.onIssue = func(cert ManagedCertificate) {
+		issueDomains = append(issueDomains, cert.Domain)
+		if len(issueDomains) == 1 {
+			updated := managedCertificateFromRow(store.managedCerts[0])
+			updated.Domain = "updated-invalid-material.example.com"
+			updated.Revision = 5
+			store.managedCerts[0] = managedCertificateToRow(updated)
+			issuer.results[55] = managedCertificateRenewalResult{
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "updated-invalid-material-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "updated-invalid-material.example.com",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			}
+		}
+	}
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 55); err != nil {
+		t.Fatalf("signer() error = %v", err)
+	}
+	if got, want := strings.Join(issueDomains, ","), "old-invalid-material.example.com,updated-invalid-material.example.com"; got != want {
+		t.Fatalf("issue domains = %q, want %q", got, want)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "active" || persisted.Domain != "updated-invalid-material.example.com" || persisted.MaterialHash != "updated-invalid-material-hash" {
+		t.Fatalf("persisted certificate = %+v", persisted)
+	}
+}
+
+func TestManagedCertificateAsyncSignerRecordsMaterialPersistenceFailureOnFreshRow(t *testing.T) {
+	now := time.Date(2026, 4, 11, 7, 8, 9, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "same-domain-material-failure.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              56,
+			Domain:          "same-domain-material-failure.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+			TagsJSON:        `["old-tag"]`,
+		}},
+		saveMaterialErrs: []error{
+			errors.New("persist failed"),
+		},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			56: {
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "same-domain-material-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "same-domain-material-failure.example.com",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+		onIssue: func(ManagedCertificate) {
+			updated := managedCertificateFromRow(store.managedCerts[0])
+			updated.Tags = []string{"fresh-tag"}
+			updated.Revision = 8
+			store.managedCerts[0] = managedCertificateToRow(updated)
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 56); err == nil {
+		t.Fatal("expected signer error for material persistence failure")
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "error" {
+		t.Fatalf("persisted.Status = %q, want error", persisted.Status)
+	}
+	if !reflect.DeepEqual(persisted.Tags, []string{"fresh-tag"}) {
+		t.Fatalf("persisted.Tags = %+v, want fresh tag", persisted.Tags)
+	}
+	if persisted.Revision != 8 {
+		t.Fatalf("persisted.Revision = %d, want 8", persisted.Revision)
+	}
+	if persisted.RetryCount != 1 || persisted.NextRetryAtUnix <= now.Unix() {
+		t.Fatalf("persisted backoff = %+v", persisted)
+	}
+}
+
+func TestManagedCertificateAsyncSignerSkipsResultAfterSameDomainIneligibleEdit(t *testing.T) {
+	now := time.Date(2026, 4, 11, 8, 9, 10, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "same-domain-ineligible-edit.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              57,
+			Domain:          "same-domain-ineligible-edit.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			57: {
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "stale-result-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "same-domain-ineligible-edit.example.com",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+		onIssue: func(ManagedCertificate) {
+			updated := managedCertificateFromRow(store.managedCerts[0])
+			updated.Enabled = false
+			updated.Revision = 8
+			store.managedCerts[0] = managedCertificateToRow(updated)
+		},
+	}
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 57); err != nil {
+		t.Fatalf("signer() error = %v", err)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Enabled || persisted.Status != "issuing" || persisted.Revision != 8 {
+		t.Fatalf("persisted certificate = %+v", persisted)
+	}
+	if persisted.MaterialHash == "stale-result-hash" || persisted.LastIssueAt != "" {
+		t.Fatalf("stale result was applied = %+v", persisted)
+	}
+	if len(store.materialsByHost) != 0 {
+		t.Fatalf("stale material was persisted: %+v", store.materialsByHost)
+	}
+}
+
+func TestManagedCertificateRenewalCandidateBackoff(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, &relayCertStore{}, &fakeManagedCertificateRenewalIssuer{})
+	base := func() ManagedCertificate {
+		return ManagedCertificate{
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			CertificateType: "acme",
+			TargetAgentIDs:  []string{"local"},
+		}
+	}
+	tests := []struct {
+		name string
+		cert ManagedCertificate
+		want bool
+	}{
+		{"no backoff no renew date is candidate", base(), true},
+		{"backoff in future skipped", func() ManagedCertificate { c := base(); c.NextRetryAtUnix = now.Unix() + 3600; return c }(), false},
+		{"backoff elapsed is candidate", func() ManagedCertificate { c := base(); c.NextRetryAtUnix = now.Unix() - 3600; return c }(), true},
+		{"issuing with no backoff is fallback candidate", func() ManagedCertificate { c := base(); c.Status = "issuing"; return c }(), true},
+		{"issuing with future backoff still skipped", func() ManagedCertificate {
+			c := base()
+			c.Status = "issuing"
+			c.NextRetryAtUnix = now.Unix() + 3600
+			return c
+		}(), false},
+		{"error with future backoff skipped", func() ManagedCertificate {
+			c := base()
+			c.Status = "error"
+			c.NextRetryAtUnix = now.Unix() + 3600
+			return c
+		}(), false},
+		{"future renew date skipped", func() ManagedCertificate { c := base(); c.ACMEInfo.Renew = "2026-05-10T00:00:00Z"; return c }(), false},
+		{"past renew date is candidate", func() ManagedCertificate { c := base(); c.ACMEInfo.Renew = "2026-04-10T00:00:00Z"; return c }(), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := svc.isManagedCertificateRenewalCandidate(tc.cert, now); got != tc.want {
+				t.Fatalf("isManagedCertificateRenewalCandidate = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCertificateServiceRunRenewalPassSkipsCertInBackoff(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              50,
+			Domain:          "backoff.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "error",
+			LastError:       "previous failure",
+			ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        5,
+			BackoffClass:    "persistent",
+			RetryCount:      2,
+			NextRetryAtUnix: now.Unix() + 3600, // backoff not yet elapsed
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.RunRenewalPass(context.Background()); err != nil {
+		t.Fatalf("RunRenewalPass() error = %v", err)
+	}
+	if len(issuer.calls) != 0 {
+		t.Fatalf("issuer must not run while backoff is outstanding, calls = %+v", issuer.calls)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.BackoffClass != "persistent" || persisted.RetryCount != 2 || persisted.NextRetryAtUnix != now.Unix()+3600 {
+		t.Fatalf("backoff fields must be preserved when skipped = %+v", persisted)
+	}
+}
+
+func TestCertificateServiceRunRenewalPassRecordsRenewalFailureBackoff(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              51,
+			Domain:          "failing.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        7,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		errs: map[int]error{51: errors.New("cloudflare rate limit exceeded")},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.RunRenewalPass(context.Background()); err == nil {
+		t.Fatal("expected RunRenewalPass() to return renewal error")
+	}
+	failed := managedCertificateFromRow(store.managedCerts[0])
+	if failed.Status != "error" {
+		t.Fatalf("failed.Status = %q", failed.Status)
+	}
+	if failed.BackoffClass != managedCertificateBackoffClassRateLimited {
+		t.Fatalf("failed.BackoffClass = %q, want %q", failed.BackoffClass, managedCertificateBackoffClassRateLimited)
+	}
+	if failed.RetryCount != 1 {
+		t.Fatalf("failed.RetryCount = %d, want 1", failed.RetryCount)
+	}
+	if failed.NextRetryAtUnix <= now.Unix() {
+		t.Fatalf("failed.NextRetryAtUnix = %d, want > %d", failed.NextRetryAtUnix, now.Unix())
+	}
+}
+
+func TestCertificateServiceRunRenewalPassClearsBackoffOnSuccess(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	renewedMaterial := mustCreateSelfSignedCA(t, "Clear Backoff Material")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              52,
+			Domain:          "recover.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "error",
+			LastError:       "old failure",
+			ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+			BackoffClass:    "persistent",
+			RetryCount:      3,
+			// NextRetryAtUnix intentionally zero: backoff elapsed, so it is a candidate again.
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			52: {
+				Changed:      true,
+				LastIssueAt:  "2026-04-11T00:00:00Z",
+				MaterialHash: "recovered-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "recover.example.com",
+					Renew:      "2026-07-10T00:00:00Z",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(renewedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(renewedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.RunRenewalPass(context.Background()); err != nil {
+		t.Fatalf("RunRenewalPass() error = %v", err)
+	}
+	recovered := managedCertificateFromRow(store.managedCerts[0])
+	if recovered.Status != "active" {
+		t.Fatalf("recovered.Status = %q", recovered.Status)
+	}
+	if recovered.BackoffClass != "" || recovered.RetryCount != 0 || recovered.NextRetryAtUnix != 0 {
+		t.Fatalf("backoff must be cleared on success = %+v", recovered)
+	}
+	if recovered.LastError != "" {
+		t.Fatalf("recovered.LastError = %q", recovered.LastError)
+	}
 }
