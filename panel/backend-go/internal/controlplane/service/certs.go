@@ -814,7 +814,7 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		if !persistFound {
 			return ManagedCertificate{}, nil
 		}
-		if persistCert.Status != "issuing" || persistCert.Domain != current.Domain {
+		if persistCert.Domain != current.Domain || !managedCertificateEligibleForBackgroundIssue(persistCert) {
 			// A concurrent edit changed the certificate while the ACME order was in
 			// flight. If the row is still eligible, restart issuance with the updated
 			// data instead of leaving the certificate stuck in "issuing".

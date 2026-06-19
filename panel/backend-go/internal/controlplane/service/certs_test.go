@@ -4124,6 +4124,64 @@ func TestManagedCertificateAsyncSignerRecordsMaterialPersistenceFailureOnFreshRo
 	}
 }
 
+func TestManagedCertificateAsyncSignerSkipsResultAfterSameDomainIneligibleEdit(t *testing.T) {
+	now := time.Date(2026, 4, 11, 8, 9, 10, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "same-domain-ineligible-edit.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              57,
+			Domain:          "same-domain-ineligible-edit.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			57: {
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "stale-result-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "same-domain-ineligible-edit.example.com",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+		onIssue: func(ManagedCertificate) {
+			updated := managedCertificateFromRow(store.managedCerts[0])
+			updated.Enabled = false
+			updated.Revision = 8
+			store.managedCerts[0] = managedCertificateToRow(updated)
+		},
+	}
+	signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
+		return store, nil
+	}, issuer, nil)
+
+	if err := signer(context.Background(), 57); err != nil {
+		t.Fatalf("signer() error = %v", err)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Enabled || persisted.Status != "issuing" || persisted.Revision != 8 {
+		t.Fatalf("persisted certificate = %+v", persisted)
+	}
+	if persisted.MaterialHash == "stale-result-hash" || persisted.LastIssueAt != "" {
+		t.Fatalf("stale result was applied = %+v", persisted)
+	}
+	if len(store.materialsByHost) != 0 {
+		t.Fatalf("stale material was persisted: %+v", store.materialsByHost)
+	}
+}
+
 func TestManagedCertificateRenewalCandidateBackoff(t *testing.T) {
 	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
 	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, &relayCertStore{}, &fakeManagedCertificateRenewalIssuer{})
