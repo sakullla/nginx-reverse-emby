@@ -1536,6 +1536,86 @@ func TestListTrafficAgentIDsFallsBackToBucketsWhenFastSourcesAreEmpty(t *testing
 	}
 }
 
+func TestListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+		AgentID:     "bucket-only",
+		ScopeType:   "http_rule",
+		ScopeID:     "11",
+		BucketStart: bucket,
+		RXBytes:     100,
+		TXBytes:     200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var queries []string
+	callbackName := "test:list_traffic_agent_ids_queries"
+	if err := store.db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		queries = append(queries, strings.ToLower(tx.Statement.SQL.String()))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = store.db.Callback().Query().Remove(callbackName)
+	}()
+
+	agentIDs, err := store.ListTrafficAgentIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(agentIDs, ",") != "bucket-only" {
+		t.Fatalf("ListTrafficAgentIDs() = %+v, want bucket-only", agentIDs)
+	}
+	for _, query := range queries {
+		for _, table := range []string{"agent_traffic_hourly_buckets", "agent_traffic_daily_summaries", "agent_traffic_monthly_summaries"} {
+			if strings.Contains(query, table) {
+				t.Fatalf("ListTrafficAgentIDs scanned bucket table %s via query %q", table, query)
+			}
+		}
+	}
+}
+
+func TestBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
+	db := openTrafficTestGormDB(t)
+	ctx := context.Background()
+
+	if err := BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true, WireGuardEnabled: testBoolPtr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrator().DropTable(&AgentTrafficAgentRow{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("key = ?", trafficAgentIndexBackfillMarkerKey).Delete(&MetaRow{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&AgentTrafficHourlyBucketRow{
+		AgentID:     "legacy-bucket",
+		ScopeType:   "http_rule",
+		ScopeID:     "11",
+		BucketStart: "2026-05-03T08:00:00Z",
+		RXBytes:     100,
+		TXBytes:     200,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true, WireGuardEnabled: testBoolPtr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	store := &GormStore{db: db, localAgentID: "local"}
+	agentIDs, err := store.ListTrafficAgentIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(agentIDs, ",") != "legacy-bucket" {
+		t.Fatalf("ListTrafficAgentIDs() = %+v, want legacy-bucket", agentIDs)
+	}
+}
+
 func TestDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
 	store := newTrafficTestStore(t, false)
 	ctx := context.Background()
@@ -1585,6 +1665,7 @@ func assertTrafficAgentRows(t *testing.T, store *GormStore, agentID string, want
 	t.Helper()
 
 	models := []any{
+		&AgentTrafficAgentRow{},
 		&AgentTrafficPolicyRow{},
 		&AgentTrafficBaselineRow{},
 		&AgentTrafficRawCursorRow{},
@@ -2077,6 +2158,88 @@ func TestIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].RXBytes != 100 || rows[0].TXBytes != 50 {
 		t.Fatalf("rows = %+v, want reset delta rolled back", rows)
+	}
+}
+
+func TestIngestTrafficCursorDeltaSkipsEventForHostRollbackWithSameBootID(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	if _, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "host_total",
+		RXBytes:    100,
+		TXBytes:    50,
+		BootID:     "boot-a",
+		ObservedAt: observedAt.Format(time.RFC3339),
+	}, observedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.IngestTrafficCursorDeltaWithEvent(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "host_total",
+		RXBytes:    10,
+		TXBytes:    5,
+		BootID:     "boot-a",
+		ObservedAt: observedAt.Add(time.Hour).Format(time.RFC3339),
+	}, observedAt.Add(time.Hour), &AgentTrafficEventRow{
+		AgentID:   "edge-1",
+		EventType: "counter_reset",
+		Message:   "traffic counter reset",
+		CreatedAt: observedAt.Add(time.Hour).Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CounterReset || result.DeltaRXBytes != 10 || result.DeltaTXBytes != 5 {
+		t.Fatalf("result = %+v, want reset delta without event", result)
+	}
+	var events int64
+	if err := store.db.Model(&AgentTrafficEventRow{}).Where("agent_id = ? AND event_type = ?", "edge-1", "counter_reset").Count(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if events != 0 {
+		t.Fatalf("counter reset events = %d, want 0", events)
+	}
+}
+
+func TestIngestTrafficCursorDeltaRecordsEventForHostBootChange(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	if _, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "host_total",
+		RXBytes:    100,
+		TXBytes:    50,
+		BootID:     "boot-a",
+		ObservedAt: observedAt.Format(time.RFC3339),
+	}, observedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.IngestTrafficCursorDeltaWithEvent(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "host_total",
+		RXBytes:    10,
+		TXBytes:    5,
+		BootID:     "boot-b",
+		ObservedAt: observedAt.Add(time.Hour).Format(time.RFC3339),
+	}, observedAt.Add(time.Hour), &AgentTrafficEventRow{
+		AgentID:   "edge-1",
+		EventType: "counter_reset",
+		Message:   "traffic counter reset",
+		CreatedAt: observedAt.Add(time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var events int64
+	if err := store.db.Model(&AgentTrafficEventRow{}).Where("agent_id = ? AND event_type = ?", "edge-1", "counter_reset").Count(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("counter reset events = %d, want 1", events)
 	}
 }
 

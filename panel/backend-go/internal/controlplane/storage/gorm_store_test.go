@@ -1,13 +1,34 @@
 package storage
 
 import (
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
+
+type dryRunConnPool struct{}
+
+func (dryRunConnPool) PrepareContext(context.Context, string) (*sql.Stmt, error) {
+	return nil, nil
+}
+
+func (dryRunConnPool) ExecContext(context.Context, string, ...interface{}) (sql.Result, error) {
+	return nil, nil
+}
+
+func (dryRunConnPool) QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error) {
+	return nil, nil
+}
+
+func (dryRunConnPool) QueryRowContext(context.Context, string, ...interface{}) *sql.Row {
+	return nil
+}
 
 func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
 	cfg := config.Default()
@@ -55,6 +76,29 @@ func TestNewStoreRejectsUnsupportedDriver(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported database driver") {
 		t.Fatalf("NewStore() error = %v, want unsupported database driver error", err)
+	}
+}
+
+func TestPostgresTrafficBlockedNormalizationUsesBooleanValue(t *testing.T) {
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		DSN:                  "postgres://nre:nre@localhost:5432/nre?sslmode=disable",
+		Conn:                 dryRunConnPool{},
+		PreferSimpleProtocol: true,
+		WithoutReturning:     true,
+	}), &gorm.Config{
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stmt := db.Model(&AgentRow{}).Where("traffic_blocked IS NULL").Update("traffic_blocked", false).Statement
+	sql := stmt.SQL.String()
+	if strings.Contains(sql, "traffic_blocked = 0") || strings.Contains(sql, `"traffic_blocked"=0`) {
+		t.Fatalf("postgres traffic_blocked normalization SQL = %q, want boolean parameter", sql)
+	}
+	if len(stmt.Vars) == 0 || stmt.Vars[0] != false {
+		t.Fatalf("postgres traffic_blocked normalization vars = %#v, want first var false", stmt.Vars)
 	}
 }
 

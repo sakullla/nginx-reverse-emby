@@ -215,6 +215,12 @@ type AgentTrafficBaselineRow struct {
 	CreatedAt         string `gorm:"column:created_at"`
 }
 
+type AgentTrafficAgentRow struct {
+	AgentID   string `gorm:"column:agent_id;primaryKey"`
+	UpdatedAt string `gorm:"column:updated_at"`
+	CreatedAt string `gorm:"column:created_at"`
+}
+
 type AgentTrafficRawCursorRow struct {
 	AgentID    string `gorm:"column:agent_id;primaryKey"`
 	ScopeType  string `gorm:"column:scope_type;primaryKey"`
@@ -317,6 +323,10 @@ func (AgentTrafficPolicyRow) TableName() string {
 
 func (AgentTrafficBaselineRow) TableName() string {
 	return "agent_traffic_baselines"
+}
+
+func (AgentTrafficAgentRow) TableName() string {
+	return "agent_traffic_agents"
 }
 
 func (AgentTrafficRawCursorRow) TableName() string {

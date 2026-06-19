@@ -13,7 +13,11 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const wireGuardAgentLocalSnapshotMarkerKey = "migration.wireguard_snapshots_agent_local.v1"
+const (
+	wireGuardAgentLocalSnapshotMarkerKey = "migration.wireguard_snapshots_agent_local.v1"
+	trafficAgentIndexBackfillMarkerKey   = "migration.agent_traffic_agents_backfill.v1"
+	agentDefaultNormalizationMarkerKey   = "migration.agent_default_normalization.v1"
+)
 
 type SchemaOptions struct {
 	TrafficStatsEnabled    bool
@@ -74,12 +78,16 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		if err := tx.AutoMigrate(
 			&AgentTrafficPolicyRow{},
 			&AgentTrafficBaselineRow{},
+			&AgentTrafficAgentRow{},
 			&AgentTrafficRawCursorRow{},
 			&AgentTrafficHourlyBucketRow{},
 			&AgentTrafficDailySummaryRow{},
 			&AgentTrafficMonthlySummaryRow{},
 			&AgentTrafficEventRow{},
 		); err != nil {
+			return err
+		}
+		if err := backfillTrafficAgentIndex(ctx, db); err != nil {
 			return err
 		}
 	}
@@ -99,6 +107,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			return err
 		}
 	}
+	if err := normalizeAgentDefaultsOnce(ctx, db); err != nil {
+		return err
+	}
 
 	return tx.
 		Clauses(clause.OnConflict{DoNothing: true}).
@@ -113,6 +124,71 @@ func schemaWireGuardEnabled(options SchemaOptions) bool {
 		return true
 	}
 	return *options.WireGuardEnabled
+}
+
+func backfillTrafficAgentIndex(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if !tx.Migrator().HasTable(&MetaRow{}) || !tx.Migrator().HasTable(&AgentTrafficAgentRow{}) {
+		return nil
+	}
+
+	return tx.Transaction(func(tx *gorm.DB) error {
+		marker := MetaRow{
+			Key:   trafficAgentIndexBackfillMarkerKey,
+			Value: "applied",
+		}
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&marker)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+
+		sourceTables := []string{
+			(&AgentTrafficRawCursorRow{}).TableName(),
+			(&AgentTrafficHourlyBucketRow{}).TableName(),
+			(&AgentTrafficDailySummaryRow{}).TableName(),
+			(&AgentTrafficMonthlySummaryRow{}).TableName(),
+		}
+		seen := map[string]struct{}{}
+		if tx.Migrator().HasTable(&AgentRow{}) {
+			var rows []string
+			if err := tx.Model(&AgentRow{}).Pluck("id", &rows).Error; err != nil {
+				return err
+			}
+			for _, row := range rows {
+				agentID := strings.TrimSpace(row)
+				if agentID != "" {
+					seen[agentID] = struct{}{}
+				}
+			}
+		}
+		for _, table := range sourceTables {
+			if !tx.Migrator().HasTable(table) {
+				continue
+			}
+			var rows []string
+			if err := tx.Table(table).Distinct("agent_id").Pluck("agent_id", &rows).Error; err != nil {
+				return err
+			}
+			for _, row := range rows {
+				agentID := strings.TrimSpace(row)
+				if agentID == "" {
+					continue
+				}
+				seen[agentID] = struct{}{}
+			}
+		}
+
+		now := nowTrafficTimestamp()
+		for agentID := range seen {
+			if err := ensureTrafficAgentTx(tx, agentID, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func markWireGuardSnapshotsAgentLocal(ctx context.Context, db *gorm.DB) error {
@@ -157,9 +233,57 @@ func markWireGuardSnapshotsAgentLocal(ctx context.Context, db *gorm.DB) error {
 	})
 }
 
+func normalizeAgentDefaultsOnce(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if !tx.Migrator().HasTable(&MetaRow{}) || !tx.Migrator().HasTable(&AgentRow{}) {
+		return nil
+	}
+
+	return tx.Transaction(func(tx *gorm.DB) error {
+		marker := MetaRow{
+			Key:   agentDefaultNormalizationMarkerKey,
+			Value: "applied",
+		}
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&marker)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+
+		for _, stmt := range []string{
+			`UPDATE agents SET desired_version = '' WHERE desired_version IS NULL`,
+			`UPDATE agents SET platform = '' WHERE platform IS NULL`,
+			`UPDATE agents SET runtime_package_version = '' WHERE runtime_package_version IS NULL`,
+			`UPDATE agents SET runtime_package_platform = '' WHERE runtime_package_platform IS NULL`,
+			`UPDATE agents SET runtime_package_arch = '' WHERE runtime_package_arch IS NULL`,
+			`UPDATE agents SET runtime_package_sha256 = '' WHERE runtime_package_sha256 IS NULL`,
+			`UPDATE agents SET outbound_proxy_url = '' WHERE outbound_proxy_url IS NULL`,
+			`UPDATE agents SET traffic_stats_interval = '' WHERE traffic_stats_interval IS NULL`,
+			`UPDATE agents SET traffic_block_reason = '' WHERE traffic_block_reason IS NULL`,
+		} {
+			if err := tx.Exec(stmt).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(&AgentRow{}).Where("traffic_blocked IS NULL").Update("traffic_blocked", false).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 func cleanupSQLiteLegacyLocalAgentState(ctx context.Context, db *gorm.DB) error {
 	tx := db.WithContext(ctx)
 	if tx.Migrator().HasTable(&LocalAgentStateRow{}) {
+		var legacyRows int64
+		if err := tx.Model(&LocalAgentStateRow{}).Where("id <> ?", 1).Count(&legacyRows).Error; err != nil {
+			return err
+		}
+		if legacyRows == 0 {
+			return nil
+		}
 		if err := tx.Exec(`DELETE FROM local_agent_state WHERE id <> 1`).Error; err != nil {
 			return err
 		}
@@ -329,16 +453,6 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB, wireGuardEnab
 		`UPDATE l4_rules SET wireguard_inbound_mode = 'address' WHERE wireguard_inbound_mode IS NULL OR trim(wireguard_inbound_mode) = ''`,
 		`UPDATE l4_rules SET wireguard_listen_host = '' WHERE wireguard_listen_host IS NULL`,
 		`UPDATE l4_rules SET proxy_entry_auth = '{}' WHERE proxy_entry_auth IS NULL OR trim(proxy_entry_auth) = ''`,
-		`UPDATE agents SET desired_version = '' WHERE desired_version IS NULL`,
-		`UPDATE agents SET platform = '' WHERE platform IS NULL`,
-		`UPDATE agents SET runtime_package_version = '' WHERE runtime_package_version IS NULL`,
-		`UPDATE agents SET runtime_package_platform = '' WHERE runtime_package_platform IS NULL`,
-		`UPDATE agents SET runtime_package_arch = '' WHERE runtime_package_arch IS NULL`,
-		`UPDATE agents SET runtime_package_sha256 = '' WHERE runtime_package_sha256 IS NULL`,
-		`UPDATE agents SET outbound_proxy_url = '' WHERE outbound_proxy_url IS NULL`,
-		`UPDATE agents SET traffic_stats_interval = '' WHERE traffic_stats_interval IS NULL`,
-		`UPDATE agents SET traffic_blocked = 0 WHERE traffic_blocked IS NULL`,
-		`UPDATE agents SET traffic_block_reason = '' WHERE traffic_block_reason IS NULL`,
 		`UPDATE local_agent_state SET desired_version = '' WHERE desired_version IS NULL`,
 		`UPDATE local_agent_state SET last_apply_status = 'success' WHERE last_apply_status IS NULL OR trim(last_apply_status) = ''`,
 		`UPDATE local_agent_state SET last_apply_message = '' WHERE last_apply_message IS NULL`,
