@@ -85,6 +85,13 @@ var runControlPlaneFromEnv = func() error {
 	if err := application.Run(ctx); err != nil {
 		return err
 	}
+	// Graceful shutdown: application.Run returns once the shutdown context is cancelled,
+	// but background issuance goroutines may still be finishing. Give them a bounded window
+	// to observe cancellation and persist their outcome instead of leaving them to race
+	// process exit; log if any are still outstanding when the window closes.
+	if !service.ManagedCertificateDispatcher().WaitWithTimeout(managedCertificateIssuanceShutdownTimeout) {
+		log.Println("[cert] shutdown: timed out waiting for in-flight certificate issuance to finish")
+	}
 	return nil
 }
 
@@ -303,6 +310,7 @@ var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Conf
 }
 
 var managedCertificateAutoRenewInitialDelay = 10 * time.Second
+var managedCertificateIssuanceShutdownTimeout = 30 * time.Second
 var trafficCleanupInitialDelay = 30 * time.Second
 
 func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger) {

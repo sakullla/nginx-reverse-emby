@@ -6,6 +6,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -120,6 +121,63 @@ func TestManagedCertificateDispatcherRecoverDispatchesOnlyIssuing(t *testing.T) 
 	if !reflect.DeepEqual(got, []int{1, 3}) {
 		t.Fatalf("expected sign invoked for [1 3], got %v", got)
 	}
+}
+
+// TestManagedCertificateDispatcherSerializesWithIssuanceLock exercises the R6
+// "no duplicate ACME order" contract through the dispatcher path: the injected sign
+// function holds issuanceLock(certID) (mirroring renewSingleCertificate), so a
+// dispatcher goroutine and a concurrent renewal-loop acquire of the same per-certificate
+// lock must serialize rather than overlap. The cert async-issuance review recorded this
+// concurrency invariant as a deferred integration test (T2a F2).
+func TestManagedCertificateDispatcherSerializesWithIssuanceLock(t *testing.T) {
+	d := newManagedCertificateDispatcher()
+
+	const certID = 903
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	d.SetSignFunc(func(ctx context.Context, id int) error {
+		unlock := issuanceLock(id)
+		// Signal that we hold the per-certificate lock, then block until released.
+		close(entered)
+		<-release
+		unlock()
+		return nil
+	})
+
+	if !d.Submit(certID) {
+		t.Fatal("Submit should dispatch a new goroutine")
+	}
+
+	// Wait for the dispatcher goroutine to be inside its locked section.
+	<-entered
+
+	// A concurrent acquirer of the same per-certificate lock (the renewal loop uses the
+	// same issuanceLock) must block while the dispatcher holds it. Assert the lock is NOT
+	// acquirable within a short window, proving serialization instead of overlap.
+	acquired := make(chan struct{})
+	go func() {
+		unlock := issuanceLock(certID)
+		close(acquired)
+		unlock()
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("concurrent issuanceLock acquired while dispatcher sign function held it; expected serialization")
+	case <-time.After(50 * time.Millisecond):
+		// Expected: still blocked because the dispatcher goroutine holds the lock.
+	}
+
+	// Releasing the dispatcher goroutine must unblock the concurrent acquirer, proving
+	// both sides contend on the same per-certificate lock.
+	close(release)
+	select {
+	case <-acquired:
+		// Expected: concurrent acquirer got the lock once the dispatcher released it.
+	case <-time.After(time.Second):
+		t.Fatal("concurrent issuanceLock did not acquire after the dispatcher released it")
+	}
+
+	d.Wait()
 }
 
 type managedCertificateDispatcherListStoreStub struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -149,6 +150,25 @@ func (d *managedCertificateDispatcher) InFlight(certID int) bool {
 // it to observe post-issue state; production does not block on it.
 func (d *managedCertificateDispatcher) Wait() {
 	d.wg.Wait()
+}
+
+// WaitWithTimeout blocks until every dispatched issuance goroutine has finished or the
+// timeout elapses, returning true only if all finished within the timeout. Intended for
+// graceful shutdown: application.Run returns once the shutdown context is cancelled, but
+// background issuance goroutines may still be finishing — this gives them a bounded window
+// to observe cancellation and persist their outcome instead of racing process exit.
+func (d *managedCertificateDispatcher) WaitWithTimeout(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // managedCertificateListStore is the narrow store view Recover needs.

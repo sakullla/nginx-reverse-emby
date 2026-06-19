@@ -96,11 +96,7 @@ func (s *certificateService) renewSingleCertificate(
 
 	result, err := issuer.Renew(ctx, cert)
 	if err != nil {
-		next := applyManagedCertificateRenewalFailureBackoff(cert, err, s.now().UTC())
-		next.Status = "error"
-		next.LastError = err.Error()
-		rows[index] = managedCertificateToRow(next)
-		if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
+		if _, saveErr := s.recordManagedCertificateRenewalFailure(ctx, cert, err, rows, index); saveErr != nil {
 			return false, saveErr
 		}
 		return false, fmt.Errorf("renew certificate %d: %w", cert.ID, err)
@@ -112,11 +108,7 @@ func (s *certificateService) renewSingleCertificate(
 	if result.Changed {
 		issuedMaterial, err = resolveManagedCertificateIssueMaterial(cert, result)
 		if err != nil {
-			next := applyManagedCertificateRenewalFailureBackoff(cert, err, s.now().UTC())
-			next.Status = "error"
-			next.LastError = err.Error()
-			rows[index] = managedCertificateToRow(next)
-			if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
+			if _, saveErr := s.recordManagedCertificateRenewalFailure(ctx, cert, err, rows, index); saveErr != nil {
 				return false, saveErr
 			}
 			return false, fmt.Errorf("renew certificate %d: %w", cert.ID, err)
@@ -127,11 +119,8 @@ func (s *certificateService) renewSingleCertificate(
 			return false, err
 		}
 		if err := s.store.SaveManagedCertificateMaterial(ctx, cert.Domain, issuedMaterial); err != nil {
-			next := applyManagedCertificateRenewalFailureBackoff(cert, err, s.now().UTC())
-			next.Status = "error"
-			next.LastError = err.Error()
-			rows[index] = managedCertificateToRow(next)
-			if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
+			next, saveErr := s.recordManagedCertificateRenewalFailure(ctx, cert, err, rows, index)
+			if saveErr != nil {
 				return false, saveErr
 			}
 			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, next, previousMaterial, previousMaterialFound); restoreErr != nil {
@@ -226,6 +215,25 @@ func applyManagedCertificateRenewalFailureBackoff(cert ManagedCertificate, err e
 	failed.RetryCount = cert.RetryCount + 1
 	failed.NextRetryAtUnix = now.Add(managedCertificateBackoffDelay(class, retryAfter, failed.RetryCount)).Unix()
 	return failed
+}
+
+// recordManagedCertificateRenewalFailure writes the failure backoff + error state for a
+// renewal attempt and persists it, centralizing the pattern that was previously repeated
+// across the three failure branches of renewSingleCertificate (issuer.Renew /
+// resolveManagedCertificateIssueMaterial / SaveManagedCertificateMaterial). It mirrors
+// failManagedCertificateIssue (certs.go) so the async issue path and the renewal loop
+// share one backoff contract. It returns the updated certificate (with backoff and error
+// fields set) so the caller can drive any extra cleanup — e.g. restoring the previous
+// material after a SaveMaterial failure — using the same row that was just persisted.
+func (s *certificateService) recordManagedCertificateRenewalFailure(ctx context.Context, cert ManagedCertificate, err error, rows []storage.ManagedCertificateRow, index int) (ManagedCertificate, error) {
+	next := applyManagedCertificateRenewalFailureBackoff(cert, err, s.now().UTC())
+	next.Status = "error"
+	next.LastError = err.Error()
+	rows[index] = managedCertificateToRow(next)
+	if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
+		return next, saveErr
+	}
+	return next, nil
 }
 
 func parseManagedCertificateRenewAt(raw string) (time.Time, bool) {

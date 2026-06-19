@@ -27,7 +27,13 @@ export function useCertificates(agentId) {
   function startPolling() {
     if (pollTimer !== null) return
     pollTimer = setInterval(() => {
-      query.refetch().catch(() => {})
+      // Polling failures here are network-transient during the seconds-level issuing
+      // refresh; vue-query's own error state stays observable to consumers, so we do
+      // not raise a toast (that would be noisy). We still record the rejection for
+      // diagnostics instead of silently swallowing it.
+      query.refetch().catch((err) => {
+        console.debug('[cert] issuing poll refresh failed', err)
+      })
     }, ISSUING_POLL_INTERVAL_MS)
   }
 
