@@ -3619,3 +3619,183 @@ func TestManagedCertificateAsyncSignerSkipsStaleDispatches(t *testing.T) {
 		}
 	})
 }
+
+func TestManagedCertificateRenewalCandidateBackoff(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, &relayCertStore{}, &fakeManagedCertificateRenewalIssuer{})
+	base := func() ManagedCertificate {
+		return ManagedCertificate{
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			CertificateType: "acme",
+			TargetAgentIDs:  []string{"local"},
+		}
+	}
+	tests := []struct {
+		name string
+		cert ManagedCertificate
+		want bool
+	}{
+		{"no backoff no renew date is candidate", base(), true},
+		{"backoff in future skipped", func() ManagedCertificate { c := base(); c.NextRetryAtUnix = now.Unix() + 3600; return c }(), false},
+		{"backoff elapsed is candidate", func() ManagedCertificate { c := base(); c.NextRetryAtUnix = now.Unix() - 3600; return c }(), true},
+		{"issuing with no backoff is fallback candidate", func() ManagedCertificate { c := base(); c.Status = "issuing"; return c }(), true},
+		{"issuing with future backoff still skipped", func() ManagedCertificate {
+			c := base()
+			c.Status = "issuing"
+			c.NextRetryAtUnix = now.Unix() + 3600
+			return c
+		}(), false},
+		{"error with future backoff skipped", func() ManagedCertificate {
+			c := base()
+			c.Status = "error"
+			c.NextRetryAtUnix = now.Unix() + 3600
+			return c
+		}(), false},
+		{"future renew date skipped", func() ManagedCertificate { c := base(); c.ACMEInfo.Renew = "2026-05-10T00:00:00Z"; return c }(), false},
+		{"past renew date is candidate", func() ManagedCertificate { c := base(); c.ACMEInfo.Renew = "2026-04-10T00:00:00Z"; return c }(), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := svc.isManagedCertificateRenewalCandidate(tc.cert, now); got != tc.want {
+				t.Fatalf("isManagedCertificateRenewalCandidate = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCertificateServiceRunRenewalPassSkipsCertInBackoff(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              50,
+			Domain:          "backoff.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "error",
+			LastError:       "previous failure",
+			ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        5,
+			BackoffClass:    "persistent",
+			RetryCount:      2,
+			NextRetryAtUnix: now.Unix() + 3600, // backoff not yet elapsed
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.RunRenewalPass(context.Background()); err != nil {
+		t.Fatalf("RunRenewalPass() error = %v", err)
+	}
+	if len(issuer.calls) != 0 {
+		t.Fatalf("issuer must not run while backoff is outstanding, calls = %+v", issuer.calls)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.BackoffClass != "persistent" || persisted.RetryCount != 2 || persisted.NextRetryAtUnix != now.Unix()+3600 {
+		t.Fatalf("backoff fields must be preserved when skipped = %+v", persisted)
+	}
+}
+
+func TestCertificateServiceRunRenewalPassRecordsRenewalFailureBackoff(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              51,
+			Domain:          "failing.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        7,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		errs: map[int]error{51: errors.New("cloudflare rate limit exceeded")},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.RunRenewalPass(context.Background()); err == nil {
+		t.Fatal("expected RunRenewalPass() to return renewal error")
+	}
+	failed := managedCertificateFromRow(store.managedCerts[0])
+	if failed.Status != "error" {
+		t.Fatalf("failed.Status = %q", failed.Status)
+	}
+	if failed.BackoffClass != managedCertificateBackoffClassRateLimited {
+		t.Fatalf("failed.BackoffClass = %q, want %q", failed.BackoffClass, managedCertificateBackoffClassRateLimited)
+	}
+	if failed.RetryCount != 1 {
+		t.Fatalf("failed.RetryCount = %d, want 1", failed.RetryCount)
+	}
+	if failed.NextRetryAtUnix <= now.Unix() {
+		t.Fatalf("failed.NextRetryAtUnix = %d, want > %d", failed.NextRetryAtUnix, now.Unix())
+	}
+}
+
+func TestCertificateServiceRunRenewalPassClearsBackoffOnSuccess(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	renewedMaterial := mustCreateSelfSignedCA(t, "Clear Backoff Material")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              52,
+			Domain:          "recover.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "error",
+			LastError:       "old failure",
+			ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        4,
+			BackoffClass:    "persistent",
+			RetryCount:      3,
+			// NextRetryAtUnix intentionally zero: backoff elapsed, so it is a candidate again.
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			52: {
+				Changed:      true,
+				LastIssueAt:  "2026-04-11T00:00:00Z",
+				MaterialHash: "recovered-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "recover.example.com",
+					Renew:      "2026-07-10T00:00:00Z",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(renewedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(renewedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.RunRenewalPass(context.Background()); err != nil {
+		t.Fatalf("RunRenewalPass() error = %v", err)
+	}
+	recovered := managedCertificateFromRow(store.managedCerts[0])
+	if recovered.Status != "active" {
+		t.Fatalf("recovered.Status = %q", recovered.Status)
+	}
+	if recovered.BackoffClass != "" || recovered.RetryCount != 0 || recovered.NextRetryAtUnix != 0 {
+		t.Fatalf("backoff must be cleared on success = %+v", recovered)
+	}
+	if recovered.LastError != "" {
+		t.Fatalf("recovered.LastError = %q", recovered.LastError)
+	}
+}

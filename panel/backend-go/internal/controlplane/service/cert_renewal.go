@@ -96,7 +96,7 @@ func (s *certificateService) renewSingleCertificate(
 
 	result, err := issuer.Renew(ctx, cert)
 	if err != nil {
-		next := cert
+		next := applyManagedCertificateRenewalFailureBackoff(cert, err, s.now().UTC())
 		next.Status = "error"
 		next.LastError = err.Error()
 		rows[index] = managedCertificateToRow(next)
@@ -112,7 +112,7 @@ func (s *certificateService) renewSingleCertificate(
 	if result.Changed {
 		issuedMaterial, err = resolveManagedCertificateIssueMaterial(cert, result)
 		if err != nil {
-			next := cert
+			next := applyManagedCertificateRenewalFailureBackoff(cert, err, s.now().UTC())
 			next.Status = "error"
 			next.LastError = err.Error()
 			rows[index] = managedCertificateToRow(next)
@@ -127,7 +127,14 @@ func (s *certificateService) renewSingleCertificate(
 			return false, err
 		}
 		if err := s.store.SaveManagedCertificateMaterial(ctx, cert.Domain, issuedMaterial); err != nil {
-			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, cert, previousMaterial, previousMaterialFound); restoreErr != nil {
+			next := applyManagedCertificateRenewalFailureBackoff(cert, err, s.now().UTC())
+			next.Status = "error"
+			next.LastError = err.Error()
+			rows[index] = managedCertificateToRow(next)
+			if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
+				return false, saveErr
+			}
+			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, next, previousMaterial, previousMaterialFound); restoreErr != nil {
 				return false, fmt.Errorf("persist renewed certificate material for %s: %w (restore failed: %v)", cert.Domain, err, restoreErr)
 			}
 			return false, fmt.Errorf("persist renewed certificate material for %s: %w", cert.Domain, err)
@@ -138,6 +145,10 @@ func (s *certificateService) renewSingleCertificate(
 	next := cert
 	next.Status = "active"
 	next.LastError = ""
+	// Success clears accumulated failure backoff so the next renewal cycle treats this cert as healthy.
+	next.BackoffClass = ""
+	next.RetryCount = 0
+	next.NextRetryAtUnix = 0
 	if result.Changed {
 		if result.LastIssueAt != "" {
 			next.LastIssueAt = result.LastIssueAt
@@ -186,11 +197,35 @@ func (s *certificateService) isManagedCertificateRenewalCandidate(cert ManagedCe
 			return false
 		}
 	}
+	// Honor failure backoff recorded by the issue/renew failure paths: a cert whose next retry is
+	// still in the future is skipped until NextRetryAtUnix elapses. This replaces the old behavior
+	// of blindly retrying certs with no Renew date on every pass (R5①). A zero/cleared
+	// NextRetryAtUnix (fresh cert, successful issue, or legacy row) is not skipped. A cert left in
+	// "issuing" by the background signer remains a candidate as a crash/restart fallback: the
+	// per-cert issuanceLock serializes it, and the fresh re-check below re-evaluates candidacy
+	// after the lock so a finalized cert is never double-processed.
+	if cert.NextRetryAtUnix > 0 && now.Unix() < cert.NextRetryAtUnix {
+		return false
+	}
 	renewAt, ok := parseManagedCertificateRenewAt(cert.ACMEInfo.Renew)
 	if !ok {
 		return true
 	}
 	return !renewAt.After(now)
+}
+
+// applyManagedCertificateRenewalFailureBackoff records the failure backoff fields on a renewal
+// attempt failure, mirroring failManagedCertificateIssue in certs.go so the async issue path and
+// the renewal loop share one backoff contract (and isManagedCertificateRenewalCandidate reads the
+// same NextRetryAtUnix). It only touches the backoff fields; callers still own Status/LastError.
+func applyManagedCertificateRenewalFailureBackoff(cert ManagedCertificate, err error, now time.Time) ManagedCertificate {
+	failed := cert
+	class := classifyManagedCertificateIssueError(err)
+	retryAfter := extractManagedCertificateRetryAfter(err)
+	failed.BackoffClass = class
+	failed.RetryCount = cert.RetryCount + 1
+	failed.NextRetryAtUnix = now.Add(managedCertificateBackoffDelay(class, retryAfter, failed.RetryCount)).Unix()
+	return failed
 }
 
 func parseManagedCertificateRenewAt(raw string) (time.Time, bool) {
