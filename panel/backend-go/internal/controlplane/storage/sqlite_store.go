@@ -327,6 +327,12 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		return Snapshot{}, err
 	}
 
+	certBundles := s.snapshotCertificateBundles(relevantCertRows)
+	certMaterialDomains := make(map[string]bool, len(certBundles))
+	for _, bundle := range certBundles {
+		certMaterialDomains[strings.TrimSpace(bundle.Domain)] = true
+	}
+
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
 		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, egressRows, relevantCertRows, egressScopeRevision)),
@@ -337,8 +343,8 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		WireGuardProfiles:   SnapshotWireGuardProfiles(wireGuardRows),
 		EgressProfiles:      SnapshotEgressProfiles(egressRows),
-		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
-		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
+		Certificates:        certBundles,
+		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains),
 	}, nil
 }
 
@@ -2637,9 +2643,15 @@ func (s *GormStore) snapshotCertificateBundles(rows []ManagedCertificateRow) []M
 	return bundles
 }
 
-func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string) []ManagedCertificatePolicy {
+func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string, materialByDomain map[string]bool) []ManagedCertificatePolicy {
 	policies := make([]ManagedCertificatePolicy, 0, len(rows))
 	for _, row := range rows {
+		// Master-issued (control-plane) certificates are installed, not issued, by agents:
+		// withhold the policy until material exists so agents don't attempt local
+		// master_cf_dns issuance, which non-master agents reject and fail the heartbeat on.
+		if isMasterIssuedCertificateMode(defaultString(row.IssuerMode, "master_cf_dns")) && !materialByDomain[strings.TrimSpace(row.Domain)] {
+			continue
+		}
 		view := buildManagedCertificateViewForAgent(row, agentID)
 		policies = append(policies, ManagedCertificatePolicy{
 			ID:              view.ID,
@@ -2659,6 +2671,13 @@ func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string) [
 		})
 	}
 	return policies
+}
+
+// isMasterIssuedCertificateMode reports whether the issuer mode is issued by the control
+// plane (DNS-01) rather than the agent, so its policy must wait for material before publishing.
+func isMasterIssuedCertificateMode(mode string) bool {
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	return mode == "" || mode == "master_cf_dns"
 }
 
 func filterManagedCertificatesForAgent(rows []ManagedCertificateRow, agentID string, httpRows []HTTPRuleRow, relayRows []RelayListenerRow) []ManagedCertificateRow {
