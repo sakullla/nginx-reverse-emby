@@ -70,6 +70,9 @@ type ManagedCertificate struct {
 	CertificateType string                                   `json:"certificate_type"`
 	SelfSigned      bool                                     `json:"self_signed"`
 	Revision        int                                      `json:"revision"`
+	NextRetryAtUnix int64                                    `json:"next_retry_at_unix"`
+	RetryCount      int                                      `json:"retry_count"`
+	BackoffClass    string                                   `json:"backoff_class"`
 }
 
 type ManagedCertificateInput struct {
@@ -1439,6 +1442,9 @@ func managedCertificateFromRow(row storage.ManagedCertificateRow) ManagedCertifi
 		CertificateType: defaultString(row.CertificateType, "acme"),
 		SelfSigned:      row.SelfSigned,
 		Revision:        row.Revision,
+		NextRetryAtUnix: row.NextRetryAtUnix,
+		RetryCount:      row.RetryCount,
+		BackoffClass:    row.BackoffClass,
 		AgentReports:    map[string]ManagedCertificateAgentReport{},
 	}
 	cert.TargetAgentIDs = parseStringArray(row.TargetAgentIDs)
@@ -1466,6 +1472,9 @@ func managedCertificateToRow(cert ManagedCertificate) storage.ManagedCertificate
 		SelfSigned:      cert.SelfSigned,
 		TagsJSON:        marshalJSON(cert.Tags, "[]"),
 		Revision:        cert.Revision,
+		NextRetryAtUnix: cert.NextRetryAtUnix,
+		RetryCount:      cert.RetryCount,
+		BackoffClass:    cert.BackoffClass,
 	}
 }
 
@@ -1689,7 +1698,7 @@ func normalizeOptionalTimestamp(value string) string {
 
 func normalizeManagedCertificateReportStatus(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "pending", "active", "error":
+	case "pending", "active", "error", "issuing":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""

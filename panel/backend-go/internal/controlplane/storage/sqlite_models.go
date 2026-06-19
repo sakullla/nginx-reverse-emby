@@ -184,6 +184,9 @@ type ManagedCertificateRow struct {
 	SelfSigned      bool   `gorm:"column:self_signed"`
 	TagsJSON        string `gorm:"column:tags"`
 	Revision        int    `gorm:"column:revision"`
+	NextRetryAtUnix int64  `gorm:"column:next_retry_at_unix"`
+	RetryCount      int    `gorm:"column:retry_count"`
+	BackoffClass    string `gorm:"column:backoff_class"`
 }
 
 type MetaRow struct {
