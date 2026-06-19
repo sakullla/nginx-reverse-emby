@@ -1060,8 +1060,8 @@ func withMasterCFDNSBackgroundSigner(t *testing.T, cfg config.Config, store stor
 	t.Helper()
 	dispatcher := ManagedCertificateDispatcher()
 	dispatcher.SetSignFunc(managedCertificateBackgroundSignerWithIssuer(cfg, func() (storage.Store, error) {
-		return store, nil
-	}, issuer))
+			return store, nil
+		}, issuer, nil))
 	t.Cleanup(func() {
 		dispatcher.Wait()
 		dispatcher.SetSignFunc(nil)
@@ -3819,7 +3819,7 @@ func TestManagedCertificateAsyncSignerSkipsStaleDispatches(t *testing.T) {
 		}
 		signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
 			return store, nil
-		}, issuer)
+		}, issuer, nil)
 
 		if err := signer(context.Background(), 5); err != nil {
 			t.Fatalf("signer() error = %v", err)
@@ -3838,7 +3838,7 @@ func TestManagedCertificateAsyncSignerSkipsStaleDispatches(t *testing.T) {
 		store := &relayCertStore{managedCerts: nil}
 		signer := managedCertificateBackgroundSignerWithIssuer(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, func() (storage.Store, error) {
 			return store, nil
-		}, issuer)
+		}, issuer, nil)
 
 		if err := signer(context.Background(), 99); err != nil {
 			t.Fatalf("signer() error = %v", err)

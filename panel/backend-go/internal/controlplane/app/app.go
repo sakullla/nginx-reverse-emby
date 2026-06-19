@@ -18,6 +18,7 @@ type App struct {
 	server           *http.Server
 	enableLocalAgent bool
 	startLocalAgent  LocalAgentStarter
+	syncNow          func(context.Context) error
 	cleanup          func() error
 }
 
@@ -121,6 +122,18 @@ func (a *App) Run(ctx context.Context) error {
 
 func (a *App) SetCleanup(cleanup func() error) {
 	a.cleanup = cleanup
+}
+
+// SetLocalApplyTrigger stores the local-agent SyncNow trigger so callers that need
+// to trigger an immediate local apply (e.g. the background certificate signer) can
+// retrieve it after wiring without restructuring init order around the runtime.
+func (a *App) SetLocalApplyTrigger(trigger func(context.Context) error) {
+	a.syncNow = trigger
+}
+
+// LocalApplyTrigger returns the stored local-agent apply trigger, or nil.
+func (a *App) LocalApplyTrigger() func(context.Context) error {
+	return a.syncNow
 }
 
 func waitLocalAgent(localAgentErrCh <-chan error, enabled bool) error {

@@ -757,17 +757,10 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
 	}
 
-	previousMaterial, previousMaterialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
-	if err != nil {
-		return ManagedCertificate{}, err
-	}
-	if err := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, issuedMaterial); err != nil {
-		if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
-			return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
-		}
-		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
-	}
-
+	// Revalidate the certificate row after the (potentially long) ACME order before
+	// writing any material to disk: if the certificate was deleted, disabled, or changed
+	// to another domain while the order was in flight, returning here avoids leaving
+	// orphaned PEM files behind.
 	persistRows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
 		return ManagedCertificate{}, err
@@ -778,6 +771,17 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 	}
 	if persistCert.Status != "issuing" || persistCert.Domain != current.Domain {
 		return persistCert, nil
+	}
+
+	previousMaterial, previousMaterialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, issuedMaterial); err != nil {
+		if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
+			return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
+		}
+		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
 	}
 
 	next := persistCert
@@ -1159,13 +1163,13 @@ func (s *certificateService) managedCertificateIssuerAvailable() bool {
 // issueManagedCertificateInBackground, which acquires issuanceLock, performs the ACME
 // issue, and persists the outcome (active on success, error + backoff on failure). The production
 // Cloudflare DNS issuer is built from cfg inside the issue body.
-func ManagedCertificateBackgroundSigner(cfg config.Config, openStore func() (storage.Store, error)) managedCertificateSignFunc {
-	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, nil)
+func ManagedCertificateBackgroundSigner(cfg config.Config, openStore func() (storage.Store, error), localApplyTrigger func(context.Context) error) managedCertificateSignFunc {
+	return managedCertificateBackgroundSignerWithIssuer(cfg, openStore, nil, localApplyTrigger)
 }
 
 // managedCertificateBackgroundSignerWithIssuer is the testable core: tests inject a fake issuer
 // while production passes nil so the Cloudflare DNS issuer is built from cfg on demand.
-func managedCertificateBackgroundSignerWithIssuer(cfg config.Config, openStore func() (storage.Store, error), issuer managedCertificateRenewalIssuer) managedCertificateSignFunc {
+func managedCertificateBackgroundSignerWithIssuer(cfg config.Config, openStore func() (storage.Store, error), issuer managedCertificateRenewalIssuer, localApplyTrigger func(context.Context) error) managedCertificateSignFunc {
 	return func(ctx context.Context, certID int) error {
 		store, err := openStore()
 		if err != nil {
@@ -1178,6 +1182,7 @@ func managedCertificateBackgroundSignerWithIssuer(cfg config.Config, openStore f
 		}
 
 		svc := newCertificateServiceWithRenewal(cfg, store, issuer)
+		svc.SetLocalApplyTrigger(localApplyTrigger)
 		rows, err := store.ListManagedCertificates(ctx)
 		if err != nil {
 			return err

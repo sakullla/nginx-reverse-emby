@@ -80,7 +80,7 @@ var runControlPlaneFromEnv = func() error {
 	// store, decoupled from the HTTP request or renewal-loop store lifecycles.
 	service.ManagedCertificateDispatcher().SetSignFunc(service.ManagedCertificateBackgroundSigner(cfg, func() (storage.Store, error) {
 		return openConfiguredStore(cfg)
-	}))
+	}, application.LocalApplyTrigger()))
 	startManagedCertificateIssuanceRecovery(ctx, cfg, nil)
 	if err := application.Run(ctx); err != nil {
 		return err
@@ -561,6 +561,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	}
 
 	controlPlaneApp := app.New(cfg, handler, logger, runtime.Start)
+	controlPlaneApp.SetLocalApplyTrigger(runtime.SyncNow)
 	controlPlaneApp.SetCleanup(closeApp)
 	return controlPlaneApp, nil
 }
