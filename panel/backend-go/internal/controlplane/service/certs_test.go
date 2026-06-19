@@ -1128,7 +1128,7 @@ func TestCertificateServiceCreateMasterCFDNSDispatchesIssuingAsync(t *testing.T)
 		t.Fatalf("issuer calls = %+v", issuer.calls)
 	}
 	finalized := managedCertificateFromRow(store.managedCerts[0])
-	if finalized.Status != "active" || finalized.Revision != 1 || finalized.MaterialHash != "issued-hash" {
+	if finalized.Status != "active" || finalized.Revision != 2 || finalized.MaterialHash != "issued-hash" {
 		t.Fatalf("finalized row = %+v", finalized)
 	}
 }
@@ -1202,7 +1202,7 @@ func TestCertificateServiceUpdateMasterCFDNSEnableDispatchesIssuingAsync(t *test
 	if finalized.MaterialHash != "enabled-issue-hash" {
 		t.Fatalf("finalized.MaterialHash = %q", finalized.MaterialHash)
 	}
-	if finalized.Revision != 7 {
+	if finalized.Revision != 8 {
 		t.Fatalf("finalized.Revision = %d", finalized.Revision)
 	}
 }
@@ -1477,7 +1477,7 @@ func TestCertificateServiceIssueMasterCFDNSIssuerFailureRecordsErrorState(t *tes
 	if failed.LastError != "cloudflare issue failed" {
 		t.Fatalf("failed.LastError = %q", failed.LastError)
 	}
-	if failed.Revision != 8 {
+	if failed.Revision != 7 {
 		t.Fatalf("failed.Revision = %d", failed.Revision)
 	}
 	if failed.BackoffClass != managedCertificateBackoffClassPersistent {
@@ -1556,7 +1556,7 @@ func TestCertificateServiceIssueMasterCFDNSMaterialPersistenceFailureRestoresSta
 	if failed.Status != "error" {
 		t.Fatalf("failed.Status = %q", failed.Status)
 	}
-	if failed.Revision != 5 {
+	if failed.Revision != 4 {
 		t.Fatalf("failed.Revision = %d", failed.Revision)
 	}
 	if failed.MaterialHash != previousHash {
@@ -1578,7 +1578,7 @@ func TestCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureW
 			Scope:           "domain",
 			IssuerMode:      "master_cf_dns",
 			TargetAgentIDs:  `["local"]`,
-			Status:          "pending",
+			Status:          "issuing",
 			LastError:       "",
 			MaterialHash:    "",
 			CertificateType: "acme",
@@ -1622,7 +1622,7 @@ func TestCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureW
 			maxRevision = candidate.Revision
 		}
 	}
-	_, err := svc.issueManagedCertificateWithoutRevisionBump(context.Background(), rows, targetIndex, current, maxRevision)
+	_, err := svc.issueManagedCertificateInBackground(context.Background(), rows, targetIndex, current, maxRevision)
 	if err == nil {
 		t.Fatal("expected issue error")
 	}
@@ -1631,7 +1631,7 @@ func TestCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureW
 	}
 
 	row := managedCertificateFromRow(store.managedCerts[0])
-	if row.Status != "pending" || row.Revision != 6 || row.LastError != "" {
+	if row.Status != "issuing" || row.Revision != 6 || row.LastError != "" {
 		t.Fatalf("row changed unexpectedly after restore failure: %+v", row)
 	}
 	if store.saveManagedCall != 0 {
@@ -2154,7 +2154,7 @@ func TestCertificateServiceCreateMasterCFDNSAsyncIssueFinalizesActive(t *testing
 		t.Fatalf("savedRuntimeState = %+v", store.savedRuntimeState)
 	}
 	persisted := managedCertificateFromRow(store.managedCerts[0])
-	if persisted.Revision != 1 || persisted.Status != "active" {
+	if persisted.Revision != 2 || persisted.Status != "active" {
 		t.Fatalf("persisted = %+v", persisted)
 	}
 	if persisted.LastIssueAt != "2026-04-11T16:17:18Z" {
@@ -2162,6 +2162,143 @@ func TestCertificateServiceCreateMasterCFDNSAsyncIssueFinalizesActive(t *testing
 	}
 	if persisted.MaterialHash != "issued-hash" {
 		t.Fatalf("persisted.MaterialHash = %q", persisted.MaterialHash)
+	}
+}
+
+func TestManagedCertificateAsyncIssueBumpsRevisionOnSuccessAndNotifiesAgents(t *testing.T) {
+	issuedMaterial := mustCreateSelfSignedCA(t, "success-bump.example.com")
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["cert_install"]`,
+			DesiredRevision:  0,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			1: {
+				LastIssueAt:  "2026-04-11T16:17:18Z",
+				MaterialHash: "success-bump-hash",
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{}, store, issuer)
+	drain := withMasterCFDNSBackgroundSigner(t, svc.cfg, store, issuer)
+
+	created, err := svc.Create(context.Background(), "", ManagedCertificateInput{
+		Domain:          stringPtr("success-bump.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("master_cf_dns"),
+		TargetAgentIDs:  &[]string{"edge-1"},
+		CertificateType: stringPtr("acme"),
+		Usage:           stringPtr("https"),
+		Enabled:         boolPtr(true),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.Status != "issuing" {
+		t.Fatalf("created.Status = %q, want issuing", created.Status)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("created.Revision = %d, want 1 (issuing must not bump)", created.Revision)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 0 {
+		t.Fatalf("edge-1 desired revision at issuing = %d, want 0 (no premature notification)", got)
+	}
+
+	drain()
+
+	finalized := managedCertificateFromRow(store.managedCerts[0])
+	if finalized.Status != "active" {
+		t.Fatalf("finalized.Status = %q, want active", finalized.Status)
+	}
+	if finalized.Revision != 2 {
+		t.Fatalf("finalized.Revision = %d, want 2 (success must bump)", finalized.Revision)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 2 {
+		t.Fatalf("edge-1 desired revision after success = %d, want 2", got)
+	}
+}
+
+func TestManagedCertificateBackgroundIssueRereadsStateUnderLock(t *testing.T) {
+	issuedMaterial := mustCreateSelfSignedCA(t, "stale-reread.example.com")
+	store := &relayCertStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-1", Name: "Edge 1", CapabilitiesJSON: `["cert_install"]`},
+			{ID: "edge-2", Name: "Edge 2", CapabilitiesJSON: `["cert_install"]`},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              88,
+			Domain:          "stale-reread.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["edge-2"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			88: {
+				LastIssueAt: "2026-04-11T16:17:18Z",
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{}, store, issuer)
+
+	staleRows := []storage.ManagedCertificateRow{{
+		ID:              88,
+		Domain:          "stale-reread.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "master_cf_dns",
+		TargetAgentIDs:  `["edge-1"]`,
+		Status:          "issuing",
+		CertificateType: "acme",
+		Usage:           "https",
+		Revision:        3,
+	}}
+	staleCurrent, staleIndex, ok := findManagedCertificateByID(staleRows, 88)
+	if !ok {
+		t.Fatalf("certificate 88 not found in stale snapshot")
+	}
+
+	out, err := svc.issueManagedCertificateInBackground(context.Background(), staleRows, staleIndex, staleCurrent, 3)
+	if err != nil {
+		t.Fatalf("issueManagedCertificateInBackground() error = %v", err)
+	}
+	if out.Status != "active" {
+		t.Fatalf("out.Status = %q, want active", out.Status)
+	}
+
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "active" {
+		t.Fatalf("persisted.Status = %q, want active", persisted.Status)
+	}
+	if len(persisted.TargetAgentIDs) != 1 || persisted.TargetAgentIDs[0] != "edge-2" {
+		t.Fatalf("persisted.TargetAgentIDs = %+v, want [edge-2]: background issue overwrote a concurrent edit with the stale snapshot", persisted.TargetAgentIDs)
+	}
+	if persisted.Revision != 4 {
+		t.Fatalf("persisted.Revision = %d, want 4 (fresh maxRevision 3 + 1)", persisted.Revision)
+	}
+	if got := relayAgentByID(t, store, "edge-2").DesiredRevision; got != 4 {
+		t.Fatalf("edge-2 desired revision = %d, want 4", got)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 0 {
+		t.Fatalf("edge-1 desired revision = %d, want 0 (stale target must not be notified)", got)
 	}
 }
 

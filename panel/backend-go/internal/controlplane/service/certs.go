@@ -486,8 +486,8 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 		// Async issuance: persist "issuing" + revision, dispatch a background signer, and return
 		// immediately so the HTTP request no longer blocks on the ACME order. The dispatcher's
 		// sign function owns issuanceLock and performs the actual issue (see
-		// ManagedCertificateBackgroundSigner / issueManagedCertificateWithoutRevisionBump).
-		return s.scheduleManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, true, nil)
+		// ManagedCertificateBackgroundSigner / issueManagedCertificateInBackground).
+		return s.scheduleManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, false, nil)
 	}
 	if current.CertificateType == "uploaded" && current.IssuerMode == "local_http01" {
 		return s.syncStaticLocalCertificate(ctx, rows, targetIndex, current, maxRevision, resolvedID, true)
@@ -716,7 +716,7 @@ func managedCertificateMutationNeedsManagedDNSIssue(previous *ManagedCertificate
 		!reflect.DeepEqual(previous.TargetAgentIDs, current.TargetAgentIDs)
 }
 
-func (s *certificateService) issueManagedCertificateWithoutRevisionBump(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int) (ManagedCertificate, error) {
+func (s *certificateService) issueManagedCertificateInBackground(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int) (ManagedCertificate, error) {
 	if err := s.assertCertificateDistributionTargetsAllowed(ctx, current); err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -734,6 +734,19 @@ func (s *certificateService) issueManagedCertificateWithoutRevisionBump(ctx cont
 
 	unlock := issuanceLock(current.ID)
 	defer unlock()
+
+	freshRows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	fresh, freshIndex, found := findManagedCertificateByID(freshRows, current.ID)
+	if !found {
+		return ManagedCertificate{}, nil
+	}
+	if !managedCertificateEligibleForBackgroundIssue(fresh) {
+		return fresh, nil
+	}
+	rows, targetIndex, current, maxRevision = freshRows, freshIndex, fresh, highestManagedCertificateRevisionForService(freshRows)
 
 	issueResult, err := issuer.Issue(ctx, current)
 	if err != nil {
@@ -771,7 +784,7 @@ func (s *certificateService) issueManagedCertificateWithoutRevisionBump(ctx cont
 		next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
 	}
 	next.ACMEInfo = issueResult.ACMEInfo
-	next.Revision = managedCertificateMutationRevision(current, maxRevision, false)
+	next.Revision = maxRevision + 1
 
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	rows[targetIndex] = managedCertificateToRow(next)
@@ -1082,8 +1095,7 @@ func (s *certificateService) failManagedCertificateIssue(ctx context.Context, ro
 // process-wide dispatcher, and returns the issuing certificate. It replaces the historical
 // synchronous master_cf_dns issue path in Create/Update/Issue so those entry points no longer
 // block the HTTP request on the ACME order. All eligibility checks still run synchronously
-// (fail-fast) before anything is persisted. bumpRevision follows the historical per-entry
-// semantics: false for Create/Update (reuse current revision), true for Issue (maxRevision+1).
+// (fail-fast) before anything is persisted.
 func (s *certificateService) scheduleManagedCertificateIssue(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, bumpRevision bool, removedAgentIDs []string) (ManagedCertificate, error) {
 	if err := s.assertCertificateDistributionTargetsAllowed(ctx, current); err != nil {
 		return ManagedCertificate{}, err
@@ -1132,7 +1144,7 @@ func (s *certificateService) managedCertificateIssuerAvailable() bool {
 // ManagedCertificateBackgroundSigner returns the background issuance function injected into the
 // process-wide dispatcher. It opens a short-lived store (independent of any HTTP request's store
 // or connection), reloads the certificate, and — if it is still eligible for issuance — runs
-// issueManagedCertificateWithoutRevisionBump, which acquires issuanceLock, performs the ACME
+// issueManagedCertificateInBackground, which acquires issuanceLock, performs the ACME
 // issue, and persists the outcome (active on success, error + backoff on failure). The production
 // Cloudflare DNS issuer is built from cfg inside the issue body.
 func ManagedCertificateBackgroundSigner(cfg config.Config, openStore func() (storage.Store, error)) managedCertificateSignFunc {
@@ -1173,7 +1185,7 @@ func managedCertificateBackgroundSignerWithIssuer(cfg config.Config, openStore f
 				maxRevision = row.Revision
 			}
 		}
-		_, err = svc.issueManagedCertificateWithoutRevisionBump(ctx, rows, targetIndex, current, maxRevision)
+		_, err = svc.issueManagedCertificateInBackground(ctx, rows, targetIndex, current, maxRevision)
 		return err
 	}
 }
