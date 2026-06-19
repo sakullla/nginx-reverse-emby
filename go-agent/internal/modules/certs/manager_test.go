@@ -1541,6 +1541,57 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 	}
 }
 
+// TestManagerApplyRecordsBackoffForNonIssuerFailures pins the fix for non-issuer
+// renewal failures: an error raised OUTSIDE issuer.Issue (here, the issuer
+// factory itself failing) must still record failure backoff, so the certificate
+// is not retried every heartbeat without a backoff window. Before the fix only
+// issuer.Issue errors were recorded in loadOrIssueACMEUnlocked; factory, request,
+// parse and persist failures returned unrecorded.
+func TestManagerApplyRecordsBackoffForNonIssuerFailures(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withNow(func() time.Time { return now }),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return nil, errSyntheticACMEFailure
+		}),
+	)
+	policy := model.ManagedCertificatePolicy{
+		ID:              5801,
+		Domain:          "factory-error.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+	if !errors.Is(err, errSyntheticACMEFailure) {
+		t.Fatalf("expected synthetic acme failure from issuer factory, got %v", err)
+	}
+
+	state, ok, err := manager.loadManagedCertificateState(5801)
+	if err != nil {
+		t.Fatalf("load state failed: %v", err)
+	}
+	if !ok || state.ACME == nil {
+		t.Fatalf("expected managed acme state after non-issuer failure, got ok=%v state=%+v", ok, state)
+	}
+	if got := state.ACME.Renewal.LastAttemptStatus; got != "error" {
+		t.Fatalf("expected non-issuer failure to record last attempt status error, got %q", got)
+	}
+	if got := state.ACME.Renewal.BackoffClass; got == "" {
+		t.Fatal("expected non-issuer failure to record a backoff class; pre-fix only issuer.Issue errors were recorded")
+	}
+	if got := state.ACME.Renewal.BackoffRetryNext; got <= now.Unix() {
+		t.Fatalf("expected non-issuer failure to schedule a future retry, got %d (now=%d)", got, now.Unix())
+	}
+}
+
 type certificateSpec struct {
 	commonName string
 	isCA       bool

@@ -336,7 +336,14 @@ func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCerti
 	return m.loadOrIssueACMEUnlocked(ctx, policy)
 }
 
-func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
+func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.ManagedCertificatePolicy) (certPEM []byte, keyPEM []byte, err error) {
+	var failureRecorded bool
+	defer func() {
+		if err != nil && !failureRecorded {
+			m.recordRenewalFailureLocked(policy.ID, err)
+		}
+	}()
+
 	persisted, err := m.loadPersistedACMEMaterial(policy.ID)
 	if err != nil {
 		return nil, nil, err
@@ -358,6 +365,7 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 	// Returning an error preserves the existing Apply contract; the renewal loop
 	// separately skips in-backoff candidates via isInRenewalBackoffLocked.
 	if m.isInRenewalBackoffLocked(policy.ID, m.cfg.now()) {
+		failureRecorded = true
 		return nil, nil, fmt.Errorf("certificate %d: issuance deferred by failure backoff", policy.ID)
 	}
 
@@ -382,6 +390,7 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 		// receives the original issuance error; this only persists backoff
 		// metadata used by later retries.
 		m.recordRenewalFailureLocked(policy.ID, err)
+		failureRecorded = true
 		return nil, nil, err
 	}
 

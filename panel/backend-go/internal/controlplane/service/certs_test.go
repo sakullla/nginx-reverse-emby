@@ -2302,6 +2302,94 @@ func TestManagedCertificateBackgroundIssueRereadsStateUnderLock(t *testing.T) {
 	}
 }
 
+// TestManagedCertificateBackgroundIssuePreservesConcurrentRetargetDuringACMEOrder
+// targets the long issuer.Issue window: a concurrent Update retargets the
+// certificate AFTER the top-of-function re-read (which still sees [edge-1]) but
+// BEFORE the success-path save. Only a re-read of the persisted row at save time
+// can preserve that retarget; saving the stale snapshot would clobber it.
+func TestManagedCertificateBackgroundIssuePreservesConcurrentRetargetDuringACMEOrder(t *testing.T) {
+	issuedMaterial := mustCreateSelfSignedCA(t, "mid-order-edit.example.com")
+	store := &relayCertStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-1", Name: "Edge 1", CapabilitiesJSON: `["cert_install"]`},
+			{ID: "edge-2", Name: "Edge 2", CapabilitiesJSON: `["cert_install"]`},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              88,
+			Domain:          "mid-order-edit.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["edge-1"]`,
+			Status:          "issuing",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			88: {
+				LastIssueAt: "2026-04-11T16:17:18Z",
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+		onIssue: func(_ ManagedCertificate) {
+			for i := range store.managedCerts {
+				if store.managedCerts[i].ID == 88 {
+					store.managedCerts[i].TargetAgentIDs = `["edge-2"]`
+				}
+			}
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{}, store, issuer)
+
+	staleRows := []storage.ManagedCertificateRow{{
+		ID:              88,
+		Domain:          "mid-order-edit.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "master_cf_dns",
+		TargetAgentIDs:  `["edge-1"]`,
+		Status:          "issuing",
+		CertificateType: "acme",
+		Usage:           "https",
+		Revision:        3,
+	}}
+	staleCurrent, staleIndex, ok := findManagedCertificateByID(staleRows, 88)
+	if !ok {
+		t.Fatalf("certificate 88 not found in stale snapshot")
+	}
+
+	out, err := svc.issueManagedCertificateInBackground(context.Background(), staleRows, staleIndex, staleCurrent, 3)
+	if err != nil {
+		t.Fatalf("issueManagedCertificateInBackground() error = %v", err)
+	}
+	if out.Status != "active" {
+		t.Fatalf("out.Status = %q, want active", out.Status)
+	}
+
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "active" {
+		t.Fatalf("persisted.Status = %q, want active", persisted.Status)
+	}
+	if len(persisted.TargetAgentIDs) != 1 || persisted.TargetAgentIDs[0] != "edge-2" {
+		t.Fatalf("persisted.TargetAgentIDs = %+v, want [edge-2]: success path clobbered a concurrent retarget made during the ACME order with the stale snapshot", persisted.TargetAgentIDs)
+	}
+	if persisted.Revision != 4 {
+		t.Fatalf("persisted.Revision = %d, want 4", persisted.Revision)
+	}
+	if got := relayAgentByID(t, store, "edge-2").DesiredRevision; got != 4 {
+		t.Fatalf("edge-2 desired revision = %d, want 4 (retargeted agent must be notified)", got)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 0 {
+		t.Fatalf("edge-1 desired revision = %d, want 0 (dropped target must not be notified from a stale snapshot)", got)
+	}
+}
+
 func TestCertificateServiceCreateUploadedLocalHTTP01SyncsTargetsImmediatelyWithoutExtraRevision(t *testing.T) {
 	ca := mustCreateSelfSignedCA(t, "Create Upload CA")
 	leaf := mustCreateLeafSignedByCA(t, "created-upload.example.com", ca)
@@ -3565,10 +3653,14 @@ type fakeManagedCertificateRenewalIssuer struct {
 	calls   []int
 	results map[int]managedCertificateRenewalResult
 	errs    map[int]error
+	onIssue func(ManagedCertificate)
 }
 
 func (f *fakeManagedCertificateRenewalIssuer) Issue(_ context.Context, cert ManagedCertificate) (managedCertificateRenewalResult, error) {
 	f.calls = append(f.calls, cert.ID)
+	if f.onIssue != nil {
+		f.onIssue(cert)
+	}
 	if err := f.errs[cert.ID]; err != nil {
 		return managedCertificateRenewalResult{}, err
 	}

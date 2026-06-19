@@ -768,7 +768,19 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
 	}
 
-	next := current
+	persistRows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	persistCert, persistIndex, persistFound := findManagedCertificateByID(persistRows, current.ID)
+	if !persistFound {
+		return ManagedCertificate{}, nil
+	}
+	if persistCert.Status != "issuing" || persistCert.Domain != current.Domain {
+		return persistCert, nil
+	}
+
+	next := persistCert
 	next.Status = "active"
 	next.LastIssueAt = issueResult.LastIssueAt
 	if strings.TrimSpace(next.LastIssueAt) == "" {
@@ -784,17 +796,17 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
 	}
 	next.ACMEInfo = issueResult.ACMEInfo
-	next.Revision = maxRevision + 1
+	next.Revision = highestManagedCertificateRevisionForService(persistRows) + 1
 
-	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
-	rows[targetIndex] = managedCertificateToRow(next)
-	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+	originalRows := append([]storage.ManagedCertificateRow(nil), persistRows...)
+	persistRows[persistIndex] = managedCertificateToRow(next)
+	if err := s.store.SaveManagedCertificates(ctx, persistRows); err != nil {
 		if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
 			return ManagedCertificate{}, fmt.Errorf("save issued certificate metadata: %w (restore failed: %v)", err, restoreErr)
 		}
 		return ManagedCertificate{}, err
 	}
-	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, persistRows)
 	if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
 		return ManagedCertificate{}, err
 	}
