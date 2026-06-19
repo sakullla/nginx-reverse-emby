@@ -196,19 +196,6 @@ func (m *Manager) recordRenewalFailureLocked(certificateID int, renewalErr error
 	_ = m.saveManagedCertificateState(certificateID, state)
 }
 
-// resetRenewalBackoffLocked clears failure-backoff state. Called on successful
-// issuance so a future failure sequence restarts from retryCount=1.
-func (m *Manager) resetRenewalBackoffLocked(certificateID int) {
-	state, ok, err := m.loadManagedCertificateState(certificateID)
-	if err != nil || !ok || state.ACME == nil {
-		return
-	}
-	state.ACME.Renewal.BackoffClass = ""
-	state.ACME.Renewal.BackoffRetryNext = 0
-	state.ACME.Renewal.BackoffRetryNum = 0
-	_ = m.saveManagedCertificateState(certificateID, state)
-}
-
 // Failure backoff classes. These mirror the control-plane retry curve
 // (panel/backend-go/internal/controlplane/service/certs.go) so the local agent
 // renewal path and the master control-plane issuance path share the same delays
