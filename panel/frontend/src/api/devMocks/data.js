@@ -204,8 +204,14 @@ mockAgents.forEach((agent, index) => {
     is_local: agent.is_local,
     metrics: {
       cpu_usage_percent: agent.status === 'offline' ? null : (index * 7 + 18) % 86,
+      cpu_used_cores: agent.status === 'offline' ? null : Number((((index * 7 + 18) % 86) / 100 * 8).toFixed(2)),
+      cpu_total_cores: agent.status === 'offline' ? null : 8,
       memory_usage_percent: agent.status === 'offline' ? null : (index * 5 + 42) % 92,
+      memory_used_bytes: agent.status === 'offline' ? null : 1024 * 1024 * 1024 * (4 + index),
+      memory_total_bytes: agent.status === 'offline' ? null : 1024 * 1024 * 1024 * 16,
       disk_usage_percent: (index * 3 + 35) % 88,
+      disk_used_bytes: 1024 * 1024 * 1024 * (80 + index * 12),
+      disk_total_bytes: 1024 * 1024 * 1024 * 512,
       network: {
         rx_bytes: rxBytes,
         tx_bytes: txBytes,

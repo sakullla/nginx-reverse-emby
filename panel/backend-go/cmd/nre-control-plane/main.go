@@ -510,6 +510,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	}
 
 	agentSvc.SetLocalApplyTrigger(runtime.SyncNow)
+	agentSvc.SetLocalMonitorRefreshTrigger(runtime.SyncNow)
 	ruleSvc.SetLocalApplyTrigger(runtime.SyncNow)
 	l4Svc.SetLocalApplyTrigger(runtime.SyncNow)
 	relaySvc.SetLocalApplyTrigger(runtime.SyncNow)

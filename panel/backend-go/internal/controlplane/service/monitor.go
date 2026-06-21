@@ -39,8 +39,14 @@ type AgentMonitorAgent struct {
 
 type AgentMonitorMetrics struct {
 	CPUUsagePercent    *float64             `json:"cpu_usage_percent"`
+	CPUUsedCores       *float64             `json:"cpu_used_cores"`
+	CPUTotalCores      *float64             `json:"cpu_total_cores"`
 	MemoryUsagePercent *float64             `json:"memory_usage_percent"`
+	MemoryUsedBytes    *uint64              `json:"memory_used_bytes"`
+	MemoryTotalBytes   *uint64              `json:"memory_total_bytes"`
 	DiskUsagePercent   *float64             `json:"disk_usage_percent"`
+	DiskUsedBytes      *uint64              `json:"disk_used_bytes"`
+	DiskTotalBytes     *uint64              `json:"disk_total_bytes"`
 	Network            *AgentMonitorNetwork `json:"network"`
 }
 
@@ -68,6 +74,9 @@ type AgentMonitorTraffic struct {
 func (s *agentService) MonitorSnapshot(ctx context.Context) (AgentMonitorSnapshot, error) {
 	agents := []AgentMonitorAgent{}
 	if s.cfg.EnableLocalAgent {
+		if err := s.refreshLocalMonitorStats(ctx); err != nil {
+			return AgentMonitorSnapshot{}, err
+		}
 		summary, err := s.localSummary(ctx)
 		if err != nil {
 			return AgentMonitorSnapshot{}, err
@@ -103,6 +112,9 @@ func (s *agentService) MonitorSnapshot(ctx context.Context) (AgentMonitorSnapsho
 
 func (s *agentService) MonitorAgent(ctx context.Context, agentID string) (AgentMonitorUpdate, error) {
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		if err := s.refreshLocalMonitorStats(ctx); err != nil {
+			return AgentMonitorUpdate{}, err
+		}
 		summary, err := s.localSummary(ctx)
 		if err != nil {
 			return AgentMonitorUpdate{}, err
@@ -152,6 +164,13 @@ func (s *agentService) SubscribeMonitorUpdates(ctx context.Context) (<-chan Agen
 		}()
 	}
 	return ch, cancel
+}
+
+func (s *agentService) refreshLocalMonitorStats(ctx context.Context) error {
+	if s.localMonitorRefreshTrigger == nil {
+		return nil
+	}
+	return s.localMonitorRefreshTrigger(ctx)
 }
 
 func (s *agentService) broadcastMonitorUpdate(ctx context.Context, row storage.AgentRow) {
@@ -234,8 +253,14 @@ func monitorMetricsFromStats(stats AgentStats, status string) AgentMonitorMetric
 	}
 	metrics := AgentMonitorMetrics{
 		CPUUsagePercent:    monitorUsagePercent(host["cpu"]),
+		CPUUsedCores:       monitorFloatField(host["cpu"], "used_cores"),
+		CPUTotalCores:      monitorFloatField(host["cpu"], "total_cores"),
 		MemoryUsagePercent: monitorUsagePercent(host["memory"]),
+		MemoryUsedBytes:    monitorUint64Field(host["memory"], "used_bytes"),
+		MemoryTotalBytes:   monitorUint64Field(host["memory"], "total_bytes"),
 		DiskUsagePercent:   monitorUsagePercent(host["disk"]),
+		DiskUsedBytes:      monitorUint64Field(host["disk"], "used_bytes"),
+		DiskTotalBytes:     monitorUint64Field(host["disk"], "total_bytes"),
 	}
 	if network := monitorNetworkFromHost(host, status); network != nil {
 		metrics.Network = network
@@ -257,6 +282,30 @@ func monitorUsagePercent(raw any) *float64 {
 	}
 	if value > 100 {
 		value = 100
+	}
+	return &value
+}
+
+func monitorFloatField(raw any, field string) *float64 {
+	values, ok := asStringAnyMap(raw)
+	if !ok {
+		return nil
+	}
+	value, ok := asFloat64(values[field])
+	if !ok || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return nil
+	}
+	return &value
+}
+
+func monitorUint64Field(raw any, field string) *uint64 {
+	values, ok := asStringAnyMap(raw)
+	if !ok {
+		return nil
+	}
+	value, ok := asUint64(values[field])
+	if !ok {
+		return nil
 	}
 	return &value
 }

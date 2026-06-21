@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
@@ -118,21 +119,23 @@ type BackupService interface {
 }
 
 type Dependencies struct {
-	Config                  config.Config
-	SystemService           SystemService
-	AgentService            AgentService
-	RuleService             RuleService
-	L4RuleService           L4RuleService
-	VersionPolicyService    VersionPolicyService
-	EgressProfileService    EgressProfileService
-	RelayListenerService    RelayListenerService
-	WireGuardProfileService WireGuardProfileService
-	WireGuardClientService  WireGuardClientService
-	CertificateService      CertificateService
-	TaskService             TaskService
-	BackupService           BackupService
-	TrafficService          TrafficService
-	cleanup                 func() error
+	Config                       config.Config
+	SystemService                SystemService
+	AgentService                 AgentService
+	RuleService                  RuleService
+	L4RuleService                L4RuleService
+	VersionPolicyService         VersionPolicyService
+	EgressProfileService         EgressProfileService
+	RelayListenerService         RelayListenerService
+	WireGuardProfileService      WireGuardProfileService
+	WireGuardClientService       WireGuardClientService
+	CertificateService           CertificateService
+	TaskService                  TaskService
+	BackupService                BackupService
+	TrafficService               TrafficService
+	MonitorStreamRefreshInterval time.Duration
+	MonitorStreamMaxAge          time.Duration
+	cleanup                      func() error
 }
 
 var openConfiguredStore = storage.NewConfiguredStore

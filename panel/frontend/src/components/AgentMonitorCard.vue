@@ -21,15 +21,18 @@
     <div class="agent-monitor-card__metrics">
       <div class="agent-monitor-card__metric">
         <span class="agent-monitor-card__label">CPU</span>
-        <strong>{{ percent(metrics.cpu_usage_percent) }}</strong>
+        <strong>{{ cpuUsage(metrics) }}</strong>
+        <small>{{ percent(metrics.cpu_usage_percent) }}</small>
       </div>
       <div class="agent-monitor-card__metric">
         <span class="agent-monitor-card__label">内存</span>
-        <strong>{{ percent(metrics.memory_usage_percent) }}</strong>
+        <strong>{{ bytesPair(metrics.memory_used_bytes, metrics.memory_total_bytes) }}</strong>
+        <small>{{ percent(metrics.memory_usage_percent) }}</small>
       </div>
       <div class="agent-monitor-card__metric">
         <span class="agent-monitor-card__label">磁盘</span>
-        <strong>{{ percent(metrics.disk_usage_percent) }}</strong>
+        <strong>{{ bytesPair(metrics.disk_used_bytes, metrics.disk_total_bytes) }}</strong>
+        <small>{{ percent(metrics.disk_usage_percent) }}</small>
       </div>
     </div>
 
@@ -89,7 +92,7 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 
 function percent(value) {
   if (value === null || value === undefined || value === '') return '—'
-  return Number.isFinite(Number(value)) ? `${Number(value).toFixed(0)}%` : '—'
+  return Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)}%` : '—'
 }
 
 function bytes(value) {
@@ -108,6 +111,26 @@ function rate(value) {
   const n = Number(value)
   if (!Number.isFinite(n)) return '—'
   return `${bytes(n)}/s`
+}
+
+function cpuUsage(source = {}) {
+  const used = Number(source.cpu_used_cores)
+  const total = Number(source.cpu_total_cores)
+  if (Number.isFinite(used) && Number.isFinite(total) && total > 0) {
+    return `${used.toFixed(1)} / ${total.toFixed(0)} 核`
+  }
+  if (Number.isFinite(used)) return `${used.toFixed(1)} 核`
+  return percent(source.cpu_usage_percent)
+}
+
+function bytesPair(usedValue, totalValue) {
+  const used = Number(usedValue)
+  const total = Number(totalValue)
+  if (Number.isFinite(used) && Number.isFinite(total) && total > 0) {
+    return `${bytes(used)} / ${bytes(total)}`
+  }
+  if (Number.isFinite(used)) return bytes(used)
+  return '—'
 }
 </script>
 
@@ -158,6 +181,14 @@ function rate(value) {
   font-size: 0.875rem;
   line-height: 1.2;
   overflow-wrap: anywhere;
+}
+
+.agent-monitor-card__metric small {
+  display: block;
+  margin-top: 0.125rem;
+  color: var(--color-text-tertiary);
+  font-size: 0.7rem;
+  line-height: 1.2;
 }
 
 @media (max-width: 420px) {

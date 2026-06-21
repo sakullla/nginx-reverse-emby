@@ -25,7 +25,7 @@ func TestMonitorSnapshotParsesHostMetricsAndTrafficSummary(t *testing.T) {
 			CurrentRevision:       2,
 			LastSeenAt:            now.Add(-20 * time.Second).Format(time.RFC3339),
 			LastSeenIP:            "203.0.113.9",
-			LastReportedStatsJSON: `{"host":{"cpu":{"usage_percent":12.5},"memory":{"usage_percent":64.25},"disk":{"usage_percent":77.75},"network":{"total":{"rx_bytes":1000,"tx_bytes":2000,"rx_bytes_per_second":10,"tx_bytes_per_second":20,"rate_window_seconds":30,"rate_calculated_at":"2026-06-21T11:59:50Z"}}}}`,
+			LastReportedStatsJSON: `{"host":{"cpu":{"usage_percent":12.5,"used_cores":1,"total_cores":8},"memory":{"usage_percent":64.25,"used_bytes":10737418240,"total_bytes":17179869184},"disk":{"usage_percent":77.75,"used_bytes":427349245952,"total_bytes":549755813888},"network":{"total":{"rx_bytes":1000,"tx_bytes":2000,"rx_bytes_per_second":10,"tx_bytes_per_second":20,"rate_window_seconds":30,"rate_calculated_at":"2026-06-21T11:59:50Z"}}}}`,
 		}},
 		snapshot: storage.Snapshot{Revision: 2},
 	}
@@ -60,11 +60,29 @@ func TestMonitorSnapshotParsesHostMetricsAndTrafficSummary(t *testing.T) {
 	if got := *agent.Metrics.CPUUsagePercent; got != 12.5 {
 		t.Fatalf("CPUUsagePercent = %v", got)
 	}
+	if got := *agent.Metrics.CPUUsedCores; got != 1 {
+		t.Fatalf("CPUUsedCores = %v", got)
+	}
+	if got := *agent.Metrics.CPUTotalCores; got != 8 {
+		t.Fatalf("CPUTotalCores = %v", got)
+	}
 	if got := *agent.Metrics.MemoryUsagePercent; got != 64.25 {
 		t.Fatalf("MemoryUsagePercent = %v", got)
 	}
+	if got := *agent.Metrics.MemoryUsedBytes; got != 10737418240 {
+		t.Fatalf("MemoryUsedBytes = %v", got)
+	}
+	if got := *agent.Metrics.MemoryTotalBytes; got != 17179869184 {
+		t.Fatalf("MemoryTotalBytes = %v", got)
+	}
 	if got := *agent.Metrics.DiskUsagePercent; got != 77.75 {
 		t.Fatalf("DiskUsagePercent = %v", got)
+	}
+	if got := *agent.Metrics.DiskUsedBytes; got != 427349245952 {
+		t.Fatalf("DiskUsedBytes = %v", got)
+	}
+	if got := *agent.Metrics.DiskTotalBytes; got != 549755813888 {
+		t.Fatalf("DiskTotalBytes = %v", got)
 	}
 	if agent.Metrics.Network == nil || *agent.Metrics.Network.RXBytes != 1000 || *agent.Metrics.Network.TXBytes != 2000 {
 		t.Fatalf("network = %+v", agent.Metrics.Network)
@@ -104,6 +122,49 @@ func TestMonitorSnapshotToleratesMissingMetrics(t *testing.T) {
 	}
 	if agent.Metrics.CPUUsagePercent != nil || agent.Metrics.Network != nil || agent.Traffic != nil {
 		t.Fatalf("metrics should be empty for old agent: %+v traffic=%+v", agent.Metrics, agent.Traffic)
+	}
+}
+
+func TestMonitorSnapshotRefreshesLocalStatsBeforeReadingRuntimeState(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{
+		localState: storage.LocalAgentStateRow{DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success"},
+	}
+	svc := NewAgentService(config.Config{
+		EnableLocalAgent:  true,
+		LocalAgentID:      "local",
+		LocalAgentName:    "Local Agent",
+		HeartbeatInterval: 30 * time.Second,
+	}, store)
+	svc.now = func() time.Time { return now }
+	refreshCalls := 0
+	svc.SetLocalMonitorRefreshTrigger(func(context.Context) error {
+		refreshCalls++
+		store.savedRuntimeState = storage.RuntimeState{Metadata: map[string]string{
+			"stats": `{"host":{"cpu":{"usage_percent":25,"used_cores":2,"total_cores":8},"network":{"total":{"rx_bytes":1000,"tx_bytes":2000}}}}`,
+		}}
+		return nil
+	})
+
+	snapshot, err := svc.MonitorSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("MonitorSnapshot() error = %v", err)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+	if len(snapshot.Agents) != 1 {
+		t.Fatalf("agents len = %d, want 1", len(snapshot.Agents))
+	}
+	agent := snapshot.Agents[0]
+	if !agent.IsLocal || agent.ID != "local" {
+		t.Fatalf("agent = %+v, want local agent", agent)
+	}
+	if agent.Metrics.CPUUsedCores == nil || *agent.Metrics.CPUUsedCores != 2 {
+		t.Fatalf("CPUUsedCores = %v, want 2", agent.Metrics.CPUUsedCores)
+	}
+	if agent.Metrics.Network == nil || agent.Metrics.Network.RXBytes == nil || *agent.Metrics.Network.RXBytes != 1000 {
+		t.Fatalf("network = %+v, want refreshed counters", agent.Metrics.Network)
 	}
 }
 

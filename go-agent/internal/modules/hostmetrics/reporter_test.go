@@ -16,11 +16,14 @@ func TestReporterBuildsHostMetricsPayload(t *testing.T) {
 		CPUPercent: func(context.Context, time.Duration, bool) ([]float64, error) {
 			return []float64{12.5}, nil
 		},
+		CPUCounts: func(context.Context, bool) (int, error) {
+			return 8, nil
+		},
 		Memory: func(context.Context) (*mem.VirtualMemoryStat, error) {
-			return &mem.VirtualMemoryStat{UsedPercent: 64.25}, nil
+			return &mem.VirtualMemoryStat{Total: 16 * 1024 * 1024 * 1024, Used: 10 * 1024 * 1024 * 1024, UsedPercent: 64.25}, nil
 		},
 		DiskUsage: func(context.Context, string) (*disk.UsageStat, error) {
-			return &disk.UsageStat{UsedPercent: 77.75}, nil
+			return &disk.UsageStat{Total: 512 * 1024 * 1024 * 1024, Used: 398 * 1024 * 1024 * 1024, UsedPercent: 77.75}, nil
 		},
 		NetIO: func(context.Context, bool) ([]net.IOCountersStat, error) {
 			return []net.IOCountersStat{{BytesRecv: 100, BytesSent: 200}, {BytesRecv: 3, BytesSent: 4}}, nil
@@ -39,11 +42,29 @@ func TestReporterBuildsHostMetricsPayload(t *testing.T) {
 	if got := host["cpu"].(map[string]any)["usage_percent"]; got != 12.5 {
 		t.Fatalf("cpu usage = %v, want 12.5", got)
 	}
+	if got := host["cpu"].(map[string]any)["total_cores"]; got != 8 {
+		t.Fatalf("cpu total_cores = %v, want 8", got)
+	}
+	if got := host["cpu"].(map[string]any)["used_cores"]; got != 1.0 {
+		t.Fatalf("cpu used_cores = %v, want 1", got)
+	}
 	if got := host["memory"].(map[string]any)["usage_percent"]; got != 64.25 {
 		t.Fatalf("memory usage = %v, want 64.25", got)
 	}
+	if got := host["memory"].(map[string]any)["used_bytes"]; got != uint64(10*1024*1024*1024) {
+		t.Fatalf("memory used_bytes = %v, want 10 GiB", got)
+	}
+	if got := host["memory"].(map[string]any)["total_bytes"]; got != uint64(16*1024*1024*1024) {
+		t.Fatalf("memory total_bytes = %v, want 16 GiB", got)
+	}
 	if got := host["disk"].(map[string]any)["usage_percent"]; got != 77.75 {
 		t.Fatalf("disk usage = %v, want 77.75", got)
+	}
+	if got := host["disk"].(map[string]any)["used_bytes"]; got != uint64(398*1024*1024*1024) {
+		t.Fatalf("disk used_bytes = %v, want 398 GiB", got)
+	}
+	if got := host["disk"].(map[string]any)["total_bytes"]; got != uint64(512*1024*1024*1024) {
+		t.Fatalf("disk total_bytes = %v, want 512 GiB", got)
 	}
 	total := host["network"].(map[string]any)["total"].(map[string]uint64)
 	if total["rx_bytes"] != 103 || total["tx_bytes"] != 204 {
@@ -55,6 +76,9 @@ func TestReporterOmitsUnavailableMetrics(t *testing.T) {
 	reporter := NewReporter(ReporterConfig{
 		CPUPercent: func(context.Context, time.Duration, bool) ([]float64, error) {
 			return nil, errors.New("cpu unavailable")
+		},
+		CPUCounts: func(context.Context, bool) (int, error) {
+			return 0, errors.New("cpu count unavailable")
 		},
 		Memory: func(context.Context) (*mem.VirtualMemoryStat, error) {
 			return &mem.VirtualMemoryStat{UsedPercent: 33}, nil

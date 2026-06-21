@@ -211,15 +211,16 @@ type ApplyAgentResult struct {
 }
 
 type agentService struct {
-	cfg                config.Config
-	store              agentStore
-	trafficService     heartbeatTrafficService
-	now                func() time.Time
-	localApplyTrigger  func(context.Context) error
-	bundledCacheMu     sync.Mutex
-	bundledCache       map[string]bundledPackageCacheEntry
-	monitorMu          sync.Mutex
-	monitorSubscribers map[chan AgentMonitorUpdate]struct{}
+	cfg                        config.Config
+	store                      agentStore
+	trafficService             heartbeatTrafficService
+	now                        func() time.Time
+	localApplyTrigger          func(context.Context) error
+	localMonitorRefreshTrigger func(context.Context) error
+	bundledCacheMu             sync.Mutex
+	bundledCache               map[string]bundledPackageCacheEntry
+	monitorMu                  sync.Mutex
+	monitorSubscribers         map[chan AgentMonitorUpdate]struct{}
 }
 
 type heartbeatTrafficService interface {
@@ -269,6 +270,10 @@ func (s *agentService) SetTrafficService(trafficService heartbeatTrafficService)
 
 func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
 	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
+}
+
+func (s *agentService) SetLocalMonitorRefreshTrigger(trigger func(context.Context) error) {
+	s.localMonitorRefreshTrigger = wrapLocalApplyTrigger(trigger)
 }
 
 func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
