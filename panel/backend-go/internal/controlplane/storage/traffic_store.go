@@ -56,6 +56,7 @@ type TrafficCleanupCutoff struct {
 	HourlyBefore  time.Time
 	DailyBefore   time.Time
 	MonthlyBefore time.Time
+	EventBefore   time.Time
 }
 
 type TrafficCursorDeltaResult struct {
@@ -833,6 +834,14 @@ func (s *GormStore) DeleteTrafficBefore(ctx context.Context, agentID string, cut
 		if !cutoff.MonthlyBefore.IsZero() {
 			result := tx.Where("agent_id = ? AND period_start < ?", agentID, formatTrafficTime(cutoff.MonthlyBefore.UTC())).
 				Delete(&AgentTrafficMonthlySummaryRow{})
+			if result.Error != nil {
+				return result.Error
+			}
+			deleted += result.RowsAffected
+		}
+		if !cutoff.EventBefore.IsZero() {
+			result := tx.Where("agent_id = ? AND created_at < ?", agentID, formatTrafficTime(cutoff.EventBefore.UTC())).
+				Delete(&AgentTrafficEventRow{})
 			if result.Error != nil {
 				return result.Error
 			}

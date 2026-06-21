@@ -967,6 +967,91 @@ func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
 	}
 }
 
+func TestDeleteTrafficBeforeRemovesExpiredEvents(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	cutoff := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	for _, ts := range []time.Time{
+		cutoff.Add(-2 * time.Hour),
+		cutoff.Add(-time.Hour),
+		cutoff.Add(time.Hour),
+	} {
+		if err := store.SaveTrafficEvent(ctx, AgentTrafficEventRow{
+			AgentID:   "edge-1",
+			EventType: "counter_reset",
+			Message:   "old",
+			CreatedAt: formatTrafficTime(ts),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, err := store.DeleteTrafficBefore(ctx, "edge-1", TrafficCleanupCutoff{
+		EventBefore: cutoff,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+
+	var remaining int64
+	if err := store.db.WithContext(ctx).
+		Model(&AgentTrafficEventRow{}).
+		Where("agent_id = ?", "edge-1").
+		Count(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining = %d, want 1", remaining)
+	}
+}
+
+func TestDeleteTrafficBeforeEventCutoffIsOptional(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	oldBucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+		AgentID:     "edge-1",
+		ScopeType:   "http_rule",
+		ScopeID:     "11",
+		BucketStart: oldBucket,
+		RXBytes:     1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveTrafficEvent(ctx, AgentTrafficEventRow{
+		AgentID:   "edge-1",
+		EventType: "calibration",
+		Message:   "kept",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := store.DeleteTrafficBefore(ctx, "edge-1", TrafficCleanupCutoff{
+		HourlyBefore: oldBucket.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+
+	var remaining int64
+	if err := store.db.WithContext(ctx).
+		Model(&AgentTrafficEventRow{}).
+		Where("agent_id = ?", "edge-1").
+		Count(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("events remaining = %d, want 1", remaining)
+	}
+}
 func TestDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
