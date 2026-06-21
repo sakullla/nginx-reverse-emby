@@ -87,6 +87,37 @@ func TestReporterOmitsUnavailableMetrics(t *testing.T) {
 	}
 }
 
+func TestReporterKeepsAvailableZeroNetworkCounters(t *testing.T) {
+	reporter := NewReporter(ReporterConfig{
+		CPUPercent: func(context.Context, time.Duration, bool) ([]float64, error) {
+			return nil, nil
+		},
+		Memory: func(context.Context) (*mem.VirtualMemoryStat, error) {
+			return nil, nil
+		},
+		DiskUsage: func(context.Context, string) (*disk.UsageStat, error) {
+			return nil, nil
+		},
+		NetIO: func(context.Context, bool) ([]net.IOCountersStat, error) {
+			return []net.IOCountersStat{{Name: "eth0"}}, nil
+		},
+		Logf: func(string, ...any) {},
+	})
+
+	report, err := reporter.HostMetricsReport(context.Background())
+	if err != nil {
+		t.Fatalf("HostMetricsReport() error = %v", err)
+	}
+	if !report.StatsPresent {
+		t.Fatal("StatsPresent = false, want true")
+	}
+	host := report.Stats["host"].(map[string]any)
+	total := host["network"].(map[string]any)["total"].(map[string]uint64)
+	if total["rx_bytes"] != 0 || total["tx_bytes"] != 0 {
+		t.Fatalf("network total = %+v, want rx=0 tx=0", total)
+	}
+}
+
 func TestNormalizePercentClampsInvalidValues(t *testing.T) {
 	if got, ok := normalizePercent(-1); !ok || got != 0 {
 		t.Fatalf("normalizePercent(-1) = %v %v, want 0 true", got, ok)

@@ -133,9 +133,6 @@ func (r *Reporter) networkCounters(ctx context.Context) map[string]uint64 {
 		total["rx_bytes"] += c.BytesRecv
 		total["tx_bytes"] += c.BytesSent
 	}
-	if total["rx_bytes"] == 0 && total["tx_bytes"] == 0 {
-		return nil
-	}
 	return total
 }
 
