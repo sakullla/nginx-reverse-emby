@@ -760,17 +760,17 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
 	currentSeenAt := s.now().UTC().Format(time.RFC3339)
 	if request.Stats != nil {
-		if trafficStatsEnabled {
-			persistedStats := persistentAgentStats(request.Stats, true)
-			persistedStats = statsWithMonitorRates(persistedStats, parseAgentStats(previousRow.LastReportedStatsJSON), previousRow.LastSeenAt, currentSeenAt)
-			row.LastReportedStatsJSON = marshalAgentStats(persistedStats)
-			if s.trafficService != nil {
-				if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
-					return HeartbeatReply{}, err
-				}
-			}
-		} else {
+		persistedStats := persistentAgentStats(request.Stats, true)
+		persistedStats = statsWithMonitorRates(persistedStats, parseAgentStats(previousRow.LastReportedStatsJSON), previousRow.LastSeenAt, currentSeenAt)
+		if len(persistedStats) == 0 {
 			row.LastReportedStatsJSON = ""
+		} else {
+			row.LastReportedStatsJSON = marshalAgentStats(persistedStats)
+		}
+		if trafficStatsEnabled && s.trafficService != nil {
+			if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
+				return HeartbeatReply{}, err
+			}
 		}
 	}
 	if strings.TrimSpace(request.LastSeenIP) != "" {
@@ -1429,6 +1429,9 @@ func persistentAgentStats(stats AgentStats, trafficStatsEnabled bool) AgentStats
 			continue
 		}
 		persisted[key] = value
+	}
+	if len(persisted) == 0 {
+		return nil
 	}
 	return persisted
 }

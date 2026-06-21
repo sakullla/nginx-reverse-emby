@@ -278,9 +278,12 @@ func statsWithMonitorRates(current AgentStats, previous AgentStats, previousSeen
 		return stats
 	}
 	counterReset := false
+	missingPreviousCounter := false
 	if rxOK {
 		previousRX, ok := asUint64(previousTotal["rx_bytes"])
-		if ok {
+		if !ok {
+			missingPreviousCounter = true
+		} else {
 			if currentRX >= previousRX {
 				total["rx_bytes_per_second"] = float64(currentRX-previousRX) / windowSeconds
 			} else {
@@ -290,13 +293,21 @@ func statsWithMonitorRates(current AgentStats, previous AgentStats, previousSeen
 	}
 	if txOK {
 		previousTX, ok := asUint64(previousTotal["tx_bytes"])
-		if ok {
+		if !ok {
+			missingPreviousCounter = true
+		} else {
 			if currentTX >= previousTX {
 				total["tx_bytes_per_second"] = float64(currentTX-previousTX) / windowSeconds
 			} else {
 				counterReset = true
 			}
 		}
+	}
+	if missingPreviousCounter {
+		delete(total, "rx_bytes_per_second")
+		delete(total, "tx_bytes_per_second")
+		total["rate_unavailable_reason"] = "missing_previous_counter"
+		return stats
 	}
 	if counterReset {
 		delete(total, "rx_bytes_per_second")
