@@ -758,9 +758,12 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		row.CapabilitiesJSON = marshalStringArray(nextCapabilities)
 	}
 	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
+	currentSeenAt := s.now().UTC().Format(time.RFC3339)
 	if request.Stats != nil {
 		if trafficStatsEnabled {
-			row.LastReportedStatsJSON = marshalAgentStats(persistentAgentStats(request.Stats, true))
+			persistedStats := persistentAgentStats(request.Stats, true)
+			persistedStats = statsWithMonitorRates(persistedStats, parseAgentStats(previousRow.LastReportedStatsJSON), previousRow.LastSeenAt, currentSeenAt)
+			row.LastReportedStatsJSON = marshalAgentStats(persistedStats)
 			if s.trafficService != nil {
 				if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
 					return HeartbeatReply{}, err
@@ -781,7 +784,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	}
 	row.LastApplyStatus = defaultString(request.LastApplyStatus, row.LastApplyStatus)
 	row.LastApplyMessage = request.LastApplyMessage
-	row.LastSeenAt = s.now().UTC().Format(time.RFC3339)
+	row.LastSeenAt = currentSeenAt
 
 	if heartbeatStore, ok := s.store.(agentHeartbeatStore); ok && !agentHeartbeatRequiresFullSave(previousRow, row) {
 		if err := heartbeatStore.SaveAgentHeartbeat(ctx, row); err != nil {
