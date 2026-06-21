@@ -257,6 +257,7 @@ func statsWithMonitorRates(current AgentStats, previous AgentStats, previousSeen
 	if !rxOK && !txOK {
 		return stats
 	}
+	clearMonitorRateFields(total)
 	previousTotal, ok := previousHostNetworkTotal(previous)
 	if !ok {
 		total["rate_unavailable_reason"] = "missing_previous_counter"
@@ -304,14 +305,12 @@ func statsWithMonitorRates(current AgentStats, previous AgentStats, previousSeen
 		}
 	}
 	if missingPreviousCounter {
-		delete(total, "rx_bytes_per_second")
-		delete(total, "tx_bytes_per_second")
+		clearMonitorRateFields(total)
 		total["rate_unavailable_reason"] = "missing_previous_counter"
 		return stats
 	}
 	if counterReset {
-		delete(total, "rx_bytes_per_second")
-		delete(total, "tx_bytes_per_second")
+		clearMonitorRateFields(total)
 		total["rate_unavailable_reason"] = "counter_reset"
 		return stats
 	}
@@ -328,6 +327,14 @@ func statsWithMonitorRates(current AgentStats, previous AgentStats, previousSeen
 		total["rate_calculated_at"] = currentAt.UTC().Format(time.RFC3339)
 	}
 	return stats
+}
+
+func clearMonitorRateFields(total map[string]any) {
+	delete(total, "rx_bytes_per_second")
+	delete(total, "tx_bytes_per_second")
+	delete(total, "rate_window_seconds")
+	delete(total, "rate_calculated_at")
+	delete(total, "rate_unavailable_reason")
 }
 
 func previousHostNetworkTotal(stats AgentStats) (map[string]any, bool) {
