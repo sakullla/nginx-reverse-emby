@@ -29,6 +29,7 @@ export async function consumeAgentMonitorStream({ signal, onMessage, fetchImpl =
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   const parser = createNDJSONParser(onMessage)
+  let completed = false
   try {
     while (true) {
       const { value, done } = await reader.read()
@@ -37,9 +38,13 @@ export async function consumeAgentMonitorStream({ signal, onMessage, fetchImpl =
     }
     parser.push(decoder.decode())
     parser.flush()
+    completed = true
   } finally {
-    if (signal?.aborted) {
+    if (!completed) {
       await reader.cancel().catch(() => {})
+    }
+    if (typeof reader.releaseLock === 'function') {
+      reader.releaseLock()
     }
   }
 }

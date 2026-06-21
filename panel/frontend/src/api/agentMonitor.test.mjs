@@ -50,4 +50,34 @@ describe('consumeAgentMonitorStream', () => {
       .rejects
       .toMatchObject({ status: 401 })
   })
+
+  it('cancels the reader when message handling throws', async () => {
+    const cancel = vi.fn(async () => {})
+    const releaseLock = vi.fn()
+    const encoder = new TextEncoder()
+    const reader = {
+      read: vi.fn()
+        .mockResolvedValueOnce({
+          value: encoder.encode('{"type":"snapshot","payload":{"agents":[]}}\n'),
+          done: false
+        })
+        .mockResolvedValueOnce({ done: true }),
+      cancel,
+      releaseLock
+    }
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      body: { getReader: () => reader }
+    }))
+
+    await expect(consumeAgentMonitorStream({
+      fetchImpl,
+      onMessage: () => {
+        throw new Error('bad consumer')
+      }
+    })).rejects.toThrow('bad consumer')
+
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(releaseLock).toHaveBeenCalledTimes(1)
+  })
 })
