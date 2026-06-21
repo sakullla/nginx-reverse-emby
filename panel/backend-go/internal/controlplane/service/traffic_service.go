@@ -801,6 +801,7 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 	cutoff := storage.TrafficCleanupCutoff{}
 	if policy.HourlyRetentionDays > 0 {
 		cutoff.HourlyBefore = storage.LocalHourStart(now.AddDate(0, 0, -policy.HourlyRetentionDays)).UTC()
+		cutoff.EventBefore = cutoff.HourlyBefore
 		cycleStart, cycleEnd := monthlyCycleWindow(now, policy.CycleStartDay)
 		if cutoff.HourlyBefore.After(cycleStart) {
 			protectedStart, ok, err := s.rolloutDayHourlyPreserveStart(ctx, agentID, cycleStart, cycleEnd)
@@ -809,6 +810,7 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 			}
 			if ok && cutoff.HourlyBefore.After(protectedStart) {
 				cutoff.HourlyBefore = protectedStart
+				cutoff.EventBefore = protectedStart
 			}
 		}
 	}
