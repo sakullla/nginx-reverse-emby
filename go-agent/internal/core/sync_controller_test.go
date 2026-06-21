@@ -131,6 +131,43 @@ func TestSyncControllerBuildSyncPlanIncludesApplyStatusStatsAndCertificateReport
 	}
 }
 
+func TestSyncControllerBuildSyncPlanMergesTrafficAndHostMetricsStats(t *testing.T) {
+	st := newSyncControllerStore()
+	controller := &SyncController{
+		Store: st,
+		Traffic: syncControllerTrafficReporter{report: TrafficReport{
+			Stats:        map[string]any{"traffic": map[string]any{"total": map[string]uint64{"rx_bytes": 11, "tx_bytes": 22}}},
+			StatsPresent: true,
+		}},
+		HostMetrics: syncControllerHostMetricsReporter{report: HostMetricsReport{
+			Stats: map[string]any{"host": map[string]any{
+				"cpu": map[string]any{"usage_percent": 12.5},
+			}},
+			StatsPresent: true,
+		}},
+	}
+
+	plan, err := controller.BuildSyncPlan(context.Background(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatalf("BuildSyncPlan() error = %v", err)
+	}
+
+	if !plan.Request.StatsPresent {
+		t.Fatal("StatsPresent = false, want true")
+	}
+	if _, ok := plan.Request.Stats["traffic"]; !ok {
+		t.Fatalf("traffic stats missing: %+v", plan.Request.Stats)
+	}
+	host, ok := plan.Request.Stats["host"].(map[string]any)
+	if !ok {
+		t.Fatalf("host stats missing: %+v", plan.Request.Stats)
+	}
+	cpu := host["cpu"].(map[string]any)
+	if cpu["usage_percent"] != 12.5 {
+		t.Fatalf("cpu usage = %+v, want 12.5", cpu)
+	}
+}
+
 func TestSyncControllerMergesOmittedPayloadsAgainstDesiredAndAppliedSnapshots(t *testing.T) {
 	st := newSyncControllerStore()
 	previousApplied := model.Snapshot{
@@ -1073,6 +1110,15 @@ type syncControllerTrafficReporter struct {
 }
 
 func (r syncControllerTrafficReporter) TrafficReport(context.Context, map[string]string) (TrafficReport, error) {
+	return r.report, r.err
+}
+
+type syncControllerHostMetricsReporter struct {
+	report HostMetricsReport
+	err    error
+}
+
+func (r syncControllerHostMetricsReporter) HostMetricsReport(context.Context) (HostMetricsReport, error) {
 	return r.report, r.err
 }
 

@@ -12,6 +12,7 @@ func (a *App) syncController() *core.SyncController {
 		SyncClient:           a.syncClient,
 		Updater:              a.updater,
 		Traffic:              a.trafficReporter(),
+		HostMetrics:          a.hostMetricsReporter(),
 		CertReports:          a.certReports,
 		CurrentPackageSHA256: a.cfg.RuntimePackageSHA256,
 	}
@@ -22,4 +23,11 @@ func (a *App) trafficReporter() core.TrafficReporter {
 		return moduletraffic.NewReporter(moduletraffic.ReporterConfig{})
 	}
 	return a.trafficReports
+}
+
+func (a *App) hostMetricsReporter() core.HostMetricsReporter {
+	if a == nil || a.hostMetricsReports == nil {
+		return nil
+	}
+	return a.hostMetricsReports
 }
