@@ -25,6 +25,8 @@ type AgentService interface {
 	Stats(context.Context, string) (service.AgentStats, error)
 	Apply(context.Context, string) (service.ApplyAgentResult, error)
 	Heartbeat(context.Context, service.HeartbeatRequest, string) (service.HeartbeatReply, error)
+	MonitorSnapshot(context.Context) (service.AgentMonitorSnapshot, error)
+	SubscribeMonitorUpdates(context.Context) (<-chan service.AgentMonitorUpdate, func())
 }
 
 type TrafficService interface {
@@ -341,6 +343,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			mux.Handle(prefix+"/system/backup/counts", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupResourceCounts)))
 		}
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
+		mux.Handle(prefix+"/agents/monitor-stream", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentMonitorStream)))
 		mux.Handle(prefix+"/agents/{agentID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgent)))
 		mux.Handle(prefix+"/agents/{agentID}/stats", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentStats)))
 		mux.Handle(prefix+"/agents/{agentID}/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleApplyAgent)))

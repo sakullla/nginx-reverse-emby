@@ -25,32 +25,38 @@ func (f fakeSystemService) Info(context.Context) service.SystemInfo {
 }
 
 type fakeAgentService struct {
-	agents         []service.AgentSummary
-	agentsByID     map[string]service.AgentSummary
-	agentsByToken  map[string]service.AgentSummary
-	heartbeatReply service.HeartbeatReply
-	heartbeatErr   error
-	updateAgent    service.AgentSummary
-	deleteAgent    service.AgentSummary
-	applyResult    service.ApplyAgentResult
-	statsByID      map[string]service.AgentStats
-	getErr         error
-	updateErr      error
-	deleteErr      error
-	statsErr       error
-	applyErr       error
-	state          *fakeAgentServiceState
+	agents          []service.AgentSummary
+	agentsByID      map[string]service.AgentSummary
+	agentsByToken   map[string]service.AgentSummary
+	heartbeatReply  service.HeartbeatReply
+	heartbeatErr    error
+	updateAgent     service.AgentSummary
+	deleteAgent     service.AgentSummary
+	applyResult     service.ApplyAgentResult
+	statsByID       map[string]service.AgentStats
+	getErr          error
+	updateErr       error
+	deleteErr       error
+	statsErr        error
+	applyErr        error
+	monitorSnapshot service.AgentMonitorSnapshot
+	monitorErr      error
+	monitorUpdates  chan service.AgentMonitorUpdate
+	state           *fakeAgentServiceState
 }
 
 type fakeAgentServiceState struct {
-	updateAgentID  string
-	updateInput    service.UpdateAgentRequest
-	deleteAgentID  string
-	statsAgentID   string
-	applyAgentID   string
-	heartbeat      service.HeartbeatRequest
-	heartbeatToken string
-	resolveTokens  []string
+	updateAgentID        string
+	updateInput          service.UpdateAgentRequest
+	deleteAgentID        string
+	statsAgentID         string
+	applyAgentID         string
+	heartbeat            service.HeartbeatRequest
+	heartbeatToken       string
+	resolveTokens        []string
+	monitorSnapshotCalls int
+	monitorSubscribed    bool
+	monitorUnsubscribed  bool
 }
 
 func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) {
@@ -137,6 +143,31 @@ func (f fakeAgentService) GetByToken(_ context.Context, agentToken string) (serv
 		return agent, nil
 	}
 	return service.AgentSummary{}, service.ErrAgentUnauthorized
+}
+
+func (f fakeAgentService) MonitorSnapshot(context.Context) (service.AgentMonitorSnapshot, error) {
+	if f.state != nil {
+		f.state.monitorSnapshotCalls++
+	}
+	if f.monitorErr != nil {
+		return service.AgentMonitorSnapshot{}, f.monitorErr
+	}
+	return f.monitorSnapshot, nil
+}
+
+func (f fakeAgentService) SubscribeMonitorUpdates(context.Context) (<-chan service.AgentMonitorUpdate, func()) {
+	if f.state != nil {
+		f.state.monitorSubscribed = true
+	}
+	ch := f.monitorUpdates
+	if ch == nil {
+		ch = make(chan service.AgentMonitorUpdate)
+	}
+	return ch, func() {
+		if f.state != nil {
+			f.state.monitorUnsubscribed = true
+		}
+	}
 }
 
 type fakeL4RuleService struct {
@@ -1392,6 +1423,165 @@ func TestHandleAgentTaskStreamAppliesUpdateWithLargeResult(t *testing.T) {
 	}
 	if got, _ := state.updates[0].Result["blob"].(string); got != blob {
 		t.Fatalf("Result[blob] length = %d, want %d", len(got), len(blob))
+	}
+}
+
+func TestAgentMonitorStreamRequiresPanelToken(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config:               config.Config{PanelToken: "secret"},
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/agents/monitor-stream", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("GET monitor-stream without token = %d", resp.Code)
+	}
+}
+
+func TestAgentMonitorStreamSupportsHEADProbe(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config:               config.Config{PanelToken: "secret"},
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{state: state},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodHead, "/panel-api/agents/monitor-stream", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("HEAD monitor-stream = %d", resp.Code)
+	}
+	if got := resp.Header().Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q, want application/x-ndjson", got)
+	}
+	if state.monitorSnapshotCalls != 0 || state.monitorSubscribed {
+		t.Fatalf("HEAD should not open monitor stream: %+v", state)
+	}
+}
+
+func TestAgentMonitorStreamWritesSnapshotAndUpdates(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	updates := make(chan service.AgentMonitorUpdate, 1)
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			monitorSnapshot: service.AgentMonitorSnapshot{
+				GeneratedAt: "2026-06-21T12:00:00Z",
+				Agents: []service.AgentMonitorAgent{{
+					ID:     "edge-a",
+					Name:   "Edge A",
+					Status: "online",
+				}},
+			},
+			monitorUpdates: updates,
+			state:          state,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/panel-api/agents/monitor-stream", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(resp, req)
+		close(done)
+	}()
+
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		if strings.Contains(resp.Body.String(), `"type":"snapshot"`) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	updates <- service.AgentMonitorUpdate{
+		GeneratedAt: "2026-06-21T12:00:10Z",
+		Agent: service.AgentMonitorAgent{
+			ID:     "edge-a",
+			Name:   "Edge A",
+			Status: "online",
+		},
+	}
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		if strings.Count(strings.TrimSpace(resp.Body.String()), "\n")+1 >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET monitor-stream = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := resp.Header().Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q, want application/x-ndjson", got)
+	}
+	if !state.monitorSubscribed || !state.monitorUnsubscribed || state.monitorSnapshotCalls != 1 {
+		t.Fatalf("monitor state = %+v", state)
+	}
+	lines := strings.Split(strings.TrimSpace(resp.Body.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("NDJSON lines = %d body=%q", len(lines), resp.Body.String())
+	}
+	var snapshot struct {
+		Type    string                       `json:"type"`
+		Payload service.AgentMonitorSnapshot `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &snapshot); err != nil {
+		t.Fatalf("snapshot json.Unmarshal() error = %v line=%q", err, lines[0])
+	}
+	if snapshot.Type != "snapshot" || len(snapshot.Payload.Agents) != 1 || snapshot.Payload.Agents[0].ID != "edge-a" {
+		t.Fatalf("snapshot message = %+v", snapshot)
+	}
+	var update struct {
+		Type    string                     `json:"type"`
+		Payload service.AgentMonitorUpdate `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &update); err != nil {
+		t.Fatalf("update json.Unmarshal() error = %v line=%q", err, lines[1])
+	}
+	if update.Type != "update" || update.Payload.Agent.ID != "edge-a" {
+		t.Fatalf("update message = %+v", update)
 	}
 }
 

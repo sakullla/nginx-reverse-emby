@@ -389,3 +389,42 @@ func TestHeartbeatClearsSuppliedMonitorRatesWhenCurrentCounterMissing(t *testing
 		t.Fatalf("rate_unavailable_reason = %v, want missing_current_counter", got)
 	}
 }
+
+func TestHeartbeatBroadcastsMonitorUpdate(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			AgentToken:       "token-edge-1",
+			CapabilitiesJSON: `["http_rules"]`,
+			LastApplyStatus:  "success",
+			CurrentRevision:  1,
+			LastSeenAt:       now.Add(-30 * time.Second).Format(time.RFC3339),
+		}},
+		snapshot: storage.Snapshot{Revision: 1},
+	}
+	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
+	svc.now = func() time.Time { return now }
+	updates, unsubscribe := svc.SubscribeMonitorUpdates(context.Background())
+	defer unsubscribe()
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Stats: AgentStats{"host": map[string]any{
+			"cpu": map[string]any{"usage_percent": 42.5},
+		}},
+	}, "token-edge-1")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	select {
+	case update := <-updates:
+		if update.Agent.ID != "edge-1" || update.Agent.Name != "Edge 1" || update.Agent.Metrics.CPUUsagePercent == nil || *update.Agent.Metrics.CPUUsagePercent != 42.5 {
+			t.Fatalf("monitor update = %+v", update)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for monitor update")
+	}
+}

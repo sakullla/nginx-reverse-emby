@@ -211,13 +211,15 @@ type ApplyAgentResult struct {
 }
 
 type agentService struct {
-	cfg               config.Config
-	store             agentStore
-	trafficService    heartbeatTrafficService
-	now               func() time.Time
-	localApplyTrigger func(context.Context) error
-	bundledCacheMu    sync.Mutex
-	bundledCache      map[string]bundledPackageCacheEntry
+	cfg                config.Config
+	store              agentStore
+	trafficService     heartbeatTrafficService
+	now                func() time.Time
+	localApplyTrigger  func(context.Context) error
+	bundledCacheMu     sync.Mutex
+	bundledCache       map[string]bundledPackageCacheEntry
+	monitorMu          sync.Mutex
+	monitorSubscribers map[chan AgentMonitorUpdate]struct{}
 }
 
 type heartbeatTrafficService interface {
@@ -235,10 +237,11 @@ type bundledPackageCacheEntry struct {
 func NewAgentService(cfg config.Config, store agentStore) *agentService {
 	cfg.TrafficStatsEnabled = agentTrafficStatsEnabled(cfg)
 	svc := &agentService{
-		cfg:          cfg,
-		store:        store,
-		now:          time.Now,
-		bundledCache: make(map[string]bundledPackageCacheEntry),
+		cfg:                cfg,
+		store:              store,
+		now:                time.Now,
+		bundledCache:       make(map[string]bundledPackageCacheEntry),
+		monitorSubscribers: make(map[chan AgentMonitorUpdate]struct{}),
 	}
 	if trafficStore, ok := store.(trafficStore); ok {
 		trafficCfg, err := NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
@@ -811,6 +814,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err := s.persistHeartbeatTrafficBlockState(ctx, &row, trafficBlocked, trafficBlockReason); err != nil {
 		return HeartbeatReply{}, err
 	}
+	s.broadcastMonitorUpdate(ctx, row)
 	needsWireGuardCleanup := wireGuardCapabilityRemoved && snapshot.WireGuardProfiles != nil && len(snapshot.WireGuardProfiles) == 0
 	reply := HeartbeatReply{
 		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success") || needsWireGuardCleanup,

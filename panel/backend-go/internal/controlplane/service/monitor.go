@@ -6,7 +6,10 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 type AgentMonitorSnapshot struct {
@@ -125,6 +128,63 @@ func (s *agentService) MonitorAgent(ctx context.Context, agentID string) (AgentM
 		GeneratedAt: s.now().UTC().Format(time.RFC3339),
 		Agent:       s.monitorAgentFromSummary(ctx, summary, parseAgentStats(row.LastReportedStatsJSON)),
 	}, nil
+}
+
+func (s *agentService) SubscribeMonitorUpdates(ctx context.Context) (<-chan AgentMonitorUpdate, func()) {
+	ch := make(chan AgentMonitorUpdate, 8)
+	s.monitorMu.Lock()
+	s.monitorSubscribers[ch] = struct{}{}
+	s.monitorMu.Unlock()
+
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			s.monitorMu.Lock()
+			delete(s.monitorSubscribers, ch)
+			close(ch)
+			s.monitorMu.Unlock()
+		})
+	}
+	if ctx != nil && ctx.Done() != nil {
+		go func() {
+			<-ctx.Done()
+			cancel()
+		}()
+	}
+	return ch, cancel
+}
+
+func (s *agentService) broadcastMonitorUpdate(ctx context.Context, row storage.AgentRow) {
+	summary := s.monitorSummaryForRow(row)
+	update := AgentMonitorUpdate{
+		GeneratedAt: s.now().UTC().Format(time.RFC3339),
+		Agent:       s.monitorAgentFromSummary(ctx, summary, parseAgentStats(row.LastReportedStatsJSON)),
+	}
+
+	s.monitorMu.Lock()
+	defer s.monitorMu.Unlock()
+	for ch := range s.monitorSubscribers {
+		select {
+		case ch <- update:
+		default:
+		}
+	}
+}
+
+func (s *agentService) monitorSummaryForRow(row storage.AgentRow) AgentSummary {
+	return AgentSummary{
+		ID:           row.ID,
+		Name:         row.Name,
+		Version:      row.Version,
+		Platform:     row.Platform,
+		Tags:         parseStringArray(row.TagsJSON),
+		Mode:         defaultString(row.Mode, "pull"),
+		LastSeenAt:   row.LastSeenAt,
+		Status:       s.agentStatus(row),
+		IsLocal:      row.IsLocal,
+		LastSeenIP:   row.LastSeenIP,
+		Capabilities: parseStringArray(row.CapabilitiesJSON),
+	}
 }
 
 func (s *agentService) monitorAgentFromSummary(ctx context.Context, summary AgentSummary, stats AgentStats) AgentMonitorAgent {
