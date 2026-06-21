@@ -7,6 +7,7 @@
         <p v-else class='relay-page__subtitle'>请先选择一个节点</p>
       </div>
       <div class='relay-page__header-right'>
+        <ViewToggle v-if='agentId && listeners.length' v-model:view='view' />
         <button v-if='agentId' class='btn btn-primary' @click='showAddForm = true'>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -42,7 +43,7 @@
     </div>
 
     <!-- Listener card grid -->
-    <div v-if='agentId && listeners.length' class='relay-grid'>
+    <div v-show='agentId && listeners.length && view === "card"' class='relay-grid'>
       <RelayCard
         v-for='listener in listeners'
         :key='listener.id'
@@ -55,6 +56,15 @@
         @traffic-click='openTrendModal'
       />
     </div>
+
+    <!-- Listener list table -->
+    <RelayTable
+      v-show='agentId && listeners.length && view === "list"'
+      :listeners='listeners'
+      @edit='startEdit'
+      @toggle='toggleListener'
+      @delete='startDelete'
+    />
 
     <!-- Loading -->
     <div v-if='isLoading' class='relay-page__loading'>
@@ -106,11 +116,15 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
+import ViewToggle from '../components/common/ViewToggle.vue'
+import RelayTable from '../components/relay/RelayTable.vue'
+import { useViewToggle } from '../composables/useViewToggle'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
+const { view } = useViewToggle('relay')
 const agentContext = useAgent()
 const { selectedAgentId } = agentContext
 const systemInfo = agentContext.systemInfo || ref(null)
@@ -270,6 +284,21 @@ function confirmDelete() {
   }
   .relay-page__header {
     margin-bottom: 1rem;
+  }
+}
+
+.relay-grid,
+.relay-page :deep(.rule-table) {
+  animation: viewToggleIn 200ms var(--ease-default) both;
+}
+@keyframes viewToggleIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .relay-grid,
+  .relay-page :deep(.rule-table) {
+    animation: none;
   }
 }
 </style>

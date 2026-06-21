@@ -26,6 +26,7 @@ type fakeStore struct {
 	localState          storage.LocalAgentStateRow
 	savedAgent          storage.AgentRow
 	savedAgentCalls     int
+	savedHeartbeatCalls int
 	deletedAgentID      string
 	snapshot            storage.Snapshot
 	localSnapshot       storage.Snapshot
@@ -96,6 +97,19 @@ func (f *fakeStore) LoadLocalRuntimeState(context.Context) (storage.RuntimeState
 func (f *fakeStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
 	f.savedAgent = row
 	f.savedAgentCalls++
+	for i := range f.agents {
+		if f.agents[i].ID == row.ID {
+			f.agents[i] = row
+			return nil
+		}
+	}
+	f.agents = append(f.agents, row)
+	return nil
+}
+
+func (f *fakeStore) SaveAgentHeartbeat(_ context.Context, row storage.AgentRow) error {
+	f.savedAgent = row
+	f.savedHeartbeatCalls++
 	for i := range f.agents {
 		if f.agents[i].ID == row.ID {
 			f.agents[i] = row
@@ -1617,6 +1631,7 @@ func TestHeartbeatIngestsTrafficWhenModuleEnabled(t *testing.T) {
 	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
 		CurrentRevision: 1,
 		Stats: AgentStats{
+			"status": "运行中",
 			"traffic": map[string]any{
 				"total": map[string]any{"rx_bytes": float64(123), "tx_bytes": float64(456)},
 			},
@@ -1632,8 +1647,21 @@ func TestHeartbeatIngestsTrafficWhenModuleEnabled(t *testing.T) {
 	if trafficSvc.ingestCalls[0].agentID != "remote-traffic" {
 		t.Fatalf("traffic ingest agentID = %q", trafficSvc.ingestCalls[0].agentID)
 	}
-	if store.savedAgent.LastReportedStatsJSON == "" {
-		t.Fatal("LastReportedStatsJSON was not persisted")
+	if _, ok := trafficSvc.ingestCalls[0].stats["traffic"]; !ok {
+		t.Fatalf("traffic ingest stats = %+v, want original traffic payload", trafficSvc.ingestCalls[0].stats)
+	}
+	stats := parseAgentStats(store.savedAgent.LastReportedStatsJSON)
+	if _, ok := stats["traffic"]; ok {
+		t.Fatalf("LastReportedStatsJSON = %q, want traffic omitted", store.savedAgent.LastReportedStatsJSON)
+	}
+	if stats["status"] != "运行中" {
+		t.Fatalf("LastReportedStatsJSON = %q, want non-traffic stats persisted", store.savedAgent.LastReportedStatsJSON)
+	}
+	if store.savedHeartbeatCalls != 1 {
+		t.Fatalf("SaveAgentHeartbeat calls = %d, want 1", store.savedHeartbeatCalls)
+	}
+	if store.savedAgentCalls != 0 {
+		t.Fatalf("SaveAgent calls = %d, want 0", store.savedAgentCalls)
 	}
 	if reply.TrafficStatsEnabled == nil || !*reply.TrafficStatsEnabled {
 		t.Fatalf("TrafficStatsEnabled = %v, want true", reply.TrafficStatsEnabled)
@@ -1682,6 +1710,41 @@ func TestHeartbeatIgnoresTrafficAndDisablesAgentReportingWhenModuleDisabled(t *t
 	}
 	if reply.TrafficBlocked {
 		t.Fatal("TrafficBlocked = true, want false when module disabled")
+	}
+}
+
+func TestHeartbeatUsesFullSaveWhenConfigFieldsChange(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-config",
+			Name:            "remote-config",
+			AgentToken:      "token-remote-config",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Capabilities:    []string{"http_rules"},
+		Stats: AgentStats{
+			"status": "运行中",
+		},
+	}, "token-remote-config")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if store.savedAgentCalls != 1 {
+		t.Fatalf("SaveAgent calls = %d, want 1", store.savedAgentCalls)
+	}
+	if store.savedHeartbeatCalls != 0 {
+		t.Fatalf("SaveAgentHeartbeat calls = %d, want 0", store.savedHeartbeatCalls)
+	}
+	if store.savedAgent.CapabilitiesJSON != `["http_rules"]` {
+		t.Fatalf("CapabilitiesJSON = %q", store.savedAgent.CapabilitiesJSON)
 	}
 }
 
@@ -2011,6 +2074,20 @@ func TestBundledAgentPackageInfoCachesSHAUntilFileChanges(t *testing.T) {
 	}
 	if third.SHA256 == first.SHA256 {
 		t.Fatalf("expected sha to change after file update, got %q", third.SHA256)
+	}
+}
+
+func TestBundledAgentPackageInfoRejectsUnsafePlatform(t *testing.T) {
+	assetDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
+		t.Fatalf("WriteFile(agent asset) error = %v", err)
+	}
+
+	if pkg := bundledAgentPackageInfoCached(assetDir, "../linux-amd64", nil, nil); pkg != nil {
+		t.Fatalf("expected unsafe platform to be rejected, got %+v", pkg)
+	}
+	if pkg := bundledAgentPackageInfoCached(assetDir, `linux\amd64`, nil, nil); pkg != nil {
+		t.Fatalf("expected platform with path separator to be rejected, got %+v", pkg)
 	}
 }
 

@@ -131,6 +131,12 @@ func parseProxyAddresses(network, sourceIP, destinationIP, sourcePort, destinati
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid proxy protocol destination port %q", destinationPort)
 	}
+	if !isValidTCPPort(sourcePortNumber) {
+		return nil, nil, fmt.Errorf("invalid proxy protocol source port %q", sourcePort)
+	}
+	if !isValidTCPPort(destinationPortNumber) {
+		return nil, nil, fmt.Errorf("invalid proxy protocol destination port %q", destinationPort)
+	}
 
 	source := net.ParseIP(sourceIP)
 	if source == nil {
@@ -198,6 +204,9 @@ func buildProxyProtocolV1(info proxyInfo) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !isValidTCPPort(info.Source.Port) || !isValidTCPPort(info.Destination.Port) {
+		return nil, fmt.Errorf("proxy protocol port out of range")
+	}
 	return []byte(fmt.Sprintf(
 		"PROXY %s %s %s %d %d\r\n",
 		network,
@@ -212,6 +221,9 @@ func buildProxyProtocolV2(info proxyInfo) ([]byte, error) {
 	family, sourceIP, destinationIP, err := proxyAddressFamily(info)
 	if err != nil {
 		return nil, err
+	}
+	if !isValidTCPPort(info.Source.Port) || !isValidTCPPort(info.Destination.Port) {
+		return nil, fmt.Errorf("proxy protocol port out of range")
 	}
 
 	header := append([]byte(nil), proxyProtocolV2Signature...)
@@ -242,6 +254,10 @@ func buildProxyProtocolV2(info proxyInfo) ([]byte, error) {
 	header = append(header, length[:]...)
 	header = append(header, addressBytes...)
 	return header, nil
+}
+
+func isValidTCPPort(port int) bool {
+	return port > 0 && port <= 65535
 }
 
 func proxyAddressFamily(info proxyInfo) (string, net.IP, net.IP, error) {

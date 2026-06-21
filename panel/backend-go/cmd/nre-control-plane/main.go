@@ -67,6 +67,7 @@ var runControlPlaneFromEnv = func() error {
 	if err := initializeControlPlane(ctx, cfg); err != nil {
 		return err
 	}
+	service.ManagedCertificateDispatcher().SetBaseContext(ctx)
 	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
 	startTrafficCleanupLoop(ctx, cfg, nil)
 
@@ -74,8 +75,22 @@ var runControlPlaneFromEnv = func() error {
 	if err != nil {
 		return err
 	}
+	// Wire the background signer before startup recovery so re-dispatched "issuing" certificates
+	// have a real sign function (otherwise Submit is a safe no-op). Each issuance opens a fresh
+	// store, decoupled from the HTTP request or renewal-loop store lifecycles.
+	service.ManagedCertificateDispatcher().SetSignFunc(service.ManagedCertificateBackgroundSigner(cfg, func() (storage.Store, error) {
+		return openConfiguredStore(cfg)
+	}, application.LocalApplyTrigger()))
+	startManagedCertificateIssuanceRecovery(ctx, cfg, nil)
 	if err := application.Run(ctx); err != nil {
 		return err
+	}
+	// Graceful shutdown: application.Run returns once the shutdown context is cancelled,
+	// but background issuance goroutines may still be finishing. Give them a bounded window
+	// to observe cancellation and persist their outcome instead of leaving them to race
+	// process exit; log if any are still outstanding when the window closes.
+	if !service.ManagedCertificateDispatcher().WaitWithTimeout(managedCertificateIssuanceShutdownTimeout) {
+		log.Println("[cert] shutdown: timed out waiting for in-flight certificate issuance to finish")
 	}
 	return nil
 }
@@ -295,6 +310,7 @@ var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Conf
 }
 
 var managedCertificateAutoRenewInitialDelay = 10 * time.Second
+var managedCertificateIssuanceShutdownTimeout = 30 * time.Second
 var trafficCleanupInitialDelay = 30 * time.Second
 
 func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger) {
@@ -331,6 +347,34 @@ func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config
 			}
 		}
 	}()
+}
+
+var runManagedCertificateIssuanceRecovery = func(ctx context.Context, cfg config.Config) (int, error) {
+	store, err := openConfiguredStore(cfg)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+	return service.ManagedCertificateDispatcher().Recover(ctx, store)
+}
+
+func startManagedCertificateIssuanceRecovery(ctx context.Context, cfg config.Config, logger *log.Logger) {
+	if !cfg.ManagedDNSCertificatesEnabled {
+		return
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+	dispatched, err := runManagedCertificateIssuanceRecovery(ctx, cfg)
+	if err != nil {
+		logger.Printf("[cert] startup issuance recovery failed: %v", err)
+		return
+	}
+	if dispatched > 0 {
+		logger.Printf("[cert] startup issuance recovery re-dispatched %d in-flight certificate(s)", dispatched)
+	}
 }
 
 var runTrafficCleanupPass = func(ctx context.Context, cfg config.Config) error {
@@ -517,6 +561,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	}
 
 	controlPlaneApp := app.New(cfg, handler, logger, runtime.Start)
+	controlPlaneApp.SetLocalApplyTrigger(runtime.SyncNow)
 	controlPlaneApp.SetCleanup(closeApp)
 	return controlPlaneApp, nil
 }

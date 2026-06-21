@@ -13,6 +13,7 @@
         </p>
       </div>
       <div class="rules-page__header-right">
+        <ViewToggle v-if="agentId && rules.length" v-model:view="view" />
         <div class="search-wrapper" v-if="agentId && rules.length" @click="focusSearch">
           <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input ref="searchInputRef" v-model="searchQuery" name="rule-search" class="search-input" placeholder="搜索 URL / 标签 / #id=...">
@@ -65,7 +66,7 @@
     </div>
 
     <!-- Rules card grid -->
-    <div v-if="agentId && filteredRules.length" class="rule-grid">
+    <div v-show="agentId && filteredRules.length && view === 'card'" class="rule-grid">
       <RuleCard
         v-for="rule in filteredRules"
         :key="rule.id"
@@ -81,6 +82,16 @@
         @delete="startDelete"
       />
     </div>
+
+    <!-- Rules list table -->
+    <RuleTable
+      v-show="agentId && filteredRules.length && view === 'list'"
+      :rules="filteredRules"
+      :agent="selectedAgent"
+      @edit="startEdit"
+      @toggle="toggleRule"
+      @delete="startDelete"
+    />
 
     <!-- Loading -->
     <div v-if="isLoading" class="rules-page__loading">
@@ -139,18 +150,27 @@
       :scope-label="trendModal.scopeLabel"
       :direction="trafficDirection"
     />
+
+    <IdCandidateModal
+      v-model:visible="candidateModalVisible"
+      :id="candidateModalId"
+      :candidates="candidateModalCandidates"
+      @select="handleCandidateSelect"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watchEffect } from 'vue'
+import { ref, computed, watchEffect, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchTrafficSummary } from '../api'
+import { fetchTrafficSummary, fetchAllAgentsRules } from '../api'
+import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import IdCandidateModal from '../components/IdCandidateModal.vue'
 import RuleForm from '../components/RuleForm.vue'
 import RuleCard from '../components/rules/RuleCard.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
@@ -158,11 +178,15 @@ import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
+import ViewToggle from '../components/common/ViewToggle.vue'
+import RuleTable from '../components/rules/RuleTable.vue'
+import { useViewToggle } from '../composables/useViewToggle'
 import { messageStore } from '../stores/messages'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
+const { view } = useViewToggle('rules')
 const agentContext = useAgent()
 const { selectedAgentId } = agentContext
 const systemInfo = agentContext.systemInfo || ref(null)
@@ -248,6 +272,39 @@ const filteredRules = computed(() => {
     (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
   )
 })
+
+// R3: Cross-agent #id= resolution — if not found in current agent, search all agents
+const _crossSearching = ref(false)
+const candidateModalVisible = ref(false)
+const candidateModalCandidates = ref([])
+const candidateModalId = ref('')
+
+watch([filteredRules, isLoading], ([result]) => {
+  const idQuery = shouldStartCrossAgentIdSearch({
+    search: searchQuery.value,
+    currentMatches: result,
+    isLoading: isLoading.value,
+    isSearching: _crossSearching.value
+  })
+  if (!idQuery) return
+  const agentIds = allAgents.value.map(a => a.id)
+  if (!agentIds.length) return
+  _crossSearching.value = true
+  candidateModalId.value = idQuery.id
+  fetchAllAgentsRules(agentIds).then(allData => {
+    const allMatches = findAllMatchesInAgents({ rules: allData }, idQuery.id)
+    if (allMatches.length === 1) {
+      router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })
+    } else if (allMatches.length > 1) {
+      candidateModalCandidates.value = allMatches
+      candidateModalVisible.value = true
+    }
+  }).finally(() => { _crossSearching.value = false })
+})
+
+function handleCandidateSelect(candidate) {
+  router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
+}
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
 
@@ -403,5 +460,20 @@ async function confirmDelete() {
 
 @media (min-width: 1280px) {
   .rule-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+}
+
+.rule-grid,
+.rules-page :deep(.rule-table) {
+  animation: viewToggleIn 200ms var(--ease-default) both;
+}
+@keyframes viewToggleIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rule-grid,
+  .rules-page :deep(.rule-table) {
+    animation: none;
+  }
 }
 </style>

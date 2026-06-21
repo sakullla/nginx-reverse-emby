@@ -19,6 +19,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const maxRelayLeafAliasCount = 256
+
 func generateRelayLeafMaterial(domain string, caBundle storage.ManagedCertificateBundle, aliases ...string) (storage.ManagedCertificateBundle, error) {
 	caCert, caKey, err := parseCertificateSigner(caBundle.CertPEM, caBundle.KeyPEM)
 	if err != nil {
@@ -54,10 +56,11 @@ func generateRelayLeafMaterial(domain string, caBundle storage.ManagedCertificat
 }
 
 func relayLeafSANs(domain string, aliases ...string) ([]string, []net.IP) {
-	dnsNames := make([]string, 0, 1+len(aliases))
-	ipAddresses := make([]net.IP, 0, 1+len(aliases))
-	seenDNS := make(map[string]struct{}, 1+len(aliases))
-	seenIPs := make(map[string]struct{}, 1+len(aliases))
+	capacity := 1 + min(len(aliases), maxRelayLeafAliasCount)
+	dnsNames := make([]string, 0, capacity)
+	ipAddresses := make([]net.IP, 0, capacity)
+	seenDNS := make(map[string]struct{}, capacity)
+	seenIPs := make(map[string]struct{}, capacity)
 
 	addHost := func(raw string) {
 		host := strings.TrimSpace(raw)

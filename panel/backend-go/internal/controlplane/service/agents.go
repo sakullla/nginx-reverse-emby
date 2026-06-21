@@ -47,6 +47,10 @@ type agentStore interface {
 	DeleteAgent(context.Context, string) error
 }
 
+type agentHeartbeatStore interface {
+	SaveAgentHeartbeat(context.Context, storage.AgentRow) error
+}
+
 type AgentSummary struct {
 	ID                     string   `json:"id"`
 	Name                   string   `json:"name"`
@@ -725,6 +729,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		return HeartbeatReply{}, err
 	}
 
+	previousRow := row
 	row.Version = defaultString(request.Version, row.Version)
 	row.Platform = defaultString(request.Platform, row.Platform)
 	row.RuntimePackageVersion = defaultString(request.RuntimePackage.Version, row.RuntimePackageVersion)
@@ -755,7 +760,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
 	if request.Stats != nil {
 		if trafficStatsEnabled {
-			row.LastReportedStatsJSON = marshalAgentStats(request.Stats)
+			row.LastReportedStatsJSON = marshalAgentStats(persistentAgentStats(request.Stats, true))
 			if s.trafficService != nil {
 				if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
 					return HeartbeatReply{}, err
@@ -778,8 +783,14 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	row.LastApplyMessage = request.LastApplyMessage
 	row.LastSeenAt = s.now().UTC().Format(time.RFC3339)
 
-	if err := s.store.SaveAgent(ctx, row); err != nil {
-		return HeartbeatReply{}, err
+	if heartbeatStore, ok := s.store.(agentHeartbeatStore); ok && !agentHeartbeatRequiresFullSave(previousRow, row) {
+		if err := heartbeatStore.SaveAgentHeartbeat(ctx, row); err != nil {
+			return HeartbeatReply{}, err
+		}
+	} else {
+		if err := s.store.SaveAgent(ctx, row); err != nil {
+			return HeartbeatReply{}, err
+		}
 	}
 	if err := s.reconcileManagedCertificatesFromHeartbeat(ctx, row, request); err != nil {
 		return HeartbeatReply{}, err
@@ -1093,6 +1104,9 @@ func bundledAgentPackageInfoCached(assetRoot string, platform string, mu *sync.M
 	if normalizedPlatform == "" || normalizedRoot == "" {
 		return nil
 	}
+	if !isSafeBundledAgentPlatform(normalizedPlatform) {
+		return nil
+	}
 	filename := "nre-agent-" + normalizedPlatform
 	assetPath := filepath.Join(normalizedRoot, filename)
 	info, err := os.Stat(assetPath)
@@ -1131,6 +1145,23 @@ func bundledAgentPackageInfoCached(assetRoot string, platform string, mu *sync.M
 		mu.Unlock()
 	}
 	return &pkg
+}
+
+func isSafeBundledAgentPlatform(platform string) bool {
+	if platform == "." || platform == ".." || strings.Contains(platform, "..") {
+		return false
+	}
+	for _, r := range platform {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func fileSHA256(path string) (string, error) {
@@ -1380,6 +1411,33 @@ func marshalAgentStats(stats AgentStats) string {
 		return "{}"
 	}
 	return string(data)
+}
+
+func persistentAgentStats(stats AgentStats, trafficStatsEnabled bool) AgentStats {
+	if !trafficStatsEnabled {
+		return stats
+	}
+	if _, ok := stats["traffic"]; !ok {
+		return stats
+	}
+	persisted := make(AgentStats, len(stats)-1)
+	for key, value := range stats {
+		if key == "traffic" {
+			continue
+		}
+		persisted[key] = value
+	}
+	return persisted
+}
+
+func agentHeartbeatRequiresFullSave(previous, next storage.AgentRow) bool {
+	trim := func(value string) string {
+		return strings.TrimSpace(value)
+	}
+	return trim(previous.AgentURL) != trim(next.AgentURL) ||
+		trim(previous.TagsJSON) != trim(next.TagsJSON) ||
+		trim(previous.CapabilitiesJSON) != trim(next.CapabilitiesJSON) ||
+		trim(previous.Mode) != trim(next.Mode)
 }
 
 func trimTrailingSlash(value string) string {

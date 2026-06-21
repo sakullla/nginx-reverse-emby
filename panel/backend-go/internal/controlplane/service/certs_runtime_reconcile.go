@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"math"
 	"strings"
 	"time"
 
@@ -37,7 +38,7 @@ func ReconcileManagedCertificatesFromLocalRuntimeState(ctx context.Context, stor
 		resolvedAgentID,
 		defaultLocalCapabilities,
 		rules,
-		int(outcome.Revision),
+		boundedRevisionInt(outcome.Revision),
 		outcome.Status,
 		outcome.Message,
 		reportedCertIDs,
@@ -47,6 +48,16 @@ func ReconcileManagedCertificatesFromLocalRuntimeState(ctx context.Context, stor
 		return nil
 	}
 	return store.SaveManagedCertificates(ctx, nextRows)
+}
+
+func boundedRevisionInt(value int64) int {
+	if value <= 0 {
+		return 0
+	}
+	if value > int64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(value)
 }
 
 func managedCertificateHeartbeatReportsFromRuntimeState(reports []storage.ManagedCertificateReport) []ManagedCertificateHeartbeatReport {

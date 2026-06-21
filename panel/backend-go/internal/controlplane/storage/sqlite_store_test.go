@@ -53,6 +53,15 @@ func TestStoreLoadsAgentsAndRulesFromGORMSeededSQLite(t *testing.T) {
 	}
 }
 
+func TestLoadAgentConfigForSnapshotMissingAgentReturnsFalse(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+
+	config, ok := store.loadAgentConfigForSnapshot(t.Context(), "missing-agent")
+	if ok {
+		t.Fatalf("loadAgentConfigForSnapshot() = %+v, true; want false", config)
+	}
+}
+
 func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *testing.T) {
 	dataRoot := t.TempDir()
 
@@ -4282,6 +4291,102 @@ func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWit
 	}
 }
 
+func TestStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "edge-withhold",
+		Name:            "edge-withhold",
+		AgentToken:      "token-edge-withhold",
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 2,
+		CurrentRevision: 1,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	rows := []ManagedCertificateRow{
+		{
+			ID:              40,
+			Domain:          "issuing.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["edge-withhold"]`,
+			Status:          "issuing",
+			AgentReports:    `{}`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        5,
+		},
+		{
+			ID:              41,
+			Domain:          "agent-issued.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-withhold"]`,
+			Status:          "issuing",
+			AgentReports:    `{}`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        6,
+		},
+	}
+	if err := store.SaveManagedCertificates(t.Context(), rows); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+
+	load := func() Snapshot {
+		t.Helper()
+		snapshot, err := store.LoadAgentSnapshot(t.Context(), "edge-withhold", AgentSnapshotInput{
+			DesiredVersion:  "1.2.3",
+			DesiredRevision: 6,
+			CurrentRevision: 1,
+			Platform:        "linux-amd64",
+		})
+		if err != nil {
+			t.Fatalf("LoadAgentSnapshot() error = %v", err)
+		}
+		return snapshot
+	}
+
+	snapshot := load()
+	if containsPolicyID(snapshot.CertificatePolicies, 40) {
+		t.Fatalf("master_cf_dns policy id 40 must be withheld while it has no material (agents cannot issue it): %+v", snapshot.CertificatePolicies)
+	}
+	if containsCertificateID(snapshot.Certificates, 40) {
+		t.Fatalf("master_cf_dns bundle id 40 must be absent without material: %+v", snapshot.Certificates)
+	}
+	if !containsPolicyID(snapshot.CertificatePolicies, 41) {
+		t.Fatalf("local_http01 policy id 41 must remain published without material (the agent issues it): %+v", snapshot.CertificatePolicies)
+	}
+
+	// Background signer completes: material is written and the row flips to active.
+	writeManagedCertificateMaterial(t, dataRoot, "issuing.example.com", "issued-cert", "issued-key")
+	rows[0].Status = "active"
+	if err := store.SaveManagedCertificates(t.Context(), rows); err != nil {
+		t.Fatalf("SaveManagedCertificates() reactivate error = %v", err)
+	}
+
+	snapshot = load()
+	if !containsPolicyID(snapshot.CertificatePolicies, 40) || !containsCertificateID(snapshot.Certificates, 40) {
+		t.Fatalf("master_cf_dns id 40 must be published once material exists: policies=%+v certs=%+v", snapshot.CertificatePolicies, snapshot.Certificates)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -6532,6 +6637,61 @@ func TestStoreLoadAgentSnapshotIncludesEnabledWireGuardProfilesWithRawSecrets(t 
 	}
 }
 
+func TestCleanupSQLiteLegacyLocalAgentStateSkipsDeleteWhenNoLegacyRows(t *testing.T) {
+	db := openTrafficTestGormDB(t)
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+
+	var deleteCount int
+	callbackName := "test:count_legacy_local_agent_state_cleanup_delete"
+	if err := db.Callback().Raw().Before("gorm:raw").Register(callbackName, func(tx *gorm.DB) {
+		if strings.Contains(tx.Statement.SQL.String(), "DELETE FROM local_agent_state WHERE id <> 1") {
+			deleteCount++
+		}
+	}); err != nil {
+		t.Fatalf("register raw callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Raw().Remove(callbackName)
+	})
+
+	if err := cleanupSQLiteLegacyLocalAgentState(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	if deleteCount != 0 {
+		t.Fatalf("legacy local_agent_state cleanup delete count = %d, want 0", deleteCount)
+	}
+}
+
+func TestBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
+	db := openTrafficTestGormDB(t)
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+
+	var updateCount int
+	callbackName := "test:count_agent_default_normalization_updates"
+	if err := db.Callback().Raw().Before("gorm:raw").Register(callbackName, func(tx *gorm.DB) {
+		sql := tx.Statement.SQL.String()
+		if strings.HasPrefix(sql, "UPDATE agents SET ") && strings.Contains(sql, " IS NULL") {
+			updateCount++
+		}
+	}); err != nil {
+		t.Fatalf("register raw callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Raw().Remove(callbackName)
+	})
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	if updateCount != 0 {
+		t.Fatalf("repeated agent default normalization updates = %d, want 0", updateCount)
+	}
+}
+
 func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -6712,6 +6872,144 @@ func TestStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
 	}
 	if runtimeState.Metadata["stats"] != `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}` {
 		t.Fatalf("LoadLocalRuntimeState() metadata = %+v", runtimeState.Metadata)
+	}
+}
+
+func TestStoreSaveLocalRuntimeStateSkipsUnchangedWrite(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	runtimeState := RuntimeState{
+		CurrentRevision: 9,
+		Status:          "active",
+		Metadata: map[string]string{
+			"stats": `{"status":"running"}`,
+		},
+	}
+
+	if err := store.SaveLocalRuntimeState(t.Context(), "local", runtimeState); err != nil {
+		t.Fatalf("SaveLocalRuntimeState(first) error = %v", err)
+	}
+
+	var createCount int
+	callbackName := "test:count_unchanged_local_runtime_state_writes"
+	if err := store.db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		switch tx.Statement.Table {
+		case "local_agent_state", "meta":
+			createCount++
+		}
+	}); err != nil {
+		t.Fatalf("register create callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.db.Callback().Create().Remove(callbackName)
+	})
+
+	if err := store.SaveLocalRuntimeState(t.Context(), "local", runtimeState); err != nil {
+		t.Fatalf("SaveLocalRuntimeState(second) error = %v", err)
+	}
+	if createCount != 0 {
+		t.Fatalf("unchanged SaveLocalRuntimeState writes = %d, want 0", createCount)
+	}
+}
+
+func TestSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	if err := store.SaveAgent(ctx, AgentRow{
+		ID:              "edge-heartbeat",
+		Name:            "edge",
+		AgentToken:      "token",
+		DesiredRevision: 7,
+		CurrentRevision: 6,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SaveAgentHeartbeat(ctx, AgentRow{
+		ID:                    "edge-heartbeat",
+		Name:                  "changed-name",
+		AgentToken:            "changed-token",
+		Version:               "1.2.3",
+		Platform:              "linux-amd64",
+		DesiredRevision:       99,
+		CurrentRevision:       8,
+		LastApplyRevision:     8,
+		LastApplyStatus:       "error",
+		LastApplyMessage:      "apply failed",
+		LastReportedStatsJSON: `{"status":"running"}`,
+		LastSeenAt:            "2026-06-18T16:00:00Z",
+		LastSeenIP:            "10.0.0.1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got AgentRow
+	for _, row := range agents {
+		if row.ID == "edge-heartbeat" {
+			got = row
+			break
+		}
+	}
+	if got.Name != "edge" || got.AgentToken != "token" || got.DesiredRevision != 7 {
+		t.Fatalf("config fields overwritten: %+v", got)
+	}
+	if got.Version != "1.2.3" || got.CurrentRevision != 8 || got.LastApplyStatus != "error" || got.LastReportedStatsJSON == "" || got.LastSeenIP != "10.0.0.1" {
+		t.Fatalf("heartbeat fields not updated: %+v", got)
+	}
+}
+
+func TestSaveAgentHeartbeatOnlyUpdatesChangedColumns(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	row := AgentRow{
+		ID:                     "edge-heartbeat",
+		Name:                   "edge",
+		AgentToken:             "token",
+		Version:                "1.2.3",
+		Platform:               "linux-amd64",
+		RuntimePackageVersion:  "1",
+		RuntimePackagePlatform: "linux",
+		RuntimePackageArch:     "amd64",
+		RuntimePackageSHA256:   "sha256",
+		CurrentRevision:        8,
+		LastApplyRevision:      8,
+		LastApplyStatus:        "success",
+		LastReportedStatsJSON:  `{}`,
+		LastSeenAt:             "2026-06-18T16:00:00Z",
+		LastSeenIP:             "10.0.0.1",
+	}
+	if err := store.SaveAgent(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+
+	var updateSQL string
+	callbackName := "test:capture_agent_heartbeat_update"
+	if err := store.db.Callback().Update().After("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "agents" {
+			updateSQL = tx.Statement.SQL.String()
+		}
+	}); err != nil {
+		t.Fatalf("register update callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.db.Callback().Update().Remove(callbackName)
+	})
+
+	row.LastSeenAt = "2026-06-18T16:00:30Z"
+	if err := store.SaveAgentHeartbeat(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(updateSQL, "`last_seen_at`") {
+		t.Fatalf("heartbeat update SQL = %q, want last_seen_at", updateSQL)
+	}
+	for _, column := range []string{"`version`", "`platform`", "`runtime_package_version`", "`current_revision`", "`last_apply_status`", "`last_reported_stats`"} {
+		if strings.Contains(updateSQL, column) {
+			t.Fatalf("heartbeat update SQL = %q, unexpectedly updated unchanged column %s", updateSQL, column)
+		}
 	}
 }
 
@@ -6989,6 +7287,15 @@ func (l *schemaTraceLogger) Trace(_ context.Context, _ time.Time, fc func() (str
 
 func (l *schemaTraceLogger) Reset() {
 	l.duplicateRelayColumnStatements = 0
+}
+
+func TestManagedCertificateDirectorySanitizesPathComponents(t *testing.T) {
+	baseDir := t.TempDir()
+	got := managedCertificateDirectory(baseDir, `../../evil\leaf`)
+	want := filepath.Join(baseDir, "____evil_leaf")
+	if got != want {
+		t.Fatalf("managedCertificateDirectory() = %q, want %q", got, want)
+	}
 }
 
 func writeManagedCertificateMaterial(t *testing.T, dataRoot string, domain string, certPEM string, keyPEM string) {

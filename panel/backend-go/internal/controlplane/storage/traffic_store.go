@@ -56,6 +56,7 @@ type TrafficCleanupCutoff struct {
 	HourlyBefore  time.Time
 	DailyBefore   time.Time
 	MonthlyBefore time.Time
+	EventBefore   time.Time
 }
 
 type TrafficCursorDeltaResult struct {
@@ -64,6 +65,11 @@ type TrafficCursorDeltaResult struct {
 	DeltaRXBytes  uint64
 	DeltaTXBytes  uint64
 	CounterReset  bool
+}
+
+type TrafficCursorIngestRow struct {
+	Cursor AgentTrafficRawCursorRow
+	Event  *AgentTrafficEventRow
 }
 
 func (s *GormStore) GetTrafficPolicy(ctx context.Context, agentID string) (AgentTrafficPolicyRow, error) {
@@ -115,7 +121,7 @@ func saveTrafficPolicyTx(tx *gorm.DB, row AgentTrafficPolicyRow) error {
 func (s *GormStore) SaveTrafficPolicyAndRebuildMonthlySummaries(ctx context.Context, row AgentTrafficPolicyRow, rebuild bool, from, to time.Time, previousCycleStartDay int) error {
 	row.AgentID = s.resolveAgentID(row.AgentID)
 	normalizeTrafficPolicyRow(&row)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if err := saveTrafficPolicyTx(tx, row); err != nil {
 			return err
 		}
@@ -141,7 +147,7 @@ func (s *GormStore) ListTrafficPolicies(ctx context.Context) ([]AgentTrafficPoli
 }
 
 func (s *GormStore) ReplaceTrafficPolicies(ctx context.Context, rows []AgentTrafficPolicyRow) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if err := tx.Where("1 = 1").Delete(&AgentTrafficPolicyRow{}).Error; err != nil {
 			return err
 		}
@@ -209,34 +215,26 @@ func (s *GormStore) ListTrafficBaselines(ctx context.Context) ([]AgentTrafficBas
 
 func (s *GormStore) ListTrafficAgentIDs(ctx context.Context) ([]string, error) {
 	agentIDs := map[string]struct{}{}
-	collect := func(model any, column string) error {
-		if !s.db.Migrator().HasTable(model) {
-			return nil
-		}
-		var rows []string
-		if err := s.db.WithContext(ctx).Model(model).Distinct(column).Pluck(column, &rows).Error; err != nil {
-			return err
-		}
+	collect := func(rows []string) {
 		for _, row := range rows {
-			agentID := strings.TrimSpace(row)
-			if agentID != "" {
+			if agentID := strings.TrimSpace(row); agentID != "" {
 				agentIDs[agentID] = struct{}{}
 			}
 		}
-		return nil
 	}
-	for _, source := range []struct {
-		model  any
-		column string
-	}{
-		{model: &AgentTrafficRawCursorRow{}, column: "agent_id"},
-		{model: &AgentTrafficHourlyBucketRow{}, column: "agent_id"},
-		{model: &AgentTrafficDailySummaryRow{}, column: "agent_id"},
-		{model: &AgentTrafficMonthlySummaryRow{}, column: "agent_id"},
-	} {
-		if err := collect(source.model, source.column); err != nil {
+	if s.db.Migrator().HasTable(&AgentRow{}) {
+		var rows []string
+		if err := s.db.WithContext(ctx).Model(&AgentRow{}).Pluck("id", &rows).Error; err != nil {
 			return nil, err
 		}
+		collect(rows)
+	}
+	if s.db.Migrator().HasTable(&AgentTrafficAgentRow{}) {
+		var rows []string
+		if err := s.db.WithContext(ctx).Model(&AgentTrafficAgentRow{}).Pluck("agent_id", &rows).Error; err != nil {
+			return nil, err
+		}
+		collect(rows)
 	}
 	out := make([]string, 0, len(agentIDs))
 	for agentID := range agentIDs {
@@ -247,7 +245,7 @@ func (s *GormStore) ListTrafficAgentIDs(ctx context.Context) ([]string, error) {
 }
 
 func (s *GormStore) ReplaceTrafficBaselines(ctx context.Context, rows []AgentTrafficBaselineRow) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if err := tx.Where("1 = 1").Delete(&AgentTrafficBaselineRow{}).Error; err != nil {
 			return err
 		}
@@ -288,9 +286,12 @@ func (s *GormStore) SaveTrafficCursor(ctx context.Context, row AgentTrafficRawCu
 	if err != nil {
 		return err
 	}
-	return s.db.WithContext(ctx).
-		Clauses(clause.OnConflict{UpdateAll: true}).
-		Create(&row).Error
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := ensureTrafficAgentTx(tx, row.AgentID, ""); err != nil {
+			return err
+		}
+		return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error
+	})
 }
 
 func (s *GormStore) IngestTrafficCursorDelta(ctx context.Context, cursor AgentTrafficRawCursorRow, bucketStart time.Time) (TrafficCursorDeltaResult, error) {
@@ -298,8 +299,68 @@ func (s *GormStore) IngestTrafficCursorDelta(ctx context.Context, cursor AgentTr
 }
 
 func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, cursor AgentTrafficRawCursorRow, bucketStart time.Time, event *AgentTrafficEventRow) (TrafficCursorDeltaResult, error) {
+	results, err := s.IngestTrafficCursorDeltasWithEvents(ctx, []TrafficCursorIngestRow{{Cursor: cursor, Event: event}}, bucketStart)
+	if len(results) == 0 {
+		return TrafficCursorDeltaResult{}, err
+	}
+	return results[0], err
+}
+
+func (s *GormStore) IngestTrafficCursorDeltasWithEvents(ctx context.Context, rows []TrafficCursorIngestRow, bucketStart time.Time) ([]TrafficCursorDeltaResult, error) {
+	results := make([]TrafficCursorDeltaResult, len(rows))
+	if len(rows) == 0 {
+		return results, nil
+	}
+	normalized := make([]TrafficCursorIngestRow, len(rows))
+	lockKeys := make([]string, 0, len(rows))
+	seenLocks := map[string]struct{}{}
+	for i, row := range rows {
+		var err error
+		row.Cursor.AgentID = s.resolveAgentID(row.Cursor.AgentID)
+		row.Cursor.ScopeType, err = normalizeTrafficScopeType(row.Cursor.ScopeType)
+		if err != nil {
+			return nil, err
+		}
+		if row.Cursor.ObservedAt == "" {
+			row.Cursor.ObservedAt = formatTrafficTime(bucketStart.UTC())
+		}
+		normalized[i] = row
+		lockKey := trafficCursorLockKey(row.Cursor.AgentID, row.Cursor.ScopeType, row.Cursor.ScopeID)
+		if _, ok := seenLocks[lockKey]; !ok {
+			seenLocks[lockKey] = struct{}{}
+			lockKeys = append(lockKeys, lockKey)
+		}
+	}
+	slices.Sort(lockKeys)
+	locks := make([]*sync.Mutex, 0, len(lockKeys))
+	for _, key := range lockKeys {
+		locks = append(locks, trafficCursorMutexForKey(key))
+	}
+	for _, lock := range locks {
+		lock.Lock()
+	}
+	defer func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			locks[i].Unlock()
+		}
+	}()
+
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		policyCache := map[string]AgentTrafficPolicyRow{}
+		for i, row := range normalized {
+			result, err := ingestTrafficCursorDeltaTx(tx, row.Cursor, bucketStart, row.Event, policyCache)
+			if err != nil {
+				return err
+			}
+			results[i] = result
+		}
+		return nil
+	})
+	return results, err
+}
+
+func ingestTrafficCursorDeltaTx(tx *gorm.DB, cursor AgentTrafficRawCursorRow, bucketStart time.Time, event *AgentTrafficEventRow, policyCache map[string]AgentTrafficPolicyRow) (TrafficCursorDeltaResult, error) {
 	var err error
-	cursor.AgentID = s.resolveAgentID(cursor.AgentID)
 	cursor.ScopeType, err = normalizeTrafficScopeType(cursor.ScopeType)
 	if err != nil {
 		return TrafficCursorDeltaResult{}, err
@@ -307,106 +368,132 @@ func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, curso
 	if cursor.ObservedAt == "" {
 		cursor.ObservedAt = formatTrafficTime(bucketStart.UTC())
 	}
-
-	lock := trafficCursorMutex(cursor.AgentID, cursor.ScopeType, cursor.ScopeID)
-	lock.Lock()
-	defer lock.Unlock()
+	if err := ensureTrafficAgentTx(tx, cursor.AgentID, cursor.ObservedAt); err != nil {
+		return TrafficCursorDeltaResult{}, err
+	}
 
 	var result TrafficCursorDeltaResult
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if isHostTrafficScope(cursor.ScopeType) {
-			var existing AgentTrafficRawCursorRow
-			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-				Where("agent_id = ? AND scope_type = ? AND scope_id = ?", cursor.AgentID, cursor.ScopeType, cursor.ScopeID).
-				First(&existing).Error
-			if err == gorm.ErrRecordNotFound {
-				return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&cursor).Error
-			}
-			if err != nil {
-				return err
-			}
+	var previous AgentTrafficRawCursorRow
+	previousLoaded := false
+	if isHostTrafficScope(cursor.ScopeType) {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("agent_id = ? AND scope_type = ? AND scope_id = ?", cursor.AgentID, cursor.ScopeType, cursor.ScopeID).
+			First(&previous).Error
+		if err == gorm.ErrRecordNotFound {
+			return result, tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&cursor).Error
 		}
+		if err != nil {
+			return result, err
+		}
+		previousLoaded = true
+	}
+	if !previousLoaded {
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("agent_id = ? AND scope_type = ? AND scope_id = ?", cursor.AgentID, cursor.ScopeType, cursor.ScopeID).
+			First(&previous).Error
+	}
+	switch {
+	case previousLoaded || err == nil:
+		result = trafficCursorDeltaFromPrevious(cursor, previous)
+	case err == gorm.ErrRecordNotFound:
+		result.DeltaRXBytes = cursor.RXBytes
+		result.DeltaTXBytes = cursor.TXBytes
+	default:
+		return result, err
+	}
+	if !result.FoundPrevious {
 		seed := cursor
 		seed.RXBytes = 0
 		seed.TXBytes = 0
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error; err != nil {
-			return err
+			return result, err
 		}
-
-		var previous AgentTrafficRawCursorRow
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("agent_id = ? AND scope_type = ? AND scope_id = ?", cursor.AgentID, cursor.ScopeType, cursor.ScopeID).
-			First(&previous).Error
-		switch {
-		case err == nil:
-			result.Previous = previous
-			result.FoundPrevious = true
-			bootChanged := isHostTrafficScope(cursor.ScopeType) && strings.TrimSpace(previous.BootID) != "" && strings.TrimSpace(cursor.BootID) != "" && previous.BootID != cursor.BootID
-			if bootChanged {
-				result.DeltaRXBytes = cursor.RXBytes
-				result.CounterReset = true
-			} else if cursor.RXBytes >= previous.RXBytes {
-				result.DeltaRXBytes = cursor.RXBytes - previous.RXBytes
-			} else {
-				result.DeltaRXBytes = cursor.RXBytes
-				result.CounterReset = true
-			}
-			if bootChanged {
-				result.DeltaTXBytes = cursor.TXBytes
-				result.CounterReset = true
-			} else if cursor.TXBytes >= previous.TXBytes {
-				result.DeltaTXBytes = cursor.TXBytes - previous.TXBytes
-			} else {
-				result.DeltaTXBytes = cursor.TXBytes
-				result.CounterReset = true
-			}
-		case err == gorm.ErrRecordNotFound:
-			result.DeltaRXBytes = cursor.RXBytes
-			result.DeltaTXBytes = cursor.TXBytes
-		default:
-			return err
+			First(&previous).Error; err != nil {
+			return result, err
 		}
-		if result.DeltaRXBytes > 0 || result.DeltaTXBytes > 0 {
-			if err := incrementTrafficBucketsTx(tx, TrafficDelta{
-				AgentID:     cursor.AgentID,
-				ScopeType:   cursor.ScopeType,
-				ScopeID:     cursor.ScopeID,
-				BucketStart: bucketStart,
-				RXBytes:     result.DeltaRXBytes,
-				TXBytes:     result.DeltaTXBytes,
-			}); err != nil {
-				return err
-			}
+		result = trafficCursorDeltaFromPrevious(cursor, previous)
+	}
+	if !result.FoundPrevious {
+		return result, fmt.Errorf("traffic cursor seed was not found after conflict")
+	}
+	if result.DeltaRXBytes > 0 || result.DeltaTXBytes > 0 {
+		if err := incrementTrafficBucketsTx(tx, TrafficDelta{
+			AgentID:     cursor.AgentID,
+			ScopeType:   cursor.ScopeType,
+			ScopeID:     cursor.ScopeID,
+			BucketStart: bucketStart,
+			RXBytes:     result.DeltaRXBytes,
+			TXBytes:     result.DeltaTXBytes,
+		}, policyCache); err != nil {
+			return result, err
 		}
-		if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&cursor).Error; err != nil {
-			return err
-		}
-		if event == nil || !result.CounterReset {
-			return nil
-		}
-		event.AgentID = s.resolveAgentID(event.AgentID)
-		if event.EventType == "" {
-			return fmt.Errorf("traffic event_type is required")
-		}
-		if event.Payload == "" {
-			payload, _ := json.Marshal(map[string]any{
-				"scope_type":       cursor.ScopeType,
-				"scope_id":         cursor.ScopeID,
-				"previous_rx":      result.Previous.RXBytes,
-				"previous_tx":      result.Previous.TXBytes,
-				"current_rx":       cursor.RXBytes,
-				"current_tx":       cursor.TXBytes,
-				"previous_boot_id": result.Previous.BootID,
-				"current_boot_id":  cursor.BootID,
-			})
-			event.Payload = string(payload)
-		}
-		if event.CreatedAt == "" {
-			event.CreatedAt = nowTrafficTimestamp()
-		}
-		return tx.Create(event).Error
-	})
-	return result, err
+	}
+	if !result.CounterReset && result.DeltaRXBytes == 0 && result.DeltaTXBytes == 0 && previous.BootID == cursor.BootID {
+		return result, nil
+	}
+	if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&cursor).Error; err != nil {
+		return result, err
+	}
+	if event == nil || !result.CounterReset || isNoisyHostCounterRollback(cursor, result.Previous) {
+		return result, nil
+	}
+	if event.EventType == "" {
+		return result, fmt.Errorf("traffic event_type is required")
+	}
+	event.AgentID = cursor.AgentID
+	if event.Payload == "" {
+		payload, _ := json.Marshal(map[string]any{
+			"scope_type":       cursor.ScopeType,
+			"scope_id":         cursor.ScopeID,
+			"previous_rx":      result.Previous.RXBytes,
+			"previous_tx":      result.Previous.TXBytes,
+			"current_rx":       cursor.RXBytes,
+			"current_tx":       cursor.TXBytes,
+			"previous_boot_id": result.Previous.BootID,
+			"current_boot_id":  cursor.BootID,
+		})
+		event.Payload = string(payload)
+	}
+	if event.CreatedAt == "" {
+		event.CreatedAt = nowTrafficTimestamp()
+	}
+	return result, tx.Create(event).Error
+}
+
+func isNoisyHostCounterRollback(cursor, previous AgentTrafficRawCursorRow) bool {
+	return isHostTrafficScope(cursor.ScopeType) &&
+		strings.TrimSpace(cursor.BootID) != "" &&
+		previous.BootID == cursor.BootID &&
+		(cursor.RXBytes < previous.RXBytes || cursor.TXBytes < previous.TXBytes)
+}
+
+func trafficCursorDeltaFromPrevious(cursor, previous AgentTrafficRawCursorRow) TrafficCursorDeltaResult {
+	result := TrafficCursorDeltaResult{
+		Previous:      previous,
+		FoundPrevious: true,
+	}
+	bootChanged := isHostTrafficScope(cursor.ScopeType) && strings.TrimSpace(previous.BootID) != "" && strings.TrimSpace(cursor.BootID) != "" && previous.BootID != cursor.BootID
+	if bootChanged {
+		result.DeltaRXBytes = cursor.RXBytes
+		result.CounterReset = true
+	} else if cursor.RXBytes >= previous.RXBytes {
+		result.DeltaRXBytes = cursor.RXBytes - previous.RXBytes
+	} else {
+		result.DeltaRXBytes = cursor.RXBytes
+		result.CounterReset = true
+	}
+	if bootChanged {
+		result.DeltaTXBytes = cursor.TXBytes
+		result.CounterReset = true
+	} else if cursor.TXBytes >= previous.TXBytes {
+		result.DeltaTXBytes = cursor.TXBytes - previous.TXBytes
+	} else {
+		result.DeltaTXBytes = cursor.TXBytes
+		result.CounterReset = true
+	}
+	return result
 }
 
 func isHostTrafficScope(scopeType string) bool {
@@ -414,7 +501,14 @@ func isHostTrafficScope(scopeType string) bool {
 }
 
 func trafficCursorMutex(agentID, scopeType, scopeID string) *sync.Mutex {
-	key := agentID + "\x00" + scopeType + "\x00" + scopeID
+	return trafficCursorMutexForKey(trafficCursorLockKey(agentID, scopeType, scopeID))
+}
+
+func trafficCursorLockKey(agentID, scopeType, scopeID string) string {
+	return agentID + "\x00" + scopeType + "\x00" + scopeID
+}
+
+func trafficCursorMutexForKey(key string) *sync.Mutex {
 	value, _ := trafficCursorLocks.LoadOrStore(key, &sync.Mutex{})
 	return value.(*sync.Mutex)
 }
@@ -426,14 +520,17 @@ func (s *GormStore) IncrementTrafficBuckets(ctx context.Context, delta TrafficDe
 	if err != nil {
 		return err
 	}
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return incrementTrafficBucketsTx(tx, delta)
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		return incrementTrafficBucketsTx(tx, delta, nil)
 	})
 }
 
-func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta) error {
+func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta, policyCache map[string]AgentTrafficPolicyRow) error {
 	bucketStart := delta.BucketStart
 	now := nowTrafficTimestamp()
+	if err := ensureTrafficAgentTx(tx, delta.AgentID, now); err != nil {
+		return err
+	}
 
 	if err := incrementTrafficHourlyBucket(tx, AgentTrafficHourlyBucketRow{
 		AgentID:     delta.AgentID,
@@ -462,7 +559,7 @@ func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta) error {
 		return err
 	}
 
-	monthStart, err := trafficCycleMonthStart(tx, delta.AgentID, bucketStart)
+	monthStart, err := trafficCycleMonthStart(tx, delta.AgentID, bucketStart, policyCache)
 	if err != nil {
 		return err
 	}
@@ -478,23 +575,32 @@ func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta) error {
 	})
 }
 
-func trafficCycleMonthStart(tx *gorm.DB, agentID string, bucketStart time.Time) (time.Time, error) {
-	policy, err := trafficPolicyForTx(tx, agentID)
+func trafficCycleMonthStart(tx *gorm.DB, agentID string, bucketStart time.Time, policyCache map[string]AgentTrafficPolicyRow) (time.Time, error) {
+	policy, err := trafficPolicyForTx(tx, agentID, policyCache)
 	if err != nil {
 		return time.Time{}, err
 	}
 	return cycleMonthStart(bucketStart, policy.CycleStartDay), nil
 }
 
-func trafficPolicyForTx(tx *gorm.DB, agentID string) (AgentTrafficPolicyRow, error) {
+func trafficPolicyForTx(tx *gorm.DB, agentID string, policyCache map[string]AgentTrafficPolicyRow) (AgentTrafficPolicyRow, error) {
+	if policyCache != nil {
+		if row, ok := policyCache[agentID]; ok {
+			return row, nil
+		}
+	}
 	var row AgentTrafficPolicyRow
 	if err := tx.Where("agent_id = ?", agentID).Limit(1).Find(&row).Error; err != nil {
 		return AgentTrafficPolicyRow{}, err
 	}
 	if row.AgentID == "" {
-		return defaultTrafficPolicy(agentID), nil
+		row = defaultTrafficPolicy(agentID)
+	} else {
+		normalizeTrafficPolicyRow(&row)
 	}
-	normalizeTrafficPolicyRow(&row)
+	if policyCache != nil {
+		policyCache[agentID] = row
+	}
 	return row, nil
 }
 
@@ -708,7 +814,7 @@ func (s *GormStore) SaveTrafficEvent(ctx context.Context, row AgentTrafficEventR
 func (s *GormStore) DeleteTrafficBefore(ctx context.Context, agentID string, cutoff TrafficCleanupCutoff) (int64, error) {
 	agentID = s.resolveAgentID(agentID)
 	var deleted int64
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if !cutoff.HourlyBefore.IsZero() {
 			result := tx.Where("agent_id = ? AND bucket_start < ?", agentID, formatTrafficTime(cutoff.HourlyBefore.UTC())).
 				Delete(&AgentTrafficHourlyBucketRow{})
@@ -733,6 +839,14 @@ func (s *GormStore) DeleteTrafficBefore(ctx context.Context, agentID string, cut
 			}
 			deleted += result.RowsAffected
 		}
+		if !cutoff.EventBefore.IsZero() {
+			result := tx.Where("agent_id = ? AND created_at < ?", agentID, formatTrafficTime(cutoff.EventBefore.UTC())).
+				Delete(&AgentTrafficEventRow{})
+			if result.Error != nil {
+				return result.Error
+			}
+			deleted += result.RowsAffected
+		}
 		return nil
 	})
 	return deleted, err
@@ -747,7 +861,7 @@ func (s *GormStore) DeleteTrafficByScope(ctx context.Context, agentID, scopeType
 	scopeID = strings.TrimSpace(scopeID)
 
 	var deleted int64
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		count, err := deleteTrafficRows(tx, trafficScopedDataModels(), "agent_id = ? AND scope_type = ? AND scope_id = ?", agentID, scopeType, scopeID)
 		if err != nil {
 			return err
@@ -761,7 +875,7 @@ func (s *GormStore) DeleteTrafficByScope(ctx context.Context, agentID, scopeType
 func (s *GormStore) DeleteTrafficByAgent(ctx context.Context, agentID string) (int64, error) {
 	agentID = s.resolveAgentID(agentID)
 	var deleted int64
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		count, err := s.deleteTrafficByAgentTx(tx, agentID)
 		if err != nil {
 			return err
@@ -775,7 +889,7 @@ func (s *GormStore) DeleteTrafficByAgent(ctx context.Context, agentID string) (i
 func (s *GormStore) DeleteTrafficBucketsByAgent(ctx context.Context, agentID string) (int64, error) {
 	agentID = s.resolveAgentID(agentID)
 	var deleted int64
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		count, err := deleteTrafficRows(tx, trafficScopedDataModels(), "agent_id = ?", agentID)
 		if err != nil {
 			return err
@@ -789,7 +903,7 @@ func (s *GormStore) DeleteTrafficBucketsByAgent(ctx context.Context, agentID str
 func (s *GormStore) DeleteTrafficBucketsByAgentInWindow(ctx context.Context, agentID string, from, to time.Time) (int64, error) {
 	agentID = s.resolveAgentID(agentID)
 	var deleted int64
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		count, err := deleteTrafficBucketRowsInWindow(tx, agentID, from, to)
 		if err != nil {
 			return err
@@ -802,13 +916,13 @@ func (s *GormStore) DeleteTrafficBucketsByAgentInWindow(ctx context.Context, age
 
 func (s *GormStore) RebuildTrafficMonthlySummaries(ctx context.Context, agentID string, from, to time.Time) error {
 	agentID = s.resolveAgentID(agentID)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		return rebuildTrafficMonthlySummariesTx(tx, agentID, from, to, 0)
 	})
 }
 
 func rebuildTrafficMonthlySummariesTx(tx *gorm.DB, agentID string, from, to time.Time, previousCycleStartDay int) error {
-	policy, err := trafficPolicyForTx(tx, agentID)
+	policy, err := trafficPolicyForTx(tx, agentID, nil)
 	if err != nil {
 		return err
 	}
@@ -838,6 +952,7 @@ func trafficScopedDataModels() []any {
 
 func trafficAgentDataModels() []any {
 	return []any{
+		&AgentTrafficAgentRow{},
 		&AgentTrafficPolicyRow{},
 		&AgentTrafficBaselineRow{},
 		&AgentTrafficRawCursorRow{},
@@ -846,6 +961,29 @@ func trafficAgentDataModels() []any {
 		&AgentTrafficMonthlySummaryRow{},
 		&AgentTrafficEventRow{},
 	}
+}
+
+func ensureTrafficAgentTx(tx *gorm.DB, agentID, observedAt string) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil
+	}
+	now := strings.TrimSpace(observedAt)
+	if now == "" {
+		now = nowTrafficTimestamp()
+	}
+	return tx.
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "agent_id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"updated_at": now,
+			}),
+		}).
+		Create(&AgentTrafficAgentRow{
+			AgentID:   agentID,
+			UpdatedAt: now,
+			CreatedAt: now,
+		}).Error
 }
 
 func deleteTrafficRows(tx *gorm.DB, models []any, query string, args ...any) (int64, error) {
@@ -865,7 +1003,7 @@ func deleteTrafficRows(tx *gorm.DB, models []any, query string, args ...any) (in
 
 func deleteTrafficBucketRowsInWindow(tx *gorm.DB, agentID string, from, to time.Time) (int64, error) {
 	var deleted int64
-	policy, err := trafficPolicyForTx(tx, agentID)
+	policy, err := trafficPolicyForTx(tx, agentID, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -930,7 +1068,7 @@ func rebuildMonthlyTrafficBuckets(tx *gorm.DB, agentID string, from, to time.Tim
 	if !tx.Migrator().HasTable(&AgentTrafficDailySummaryRow{}) || !tx.Migrator().HasTable(&AgentTrafficMonthlySummaryRow{}) {
 		return nil
 	}
-	policy, err := trafficPolicyForTx(tx, agentID)
+	policy, err := trafficPolicyForTx(tx, agentID, nil)
 	if err != nil {
 		return err
 	}

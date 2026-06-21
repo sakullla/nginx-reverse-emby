@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"os"
@@ -23,6 +24,21 @@ func (d Dependencies) staticHandler() http.Handler {
 			return
 		}
 
+		panelPublicPath := strings.TrimRight(strings.TrimSpace(d.Config.PanelPublicPath), "/")
+		if panelPublicPath != "" {
+			switch {
+			case path == panelPublicPath || strings.HasPrefix(path, panelPublicPath+"/"):
+				path = strings.TrimPrefix(path, panelPublicPath)
+				if path == "" {
+					path = "/"
+				}
+			case strings.HasPrefix(path, "/assets/") || path == "/favicon.ico":
+			default:
+				http.NotFound(w, r)
+				return
+			}
+		}
+
 		distRoot := filepath.Clean(d.Config.FrontendDistDir)
 		if distRoot == "" {
 			http.NotFound(w, r)
@@ -41,6 +57,10 @@ func (d Dependencies) staticHandler() http.Handler {
 		}
 
 		if info, err := os.Stat(requestedFile); err == nil && !info.IsDir() {
+			if relativePath == "index.html" {
+				d.serveIndexFile(w, r, requestedFile)
+				return
+			}
 			serveFile(w, r, requestedFile, staticContentType(requestedFile), map[string]string{
 				"Cache-Control": "public, max-age=300",
 			})
@@ -58,10 +78,36 @@ func (d Dependencies) staticHandler() http.Handler {
 			return
 		}
 
-		serveFile(w, r, indexFile, "text/html; charset=utf-8", map[string]string{
-			"Cache-Control": "no-store",
-		})
+		d.serveIndexFile(w, r, indexFile)
 	})
+}
+
+func (d Dependencies) serveIndexFile(w http.ResponseWriter, r *http.Request, indexFile string) {
+	body, err := os.ReadFile(indexFile)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	body = d.injectPanelBase(body)
+	w.Header().Set("Cache-Control", "no-store")
+	writeBody(w, r, http.StatusOK, body, "text/html; charset=utf-8")
+}
+
+func (d Dependencies) injectPanelBase(body []byte) []byte {
+	panelPublicPath := strings.TrimRight(strings.TrimSpace(d.Config.PanelPublicPath), "/")
+	if panelPublicPath == "" {
+		return body
+	}
+	baseScript := `<script>window.__NRE_PANEL_BASE__=` + strconv.Quote(panelPublicPath+"/") + `;</script>`
+	marker := []byte("</head>")
+	if idx := bytes.Index(body, marker); idx >= 0 {
+		out := make([]byte, 0, len(body)+len(baseScript))
+		out = append(out, body[:idx]...)
+		out = append(out, baseScript...)
+		out = append(out, body[idx:]...)
+		return out
+	}
+	return append([]byte(baseScript), body...)
 }
 
 func (d Dependencies) buildJoinAgentScript(r *http.Request) (string, error) {
@@ -75,7 +121,7 @@ func (d Dependencies) buildJoinAgentScript(r *http.Request) (string, error) {
 		return "", err
 	}
 
-	baseURL := requestBaseURL(r)
+	baseURL := d.requestBaseURL(r)
 	assetBaseURL := baseURL + "/panel-api/public/agent-assets"
 	replacer := strings.NewReplacer(
 		"__DEFAULT_MASTER_URL__", escapeForDoubleQuotedShell(baseURL),
@@ -106,9 +152,20 @@ func (d Dependencies) joinAgentScriptPath() (string, error) {
 	return "", os.ErrNotExist
 }
 
-func requestBaseURL(r *http.Request) string {
-	proto := firstHeaderValue(r.Header.Get("X-Forwarded-Proto"), "http")
-	forwardedHost := firstHeaderValue(r.Header.Get("X-Forwarded-Host"), "")
+func (d Dependencies) requestBaseURL(r *http.Request) string {
+	if publicURL := strings.TrimRight(strings.TrimSpace(d.Config.PublicURL), "/"); publicURL != "" {
+		return publicURL
+	}
+	return requestBaseURL(r, d.Config.TrustForwardedHeaders)
+}
+
+func requestBaseURL(r *http.Request, trustForwardedHeaders bool) string {
+	proto := "http"
+	forwardedHost := ""
+	if trustForwardedHeaders {
+		proto = firstHeaderValue(r.Header.Get("X-Forwarded-Proto"), "http")
+		forwardedHost = firstHeaderValue(r.Header.Get("X-Forwarded-Host"), "")
+	}
 	requestHost := firstHeaderValue(r.Host, "")
 	host := forwardedHost
 	if host == "" {
@@ -122,7 +179,10 @@ func requestBaseURL(r *http.Request) string {
 		return proto + "://" + host
 	}
 
-	forwardedPort := firstHeaderValue(r.Header.Get("X-Forwarded-Port"), "")
+	forwardedPort := ""
+	if trustForwardedHeaders {
+		forwardedPort = firstHeaderValue(r.Header.Get("X-Forwarded-Port"), "")
+	}
 	switch forwardedPort {
 	case "", "80":
 		if proto == "http" {

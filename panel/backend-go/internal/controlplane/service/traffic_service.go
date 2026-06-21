@@ -89,6 +89,10 @@ type trafficCursorDeltaEventStore interface {
 	IngestTrafficCursorDeltaWithEvent(context.Context, storage.AgentTrafficRawCursorRow, time.Time, *storage.AgentTrafficEventRow) (storage.TrafficCursorDeltaResult, error)
 }
 
+type trafficCursorBatchDeltaEventStore interface {
+	IngestTrafficCursorDeltasWithEvents(context.Context, []storage.TrafficCursorIngestRow, time.Time) ([]storage.TrafficCursorDeltaResult, error)
+}
+
 type trafficService struct {
 	enabled bool
 	store   trafficStore
@@ -139,6 +143,7 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 	bucketAt := s.now().In(s.tz)
 	observedAt := bucketAt.UTC()
 	var scopeCache *trafficScopeLookupCache
+	batchRows := make([]storage.TrafficCursorIngestRow, 0, len(samples))
 	for _, sample := range samples {
 		allow, err := s.allowTrafficSample(ctx, agentID, sample, &scopeCache)
 		if err != nil {
@@ -155,6 +160,18 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 			TXBytes:    sample.tx,
 			BootID:     sample.bootID,
 			ObservedAt: observedAt.Format(time.RFC3339),
+		}
+		if _, ok := s.store.(trafficCursorBatchDeltaEventStore); ok {
+			batchRows = append(batchRows, storage.TrafficCursorIngestRow{
+				Cursor: cursor,
+				Event: &storage.AgentTrafficEventRow{
+					AgentID:   agentID,
+					EventType: "counter_reset",
+					Message:   "traffic counter reset",
+					CreatedAt: observedAt.Format(time.RFC3339),
+				},
+			})
+			continue
 		}
 		if ingestStore, ok := s.store.(trafficCursorDeltaEventStore); ok {
 			if _, err := ingestStore.IngestTrafficCursorDeltaWithEvent(ctx, cursor, bucketAt, &storage.AgentTrafficEventRow{
@@ -236,6 +253,11 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 				return err
 			}
 		}
+	}
+	if len(batchRows) > 0 {
+		ingestStore := s.store.(trafficCursorBatchDeltaEventStore)
+		_, err := ingestStore.IngestTrafficCursorDeltasWithEvents(ctx, batchRows, bucketAt)
+		return err
 	}
 	return nil
 }
@@ -779,6 +801,7 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 	cutoff := storage.TrafficCleanupCutoff{}
 	if policy.HourlyRetentionDays > 0 {
 		cutoff.HourlyBefore = storage.LocalHourStart(now.AddDate(0, 0, -policy.HourlyRetentionDays)).UTC()
+		cutoff.EventBefore = cutoff.HourlyBefore
 		cycleStart, cycleEnd := monthlyCycleWindow(now, policy.CycleStartDay)
 		if cutoff.HourlyBefore.After(cycleStart) {
 			protectedStart, ok, err := s.rolloutDayHourlyPreserveStart(ctx, agentID, cycleStart, cycleEnd)
@@ -787,6 +810,7 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 			}
 			if ok && cutoff.HourlyBefore.After(protectedStart) {
 				cutoff.HourlyBefore = protectedStart
+				cutoff.EventBefore = protectedStart
 			}
 		}
 	}

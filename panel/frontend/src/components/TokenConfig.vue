@@ -16,28 +16,24 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRuleStore } from '../stores/rules'
-import { setApiToken } from '../api'
+import { setAuthToken } from '../api/authState'
 
 const ruleStore = useRuleStore()
 const apiToken = ref('')
 
 onMounted(() => {
-  const saved = localStorage.getItem('panel_api_token')
-  if (saved) {
-    apiToken.value = saved
-    setApiToken(saved)
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem('panel_api_token')
   }
 })
 
 function saveToken() {
   const token = apiToken.value.trim()
   if (token) {
-    localStorage.setItem('panel_api_token', token)
-    setApiToken(token)
+    setAuthToken(token)
     ruleStore.showInfo('✨ Token 已保存')
   } else {
-    localStorage.removeItem('panel_api_token')
-    setApiToken('')
+    setAuthToken('')
     ruleStore.showInfo('Token 已清除')
   }
 }

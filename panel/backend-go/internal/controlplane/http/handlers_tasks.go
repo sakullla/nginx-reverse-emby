@@ -244,7 +244,7 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 		AgentID:    agent.ID,
 		SessionID:  strings.TrimSpace(r.URL.Query().Get("session_id")),
 		Session:    session,
-		RemoteAddr: remoteIPFromRequest(r),
+		RemoteAddr: remoteIPFromRequest(r, d.Config.TrustForwardedHeaders),
 	}); err != nil {
 		status, body := mapServiceError(err)
 		writeJSON(w, status, body)
@@ -296,7 +296,7 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		AgentID:    agent.ID,
 		SessionID:  strings.TrimSpace(r.URL.Query().Get("session_id")),
 		Session:    session,
-		RemoteAddr: remoteIPFromRequest(r),
+		RemoteAddr: remoteIPFromRequest(r, d.Config.TrustForwardedHeaders),
 	}); err != nil {
 		_ = session.Close()
 		return

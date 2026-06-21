@@ -5,7 +5,7 @@
         <h1 class='certs-page__title'>证书管理</h1>
         <p class='certs-page__subtitle'>
           <template v-if='agentId'>
-            {{ certificates.length }} 项证书 · {{ activeCount }} 生效中 · 模板优先创建
+            {{ certificates.length }} 项证书 · {{ activeCount }} 生效中<template v-if='issuingCount'> · {{ issuingCount }} 签发中</template> · 模板优先创建
           </template>
           <template v-else>
             请先选择一个节点
@@ -13,6 +13,7 @@
         </p>
       </div>
       <div class='certs-page__header-right'>
+        <ViewToggle v-if='agentId && certificates.length' v-model:view='view' />
         <div v-if='agentId && certificates.length' class='search-wrapper' @click='focusSearch'>
           <svg class='search-icon-btn' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
             <circle cx='11' cy='11' r='8' />
@@ -56,7 +57,7 @@
       <div class='spinner'></div>
     </div>
 
-    <div v-else-if='certificates.length && filteredCerts.length' class='cert-grid'>
+    <div v-show='certificates.length && filteredCerts.length && view === "card"' class='cert-grid'>
       <CertCard
         v-for='cert in filteredCerts'
         :key='cert.id'
@@ -67,7 +68,14 @@
       />
     </div>
 
-    <div v-else-if='certificates.length && !filteredCerts.length && !isIdExactMatch' class='certs-page__empty'>
+    <CertTable
+      v-show='agentId && filteredCerts.length && view === "list"'
+      :certificates='filteredCerts'
+      @edit='startEdit'
+      @delete='startDelete'
+    />
+
+    <div v-if='agentId && certificates.length && !filteredCerts.length && !isIdExactMatch' class='certs-page__empty'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
         <circle cx='11' cy='11' r='8' />
         <line x1='21' y1='21' x2='16.65' y2='16.65' />
@@ -75,7 +83,7 @@
       <p>没有匹配的证书</p>
     </div>
 
-    <div v-else class='certs-page__empty'>
+    <div v-if='agentId && !isLoading && !certificates.length' class='certs-page__empty'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
         <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
         <path d='M7 11V7a5 5 0 0 1 10 0v4' />
@@ -104,11 +112,18 @@
       @confirm='confirmDelete'
       @cancel='deletingCert = null'
     />
+
+    <IdCandidateModal
+      v-model:visible="candidateModalVisible"
+      :id="candidateModalId"
+      :candidates="candidateModalCandidates"
+      @select="handleCandidateSelect"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, ref, watchEffect } from 'vue'
+import { computed, ref, watchEffect, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
@@ -118,12 +133,19 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import CertCard from '../components/certs/CertCard.vue'
+import ViewToggle from '../components/common/ViewToggle.vue'
+import CertTable from '../components/certs/CertTable.vue'
+import { useViewToggle } from '../composables/useViewToggle'
 import {
   isSystemRelayCA
 } from '../utils/certificateTemplates'
+import { fetchAllAgentsCertificates } from '../api'
+import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import IdCandidateModal from '../components/IdCandidateModal.vue'
 
 const route = useRoute()
 const router = useRouter()
+const { view } = useViewToggle('certs')
 const agentContext = useAgent()
 const { selectedAgentId } = agentContext
 const { data: agentsData } = useAgents()
@@ -173,7 +195,41 @@ const filteredCerts = computed(() => {
   )
 })
 
+// R3: Cross-agent #id= resolution — if not found in current agent, search all agents
+const _crossSearching = ref(false)
+const candidateModalVisible = ref(false)
+const candidateModalCandidates = ref([])
+const candidateModalId = ref('')
+
+watch([filteredCerts, isLoading], ([result]) => {
+  const idQuery = shouldStartCrossAgentIdSearch({
+    search: searchQuery.value,
+    currentMatches: result,
+    isLoading: isLoading.value,
+    isSearching: _crossSearching.value
+  })
+  if (!idQuery) return
+  const agentIds = allAgents.value.map(a => a.id)
+  if (!agentIds.length) return
+  _crossSearching.value = true
+  candidateModalId.value = idQuery.id
+  fetchAllAgentsCertificates(agentIds).then(allData => {
+    const allMatches = findAllMatchesInAgents({ certificates: allData }, idQuery.id)
+    if (allMatches.length === 1) {
+      router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })
+    } else if (allMatches.length > 1) {
+      candidateModalCandidates.value = allMatches
+      candidateModalVisible.value = true
+    }
+  }).finally(() => { _crossSearching.value = false })
+})
+
+function handleCandidateSelect(candidate) {
+  router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
+}
+
 const activeCount = computed(() => certificates.value.filter((cert) => cert.enabled && cert.status === 'active').length)
+const issuingCount = computed(() => certificates.value.filter((cert) => cert.status === 'issuing').length)
 
 function issueCert(cert) {
   issueCertificate.mutate(cert.id)
@@ -212,4 +268,18 @@ function confirmDelete() {
 .certs-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .certs-page__loading, .certs-page__empty, .certs-page__prompt { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+.cert-grid,
+.certs-page :deep(.rule-table) {
+  animation: viewToggleIn 200ms var(--ease-default) both;
+}
+@keyframes viewToggleIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cert-grid,
+  .certs-page :deep(.rule-table) {
+    animation: none;
+  }
+}
 </style>

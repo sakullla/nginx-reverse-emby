@@ -247,13 +247,24 @@ func parseInternalRedirectTarget(rawPath, frontendBasePath string) (*url.URL, bo
 	}
 	targetPath := "/"
 	if len(parts) == 3 && strings.TrimSpace(parts[2]) != "" {
-		targetPath = "/" + parts[2]
+		unescapedPath, err := url.PathUnescape(parts[2])
+		if err != nil {
+			return nil, false
+		}
+		targetPath = "/" + unescapedPath
+	}
+	if isUnsafeRedirectPath(targetPath) {
+		return nil, false
 	}
 	return &url.URL{
 		Scheme: scheme,
 		Host:   host,
 		Path:   targetPath,
 	}, true
+}
+
+func isUnsafeRedirectPath(value string) bool {
+	return strings.HasPrefix(value, "//") || strings.HasPrefix(value, `/\`) || strings.Contains(value, "\\")
 }
 
 func normalizeHost(value string) string {

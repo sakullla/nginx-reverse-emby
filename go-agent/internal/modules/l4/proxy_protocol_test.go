@@ -37,6 +37,24 @@ func TestBuildProxyProtocolV2Frame(t *testing.T) {
 	}
 }
 
+func TestBuildProxyProtocolRejectsOutOfRangePorts(t *testing.T) {
+	_, err := buildProxyHeader(proxyInfo{
+		Source:      &net.TCPAddr{IP: net.ParseIP("198.51.100.10"), Port: 70000},
+		Destination: mustTCPAddr(t, "203.0.113.20:443"),
+		Version:     2,
+	})
+	if err == nil {
+		t.Fatal("expected out-of-range source port to be rejected")
+	}
+}
+
+func TestParseProxyProtocolV1RejectsOutOfRangePorts(t *testing.T) {
+	header := []byte("PROXY TCP4 198.51.100.10 203.0.113.20 70000 443\r\npayload")
+	if _, _, err := parseProxyHeader(bytes.NewReader(header)); err == nil {
+		t.Fatal("expected out-of-range source port to be rejected")
+	}
+}
+
 func TestParseProxyProtocolV1Unknown(t *testing.T) {
 	header := []byte("PROXY UNKNOWN\r\npayload")
 	info, payload, err := parseProxyHeader(bytes.NewReader(header))

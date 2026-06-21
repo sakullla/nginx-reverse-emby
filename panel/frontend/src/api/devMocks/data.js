@@ -2274,12 +2274,16 @@ function profileSubnetPrefix(profile = {}) {
   return match ? `${match[1]}.${match[2]}.${match[3]}` : '10.8.0'
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+}
+
 function nextMockWireGuardClientAddress(agentId, profileId) {
   const profile = findMockWireGuardProfile(agentId, profileId)
   const prefix = profileSubnetPrefix(profile)
   const used = new Set((mockWireGuardClientsByProfile[agentId]?.[profileId] || [])
     .map((client) => {
-      const match = new RegExp(`^${prefix.replace(/\./g, '\\.')}\\.(\\d{1,3})/32$`).exec(String(client.address || ''))
+      const match = new RegExp(`^${escapeRegExp(prefix)}\\.(\\d{1,3})/32$`).exec(String(client.address || ''))
       return match ? Number(match[1]) : null
     })
     .filter((item) => Number.isInteger(item)))

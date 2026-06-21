@@ -2,6 +2,7 @@ package certs
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -258,8 +259,13 @@ func TestRenewalFailureDoesNotOverwriteConcurrentApplySuccess(t *testing.T) {
 	if err := <-renewalDone; err == nil {
 		t.Fatal("expected renewal iteration to report error")
 	}
-	if err := <-applyDone; err != nil {
-		t.Fatalf("concurrent apply failed: %v", err)
+	// The renewal failure recorded a failure-backoff window. The concurrent Apply's
+	// re-issuance is therefore deferred (it must not burn LE quota by re-attempting
+	// immediately), and Apply returns an error without overwriting the certificate's
+	// last valid material or corrupting state. This is the intended R4 behavior; the
+	// renewal loop / next heartbeat retries once the backoff window elapses.
+	if err := <-applyDone; err == nil {
+		t.Fatal("expected concurrent apply to be deferred by failure backoff")
 	}
 
 	finalState, ok, err := manager.loadManagedCertificateState(9204)
@@ -269,11 +275,14 @@ func TestRenewalFailureDoesNotOverwriteConcurrentApplySuccess(t *testing.T) {
 	if !ok || finalState.ACME == nil {
 		t.Fatal("expected final managed acme state")
 	}
-	if got := finalState.ACME.Renewal.LastAttemptStatus; got != "success" {
-		t.Fatalf("expected concurrent apply success to remain authoritative, got %q", got)
+	if got := finalState.ACME.Renewal.LastAttemptStatus; got != "error" {
+		t.Fatalf("expected renewal failure to remain recorded during backoff, got %q", got)
 	}
-	if got := finalState.ACME.Renewal.LastAttemptError; got != "" {
-		t.Fatalf("expected no lingering renewal error after apply success, got %q", got)
+	if got := finalState.ACME.Renewal.BackoffClass; got == "" {
+		t.Fatal("expected failure backoff class to be recorded after renewal failure")
+	}
+	if got := finalState.ACME.Renewal.BackoffRetryNext; got <= now.Unix() {
+		t.Fatalf("expected backoff next-retry in the future, got %d (now=%d)", got, now.Unix())
 	}
 }
 
@@ -352,4 +361,185 @@ func (i *sequencedIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssu
 		return acmeIssueResult{}, result.Err
 	}
 	return result, nil
+}
+
+// TestRenewalBackoffClassification mirrors the control-plane classification
+// heuristic so both ACME paths share the same Retry-After / error-class curve (R4).
+func TestRenewalBackoffClassification(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil is transient", nil, backoffClassTransient},
+		{"rate limit", errors.New("rate limit exceeded registering account"), backoffClassRateLimited},
+		{"too many", errors.New("too many requests"), backoffClassRateLimited},
+		{"retry-after header", errors.New("server returned Retry-After: 3600"), backoffClassRateLimited},
+		{"connection refused", errors.New("connection refused"), backoffClassTransient},
+		{"i/o timeout", errors.New("read tcp: i/o timeout"), backoffClassTransient},
+		{"no such host", errors.New("dial tcp: lookup acme.invalid: no such host"), backoffClassTransient},
+		{"service unavailable", errors.New("503 service unavailable"), backoffClassTransient},
+		{"durable auth failure", errors.New("invalid cloudflare api token"), backoffClassPersistent},
+		{"unknown durable", errors.New("unexpected ACME response"), backoffClassPersistent},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := classifyRenewalError(tc.err); got != tc.want {
+				t.Fatalf("classifyRenewalError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractRenewalRetryAfter(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		err  error
+		want time.Duration
+	}{
+		{"nil", nil, 0},
+		{"no marker", errors.New("connection refused"), 0},
+		{"colon seconds", errors.New("Retry-After: 3600"), 3600 * time.Second},
+		{"equals seconds", errors.New("retry-after=120"), 120 * time.Second},
+		{"embedded in sentence", errors.New("rate limited; retry-after: 7200 seconds"), 7200 * time.Second},
+		{"non-numeric", errors.New("retry-after: soon"), 0},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := extractRenewalRetryAfter(tc.err); got != tc.want {
+				t.Fatalf("extractRenewalRetryAfter(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenewalBackoffDelay pins the exact retry curve. Values mirror the
+// control-plane managedCertificateBackoffDelay tests so master and local share
+// one curve per R4 (transient 5s->5m, persistent 1h->32h, rate-limited
+// max(retryAfter,1h)->32h, deterministic quarter jitter, MaxShift=6).
+func TestRenewalBackoffDelay(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		class      string
+		retryAfter time.Duration
+		retryCount int
+		want       time.Duration
+	}{
+		{"transient r1", backoffClassTransient, 0, 1, 6*time.Second + 250*time.Millisecond},
+		{"transient r2", backoffClassTransient, 0, 2, 15 * time.Second},
+		{"transient r3", backoffClassTransient, 0, 3, 35 * time.Second},
+		{"transient r7 capped+jitter", backoffClassTransient, 0, 7, 375 * time.Second},
+		{"persistent r1", backoffClassPersistent, 0, 1, time.Hour + 15*time.Minute},
+		{"persistent r6 capped", backoffClassPersistent, 0, 6, 40 * time.Hour},
+		{"persistent r7 capped", backoffClassPersistent, 0, 7, 40 * time.Hour},
+		{"rate_limited no retry-after", backoffClassRateLimited, 0, 1, time.Hour + 15*time.Minute},
+		{"rate_limited retry-after 2h", backoffClassRateLimited, 2 * time.Hour, 1, 2*time.Hour + 30*time.Minute},
+		{"rate_limited retry-after above cap", backoffClassRateLimited, 100 * time.Hour, 1, 40 * time.Hour},
+		{"unknown class falls back to persistent", "bogus", 0, 1, time.Hour + 15*time.Minute},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := renewalBackoffDelay(tc.class, tc.retryAfter, tc.retryCount)
+			if got != tc.want {
+				t.Fatalf("renewalBackoffDelay(%q, %v, %d) = %v, want %v", tc.class, tc.retryAfter, tc.retryCount, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenewalBackoffJitterFraction(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		retryCount int
+		want       int64
+	}{
+		{0, 0}, {1, 1}, {2, 2}, {3, 3}, {4, 0}, {5, 1}, {8, 0},
+	}
+	for _, tc := range cases {
+		if got := renewalBackoffJitterFraction(tc.retryCount); got != tc.want {
+			t.Fatalf("renewalBackoffJitterFraction(%d) = %d, want %d", tc.retryCount, got, tc.want)
+		}
+	}
+}
+
+// transientFailingIssuer always fails with a transient error and counts attempts.
+type transientFailingIssuer struct {
+	calls int
+}
+
+func (i *transientFailingIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssueResult, error) {
+	i.calls++
+	return acmeIssueResult{}, errors.New("connection refused")
+}
+
+// TestRenewalBackoffDefersFirstIssuanceWithinWindow verifies the backoff guard
+// in loadOrIssueACMEUnlocked gates the heartbeat-driven first-issuance path: a
+// failed first issuance records backoff and is NOT re-attempted until the
+// backoff window elapses, so LE quota is not burned (R5② / R4, requirement #4).
+func TestRenewalBackoffDefersFirstIssuanceWithinWindow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	nowPtr := &now
+	issuer := &transientFailingIssuer{}
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withNow(func() time.Time { return *nowPtr }),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return issuer, nil
+		}),
+	)
+	policy := model.ManagedCertificatePolicy{
+		ID:              9210,
+		Domain:          "backoff.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	// First Apply attempts issuance and fails; backoff is recorded.
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err == nil {
+		t.Fatal("expected first apply to fail with a transient issuance error")
+	}
+	if issuer.calls != 1 {
+		t.Fatalf("expected one issuance attempt on first apply, got %d", issuer.calls)
+	}
+	state, ok, err := manager.loadManagedCertificateState(9210)
+	if err != nil || !ok || state.ACME == nil {
+		t.Fatalf("expected persisted acme state after failure: ok=%v err=%v", ok, err)
+	}
+	if got := state.ACME.Renewal.BackoffClass; got != backoffClassTransient {
+		t.Fatalf("expected transient backoff class, got %q", got)
+	}
+	nextRetry := state.ACME.Renewal.BackoffRetryNext
+	if nextRetry <= now.Unix() {
+		t.Fatalf("expected backoff next-retry in the future, got %d (now=%d)", nextRetry, now.Unix())
+	}
+
+	// Second Apply within the backoff window must NOT re-attempt issuance.
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err == nil {
+		t.Fatal("expected second apply to be deferred by failure backoff")
+	}
+	if issuer.calls != 1 {
+		t.Fatalf("expected no new issuance attempt during backoff window, got %d", issuer.calls)
+	}
+
+	// Advance the clock past the backoff window; issuance resumes.
+	*nowPtr = time.Unix(nextRetry, 0).Add(time.Second)
+	_ = manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+	if issuer.calls != 2 {
+		t.Fatalf("expected issuance to resume after backoff window, got %d", issuer.calls)
+	}
 }

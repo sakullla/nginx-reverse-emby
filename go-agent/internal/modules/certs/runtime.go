@@ -336,7 +336,14 @@ func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCerti
 	return m.loadOrIssueACMEUnlocked(ctx, policy)
 }
 
-func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
+func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.ManagedCertificatePolicy) (certPEM []byte, keyPEM []byte, err error) {
+	var failureRecorded bool
+	defer func() {
+		if err != nil && !failureRecorded {
+			m.recordRenewalFailureLocked(policy.ID, err)
+		}
+	}()
+
 	persisted, err := m.loadPersistedACMEMaterial(policy.ID)
 	if err != nil {
 		return nil, nil, err
@@ -347,6 +354,19 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 		if err == nil && tlsCert.Leaf != nil && persisted.metadata.matchesPolicy(policy) && !m.needsRenewalForScope(tlsCert.Leaf, policy.Scope) {
 			return persisted.certPEM, persisted.keyPEM, nil
 		}
+	}
+
+	// Failure backoff (R5② / R4): if a prior attempt for this certificate failed
+	// and we are still inside the backoff window, do not re-attempt issuance. This
+	// gates BOTH the heartbeat-driven first-issuance path (Apply) and the renewal
+	// loop, so neither burns Let's Encrypt's 5-failed-validations/hour/hostname
+	// quota. The next attempt is allowed once the recorded next-retry-at elapses;
+	// zero/legacy state (no backoff class) falls through to normal issuance.
+	// Returning an error preserves the existing Apply contract; the renewal loop
+	// separately skips in-backoff candidates via isInRenewalBackoffLocked.
+	if m.isInRenewalBackoffLocked(policy.ID, m.cfg.now()) {
+		failureRecorded = true
+		return nil, nil, fmt.Errorf("certificate %d: issuance deferred by failure backoff", policy.ID)
 	}
 
 	request, err := m.newACMEIssueRequest(policy, persisted)
@@ -364,6 +384,13 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 		if saveErr := m.savePersistedACMEAccountState(policy.ID, result); saveErr != nil {
 			return nil, nil, fmt.Errorf("%w (persist acme account state: %v)", err, saveErr)
 		}
+		// Record the failure into the renewal state so the backoff curve and
+		// last-error metadata apply uniformly to first-issuance failures and
+		// renewal failures (R5② / requirement #4). The Apply caller still
+		// receives the original issuance error; this only persists backoff
+		// metadata used by later retries.
+		m.recordRenewalFailureLocked(policy.ID, err)
+		failureRecorded = true
 		return nil, nil, err
 	}
 
@@ -614,6 +641,11 @@ func (m *Manager) savePersistedACMEMaterial(certificateID int, scope string, res
 		state.ACME.Renewal.LastAttemptError = ""
 		state.ACME.Renewal.LastAttemptStatus = "success"
 		state.ACME.Renewal.LastAttemptNotAfter = tlsCert.Leaf.NotAfter.Unix()
+		// Successful issuance clears the failure backoff curve so a future
+		// failure sequence restarts from retryCount=1.
+		state.ACME.Renewal.BackoffClass = ""
+		state.ACME.Renewal.BackoffRetryNext = 0
+		state.ACME.Renewal.BackoffRetryNum = 0
 	}
 	if err := m.saveManagedCertificateState(certificateID, state); err != nil {
 		return err

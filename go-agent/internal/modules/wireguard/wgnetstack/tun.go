@@ -69,6 +69,9 @@ const netTunTCPMaxBufferSize = 4 << 20
 const netTunDNSCacheMaxTTL = 5 * time.Minute
 
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device, RuntimeNet, *stack.Stack, error) {
+	if mtu <= 0 || mtu > int(^uint32(0)) {
+		return nil, nil, nil, fmt.Errorf("invalid MTU %d", mtu)
+	}
 	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol6, icmp.NewProtocol4},

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"math"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
@@ -17,14 +18,14 @@ func (c *SyncController) BuildSyncRequest(ctx context.Context, applied model.Sna
 }
 
 func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapshot) (SyncPlan, error) {
-	plan := SyncPlan{Request: control.SyncRequest{CurrentRevision: int(applied.Revision)}}
+	plan := SyncPlan{Request: control.SyncRequest{CurrentRevision: boundedInt64Revision(applied.Revision)}}
 
 	state, err := c.Store.LoadRuntimeState()
 	if err != nil {
 		return SyncPlan{}, err
 	}
 	meta := ensureMetadata(state.Metadata)
-	plan.Request.LastApplyRevision = int(parseInt64Default(meta["last_apply_revision"], applied.Revision))
+	plan.Request.LastApplyRevision = boundedInt64Revision(parseInt64Default(meta["last_apply_revision"], applied.Revision))
 	plan.Request.LastApplyStatus = strings.TrimSpace(meta["last_apply_status"])
 	plan.Request.LastApplyMessage = meta["last_apply_message"]
 	if plan.Request.LastApplyStatus == "" {
@@ -54,4 +55,14 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 	}
 
 	return plan, nil
+}
+
+func boundedInt64Revision(value int64) int {
+	if value <= 0 {
+		return 0
+	}
+	if value > int64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(value)
 }

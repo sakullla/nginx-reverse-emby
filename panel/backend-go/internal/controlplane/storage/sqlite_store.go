@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -88,17 +89,17 @@ func (s *GormStore) GetAgentTrafficState(ctx context.Context, agentID string) (b
 		return false, "", false, nil
 	}
 	var row AgentRow
-	err := s.db.WithContext(ctx).
+	if err := s.db.WithContext(ctx).
 		Select("id", "traffic_blocked", "traffic_block_reason").
 		Where("id = ?", agentID).
-		First(&row).Error
-	if err == nil {
-		return row.TrafficBlocked, defaultString(row.TrafficBlockReason, ""), true, nil
+		Limit(1).
+		Find(&row).Error; err != nil {
+		return false, "", false, err
 	}
-	if err == gorm.ErrRecordNotFound {
+	if row.ID == "" {
 		return false, "", false, nil
 	}
-	return false, "", false, err
+	return row.TrafficBlocked, defaultString(row.TrafficBlockReason, ""), true, nil
 }
 
 func (s *GormStore) SaveAgentTrafficState(ctx context.Context, agentID string, blocked bool, reason string) error {
@@ -326,6 +327,12 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		return Snapshot{}, err
 	}
 
+	certBundles := s.snapshotCertificateBundles(relevantCertRows)
+	certMaterialDomains := make(map[string]bool, len(certBundles))
+	for _, bundle := range certBundles {
+		certMaterialDomains[strings.TrimSpace(bundle.Domain)] = true
+	}
+
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
 		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, egressRows, relevantCertRows, egressScopeRevision)),
@@ -336,18 +343,21 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		WireGuardProfiles:   SnapshotWireGuardProfiles(wireGuardRows),
 		EgressProfiles:      SnapshotEgressProfiles(egressRows),
-		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
-		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
+		Certificates:        certBundles,
+		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains),
 	}, nil
 }
 
 func (s *GormStore) loadAgentConfigForSnapshot(ctx context.Context, agentID string) (AgentConfig, bool) {
 	var row AgentRow
-	err := s.db.WithContext(ctx).
+	if err := s.db.WithContext(ctx).
 		Select("id", "outbound_proxy_url", "traffic_stats_interval", "traffic_blocked", "traffic_block_reason").
 		Where("id = ?", agentID).
-		First(&row).Error
-	if err != nil {
+		Limit(1).
+		Find(&row).Error; err != nil {
+		return AgentConfig{}, false
+	}
+	if row.ID == "" {
 		return AgentConfig{}, false
 	}
 	normalizeAgentRow(&row)
@@ -551,15 +561,16 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 	}
 
 	desiredRevision := currentState.DesiredRevision
+	lastApplyRevisionInt := boundedIntFromInt64(lastApplyRevision)
 	if lastApplyStatus == "success" {
-		desiredRevision = maxInt(desiredRevision, int(lastApplyRevision))
+		desiredRevision = maxInt(desiredRevision, lastApplyRevisionInt)
 	}
 
 	row := LocalAgentStateRow{
 		ID:                1,
 		DesiredRevision:   desiredRevision,
-		CurrentRevision:   int(runtimeState.CurrentRevision),
-		LastApplyRevision: int(lastApplyRevision),
+		CurrentRevision:   boundedIntFromInt64(runtimeState.CurrentRevision),
+		LastApplyRevision: lastApplyRevisionInt,
 		LastApplyStatus:   lastApplyStatus,
 		LastApplyMessage:  lastApplyMessage,
 		DesiredVersion:    currentState.DesiredVersion,
@@ -569,6 +580,20 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 	stateJSON, err := json.Marshal(runtimeState)
 	if err != nil {
 		return err
+	}
+	stateJSONString := string(stateJSON)
+	if localAgentStateRowsEqual(currentState, row) {
+		var existingMeta MetaRow
+		err := s.db.WithContext(ctx).
+			Where("key = ?", localRuntimeStateMetaKey).
+			Limit(1).
+			Find(&existingMeta).Error
+		if err != nil {
+			return err
+		}
+		if existingMeta.Key == localRuntimeStateMetaKey && strings.TrimSpace(existingMeta.Value) == stateJSONString {
+			return nil
+		}
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -587,9 +612,21 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 			}).
 			Create(&MetaRow{
 				Key:   localRuntimeStateMetaKey,
-				Value: string(stateJSON),
+				Value: stateJSONString,
 			}).Error
 	})
+}
+
+func localAgentStateRowsEqual(a, b LocalAgentStateRow) bool {
+	normalizeLocalAgentStateRow(&a)
+	normalizeLocalAgentStateRow(&b)
+	return a.ID == b.ID &&
+		a.DesiredRevision == b.DesiredRevision &&
+		a.CurrentRevision == b.CurrentRevision &&
+		a.LastApplyRevision == b.LastApplyRevision &&
+		a.LastApplyStatus == b.LastApplyStatus &&
+		a.LastApplyMessage == b.LastApplyMessage &&
+		a.DesiredVersion == b.DesiredVersion
 }
 
 func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
@@ -600,6 +637,81 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 			UpdateAll: true,
 		}).
 		Create(&row).Error
+}
+
+func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error {
+	normalizeAgentRow(&row)
+	var current AgentRow
+	if err := s.db.WithContext(ctx).
+		Select(
+			"id",
+			"version",
+			"platform",
+			"runtime_package_version",
+			"runtime_package_platform",
+			"runtime_package_arch",
+			"runtime_package_sha256",
+			"current_revision",
+			"last_apply_revision",
+			"last_apply_status",
+			"last_apply_message",
+			"last_reported_stats",
+			"last_seen_ip",
+		).
+		Where("id = ?", row.ID).
+		Limit(1).
+		Find(&current).Error; err != nil {
+		return err
+	}
+	if current.ID == "" {
+		return s.SaveAgent(ctx, row)
+	}
+	normalizeAgentRow(&current)
+
+	updates := map[string]any{
+		"last_seen_at": row.LastSeenAt,
+	}
+	if current.Version != row.Version {
+		updates["version"] = row.Version
+	}
+	if current.Platform != row.Platform {
+		updates["platform"] = row.Platform
+	}
+	if current.RuntimePackageVersion != row.RuntimePackageVersion {
+		updates["runtime_package_version"] = row.RuntimePackageVersion
+	}
+	if current.RuntimePackagePlatform != row.RuntimePackagePlatform {
+		updates["runtime_package_platform"] = row.RuntimePackagePlatform
+	}
+	if current.RuntimePackageArch != row.RuntimePackageArch {
+		updates["runtime_package_arch"] = row.RuntimePackageArch
+	}
+	if current.RuntimePackageSHA256 != row.RuntimePackageSHA256 {
+		updates["runtime_package_sha256"] = row.RuntimePackageSHA256
+	}
+	if current.CurrentRevision != row.CurrentRevision {
+		updates["current_revision"] = row.CurrentRevision
+	}
+	if current.LastApplyRevision != row.LastApplyRevision {
+		updates["last_apply_revision"] = row.LastApplyRevision
+	}
+	if current.LastApplyStatus != row.LastApplyStatus {
+		updates["last_apply_status"] = row.LastApplyStatus
+	}
+	if current.LastApplyMessage != row.LastApplyMessage {
+		updates["last_apply_message"] = row.LastApplyMessage
+	}
+	if current.LastReportedStatsJSON != row.LastReportedStatsJSON {
+		updates["last_reported_stats"] = row.LastReportedStatsJSON
+	}
+	if current.LastSeenIP != row.LastSeenIP {
+		updates["last_seen_ip"] = row.LastSeenIP
+	}
+
+	return s.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ?", row.ID).
+		Updates(updates).Error
 }
 
 func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
@@ -913,7 +1025,11 @@ func (s *GormStore) CleanupManagedCertificateMaterial(_ context.Context, previou
 		if _, ok := nextDomains[domain]; ok {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(baseDir, domain)); err != nil {
+		certDir := managedCertificateDirectory(baseDir, domain)
+		if certDir == "" {
+			continue
+		}
+		if err := os.RemoveAll(certDir); err != nil {
 			return err
 		}
 	}
@@ -2527,9 +2643,15 @@ func (s *GormStore) snapshotCertificateBundles(rows []ManagedCertificateRow) []M
 	return bundles
 }
 
-func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string) []ManagedCertificatePolicy {
+func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string, materialByDomain map[string]bool) []ManagedCertificatePolicy {
 	policies := make([]ManagedCertificatePolicy, 0, len(rows))
 	for _, row := range rows {
+		// Master-issued (control-plane) certificates are installed, not issued, by agents:
+		// withhold the policy until material exists so agents don't attempt local
+		// master_cf_dns issuance, which non-master agents reject and fail the heartbeat on.
+		if isMasterIssuedCertificateMode(defaultString(row.IssuerMode, "master_cf_dns")) && !materialByDomain[strings.TrimSpace(row.Domain)] {
+			continue
+		}
 		view := buildManagedCertificateViewForAgent(row, agentID)
 		policies = append(policies, ManagedCertificatePolicy{
 			ID:              view.ID,
@@ -2549,6 +2671,13 @@ func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string) [
 		})
 	}
 	return policies
+}
+
+// isMasterIssuedCertificateMode reports whether the issuer mode is issued by the control
+// plane (DNS-01) rather than the agent, so its policy must wait for material before publishing.
+func isMasterIssuedCertificateMode(mode string) bool {
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	return mode == "" || mode == "master_cf_dns"
 }
 
 func filterManagedCertificatesForAgent(rows []ManagedCertificateRow, agentID string, httpRows []HTTPRuleRow, relayRows []RelayListenerRow) []ManagedCertificateRow {
@@ -2955,6 +3084,16 @@ func maxInt(values ...int) int {
 	return maxValue
 }
 
+func boundedIntFromInt64(value int64) int {
+	if value <= 0 {
+		return 0
+	}
+	if value > int64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(value)
+}
+
 type managedCertificateMaterial struct {
 	CertPEM string
 	KeyPEM  string
@@ -2974,7 +3113,15 @@ func (s *GormStore) readManagedCertificateMaterial(domain string) (managedCertif
 }
 
 func (s *GormStore) managedCertificateDirectory(domain string) string {
-	return filepath.Join(s.dataRoot, "managed_certificates", normalizeManagedCertificateHost(domain))
+	return managedCertificateDirectory(filepath.Join(s.dataRoot, "managed_certificates"), domain)
+}
+
+func managedCertificateDirectory(baseDir string, domain string) string {
+	safeHost := normalizeManagedCertificateHost(domain)
+	if !isSafeSinglePathComponent(safeHost) {
+		safeHost = "_"
+	}
+	return filepath.Join(baseDir, safeHost)
 }
 
 func normalizeManagedCertificateHost(domain string) string {
@@ -2984,7 +3131,24 @@ func normalizeManagedCertificateHost(domain string) string {
 	}
 	normalized = strings.ReplaceAll(normalized, "*.", "_wildcard_.")
 	replacer := strings.NewReplacer("<", "_", ">", "_", ":", "_", "\"", "_", "/", "_", "\\", "_", "|", "_", "?", "_", "*", "_")
-	return replacer.Replace(normalized)
+	normalized = replacer.Replace(normalized)
+	for strings.Contains(normalized, "..") {
+		normalized = strings.ReplaceAll(normalized, "..", "_")
+	}
+	normalized = strings.Trim(normalized, ". ")
+	if normalized == "" {
+		return "_"
+	}
+	return normalized
+}
+
+func isSafeSinglePathComponent(component string) bool {
+	return component != "" &&
+		component != "." &&
+		component != ".." &&
+		!strings.Contains(component, "..") &&
+		!strings.Contains(component, "/") &&
+		!strings.Contains(component, "\\")
 }
 
 func managedCertificateDomainSet(rows []ManagedCertificateRow) map[string]struct{} {

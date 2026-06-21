@@ -14,7 +14,17 @@
     </template>
     <template #header-right>
       <BaseIconButton
-        v-if="cert.status === 'pending' || cert.status === 'error'"
+        v-if="cert.status === 'issuing'"
+        tone="default"
+        title="签发中"
+        disabled
+      >
+        <svg class="cert-card__spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+        </svg>
+      </BaseIconButton>
+      <BaseIconButton
+        v-else-if="cert.status === 'pending' || cert.status === 'error'"
         tone="success"
         title="签发"
         @click="$emit('issue', cert)"
@@ -52,7 +62,10 @@
       <span v-if="cert.last_issue_at" class="cert-card__date">{{ formattedDate }}</span>
     </div>
 
-    <p v-if="cert.last_error" class="cert-card__error">{{ cert.last_error }}</p>
+    <p v-if='cert.last_error' class='cert-card__error'>
+      <span class='cert-card__error-reason'>{{ cert.last_error }}</span>
+      <span v-if='nextRetryLabel' class='cert-card__retry'>· {{ nextRetryLabel }}</span>
+    </p>
 
     <template v-if="hasFooter" #footer>
       <BaseBadge v-if="isSystemRelayCA(cert)" tone="primary">系统 Relay CA</BaseBadge>
@@ -83,6 +96,7 @@ defineEmits(['edit', 'delete', 'issue'])
 const STATUS_TONE = {
   active: 'success',
   pending: 'warning',
+  issuing: 'primary',
   error: 'danger',
 }
 
@@ -95,8 +109,33 @@ const statusLabel = computed(() => {
   if (!props.cert.enabled) return '已禁用'
   if (props.cert.status === 'active') return '生效中'
   if (props.cert.status === 'pending') return '待签发'
+  if (props.cert.status === 'issuing') return '签发中'
   if (props.cert.status === 'error') return '签发失败'
   return '未知'
+})
+
+function formatUnixSeconds(unix) {
+  if (!unix || unix <= 0) return ''
+  try {
+    return new Date(unix * 1000).toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return ''
+  }
+}
+
+const nextRetryLabel = computed(() => {
+  const ts = props.cert.next_retry_at_unix
+  if (!ts || ts <= 0) return ''
+  const formatted = formatUnixSeconds(ts)
+  if (!formatted) return ''
+  const retryCount = Number(props.cert.retry_count) || 0
+  const countPart = retryCount > 0 ? `（第 ${retryCount} 次）` : ''
+  return `下次重试 ${formatted}${countPart}`
 })
 
 const issuerLabel = computed(() => {
@@ -149,5 +188,15 @@ const hasFooter = computed(() =>
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.cert-card__retry {
+  margin-left: 0.25rem;
+  color: var(--color-text-tertiary);
+}
+.cert-card__spin {
+  animation: cert-card-spin 0.9s linear infinite;
+}
+@keyframes cert-card-spin {
+  to { transform: rotate(360deg); }
 }
 </style>

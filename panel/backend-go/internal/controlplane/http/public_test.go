@@ -142,8 +142,8 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	if state.heartbeatToken != "agent-token" {
 		t.Fatalf("heartbeat token = %q", state.heartbeatToken)
 	}
-	if state.heartbeat.LastSeenIP != "203.0.113.10" {
-		t.Fatalf("heartbeat LastSeenIP = %q", state.heartbeat.LastSeenIP)
+	if state.heartbeat.LastSeenIP == "" || state.heartbeat.LastSeenIP == "203.0.113.10" {
+		t.Fatalf("heartbeat LastSeenIP = %q, want non-forwarded remote address", state.heartbeat.LastSeenIP)
 	}
 
 	assetResp, err := http.Get(server.URL + "/assets/app.js")
@@ -171,6 +171,64 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	defer binaryResp.Body.Close()
 	if binaryResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET public agent asset = %d", binaryResp.StatusCode)
+	}
+}
+
+func TestRouterServesPanelOnlyUnderConfiguredPublicPath(t *testing.T) {
+	distDir := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(filepath.Join(distDir, "assets"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(dist) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte("<html><head></head><body>control-plane</body></html>"), 0o644); err != nil {
+		t.Fatalf("WriteFile(index.html) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "assets", "app.js"), []byte("console.log('panel');"), 0o644); err != nil {
+		t.Fatalf("WriteFile(app.js) error = %v", err)
+	}
+
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{
+			PanelToken:      "secret",
+			FrontendDistDir: distDir,
+			PanelPublicPath: "/panel-a1b2c3",
+		},
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	rootResp := httptest.NewRecorder()
+	router.ServeHTTP(rootResp, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rootResp.Code != http.StatusNotFound {
+		t.Fatalf("GET / = %d, want 404", rootResp.Code)
+	}
+
+	panelResp := httptest.NewRecorder()
+	router.ServeHTTP(panelResp, httptest.NewRequest(http.MethodGet, "/panel-a1b2c3", nil))
+	if panelResp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-a1b2c3 = %d", panelResp.Code)
+	}
+	if !strings.Contains(panelResp.Body.String(), `window.__NRE_PANEL_BASE__="/panel-a1b2c3/"`) {
+		t.Fatalf("panel index missing injected base path: %s", panelResp.Body.String())
+	}
+
+	nestedResp := httptest.NewRecorder()
+	router.ServeHTTP(nestedResp, httptest.NewRequest(http.MethodGet, "/panel-a1b2c3/agents/local", nil))
+	if nestedResp.Code != http.StatusOK {
+		t.Fatalf("GET nested panel route = %d", nestedResp.Code)
+	}
+
+	assetResp := httptest.NewRecorder()
+	router.ServeHTTP(assetResp, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if assetResp.Code != http.StatusOK {
+		t.Fatalf("GET /assets/app.js = %d", assetResp.Code)
 	}
 }
 
@@ -330,7 +388,7 @@ func TestDockerComposeMountsControlPlaneDataDir(t *testing.T) {
 	if !strings.Contains(compose, "./data:/opt/nginx-reverse-emby/panel/data") {
 		t.Fatalf("docker-compose.yaml missing control-plane panel data dir mount: %s", compose)
 	}
-	if !strings.Contains(compose, "NRE_TIMEZONE: Asia/Shanghai") {
+	if !strings.Contains(compose, "NRE_TIMEZONE: ${NRE_TIMEZONE:-Asia/Shanghai}") && !strings.Contains(compose, "NRE_TIMEZONE: Asia/Shanghai") {
 		t.Fatalf("docker-compose.yaml missing panel timezone setting: %s", compose)
 	}
 	if strings.Contains(compose, "NRE_DATABASE_DRIVER: postgres") ||
@@ -866,6 +924,7 @@ func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t 
 	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":9}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Agent-Token", "agent-token")
+	req.Host = "panel.internal:8080"
 	req.Header.Set("X-Forwarded-Proto", "https")
 	req.Header.Set("X-Forwarded-Host", "panel.example.com")
 	resp := httptest.NewRecorder()
@@ -895,6 +954,100 @@ func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t 
 	if meta["sha256"] != "desired-sha" {
 		t.Fatalf("version_package_meta.sha256 = %#v", meta["sha256"])
 	}
+	if meta["url"] != "http://panel.internal:8080/panel-api/public/agent-assets/nre-agent-linux-amd64" {
+		t.Fatalf("version_package_meta.url = %#v", meta["url"])
+	}
+}
+
+func TestHeartbeatResponseUsesPublicURLBeforeForwardedHeaders(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{
+			PanelToken:            "secret",
+			PublicURL:             "https://public.example.com/panel",
+			TrustForwardedHeaders: true,
+		},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
+			VersionPackageMeta: &storage.VersionPackage{
+				URL: "/panel-api/public/agent-assets/nre-agent-linux-amd64",
+			},
+		}},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "agent-token")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "attacker.example.com")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat = %d", resp.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	syncPayload := payload["sync"].(map[string]any)
+	meta := syncPayload["version_package_meta"].(map[string]any)
+	if meta["url"] != "https://public.example.com/panel/panel-api/public/agent-assets/nre-agent-linux-amd64" {
+		t.Fatalf("version_package_meta.url = %#v", meta["url"])
+	}
+}
+
+func TestHeartbeatTrustsForwardedHeadersOnlyWhenConfigured(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret", TrustForwardedHeaders: true},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{
+			heartbeatReply: service.HeartbeatReply{
+				VersionPackageMeta: &storage.VersionPackage{URL: "/panel-api/public/agent-assets/nre-agent-linux-amd64"},
+			},
+			state: state,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":1}`))
+	req.Host = "panel.internal:8080"
+	req.RemoteAddr = "198.51.100.7:12345"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "agent-token")
+	req.Header.Set("X-Forwarded-For", "203.0.113.10, 198.51.100.8")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "panel.example.com")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat = %d", resp.Code)
+	}
+	if state.heartbeat.LastSeenIP != "203.0.113.10" {
+		t.Fatalf("LastSeenIP = %q", state.heartbeat.LastSeenIP)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	syncPayload := payload["sync"].(map[string]any)
+	meta := syncPayload["version_package_meta"].(map[string]any)
 	if meta["url"] != "https://panel.example.com/panel-api/public/agent-assets/nre-agent-linux-amd64" {
 		t.Fatalf("version_package_meta.url = %#v", meta["url"])
 	}

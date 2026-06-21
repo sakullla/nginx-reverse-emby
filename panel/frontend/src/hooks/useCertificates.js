@@ -1,17 +1,58 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
-import { unref } from 'vue'
+import { unref, watch, onScopeDispose } from 'vue'
 import * as api from '../api'
 import { messageStore } from '../stores/messages'
 
+// R3: 后台异步签发期间，存在 issuing 证书时智能轮询；全部离开 issuing 停止。
+const ISSUING_POLL_INTERVAL_MS = 4000
+
 export function useCertificates(agentId) {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['certificates', agentId],
     queryFn: () => {
       const id = unref(agentId)
       if (!id) return []
       return api.fetchCertificates(id)
-    }
+    },
+    refetchOnWindowFocus: true,
   })
+
+  let pollTimer = null
+  function stopPolling() {
+    if (pollTimer !== null) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  }
+  function startPolling() {
+    if (pollTimer !== null) return
+    pollTimer = setInterval(() => {
+      // Polling failures here are network-transient during the seconds-level issuing
+      // refresh; vue-query's own error state stays observable to consumers, so we do
+      // not raise a toast (that would be noisy). We still record the rejection for
+      // diagnostics instead of silently swallowing it.
+      query.refetch().catch((err) => {
+        console.debug('[cert] issuing poll refresh failed', err)
+      })
+    }, ISSUING_POLL_INTERVAL_MS)
+  }
+
+  watch(
+    () => {
+      const list = query.data.value
+      if (!Array.isArray(list)) return false
+      return list.some((cert) => cert && cert.status === 'issuing')
+    },
+    (hasIssuing) => {
+      if (hasIssuing) startPolling()
+      else stopPolling()
+    },
+    { immediate: true }
+  )
+
+  onScopeDispose(stopPolling)
+
+  return query
 }
 
 export function useCreateCertificate(agentId) {
@@ -20,7 +61,7 @@ export function useCreateCertificate(agentId) {
     mutationFn: (payload) => api.createCertificate(unref(agentId), payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['certificates', agentId] })
-      messageStore.success('证书创建成功')
+      messageStore.success('证书已创建，签发任务已提交')
     },
     onError: (error) => {
       messageStore.error(error, '创建证书失败')
@@ -34,7 +75,7 @@ export function useUpdateCertificate(agentId) {
     mutationFn: ({ id, ...payload }) => api.updateCertificate(unref(agentId), id, payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['certificates', agentId] })
-      messageStore.success('证书更新成功')
+      messageStore.success('证书已更新，变更已提交')
     },
     onError: (error) => {
       messageStore.error(error, '更新证书失败')

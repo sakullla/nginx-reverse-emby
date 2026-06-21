@@ -51,132 +51,82 @@
         </div>
       </div>
     </section>
-
-    <section class="settings-section">
-      <div class="settings-section__header">
-        <h3 class="settings-section__title">系统状态</h3>
-      </div>
-      <div class="settings-section__body">
-        <div class="info-row">
-          <span class="info-label"><span class="info-icon">🖥️</span> 角色</span>
-          <span class="info-value">{{ info?.role || '—' }}</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label"><span class="info-icon">⚡</span> 本地 Agent</span>
-          <span class="info-value" :class="info?.local_agent_enabled ? 'status-ok' : ''">
-            <span v-if="info?.local_agent_enabled" class="status-dot"></span>
-            {{ info?.local_agent_enabled ? '已启用' : '未启用' }}
-          </span>
-        </div>
-        <div class="info-row">
-          <span class="info-label"><span class="info-icon">🌐</span> 在线节点</span>
-          <span class="info-value">{{ info?.online_agents ?? '—' }} 在线 / {{ info?.total_agents ?? '—' }} 总计</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label"><span class="info-icon">⏱️</span> 运行时长</span>
-          <span class="info-value">{{ formatUptime(info?.started_at) }}</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label"><span class="info-icon">📁</span> 数据目录</span>
-          <span class="info-value info-value--mono">{{ info?.data_dir || '—' }}</span>
-        </div>
-      </div>
-    </section>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { fetchSystemInfo } from '../../api'
+import { useSystemInfo } from '../../hooks/useSystemInfo'
 
-const info = ref(null)
-
-onMounted(() => {
-  fetchSystemInfo().then(d => { info.value = d }).catch(() => {})
-})
-
-function formatUptime(startedAt) {
-  if (!startedAt) return '—'
-  const start = new Date(startedAt)
-  if (Number.isNaN(start.getTime())) return '—'
-  const diff = Date.now() - start.getTime()
-  if (diff < 0) return '—'
-  const seconds = Math.floor(diff / 1000)
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  if (days > 0) return `${days} 天 ${hours} 小时`
-  if (hours > 0) return `${hours} 小时 ${minutes} 分钟`
-  return `${minutes} 分钟`
-}
+// 版本字段经 useSystemInfo（与系统信息分区共享同一次 /info 缓存请求）
+const { data: info } = useSystemInfo()
 </script>
 
 <style scoped>
-.settings-about { display: flex; flex-direction: column; gap: 1.25rem; }
+.settings-about {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
 
 .about-identity {
   text-align: center;
-  padding: 1.5rem 0;
+  padding: var(--space-6) 0;
 }
 .about-identity__name {
-  font-size: 1.8rem;
-  font-weight: 700;
-  margin: 0 0 0.5rem;
+  font-size: var(--text-3xl);
+  font-weight: var(--font-bold);
+  margin: 0 0 var(--space-2);
   color: var(--color-text-primary);
 }
 .about-identity__divider {
   width: 80px;
   height: 3px;
-  margin: 0 auto 0.5rem;
-  border-radius: 2px;
+  margin: 0 auto var(--space-2);
+  border-radius: var(--radius-full);
   background: linear-gradient(90deg, transparent, var(--color-primary), transparent);
 }
 .about-identity__tagline {
-  font-size: 0.9rem;
+  font-size: var(--text-sm);
   color: var(--color-text-secondary);
   margin: 0;
 }
 
-.settings-section {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-xl);
-  overflow: hidden;
-  transition: box-shadow 0.2s var(--ease-default);
-}
-.settings-section:hover {
-  box-shadow: 0 1px 4px color-mix(in srgb, var(--color-border-default) 30%, transparent);
-}
-.settings-section__header {
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--color-border-subtle);
+.info-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding: var(--space-2-5) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
 }
-.settings-section__title { font-size: 1rem; font-weight: 600; margin: 0; color: var(--color-text-primary); }
-.settings-section__body { padding: 0.25rem 1.25rem; }
-
-.info-row { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0; border-bottom: 1px solid var(--color-border-subtle); }
 .info-row:last-child { border-bottom: none; }
-.info-label { font-size: 0.875rem; color: var(--color-text-secondary); display: flex; align-items: center; }
-.info-value { font-size: 0.875rem; color: var(--color-text-primary); font-weight: 500; }
-.info-value--highlight { font-family: monospace; color: var(--color-primary); }
-.info-value--mono { font-family: monospace; font-size: 0.8rem; }
-.info-icon { margin-right: 0.4rem; font-size: 0.9rem; }
+.info-label {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+}
+.info-value {
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-weight: var(--font-medium);
+}
+.info-value--highlight { font-family: var(--font-mono); color: var(--color-primary); }
+.info-icon { margin-right: var(--space-1); font-size: var(--text-sm); }
 
-.project-links { display: flex; flex-direction: column; gap: 0.5rem; }
+.project-links { display: flex; flex-direction: column; gap: var(--space-2); }
 .project-link {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.75rem 1rem;
+  gap: var(--space-2-5);
+  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   background: var(--color-bg-subtle);
   color: var(--color-text-primary);
   text-decoration: none;
-  transition: all 0.2s var(--ease-default);
+  transition: border-color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default),
+              transform var(--duration-fast) var(--ease-default);
 }
 .project-link:hover {
   border-color: var(--color-primary);
@@ -184,21 +134,6 @@ function formatUptime(startedAt) {
   transform: translateY(-1px);
 }
 .project-link__icon { display: flex; align-items: center; color: var(--color-primary); }
-.project-link__text { flex: 1; font-size: 0.9rem; font-weight: 500; }
-.project-link__arrow { font-size: 0.85rem; color: var(--color-text-tertiary); }
-
-.status-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #16a34a;
-  margin-right: 0.35rem;
-  animation: pulse 2s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-.status-ok { color: #16a34a; display: flex; align-items: center; }
+.project-link__text { flex: 1; font-size: var(--text-sm); font-weight: var(--font-medium); }
+.project-link__arrow { font-size: var(--text-xs); color: var(--color-text-tertiary); }
 </style>
