@@ -760,7 +760,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
 	currentSeenAt := s.now().UTC().Format(time.RFC3339)
 	if request.Stats != nil {
-		persistedStats := persistentAgentStats(request.Stats, true)
+		persistedStats := monitorPersistentAgentStats(request.Stats)
 		persistedStats = statsWithMonitorRates(persistedStats, parseAgentStats(previousRow.LastReportedStatsJSON), previousRow.LastSeenAt, currentSeenAt)
 		if len(persistedStats) == 0 {
 			row.LastReportedStatsJSON = ""
@@ -1416,10 +1416,7 @@ func marshalAgentStats(stats AgentStats) string {
 	return string(data)
 }
 
-func persistentAgentStats(stats AgentStats, trafficStatsEnabled bool) AgentStats {
-	if !trafficStatsEnabled {
-		return stats
-	}
+func monitorPersistentAgentStats(stats AgentStats) AgentStats {
 	if _, ok := stats["traffic"]; !ok {
 		return stats
 	}
