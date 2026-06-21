@@ -5,9 +5,9 @@
       <div class="view-toggle">
         <button
           class="view-toggle__btn"
-          :class="{ active: view === 'card' }"
-          title="卡片视图"
-          @click="view = 'card'"
+          :class="{ active: view === 'monitor' }"
+          title="监控视图"
+          @click="view = 'monitor'"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="3" y="3" width="7" height="7" rx="1"/>

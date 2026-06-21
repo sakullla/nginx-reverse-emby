@@ -7,14 +7,14 @@ const STORAGE_KEY = 'agent-list-view'
 function normalizeAgentView(value) {
   const raw = Array.isArray(value) ? value[0] : value
   const normalized = String(raw || '').trim().toLowerCase()
-  return normalized === 'list' ? 'list' : 'card'
+  return normalized === 'list' ? 'list' : 'monitor'
 }
 
 export function useAgentFilters(agentsRef) {
   const route = useRoute()
   const router = useRouter()
 
-  // View preference (card/list) with localStorage fallback
+  // View preference (monitor/list) with legacy card fallback.
   const view = ref(normalizeAgentView(route.query.view || localStorage.getItem(STORAGE_KEY)))
   watch(view, (v) => {
     const normalized = normalizeAgentView(v)

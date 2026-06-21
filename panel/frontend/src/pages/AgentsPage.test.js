@@ -11,6 +11,12 @@ function readPage() {
 }
 
 describe('AgentsPage', () => {
+  it('uses monitor cards as the default card-like view', () => {
+    expect(readPage()).toContain("view === 'monitor'")
+    expect(readPage()).toContain('AgentMonitorCard')
+    expect(readPage()).toContain('useAgentMonitorStream')
+  })
+
   it('hides outbound proxy editing for embedded local agents', () => {
     expect(readPage()).toMatch(/v-if="!editingAgent\?\.is_local"\s+class="form-group"/)
   })

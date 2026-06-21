@@ -188,6 +188,36 @@ const mockAgents = [
   })
 ]
 
+mockAgents.forEach((agent, index) => {
+  const rxBytes = 1024 * 1024 * (120 + index * 17)
+  const txBytes = 1024 * 1024 * (48 + index * 9)
+  agent.monitor = {
+    id: agent.id,
+    name: agent.name,
+    status: agent.status,
+    last_seen_at: agent.last_seen_at,
+    last_seen_ip: agent.last_seen_ip,
+    version: agent.version,
+    platform: agent.runtime_package_platform,
+    mode: agent.mode,
+    tags: agent.tags,
+    is_local: agent.is_local,
+    metrics: {
+      cpu_usage_percent: agent.status === 'offline' ? null : (index * 7 + 18) % 86,
+      memory_usage_percent: agent.status === 'offline' ? null : (index * 5 + 42) % 92,
+      disk_usage_percent: (index * 3 + 35) % 88,
+      network: {
+        rx_bytes: rxBytes,
+        tx_bytes: txBytes,
+        rx_bytes_per_second: agent.status === 'offline' ? null : 1024 * (index + 8),
+        tx_bytes_per_second: agent.status === 'offline' ? null : 1024 * (index + 3),
+        rate_available: agent.status !== 'offline',
+        rate_unavailable_reason: agent.status === 'offline' ? 'offline' : ''
+      }
+    }
+  }
+})
+
 const serviceTypes = [
   { name: 'emby', port: 8096, tags: ['emby', 'media'] },
   { name: 'jellyfin', port: 8096, tags: ['jellyfin', 'media'] },

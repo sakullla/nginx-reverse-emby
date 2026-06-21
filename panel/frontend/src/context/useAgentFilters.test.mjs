@@ -27,21 +27,29 @@ describe('useAgentFilters helpers', () => {
     expect(getAgentStatus({ status: 'online', desired_revision: 5, current_revision: 3 })).toBe('pending')
   })
 
-  it('falls back to card view for unsupported route view values', () => {
+  it('falls back to monitor view for unsupported route view values', () => {
     routerState.route.query = { view: 'grid' }
     localStorage.setItem('agent-list-view', 'list')
 
     const { view } = useAgentFilters(ref([]))
 
-    expect(view.value).toBe('card')
+    expect(view.value).toBe('monitor')
   })
 
-  it('falls back to card view for unsupported persisted view values', () => {
+  it('falls back to monitor view for unsupported persisted view values', () => {
     routerState.route.query = {}
     localStorage.setItem('agent-list-view', 'table')
 
     const { view } = useAgentFilters(ref([]))
 
-    expect(view.value).toBe('card')
+    expect(view.value).toBe('monitor')
+  })
+
+  it('maps legacy card view values to monitor view', () => {
+    routerState.route.query = { view: 'card' }
+
+    const { view } = useAgentFilters(ref([]))
+
+    expect(view.value).toBe('monitor')
   })
 })

@@ -50,15 +50,13 @@
       <button class="btn btn-secondary" @click="clearFilters">清除筛选</button>
     </div>
 
-    <!-- Card View -->
-    <div v-else-if="view === 'card' && filteredAgents.length" class="agent-grid">
-      <AgentCard
+    <!-- Monitor View -->
+    <div v-else-if="view === 'monitor' && filteredAgents.length" class="agent-grid">
+      <AgentMonitorCard
         v-for="agent in filteredAgents"
         :key="agent.id"
         :agent="agent"
-        @click="router.push(`/agents/${agent.id}`)"
-        @rename="startEdit(agent)"
-        @delete="startDelete(agent)"
+        @details="agent => router.push(`/agents/${agent.id}`)"
       />
     </div>
 
@@ -149,10 +147,11 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents, useUpdateAgent, useDeleteAgent } from '../hooks/useAgents'
+import { useAgentMonitorStream } from '../hooks/useAgentMonitorStream'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
 import { useAgentFilters } from '../hooks/useAgentFilters'
 import AgentFilterBar from '../components/AgentFilterBar.vue'
-import AgentCard from '../components/AgentCard.vue'
+import AgentMonitorCard from '../components/AgentMonitorCard.vue'
 import AgentTable from '../components/AgentTable.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
@@ -163,9 +162,16 @@ const router = useRouter()
 const { selectedAgentId } = useAgent()
 
 const { data, isLoading } = useAgents()
+const { data: monitorAgents } = useAgentMonitorStream()
 const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
-const agents = computed(() => data.value ?? [])
+const agents = computed(() => {
+  const monitorById = new Map((monitorAgents.value || []).map(agent => [agent.id, agent]))
+  return (data.value ?? []).map(agent => {
+    const monitor = monitorById.get(agent.id) || agent.monitor
+    return monitor ? { ...agent, ...monitor, monitor } : agent
+  })
+})
 
 // Filter/sort state
 const {
