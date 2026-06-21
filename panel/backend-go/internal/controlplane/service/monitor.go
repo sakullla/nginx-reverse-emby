@@ -252,12 +252,13 @@ func statsWithMonitorRates(current AgentStats, previous AgentStats, previousSeen
 	if !ok {
 		return stats
 	}
+	clearMonitorRateFields(total)
 	currentRX, rxOK := asUint64(total["rx_bytes"])
 	currentTX, txOK := asUint64(total["tx_bytes"])
 	if !rxOK && !txOK {
+		total["rate_unavailable_reason"] = "missing_current_counter"
 		return stats
 	}
-	clearMonitorRateFields(total)
 	previousTotal, ok := previousHostNetworkTotal(previous)
 	if !ok {
 		total["rate_unavailable_reason"] = "missing_previous_counter"

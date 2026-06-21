@@ -341,3 +341,51 @@ func TestHeartbeatClearsSuppliedMonitorRatesWhenPreviousTotalMissing(t *testing.
 		t.Fatalf("rate_unavailable_reason = %v, want missing_previous_counter", got)
 	}
 }
+
+func TestHeartbeatClearsSuppliedMonitorRatesWhenCurrentCounterMissing(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                    "edge-1",
+			Name:                  "Edge 1",
+			AgentToken:            "token-edge-1",
+			CapabilitiesJSON:      `["http_rules"]`,
+			LastApplyStatus:       "success",
+			CurrentRevision:       1,
+			LastSeenAt:            now.Add(-30 * time.Second).Format(time.RFC3339),
+			LastReportedStatsJSON: `{"host":{"network":{"total":{"rx_bytes":100,"tx_bytes":200}}}}`,
+		}},
+		snapshot: storage.Snapshot{Revision: 1},
+	}
+	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
+	svc.now = func() time.Time { return now }
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Stats: AgentStats{"host": map[string]any{
+			"network": map[string]any{"total": map[string]any{
+				"rx_bytes_per_second": float64(999),
+				"tx_bytes_per_second": float64(999),
+				"rate_window_seconds": float64(1),
+				"rate_calculated_at":  "2026-06-21T12:00:59Z",
+			}},
+		}},
+	}, "token-edge-1")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	stats := parseAgentStats(store.savedAgent.LastReportedStatsJSON)
+	total, ok := previousHostNetworkTotal(stats)
+	if !ok {
+		t.Fatalf("missing host network total in %q", store.savedAgent.LastReportedStatsJSON)
+	}
+	if _, ok := total["rx_bytes_per_second"]; ok {
+		t.Fatalf("rx rate was not cleared: %+v", total)
+	}
+	if _, ok := total["tx_bytes_per_second"]; ok {
+		t.Fatalf("tx rate was not cleared: %+v", total)
+	}
+	if got := total["rate_unavailable_reason"]; got != "missing_current_counter" {
+		t.Fatalf("rate_unavailable_reason = %v, want missing_current_counter", got)
+	}
+}
