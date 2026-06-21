@@ -1,3 +1,5 @@
+export { consumeAgentMonitorStream } from './agentMonitor'
+
 export {
   verifyToken,
   fetchSystemInfo,
