@@ -88,10 +88,12 @@ const network = computed(() => metrics.value.network || null)
 const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.tags.length > 0)
 
 function percent(value) {
+  if (value === null || value === undefined || value === '') return '—'
   return Number.isFinite(Number(value)) ? `${Number(value).toFixed(0)}%` : '—'
 }
 
 function bytes(value) {
+  if (value === null || value === undefined || value === '') return '—'
   const n = Number(value)
   if (!Number.isFinite(n)) return '—'
   if (n >= 1024 ** 4) return `${(n / 1024 ** 4).toFixed(1)} TB`
@@ -102,6 +104,7 @@ function bytes(value) {
 }
 
 function rate(value) {
+  if (value === null || value === undefined || value === '') return '—'
   const n = Number(value)
   if (!Number.isFinite(n)) return '—'
   return `${bytes(n)}/s`

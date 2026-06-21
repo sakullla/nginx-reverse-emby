@@ -52,8 +52,24 @@ describe('AgentMonitorCard', () => {
   })
 
   it('uses placeholders for missing metrics', () => {
-    const wrapper = mountCard({ monitor: { metrics: {} } })
+    const wrapper = mountCard({
+      monitor: {
+        metrics: {
+          cpu_usage_percent: null,
+          memory_usage_percent: null,
+          disk_usage_percent: null,
+          network: {
+            rx_bytes: null,
+            tx_bytes: null,
+            rx_bytes_per_second: null,
+            tx_bytes_per_second: null
+          }
+        }
+      }
+    })
 
     expect(wrapper.text()).toContain('—')
+    expect(wrapper.text()).not.toContain('0%')
+    expect(wrapper.text()).not.toContain('0 B/s')
   })
 })
