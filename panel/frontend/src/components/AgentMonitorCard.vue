@@ -24,8 +24,14 @@
     </template>
 
     <div class="agent-monitor-card__meta">
-      <span data-testid="monitor-card-endpoint">{{ endpointLabel }}</span>
-      <span data-testid="monitor-card-last-seen">{{ timeAgo(agent.last_seen_at) }}</span>
+      <div class="agent-monitor-card__meta-item">
+        <span class="agent-monitor-card__meta-label">地址</span>
+        <span data-testid="monitor-card-endpoint">{{ endpointLabel }}</span>
+      </div>
+      <div class="agent-monitor-card__meta-item">
+        <span class="agent-monitor-card__meta-label">最后活跃</span>
+        <span data-testid="monitor-card-last-seen">{{ timeAgo(agent.last_seen_at) }}</span>
+      </div>
     </div>
 
     <div class="agent-monitor-card__grid">
@@ -199,12 +205,24 @@ function barClass(value) {
 
 .agent-monitor-card__meta {
   display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
+  flex-direction: column;
+  gap: 0.2rem;
   color: var(--color-text-tertiary);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-family: var(--font-mono);
   margin-top: -0.125rem;
+}
+
+.agent-monitor-card__meta-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+}
+
+.agent-monitor-card__meta-label {
+  font-size: 0.625rem;
+  color: var(--amc-status-neutral);
+  flex-shrink: 0;
 }
 
 .agent-monitor-card__grid {
@@ -216,7 +234,7 @@ function barClass(value) {
 
 .agent-monitor-card__cell {
   min-width: 0;
-  padding: 0.5rem;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--amc-green-border);
   border-radius: var(--radius-md);
   background: var(--amc-green-subtle);
@@ -230,6 +248,9 @@ function barClass(value) {
   display: flex;
   align-items: center;
   gap: 0.375rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  margin-bottom: 0.125rem;
 }
 
 .agent-monitor-card__icon {
@@ -260,7 +281,7 @@ function barClass(value) {
 }
 
 .agent-monitor-card__bar-bg {
-  height: 3px;
+  height: 4px;
   background: var(--color-bg-subtle);
   border-radius: 999px;
   overflow: hidden;
