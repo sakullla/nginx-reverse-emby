@@ -519,6 +519,7 @@ func TestSystemInfoExposesTrafficStatsEnabled(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/info", nil)
+	req.Header.Set("X-Panel-Token", "secret")
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
 
