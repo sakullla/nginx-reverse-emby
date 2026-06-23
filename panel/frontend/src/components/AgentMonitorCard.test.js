@@ -39,24 +39,33 @@ function mountCard(agent = {}) {
 }
 
 describe('AgentMonitorCard', () => {
-  it('renders monitor metrics and emits details only', async () => {
+  it('renders node name and monitor metrics', () => {
     const wrapper = mountCard()
 
-    expect(wrapper.text()).toContain('CPU')
-    expect(wrapper.text()).toContain('1.0 / 8 核')
-    expect(wrapper.text()).toContain('12.4%')
-    expect(wrapper.text()).toContain('内存')
-    expect(wrapper.text()).toContain('10.0 GB / 16.0 GB')
-    expect(wrapper.text()).toContain('63.8%')
-    expect(wrapper.text()).toContain('398.0 GB / 512.0 GB')
-    expect(wrapper.text()).toContain('77.0%')
-    expect(wrapper.text()).toContain('下行速率')
-    expect(wrapper.text()).toContain('2.0 KB/s')
-    expect(wrapper.text()).not.toContain('重命名')
-    expect(wrapper.text()).not.toContain('删除')
+    expect(wrapper.find('[data-testid="monitor-card-name"]').text()).toBe('Edge 1')
+
+    expect(wrapper.find('[data-testid="monitor-card-cpu-value"]').text()).toContain('1.0 / 8 核')
+    expect(wrapper.find('[data-testid="monitor-card-cpu-percent"]').text()).toContain('12.4%')
+
+    expect(wrapper.find('[data-testid="monitor-card-memory-value"]').text()).toContain('10.0 GB / 16.0 GB')
+    expect(wrapper.find('[data-testid="monitor-card-memory-percent"]').text()).toContain('63.8%')
+
+    expect(wrapper.find('[data-testid="monitor-card-disk-value"]').text()).toContain('398.0 GB / 512.0 GB')
+    expect(wrapper.find('[data-testid="monitor-card-disk-percent"]').text()).toContain('77.0%')
+
+    expect(wrapper.find('[data-testid="monitor-card-network-down"]').text()).toContain('2.0 KB/s')
+    expect(wrapper.find('[data-testid="monitor-card-network-up"]').text()).toContain('1.0 KB/s')
+  })
+
+  it('emits details event when clicking detail button or card', async () => {
+    const wrapper = mountCard()
 
     await wrapper.find('[title="查看详情"]').trigger('click')
     expect(wrapper.emitted('details')).toHaveLength(1)
+
+    await wrapper.find('.base-list-card').trigger('click')
+    expect(wrapper.emitted('details')).toHaveLength(2)
+
     expect(wrapper.emitted('rename')).toBeUndefined()
     expect(wrapper.emitted('delete')).toBeUndefined()
   })
@@ -78,8 +87,43 @@ describe('AgentMonitorCard', () => {
       }
     })
 
-    expect(wrapper.text()).toContain('—')
+    expect(wrapper.find('[data-testid="monitor-card-cpu-percent"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="monitor-card-memory-percent"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="monitor-card-disk-percent"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="monitor-card-network-down"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="monitor-card-network-up"]').text()).toContain('—')
+
     expect(wrapper.text()).not.toContain('0%')
     expect(wrapper.text()).not.toContain('0 B/s')
+  })
+
+  it('renders online status badge', () => {
+    const wrapper = mountCard({ status: 'online' })
+    expect(wrapper.find('.agent-monitor-card__status').text()).toContain('在线')
+  })
+
+  it('renders offline status badge', () => {
+    const wrapper = mountCard({ status: 'offline' })
+    expect(wrapper.find('.agent-monitor-card__status').text()).toContain('离线')
+  })
+
+  it('renders failed status badge', () => {
+    const wrapper = mountCard({
+      status: 'online',
+      desired_revision: 2,
+      current_revision: 1,
+      last_apply_status: 'failed',
+      last_apply_revision: 2
+    })
+    expect(wrapper.find('.agent-monitor-card__status').text()).toContain('失败')
+  })
+
+  it('renders pending status badge', () => {
+    const wrapper = mountCard({
+      status: 'online',
+      desired_revision: 2,
+      current_revision: 1
+    })
+    expect(wrapper.find('.agent-monitor-card__status').text()).toContain('同步中')
   })
 })
