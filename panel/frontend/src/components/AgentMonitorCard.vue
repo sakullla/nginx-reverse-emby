@@ -1,11 +1,21 @@
 <template>
-  <BaseListCard :status="statusTone" :title="displayName" @click="$emit('details', agent)">
+  <BaseListCard
+    class="agent-monitor-card"
+    :status="statusTone"
+    :title="displayName"
+    @click="$emit('details', agent)"
+  >
     <template #header-left>
-      <AgentStatusBadge :agent="agent" />
-      <BaseBadge tone="primary">{{ modeLabel }}</BaseBadge>
+      <AgentStatusBadge :agent="agent" class="agent-monitor-card__status" />
+      <span class="agent-monitor-card__name" data-testid="monitor-card-name">{{ displayName }}</span>
     </template>
     <template #header-right>
-      <BaseIconButton title="查看详情" tone="primary" @click="$emit('details', agent)">
+      <BaseIconButton
+        title="查看详情"
+        tone="primary"
+        class="agent-monitor-card__detail-btn"
+        @click="$emit('details', agent)"
+      >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/>
           <circle cx="12" cy="12" r="3"/>
@@ -14,49 +24,71 @@
     </template>
 
     <div class="agent-monitor-card__meta">
-      <span>{{ endpointLabel }}</span>
-      <span>{{ timeAgo(agent.last_seen_at) }}</span>
+      <span data-testid="monitor-card-endpoint">{{ endpointLabel }}</span>
+      <span data-testid="monitor-card-last-seen">{{ timeAgo(agent.last_seen_at) }}</span>
     </div>
 
-    <div class="agent-monitor-card__metrics">
-      <div class="agent-monitor-card__metric">
-        <span class="agent-monitor-card__label">CPU</span>
-        <strong>{{ cpuUsage(metrics) }}</strong>
-        <small>{{ percent(metrics.cpu_usage_percent) }}</small>
+    <div class="agent-monitor-card__grid">
+      <div class="agent-monitor-card__cell" data-testid="monitor-card-cpu">
+        <div class="agent-monitor-card__cell-header">
+          <i class="i-mdi-cpu agent-monitor-card__icon" />
+          <span class="agent-monitor-card__label">CPU</span>
+        </div>
+        <div class="agent-monitor-card__value" data-testid="monitor-card-cpu-value">{{ cpuUsage(metrics) }}</div>
+        <div class="agent-monitor-card__subvalue" data-testid="monitor-card-cpu-percent">{{ percent(metrics.cpu_usage_percent) }}</div>
+        <div class="agent-monitor-card__bar-bg">
+          <div
+            class="agent-monitor-card__bar"
+            :class="barTone(metrics.cpu_usage_percent)"
+            :style="{ width: `${clamp(metrics.cpu_usage_percent)}%` }"
+          />
+        </div>
       </div>
-      <div class="agent-monitor-card__metric">
-        <span class="agent-monitor-card__label">内存</span>
-        <strong>{{ bytesPair(metrics.memory_used_bytes, metrics.memory_total_bytes) }}</strong>
-        <small>{{ percent(metrics.memory_usage_percent) }}</small>
-      </div>
-      <div class="agent-monitor-card__metric">
-        <span class="agent-monitor-card__label">磁盘</span>
-        <strong>{{ bytesPair(metrics.disk_used_bytes, metrics.disk_total_bytes) }}</strong>
-        <small>{{ percent(metrics.disk_usage_percent) }}</small>
-      </div>
-    </div>
 
-    <div class="agent-monitor-card__network">
-      <div>
-        <span class="agent-monitor-card__label">累计下行</span>
-        <strong>{{ bytes(network?.rx_bytes) }}</strong>
+      <div class="agent-monitor-card__cell" data-testid="monitor-card-memory">
+        <div class="agent-monitor-card__cell-header">
+          <i class="i-mdi-memory agent-monitor-card__icon" />
+          <span class="agent-monitor-card__label">内存</span>
+        </div>
+        <div class="agent-monitor-card__value" data-testid="monitor-card-memory-value">{{ bytesPair(metrics.memory_used_bytes, metrics.memory_total_bytes) }}</div>
+        <div class="agent-monitor-card__subvalue" data-testid="monitor-card-memory-percent">{{ percent(metrics.memory_usage_percent) }}</div>
+        <div class="agent-monitor-card__bar-bg">
+          <div
+            class="agent-monitor-card__bar"
+            :class="barTone(metrics.memory_usage_percent)"
+            :style="{ width: `${clamp(metrics.memory_usage_percent)}%` }"
+          />
+        </div>
       </div>
-      <div>
-        <span class="agent-monitor-card__label">累计上行</span>
-        <strong>{{ bytes(network?.tx_bytes) }}</strong>
+
+      <div class="agent-monitor-card__cell" data-testid="monitor-card-disk">
+        <div class="agent-monitor-card__cell-header">
+          <i class="i-mdi-harddisk agent-monitor-card__icon" />
+          <span class="agent-monitor-card__label">磁盘</span>
+        </div>
+        <div class="agent-monitor-card__value" data-testid="monitor-card-disk-value">{{ bytesPair(metrics.disk_used_bytes, metrics.disk_total_bytes) }}</div>
+        <div class="agent-monitor-card__subvalue" data-testid="monitor-card-disk-percent">{{ percent(metrics.disk_usage_percent) }}</div>
+        <div class="agent-monitor-card__bar-bg">
+          <div
+            class="agent-monitor-card__bar"
+            :class="barTone(metrics.disk_usage_percent)"
+            :style="{ width: `${clamp(metrics.disk_usage_percent)}%` }"
+          />
+        </div>
       </div>
-      <div>
-        <span class="agent-monitor-card__label">下行速率</span>
-        <strong>{{ rate(network?.rx_bytes_per_second) }}</strong>
-      </div>
-      <div>
-        <span class="agent-monitor-card__label">上行速率</span>
-        <strong>{{ rate(network?.tx_bytes_per_second) }}</strong>
+
+      <div class="agent-monitor-card__cell" data-testid="monitor-card-network">
+        <div class="agent-monitor-card__cell-header">
+          <i class="i-mdi-network agent-monitor-card__icon" />
+          <span class="agent-monitor-card__label">网络</span>
+        </div>
+        <div class="agent-monitor-card__value" data-testid="monitor-card-network-down">↓ {{ rate(network?.rx_bytes_per_second) }}</div>
+        <div class="agent-monitor-card__subvalue" data-testid="monitor-card-network-up">↑ {{ rate(network?.tx_bytes_per_second) }}</div>
       </div>
     </div>
 
     <template v-if="hasTags" #footer>
-      <BaseBadge v-for="tag in agent.tags" :key="tag" tone="neutral">{{ tag }}</BaseBadge>
+      <BaseBadge v-for="tag in agent.tags" :key="tag" tone="neutral" class="agent-monitor-card__tag">{{ tag }}</BaseBadge>
     </template>
   </BaseListCard>
 </template>
@@ -67,7 +99,7 @@ import AgentStatusBadge from './AgentStatusBadge.vue'
 import BaseBadge from './base/BaseBadge.vue'
 import BaseIconButton from './base/BaseIconButton.vue'
 import BaseListCard from './base/BaseListCard.vue'
-import { getAgentStatus, getHostname, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
+import { getAgentStatus, getHostname, timeAgo } from '../utils/agentHelpers.js'
 
 const props = defineProps({
   agent: { type: Object, required: true }
@@ -84,7 +116,6 @@ const STATUS_TONE = {
 
 const displayName = computed(() => props.agent.name || props.agent.id || '未命名节点')
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(props.agent)] || 'neutral')
-const modeLabel = computed(() => getModeLabel(props.agent.mode))
 const endpointLabel = computed(() => props.agent.agent_url ? getHostname(props.agent.agent_url) : (props.agent.last_seen_ip || '—'))
 const metrics = computed(() => props.agent.monitor?.metrics || props.agent.metrics || {})
 const network = computed(() => metrics.value.network || null)
@@ -93,6 +124,21 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 function percent(value) {
   if (value === null || value === undefined || value === '') return '—'
   return Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)}%` : '—'
+}
+
+function clamp(value) {
+  if (value === null || value === undefined || value === '') return 0
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 0
+  return Math.min(100, Math.max(0, n))
+}
+
+function barTone(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 'agent-monitor-card__bar--neutral'
+  if (n > 85) return 'agent-monitor-card__bar--danger'
+  if (n >= 70) return 'agent-monitor-card__bar--warning'
+  return 'agent-monitor-card__bar--success'
 }
 
 function bytes(value) {
@@ -135,65 +181,170 @@ function bytesPair(usedValue, totalValue) {
 </script>
 
 <style scoped>
+.agent-monitor-card {
+  --amc-green: var(--color-primary, #059669);
+  --amc-green-subtle: color-mix(in srgb, var(--amc-green) 8%, transparent);
+  --amc-green-border: color-mix(in srgb, var(--amc-green) 15%, transparent);
+  --amc-status-success: var(--color-success, #059669);
+  --amc-status-warning: var(--color-warning, #d97706);
+  --amc-status-danger: var(--color-danger, #dc2626);
+  --amc-status-neutral: var(--color-text-muted, #9ca3af);
+}
+
+:deep(.base-list-card) {
+  position: relative;
+  overflow: hidden;
+}
+
+:deep(.base-list-card)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--amc-status-neutral);
+  transition: background 150ms ease;
+}
+
+:deep(.base-list-card[data-status="success"])::before {
+  background: var(--amc-status-success);
+}
+
+:deep(.base-list-card[data-status="warning"])::before {
+  background: var(--amc-status-warning);
+}
+
+:deep(.base-list-card[data-status="danger"])::before {
+  background: var(--amc-status-danger);
+}
+
+:deep(.base-list-card[data-status="neutral"])::before {
+  background: var(--amc-status-neutral);
+}
+
+:deep(.base-list-card__header) {
+  align-items: flex-start;
+}
+
+:deep(.base-list-card__header-left) {
+  gap: 0.625rem;
+}
+
+.agent-monitor-card__status {
+  flex-shrink: 0;
+}
+
+.agent-monitor-card__name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.35;
+  word-break: break-all;
+}
+
 .agent-monitor-card__meta {
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
   color: var(--color-text-tertiary);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-family: var(--font-mono);
+  margin-top: -0.125rem;
 }
 
-.agent-monitor-card__metrics,
-.agent-monitor-card__network {
+.agent-monitor-card__grid {
   display: grid;
-  gap: 0.5rem;
-}
-
-.agent-monitor-card__metrics {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.agent-monitor-card__network {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.25rem;
 }
 
-.agent-monitor-card__metric,
-.agent-monitor-card__network > div {
+.agent-monitor-card__cell {
   min-width: 0;
   padding: 0.5rem;
-  border: 1px solid var(--color-border-subtle);
+  border: 1px solid var(--amc-green-border);
   border-radius: var(--radius-md);
-  background: var(--color-bg-subtle);
+  background: var(--amc-green-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.agent-monitor-card__cell-header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.agent-monitor-card__icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--amc-green);
+  flex-shrink: 0;
 }
 
 .agent-monitor-card__label {
-  display: block;
-  margin-bottom: 0.25rem;
   color: var(--color-text-tertiary);
   font-size: 0.7rem;
+  line-height: 1;
 }
 
-.agent-monitor-card__metric strong,
-.agent-monitor-card__network strong {
-  display: block;
+.agent-monitor-card__value {
   color: var(--color-text-primary);
-  font-size: 0.875rem;
-  line-height: 1.2;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
-.agent-monitor-card__metric small {
-  display: block;
-  margin-top: 0.125rem;
-  color: var(--color-text-tertiary);
+.agent-monitor-card__subvalue {
+  color: var(--color-text-secondary);
   font-size: 0.7rem;
   line-height: 1.2;
 }
 
+.agent-monitor-card__bar-bg {
+  height: 3px;
+  background: var(--color-bg-subtle);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 0.25rem;
+}
+
+.agent-monitor-card__bar {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 300ms ease, background 150ms ease;
+}
+
+.agent-monitor-card__bar--success {
+  background: var(--amc-status-success);
+}
+
+.agent-monitor-card__bar--warning {
+  background: var(--amc-status-warning);
+}
+
+.agent-monitor-card__bar--danger {
+  background: var(--amc-status-danger);
+}
+
+.agent-monitor-card__bar--neutral {
+  background: var(--amc-status-neutral);
+}
+
+:deep(.base-list-card__footer) {
+  margin-top: -0.125rem;
+}
+
+.agent-monitor-card__tag {
+  font-size: 0.7rem;
+}
+
 @media (max-width: 420px) {
-  .agent-monitor-card__metrics,
-  .agent-monitor-card__network {
+  .agent-monitor-card__grid {
     grid-template-columns: 1fr;
   }
 }
