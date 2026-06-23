@@ -443,6 +443,7 @@ create_panel_self_proxy() {
     token="$1"
     domain="$2"
     scheme="${3:-https}"
+    defer_apply="${4:-0}"
     frontend="${scheme}://${domain}"
     payload="$(printf '{"frontend_url":"%s","backends":[{"url":"http://127.0.0.1:8080"}],"tags":["panel","bootstrap"]}' "$(json_escape "$frontend")")"
     response_file="${TMPDIR:-/tmp}/nre-panel-api-response.$$"
@@ -460,7 +461,9 @@ create_panel_self_proxy() {
     case "$http_status" in
         2??)
         rm -f "$response_file" "$error_file"
-        curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
+        if [ "$defer_apply" -ne 1 ]; then
+            curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
+        fi
         return 0
         ;;
     esac
@@ -470,7 +473,9 @@ create_panel_self_proxy() {
     rm -f "$response_file" "$error_file"
     if printf '%s' "$response_body" | grep -q "frontend_url conflicts with existing rule"; then
         last_panel_self_proxy_error="已有规则占用 ${frontend}，将复用现有规则继续验证"
-        curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
+        if [ "$defer_apply" -ne 1 ]; then
+            curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
+        fi
         return 0
     fi
     last_panel_self_proxy_error="HTTP ${http_status:-000}"
@@ -489,12 +494,15 @@ is_panel_html() {
 wait_public_panel_ready() {
     token="$1"
     url="$2"
+    retry_apply="${3:-1}"
     attempt=1
     while [ "$attempt" -le "$public_panel_ready_attempts" ]; do
         if curl -fsSL --max-time 10 "$url" 2>/dev/null | is_panel_html; then
             return 0
         fi
-        curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
+        if [ "$retry_apply" -eq 1 ]; then
+            curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
+        fi
         attempt=$((attempt + 1))
         sleep 5
     done
@@ -772,10 +780,18 @@ else
 fi
 
 if [ -n "$domain" ]; then
-    if create_panel_self_proxy "$api_token" "$domain" "https"; then
+    defer_https_apply=0
+    if [ "$cf_enabled" -eq 1 ]; then
+        defer_https_apply=1
+    fi
+    if create_panel_self_proxy "$api_token" "$domain" "https" "$defer_https_apply"; then
         panel_self_proxy_scheme="https"
-        say "面板自代理规则已创建，证书申请可能需要 1-3 分钟"
-        if wait_public_panel_ready "$api_token" "https://${domain}/"; then
+        if [ "$defer_https_apply" -eq 1 ]; then
+            say "面板自代理规则已创建，证书申请可能需要 1-3 分钟；将等待后台签发完成后自动应用"
+        else
+            say "面板自代理规则已创建，证书申请可能需要 1-3 分钟"
+        fi
+        if wait_public_panel_ready "$api_token" "https://${domain}/" "$((1 - defer_https_apply))"; then
             say "HTTPS 面板已可访问：https://${domain}/"
         else
             warn "暂未确认 HTTPS 面板首页可访问：https://${domain}/。请稍后刷新，或查看 ${compose} logs -f。"
@@ -785,10 +801,10 @@ if [ -n "$domain" ]; then
             warn "HTTPS 自代理接口返回：${last_panel_self_proxy_error}"
         fi
         warn "HTTPS 自代理规则创建失败，通常是域名、DNS、Cloudflare Token 权限或 ACME 校验失败。"
-        if create_panel_self_proxy "$api_token" "$domain" "http"; then
+        if create_panel_self_proxy "$api_token" "$domain" "http" "0"; then
             panel_self_proxy_scheme="http"
             warn "已创建 HTTP 后备自代理规则：http://${domain} -> http://127.0.0.1:8080。请修复证书/DNS/Cloudflare 后在面板中改为 HTTPS。"
-            if wait_public_panel_ready "$api_token" "http://${domain}/"; then
+            if wait_public_panel_ready "$api_token" "http://${domain}/" "1"; then
                 say "HTTP 后备面板已可访问：http://${domain}/"
             fi
         else
