@@ -11,8 +11,14 @@
           <h1 class="agent-detail__name">{{ agent.name }}</h1>
           <span class="agent-detail__mode">{{ getModeLabel(agent.mode) }}</span>
         </div>
-        <p class="agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</p>
-        <p class="agent-detail__last-seen">{{ agent.last_seen_at ? `最后在线 ${timeAgo(agent.last_seen_at)}` : '—' }}</p>
+        <p class="agent-detail__meta-row">
+          <span class="agent-detail__meta-label">地址</span>
+          <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
+        </p>
+        <p class="agent-detail__meta-row">
+          <span class="agent-detail__meta-label">最后活跃</span>
+          <span class="agent-detail__meta-value agent-detail__last-seen">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
+        </p>
       </div>
       <div class="agent-detail__quick-stats">
         <div class="stat-mini">
@@ -811,20 +817,41 @@ function packageStatusLabel(status) {
   border: 1px solid var(--amc-green-border);
 }
 
-.agent-detail__endpoint {
+.agent-detail__meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  margin-bottom: 0.125rem;
+}
+
+.agent-detail__meta-label {
+  font-size: 0.625rem;
+  color: var(--amc-status-neutral);
+  flex-shrink: 0;
+}
+
+.agent-detail__meta-value {
+  flex: 1;
+  min-width: 0;
   font-size: 0.8rem;
   color: var(--color-text-tertiary);
-  font-family: var(--font-mono);
-  margin: 0 0 0.125rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.agent-detail__status-header + .agent-detail__meta-row {
+  margin-top: 0.625rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.1));
+}
+
+.agent-detail__endpoint {
+  font-family: var(--font-mono);
+}
+
 .agent-detail__last-seen {
-  font-size: 0.75rem;
   color: var(--color-text-secondary);
-  margin: 0;
 }
 
 .agent-detail__quick-stats {
@@ -944,7 +971,8 @@ function packageStatusLabel(status) {
 .traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--amc-green); box-shadow: var(--shadow-sm); }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
-.info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; }
+.info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08)); }
+.info-row:last-child { border-bottom: none; }
 .info-row span:first-child { color: var(--color-text-secondary); }
 .info-row span:last-child { color: var(--color-text-primary); font-weight: 500; }
 .agent-detail__loading { display: flex; justify-content: center; padding: 3rem; }
