@@ -3131,6 +3131,86 @@ func TestRuleServiceCreateHTTPSMasterCFDNSDefersLocalApplyUntilCertificateIssued
 	}
 }
 
+func TestRuleServiceCreateHTTPSMasterCFDNSDefersLocalRelayCallerApplyUntilCertificateIssued(t *testing.T) {
+	t.Setenv("CF_TOKEN", "test-token")
+	dispatcher := ManagedCertificateDispatcher()
+	dispatcher.Wait()
+	issued := make(chan int, 1)
+	dispatcher.SetSignFunc(func(_ context.Context, certID int) error {
+		issued <- certID
+		return nil
+	})
+	defer func() {
+		dispatcher.Wait()
+		dispatcher.SetSignFunc(nil)
+	}()
+
+	wireGuardProfileID := 17
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-relay",
+			Name:            "remote-relay",
+			DesiredRevision: 2,
+			CurrentRevision: 2,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		listeners: []storage.RelayListenerRow{{
+			ID:                 7,
+			AgentID:            "remote-relay",
+			Enabled:            true,
+			TransportMode:      "wireguard",
+			WireGuardProfileID: &wireGuardProfileID,
+		}},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
+			"local": {{
+				ID:       9,
+				AgentID:  "local",
+				Name:     "local-default",
+				Enabled:  true,
+				TagsJSON: `["system:default-wireguard"]`,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent:              true,
+		LocalAgentID:                  "local",
+		ManagedDNSCertificatesEnabled: true,
+	}, store)
+	localApplyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		localApplyCalls++
+		return nil
+	})
+
+	if _, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://relay-panel.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8080"}},
+		RelayLayers: &[][]int{{7}},
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	dispatcher.Wait()
+
+	if localApplyCalls != 0 {
+		t.Fatalf("local apply calls = %d, want 0 before certificate material exists", localApplyCalls)
+	}
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("managed cert count = %d", len(store.managedCerts))
+	}
+	cert := managedCertificateFromRow(store.managedCerts[0])
+	if cert.IssuerMode != "master_cf_dns" || cert.Status != "issuing" {
+		t.Fatalf("cert issuer/status = %s/%s, want master_cf_dns/issuing", cert.IssuerMode, cert.Status)
+	}
+	select {
+	case certID := <-issued:
+		if certID != cert.ID {
+			t.Fatalf("issued cert id = %d, want %d", certID, cert.ID)
+		}
+	default:
+		t.Fatal("background certificate issue was not submitted")
+	}
+}
+
 func TestRuleServiceCreateHTTPSRemoteDomainRejectsMasterCFDNSForNonLocalTarget(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{

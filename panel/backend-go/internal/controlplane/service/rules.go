@@ -250,13 +250,14 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
 		return rollbackPostSave(err)
 	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
+	deferLocalApply := len(autoManagedDNSIssueIDs) > 0
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision, deferLocalApply); err != nil {
 		return rollbackPostSave(err)
 	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision, deferLocalApply); err != nil {
 		return rollbackPostSave(err)
 	}
-	if len(autoManagedDNSIssueIDs) == 0 {
+	if !deferLocalApply {
 		if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 			return rollbackPostSave(err)
 		}
@@ -439,13 +440,14 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
 		return rollbackPostSave(err)
 	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
+	deferLocalApply := len(autoManagedDNSIssueIDs) > 0
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision, deferLocalApply); err != nil {
 		return rollbackPostSave(err)
 	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision, deferLocalApply); err != nil {
 		return rollbackPostSave(err)
 	}
-	if len(autoManagedDNSIssueIDs) == 0 {
+	if !deferLocalApply {
 		if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 			return rollbackPostSave(err)
 		}
@@ -537,7 +539,7 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
 		return rollbackPostSave(err)
 	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, nextRevision); err != nil {
+	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, nextRevision, false); err != nil {
 		return rollbackPostSave(err)
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
@@ -593,10 +595,13 @@ func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID str
 	return ErrAgentNotFound
 }
 
-func (s *ruleService) bumpRelayLayerWireGuardCallers(ctx context.Context, agentIDs []string, revision int) error {
+func (s *ruleService) bumpRelayLayerWireGuardCallers(ctx context.Context, agentIDs []string, revision int, deferLocalApply bool) error {
 	for _, agentID := range agentIDs {
 		if err := s.bumpRemoteDesiredRevision(ctx, agentID, revision); err != nil {
 			return err
+		}
+		if deferLocalApply && s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+			continue
 		}
 		if err := s.triggerLocalApply(ctx, agentID); err != nil {
 			return err
