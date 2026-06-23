@@ -11,6 +11,8 @@ docker_cli_version="${NRE_DOCKER_CLI_VERSION:-29.5.3}"
 docker_compose_version="${NRE_DOCKER_COMPOSE_VERSION:-v5.1.4}"
 panel_health_url="${NRE_PANEL_HEALTH_URL:-http://127.0.0.1:8080/panel-api/info}"
 panel_api_base="${NRE_PANEL_API_BASE:-http://127.0.0.1:8080}"
+panel_root_url="${NRE_PANEL_ROOT_URL:-http://127.0.0.1:8080/}"
+public_panel_ready_attempts="${NRE_PUBLIC_PANEL_READY_ATTEMPTS:-36}"
 
 opt_noninteractive=0
 opt_yes=0
@@ -403,6 +405,18 @@ write_env_value() {
     printf '%s=%s\n' "$key" "$value" >> "$file"
 }
 
+delete_env_value() {
+    key="$1"
+    file="$2"
+    if [ ! -f "$file" ] || ! grep -q "^${key}=" "$file"; then
+        return 1
+    fi
+    tmp="${file}.tmp.$$"
+    awk -v key="$key" 'BEGIN { FS="=" } $1 != key { print }' "$file" > "$tmp"
+    mv "$tmp" "$file"
+    return 0
+}
+
 env_value() {
     key="$1"
     file="$2"
@@ -412,7 +426,8 @@ env_value() {
 wait_panel_ready() {
     token="$1"
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-        if curl -fsS -H "X-Panel-Token: ${token}" "$panel_health_url" >/dev/null 2>&1; then
+        if curl -fsS -H "X-Panel-Token: ${token}" "$panel_health_url" >/dev/null 2>&1 && \
+            curl -fsS "$panel_root_url" >/dev/null 2>&1; then
             return 0
         fi
         sleep 5
@@ -430,16 +445,59 @@ create_panel_self_proxy() {
     scheme="${3:-https}"
     frontend="${scheme}://${domain}"
     payload="$(printf '{"frontend_url":"%s","backends":[{"url":"http://127.0.0.1:8080"}],"tags":["panel","bootstrap"]}' "$(json_escape "$frontend")")"
+    response_file="${TMPDIR:-/tmp}/nre-panel-api-response.$$"
+    error_file="${TMPDIR:-/tmp}/nre-panel-api-error.$$"
+    last_panel_self_proxy_error=""
 
     say "正在创建面板自代理规则：${frontend} -> http://127.0.0.1:8080"
-    if curl -fsS \
+    http_status="$(curl -sS \
+        -o "$response_file" \
+        -w "%{http_code}" \
         -H "Content-Type: application/json" \
         -H "X-Panel-Token: ${token}" \
         -d "$payload" \
-        "${panel_api_base}/panel-api/agents/local/rules" >/dev/null; then
+        "${panel_api_base}/panel-api/agents/local/rules" 2>"$error_file" || true)"
+    case "$http_status" in
+        2??)
+        rm -f "$response_file" "$error_file"
+        curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
+        return 0
+        ;;
+    esac
+
+    response_body="$(sed 's/[[:cntrl:]]/ /g' "$response_file" 2>/dev/null | cut -c 1-500 || true)"
+    curl_error="$(sed 's/[[:cntrl:]]/ /g' "$error_file" 2>/dev/null | cut -c 1-300 || true)"
+    rm -f "$response_file" "$error_file"
+    if printf '%s' "$response_body" | grep -q "frontend_url conflicts with existing rule"; then
+        last_panel_self_proxy_error="已有规则占用 ${frontend}，将复用现有规则继续验证"
         curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
         return 0
     fi
+    last_panel_self_proxy_error="HTTP ${http_status:-000}"
+    if [ -n "$response_body" ]; then
+        last_panel_self_proxy_error="${last_panel_self_proxy_error}: ${response_body}"
+    elif [ -n "$curl_error" ]; then
+        last_panel_self_proxy_error="${last_panel_self_proxy_error}: ${curl_error}"
+    fi
+    return 1
+}
+
+is_panel_html() {
+    grep -q '<div id="app"\|Nginx Reverse Emby Panel\|window.__NRE_PANEL_BASE__'
+}
+
+wait_public_panel_ready() {
+    token="$1"
+    url="$2"
+    attempt=1
+    while [ "$attempt" -le "$public_panel_ready_attempts" ]; do
+        if curl -fsSL --max-time 10 "$url" 2>/dev/null | is_panel_html; then
+            return 0
+        fi
+        curl -fsS -X POST -H "X-Panel-Token: ${token}" "${panel_api_base}/panel-api/agents/local/apply" >/dev/null 2>&1 || true
+        attempt=$((attempt + 1))
+        sleep 5
+    done
     return 1
 }
 
@@ -599,9 +657,15 @@ panel_path=""
 public_ip=""
 cf_token=""
 cf_enabled=0
+panel_self_proxy_scheme=""
+force_recreate=0
 
 if [ -n "$public_url" ]; then
     write_env_value "NRE_PUBLIC_URL" "$public_url" "$env_file"
+    if delete_env_value "NRE_PANEL_PUBLIC_PATH" "$env_file"; then
+        force_recreate=1
+        say "已清理旧的 NRE_PANEL_PUBLIC_PATH，HTTPS 面板将使用根路径访问"
+    fi
     say "已写入 NRE_PUBLIC_URL=${public_url}"
     if [ -n "${CF_TOKEN:-}" ]; then
         verify_cf_token "$CF_TOKEN" || warn "CF_TOKEN 校验未通过，仍会写入。"
@@ -626,6 +690,10 @@ elif [ "$interactive" -eq 1 ] && ask_yes_no "你是否已经有域名，并且 D
         domain="$(printf '%s' "$domain" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*##; s#:.*##')"
         write_env_value "PANEL_BACKEND_HOST" "127.0.0.1" "$env_file"
         write_env_value "NRE_PUBLIC_URL" "https://${domain}" "$env_file"
+        if delete_env_value "NRE_PANEL_PUBLIC_PATH" "$env_file"; then
+            force_recreate=1
+            say "已清理旧的 NRE_PANEL_PUBLIC_PATH，HTTPS 面板将使用根路径访问"
+        fi
 
         cf_token="$(collect_cf_token)"
         if [ -n "$cf_token" ]; then
@@ -643,6 +711,7 @@ if [ -z "$public_url" ] && [ -z "$domain" ]; then
     panel_path="/panel-$(random_hex 8)"
     write_env_value "PANEL_BACKEND_HOST" "0.0.0.0" "$env_file"
     write_env_value "NRE_PANEL_PUBLIC_PATH" "$panel_path" "$env_file"
+    panel_root_url="http://127.0.0.1:8080${panel_path}"
     public_ip="$(detect_public_ip)"
     warn "你选择了没有域名的 HTTP 部署。公网 HTTP 会暴露 token 传输风险，只建议临时使用。"
     warn "脚本已为面板生成随机访问路径：${panel_path}"
@@ -688,7 +757,13 @@ fi
 
 say "启动控制面板容器"
 # shellcheck disable=SC2086
-$compose up -d
+if [ "$force_recreate" -eq 1 ]; then
+    # shellcheck disable=SC2086
+    $compose up -d --force-recreate
+else
+    # shellcheck disable=SC2086
+    $compose up -d
+fi
 
 if wait_panel_ready "$api_token"; then
     say "控制面板已启动"
@@ -698,12 +773,28 @@ fi
 
 if [ -n "$domain" ]; then
     if create_panel_self_proxy "$api_token" "$domain" "https"; then
+        panel_self_proxy_scheme="https"
         say "面板自代理规则已创建，证书申请可能需要 1-3 分钟"
+        if wait_public_panel_ready "$api_token" "https://${domain}/"; then
+            say "HTTPS 面板已可访问：https://${domain}/"
+        else
+            warn "暂未确认 HTTPS 面板首页可访问：https://${domain}/。请稍后刷新，或查看 ${compose} logs -f。"
+        fi
     else
+        if [ -n "${last_panel_self_proxy_error:-}" ]; then
+            warn "HTTPS 自代理接口返回：${last_panel_self_proxy_error}"
+        fi
         warn "HTTPS 自代理规则创建失败，通常是域名、DNS、Cloudflare Token 权限或 ACME 校验失败。"
         if create_panel_self_proxy "$api_token" "$domain" "http"; then
+            panel_self_proxy_scheme="http"
             warn "已创建 HTTP 后备自代理规则：http://${domain} -> http://127.0.0.1:8080。请修复证书/DNS/Cloudflare 后在面板中改为 HTTPS。"
+            if wait_public_panel_ready "$api_token" "http://${domain}/"; then
+                say "HTTP 后备面板已可访问：http://${domain}/"
+            fi
         else
+            if [ -n "${last_panel_self_proxy_error:-}" ]; then
+                warn "HTTP 后备自代理接口返回：${last_panel_self_proxy_error}"
+            fi
             warn "HTTP 后备规则也创建失败。请登录面板后手动添加：前端 http://${domain}，后端 http://127.0.0.1:8080，节点 local。"
         fi
     fi
@@ -722,11 +813,18 @@ Agent 注册 token：
 EOF
 
 if [ -n "$domain" ]; then
+    if [ "$panel_self_proxy_scheme" = "http" ]; then
+        domain_recommended_url="http://${domain}"
+        domain_access_note="HTTPS 自代理创建失败，当前已创建 HTTP 后备规则。修复证书/DNS/Cloudflare 后再切换到 HTTPS。"
+    else
+        domain_recommended_url="https://${domain}"
+        domain_access_note="如果证书还在签发中，请等待几分钟后刷新；也可以临时用 SSH 隧道访问："
+    fi
     cat <<EOF
 推荐访问地址：
-  https://${domain}
+  ${domain_recommended_url}/
 
-如果证书还在签发中，请等待几分钟后刷新；也可以临时用 SSH 隧道访问：
+${domain_access_note}
   ssh -L 8080:127.0.0.1:8080 root@<服务器IP>
   http://127.0.0.1:8080
 

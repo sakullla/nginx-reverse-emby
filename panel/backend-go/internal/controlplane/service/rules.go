@@ -197,6 +197,7 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	certRowsChanged := false
 	var originalCertRows []storage.ManagedCertificateRow
 	var nextCertRows []storage.ManagedCertificateRow
+	autoManagedDNSIssueIDs := []int(nil)
 	if scheme, _, ok := parseRuleFrontendTarget(rule.FrontendURL); ok && scheme == "https" {
 		originalCertRows, nextCertRows, certRowsChanged, err = s.prepareManagedCertificatesForRuleMutation(
 			ctx,
@@ -210,6 +211,11 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 			return HTTPRule{}, err
 		}
 		if certRowsChanged {
+			autoManagedDNSIssueIDs, err = s.prepareAutoManagedDNSCertificateIssues(originalCertRows, nextCertRows)
+			if err != nil {
+				rollbackDefaultWireGuard()
+				return HTTPRule{}, err
+			}
 			if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
 				rollbackDefaultWireGuard()
 				return HTTPRule{}, err
@@ -250,11 +256,16 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
 		return rollbackPostSave(err)
 	}
-	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		return rollbackPostSave(err)
+	if len(autoManagedDNSIssueIDs) == 0 {
+		if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+			return rollbackPostSave(err)
+		}
 	}
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+	}
+	for _, certID := range autoManagedDNSIssueIDs {
+		ManagedCertificateDispatcher().Submit(certID)
 	}
 	return rule, nil
 }
@@ -354,7 +365,13 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
+	autoManagedDNSIssueIDs := []int(nil)
 	if certRowsChanged {
+		autoManagedDNSIssueIDs, err = s.prepareAutoManagedDNSCertificateIssues(originalCertRows, nextCertRows)
+		if err != nil {
+			rollbackDefaultWireGuard()
+			return HTTPRule{}, err
+		}
 		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
 			rollbackDefaultWireGuard()
 			return HTTPRule{}, err
@@ -428,11 +445,16 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
 		return rollbackPostSave(err)
 	}
-	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		return rollbackPostSave(err)
+	if len(autoManagedDNSIssueIDs) == 0 {
+		if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+			return rollbackPostSave(err)
+		}
 	}
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+	}
+	for _, certID := range autoManagedDNSIssueIDs {
+		ManagedCertificateDispatcher().Submit(certID)
 	}
 	return rule, nil
 }
@@ -711,6 +733,41 @@ func (s *ruleService) ensureManagedCertificateForRule(
 	next.Revision = allocateManagedCertificateRevision(nextRevision)
 	*rows = append(*rows, managedCertificateToRow(next))
 	return nil
+}
+
+func (s *ruleService) prepareAutoManagedDNSCertificateIssues(originalRows []storage.ManagedCertificateRow, nextRows []storage.ManagedCertificateRow) ([]int, error) {
+	previousByID := make(map[int]ManagedCertificate, len(originalRows))
+	for _, row := range originalRows {
+		previousByID[row.ID] = managedCertificateFromRow(row)
+	}
+
+	issueIDs := make([]int, 0)
+	for index, row := range nextRows {
+		cert := managedCertificateFromRow(row)
+		var previous *ManagedCertificate
+		if value, ok := previousByID[cert.ID]; ok {
+			previous = &value
+		}
+		if !managedCertificateMutationNeedsManagedDNSIssue(previous, cert) {
+			continue
+		}
+		if !s.autoManagedDNSIssuerAvailable() {
+			return nil, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
+		}
+		scheduled := cert
+		scheduled.Status = "issuing"
+		scheduled.LastError = ""
+		scheduled.BackoffClass = ""
+		scheduled.RetryCount = 0
+		scheduled.NextRetryAtUnix = 0
+		nextRows[index] = managedCertificateToRow(scheduled)
+		issueIDs = append(issueIDs, scheduled.ID)
+	}
+	return issueIDs, nil
+}
+
+func (s *ruleService) autoManagedDNSIssuerAvailable() bool {
+	return s.cfg.ManagedDNSCertificatesEnabled && newMasterCFDNSManagedCertificateIssuer() != nil
 }
 
 func (s *ruleService) cleanupUnusedManagedCertificatesForAgent(

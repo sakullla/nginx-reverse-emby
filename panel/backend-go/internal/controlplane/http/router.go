@@ -326,7 +326,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	for _, prefix := range []string{"/panel-api", "/api"} {
 		mux.Handle(prefix+"/health", http.HandlerFunc(resolved.handleHealth))
 		mux.Handle(prefix+"/auth/verify", http.HandlerFunc(resolved.handleVerify))
-		mux.Handle(prefix+"/info", http.HandlerFunc(resolved.handleInfo))
+		mux.Handle(prefix+"/info", resolved.requirePanelToken(http.HandlerFunc(resolved.handleInfo)))
 		mux.Handle(prefix+"/public/join-agent.sh", http.HandlerFunc(resolved.handleJoinAgentScript))
 		mux.Handle(prefix+"/public/agent-assets/", http.HandlerFunc(resolved.handlePublicAgentAsset))
 		mux.Handle(prefix+"/agents/register", http.HandlerFunc(resolved.handleRegisterAgent))

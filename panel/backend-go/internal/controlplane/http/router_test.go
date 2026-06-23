@@ -682,19 +682,27 @@ func TestRouterInfoOmitsSensitiveFieldsWithoutPanelToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/info", nil)
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /panel-api/info without token = %d", resp.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/panel-api/info", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
 	if resp.Code != http.StatusOK {
-		t.Fatalf("GET /panel-api/info = %d", resp.Code)
+		t.Fatalf("GET /panel-api/info with token = %d", resp.Code)
 	}
 
 	var payload map[string]any
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	if _, ok := payload["data_dir"]; ok {
-		t.Fatalf("unauthorized /info leaked data_dir: %+v", payload)
+	if _, ok := payload["data_dir"]; !ok {
+		t.Fatalf("authorized /info missing data_dir: %+v", payload)
 	}
-	if _, ok := payload["master_register_token"]; ok {
-		t.Fatalf("unauthorized /info leaked register token: %+v", payload)
+	if payload["master_register_token"] != "register-secret" {
+		t.Fatalf("master_register_token = %v", payload["master_register_token"])
 	}
 }
 
