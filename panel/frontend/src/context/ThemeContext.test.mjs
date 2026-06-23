@@ -42,14 +42,14 @@ describe('ThemeContext', () => {
     })
   })
 
-  it('defaults to fresh green when no user preference exists', () => {
+  it('defaults to sakura day when no user preference exists', () => {
     const matchMedia = vi.fn(() => ({ matches: true }))
     vi.stubGlobal('matchMedia', matchMedia)
 
     const wrapper = mountProvider()
 
-    expect(document.documentElement.getAttribute('data-theme')).toBe('fresh-green')
-    expect(wrapper.get('#theme-button').attributes('data-current-theme')).toBe('fresh-green')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('sakura-day')
+    expect(wrapper.get('#theme-button').attributes('data-current-theme')).toBe('sakura-day')
     expect(localStorage.getItem('theme')).toBeNull()
     expect(matchMedia).not.toHaveBeenCalled()
   })

@@ -23,7 +23,7 @@ export const ThemeProvider = defineComponent({
 
     const initialTheme = (migrated && VALID_THEME_IDS.includes(migrated))
       ? migrated
-      : 'fresh-green'
+      : 'sakura-day'
 
     const currentThemeId = ref(initialTheme)
 
