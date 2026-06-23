@@ -39,7 +39,7 @@
         <div class="agent-monitor-card__bar-bg">
           <div
             class="agent-monitor-card__bar"
-            :class="barTone(metrics.cpu_usage_percent)"
+            :class="barClass(metrics.cpu_usage_percent)"
             :style="{ width: `${clamp(metrics.cpu_usage_percent)}%` }"
           />
         </div>
@@ -55,7 +55,7 @@
         <div class="agent-monitor-card__bar-bg">
           <div
             class="agent-monitor-card__bar"
-            :class="barTone(metrics.memory_usage_percent)"
+            :class="barClass(metrics.memory_usage_percent)"
             :style="{ width: `${clamp(metrics.memory_usage_percent)}%` }"
           />
         </div>
@@ -71,7 +71,7 @@
         <div class="agent-monitor-card__bar-bg">
           <div
             class="agent-monitor-card__bar"
-            :class="barTone(metrics.disk_usage_percent)"
+            :class="barClass(metrics.disk_usage_percent)"
             :style="{ width: `${clamp(metrics.disk_usage_percent)}%` }"
           />
         </div>
@@ -100,6 +100,7 @@ import BaseBadge from './base/BaseBadge.vue'
 import BaseIconButton from './base/BaseIconButton.vue'
 import BaseListCard from './base/BaseListCard.vue'
 import { getAgentStatus, getHostname, timeAgo } from '../utils/agentHelpers.js'
+import { barTone, bytesPair, clamp, cpuUsage, percent, rate } from '../utils/agentMetrics.js'
 
 const props = defineProps({
   agent: { type: Object, required: true }
@@ -114,6 +115,13 @@ const STATUS_TONE = {
   pending: 'warning',
 }
 
+const BAR_TONE_CLASS = {
+  success: 'agent-monitor-card__bar--success',
+  warning: 'agent-monitor-card__bar--warning',
+  danger: 'agent-monitor-card__bar--danger',
+  neutral: 'agent-monitor-card__bar--neutral',
+}
+
 const displayName = computed(() => props.agent.name || props.agent.id || '未命名节点')
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(props.agent)] || 'neutral')
 const endpointLabel = computed(() => props.agent.agent_url ? getHostname(props.agent.agent_url) : (props.agent.last_seen_ip || '—'))
@@ -121,62 +129,8 @@ const metrics = computed(() => props.agent.monitor?.metrics || props.agent.metri
 const network = computed(() => metrics.value.network || null)
 const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.tags.length > 0)
 
-function percent(value) {
-  if (value === null || value === undefined || value === '') return '—'
-  return Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)}%` : '—'
-}
-
-function clamp(value) {
-  if (value === null || value === undefined || value === '') return 0
-  const n = Number(value)
-  if (!Number.isFinite(n)) return 0
-  return Math.min(100, Math.max(0, n))
-}
-
-function barTone(value) {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return 'agent-monitor-card__bar--neutral'
-  if (n > 85) return 'agent-monitor-card__bar--danger'
-  if (n >= 70) return 'agent-monitor-card__bar--warning'
-  return 'agent-monitor-card__bar--success'
-}
-
-function bytes(value) {
-  if (value === null || value === undefined || value === '') return '—'
-  const n = Number(value)
-  if (!Number.isFinite(n)) return '—'
-  if (n >= 1024 ** 4) return `${(n / 1024 ** 4).toFixed(1)} TB`
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`
-  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${Math.max(0, Math.round(n))} B`
-}
-
-function rate(value) {
-  if (value === null || value === undefined || value === '') return '—'
-  const n = Number(value)
-  if (!Number.isFinite(n)) return '—'
-  return `${bytes(n)}/s`
-}
-
-function cpuUsage(source = {}) {
-  const used = Number(source.cpu_used_cores)
-  const total = Number(source.cpu_total_cores)
-  if (Number.isFinite(used) && Number.isFinite(total) && total > 0) {
-    return `${used.toFixed(1)} / ${total.toFixed(0)} 核`
-  }
-  if (Number.isFinite(used)) return `${used.toFixed(1)} 核`
-  return percent(source.cpu_usage_percent)
-}
-
-function bytesPair(usedValue, totalValue) {
-  const used = Number(usedValue)
-  const total = Number(totalValue)
-  if (Number.isFinite(used) && Number.isFinite(total) && total > 0) {
-    return `${bytes(used)} / ${bytes(total)}`
-  }
-  if (Number.isFinite(used)) return bytes(used)
-  return '—'
+function barClass(value) {
+  return BAR_TONE_CLASS[barTone(value)] || BAR_TONE_CLASS.neutral
 }
 </script>
 

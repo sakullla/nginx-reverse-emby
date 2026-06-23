@@ -47,14 +47,14 @@ describe('AgentMonitorCard', () => {
     expect(wrapper.find('[data-testid="monitor-card-cpu-value"]').text()).toContain('1.0 / 8 核')
     expect(wrapper.find('[data-testid="monitor-card-cpu-percent"]').text()).toContain('12.4%')
 
-    expect(wrapper.find('[data-testid="monitor-card-memory-value"]').text()).toContain('10.0 GB / 16.0 GB')
+    expect(wrapper.find('[data-testid="monitor-card-memory-value"]').text()).toContain('10.0 GiB / 16.0 GiB')
     expect(wrapper.find('[data-testid="monitor-card-memory-percent"]').text()).toContain('63.8%')
 
-    expect(wrapper.find('[data-testid="monitor-card-disk-value"]').text()).toContain('398.0 GB / 512.0 GB')
+    expect(wrapper.find('[data-testid="monitor-card-disk-value"]').text()).toContain('398.0 GiB / 512.0 GiB')
     expect(wrapper.find('[data-testid="monitor-card-disk-percent"]').text()).toContain('77.0%')
 
-    expect(wrapper.find('[data-testid="monitor-card-network-down"]').text()).toContain('2.0 KB/s')
-    expect(wrapper.find('[data-testid="monitor-card-network-up"]').text()).toContain('1.0 KB/s')
+    expect(wrapper.find('[data-testid="monitor-card-network-down"]').text()).toContain('2.00 KiB/s')
+    expect(wrapper.find('[data-testid="monitor-card-network-up"]').text()).toContain('1.00 KiB/s')
   })
 
   it('emits details event when clicking detail button or card', async () => {
