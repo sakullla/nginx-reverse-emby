@@ -18,34 +18,38 @@ describe('TrafficHistoryManager', () => {
     })
   }
 
-  it('renders two action cards', () => {
+  it('renders retention policy summary and action buttons', () => {
     const wrapper = mountManager()
-    const cards = wrapper.findAll('.traffic-history-manager__card')
-    expect(cards.length).toBe(2)
-    expect(wrapper.text()).toContain('流量校准')
-    expect(wrapper.text()).toContain('数据清理')
-  })
-
-  it('displays retention policy summary in cleanup card', () => {
-    const wrapper = mountManager()
+    expect(wrapper.find('.traffic-history-manager__summary').exists()).toBe(true)
     expect(wrapper.text()).toContain('小时 30 天')
     expect(wrapper.text()).toContain('日 3 个月')
     expect(wrapper.text()).toContain('月 36 个月')
+
+    const buttons = wrapper.findAll('.traffic-history-manager__actions button')
+    expect(buttons.length).toBe(3)
+    expect(buttons[0].text()).toBe('校准为指定值')
+    expect(buttons[1].text()).toBe('从现在归零')
+    expect(buttons[2].text()).toBe('清理过期数据')
   })
 
   it('emits calibrate on calibrate button click', async () => {
     const wrapper = mountManager()
-    const calibrateBtn = wrapper.findAll('.traffic-history-manager__card')[0]
-      .find('button')
-    await calibrateBtn.trigger('click')
+    const buttons = wrapper.findAll('.traffic-history-manager__actions button')
+    await buttons[0].trigger('click')
     expect(wrapper.emitted('calibrate')).toHaveLength(1)
+  })
+
+  it('emits calibrate-zero on zero button click', async () => {
+    const wrapper = mountManager()
+    const buttons = wrapper.findAll('.traffic-history-manager__actions button')
+    await buttons[1].trigger('click')
+    expect(wrapper.emitted('calibrate-zero')).toHaveLength(1)
   })
 
   it('emits cleanup on cleanup button click', async () => {
     const wrapper = mountManager()
-    const cleanupBtn = wrapper.findAll('.traffic-history-manager__card')[1]
-      .find('button')
-    await cleanupBtn.trigger('click')
+    const buttons = wrapper.findAll('.traffic-history-manager__actions button')
+    await buttons[2].trigger('click')
     expect(wrapper.emitted('cleanup')).toHaveLength(1)
   })
 

@@ -86,10 +86,25 @@
       <div v-if="activeTab === 'traffic'" class="tab-panel">
         <div class="traffic-sections">
           <BaseListCard class="traffic-card" title="概览" :clickable="false">
-            <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" />
+            <template #header-right>
+              <span
+                class="traffic-overview__status"
+                :class="trafficSummary.blocked ? 'traffic-overview__status--danger' : 'traffic-overview__status--success'"
+              >
+                {{ trafficSummary.blocked ? '已阻断' : '正常' }}
+              </span>
+            </template>
+            <TrafficSummaryCards
+              :summary="trafficSummary"
+              :direction="trafficPolicyForm.direction"
+              :network-metrics="networkMetrics"
+            />
+          </BaseListCard>
+
+          <BaseListCard class="traffic-card" title="趋势" :clickable="false">
             <div class="traffic-tab__trend">
               <div class="traffic-tab__trend-header">
-                <span>趋势</span>
+                <span>流量趋势</span>
                 <div class="traffic-trend__controls" role="group" aria-label="趋势粒度">
                   <button
                     v-for="option in trafficTrendGranularityOptions"
@@ -110,25 +125,27 @@
                 :refresh-key="agentStatsRefreshKey"
               />
             </div>
+          </BaseListCard>
+
+          <BaseListCard class="traffic-card" title="分项流量" :clickable="false">
             <div class="traffic-tab__breakdown">
-              <span class="traffic-tab__breakdown-title">分项流量（点击查看趋势）</span>
               <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
             </div>
           </BaseListCard>
 
-          <BaseListCard class="traffic-card" title="策略设置" :clickable="false">
-            <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
-          </BaseListCard>
-
-          <BaseListCard class="traffic-card" title="历史管理" :clickable="false">
-            <TrafficHistoryManager
-              :policy="trafficPolicyForm"
-              :calibrating="calibrateTrafficMutation.isPending.value"
-              :cleaning="cleanupTrafficMutation.isPending.value"
-              @calibrate="calibrateModalVisible = true"
-              @calibrate-zero="showCalibrateZeroConfirm"
-              @cleanup="showCleanupConfirm"
-            />
+          <BaseListCard class="traffic-card" title="流量维护" :clickable="false">
+            <div class="traffic-maintenance">
+              <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
+              <div class="traffic-maintenance__divider" />
+              <TrafficHistoryManager
+                :policy="trafficPolicyForm"
+                :calibrating="calibrateTrafficMutation.isPending.value"
+                :cleaning="cleanupTrafficMutation.isPending.value"
+                @calibrate="calibrateModalVisible = true"
+                @calibrate-zero="showCalibrateZeroConfirm"
+                @cleanup="showCleanupConfirm"
+              />
+            </div>
           </BaseListCard>
         </div>
 
@@ -176,15 +193,15 @@
               class="rules-list__row"
               @click="navigateToRule(rule)"
             >
-              <span class="rules-list__col rules-list__col--type">
+              <span class="rules-list__col rules-list__col--type" data-label="类型">
                 <span class="rule-type-badge" :class="`rule-type-badge--${rule._type}`">{{ ruleTypeLabel(rule) }}</span>
               </span>
-              <span class="rules-list__col rules-list__col--status">
+              <span class="rules-list__col rules-list__col--status" data-label="状态">
                 <span class="rule-status-badge" :class="rule.enabled !== false ? 'rule-status-badge--enabled' : 'rule-status-badge--disabled'">{{ rule.enabled !== false ? '启用' : '禁用' }}</span>
               </span>
-              <span class="rules-list__col rules-list__col--entry" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
-              <span class="rules-list__col rules-list__col--backend" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
-              <span class="rules-list__col rules-list__col--tags">
+              <span class="rules-list__col rules-list__col--entry" data-label="入口地址" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
+              <span class="rules-list__col rules-list__col--backend" data-label="后端地址" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
+              <span class="rules-list__col rules-list__col--tags" data-label="标签">
                 <span v-if="rule.tags && rule.tags.length" class="rule-tags">
                   <span v-for="tag in rule.tags.slice(0, 3)" :key="tag" class="rule-tag">{{ tag }}</span>
                   <span v-if="rule.tags.length > 3" class="rule-tag rule-tag--more">+{{ rule.tags.length - 3 }}</span>
@@ -930,13 +947,60 @@ function packageStatusLabel(status) {
 
 .rules-list { display: flex; flex-direction: column; gap: 0.25rem; }
 .rules-list__header-row,
-.rules-list__row { display: grid; grid-template-columns: 3.5rem 3.5rem 1.2fr 1fr 1fr; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; font-size: 0.8125rem; }
+.rules-list__row {
+  display: grid;
+  grid-template-columns: 3.5rem 3.5rem 1.2fr 1fr 1fr;
+  grid-template-areas: 'type status entry backend tags';
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.8125rem;
+}
 .rules-list__header-row { font-weight: 600; color: var(--color-text-secondary); border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 0.5rem; }
 .rules-list__row { cursor: pointer; border-radius: var(--radius-lg); transition: background-color 150ms ease; }
 .rules-list__row:hover { background: var(--color-bg-subtle); }
 .rules-list__col { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rules-list__col--tags { display: flex; justify-content: flex-end; }
+.rules-list__col--type { grid-area: type; }
+.rules-list__col--status { grid-area: status; }
+.rules-list__col--entry { grid-area: entry; }
+.rules-list__col--backend { grid-area: backend; }
+.rules-list__col--tags { grid-area: tags; display: flex; justify-content: flex-end; }
 .rules-list__empty-cell { color: var(--color-text-muted); }
+@media (max-width: 900px) {
+  .rules-list__header-row { display: none; }
+  .rules-list__row {
+    grid-template-columns: auto auto 1fr;
+    grid-template-areas:
+      'type status tags'
+      'entry entry entry'
+      'backend backend backend';
+    gap: 0.375rem 0.5rem;
+    padding: 0.75rem;
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border-subtle);
+  }
+  .rules-list__row:hover { background: var(--color-bg-hover); }
+  .rules-list__col--entry,
+  .rules-list__col--backend {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-primary);
+    white-space: normal;
+    word-break: break-all;
+    overflow: visible;
+  }
+  .rules-list__col--entry::before,
+  .rules-list__col--backend::before {
+    content: attr(data-label) ':';
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    color: var(--color-text-tertiary);
+  }
+  .rules-list__col--tags { justify-content: flex-start; }
+  .rule-tags { justify-content: flex-start; }
+}
 .rule-type-badge { display: inline-flex; align-items: center; justify-content: center; padding: 0.15rem 0.4rem; border-radius: var(--radius-sm); font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; }
 .rule-type-badge--http { background: var(--color-primary-subtle); color: var(--color-primary); }
 .rule-type-badge--l4 { background: var(--color-success-subtle, #dcfce7); color: var(--color-success, #16a34a); }
@@ -946,10 +1010,25 @@ function packageStatusLabel(status) {
 .rule-tags { display: flex; gap: 0.375rem; flex-wrap: wrap; justify-content: flex-end; }
 .rule-tag { display: inline-flex; align-items: center; padding: 0.125rem 0.375rem; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); font-size: 0.6875rem; color: var(--color-text-secondary); }
 .rule-tag--more { background: transparent; border-style: dashed; }
-.traffic-tab__trend { margin-bottom: 1rem; }
-.traffic-tab__trend-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); }
-.traffic-tab__breakdown { margin-top: 0.5rem; }
-.traffic-tab__breakdown-title { display: block; font-size: 0.8125rem; color: var(--color-text-tertiary); margin-bottom: 0.5rem; }
+.traffic-overview__status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.traffic-overview__status--success {
+  background: var(--color-success-subtle, #dcfce7);
+  color: var(--color-success, #16a34a);
+}
+.traffic-overview__status--danger {
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+}
+.traffic-tab__trend { display: flex; flex-direction: column; gap: 0.75rem; }
+.traffic-tab__trend-header { display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); }
+.traffic-tab__breakdown { }
 .traffic-trend__controls { display: inline-flex; gap: 2px; padding: 2px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
 .traffic-trend__mode { min-width: 3.25rem; padding: 0.45rem 0.85rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.875rem; font-weight: 600; cursor: pointer; font-family: inherit; }
 .traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
@@ -976,6 +1055,12 @@ function packageStatusLabel(status) {
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .traffic-sections { display: flex; flex-direction: column; gap: 1rem; }
 .traffic-card:deep(.base-list-card__body) { gap: 1rem; }
+.traffic-maintenance { display: flex; flex-direction: column; gap: 1rem; }
+.traffic-maintenance__divider { height: 1px; background: var(--color-border-subtle); }
+.traffic-maintenance :deep(.traffic-policy-form__cards) { gap: 1rem; }
+.traffic-maintenance :deep(.traffic-policy-form__card) { background: transparent; border: none; padding: 0; border-radius: 0; }
+.traffic-maintenance :deep(.traffic-policy-form__card-title) { font-size: 0.9375rem; }
+.traffic-maintenance :deep(.traffic-history-manager) { gap: 0.75rem; }
 
 @media (max-width: 720px) {
   .agent-detail__metrics { grid-template-columns: 1fr; }
