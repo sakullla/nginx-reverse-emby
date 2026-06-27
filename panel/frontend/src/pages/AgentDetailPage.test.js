@@ -76,14 +76,14 @@ vi.mock('../hooks/useAgents', async () => {
 vi.mock('../hooks/useRules', async () => {
   const { ref } = await import('vue')
   return {
-    useRules: () => ({ data: ref([]) })
+    useRules: () => ({ data: ref(mockHttpRules) })
   }
 })
 
 vi.mock('../hooks/useL4Rules', async () => {
   const { ref } = await import('vue')
   return {
-    useL4Rules: () => ({ data: ref([]) })
+    useL4Rules: () => ({ data: ref(mockL4Rules) })
   }
 })
 
@@ -144,6 +144,8 @@ beforeEach(() => {
       total: { rx_bytes: 100, tx_bytes: 200 }
     }
   }
+  mockHttpRules = []
+  mockL4Rules = []
   vi.restoreAllMocks()
   vi.clearAllMocks()
   vi.spyOn(window, 'confirm').mockReturnValue(true)
@@ -245,26 +247,69 @@ describe('AgentDetailPage', () => {
 
     await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '规则').trigger('click')
     await nextTick()
-    expect(wrapper.text()).toContain('查看全部规则')
+    expect(wrapper.text()).toContain('入口地址')
+    expect(wrapper.text()).toContain('后端地址')
 
     await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '系统信息').trigger('click')
     await nextTick()
     expect(wrapper.text()).toContain('版本')
   })
 
-  it('applies focused UI polish styles', async () => {
-    const wrapper = await mountPage()
+  it('applies focused UI polish styles and renders unified rules list', async () => {
+    mockHttpRules = [
+      {
+        id: 1,
+        frontend_url: 'https://a.example.com',
+        backends: [{ url: 'http://10.0.0.1:8080' }],
+        enabled: true,
+        tags: ['web', 'prod']
+      },
+      {
+        id: 2,
+        frontend_url: 'https://b.example.com',
+        backends: [{ url: 'http://10.0.0.2:8080' }, { url: 'http://10.0.0.3:8080' }],
+        enabled: false,
+        tags: []
+      }
+    ]
+    mockL4Rules = [
+      {
+        id: 101,
+        protocol: 'tcp',
+        listen_host: '0.0.0.0',
+        listen_port: 25565,
+        backends: [{ host: '192.168.1.20', port: 25565 }],
+        enabled: true,
+        tags: ['game']
+      }
+    ]
 
-    const rulesActions = wrapper.findAll('.rules-card__action')
-    expect(rulesActions.length).toBe(2)
-    for (const btn of rulesActions) {
-      expect(btn.classes()).toContain('btn-sm')
-      expect(btn.classes()).toContain('btn-secondary')
-      expect(btn.classes()).not.toContain('btn-primary')
-    }
+    const wrapper = await mountPage()
 
     expect(wrapper.find('.stat-mini--ghost').exists()).toBe(true)
     expect(wrapper.find('.agent-detail__metrics--relaxed').exists()).toBe(true)
+
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '规则').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.rules-list').exists()).toBe(true)
+    const rows = wrapper.findAll('.rules-list__row')
+    expect(rows.length).toBe(3)
+
+    expect(rows[0].text()).toContain('HTTP')
+    expect(rows[0].text()).toContain('https://a.example.com')
+    expect(rows[0].text()).toContain('http://10.0.0.1:8080')
+    expect(rows[0].text()).toContain('web')
+    expect(rows[0].text()).toContain('prod')
+
+    expect(rows[1].text()).toContain('禁用')
+
+    expect(rows[2].text()).toContain('L4')
+    expect(rows[2].text()).toContain('tcp://0.0.0.0:25565')
+    expect(rows[2].text()).toContain('192.168.1.20:25565')
+
+    await rows[0].trigger('click')
+    await nextTick()
 
     await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()

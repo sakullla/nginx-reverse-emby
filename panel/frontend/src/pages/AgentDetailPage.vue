@@ -160,33 +160,42 @@
       </div>
 
       <div v-if="activeTab === 'rules'" class="tab-panel">
-        <div class="rules-sections">
-          <BaseListCard class="rules-card" title="HTTP 规则" :clickable="false">
-            <template #header-right>
-              <button class="btn btn-sm btn-secondary rules-card__action" @click="router.push({ path: '/rules', query: { agentId } })">查看全部规则</button>
-            </template>
-            <div class="rules-preview">
-              <div v-for="rule in httpRules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
-                <span class="rule-preview-item__url">{{ rule.frontend_url }}</span>
-                <span class="rule-preview-item__backend">→ {{ formatHttpBackend(rule) }}</span>
-              </div>
-              <p v-if="!httpRules.length" class="empty-hint">暂无 HTTP 规则</p>
+        <BaseListCard class="rules-list-card" :clickable="false">
+          <div class="rules-list">
+            <div class="rules-list__header-row">
+              <span class="rules-list__col rules-list__col--type">类型</span>
+              <span class="rules-list__col rules-list__col--status">状态</span>
+              <span class="rules-list__col rules-list__col--entry">入口地址</span>
+              <span class="rules-list__col rules-list__col--backend">后端地址</span>
+              <span class="rules-list__col rules-list__col--tags">标签</span>
             </div>
-          </BaseListCard>
 
-          <BaseListCard class="rules-card" title="L4 规则" :clickable="false">
-            <template #header-right>
-              <button class="btn btn-sm btn-secondary rules-card__action" @click="router.push({ path: '/l4', query: { agentId } })">查看全部规则</button>
-            </template>
-            <div class="rules-preview">
-              <div v-for="rule in l4Rules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
-                <span class="rule-preview-item__url">{{ rule.listen_host }}:{{ rule.listen_port }}</span>
-                <span class="rule-preview-item__backend">→ {{ formatL4Backend(rule) }}</span>
-              </div>
-              <p v-if="!l4Rules.length" class="empty-hint">暂无 L4 规则</p>
+            <div
+              v-for="rule in allRules"
+              :key="`${rule._type}-${rule.id}`"
+              class="rules-list__row"
+              @click="navigateToRule(rule)"
+            >
+              <span class="rules-list__col rules-list__col--type">
+                <span class="rule-type-badge" :class="`rule-type-badge--${rule._type}`">{{ ruleTypeLabel(rule) }}</span>
+              </span>
+              <span class="rules-list__col rules-list__col--status">
+                <span class="rule-status-badge" :class="rule.enabled !== false ? 'rule-status-badge--enabled' : 'rule-status-badge--disabled'">{{ rule.enabled !== false ? '启用' : '禁用' }}</span>
+              </span>
+              <span class="rules-list__col rules-list__col--entry" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
+              <span class="rules-list__col rules-list__col--backend" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
+              <span class="rules-list__col rules-list__col--tags">
+                <span v-if="rule.tags && rule.tags.length" class="rule-tags">
+                  <span v-for="tag in rule.tags.slice(0, 3)" :key="tag" class="rule-tag">{{ tag }}</span>
+                  <span v-if="rule.tags.length > 3" class="rule-tag rule-tag--more">+{{ rule.tags.length - 3 }}</span>
+                </span>
+                <span v-else class="rules-list__empty-cell">—</span>
+              </span>
             </div>
-          </BaseListCard>
-        </div>
+
+            <p v-if="!allRules.length" class="empty-hint">该节点暂无规则</p>
+          </div>
+        </BaseListCard>
       </div>
 
       <div v-if="activeTab === 'info'" class="tab-panel">
@@ -284,6 +293,11 @@ const httpRulesCount = computed(() => httpRules.value.length)
 const { data: l4RulesData } = useL4Rules(agentId)
 const l4Rules = computed(() => l4RulesData.value ?? [])
 const l4RulesCount = computed(() => l4Rules.value.length)
+
+const allRules = computed(() => [
+  ...httpRules.value.map((rule) => ({ ...rule, _type: 'http' })),
+  ...l4Rules.value.map((rule) => ({ ...rule, _type: 'l4' }))
+])
 
 const { data: agentStatsData, dataUpdatedAt: agentStatsUpdatedAt } = useQuery({
   queryKey: ['agent-stats', agentId],
@@ -739,6 +753,34 @@ function formatL4Backend(rule) {
   return count > 1 ? `${first} +${count - 1}` : first
 }
 
+function ruleTypeLabel(rule) {
+  return rule._type === 'http' ? 'HTTP' : 'L4'
+}
+
+function ruleEntry(rule) {
+  if (rule._type === 'http') return rule.frontend_url || '—'
+  const protocol = rule.protocol || 'tcp'
+  const host = rule.listen_host || '0.0.0.0'
+  const port = rule.listen_port ?? '—'
+  return `${protocol}://${host}:${port}`
+}
+
+function ruleBackend(rule) {
+  if (rule._type === 'http') return formatHttpBackend(rule)
+  return formatL4Backend(rule)
+}
+
+function navigateToRule(rule) {
+  const path = rule._type === 'http' ? '/rules' : '/l4'
+  router.push({
+    path,
+    query: {
+      agentId: agentId.value,
+      search: `#id=${rule.id}`
+    }
+  })
+}
+
 function shortSha(value) {
   const sha = String(value || '').trim()
   if (!sha) return '—'
@@ -886,12 +928,24 @@ function packageStatusLabel(status) {
 
 .agent-detail__tabs { margin-bottom: 1rem; }
 
-.rules-sections { display: flex; flex-direction: column; gap: 1rem; }
-.rules-card:deep(.base-list-card__header) { align-items: flex-start; }
-.rules-preview { display: flex; flex-direction: column; gap: 0.5rem; }
-.rule-preview-item { display: flex; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); font-size: 0.8125rem; }
-.rule-preview-item__url { flex: 1; color: var(--color-text-primary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rule-preview-item__backend { color: var(--color-text-tertiary); font-family: var(--font-mono); }
+.rules-list { display: flex; flex-direction: column; gap: 0.25rem; }
+.rules-list__header-row,
+.rules-list__row { display: grid; grid-template-columns: 3.5rem 3.5rem 1.2fr 1fr 1fr; align-items: center; gap: 0.75rem; padding: 0.625rem 0.75rem; font-size: 0.8125rem; }
+.rules-list__header-row { font-weight: 600; color: var(--color-text-secondary); border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 0.5rem; }
+.rules-list__row { cursor: pointer; border-radius: var(--radius-lg); transition: background-color 150ms ease; }
+.rules-list__row:hover { background: var(--color-bg-subtle); }
+.rules-list__col { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rules-list__col--tags { display: flex; justify-content: flex-end; }
+.rules-list__empty-cell { color: var(--color-text-muted); }
+.rule-type-badge { display: inline-flex; align-items: center; justify-content: center; padding: 0.15rem 0.4rem; border-radius: var(--radius-sm); font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; }
+.rule-type-badge--http { background: var(--color-primary-subtle); color: var(--color-primary); }
+.rule-type-badge--l4 { background: var(--color-success-subtle, #dcfce7); color: var(--color-success, #16a34a); }
+.rule-status-badge { font-size: 0.75rem; font-weight: 500; }
+.rule-status-badge--enabled { color: var(--color-success); }
+.rule-status-badge--disabled { color: var(--color-text-muted); }
+.rule-tags { display: flex; gap: 0.375rem; flex-wrap: wrap; justify-content: flex-end; }
+.rule-tag { display: inline-flex; align-items: center; padding: 0.125rem 0.375rem; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); font-size: 0.6875rem; color: var(--color-text-secondary); }
+.rule-tag--more { background: transparent; border-style: dashed; }
 .traffic-tab__trend { margin-bottom: 1rem; }
 .traffic-tab__trend-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); }
 .traffic-tab__breakdown { margin-top: 0.5rem; }
@@ -915,8 +969,6 @@ function packageStatusLabel(status) {
 .spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn { padding: 10px 24px; border-radius: var(--radius-full); font-size: var(--text-sm); font-weight: var(--font-semibold); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); border: 1.5px solid transparent; font-family: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; }
-.btn-sm { padding: 0.375rem 0.75rem; font-size: 0.75rem; line-height: 1.25; }
-.rules-card__action { border-radius: var(--radius-lg); }
 .btn-primary { background: var(--color-primary); color: white; }
 .btn-primary:hover { background: var(--color-primary-hover); }
 .btn-secondary { background: transparent; color: var(--color-text-secondary); border: 1.5px solid var(--color-border-default); }
