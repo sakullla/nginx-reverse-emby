@@ -25,32 +25,47 @@ func (f fakeSystemService) Info(context.Context) service.SystemInfo {
 }
 
 type fakeAgentService struct {
-	agents         []service.AgentSummary
-	agentsByID     map[string]service.AgentSummary
-	agentsByToken  map[string]service.AgentSummary
-	heartbeatReply service.HeartbeatReply
-	heartbeatErr   error
-	updateAgent    service.AgentSummary
-	deleteAgent    service.AgentSummary
-	applyResult    service.ApplyAgentResult
-	statsByID      map[string]service.AgentStats
-	getErr         error
-	updateErr      error
-	deleteErr      error
-	statsErr       error
-	applyErr       error
-	state          *fakeAgentServiceState
+	agents           []service.AgentSummary
+	agentsByID       map[string]service.AgentSummary
+	agentsByToken    map[string]service.AgentSummary
+	heartbeatReply   service.HeartbeatReply
+	heartbeatErr     error
+	updateAgent      service.AgentSummary
+	deleteAgent      service.AgentSummary
+	applyResult      service.ApplyAgentResult
+	statsByID        map[string]service.AgentStats
+	getErr           error
+	updateErr        error
+	deleteErr        error
+	statsErr         error
+	applyErr         error
+	monitorSnapshot  service.AgentMonitorSnapshot
+	monitorSnapshots []service.AgentMonitorSnapshot
+	monitorErr       error
+	monitorUpdates   chan service.AgentMonitorUpdate
+	state            *fakeAgentServiceState
 }
 
 type fakeAgentServiceState struct {
-	updateAgentID  string
-	updateInput    service.UpdateAgentRequest
-	deleteAgentID  string
-	statsAgentID   string
-	applyAgentID   string
-	heartbeat      service.HeartbeatRequest
-	heartbeatToken string
-	resolveTokens  []string
+	updateAgentID        string
+	updateInput          service.UpdateAgentRequest
+	deleteAgentID        string
+	statsAgentID         string
+	applyAgentID         string
+	heartbeat            service.HeartbeatRequest
+	heartbeatToken       string
+	resolveTokens        []string
+	monitorSnapshotCalls int
+	monitorSubscribed    bool
+	monitorUnsubscribed  bool
+}
+
+func float64Ptr(value float64) *float64 {
+	return &value
+}
+
+func uint64Ptr(value uint64) *uint64 {
+	return &value
 }
 
 func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) {
@@ -137,6 +152,41 @@ func (f fakeAgentService) GetByToken(_ context.Context, agentToken string) (serv
 		return agent, nil
 	}
 	return service.AgentSummary{}, service.ErrAgentUnauthorized
+}
+
+func (f fakeAgentService) MonitorSnapshot(context.Context) (service.AgentMonitorSnapshot, error) {
+	if f.state != nil {
+		f.state.monitorSnapshotCalls++
+	}
+	if f.monitorErr != nil {
+		return service.AgentMonitorSnapshot{}, f.monitorErr
+	}
+	if len(f.monitorSnapshots) > 0 {
+		idx := 0
+		if f.state != nil && f.state.monitorSnapshotCalls > 0 {
+			idx = f.state.monitorSnapshotCalls - 1
+		}
+		if idx >= len(f.monitorSnapshots) {
+			idx = len(f.monitorSnapshots) - 1
+		}
+		return f.monitorSnapshots[idx], nil
+	}
+	return f.monitorSnapshot, nil
+}
+
+func (f fakeAgentService) SubscribeMonitorUpdates(context.Context) (<-chan service.AgentMonitorUpdate, func()) {
+	if f.state != nil {
+		f.state.monitorSubscribed = true
+	}
+	ch := f.monitorUpdates
+	if ch == nil {
+		ch = make(chan service.AgentMonitorUpdate)
+	}
+	return ch, func() {
+		if f.state != nil {
+			f.state.monitorUnsubscribed = true
+		}
+	}
 }
 
 type fakeL4RuleService struct {
@@ -1400,6 +1450,483 @@ func TestHandleAgentTaskStreamAppliesUpdateWithLargeResult(t *testing.T) {
 	}
 	if got, _ := state.updates[0].Result["blob"].(string); got != blob {
 		t.Fatalf("Result[blob] length = %d, want %d", len(got), len(blob))
+	}
+}
+
+func TestAgentMonitorStreamRequiresPanelToken(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config:               config.Config{PanelToken: "secret"},
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/agents/monitor-stream", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("GET monitor-stream without token = %d", resp.Code)
+	}
+}
+
+func TestAgentMonitorStreamSupportsHEADProbe(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config:               config.Config{PanelToken: "secret"},
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{state: state},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodHead, "/panel-api/agents/monitor-stream", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("HEAD monitor-stream = %d", resp.Code)
+	}
+	if got := resp.Header().Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q, want application/x-ndjson", got)
+	}
+	if state.monitorSnapshotCalls != 0 || state.monitorSubscribed {
+		t.Fatalf("HEAD should not open monitor stream: %+v", state)
+	}
+}
+
+func TestAgentMonitorStreamWritesSnapshotAndUpdates(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	updates := make(chan service.AgentMonitorUpdate, 1)
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			monitorSnapshot: service.AgentMonitorSnapshot{
+				GeneratedAt: "2026-06-21T12:00:00Z",
+				Agents: []service.AgentMonitorAgent{{
+					ID:     "edge-a",
+					Name:   "Edge A",
+					Status: "online",
+				}},
+			},
+			monitorUpdates: updates,
+			state:          state,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/panel-api/agents/monitor-stream", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(resp, req)
+		close(done)
+	}()
+
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		if strings.Contains(resp.Body.String(), `"type":"snapshot"`) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	updates <- service.AgentMonitorUpdate{
+		GeneratedAt: "2026-06-21T12:00:10Z",
+		Agent: service.AgentMonitorAgent{
+			ID:     "edge-a",
+			Name:   "Edge A",
+			Status: "online",
+		},
+	}
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		if strings.Count(strings.TrimSpace(resp.Body.String()), "\n")+1 >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET monitor-stream = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := resp.Header().Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q, want application/x-ndjson", got)
+	}
+	if !state.monitorSubscribed || !state.monitorUnsubscribed || state.monitorSnapshotCalls != 1 {
+		t.Fatalf("monitor state = %+v", state)
+	}
+	lines := strings.Split(strings.TrimSpace(resp.Body.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("NDJSON lines = %d body=%q", len(lines), resp.Body.String())
+	}
+	var snapshot struct {
+		Type    string                       `json:"type"`
+		Payload service.AgentMonitorSnapshot `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &snapshot); err != nil {
+		t.Fatalf("snapshot json.Unmarshal() error = %v line=%q", err, lines[0])
+	}
+	if snapshot.Type != "snapshot" || len(snapshot.Payload.Agents) != 1 || snapshot.Payload.Agents[0].ID != "edge-a" {
+		t.Fatalf("snapshot message = %+v", snapshot)
+	}
+	var update struct {
+		Type    string                     `json:"type"`
+		Payload service.AgentMonitorUpdate `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &update); err != nil {
+		t.Fatalf("update json.Unmarshal() error = %v line=%q", err, lines[1])
+	}
+	if update.Type != "update" || update.Payload.Agent.ID != "edge-a" {
+		t.Fatalf("update message = %+v", update)
+	}
+}
+
+func TestAgentMonitorStreamRefreshesSnapshotOnInterval(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			monitorSnapshots: []service.AgentMonitorSnapshot{
+				{
+					GeneratedAt: "2026-06-21T12:00:00Z",
+					Agents: []service.AgentMonitorAgent{{
+						ID:         "local",
+						Name:       "local",
+						Status:     "online",
+						LastSeenAt: "2026-06-21T12:00:00Z",
+						Metrics: service.AgentMonitorMetrics{
+							Network: &service.AgentMonitorNetwork{
+								RXBytes: uint64Ptr(100),
+								TXBytes: uint64Ptr(200),
+							},
+						},
+					}},
+				},
+				{
+					GeneratedAt: "2026-06-21T12:00:05Z",
+					Agents: []service.AgentMonitorAgent{{
+						ID:         "local",
+						Name:       "local",
+						Status:     "online",
+						LastSeenAt: "2026-06-21T12:00:05Z",
+						Metrics: service.AgentMonitorMetrics{
+							CPUUsagePercent: float64Ptr(42.5),
+							Network: &service.AgentMonitorNetwork{
+								RXBytes: uint64Ptr(600),
+								TXBytes: uint64Ptr(700),
+							},
+						},
+					}},
+				},
+			},
+			state: state,
+		},
+		RuleService:                  fakeRuleService{},
+		L4RuleService:                fakeL4RuleService{},
+		VersionPolicyService:         fakeVersionPolicyService{},
+		RelayListenerService:         fakeRelayListenerService{},
+		CertificateService:           fakeCertificateService{},
+		MonitorStreamRefreshInterval: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/panel-api/agents/monitor-stream", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(resp, req)
+		close(done)
+	}()
+
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		if strings.Count(strings.TrimSpace(resp.Body.String()), "\n")+1 >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET monitor-stream = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if state.monitorSnapshotCalls < 2 {
+		t.Fatalf("monitor snapshot calls = %d, want at least 2", state.monitorSnapshotCalls)
+	}
+	lines := strings.Split(strings.TrimSpace(resp.Body.String()), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("NDJSON lines = %d body=%q", len(lines), resp.Body.String())
+	}
+	var refreshed struct {
+		Type    string                       `json:"type"`
+		Payload service.AgentMonitorSnapshot `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &refreshed); err != nil {
+		t.Fatalf("refreshed snapshot json.Unmarshal() error = %v line=%q", err, lines[1])
+	}
+	if refreshed.Type != "snapshot" || refreshed.Payload.GeneratedAt != "2026-06-21T12:00:05Z" {
+		t.Fatalf("refreshed snapshot = %+v", refreshed)
+	}
+	if got := refreshed.Payload.Agents[0].Metrics.CPUUsagePercent; got == nil || *got != 42.5 {
+		t.Fatalf("refreshed CPUUsagePercent = %v", got)
+	}
+	network := refreshed.Payload.Agents[0].Metrics.Network
+	if network == nil || network.RXBytesPerSecond == nil || *network.RXBytesPerSecond != 100 {
+		t.Fatalf("refreshed rx rate = %+v, want 100 B/s", network)
+	}
+	if network.TXBytesPerSecond == nil || *network.TXBytesPerSecond != 100 || !network.RateAvailable {
+		t.Fatalf("refreshed tx rate = %+v, want 100 B/s available", network)
+	}
+}
+
+func TestSnapshotWithMonitorRatesPreservesPersistedRatesWhenSampleTimeDoesNotAdvance(t *testing.T) {
+	previous := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:00Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T11:59:50Z",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes:           uint64Ptr(1000),
+					TXBytes:           uint64Ptr(2000),
+					RXBytesPerSecond:  float64Ptr(33),
+					TXBytesPerSecond:  float64Ptr(44),
+					RateWindowSeconds: float64Ptr(30),
+					RateCalculatedAt:  "2026-06-21T11:59:50Z",
+					RateAvailable:     true,
+				},
+			},
+		}},
+	}
+	current := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:05Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T11:59:50Z",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes:           uint64Ptr(1000),
+					TXBytes:           uint64Ptr(2000),
+					RXBytesPerSecond:  float64Ptr(33),
+					TXBytesPerSecond:  float64Ptr(44),
+					RateWindowSeconds: float64Ptr(30),
+					RateCalculatedAt:  "2026-06-21T11:59:50Z",
+					RateAvailable:     true,
+				},
+			},
+		}},
+	}
+
+	refreshed := snapshotWithMonitorRates(current, previous)
+	network := refreshed.Agents[0].Metrics.Network
+	if network == nil {
+		t.Fatal("network = nil")
+	}
+	if network.RXBytesPerSecond == nil || *network.RXBytesPerSecond != 33 {
+		t.Fatalf("rx rate = %+v, want persisted 33 B/s", network)
+	}
+	if network.TXBytesPerSecond == nil || *network.TXBytesPerSecond != 44 {
+		t.Fatalf("tx rate = %+v, want persisted 44 B/s", network)
+	}
+	if network.RateCalculatedAt != "2026-06-21T11:59:50Z" || network.RateWindowSeconds == nil || *network.RateWindowSeconds != 30 || !network.RateAvailable {
+		t.Fatalf("rate metadata = %+v, want persisted 30s available sample", network)
+	}
+}
+
+func TestSnapshotWithMonitorRatesUsesAgentSampleWindow(t *testing.T) {
+	previous := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:00Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T11:59:30Z",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes: uint64Ptr(1000),
+					TXBytes: uint64Ptr(2000),
+				},
+			},
+		}},
+	}
+	current := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:05Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T12:00:00Z",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes: uint64Ptr(1060),
+					TXBytes: uint64Ptr(2120),
+				},
+			},
+		}},
+	}
+
+	refreshed := snapshotWithMonitorRates(current, previous)
+	network := refreshed.Agents[0].Metrics.Network
+	if network == nil {
+		t.Fatal("network = nil")
+	}
+	if network.RXBytesPerSecond == nil || *network.RXBytesPerSecond != 2 {
+		t.Fatalf("rx rate = %+v, want 2 B/s from 30s sample window", network)
+	}
+	if network.TXBytesPerSecond == nil || *network.TXBytesPerSecond != 4 {
+		t.Fatalf("tx rate = %+v, want 4 B/s from 30s sample window", network)
+	}
+	if network.RateCalculatedAt != "2026-06-21T12:00:00Z" || network.RateWindowSeconds == nil || *network.RateWindowSeconds != 30 || !network.RateAvailable {
+		t.Fatalf("rate metadata = %+v, want agent sample timestamp/window", network)
+	}
+}
+
+func TestSnapshotWithMonitorRatesClearsRatesOnCounterReset(t *testing.T) {
+	previous := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:00Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T11:59:30Z",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes: uint64Ptr(1000),
+					TXBytes: uint64Ptr(2000),
+				},
+			},
+		}},
+	}
+	current := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:05Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T12:00:00Z",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes:           uint64Ptr(900),
+					TXBytes:           uint64Ptr(2100),
+					RXBytesPerSecond:  float64Ptr(33),
+					TXBytesPerSecond:  float64Ptr(44),
+					RateWindowSeconds: float64Ptr(30),
+					RateCalculatedAt:  "2026-06-21T11:59:50Z",
+					RateAvailable:     true,
+				},
+			},
+		}},
+	}
+
+	refreshed := snapshotWithMonitorRates(current, previous)
+	network := refreshed.Agents[0].Metrics.Network
+	if network == nil {
+		t.Fatal("network = nil")
+	}
+	if network.RXBytesPerSecond != nil || network.TXBytesPerSecond != nil || network.RateWindowSeconds != nil || network.RateCalculatedAt != "" {
+		t.Fatalf("network rates = %+v, want cleared on counter reset", network)
+	}
+	if network.RateAvailable || network.RateUnavailableWhy != "counter_reset" {
+		t.Fatalf("rate availability = %+v, want counter_reset unavailable", network)
+	}
+}
+
+func TestAgentMonitorStreamEndsAtMaxAgeForClientReconnect(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			monitorSnapshot: service.AgentMonitorSnapshot{
+				GeneratedAt: "2026-06-21T12:00:00Z",
+				Agents: []service.AgentMonitorAgent{{
+					ID:     "local",
+					Name:   "local",
+					Status: "online",
+				}},
+			},
+			state: state,
+		},
+		RuleService:                  fakeRuleService{},
+		L4RuleService:                fakeL4RuleService{},
+		VersionPolicyService:         fakeVersionPolicyService{},
+		RelayListenerService:         fakeRelayListenerService{},
+		CertificateService:           fakeCertificateService{},
+		MonitorStreamRefreshInterval: time.Second,
+		MonitorStreamMaxAge:          10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/agents/monitor-stream", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(resp, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for monitor stream max age")
+	}
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET monitor-stream = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !state.monitorSubscribed || !state.monitorUnsubscribed {
+		t.Fatalf("monitor state = %+v", state)
 	}
 }
 

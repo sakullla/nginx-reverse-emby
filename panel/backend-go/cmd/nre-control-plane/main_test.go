@@ -678,6 +678,59 @@ func TestNewControlPlaneAppProvidesBackupServiceWhenLocalAgentEnabled(t *testing
 	}
 }
 
+func TestNewControlPlaneAppWiresLocalMonitorRefreshToRuntimeSync(t *testing.T) {
+	cfg := config.Default()
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.EnableLocalAgent = true
+	cfg.LocalAgentID = "local"
+	cfg.LocalAgentName = "Local Agent"
+	cfg.DataDir = t.TempDir()
+
+	previousNewHandler := newHandler
+	previousNewHandlerWithDependencies := newHandlerWithDependencies
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		newHandler = previousNewHandler
+		newHandlerWithDependencies = previousNewHandlerWithDependencies
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	syncCalls := 0
+	newHandler = func(config.Config) (http.Handler, error) {
+		return http.NewServeMux(), nil
+	}
+	newLocalAgentRuntime = func(_ config.Config, store localagent.Store) (localAgentRuntime, error) {
+		if sqliteStore, ok := store.(*storage.SQLiteStore); ok {
+			t.Cleanup(func() {
+				_ = sqliteStore.Close()
+			})
+		}
+		return localAgentRuntimeStub{syncNow: func(context.Context) error {
+			syncCalls++
+			return nil
+		}}, nil
+	}
+	newHandlerWithDependencies = func(_ config.Config, deps httpapi.Dependencies) (http.Handler, error) {
+		if _, err := deps.AgentService.MonitorSnapshot(t.Context()); err != nil {
+			return nil, err
+		}
+		if syncCalls != 1 {
+			return nil, errors.New("AgentService monitor snapshot did not trigger runtime sync")
+		}
+		return http.NewServeMux(), nil
+	}
+
+	application, err := newControlPlaneApp(cfg, nil)
+	if err != nil {
+		t.Fatalf("newControlPlaneApp() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
 func TestNewControlPlaneAppProvidesWireGuardProfileServiceWhenLocalAgentEnabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"

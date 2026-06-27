@@ -4,28 +4,90 @@
       <RouterLink to="/agents" class="back-link">← 返回节点管理</RouterLink>
     </div>
 
-    <div class="agent-detail__header">
-      <div>
-        <h1 class="agent-detail__name">{{ agent.name }}</h1>
-        <p class="agent-detail__url">{{ agent.agent_url || agent.last_seen_ip || '—' }}</p>
+    <div class="agent-detail__status-card" :data-status="statusTone">
+      <div class="agent-detail__status-main">
+        <div class="agent-detail__status-header">
+          <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
+          <h1 class="agent-detail__name">{{ agent.name }}</h1>
+          <span class="agent-detail__mode">{{ getModeLabel(agent.mode) }}</span>
+        </div>
+        <p class="agent-detail__meta-row">
+          <span class="agent-detail__meta-label">地址</span>
+          <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
+        </p>
+        <p class="agent-detail__meta-row">
+          <span class="agent-detail__meta-label">最后活跃</span>
+          <span class="agent-detail__meta-value agent-detail__last-seen">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
+        </p>
       </div>
-      <div class="agent-detail__status" :class="`agent-detail__status--${getStatus(agent)}`">
-        {{ getStatusLabel(agent) }}
+      <div class="agent-detail__quick-stats">
+        <div class="stat-mini">
+          <span class="stat-mini__value">{{ httpRulesCount }}</span>
+          <span class="stat-mini__label">HTTP 规则</span>
+        </div>
+        <div class="stat-mini">
+          <span class="stat-mini__value">{{ l4RulesCount }}</span>
+          <span class="stat-mini__label">L4 规则</span>
+        </div>
       </div>
     </div>
 
-    <div class="agent-detail__stats">
-      <div class="stat-mini">
-        <span class="stat-mini__value">{{ httpRulesCount }}</span>
-        <span class="stat-mini__label">HTTP 规则</span>
+    <div class="agent-detail__metrics">
+      <div class="agent-detail__metric-cell" data-testid="detail-metric-cpu">
+        <div class="agent-detail__metric-header">
+          <i class="i-mdi-cpu agent-detail__metric-icon" />
+          <span class="agent-detail__metric-label">CPU</span>
+        </div>
+        <div class="agent-detail__metric-value" data-testid="detail-metric-cpu-value">{{ cpuUsage(agentMetricsData) }}</div>
+        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-cpu-percent">{{ percent(agentMetricsData.cpu_usage_percent) }}</div>
+        <div class="agent-detail__metric-bar-bg">
+          <div
+            class="agent-detail__metric-bar"
+            :class="barClass(agentMetricsData.cpu_usage_percent)"
+            :style="{ width: `${clamp(agentMetricsData.cpu_usage_percent)}%` }"
+          />
+        </div>
       </div>
-      <div class="stat-mini">
-        <span class="stat-mini__value">{{ l4RulesCount }}</span>
-        <span class="stat-mini__label">L4 规则</span>
+
+      <div class="agent-detail__metric-cell" data-testid="detail-metric-memory">
+        <div class="agent-detail__metric-header">
+          <i class="i-mdi-memory agent-detail__metric-icon" />
+          <span class="agent-detail__metric-label">内存</span>
+        </div>
+        <div class="agent-detail__metric-value" data-testid="detail-metric-memory-value">{{ bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes) }}</div>
+        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-memory-percent">{{ percent(agentMetricsData.memory_usage_percent) }}</div>
+        <div class="agent-detail__metric-bar-bg">
+          <div
+            class="agent-detail__metric-bar"
+            :class="barClass(agentMetricsData.memory_usage_percent)"
+            :style="{ width: `${clamp(agentMetricsData.memory_usage_percent)}%` }"
+          />
+        </div>
       </div>
-      <div class="stat-mini">
-        <span class="stat-mini__value">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
-        <span class="stat-mini__label">最后活跃</span>
+
+      <div class="agent-detail__metric-cell" data-testid="detail-metric-disk">
+        <div class="agent-detail__metric-header">
+          <i class="i-mdi-harddisk agent-detail__metric-icon" />
+          <span class="agent-detail__metric-label">磁盘</span>
+        </div>
+        <div class="agent-detail__metric-value" data-testid="detail-metric-disk-value">{{ bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes) }}</div>
+        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-disk-percent">{{ percent(agentMetricsData.disk_usage_percent) }}</div>
+        <div class="agent-detail__metric-bar-bg">
+          <div
+            class="agent-detail__metric-bar"
+            :class="barClass(agentMetricsData.disk_usage_percent)"
+            :style="{ width: `${clamp(agentMetricsData.disk_usage_percent)}%` }"
+          />
+        </div>
+      </div>
+
+      <div class="agent-detail__metric-cell" data-testid="detail-metric-network">
+        <div class="agent-detail__metric-header">
+          <i class="i-mdi-network agent-detail__metric-icon" />
+          <span class="agent-detail__metric-label">网络</span>
+        </div>
+        <div class="agent-detail__metric-value" data-testid="detail-metric-network-down">↓ {{ rate(networkMetrics?.rx_bytes_per_second) }}</div>
+        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-network-up">↑ {{ rate(networkMetrics?.tx_bytes_per_second) }}</div>
       </div>
     </div>
 
@@ -186,6 +248,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
+import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
 import { useAgents, useUpdateAgent } from '../hooks/useAgents'
@@ -193,6 +256,8 @@ import { fetchAgentStats, fetchSystemInfo } from '../api'
 import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSummary, useTrafficTrend, useUpdateTrafficPolicy } from '../hooks/useTraffic'
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
+import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
+import { barTone, bytesPair, clamp, cpuUsage, percent, rate } from '../utils/agentMetrics.js'
 import {
   accountedBytes,
   formatBytes,
@@ -291,6 +356,61 @@ const trafficBreakdownTabs = computed(() => [
     ])
   }
 ].filter(t => t.rows.length > 0))
+
+const agentMetricsData = computed(() => metricsFromAgentStats(agentStats.value) || agent.value?.monitor?.metrics || agent.value?.metrics || {})
+const networkMetrics = computed(() => agentMetricsData.value.network || null)
+
+const STATUS_TONE = {
+  online: 'success',
+  offline: 'neutral',
+  failed: 'danger',
+  pending: 'warning',
+}
+
+const BAR_TONE_CLASS = {
+  success: 'agent-detail__metric-bar--success',
+  warning: 'agent-detail__metric-bar--warning',
+  danger: 'agent-detail__metric-bar--danger',
+  neutral: 'agent-detail__metric-bar--neutral',
+}
+
+const statusTone = computed(() => STATUS_TONE[getAgentStatus(agent.value)] || 'neutral')
+
+function barClass(value) {
+  return BAR_TONE_CLASS[barTone(value)] || BAR_TONE_CLASS.neutral
+}
+
+function metricsFromAgentStats(stats = {}) {
+  if (stats?.metrics) return stats.metrics
+  const host = stats?.host
+  if (!host || typeof host !== 'object') return null
+
+  const metrics = {}
+  let hasMetric = false
+  const setMetric = (key, value) => {
+    if (value === undefined || value === null) return
+    metrics[key] = value
+    hasMetric = true
+  }
+
+  setMetric('cpu_usage_percent', host.cpu?.usage_percent)
+  setMetric('cpu_used_cores', host.cpu?.used_cores)
+  setMetric('cpu_total_cores', host.cpu?.total_cores)
+  setMetric('memory_usage_percent', host.memory?.usage_percent)
+  setMetric('memory_used_bytes', host.memory?.used_bytes)
+  setMetric('memory_total_bytes', host.memory?.total_bytes)
+  setMetric('disk_usage_percent', host.disk?.usage_percent)
+  setMetric('disk_used_bytes', host.disk?.used_bytes)
+  setMetric('disk_total_bytes', host.disk?.total_bytes)
+
+  const networkTotal = host.network?.total
+  if (networkTotal && typeof networkTotal === 'object' && Object.keys(networkTotal).length > 0) {
+    metrics.network = { ...networkTotal }
+    hasMetric = true
+  }
+
+  return hasMetric ? metrics : null
+}
 
 const activeTab = ref('http')
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
@@ -638,22 +758,6 @@ function formatL4Backend(rule) {
   return count > 1 ? `${first} +${count - 1}` : first
 }
 
-function getStatus(agent) {
-  if (agent.status === 'offline') return 'offline'
-  if (agent.last_apply_status === 'failed') return 'failed'
-  if (agent.desired_revision > agent.current_revision) return 'pending'
-  return 'online'
-}
-
-function getStatusLabel(agent) {
-  const map = { online: '在线', offline: '离线', failed: '失败', pending: '同步中' }
-  return map[getStatus(agent)] || '—'
-}
-
-function getModeLabel(mode) {
-  return { local: '本机', master: '主控' }[mode] || '拉取'
-}
-
 function shortSha(value) {
   const sha = String(value || '').trim()
   if (!sha) return '—'
@@ -665,40 +769,223 @@ function packageStatusLabel(status) {
   if (status === 'pending') return '待更新'
   return '—'
 }
-
-function timeAgo(date) {
-  const seconds = Math.floor((Date.now() - new Date(date)) / 1000)
-  if (seconds < 60) return '刚刚'
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟前`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.floor(hours / 24)} 天前`
-}
 </script>
 
 <style scoped>
-.agent-detail { max-width: 900px; margin: 0 auto; }
-.agent-detail__back { margin-bottom: 1.5rem; }
+.agent-detail {
+  --amc-green: var(--color-primary, #059669);
+  --amc-green-subtle: color-mix(in srgb, var(--amc-green) 8%, transparent);
+  --amc-green-border: color-mix(in srgb, var(--amc-green) 15%, transparent);
+  --amc-status-success: var(--color-success, #059669);
+  --amc-status-warning: var(--color-warning, #d97706);
+  --amc-status-danger: var(--color-danger, #dc2626);
+  --amc-status-neutral: var(--color-text-muted, #9ca3af);
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.agent-detail__back { margin-bottom: 1rem; }
 .back-link { color: var(--color-text-secondary); font-size: 0.875rem; text-decoration: none; }
-.back-link:hover { color: var(--color-primary); }
-.agent-detail__header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 1.5rem; }
-.agent-detail__name { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
-.agent-detail__url { font-size: 0.875rem; color: var(--color-text-tertiary); font-family: var(--font-mono); margin: 0; }
-.agent-detail__status { font-size: 0.8rem; font-weight: 600; padding: 0.25rem 0.75rem; border-radius: var(--radius-full); }
-.agent-detail__status--online { background: var(--color-success-50); color: var(--color-success); }
-.agent-detail__status--offline { background: var(--color-bg-subtle); color: var(--color-text-muted); }
-.agent-detail__status--failed { background: var(--color-danger-50); color: var(--color-danger); }
-.agent-detail__status--pending { background: var(--color-warning-50); color: var(--color-warning); }
-.agent-detail__stats { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
-.stat-mini { flex: 1; background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-xl); padding: 1rem; text-align: center; }
-.stat-mini__value { display: block; font-size: 1.5rem; font-weight: 700; color: var(--color-text-primary); }
-.stat-mini__label { font-size: 0.75rem; color: var(--color-text-tertiary); }
-.traffic-summary { margin-bottom: 1.5rem; padding: 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
-.agent-detail__tabs { display: flex; gap: 2px; margin-bottom: 1.5rem; padding: 3px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
+.back-link:hover { color: var(--amc-green); }
+
+.agent-detail__status-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--amc-green-border);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  margin-bottom: 0.75rem;
+}
+
+.agent-detail__status-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--amc-status-neutral);
+  transition: background 150ms ease;
+}
+
+.agent-detail__status-card[data-status="success"]::before { background: var(--amc-status-success); }
+.agent-detail__status-card[data-status="warning"]::before { background: var(--amc-status-warning); }
+.agent-detail__status-card[data-status="danger"]::before { background: var(--amc-status-danger); }
+.agent-detail__status-card[data-status="neutral"]::before { background: var(--amc-status-neutral); }
+
+.agent-detail__status-main { min-width: 0; flex: 1; }
+
+.agent-detail__status-header {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 0.375rem;
+}
+
+.agent-detail__status-badge { flex-shrink: 0; }
+
+.agent-detail__name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+  word-break: break-all;
+}
+
+.agent-detail__mode {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-full);
+  background: var(--amc-green-subtle);
+  color: var(--amc-green);
+  border: 1px solid var(--amc-green-border);
+}
+
+.agent-detail__meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  margin-bottom: 0.125rem;
+}
+
+.agent-detail__meta-label {
+  font-size: 0.625rem;
+  color: var(--amc-status-neutral);
+  flex-shrink: 0;
+}
+
+.agent-detail__meta-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-detail__status-header + .agent-detail__meta-row {
+  margin-top: 0.625rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.1));
+}
+
+.agent-detail__endpoint {
+  font-family: var(--font-mono);
+}
+
+.agent-detail__last-seen {
+  color: var(--color-text-secondary);
+}
+
+.agent-detail__quick-stats {
+  display: flex;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.stat-mini {
+  min-width: 5.5rem;
+  text-align: center;
+  padding: 0.625rem 0.75rem;
+  background: var(--amc-green-subtle);
+  border: 1px solid var(--amc-green-border);
+  border-radius: var(--radius-lg);
+}
+
+.stat-mini__value { display: block; font-size: 1.25rem; font-weight: 700; color: var(--color-text-primary); line-height: 1.2; }
+.stat-mini__label { font-size: 0.7rem; color: var(--color-text-tertiary); }
+
+.agent-detail__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.agent-detail__metric-cell {
+  min-width: 0;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--amc-green-border);
+  border-radius: var(--radius-md);
+  background: var(--amc-green-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.agent-detail__metric-header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.agent-detail__metric-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--amc-green);
+  flex-shrink: 0;
+}
+
+.agent-detail__metric-label {
+  color: var(--color-text-tertiary);
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+.agent-detail__metric-value {
+  color: var(--color-text-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.agent-detail__metric-subvalue {
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.2;
+}
+
+.agent-detail__metric-bar-bg {
+  height: 3px;
+  background: var(--color-bg-subtle);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 0.25rem;
+}
+
+.agent-detail__metric-bar {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 300ms ease, background 150ms ease;
+}
+
+.agent-detail__metric-bar--success { background: var(--amc-status-success); }
+.agent-detail__metric-bar--warning { background: var(--amc-status-warning); }
+.agent-detail__metric-bar--danger { background: var(--amc-status-danger); }
+.agent-detail__metric-bar--neutral { background: var(--amc-status-neutral); }
+
+.agent-detail__error { margin-bottom: 1rem; }
+.error-block { display: flex; align-items: flex-start; gap: 0.75rem; padding: 1rem; background: var(--color-danger-50); border: 1px solid var(--color-danger-100); border-radius: var(--radius-lg); color: var(--color-danger); }
+.error-block svg { flex-shrink: 0; margin-top: 1px; }
+.error-block__title { font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; }
+.error-block__text { font-size: 0.8125rem; line-height: 1.5; color: var(--color-danger); opacity: 0.95; word-break: break-word; }
+
+.agent-detail__tabs { display: flex; gap: 2px; margin-bottom: 1rem; padding: 3px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
 .tab-btn { padding: 6px 1rem; border: none; background: transparent; color: var(--color-text-muted); font-size: 0.875rem; font-weight: 500; cursor: pointer; border-radius: var(--radius-md); transition: all 0.15s; font-family: inherit; flex: 1; text-align: center; white-space: nowrap; }
 .tab-btn:hover { color: var(--color-text-secondary); }
-.tab-btn--active { color: var(--color-primary); background: var(--color-bg-surface); font-weight: 600; box-shadow: var(--shadow-sm); }
+.tab-btn--active { color: var(--amc-green); background: var(--color-bg-surface); font-weight: 600; box-shadow: var(--shadow-sm); }
+
 .tab-panel__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .tab-panel__title-group h2 { margin: 0; font-size: 1rem; color: var(--color-text-primary); }
 .tab-panel__title-group span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
@@ -713,33 +1000,31 @@ function timeAgo(date) {
 .traffic-tab__breakdown-title { display: block; font-size: 0.8125rem; color: var(--color-text-tertiary); margin-bottom: 0.5rem; }
 .traffic-trend__controls { display: inline-flex; gap: 2px; padding: 2px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
 .traffic-trend__mode { min-width: 2.75rem; padding: 0.3rem 0.55rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.75rem; font-weight: 600; cursor: pointer; font-family: inherit; }
-.traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
+.traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--amc-green); box-shadow: var(--shadow-sm); }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
-.info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; }
+.info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08)); }
+.info-row:last-child { border-bottom: none; }
 .info-row span:first-child { color: var(--color-text-secondary); }
 .info-row span:last-child { color: var(--color-text-primary); font-weight: 500; }
-.agent-detail__error { margin-bottom: 1.5rem; }
-.error-block { display: flex; align-items: flex-start; gap: 0.75rem; padding: 1rem; background: var(--color-danger-50); border: 1px solid var(--color-danger-100); border-radius: var(--radius-lg); color: var(--color-danger); }
-.error-block svg { flex-shrink: 0; margin-top: 1px; }
-.error-block__title { font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; }
-.error-block__text { font-size: 0.8125rem; line-height: 1.5; color: var(--color-danger); opacity: 0.95; word-break: break-word; }
 .agent-detail__loading { display: flex; justify-content: center; padding: 3rem; }
 .agent-detail__not-found { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .agent-detail__not-found p { margin: 0; font-size: 1rem; }
-.spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
+.spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--amc-green); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn { padding: 10px 24px; border-radius: var(--radius-full); font-size: var(--text-sm); font-weight: var(--font-semibold); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); border: 1.5px solid transparent; font-family: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; }
-.btn-primary { background: var(--color-primary); color: white; }
+.btn-primary { background: var(--amc-green); color: white; }
 .btn-primary:hover { background: var(--color-primary-hover); }
 .btn-secondary { background: transparent; color: var(--color-text-secondary); border: 1.5px solid var(--color-border-default); }
-.btn-secondary:hover { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-subtle); }
+.btn-secondary:hover { border-color: var(--amc-green); color: var(--amc-green); background: var(--amc-green-subtle); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.traffic-section { margin-bottom: 1.5rem; }
+.traffic-section { margin-bottom: 1rem; }
 .traffic-section__title { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); margin: 0 0 0.75rem; }
+
 @media (max-width: 720px) {
-  .agent-detail__header,
-  .tab-panel__header { flex-direction: column; }
+  .agent-detail__status-card { flex-direction: column; align-items: flex-start; }
+  .agent-detail__quick-stats { width: 100%; }
+  .agent-detail__metrics { grid-template-columns: 1fr; }
   .agent-detail__tabs { overflow-x: auto; }
   .tab-btn { flex: 0 0 auto; }
 }

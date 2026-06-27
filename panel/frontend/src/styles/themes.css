@@ -73,6 +73,62 @@
 }
 
 /* =============================================
+   Theme: 清新绿 (fresh-green) — Fresh operations
+   ============================================= */
+[data-theme="fresh-green"] {
+  --color-primary: #059669;
+  --color-primary-hover: #047857;
+  --color-primary-active: #065f46;
+  --color-primary-subtle: rgba(5, 150, 105, 0.10);
+  --color-primary-50: rgba(5, 150, 105, 0.04);
+  --color-primary-100: rgba(5, 150, 105, 0.10);
+  --color-primary-200: rgba(5, 150, 105, 0.18);
+  --color-primary-300: rgba(5, 150, 105, 0.30);
+
+  --color-accent: #0ea5e9;
+  --color-accent-hover: #0284c7;
+  --color-accent-subtle: rgba(14, 165, 233, 0.08);
+
+  --color-text-primary: #10231d;
+  --color-text-secondary: #3f5f54;
+  --color-text-tertiary: #6b8a7d;
+  --color-text-muted: #9bb5aa;
+  --color-text-inverse: #ffffff;
+
+  --color-bg-canvas: #f6fbf8;
+  --color-bg-surface: #ffffff;
+  --color-bg-surface-raised: #ffffff;
+  --color-bg-sunken: #edf7f1;
+  --color-bg-subtle: #e9f7ef;
+  --color-bg-hover: #dff2e8;
+  --color-bg-active: #cbe9da;
+
+  --color-border-subtle: rgba(16, 35, 29, 0.06);
+  --color-border-default: rgba(16, 35, 29, 0.10);
+  --color-border-strong: rgba(16, 35, 29, 0.16);
+  --color-border-focus: rgba(5, 150, 105, 0.38);
+
+  --color-success: #059669;
+  --color-success-50: rgba(5, 150, 105, 0.09);
+  --color-success-glow: rgba(5, 150, 105, 0.20);
+  --color-danger: #dc2626;
+  --color-danger-50: rgba(220, 38, 38, 0.08);
+  --color-danger-glow: rgba(220, 38, 38, 0.18);
+  --color-warning: #d97706;
+  --color-warning-50: rgba(217, 119, 6, 0.09);
+  --color-warning-glow: rgba(217, 119, 6, 0.20);
+
+  --shadow-xs: 0 1px 2px rgba(16, 35, 29, 0.04);
+  --shadow-sm: 0 1px 3px rgba(16, 35, 29, 0.06), 0 1px 2px rgba(16, 35, 29, 0.04);
+  --shadow-md: 0 4px 6px rgba(16, 35, 29, 0.06), 0 2px 4px rgba(16, 35, 29, 0.04);
+  --shadow-lg: 0 10px 15px rgba(16, 35, 29, 0.07), 0 4px 6px rgba(16, 35, 29, 0.04);
+  --shadow-xl: 0 20px 25px rgba(16, 35, 29, 0.08), 0 8px 10px rgba(16, 35, 29, 0.04);
+  --shadow-2xl: 0 24px 48px rgba(16, 35, 29, 0.10);
+  --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
+  --shadow-inner: inset 0 1px 2px rgba(16, 35, 29, 0.04);
+}
+
+/* =============================================
    Theme: 昼樱 (sakura-day) — Light anime
    ============================================= */
 [data-theme="sakura-day"] {

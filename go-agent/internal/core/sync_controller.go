@@ -26,6 +26,15 @@ type TrafficReport struct {
 	RuntimeMetadata map[string]string
 }
 
+type HostMetricsReporter interface {
+	HostMetricsReport(context.Context) (HostMetricsReport, error)
+}
+
+type HostMetricsReport struct {
+	Stats        map[string]any
+	StatsPresent bool
+}
+
 type SyncPlan struct {
 	Request         control.SyncRequest
 	RuntimeMetadata map[string]string
@@ -41,6 +50,7 @@ type SyncController struct {
 	SyncClient           SyncClient
 	Updater              Updater
 	Traffic              TrafficReporter
+	HostMetrics          HostMetricsReporter
 	CertReports          ManagedCertificateReporter
 	CurrentPackageSHA256 string
 }

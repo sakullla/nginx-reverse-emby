@@ -1,6 +1,7 @@
 import { defineComponent, provide, inject, ref } from 'vue'
 
 export const themes = [
+  { id: 'fresh-green',  emoji: '🌿', label: '清新绿' },
   { id: 'sakura-day',   emoji: '🌸', label: '昼樱' },
   { id: 'sakura-night', emoji: '🌙', label: '夜樱' },
   { id: 'business',     emoji: '☀️', label: '晴空' },
@@ -22,7 +23,7 @@ export const ThemeProvider = defineComponent({
 
     const initialTheme = (migrated && VALID_THEME_IDS.includes(migrated))
       ? migrated
-      : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'sakura-night' : 'sakura-day')
+      : 'sakura-day'
 
     const currentThemeId = ref(initialTheme)
 

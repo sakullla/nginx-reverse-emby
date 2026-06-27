@@ -14,6 +14,7 @@ function call(name, ...args) {
 }
 
 export const verifyToken = (...args) => call('verifyToken', ...args)
+export const consumeAgentMonitorStream = (...args) => call('consumeAgentMonitorStream', ...args)
 export const fetchSystemInfo = (...args) => call('fetchSystemInfo', ...args)
 export const exportBackup = (...args) => call('exportBackup', ...args)
 export const importBackup = (...args) => call('importBackup', ...args)

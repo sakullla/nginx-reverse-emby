@@ -1,4 +1,5 @@
 import { api, longRunningRequest } from './client'
+export { consumeAgentMonitorStream } from './agentMonitor'
 
 const SUPPORTED_LOAD_BALANCING_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
 

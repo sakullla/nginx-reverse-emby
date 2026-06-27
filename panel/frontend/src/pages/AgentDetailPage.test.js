@@ -3,6 +3,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import AgentDetailPage from './AgentDetailPage.vue'
+import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 
 let routeParams
 let systemInfo
@@ -185,6 +186,73 @@ beforeEach(() => {
 })
 
 describe('AgentDetailPage', () => {
+  it('renders status card, AgentStatusBadge and four metric cards', async () => {
+    agentRecord.status = 'online'
+    agentRecord.mode = 'master'
+    currentAgentStats = {
+      host: {
+        cpu: {
+          usage_percent: 12.4,
+          used_cores: 1,
+          total_cores: 8
+        },
+        memory: {
+          usage_percent: 63.8,
+          used_bytes: 1024 * 1024 * 1024 * 10,
+          total_bytes: 1024 * 1024 * 1024 * 16
+        },
+        disk: {
+          usage_percent: 77,
+          used_bytes: 1024 * 1024 * 1024 * 398,
+          total_bytes: 1024 * 1024 * 1024 * 512
+        },
+        network: {
+          total: {
+            rx_bytes: 1024 * 1024 * 4,
+            tx_bytes: 1024 * 1024,
+            rx_bytes_per_second: 2048,
+            tx_bytes_per_second: 1024
+          }
+        }
+      }
+    }
+    agentRecord.monitor = undefined
+    agentRecord.metrics = undefined
+
+    const wrapper = await mountPage()
+
+    expect(wrapper.find('.agent-detail__status-card').exists()).toBe(true)
+    expect(wrapper.findComponent(AgentStatusBadge).exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-metric-cpu"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-metric-memory"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-metric-disk"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-metric-network"]').exists()).toBe(true)
+
+    expect(wrapper.find('[data-testid="detail-metric-cpu-value"]').text()).toContain('1.0 / 8 核')
+    expect(wrapper.find('[data-testid="detail-metric-cpu-percent"]').text()).toContain('12.4%')
+    expect(wrapper.find('[data-testid="detail-metric-memory-value"]').text()).toContain('10.0 GiB / 16.0 GiB')
+    expect(wrapper.find('[data-testid="detail-metric-memory-percent"]').text()).toContain('63.8%')
+    expect(wrapper.find('[data-testid="detail-metric-disk-value"]').text()).toContain('398.0 GiB / 512.0 GiB')
+    expect(wrapper.find('[data-testid="detail-metric-disk-percent"]').text()).toContain('77.0%')
+    expect(wrapper.find('[data-testid="detail-metric-network-down"]').text()).toContain('2.00 KiB/s')
+    expect(wrapper.find('[data-testid="detail-metric-network-up"]').text()).toContain('1.00 KiB/s')
+
+    expect(wrapper.text()).toContain('边缘节点-01')
+    expect(wrapper.text()).toContain('主控')
+  })
+
+  it('switches between HTTP, L4 and Info tabs', async () => {
+    const wrapper = await mountPage()
+
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === 'L4 规则').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('查看全部规则')
+
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '系统信息').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('版本')
+  })
+
   it('does not expose outbound proxy editing from the system info tab', async () => {
     agentRecord.is_local = true
     const wrapper = await mountPage()

@@ -211,13 +211,16 @@ type ApplyAgentResult struct {
 }
 
 type agentService struct {
-	cfg               config.Config
-	store             agentStore
-	trafficService    heartbeatTrafficService
-	now               func() time.Time
-	localApplyTrigger func(context.Context) error
-	bundledCacheMu    sync.Mutex
-	bundledCache      map[string]bundledPackageCacheEntry
+	cfg                        config.Config
+	store                      agentStore
+	trafficService             heartbeatTrafficService
+	now                        func() time.Time
+	localApplyTrigger          func(context.Context) error
+	localMonitorRefreshTrigger func(context.Context) error
+	bundledCacheMu             sync.Mutex
+	bundledCache               map[string]bundledPackageCacheEntry
+	monitorMu                  sync.Mutex
+	monitorSubscribers         map[chan AgentMonitorUpdate]struct{}
 }
 
 type heartbeatTrafficService interface {
@@ -235,10 +238,11 @@ type bundledPackageCacheEntry struct {
 func NewAgentService(cfg config.Config, store agentStore) *agentService {
 	cfg.TrafficStatsEnabled = agentTrafficStatsEnabled(cfg)
 	svc := &agentService{
-		cfg:          cfg,
-		store:        store,
-		now:          time.Now,
-		bundledCache: make(map[string]bundledPackageCacheEntry),
+		cfg:                cfg,
+		store:              store,
+		now:                time.Now,
+		bundledCache:       make(map[string]bundledPackageCacheEntry),
+		monitorSubscribers: make(map[chan AgentMonitorUpdate]struct{}),
 	}
 	if trafficStore, ok := store.(trafficStore); ok {
 		trafficCfg, err := NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
@@ -266,6 +270,10 @@ func (s *agentService) SetTrafficService(trafficService heartbeatTrafficService)
 
 func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
 	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
+}
+
+func (s *agentService) SetLocalMonitorRefreshTrigger(trigger func(context.Context) error) {
+	s.localMonitorRefreshTrigger = wrapLocalApplyTrigger(trigger)
 }
 
 func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
@@ -758,16 +766,19 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		row.CapabilitiesJSON = marshalStringArray(nextCapabilities)
 	}
 	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
+	currentSeenAt := s.now().UTC().Format(time.RFC3339)
 	if request.Stats != nil {
-		if trafficStatsEnabled {
-			row.LastReportedStatsJSON = marshalAgentStats(persistentAgentStats(request.Stats, true))
-			if s.trafficService != nil {
-				if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
-					return HeartbeatReply{}, err
-				}
-			}
-		} else {
+		persistedStats := monitorPersistentAgentStats(request.Stats)
+		persistedStats = statsWithMonitorRates(persistedStats, parseAgentStats(previousRow.LastReportedStatsJSON), previousRow.LastSeenAt, currentSeenAt)
+		if len(persistedStats) == 0 {
 			row.LastReportedStatsJSON = ""
+		} else {
+			row.LastReportedStatsJSON = marshalAgentStats(persistedStats)
+		}
+		if trafficStatsEnabled && s.trafficService != nil {
+			if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
+				return HeartbeatReply{}, err
+			}
 		}
 	}
 	if strings.TrimSpace(request.LastSeenIP) != "" {
@@ -781,7 +792,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	}
 	row.LastApplyStatus = defaultString(request.LastApplyStatus, row.LastApplyStatus)
 	row.LastApplyMessage = request.LastApplyMessage
-	row.LastSeenAt = s.now().UTC().Format(time.RFC3339)
+	row.LastSeenAt = currentSeenAt
 
 	if heartbeatStore, ok := s.store.(agentHeartbeatStore); ok && !agentHeartbeatRequiresFullSave(previousRow, row) {
 		if err := heartbeatStore.SaveAgentHeartbeat(ctx, row); err != nil {
@@ -808,6 +819,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err := s.persistHeartbeatTrafficBlockState(ctx, &row, trafficBlocked, trafficBlockReason); err != nil {
 		return HeartbeatReply{}, err
 	}
+	s.broadcastMonitorUpdate(ctx, row)
 	needsWireGuardCleanup := wireGuardCapabilityRemoved && snapshot.WireGuardProfiles != nil && len(snapshot.WireGuardProfiles) == 0
 	reply := HeartbeatReply{
 		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success") || needsWireGuardCleanup,
@@ -1413,10 +1425,7 @@ func marshalAgentStats(stats AgentStats) string {
 	return string(data)
 }
 
-func persistentAgentStats(stats AgentStats, trafficStatsEnabled bool) AgentStats {
-	if !trafficStatsEnabled {
-		return stats
-	}
+func monitorPersistentAgentStats(stats AgentStats) AgentStats {
 	if _, ok := stats["traffic"]; !ok {
 		return stats
 	}
@@ -1426,6 +1435,9 @@ func persistentAgentStats(stats AgentStats, trafficStatsEnabled bool) AgentStats
 			continue
 		}
 		persisted[key] = value
+	}
+	if len(persisted) == 0 {
+		return nil
 	}
 	return persisted
 }

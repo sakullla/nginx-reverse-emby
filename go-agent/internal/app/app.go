@@ -10,6 +10,7 @@ import (
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
+	modulehostmetrics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/hostmetrics"
 	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
@@ -37,19 +38,20 @@ type Updater interface {
 }
 
 type App struct {
-	cfg               Config
-	syncClient        SyncClient
-	store             core.Store
-	updater           Updater
-	runtime           *core.Runtime
-	taskClient        *control.TaskClient
-	moduleRegistry    *agentmodule.Registry
-	diagnosticModule  *modulediagnostics.Module
-	trafficReports    core.TrafficReporter
-	certReports       core.ManagedCertificateReporter
-	relayTimeoutReset func()
-	closeOnce         sync.Once
-	syncMu            sync.Mutex
+	cfg                Config
+	syncClient         SyncClient
+	store              core.Store
+	updater            Updater
+	runtime            *core.Runtime
+	taskClient         *control.TaskClient
+	moduleRegistry     *agentmodule.Registry
+	diagnosticModule   *modulediagnostics.Module
+	trafficReports     core.TrafficReporter
+	hostMetricsReports core.HostMetricsReporter
+	certReports        core.ManagedCertificateReporter
+	relayTimeoutReset  func()
+	closeOnce          sync.Once
+	syncMu             sync.Mutex
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -133,6 +135,7 @@ type configuredModules struct {
 	registry    *agentmodule.Registry
 	diagnostics *modulediagnostics.Module
 	traffic     core.TrafficReporter
+	hostMetrics core.HostMetricsReporter
 	certReports core.ManagedCertificateReporter
 }
 
@@ -164,6 +167,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		registry:    registry,
 		diagnostics: diagnosticModule,
 		traffic:     trafficModule,
+		hostMetrics: modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
 		certReports: certModule,
 	}, nil
 }
@@ -328,6 +332,7 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.moduleRegistry = modules.registry
 	a.diagnosticModule = modules.diagnostics
 	a.trafficReports = modules.traffic
+	a.hostMetricsReports = modules.hostMetrics
 	a.certReports = modules.certReports
 	a.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(modules.registry))
 }

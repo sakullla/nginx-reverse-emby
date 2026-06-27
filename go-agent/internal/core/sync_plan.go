@@ -46,6 +46,17 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 		}
 	}
 
+	if c.HostMetrics != nil {
+		report, err := c.HostMetrics.HostMetricsReport(ctx)
+		if err != nil {
+			return SyncPlan{}, err
+		}
+		if report.StatsPresent || report.Stats != nil {
+			plan.Request.Stats = mergeStats(plan.Request.Stats, report.Stats)
+			plan.Request.StatsPresent = plan.Request.StatsPresent || report.StatsPresent
+		}
+	}
+
 	if c.CertReports != nil {
 		reports, err := c.CertReports.ManagedCertificateReports(ctx)
 		if err != nil {
@@ -55,6 +66,19 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 	}
 
 	return plan, nil
+}
+
+func mergeStats(base, extra map[string]any) map[string]any {
+	if extra == nil {
+		return base
+	}
+	if base == nil {
+		base = map[string]any{}
+	}
+	for key, value := range extra {
+		base[key] = value
+	}
+	return base
 }
 
 func boundedInt64Revision(value int64) int {
