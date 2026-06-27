@@ -192,18 +192,32 @@
       </div>
 
       <div v-if="activeTab === 'info'" class="tab-panel">
-        <div class="info-grid">
-          <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
-          <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
-          <div class="info-row"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
-          <div class="info-row"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
-          <div class="info-row"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
-          <div class="info-row"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
-          <div class="info-row"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
-          <div class="info-row"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
-          <div class="info-row"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
-          <div class="info-row"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
-          <div v-if="agent.last_apply_message" class="info-row"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
+        <div class="info-sections">
+          <BaseListCard class="info-card" title="运行包" :clickable="false">
+            <div class="info-grid">
+              <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
+              <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
+              <div class="info-row"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
+              <div class="info-row"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
+              <div class="info-row"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
+              <div class="info-row"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
+            </div>
+          </BaseListCard>
+
+          <BaseListCard class="info-card" title="节点身份" :clickable="false">
+            <div class="info-grid">
+              <div class="info-row"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
+              <div class="info-row"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
+              <div class="info-row"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
+            </div>
+          </BaseListCard>
+
+          <BaseListCard class="info-card" title="同步状态" :clickable="false">
+            <div class="info-grid">
+              <div class="info-row"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
+              <div v-if="agent.last_apply_message" class="info-row"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
+            </div>
+          </BaseListCard>
         </div>
       </div>
     </div>
@@ -1000,6 +1014,7 @@ function packageStatusLabel(status) {
 .traffic-trend__mode { min-width: 2.75rem; padding: 0.3rem 0.55rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.75rem; font-weight: 600; cursor: pointer; font-family: inherit; }
 .traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--amc-green); box-shadow: var(--shadow-sm); }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
+.info-sections { display: flex; flex-direction: column; gap: 1rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
 .info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08)); }
 .info-row:last-child { border-bottom: none; }
