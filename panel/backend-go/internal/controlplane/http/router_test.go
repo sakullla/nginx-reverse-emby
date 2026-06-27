@@ -1621,9 +1621,10 @@ func TestAgentMonitorStreamRefreshesSnapshotOnInterval(t *testing.T) {
 				{
 					GeneratedAt: "2026-06-21T12:00:00Z",
 					Agents: []service.AgentMonitorAgent{{
-						ID:     "local",
-						Name:   "local",
-						Status: "online",
+						ID:         "local",
+						Name:       "local",
+						Status:     "online",
+						LastSeenAt: "2026-06-21T12:00:00Z",
 						Metrics: service.AgentMonitorMetrics{
 							Network: &service.AgentMonitorNetwork{
 								RXBytes: uint64Ptr(100),
@@ -1635,9 +1636,10 @@ func TestAgentMonitorStreamRefreshesSnapshotOnInterval(t *testing.T) {
 				{
 					GeneratedAt: "2026-06-21T12:00:05Z",
 					Agents: []service.AgentMonitorAgent{{
-						ID:     "local",
-						Name:   "local",
-						Status: "online",
+						ID:         "local",
+						Name:       "local",
+						Status:     "online",
+						LastSeenAt: "2026-06-21T12:00:05Z",
 						Metrics: service.AgentMonitorMetrics{
 							CPUUsagePercent: float64Ptr(42.5),
 							Network: &service.AgentMonitorNetwork{
@@ -1712,12 +1714,13 @@ func TestAgentMonitorStreamRefreshesSnapshotOnInterval(t *testing.T) {
 	}
 }
 
-func TestSnapshotWithMonitorRatesRecomputesZeroWhenCountersDoNotAdvance(t *testing.T) {
+func TestSnapshotWithMonitorRatesPreservesPersistedRatesWhenSampleTimeDoesNotAdvance(t *testing.T) {
 	previous := service.AgentMonitorSnapshot{
 		GeneratedAt: "2026-06-21T12:00:00Z",
 		Agents: []service.AgentMonitorAgent{{
-			ID:     "edge-a",
-			Status: "online",
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T11:59:50Z",
 			Metrics: service.AgentMonitorMetrics{
 				Network: &service.AgentMonitorNetwork{
 					RXBytes:           uint64Ptr(1000),
@@ -1734,8 +1737,9 @@ func TestSnapshotWithMonitorRatesRecomputesZeroWhenCountersDoNotAdvance(t *testi
 	current := service.AgentMonitorSnapshot{
 		GeneratedAt: "2026-06-21T12:00:05Z",
 		Agents: []service.AgentMonitorAgent{{
-			ID:     "edge-a",
-			Status: "online",
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T11:59:50Z",
 			Metrics: service.AgentMonitorMetrics{
 				Network: &service.AgentMonitorNetwork{
 					RXBytes:           uint64Ptr(1000),
@@ -1755,23 +1759,24 @@ func TestSnapshotWithMonitorRatesRecomputesZeroWhenCountersDoNotAdvance(t *testi
 	if network == nil {
 		t.Fatal("network = nil")
 	}
-	if network.RXBytesPerSecond == nil || *network.RXBytesPerSecond != 0 {
-		t.Fatalf("rx rate = %+v, want recomputed 0 B/s", network)
+	if network.RXBytesPerSecond == nil || *network.RXBytesPerSecond != 33 {
+		t.Fatalf("rx rate = %+v, want persisted 33 B/s", network)
 	}
-	if network.TXBytesPerSecond == nil || *network.TXBytesPerSecond != 0 {
-		t.Fatalf("tx rate = %+v, want recomputed 0 B/s", network)
+	if network.TXBytesPerSecond == nil || *network.TXBytesPerSecond != 44 {
+		t.Fatalf("tx rate = %+v, want persisted 44 B/s", network)
 	}
-	if network.RateCalculatedAt != "2026-06-21T12:00:05Z" || network.RateWindowSeconds == nil || *network.RateWindowSeconds != 5 || !network.RateAvailable {
-		t.Fatalf("rate metadata = %+v, want refreshed 5s available sample", network)
+	if network.RateCalculatedAt != "2026-06-21T11:59:50Z" || network.RateWindowSeconds == nil || *network.RateWindowSeconds != 30 || !network.RateAvailable {
+		t.Fatalf("rate metadata = %+v, want persisted 30s available sample", network)
 	}
 }
 
-func TestSnapshotWithMonitorRatesClearsRatesOnCounterReset(t *testing.T) {
+func TestSnapshotWithMonitorRatesUsesAgentSampleWindow(t *testing.T) {
 	previous := service.AgentMonitorSnapshot{
 		GeneratedAt: "2026-06-21T12:00:00Z",
 		Agents: []service.AgentMonitorAgent{{
-			ID:     "edge-a",
-			Status: "online",
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T11:59:30Z",
 			Metrics: service.AgentMonitorMetrics{
 				Network: &service.AgentMonitorNetwork{
 					RXBytes: uint64Ptr(1000),
@@ -1783,8 +1788,55 @@ func TestSnapshotWithMonitorRatesClearsRatesOnCounterReset(t *testing.T) {
 	current := service.AgentMonitorSnapshot{
 		GeneratedAt: "2026-06-21T12:00:05Z",
 		Agents: []service.AgentMonitorAgent{{
-			ID:     "edge-a",
-			Status: "online",
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T12:00:00Z",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes: uint64Ptr(1060),
+					TXBytes: uint64Ptr(2120),
+				},
+			},
+		}},
+	}
+
+	refreshed := snapshotWithMonitorRates(current, previous)
+	network := refreshed.Agents[0].Metrics.Network
+	if network == nil {
+		t.Fatal("network = nil")
+	}
+	if network.RXBytesPerSecond == nil || *network.RXBytesPerSecond != 2 {
+		t.Fatalf("rx rate = %+v, want 2 B/s from 30s sample window", network)
+	}
+	if network.TXBytesPerSecond == nil || *network.TXBytesPerSecond != 4 {
+		t.Fatalf("tx rate = %+v, want 4 B/s from 30s sample window", network)
+	}
+	if network.RateCalculatedAt != "2026-06-21T12:00:00Z" || network.RateWindowSeconds == nil || *network.RateWindowSeconds != 30 || !network.RateAvailable {
+		t.Fatalf("rate metadata = %+v, want agent sample timestamp/window", network)
+	}
+}
+
+func TestSnapshotWithMonitorRatesClearsRatesOnCounterReset(t *testing.T) {
+	previous := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:00Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T11:59:30Z",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes: uint64Ptr(1000),
+					TXBytes: uint64Ptr(2000),
+				},
+			},
+		}},
+	}
+	current := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:05Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:         "edge-a",
+			Status:     "online",
+			LastSeenAt: "2026-06-21T12:00:00Z",
 			Metrics: service.AgentMonitorMetrics{
 				Network: &service.AgentMonitorNetwork{
 					RXBytes:           uint64Ptr(900),

@@ -104,21 +104,17 @@ func snapshotWithMonitorRates(current, previous service.AgentMonitorSnapshot) se
 			previousByID[agent.ID] = agent
 		}
 	}
-	window := monitorSnapshotWindowSeconds(current.GeneratedAt, previous.GeneratedAt)
-	if window <= 0 {
-		return current
-	}
 	for idx := range current.Agents {
 		previousAgent, ok := previousByID[current.Agents[idx].ID]
 		if !ok {
 			continue
 		}
-		applyMonitorNetworkRates(&current.Agents[idx], previousAgent, window, current.GeneratedAt)
+		applyMonitorNetworkRates(&current.Agents[idx], previousAgent)
 	}
 	return current
 }
 
-func monitorSnapshotWindowSeconds(currentAt, previousAt string) float64 {
+func monitorSampleWindowSeconds(currentAt, previousAt string) float64 {
 	currentTime, err := time.Parse(time.RFC3339, currentAt)
 	if err != nil {
 		return 0
@@ -130,8 +126,12 @@ func monitorSnapshotWindowSeconds(currentAt, previousAt string) float64 {
 	return currentTime.Sub(previousTime).Seconds()
 }
 
-func applyMonitorNetworkRates(current *service.AgentMonitorAgent, previous service.AgentMonitorAgent, windowSeconds float64, calculatedAt string) {
-	if current == nil || current.Metrics.Network == nil || previous.Metrics.Network == nil || windowSeconds <= 0 {
+func applyMonitorNetworkRates(current *service.AgentMonitorAgent, previous service.AgentMonitorAgent) {
+	if current == nil || current.Metrics.Network == nil || previous.Metrics.Network == nil {
+		return
+	}
+	windowSeconds := monitorSampleWindowSeconds(current.LastSeenAt, previous.LastSeenAt)
+	if windowSeconds <= 0 {
 		return
 	}
 	network := current.Metrics.Network
@@ -161,7 +161,7 @@ func applyMonitorNetworkRates(current *service.AgentMonitorAgent, previous servi
 	if recomputed {
 		window := windowSeconds
 		network.RateWindowSeconds = &window
-		network.RateCalculatedAt = calculatedAt
+		network.RateCalculatedAt = current.LastSeenAt
 		network.RateAvailable = true
 		network.RateUnavailableWhy = ""
 	}
