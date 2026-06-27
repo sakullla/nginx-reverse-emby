@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -165,6 +166,73 @@ func TestMonitorSnapshotRefreshesLocalStatsBeforeReadingRuntimeState(t *testing.
 	}
 	if agent.Metrics.Network == nil || agent.Metrics.Network.RXBytes == nil || *agent.Metrics.Network.RXBytes != 1000 {
 		t.Fatalf("network = %+v, want refreshed counters", agent.Metrics.Network)
+	}
+}
+
+func TestMonitorSnapshotContinuesWhenLocalRefreshFails(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			AgentToken:       "token-edge-1",
+			CapabilitiesJSON: `["http_rules"]`,
+			LastApplyStatus:  "success",
+			CurrentRevision:  1,
+			LastSeenAt:       now.Add(-20 * time.Second).Format(time.RFC3339),
+		}},
+		localState: storage.LocalAgentStateRow{DesiredRevision: 1, CurrentRevision: 0, LastApplyRevision: 0, LastApplyStatus: "failed"},
+		snapshot:   storage.Snapshot{Revision: 1},
+	}
+	svc := NewAgentService(config.Config{
+		EnableLocalAgent:  true,
+		LocalAgentID:      "local",
+		LocalAgentName:    "Local Agent",
+		HeartbeatInterval: 30 * time.Second,
+	}, store)
+	svc.now = func() time.Time { return now }
+	svc.SetLocalMonitorRefreshTrigger(func(context.Context) error {
+		return errors.New("local apply failed")
+	})
+
+	snapshot, err := svc.MonitorSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("MonitorSnapshot() error = %v", err)
+	}
+	if len(snapshot.Agents) != 2 {
+		t.Fatalf("agents len = %d, want local and remote agents", len(snapshot.Agents))
+	}
+	if snapshot.Agents[0].ID != "local" || !snapshot.Agents[0].IsLocal {
+		t.Fatalf("first agent = %+v, want local agent", snapshot.Agents[0])
+	}
+	if snapshot.Agents[1].ID != "edge-1" {
+		t.Fatalf("second agent = %+v, want remote agent", snapshot.Agents[1])
+	}
+}
+
+func TestMonitorSnapshotStampsLocalSampleTime(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	store := &fakeStore{
+		localState:        storage.LocalAgentStateRow{DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success"},
+		savedRuntimeState: storage.RuntimeState{Metadata: map[string]string{"stats": `{"host":{"network":{"total":{"rx_bytes":1000,"tx_bytes":2000}}}}`}},
+	}
+	svc := NewAgentService(config.Config{
+		EnableLocalAgent:  true,
+		LocalAgentID:      "local",
+		LocalAgentName:    "Local Agent",
+		HeartbeatInterval: 30 * time.Second,
+	}, store)
+	svc.now = func() time.Time { return now }
+
+	snapshot, err := svc.MonitorSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("MonitorSnapshot() error = %v", err)
+	}
+	if len(snapshot.Agents) != 1 {
+		t.Fatalf("agents len = %d, want local agent", len(snapshot.Agents))
+	}
+	if got := snapshot.Agents[0].LastSeenAt; got != now.Format(time.RFC3339) {
+		t.Fatalf("local LastSeenAt = %q, want monitor sample time", got)
 	}
 }
 

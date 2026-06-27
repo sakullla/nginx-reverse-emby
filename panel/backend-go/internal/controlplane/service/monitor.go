@@ -72,15 +72,15 @@ type AgentMonitorTraffic struct {
 }
 
 func (s *agentService) MonitorSnapshot(ctx context.Context) (AgentMonitorSnapshot, error) {
+	generatedAt := s.now().UTC().Format(time.RFC3339)
 	agents := []AgentMonitorAgent{}
 	if s.cfg.EnableLocalAgent {
-		if err := s.refreshLocalMonitorStats(ctx); err != nil {
-			return AgentMonitorSnapshot{}, err
-		}
+		s.refreshLocalMonitorStatsBestEffort(ctx)
 		summary, err := s.localSummary(ctx)
 		if err != nil {
 			return AgentMonitorSnapshot{}, err
 		}
+		summary.LastSeenAt = generatedAt
 		stats, err := s.Stats(ctx, s.cfg.LocalAgentID)
 		if err != nil {
 			return AgentMonitorSnapshot{}, err
@@ -105,26 +105,26 @@ func (s *agentService) MonitorSnapshot(ctx context.Context) (AgentMonitorSnapsho
 	}
 
 	return AgentMonitorSnapshot{
-		GeneratedAt: s.now().UTC().Format(time.RFC3339),
+		GeneratedAt: generatedAt,
 		Agents:      agents,
 	}, nil
 }
 
 func (s *agentService) MonitorAgent(ctx context.Context, agentID string) (AgentMonitorUpdate, error) {
+	generatedAt := s.now().UTC().Format(time.RFC3339)
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		if err := s.refreshLocalMonitorStats(ctx); err != nil {
-			return AgentMonitorUpdate{}, err
-		}
+		s.refreshLocalMonitorStatsBestEffort(ctx)
 		summary, err := s.localSummary(ctx)
 		if err != nil {
 			return AgentMonitorUpdate{}, err
 		}
+		summary.LastSeenAt = generatedAt
 		stats, err := s.Stats(ctx, s.cfg.LocalAgentID)
 		if err != nil {
 			return AgentMonitorUpdate{}, err
 		}
 		return AgentMonitorUpdate{
-			GeneratedAt: s.now().UTC().Format(time.RFC3339),
+			GeneratedAt: generatedAt,
 			Agent:       s.monitorAgentFromSummary(ctx, summary, stats),
 		}, nil
 	}
@@ -137,7 +137,7 @@ func (s *agentService) MonitorAgent(ctx context.Context, agentID string) (AgentM
 		return AgentMonitorUpdate{}, err
 	}
 	return AgentMonitorUpdate{
-		GeneratedAt: s.now().UTC().Format(time.RFC3339),
+		GeneratedAt: generatedAt,
 		Agent:       s.monitorAgentFromSummary(ctx, summary, parseAgentStats(row.LastReportedStatsJSON)),
 	}, nil
 }
@@ -171,6 +171,10 @@ func (s *agentService) refreshLocalMonitorStats(ctx context.Context) error {
 		return nil
 	}
 	return s.localMonitorRefreshTrigger(ctx)
+}
+
+func (s *agentService) refreshLocalMonitorStatsBestEffort(ctx context.Context) {
+	_ = s.refreshLocalMonitorStats(ctx)
 }
 
 func (s *agentService) broadcastMonitorUpdate(ctx context.Context, row storage.AgentRow) {
