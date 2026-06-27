@@ -189,25 +189,35 @@ describe('AgentDetailPage', () => {
   it('renders status card, AgentStatusBadge and four metric cards', async () => {
     agentRecord.status = 'online'
     agentRecord.mode = 'master'
-    agentRecord.monitor = {
-      metrics: {
-        cpu_usage_percent: 12.4,
-        cpu_used_cores: 1,
-        cpu_total_cores: 8,
-        memory_usage_percent: 63.8,
-        memory_used_bytes: 1024 * 1024 * 1024 * 10,
-        memory_total_bytes: 1024 * 1024 * 1024 * 16,
-        disk_usage_percent: 77,
-        disk_used_bytes: 1024 * 1024 * 1024 * 398,
-        disk_total_bytes: 1024 * 1024 * 1024 * 512,
+    currentAgentStats = {
+      host: {
+        cpu: {
+          usage_percent: 12.4,
+          used_cores: 1,
+          total_cores: 8
+        },
+        memory: {
+          usage_percent: 63.8,
+          used_bytes: 1024 * 1024 * 1024 * 10,
+          total_bytes: 1024 * 1024 * 1024 * 16
+        },
+        disk: {
+          usage_percent: 77,
+          used_bytes: 1024 * 1024 * 1024 * 398,
+          total_bytes: 1024 * 1024 * 1024 * 512
+        },
         network: {
-          rx_bytes: 1024 * 1024 * 4,
-          tx_bytes: 1024 * 1024,
-          rx_bytes_per_second: 2048,
-          tx_bytes_per_second: 1024
+          total: {
+            rx_bytes: 1024 * 1024 * 4,
+            tx_bytes: 1024 * 1024,
+            rx_bytes_per_second: 2048,
+            tx_bytes_per_second: 1024
+          }
         }
       }
     }
+    agentRecord.monitor = undefined
+    agentRecord.metrics = undefined
 
     const wrapper = await mountPage()
 

@@ -136,15 +136,18 @@ func applyMonitorNetworkRates(current *service.AgentMonitorAgent, previous servi
 	}
 	network := current.Metrics.Network
 	previousNetwork := previous.Metrics.Network
-	if network.RXBytes != nil && previousNetwork.RXBytes != nil && *network.RXBytes >= *previousNetwork.RXBytes {
+	recomputed := false
+	if network.RXBytes != nil && previousNetwork.RXBytes != nil && *network.RXBytes > *previousNetwork.RXBytes {
 		rate := float64(*network.RXBytes-*previousNetwork.RXBytes) / windowSeconds
 		network.RXBytesPerSecond = &rate
+		recomputed = true
 	}
-	if network.TXBytes != nil && previousNetwork.TXBytes != nil && *network.TXBytes >= *previousNetwork.TXBytes {
+	if network.TXBytes != nil && previousNetwork.TXBytes != nil && *network.TXBytes > *previousNetwork.TXBytes {
 		rate := float64(*network.TXBytes-*previousNetwork.TXBytes) / windowSeconds
 		network.TXBytesPerSecond = &rate
+		recomputed = true
 	}
-	if network.RXBytesPerSecond != nil || network.TXBytesPerSecond != nil {
+	if recomputed {
 		window := windowSeconds
 		network.RateWindowSeconds = &window
 		network.RateCalculatedAt = calculatedAt

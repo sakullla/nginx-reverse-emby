@@ -1712,6 +1712,60 @@ func TestAgentMonitorStreamRefreshesSnapshotOnInterval(t *testing.T) {
 	}
 }
 
+func TestSnapshotWithMonitorRatesPreservesRatesWhenCountersDoNotAdvance(t *testing.T) {
+	previous := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:00Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:     "edge-a",
+			Status: "online",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes:           uint64Ptr(1000),
+					TXBytes:           uint64Ptr(2000),
+					RXBytesPerSecond:  float64Ptr(33),
+					TXBytesPerSecond:  float64Ptr(44),
+					RateWindowSeconds: float64Ptr(30),
+					RateCalculatedAt:  "2026-06-21T11:59:50Z",
+					RateAvailable:     true,
+				},
+			},
+		}},
+	}
+	current := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:05Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:     "edge-a",
+			Status: "online",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes:           uint64Ptr(1000),
+					TXBytes:           uint64Ptr(2000),
+					RXBytesPerSecond:  float64Ptr(33),
+					TXBytesPerSecond:  float64Ptr(44),
+					RateWindowSeconds: float64Ptr(30),
+					RateCalculatedAt:  "2026-06-21T11:59:50Z",
+					RateAvailable:     true,
+				},
+			},
+		}},
+	}
+
+	refreshed := snapshotWithMonitorRates(current, previous)
+	network := refreshed.Agents[0].Metrics.Network
+	if network == nil {
+		t.Fatal("network = nil")
+	}
+	if network.RXBytesPerSecond == nil || *network.RXBytesPerSecond != 33 {
+		t.Fatalf("rx rate = %+v, want preserved 33 B/s", network)
+	}
+	if network.TXBytesPerSecond == nil || *network.TXBytesPerSecond != 44 {
+		t.Fatalf("tx rate = %+v, want preserved 44 B/s", network)
+	}
+	if network.RateCalculatedAt != "2026-06-21T11:59:50Z" {
+		t.Fatalf("rate calculated at = %q, want preserved heartbeat sample time", network.RateCalculatedAt)
+	}
+}
+
 func TestAgentMonitorStreamEndsAtMaxAgeForClientReconnect(t *testing.T) {
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{

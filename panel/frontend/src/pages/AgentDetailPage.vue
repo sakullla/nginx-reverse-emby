@@ -357,7 +357,7 @@ const trafficBreakdownTabs = computed(() => [
   }
 ].filter(t => t.rows.length > 0))
 
-const agentMetricsData = computed(() => agentStats.value?.metrics || agent.value?.monitor?.metrics || agent.value?.metrics || {})
+const agentMetricsData = computed(() => metricsFromAgentStats(agentStats.value) || agent.value?.monitor?.metrics || agent.value?.metrics || {})
 const networkMetrics = computed(() => agentMetricsData.value.network || null)
 
 const STATUS_TONE = {
@@ -378,6 +378,38 @@ const statusTone = computed(() => STATUS_TONE[getAgentStatus(agent.value)] || 'n
 
 function barClass(value) {
   return BAR_TONE_CLASS[barTone(value)] || BAR_TONE_CLASS.neutral
+}
+
+function metricsFromAgentStats(stats = {}) {
+  if (stats?.metrics) return stats.metrics
+  const host = stats?.host
+  if (!host || typeof host !== 'object') return null
+
+  const metrics = {}
+  let hasMetric = false
+  const setMetric = (key, value) => {
+    if (value === undefined || value === null) return
+    metrics[key] = value
+    hasMetric = true
+  }
+
+  setMetric('cpu_usage_percent', host.cpu?.usage_percent)
+  setMetric('cpu_used_cores', host.cpu?.used_cores)
+  setMetric('cpu_total_cores', host.cpu?.total_cores)
+  setMetric('memory_usage_percent', host.memory?.usage_percent)
+  setMetric('memory_used_bytes', host.memory?.used_bytes)
+  setMetric('memory_total_bytes', host.memory?.total_bytes)
+  setMetric('disk_usage_percent', host.disk?.usage_percent)
+  setMetric('disk_used_bytes', host.disk?.used_bytes)
+  setMetric('disk_total_bytes', host.disk?.total_bytes)
+
+  const networkTotal = host.network?.total
+  if (networkTotal && typeof networkTotal === 'object' && Object.keys(networkTotal).length > 0) {
+    metrics.network = { ...networkTotal }
+    hasMetric = true
+  }
+
+  return hasMetric ? metrics : null
 }
 
 const activeTab = ref('http')
