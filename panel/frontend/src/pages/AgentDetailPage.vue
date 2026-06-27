@@ -80,9 +80,7 @@
       </div>
     </div>
 
-    <div class="agent-detail__tabs">
-      <button v-for="tab in tabs" :key="tab.id" class="tab-btn" :class="{ 'tab-btn--active': activeTab === tab.id }" @click="activeTab = tab.id">{{ tab.label }}</button>
-    </div>
+    <BaseTabs v-model="activeTab" :tabs="tabs" class="agent-detail__tabs" />
 
     <div class="agent-detail__tab-content">
       <div v-if="activeTab === 'traffic'" class="tab-panel">
@@ -243,6 +241,7 @@ import { useQuery } from '@tanstack/vue-query'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseMetricBar from '../components/base/BaseMetricBar.vue'
+import BaseTabs from '../components/base/BaseTabs.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
 import { useAgents, useUpdateAgent } from '../hooks/useAgents'
@@ -755,20 +754,13 @@ function packageStatusLabel(status) {
 
 <style scoped>
 .agent-detail {
-  --amc-green: var(--color-primary, #059669);
-  --amc-green-subtle: color-mix(in srgb, var(--amc-green) 8%, transparent);
-  --amc-green-border: color-mix(in srgb, var(--amc-green) 15%, transparent);
-  --amc-status-success: var(--color-success, #059669);
-  --amc-status-warning: var(--color-warning, #d97706);
-  --amc-status-danger: var(--color-danger, #dc2626);
-  --amc-status-neutral: var(--color-text-muted, #9ca3af);
   max-width: 900px;
   margin: 0 auto;
 }
 
 .agent-detail__back { margin-bottom: 1rem; }
 .back-link { color: var(--color-text-secondary); font-size: 0.875rem; text-decoration: none; }
-.back-link:hover { color: var(--amc-green); }
+.back-link:hover { color: var(--color-primary); }
 
 .agent-detail__summary-card {
   position: relative;
@@ -798,45 +790,6 @@ function packageStatusLabel(status) {
   gap: 0.75rem;
 }
 
-.agent-detail__status-card {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 1.25rem;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--amc-green-border);
-  border-radius: var(--radius-xl);
-  overflow: hidden;
-  margin-bottom: 0.75rem;
-}
-
-.agent-detail__status-card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  background: var(--amc-status-neutral);
-  transition: background 150ms ease;
-}
-
-.agent-detail__status-card[data-status="success"]::before { background: var(--amc-status-success); }
-.agent-detail__status-card[data-status="warning"]::before { background: var(--amc-status-warning); }
-.agent-detail__status-card[data-status="danger"]::before { background: var(--amc-status-danger); }
-.agent-detail__status-card[data-status="neutral"]::before { background: var(--amc-status-neutral); }
-
-.agent-detail__status-main { min-width: 0; flex: 1; }
-
-.agent-detail__status-header {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  margin-bottom: 0.375rem;
-}
-
 .agent-detail__status-badge { flex-shrink: 0; }
 
 .agent-detail__name {
@@ -854,9 +807,9 @@ function packageStatusLabel(status) {
   font-weight: 600;
   padding: 0.15rem 0.5rem;
   border-radius: var(--radius-full);
-  background: var(--amc-green-subtle);
-  color: var(--amc-green);
-  border: 1px solid var(--amc-green-border);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary-200);
 }
 
 .agent-detail__meta-row {
@@ -868,7 +821,7 @@ function packageStatusLabel(status) {
 
 .agent-detail__meta-label {
   font-size: 0.625rem;
-  color: var(--amc-status-neutral);
+  color: var(--color-text-muted);
   flex-shrink: 0;
 }
 
@@ -880,12 +833,6 @@ function packageStatusLabel(status) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.agent-detail__status-header + .agent-detail__meta-row {
-  margin-top: 0.625rem;
-  padding-top: 0.625rem;
-  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.1));
 }
 
 .agent-detail__endpoint {
@@ -906,8 +853,8 @@ function packageStatusLabel(status) {
   min-width: 5.5rem;
   text-align: center;
   padding: 0.625rem 0.75rem;
-  background: var(--amc-green-subtle);
-  border: 1px solid var(--amc-green-border);
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-primary-200);
   border-radius: var(--radius-lg);
 }
 
@@ -921,85 +868,14 @@ function packageStatusLabel(status) {
   margin-bottom: 1rem;
 }
 
-.agent-detail__metric-cell {
-  min-width: 0;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--amc-green-border);
-  border-radius: var(--radius-md);
-  background: var(--amc-green-subtle);
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  transition: background 150ms ease, border-color 150ms ease;
-}
-
-.agent-detail__metric-header {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.agent-detail__metric-icon {
-  width: 0.875rem;
-  height: 0.875rem;
-  color: var(--amc-green);
-  flex-shrink: 0;
-}
-
-.agent-detail__metric-label {
-  color: var(--color-text-tertiary);
-  font-size: 0.7rem;
-  line-height: 1;
-}
-
-.agent-detail__metric-value {
-  color: var(--color-text-primary);
-  font-size: 0.85rem;
-  font-weight: 600;
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
-.agent-detail__metric-subvalue {
-  color: var(--color-text-secondary);
-  font-size: 0.7rem;
-  line-height: 1.2;
-}
-
-.agent-detail__metric-bar-bg {
-  height: 3px;
-  background: var(--color-bg-subtle);
-  border-radius: 999px;
-  overflow: hidden;
-  margin-top: 0.25rem;
-}
-
-.agent-detail__metric-bar {
-  height: 100%;
-  border-radius: 999px;
-  transition: width 300ms ease, background 150ms ease;
-}
-
-.agent-detail__metric-bar--success { background: var(--amc-status-success); }
-.agent-detail__metric-bar--warning { background: var(--amc-status-warning); }
-.agent-detail__metric-bar--danger { background: var(--amc-status-danger); }
-.agent-detail__metric-bar--neutral { background: var(--amc-status-neutral); }
-
 .agent-detail__error { margin-bottom: 1rem; }
-.error-block { display: flex; align-items: flex-start; gap: 0.75rem; padding: 1rem; background: var(--color-danger-50); border: 1px solid var(--color-danger-100); border-radius: var(--radius-lg); color: var(--color-danger); }
+.error-block { display: flex; align-items: flex-start; gap: 0.75rem; padding: 1rem; background: var(--color-danger-50); border: 1px solid var(--color-danger); border-radius: var(--radius-lg); color: var(--color-danger); }
 .error-block svg { flex-shrink: 0; margin-top: 1px; }
 .error-block__title { font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; }
 .error-block__text { font-size: 0.8125rem; line-height: 1.5; color: var(--color-danger); opacity: 0.95; word-break: break-word; }
 
-.agent-detail__tabs { display: flex; gap: 2px; margin-bottom: 1rem; padding: 3px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
-.tab-btn { padding: 6px 1rem; border: none; background: transparent; color: var(--color-text-muted); font-size: 0.875rem; font-weight: 500; cursor: pointer; border-radius: var(--radius-md); transition: all 0.15s; font-family: inherit; flex: 1; text-align: center; white-space: nowrap; }
-.tab-btn:hover { color: var(--color-text-secondary); }
-.tab-btn--active { color: var(--amc-green); background: var(--color-bg-surface); font-weight: 600; box-shadow: var(--shadow-sm); }
+.agent-detail__tabs { margin-bottom: 1rem; }
 
-.tab-panel__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
-.tab-panel__title-group h2 { margin: 0; font-size: 1rem; color: var(--color-text-primary); }
-.tab-panel__title-group span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
-.tab-panel__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .rules-sections { display: flex; flex-direction: column; gap: 1rem; }
 .rules-card:deep(.base-list-card__header) { align-items: flex-start; }
 .rules-preview { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -1012,35 +888,29 @@ function packageStatusLabel(status) {
 .traffic-tab__breakdown-title { display: block; font-size: 0.8125rem; color: var(--color-text-tertiary); margin-bottom: 0.5rem; }
 .traffic-trend__controls { display: inline-flex; gap: 2px; padding: 2px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
 .traffic-trend__mode { min-width: 2.75rem; padding: 0.3rem 0.55rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.75rem; font-weight: 600; cursor: pointer; font-family: inherit; }
-.traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--amc-green); box-shadow: var(--shadow-sm); }
+.traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
 .info-sections { display: flex; flex-direction: column; gap: 1rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
-.info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08)); }
+.info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; border-bottom: 1px solid var(--color-border-subtle); }
 .info-row:last-child { border-bottom: none; }
 .info-row span:first-child { color: var(--color-text-secondary); }
 .info-row span:last-child { color: var(--color-text-primary); font-weight: 500; }
 .agent-detail__loading { display: flex; justify-content: center; padding: 3rem; }
 .agent-detail__not-found { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .agent-detail__not-found p { margin: 0; font-size: 1rem; }
-.spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--amc-green); border-radius: 50%; animation: spin 1s linear infinite; }
+.spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn { padding: 10px 24px; border-radius: var(--radius-full); font-size: var(--text-sm); font-weight: var(--font-semibold); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); border: 1.5px solid transparent; font-family: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; }
-.btn-primary { background: var(--amc-green); color: white; }
+.btn-primary { background: var(--color-primary); color: white; }
 .btn-primary:hover { background: var(--color-primary-hover); }
 .btn-secondary { background: transparent; color: var(--color-text-secondary); border: 1.5px solid var(--color-border-default); }
-.btn-secondary:hover { border-color: var(--amc-green); color: var(--amc-green); background: var(--amc-green-subtle); }
+.btn-secondary:hover { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-subtle); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .traffic-sections { display: flex; flex-direction: column; gap: 1rem; }
 .traffic-card:deep(.base-list-card__body) { gap: 1rem; }
-.traffic-section { margin-bottom: 1rem; }
-.traffic-section__title { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); margin: 0 0 0.75rem; }
 
 @media (max-width: 720px) {
-  .agent-detail__status-card { flex-direction: column; align-items: flex-start; }
-  .agent-detail__quick-stats { width: 100%; }
   .agent-detail__metrics { grid-template-columns: 1fr; }
-  .agent-detail__tabs { overflow-x: auto; }
-  .tab-btn { flex: 0 0 auto; }
 }
 </style>
