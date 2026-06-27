@@ -162,29 +162,33 @@
         />
       </div>
 
-      <div v-if="activeTab === 'http'" class="tab-panel">
-        <div class="tab-panel__header">
-          <button class="btn btn-primary" @click="router.push({ path: '/rules', query: { agentId } })">查看全部规则</button>
-        </div>
-        <div class="rules-preview">
-          <div v-for="rule in httpRules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
-            <span class="rule-preview-item__url">{{ rule.frontend_url }}</span>
-            <span class="rule-preview-item__backend">→ {{ formatHttpBackend(rule) }}</span>
-          </div>
-          <p v-if="!httpRules.length" class="empty-hint">暂无 HTTP 规则</p>
-        </div>
-      </div>
+      <div v-if="activeTab === 'rules'" class="tab-panel">
+        <div class="rules-sections">
+          <BaseListCard class="rules-card" title="HTTP 规则" :clickable="false">
+            <template #header-right>
+              <button class="btn btn-primary" @click="router.push({ path: '/rules', query: { agentId } })">查看全部规则</button>
+            </template>
+            <div class="rules-preview">
+              <div v-for="rule in httpRules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
+                <span class="rule-preview-item__url">{{ rule.frontend_url }}</span>
+                <span class="rule-preview-item__backend">→ {{ formatHttpBackend(rule) }}</span>
+              </div>
+              <p v-if="!httpRules.length" class="empty-hint">暂无 HTTP 规则</p>
+            </div>
+          </BaseListCard>
 
-      <div v-if="activeTab === 'l4'" class="tab-panel">
-        <div class="tab-panel__header">
-          <button class="btn btn-primary" @click="router.push({ path: '/l4', query: { agentId } })">查看全部规则</button>
-        </div>
-        <div class="rules-preview">
-          <div v-for="rule in l4Rules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
-            <span class="rule-preview-item__url">{{ rule.listen_host }}:{{ rule.listen_port }}</span>
-            <span class="rule-preview-item__backend">→ {{ formatL4Backend(rule) }}</span>
-          </div>
-          <p v-if="!l4Rules.length" class="empty-hint">暂无 L4 规则</p>
+          <BaseListCard class="rules-card" title="L4 规则" :clickable="false">
+            <template #header-right>
+              <button class="btn btn-primary" @click="router.push({ path: '/l4', query: { agentId } })">查看全部规则</button>
+            </template>
+            <div class="rules-preview">
+              <div v-for="rule in l4Rules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
+                <span class="rule-preview-item__url">{{ rule.listen_host }}:{{ rule.listen_port }}</span>
+                <span class="rule-preview-item__backend">→ {{ formatL4Backend(rule) }}</span>
+              </div>
+              <p v-if="!l4Rules.length" class="empty-hint">暂无 L4 规则</p>
+            </div>
+          </BaseListCard>
         </div>
       </div>
 
@@ -378,7 +382,7 @@ function metricsFromAgentStats(stats = {}) {
   return hasMetric ? metrics : null
 }
 
-const activeTab = ref('http')
+const activeTab = ref('rules')
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
 const calibrateModalVisible = ref(false)
 const confirmDialog = ref({ visible: false, type: '', title: '', message: '', confirmText: '', loading: false })
@@ -393,8 +397,7 @@ function openBreakdownTrendModal(row) {
 }
 
 const tabs = computed(() => [
-  { id: 'http', label: 'HTTP 规则' },
-  { id: 'l4', label: 'L4 规则' },
+  { id: 'rules', label: '规则' },
   ...(trafficStatsEnabled.value ? [{ id: 'traffic', label: '流量统计' }] : []),
   { id: 'info', label: '系统信息' }
 ])
@@ -417,7 +420,7 @@ watch([trafficPolicyQuery.data, trafficStatsEnabled], ([policy, enabled]) => {
 
 watch(tabs, (value) => {
   if (!value.some((tab) => tab.id === activeTab.value)) {
-    activeTab.value = value[0]?.id || 'http'
+    activeTab.value = value[0]?.id || 'rules'
   }
 }, { immediate: true })
 
@@ -984,6 +987,8 @@ function packageStatusLabel(status) {
 .tab-panel__title-group h2 { margin: 0; font-size: 1rem; color: var(--color-text-primary); }
 .tab-panel__title-group span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
 .tab-panel__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.rules-sections { display: flex; flex-direction: column; gap: 1rem; }
+.rules-card:deep(.base-list-card__header) { align-items: flex-start; }
 .rules-preview { display: flex; flex-direction: column; gap: 0.5rem; }
 .rule-preview-item { display: flex; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); font-size: 0.8125rem; }
 .rule-preview-item__url { flex: 1; color: var(--color-text-primary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
