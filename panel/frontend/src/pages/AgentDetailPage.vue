@@ -4,92 +4,67 @@
       <RouterLink to="/agents" class="back-link">← 返回节点管理</RouterLink>
     </div>
 
-    <div class="agent-detail__status-card" :data-status="statusTone">
-      <div class="agent-detail__status-main">
-        <div class="agent-detail__status-header">
-          <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
-          <h1 class="agent-detail__name">{{ agent.name }}</h1>
-          <span class="agent-detail__mode">{{ getModeLabel(agent.mode) }}</span>
+    <BaseListCard class="agent-detail__summary-card" :status="statusTone" :clickable="false">
+      <template #header-left>
+        <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
+        <h1 class="agent-detail__name">{{ agent.name }}</h1>
+        <span class="agent-detail__mode">{{ getModeLabel(agent.mode) }}</span>
+      </template>
+      <template #header-right>
+        <div class="agent-detail__quick-stats">
+          <div class="stat-mini">
+            <span class="stat-mini__value">{{ httpRulesCount }}</span>
+            <span class="stat-mini__label">HTTP 规则</span>
+          </div>
+          <div class="stat-mini">
+            <span class="stat-mini__value">{{ l4RulesCount }}</span>
+            <span class="stat-mini__label">L4 规则</span>
+          </div>
         </div>
-        <p class="agent-detail__meta-row">
-          <span class="agent-detail__meta-label">地址</span>
-          <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
-        </p>
-        <p class="agent-detail__meta-row">
-          <span class="agent-detail__meta-label">最后活跃</span>
-          <span class="agent-detail__meta-value agent-detail__last-seen">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
-        </p>
-      </div>
-      <div class="agent-detail__quick-stats">
-        <div class="stat-mini">
-          <span class="stat-mini__value">{{ httpRulesCount }}</span>
-          <span class="stat-mini__label">HTTP 规则</span>
-        </div>
-        <div class="stat-mini">
-          <span class="stat-mini__value">{{ l4RulesCount }}</span>
-          <span class="stat-mini__label">L4 规则</span>
-        </div>
-      </div>
-    </div>
+      </template>
 
-    <div class="agent-detail__metrics">
-      <div class="agent-detail__metric-cell" data-testid="detail-metric-cpu">
-        <div class="agent-detail__metric-header">
-          <i class="i-mdi-cpu agent-detail__metric-icon" />
-          <span class="agent-detail__metric-label">CPU</span>
+      <div class="agent-detail__summary-body">
+        <div class="agent-detail__meta-rows">
+          <p class="agent-detail__meta-row">
+            <span class="agent-detail__meta-label">地址</span>
+            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
+          </p>
+          <p class="agent-detail__meta-row">
+            <span class="agent-detail__meta-label">最后活跃</span>
+            <span class="agent-detail__meta-value agent-detail__last-seen">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
+          </p>
         </div>
-        <div class="agent-detail__metric-value" data-testid="detail-metric-cpu-value">{{ cpuUsage(agentMetricsData) }}</div>
-        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-cpu-percent">{{ percent(agentMetricsData.cpu_usage_percent) }}</div>
-        <div class="agent-detail__metric-bar-bg">
-          <div
-            class="agent-detail__metric-bar"
-            :class="barClass(agentMetricsData.cpu_usage_percent)"
-            :style="{ width: `${clamp(agentMetricsData.cpu_usage_percent)}%` }"
+        <div class="agent-detail__metrics">
+          <BaseMetricBar
+            data-testid="detail-metric-cpu"
+            label="CPU"
+            :value="cpuUsage(agentMetricsData)"
+            :percent="agentMetricsData.cpu_usage_percent"
+            :tone="barTone(agentMetricsData.cpu_usage_percent)"
+          />
+          <BaseMetricBar
+            data-testid="detail-metric-memory"
+            label="内存"
+            :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
+            :percent="agentMetricsData.memory_usage_percent"
+            :tone="barTone(agentMetricsData.memory_usage_percent)"
+          />
+          <BaseMetricBar
+            data-testid="detail-metric-disk"
+            label="磁盘"
+            :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
+            :percent="agentMetricsData.disk_usage_percent"
+            :tone="barTone(agentMetricsData.disk_usage_percent)"
+          />
+          <BaseMetricBar
+            data-testid="detail-metric-network"
+            label="网络"
+            :value="`↓ ${rate(networkMetrics?.rx_bytes_per_second)}`"
+            :unit="`↑ ${rate(networkMetrics?.tx_bytes_per_second)}`"
           />
         </div>
       </div>
-
-      <div class="agent-detail__metric-cell" data-testid="detail-metric-memory">
-        <div class="agent-detail__metric-header">
-          <i class="i-mdi-memory agent-detail__metric-icon" />
-          <span class="agent-detail__metric-label">内存</span>
-        </div>
-        <div class="agent-detail__metric-value" data-testid="detail-metric-memory-value">{{ bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes) }}</div>
-        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-memory-percent">{{ percent(agentMetricsData.memory_usage_percent) }}</div>
-        <div class="agent-detail__metric-bar-bg">
-          <div
-            class="agent-detail__metric-bar"
-            :class="barClass(agentMetricsData.memory_usage_percent)"
-            :style="{ width: `${clamp(agentMetricsData.memory_usage_percent)}%` }"
-          />
-        </div>
-      </div>
-
-      <div class="agent-detail__metric-cell" data-testid="detail-metric-disk">
-        <div class="agent-detail__metric-header">
-          <i class="i-mdi-harddisk agent-detail__metric-icon" />
-          <span class="agent-detail__metric-label">磁盘</span>
-        </div>
-        <div class="agent-detail__metric-value" data-testid="detail-metric-disk-value">{{ bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes) }}</div>
-        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-disk-percent">{{ percent(agentMetricsData.disk_usage_percent) }}</div>
-        <div class="agent-detail__metric-bar-bg">
-          <div
-            class="agent-detail__metric-bar"
-            :class="barClass(agentMetricsData.disk_usage_percent)"
-            :style="{ width: `${clamp(agentMetricsData.disk_usage_percent)}%` }"
-          />
-        </div>
-      </div>
-
-      <div class="agent-detail__metric-cell" data-testid="detail-metric-network">
-        <div class="agent-detail__metric-header">
-          <i class="i-mdi-network agent-detail__metric-icon" />
-          <span class="agent-detail__metric-label">网络</span>
-        </div>
-        <div class="agent-detail__metric-value" data-testid="detail-metric-network-down">↓ {{ rate(networkMetrics?.rx_bytes_per_second) }}</div>
-        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-network-up">↑ {{ rate(networkMetrics?.tx_bytes_per_second) }}</div>
-      </div>
-    </div>
+    </BaseListCard>
 
     <div v-if="agent.last_apply_status === 'failed' && agent.last_apply_message" class="agent-detail__error">
       <div class="error-block">
@@ -249,6 +224,8 @@ import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
+import BaseListCard from '../components/base/BaseListCard.vue'
+import BaseMetricBar from '../components/base/BaseMetricBar.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
 import { useAgents, useUpdateAgent } from '../hooks/useAgents'
@@ -257,7 +234,7 @@ import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSum
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
 import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
-import { barTone, bytesPair, clamp, cpuUsage, percent, rate } from '../utils/agentMetrics.js'
+import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
 import {
   accountedBytes,
   formatBytes,
@@ -367,18 +344,7 @@ const STATUS_TONE = {
   pending: 'warning',
 }
 
-const BAR_TONE_CLASS = {
-  success: 'agent-detail__metric-bar--success',
-  warning: 'agent-detail__metric-bar--warning',
-  danger: 'agent-detail__metric-bar--danger',
-  neutral: 'agent-detail__metric-bar--neutral',
-}
-
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(agent.value)] || 'neutral')
-
-function barClass(value) {
-  return BAR_TONE_CLASS[barTone(value)] || BAR_TONE_CLASS.neutral
-}
 
 function metricsFromAgentStats(stats = {}) {
   if (stats?.metrics) return stats.metrics
@@ -787,6 +753,34 @@ function packageStatusLabel(status) {
 .agent-detail__back { margin-bottom: 1rem; }
 .back-link { color: var(--color-text-secondary); font-size: 0.875rem; text-decoration: none; }
 .back-link:hover { color: var(--amc-green); }
+
+.agent-detail__summary-card {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 0.75rem;
+}
+
+.agent-detail__summary-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--color-text-muted);
+  transition: background 150ms ease;
+}
+
+.agent-detail__summary-card[data-status="success"]::before { background: var(--color-success); }
+.agent-detail__summary-card[data-status="warning"]::before { background: var(--color-warning); }
+.agent-detail__summary-card[data-status="danger"]::before { background: var(--color-danger); }
+.agent-detail__summary-card[data-status="neutral"]::before { background: var(--color-text-muted); }
+
+.agent-detail__summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
 
 .agent-detail__status-card {
   position: relative;
