@@ -18,7 +18,7 @@
         <h4 class="traffic-history-manager__card-title">数据清理</h4>
       </div>
       <p class="traffic-history-manager__card-desc">
-        按保留策略清理过期历史数据。当前策略：小时 {{ policy.hourly_retention_days }} 天、日 {{ policy.daily_retention_months }} 个月、月 {{ policy.monthly_retention_months }} 个月。
+        按保留策略清理过期历史数据。当前策略：小时 {{ policy.hourly_retention_days }} 天、日 {{ policy.daily_retention_months }} 个月、月 {{ policy.monthly_retention_months ?? '—' }} 个月。
       </p>
       <div class="traffic-history-manager__card-actions">
         <button class="btn btn-danger" type="button" :disabled="cleaning" @click="$emit('cleanup')">清理过期数据</button>
@@ -35,7 +35,7 @@ defineProps({
     validator: v =>
       typeof v.hourly_retention_days === 'number' &&
       typeof v.daily_retention_months === 'number' &&
-      typeof v.monthly_retention_months === 'number'
+      (v.monthly_retention_months === null || v.monthly_retention_months === undefined || typeof v.monthly_retention_months === 'number')
   },
   calibrating: { type: Boolean, default: false },
   cleaning: { type: Boolean, default: false }

@@ -12,11 +12,11 @@
       </template>
       <template #header-right>
         <div class="agent-detail__quick-stats">
-          <div class="stat-mini">
+          <div class="stat-mini stat-mini--ghost">
             <span class="stat-mini__value">{{ httpRulesCount }}</span>
             <span class="stat-mini__label">HTTP 规则</span>
           </div>
-          <div class="stat-mini">
+          <div class="stat-mini stat-mini--ghost">
             <span class="stat-mini__value">{{ l4RulesCount }}</span>
             <span class="stat-mini__label">L4 规则</span>
           </div>
@@ -34,7 +34,7 @@
             <span class="agent-detail__meta-value agent-detail__last-seen">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
           </p>
         </div>
-        <div class="agent-detail__metrics">
+        <div class="agent-detail__metrics agent-detail__metrics--relaxed">
           <BaseMetricBar
             data-testid="detail-metric-cpu"
             label="CPU"
@@ -94,7 +94,7 @@
                   <button
                     v-for="option in trafficTrendGranularityOptions"
                     :key="option.value"
-                    class="traffic-trend__mode"
+                    class="traffic-trend__mode traffic-trend__mode--large"
                     :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
                     type="button"
                     @click="trafficTrendGranularity = option.value"
@@ -163,7 +163,7 @@
         <div class="rules-sections">
           <BaseListCard class="rules-card" title="HTTP 规则" :clickable="false">
             <template #header-right>
-              <button class="btn btn-primary" @click="router.push({ path: '/rules', query: { agentId } })">查看全部规则</button>
+              <button class="btn btn-sm btn-secondary rules-card__action" @click="router.push({ path: '/rules', query: { agentId } })">查看全部规则</button>
             </template>
             <div class="rules-preview">
               <div v-for="rule in httpRules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
@@ -176,7 +176,7 @@
 
           <BaseListCard class="rules-card" title="L4 规则" :clickable="false">
             <template #header-right>
-              <button class="btn btn-primary" @click="router.push({ path: '/l4', query: { agentId } })">查看全部规则</button>
+              <button class="btn btn-sm btn-secondary rules-card__action" @click="router.push({ path: '/l4', query: { agentId } })">查看全部规则</button>
             </template>
             <div class="rules-preview">
               <div v-for="rule in l4Rules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
@@ -193,27 +193,27 @@
         <div class="info-sections">
           <BaseListCard class="info-card" title="运行包" :clickable="false">
             <div class="info-grid">
-              <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
-              <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
-              <div class="info-row"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
-              <div class="info-row"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
-              <div class="info-row"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
-              <div class="info-row"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
+              <div class="info-row info-row--clean"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
+              <div class="info-row info-row--clean"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
+              <div class="info-row info-row--clean"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
+              <div class="info-row info-row--clean"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
+              <div class="info-row info-row--clean"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
+              <div class="info-row info-row--clean"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
             </div>
           </BaseListCard>
 
           <BaseListCard class="info-card" title="节点身份" :clickable="false">
             <div class="info-grid">
-              <div class="info-row"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
-              <div class="info-row"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
-              <div class="info-row"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
+              <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
+              <div class="info-row info-row--clean"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
+              <div class="info-row info-row--clean"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
             </div>
           </BaseListCard>
 
           <BaseListCard class="info-card" title="同步状态" :clickable="false">
             <div class="info-grid">
-              <div class="info-row"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
-              <div v-if="agent.last_apply_message" class="info-row"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
+              <div class="info-row info-row--clean"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
+              <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
             </div>
           </BaseListCard>
         </div>
@@ -852,13 +852,13 @@ function packageStatusLabel(status) {
 .stat-mini {
   min-width: 5.5rem;
   text-align: center;
-  padding: 0.625rem 0.75rem;
-  background: var(--color-primary-subtle);
-  border: 1px solid var(--color-primary-200);
+  padding: 0.5rem 0.75rem;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
 }
 
-.stat-mini__value { display: block; font-size: 1.25rem; font-weight: 700; color: var(--color-text-primary); line-height: 1.2; }
+.stat-mini__value { display: block; font-size: 1.125rem; font-weight: 700; color: var(--color-text-primary); line-height: 1.2; }
 .stat-mini__label { font-size: 0.7rem; color: var(--color-text-tertiary); }
 
 .agent-detail__metrics {
@@ -866,6 +866,16 @@ function packageStatusLabel(status) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.5rem;
   margin-bottom: 1rem;
+}
+
+.agent-detail__metrics--relaxed {
+  gap: 1rem;
+  margin-bottom: 0;
+}
+
+.agent-detail__metrics--relaxed :deep(.base-metric-bar__label) {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
 }
 
 .agent-detail__error { margin-bottom: 1rem; }
@@ -887,21 +897,26 @@ function packageStatusLabel(status) {
 .traffic-tab__breakdown { margin-top: 0.5rem; }
 .traffic-tab__breakdown-title { display: block; font-size: 0.8125rem; color: var(--color-text-tertiary); margin-bottom: 0.5rem; }
 .traffic-trend__controls { display: inline-flex; gap: 2px; padding: 2px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
-.traffic-trend__mode { min-width: 2.75rem; padding: 0.3rem 0.55rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.75rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+.traffic-trend__mode { min-width: 3.25rem; padding: 0.45rem 0.85rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.875rem; font-weight: 600; cursor: pointer; font-family: inherit; }
 .traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
 .info-sections { display: flex; flex-direction: column; gap: 1rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
-.info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; border-bottom: 1px solid var(--color-border-subtle); }
-.info-row:last-child { border-bottom: none; }
-.info-row span:first-child { color: var(--color-text-secondary); }
-.info-row span:last-child { color: var(--color-text-primary); font-weight: 500; }
+.info-row,
+.info-row--clean { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; }
+.info-row--clean { padding: 0.625rem 1rem; }
+.info-row span:first-child,
+.info-row--clean span:first-child { color: var(--color-text-secondary); }
+.info-row span:last-child,
+.info-row--clean span:last-child { color: var(--color-text-primary); font-weight: 500; }
 .agent-detail__loading { display: flex; justify-content: center; padding: 3rem; }
 .agent-detail__not-found { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .agent-detail__not-found p { margin: 0; font-size: 1rem; }
 .spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn { padding: 10px 24px; border-radius: var(--radius-full); font-size: var(--text-sm); font-weight: var(--font-semibold); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); border: 1.5px solid transparent; font-family: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; }
+.btn-sm { padding: 0.375rem 0.75rem; font-size: 0.75rem; line-height: 1.25; }
+.rules-card__action { border-radius: var(--radius-lg); }
 .btn-primary { background: var(--color-primary); color: white; }
 .btn-primary:hover { background: var(--color-primary-hover); }
 .btn-secondary { background: transparent; color: var(--color-text-secondary); border: 1.5px solid var(--color-border-default); }

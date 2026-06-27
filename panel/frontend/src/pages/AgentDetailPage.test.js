@@ -9,6 +9,8 @@ let routeParams
 let systemInfo
 let agentRecord
 let currentAgentStats
+let mockHttpRules = []
+let mockL4Rules = []
 const apiCalls = {
   fetchTrafficPolicy: vi.fn(),
   fetchTrafficSummary: vi.fn(),
@@ -248,6 +250,29 @@ describe('AgentDetailPage', () => {
     await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '系统信息').trigger('click')
     await nextTick()
     expect(wrapper.text()).toContain('版本')
+  })
+
+  it('applies focused UI polish styles', async () => {
+    const wrapper = await mountPage()
+
+    const rulesActions = wrapper.findAll('.rules-card__action')
+    expect(rulesActions.length).toBe(2)
+    for (const btn of rulesActions) {
+      expect(btn.classes()).toContain('btn-sm')
+      expect(btn.classes()).toContain('btn-secondary')
+      expect(btn.classes()).not.toContain('btn-primary')
+    }
+
+    expect(wrapper.find('.stat-mini--ghost').exists()).toBe(true)
+    expect(wrapper.find('.agent-detail__metrics--relaxed').exists()).toBe(true)
+
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.traffic-trend__mode--large').exists()).toBe(true)
+
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '系统信息').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.info-row--clean').exists()).toBe(true)
   })
 
   it('does not expose outbound proxy editing from the system info tab', async () => {

@@ -56,4 +56,15 @@ describe('TrafficHistoryManager', () => {
       expect(btn.attributes('disabled')).toBeDefined()
     }
   })
+
+  it('renders with null monthly retention months', () => {
+    const wrapper = mountManager({
+      policy: {
+        hourly_retention_days: 30,
+        daily_retention_months: 3,
+        monthly_retention_months: null
+      }
+    })
+    expect(wrapper.text()).toContain('月 — 个月')
+  })
 })
