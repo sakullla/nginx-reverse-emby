@@ -86,54 +86,53 @@
 
     <div class="agent-detail__tab-content">
       <div v-if="activeTab === 'traffic'" class="tab-panel">
-        <section class="traffic-section">
-          <h3 class="traffic-section__title">概览</h3>
-          <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" />
-          <div class="traffic-tab__trend">
-            <div class="traffic-tab__trend-header">
-              <span>趋势</span>
-              <div class="traffic-trend__controls" role="group" aria-label="趋势粒度">
-                <button
-                  v-for="option in trafficTrendGranularityOptions"
-                  :key="option.value"
-                  class="traffic-trend__mode"
-                  :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
-                  type="button"
-                  @click="trafficTrendGranularity = option.value"
-                >
-                  {{ option.label }}
-                </button>
+        <div class="traffic-sections">
+          <BaseListCard class="traffic-card" title="概览" :clickable="false">
+            <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" />
+            <div class="traffic-tab__trend">
+              <div class="traffic-tab__trend-header">
+                <span>趋势</span>
+                <div class="traffic-trend__controls" role="group" aria-label="趋势粒度">
+                  <button
+                    v-for="option in trafficTrendGranularityOptions"
+                    :key="option.value"
+                    class="traffic-trend__mode"
+                    :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
+                    type="button"
+                    @click="trafficTrendGranularity = option.value"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
               </div>
+              <TrafficTrendChart
+                :points="trafficTrendPoints"
+                :granularity="trafficTrendGranularity"
+                :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
+                :refresh-key="agentStatsRefreshKey"
+              />
             </div>
-            <TrafficTrendChart
-              :points="trafficTrendPoints"
-              :granularity="trafficTrendGranularity"
-              :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
-              :refresh-key="agentStatsRefreshKey"
+            <div class="traffic-tab__breakdown">
+              <span class="traffic-tab__breakdown-title">分项流量（点击查看趋势）</span>
+              <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
+            </div>
+          </BaseListCard>
+
+          <BaseListCard class="traffic-card" title="策略设置" :clickable="false">
+            <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
+          </BaseListCard>
+
+          <BaseListCard class="traffic-card" title="历史管理" :clickable="false">
+            <TrafficHistoryManager
+              :policy="trafficPolicyForm"
+              :calibrating="calibrateTrafficMutation.isPending.value"
+              :cleaning="cleanupTrafficMutation.isPending.value"
+              @calibrate="calibrateModalVisible = true"
+              @calibrate-zero="showCalibrateZeroConfirm"
+              @cleanup="showCleanupConfirm"
             />
-          </div>
-          <div class="traffic-tab__breakdown">
-            <span class="traffic-tab__breakdown-title">分项流量（点击查看趋势）</span>
-            <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
-          </div>
-        </section>
-
-        <section class="traffic-section">
-          <h3 class="traffic-section__title">策略设置</h3>
-          <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
-        </section>
-
-        <section class="traffic-section">
-          <h3 class="traffic-section__title">历史管理</h3>
-          <TrafficHistoryManager
-            :policy="trafficPolicyForm"
-            :calibrating="calibrateTrafficMutation.isPending.value"
-            :cleaning="cleanupTrafficMutation.isPending.value"
-            @calibrate="calibrateModalVisible = true"
-            @calibrate-zero="showCalibrateZeroConfirm"
-            @cleanup="showCleanupConfirm"
-          />
-        </section>
+          </BaseListCard>
+        </div>
 
         <TrafficTrendModal
           v-model:visible="trendModal.visible"
@@ -1017,6 +1016,8 @@ function packageStatusLabel(status) {
 .btn-secondary { background: transparent; color: var(--color-text-secondary); border: 1.5px solid var(--color-border-default); }
 .btn-secondary:hover { border-color: var(--amc-green); color: var(--amc-green); background: var(--amc-green-subtle); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.traffic-sections { display: flex; flex-direction: column; gap: 1rem; }
+.traffic-card:deep(.base-list-card__body) { gap: 1rem; }
 .traffic-section { margin-bottom: 1rem; }
 .traffic-section__title { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); margin: 0 0 0.75rem; }
 
