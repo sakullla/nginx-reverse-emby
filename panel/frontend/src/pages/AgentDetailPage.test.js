@@ -221,34 +221,31 @@ describe('AgentDetailPage', () => {
 
     const wrapper = await mountPage()
 
-    expect(wrapper.find('.agent-detail__status-card').exists()).toBe(true)
+    expect(wrapper.find('.agent-detail__summary-card').exists()).toBe(true)
     expect(wrapper.findComponent(AgentStatusBadge).exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-metric-cpu"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-metric-memory"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-metric-disk"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-metric-network"]').exists()).toBe(true)
 
-    expect(wrapper.find('[data-testid="detail-metric-cpu-value"]').text()).toContain('1.0 / 8 核')
-    expect(wrapper.find('[data-testid="detail-metric-cpu-percent"]').text()).toContain('12.4%')
-    expect(wrapper.find('[data-testid="detail-metric-memory-value"]').text()).toContain('10.0 GiB / 16.0 GiB')
-    expect(wrapper.find('[data-testid="detail-metric-memory-percent"]').text()).toContain('63.8%')
-    expect(wrapper.find('[data-testid="detail-metric-disk-value"]').text()).toContain('398.0 GiB / 512.0 GiB')
-    expect(wrapper.find('[data-testid="detail-metric-disk-percent"]').text()).toContain('77.0%')
-    expect(wrapper.find('[data-testid="detail-metric-network-down"]').text()).toContain('2.00 KiB/s')
-    expect(wrapper.find('[data-testid="detail-metric-network-up"]').text()).toContain('1.00 KiB/s')
+    expect(wrapper.find('[data-testid="detail-metric-cpu"] .base-metric-bar__value').text()).toContain('1.0 / 8 核')
+    expect(wrapper.find('[data-testid="detail-metric-memory"] .base-metric-bar__value').text()).toContain('10.0 GiB / 16.0 GiB')
+    expect(wrapper.find('[data-testid="detail-metric-disk"] .base-metric-bar__value').text()).toContain('398.0 GiB / 512.0 GiB')
+    expect(wrapper.find('[data-testid="detail-metric-network"] .base-metric-bar__value').text()).toContain('↓ 2.00 KiB/s')
+    expect(wrapper.find('[data-testid="detail-metric-network"] .base-metric-bar__value').text()).toContain('↑ 1.00 KiB/s')
 
     expect(wrapper.text()).toContain('边缘节点-01')
     expect(wrapper.text()).toContain('主控')
   })
 
-  it('switches between HTTP, L4 and Info tabs', async () => {
+  it('switches between Rules and Info tabs', async () => {
     const wrapper = await mountPage()
 
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === 'L4 规则').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '规则').trigger('click')
     await nextTick()
     expect(wrapper.text()).toContain('查看全部规则')
 
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '系统信息').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '系统信息').trigger('click')
     await nextTick()
     expect(wrapper.text()).toContain('版本')
   })
@@ -257,7 +254,7 @@ describe('AgentDetailPage', () => {
     agentRecord.is_local = true
     const wrapper = await mountPage()
 
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '系统信息').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '系统信息').trigger('click')
 
     expect(wrapper.find('#agent-outbound-proxy').exists()).toBe(false)
 
@@ -265,7 +262,7 @@ describe('AgentDetailPage', () => {
     agentRecord.is_local = false
     const remoteWrapper = await mountPage()
 
-    await remoteWrapper.findAll('.tab-btn').find((button) => button.text() === '系统信息').trigger('click')
+    await remoteWrapper.findAll('.base-tabs__tab').find((button) => button.text() === '系统信息').trigger('click')
     expect(remoteWrapper.find('#agent-outbound-proxy').exists()).toBe(false)
     expect(remoteWrapper.find('[data-test="save-outbound-proxy"]').exists()).toBe(false)
   })
@@ -274,7 +271,7 @@ describe('AgentDetailPage', () => {
     const wrapper = await mountPage()
 
     expect(wrapper.text()).toContain('流量统计')
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
 
     expect(wrapper.text()).toContain('趋势')
     expect(wrapper.text()).toContain('额度')
@@ -289,7 +286,7 @@ describe('AgentDetailPage', () => {
 
   it('renders accounted traffic breakdowns in traffic tab', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     expect(wrapper.text()).toContain('分项流量')
@@ -312,7 +309,7 @@ describe('AgentDetailPage', () => {
 
   it('renders the traffic trend chart canvas', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     expect(wrapper.find('.traffic-trend-chart').exists()).toBe(true)
@@ -320,7 +317,7 @@ describe('AgentDetailPage', () => {
 
   it('passes agent stats refresh timestamp to the traffic trend chart', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     const chart = wrapper.findComponent({ name: 'TrafficTrendChart' })
@@ -329,7 +326,7 @@ describe('AgentDetailPage', () => {
 
   it('switches traffic trend granularity', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     await wrapper.findAll('.traffic-trend__mode').find((button) => button.text() === '月').trigger('click')
@@ -344,7 +341,7 @@ describe('AgentDetailPage', () => {
 
     const wrapper = await mountPage()
 
-    expect(wrapper.findAll('.tab-btn').map((button) => button.text())).not.toContain('流量统计')
+    expect(wrapper.findAll('.base-tabs__tab').map((button) => button.text())).not.toContain('流量统计')
     expect(wrapper.text()).not.toContain('月额度')
     expect(apiCalls.fetchTrafficPolicy).not.toHaveBeenCalled()
     expect(apiCalls.fetchTrafficSummary).not.toHaveBeenCalled()
@@ -353,7 +350,7 @@ describe('AgentDetailPage', () => {
 
   it('does not submit invalid traffic policy values', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     const quotaInput = wrapper.find('input[placeholder="留空表示无限制"]')
@@ -365,7 +362,7 @@ describe('AgentDetailPage', () => {
 
   it('shows monthly quota with units and saves bytes', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     const quotaInput = wrapper.find('input[placeholder="留空表示无限制"]')
@@ -384,7 +381,7 @@ describe('AgentDetailPage', () => {
 
   it('does not normalize invalid traffic policy integers into defaults', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     const numberInputs = wrapper.findAll('input[type="number"]')
@@ -405,7 +402,7 @@ describe('AgentDetailPage', () => {
 
   it('does not cleanup traffic history when confirmation is cancelled', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
@@ -420,7 +417,7 @@ describe('AgentDetailPage', () => {
 
   it('cleans up traffic history after confirmation', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
@@ -434,7 +431,7 @@ describe('AgentDetailPage', () => {
 
   it('calibrates traffic via modal', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '校准为指定值').trigger('click')
@@ -456,7 +453,7 @@ describe('AgentDetailPage', () => {
 
   it('calibrates traffic current usage to zero after confirmation', async () => {
     const wrapper = await mountPage()
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '从现在归零').trigger('click')
