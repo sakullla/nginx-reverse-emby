@@ -137,12 +137,23 @@ func applyMonitorNetworkRates(current *service.AgentMonitorAgent, previous servi
 	network := current.Metrics.Network
 	previousNetwork := previous.Metrics.Network
 	recomputed := false
-	if network.RXBytes != nil && previousNetwork.RXBytes != nil && *network.RXBytes > *previousNetwork.RXBytes {
+	counterReset := false
+	if network.RXBytes != nil && previousNetwork.RXBytes != nil && *network.RXBytes < *previousNetwork.RXBytes {
+		counterReset = true
+	}
+	if network.TXBytes != nil && previousNetwork.TXBytes != nil && *network.TXBytes < *previousNetwork.TXBytes {
+		counterReset = true
+	}
+	if counterReset {
+		clearMonitorNetworkRates(network, "counter_reset")
+		return
+	}
+	if network.RXBytes != nil && previousNetwork.RXBytes != nil {
 		rate := float64(*network.RXBytes-*previousNetwork.RXBytes) / windowSeconds
 		network.RXBytesPerSecond = &rate
 		recomputed = true
 	}
-	if network.TXBytes != nil && previousNetwork.TXBytes != nil && *network.TXBytes > *previousNetwork.TXBytes {
+	if network.TXBytes != nil && previousNetwork.TXBytes != nil {
 		rate := float64(*network.TXBytes-*previousNetwork.TXBytes) / windowSeconds
 		network.TXBytesPerSecond = &rate
 		recomputed = true
@@ -154,6 +165,18 @@ func applyMonitorNetworkRates(current *service.AgentMonitorAgent, previous servi
 		network.RateAvailable = true
 		network.RateUnavailableWhy = ""
 	}
+}
+
+func clearMonitorNetworkRates(network *service.AgentMonitorNetwork, reason string) {
+	if network == nil {
+		return
+	}
+	network.RXBytesPerSecond = nil
+	network.TXBytesPerSecond = nil
+	network.RateWindowSeconds = nil
+	network.RateCalculatedAt = ""
+	network.RateAvailable = false
+	network.RateUnavailableWhy = reason
 }
 
 func writeMonitorStreamMessage(w http.ResponseWriter, flusher http.Flusher, messageType string, payload any) bool {

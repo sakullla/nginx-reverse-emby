@@ -77,6 +77,18 @@ describe('agentMetrics', () => {
       expect(cpuUsage({ cpu_usage_percent: 12.4 })).toBe('12.4%')
     })
 
+    it('treats null core fields as missing', () => {
+      expect(cpuUsage({
+        cpu_usage_percent: 12.4,
+        cpu_used_cores: null,
+        cpu_total_cores: null
+      })).toBe('12.4%')
+      expect(cpuUsage({
+        cpu_used_cores: null,
+        cpu_total_cores: null
+      })).toBe('—')
+    })
+
     it('returns placeholder when nothing is available', () => {
       expect(cpuUsage({})).toBe('—')
     })

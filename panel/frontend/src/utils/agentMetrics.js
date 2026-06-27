@@ -43,13 +43,18 @@ export function rate(value) {
 }
 
 export function cpuUsage(source = {}) {
-  const used = Number(source.cpu_used_cores)
-  const total = Number(source.cpu_total_cores)
+  const used = metricNumber(source.cpu_used_cores)
+  const total = metricNumber(source.cpu_total_cores)
   if (Number.isFinite(used) && Number.isFinite(total) && total > 0) {
     return `${used.toFixed(1)} / ${total.toFixed(0)} 核`
   }
   if (Number.isFinite(used)) return `${used.toFixed(1)} 核`
   return percent(source.cpu_usage_percent)
+}
+
+function metricNumber(value) {
+  if (value === null || value === undefined || value === '') return NaN
+  return Number(value)
 }
 
 export function bytesPair(usedValue, totalValue) {

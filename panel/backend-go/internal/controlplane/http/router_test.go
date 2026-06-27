@@ -1712,7 +1712,7 @@ func TestAgentMonitorStreamRefreshesSnapshotOnInterval(t *testing.T) {
 	}
 }
 
-func TestSnapshotWithMonitorRatesPreservesRatesWhenCountersDoNotAdvance(t *testing.T) {
+func TestSnapshotWithMonitorRatesRecomputesZeroWhenCountersDoNotAdvance(t *testing.T) {
 	previous := service.AgentMonitorSnapshot{
 		GeneratedAt: "2026-06-21T12:00:00Z",
 		Agents: []service.AgentMonitorAgent{{
@@ -1755,14 +1755,60 @@ func TestSnapshotWithMonitorRatesPreservesRatesWhenCountersDoNotAdvance(t *testi
 	if network == nil {
 		t.Fatal("network = nil")
 	}
-	if network.RXBytesPerSecond == nil || *network.RXBytesPerSecond != 33 {
-		t.Fatalf("rx rate = %+v, want preserved 33 B/s", network)
+	if network.RXBytesPerSecond == nil || *network.RXBytesPerSecond != 0 {
+		t.Fatalf("rx rate = %+v, want recomputed 0 B/s", network)
 	}
-	if network.TXBytesPerSecond == nil || *network.TXBytesPerSecond != 44 {
-		t.Fatalf("tx rate = %+v, want preserved 44 B/s", network)
+	if network.TXBytesPerSecond == nil || *network.TXBytesPerSecond != 0 {
+		t.Fatalf("tx rate = %+v, want recomputed 0 B/s", network)
 	}
-	if network.RateCalculatedAt != "2026-06-21T11:59:50Z" {
-		t.Fatalf("rate calculated at = %q, want preserved heartbeat sample time", network.RateCalculatedAt)
+	if network.RateCalculatedAt != "2026-06-21T12:00:05Z" || network.RateWindowSeconds == nil || *network.RateWindowSeconds != 5 || !network.RateAvailable {
+		t.Fatalf("rate metadata = %+v, want refreshed 5s available sample", network)
+	}
+}
+
+func TestSnapshotWithMonitorRatesClearsRatesOnCounterReset(t *testing.T) {
+	previous := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:00Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:     "edge-a",
+			Status: "online",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes: uint64Ptr(1000),
+					TXBytes: uint64Ptr(2000),
+				},
+			},
+		}},
+	}
+	current := service.AgentMonitorSnapshot{
+		GeneratedAt: "2026-06-21T12:00:05Z",
+		Agents: []service.AgentMonitorAgent{{
+			ID:     "edge-a",
+			Status: "online",
+			Metrics: service.AgentMonitorMetrics{
+				Network: &service.AgentMonitorNetwork{
+					RXBytes:           uint64Ptr(900),
+					TXBytes:           uint64Ptr(2100),
+					RXBytesPerSecond:  float64Ptr(33),
+					TXBytesPerSecond:  float64Ptr(44),
+					RateWindowSeconds: float64Ptr(30),
+					RateCalculatedAt:  "2026-06-21T11:59:50Z",
+					RateAvailable:     true,
+				},
+			},
+		}},
+	}
+
+	refreshed := snapshotWithMonitorRates(current, previous)
+	network := refreshed.Agents[0].Metrics.Network
+	if network == nil {
+		t.Fatal("network = nil")
+	}
+	if network.RXBytesPerSecond != nil || network.TXBytesPerSecond != nil || network.RateWindowSeconds != nil || network.RateCalculatedAt != "" {
+		t.Fatalf("network rates = %+v, want cleared on counter reset", network)
+	}
+	if network.RateAvailable || network.RateUnavailableWhy != "counter_reset" {
+		t.Fatalf("rate availability = %+v, want counter_reset unavailable", network)
 	}
 }
 
