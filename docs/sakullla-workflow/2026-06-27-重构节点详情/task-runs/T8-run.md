@@ -36,3 +36,15 @@
 - commit_ref: 57401014
 - summary: T8 regression gate passed; updated stale test selectors and assertions to align with refactored AgentDetailPage UI.
 - verification_debt: closed
+
+## Record
+
+event: record
+recorded_at: 2026-06-27T23:24:18
+summary: T8 regression gate closed verification debt from T3-T7
+evidence_refs:
+  - task-runs/T8-run.md#t8-run-最终回归验证门
+commit_ref: d6ff5776
+verification_debt
+verification_debt_status=closed
+cleared_deferred_tasks=T3,T4,T5,T6,T7

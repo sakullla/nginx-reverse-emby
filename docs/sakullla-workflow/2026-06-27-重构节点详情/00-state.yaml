@@ -1,0 +1,371 @@
+workflow_id: 2026-06-27-重构节点详情
+workflow_dir: docs/sakullla-workflow/2026-06-27-重构节点详情
+topic: 重构节点详情
+knowledge_context:
+  status: missing
+  last_refresh_request: ""
+  translation_file: 00-knowledge-translation.yaml
+phase: exploration
+context_ledger:
+  summary: 用户已确认执行偏好：max_parallel。gates.execution_user_confirmed=confirmed，execution_mode.user_preference=max_parallel。
+  current_focus: 进入执行阶段，由 execute-task-workflow 按 T1-T8 推进。
+  next_action: scheduler 路由到 execute-task-workflow 开始执行。
+  key_refs:
+    - ref: docs/requirements/2026-06-27-重构节点详情.md
+      note: 已确认需求文档
+    - ref: docs/sakullla-workflow/2026-06-27-重构节点详情/01-exploration.md
+      note: 探索报告：AgentDetailPage 现状、组件、主题、路由与回归验证
+    - ref: docs/sakullla-workflow/2026-06-27-重构节点详情/02-technical-solution.md
+      note: 已确认技术方案
+    - ref: docs/sakullla-workflow/2026-06-27-重构节点详情/03-execution-plan.md
+      note: 已确认执行计划，执行偏好 max_parallel
+  open_questions: []
+  updated_by: using-workflow
+  updated_at: 2026-06-27
+gates:
+  solution_user_confirmed: confirmed
+  execution_user_confirmed: confirmed
+  delivery_gate: pending
+execution_mode:
+  user_preference: max_parallel
+tasks:
+  - id: T1
+    title: 创建 BaseTabs.vue 通用标签页组件
+    status: done
+    work:
+      goal: 提取通用标签页组件，供 AgentDetailPage.vue 和后续页面复用。
+      depends_on: []
+      non_goals: []
+    risk_complexity:
+      score: 4
+      level: medium
+    execution:
+      allowed_files: [panel/frontend/src/components/base/BaseTabs.vue, "`panel/frontend/src/components/base/BaseTabs.test.js`（新增测试）", "`panel/frontend/src/styles/themes.css`（只读参考，不修改）"]
+      forbidden_files: [panel/frontend/src/pages/AgentDetailPage.vue, 后端代码]
+      integration_target: main
+      base_ref: workflow_baseline
+      commit_policy: per_task
+      verify:
+        commands: [cd panel/frontend && npm test -- BaseTabs.test.js]
+        evidence: ""
+      tests:
+        unit_test: required
+        responsibility: 覆盖 BaseTabs 渲染、事件、active 态、空数组。
+        minimum_command: cd panel/frontend && npm test -- BaseTabs.test.js
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: ""
+    result:
+      run_ref: docs/sakullla-workflow/2026-06-27-重构节点详情/task-runs/T1-run.md
+      commit_ref: 8375e738321c7f3be3ebfefe8b8dbdd1bf8b0301
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "docs/sakullla-workflow/2026-06-27-重构节点详情/task-runs/T1-run.md#Review"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T2
+    title: 创建 BaseMetricBar.vue 通用指标条组件
+    status: done
+    work:
+      goal: 提取通用指标条/指标卡片组件，统一展示 CPU、内存、磁盘、网络等资源指标。
+      depends_on: []
+      non_goals: []
+    risk_complexity:
+      score: 4
+      level: medium
+    execution:
+      allowed_files: [panel/frontend/src/components/base/BaseMetricBar.vue, "`panel/frontend/src/components/base/BaseMetricBar.test.js`（新增测试）", "`panel/frontend/src/styles/themes.css`（只读参考）"]
+      forbidden_files: [panel/frontend/src/pages/AgentDetailPage.vue, 后端代码]
+      integration_target: main
+      base_ref: workflow_baseline
+      commit_policy: per_task
+      verify:
+        commands: [cd panel/frontend && npm test -- BaseMetricBar.test.js]
+        evidence: ""
+      tests:
+        unit_test: required
+        responsibility: 覆盖 BaseMetricBar 渲染、percent clamp、tone 类名。
+        minimum_command: cd panel/frontend && npm test -- BaseMetricBar.test.js
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: ""
+    result:
+      run_ref: docs/sakullla-workflow/2026-06-27-重构节点详情/task-runs/T2-run.md
+      commit_ref: 078446fc1a3c00823c183a8adc23c0f82181733d
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "docs/sakullla-workflow/2026-06-27-重构节点详情/task-runs/T2-run.md#Review"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T3
+    title: 重构顶部状态摘要区
+    status: done
+    work:
+      goal: 将 AgentDetailPage.vue 顶部状态卡片和指标条改造为卡片化摘要区，使用 BaseListCard、AgentStatusBadge、BaseMetricBar。
+      depends_on: [T1, T2]
+      non_goals: []
+    risk_complexity:
+      score: 5
+      level: medium
+    execution:
+      allowed_files: [panel/frontend/src/pages/AgentDetailPage.vue, "`panel/frontend/src/utils/agentMetrics.js`（只读参考）"]
+      forbidden_files: [panel/frontend/src/components/base/BaseTabs.vue, "`panel/frontend/src/components/base/BaseMetricBar.vue`（只消费，不修改）", 后端代码]
+      integration_target: main
+      base_ref: workflow_baseline
+      commit_policy: per_task
+      verify:
+        commands: [cd panel/frontend && npm run build]
+        evidence: ""
+      tests:
+        unit_test: deferred_to_gate
+        responsibility: "T8 覆盖 AgentDetailPage.test.js 中“renders status card, AgentStatusBadge and four metric cards”等用例。"
+        minimum_command: ""
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: ""
+    result:
+      run_ref: task-runs/T3-run.md
+      commit_ref: 9de4b0bb
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "agent-cards/reviewer-T3-agentdetail-top-summary-result.md#review-result-t3-agentdetailpage-top-summary"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T4
+    title: 重构规则标签页（HTTP + L4）
+    status: done
+    work:
+      goal: 将当前 http 和 l4 两个独立标签页合并为单一“规则”标签页，内部使用 BaseTabs 或分区展示 HTTP/L4 规则预览和跳转链接。
+      depends_on: [T1]
+      non_goals: []
+    risk_complexity:
+      score: 5
+      level: medium
+    execution:
+      allowed_files: [panel/frontend/src/pages/AgentDetailPage.vue]
+      forbidden_files: ["`panel/frontend/src/components/base/BaseTabs.vue`（只消费，不修改）", 后端代码]
+      integration_target: main
+      base_ref: workflow_baseline
+      commit_policy: per_task
+      verify:
+        commands: [cd panel/frontend && npm run build]
+        evidence: ""
+      tests:
+        unit_test: deferred_to_gate
+        responsibility: T8 覆盖 AgentDetailPage.test.js 中 Tab 切换和规则跳转用例。
+        minimum_command: ""
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: ""
+    result:
+      run_ref: task-runs/T4-run.md
+      commit_ref: 2932a193
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "agent-cards/reviewer-T4-rules-tab-merge-result.md#review-result-t4-rules-tab-merge"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T5
+    title: 重构流量标签页（外层卡片化）
+    status: done
+    work:
+      goal: 将流量标签页外层改为卡片化布局，内部继续复用现有流量组件。
+      depends_on: [T1]
+      non_goals: []
+    risk_complexity:
+      score: 4
+      level: medium
+    execution:
+      allowed_files: [panel/frontend/src/pages/AgentDetailPage.vue]
+      forbidden_files: ["`panel/frontend/src/components/traffic/*.vue`（不修改内部实现）", 后端代码]
+      integration_target: main
+      base_ref: workflow_baseline
+      commit_policy: per_task
+      verify:
+        commands: [cd panel/frontend && npm run build]
+        evidence: ""
+      tests:
+        unit_test: deferred_to_gate
+        responsibility: T8 覆盖 AgentDetailPage.test.js 中流量相关用例。
+        minimum_command: ""
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: ""
+    result:
+      run_ref: task-runs/T5-run.md
+      commit_ref: bda8ff99
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "agent-cards/reviewer-T5-traffic-tab-cardify-result.md#review-result-t5-traffic-tab-cardify"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T6
+    title: 重构系统信息标签页
+    status: done
+    work:
+      goal: 将当前 info 标签页的扁平列表改为卡片化分组展示。
+      depends_on: [T1]
+      non_goals: []
+    risk_complexity:
+      score: 3
+      level: medium
+    execution:
+      allowed_files: [panel/frontend/src/pages/AgentDetailPage.vue]
+      forbidden_files: [后端代码]
+      integration_target: main
+      base_ref: workflow_baseline
+      commit_policy: per_task
+      verify:
+        commands: [cd panel/frontend && npm run build]
+        evidence: ""
+      tests:
+        unit_test: deferred_to_gate
+        responsibility: T8 覆盖 AgentDetailPage.test.js 中系统信息相关用例。
+        minimum_command: ""
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: true
+        reason: ""
+    result:
+      run_ref: task-runs/T6-run.md
+      commit_ref: 646e53bf
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "agent-cards/reviewer-T6-system-info-cardify-result.md#review-result-t6-system-info-cardify"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T7
+    title: 清理自定义 scoped CSS
+    status: done
+    work:
+      goal: 删除或大幅简化 AgentDetailPage.vue 中的自定义 scoped CSS，将视觉委托给共享组件和主题变量。
+      depends_on: [T3, T4, T5, T6]
+      non_goals: []
+    risk_complexity:
+      score: 4
+      level: medium
+    execution:
+      allowed_files: [panel/frontend/src/pages/AgentDetailPage.vue]
+      forbidden_files: ["`panel/frontend/src/components/base/*.vue`（不修改）", "`panel/frontend/src/components/traffic/*.vue`（不修改）", 后端代码]
+      integration_target: main
+      base_ref: workflow_baseline
+      commit_policy: per_task
+      verify:
+        commands: [cd panel/frontend && npm run build]
+        evidence: ""
+      tests:
+        unit_test: deferred_to_gate
+        responsibility: T8 运行完整回归测试。
+        minimum_command: ""
+        not_applicable_reason: ""
+      delegate_policy:
+        allowed: false
+        reason: ""
+    result:
+      run_ref: task-runs/T7-run.md
+      commit_ref: c1619d32
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "agent-cards/reviewer-T7-css-cleanup-result.md#review-result-t7-css-cleanup"
+      unresolved: ""
+    blocked_reason: ""
+  - id: T8
+    title: 回归验证门
+    status: done
+    work:
+      goal: 运行完整构建和测试，确认重构后功能不回归。
+      depends_on: [T7]
+      non_goals: []
+    risk_complexity:
+      score: 2
+      level: low
+    execution:
+      allowed_files: ["`panel/frontend/src/pages/AgentDetailPage.test.js`（只读，确认测试通过）", "`panel/frontend/src/components/canonicalBackendDisplay.test.js`（只读）"]
+      forbidden_files: [所有实现文件（本任务不修改代码）]
+      integration_target: main
+      base_ref: workflow_baseline
+      commit_policy: per_task
+      verify:
+        commands: [cd panel/frontend && npm run build, cd panel/frontend && npm test]
+        evidence: ""
+      tests:
+        unit_test: not_applicable
+        responsibility: 本任务为验证门，不新增代码，只运行已有测试套件。
+        minimum_command: ""
+        not_applicable_reason: 本任务为验证门，不新增代码，只运行已有测试套件。
+      delegate_policy:
+        allowed: false
+        reason: ""
+    result:
+      run_ref: task-runs/T8-run.md
+      commit_ref: d6ff5776
+      checkpoint_ref: ""
+    review:
+      status: passed
+      evidence: "task-runs/T8-run.md#t8-run-最终回归验证门"
+      unresolved: ""
+    blocked_reason: ""
+active_task_id: ""
+artifacts:
+  delivery_docs: not_needed
+delivery_evidence:
+  compile: pending
+  compile_ref: ""
+  test: pending
+  test_ref: ""
+  traceability: pending
+  traceability_ref: ""
+  checklist: pending
+  checklist_ref: ""
+  freshness: pending
+  freshness_ref: ""
+delivery:
+  status: pending
+  done_at: ""
+blocker:
+  active: false
+  kind: ""
+  source_skill: ""
+  resume_skill: ""
+  resume_kind: ""
+  resume_task_id: ""
+  resume_artifact: ""
+  reason: ""
+  clear_rule: ""
+  awaiting_user_action: false
+  user_action_message: ""
+  discussion_draft: ""
+  user_response_summary: ""
+worktree:
+  enabled: false
+  requested: false
+  root_path: ""
+  root_kind: auto
+  status: inactive
+  current_task_id: ""
+  current_branch: ""
+  current_path: ""
+  base_branch: ""
+  topic_branch: ""
+  verify_baseline: ""
+  verify_baseline_ref: ""
+  last_prepared_at: ""
+  task_refs: null
+stage_files:
+  00-knowledge-translation.yaml: missing
+  01-exploration.md: exists
+  02-technical-solution.md: exists
+  03-execution-plan.md: exists
+  04-delivery-gate.md: missing
