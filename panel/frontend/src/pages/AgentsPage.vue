@@ -144,7 +144,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onScopeDispose } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents, useUpdateAgent, useDeleteAgent } from '../hooks/useAgents'
 import { useAgentMonitorStream } from '../hooks/useAgentMonitorStream'
@@ -199,6 +199,22 @@ const editOutboundProxy = ref('')
 const deletingAgent = ref(null)
 const applying = ref(false)
 
+// Scope disposal guard for async callbacks and timers
+let disposed = false
+let copyTimeout = null
+
+function clearCopyTimeout() {
+  if (copyTimeout) {
+    clearTimeout(copyTimeout)
+    copyTimeout = null
+  }
+}
+
+onScopeDispose(() => {
+  disposed = true
+  clearCopyTimeout()
+})
+
 // Search
 const searchInputRef = ref(null)
 function focusSearch() { searchInputRef.value?.focus() }
@@ -209,12 +225,18 @@ async function handleApply() {
   try {
     await applyConfig(selectedAgentId.value)
   } finally {
-    applying.value = false
+    if (!disposed) {
+      applying.value = false
+    }
   }
 }
 
 const systemInfo = ref(null)
-fetchSystemInfo().then(info => { systemInfo.value = info }).catch(() => {})
+fetchSystemInfo().then(info => {
+  if (!disposed) {
+    systemInfo.value = info
+  }
+}).catch(() => {})
 
 const joinCommands = computed(() => {
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -268,7 +290,13 @@ async function copyCommand() {
     }
     messageStore.success('已复制到剪贴板')
     copied.value = true
-    setTimeout(() => { copied.value = false }, 1500)
+    clearCopyTimeout()
+    copyTimeout = setTimeout(() => {
+      copyTimeout = null
+      if (!disposed) {
+        copied.value = false
+      }
+    }, 1500)
   } catch (err) {
     console.error('Copy failed:', err)
     messageStore.error('复制失败，请手动选择复制')
