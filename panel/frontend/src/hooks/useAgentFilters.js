@@ -10,9 +10,15 @@ function normalizeAgentView(value) {
   return normalized === 'list' ? 'list' : 'monitor'
 }
 
-function lastSeenAtMinuteTime(agent) {
+function lastSeenAtRecencyRank(agent) {
   const time = new Date(agent.last_seen_at || 0).getTime()
-  return Number.isNaN(time) ? 0 : Math.floor(time / 60000)
+  if (Number.isNaN(time)) return 0
+  const minutesAgo = Math.floor((Date.now() - time) / 60000)
+  if (minutesAgo < 1) return 4
+  if (minutesAgo < 5) return 3
+  if (minutesAgo < 15) return 2
+  if (minutesAgo < 60) return 1
+  return 0
 }
 
 function totalRulesCount(agent) {
@@ -154,7 +160,7 @@ export function useAgentFilters(agentsRef) {
           break
         case 'last_seen_at':
         default:
-          comparison = lastSeenAtMinuteTime(a) - lastSeenAtMinuteTime(b)
+          comparison = lastSeenAtRecencyRank(a) - lastSeenAtRecencyRank(b)
           if (comparison === 0) {
             comparison = totalRulesCount(a) - totalRulesCount(b)
           }
