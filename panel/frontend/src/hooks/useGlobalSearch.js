@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/vue-query'
 import * as api from '../api'
-import { ref, watch } from 'vue'
-import { computed } from 'vue'
+import { ref, watch, computed, onScopeDispose } from 'vue'
 
 function httpBackendUrls(rule) {
   if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
@@ -30,10 +29,19 @@ export function useGlobalSearch(query) {
   const debouncedQuery = ref('')
   let timer = null
 
+  function clearTimer() {
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+  }
+
   watch(query, (val) => {
-    clearTimeout(timer)
+    clearTimer()
     timer = setTimeout(() => { debouncedQuery.value = val }, 400)
   })
+
+  onScopeDispose(clearTimer)
 
   return useQuery({
     queryKey: ['globalSearch', debouncedQuery],

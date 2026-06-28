@@ -4,92 +4,67 @@
       <RouterLink to="/agents" class="back-link">← 返回节点管理</RouterLink>
     </div>
 
-    <div class="agent-detail__status-card" :data-status="statusTone">
-      <div class="agent-detail__status-main">
-        <div class="agent-detail__status-header">
-          <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
-          <h1 class="agent-detail__name">{{ agent.name }}</h1>
-          <span class="agent-detail__mode">{{ getModeLabel(agent.mode) }}</span>
+    <BaseListCard class="agent-detail__summary-card" :status="statusTone" :clickable="false">
+      <template #header-left>
+        <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
+        <h1 class="agent-detail__name">{{ agent.name }}</h1>
+        <span class="agent-detail__mode">{{ getModeLabel(agent.mode) }}</span>
+      </template>
+      <template #header-right>
+        <div class="agent-detail__quick-stats">
+          <div class="stat-mini stat-mini--ghost">
+            <span class="stat-mini__value">{{ httpRulesCount }}</span>
+            <span class="stat-mini__label">HTTP 规则</span>
+          </div>
+          <div class="stat-mini stat-mini--ghost">
+            <span class="stat-mini__value">{{ l4RulesCount }}</span>
+            <span class="stat-mini__label">L4 规则</span>
+          </div>
         </div>
-        <p class="agent-detail__meta-row">
-          <span class="agent-detail__meta-label">地址</span>
-          <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
-        </p>
-        <p class="agent-detail__meta-row">
-          <span class="agent-detail__meta-label">最后活跃</span>
-          <span class="agent-detail__meta-value agent-detail__last-seen">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
-        </p>
-      </div>
-      <div class="agent-detail__quick-stats">
-        <div class="stat-mini">
-          <span class="stat-mini__value">{{ httpRulesCount }}</span>
-          <span class="stat-mini__label">HTTP 规则</span>
-        </div>
-        <div class="stat-mini">
-          <span class="stat-mini__value">{{ l4RulesCount }}</span>
-          <span class="stat-mini__label">L4 规则</span>
-        </div>
-      </div>
-    </div>
+      </template>
 
-    <div class="agent-detail__metrics">
-      <div class="agent-detail__metric-cell" data-testid="detail-metric-cpu">
-        <div class="agent-detail__metric-header">
-          <i class="i-mdi-cpu agent-detail__metric-icon" />
-          <span class="agent-detail__metric-label">CPU</span>
+      <div class="agent-detail__summary-body">
+        <div class="agent-detail__meta-rows">
+          <p class="agent-detail__meta-row">
+            <span class="agent-detail__meta-label">地址</span>
+            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
+          </p>
+          <p class="agent-detail__meta-row">
+            <span class="agent-detail__meta-label">最后活跃</span>
+            <span class="agent-detail__meta-value agent-detail__last-seen">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
+          </p>
         </div>
-        <div class="agent-detail__metric-value" data-testid="detail-metric-cpu-value">{{ cpuUsage(agentMetricsData) }}</div>
-        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-cpu-percent">{{ percent(agentMetricsData.cpu_usage_percent) }}</div>
-        <div class="agent-detail__metric-bar-bg">
-          <div
-            class="agent-detail__metric-bar"
-            :class="barClass(agentMetricsData.cpu_usage_percent)"
-            :style="{ width: `${clamp(agentMetricsData.cpu_usage_percent)}%` }"
+        <div class="agent-detail__metrics agent-detail__metrics--relaxed">
+          <BaseMetricBar
+            data-testid="detail-metric-cpu"
+            label="CPU"
+            :value="cpuUsage(agentMetricsData)"
+            :percent="agentMetricsData.cpu_usage_percent"
+            :tone="barTone(agentMetricsData.cpu_usage_percent)"
+          />
+          <BaseMetricBar
+            data-testid="detail-metric-memory"
+            label="内存"
+            :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
+            :percent="agentMetricsData.memory_usage_percent"
+            :tone="barTone(agentMetricsData.memory_usage_percent)"
+          />
+          <BaseMetricBar
+            data-testid="detail-metric-disk"
+            label="磁盘"
+            :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
+            :percent="agentMetricsData.disk_usage_percent"
+            :tone="barTone(agentMetricsData.disk_usage_percent)"
+          />
+          <BaseMetricBar
+            data-testid="detail-metric-network"
+            label="网络"
+            :value="`↓ ${rate(networkMetrics?.rx_bytes_per_second)}`"
+            :unit="`↑ ${rate(networkMetrics?.tx_bytes_per_second)}`"
           />
         </div>
       </div>
-
-      <div class="agent-detail__metric-cell" data-testid="detail-metric-memory">
-        <div class="agent-detail__metric-header">
-          <i class="i-mdi-memory agent-detail__metric-icon" />
-          <span class="agent-detail__metric-label">内存</span>
-        </div>
-        <div class="agent-detail__metric-value" data-testid="detail-metric-memory-value">{{ bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes) }}</div>
-        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-memory-percent">{{ percent(agentMetricsData.memory_usage_percent) }}</div>
-        <div class="agent-detail__metric-bar-bg">
-          <div
-            class="agent-detail__metric-bar"
-            :class="barClass(agentMetricsData.memory_usage_percent)"
-            :style="{ width: `${clamp(agentMetricsData.memory_usage_percent)}%` }"
-          />
-        </div>
-      </div>
-
-      <div class="agent-detail__metric-cell" data-testid="detail-metric-disk">
-        <div class="agent-detail__metric-header">
-          <i class="i-mdi-harddisk agent-detail__metric-icon" />
-          <span class="agent-detail__metric-label">磁盘</span>
-        </div>
-        <div class="agent-detail__metric-value" data-testid="detail-metric-disk-value">{{ bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes) }}</div>
-        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-disk-percent">{{ percent(agentMetricsData.disk_usage_percent) }}</div>
-        <div class="agent-detail__metric-bar-bg">
-          <div
-            class="agent-detail__metric-bar"
-            :class="barClass(agentMetricsData.disk_usage_percent)"
-            :style="{ width: `${clamp(agentMetricsData.disk_usage_percent)}%` }"
-          />
-        </div>
-      </div>
-
-      <div class="agent-detail__metric-cell" data-testid="detail-metric-network">
-        <div class="agent-detail__metric-header">
-          <i class="i-mdi-network agent-detail__metric-icon" />
-          <span class="agent-detail__metric-label">网络</span>
-        </div>
-        <div class="agent-detail__metric-value" data-testid="detail-metric-network-down">↓ {{ rate(networkMetrics?.rx_bytes_per_second) }}</div>
-        <div class="agent-detail__metric-subvalue" data-testid="detail-metric-network-up">↑ {{ rate(networkMetrics?.tx_bytes_per_second) }}</div>
-      </div>
-    </div>
+    </BaseListCard>
 
     <div v-if="agent.last_apply_status === 'failed' && agent.last_apply_message" class="agent-detail__error">
       <div class="error-block">
@@ -105,60 +80,92 @@
       </div>
     </div>
 
-    <div class="agent-detail__tabs">
-      <button v-for="tab in tabs" :key="tab.id" class="tab-btn" :class="{ 'tab-btn--active': activeTab === tab.id }" @click="activeTab = tab.id">{{ tab.label }}</button>
-    </div>
+    <BaseTabs v-model="activeTab" :tabs="tabs" class="agent-detail__tabs" />
 
     <div class="agent-detail__tab-content">
       <div v-if="activeTab === 'traffic'" class="tab-panel">
-        <section class="traffic-section">
-          <h3 class="traffic-section__title">概览</h3>
-          <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" />
-          <div class="traffic-tab__trend">
-            <div class="traffic-tab__trend-header">
-              <span>趋势</span>
-              <div class="traffic-trend__controls" role="group" aria-label="趋势粒度">
-                <button
-                  v-for="option in trafficTrendGranularityOptions"
-                  :key="option.value"
-                  class="traffic-trend__mode"
-                  :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
-                  type="button"
-                  @click="trafficTrendGranularity = option.value"
-                >
-                  {{ option.label }}
-                </button>
-              </div>
-            </div>
-            <TrafficTrendChart
-              :points="trafficTrendPoints"
-              :granularity="trafficTrendGranularity"
-              :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
-              :refresh-key="agentStatsRefreshKey"
+        <div class="traffic-sections">
+          <BaseListCard class="traffic-card" :clickable="false">
+            <template #header-left>
+              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              <span class="traffic-section-card__title">监控</span>
+            </template>
+            <template #header-right>
+              <span
+                class="traffic-overview__status"
+                :class="trafficSummary.blocked ? 'traffic-overview__status--danger' : 'traffic-overview__status--success'"
+              >
+                {{ trafficSummary.blocked ? '已阻断' : '正常' }}
+              </span>
+            </template>
+            <TrafficSummaryCards
+              :summary="trafficSummary"
+              :direction="trafficPolicyForm.direction"
+              :network-metrics="networkMetrics"
             />
-          </div>
-          <div class="traffic-tab__breakdown">
-            <span class="traffic-tab__breakdown-title">分项流量（点击查看趋势）</span>
-            <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
-          </div>
-        </section>
+            <div class="traffic-monitor__divider" />
+            <div class="traffic-tab__trend">
+              <div class="traffic-tab__trend-header">
+                <span>流量趋势</span>
+                <div class="traffic-trend__controls" role="group" aria-label="趋势粒度">
+                  <button
+                    v-for="option in trafficTrendGranularityOptions"
+                    :key="option.value"
+                    class="traffic-trend__mode traffic-trend__mode--large"
+                    :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
+                    type="button"
+                    @click="trafficTrendGranularity = option.value"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+              </div>
+              <TrafficTrendChart
+                :points="trafficTrendPoints"
+                :granularity="trafficTrendGranularity"
+                :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
+                :refresh-key="agentStatsRefreshKey"
+              />
+            </div>
+          </BaseListCard>
 
-        <section class="traffic-section">
-          <h3 class="traffic-section__title">策略设置</h3>
-          <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
-        </section>
+          <BaseListCard class="traffic-card" :clickable="false">
+            <template #header-left>
+              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <span class="traffic-section-card__title">分析</span>
+            </template>
+            <div class="traffic-tab__breakdown">
+              <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
+            </div>
+          </BaseListCard>
 
-        <section class="traffic-section">
-          <h3 class="traffic-section__title">历史管理</h3>
-          <TrafficHistoryManager
-            :policy="trafficPolicyForm"
-            :calibrating="calibrateTrafficMutation.isPending.value"
-            :cleaning="cleanupTrafficMutation.isPending.value"
-            @calibrate="calibrateModalVisible = true"
-            @calibrate-zero="showCalibrateZeroConfirm"
-            @cleanup="showCleanupConfirm"
-          />
-        </section>
+          <BaseListCard class="traffic-card" :clickable="false">
+            <template #header-left>
+              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              <span class="traffic-section-card__title">管理</span>
+            </template>
+            <div class="traffic-maintenance">
+              <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
+              <div class="traffic-maintenance__divider" />
+              <TrafficHistoryManager
+                :policy="trafficPolicyForm"
+                :calibrating="calibrateTrafficMutation.isPending.value"
+                :cleaning="cleanupTrafficMutation.isPending.value"
+                @calibrate="calibrateModalVisible = true"
+                @calibrate-zero="showCalibrateZeroConfirm"
+                @cleanup="showCleanupConfirm"
+              />
+            </div>
+          </BaseListCard>
+        </div>
 
         <TrafficTrendModal
           v-model:visible="trendModal.visible"
@@ -187,45 +194,72 @@
         />
       </div>
 
-      <div v-if="activeTab === 'http'" class="tab-panel">
-        <div class="tab-panel__header">
-          <button class="btn btn-primary" @click="router.push({ path: '/rules', query: { agentId } })">查看全部规则</button>
-        </div>
-        <div class="rules-preview">
-          <div v-for="rule in httpRules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
-            <span class="rule-preview-item__url">{{ rule.frontend_url }}</span>
-            <span class="rule-preview-item__backend">→ {{ formatHttpBackend(rule) }}</span>
-          </div>
-          <p v-if="!httpRules.length" class="empty-hint">暂无 HTTP 规则</p>
-        </div>
-      </div>
+      <div v-if="activeTab === 'rules'" class="tab-panel">
+        <BaseListCard class="rules-list-card" :clickable="false">
+          <div class="rules-list">
+            <div class="rules-list__header-row">
+              <span class="rules-list__col rules-list__col--type">类型</span>
+              <span class="rules-list__col rules-list__col--status">状态</span>
+              <span class="rules-list__col rules-list__col--entry">入口地址</span>
+              <span class="rules-list__col rules-list__col--backend">后端地址</span>
+              <span class="rules-list__col rules-list__col--tags">标签</span>
+            </div>
 
-      <div v-if="activeTab === 'l4'" class="tab-panel">
-        <div class="tab-panel__header">
-          <button class="btn btn-primary" @click="router.push({ path: '/l4', query: { agentId } })">查看全部规则</button>
-        </div>
-        <div class="rules-preview">
-          <div v-for="rule in l4Rules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
-            <span class="rule-preview-item__url">{{ rule.listen_host }}:{{ rule.listen_port }}</span>
-            <span class="rule-preview-item__backend">→ {{ formatL4Backend(rule) }}</span>
+            <div
+              v-for="rule in allRules"
+              :key="`${rule._type}-${rule.id}`"
+              class="rules-list__row"
+              @click="navigateToRule(rule)"
+            >
+              <span class="rules-list__col rules-list__col--type" data-label="类型">
+                <span class="rule-type-badge" :class="`rule-type-badge--${rule._type}`">{{ ruleTypeLabel(rule) }}</span>
+              </span>
+              <span class="rules-list__col rules-list__col--status" data-label="状态">
+                <span class="rule-status-badge" :class="rule.enabled !== false ? 'rule-status-badge--enabled' : 'rule-status-badge--disabled'">{{ rule.enabled !== false ? '启用' : '禁用' }}</span>
+              </span>
+              <span class="rules-list__col rules-list__col--entry" data-label="入口地址" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
+              <span class="rules-list__col rules-list__col--backend" data-label="后端地址" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
+              <span class="rules-list__col rules-list__col--tags" data-label="标签">
+                <span v-if="rule.tags && rule.tags.length" class="rule-tags">
+                  <span v-for="tag in rule.tags.slice(0, 3)" :key="tag" class="rule-tag">{{ tag }}</span>
+                  <span v-if="rule.tags.length > 3" class="rule-tag rule-tag--more">+{{ rule.tags.length - 3 }}</span>
+                </span>
+                <span v-else class="rules-list__empty-cell">—</span>
+              </span>
+            </div>
+
+            <p v-if="!allRules.length" class="empty-hint">该节点暂无规则</p>
           </div>
-          <p v-if="!l4Rules.length" class="empty-hint">暂无 L4 规则</p>
-        </div>
+        </BaseListCard>
       </div>
 
       <div v-if="activeTab === 'info'" class="tab-panel">
-        <div class="info-grid">
-          <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
-          <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
-          <div class="info-row"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
-          <div class="info-row"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
-          <div class="info-row"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
-          <div class="info-row"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
-          <div class="info-row"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
-          <div class="info-row"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
-          <div class="info-row"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
-          <div class="info-row"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
-          <div v-if="agent.last_apply_message" class="info-row"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
+        <div class="info-sections">
+          <BaseListCard class="info-card" title="运行包" :clickable="false">
+            <div class="info-grid">
+              <div class="info-row info-row--clean"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
+              <div class="info-row info-row--clean"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
+              <div class="info-row info-row--clean"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
+              <div class="info-row info-row--clean"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
+              <div class="info-row info-row--clean"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
+              <div class="info-row info-row--clean"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
+            </div>
+          </BaseListCard>
+
+          <BaseListCard class="info-card" title="节点身份" :clickable="false">
+            <div class="info-grid">
+              <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
+              <div class="info-row info-row--clean"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
+              <div class="info-row info-row--clean"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
+            </div>
+          </BaseListCard>
+
+          <BaseListCard class="info-card" title="同步状态" :clickable="false">
+            <div class="info-grid">
+              <div class="info-row info-row--clean"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
+              <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
+            </div>
+          </BaseListCard>
         </div>
       </div>
     </div>
@@ -249,6 +283,9 @@ import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
+import BaseListCard from '../components/base/BaseListCard.vue'
+import BaseMetricBar from '../components/base/BaseMetricBar.vue'
+import BaseTabs from '../components/base/BaseTabs.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
 import { useAgents, useUpdateAgent } from '../hooks/useAgents'
@@ -257,7 +294,7 @@ import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSum
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
 import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
-import { barTone, bytesPair, clamp, cpuUsage, percent, rate } from '../utils/agentMetrics.js'
+import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
 import {
   accountedBytes,
   formatBytes,
@@ -291,6 +328,11 @@ const httpRulesCount = computed(() => httpRules.value.length)
 const { data: l4RulesData } = useL4Rules(agentId)
 const l4Rules = computed(() => l4RulesData.value ?? [])
 const l4RulesCount = computed(() => l4Rules.value.length)
+
+const allRules = computed(() => [
+  ...httpRules.value.map((rule) => ({ ...rule, _type: 'http' })),
+  ...l4Rules.value.map((rule) => ({ ...rule, _type: 'l4' }))
+])
 
 const { data: agentStatsData, dataUpdatedAt: agentStatsUpdatedAt } = useQuery({
   queryKey: ['agent-stats', agentId],
@@ -367,18 +409,7 @@ const STATUS_TONE = {
   pending: 'warning',
 }
 
-const BAR_TONE_CLASS = {
-  success: 'agent-detail__metric-bar--success',
-  warning: 'agent-detail__metric-bar--warning',
-  danger: 'agent-detail__metric-bar--danger',
-  neutral: 'agent-detail__metric-bar--neutral',
-}
-
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(agent.value)] || 'neutral')
-
-function barClass(value) {
-  return BAR_TONE_CLASS[barTone(value)] || BAR_TONE_CLASS.neutral
-}
 
 function metricsFromAgentStats(stats = {}) {
   if (stats?.metrics) return stats.metrics
@@ -412,7 +443,7 @@ function metricsFromAgentStats(stats = {}) {
   return hasMetric ? metrics : null
 }
 
-const activeTab = ref('http')
+const activeTab = ref('rules')
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
 const calibrateModalVisible = ref(false)
 const confirmDialog = ref({ visible: false, type: '', title: '', message: '', confirmText: '', loading: false })
@@ -427,8 +458,7 @@ function openBreakdownTrendModal(row) {
 }
 
 const tabs = computed(() => [
-  { id: 'http', label: 'HTTP 规则' },
-  { id: 'l4', label: 'L4 规则' },
+  { id: 'rules', label: '规则' },
   ...(trafficStatsEnabled.value ? [{ id: 'traffic', label: '流量统计' }] : []),
   { id: 'info', label: '系统信息' }
 ])
@@ -451,7 +481,7 @@ watch([trafficPolicyQuery.data, trafficStatsEnabled], ([policy, enabled]) => {
 
 watch(tabs, (value) => {
   if (!value.some((tab) => tab.id === activeTab.value)) {
-    activeTab.value = value[0]?.id || 'http'
+    activeTab.value = value[0]?.id || 'rules'
   }
 }, { immediate: true })
 
@@ -758,6 +788,34 @@ function formatL4Backend(rule) {
   return count > 1 ? `${first} +${count - 1}` : first
 }
 
+function ruleTypeLabel(rule) {
+  return rule._type === 'http' ? 'HTTP' : 'L4'
+}
+
+function ruleEntry(rule) {
+  if (rule._type === 'http') return rule.frontend_url || '—'
+  const protocol = rule.protocol || 'tcp'
+  const host = rule.listen_host || '0.0.0.0'
+  const port = rule.listen_port ?? '—'
+  return `${protocol}://${host}:${port}`
+}
+
+function ruleBackend(rule) {
+  if (rule._type === 'http') return formatHttpBackend(rule)
+  return formatL4Backend(rule)
+}
+
+function navigateToRule(rule) {
+  const path = rule._type === 'http' ? '/rules' : '/l4'
+  router.push({
+    path,
+    query: {
+      agentId: agentId.value,
+      search: `#id=${rule.id}`
+    }
+  })
+}
+
 function shortSha(value) {
   const sha = String(value || '').trim()
   if (!sha) return '—'
@@ -773,58 +831,40 @@ function packageStatusLabel(status) {
 
 <style scoped>
 .agent-detail {
-  --amc-green: var(--color-primary, #059669);
-  --amc-green-subtle: color-mix(in srgb, var(--amc-green) 8%, transparent);
-  --amc-green-border: color-mix(in srgb, var(--amc-green) 15%, transparent);
-  --amc-status-success: var(--color-success, #059669);
-  --amc-status-warning: var(--color-warning, #d97706);
-  --amc-status-danger: var(--color-danger, #dc2626);
-  --amc-status-neutral: var(--color-text-muted, #9ca3af);
   max-width: 900px;
   margin: 0 auto;
 }
 
 .agent-detail__back { margin-bottom: 1rem; }
 .back-link { color: var(--color-text-secondary); font-size: 0.875rem; text-decoration: none; }
-.back-link:hover { color: var(--amc-green); }
+.back-link:hover { color: var(--color-primary); }
 
-.agent-detail__status-card {
+.agent-detail__summary-card {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 1.25rem;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--amc-green-border);
-  border-radius: var(--radius-xl);
   overflow: hidden;
   margin-bottom: 0.75rem;
 }
 
-.agent-detail__status-card::before {
+.agent-detail__summary-card::before {
   content: '';
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
   width: 4px;
-  background: var(--amc-status-neutral);
+  background: var(--color-text-muted);
   transition: background 150ms ease;
 }
 
-.agent-detail__status-card[data-status="success"]::before { background: var(--amc-status-success); }
-.agent-detail__status-card[data-status="warning"]::before { background: var(--amc-status-warning); }
-.agent-detail__status-card[data-status="danger"]::before { background: var(--amc-status-danger); }
-.agent-detail__status-card[data-status="neutral"]::before { background: var(--amc-status-neutral); }
+.agent-detail__summary-card[data-status="success"]::before { background: var(--color-success); }
+.agent-detail__summary-card[data-status="warning"]::before { background: var(--color-warning); }
+.agent-detail__summary-card[data-status="danger"]::before { background: var(--color-danger); }
+.agent-detail__summary-card[data-status="neutral"]::before { background: var(--color-text-muted); }
 
-.agent-detail__status-main { min-width: 0; flex: 1; }
-
-.agent-detail__status-header {
+.agent-detail__summary-body {
   display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  margin-bottom: 0.375rem;
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
 .agent-detail__status-badge { flex-shrink: 0; }
@@ -844,9 +884,9 @@ function packageStatusLabel(status) {
   font-weight: 600;
   padding: 0.15rem 0.5rem;
   border-radius: var(--radius-full);
-  background: var(--amc-green-subtle);
-  color: var(--amc-green);
-  border: 1px solid var(--amc-green-border);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary-200);
 }
 
 .agent-detail__meta-row {
@@ -858,7 +898,7 @@ function packageStatusLabel(status) {
 
 .agent-detail__meta-label {
   font-size: 0.625rem;
-  color: var(--amc-status-neutral);
+  color: var(--color-text-muted);
   flex-shrink: 0;
 }
 
@@ -870,12 +910,6 @@ function packageStatusLabel(status) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.agent-detail__status-header + .agent-detail__meta-row {
-  margin-top: 0.625rem;
-  padding-top: 0.625rem;
-  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.1));
 }
 
 .agent-detail__endpoint {
@@ -895,13 +929,13 @@ function packageStatusLabel(status) {
 .stat-mini {
   min-width: 5.5rem;
   text-align: center;
-  padding: 0.625rem 0.75rem;
-  background: var(--amc-green-subtle);
-  border: 1px solid var(--amc-green-border);
+  padding: 0.5rem 0.75rem;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
 }
 
-.stat-mini__value { display: block; font-size: 1.25rem; font-weight: 700; color: var(--color-text-primary); line-height: 1.2; }
+.stat-mini__value { display: block; font-size: 1.125rem; font-weight: 700; color: var(--color-text-primary); line-height: 1.2; }
 .stat-mini__label { font-size: 0.7rem; color: var(--color-text-tertiary); }
 
 .agent-detail__metrics {
@@ -911,121 +945,156 @@ function packageStatusLabel(status) {
   margin-bottom: 1rem;
 }
 
-.agent-detail__metric-cell {
-  min-width: 0;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--amc-green-border);
-  border-radius: var(--radius-md);
-  background: var(--amc-green-subtle);
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  transition: background 150ms ease, border-color 150ms ease;
+.agent-detail__metrics--relaxed {
+  gap: 1rem;
+  margin-bottom: 0;
 }
 
-.agent-detail__metric-header {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.agent-detail__metric-icon {
-  width: 0.875rem;
-  height: 0.875rem;
-  color: var(--amc-green);
-  flex-shrink: 0;
-}
-
-.agent-detail__metric-label {
-  color: var(--color-text-tertiary);
-  font-size: 0.7rem;
-  line-height: 1;
-}
-
-.agent-detail__metric-value {
-  color: var(--color-text-primary);
-  font-size: 0.85rem;
-  font-weight: 600;
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
-.agent-detail__metric-subvalue {
+.agent-detail__metrics--relaxed :deep(.base-metric-bar__label) {
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
-  font-size: 0.7rem;
-  line-height: 1.2;
 }
-
-.agent-detail__metric-bar-bg {
-  height: 3px;
-  background: var(--color-bg-subtle);
-  border-radius: 999px;
-  overflow: hidden;
-  margin-top: 0.25rem;
-}
-
-.agent-detail__metric-bar {
-  height: 100%;
-  border-radius: 999px;
-  transition: width 300ms ease, background 150ms ease;
-}
-
-.agent-detail__metric-bar--success { background: var(--amc-status-success); }
-.agent-detail__metric-bar--warning { background: var(--amc-status-warning); }
-.agent-detail__metric-bar--danger { background: var(--amc-status-danger); }
-.agent-detail__metric-bar--neutral { background: var(--amc-status-neutral); }
 
 .agent-detail__error { margin-bottom: 1rem; }
-.error-block { display: flex; align-items: flex-start; gap: 0.75rem; padding: 1rem; background: var(--color-danger-50); border: 1px solid var(--color-danger-100); border-radius: var(--radius-lg); color: var(--color-danger); }
+.error-block { display: flex; align-items: flex-start; gap: 0.75rem; padding: 1rem; background: var(--color-danger-50); border: 1px solid var(--color-danger); border-radius: var(--radius-lg); color: var(--color-danger); }
 .error-block svg { flex-shrink: 0; margin-top: 1px; }
 .error-block__title { font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; }
 .error-block__text { font-size: 0.8125rem; line-height: 1.5; color: var(--color-danger); opacity: 0.95; word-break: break-word; }
 
-.agent-detail__tabs { display: flex; gap: 2px; margin-bottom: 1rem; padding: 3px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
-.tab-btn { padding: 6px 1rem; border: none; background: transparent; color: var(--color-text-muted); font-size: 0.875rem; font-weight: 500; cursor: pointer; border-radius: var(--radius-md); transition: all 0.15s; font-family: inherit; flex: 1; text-align: center; white-space: nowrap; }
-.tab-btn:hover { color: var(--color-text-secondary); }
-.tab-btn--active { color: var(--amc-green); background: var(--color-bg-surface); font-weight: 600; box-shadow: var(--shadow-sm); }
+.agent-detail__tabs { margin-bottom: 1rem; }
 
-.tab-panel__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
-.tab-panel__title-group h2 { margin: 0; font-size: 1rem; color: var(--color-text-primary); }
-.tab-panel__title-group span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
-.tab-panel__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-.rules-preview { display: flex; flex-direction: column; gap: 0.5rem; }
-.rule-preview-item { display: flex; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); font-size: 0.8125rem; }
-.rule-preview-item__url { flex: 1; color: var(--color-text-primary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rule-preview-item__backend { color: var(--color-text-tertiary); font-family: var(--font-mono); }
-.traffic-tab__trend { margin-bottom: 1rem; }
-.traffic-tab__trend-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); }
-.traffic-tab__breakdown { margin-top: 0.5rem; }
-.traffic-tab__breakdown-title { display: block; font-size: 0.8125rem; color: var(--color-text-tertiary); margin-bottom: 0.5rem; }
+.rules-list { display: flex; flex-direction: column; gap: 0.25rem; }
+.rules-list__header-row,
+.rules-list__row {
+  display: grid;
+  grid-template-columns: 3.5rem 3.5rem 1.2fr 1fr 1fr;
+  grid-template-areas: 'type status entry backend tags';
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.rules-list__header-row { font-weight: 600; color: var(--color-text-secondary); border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 0.5rem; }
+.rules-list__row { cursor: pointer; border-radius: var(--radius-lg); transition: background-color 150ms ease; }
+.rules-list__row:hover { background: var(--color-bg-subtle); }
+.rules-list__col { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rules-list__col--type { grid-area: type; }
+.rules-list__col--status { grid-area: status; }
+.rules-list__col--entry { grid-area: entry; }
+.rules-list__col--backend { grid-area: backend; }
+.rules-list__col--tags { grid-area: tags; display: flex; justify-content: flex-end; }
+.rules-list__empty-cell { color: var(--color-text-muted); }
+@media (max-width: 900px) {
+  .rules-list__header-row { display: none; }
+  .rules-list__row {
+    grid-template-columns: auto auto 1fr;
+    grid-template-areas:
+      'type status tags'
+      'entry entry entry'
+      'backend backend backend';
+    gap: 0.375rem 0.5rem;
+    padding: 0.75rem;
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border-subtle);
+  }
+  .rules-list__row:hover { background: var(--color-bg-hover); }
+  .rules-list__col--entry,
+  .rules-list__col--backend {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+    color: var(--color-text-primary);
+    white-space: normal;
+    word-break: break-all;
+    overflow: visible;
+  }
+  .rules-list__col--entry::before,
+  .rules-list__col--backend::before {
+    content: attr(data-label) ':';
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    color: var(--color-text-tertiary);
+  }
+  .rules-list__col--tags { justify-content: flex-start; }
+  .rule-tags { justify-content: flex-start; }
+}
+.rule-type-badge { display: inline-flex; align-items: center; justify-content: center; padding: 0.15rem 0.4rem; border-radius: var(--radius-sm); font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; }
+.rule-type-badge--http { background: var(--color-primary-subtle); color: var(--color-primary); }
+.rule-type-badge--l4 { background: var(--color-success-subtle, #dcfce7); color: var(--color-success, #16a34a); }
+.rule-status-badge { font-size: 0.75rem; font-weight: 500; }
+.rule-status-badge--enabled { color: var(--color-success); }
+.rule-status-badge--disabled { color: var(--color-text-muted); }
+.rule-tags { display: flex; gap: 0.375rem; flex-wrap: wrap; justify-content: flex-end; }
+.rule-tag { display: inline-flex; align-items: center; padding: 0.125rem 0.375rem; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); font-size: 0.6875rem; color: var(--color-text-secondary); }
+.rule-tag--more { background: transparent; border-style: dashed; }
+.traffic-overview__status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.traffic-overview__status--success {
+  background: var(--color-success-subtle, #dcfce7);
+  color: var(--color-success, #16a34a);
+}
+.traffic-overview__status--danger {
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+}
+.traffic-tab__trend { display: flex; flex-direction: column; gap: 0.75rem; }
+.traffic-tab__trend-header { display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); }
+.traffic-tab__breakdown { }
 .traffic-trend__controls { display: inline-flex; gap: 2px; padding: 2px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
-.traffic-trend__mode { min-width: 2.75rem; padding: 0.3rem 0.55rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.75rem; font-weight: 600; cursor: pointer; font-family: inherit; }
-.traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--amc-green); box-shadow: var(--shadow-sm); }
+.traffic-trend__mode { min-width: 3.25rem; padding: 0.45rem 0.85rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.875rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+.traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
+.info-sections { display: flex; flex-direction: column; gap: 1rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
-.info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08)); }
-.info-row:last-child { border-bottom: none; }
-.info-row span:first-child { color: var(--color-text-secondary); }
-.info-row span:last-child { color: var(--color-text-primary); font-weight: 500; }
+.info-row,
+.info-row--clean { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; }
+.info-row--clean { padding: 0.625rem 1rem; }
+.info-row span:first-child,
+.info-row--clean span:first-child { color: var(--color-text-secondary); }
+.info-row span:last-child,
+.info-row--clean span:last-child { color: var(--color-text-primary); font-weight: 500; }
 .agent-detail__loading { display: flex; justify-content: center; padding: 3rem; }
 .agent-detail__not-found { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .agent-detail__not-found p { margin: 0; font-size: 1rem; }
-.spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--amc-green); border-radius: 50%; animation: spin 1s linear infinite; }
+.spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn { padding: 10px 24px; border-radius: var(--radius-full); font-size: var(--text-sm); font-weight: var(--font-semibold); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); border: 1.5px solid transparent; font-family: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; }
-.btn-primary { background: var(--amc-green); color: white; }
+.btn-primary { background: var(--color-primary); color: white; }
 .btn-primary:hover { background: var(--color-primary-hover); }
 .btn-secondary { background: transparent; color: var(--color-text-secondary); border: 1.5px solid var(--color-border-default); }
-.btn-secondary:hover { border-color: var(--amc-green); color: var(--amc-green); background: var(--amc-green-subtle); }
+.btn-secondary:hover { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-subtle); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.traffic-section { margin-bottom: 1rem; }
-.traffic-section__title { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); margin: 0 0 0.75rem; }
+.traffic-sections { display: flex; flex-direction: column; gap: 1rem; }
+.traffic-section-card__title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.traffic-section-card__icon {
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+.traffic-card:deep(.base-list-card__body) { gap: 1rem; }
+.traffic-monitor__divider {
+  height: 1px;
+  background: var(--color-border-subtle);
+  margin: 0.25rem 0;
+}
+.traffic-maintenance { display: flex; flex-direction: column; gap: 1rem; }
+.traffic-maintenance__divider { height: 1px; background: var(--color-border-subtle); }
+.traffic-maintenance :deep(.traffic-policy-form__cards) { gap: 1rem; }
+.traffic-maintenance :deep(.traffic-policy-form__card) { background: transparent; border: none; padding: 0; border-radius: 0; }
+.traffic-maintenance :deep(.traffic-policy-form__card-title) { font-size: 0.9375rem; }
+.traffic-maintenance :deep(.traffic-history-manager) { gap: 0.75rem; }
 
 @media (max-width: 720px) {
-  .agent-detail__status-card { flex-direction: column; align-items: flex-start; }
-  .agent-detail__quick-stats { width: 100%; }
   .agent-detail__metrics { grid-template-columns: 1fr; }
-  .agent-detail__tabs { overflow-x: auto; }
-  .tab-btn { flex: 0 0 auto; }
 }
 </style>

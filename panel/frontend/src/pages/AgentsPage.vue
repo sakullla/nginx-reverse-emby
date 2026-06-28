@@ -144,11 +144,12 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onScopeDispose } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents, useUpdateAgent, useDeleteAgent } from '../hooks/useAgents'
 import { useAgentMonitorStream } from '../hooks/useAgentMonitorStream'
-import { buildOutboundProxyPayload } from './outboundProxyURL'
+import { mergeAgentsWithMonitor } from '../utils/agentMonitor.js'
+import { buildOutboundProxyPayload } from './outboundProxyURL.js'
 import { useAgentFilters } from '../hooks/useAgentFilters'
 import AgentFilterBar from '../components/AgentFilterBar.vue'
 import AgentMonitorCard from '../components/AgentMonitorCard.vue'
@@ -162,16 +163,13 @@ const router = useRouter()
 const { selectedAgentId } = useAgent()
 
 const { data, isLoading } = useAgents()
-const { data: monitorAgents } = useAgentMonitorStream()
 const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
-const agents = computed(() => {
-  const monitorById = new Map((monitorAgents.value || []).map(agent => [agent.id, agent]))
-  return (data.value ?? []).map(agent => {
-    const monitor = monitorById.get(agent.id) || agent.monitor
-    return monitor ? { ...agent, ...monitor, monitor } : agent
-  })
-})
+
+const monitorStreamEnabled = ref(false)
+const { data: monitorAgents } = useAgentMonitorStream({ enabled: monitorStreamEnabled })
+
+const agents = computed(() => mergeAgentsWithMonitor(data.value, monitorAgents.value))
 
 // Filter/sort state
 const {
@@ -189,6 +187,10 @@ const {
   toggleSortOrder
 } = useAgentFilters(agents)
 
+watch(view, () => {
+  monitorStreamEnabled.value = view.value === 'monitor'
+}, { immediate: true })
+
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')
 const copied = ref(false)
@@ -197,6 +199,22 @@ const editName = ref('')
 const editOutboundProxy = ref('')
 const deletingAgent = ref(null)
 const applying = ref(false)
+
+// Scope disposal guard for async callbacks and timers
+let disposed = false
+let copyTimeout = null
+
+function clearCopyTimeout() {
+  if (copyTimeout) {
+    clearTimeout(copyTimeout)
+    copyTimeout = null
+  }
+}
+
+onScopeDispose(() => {
+  disposed = true
+  clearCopyTimeout()
+})
 
 // Search
 const searchInputRef = ref(null)
@@ -208,12 +226,18 @@ async function handleApply() {
   try {
     await applyConfig(selectedAgentId.value)
   } finally {
-    applying.value = false
+    if (!disposed) {
+      applying.value = false
+    }
   }
 }
 
 const systemInfo = ref(null)
-fetchSystemInfo().then(info => { systemInfo.value = info }).catch(() => {})
+fetchSystemInfo().then(info => {
+  if (!disposed) {
+    systemInfo.value = info
+  }
+}).catch(() => {})
 
 const joinCommands = computed(() => {
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -267,7 +291,13 @@ async function copyCommand() {
     }
     messageStore.success('已复制到剪贴板')
     copied.value = true
-    setTimeout(() => { copied.value = false }, 1500)
+    clearCopyTimeout()
+    copyTimeout = setTimeout(() => {
+      copyTimeout = null
+      if (!disposed) {
+        copied.value = false
+      }
+    }, 1500)
   } catch (err) {
     console.error('Copy failed:', err)
     messageStore.error('复制失败，请手动选择复制')

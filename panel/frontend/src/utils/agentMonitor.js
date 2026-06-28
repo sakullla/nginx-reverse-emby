@@ -25,8 +25,17 @@ export function createNDJSONParser(onMessage) {
   }
 }
 
+export function quantizeLastSeenAt(agent) {
+  if (!agent?.last_seen_at) return agent
+  const date = new Date(agent.last_seen_at)
+  if (Number.isNaN(date.getTime())) return agent
+  if (date.getSeconds() === 0 && date.getMilliseconds() === 0) return agent
+  date.setSeconds(0, 0)
+  return { ...agent, last_seen_at: date.toISOString() }
+}
+
 export function mergeMonitorAgents(previous = [], update) {
-  const nextAgent = update?.agent || update
+  const nextAgent = quantizeLastSeenAt(update?.agent || update)
   if (!nextAgent?.id) return Array.isArray(previous) ? previous : []
   const agents = Array.isArray(previous) ? [...previous] : []
   const index = agents.findIndex((agent) => agent?.id === nextAgent.id)
@@ -38,6 +47,19 @@ export function mergeMonitorAgents(previous = [], update) {
   return agents
 }
 
+export function mergeAgentsWithMonitor(agents, monitorAgents) {
+  const monitorById = new Map((monitorAgents || []).map(agent => [agent.id, agent]))
+  const baseAgents = agents || []
+  let changed = false
+  const merged = baseAgents.map((agent) => {
+    const monitor = monitorById.get(agent.id) || agent.monitor
+    if (!monitor) return agent
+    changed = true
+    return { ...agent, ...monitor, monitor }
+  })
+  return changed ? merged : baseAgents
+}
+
 export function monitorSnapshotAgents(snapshot) {
-  return Array.isArray(snapshot?.agents) ? snapshot.agents : []
+  return (Array.isArray(snapshot?.agents) ? snapshot.agents : []).map(quantizeLastSeenAt)
 }

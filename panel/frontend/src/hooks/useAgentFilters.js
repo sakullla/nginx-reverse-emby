@@ -10,6 +10,24 @@ function normalizeAgentView(value) {
   return normalized === 'list' ? 'list' : 'monitor'
 }
 
+function lastSeenAtMinuteTime(agent) {
+  const time = new Date(agent.last_seen_at || 0).getTime()
+  return Number.isNaN(time) ? 0 : Math.floor(time / 60000)
+}
+
+function totalRulesCount(agent) {
+  return (agent.http_rules_count || 0) + (agent.l4_rules_count || 0)
+}
+
+function arraysShallowEqual(a, b) {
+  if (a === b) return true
+  if (!a || !b || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
 export function useAgentFilters(agentsRef) {
   const route = useRoute()
   const router = useRouter()
@@ -84,6 +102,7 @@ export function useAgentFilters(agentsRef) {
   })
 
   // Filtered + sorted agents
+  let previousFilteredAgents = []
   const filteredAgents = computed(() => {
     let result = [...(agentsRef.value || [])]
 
@@ -120,6 +139,7 @@ export function useAgentFilters(agentsRef) {
     }
 
     // Apply sort
+    const direction = sortOrder.value === 'asc' ? 1 : -1
     result.sort((a, b) => {
       let comparison = 0
       switch (sortField.value) {
@@ -134,12 +154,20 @@ export function useAgentFilters(agentsRef) {
           break
         case 'last_seen_at':
         default:
-          comparison = new Date(a.last_seen_at || 0) - new Date(b.last_seen_at || 0)
+          comparison = lastSeenAtMinuteTime(a) - lastSeenAtMinuteTime(b)
+          if (comparison === 0) {
+            comparison = totalRulesCount(a) - totalRulesCount(b)
+          }
           break
       }
-      return sortOrder.value === 'asc' ? comparison : -comparison
+      if (comparison !== 0) return comparison * direction
+      return String(a.id || '').localeCompare(String(b.id || ''))
     })
 
+    if (arraysShallowEqual(previousFilteredAgents, result)) {
+      return previousFilteredAgents
+    }
+    previousFilteredAgents = result
     return result
   })
 

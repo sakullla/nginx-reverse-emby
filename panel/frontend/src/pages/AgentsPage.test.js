@@ -17,11 +17,28 @@ describe('AgentsPage', () => {
     expect(readPage()).toContain('useAgentMonitorStream')
   })
 
+  it('only enables monitor stream in monitor view', () => {
+    const page = readPage()
+    expect(page).toMatch(/useAgentMonitorStream\s*\(\s*\{[\s\S]*enabled[\s\S]*\}\s*\)/)
+    expect(page).toMatch(/view\.value\s*===\s*['"]monitor['"]/)
+  })
+
   it('hides outbound proxy editing for embedded local agents', () => {
     expect(readPage()).toMatch(/v-if="!editingAgent\?\.is_local"\s+class="form-group"/)
   })
 
   it('omits outbound proxy updates for embedded local agents', () => {
     expect(readPage()).toMatch(/if \(!editingAgent\.value\.is_local\) \{[\s\S]*buildOutboundProxyPayload/)
+  })
+
+  it('uses onScopeDispose to clean up pending async work and timers', () => {
+    const page = readPage()
+    expect(page).toContain('onScopeDispose')
+    expect(page).toMatch(/clearTimeout\s*\(\s*copyTimeout\s*\)/)
+  })
+
+  it('guards systemInfo fetch callback against unmounted scope', () => {
+    const page = readPage()
+    expect(page).toMatch(/fetchSystemInfo\s*\(\s*\)\s*\.then\s*\(\s*info\s*=>\s*\{\s*if\s*\(\s*!\s*disposed\s*\)/)
   })
 })
