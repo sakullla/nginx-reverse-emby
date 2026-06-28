@@ -170,4 +170,14 @@ describe('useAgentFilters helpers', () => {
     await vi.advanceTimersByTimeAsync(90000)
     expect(filteredAgents.value.map(x => x.id)).toEqual(['a', 'b'])
   })
+
+  it('uses exact last_seen_at sorting in list view', () => {
+    routerState.route.query = { view: 'list' }
+    const a = { id: 'a', last_seen_at: '2026-06-28T10:03:00.000Z' }
+    const b = { id: 'b', last_seen_at: '2026-06-28T10:04:00.000Z' }
+    const agents = ref([a, b])
+    const { filteredAgents } = useAgentFilters(agents)
+    // List view uses exact minute-level sort, so b (10:04) comes before a (10:03)
+    expect(filteredAgents.value.map(x => x.id)).toEqual(['b', 'a'])
+  })
 })
