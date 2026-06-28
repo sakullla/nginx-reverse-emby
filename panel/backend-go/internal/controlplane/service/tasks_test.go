@@ -391,6 +391,118 @@ func TestTaskServiceRegisterSessionDoesNotCloseExistingSessionWhileLocked(t *tes
 	}
 }
 
+func TestTaskServicePrunesTerminalTasksPastRetention(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	service := NewTaskService(TaskServiceConfig{
+		Now:           func() time.Time { return now },
+		TaskTTL:       30 * time.Second,
+		Retention:     5 * time.Minute,
+		PruneInterval: time.Hour, // long interval: the test drives prune explicitly
+	})
+	defer func() { _ = service.Close() }()
+
+	// Buffer the session generously: this test dispatches several tasks back to
+	// back and never drains them, so a size-1 buffer would block CreateAndDispatch.
+	session := &stubTaskSession{agentID: "agent-a", tasks: make(chan TaskEnvelope, 16)}
+	if err := service.RegisterSession(TaskSessionRegistration{
+		AgentID:   "agent-a",
+		SessionID: "session-1",
+		Session:   session,
+	}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	// Terminal record at the base clock: should be removed once the retention
+	// window has elapsed.
+	completed, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+	})
+	if err != nil {
+		t.Fatalf("CreateAndDispatch() completed error = %v", err)
+	}
+	if err := service.ApplyUpdate(context.Background(), TaskUpdateInput{
+		AgentID: "agent-a",
+		TaskID:  completed.ID,
+		State:   "completed",
+		Result:  map[string]any{"ok": true},
+	}); err != nil {
+		t.Fatalf("ApplyUpdate() completed error = %v", err)
+	}
+
+	// Non-terminal record (long TTL so its deadline never trips during the
+	// test): must survive prune regardless of age.
+	dispatched, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+		TTL:     time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("CreateAndDispatch() dispatched error = %v", err)
+	}
+
+	// Advance inside the window, then finalize a fresh terminal record so it
+	// stays younger than retention at prune time.
+	now = now.Add(6 * time.Minute)
+	recent, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+	})
+	if err != nil {
+		t.Fatalf("CreateAndDispatch() recent error = %v", err)
+	}
+	if err := service.ApplyUpdate(context.Background(), TaskUpdateInput{
+		AgentID: "agent-a",
+		TaskID:  recent.ID,
+		State:   "completed",
+	}); err != nil {
+		t.Fatalf("ApplyUpdate() recent error = %v", err)
+	}
+
+	// Advance past the retention window relative to `completed` (now 10m old)
+	// while `recent` is still 4m old.
+	now = now.Add(4 * time.Minute)
+
+	removed := service.pruneTerminalTasks(now)
+	if removed != 1 {
+		t.Fatalf("pruneTerminalTasks() removed = %d, want 1", removed)
+	}
+
+	if _, err := service.Get(context.Background(), "agent-a", completed.ID); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("terminal task past retention: Get() error = %v, want ErrTaskNotFound", err)
+	}
+	if got, err := service.Get(context.Background(), "agent-a", dispatched.ID); err != nil || got.State != "dispatched" {
+		t.Fatalf("dispatched task must survive prune, got err=%v state=%q", err, got.State)
+	}
+	if got, err := service.Get(context.Background(), "agent-a", recent.ID); err != nil || got.State != "completed" {
+		t.Fatalf("terminal task within window must survive prune, got err=%v state=%q", err, got.State)
+	}
+}
+
+func TestTaskServiceCloseStopsPruneGoroutine(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{
+		TaskTTL:       30 * time.Second,
+		Retention:     time.Minute,
+		PruneInterval: time.Minute,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		_ = service.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not return within timeout; prune goroutine likely leaked")
+	}
+
+	// Idempotent: a second Close must not block or panic.
+	if err := service.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+}
+
 type stubTaskSession struct {
 	agentID string
 	tasks   chan TaskEnvelope

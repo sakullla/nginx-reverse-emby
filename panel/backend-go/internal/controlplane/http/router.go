@@ -409,6 +409,21 @@ func (h closeableHandler) Close() error {
 	return h.close()
 }
 
+// joinCleanup composes two cleanup functions so both run on Close, joining
+// their errors via errors.Join. Either argument may be nil.
+func joinCleanup(prev, next func() error) func() error {
+	switch {
+	case prev == nil:
+		return next
+	case next == nil:
+		return prev
+	default:
+		return func() error {
+			return errors.Join(prev(), next())
+		}
+	}
+}
+
 func (d Dependencies) withDefaults() (Dependencies, error) {
 	if d.RuleService == nil {
 		if legacy, ok := any(d.AgentService).(legacyRuleListService); ok {
@@ -417,7 +432,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	}
 
 	if d.TaskService == nil && d.hasCoreServices() {
-		d.TaskService = service.NewTaskService(service.TaskServiceConfig{})
+		// withDefaults owns this TaskService, so its background prune goroutine
+		// must be stopped on cleanup alongside any store Close wired below.
+		taskSvc := service.NewTaskService(service.TaskServiceConfig{})
+		d.TaskService = taskSvc
+		d.cleanup = joinCleanup(d.cleanup, taskSvc.Close)
 	}
 
 	if d.BackupService == nil && d.hasCoreServices() && d.TaskService != nil {
@@ -459,7 +478,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if err != nil {
 		return Dependencies{}, err
 	}
-	d.cleanup = store.Close
+	d.cleanup = joinCleanup(d.cleanup, store.Close)
 
 	if d.SystemService == nil {
 		d.SystemService = service.NewSystemService(d.Config)
@@ -500,7 +519,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.CertificateService = service.NewCertificateService(d.Config, store)
 	}
 	if d.TaskService == nil {
-		d.TaskService = service.NewTaskService(service.TaskServiceConfig{})
+		// withDefaults owns this TaskService; stop its background prune goroutine
+		// on cleanup together with the store Close wired above.
+		taskSvc := service.NewTaskService(service.TaskServiceConfig{})
+		d.TaskService = taskSvc
+		d.cleanup = joinCleanup(d.cleanup, taskSvc.Close)
 	}
 	if d.BackupService == nil {
 		d.BackupService = service.NewBackupService(d.Config, store)
