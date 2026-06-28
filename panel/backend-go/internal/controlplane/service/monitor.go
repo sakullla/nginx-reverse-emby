@@ -148,21 +148,32 @@ func (s *agentService) SubscribeMonitorUpdates(ctx context.Context) (<-chan Agen
 	s.monitorSubscribers[ch] = struct{}{}
 	s.monitorMu.Unlock()
 
+	// Derive a cancellable child of the caller context so the watcher goroutine
+	// exits promptly when the caller unsubscribes, not only when the parent
+	// context is cancelled. The previous implementation waited on the parent
+	// ctx.Done() directly: if the caller ran cancel() (unsubscribe) while the
+	// parent stayed alive, the goroutine blocked forever, leaking one goroutine
+	// per subscription for the lifetime of the parent context.
+	parent := ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	watchCtx, watchCancel := context.WithCancel(parent)
+
 	var once sync.Once
 	cancel := func() {
 		once.Do(func() {
+			watchCancel()
 			s.monitorMu.Lock()
 			delete(s.monitorSubscribers, ch)
 			close(ch)
 			s.monitorMu.Unlock()
 		})
 	}
-	if ctx != nil && ctx.Done() != nil {
-		go func() {
-			<-ctx.Done()
-			cancel()
-		}()
-	}
+	go func() {
+		<-watchCtx.Done()
+		cancel()
+	}()
 	return ch, cancel
 }
 
