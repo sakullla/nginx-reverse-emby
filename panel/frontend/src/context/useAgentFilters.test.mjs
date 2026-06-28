@@ -91,4 +91,29 @@ describe('useAgentFilters helpers', () => {
     const { filteredAgents } = useAgentFilters(agents)
     expect(filteredAgents.value.map(a => a.id)).toEqual(['a', 'b'])
   })
+
+  it('preserves filteredAgents array reference when sorted identities and order are unchanged', () => {
+    const a = { id: 'a', last_seen_at: '2026-06-28T10:00:00.000Z' }
+    const b = { id: 'b', last_seen_at: '2026-06-28T10:01:00.000Z' }
+    const agents = ref([a, b])
+    const { filteredAgents } = useAgentFilters(agents)
+    const first = filteredAgents.value
+    expect(first.map(x => x.id)).toEqual(['b', 'a'])
+
+    // New source array but same object identities and same resulting order
+    agents.value = [a, b]
+    expect(filteredAgents.value).toBe(first)
+  })
+
+  it('returns a new filteredAgents array when sorted order changes', () => {
+    const a = { id: 'a', last_seen_at: '2026-06-28T10:00:00.000Z' }
+    const b = { id: 'b', last_seen_at: '2026-06-28T10:01:00.000Z' }
+    const agents = ref([a, b])
+    const { filteredAgents } = useAgentFilters(agents)
+    const first = filteredAgents.value
+
+    agents.value = [{ id: 'c', last_seen_at: '2026-06-28T10:02:00.000Z' }, a, b]
+    expect(filteredAgents.value).not.toBe(first)
+    expect(filteredAgents.value.map(x => x.id)).toEqual(['c', 'b', 'a'])
+  })
 })

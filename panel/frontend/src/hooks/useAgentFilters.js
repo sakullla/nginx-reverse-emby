@@ -19,6 +19,15 @@ function totalRulesCount(agent) {
   return (agent.http_rules_count || 0) + (agent.l4_rules_count || 0)
 }
 
+function arraysShallowEqual(a, b) {
+  if (a === b) return true
+  if (!a || !b || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
 export function useAgentFilters(agentsRef) {
   const route = useRoute()
   const router = useRouter()
@@ -93,6 +102,7 @@ export function useAgentFilters(agentsRef) {
   })
 
   // Filtered + sorted agents
+  let previousFilteredAgents = []
   const filteredAgents = computed(() => {
     let result = [...(agentsRef.value || [])]
 
@@ -154,6 +164,10 @@ export function useAgentFilters(agentsRef) {
       return String(a.id || '').localeCompare(String(b.id || ''))
     })
 
+    if (arraysShallowEqual(previousFilteredAgents, result)) {
+      return previousFilteredAgents
+    }
+    previousFilteredAgents = result
     return result
   })
 
