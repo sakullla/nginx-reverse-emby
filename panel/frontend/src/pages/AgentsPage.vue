@@ -51,14 +51,19 @@
     </div>
 
     <!-- Monitor View -->
-    <div v-else-if="view === 'monitor' && filteredAgents.length" class="agent-grid">
+    <transition-group
+      v-else-if="view === 'monitor' && filteredAgents.length"
+      name="agent-list"
+      tag="div"
+      class="agent-grid"
+    >
       <AgentMonitorCard
         v-for="agent in filteredAgents"
         :key="agent.id"
         :agent="agent"
         @details="agent => router.push(`/agents/${agent.id}`)"
       />
-    </div>
+    </transition-group>
 
     <!-- List View -->
     <AgentTable
@@ -393,6 +398,10 @@ function confirmDelete() {
   font-size: 0.875rem;
   color: var(--color-text-tertiary);
   margin: 0;
+}
+
+.agent-list-move {
+  transition: transform 0.3s ease;
 }
 
 /* Card grid */

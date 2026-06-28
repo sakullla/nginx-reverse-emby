@@ -41,4 +41,11 @@ describe('AgentsPage', () => {
     const page = readPage()
     expect(page).toMatch(/fetchSystemInfo\s*\(\s*\)\s*\.then\s*\(\s*info\s*=>\s*\{\s*if\s*\(\s*!\s*disposed\s*\)/)
   })
+
+  it('wraps monitor cards in a transition-group for smooth reordering', () => {
+    const page = readPage()
+    expect(page).toContain('<transition-group')
+    expect(page).toContain('name="agent-list"')
+    expect(page).toContain('.agent-list-move')
+  })
 })
