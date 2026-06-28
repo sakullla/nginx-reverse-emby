@@ -18,6 +18,18 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// closeCountingCloser tracks how often Close is called so tests can assert the
+// underlying request body source is released exactly once.
+type closeCountingCloser struct {
+	io.ReadCloser
+	closes int
+}
+
+func (c *closeCountingCloser) Close() error {
+	c.closes++
+	return c.ReadCloser.Close()
+}
+
 // TestPrepareReusableBodyBuffersBodyUnderCapForReplay verifies the existing
 // happy path is preserved: a body within the cap is buffered and replayable.
 func TestPrepareReusableBodyBuffersBodyUnderCapForReplay(t *testing.T) {
@@ -104,8 +116,9 @@ func TestPrepareReusableBodyStreamsOversizedUnknownLengthBody(t *testing.T) {
 	for i := range payload {
 		payload[i] = byte(i)
 	}
+	src := &closeCountingCloser{ReadCloser: io.NopCloser(bytes.NewReader(payload))}
 	req := &http.Request{
-		Body:          io.NopCloser(bytes.NewReader(payload)),
+		Body:          src,
 		ContentLength: -1, // unknown length / chunked
 	}
 
@@ -132,9 +145,15 @@ func TestPrepareReusableBodyStreamsOversizedUnknownLengthBody(t *testing.T) {
 		t.Fatalf("streamed body length = %d, want %d (prefix+remainder mismatch)", len(got), len(payload))
 	}
 
-	// Closing the streamed body must release the source (no resource leak).
-	if err := body.Close(); err != nil {
-		t.Fatalf("body.Close() error = %v", err)
+	// The degraded stream owns req.Body: closing the reader returned by Open()
+	// must release the source exactly once (no resource leak). After Open(),
+	// reusableRequestBody.Close() is a no-op for the stream path, so the source
+	// is released through this reader's Close.
+	if err := rc.Close(); err != nil {
+		t.Fatalf("rc.Close() error = %v", err)
+	}
+	if src.closes != 1 {
+		t.Fatalf("source body closed %d times, want 1 (degraded stream must release req.Body)", src.closes)
 	}
 }
 
