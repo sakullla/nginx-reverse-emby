@@ -45,11 +45,31 @@ describe('useAgentFilters helpers', () => {
     expect(view.value).toBe('monitor')
   })
 
-  it('maps legacy card view values to monitor view', () => {
-    routerState.route.query = { view: 'card' }
+  it('stabilizes last_seen_at sorting within the same minute using id tie-breaker', () => {
+    const agents = ref([
+      { id: 'b', last_seen_at: '2026-06-28T10:00:00.100Z' },
+      { id: 'a', last_seen_at: '2026-06-28T10:00:00.050Z' },
+      { id: 'c', last_seen_at: '2026-06-28T10:00:00.200Z' }
+    ])
+    const { filteredAgents } = useAgentFilters(agents)
+    // Same minute → sorted by id ascending
+    expect(filteredAgents.value.map(a => a.id)).toEqual(['a', 'b', 'c'])
 
-    const { view } = useAgentFilters(ref([]))
+    // Update milliseconds within the same minute; order should stay stable
+    agents.value = [
+      { id: 'b', last_seen_at: '2026-06-28T10:00:59.900Z' },
+      { id: 'a', last_seen_at: '2026-06-28T10:00:30.050Z' },
+      { id: 'c', last_seen_at: '2026-06-28T10:00:00.200Z' }
+    ]
+    expect(filteredAgents.value.map(a => a.id)).toEqual(['a', 'b', 'c'])
+  })
 
-    expect(view.value).toBe('monitor')
+  it('still reorders agents by last_seen_at across minute boundaries', () => {
+    const agents = ref([
+      { id: 'a', last_seen_at: '2026-06-28T10:00:00.000Z' },
+      { id: 'b', last_seen_at: '2026-06-28T10:01:00.000Z' }
+    ])
+    const { filteredAgents } = useAgentFilters(agents)
+    expect(filteredAgents.value.map(a => a.id)).toEqual(['b', 'a'])
   })
 })

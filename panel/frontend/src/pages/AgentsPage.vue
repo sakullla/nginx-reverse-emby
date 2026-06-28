@@ -144,11 +144,11 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents, useUpdateAgent, useDeleteAgent } from '../hooks/useAgents'
 import { useAgentMonitorStream } from '../hooks/useAgentMonitorStream'
-import { buildOutboundProxyPayload } from './outboundProxyURL'
+import { mergeAgentsWithMonitor } from '../utils/agentMonitor.js'
 import { useAgentFilters } from '../hooks/useAgentFilters'
 import AgentFilterBar from '../components/AgentFilterBar.vue'
 import AgentMonitorCard from '../components/AgentMonitorCard.vue'
@@ -162,16 +162,13 @@ const router = useRouter()
 const { selectedAgentId } = useAgent()
 
 const { data, isLoading } = useAgents()
-const { data: monitorAgents } = useAgentMonitorStream()
 const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
-const agents = computed(() => {
-  const monitorById = new Map((monitorAgents.value || []).map(agent => [agent.id, agent]))
-  return (data.value ?? []).map(agent => {
-    const monitor = monitorById.get(agent.id) || agent.monitor
-    return monitor ? { ...agent, ...monitor, monitor } : agent
-  })
-})
+
+const monitorStreamEnabled = ref(false)
+const { data: monitorAgents } = useAgentMonitorStream({ enabled: monitorStreamEnabled })
+
+const agents = computed(() => mergeAgentsWithMonitor(data.value, monitorAgents.value))
 
 // Filter/sort state
 const {
@@ -188,6 +185,10 @@ const {
   clearFilters,
   toggleSortOrder
 } = useAgentFilters(agents)
+
+watch(view, () => {
+  monitorStreamEnabled.value = view.value === 'monitor'
+}, { immediate: true })
 
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')

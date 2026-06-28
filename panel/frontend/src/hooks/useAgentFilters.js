@@ -10,6 +10,11 @@ function normalizeAgentView(value) {
   return normalized === 'list' ? 'list' : 'monitor'
 }
 
+function lastSeenAtMinuteTime(agent) {
+  const time = new Date(agent.last_seen_at || 0).getTime()
+  return Number.isNaN(time) ? 0 : Math.floor(time / 60000)
+}
+
 export function useAgentFilters(agentsRef) {
   const route = useRoute()
   const router = useRouter()
@@ -120,6 +125,7 @@ export function useAgentFilters(agentsRef) {
     }
 
     // Apply sort
+    const direction = sortOrder.value === 'asc' ? 1 : -1
     result.sort((a, b) => {
       let comparison = 0
       switch (sortField.value) {
@@ -134,10 +140,11 @@ export function useAgentFilters(agentsRef) {
           break
         case 'last_seen_at':
         default:
-          comparison = new Date(a.last_seen_at || 0) - new Date(b.last_seen_at || 0)
+          comparison = lastSeenAtMinuteTime(a) - lastSeenAtMinuteTime(b)
           break
       }
-      return sortOrder.value === 'asc' ? comparison : -comparison
+      if (comparison !== 0) return comparison * direction
+      return String(a.id || '').localeCompare(String(b.id || ''))
     })
 
     return result

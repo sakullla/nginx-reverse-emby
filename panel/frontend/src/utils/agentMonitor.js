@@ -38,6 +38,19 @@ export function mergeMonitorAgents(previous = [], update) {
   return agents
 }
 
+export function mergeAgentsWithMonitor(agents, monitorAgents) {
+  const monitorById = new Map((monitorAgents || []).map(agent => [agent.id, agent]))
+  const baseAgents = agents || []
+  let changed = false
+  const merged = baseAgents.map((agent) => {
+    const monitor = monitorById.get(agent.id) || agent.monitor
+    if (!monitor) return agent
+    changed = true
+    return { ...agent, ...monitor, monitor }
+  })
+  return changed ? merged : baseAgents
+}
+
 export function monitorSnapshotAgents(snapshot) {
   return Array.isArray(snapshot?.agents) ? snapshot.agents : []
 }

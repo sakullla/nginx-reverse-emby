@@ -17,6 +17,12 @@ describe('AgentsPage', () => {
     expect(readPage()).toContain('useAgentMonitorStream')
   })
 
+  it('only enables monitor stream in monitor view', () => {
+    const page = readPage()
+    expect(page).toMatch(/useAgentMonitorStream\s*\(\s*\{[\s\S]*enabled[\s\S]*\}\s*\)/)
+    expect(page).toMatch(/view\.value\s*===\s*['"]monitor['"]/)
+  })
+
   it('hides outbound proxy editing for embedded local agents', () => {
     expect(readPage()).toMatch(/v-if="!editingAgent\?\.is_local"\s+class="form-group"/)
   })
