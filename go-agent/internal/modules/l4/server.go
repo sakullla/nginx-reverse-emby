@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,6 +53,13 @@ type Server struct {
 	udpReplyTimeout       time.Duration
 	udpSessionIdleTimeout time.Duration
 	upstreamScore         *model.ScoreStore
+
+	// udpPacketSem bounds the number of concurrently in-flight per-packet
+	// goroutines spawned by the UDP read loops. When full, incoming packets are
+	// dropped and udpDroppedPackets is incremented, preventing unbounded goroutine
+	// growth under packet floods (R6) without blocking the read loop deadlines.
+	udpPacketSem      chan struct{}
+	udpDroppedPackets atomic.Int64
 
 	relayListenersByID  map[int]model.RelayListener
 	relayProvider       RelayMaterialProvider
@@ -165,6 +173,7 @@ func newServerWithOptions(
 		udpReplyTimeout:       defaultUDPReplyTimeout,
 		udpSessionIdleTimeout: 30 * time.Second,
 		upstreamScore:         model.NewScoreStore(time.Now),
+		udpPacketSem:          make(chan struct{}, udpMaxConcurrentPackets),
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
