@@ -343,10 +343,10 @@ describe('AgentDetailPage', () => {
     expect(wrapper.text()).toContain('流量统计')
     await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
 
-    expect(wrapper.text()).toContain('概览')
-    expect(wrapper.text()).toContain('趋势')
-    expect(wrapper.text()).toContain('分项流量')
-    expect(wrapper.text()).toContain('流量维护')
+    expect(wrapper.text()).toContain('监控')
+    expect(wrapper.text()).toContain('分析')
+    expect(wrapper.text()).toContain('管理')
+    expect(wrapper.text()).not.toContain('概览')
     expect(wrapper.text()).toContain('总流量')
     expect(wrapper.text()).toContain('上行')
     expect(wrapper.text()).toContain('下行')
@@ -358,12 +358,31 @@ describe('AgentDetailPage', () => {
     expect(apiCalls.fetchTrafficTrend).toHaveBeenCalledWith('edge-1', expect.objectContaining({ granularity: 'day' }))
   })
 
+  it('groups traffic sections into monitor, analysis and management cards', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    const trafficCards = wrapper.findAll('.traffic-card')
+    const titles = trafficCards.map((card) => card.find('.traffic-section-card__title').text())
+    expect(titles).toEqual(['监控', '分析', '管理'])
+
+    const monitorCard = trafficCards[0]
+    expect(monitorCard.findComponent({ name: 'TrafficSummaryCards' }).exists()).toBe(true)
+    expect(monitorCard.findComponent({ name: 'TrafficTrendChart' }).exists()).toBe(true)
+    expect(monitorCard.find('.traffic-monitor__divider').exists()).toBe(true)
+
+    for (const card of trafficCards) {
+      expect(card.find('.traffic-section-card__icon').exists()).toBe(true)
+    }
+  })
+
   it('renders accounted traffic breakdowns in traffic tab', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.base-tabs__tab').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
-    expect(wrapper.text()).toContain('分项流量')
+    expect(wrapper.text()).toContain('分析')
     expect(wrapper.text()).toContain('HTTP')
     expect(wrapper.text()).toContain('HTTP 规则 #7')
     expect(wrapper.text()).toContain('12.0 KiB')

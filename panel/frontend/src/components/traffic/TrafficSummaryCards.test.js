@@ -58,6 +58,22 @@ describe('TrafficSummaryCards', () => {
     expect(rateValue.text()).toBe('—')
   })
 
+  it('renders an icon for each metric', () => {
+    const wrapper = mountCards()
+    const metrics = wrapper.findAll('.traffic-summary-card__metric')
+    expect(metrics.length).toBe(4)
+    for (const metric of metrics) {
+      expect(metric.find('.traffic-summary-card__icon').exists()).toBe(true)
+    }
+  })
+
+  it('highlights total and current-rate metrics', () => {
+    const wrapper = mountCards()
+    const metrics = wrapper.findAll('.traffic-summary-card__metric')
+    expect(metrics[0].classes()).toContain('traffic-summary-card__metric--primary')
+    expect(metrics[3].classes()).toContain('traffic-summary-card__metric--primary')
+  })
+
   it('uses a four-column desktop grid', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/components/traffic/TrafficSummaryCards.vue'), 'utf8')
     expect(source).toContain('grid-template-columns: repeat(4, 1fr);')

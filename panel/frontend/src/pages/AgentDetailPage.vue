@@ -85,7 +85,13 @@
     <div class="agent-detail__tab-content">
       <div v-if="activeTab === 'traffic'" class="tab-panel">
         <div class="traffic-sections">
-          <BaseListCard class="traffic-card" title="概览" :clickable="false">
+          <BaseListCard class="traffic-card" :clickable="false">
+            <template #header-left>
+              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              <span class="traffic-section-card__title">监控</span>
+            </template>
             <template #header-right>
               <span
                 class="traffic-overview__status"
@@ -99,9 +105,7 @@
               :direction="trafficPolicyForm.direction"
               :network-metrics="networkMetrics"
             />
-          </BaseListCard>
-
-          <BaseListCard class="traffic-card" title="趋势" :clickable="false">
+            <div class="traffic-monitor__divider" />
             <div class="traffic-tab__trend">
               <div class="traffic-tab__trend-header">
                 <span>流量趋势</span>
@@ -127,13 +131,27 @@
             </div>
           </BaseListCard>
 
-          <BaseListCard class="traffic-card" title="分项流量" :clickable="false">
+          <BaseListCard class="traffic-card" :clickable="false">
+            <template #header-left>
+              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <span class="traffic-section-card__title">分析</span>
+            </template>
             <div class="traffic-tab__breakdown">
               <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
             </div>
           </BaseListCard>
 
-          <BaseListCard class="traffic-card" title="流量维护" :clickable="false">
+          <BaseListCard class="traffic-card" :clickable="false">
+            <template #header-left>
+              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              <span class="traffic-section-card__title">管理</span>
+            </template>
             <div class="traffic-maintenance">
               <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
               <div class="traffic-maintenance__divider" />
@@ -1054,7 +1072,21 @@ function packageStatusLabel(status) {
 .btn-secondary:hover { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-subtle); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .traffic-sections { display: flex; flex-direction: column; gap: 1rem; }
+.traffic-section-card__title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.traffic-section-card__icon {
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
 .traffic-card:deep(.base-list-card__body) { gap: 1rem; }
+.traffic-monitor__divider {
+  height: 1px;
+  background: var(--color-border-subtle);
+  margin: 0.25rem 0;
+}
 .traffic-maintenance { display: flex; flex-direction: column; gap: 1rem; }
 .traffic-maintenance__divider { height: 1px; background: var(--color-border-subtle); }
 .traffic-maintenance :deep(.traffic-policy-form__cards) { gap: 1rem; }
