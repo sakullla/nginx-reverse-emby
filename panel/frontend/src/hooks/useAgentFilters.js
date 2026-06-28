@@ -15,6 +15,10 @@ function lastSeenAtMinuteTime(agent) {
   return Number.isNaN(time) ? 0 : Math.floor(time / 60000)
 }
 
+function totalRulesCount(agent) {
+  return (agent.http_rules_count || 0) + (agent.l4_rules_count || 0)
+}
+
 export function useAgentFilters(agentsRef) {
   const route = useRoute()
   const router = useRouter()
@@ -141,6 +145,9 @@ export function useAgentFilters(agentsRef) {
         case 'last_seen_at':
         default:
           comparison = lastSeenAtMinuteTime(a) - lastSeenAtMinuteTime(b)
+          if (comparison === 0) {
+            comparison = totalRulesCount(a) - totalRulesCount(b)
+          }
           break
       }
       if (comparison !== 0) return comparison * direction

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createNDJSONParser, mergeAgentsWithMonitor, mergeMonitorAgents } from './agentMonitor.js'
+import { createNDJSONParser, mergeAgentsWithMonitor, mergeMonitorAgents, monitorSnapshotAgents, quantizeLastSeenAt } from './agentMonitor.js'
 
 describe('agent monitor utils', () => {
   it('parses split NDJSON chunks', () => {
@@ -25,6 +25,41 @@ describe('agent monitor utils', () => {
     expect(mergeMonitorAgents([{ id: 'edge-1' }], {
       agent: { id: 'edge-2' }
     })).toEqual([{ id: 'edge-1' }, { id: 'edge-2' }])
+  })
+
+  describe('quantizeLastSeenAt', () => {
+    it('rounds last_seen_at down to the minute', () => {
+      const agent = { id: 'edge-1', last_seen_at: '2026-06-28T10:05:42.123Z' }
+      expect(quantizeLastSeenAt(agent)).toEqual({
+        id: 'edge-1',
+        last_seen_at: '2026-06-28T10:05:00.000Z'
+      })
+    })
+
+    it('returns the same object when last_seen_at is already on the minute', () => {
+      const agent = { id: 'edge-1', last_seen_at: '2026-06-28T10:05:00.000Z' }
+      expect(quantizeLastSeenAt(agent)).toBe(agent)
+    })
+
+    it('returns the same object when last_seen_at is missing', () => {
+      const agent = { id: 'edge-1' }
+      expect(quantizeLastSeenAt(agent)).toBe(agent)
+    })
+  })
+
+  describe('monitorSnapshotAgents', () => {
+    it('quantizes last_seen_at for each snapshot agent', () => {
+      const snapshot = {
+        agents: [
+          { id: 'edge-1', last_seen_at: '2026-06-28T10:05:42.123Z' },
+          { id: 'edge-2', last_seen_at: '2026-06-28T10:06:00.000Z' }
+        ]
+      }
+      expect(monitorSnapshotAgents(snapshot)).toEqual([
+        { id: 'edge-1', last_seen_at: '2026-06-28T10:05:00.000Z' },
+        { id: 'edge-2', last_seen_at: '2026-06-28T10:06:00.000Z' }
+      ])
+    })
   })
 
   describe('mergeAgentsWithMonitor', () => {

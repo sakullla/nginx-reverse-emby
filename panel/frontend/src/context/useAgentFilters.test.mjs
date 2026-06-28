@@ -72,4 +72,23 @@ describe('useAgentFilters helpers', () => {
     const { filteredAgents } = useAgentFilters(agents)
     expect(filteredAgents.value.map(a => a.id)).toEqual(['b', 'a'])
   })
+
+  it('sorts by total rule count within the same minute when last_seen_at is tied', () => {
+    const agents = ref([
+      { id: 'a', last_seen_at: '2026-06-28T10:00:00.000Z', http_rules_count: 1, l4_rules_count: 0 },
+      { id: 'b', last_seen_at: '2026-06-28T10:00:00.000Z', http_rules_count: 3, l4_rules_count: 1 },
+      { id: 'c', last_seen_at: '2026-06-28T10:00:00.000Z', http_rules_count: 2, l4_rules_count: 2 }
+    ])
+    const { filteredAgents } = useAgentFilters(agents)
+    expect(filteredAgents.value.map(a => a.id)).toEqual(['b', 'c', 'a'])
+  })
+
+  it('falls back to id tie-breaker when last_seen_at and rule counts are equal', () => {
+    const agents = ref([
+      { id: 'b', last_seen_at: '2026-06-28T10:00:00.000Z', http_rules_count: 1, l4_rules_count: 1 },
+      { id: 'a', last_seen_at: '2026-06-28T10:00:00.000Z', http_rules_count: 1, l4_rules_count: 1 }
+    ])
+    const { filteredAgents } = useAgentFilters(agents)
+    expect(filteredAgents.value.map(a => a.id)).toEqual(['a', 'b'])
+  })
 })
