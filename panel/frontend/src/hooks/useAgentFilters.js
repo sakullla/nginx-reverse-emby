@@ -1,4 +1,4 @@
-import { computed, ref, watch } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAgentStatus } from '../utils/agentHelpers.js'
 
@@ -10,10 +10,10 @@ function normalizeAgentView(value) {
   return normalized === 'list' ? 'list' : 'monitor'
 }
 
-function lastSeenAtRecencyRank(agent) {
+function lastSeenAtRecencyRank(agent, nowMs) {
   const time = new Date(agent.last_seen_at || 0).getTime()
   if (Number.isNaN(time)) return 0
-  const minutesAgo = Math.floor((Date.now() - time) / 60000)
+  const minutesAgo = Math.floor((nowMs - time) / 60000)
   if (minutesAgo < 1) return 4
   if (minutesAgo < 5) return 3
   if (minutesAgo < 15) return 2
@@ -61,6 +61,14 @@ export function useAgentFilters(agentsRef) {
 
   // Search
   const searchQuery = ref('')
+
+  // Reactive wall-clock for time-dependent recency buckets.
+  // Updated every minute so last_seen_at ordering stays fresh while the page is open.
+  const now = ref(Date.now())
+  const nowInterval = setInterval(() => {
+    now.value = Date.now()
+  }, 60000)
+  onScopeDispose(() => clearInterval(nowInterval))
 
   // Sync filters/sort to URL query
   function syncQuery(overrides = {}) {
@@ -160,7 +168,7 @@ export function useAgentFilters(agentsRef) {
           break
         case 'last_seen_at':
         default:
-          comparison = lastSeenAtRecencyRank(a) - lastSeenAtRecencyRank(b)
+          comparison = lastSeenAtRecencyRank(a, now.value) - lastSeenAtRecencyRank(b, now.value)
           if (comparison === 0) {
             comparison = totalRulesCount(a) - totalRulesCount(b)
           }

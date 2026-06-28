@@ -157,4 +157,17 @@ describe('useAgentFilters helpers', () => {
     agents.value = [a, { ...b, last_seen_at: '2026-06-28T10:04:00.000Z' }]
     expect(filteredAgents.value.map(x => x.id)).toEqual(['a', 'b'])
   })
+
+  it('invalidates recency buckets as wall-clock time advances', async () => {
+    const a = { id: 'a', last_seen_at: '2026-06-28T10:04:00.000Z' }
+    const b = { id: 'b', last_seen_at: '2026-06-28T10:04:30.000Z' }
+    const agents = ref([a, b])
+    const { filteredAgents } = useAgentFilters(agents)
+    // At 10:05:00: b (30s) in bucket 4, a (1m) in bucket 3 -> b, a
+    expect(filteredAgents.value.map(x => x.id)).toEqual(['b', 'a'])
+
+    // Advance 90s to 10:06:30: both in bucket 3, tie by id -> a, b
+    await vi.advanceTimersByTimeAsync(90000)
+    expect(filteredAgents.value.map(x => x.id)).toEqual(['a', 'b'])
+  })
 })
