@@ -92,6 +92,15 @@ func (b *reusableRequestBody) Open() (io.ReadCloser, int64, func() (io.ReadClose
 	return nil, 0, nil
 }
 
+// Replayable reports whether Open() can be called more than once and still
+// yield the original payload. A buffered body (and the trivial empty body)
+// replays on every Open(); a streamed body is consumed the first time Open()
+// runs, so a second Open() would yield an empty body. Callers must check this
+// before the first Open() (afterwards b.stream is already nilled).
+func (b *reusableRequestBody) Replayable() bool {
+	return b == nil || b.stream == nil
+}
+
 func (b *reusableRequestBody) Close() error {
 	if b == nil || b.stream == nil {
 		return nil

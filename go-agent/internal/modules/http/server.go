@@ -240,8 +240,18 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		log.Printf("[proxy] candidates error for %s: %v", e.rule.FrontendURL, err)
 		return err
 	}
+	// A retry-safe method whose body was too large to buffer is streamed once
+	// and cannot be replayed: once Open() hands the stream to a request the
+	// underlying stream is consumed, so a second Open() yields an empty body.
+	// When more than one attempt is planned, restrict it to a single attempt so
+	// retry and failover never silently change the request. Single-attempt
+	// methods keep their existing failover behavior.
+	maxSameBackendAttempts := e.sameBackendRetryMaxAttempts(req)
+	singleShotBody := maxSameBackendAttempts > 1 && !body.Replayable()
+	if singleShotBody {
+		maxSameBackendAttempts = 1
+	}
 	for _, candidate := range candidates {
-		maxSameBackendAttempts := e.sameBackendRetryMaxAttempts(req)
 		for attempt := 0; attempt < maxSameBackendAttempts; attempt++ {
 			attemptReq, err := cloneProxyRequest(req, body, candidate, e.rule, e.frontendPath, recorder)
 			if err != nil {
@@ -326,6 +336,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			}
 			e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), written)
 			return nil
+		}
+		// The one-shot body was consumed by the attempt above, so stop before
+		// failover to another candidate reuses it with an empty body.
+		if singleShotBody {
+			break
 		}
 	}
 	return fmt.Errorf("all backends failed for %s", e.rule.FrontendURL)
