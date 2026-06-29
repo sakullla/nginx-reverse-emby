@@ -479,6 +479,70 @@ func TestTaskServicePrunesTerminalTasksPastRetention(t *testing.T) {
 	}
 }
 
+func TestTaskServicePruneExpiresAbandonedTimedOutTasks(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	service := NewTaskService(TaskServiceConfig{
+		Now:           func() time.Time { return now },
+		TaskTTL:       30 * time.Second,
+		Retention:     5 * time.Minute,
+		PruneInterval: time.Hour, // long interval: the test drives prune explicitly
+	})
+	defer func() { _ = service.Close() }()
+
+	session := &stubTaskSession{agentID: "agent-a", tasks: make(chan TaskEnvelope, 4)}
+	if err := service.RegisterSession(TaskSessionRegistration{
+		AgentID:   "agent-a",
+		SessionID: "session-1",
+		Session:   session,
+	}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	// Dispatched task whose agent never reports back.
+	abandoned, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+	})
+	if err != nil {
+		t.Fatalf("CreateAndDispatch() error = %v", err)
+	}
+
+	// Advance past the deadline WITHOUT calling Get/ApplyUpdate, so the record
+	// is still "dispatched". Without expiring in the prune loop it would stay
+	// non-terminal forever and never age out.
+	now = now.Add(time.Minute)
+
+	// First prune pass must expire the abandoned dispatched task to failed. It
+	// is freshly expired, so it stays within the retention window and is not
+	// removed yet.
+	if removed := service.pruneTerminalTasks(now); removed != 0 {
+		t.Fatalf("first prune removed = %d, want 0 (expired record still within retention)", removed)
+	}
+	// Read the stored record directly: Get() would itself expire the record and
+	// mask whether the prune loop did the work.
+	service.mu.RLock()
+	stored, ok := service.tasks[abandoned.ID]
+	service.mu.RUnlock()
+	if !ok {
+		t.Fatalf("abandoned task missing after first prune")
+	}
+	if stored.State != "failed" || stored.Error != taskDeadlineExceededError {
+		t.Fatalf("abandoned task after prune = state %q error %q, want failed/%q", stored.State, stored.Error, taskDeadlineExceededError)
+	}
+	if !stored.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %s, want %s", stored.UpdatedAt, now)
+	}
+
+	// Advance past retention; the now-terminal record must age out.
+	now = now.Add(service.retention + time.Minute)
+	if removed := service.pruneTerminalTasks(now); removed != 1 {
+		t.Fatalf("second prune removed = %d, want 1", removed)
+	}
+	if _, err := service.Get(context.Background(), "agent-a", abandoned.ID); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("abandoned timed-out task past retention: Get() error = %v, want ErrTaskNotFound", err)
+	}
+}
+
 func TestTaskServiceCloseStopsPruneGoroutine(t *testing.T) {
 	service := NewTaskService(TaskServiceConfig{
 		TaskTTL:       30 * time.Second,

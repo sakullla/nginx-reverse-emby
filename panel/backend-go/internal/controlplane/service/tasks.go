@@ -162,7 +162,7 @@ func (s *TaskService) runPruneLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.pruneTerminalTasks(s.now())
+			s.pruneTerminalTasks(s.now().UTC())
 		}
 	}
 }
@@ -180,16 +180,22 @@ func (s *TaskService) Close() error {
 	return nil
 }
 
-// pruneTerminalTasks removes terminal (completed/failed) task records whose
-// final UpdatedAt is older than the retention window relative to now. The
-// decision is driven by the injected clock so it stays deterministic and
-// testable; non-terminal records (including dispatched) are never removed here.
-// It returns the number of records removed.
+// pruneTerminalTasks first expires abandoned tasks whose deadline passed
+// without a terminal update (e.g. an agent that never reported back and was
+// never polled via Get/ApplyUpdate), then removes terminal (completed/failed)
+// task records whose final UpdatedAt is older than the retention window
+// relative to now. Expiring first is what lets those records reach a final
+// state and age out; without it they would stay dispatched forever and defeat
+// the bounded retention. The decisions are driven by the injected clock so they
+// stay deterministic and testable; non-terminal records still within their
+// deadline are never removed here. It returns the number of records removed.
 func (s *TaskService) pruneTerminalTasks(now time.Time) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	removed := 0
 	for id, record := range s.tasks {
+		record = s.expireTaskIfDeadlineExceededLocked(record, now)
+		s.tasks[id] = record
 		if !isTerminalTaskState(record.State) {
 			continue
 		}
