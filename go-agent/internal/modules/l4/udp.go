@@ -400,10 +400,13 @@ func (s *Server) udpReadLoop(conn udpListener, rule model.L4Rule) {
 			return
 		}
 
-		packet := append([]byte(nil), buf[:n]...)
+		// Acquire the concurrency slot before copying the datagram so packets
+		// dropped because the cap is reached do not allocate a fresh buffer (up
+		// to 64 KiB each) and add GC pressure under packet floods.
 		if !s.tryAcquireUDPPacketSlot() {
 			continue
 		}
+		packet := append([]byte(nil), buf[:n]...)
 		s.wg.Add(1)
 		go func(payload []byte, peerAddr *net.UDPAddr) {
 			defer s.wg.Done()

@@ -274,6 +274,51 @@ func TestUDPReadLoopDropsPacketsWhenSlotsFull(t *testing.T) {
 	}
 }
 
+// TestUDPReadLoopDoesNotAllocateDroppedPackets guards the ordering of the
+// per-packet copy relative to the concurrency slot. When the semaphore is full
+// every datagram is dropped; the acquire must happen before the buffer copy so a
+// flood of dropped packets does not allocate up to 64 KiB per datagram. Because
+// udpReadLoop has fixed per-call overhead (the read buffer and its defer), the
+// invariant is that allocations must NOT grow with the number of dropped packets.
+func TestUDPReadLoopDoesNotAllocateDroppedPackets(t *testing.T) {
+	s := &Server{
+		ctx:          context.Background(),
+		now:          time.Now,
+		udpPacketSem: make(chan struct{}, 1),
+	}
+	// Pre-fill the single slot so every incoming packet must be dropped.
+	s.udpPacketSem <- struct{}{}
+
+	dropAllocs := func(n int) float64 {
+		packets := make([][]byte, n)
+		for i := range packets {
+			packets[i] = []byte("payload")
+		}
+		conn := &dropTestUDPListener{
+			packets: packets,
+			addr:    &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1234},
+		}
+		return testing.AllocsPerRun(1, func() {
+			// Re-arm the listener and reset drop state each run; the semaphore
+			// stays full because dropped packets never acquire or release a slot.
+			s.udpDroppedPackets.Store(0)
+			conn.packets = packets
+			s.wg.Add(1)
+			s.udpReadLoop(conn, model.L4Rule{})
+			s.wg.Wait()
+		})
+	}
+
+	few := dropAllocs(2)
+	many := dropAllocs(32)
+	if many != few {
+		t.Fatalf("drop-path allocations grew with packet count (few=%v, many=%v); the slot must be acquired before copying the datagram", few, many)
+	}
+	if got := s.udpDroppedPackets.Load(); got != 32 {
+		t.Fatalf("dropped = %d, want 32 (all packets dropped while slot full)", got)
+	}
+}
+
 // TestWireGuardTransparentUDPReadLoopDropsPacketsWhenSlotsFull is the WireGuard
 // transparent counterpart: with a full semaphore, every packet is dropped +
 // counted and no handler goroutine is spawned (R6 applies to both UDP loops).
