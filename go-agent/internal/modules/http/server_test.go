@@ -1797,6 +1797,181 @@ func TestRouteEntryRetriesSameBackendOnceBeforeFailingRequest(t *testing.T) {
 	}
 }
 
+// TestServeHTTPDoesNotRetryNonReplayableBodyWithEmptyPayload guards against the
+// regression where an oversized request body — streamed once because it exceeds
+// the buffered-retry cap and therefore cannot be replayed — is retried or failed
+// over with an empty body. With SameBackendRetryAttempts=1 a retry-safe method
+// (GET) makes maxAttempts=2; the streamed body is consumed by the first Open(),
+// so a second Open() would yield Content-Length: 0. The fix must keep the single
+// attempt's payload and suppress the retry rather than silently changing it.
+func TestServeHTTPDoesNotRetryNonReplayableBodyWithEmptyPayload(t *testing.T) {
+	var mu sync.Mutex
+	receivedBodyLens := make([]int, 0)
+	attempts := 0
+	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		attempts++
+		receivedBodyLens = append(receivedBodyLens, len(body))
+		isFirst := attempts == 1
+		mu.Unlock()
+		if isFirst {
+			// Abort the first attempt after reading its body so a retryable
+			// connection failure forces the retry path.
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatalf("response writer does not support hijack")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("hijack failed: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer flaky.Close()
+
+	backendURL := mustParseBackendURL(t, flaky.URL)
+	cache := model.NewCache(model.BackendCacheConfig{})
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: backendURL, backendHost: backendURL.Host},
+		},
+		backendCache:   cache,
+		transport:      NewSharedTransport(),
+		selectionScope: "edge.example.test",
+		resilience: StreamResilienceOptions{
+			SameBackendRetryAttempts: 1,
+		},
+	}
+
+	// Retry-safe method carrying a body larger than the buffered-retry cap: it
+	// takes the one-shot stream path (non-replayable).
+	payload := make([]byte, maxBufferedRetryBodyBytes+1)
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/upload", bytes.NewReader(payload))
+	req.ContentLength = int64(len(payload))
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+
+	// The single attempt aborted, so the request must fail rather than be
+	// retried with an empty body.
+	if err == nil {
+		t.Fatalf("expected request to fail after the single aborted attempt, got success with body %q", recorder.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("expected exactly one backend attempt for non-replayable body, got %d (body lengths %v)", attempts, receivedBodyLens)
+	}
+	if len(receivedBodyLens) != 1 || receivedBodyLens[0] != len(payload) {
+		t.Fatalf("expected the full payload (%d bytes) sent once, got %v", len(payload), receivedBodyLens)
+	}
+}
+
+// TestServeHTTPFailoversOneShotBodyPastBackoffCandidate guards the regression
+// where a non-replayable (one-shot) request body is consumed while cloning the
+// first candidate, which is then skipped by the per-candidate backoff check.
+// The old code broke out of the candidate loop and returned "all backends
+// failed" without ever trying later healthy candidates. The fix evaluates
+// backoff before cloneProxyRequest opens the body, so a backoff candidate is
+// skipped without spending the stream and failover still reaches the healthy
+// backend with the full payload.
+//
+// The bug needs a candidate that candidates() returned but that is in backoff
+// by the time the per-candidate check runs. That race is reproduced here
+// deterministically: the resolver marks the first backend's address into
+// backoff while resolving the second backend (after the first candidate is
+// already in the list). round_robin preserves config order on the first call
+// for a scope, so the backoff backend is resolved before the healthy one.
+func TestServeHTTPFailoversOneShotBodyPastBackoffCandidate(t *testing.T) {
+	var healthyMu sync.Mutex
+	healthyRequests := 0
+	receivedLen := 0
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		healthyMu.Lock()
+		healthyRequests++
+		receivedLen = len(body)
+		healthyMu.Unlock()
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer healthy.Close()
+
+	healthyURL := mustParseBackendURL(t, healthy.URL)
+	// The healthy backend uses a hostname (not an IP literal) so the resolver is
+	// actually invoked: Resolve() short-circuits IP hosts without calling it.
+	healthyTarget := mustParseBackendURL(t, fmt.Sprintf("http://healthy.example:%s", healthyURL.Port()))
+	var cache *model.Cache
+	cache = model.NewCache(model.BackendCacheConfig{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			switch host {
+			case "backoff.example":
+				// Resolved first: an address the second resolution pushes into
+				// backoff to simulate the post-candidates() race.
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.50")}}, nil
+			case "healthy.example":
+				// Resolved second: mark the first candidate into backoff after it
+				// is already in the candidate list, then resolve the healthy
+				// test server so failover can reach it.
+				cache.MarkFailure("127.0.0.50:8096")
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected resolver host %q", host)
+			}
+		}),
+	})
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://backoff.example:8096"), backendHost: "backoff.example:8096"},
+			{target: healthyTarget, backendHost: healthyTarget.Host},
+		},
+		backendCache:   cache,
+		transport:      NewSharedTransport(),
+		selectionScope: "edge.example.test",
+		resilience: StreamResilienceOptions{
+			SameBackendRetryAttempts: 1,
+		},
+	}
+
+	// Retry-safe GET carrying a body larger than the buffered-retry cap takes the
+	// one-shot (non-replayable) stream path.
+	payload := make([]byte, maxBufferedRetryBodyBytes+1)
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/upload", bytes.NewReader(payload))
+	req.ContentLength = int64(len(payload))
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	if err := entry.serveHTTP(recorder, req); err != nil {
+		t.Fatalf("expected failover to the healthy backend, got error: %v", err)
+	}
+
+	healthyMu.Lock()
+	defer healthyMu.Unlock()
+	if healthyRequests != 1 {
+		t.Fatalf("expected exactly one healthy backend request after skipping the backoff candidate, got %d", healthyRequests)
+	}
+	if receivedLen != len(payload) {
+		t.Fatalf("expected the full %d-byte payload at the healthy backend, got %d", len(payload), receivedLen)
+	}
+}
+
 func TestRouteEntryMarksRedirectDialAddressInBackoffOnFailure(t *testing.T) {
 	redirectTarget := mustParseBackendURL(t, "http://127.0.0.1:18093")
 	cache := model.NewCache(model.BackendCacheConfig{

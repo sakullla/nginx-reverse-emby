@@ -549,15 +549,21 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		TaskService:             taskSvc,
 	})
 	if err != nil {
+		_ = taskSvc.Close()
 		_ = closeStores()
 		return nil, err
 	}
-	closeApp := closeStores
+	closeApp := func() error {
+		taskErr := taskSvc.Close()
+		storeErr := closeStores()
+		return errors.Join(taskErr, storeErr)
+	}
 	if cleanup, ok := handler.(interface{ Close() error }); ok {
+		nextCloseApp := closeApp
 		closeApp = func() error {
 			handlerErr := cleanup.Close()
-			storeErr := closeStores()
-			return errors.Join(handlerErr, storeErr)
+			restErr := nextCloseApp()
+			return errors.Join(handlerErr, restErr)
 		}
 	}
 

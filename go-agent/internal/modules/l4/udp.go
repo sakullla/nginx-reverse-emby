@@ -15,6 +15,14 @@ import (
 
 const udpPacketBufferSize = 64 * 1024
 
+// udpMaxConcurrentPackets bounds how many per-packet goroutines the UDP read
+// loops may run concurrently. Beyond this, incoming packets are dropped and
+// counted rather than spawning another goroutine, so a packet flood cannot grow
+// the goroutine population without limit (R6). The cap is a generous constant so
+// normal bursty UDP traffic is not throttled while still preventing unbounded
+// memory/goroutine growth.
+const udpMaxConcurrentPackets = 1024
+
 type udpSession struct {
 	key                   string
 	peer                  *net.UDPAddr
@@ -350,9 +358,32 @@ func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, erro
 	return conn, nil
 }
 
+// tryAcquireUDPPacketSlot performs a non-blocking acquire of a per-packet
+// worker slot. It returns true when a slot is acquired, in which case the caller
+// MUST release it via releaseUDPPacketSlot once the packet has been handled.
+// When the concurrency cap (udpMaxConcurrentPackets) is reached it returns
+// false, the packet is dropped, and the drop counter is incremented — bounding
+// goroutine growth under packet floods (R6) without blocking the read loop or
+// its per-read deadlines.
+func (s *Server) tryAcquireUDPPacketSlot() bool {
+	select {
+	case s.udpPacketSem <- struct{}{}:
+		return true
+	default:
+		s.udpDroppedPackets.Add(1)
+		return false
+	}
+}
+
+// releaseUDPPacketSlot returns a per-packet worker slot acquired via
+// tryAcquireUDPPacketSlot.
+func (s *Server) releaseUDPPacketSlot() {
+	<-s.udpPacketSem
+}
+
 func (s *Server) udpReadLoop(conn udpListener, rule model.L4Rule) {
 	defer s.wg.Done()
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, udpPacketBufferSize)
 
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
@@ -369,10 +400,17 @@ func (s *Server) udpReadLoop(conn udpListener, rule model.L4Rule) {
 			return
 		}
 
+		// Acquire the concurrency slot before copying the datagram so packets
+		// dropped because the cap is reached do not allocate a fresh buffer (up
+		// to 64 KiB each) and add GC pressure under packet floods.
+		if !s.tryAcquireUDPPacketSlot() {
+			continue
+		}
 		packet := append([]byte(nil), buf[:n]...)
 		s.wg.Add(1)
 		go func(payload []byte, peerAddr *net.UDPAddr) {
 			defer s.wg.Done()
+			defer s.releaseUDPPacketSlot()
 			s.proxyUDPPacket(conn, rule, payload, peerAddr)
 		}(packet, peer)
 	}
@@ -386,9 +424,13 @@ func (s *Server) wireGuardTransparentUDPReadLoop(conn wireGuardTransparentUDPLis
 		if err != nil {
 			return
 		}
+		if !s.tryAcquireUDPPacketSlot() {
+			continue
+		}
 		s.wg.Add(1)
 		go func(packet module.TransparentUDPPacket) {
 			defer s.wg.Done()
+			defer s.releaseUDPPacketSlot()
 			s.proxyWireGuardTransparentUDPPacket(conn, rule, packet)
 		}(packet)
 	}

@@ -16,6 +16,14 @@ const (
 
 const taskDeadlineExceededError = "task deadline exceeded"
 
+// Terminal task records are kept for a bounded window after they reach a final
+// state, then removed by the background prune loop so the in-memory tasks map
+// cannot grow without bound over the process lifetime.
+const (
+	defaultTaskRetention    = time.Hour
+	defaultTaskPruneInterval = 10 * time.Minute
+)
+
 var ErrTaskNotFound = fmt.Errorf("%w: task not found", ErrRuleNotFound)
 
 var errTaskSessionUnavailable = fmt.Errorf("%w: task session unavailable", ErrAgentNotFound)
@@ -23,6 +31,16 @@ var errTaskSessionUnavailable = fmt.Errorf("%w: task session unavailable", ErrAg
 type TaskServiceConfig struct {
 	Now     func() time.Time
 	TaskTTL time.Duration
+
+	// Retention bounds how long terminal (completed/failed) task records are
+	// kept after their final state transition. Records older than Retention
+	// are pruned by the background loop so the in-memory tasks map cannot grow
+	// without bound. A value <= 0 falls back to the default window.
+	Retention time.Duration
+
+	// PruneInterval controls how often the background prune loop sweeps the
+	// tasks map. A value <= 0 falls back to the default cadence.
+	PruneInterval time.Duration
 }
 
 type TaskSession interface {
@@ -83,10 +101,17 @@ type TaskService struct {
 	now     func() time.Time
 	taskTTL time.Duration
 
+	retention     time.Duration
+	pruneInterval time.Duration
+
 	mu       sync.RWMutex
 	sessions map[string]taskSessionState
 	tasks    map[string]TaskRecord
 	seq      uint64
+
+	pruneCtx    context.Context
+	pruneCancel context.CancelFunc
+	pruneDone   chan struct{}
 }
 
 func NewTaskService(cfg TaskServiceConfig) *TaskService {
@@ -97,12 +122,90 @@ func NewTaskService(cfg TaskServiceConfig) *TaskService {
 	if cfg.TaskTTL <= 0 {
 		cfg.TaskTTL = 30 * time.Second
 	}
-	return &TaskService{
-		now:      now,
-		taskTTL:  cfg.TaskTTL,
-		sessions: make(map[string]taskSessionState),
-		tasks:    make(map[string]TaskRecord),
+	retention := cfg.Retention
+	if retention <= 0 {
+		retention = defaultTaskRetention
 	}
+	pruneInterval := cfg.PruneInterval
+	if pruneInterval <= 0 {
+		pruneInterval = defaultTaskPruneInterval
+	}
+	s := &TaskService{
+		now:           now,
+		taskTTL:       cfg.TaskTTL,
+		retention:     retention,
+		pruneInterval: pruneInterval,
+		sessions:      make(map[string]taskSessionState),
+		tasks:         make(map[string]TaskRecord),
+		pruneDone:     make(chan struct{}),
+	}
+	s.startPruneLoop()
+	return s
+}
+
+// startPruneLoop launches the background goroutine that periodically removes
+// terminal task records past their retention window. NewTaskService starts it
+// once; Close stops it.
+func (s *TaskService) startPruneLoop() {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.pruneCtx = ctx
+	s.pruneCancel = cancel
+	go s.runPruneLoop(ctx)
+}
+
+func (s *TaskService) runPruneLoop(ctx context.Context) {
+	defer close(s.pruneDone)
+	ticker := time.NewTicker(s.pruneInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.pruneTerminalTasks(s.now().UTC())
+		}
+	}
+}
+
+// Close stops the background prune loop and waits for it to exit. It is safe
+// to call concurrently and more than once; cancel and channel receive are both
+// idempotent.
+func (s *TaskService) Close() error {
+	if s.pruneCancel != nil {
+		s.pruneCancel()
+	}
+	if s.pruneDone != nil {
+		<-s.pruneDone
+	}
+	return nil
+}
+
+// pruneTerminalTasks first expires abandoned tasks whose deadline passed
+// without a terminal update (e.g. an agent that never reported back and was
+// never polled via Get/ApplyUpdate), then removes terminal (completed/failed)
+// task records whose final UpdatedAt is older than the retention window
+// relative to now. Expiring first is what lets those records reach a final
+// state and age out; without it they would stay dispatched forever and defeat
+// the bounded retention. The decisions are driven by the injected clock so they
+// stay deterministic and testable; non-terminal records still within their
+// deadline are never removed here. It returns the number of records removed.
+func (s *TaskService) pruneTerminalTasks(now time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for id, record := range s.tasks {
+		record = s.expireTaskIfDeadlineExceededLocked(record, now)
+		s.tasks[id] = record
+		if !isTerminalTaskState(record.State) {
+			continue
+		}
+		if now.Sub(record.UpdatedAt) < s.retention {
+			continue
+		}
+		delete(s.tasks, id)
+		removed++
+	}
+	return removed
 }
 
 func (s *TaskService) RegisterSession(reg TaskSessionRegistration) error {

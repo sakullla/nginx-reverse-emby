@@ -3,9 +3,11 @@ package wgnetstack
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net/netip"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -201,6 +203,105 @@ func TestNetTunDNSCachePrunesExpiredHostsOnInsert(t *testing.T) {
 	}
 	if _, ok := tun.dnsCache["new.example.com"]; !ok {
 		t.Fatal("new DNS cache entry was not stored")
+	}
+}
+
+// TestNetTunDNSCacheEnforcesMaxEntries verifies the cache is bounded at
+// netTunDNSCacheMaxEntries: inserting a brand-new host beyond capacity evicts
+// the earliest-expiring entry, overwriting an existing host never grows or
+// evicts, and continued inserts never exceed the cap (R3).
+func TestNetTunDNSCacheEnforcesMaxEntries(t *testing.T) {
+	tun := &netTun{}
+	now := time.Now()
+
+	// Pre-populate to exactly the capacity with deterministic expiries. One
+	// entry (the victim) expires earliest so it must be evicted first.
+	tun.dnsCache = make(map[string]dnsCacheEntry, netTunDNSCacheMaxEntries)
+	for i := 0; i < netTunDNSCacheMaxEntries-1; i++ {
+		tun.dnsCache[fmt.Sprintf("host-%04d.example.com", i)] = dnsCacheEntry{
+			addrs:  []string{"203.0.113.1"},
+			expiry: now.Add(5 * time.Minute),
+		}
+	}
+	const victim = "victim.example.com"
+	tun.dnsCache[victim] = dnsCacheEntry{
+		addrs:  []string{"203.0.113.2"},
+		expiry: now.Add(time.Minute), // earliest expiry
+	}
+	if got := len(tun.dnsCache); got != netTunDNSCacheMaxEntries {
+		t.Fatalf("precondition: cache size = %d, want %d", got, netTunDNSCacheMaxEntries)
+	}
+
+	// Inserting a brand-new host beyond capacity must cap the cache and evict
+	// the earliest-expiring entry rather than growing unbounded.
+	tun.storeDNSCache("overflow.example.com", []string{"203.0.113.9"}, 5*time.Minute)
+
+	if got := len(tun.dnsCache); got != netTunDNSCacheMaxEntries {
+		t.Fatalf("cache size after overflow insert = %d, want capped at %d", got, netTunDNSCacheMaxEntries)
+	}
+	if _, ok := tun.dnsCache[victim]; ok {
+		t.Fatalf("expected earliest-expiry entry %q to be evicted", victim)
+	}
+	if _, ok := tun.dnsCache["overflow.example.com"]; !ok {
+		t.Fatal("expected new overflow entry to be present")
+	}
+
+	// Overwriting an existing host must not grow the cache or evict anything.
+	tun.storeDNSCache("host-0000.example.com", []string{"203.0.113.50"}, 5*time.Minute)
+	if got := len(tun.dnsCache); got != netTunDNSCacheMaxEntries {
+		t.Fatalf("cache size after overwrite = %d, want %d", got, netTunDNSCacheMaxEntries)
+	}
+	if got := tun.dnsCache["host-0000.example.com"].addrs[0]; got != "203.0.113.50" {
+		t.Fatalf("overwrite did not update addrs, got %q", got)
+	}
+
+	// Continued inserts must stay bounded: the cache never exceeds the cap.
+	for i := 0; i < 64; i++ {
+		tun.storeDNSCache(fmt.Sprintf("extra-%04d.example.com", i), []string{"203.0.113.99"}, 5*time.Minute)
+	}
+	if got := len(tun.dnsCache); got != netTunDNSCacheMaxEntries {
+		t.Fatalf("cache size after extra inserts = %d, want capped at %d", got, netTunDNSCacheMaxEntries)
+	}
+}
+
+// TestNetTunDNSCacheConcurrentStoresStayBounded exercises the cache under
+// concurrent inserts from many goroutines: the size must never exceed the cap
+// and no entry may be left with empty addrs (no torn / conflicting writes).
+func TestNetTunDNSCacheConcurrentStoresStayBounded(t *testing.T) {
+	tun := &netTun{}
+
+	const goroutines = 16
+	const insertsPerGoroutine = 200
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < insertsPerGoroutine; i++ {
+				host := fmt.Sprintf("g%d-h%d.example.com", g, i)
+				tun.storeDNSCache(host, []string{"203.0.113.10"}, 5*time.Minute)
+				if _, ok := tun.lookupDNSCache(host); !ok {
+					// A concurrent evictor may have removed this host; that is
+					// acceptable as long as the cache stays consistent.
+					continue
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	tun.dnsCacheMu.Lock()
+	defer tun.dnsCacheMu.Unlock()
+	if got := len(tun.dnsCache); got > netTunDNSCacheMaxEntries {
+		t.Fatalf("concurrent stores grew cache to %d, exceeding cap %d", got, netTunDNSCacheMaxEntries)
+	}
+	for host, entry := range tun.dnsCache {
+		if len(entry.addrs) == 0 {
+			t.Fatalf("cache entry %q has empty addrs (torn write)", host)
+		}
+		if entry.expiry.IsZero() {
+			t.Fatalf("cache entry %q has zero expiry", host)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -123,4 +124,104 @@ func (b *blockingManagedCertificateRenewalIssuer) callCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.calls)
+}
+
+// TestIssuanceLockSerializesSameCertificateID asserts that concurrent issuances
+// for one certificate ID run one at a time, and that the package-level map does
+// not retain the entry after every holder/waiter has released it (R2: bounded
+// refcount, no permanent retention of historical IDs).
+func TestIssuanceLockSerializesSameCertificateID(t *testing.T) {
+	const id = 900001
+	var current, maxConcurrent int32
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			unlock := issuanceLock(id)
+			n := atomic.AddInt32(&current, 1)
+			for {
+				m := atomic.LoadInt32(&maxConcurrent)
+				if n <= m || atomic.CompareAndSwapInt32(&maxConcurrent, m, n) {
+					break
+				}
+			}
+			time.Sleep(time.Millisecond)
+			atomic.AddInt32(&current, -1)
+			unlock()
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&maxConcurrent); got != 1 {
+		t.Fatalf("max concurrent issuance holders = %d, want 1 (same ID must serialize)", got)
+	}
+
+	issuanceMu.Lock()
+	_, leaked := issuanceByID[id]
+	issuanceMu.Unlock()
+	if leaked {
+		t.Fatalf("expected issuanceByID[%d] removed once no goroutine holds or waits on it", id)
+	}
+}
+
+// TestIssuanceLockRemovesEntryWhenLastHolderReleases verifies that an idle lock
+// (no holder, no waiter) is deleted, which is what keeps the map bounded.
+func TestIssuanceLockRemovesEntryWhenLastHolderReleases(t *testing.T) {
+	id := 900002
+	unlock := issuanceLock(id)
+
+	issuanceMu.Lock()
+	_, held := issuanceByID[id]
+	issuanceMu.Unlock()
+	if !held {
+		t.Fatal("expected issuanceByID entry present while lock is held")
+	}
+
+	unlock()
+
+	issuanceMu.Lock()
+	_, stillThere := issuanceByID[id]
+	issuanceMu.Unlock()
+	if stillThere {
+		t.Fatal("expected issuanceByID entry removed after unlock with no remaining holders or waiters")
+	}
+}
+
+// TestIssuanceLockRetainsEntryUntilNoWaitersRemain verifies the entry survives
+// while a waiter still holds the lock and is only reclaimed once the last
+// waiter releases (refcount semantics, not "first unlock deletes").
+func TestIssuanceLockRetainsEntryUntilNoWaitersRemain(t *testing.T) {
+	id := 900003
+
+	unlock1 := issuanceLock(id)
+
+	waiterAcquired := make(chan struct{})
+	waiterReleased := make(chan struct{})
+	go func() {
+		unlock2 := issuanceLock(id)
+		close(waiterAcquired)
+		time.Sleep(15 * time.Millisecond)
+		unlock2()
+		close(waiterReleased)
+	}()
+
+	unlock1()
+	<-waiterAcquired
+
+	issuanceMu.Lock()
+	_, present := issuanceByID[id]
+	issuanceMu.Unlock()
+	if !present {
+		t.Fatal("expected issuanceByID entry retained while a goroutine still holds the lock")
+	}
+
+	<-waiterReleased
+
+	issuanceMu.Lock()
+	_, presentAfter := issuanceByID[id]
+	issuanceMu.Unlock()
+	if presentAfter {
+		t.Fatal("expected issuanceByID entry removed once the final waiter released")
+	}
 }

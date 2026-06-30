@@ -240,19 +240,40 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		log.Printf("[proxy] candidates error for %s: %v", e.rule.FrontendURL, err)
 		return err
 	}
+	// A retry-safe method whose body was too large to buffer is streamed once
+	// and cannot be replayed: once Open() hands the stream to a request the
+	// underlying stream is consumed, so a second Open() yields an empty body.
+	// When more than one attempt is planned, restrict it to a single attempt so
+	// retry and failover never silently change the request. Single-attempt
+	// methods keep their existing failover behavior.
+	maxSameBackendAttempts := e.sameBackendRetryMaxAttempts(req)
+	singleShotBody := maxSameBackendAttempts > 1 && !body.Replayable()
+	if singleShotBody {
+		maxSameBackendAttempts = 1
+	}
 	for _, candidate := range candidates {
-		maxSameBackendAttempts := e.sameBackendRetryMaxAttempts(req)
+		// Evaluate backoff before cloneProxyRequest consumes the request body.
+		// A non-replayable (one-shot) body can be opened once: if this candidate
+		// entered backoff after candidates() built the list, consuming its stream
+		// here would force the singleShotBody break below and abandon later
+		// healthy candidates. Skip the candidate without opening the body instead.
+		actualDialAddress := candidateDialAddress(req, candidate, e.frontendPath)
+		backoffAddr := actualDialAddress
+		if ruleUsesRelay(e.rule) {
+			backoffAddr = model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, actualDialAddress)
+		}
+		if e.backendCache.IsInBackoff(backoffAddr) {
+			continue
+		}
 		for attempt := 0; attempt < maxSameBackendAttempts; attempt++ {
 			attemptReq, err := cloneProxyRequest(req, body, candidate, e.rule, e.frontendPath, recorder)
 			if err != nil {
 				log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				return err
 			}
-			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
-			backoffAddr := actualDialAddress
-			if ruleUsesRelay(e.rule) {
-				backoffAddr = model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, actualDialAddress)
-			}
+			// Re-check backoff between same-backend retries: a failed attempt
+			// marks the address failed and may flip it into backoff, in which
+			// case the remaining attempts should bail out rather than redial.
 			if e.backendCache.IsInBackoff(backoffAddr) {
 				break
 			}
@@ -326,6 +347,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			}
 			e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), written)
 			return nil
+		}
+		// The one-shot body was consumed by the attempt above, so stop before
+		// failover to another candidate reuses it with an empty body.
+		if singleShotBody {
+			break
 		}
 	}
 	return fmt.Errorf("all backends failed for %s", e.rule.FrontendURL)

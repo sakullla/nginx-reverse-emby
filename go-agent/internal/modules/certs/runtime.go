@@ -50,7 +50,17 @@ type Manager struct {
 	renewalWG          sync.WaitGroup
 	closeOnce          sync.Once
 	issuanceMu         sync.Mutex
-	issuanceByID       map[int]*sync.Mutex
+	issuanceByID       map[int]*issuanceLockEntry
+}
+
+// issuanceLockEntry is a per-certificate-ID lock carrying a refcount of the
+// goroutines currently holding or waiting on it. An entry is removed from
+// Manager.issuanceByID once its refcount drops to zero, so the map is bounded
+// by the number of in-flight issuances instead of growing without bound as new
+// certificate IDs are issued over the process lifetime.
+type issuanceLockEntry struct {
+	mu      sync.Mutex
+	waiters int
 }
 
 type activeState struct {
@@ -112,7 +122,7 @@ func NewManager(dataDir string, opts ...Option) (*Manager, error) {
 		cfg:           cfg,
 		active:        &activeState{byID: map[int]*managedCertificate{}},
 		renewalCancel: renewalCancel,
-		issuanceByID:  map[int]*sync.Mutex{},
+		issuanceByID:  map[int]*issuanceLockEntry{},
 	}
 	manager.startRenewalLoop(renewalCtx)
 	return manager, nil
@@ -418,15 +428,25 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 
 func (m *Manager) issuanceLock(certificateID int) func() {
 	m.issuanceMu.Lock()
-	mu, ok := m.issuanceByID[certificateID]
+	entry, ok := m.issuanceByID[certificateID]
 	if !ok {
-		mu = &sync.Mutex{}
-		m.issuanceByID[certificateID] = mu
+		entry = &issuanceLockEntry{}
+		m.issuanceByID[certificateID] = entry
 	}
+	entry.waiters++
 	m.issuanceMu.Unlock()
 
-	mu.Lock()
-	return func() { mu.Unlock() }
+	entry.mu.Lock()
+
+	return func() {
+		entry.mu.Unlock()
+		m.issuanceMu.Lock()
+		entry.waiters--
+		if entry.waiters == 0 {
+			delete(m.issuanceByID, certificateID)
+		}
+		m.issuanceMu.Unlock()
+	}
 }
 
 func (m *Manager) newACMEIssueRequest(policy model.ManagedCertificatePolicy, persisted persistedACMEMaterial) (acmeIssueRequest, error) {

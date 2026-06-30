@@ -557,3 +557,124 @@ func TestHeartbeatBroadcastsMonitorUpdate(t *testing.T) {
 		t.Fatal("timed out waiting for monitor update")
 	}
 }
+
+// monitorSubscriberCount returns the number of active monitor subscribers. It
+// acquires the service lock so the observation races neither with
+// SubscribeMonitorUpdates registration nor with cancel() cleanup. The subscriber
+// map is keyed by the bidirectional chan the service holds internally, so tests
+// observe registration/cleanup through the count rather than the receive-only
+// channel they hold.
+func monitorSubscriberCount(s *agentService) int {
+	s.monitorMu.Lock()
+	defer s.monitorMu.Unlock()
+	return len(s.monitorSubscribers)
+}
+
+// TestSubscribeMonitorUpdatesUnsubscribeClosesChannelAndRemovesFromMap verifies
+// that an explicit unsubscribe closes the channel, removes it from the
+// subscriber map, and is idempotent. R5: the watcher goroutine must not outlive
+// the subscription.
+func TestSubscribeMonitorUpdatesUnsubscribeClosesChannelAndRemovesFromMap(t *testing.T) {
+	svc := NewAgentService(config.Config{}, &fakeStore{})
+	if got := monitorSubscriberCount(svc); got != 0 {
+		t.Fatalf("subscriber count = %d, want 0 before subscribe", got)
+	}
+	ch, cancel := svc.SubscribeMonitorUpdates(context.Background())
+
+	if got := monitorSubscriberCount(svc); got != 1 {
+		t.Fatalf("subscriber count = %d, want 1 after subscribe", got)
+	}
+	cancel()
+
+	// cancel() runs close(ch) synchronously, so the channel is closed now.
+	_, ok := <-ch
+	if ok {
+		t.Fatal("expected closed channel after unsubscribe")
+	}
+	if got := monitorSubscriberCount(svc); got != 0 {
+		t.Fatalf("subscriber count = %d, want 0 after unsubscribe", got)
+	}
+
+	// Idempotent: a second unsubscribe must not panic, double-close, or re-add.
+	cancel()
+	if got := monitorSubscriberCount(svc); got != 0 {
+		t.Fatalf("subscriber count = %d, want 0 after second unsubscribe", got)
+	}
+}
+
+// TestSubscribeMonitorUpdatesParentCancelCleansUpGoroutine verifies that
+// cancelling the parent context cleans up the subscription on its own (channel
+// closed, map entry removed) without an explicit unsubscribe, so the watcher
+// goroutine exits promptly instead of leaking for the parent's lifetime.
+func TestSubscribeMonitorUpdatesParentCancelCleansUpGoroutine(t *testing.T) {
+	svc := NewAgentService(config.Config{}, &fakeStore{})
+	ctx, cancelParent := context.WithCancel(context.Background())
+	ch, unsubscribe := svc.SubscribeMonitorUpdates(ctx)
+
+	if got := monitorSubscriberCount(svc); got != 1 {
+		t.Fatalf("subscriber count = %d, want 1 after subscribe", got)
+	}
+	// Cancel the parent context without calling unsubscribe. The derived watcher
+	// goroutine must drive cleanup itself.
+	cancelParent()
+
+	// Cleanup is asynchronous (goroutine wakes on the derived ctx). Poll until
+	// the subscriber is gone; once it is, close(ch) has already run too (both
+	// happen under the same lock inside cancel()).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && monitorSubscriberCount(svc) != 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if got := monitorSubscriberCount(svc); got != 0 {
+		t.Fatalf("subscriber count = %d, want 0 after parent cancel", got)
+	}
+	_, ok := <-ch
+	if ok {
+		t.Fatal("expected closed channel after parent cancel")
+	}
+
+	// Late explicit unsubscribe after goroutine-driven cleanup must stay safe.
+	unsubscribe()
+	if got := monitorSubscriberCount(svc); got != 0 {
+		t.Fatalf("subscriber count = %d, want 0 after late unsubscribe", got)
+	}
+}
+
+// TestSubscribeMonitorUpdatesMultipleSubscriptionsAreIndependent verifies that
+// unsubscribing one subscription does not disturb another active subscription.
+func TestSubscribeMonitorUpdatesMultipleSubscriptionsAreIndependent(t *testing.T) {
+	svc := NewAgentService(config.Config{}, &fakeStore{})
+	ch1, cancel1 := svc.SubscribeMonitorUpdates(context.Background())
+	_, cancel2 := svc.SubscribeMonitorUpdates(context.Background())
+	defer cancel2()
+
+	if got := monitorSubscriberCount(svc); got != 2 {
+		t.Fatalf("subscriber count = %d, want 2 after two subscribes", got)
+	}
+	cancel1()
+	if got := monitorSubscriberCount(svc); got != 1 {
+		t.Fatalf("subscriber count = %d, want 1 after first unsubscribe (second must remain)", got)
+	}
+	if _, ok := <-ch1; ok {
+		t.Fatal("expected first channel closed after its unsubscribe")
+	}
+}
+
+// TestSubscribeMonitorUpdatesWithNilContextUnsubscribeCleansUp exercises the
+// nil-context fast path (SubscribeMonitorUpdates(nil) must not panic) and
+// confirms unsubscribe still closes the channel and removes the subscriber.
+func TestSubscribeMonitorUpdatesWithNilContextUnsubscribeCleansUp(t *testing.T) {
+	svc := NewAgentService(config.Config{}, &fakeStore{})
+	ch, cancel := svc.SubscribeMonitorUpdates(nil)
+
+	if got := monitorSubscriberCount(svc); got != 1 {
+		t.Fatalf("subscriber count = %d, want 1 after subscribe(nil)", got)
+	}
+	cancel()
+	if _, ok := <-ch; ok {
+		t.Fatal("expected closed channel after unsubscribe")
+	}
+	if got := monitorSubscriberCount(svc); got != 0 {
+		t.Fatalf("subscriber count = %d, want 0 after unsubscribe", got)
+	}
+}

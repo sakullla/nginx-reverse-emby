@@ -68,6 +68,12 @@ const netTunTCPDefaultBufferSize = 2 << 20
 const netTunTCPMaxBufferSize = 4 << 20
 const netTunDNSCacheMaxTTL = 5 * time.Minute
 
+// netTunDNSCacheMaxEntries bounds the DNS cache size so it cannot grow without
+// limit as new hostnames are resolved over the process lifetime. When the cache
+// is full and a brand-new host is stored, the earliest-expiring entry is
+// evicted to make room (frequently used, longer-lived records survive longer).
+const netTunDNSCacheMaxEntries = 512
+
 func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device, RuntimeNet, *stack.Stack, error) {
 	if mtu <= 0 || mtu > int(^uint32(0)) {
 		return nil, nil, nil, fmt.Errorf("invalid MTU %d", mtu)
@@ -923,9 +929,34 @@ func (tun *netTun) storeDNSCache(host string, addrs []string, ttl time.Duration)
 		tun.dnsCache = make(map[string]dnsCacheEntry)
 	}
 	tun.pruneExpiredDNSCacheLocked(now)
+	tun.ensureDNSCacheCapacityLocked(key)
 	tun.dnsCache[key] = dnsCacheEntry{
 		addrs:  append([]string(nil), addrs...),
 		expiry: now.Add(ttl),
+	}
+}
+
+// ensureDNSCacheCapacityLocked evicts the earliest-expiring entry when the DNS
+// cache is at capacity and key is new, keeping the cache bounded at
+// netTunDNSCacheMaxEntries. Overwriting an existing key does not grow the cache
+// and never triggers eviction. The caller must hold tun.dnsCacheMu.
+func (tun *netTun) ensureDNSCacheCapacityLocked(key string) {
+	if len(tun.dnsCache) < netTunDNSCacheMaxEntries {
+		return
+	}
+	if _, exists := tun.dnsCache[key]; exists {
+		return
+	}
+	var evictKey string
+	var evictExpiry time.Time
+	for k, entry := range tun.dnsCache {
+		if evictKey == "" || entry.expiry.Before(evictExpiry) {
+			evictKey = k
+			evictExpiry = entry.expiry
+		}
+	}
+	if evictKey != "" {
+		delete(tun.dnsCache, evictKey)
 	}
 }
 
