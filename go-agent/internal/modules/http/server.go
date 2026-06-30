@@ -252,17 +252,28 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		maxSameBackendAttempts = 1
 	}
 	for _, candidate := range candidates {
+		// Evaluate backoff before cloneProxyRequest consumes the request body.
+		// A non-replayable (one-shot) body can be opened once: if this candidate
+		// entered backoff after candidates() built the list, consuming its stream
+		// here would force the singleShotBody break below and abandon later
+		// healthy candidates. Skip the candidate without opening the body instead.
+		actualDialAddress := candidateDialAddress(req, candidate, e.frontendPath)
+		backoffAddr := actualDialAddress
+		if ruleUsesRelay(e.rule) {
+			backoffAddr = model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, actualDialAddress)
+		}
+		if e.backendCache.IsInBackoff(backoffAddr) {
+			continue
+		}
 		for attempt := 0; attempt < maxSameBackendAttempts; attempt++ {
 			attemptReq, err := cloneProxyRequest(req, body, candidate, e.rule, e.frontendPath, recorder)
 			if err != nil {
 				log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				return err
 			}
-			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
-			backoffAddr := actualDialAddress
-			if ruleUsesRelay(e.rule) {
-				backoffAddr = model.RelayBackoffKeyForLayers(nil, e.rule.RelayLayers, actualDialAddress)
-			}
+			// Re-check backoff between same-backend retries: a failed attempt
+			// marks the address failed and may flip it into backoff, in which
+			// case the remaining attempts should bail out rather than redial.
 			if e.backendCache.IsInBackoff(backoffAddr) {
 				break
 			}

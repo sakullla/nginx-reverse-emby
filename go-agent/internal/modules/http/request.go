@@ -115,16 +115,15 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	incomingScheme := requestScheme(req)
 	out := req.Clone(req.Context())
 	targetURL := cloneURL(candidate.target)
-	dialAddress := candidate.dialAddress
 	if redirectTarget, ok := parseInternalRedirectTarget(req.URL.Path, frontendPath); ok {
 		targetURL = redirectTarget
 		targetURL.RawQuery = req.URL.RawQuery
-		dialAddress = addressWithDefaultPort(targetURL)
 	} else {
 		targetURL.Path = rewriteRequestPath(req.URL.Path, frontendPath, normalizeURLPath(candidate.target.Path))
 		targetURL.RawPath = ""
 		targetURL.RawQuery = req.URL.RawQuery
 	}
+	dialAddress := candidateDialAddress(req, candidate, frontendPath)
 	out.URL = targetURL
 	out.URL.RawQuery = req.URL.RawQuery
 	out.URL.Fragment = req.URL.Fragment
@@ -161,6 +160,17 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 		ApplyHeaderOverrides(out, overrides)
 	}
 	return out, nil
+}
+
+// candidateDialAddress returns the dial address that cloneProxyRequest assigns to
+// the outbound request for a candidate. Mirroring it here lets callers evaluate
+// backoff before opening a non-replayable request body, which cloneProxyRequest
+// consumes via body.Open() and cannot replay on a second attempt.
+func candidateDialAddress(req *http.Request, candidate httpCandidate, frontendPath string) string {
+	if redirectTarget, ok := parseInternalRedirectTarget(req.URL.Path, frontendPath); ok {
+		return addressWithDefaultPort(redirectTarget)
+	}
+	return candidate.dialAddress
 }
 
 type trafficReadCloser struct {
