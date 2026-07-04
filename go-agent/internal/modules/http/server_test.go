@@ -2481,8 +2481,10 @@ func TestServerPreservesRelativeRedirectFromConfiguredBackend(t *testing.T) {
 }
 
 func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
+	var streamerHost string
 	var streamer *httptest.Server
 	streamer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		streamerHost = r.Host
 		if r.URL.Path != "/stream" {
 			t.Fatalf("expected streamer path /stream, got %q", r.URL.Path)
 		}
@@ -2493,8 +2495,10 @@ func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	}))
 	defer streamer.Close()
 
+	var backendHost string
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendHost = r.Host
 		w.Header().Set("Location", streamer.URL+"/stream?sign=abc")
 		w.WriteHeader(http.StatusMovedPermanently)
 	}))
@@ -2503,9 +2507,10 @@ func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	listener := model.HTTPListener{
 		Rules: []model.HTTPRule{
 			{
-				FrontendURL:   "https://route.example/emby",
-				Backends:      []model.HTTPBackend{{URL: backend.URL}},
-				ProxyRedirect: true,
+				FrontendURL:      "https://route.example/emby",
+				Backends:         []model.HTTPBackend{{URL: backend.URL}},
+				ProxyRedirect:    true,
+				PassProxyHeaders: true,
 			},
 		},
 	}
@@ -2537,6 +2542,12 @@ func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	}
 	if string(body) != "proxied-stream" {
 		t.Fatalf("unexpected proxied response body %q", string(body))
+	}
+	if backendHost != "route.example" {
+		t.Fatalf("expected configured backend request to preserve frontend host, got %q", backendHost)
+	}
+	if want := streamer.Listener.Addr().String(); streamerHost != want {
+		t.Fatalf("expected internal redirect request host %q, got %q", want, streamerHost)
 	}
 }
 
