@@ -20,6 +20,20 @@ func TestRewriteLocationPreservesFrontendPathPrefix(t *testing.T) {
 	}
 }
 
+func TestRewriteRequestPathPreservesTrailingSlash(t *testing.T) {
+	got := rewriteRequestPath("/api/admin/settings/", "/", "/")
+	if got != "/api/admin/settings/" {
+		t.Fatalf("rewriteRequestPath() = %q, want trailing slash preserved", got)
+	}
+}
+
+func TestRewriteRequestPathPreservesTrailingSlashWithPathPrefixes(t *testing.T) {
+	got := rewriteRequestPath("/panel/api/admin/settings/", "/panel", "/komari")
+	if got != "/komari/api/admin/settings/" {
+		t.Fatalf("rewriteRequestPath() = %q, want prefixed path with trailing slash", got)
+	}
+}
+
 func TestRewriteLocationEmptyFrontendOriginReturnsOriginal(t *testing.T) {
 	original := "https://backend.example/internal"
 	got := rewriteLocation(original, "", "/")

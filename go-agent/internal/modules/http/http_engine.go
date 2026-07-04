@@ -187,6 +187,7 @@ func translateURLPath(rawPath, fromBasePath, toBasePath string) string {
 	incoming := normalizeURLPath(rawPath)
 	fromBase := normalizeURLPath(fromBasePath)
 	toBase := normalizeURLPath(toBasePath)
+	keepTrailingSlash := hasTrailingSlash(rawPath)
 
 	suffix := incoming
 	if pathHasPrefix(incoming, fromBase) {
@@ -197,9 +198,12 @@ func translateURLPath(rawPath, fromBasePath, toBasePath string) string {
 			suffix = "/" + suffix
 		}
 	}
+	if keepTrailingSlash && suffix != "/" && !strings.HasSuffix(suffix, "/") {
+		suffix += "/"
+	}
 
 	if toBase == "/" {
-		return normalizeURLPath(suffix)
+		return suffix
 	}
 	if suffix == "/" {
 		return toBase
@@ -209,6 +213,11 @@ func translateURLPath(rawPath, fromBasePath, toBasePath string) string {
 
 func rewriteRequestPath(incomingPath, frontendBasePath, backendBasePath string) string {
 	return translateURLPath(incomingPath, frontendBasePath, backendBasePath)
+}
+
+func hasTrailingSlash(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	return len(trimmed) > 1 && strings.HasSuffix(trimmed, "/")
 }
 
 func pathHasPrefix(rawPath, prefix string) bool {

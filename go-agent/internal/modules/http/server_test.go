@@ -490,6 +490,53 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 	}
 }
 
+func TestPassProxyHeadersPreservesIncomingHostHeader(t *testing.T) {
+	var gotHost string
+	var gotOrigin string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotOrigin = r.Header.Get("Origin")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL:      "https://app.example.test",
+				Backends:         []model.HTTPBackend{{URL: backend.URL}},
+				PassProxyHeaders: true,
+			},
+		},
+	}
+
+	proxy := httptest.NewServer(NewServer(listener))
+	defer proxy.Close()
+
+	req, err := http.NewRequest(http.MethodPost, proxy.URL+"/api/rpc2", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = "app.example.test"
+	req.Header.Set("Origin", "https://app.example.test")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	if gotHost != "app.example.test" {
+		t.Fatalf("expected upstream Host to preserve frontend host, got %q", gotHost)
+	}
+	if gotOrigin != "https://app.example.test" {
+		t.Fatalf("expected Origin to be preserved, got %q", gotOrigin)
+	}
+}
+
 func TestServerUsesBackendAuthorityForHTTPSUpstreamsResolvedToIP(t *testing.T) {
 	backendHost := "backend.example.test"
 	backendCert := mustIssueProxyTLSCertificate(t, backendHost)
@@ -2609,8 +2656,10 @@ func TestServerPreservesRelativeRedirectFromConfiguredBackend(t *testing.T) {
 }
 
 func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
+	var streamerHost string
 	var streamer *httptest.Server
 	streamer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		streamerHost = r.Host
 		if r.URL.Path != "/stream" {
 			t.Fatalf("expected streamer path /stream, got %q", r.URL.Path)
 		}
@@ -2621,8 +2670,10 @@ func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	}))
 	defer streamer.Close()
 
+	var backendHost string
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendHost = r.Host
 		w.Header().Set("Location", streamer.URL+"/stream?sign=abc")
 		w.WriteHeader(http.StatusMovedPermanently)
 	}))
@@ -2631,9 +2682,10 @@ func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	listener := model.HTTPListener{
 		Rules: []model.HTTPRule{
 			{
-				FrontendURL:   "https://route.example/emby",
-				Backends:      []model.HTTPBackend{{URL: backend.URL}},
-				ProxyRedirect: true,
+				FrontendURL:      "https://route.example/emby",
+				Backends:         []model.HTTPBackend{{URL: backend.URL}},
+				ProxyRedirect:    true,
+				PassProxyHeaders: true,
 			},
 		},
 	}
@@ -2665,6 +2717,12 @@ func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	}
 	if string(body) != "proxied-stream" {
 		t.Fatalf("unexpected proxied response body %q", string(body))
+	}
+	if backendHost != "route.example" {
+		t.Fatalf("expected configured backend request to preserve frontend host, got %q", backendHost)
+	}
+	if want := streamer.Listener.Addr().String(); streamerHost != want {
+		t.Fatalf("expected internal redirect request host %q, got %q", want, streamerHost)
 	}
 }
 

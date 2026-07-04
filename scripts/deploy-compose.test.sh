@@ -13,7 +13,12 @@ awk '
         depth += opens - closes
     }
 
-    /^create_panel_self_proxy\(\)/ || /^wait_public_panel_ready\(\)/ {
+    /^json_string_field\(\)/ ||
+    /^json_number_field\(\)/ ||
+    /^panel_certificate_objects\(\)/ ||
+    /^panel_certificate_object\(\)/ ||
+    /^create_panel_self_proxy\(\)/ ||
+    /^wait_public_panel_ready\(\)/ {
         emit = 1
         depth = 0
     }
@@ -85,6 +90,16 @@ curl() {
 
 . "$tmp"
 
+assert_eq() {
+    label="$1"
+    got="$2"
+    expected="$3"
+    if [ "$got" != "$expected" ]; then
+        printf '%s: got %s, want %s\n' "$label" "$got" "$expected" >&2
+        exit 1
+    fi
+}
+
 assert_apply_calls() {
     expected="$1"
     label="$2"
@@ -93,6 +108,16 @@ assert_apply_calls() {
         exit 1
     fi
 }
+
+CERT_LIST='{"certificates":[{"id":1,"domain":"first.example","enabled":true,"status":"active","last_error":""},{"id":2,"domain":"target.example","enabled":true,"status":"active","last_error":"","agent_reports":{"local":{"status":"error","last_error":"nested error"}}},{"id":3,"domain":"third.example","enabled":true,"status":"issuing","last_error":""}],"ok":true}'
+TARGET_CERT="$(panel_certificate_object "$CERT_LIST" "" "target.example")"
+assert_eq "middle certificate id" "$(json_number_field "$TARGET_CERT" id)" "2"
+assert_eq "middle certificate status" "$(json_string_field "$TARGET_CERT" status)" "active"
+assert_eq "middle certificate last_error" "$(json_string_field "$TARGET_CERT" last_error)" ""
+
+THIRD_CERT="$(panel_certificate_object "$CERT_LIST" "3" "")"
+assert_eq "id-selected certificate domain" "$(json_string_field "$THIRD_CERT" domain)" "third.example"
+assert_eq "id-selected certificate status" "$(json_string_field "$THIRD_CERT" status)" "issuing"
 
 APPLY_CALLS=0
 CURL_RULE_STATUS=201
