@@ -84,6 +84,9 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	out.URL.ForceQuery = req.URL.ForceQuery
 	out.RequestURI = ""
 	out.Host = targetURL.Host
+	if rule.PassProxyHeaders && incomingHost != "" {
+		out.Host = incomingHost
+	}
 	out = out.WithContext(withDialAddress(out.Context(), dialAddress))
 	if ruleUsesRelay(rule) {
 		holder := &selectedRelayAddressHolder{}
