@@ -490,6 +490,53 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 	}
 }
 
+func TestPassProxyHeadersPreservesIncomingHostHeader(t *testing.T) {
+	var gotHost string
+	var gotOrigin string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotOrigin = r.Header.Get("Origin")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL:      "https://app.example.test",
+				Backends:         []model.HTTPBackend{{URL: backend.URL}},
+				PassProxyHeaders: true,
+			},
+		},
+	}
+
+	proxy := httptest.NewServer(NewServer(listener))
+	defer proxy.Close()
+
+	req, err := http.NewRequest(http.MethodPost, proxy.URL+"/api/rpc2", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = "app.example.test"
+	req.Header.Set("Origin", "https://app.example.test")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	if gotHost != "app.example.test" {
+		t.Fatalf("expected upstream Host to preserve frontend host, got %q", gotHost)
+	}
+	if gotOrigin != "https://app.example.test" {
+		t.Fatalf("expected Origin to be preserved, got %q", gotOrigin)
+	}
+}
+
 func TestServerUsesBackendAuthorityForHTTPSUpstreamsResolvedToIP(t *testing.T) {
 	backendHost := "backend.example.test"
 	backendCert := mustIssueProxyTLSCertificate(t, backendHost)
