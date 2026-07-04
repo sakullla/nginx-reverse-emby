@@ -443,24 +443,93 @@ json_escape() {
 }
 
 json_string_field() {
-    printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+    printf '%s' "$1" | sed 's/,"/\
+"/g' | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 json_number_field() {
-    printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1
+    printf '%s' "$1" | sed 's/,"/\
+"/g' | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
+panel_certificate_objects() {
+    body="$1"
+    printf '%s' "$body" | awk '
+        {
+            text = text $0
+        }
+        END {
+            key = "\"certificates\""
+            start = index(text, key)
+            if (start == 0) {
+                exit
+            }
+            text = substr(text, start + length(key))
+            start = index(text, "[")
+            if (start == 0) {
+                exit
+            }
+            text = substr(text, start + 1)
+            for (i = 1; i <= length(text); i++) {
+                ch = substr(text, i, 1)
+                if (in_object) {
+                    object = object ch
+                }
+                if (in_string) {
+                    if (escaped) {
+                        escaped = 0
+                    } else if (ch == "\\") {
+                        escaped = 1
+                    } else if (ch == "\"") {
+                        in_string = 0
+                    }
+                    continue
+                }
+                if (ch == "\"") {
+                    in_string = 1
+                    continue
+                }
+                if (ch == "{") {
+                    if (!in_object) {
+                        in_object = 1
+                        object = "{"
+                        depth = 1
+                    } else {
+                        depth++
+                    }
+                    continue
+                }
+                if (ch == "}") {
+                    if (in_object) {
+                        depth--
+                        if (depth == 0) {
+                            print object
+                            in_object = 0
+                            object = ""
+                        }
+                    }
+                    continue
+                }
+                if (!in_object && ch == "]") {
+                    exit
+                }
+            }
+        }
+    '
 }
 
 panel_certificate_object() {
     body="$1"
     cert_id="$2"
     domain="$3"
-    printf '%s' "$body" | sed 's/},{/}\
-{/g' | while IFS= read -r object; do
+    panel_certificate_objects "$body" | while IFS= read -r object; do
         if [ -n "$cert_id" ]; then
-            printf '%s' "$object" | grep -F "\"id\":${cert_id}" >/dev/null 2>&1 || continue
+            object_id="$(json_number_field "$object" id)"
+            [ "$object_id" = "$cert_id" ] || continue
         fi
         if [ -n "$domain" ]; then
-            printf '%s' "$object" | grep -F "\"domain\":\"${domain}\"" >/dev/null 2>&1 || continue
+            object_domain="$(json_string_field "$object" domain)"
+            [ "$object_domain" = "$domain" ] || continue
         fi
         printf '%s' "$object"
         break
