@@ -13,6 +13,8 @@ panel_health_url="${NRE_PANEL_HEALTH_URL:-http://127.0.0.1:8080/panel-api/info}"
 panel_api_base="${NRE_PANEL_API_BASE:-http://127.0.0.1:8080}"
 panel_root_url="${NRE_PANEL_ROOT_URL:-http://127.0.0.1:8080/}"
 public_panel_ready_attempts="${NRE_PUBLIC_PANEL_READY_ATTEMPTS:-36}"
+panel_cert_wait_timeout="${NRE_PANEL_CERT_WAIT_TIMEOUT:-300}"
+panel_cert_wait_interval="${NRE_PANEL_CERT_WAIT_INTERVAL:-5}"
 
 opt_noninteractive=0
 opt_yes=0
@@ -42,6 +44,7 @@ nginx-reverse-emby 新手 Docker Compose 部署脚本。
   MASTER_REGISTER_TOKEN 已有 Agent 注册 token；不设置则自动生成
   CF_TOKEN             Cloudflare API Token；设置后自动启用 DNS-01 并在线校验
   ACME_DNS_PROVIDER    设为 cf 以启用 Cloudflare DNS 验证
+  NRE_PANEL_CERT_WAIT_TIMEOUT HTTPS 面板自代理证书等待秒数，默认 300
   NRE_NONINTERACTIVE   设为 1 等同 --non-interactive（用于 cron / CI）
   NO_COLOR             设为任意值关闭彩色输出
 EOF
@@ -439,6 +442,200 @@ json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+json_string_field() {
+    printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+json_number_field() {
+    printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
+panel_certificate_object() {
+    body="$1"
+    cert_id="$2"
+    domain="$3"
+    printf '%s' "$body" | sed 's/},{/}\
+{/g' | while IFS= read -r object; do
+        if [ -n "$cert_id" ]; then
+            printf '%s' "$object" | grep -F "\"id\":${cert_id}" >/dev/null 2>&1 || continue
+        fi
+        if [ -n "$domain" ]; then
+            printf '%s' "$object" | grep -F "\"domain\":\"${domain}\"" >/dev/null 2>&1 || continue
+        fi
+        printf '%s' "$object"
+        break
+    done
+}
+
+fetch_panel_certificates() {
+    token="$1"
+    curl -sS \
+        -H "X-Panel-Token: ${token}" \
+        "${panel_api_base}/panel-api/agents/local/certificates"
+}
+
+create_panel_self_proxy_certificate() {
+    token="$1"
+    domain="$2"
+    response_file="${TMPDIR:-/tmp}/nre-panel-cert-response.$$"
+    error_file="${TMPDIR:-/tmp}/nre-panel-cert-error.$$"
+    last_panel_self_proxy_error=""
+    panel_self_proxy_certificate_id=""
+
+    certificates="$(fetch_panel_certificates "$token" 2>/dev/null || true)"
+    existing="$(panel_certificate_object "$certificates" "" "$domain")"
+    existing_id="$(json_number_field "$existing" id)"
+    if [ -n "$existing_id" ]; then
+        say "发现已有面板自代理证书：${domain}（ID ${existing_id}），将复用"
+        panel_self_proxy_certificate_id="$existing_id"
+        return 0
+    fi
+
+    payload="$(printf '{"domain":"%s","enabled":true,"scope":"domain","issuer_mode":"master_cf_dns","target_agent_ids":["local"],"tags":["panel","bootstrap"],"usage":"https","certificate_type":"acme"}' "$(json_escape "$domain")")"
+    say "正在创建面板自代理证书：${domain}"
+    http_status="$(curl -sS \
+        -o "$response_file" \
+        -w "%{http_code}" \
+        -H "Content-Type: application/json" \
+        -H "X-Panel-Token: ${token}" \
+        -d "$payload" \
+        "${panel_api_base}/panel-api/agents/local/certificates" 2>"$error_file" || true)"
+    response_body="$(cat "$response_file" 2>/dev/null || true)"
+    curl_error="$(sed 's/[[:cntrl:]]/ /g' "$error_file" 2>/dev/null | cut -c 1-300 || true)"
+    rm -f "$response_file" "$error_file"
+
+    case "$http_status" in
+        2??)
+            cert_id="$(json_number_field "$response_body" id)"
+            if [ -z "$cert_id" ]; then
+                certificates="$(fetch_panel_certificates "$token" 2>/dev/null || true)"
+                created="$(panel_certificate_object "$certificates" "" "$domain")"
+                cert_id="$(json_number_field "$created" id)"
+            fi
+            if [ -n "$cert_id" ]; then
+                panel_self_proxy_certificate_id="$cert_id"
+                return 0
+            fi
+            last_panel_self_proxy_error="证书已创建，但未能从接口响应中读取证书 ID"
+            return 1
+            ;;
+    esac
+
+    response_summary="$(printf '%s' "$response_body" | sed 's/[[:cntrl:]]/ /g' | cut -c 1-500)"
+    last_panel_self_proxy_error="HTTP ${http_status:-000}"
+    if [ -n "$response_summary" ]; then
+        last_panel_self_proxy_error="${last_panel_self_proxy_error}: ${response_summary}"
+    elif [ -n "$curl_error" ]; then
+        last_panel_self_proxy_error="${last_panel_self_proxy_error}: ${curl_error}"
+    fi
+    return 1
+}
+
+issue_panel_self_proxy_certificate() {
+    token="$1"
+    cert_id="$2"
+    response_file="${TMPDIR:-/tmp}/nre-panel-cert-issue-response.$$"
+    error_file="${TMPDIR:-/tmp}/nre-panel-cert-issue-error.$$"
+    last_panel_self_proxy_error=""
+
+    http_status="$(curl -sS \
+        -X POST \
+        -o "$response_file" \
+        -w "%{http_code}" \
+        -H "X-Panel-Token: ${token}" \
+        "${panel_api_base}/panel-api/agents/local/certificates/${cert_id}/issue" 2>"$error_file" || true)"
+    case "$http_status" in
+        2??)
+            rm -f "$response_file" "$error_file"
+            return 0
+            ;;
+    esac
+
+    response_body="$(sed 's/[[:cntrl:]]/ /g' "$response_file" 2>/dev/null | cut -c 1-500 || true)"
+    curl_error="$(sed 's/[[:cntrl:]]/ /g' "$error_file" 2>/dev/null | cut -c 1-300 || true)"
+    rm -f "$response_file" "$error_file"
+    last_panel_self_proxy_error="HTTP ${http_status:-000}"
+    if [ -n "$response_body" ]; then
+        last_panel_self_proxy_error="${last_panel_self_proxy_error}: ${response_body}"
+    elif [ -n "$curl_error" ]; then
+        last_panel_self_proxy_error="${last_panel_self_proxy_error}: ${curl_error}"
+    fi
+    return 1
+}
+
+read_panel_certificate_state() {
+    token="$1"
+    cert_id="$2"
+    domain="$3"
+    certificates="$(fetch_panel_certificates "$token" 2>/dev/null || true)"
+    object="$(panel_certificate_object "$certificates" "$cert_id" "$domain")"
+    panel_certificate_status="$(json_string_field "$object" status)"
+    panel_certificate_last_error="$(json_string_field "$object" last_error)"
+    if [ -z "$object" ]; then
+        panel_certificate_status="not_found"
+        panel_certificate_last_error=""
+    fi
+}
+
+wait_panel_self_proxy_certificate() {
+    token="$1"
+    domain="$2"
+    cert_id="$3"
+    timeout_seconds="${4:-300}"
+    interval_seconds="${panel_cert_wait_interval:-5}"
+    start_time="$(date +%s)"
+    next_notice=30
+    last_status=""
+    last_error=""
+
+    say "等待面板自代理证书签发完成（最多 ${timeout_seconds}s）：${domain}"
+    while :; do
+        read_panel_certificate_state "$token" "$cert_id" "$domain"
+        last_status="$panel_certificate_status"
+        last_error="$panel_certificate_last_error"
+        if [ "$last_status" = "active" ] && [ -z "$last_error" ]; then
+            say "面板自代理证书已签发完成：${domain}"
+            return 0
+        fi
+        if [ "$last_status" = "error" ] || [ -n "$last_error" ]; then
+            last_panel_self_proxy_error="证书签发失败，状态 ${last_status:-unknown}"
+            if [ -n "$last_error" ]; then
+                last_panel_self_proxy_error="${last_panel_self_proxy_error}: ${last_error}"
+            fi
+            return 1
+        fi
+
+        now="$(date +%s)"
+        elapsed=$((now - start_time))
+        if [ "$elapsed" -ge "$timeout_seconds" ]; then
+            last_panel_self_proxy_error="等待证书签发超时（${timeout_seconds}s），最后状态 ${last_status:-unknown}"
+            return 1
+        fi
+        if [ "$elapsed" -ge "$next_notice" ]; then
+            say "证书仍在等待中，当前状态：${last_status:-unknown}（已等待 ${elapsed}s）"
+            next_notice=$((next_notice + 30))
+        fi
+        sleep "$interval_seconds"
+    done
+}
+
+prepare_panel_self_proxy_certificate() {
+    token="$1"
+    domain="$2"
+    timeout_seconds="${3:-300}"
+
+    create_panel_self_proxy_certificate "$token" "$domain" || return 1
+    cert_id="$panel_self_proxy_certificate_id"
+    read_panel_certificate_state "$token" "$cert_id" "$domain"
+    if [ "$panel_certificate_status" = "issuing" ] && [ -z "$panel_certificate_last_error" ]; then
+        say "面板自代理证书已在签发中：${domain}"
+    elif [ "$panel_certificate_status" != "active" ] || [ -n "$panel_certificate_last_error" ]; then
+        say "正在触发面板自代理证书签发：${domain}"
+        issue_panel_self_proxy_certificate "$token" "$cert_id" || return 1
+    fi
+    wait_panel_self_proxy_certificate "$token" "$domain" "$cert_id" "$timeout_seconds"
+}
+
 create_panel_self_proxy() {
     token="$1"
     domain="$2"
@@ -780,18 +977,58 @@ else
 fi
 
 if [ -n "$domain" ]; then
-    defer_https_apply=0
     if [ "$cf_enabled" -eq 1 ]; then
-        defer_https_apply=1
-    fi
-    if create_panel_self_proxy "$api_token" "$domain" "https" "$defer_https_apply"; then
-        panel_self_proxy_scheme="https"
-        if [ "$defer_https_apply" -eq 1 ]; then
-            say "面板自代理规则已创建，证书申请可能需要 1-3 分钟；将等待后台签发完成后自动应用"
+        if prepare_panel_self_proxy_certificate "$api_token" "$domain" "$panel_cert_wait_timeout"; then
+            if create_panel_self_proxy "$api_token" "$domain" "https" "0"; then
+                panel_self_proxy_scheme="https"
+                say "HTTPS 面板自代理规则已创建"
+                if wait_public_panel_ready "$api_token" "https://${domain}/" "1"; then
+                    say "HTTPS 面板已可访问：https://${domain}/"
+                else
+                    warn "暂未确认 HTTPS 面板首页可访问：https://${domain}/。请稍后刷新，或查看 ${compose} logs -f。"
+                fi
+            else
+                if [ -n "${last_panel_self_proxy_error:-}" ]; then
+                    warn "HTTPS 自代理接口返回：${last_panel_self_proxy_error}"
+                fi
+                warn "HTTPS 自代理规则创建失败，通常是域名、DNS、Cloudflare Token 权限或 ACME 校验失败。"
+                if create_panel_self_proxy "$api_token" "$domain" "http" "0"; then
+                    panel_self_proxy_scheme="http"
+                    warn "已创建 HTTP 后备自代理规则：http://${domain} -> http://127.0.0.1:8080。请修复证书/DNS/Cloudflare 后在面板中改为 HTTPS。"
+                    if wait_public_panel_ready "$api_token" "http://${domain}/" "1"; then
+                        say "HTTP 后备面板已可访问：http://${domain}/"
+                    fi
+                else
+                    if [ -n "${last_panel_self_proxy_error:-}" ]; then
+                        warn "HTTP 后备自代理接口返回：${last_panel_self_proxy_error}"
+                    fi
+                    warn "HTTP 后备规则也创建失败。请登录面板后手动添加：前端 http://${domain}，后端 http://127.0.0.1:8080，节点 local。"
+                fi
+            fi
         else
-            say "面板自代理规则已创建，证书申请可能需要 1-3 分钟"
+            if [ -n "${last_panel_self_proxy_error:-}" ]; then
+                warn "HTTPS 证书准备失败：${last_panel_self_proxy_error}"
+            else
+                warn "HTTPS 证书准备失败。"
+            fi
+            warn "HTTPS 自代理规则未创建；将先创建 HTTP 后备规则，待证书问题修复后再切换 HTTPS。"
+            if create_panel_self_proxy "$api_token" "$domain" "http" "0"; then
+                panel_self_proxy_scheme="http"
+                warn "已创建 HTTP 后备自代理规则：http://${domain} -> http://127.0.0.1:8080。请修复证书/DNS/Cloudflare 后在面板中改为 HTTPS。"
+                if wait_public_panel_ready "$api_token" "http://${domain}/" "1"; then
+                    say "HTTP 后备面板已可访问：http://${domain}/"
+                fi
+            else
+                if [ -n "${last_panel_self_proxy_error:-}" ]; then
+                    warn "HTTP 后备自代理接口返回：${last_panel_self_proxy_error}"
+                fi
+                warn "HTTP 后备规则也创建失败。请登录面板后手动添加：前端 http://${domain}，后端 http://127.0.0.1:8080，节点 local。"
+            fi
         fi
-        if wait_public_panel_ready "$api_token" "https://${domain}/" "$((1 - defer_https_apply))"; then
+    elif create_panel_self_proxy "$api_token" "$domain" "https" "0"; then
+        panel_self_proxy_scheme="https"
+        say "面板自代理规则已创建，证书申请可能需要 1-3 分钟"
+        if wait_public_panel_ready "$api_token" "https://${domain}/" "1"; then
             say "HTTPS 面板已可访问：https://${domain}/"
         else
             warn "暂未确认 HTTPS 面板首页可访问：https://${domain}/。请稍后刷新，或查看 ${compose} logs -f。"
