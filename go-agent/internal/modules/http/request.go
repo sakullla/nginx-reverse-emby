@@ -69,7 +69,9 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	out := req.Clone(req.Context())
 	targetURL := cloneURL(candidate.target)
 	dialAddress := candidate.dialAddress
+	internalRedirect := false
 	if redirectTarget, ok := parseInternalRedirectTarget(req.URL.Path, frontendPath); ok {
+		internalRedirect = true
 		targetURL = redirectTarget
 		targetURL.RawQuery = req.URL.RawQuery
 		dialAddress = addressWithDefaultPort(targetURL)
@@ -84,7 +86,7 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	out.URL.ForceQuery = req.URL.ForceQuery
 	out.RequestURI = ""
 	out.Host = targetURL.Host
-	if rule.PassProxyHeaders && incomingHost != "" {
+	if rule.PassProxyHeaders && incomingHost != "" && !internalRedirect {
 		out.Host = incomingHost
 	}
 	out = out.WithContext(withDialAddress(out.Context(), dialAddress))
