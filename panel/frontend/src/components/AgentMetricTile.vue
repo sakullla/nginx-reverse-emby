@@ -18,11 +18,12 @@
 
     <BaseMetricBar
       v-else
-      :label="label"
+      :label="''"
       :value="displayValue"
       :unit="unit"
       :percent="percent"
       :tone="tone"
+      class="agent-metric-tile__metric-bar"
       data-testid="agent-metric-tile-metric-bar"
     />
   </div>

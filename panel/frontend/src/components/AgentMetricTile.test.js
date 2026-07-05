@@ -27,14 +27,23 @@ describe('AgentMetricTile', () => {
   it('uses BaseMetricBar for regular metrics', () => {
     const wrapper = mountTile()
 
+    expect(wrapper.find('.agent-metric-tile__label').text()).toBe('CPU')
+
     const bar = wrapper.find('[data-testid="agent-metric-tile-metric-bar"]')
     expect(bar.exists()).toBe(true)
-    expect(bar.find('.base-metric-bar__label').text()).toBe('CPU')
+    expect(bar.find('.base-metric-bar__label').text()).toBe('')
     expect(bar.find('.base-metric-bar__value').text()).toContain('1.0 / 8 核')
 
     const fill = bar.find('.base-metric-bar__fill')
     expect(fill.attributes('style')).toContain('width: 12.4%')
     expect(fill.classes()).toContain('base-metric-bar__fill--success')
+  })
+
+  it('clamps percent to [0, 100] via BaseMetricBar', () => {
+    const wrapper = mountTile({ percent: 150 })
+
+    const bar = wrapper.find('[data-testid="agent-metric-tile-metric-bar"]')
+    expect(bar.find('.base-metric-bar__fill').attributes('style')).toContain('width: 100%')
   })
 
   it('renders network down/up rows when network props are provided', () => {
