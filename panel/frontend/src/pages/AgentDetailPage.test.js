@@ -235,8 +235,8 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="detail-metric-cpu"] .base-metric-bar__value').text()).toContain('1.0 / 8 核')
     expect(wrapper.find('[data-testid="detail-metric-memory"] .base-metric-bar__value').text()).toContain('10.0 GiB / 16.0 GiB')
     expect(wrapper.find('[data-testid="detail-metric-disk"] .base-metric-bar__value').text()).toContain('398.0 GiB / 512.0 GiB')
-    expect(wrapper.find('[data-testid="detail-metric-network"] .base-metric-bar__value').text()).toContain('↓ 2.00 KiB/s')
-    expect(wrapper.find('[data-testid="detail-metric-network"] .base-metric-bar__value').text()).toContain('↑ 1.00 KiB/s')
+    expect(wrapper.find('[data-testid="detail-metric-network"] [data-testid="agent-metric-tile-network-down"]').text()).toContain('2.00 KiB/s')
+    expect(wrapper.find('[data-testid="detail-metric-network"] [data-testid="agent-metric-tile-network-up"]').text()).toContain('1.00 KiB/s')
 
     expect(wrapper.text()).toContain('边缘节点-01')
     expect(wrapper.text()).toContain('主控')

@@ -35,32 +35,36 @@
           </p>
         </div>
         <div class="agent-detail__metrics agent-detail__metrics--relaxed">
-          <BaseMetricBar
+          <AgentMetricTile
             data-testid="detail-metric-cpu"
+            icon="i-mdi-cpu"
             label="CPU"
             :value="cpuUsage(agentMetricsData)"
             :percent="agentMetricsData.cpu_usage_percent"
             :tone="barTone(agentMetricsData.cpu_usage_percent)"
           />
-          <BaseMetricBar
+          <AgentMetricTile
             data-testid="detail-metric-memory"
+            icon="i-mdi-memory"
             label="内存"
             :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
             :percent="agentMetricsData.memory_usage_percent"
             :tone="barTone(agentMetricsData.memory_usage_percent)"
           />
-          <BaseMetricBar
+          <AgentMetricTile
             data-testid="detail-metric-disk"
+            icon="i-mdi-harddisk"
             label="磁盘"
             :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
             :percent="agentMetricsData.disk_usage_percent"
             :tone="barTone(agentMetricsData.disk_usage_percent)"
           />
-          <BaseMetricBar
+          <AgentMetricTile
             data-testid="detail-metric-network"
+            icon="i-mdi-network"
             label="网络"
-            :value="`↓ ${rate(networkMetrics?.rx_bytes_per_second)}`"
-            :unit="`↑ ${rate(networkMetrics?.tx_bytes_per_second)}`"
+            :network-down="rate(networkMetrics?.rx_bytes_per_second)"
+            :network-up="rate(networkMetrics?.tx_bytes_per_second)"
           />
         </div>
       </div>
@@ -284,7 +288,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import BaseListCard from '../components/base/BaseListCard.vue'
-import BaseMetricBar from '../components/base/BaseMetricBar.vue'
+import AgentMetricTile from '../components/AgentMetricTile.vue'
 import BaseTabs from '../components/base/BaseTabs.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
@@ -941,18 +945,13 @@ function packageStatusLabel(status) {
 .agent-detail__metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
+  gap: var(--space-2);
   margin-bottom: 1rem;
 }
 
 .agent-detail__metrics--relaxed {
-  gap: 1rem;
+  gap: var(--space-3);
   margin-bottom: 0;
-}
-
-.agent-detail__metrics--relaxed :deep(.base-metric-bar__label) {
-  font-size: 0.75rem;
-  color: var(--color-text-secondary);
 }
 
 .agent-detail__error { margin-bottom: 1rem; }
