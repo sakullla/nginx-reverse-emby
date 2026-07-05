@@ -4,11 +4,10 @@
       <RouterLink to="/agents" class="back-link">← 返回节点管理</RouterLink>
     </div>
 
-    <BaseListCard class="agent-detail__summary-card" :status="statusTone" :clickable="false">
+    <BaseListCard class="agent-detail__summary-card" :title="agent.name" :status="statusTone" :clickable="false">
       <template #header-left>
         <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
-        <h1 class="agent-detail__name">{{ agent.name }}</h1>
-        <span class="agent-detail__mode">{{ getModeLabel(agent.mode) }}</span>
+        <BaseBadge tone="primary" size="sm" class="agent-detail__mode-badge">{{ getModeLabel(agent.mode) }}</BaseBadge>
       </template>
       <template #header-right>
         <div class="agent-detail__quick-stats">
@@ -288,6 +287,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import BaseListCard from '../components/base/BaseListCard.vue'
+import BaseBadge from '../components/base/BaseBadge.vue'
 import AgentMetricTile from '../components/AgentMetricTile.vue'
 import BaseTabs from '../components/base/BaseTabs.vue'
 import { useRules } from '../hooks/useRules'
@@ -873,25 +873,7 @@ function packageStatusLabel(status) {
 
 .agent-detail__status-badge { flex-shrink: 0; }
 
-.agent-detail__name {
-  font-size: 1.25rem;
-  font-weight: 700;
-  margin: 0;
-  color: var(--color-text-primary);
-  line-height: 1.3;
-  word-break: break-all;
-}
-
-.agent-detail__mode {
-  flex-shrink: 0;
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 0.15rem 0.5rem;
-  border-radius: var(--radius-full);
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  border: 1px solid var(--color-primary-200);
-}
+.agent-detail__mode-badge { flex-shrink: 0; }
 
 .agent-detail__meta-row {
   display: flex;
