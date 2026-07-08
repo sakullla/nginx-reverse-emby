@@ -318,15 +318,6 @@
           :cycle-end="trafficSummary.cycle_end ?? ''"
           @confirm="onCalibrateConfirm"
         />
-        <DeleteConfirmDialog
-          :show="confirmDialog.visible"
-          :title="confirmDialog.title"
-          :message="confirmDialog.message"
-          :confirm-text="confirmDialog.confirmText"
-          :loading="confirmDialog.loading"
-          @confirm="onConfirmDialogConfirm"
-          @cancel="confirmDialog.visible = false"
-        />
       </TrafficCollapsibleSection>
 
       <TrafficCollapsibleSection :title="detailLabels.sections.systemInfo">
@@ -373,6 +364,16 @@
         </BaseListCard>
       </TrafficCollapsibleSection>
     </div>
+
+    <DeleteConfirmDialog
+      :show="confirmDialog.visible"
+      :title="confirmDialog.title"
+      :message="confirmDialog.message"
+      :confirm-text="confirmDialog.confirmText"
+      :loading="confirmDialog.loading"
+      @confirm="onConfirmDialogConfirm"
+      @cancel="confirmDialog.visible = false"
+    />
   </div>
   <div v-else-if="isLoading" class="agent-detail__loading">
     <div class="spinner"></div>
