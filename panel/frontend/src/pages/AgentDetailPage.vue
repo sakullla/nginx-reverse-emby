@@ -47,8 +47,8 @@
           <BaseIconButton
             data-testid="detail-action-delete"
             tone="danger"
-            :title="agent.value?.is_local ? '本地节点不可删除' : detailLabels.actions.deleteAgent"
-            :disabled="agent.value?.is_local"
+            :title="agent?.is_local ? '本地节点不可删除' : detailLabels.actions.deleteAgent"
+            :disabled="agent?.is_local"
             @click="showDeleteConfirm"
           >
             <span class="i-mdi-delete" aria-hidden="true" />
