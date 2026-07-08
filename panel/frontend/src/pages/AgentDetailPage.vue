@@ -26,7 +26,34 @@
       </template>
 
       <template #header-right>
-        <div class="agent-detail-actions" />
+        <div class="agent-detail-actions">
+          <BaseIconButton
+            data-testid="detail-action-apply"
+            tone="primary"
+            :title="detailLabels.actions.applyConfig"
+            :disabled="applying"
+            @click="handleApplyConfig"
+          >
+            <span class="i-mdi-sync" aria-hidden="true" />
+          </BaseIconButton>
+          <BaseIconButton
+            data-testid="detail-action-copy-join"
+            tone="default"
+            :title="detailLabels.actions.copyJoinCommand"
+            @click="copyJoinCommand"
+          >
+            <span class="i-mdi-content-copy" aria-hidden="true" />
+          </BaseIconButton>
+          <BaseIconButton
+            data-testid="detail-action-delete"
+            tone="danger"
+            :title="agent.value?.is_local ? '本地节点不可删除' : detailLabels.actions.deleteAgent"
+            :disabled="agent.value?.is_local"
+            @click="showDeleteConfirm"
+          >
+            <span class="i-mdi-delete" aria-hidden="true" />
+          </BaseIconButton>
+        </div>
       </template>
 
       <div class="agent-detail__summary-body">
@@ -368,6 +395,7 @@ import { useQuery } from '@tanstack/vue-query'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
+import BaseIconButton from '../components/base/BaseIconButton.vue'
 import AgentMetricTile from '../components/AgentMetricTile.vue'
 import StatCard from '../components/base/StatCard.vue'
 import TrafficCollapsibleSection from '../components/traffic/TrafficCollapsibleSection.vue'
@@ -375,8 +403,9 @@ import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
 import { useCertificates } from '../hooks/useCertificates'
 import { useRelayListeners } from '../hooks/useRelayListeners'
-import { useAgents, useUpdateAgent } from '../hooks/useAgents'
-import { fetchAgentStats, fetchSystemInfo } from '../api'
+import { useAgents, useDeleteAgent, useUpdateAgent } from '../hooks/useAgents'
+import { applyConfig, fetchAgentStats, fetchSystemInfo } from '../api'
+import { useJoinCommand } from '../composables/useJoinCommand'
 import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSummary, useTrafficTrend, useUpdateTrafficPolicy } from '../hooks/useTraffic'
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
@@ -408,6 +437,9 @@ const detailLabels = agentDetailLabels
 const { data: agentsData, isLoading } = useAgents()
 const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const updateAgent = useUpdateAgent()
+const deleteAgent = useDeleteAgent()
+const { copyCommand: copyJoinCommand } = useJoinCommand()
+const applying = ref(false)
 const outboundProxyURL = ref('')
 
 const { data: httpRulesData } = useRules(agentId)
@@ -603,6 +635,31 @@ async function saveOutboundProxy() {
   })
 }
 
+async function handleApplyConfig() {
+  if (!agent.value || applying.value) return
+  applying.value = true
+  try {
+    await applyConfig(agent.value.id)
+    messageStore.success('配置已推送')
+  } catch (error) {
+    messageStore.error(error, '推送配置失败')
+  } finally {
+    applying.value = false
+  }
+}
+
+function showDeleteConfirm() {
+  if (!agent.value || agent.value.is_local) return
+  confirmDialog.value = {
+    visible: true,
+    type: 'delete-agent',
+    title: '确认删除节点',
+    message: `删除节点「${agent.value.name}」将同时注销其身份，此操作不可撤销。`,
+    confirmText: '删除',
+    loading: false
+  }
+}
+
 async function saveTrafficPolicy() {
   if (!agent.value || !trafficStatsEnabled.value) return
   if (!isIntegerInRange(trafficPolicyForm.value.cycle_start_day, 1, 28)) {
@@ -676,13 +733,16 @@ function showCleanupConfirm() {
 }
 
 async function onConfirmDialogConfirm() {
-  if (!agent.value || !trafficStatsEnabled.value) return
+  if (!agent.value) return
   confirmDialog.value.loading = true
   try {
     if (confirmDialog.value.type === 'calibrate-zero') {
       await calibrateTrafficMutation.mutateAsync({ used_bytes: 0 })
     } else if (confirmDialog.value.type === 'cleanup') {
       await cleanupTrafficMutation.mutateAsync()
+    } else if (confirmDialog.value.type === 'delete-agent') {
+      await deleteAgent.mutateAsync(agent.value.id)
+      router.push('/agents')
     }
   } finally {
     confirmDialog.value.visible = false
