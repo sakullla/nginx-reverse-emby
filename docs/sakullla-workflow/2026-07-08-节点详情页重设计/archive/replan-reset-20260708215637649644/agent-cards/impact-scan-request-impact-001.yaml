@@ -1,0 +1,27 @@
+symbols:
+  - AgentDetailPage
+  - BaseBadge
+  - AgentMetricTile
+  - BaseListCard
+  - BaseCard
+  - AgentMonitorCard
+  - AgentTable
+files:
+  - panel/frontend/src/views/agents/AgentDetailPage.vue
+  - panel/frontend/src/components/BaseBadge.vue
+  - panel/frontend/src/components/AgentMetricTile.vue
+  - panel/frontend/src/components/BaseListCard.vue
+  - panel/frontend/src/components/BaseCard.vue
+  - panel/frontend/src/styles/variables.css
+keywords:
+  - agent detail
+  - node detail
+  - BaseBadge
+  - AgentMetricTile
+  - BaseListCard
+  - design token
+  - dark mode
+  - responsive
+  - force sync
+  - register command
+  - 节点详情

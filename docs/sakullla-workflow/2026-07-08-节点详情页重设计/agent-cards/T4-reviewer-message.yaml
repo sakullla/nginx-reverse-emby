@@ -1,0 +1,62 @@
+identity:
+  workflow_id: "2026-07-08-节点详情页重设计"
+  task_id: T4
+  message_id: T4-code-review
+  part_index: 1
+  review_type: code_review
+  source_skill: execute-task-workflow
+  required_subagent_type: sakullla-dev:sakullla-reviewer
+target:
+  target_ref: 6a82e35623629b597858e3893b2ea146a0423f51
+  baseline_ref: 97835d398b270b07cd40e5f2221f167383faefbf
+context:
+  workflow_dir: "C:/Users/12976/IdeaProjects/nginx-reverse-emby/docs/sakullla-workflow/2026-07-08-节点详情页重设计"
+  scope:
+    include:
+      - panel/frontend/src/pages/AgentDetailPage.vue
+      - panel/frontend/src/composables/useJoinCommand.js
+    exclude:
+      - panel/frontend/src/pages/AgentDetailPage.test.js
+      - "后端代码"
+  refs:
+    state: 00-state.yaml
+    execution_plan: 03-execution-plan.md
+    task_run: task-runs/T4-run.md
+    execution_evidence: task-runs/T4-run.md#Execution
+    review_evidence: task-runs/T4-run.md#Review
+  diff_command: "git --no-pager diff --no-ext-diff --no-textconv 97835d398b270b07cd40e5f2221f167383faefbf 6a82e35623629b597858e3893b2ea146a0423f51"
+review_checks:
+  goal: "在节点详情页提供强制同步、复制注册命令、删除/注销、跳转规则/证书/监听列表等操作。"
+  acceptance:
+    - "A1：首屏可见“推送配置”“复制注册命令”“删除节点”入口。"
+    - "A2：点击“推送配置”调用 `applyConfig` 并显示 loading / success / error 反馈。"
+    - "A3：点击“复制注册命令”将命令写入剪贴板并提示成功。"
+    - "A4：点击“删除节点”弹出确认弹窗，确认后删除并跳转 `/agents`。"
+    - "A5：计数卡/规则行可跳转到对应列表页并带 agentId 过滤。"
+  acceptance_anchor_map:
+    - "A1 -> R4"
+    - "A2 -> R4"
+    - "A3 -> R4"
+    - "A4 -> R4"
+    - "A5 -> R4"
+  non_goals:
+    - 无
+  actual_files:
+    - panel/frontend/src/pages/AgentDetailPage.vue
+    - panel/frontend/src/composables/useJoinCommand.js
+  changed_files:
+    - panel/frontend/src/composables/useJoinCommand.js
+    - panel/frontend/src/pages/AgentDetailPage.vue
+  risk_level: medium
+  review_focus: "API 调用正确性、删除二次确认、跳转参数、剪贴板降级处理。"
+  verify_commands:
+    - "cd panel/frontend && npm run build"
+  standards_refs: "无"
+resume_policy:
+  if_blocked:
+    resume_skill: execute-task-workflow
+    resume_task_id: T4
+output:
+  schema_ref: C:/Users/12976/.claude/plugins/cache/sakullla-workflow/sakullla-dev/1.4.33/skills/_shared/review-common.md
+spec_compliance:
+  standards_evidence: "standards_refs=无"
