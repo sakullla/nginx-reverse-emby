@@ -53,6 +53,9 @@ export const agentDetailLabels = {
   sync: {
     failedTitle: '同步失败',
     failedHint: '最近一次配置同步未成功，错误信息如下：',
+    status: '同步状态',
+    message: '同步消息',
+    time: '同步时间',
   },
 
   // System info card titles

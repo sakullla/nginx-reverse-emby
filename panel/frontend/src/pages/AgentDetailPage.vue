@@ -333,16 +333,15 @@
       </TrafficCollapsibleSection>
 
       <TrafficCollapsibleSection
-        v-if="agent.last_apply_status"
         :title="detailLabels.sections.syncEvents"
         :subtitle="syncStatusLabel"
         :default-expanded="agent.last_apply_status === 'failed'"
       >
         <BaseListCard class="info-card" :clickable="false">
           <div class="info-grid">
-            <div class="info-row info-row--clean"><span>同步状态</span><span>{{ agent.last_apply_status }}</span></div>
-            <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
-            <div v-if="agent.last_apply_at" class="info-row info-row--clean"><span>同步时间</span><span>{{ new Date(agent.last_apply_at).toLocaleString() }}</span></div>
+            <div class="info-row info-row--clean"><span>{{ detailLabels.sync.status }}</span><span>{{ agent.last_apply_status || '—' }}</span></div>
+            <div class="info-row info-row--clean"><span>{{ detailLabels.sync.message }}</span><span>{{ agent.last_apply_message || '—' }}</span></div>
+            <div class="info-row info-row--clean"><span>{{ detailLabels.sync.time }}</span><span>{{ agent.last_apply_at ? new Date(agent.last_apply_at).toLocaleString() : '—' }}</span></div>
           </div>
         </BaseListCard>
       </TrafficCollapsibleSection>
