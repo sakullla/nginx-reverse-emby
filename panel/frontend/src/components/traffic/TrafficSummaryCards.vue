@@ -39,7 +39,18 @@
           </svg>
           <span class="traffic-summary-card__label">当前速率</span>
         </div>
-        <span class="traffic-summary-card__value">{{ currentRate }}</span>
+        <span v-if="rateRows.length" class="traffic-summary-card__value traffic-summary-card__value--rates">
+          <span
+            v-for="row in rateRows"
+            :key="row.key"
+            class="traffic-summary-card__rate-row"
+            data-testid="traffic-summary-card-rate-row"
+          >
+            <span class="traffic-summary-card__rate-arrow">{{ row.arrow }}</span>
+            <span class="traffic-summary-card__rate-value">{{ row.value }}</span>
+          </span>
+        </span>
+        <span v-else class="traffic-summary-card__value">—</span>
       </div>
     </div>
   </div>
@@ -58,15 +69,17 @@ const props = defineProps({
 
 const percent = computed(() => usagePercent(props.summary.used_bytes, props.summary.monthly_quota_bytes))
 
-const currentRate = computed(() => {
+const rateRows = computed(() => {
   const rx = props.networkMetrics?.rx_bytes_per_second
   const tx = props.networkMetrics?.tx_bytes_per_second
-  const hasRx = rx != null && rx !== ''
-  const hasTx = tx != null && tx !== ''
-  if (!hasRx && !hasTx) return '—'
-  if (hasRx && hasTx) return `↓ ${rate(rx)} ↑ ${rate(tx)}`
-  if (hasRx) return `↓ ${rate(rx)}`
-  return `↑ ${rate(tx)}`
+  const rows = []
+  if (rx != null && rx !== '') {
+    rows.push({ key: 'down', arrow: '↓', value: rate(rx) })
+  }
+  if (tx != null && tx !== '') {
+    rows.push({ key: 'up', arrow: '↑', value: rate(tx) })
+  }
+  return rows
 })
 </script>
 
@@ -127,6 +140,29 @@ const currentRate = computed(() => {
   font-size: 0.75rem;
   color: var(--color-text-muted);
   margin-top: 0.25rem;
+}
+.traffic-summary-card__value--rates {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  font-size: 1rem;
+}
+.traffic-summary-card__rate-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  min-width: 0;
+}
+.traffic-summary-card__rate-arrow {
+  font-weight: var(--font-bold);
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+.traffic-summary-card__rate-value {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
 @media (max-width: 900px) {
   .traffic-summary-cards__grid { grid-template-columns: repeat(2, 1fr); }

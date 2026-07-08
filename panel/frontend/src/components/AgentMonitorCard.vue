@@ -36,7 +36,7 @@
     <div class="agent-monitor-card__metrics">
       <AgentMetricTile
         data-testid="monitor-card-cpu"
-        icon="i-mdi-cpu"
+        icon="i-mdi-cpu-64-bit"
         label="CPU"
         :value="cpuUsage(metrics)"
         :percent="metrics.cpu_usage_percent"

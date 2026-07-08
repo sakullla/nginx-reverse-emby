@@ -36,7 +36,7 @@
         <div class="agent-detail__metrics agent-detail__metrics--relaxed">
           <AgentMetricTile
             data-testid="detail-metric-cpu"
-            icon="i-mdi-cpu"
+            icon="i-mdi-cpu-64-bit"
             label="CPU"
             :value="cpuUsage(agentMetricsData)"
             :percent="agentMetricsData.cpu_usage_percent"

@@ -96,15 +96,16 @@ const displayValue = computed(() => {
 
 .agent-metric-tile__network {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .agent-metric-tile__network-row {
   display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
+  align-items: baseline;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -121,7 +122,10 @@ const displayValue = computed(() => {
   font-weight: var(--font-bold);
   color: var(--color-text-primary);
   line-height: 1.2;
-  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .agent-metric-tile[data-variant="compact"] {

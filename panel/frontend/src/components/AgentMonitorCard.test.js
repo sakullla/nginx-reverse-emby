@@ -64,6 +64,16 @@ describe('AgentMonitorCard', () => {
     expect(networkTile.find('[data-testid="agent-metric-tile-network-up"]').text()).toContain('1.00 KiB/s')
   })
 
+  it('renders a CPU icon that exists in the mdi icon set', () => {
+    const wrapper = mountCard()
+
+    // `i-mdi-cpu` does not exist in @iconify-json/mdi, so it renders empty.
+    // Use `i-mdi-cpu-64-bit` (or another existing mdi icon) so the icon is visible.
+    const cpuIcon = wrapper.find('[data-testid="monitor-card-cpu"] .i-mdi-cpu-64-bit')
+    expect(cpuIcon.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="monitor-card-cpu"] .i-mdi-cpu').exists()).toBe(false)
+  })
+
   it('emits details event when clicking detail button or card', async () => {
     const wrapper = mountCard()
 
