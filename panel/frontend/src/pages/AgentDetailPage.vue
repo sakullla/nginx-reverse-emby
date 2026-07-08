@@ -1,43 +1,47 @@
 <template>
   <div class="agent-detail" v-if="agent">
     <div class="agent-detail__back">
-      <RouterLink to="/agents" class="back-link">← 返回节点管理</RouterLink>
+      <RouterLink to="/agents" class="back-link">← {{ detailLabels.backToAgents }}</RouterLink>
     </div>
 
     <BaseListCard class="agent-detail__summary-card" :title="agent.name" :status="statusTone" :clickable="false">
       <template #header-left>
         <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
         <BaseBadge tone="primary" size="sm" class="agent-detail__mode-badge">{{ getModeLabel(agent.mode) }}</BaseBadge>
+        <span class="agent-detail__meta-chip" :title="detailLabels.meta.version">
+          {{ agent.version || agent.runtime_package_version || '—' }}
+        </span>
+        <span class="agent-detail__meta-chip" :title="detailLabels.meta.lastSeen">
+          {{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}
+        </span>
+        <span v-if="agent.tags && agent.tags.length" class="agent-detail__tags">
+          <BaseBadge
+            v-for="tag in agent.tags.slice(0, 3)"
+            :key="tag"
+            tone="neutral"
+            size="sm"
+          >{{ tag }}</BaseBadge>
+          <BaseBadge v-if="agent.tags.length > 3" tone="neutral" size="sm">+{{ agent.tags.length - 3 }}</BaseBadge>
+        </span>
       </template>
+
       <template #header-right>
-        <div class="agent-detail__quick-stats">
-          <div class="stat-mini stat-mini--ghost">
-            <span class="stat-mini__value">{{ httpRulesCount }}</span>
-            <span class="stat-mini__label">HTTP 规则</span>
-          </div>
-          <div class="stat-mini stat-mini--ghost">
-            <span class="stat-mini__value">{{ l4RulesCount }}</span>
-            <span class="stat-mini__label">L4 规则</span>
-          </div>
-        </div>
+        <div class="agent-detail-actions" />
       </template>
 
       <div class="agent-detail__summary-body">
         <div class="agent-detail__meta-rows">
           <p class="agent-detail__meta-row">
-            <span class="agent-detail__meta-label">地址</span>
+            <span class="agent-detail__meta-label">{{ detailLabels.meta.address }}</span>
             <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
           </p>
-          <p class="agent-detail__meta-row">
-            <span class="agent-detail__meta-label">最后活跃</span>
-            <span class="agent-detail__meta-value agent-detail__last-seen">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
-          </p>
         </div>
-        <div class="agent-detail__metrics agent-detail__metrics--relaxed">
+
+        <div class="agent-detail-metrics agent-detail__resource-metrics">
           <AgentMetricTile
             data-testid="detail-metric-cpu"
             icon="i-mdi-cpu-64-bit"
-            label="CPU"
+            :label="detailLabels.metrics.cpu"
             :value="cpuUsage(agentMetricsData)"
             :percent="agentMetricsData.cpu_usage_percent"
             :tone="barTone(agentMetricsData.cpu_usage_percent)"
@@ -45,7 +49,7 @@
           <AgentMetricTile
             data-testid="detail-metric-memory"
             icon="i-mdi-memory"
-            label="内存"
+            :label="detailLabels.metrics.memory"
             :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
             :percent="agentMetricsData.memory_usage_percent"
             :tone="barTone(agentMetricsData.memory_usage_percent)"
@@ -53,7 +57,7 @@
           <AgentMetricTile
             data-testid="detail-metric-disk"
             icon="i-mdi-harddisk"
-            label="磁盘"
+            :label="detailLabels.metrics.disk"
             :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
             :percent="agentMetricsData.disk_usage_percent"
             :tone="barTone(agentMetricsData.disk_usage_percent)"
@@ -61,9 +65,41 @@
           <AgentMetricTile
             data-testid="detail-metric-network"
             icon="i-mdi-network"
-            label="网络"
+            :label="detailLabels.metrics.network"
             :network-down="rate(networkMetrics?.rx_bytes_per_second)"
             :network-up="rate(networkMetrics?.tx_bytes_per_second)"
+          />
+        </div>
+
+        <div class="agent-detail-metrics agent-detail__count-metrics">
+          <StatCard
+            tone="primary"
+            :value="httpRulesCount"
+            :label="detailLabels.metrics.httpRules"
+            :to="rulesHttpTo"
+          />
+          <StatCard
+            tone="success"
+            :value="l4RulesCount"
+            :label="detailLabels.metrics.l4Rules"
+            :to="rulesL4To"
+          />
+          <StatCard
+            tone="warning"
+            :value="certificatesCount"
+            :label="detailLabels.metrics.certificates"
+            :to="certsTo"
+          />
+          <StatCard
+            tone="primary"
+            :value="relayListenersCount"
+            :label="detailLabels.metrics.relayListeners"
+            :to="listenersTo"
+          />
+          <StatCard
+            :tone="syncStatusTone"
+            :value="syncStatusLabel"
+            :label="detailLabels.metrics.syncStatus"
           />
         </div>
       </div>
@@ -290,8 +326,11 @@ import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import AgentMetricTile from '../components/AgentMetricTile.vue'
 import BaseTabs from '../components/base/BaseTabs.vue'
+import StatCard from '../components/base/StatCard.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
+import { useCertificates } from '../hooks/useCertificates'
+import { useRelayListeners } from '../hooks/useRelayListeners'
 import { useAgents, useUpdateAgent } from '../hooks/useAgents'
 import { fetchAgentStats, fetchSystemInfo } from '../api'
 import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSummary, useTrafficTrend, useUpdateTrafficPolicy } from '../hooks/useTraffic'
@@ -299,6 +338,7 @@ import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
 import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
 import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
+import { agentDetailLabels } from '../constants/agentDetailLabels'
 import {
   accountedBytes,
   formatBytes,
@@ -319,6 +359,7 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 const route = useRoute()
 const router = useRouter()
 const agentId = computed(() => route.params.id)
+const detailLabels = agentDetailLabels
 
 const { data: agentsData, isLoading } = useAgents()
 const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
@@ -332,6 +373,14 @@ const httpRulesCount = computed(() => httpRules.value.length)
 const { data: l4RulesData } = useL4Rules(agentId)
 const l4Rules = computed(() => l4RulesData.value ?? [])
 const l4RulesCount = computed(() => l4Rules.value.length)
+
+const { data: certificatesData } = useCertificates(agentId)
+const certificates = computed(() => certificatesData.value ?? [])
+const certificatesCount = computed(() => certificates.value.length)
+
+const { data: relayListenersData } = useRelayListeners(agentId)
+const relayListeners = computed(() => relayListenersData.value ?? [])
+const relayListenersCount = computed(() => relayListeners.value.length)
 
 const allRules = computed(() => [
   ...httpRules.value.map((rule) => ({ ...rule, _type: 'http' })),
@@ -414,6 +463,20 @@ const STATUS_TONE = {
 }
 
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(agent.value)] || 'neutral')
+
+const rulesHttpTo = computed(() => ({ path: '/rules', query: { agentId: agentId.value } }))
+const rulesL4To = computed(() => ({ path: '/l4', query: { agentId: agentId.value } }))
+const certsTo = computed(() => ({ path: '/certs', query: { agentId: agentId.value } }))
+const listenersTo = computed(() => ({ path: '/relay-listeners', query: { agentId: agentId.value } }))
+
+const syncStatusTone = computed(() => {
+  const status = agent.value?.last_apply_status
+  if (status === 'success') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'pending') return 'warning'
+  return 'primary'
+})
+const syncStatusLabel = computed(() => agent.value?.last_apply_status || '—')
 
 function metricsFromAgentStats(stats = {}) {
   if (stats?.metrics) return stats.metrics
@@ -835,7 +898,7 @@ function packageStatusLabel(status) {
 
 <style scoped>
 .agent-detail {
-  max-width: 900px;
+  max-width: 75rem;
   margin: 0 auto;
 }
 
@@ -855,9 +918,9 @@ function packageStatusLabel(status) {
   left: 0;
   top: 0;
   bottom: 0;
-  width: 4px;
+  width: var(--space-1);
   background: var(--color-text-muted);
-  transition: background 150ms ease;
+  transition: background var(--duration-fast) var(--ease-default);
 }
 
 .agent-detail__summary-card[data-status="success"]::before { background: var(--color-success); }
@@ -868,12 +931,40 @@ function packageStatusLabel(status) {
 .agent-detail__summary-body {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .agent-detail__status-badge { flex-shrink: 0; }
 
 .agent-detail__mode-badge { flex-shrink: 0; }
+
+.agent-detail__meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  line-height: 1;
+}
+
+.agent-detail__tags {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.agent-detail__resource-metrics {
+  margin-bottom: var(--space-1);
+}
+
+.agent-detail__count-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(var(--space-20), 1fr));
+}
 
 .agent-detail__meta-row {
   display: flex;
@@ -883,7 +974,7 @@ function packageStatusLabel(status) {
 }
 
 .agent-detail__meta-label {
-  font-size: 0.625rem;
+  font-size: var(--text-xs);
   color: var(--color-text-muted);
   flex-shrink: 0;
 }
@@ -891,7 +982,7 @@ function packageStatusLabel(status) {
 .agent-detail__meta-value {
   flex: 1;
   min-width: 0;
-  font-size: 0.8rem;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -900,40 +991,6 @@ function packageStatusLabel(status) {
 
 .agent-detail__endpoint {
   font-family: var(--font-mono);
-}
-
-.agent-detail__last-seen {
-  color: var(--color-text-secondary);
-}
-
-.agent-detail__quick-stats {
-  display: flex;
-  gap: 0.75rem;
-  flex-shrink: 0;
-}
-
-.stat-mini {
-  min-width: 5.5rem;
-  text-align: center;
-  padding: 0.5rem 0.75rem;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-}
-
-.stat-mini__value { display: block; font-size: 1.125rem; font-weight: 700; color: var(--color-text-primary); line-height: 1.2; }
-.stat-mini__label { font-size: 0.7rem; color: var(--color-text-tertiary); }
-
-.agent-detail__metrics {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-  margin-bottom: 1rem;
-}
-
-.agent-detail__metrics--relaxed {
-  gap: var(--space-3);
-  margin-bottom: 0;
 }
 
 .agent-detail__error { margin-bottom: 1rem; }
@@ -1075,7 +1132,4 @@ function packageStatusLabel(status) {
 .traffic-maintenance :deep(.traffic-policy-form__card-title) { font-size: 0.9375rem; }
 .traffic-maintenance :deep(.traffic-history-manager) { gap: 0.75rem; }
 
-@media (max-width: 720px) {
-  .agent-detail__metrics { grid-template-columns: 1fr; }
-}
 </style>
