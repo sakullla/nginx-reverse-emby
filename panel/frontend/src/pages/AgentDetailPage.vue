@@ -119,10 +119,79 @@
       </div>
     </div>
 
-    <BaseTabs v-model="activeTab" :tabs="tabs" class="agent-detail__tabs" />
+    <div class="agent-detail__sections">
+      <TrafficCollapsibleSection :title="detailLabels.sections.rules" :subtitle="rulesSubtitle" default-expanded>
+        <BaseListCard class="rules-list-card" :clickable="false">
+          <div class="rules-list">
+            <div class="rules-list__header-row">
+              <span class="rules-list__col rules-list__col--type">类型</span>
+              <span class="rules-list__col rules-list__col--status">状态</span>
+              <span class="rules-list__col rules-list__col--entry">入口地址</span>
+              <span class="rules-list__col rules-list__col--backend">后端地址</span>
+              <span class="rules-list__col rules-list__col--tags">标签</span>
+            </div>
 
-    <div class="agent-detail__tab-content">
-      <div v-if="activeTab === 'traffic'" class="tab-panel">
+            <div
+              v-for="rule in allRules"
+              :key="`${rule._type}-${rule.id}`"
+              class="rules-list__row"
+              @click="navigateToRule(rule)"
+            >
+              <span class="rules-list__col rules-list__col--type" data-label="类型">
+                <span class="rule-type-badge" :class="`rule-type-badge--${rule._type}`">{{ ruleTypeLabel(rule) }}</span>
+              </span>
+              <span class="rules-list__col rules-list__col--status" data-label="状态">
+                <span class="rule-status-badge" :class="rule.enabled !== false ? 'rule-status-badge--enabled' : 'rule-status-badge--disabled'">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</span>
+              </span>
+              <span class="rules-list__col rules-list__col--entry" data-label="入口地址" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
+              <span class="rules-list__col rules-list__col--backend" data-label="后端地址" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
+              <span class="rules-list__col rules-list__col--tags" data-label="标签">
+                <span v-if="rule.tags && rule.tags.length" class="rule-tags">
+                  <span v-for="tag in rule.tags.slice(0, 3)" :key="tag" class="rule-tag">{{ tag }}</span>
+                  <span v-if="rule.tags.length > 3" class="rule-tag rule-tag--more">+{{ rule.tags.length - 3 }}</span>
+                </span>
+                <span v-else class="rules-list__empty-cell">—</span>
+              </span>
+            </div>
+
+            <p v-if="!allRules.length" class="empty-hint">{{ detailLabels.empty.rules }}</p>
+          </div>
+        </BaseListCard>
+      </TrafficCollapsibleSection>
+
+      <TrafficCollapsibleSection :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
+        <BaseListCard class="rules-list-card" :clickable="false">
+          <div class="simple-list">
+            <div
+              v-for="cert in certificates"
+              :key="cert.id"
+              class="simple-list__row"
+            >
+              <span class="simple-list__name">{{ cert.name || cert.domain || cert.id }}</span>
+              <BaseBadge tone="neutral" size="sm">{{ cert.status || '—' }}</BaseBadge>
+            </div>
+            <p v-if="!certificates.length" class="empty-hint">{{ detailLabels.empty.certificates }}</p>
+          </div>
+        </BaseListCard>
+      </TrafficCollapsibleSection>
+
+      <TrafficCollapsibleSection :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
+        <BaseListCard class="rules-list-card" :clickable="false">
+          <div class="simple-list">
+            <div
+              v-for="listener in relayListeners"
+              :key="listener.id"
+              class="simple-list__row"
+            >
+              <span class="simple-list__name">{{ listener.name || listener.listen_addr || listener.id }}</span>
+              <BaseBadge tone="neutral" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
+            </div>
+            <p v-if="!relayListeners.length" class="empty-hint">{{ detailLabels.empty.relayListeners }}</p>
+          </div>
+        </BaseListCard>
+      </TrafficCollapsibleSection>
+
+      <TrafficCollapsibleSection v-if="trafficStatsEnabled" :title="detailLabels.sections.traffic">
         <div class="traffic-sections">
           <BaseListCard class="traffic-card" :clickable="false">
             <template #header-left>
@@ -231,50 +300,11 @@
           @confirm="onConfirmDialogConfirm"
           @cancel="confirmDialog.visible = false"
         />
-      </div>
+      </TrafficCollapsibleSection>
 
-      <div v-if="activeTab === 'rules'" class="tab-panel">
-        <BaseListCard class="rules-list-card" :clickable="false">
-          <div class="rules-list">
-            <div class="rules-list__header-row">
-              <span class="rules-list__col rules-list__col--type">类型</span>
-              <span class="rules-list__col rules-list__col--status">状态</span>
-              <span class="rules-list__col rules-list__col--entry">入口地址</span>
-              <span class="rules-list__col rules-list__col--backend">后端地址</span>
-              <span class="rules-list__col rules-list__col--tags">标签</span>
-            </div>
-
-            <div
-              v-for="rule in allRules"
-              :key="`${rule._type}-${rule.id}`"
-              class="rules-list__row"
-              @click="navigateToRule(rule)"
-            >
-              <span class="rules-list__col rules-list__col--type" data-label="类型">
-                <span class="rule-type-badge" :class="`rule-type-badge--${rule._type}`">{{ ruleTypeLabel(rule) }}</span>
-              </span>
-              <span class="rules-list__col rules-list__col--status" data-label="状态">
-                <span class="rule-status-badge" :class="rule.enabled !== false ? 'rule-status-badge--enabled' : 'rule-status-badge--disabled'">{{ rule.enabled !== false ? '启用' : '禁用' }}</span>
-              </span>
-              <span class="rules-list__col rules-list__col--entry" data-label="入口地址" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
-              <span class="rules-list__col rules-list__col--backend" data-label="后端地址" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
-              <span class="rules-list__col rules-list__col--tags" data-label="标签">
-                <span v-if="rule.tags && rule.tags.length" class="rule-tags">
-                  <span v-for="tag in rule.tags.slice(0, 3)" :key="tag" class="rule-tag">{{ tag }}</span>
-                  <span v-if="rule.tags.length > 3" class="rule-tag rule-tag--more">+{{ rule.tags.length - 3 }}</span>
-                </span>
-                <span v-else class="rules-list__empty-cell">—</span>
-              </span>
-            </div>
-
-            <p v-if="!allRules.length" class="empty-hint">该节点暂无规则</p>
-          </div>
-        </BaseListCard>
-      </div>
-
-      <div v-if="activeTab === 'info'" class="tab-panel">
+      <TrafficCollapsibleSection :title="detailLabels.sections.systemInfo">
         <div class="info-sections">
-          <BaseListCard class="info-card" title="运行包" :clickable="false">
+          <BaseListCard class="info-card" :title="detailLabels.systemCards.package" :clickable="false">
             <div class="info-grid">
               <div class="info-row info-row--clean"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
               <div class="info-row info-row--clean"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
@@ -285,7 +315,7 @@
             </div>
           </BaseListCard>
 
-          <BaseListCard class="info-card" title="节点身份" :clickable="false">
+          <BaseListCard class="info-card" :title="detailLabels.systemCards.identity" :clickable="false">
             <div class="info-grid">
               <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
               <div class="info-row info-row--clean"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
@@ -293,14 +323,29 @@
             </div>
           </BaseListCard>
 
-          <BaseListCard class="info-card" title="同步状态" :clickable="false">
+          <BaseListCard class="info-card" :title="detailLabels.systemCards.sync" :clickable="false">
             <div class="info-grid">
               <div class="info-row info-row--clean"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
               <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
             </div>
           </BaseListCard>
         </div>
-      </div>
+      </TrafficCollapsibleSection>
+
+      <TrafficCollapsibleSection
+        v-if="agent.last_apply_status"
+        :title="detailLabels.sections.syncEvents"
+        :subtitle="syncStatusLabel"
+        :default-expanded="agent.last_apply_status === 'failed'"
+      >
+        <BaseListCard class="info-card" :clickable="false">
+          <div class="info-grid">
+            <div class="info-row info-row--clean"><span>同步状态</span><span>{{ agent.last_apply_status }}</span></div>
+            <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
+            <div v-if="agent.last_apply_at" class="info-row info-row--clean"><span>同步时间</span><span>{{ new Date(agent.last_apply_at).toLocaleString() }}</span></div>
+          </div>
+        </BaseListCard>
+      </TrafficCollapsibleSection>
     </div>
   </div>
   <div v-else-if="isLoading" class="agent-detail__loading">
@@ -325,8 +370,8 @@ import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import AgentMetricTile from '../components/AgentMetricTile.vue'
-import BaseTabs from '../components/base/BaseTabs.vue'
 import StatCard from '../components/base/StatCard.vue'
+import TrafficCollapsibleSection from '../components/traffic/TrafficCollapsibleSection.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
 import { useCertificates } from '../hooks/useCertificates'
@@ -478,6 +523,10 @@ const syncStatusTone = computed(() => {
 })
 const syncStatusLabel = computed(() => agent.value?.last_apply_status || '—')
 
+const rulesSubtitle = computed(() => `${httpRulesCount.value} HTTP / ${l4RulesCount.value} L4`)
+const certificatesSubtitle = computed(() => String(certificatesCount.value))
+const relayListenersSubtitle = computed(() => String(relayListenersCount.value))
+
 function metricsFromAgentStats(stats = {}) {
   if (stats?.metrics) return stats.metrics
   const host = stats?.host
@@ -510,7 +559,6 @@ function metricsFromAgentStats(stats = {}) {
   return hasMetric ? metrics : null
 }
 
-const activeTab = ref('rules')
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
 const calibrateModalVisible = ref(false)
 const confirmDialog = ref({ visible: false, type: '', title: '', message: '', confirmText: '', loading: false })
@@ -523,12 +571,6 @@ function openBreakdownTrendModal(row) {
     scopeLabel: trafficBreakdownLabel(row)
   }
 }
-
-const tabs = computed(() => [
-  { id: 'rules', label: '规则' },
-  ...(trafficStatsEnabled.value ? [{ id: 'traffic', label: '流量统计' }] : []),
-  { id: 'info', label: '系统信息' }
-])
 
 watch(agent, (value) => {
   outboundProxyURL.value = value?.outbound_proxy_url || ''
@@ -543,12 +585,6 @@ watch(agent, (value) => {
 watch([trafficPolicyQuery.data, trafficStatsEnabled], ([policy, enabled]) => {
   if (enabled && policy) {
     trafficPolicyForm.value = normalizeTrafficPolicyForm(policy, agent.value?.traffic_stats_interval || '')
-  }
-}, { immediate: true })
-
-watch(tabs, (value) => {
-  if (!value.some((tab) => tab.id === activeTab.value)) {
-    activeTab.value = value[0]?.id || 'rules'
   }
 }, { immediate: true })
 
@@ -999,7 +1035,28 @@ function packageStatusLabel(status) {
 .error-block__title { font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; }
 .error-block__text { font-size: 0.8125rem; line-height: 1.5; color: var(--color-danger); opacity: 0.95; word-break: break-word; }
 
-.agent-detail__tabs { margin-bottom: 1rem; }
+.agent-detail__sections { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.simple-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.simple-list__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+}
+.simple-list__row:hover { background: var(--color-bg-hover); }
+.simple-list__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
 
 .rules-list { display: flex; flex-direction: column; gap: 0.25rem; }
 .rules-list__header-row,
