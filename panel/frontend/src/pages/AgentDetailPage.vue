@@ -121,25 +121,41 @@
               :value="httpRulesCount"
               :label="detailLabels.metrics.httpRules"
               :to="rulesHttpTo"
-            />
+            >
+              <template #icon>
+                <span class="i-mdi-link-variant" aria-hidden="true" />
+              </template>
+            </StatCard>
             <StatCard
               tone="success"
               :value="l4RulesCount"
               :label="detailLabels.metrics.l4Rules"
               :to="rulesL4To"
-            />
+            >
+              <template #icon>
+                <span class="i-mdi-server-network" aria-hidden="true" />
+              </template>
+            </StatCard>
             <StatCard
               tone="warning"
               :value="certificatesCount"
               :label="detailLabels.metrics.certificates"
               :to="certsTo"
-            />
+            >
+              <template #icon>
+                <span class="i-mdi-certificate" aria-hidden="true" />
+              </template>
+            </StatCard>
             <StatCard
               tone="primary"
               :value="relayListenersCount"
               :label="detailLabels.metrics.relayListeners"
               :to="listenersTo"
-            />
+            >
+              <template #icon>
+                <span class="i-mdi-transit-connection-variant" aria-hidden="true" />
+              </template>
+            </StatCard>
           </div>
         </div>
       </div>
@@ -164,10 +180,9 @@
         <BaseListCard class="rules-list-card" :clickable="false">
           <div class="rules-list">
             <div class="rules-list__header-row">
-              <span class="rules-list__col rules-list__col--type">类型</span>
-              <span class="rules-list__col rules-list__col--status">状态</span>
-              <span class="rules-list__col rules-list__col--entry">入口地址</span>
-              <span class="rules-list__col rules-list__col--backend">后端地址</span>
+              <span class="rules-list__col rules-list__col--primary">入口地址</span>
+              <span class="rules-list__col rules-list__col--meta">类型 / 状态</span>
+              <span class="rules-list__col rules-list__col--secondary">后端地址</span>
               <span class="rules-list__col rules-list__col--tags">标签</span>
             </div>
 
@@ -177,14 +192,12 @@
               class="rules-list__row"
               @click="navigateToRule(rule)"
             >
-              <span class="rules-list__col rules-list__col--type" data-label="类型">
+              <span class="rules-list__col rules-list__col--primary" data-label="入口地址" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
+              <span class="rules-list__col rules-list__col--meta" data-label="类型 / 状态">
                 <span class="rule-type-badge" :class="`rule-type-badge--${rule._type}`">{{ ruleTypeLabel(rule) }}</span>
-              </span>
-              <span class="rules-list__col rules-list__col--status" data-label="状态">
                 <span class="rule-status-badge" :class="rule.enabled !== false ? 'rule-status-badge--enabled' : 'rule-status-badge--disabled'">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</span>
               </span>
-              <span class="rules-list__col rules-list__col--entry" data-label="入口地址" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
-              <span class="rules-list__col rules-list__col--backend" data-label="后端地址" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
+              <span class="rules-list__col rules-list__col--secondary" data-label="后端地址" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
               <span class="rules-list__col rules-list__col--tags" data-label="标签">
                 <span v-if="rule.tags && rule.tags.length" class="rule-tags">
                   <span v-for="tag in rule.tags.slice(0, 3)" :key="tag" class="rule-tag">{{ tag }}</span>
@@ -207,8 +220,15 @@
               :key="cert.id"
               class="simple-list__row"
             >
-              <span class="simple-list__name">{{ cert.name || cert.domain || cert.id }}</span>
-              <BaseBadge tone="neutral" size="sm">{{ cert.status || '—' }}</BaseBadge>
+              <div class="simple-list__main">
+                <span class="simple-list__primary" :title="certificatePrimary(cert)">{{ certificatePrimary(cert) }}</span>
+                <span
+                  v-if="certificateSecondary(cert)"
+                  class="simple-list__secondary"
+                  :title="certificateSecondary(cert)"
+                >{{ certificateSecondary(cert) }}</span>
+              </div>
+              <BaseBadge :tone="certificateStatusBadge(cert).tone" size="sm">{{ certificateStatusBadge(cert).label }}</BaseBadge>
             </div>
             <p v-if="!certificates.length" class="empty-hint">{{ detailLabels.empty.certificates }}</p>
           </div>
@@ -223,8 +243,15 @@
               :key="listener.id"
               class="simple-list__row"
             >
-              <span class="simple-list__name">{{ listener.name || listener.listen_addr || listener.id }}</span>
-              <BaseBadge tone="neutral" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
+              <div class="simple-list__main">
+                <span class="simple-list__primary" :title="listenerPrimary(listener)">{{ listenerPrimary(listener) }}</span>
+                <span
+                  v-if="listenerSecondary(listener)"
+                  class="simple-list__secondary"
+                  :title="listenerSecondary(listener)"
+                >{{ listenerSecondary(listener) }}</span>
+              </div>
+              <BaseBadge :tone="listener.enabled !== false ? 'success' : 'neutral'" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
             </div>
             <p v-if="!relayListeners.length" class="empty-hint">{{ detailLabels.empty.relayListeners }}</p>
           </div>
@@ -981,6 +1008,48 @@ function ruleBackend(rule) {
   return formatL4Backend(rule)
 }
 
+const CERT_STATUS = {
+  active: { label: agentDetailLabels.certStatus.active, tone: 'success' },
+  pending: { label: agentDetailLabels.certStatus.pending, tone: 'warning' },
+  issuing: { label: agentDetailLabels.certStatus.issuing, tone: 'primary' },
+  error: { label: agentDetailLabels.certStatus.error, tone: 'danger' },
+}
+
+function certificatePrimary(cert) {
+  return cert?.domain || cert?.name || cert?.id || '—'
+}
+
+function certificateSecondary(cert) {
+  const domain = String(cert?.domain || '').trim()
+  const name = String(cert?.name || '').trim()
+  if (domain && name && name !== domain) return name
+  return ''
+}
+
+function certificateStatusBadge(cert) {
+  if (cert?.enabled === false) {
+    return { label: agentDetailLabels.certStatus.disabled, tone: 'neutral' }
+  }
+  const mapped = CERT_STATUS[cert?.status]
+  if (mapped) return mapped
+  const raw = String(cert?.status || '').trim()
+  return {
+    label: raw || agentDetailLabels.certStatus.unknown,
+    tone: 'neutral',
+  }
+}
+
+function listenerPrimary(listener) {
+  return listener?.name || listener?.listen_addr || listener?.id || '—'
+}
+
+function listenerSecondary(listener) {
+  const name = String(listener?.name || '').trim()
+  const addr = String(listener?.listen_addr || '').trim()
+  if (name && addr && addr !== name) return addr
+  return ''
+}
+
 function navigateToRule(rule) {
   const path = rule._type === 'http' ? '/rules' : '/l4'
   router.push({
@@ -1185,20 +1254,35 @@ function packageStatusLabel(status) {
   font-size: var(--text-sm);
 }
 .simple-list__row:hover { background: var(--color-bg-hover); }
-.simple-list__name {
+.simple-list__main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.simple-list__primary {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-text-primary);
+  font-weight: 600;
+}
+.simple-list__secondary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
 }
 
 .rules-list { display: flex; flex-direction: column; gap: 0.25rem; }
 .rules-list__header-row,
 .rules-list__row {
   display: grid;
-  grid-template-columns: 3.5rem 3.5rem 1.2fr 1fr 1fr;
-  grid-template-areas: 'type status entry backend tags';
+  grid-template-columns: minmax(0, 1.6fr) auto minmax(0, 1fr) minmax(0, 0.9fr);
+  grid-template-areas: 'primary meta secondary tags';
   align-items: center;
   gap: 0.75rem;
   padding: 0.625rem 0.75rem;
@@ -1208,39 +1292,52 @@ function packageStatusLabel(status) {
 .rules-list__row { cursor: pointer; border-radius: var(--radius-lg); transition: background-color 150ms ease; }
 .rules-list__row:hover { background: var(--color-bg-subtle); }
 .rules-list__col { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rules-list__col--type { grid-area: type; }
-.rules-list__col--status { grid-area: status; }
-.rules-list__col--entry { grid-area: entry; }
-.rules-list__col--backend { grid-area: backend; }
+.rules-list__col--primary {
+  grid-area: primary;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.rules-list__col--meta {
+  grid-area: meta;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+.rules-list__col--secondary {
+  grid-area: secondary;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+}
 .rules-list__col--tags { grid-area: tags; display: flex; justify-content: flex-end; }
 .rules-list__empty-cell { color: var(--color-text-muted); }
 @media (max-width: 900px) {
   .rules-list__header-row { display: none; }
   .rules-list__row {
-    grid-template-columns: auto auto 1fr;
+    grid-template-columns: 1fr;
     grid-template-areas:
-      'type status tags'
-      'entry entry entry'
-      'backend backend backend';
+      'meta'
+      'primary'
+      'secondary'
+      'tags';
     gap: 0.375rem 0.5rem;
     padding: 0.75rem;
     background: var(--color-bg-surface);
     border: 1px solid var(--color-border-subtle);
   }
   .rules-list__row:hover { background: var(--color-bg-hover); }
-  .rules-list__col--entry,
-  .rules-list__col--backend {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    font-size: 0.8125rem;
-    color: var(--color-text-primary);
+  .rules-list__col--primary,
+  .rules-list__col--secondary {
     white-space: normal;
     word-break: break-all;
     overflow: visible;
   }
-  .rules-list__col--entry::before,
-  .rules-list__col--backend::before {
+  .rules-list__col--secondary {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+  .rules-list__col--secondary::before {
     content: attr(data-label) ':';
     flex-shrink: 0;
     font-size: 0.75rem;

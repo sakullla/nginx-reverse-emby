@@ -75,4 +75,13 @@ export const agentDetailLabels = {
   },
   ruleEnabled: '启用',
   ruleDisabled: '禁用',
+  ruleBackendLabel: '后端',
+  certStatus: {
+    active: '生效中',
+    pending: '待签发',
+    issuing: '签发中',
+    error: '签发失败',
+    disabled: '已禁用',
+    unknown: '未知',
+  },
 }

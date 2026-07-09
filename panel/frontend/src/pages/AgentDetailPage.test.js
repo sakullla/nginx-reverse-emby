@@ -12,6 +12,8 @@ let agentRecord
 let currentAgentStats
 let mockHttpRules = []
 let mockL4Rules = []
+let mockCertificates = []
+let mockRelayListeners = []
 const routerPush = vi.fn()
 const apiCalls = {
   applyConfig: vi.fn(),
@@ -100,14 +102,14 @@ vi.mock('../hooks/useL4Rules', async () => {
 vi.mock('../hooks/useRelayListeners', async () => {
   const { ref } = await import('vue')
   return {
-    useRelayListeners: () => ({ data: ref([]) })
+    useRelayListeners: () => ({ data: ref(mockRelayListeners) })
   }
 })
 
 vi.mock('../hooks/useCertificates', async () => {
   const { ref } = await import('vue')
   return {
-    useCertificates: () => ({ data: ref([]) })
+    useCertificates: () => ({ data: ref(mockCertificates) })
   }
 })
 
@@ -156,6 +158,10 @@ async function expandSection(wrapper, title) {
 beforeEach(() => {
   routeParams = { id: 'edge-1' }
   systemInfo = { traffic_stats_enabled: true, master_register_token: 'test-token' }
+  mockHttpRules = []
+  mockL4Rules = []
+  mockCertificates = []
+  mockRelayListeners = []
   agentRecord = {
     id: 'edge-1',
     name: '边缘节点-01',
@@ -371,6 +377,40 @@ describe('AgentDetailPage', () => {
     const wrapper = await mountPage()
     expect(wrapper.text()).toContain('证书列表')
     expect(wrapper.text()).toContain('监听列表')
+  })
+
+  it('renders certificate rows with domain primary id and localized status', async () => {
+    mockCertificates = [
+      { id: 11, domain: 'cdn.example.com', name: 'edge-cert', status: 'active', enabled: true },
+      { id: 12, domain: 'fail.example.com', name: 'fail-cert', status: 'error', enabled: true },
+    ]
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '证书列表')
+
+    const rows = wrapper.findAll('.simple-list__row')
+    expect(rows.length).toBeGreaterThanOrEqual(2)
+    expect(rows[0].text()).toContain('cdn.example.com')
+    expect(rows[0].text()).toContain('edge-cert')
+    expect(rows[0].text()).toContain('生效中')
+    expect(rows[1].text()).toContain('fail.example.com')
+    expect(rows[1].text()).toContain('签发失败')
+  })
+
+  it('renders relay listener rows with primary name, secondary address, and enabled status', async () => {
+    mockRelayListeners = [
+      { id: 21, name: 'public-relay', listen_addr: '0.0.0.0:8443', enabled: true },
+      { id: 22, name: 'offline-relay', listen_addr: '127.0.0.1:9000', enabled: false },
+    ]
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '监听列表')
+
+    const rows = wrapper.findAll('.simple-list__row')
+    expect(rows.length).toBeGreaterThanOrEqual(2)
+    expect(rows[0].text()).toContain('public-relay')
+    expect(rows[0].text()).toContain('0.0.0.0:8443')
+    expect(rows[0].text()).toContain('启用')
+    expect(rows[1].text()).toContain('offline-relay')
+    expect(rows[1].text()).toContain('禁用')
   })
 
   it('renders system info and sync events sections', async () => {
