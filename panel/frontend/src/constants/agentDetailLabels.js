@@ -25,6 +25,9 @@ export const agentDetailLabels = {
     syncStatus: '同步状态',
   },
 
+  // Secondary band under primary health/sync summary
+  secondaryMetrics: '资源与业务',
+
   // Section titles
   sections: {
     rules: '规则列表',

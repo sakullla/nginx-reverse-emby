@@ -57,77 +57,90 @@
       </template>
 
       <div class="agent-detail__summary-body">
-        <div class="agent-detail__meta-rows">
-          <p class="agent-detail__meta-row">
-            <span class="agent-detail__meta-label">{{ detailLabels.meta.address }}</span>
-            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
-          </p>
+        <div class="agent-detail__primary-band">
+          <div class="agent-detail__meta-rows">
+            <p class="agent-detail__meta-row">
+              <span class="agent-detail__meta-label">{{ detailLabels.meta.address }}</span>
+              <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
+            </p>
+          </div>
+
+          <div
+            class="agent-detail__sync-signal"
+            data-testid="detail-sync-status"
+            :data-tone="syncStatusTone"
+          >
+            <span class="agent-detail__sync-signal-label">{{ detailLabels.metrics.syncStatus }}</span>
+            <BaseBadge
+              :tone="syncStatusTone"
+              size="sm"
+              class="agent-detail__sync-signal-value"
+            >{{ syncStatusLabel }}</BaseBadge>
+          </div>
         </div>
 
-        <div class="agent-detail-metrics agent-detail__resource-metrics">
-          <AgentMetricTile
-            data-testid="detail-metric-cpu"
-            icon="i-mdi-cpu-64-bit"
-            :label="detailLabels.metrics.cpu"
-            :value="cpuUsage(agentMetricsData)"
-            :percent="agentMetricsData.cpu_usage_percent"
-            :tone="barTone(agentMetricsData.cpu_usage_percent)"
-          />
-          <AgentMetricTile
-            data-testid="detail-metric-memory"
-            icon="i-mdi-memory"
-            :label="detailLabels.metrics.memory"
-            :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
-            :percent="agentMetricsData.memory_usage_percent"
-            :tone="barTone(agentMetricsData.memory_usage_percent)"
-          />
-          <AgentMetricTile
-            data-testid="detail-metric-disk"
-            icon="i-mdi-harddisk"
-            :label="detailLabels.metrics.disk"
-            :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
-            :percent="agentMetricsData.disk_usage_percent"
-            :tone="barTone(agentMetricsData.disk_usage_percent)"
-          />
-          <AgentMetricTile
-            data-testid="detail-metric-network"
-            icon="i-mdi-network"
-            :label="detailLabels.metrics.network"
-            :network-down="rate(networkMetrics?.rx_bytes_per_second)"
-            :network-up="rate(networkMetrics?.tx_bytes_per_second)"
-          />
-        </div>
+        <div class="agent-detail__secondary-band">
+          <div class="agent-detail__secondary-label">{{ detailLabels.secondaryMetrics }}</div>
+          <div class="agent-detail-metrics agent-detail__resource-metrics">
+            <AgentMetricTile
+              data-testid="detail-metric-cpu"
+              icon="i-mdi-cpu-64-bit"
+              :label="detailLabels.metrics.cpu"
+              :value="cpuUsage(agentMetricsData)"
+              :percent="agentMetricsData.cpu_usage_percent"
+              :tone="barTone(agentMetricsData.cpu_usage_percent)"
+            />
+            <AgentMetricTile
+              data-testid="detail-metric-memory"
+              icon="i-mdi-memory"
+              :label="detailLabels.metrics.memory"
+              :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
+              :percent="agentMetricsData.memory_usage_percent"
+              :tone="barTone(agentMetricsData.memory_usage_percent)"
+            />
+            <AgentMetricTile
+              data-testid="detail-metric-disk"
+              icon="i-mdi-harddisk"
+              :label="detailLabels.metrics.disk"
+              :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
+              :percent="agentMetricsData.disk_usage_percent"
+              :tone="barTone(agentMetricsData.disk_usage_percent)"
+            />
+            <AgentMetricTile
+              data-testid="detail-metric-network"
+              icon="i-mdi-network"
+              :label="detailLabels.metrics.network"
+              :network-down="rate(networkMetrics?.rx_bytes_per_second)"
+              :network-up="rate(networkMetrics?.tx_bytes_per_second)"
+            />
+          </div>
 
-        <div class="agent-detail-metrics agent-detail__count-metrics">
-          <StatCard
-            tone="primary"
-            :value="httpRulesCount"
-            :label="detailLabels.metrics.httpRules"
-            :to="rulesHttpTo"
-          />
-          <StatCard
-            tone="success"
-            :value="l4RulesCount"
-            :label="detailLabels.metrics.l4Rules"
-            :to="rulesL4To"
-          />
-          <StatCard
-            tone="warning"
-            :value="certificatesCount"
-            :label="detailLabels.metrics.certificates"
-            :to="certsTo"
-          />
-          <StatCard
-            tone="primary"
-            :value="relayListenersCount"
-            :label="detailLabels.metrics.relayListeners"
-            :to="listenersTo"
-          />
-          <StatCard
-            :tone="syncStatusTone"
-            :value="syncStatusLabel"
-            :label="detailLabels.metrics.syncStatus"
-          />
+          <div class="agent-detail-metrics agent-detail__count-metrics">
+            <StatCard
+              tone="primary"
+              :value="httpRulesCount"
+              :label="detailLabels.metrics.httpRules"
+              :to="rulesHttpTo"
+            />
+            <StatCard
+              tone="success"
+              :value="l4RulesCount"
+              :label="detailLabels.metrics.l4Rules"
+              :to="rulesL4To"
+            />
+            <StatCard
+              tone="warning"
+              :value="certificatesCount"
+              :label="detailLabels.metrics.certificates"
+              :to="certsTo"
+            />
+            <StatCard
+              tone="primary"
+              :value="relayListenersCount"
+              :label="detailLabels.metrics.relayListeners"
+              :to="listenersTo"
+            />
+          </div>
         </div>
       </div>
     </BaseListCard>
@@ -140,7 +153,7 @@
           <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
         <div class="error-block__content">
-          <div class="error-block__title">同步失败</div>
+          <div class="error-block__title">{{ detailLabels.sync.failedTitle }}</div>
           <div class="error-block__text">{{ agent.last_apply_message }}</div>
         </div>
       </div>
@@ -1027,7 +1040,64 @@ function packageStatusLabel(status) {
 .agent-detail__summary-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
+}
+
+.agent-detail__primary-band {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.agent-detail__sync-signal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+}
+
+.agent-detail__sync-signal[data-tone="success"] {
+  border-color: color-mix(in srgb, var(--color-success) 35%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-success) 10%, var(--color-bg-surface));
+}
+
+.agent-detail__sync-signal[data-tone="danger"] {
+  border-color: color-mix(in srgb, var(--color-danger) 40%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-danger) 10%, var(--color-bg-surface));
+}
+
+.agent-detail__sync-signal[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--color-warning) 40%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-warning) 10%, var(--color-bg-surface));
+}
+
+.agent-detail__sync-signal-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.agent-detail__secondary-band {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+  opacity: 0.96;
+}
+
+.agent-detail__secondary-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: none;
 }
 
 .agent-detail__status-badge { flex-shrink: 0; }
@@ -1055,11 +1125,16 @@ function packageStatusLabel(status) {
 }
 
 .agent-detail__resource-metrics {
-  margin-bottom: var(--space-1);
+  margin-bottom: 0;
 }
 
 .agent-detail__count-metrics {
   grid-template-columns: repeat(auto-fit, minmax(var(--space-20), 1fr));
+}
+
+.agent-detail__secondary-band :deep(.agent-metric-tile),
+.agent-detail__secondary-band :deep(.stat-card) {
+  box-shadow: none;
 }
 
 .agent-detail__meta-row {
