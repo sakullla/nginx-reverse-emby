@@ -260,13 +260,19 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="detail-metric-disk"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-metric-network"]').exists()).toBe(true)
 
+    expect(wrapper.find('[data-testid="detail-sync-status"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-sync-status"]').text()).toContain('同步状态')
+    expect(wrapper.find('.agent-detail__primary-band').exists()).toBe(true)
+    expect(wrapper.find('.agent-detail__secondary-band').exists()).toBe(true)
+    expect(wrapper.text()).toContain('资源与业务')
+
     const statCards = wrapper.findAllComponents(StatCard)
     const labels = statCards.map((c) => c.props('label'))
     expect(labels).toContain('HTTP 规则')
     expect(labels).toContain('L4 规则')
     expect(labels).toContain('证书')
     expect(labels).toContain('Relay 监听')
-    expect(labels).toContain('同步状态')
+    expect(labels).not.toContain('同步状态')
   })
 
   it('renders operation buttons in the summary header', async () => {
