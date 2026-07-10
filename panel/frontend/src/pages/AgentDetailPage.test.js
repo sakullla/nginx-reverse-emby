@@ -261,10 +261,24 @@ describe('AgentDetailPage', () => {
 
     const wrapper = await mountPage()
 
-    expect(wrapper.find('[data-testid="detail-metric-cpu"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="detail-metric-memory"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="detail-metric-disk"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="detail-metric-network"]').exists()).toBe(true)
+    const cpuTile = wrapper.find('[data-testid="detail-metric-cpu"]')
+    const memoryTile = wrapper.find('[data-testid="detail-metric-memory"]')
+    const diskTile = wrapper.find('[data-testid="detail-metric-disk"]')
+    const networkTile = wrapper.find('[data-testid="detail-metric-network"]')
+
+    expect(cpuTile.exists()).toBe(true)
+    expect(memoryTile.exists()).toBe(true)
+    expect(diskTile.exists()).toBe(true)
+    expect(networkTile.exists()).toBe(true)
+
+    // Resource occupancy uses center-percent rings; network stays rate rows.
+    expect(cpuTile.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(true)
+    expect(memoryTile.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(true)
+    expect(diskTile.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(true)
+    expect(networkTile.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(false)
+    expect(networkTile.find('[data-testid="agent-metric-tile-network-down"]').exists()).toBe(true)
+    expect(cpuTile.find('[data-testid="agent-metric-tile-ring-percent"]').text()).toContain('%')
+    expect(cpuTile.find('[data-testid="agent-metric-tile-ring-value"]').text()).toMatch(/核|%/)
 
     expect(wrapper.find('[data-testid="detail-sync-status"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-sync-status"]').text()).toContain('同步状态')

@@ -89,6 +89,7 @@
               :value="cpuUsage(agentMetricsData)"
               :percent="agentMetricsData.cpu_usage_percent"
               :tone="barTone(agentMetricsData.cpu_usage_percent)"
+              display-mode="ring"
             />
             <AgentMetricTile
               data-testid="detail-metric-memory"
@@ -97,6 +98,7 @@
               :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
               :percent="agentMetricsData.memory_usage_percent"
               :tone="barTone(agentMetricsData.memory_usage_percent)"
+              display-mode="ring"
             />
             <AgentMetricTile
               data-testid="detail-metric-disk"
@@ -105,6 +107,7 @@
               :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
               :percent="agentMetricsData.disk_usage_percent"
               :tone="barTone(agentMetricsData.disk_usage_percent)"
+              display-mode="ring"
             />
             <AgentMetricTile
               data-testid="detail-metric-network"

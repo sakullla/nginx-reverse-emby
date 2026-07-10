@@ -26,10 +26,11 @@ describe('AgentMetricTile', () => {
     expect(wrapper.text()).toContain('1.0 / 8 核')
   })
 
-  it('uses BaseMetricBar for regular metrics', () => {
+  it('uses BaseMetricBar for regular metrics by default', () => {
     const wrapper = mountTile()
 
     expect(wrapper.find('.agent-metric-tile__label').text()).toBe('CPU')
+    expect(wrapper.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(false)
 
     const bar = wrapper.find('[data-testid="agent-metric-tile-metric-bar"]')
     expect(bar.exists()).toBe(true)
@@ -46,6 +47,41 @@ describe('AgentMetricTile', () => {
 
     const bar = wrapper.find('[data-testid="agent-metric-tile-metric-bar"]')
     expect(bar.find('.base-metric-bar__fill').attributes('style')).toContain('width: 100%')
+  })
+
+  it('renders a center-percent ring when displayMode is ring', () => {
+    const wrapper = mountTile({ displayMode: 'ring', percent: 12.4, tone: 'success' })
+
+    expect(wrapper.find('[data-testid="agent-metric-tile-metric-bar"]').exists()).toBe(false)
+
+    const ring = wrapper.find('[data-testid="agent-metric-tile-metric-ring"]')
+    expect(ring.exists()).toBe(true)
+    expect(ring.attributes('data-tone')).toBe('success')
+    expect(wrapper.find('[data-testid="agent-metric-tile-ring-percent"]').text()).toBe('12.4%')
+    expect(wrapper.find('[data-testid="agent-metric-tile-ring-value"]').text()).toContain('1.0 / 8 核')
+
+    const progress = wrapper.find('[data-testid="agent-metric-tile-ring-progress"]')
+    const dashArray = progress.attributes('stroke-dasharray') || ''
+    const dashOffset = Number(progress.attributes('stroke-dashoffset'))
+    const circumference = Number(String(dashArray).split(/\s+/)[0])
+    expect(circumference).toBeGreaterThan(0)
+    expect(dashOffset).toBeCloseTo(circumference * (1 - 12.4 / 100), 5)
+  })
+
+  it('clamps ring progress to [0, 100] and keeps absolute value', () => {
+    const wrapper = mountTile({ displayMode: 'ring', percent: 150, tone: 'danger', value: '3.9 / 4.0 GiB' })
+
+    expect(wrapper.find('[data-testid="agent-metric-tile-ring-percent"]').text()).toBe('100%')
+    expect(wrapper.find('[data-testid="agent-metric-tile-ring-value"]').text()).toContain('3.9 / 4.0 GiB')
+    expect(wrapper.find('[data-testid="agent-metric-tile-metric-ring"]').attributes('data-tone')).toBe('danger')
+  })
+
+  it('shows empty ring placeholder when percent is missing', () => {
+    const wrapper = mountTile({ displayMode: 'ring', value: null, percent: null, tone: 'neutral' })
+
+    expect(wrapper.find('[data-testid="agent-metric-tile-ring-percent"]').text()).toBe('—')
+    expect(wrapper.find('[data-testid="agent-metric-tile-ring-value"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="agent-metric-tile-metric-ring"]').attributes('data-tone')).toBe('neutral')
   })
 
   it('renders network down/up rows when network props are provided', () => {
@@ -83,9 +119,15 @@ describe('AgentMetricTile', () => {
     // the component source because scoped styles are not reflected on inline
     // element.style in jsdom.
     const source = readFileSync(resolve(process.cwd(), 'src/components/AgentMetricTile.vue'), 'utf8')
-    const networkRule = source.slice(source.indexOf('.agent-metric-tile__network {'))
+    const networkRule = source.slice(
+      source.indexOf('.agent-metric-tile__network {'),
+      source.indexOf('.agent-metric-tile__network-row {')
+    )
     expect(networkRule).toContain('flex-direction: row')
-    const valueRule = source.slice(source.indexOf('.agent-metric-tile__network-value {'))
+    const valueRule = source.slice(
+      source.indexOf('.agent-metric-tile__network-value {'),
+      source.indexOf('.agent-metric-tile__ring {')
+    )
     expect(valueRule).toContain('white-space: nowrap')
     expect(valueRule).not.toContain('overflow-wrap: anywhere')
   })
