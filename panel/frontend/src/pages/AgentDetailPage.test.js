@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import AgentDetailPage from './AgentDetailPage.vue'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
@@ -280,11 +282,20 @@ describe('AgentDetailPage', () => {
     expect(cpuTile.find('[data-testid="agent-metric-tile-ring-percent"]').text()).toContain('%')
     expect(cpuTile.find('[data-testid="agent-metric-tile-ring-value"]').text()).toMatch(/核|%/)
 
-    expect(wrapper.find('[data-testid="detail-sync-status"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="detail-sync-status"]').text()).toContain('同步状态')
-    expect(wrapper.find('.agent-detail__primary-band').exists()).toBe(true)
+    // Sync status lives in the compact header badge row, not a loose primary-band block.
+    const sync = wrapper.find('[data-testid="detail-sync-status"]')
+    expect(sync.exists()).toBe(true)
+    expect(sync.text()).toContain('同步状态')
+    expect(wrapper.find('.base-list-card__header-left [data-testid="detail-sync-status"]').exists()).toBe(true)
+    expect(wrapper.find('.agent-detail__primary-band [data-testid="detail-sync-status"]').exists()).toBe(false)
+    expect(wrapper.find('.agent-detail__sync-signal').exists()).toBe(false)
+
+    // Address stays secondary under the title; metrics grid is the main body.
+    expect(wrapper.find('.agent-detail__meta-row').exists()).toBe(true)
     expect(wrapper.find('.agent-detail__secondary-band').exists()).toBe(true)
     expect(wrapper.text()).toContain('资源与业务')
+    expect(wrapper.find('.agent-detail__resource-metrics').classes()).toContain('agent-detail-metrics--aligned')
+    expect(wrapper.find('.agent-detail__count-metrics').classes()).toContain('agent-detail-metrics--aligned')
 
     const statCards = wrapper.findAllComponents(StatCard)
     const labels = statCards.map((c) => c.props('label'))
@@ -293,6 +304,40 @@ describe('AgentDetailPage', () => {
     expect(labels).toContain('证书')
     expect(labels).toContain('Relay 监听')
     expect(labels).not.toContain('同步状态')
+
+    // Resource tiles stay shallow-embedded; business counts are white raised + horizontal.
+    // No fixed card height (cross-browser variance).
+    expect(wrapper.find('.agent-detail__resource-metrics').classes()).toContain('agent-detail-metrics--embedded')
+    expect(wrapper.find('.agent-detail__resource-metrics').classes()).not.toContain('agent-detail-metrics--fixed-height')
+    expect(wrapper.find('.agent-detail__count-metrics').classes()).not.toContain('agent-detail-metrics--embedded')
+    expect(wrapper.find('.agent-detail__count-metrics').classes()).not.toContain('agent-detail-metrics--fixed-height')
+    expect(wrapper.find('.agent-detail__count-metrics').classes()).toContain('agent-detail-metrics--raised')
+    expect(wrapper.find('.agent-detail__count-metrics').classes()).toContain('agent-detail-metrics--horizontal')
+
+    const source = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
+    expect(source).not.toContain('agent-detail-metrics--fixed-height')
+    expect(source).not.toMatch(/height:\s*7\.5rem/)
+
+    const embeddedStart = source.indexOf('.agent-detail-metrics--embedded')
+    expect(embeddedStart).toBeGreaterThan(-1)
+    const embeddedRule = source.slice(embeddedStart, embeddedStart + 450)
+    expect(embeddedRule).toContain('color-dashboard-tile-bg')
+    expect(embeddedRule).toContain('agent-metric-tile')
+    expect(embeddedRule).not.toContain(':deep(.stat-card)')
+
+    const raisedStart = source.indexOf('.agent-detail-metrics--raised')
+    expect(raisedStart).toBeGreaterThan(-1)
+    const raisedRule = source.slice(raisedStart, raisedStart + 500)
+    expect(raisedRule).toContain('color-bg-surface')
+    expect(raisedRule).toContain('shadow-sm')
+    expect(raisedRule).toContain('stat-card')
+
+    const horizontalStart = source.indexOf('.agent-detail-metrics--horizontal')
+    expect(horizontalStart).toBeGreaterThan(-1)
+    const horizontalRule = source.slice(horizontalStart, horizontalStart + 700)
+    expect(horizontalRule).toContain('flex-direction: row')
+    expect(horizontalRule).toContain('stat-card__icon')
+    expect(horizontalRule).toContain('stat-card__data')
   })
 
   it('renders operation buttons in the summary header', async () => {

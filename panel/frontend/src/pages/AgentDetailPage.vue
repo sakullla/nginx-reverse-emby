@@ -8,6 +8,19 @@
       <template #header-left>
         <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
         <BaseBadge tone="primary" size="sm" class="agent-detail__mode-badge">{{ getModeLabel(agent.mode) }}</BaseBadge>
+        <span
+          class="agent-detail__sync-badge"
+          data-testid="detail-sync-status"
+          :data-tone="syncStatusTone"
+          :title="detailLabels.metrics.syncStatus"
+        >
+          <span class="agent-detail__sync-badge-label">{{ detailLabels.metrics.syncStatus }}</span>
+          <BaseBadge
+            :tone="syncStatusTone"
+            size="sm"
+            class="agent-detail__sync-badge-value"
+          >{{ syncStatusLabel }}</BaseBadge>
+        </span>
         <span class="agent-detail__meta-chip" :title="detailLabels.meta.version">
           {{ agent.version || agent.runtime_package_version || '—' }}
         </span>
@@ -57,31 +70,16 @@
       </template>
 
       <div class="agent-detail__summary-body">
-        <div class="agent-detail__primary-band">
-          <div class="agent-detail__meta-rows">
-            <p class="agent-detail__meta-row">
-              <span class="agent-detail__meta-label">{{ detailLabels.meta.address }}</span>
-              <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
-            </p>
-          </div>
-
-          <div
-            class="agent-detail__sync-signal"
-            data-testid="detail-sync-status"
-            :data-tone="syncStatusTone"
-          >
-            <span class="agent-detail__sync-signal-label">{{ detailLabels.metrics.syncStatus }}</span>
-            <BaseBadge
-              :tone="syncStatusTone"
-              size="sm"
-              class="agent-detail__sync-signal-value"
-            >{{ syncStatusLabel }}</BaseBadge>
-          </div>
+        <div class="agent-detail__meta-rows">
+          <p class="agent-detail__meta-row">
+            <span class="agent-detail__meta-label">{{ detailLabels.meta.address }}</span>
+            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
+          </p>
         </div>
 
         <div class="agent-detail__secondary-band">
           <div class="agent-detail__secondary-label">{{ detailLabels.secondaryMetrics }}</div>
-          <div class="agent-detail-metrics agent-detail__resource-metrics">
+          <div class="agent-detail-metrics agent-detail-metrics--aligned agent-detail-metrics--embedded agent-detail__resource-metrics">
             <AgentMetricTile
               data-testid="detail-metric-cpu"
               icon="i-mdi-cpu-64-bit"
@@ -118,7 +116,7 @@
             />
           </div>
 
-          <div class="agent-detail-metrics agent-detail__count-metrics">
+          <div class="agent-detail-metrics agent-detail-metrics--aligned agent-detail-metrics--raised agent-detail-metrics--horizontal agent-detail__count-metrics">
             <StatCard
               tone="primary"
               :value="httpRulesCount"
@@ -1112,57 +1110,60 @@ function packageStatusLabel(status) {
 .agent-detail__summary-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
-.agent-detail__primary-band {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+.agent-detail__summary-card :deep(.base-list-card__header) {
+  margin-bottom: var(--space-1);
 }
 
-.agent-detail__sync-signal {
+.agent-detail__summary-card :deep(.base-list-card__title) {
+  margin-bottom: var(--space-1);
+  line-height: 1.25;
+}
+
+.agent-detail__sync-badge {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
+  gap: var(--space-1);
+  flex-shrink: 0;
+  padding: 0.1rem var(--space-1-5);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
+  line-height: 1;
 }
 
-.agent-detail__sync-signal[data-tone="success"] {
+.agent-detail__sync-badge[data-tone="success"] {
   border-color: color-mix(in srgb, var(--color-success) 35%, var(--color-border-default));
   background: color-mix(in srgb, var(--color-success) 10%, var(--color-bg-surface));
 }
 
-.agent-detail__sync-signal[data-tone="danger"] {
+.agent-detail__sync-badge[data-tone="danger"] {
   border-color: color-mix(in srgb, var(--color-danger) 40%, var(--color-border-default));
   background: color-mix(in srgb, var(--color-danger) 10%, var(--color-bg-surface));
 }
 
-.agent-detail__sync-signal[data-tone="warning"] {
+.agent-detail__sync-badge[data-tone="warning"] {
   border-color: color-mix(in srgb, var(--color-warning) 40%, var(--color-border-default));
   background: color-mix(in srgb, var(--color-warning) 10%, var(--color-bg-surface));
 }
 
-.agent-detail__sync-signal-label {
+.agent-detail__sync-badge-label {
   font-size: var(--text-xs);
   font-weight: 600;
   color: var(--color-text-secondary);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .agent-detail__secondary-band {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-2-5);
   padding: var(--space-3);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
   background: var(--color-bg-subtle);
-  opacity: 0.96;
 }
 
 .agent-detail__secondary-label {
@@ -1196,24 +1197,94 @@ function packageStatusLabel(status) {
   flex-wrap: wrap;
 }
 
-.agent-detail__resource-metrics {
+.agent-detail__resource-metrics,
+.agent-detail__count-metrics {
   margin-bottom: 0;
 }
 
-.agent-detail__count-metrics {
-  grid-template-columns: repeat(auto-fit, minmax(var(--space-20), 1fr));
+.agent-detail-metrics--aligned {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: stretch;
 }
 
-.agent-detail__secondary-band :deep(.agent-metric-tile),
-.agent-detail__secondary-band :deep(.stat-card) {
+/* Resource tiles: shallow embedded shell (dashboard tile tokens). Natural height. */
+.agent-detail-metrics--embedded :deep(.agent-metric-tile) {
+  border: 1px solid var(--color-dashboard-tile-border);
+  border-radius: var(--radius-md);
+  background: var(--color-dashboard-tile-bg);
   box-shadow: none;
+  justify-content: space-between;
+}
+
+.agent-detail-metrics--embedded :deep(.agent-metric-tile__ring-visual) {
+  width: 3.75rem;
+  height: 3.75rem;
+}
+
+/* Business counts: white raised StatCards. */
+.agent-detail-metrics--raised :deep(.stat-card) {
+  padding: var(--space-2-5) var(--space-3);
+  background: var(--color-bg-surface);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+}
+
+.agent-detail-metrics--raised :deep(.stat-card__icon) {
+  width: 2rem;
+  height: 2rem;
+}
+
+.agent-detail-metrics--raised :deep(.stat-card__value) {
+  font-size: 1.5rem;
+  margin-bottom: 0;
+}
+
+.agent-detail-metrics--raised :deep(.stat-card__label) {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-tertiary);
+}
+
+/* Business counts: icon + value/label in a horizontal row to fill width. */
+.agent-detail-metrics--horizontal :deep(.stat-card) {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.agent-detail-metrics--horizontal :deep(.stat-card__icon) {
+  flex-shrink: 0;
+  margin-bottom: 0;
+}
+
+.agent-detail-metrics--horizontal :deep(.stat-card__data) {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.agent-detail-metrics--horizontal :deep(.stat-card__value) {
+  line-height: 1.15;
+}
+
+.agent-detail-metrics--horizontal :deep(.stat-card__label) {
+  margin-top: var(--space-0-5, 0.125rem);
+}
+
+.agent-detail__meta-rows {
+  min-width: 0;
 }
 
 .agent-detail__meta-row {
   display: flex;
   align-items: baseline;
   gap: 0.375rem;
-  margin-bottom: 0.125rem;
+  margin: 0;
 }
 
 .agent-detail__meta-label {
@@ -1225,11 +1296,23 @@ function packageStatusLabel(status) {
 .agent-detail__meta-value {
   flex: 1;
   min-width: 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--color-text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 1024px) {
+  .agent-detail-metrics--aligned {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 375px) {
+  .agent-detail-metrics--aligned {
+    grid-template-columns: 1fr;
+  }
 }
 
 .agent-detail__endpoint {
