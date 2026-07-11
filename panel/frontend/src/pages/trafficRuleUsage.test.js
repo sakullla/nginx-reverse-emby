@@ -35,8 +35,24 @@ vi.mock('../hooks/useAgents', () => ({
   useAgents: () => ({ data: { value: agentsData } })
 }))
 
+function listPageResult(items) {
+  const list = Array.isArray(items) ? items : []
+  return {
+    data: {
+      value: {
+        items: list,
+        total: list.length,
+        page: 1,
+        page_size: 20,
+      },
+    },
+    isLoading: { value: false },
+  }
+}
+
 vi.mock('../hooks/useRules', () => ({
   useRules: () => ({ data: { value: rulesData }, isLoading: { value: false } }),
+  useRulesList: () => listPageResult(rulesData),
   useCreateRule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useUpdateRule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useDeleteRule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() })
@@ -44,6 +60,7 @@ vi.mock('../hooks/useRules', () => ({
 
 vi.mock('../hooks/useL4Rules', () => ({
   useL4Rules: () => ({ data: { value: l4RulesData }, isLoading: { value: false } }),
+  useL4RulesList: () => listPageResult(l4RulesData),
   useCreateL4Rule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useUpdateL4Rule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useDeleteL4Rule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() })
@@ -51,6 +68,7 @@ vi.mock('../hooks/useL4Rules', () => ({
 
 vi.mock('../hooks/useRelayListeners', () => ({
   useRelayListeners: () => ({ data: { value: relayListenersData }, isLoading: { value: false } }),
+  useRelayListenersList: () => listPageResult(relayListenersData),
   useDeleteRelayListener: () => ({ isPending: { value: false }, mutate: vi.fn() }),
   useUpdateRelayListener: () => ({ mutate: vi.fn() })
 }))
