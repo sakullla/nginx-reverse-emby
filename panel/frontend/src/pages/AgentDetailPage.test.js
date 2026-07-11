@@ -595,6 +595,10 @@ describe('AgentDetailPage', () => {
     expect(healthCard.find('.traffic-section-card__title').text()).toBe('健康概览')
     expect(wrapper.find('.traffic-summary-cards').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-summary-remaining"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-health-badge"]').text()).toContain('正常')
+    expect(wrapper.find('[data-testid="traffic-summary-loading"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="traffic-trend-empty"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
 
     // Analysis/management are nested collapsibles (headers present, bodies collapsed).
     const secondary = wrapper.findAll('.traffic-secondary')
@@ -605,6 +609,66 @@ describe('AgentDetailPage', () => {
     // Breakdown/manager not mounted while nested sections stay collapsed.
     expect(wrapper.find('.traffic-breakdown__tab').exists()).toBe(false)
     expect(wrapper.findAll('button').some((button) => button.text() === '清理过期数据')).toBe(false)
+  })
+
+  it('shows blocked health badge when summary.blocked is true', async () => {
+    apiCalls.fetchTrafficSummary.mockResolvedValue({
+      used_bytes: 300,
+      monthly_quota_bytes: 1099511627776,
+      remaining_bytes: 0,
+      blocked: true,
+      http_rules: [],
+      l4_rules: [],
+      relay_listeners: []
+    })
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '流量统计')
+    const badge = wrapper.find('[data-testid="traffic-health-badge"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('已阻断')
+    expect(badge.classes().join(' ')).toContain('base-badge--danger')
+    expect(wrapper.find('.traffic-card--health-blocked').exists()).toBe(true)
+  })
+
+  it('does not show false 无限制 while traffic summary is still loading', async () => {
+    let resolveSummary
+    apiCalls.fetchTrafficSummary.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveSummary = resolve
+      })
+    )
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '流量统计')
+
+    expect(wrapper.find('[data-testid="traffic-summary-loading"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-health-badge"]').text()).toContain('加载中')
+    expect(wrapper.find('.traffic-card--health').text()).not.toContain('无限制')
+
+    resolveSummary({
+      used_bytes: 300,
+      monthly_quota_bytes: null,
+      remaining_bytes: null,
+      blocked: false,
+      http_rules: [],
+      l4_rules: [],
+      relay_listeners: []
+    })
+    await nextTick()
+    await vi.dynamicImportSettled()
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="traffic-summary-loading"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="traffic-summary-remaining"]').text()).toBe('无限制')
+    expect(wrapper.find('[data-testid="traffic-health-badge"]').text()).toContain('正常')
+  })
+
+  it('shows trend empty state when points are empty after load', async () => {
+    apiCalls.fetchTrafficTrend.mockResolvedValue([])
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '流量统计')
+    expect(wrapper.find('[data-testid="traffic-trend-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-trend-empty"]').text()).toContain('暂无数据')
+    expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
   })
 
   it('renders accounted traffic breakdowns after expanding analysis', async () => {

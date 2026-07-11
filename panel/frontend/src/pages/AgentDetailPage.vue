@@ -295,7 +295,11 @@
         :title="detailLabels.sections.traffic"
       >
         <div class="traffic-sections">
-          <BaseListCard class="traffic-card traffic-card--health agent-detail__panel agent-detail__panel--inset" :clickable="false">
+          <BaseListCard
+            class="traffic-card traffic-card--health agent-detail__panel agent-detail__panel--inset"
+            :class="{ 'traffic-card--health-blocked': trafficHealthBlocked }"
+            :clickable="false"
+          >
             <template #header-left>
               <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -303,14 +307,19 @@
               <span class="traffic-section-card__title">{{ detailLabels.sections.trafficHealth }}</span>
             </template>
             <template #header-right>
-              <BaseBadge :tone="trafficSummary.blocked ? 'danger' : 'success'" size="sm">
-                {{ trafficSummary.blocked ? '已阻断' : '正常' }}
+              <BaseBadge
+                data-testid="traffic-health-badge"
+                :tone="trafficHealthBadge.tone"
+                size="sm"
+              >
+                {{ trafficHealthBadge.label }}
               </BaseBadge>
             </template>
             <TrafficSummaryCards
               :summary="trafficSummary"
               :direction="trafficPolicyForm.direction"
               :network-metrics="networkMetrics"
+              :loading="trafficSummaryLoading"
             />
             <div class="traffic-monitor__divider" />
             <div class="traffic-tab__trend traffic-tab__trend--demoted">
@@ -335,6 +344,7 @@
                   :granularity="trafficTrendGranularity"
                   :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
                   :refresh-key="agentStatsRefreshKey"
+                  :loading="trafficTrendLoading"
                 />
               </div>
             </div>
@@ -572,8 +582,20 @@ const quotaUnits = [
   { value: 'TiB', label: 'TiB', factor: 1024 ** 4 }
 ]
 const trafficPolicyForm = ref(normalizeTrafficPolicyForm())
+const trafficSummaryLoading = computed(() => Boolean(trafficSummaryQuery.isLoading.value))
+const trafficTrendLoading = computed(() => Boolean(trafficTrendQuery.isLoading.value))
 const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
 const trafficTrendPoints = computed(() => normalizeTrafficTrendPoints(trafficTrendQuery.data.value ?? [], trafficPolicyForm.value.direction))
+const trafficHealthBlocked = computed(() => !trafficSummaryLoading.value && Boolean(trafficSummary.value.blocked))
+const trafficHealthBadge = computed(() => {
+  if (trafficSummaryLoading.value) {
+    return { tone: 'neutral', label: '加载中' }
+  }
+  if (trafficSummary.value.blocked) {
+    return { tone: 'danger', label: '已阻断' }
+  }
+  return { tone: 'success', label: '正常' }
+})
 const trafficBreakdownTabs = computed(() => [
   {
     id: 'http',
@@ -1738,6 +1760,13 @@ function packageStatusLabel(status) {
     0 1px 0 color-mix(in srgb, var(--color-primary) 10%, transparent),
     0 8px 20px -16px color-mix(in srgb, var(--color-primary) 28%, transparent);
   background: color-mix(in srgb, var(--color-bg-surface) 96%, var(--color-primary) 4%);
+}
+.traffic-card--health-blocked {
+  border-color: color-mix(in srgb, var(--color-danger, #dc2626) 28%, var(--color-border-default));
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--color-danger, #dc2626) 12%, transparent),
+    0 8px 20px -16px color-mix(in srgb, var(--color-danger, #dc2626) 30%, transparent);
+  background: color-mix(in srgb, var(--color-bg-surface) 94%, var(--color-danger, #dc2626) 6%);
 }
 .traffic-card--health:deep(.base-list-card__header) {
   padding-bottom: 0.25rem;
