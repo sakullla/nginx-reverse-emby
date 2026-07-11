@@ -109,6 +109,25 @@ describe('resolveMutationAgentId', () => {
     expect(result.error).toMatch(/缺少节点归属/)
     expect(result.source).toBe('none')
   })
+
+  // Filter-bar list view may be ALL_AGENTS_FILTER, but mutation ownership
+  // must stay resource-bound and never silently fall back to "write as all".
+  it('keeps mutation ownership when list filter is all-agents', () => {
+    const withOwner = resolveMutationAgentId(
+      { id: 9, agent_id: 'edge-b' },
+      ALL_AGENTS_FILTER,
+    )
+    expect(withOwner).toMatchObject({
+      agentId: 'edge-b',
+      error: null,
+      source: 'resource',
+    })
+
+    const missingOwner = resolveMutationAgentId({ id: 9 }, ALL_AGENTS_FILTER)
+    expect(missingOwner.agentId).toBeNull()
+    expect(missingOwner.error).toMatch(/缺少节点归属/)
+    expect(missingOwner.source).toBe('none')
+  })
 })
 
 describe('resolveCopyTargetAgentId', () => {
