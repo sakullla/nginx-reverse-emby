@@ -21,7 +21,7 @@
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <button v-if="canCreate" class="btn btn-primary" @click="showAddForm = true">
+        <button v-if="canCreate" class="btn btn-primary" @click="startCreate">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -52,7 +52,7 @@
         <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
       </svg>
       <p>暂无 L4 规则</p>
-      <button v-if="canCreate" class="btn btn-primary" @click="showAddForm = true">添加第一条规则</button>
+      <button v-if="canCreate" class="btn btn-primary" @click="startCreate">添加第一条规则</button>
       <p v-else class="rules-page__prompt-hint">全部节点视图下请先选择具体节点再新建</p>
     </div>
 
@@ -113,7 +113,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <L4RuleForm :initial-data="editingRule" :agent-id="agentId" :l4-rules="rules" @success="closeForm" />
+      <L4RuleForm :initial-data="editingRule" :agent-id="formAgentId" :l4-rules="rules" @success="closeForm" />
     </BaseModal>
 
     <!-- Copy Modal -->
@@ -124,7 +124,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeCopy"
     >
-      <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" :l4-rules="rules" @success="closeCopy" />
+      <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="formAgentId" :l4-rules="rules" @success="closeCopy" />
     </BaseModal>
 
     <!-- Delete Modal -->
@@ -165,6 +165,27 @@
       @select="handleCandidateSelect"
     />
   </div>
+
+    <div v-if="showCreateAgentPicker" class="modal-overlay" @click.self="showCreateAgentPicker = false">
+      <div class="modal create-agent-picker">
+        <h3>选择新建所属节点</h3>
+        <p class="create-agent-picker__hint">全部节点视图下必须指定资源归属节点。</p>
+        <div class="create-agent-picker__list">
+          <button
+            v-for="agent in allAgents"
+            :key="agent.id"
+            type="button"
+            class="btn btn-secondary create-agent-picker__item"
+            @click="confirmCreateAgent(agent)"
+          >
+            {{ agent.name || agent.id }}
+          </button>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" @click="showCreateAgentPicker = false">取消</button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <script setup>
@@ -192,6 +213,7 @@ import { useViewToggle } from '../composables/useViewToggle'
 import { messageStore } from '../stores/messages'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
 import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -215,7 +237,17 @@ const agentId = computed(() => {
   return filter
 })
 const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
-const canCreate = computed(() => Boolean(agentId.value))
+const createResolve = computed(() => resolveCreateAgentId(
+  agentFilter.value,
+  allAgents.value,
+  { systemInfo: systemInfo?.value }
+))
+const formAgentId = ref(agentId.value || '')
+const showCreateAgentPicker = ref(false)
+const canCreate = computed(() => (
+  hasAgentFilter.value
+  && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
+))
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 
 const page = ref(1)
@@ -251,6 +283,45 @@ function trafficForRule(rule) {
   return trafficStatsEnabled.value
     ? summaryBucketForObject(trafficSummaryData.value, 'l4_rules', rule?.id)
     : null
+}
+
+
+function requireMutationAgent(resource, actionLabel = '操作') {
+  const resolved = resolveMutationAgentId(resource, agentFilter.value, {
+    fallbackAgentId: agentId.value,
+  })
+  if (!resolved.agentId) {
+    messageStore.error(resolved.error || `缺少节点归属，无法${actionLabel}`)
+    return null
+  }
+  return resolved.agentId
+}
+
+function startCreate() {
+  const resolved = resolveCreateAgentId(agentFilter.value, allAgents.value, {
+    systemInfo: systemInfo?.value,
+  })
+  if (resolved.agentId) {
+    formAgentId.value = resolved.agentId
+    showAddForm.value = true
+    return
+  }
+  if (resolved.needsSelection) {
+    showCreateAgentPicker.value = true
+    return
+  }
+  messageStore.error('请先选择节点后再新建')
+}
+
+function confirmCreateAgent(agent) {
+  const id = String(agent?.id || agent?.agent_id || '').trim()
+  if (!id) {
+    messageStore.error('请选择有效节点')
+    return
+  }
+  formAgentId.value = id
+  showCreateAgentPicker.value = false
+  showAddForm.value = true
 }
 
 function handleAgentSelect(id) {
@@ -345,7 +416,7 @@ const trendModal = ref({ visible: false, agentId: '', scopeType: '', scopeId: ''
 const trafficDirection = ref('both')
 
 function openTrendModal(rule) {
-  const id = selectedAgentId?.value || rule.agent_id
+  const id = requireMutationAgent(rule, '查看流量')
   if (!id) return
   trendModal.value = {
     visible: true,
@@ -356,18 +427,40 @@ function openTrendModal(rule) {
   }
 }
 
-function startEdit(rule) { editingRule.value = rule }
-function handleCopy(rule) { const { id, ...rest } = rule; copyingRule.value = rest; showCopyModal.value = true }
-function startDelete(rule) { deletingRule.value = rule }
-function closeForm() { showAddForm.value = false; editingRule.value = null }
-function closeCopy() { showCopyModal.value = false; copyingRule.value = null }
-function toggleRule(rule) { updateL4Rule.mutate({ id: rule.id, enabled: !rule.enabled }) }
-function confirmDelete() { if (deletingRule.value) deleteL4Rule.mutate(deletingRule.value.id); deletingRule.value = null }
+function startEdit(rule) {
+  const target = requireMutationAgent(rule, '编辑')
+  if (!target) return
+  formAgentId.value = target
+  editingRule.value = rule
+}
+function handleCopy(rule) {
+  const resolved = resolveCopyTargetAgentId(agentFilter.value, allAgents.value, {
+    systemInfo: systemInfo?.value,
+  })
+  if (resolved.agentId) formAgentId.value = resolved.agentId
+  else {
+    const source = String(rule?.agent_id || '').trim()
+    if (!source) { messageStore.error('全部节点视图下复制请先选择目标节点'); return }
+    formAgentId.value = source
+  }
+  const { id, ...rest } = rule
+  copyingRule.value = rest
+  showCopyModal.value = true
+}
+function confirmDelete() {
+  if (!deletingRule.value) return
+  const target = requireMutationAgent(deletingRule.value, '删除')
+  if (!target) return
+  deleteL4Rule.mutate({ id: deletingRule.value.id, agentId: target })
+  deletingRule.value = null
+}
 async function openDiagnostic(rule) {
   diagnosticRule.value = rule
   showDiagnostic.value = true
   try {
-    const response = await diagnoseL4Rule.mutateAsync(rule.id)
+    const target = requireMutationAgent(rule, '诊断')
+    if (!target) return
+    const response = await diagnoseL4Rule.mutateAsync({ id: rule.id, agentId: target })
     initialDiagnosticTask.value = response.task || null
     diagnosticTaskId.value = response.task_id
   } catch (error) {

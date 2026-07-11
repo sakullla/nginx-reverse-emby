@@ -45,10 +45,29 @@ function invalidateRelayListeners(qc) {
   qc.invalidateQueries({ queryKey: ['agents'] })
 }
 
+function resolveMutationAgent(defaultAgentId, input) {
+  if (input && typeof input === 'object') {
+    const override = input.agentId ?? input.agent_id
+    if (override != null && String(override).trim()) return String(override).trim()
+  }
+  const fallback = unref(defaultAgentId)
+  if (fallback != null && String(fallback).trim()) return String(fallback).trim()
+  return null
+}
+
+function missingAgentError() {
+  return new Error('缺少节点归属，无法执行该操作')
+}
+
 export function useCreateRelayListener(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload) => api.createRelayListener(unref(agentId), payload),
+    mutationFn: (payload = {}) => {
+      const { agentId: payloadAgentId, agent_id, ...body } = payload || {}
+      const id = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!id) return Promise.reject(missingAgentError())
+      return api.createRelayListener(id, body)
+    },
     onSuccess: () => {
       invalidateRelayListeners(qc)
       messageStore.success('Relay 监听器创建成功')
@@ -62,7 +81,11 @@ export function useCreateRelayListener(agentId) {
 export function useUpdateRelayListener(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...payload }) => api.updateRelayListener(unref(agentId), id, payload),
+    mutationFn: ({ id, agentId: payloadAgentId, agent_id, ...payload }) => {
+      const target = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!target) return Promise.reject(missingAgentError())
+      return api.updateRelayListener(target, id, payload)
+    },
     onSuccess: () => {
       invalidateRelayListeners(qc)
       messageStore.success('Relay 监听器更新成功')
@@ -76,7 +99,12 @@ export function useUpdateRelayListener(agentId) {
 export function useDeleteRelayListener(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id) => api.deleteRelayListener(unref(agentId), id),
+    mutationFn: (input) => {
+      const listenerId = input && typeof input === 'object' ? input.id : input
+      const target = resolveMutationAgent(agentId, input)
+      if (!target) return Promise.reject(missingAgentError())
+      return api.deleteRelayListener(target, listenerId)
+    },
     onSuccess: () => {
       invalidateRelayListeners(qc)
       messageStore.success('Relay 监听器已删除')

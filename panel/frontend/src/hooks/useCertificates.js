@@ -85,10 +85,29 @@ function invalidateCertificates(qc) {
   invalidateResourceList(qc, 'certificates')
 }
 
+function resolveMutationAgent(defaultAgentId, input) {
+  if (input && typeof input === 'object') {
+    const override = input.agentId ?? input.agent_id
+    if (override != null && String(override).trim()) return String(override).trim()
+  }
+  const fallback = unref(defaultAgentId)
+  if (fallback != null && String(fallback).trim()) return String(fallback).trim()
+  return null
+}
+
+function missingAgentError() {
+  return new Error('缺少节点归属，无法执行该操作')
+}
+
 export function useCreateCertificate(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload) => api.createCertificate(unref(agentId), payload),
+    mutationFn: (payload = {}) => {
+      const { agentId: payloadAgentId, agent_id, ...body } = payload || {}
+      const id = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!id) return Promise.reject(missingAgentError())
+      return api.createCertificate(id, body)
+    },
     onSuccess: () => {
       invalidateCertificates(qc)
       messageStore.success('证书已创建，签发任务已提交')
@@ -102,7 +121,11 @@ export function useCreateCertificate(agentId) {
 export function useUpdateCertificate(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...payload }) => api.updateCertificate(unref(agentId), id, payload),
+    mutationFn: ({ id, agentId: payloadAgentId, agent_id, ...payload }) => {
+      const target = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!target) return Promise.reject(missingAgentError())
+      return api.updateCertificate(target, id, payload)
+    },
     onSuccess: () => {
       invalidateCertificates(qc)
       messageStore.success('证书已更新，变更已提交')
@@ -116,7 +139,12 @@ export function useUpdateCertificate(agentId) {
 export function useDeleteCertificate(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id) => api.deleteCertificate(unref(agentId), id),
+    mutationFn: (input) => {
+      const certId = input && typeof input === 'object' ? input.id : input
+      const target = resolveMutationAgent(agentId, input)
+      if (!target) return Promise.reject(missingAgentError())
+      return api.deleteCertificate(target, certId)
+    },
     onSuccess: () => {
       invalidateCertificates(qc)
       messageStore.success('证书已删除')
@@ -130,7 +158,12 @@ export function useDeleteCertificate(agentId) {
 export function useIssueCertificate(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id) => api.issueCertificate(unref(agentId), id),
+    mutationFn: (input) => {
+      const certId = input && typeof input === 'object' ? input.id : input
+      const target = resolveMutationAgent(agentId, input)
+      if (!target) return Promise.reject(missingAgentError())
+      return api.issueCertificate(target, certId)
+    },
     onSuccess: () => {
       invalidateCertificates(qc)
       messageStore.success('证书签发申请已提交')

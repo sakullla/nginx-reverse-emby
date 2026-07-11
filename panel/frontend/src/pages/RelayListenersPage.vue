@@ -8,7 +8,7 @@
       </div>
       <div class='relay-page__header-right'>
         <ViewToggle v-if='hasAgentFilter && listTotal > 0' v-model:view='view' />
-        <button v-if='canCreate' class='btn btn-primary' @click='showAddForm = true'>
+        <button v-if='canCreate' class='btn btn-primary' @click="startCreate">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -39,7 +39,7 @@
         <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
       </svg>
       <p>暂无 Relay 监听器</p>
-      <button v-if='canCreate' class='btn btn-primary' @click='showAddForm = true'>创建第一个监听器</button>
+      <button v-if='canCreate' class='btn btn-primary' @click="startCreate">创建第一个监听器</button>
       <p v-else class='relay-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
     </div>
 
@@ -87,7 +87,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <RelayListenerForm :initial-data="editingListener" :agent-id="agentId" @success="closeForm" />
+      <RelayListenerForm :initial-data="editingListener" :agent-id="formAgentId" @success="closeForm" />
     </BaseModal>
 
     <DeleteConfirmDialog
@@ -110,6 +110,27 @@
       :direction="trafficDirection"
     />
   </div>
+
+    <div v-if="showCreateAgentPicker" class="modal-overlay" @click.self="showCreateAgentPicker = false">
+      <div class="modal create-agent-picker">
+        <h3>选择新建所属节点</h3>
+        <p class="create-agent-picker__hint">全部节点视图下必须指定资源归属节点。</p>
+        <div class="create-agent-picker__list">
+          <button
+            v-for="agent in allAgents"
+            :key="agent.id"
+            type="button"
+            class="btn btn-secondary create-agent-picker__item"
+            @click="confirmCreateAgent(agent)"
+          >
+            {{ agent.name || agent.id }}
+          </button>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" @click="showCreateAgentPicker = false">取消</button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <script setup>
@@ -133,6 +154,7 @@ import { useViewToggle } from '../composables/useViewToggle'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
 import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -156,7 +178,17 @@ const agentId = computed(() => {
   return filter
 })
 const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
-const canCreate = computed(() => Boolean(agentId.value))
+const createResolve = computed(() => resolveCreateAgentId(
+  agentFilter.value,
+  allAgents.value,
+  { systemInfo: systemInfo?.value }
+))
+const formAgentId = ref(agentId.value || '')
+const showCreateAgentPicker = ref(false)
+const canCreate = computed(() => (
+  hasAgentFilter.value
+  && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
+))
 
 const page = ref(1)
 const pageSize = 20
@@ -207,7 +239,7 @@ const trendModal = ref({ visible: false, agentId: '', scopeType: '', scopeId: ''
 const trafficDirection = ref('both')
 
 function openTrendModal(listener) {
-  const id = listener.agent_id || selectedAgentId?.value
+  const id = requireMutationAgent(listener, '查看流量')
   if (!id) return
   trendModal.value = {
     visible: true,
@@ -218,11 +250,53 @@ function openTrendModal(listener) {
   }
 }
 
+
+function requireMutationAgent(resource, actionLabel = '操作') {
+  const resolved = resolveMutationAgentId(resource, agentFilter.value, {
+    fallbackAgentId: agentId.value,
+  })
+  if (!resolved.agentId) {
+    messageStore.error(resolved.error || `缺少节点归属，无法${actionLabel}`)
+    return null
+  }
+  return resolved.agentId
+}
+
+function startCreate() {
+  const resolved = resolveCreateAgentId(agentFilter.value, allAgents.value, {
+    systemInfo: systemInfo?.value,
+  })
+  if (resolved.agentId) {
+    formAgentId.value = resolved.agentId
+    showAddForm.value = true
+    return
+  }
+  if (resolved.needsSelection) {
+    showCreateAgentPicker.value = true
+    return
+  }
+  messageStore.error('请先选择节点后再新建')
+}
+
+function confirmCreateAgent(agent) {
+  const id = String(agent?.id || agent?.agent_id || '').trim()
+  if (!id) {
+    messageStore.error('请选择有效节点')
+    return
+  }
+  formAgentId.value = id
+  showCreateAgentPicker.value = false
+  showAddForm.value = true
+}
+
 function handleAgentSelect(id) {
   router.replace({ query: { ...route.query, agentId: id } })
 }
 
 function startEdit(listener) {
+  const target = requireMutationAgent(listener, '编辑')
+  if (!target) return
+  formAgentId.value = target
   editingListener.value = listener
 }
 
@@ -237,20 +311,27 @@ function closeForm() {
 }
 
 function toggleListener(listener) {
-  updateRelayListener.mutate({ id: listener.id, enabled: !listener.enabled })
+  const target = requireMutationAgent(listener, '启停')
+  if (!target) return
+  updateRelayListener.mutate({ id: listener.id, enabled: !listener.enabled, agentId: target })
 }
 
 function confirmDelete() {
   if (!deletingListener.value) return
-  deleteRelayListener.mutate(deletingListener.value.id, {
-    onSuccess: () => {
-      deleteError.value = ''
-      deletingListener.value = null
+  const target = requireMutationAgent(deletingListener.value, '删除')
+  if (!target) return
+  deleteRelayListener.mutate(
+    { id: deletingListener.value.id, agentId: target },
+    {
+      onSuccess: () => {
+        deleteError.value = ''
+        deletingListener.value = null
+      },
+      onError: (err) => {
+        deleteError.value = err?.message || '删除失败'
+      },
     },
-    onError: (err) => {
-      deleteError.value = err?.message || '删除失败'
-    }
-  })
+  )
 }
 </script>
 

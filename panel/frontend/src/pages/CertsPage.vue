@@ -27,7 +27,7 @@
             </svg>
           </button>
         </div>
-        <button v-if='canCreate' class='btn btn-primary' @click='showAddForm = true'>
+        <button v-if='canCreate' class='btn btn-primary' @click="startCreate">
           <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
             <line x1='12' y1='5' x2='12' y2='19' />
             <line x1='5' y1='12' x2='19' y2='12' />
@@ -97,7 +97,7 @@
         <path d='M7 11V7a5 5 0 0 1 10 0v4' />
       </svg>
       <p>暂无证书</p>
-      <button v-if='canCreate' class='btn btn-primary' @click='showAddForm = true'>从模板创建第一个证书</button>
+      <button v-if='canCreate' class='btn btn-primary' @click="startCreate">从模板创建第一个证书</button>
       <p v-else class='certs-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
     </div>
 
@@ -108,7 +108,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <CertificateForm :initial-data="editingCert" :agent-id="agentId" @success="closeForm" />
+      <CertificateForm :initial-data="editingCert" :agent-id="formAgentId" @success="closeForm" />
     </BaseModal>
 
     <DeleteConfirmDialog
@@ -129,6 +129,27 @@
       @select="handleCandidateSelect"
     />
   </div>
+
+    <div v-if="showCreateAgentPicker" class="modal-overlay" @click.self="showCreateAgentPicker = false">
+      <div class="modal create-agent-picker">
+        <h3>选择新建所属节点</h3>
+        <p class="create-agent-picker__hint">全部节点视图下必须指定资源归属节点。</p>
+        <div class="create-agent-picker__list">
+          <button
+            v-for="agent in allAgents"
+            :key="agent.id"
+            type="button"
+            class="btn btn-secondary create-agent-picker__item"
+            @click="confirmCreateAgent(agent)"
+          >
+            {{ agent.name || agent.id }}
+          </button>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" @click="showCreateAgentPicker = false">取消</button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <script setup>
@@ -147,6 +168,7 @@ import ListPagination from '../components/common/ListPagination.vue'
 import CertTable from '../components/certs/CertTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 import {
   isSystemRelayCA
 } from '../utils/certificateTemplates'
@@ -158,6 +180,7 @@ const route = useRoute()
 const router = useRouter()
 const { view } = useViewToggle('certs')
 const agentContext = useAgent()
+const systemInfo = agentContext.systemInfo || ref(null)
 const { selectedAgentId } = agentContext
 const { data: agentsData } = useAgents()
 const allAgents = computed(() => agentsData.value ?? [])
@@ -175,7 +198,17 @@ const agentId = computed(() => {
   return filter
 })
 const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
-const canCreate = computed(() => Boolean(agentId.value))
+const createResolve = computed(() => resolveCreateAgentId(
+  agentFilter.value,
+  allAgents.value,
+  { systemInfo: systemInfo?.value }
+))
+const formAgentId = ref(agentId.value || '')
+const showCreateAgentPicker = ref(false)
+const canCreate = computed(() => (
+  hasAgentFilter.value
+  && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
+))
 
 const page = ref(1)
 const pageSize = 20
@@ -195,6 +228,45 @@ const { data: certsPage, isLoading } = useCertificatesList({
   q: listQ,
   enabled: hasAgentFilter
 })
+
+
+function requireMutationAgent(resource, actionLabel = '操作') {
+  const resolved = resolveMutationAgentId(resource, agentFilter.value, {
+    fallbackAgentId: agentId.value,
+  })
+  if (!resolved.agentId) {
+    messageStore.error(resolved.error || `缺少节点归属，无法${actionLabel}`)
+    return null
+  }
+  return resolved.agentId
+}
+
+function startCreate() {
+  const resolved = resolveCreateAgentId(agentFilter.value, allAgents.value, {
+    systemInfo: systemInfo?.value,
+  })
+  if (resolved.agentId) {
+    formAgentId.value = resolved.agentId
+    showAddForm.value = true
+    return
+  }
+  if (resolved.needsSelection) {
+    showCreateAgentPicker.value = true
+    return
+  }
+  messageStore.error('请先选择节点后再新建')
+}
+
+function confirmCreateAgent(agent) {
+  const id = String(agent?.id || agent?.agent_id || '').trim()
+  if (!id) {
+    messageStore.error('请选择有效节点')
+    return
+  }
+  formAgentId.value = id
+  showCreateAgentPicker.value = false
+  showAddForm.value = true
+}
 
 function handleAgentSelect(id) {
   router.replace({ query: { ...route.query, agentId: id } })
@@ -269,10 +341,17 @@ const activeCount = computed(() => certificates.value.filter((cert) => cert.enab
 const issuingCount = computed(() => certificates.value.filter((cert) => cert.status === 'issuing').length)
 
 function issueCert(cert) {
-  issueCertificate.mutate(cert.id)
+  {
+  const target = requireMutationAgent(cert, '签发')
+  if (!target) return
+  issueCertificate.mutate({ id: cert.id, agentId: target })
+}
 }
 
 function startEdit(cert) {
+  const target = requireMutationAgent(cert, '编辑')
+  if (!target) return
+  formAgentId.value = target
   editingCert.value = cert
 }
 
@@ -289,11 +368,13 @@ function closeForm() {
 }
 
 function confirmDelete() {
-  if (deletingCert.value) {
-    deleteCertificate.mutate(deletingCert.value.id)
-  }
+  if (!deletingCert.value) return
+  const target = requireMutationAgent(deletingCert.value, '删除')
+  if (!target) return
+  deleteCertificate.mutate({ id: deletingCert.value.id, agentId: target })
   deletingCert.value = null
 }
+
 </script>
 
 <style scoped>

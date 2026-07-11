@@ -205,6 +205,7 @@ describe('WireGuardProfilesPage client row actions', () => {
     await profileActionButton(wrapper, '停用').trigger('click')
 
     expect(mocks.profileUpdateMutate).toHaveBeenCalledWith({
+      agentId: 'local',
       id: 7,
       name: 'wg-main',
       mode: 'generic_wireguard',

@@ -176,6 +176,27 @@
       @cancel="deletingProfile = null"
     />
   </div>
+
+    <div v-if="showCreateAgentPicker" class="modal-overlay" @click.self="showCreateAgentPicker = false">
+      <div class="modal create-agent-picker">
+        <h3>选择新建所属节点</h3>
+        <p class="create-agent-picker__hint">全部节点视图下必须指定资源归属节点。</p>
+        <div class="create-agent-picker__list">
+          <button
+            v-for="agent in allAgents"
+            :key="agent.id"
+            type="button"
+            class="btn btn-secondary create-agent-picker__item"
+            @click="confirmCreateAgent(agent)"
+          >
+            {{ agent.name || agent.id }}
+          </button>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" @click="showCreateAgentPicker = false">取消</button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <script setup>
@@ -206,6 +227,7 @@ import ListPagination from '../components/common/ListPagination.vue'
 import WGProfileTable from '../components/wireguard/WGProfileTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 import WireGuardProfileForm from '../components/wireguard/WireGuardProfileForm.vue'
 import WireGuardClientList from '../components/wireguard/WireGuardClientList.vue'
 import WireGuardClientForm from '../components/wireguard/WireGuardClientForm.vue'
@@ -215,7 +237,9 @@ import WireGuardPeerList from '../components/wireguard/WireGuardPeerList.vue'
 const route = useRoute()
 const router = useRouter()
 const { view } = useViewToggle('wg-profiles')
-const { selectedAgentId } = useAgent()
+const agentContext = useAgent()
+const { selectedAgentId } = agentContext
+const systemInfo = agentContext.systemInfo || ref(null)
 const { data: agentsData } = useAgents()
 
 const allAgents = computed(() => agentsData.value ?? [])
@@ -232,7 +256,17 @@ const agentId = computed(() => {
   return filter
 })
 const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
-const canCreate = computed(() => Boolean(agentId.value))
+const createResolve = computed(() => resolveCreateAgentId(
+  agentFilter.value,
+  allAgents.value,
+  { systemInfo: systemInfo?.value }
+))
+const formAgentId = ref(agentId.value || '')
+const showCreateAgentPicker = ref(false)
+const canCreate = computed(() => (
+  hasAgentFilter.value
+  && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
+))
 
 const page = ref(1)
 const pageSize = 20
@@ -326,16 +360,70 @@ function formatList(items) {
   return Array.isArray(items) ? items.join(', ') : ''
 }
 
+
+function requireMutationAgent(resource, actionLabel = '操作') {
+  const resolved = resolveMutationAgentId(resource, agentFilter.value, {
+    fallbackAgentId: agentId.value,
+  })
+  if (!resolved.agentId) {
+    messageStore.error(resolved.error || `缺少节点归属，无法${actionLabel}`)
+    return null
+  }
+  return resolved.agentId
+}
+
+function startCreate() {
+  const resolved = resolveCreateAgentId(agentFilter.value, allAgents.value, {
+    systemInfo: systemInfo?.value,
+  })
+  if (resolved.agentId) {
+    formAgentId.value = resolved.agentId
+    showAddForm.value = true
+    return
+  }
+  if (resolved.needsSelection) {
+    showCreateAgentPicker.value = true
+    return
+  }
+  messageStore.error('请先选择节点后再新建')
+}
+
+function confirmCreateAgent(agent) {
+  const id = String(agent?.id || agent?.agent_id || '').trim()
+  if (!id) {
+    messageStore.error('请选择有效节点')
+    return
+  }
+  formAgentId.value = id
+  showCreateAgentPicker.value = false
+  showProfileForm.value = true
+}
+
 function handleAgentSelect(id) {
   router.replace({ query: { ...route.query, agentId: id } })
 }
 
 function startCreateProfile() {
-  editingProfile.value = null
-  showProfileForm.value = true
+  const resolved = resolveCreateAgentId(agentFilter.value, allAgents.value, {
+    systemInfo: systemInfo?.value,
+  })
+  if (resolved.agentId) {
+    formAgentId.value = resolved.agentId
+    showAddForm.value = true
+    return
+  }
+  if (resolved.needsSelection) {
+    showCreateAgentPicker.value = true
+    return
+  }
+  messageStore.error('请先选择节点后再新建')
 }
 
 function startEditProfile(profile) {
+  const target = requireMutationAgent(profile, '编辑')
+  if (!target) return
+  formAgentId.value = target
+
   editingProfile.value = profile
   showProfileForm.value = true
 }
@@ -348,9 +436,16 @@ function closeProfileForm() {
 async function handleProfileSubmit(payload) {
   try {
     if (editingProfile.value) {
-      await updateProfile.mutateAsync({ id: editingProfile.value.id, ...payload })
+      const target = requireMutationAgent(editingProfile.value, '编辑')
+      if (!target) return
+      await updateProfile.mutateAsync({ id: editingProfile.value.id, agentId: target, ...payload })
     } else {
-      await createProfile.mutateAsync(payload)
+      const target = String(formAgentId.value || '').trim()
+      if (!target) {
+        messageStore.error('请先选择节点后再新建')
+        return
+      }
+      await createProfile.mutateAsync({ agentId: target, ...payload })
     }
     closeProfileForm()
   } catch (error) {
@@ -378,11 +473,17 @@ function wireGuardProfileUpdatePayload(profile, overrides = {}) {
 }
 
 async function toggleProfileEnabled(profile) {
+  const target = requireMutationAgent(profile, '启停')
+  if (!target) return
+
   if (!profile?.id) return
   try {
-    await updateProfile.mutateAsync(wireGuardProfileUpdatePayload(profile, {
-      enabled: profile.enabled === false
-    }))
+    await updateProfile.mutateAsync({
+      agentId: target,
+      ...wireGuardProfileUpdatePayload(profile, {
+        enabled: profile.enabled === false,
+      }),
+    })
   } catch (error) {
     // Error handled by hook
   }
@@ -582,11 +683,16 @@ function deleteClientRow(client) {
 
 function confirmDeleteProfile() {
   if (!deletingProfile.value) return
-  deleteProfile.mutate(deletingProfile.value.id, {
-    onSuccess: () => {
-      deletingProfile.value = null
-    }
-  })
+  const target = requireMutationAgent(deletingProfile.value, '删除')
+  if (!target) return
+  deleteProfile.mutate(
+    { id: deletingProfile.value.id, agentId: target },
+    {
+      onSuccess: () => {
+        deletingProfile.value = null
+      },
+    },
+  )
 }
 
 defineExpose({ selectedProfileId })
