@@ -7,7 +7,7 @@
         <p v-else class='relay-page__subtitle'>暂无可用节点</p>
       </div>
       <div class='relay-page__header-right'>
-        <ViewToggle v-if='hasAgentFilter && listTotal > 0' v-model:view='view' />
+        <ViewToggle v-if='hasAgentFilter && (listTotal > 0 || listQ || searchQuery)' v-model:view='view' />
         <button v-if='canCreate' class='btn btn-primary' @click="startCreate">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -17,10 +17,16 @@
       </div>
     </div>
 
-    <QuickAgentSelect
-      :agentId="agentFilter"
+    <ResourceListFilterBar
+      :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
-      @update:agentId="handleAgentSelect"
+      :q="searchQuery"
+      search-placeholder="搜索名称 / 端口 / 标签..."
+      :status-fields="enabledStatusFields"
+      :status-values="statusValues"
+      @update:agent-id="handleAgentSelect"
+      @update:q="searchQuery = $event"
+      @update:status="onStatusUpdate"
     />
 
     <!-- No agents available -->
@@ -144,14 +150,14 @@ import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForReso
 import RelayListenerForm from '../components/RelayListenerForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
-import QuickAgentSelect from '../components/QuickAgentSelect.vue'
+import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import RelayTable from '../components/relay/RelayTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
-import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
 const route = useRoute()
@@ -190,12 +196,44 @@ const canCreate = computed(() => (
 
 const page = ref(1)
 const pageSize = 20
-watch(agentFilter, () => { page.value = 1 })
+const searchQuery = ref('')
+const listQ = computed(() => {
+  const raw = searchQuery.value.trim()
+  if (!raw) return ''
+  if (/^#id=\S+$/.test(raw)) return ''
+  return raw
+})
+
+const enabledStatusValue = ref('')
+const enabledFilter = computed(() => {
+  if (enabledStatusValue.value === 'true') return true
+  if (enabledStatusValue.value === 'false') return false
+  return undefined
+})
+const enabledStatusFields = [
+  {
+    key: 'enabled',
+    label: '启用状态',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'true', label: '启用' },
+      { value: 'false', label: '停用' }
+    ]
+  }
+]
+const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
+function onStatusUpdate({ key, value }) {
+  if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
+}
+
+watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
 
 const { data: listenersPage, isLoading } = useRelayListenersList({
   agentFilter,
   page,
   pageSize,
+  q: listQ,
+  enabledFilter,
   enabled: hasAgentFilter
 })
 const deleteRelayListener = useDeleteRelayListener(agentId)

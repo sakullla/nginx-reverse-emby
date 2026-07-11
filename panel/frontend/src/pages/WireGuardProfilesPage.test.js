@@ -76,7 +76,7 @@ function mountPage() {
   return mount(WireGuardProfilesPage, {
     global: {
       stubs: {
-        QuickAgentSelect: true,
+        ResourceListFilterBar: true,
         RouterLink: true,
         BaseModal: {
           props: ['modelValue', 'title'],

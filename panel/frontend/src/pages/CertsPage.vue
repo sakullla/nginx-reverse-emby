@@ -14,19 +14,6 @@
       </div>
       <div class='certs-page__header-right'>
         <ViewToggle v-if='hasAgentFilter && (listTotal > 0 || listQ || searchQuery)' v-model:view='view' />
-        <div v-if='hasAgentFilter' class='search-wrapper' @click='focusSearch'>
-          <svg class='search-icon-btn' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
-            <circle cx='11' cy='11' r='8' />
-            <line x1='21' y1='21' x2='16.65' y2='16.65' />
-          </svg>
-          <input ref='searchInputRef' v-model='searchQuery' name='certificate-search' class='search-input' placeholder='搜索域名 / 标签 / #id=...'>
-          <button v-if='searchQuery' class='clear-btn' @click.stop='searchQuery = ""'>
-            <svg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
-              <line x1='18' y1='6' x2='6' y2='18' />
-              <line x1='6' y1='6' x2='18' y2='18' />
-            </svg>
-          </button>
-        </div>
         <button v-if='canCreate' class='btn btn-primary' @click="startCreate">
           <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
             <line x1='12' y1='5' x2='12' y2='19' />
@@ -37,10 +24,16 @@
       </div>
     </div>
 
-    <QuickAgentSelect
-      :agentId="agentFilter"
+    <ResourceListFilterBar
+      :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
-      @update:agentId="handleAgentSelect"
+      :q="searchQuery"
+      search-placeholder="搜索域名 / 标签 / #id=..."
+      :status-fields="certStatusFields"
+      :status-values="statusValues"
+      @update:agent-id="handleAgentSelect"
+      @update:q="searchQuery = $event"
+      @update:status="onStatusUpdate"
     />
 
     <div v-if='!allAgents.length' class='certs-page__prompt'>
@@ -161,13 +154,13 @@ import { useCertificatesList, useDeleteCertificate, useIssueCertificate } from '
 import CertificateForm from '../components/CertificateForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
-import QuickAgentSelect from '../components/QuickAgentSelect.vue'
+import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vue'
 import CertCard from '../components/certs/CertCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import CertTable from '../components/certs/CertTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
-import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 import {
   isSystemRelayCA
@@ -219,13 +212,55 @@ const listQ = computed(() => {
   if (/^#id=\S+$/.test(raw)) return ''
   return raw
 })
-watch([agentFilter, listQ], () => { page.value = 1 })
+
+const enabledStatusValue = ref('')
+const certStatusValue = ref('')
+const enabledFilter = computed(() => {
+  if (enabledStatusValue.value === 'true') return true
+  if (enabledStatusValue.value === 'false') return false
+  return undefined
+})
+const listStatus = computed(() => String(certStatusValue.value || '').trim())
+const certStatusFields = [
+  {
+    key: 'enabled',
+    label: '启用状态',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'true', label: '启用' },
+      { value: 'false', label: '停用' }
+    ]
+  },
+  {
+    key: 'status',
+    label: '证书状态',
+    options: [
+      { value: '', label: '全部状态' },
+      { value: 'active', label: '生效' },
+      { value: 'pending', label: '签发中' },
+      { value: 'error', label: '错误' }
+    ]
+  }
+]
+const statusValues = computed(() => ({
+  enabled: enabledStatusValue.value,
+  status: certStatusValue.value
+}))
+function onStatusUpdate({ key, value }) {
+  const next = value == null ? '' : String(value)
+  if (key === 'enabled') enabledStatusValue.value = next
+  if (key === 'status') certStatusValue.value = next
+}
+
+watch([agentFilter, listQ, enabledStatusValue, certStatusValue], () => { page.value = 1 })
 
 const { data: certsPage, isLoading } = useCertificatesList({
   agentFilter,
   page,
   pageSize,
   q: listQ,
+  enabledFilter,
+  status: listStatus,
   enabled: hasAgentFilter
 })
 
@@ -278,11 +313,6 @@ const listTotal = computed(() => certsPage.value?.total ?? 0)
 const showAddForm = ref(false)
 const editingCert = ref(null)
 const deletingCert = ref(null)
-
-const searchInputRef = ref(null)
-function focusSearch() {
-  searchInputRef.value?.focus()
-}
 
 watchEffect(() => {
   searchQuery.value = route.query.search ?? ''

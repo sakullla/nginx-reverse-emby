@@ -14,13 +14,6 @@
       </div>
       <div class="rules-page__header-right">
         <ViewToggle v-if="hasAgentFilter && (listTotal > 0 || listQ || searchQuery)" v-model:view="view" />
-        <div class="search-wrapper" v-if="hasAgentFilter" @click="focusSearch">
-          <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input ref="searchInputRef" v-model="searchQuery" name="l4-rule-search" class="search-input" placeholder="搜索协议 / 地址 / 端口 / 标签 / #id=...">
-          <button v-if="searchQuery" class="clear-btn" @click.stop="searchQuery = ''">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
         <button v-if="canCreate" class="btn btn-primary" @click="startCreate">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -30,10 +23,16 @@
       </div>
     </div>
 
-    <QuickAgentSelect
-      :agentId="agentFilter"
+    <ResourceListFilterBar
+      :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
-      @update:agentId="handleAgentSelect"
+      :q="searchQuery"
+      search-placeholder="搜索协议 / 地址 / 端口 / 标签 / #id=..."
+      :status-fields="enabledStatusFields"
+      :status-values="statusValues"
+      @update:agent-id="handleAgentSelect"
+      @update:q="searchQuery = $event"
+      @update:status="onStatusUpdate"
     />
 
     <!-- No agents available -->
@@ -205,13 +204,13 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
-import QuickAgentSelect from '../components/QuickAgentSelect.vue'
+import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import L4RuleTable from '../components/l4/L4RuleTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { messageStore } from '../stores/messages'
-import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
 const route = useRoute()
@@ -258,13 +257,37 @@ const listQ = computed(() => {
   if (/^#id=\S+$/.test(raw)) return ''
   return raw
 })
-watch([agentFilter, listQ], () => { page.value = 1 })
+
+const enabledStatusValue = ref('')
+const enabledFilter = computed(() => {
+  if (enabledStatusValue.value === 'true') return true
+  if (enabledStatusValue.value === 'false') return false
+  return undefined
+})
+const enabledStatusFields = [
+  {
+    key: 'enabled',
+    label: '启用状态',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'true', label: '启用' },
+      { value: 'false', label: '停用' }
+    ]
+  }
+]
+const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
+function onStatusUpdate({ key, value }) {
+  if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
+}
+
+watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
 
 const { data: _rulesPage, isLoading } = useL4RulesList({
   agentFilter,
   page,
   pageSize,
   q: listQ,
+  enabledFilter,
   enabled: hasAgentFilter
 })
 const rules = computed(() => _rulesPage.value?.items ?? [])
@@ -325,9 +348,6 @@ const updateL4Rule = useUpdateL4Rule(agentId)
 const deleteL4Rule = useDeleteL4Rule(agentId)
 const diagnoseL4Rule = useDiagnoseL4Rule(agentId)
 const listTotal = computed(() => _rulesPage.value?.total ?? 0)
-
-const searchInputRef = ref(null)
-function focusSearch() { searchInputRef.value?.focus() }
 
 // Pre-fill search from global search navigation; reset when param is cleared
 watchEffect(() => {

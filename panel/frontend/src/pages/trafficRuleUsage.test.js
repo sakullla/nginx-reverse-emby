@@ -116,6 +116,7 @@ async function mountPage(component) {
       plugins: [[VueQueryPlugin, { queryClient: createQueryClient() }]],
       stubs: {
         AgentPicker: true,
+        ResourceListFilterBar: true,
         DeleteConfirmDialog: true,
         RuleForm: true,
         RelayListenerForm: true,

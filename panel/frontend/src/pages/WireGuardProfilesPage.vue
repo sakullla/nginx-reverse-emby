@@ -9,7 +9,7 @@
         <p v-else class="wg-page__subtitle">暂无可用节点</p>
       </div>
       <div class="wg-page__header-actions">
-        <ViewToggle v-if="hasAgentFilter && listTotal > 0 && !selectedProfileId" v-model:view="view" />
+        <ViewToggle v-if="hasAgentFilter && (listTotal > 0 || listQ || searchQuery) && !selectedProfileId" v-model:view="view" />
         <button v-if="canCreate && !selectedProfileId" class="btn btn--primary" @click="startCreateProfile">
           <span>+</span>
           新建 Profile
@@ -17,10 +17,17 @@
       </div>
     </div>
 
-    <QuickAgentSelect
-      :agentId="agentFilter"
+    <ResourceListFilterBar
+      v-if="!selectedProfileId"
+      :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
-      @update:agentId="handleAgentSelect"
+      :q="searchQuery"
+      search-placeholder="搜索名称 / 接口 / 标签..."
+      :status-fields="enabledStatusFields"
+      :status-values="statusValues"
+      @update:agent-id="handleAgentSelect"
+      @update:q="searchQuery = $event"
+      @update:status="onStatusUpdate"
     />
 
     <div v-if="!allAgents.length" class="wg-page__empty">
@@ -217,7 +224,7 @@ import {
   useUpdateWireGuardClient,
   useDeleteWireGuardClient
 } from '../hooks/useWireGuardProfiles'
-import QuickAgentSelect from '../components/QuickAgentSelect.vue'
+import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
@@ -226,7 +233,7 @@ import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import WGProfileTable from '../components/wireguard/WGProfileTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
-import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 import WireGuardProfileForm from '../components/wireguard/WireGuardProfileForm.vue'
 import WireGuardClientList from '../components/wireguard/WireGuardClientList.vue'
@@ -270,12 +277,43 @@ const canCreate = computed(() => (
 
 const page = ref(1)
 const pageSize = 20
-watch(agentFilter, () => { page.value = 1 })
+const searchQuery = ref('')
+const listQ = computed(() => {
+  const raw = searchQuery.value.trim()
+  if (!raw) return ''
+  return raw
+})
+
+const enabledStatusValue = ref('')
+const enabledFilter = computed(() => {
+  if (enabledStatusValue.value === 'true') return true
+  if (enabledStatusValue.value === 'false') return false
+  return undefined
+})
+const enabledStatusFields = [
+  {
+    key: 'enabled',
+    label: '启用状态',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'true', label: '启用' },
+      { value: 'false', label: '停用' }
+    ]
+  }
+]
+const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
+function onStatusUpdate({ key, value }) {
+  if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
+}
+
+watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
 
 const { data: profilesPage, isLoading } = useWireGuardProfilesList({
   agentFilter,
   page,
   pageSize,
+  q: listQ,
+  enabledFilter,
   enabled: hasAgentFilter
 })
 const createProfile = useCreateWireGuardProfile(agentId)

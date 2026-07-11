@@ -29,11 +29,12 @@ describe('RelayListenersPage deep-link #id=', () => {
     expect(page).toContain(":listeners='displayListeners'")
   })
 
-  it('does not introduce a search toolbar redesign', () => {
+  it('uses ResourceListFilterBar for search instead of header search-wrapper', () => {
     const page = readPage()
+    expect(page).toContain('ResourceListFilterBar')
     expect(page).not.toContain('search-wrapper')
-    expect(page).not.toContain('v-model=\'searchQuery\'')
-    expect(page).not.toContain('v-model="searchQuery"')
+    expect(page).not.toContain('QuickAgentSelect')
+    expect(page).toContain(':q="searchQuery"')
   })
 
   it('filters to the matching listener when search=#id= hits', () => {
