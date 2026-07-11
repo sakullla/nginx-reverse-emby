@@ -43,9 +43,9 @@
     </div>
 
     <!-- Listener card grid -->
-    <div v-show='agentId && listeners.length && view === "card"' class='relay-grid'>
+    <div v-show='agentId && displayListeners.length && view === "card"' class='relay-grid'>
       <RelayCard
-        v-for='listener in listeners'
+        v-for='listener in displayListeners'
         :key='listener.id'
         :listener='listener'
         :traffic='trafficForListener(listener)'
@@ -59,8 +59,8 @@
 
     <!-- Listener list table -->
     <RelayTable
-      v-show='agentId && listeners.length && view === "list"'
-      :listeners='listeners'
+      v-show='agentId && displayListeners.length && view === "list"'
+      :listeners='displayListeners'
       @edit='startEdit'
       @toggle='toggleListener'
       @delete='startDelete'
@@ -110,6 +110,7 @@ import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListeners, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
+import { parseIdQuery } from '../hooks/useIdSearch'
 import { fetchTrafficSummary } from '../api'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
@@ -143,6 +144,15 @@ const { data: listenersData, isLoading } = useRelayListeners(agentId)
 const deleteRelayListener = useDeleteRelayListener(agentId)
 const updateRelayListener = useUpdateRelayListener(agentId)
 const listeners = computed(() => listenersData.value ?? [])
+
+// Consume route deep-link search=#id=N (from agent detail / global search).
+// Match → filter to that listener; no match / no search → full list (no crash, no redesign).
+const displayListeners = computed(() => {
+  const idQuery = parseIdQuery(route.query.search)
+  if (!idQuery) return listeners.value
+  const matched = listeners.value.filter((listener) => String(listener.id) === idQuery.id)
+  return matched.length ? matched : listeners.value
+})
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
 const { data: trafficSummaryData } = useQuery({
