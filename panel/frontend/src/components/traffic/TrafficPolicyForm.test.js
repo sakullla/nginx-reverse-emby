@@ -38,6 +38,20 @@ describe('TrafficPolicyForm', () => {
     expect(wrapper.find('[data-testid="traffic-policy-card-advanced"].traffic-policy-form__card--muted').exists()).toBe(true)
   })
 
+  it('aligns block-when-exceeded and direction as a paired row under quota card', () => {
+    const wrapper = mountForm()
+    const pair = wrapper.find('[data-testid="traffic-policy-block-direction"]')
+    expect(pair.exists()).toBe(true)
+    expect(pair.classes()).toContain('traffic-policy-form__field-pair')
+    expect(pair.text()).toContain('超额阻断')
+    expect(pair.text()).toContain('方向')
+    expect(pair.find('input[type="checkbox"]').exists()).toBe(true)
+    expect(pair.find('select').exists()).toBe(true)
+    // both controls are stacked under labels (not a horizontal switch that breaks baseline)
+    expect(pair.findAll('.traffic-policy-form__field').length).toBe(2)
+    expect(pair.find('.traffic-policy-form__field--switch').exists()).toBe(false)
+  })
+
   it('shows retention unit badges', () => {
     const wrapper = mountForm()
     expect(wrapper.text()).toContain('单位：天')

@@ -906,8 +906,8 @@ function showCleanupConfirm() {
   confirmDialog.value = {
     visible: true,
     type: 'cleanup',
-    title: '确认清理',
-    message: '按保留策略清理过期历史数据，此操作不可撤销。',
+    title: '确认清理过期数据',
+    message: '将按当前保留策略清理过期历史数据。此操作不可撤销，请确认保留窗口后再继续。',
     confirmText: '确认清理',
     loading: false
   }

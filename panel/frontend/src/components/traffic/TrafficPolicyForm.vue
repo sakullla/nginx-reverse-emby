@@ -17,19 +17,24 @@
               </select>
             </div>
           </label>
-          <label class="traffic-policy-form__field traffic-policy-form__field--switch">
-            <span class="traffic-policy-form__label">超额阻断</span>
-            <input :checked="modelValue.block_when_exceeded" type="checkbox" @change="updateField('block_when_exceeded', $event.target.checked)">
-          </label>
-          <label class="traffic-policy-form__field">
-            <span class="traffic-policy-form__label">方向</span>
-            <select :value="modelValue.direction" class="traffic-policy-form__input" @change="updateField('direction', $event.target.value)">
-              <option value="both">双向</option>
-              <option value="rx">入站</option>
-              <option value="tx">出站</option>
-              <option value="max">取最大值</option>
-            </select>
-          </label>
+          <div class="traffic-policy-form__field-pair traffic-policy-form__field--span-2" data-testid="traffic-policy-block-direction">
+            <label class="traffic-policy-form__field">
+              <span class="traffic-policy-form__label">超额阻断</span>
+              <span class="traffic-policy-form__control-row">
+                <input :checked="modelValue.block_when_exceeded" class="traffic-policy-form__checkbox" type="checkbox" @change="updateField('block_when_exceeded', $event.target.checked)">
+                <span class="traffic-policy-form__control-hint">{{ modelValue.block_when_exceeded ? '超限后阻断' : '超限不阻断' }}</span>
+              </span>
+            </label>
+            <label class="traffic-policy-form__field">
+              <span class="traffic-policy-form__label">方向</span>
+              <select :value="modelValue.direction" class="traffic-policy-form__input" @change="updateField('direction', $event.target.value)">
+                <option value="both">双向</option>
+                <option value="rx">入站</option>
+                <option value="tx">出站</option>
+                <option value="max">取最大值</option>
+              </select>
+            </label>
+          </div>
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">月周期起始日</span>
             <input :value="modelValue.cycle_start_day" class="traffic-policy-form__input" type="number" min="1" max="28" @input="updateField('cycle_start_day', Number($event.target.value))">
@@ -214,22 +219,30 @@ function updateField(key, value) {
 .traffic-policy-form__field--span-2 {
   grid-column: 1 / -1;
 }
-.traffic-policy-form__field--switch {
-  flex-direction: row;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 0.75rem;
-  min-height: 2.25rem;
-}
-.traffic-policy-form__field--switch .traffic-policy-form__label {
-  flex: 1 1 auto;
+.traffic-policy-form__field-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem 0.875rem;
+  align-items: start;
   min-width: 0;
 }
-.traffic-policy-form__field--switch input[type='checkbox'] {
+.traffic-policy-form__control-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.25rem;
+  padding: 0 0.125rem;
+}
+.traffic-policy-form__checkbox {
   flex: 0 0 auto;
   width: 1rem;
   height: 1rem;
   margin: 0;
+}
+.traffic-policy-form__control-hint {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.35;
 }
 .traffic-policy-form__label {
   display: block;
@@ -297,7 +310,8 @@ function updateField(key, value) {
 }
 @media (max-width: 720px) {
   .traffic-policy-form__card-body--grid,
-  .traffic-policy-form__card-body--retention {
+  .traffic-policy-form__card-body--retention,
+  .traffic-policy-form__field-pair {
     grid-template-columns: 1fr;
   }
   .traffic-policy-form__field--span-2 {

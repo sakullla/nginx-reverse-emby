@@ -20,8 +20,12 @@
           <button class="btn btn-secondary" type="button" :disabled="calibrating" @click="$emit('calibrate-zero')">从现在归零</button>
         </div>
       </div>
-      <div class="traffic-history-manager__action-block traffic-history-manager__action-block--danger">
+      <div
+        class="traffic-history-manager__action-block traffic-history-manager__action-block--danger"
+        data-testid="traffic-history-danger-block"
+      >
         <div class="traffic-history-manager__action-label traffic-history-manager__action-label--danger">危险操作 · 需确认</div>
+        <p class="traffic-history-manager__action-hint">点击后需二次确认，误清不可撤销</p>
         <div class="traffic-history-manager__action-group traffic-history-manager__action-group--danger" data-testid="traffic-history-actions-danger">
           <button class="btn btn-danger" type="button" :disabled="cleaning" @click="$emit('cleanup')">清理过期数据</button>
         </div>
@@ -125,8 +129,15 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
   background: transparent;
 }
 .traffic-history-manager__action-block--danger {
-  border: 1px dashed color-mix(in srgb, var(--color-danger-muted, #fecaca) 80%, transparent);
-  background: color-mix(in srgb, var(--color-danger-subtle, #fef2f2) 55%, transparent);
+  margin-left: auto;
+  border: 1px solid color-mix(in srgb, var(--color-danger, #dc2626) 28%, var(--color-danger-muted, #fecaca));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-danger-subtle, #fef2f2) 88%, #fff),
+      color-mix(in srgb, var(--color-danger-subtle, #fef2f2) 55%, transparent)
+    );
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-danger, #dc2626) 8%, transparent);
 }
 .traffic-history-manager__action-label {
   color: var(--color-text-tertiary);
@@ -136,6 +147,12 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
 }
 .traffic-history-manager__action-label--danger {
   color: var(--color-danger, #dc2626);
+}
+.traffic-history-manager__action-hint {
+  margin: 0;
+  color: color-mix(in srgb, var(--color-danger, #dc2626) 72%, var(--color-text-muted));
+  font-size: 0.75rem;
+  line-height: 1.35;
 }
 .traffic-history-manager__action-group {
   display: flex;
@@ -167,12 +184,13 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
   background: color-mix(in srgb, var(--color-bg-subtle) 70%, var(--color-bg-surface));
 }
 .btn-danger {
-  background: var(--color-danger-subtle, #fef2f2);
-  color: var(--color-danger, #dc2626);
-  border: 1px solid var(--color-danger-muted, #fecaca);
+  background: color-mix(in srgb, var(--color-danger, #dc2626) 92%, #fff);
+  color: #fff;
+  border: 1px solid color-mix(in srgb, var(--color-danger, #dc2626) 88%, #7f1d1d);
+  font-weight: 600;
 }
 .btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-danger-subtle, #fef2f2) 70%, #fff);
+  background: color-mix(in srgb, var(--color-danger, #dc2626) 82%, #7f1d1d);
 }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 @media (max-width: 720px) {
