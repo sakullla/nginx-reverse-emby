@@ -57,7 +57,7 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
-  padding: 0.8rem 0.9rem;
+  padding: 0.75rem 0.875rem;
   border: 1px solid color-mix(in srgb, var(--color-border-subtle) 90%, transparent);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-bg-surface) 88%, var(--color-bg-subtle));
@@ -111,7 +111,7 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 0.75rem;
 }
 .traffic-history-manager__action-block {
@@ -119,11 +119,13 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
   flex-direction: column;
   gap: 0.4rem;
   min-width: 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 .traffic-history-manager__action-block--danger {
-  padding: 0.55rem 0.65rem;
   border: 1px dashed color-mix(in srgb, var(--color-danger-muted, #fecaca) 80%, transparent);
-  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-danger-subtle, #fef2f2) 55%, transparent);
 }
 .traffic-history-manager__action-label {
@@ -141,10 +143,13 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
   gap: 0.5rem;
 }
 .btn {
+  box-sizing: border-box;
+  min-height: 2.25rem;
   padding: 0.5rem 0.9rem;
   border-radius: var(--radius-lg);
   font-size: 0.875rem;
   font-weight: 500;
+  line-height: 1.35;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
   border: none;
