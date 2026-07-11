@@ -705,11 +705,21 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="traffic-management-modal-body"]').exists()).toBe(true)
     expect(wrapper.find('.traffic-scenario-modal--management').exists()).toBe(true)
     expect(wrapper.text()).toContain('剩余/额度管理')
+    expect(wrapper.find('[data-testid="traffic-management-context"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-management-context"]').text()).toContain('当前剩余')
     expect(wrapper.find('[data-testid="traffic-management-section-policy"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-management-section-history"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-management-section-policy"].traffic-scenario-modal__section--primary').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-management-section-history"].traffic-scenario-modal__section--secondary').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-management-section-policy"] .traffic-scenario-modal__section-title').text()).toContain('额度与策略')
     expect(wrapper.find('[data-testid="traffic-management-section-history"] .traffic-scenario-modal__section-title').text()).toContain('历史与维护')
     expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').exists()).toBe(true)
+
+    const managementHtml = wrapper.find('[data-testid="traffic-management-modal-body"]').html()
+    expect(managementHtml.indexOf('traffic-management-section-policy')).toBeLessThan(
+      managementHtml.indexOf('traffic-management-section-history')
+    )
+    expect(wrapper.find('[data-testid="traffic-analysis-modal-body"]').exists()).toBe(false)
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
     await nextTick()
