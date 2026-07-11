@@ -135,4 +135,31 @@ describe('TrafficSummaryCards', () => {
     )
     expect(source).not.toContain('traffic-summary-card__metric--hero')
   })
+
+  it('shows loading placeholder and never treats empty summary as 无限制 while loading', () => {
+    const wrapper = mountCards({
+      loading: true,
+      summary: {}
+    })
+    expect(wrapper.get('[data-testid="traffic-summary-loading"]').text()).toContain('加载中')
+    expect(wrapper.text()).not.toContain('无限制')
+    expect(wrapper.find('[data-testid="traffic-summary-remaining"]').exists()).toBe(false)
+    expect(wrapper.findAll('.traffic-summary-card__metric').length).toBe(0)
+  })
+
+  it('still shows 无限制 when loaded with null quota even if summary fields are sparse', () => {
+    const wrapper = mountCards({
+      loading: false,
+      summary: {
+        used_bytes: 0,
+        rx_bytes: 0,
+        tx_bytes: 0,
+        monthly_quota_bytes: null,
+        remaining_bytes: null,
+        blocked: false
+      }
+    })
+    expect(wrapper.find('[data-testid="traffic-summary-loading"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="traffic-summary-remaining"]').text()).toBe('无限制')
+  })
 })

@@ -1,6 +1,15 @@
 <template>
-  <div class="traffic-summary-cards">
-    <div class="traffic-summary-cards__grid">
+  <div class="traffic-summary-cards" :class="{ 'traffic-summary-cards--loading': showLoading }">
+    <div
+      v-if="showLoading"
+      class="traffic-summary-cards__loading"
+      data-testid="traffic-summary-loading"
+      role="status"
+      aria-live="polite"
+    >
+      加载中…
+    </div>
+    <div v-else class="traffic-summary-cards__grid">
       <div class="traffic-summary-card__metric traffic-summary-card__metric--primary">
         <div class="traffic-summary-card__header">
           <svg class="traffic-summary-card__icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -81,20 +90,26 @@ import { rate } from '../../utils/agentMetrics.js'
 const props = defineProps({
   summary: { type: Object, default: () => ({}) },
   direction: { type: String, default: 'both' },
-  networkMetrics: { type: Object, default: null }
+  networkMetrics: { type: Object, default: null },
+  /** When true, show loading placeholder and never treat empty summary as unlimited. */
+  loading: { type: Boolean, default: false }
 })
+
+const showLoading = computed(() => props.loading === true)
 
 const percent = computed(() => usagePercent(props.summary.used_bytes, props.summary.monthly_quota_bytes))
 
 const hasQuota = computed(() => props.summary.monthly_quota_bytes != null && props.summary.monthly_quota_bytes !== '')
 
 const usedSub = computed(() => {
+  if (showLoading.value) return null
   if (!hasQuota.value) return null
   if (percent.value == null) return null
   return `占额度 ${percent.value}% · 额度 ${formatQuota(props.summary.monthly_quota_bytes, '无限制')}`
 })
 
 const remainingDisplay = computed(() => {
+  if (showLoading.value) return '—'
   if (!hasQuota.value) return '无限制'
   if (props.summary.remaining_bytes != null && props.summary.remaining_bytes !== '') {
     return formatBytes(props.summary.remaining_bytes)
@@ -105,11 +120,13 @@ const remainingDisplay = computed(() => {
 })
 
 const remainingSub = computed(() => {
+  if (showLoading.value) return null
   if (!hasQuota.value) return '未设置月额度'
   return null
 })
 
 const rateRows = computed(() => {
+  if (showLoading.value) return []
   const rx = props.networkMetrics?.rx_bytes_per_second
   const tx = props.networkMetrics?.tx_bytes_per_second
   const rows = []
@@ -129,6 +146,18 @@ const rateRows = computed(() => {
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   padding: 0.875rem 1rem;
+}
+.traffic-summary-cards__loading {
+  min-height: 4.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-tertiary);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.traffic-summary-cards--loading {
+  opacity: 0.92;
 }
 .traffic-summary-cards__grid {
   display: grid;
