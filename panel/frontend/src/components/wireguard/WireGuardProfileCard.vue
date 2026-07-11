@@ -10,6 +10,7 @@
       <BaseBadge :tone="profile.enabled === false ? 'neutral' : 'success'" dot>
         {{ profile.enabled === false ? '停用' : '启用' }}
       </BaseBadge>
+      <AgentBadge :item="profile" />
     </template>
 
     <template #header-right>
@@ -105,6 +106,7 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 
 const props = defineProps({

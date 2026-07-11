@@ -9,6 +9,7 @@
         {{ isHttps ? 'HTTPS' : 'HTTP' }}
       </BaseBadge>
       <BaseBadge :tone="statusTone" dot>{{ statusLabel }}</BaseBadge>
+      <AgentBadge :item="rule" :agent="agent" />
     </template>
     <template #header-right>
       <BaseIconButton tone="warning" :title="rule.enabled ? '停用' : '启用'" @click="$emit('toggle', rule)">
@@ -85,6 +86,7 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import TrafficBar from '../traffic/TrafficBar.vue'

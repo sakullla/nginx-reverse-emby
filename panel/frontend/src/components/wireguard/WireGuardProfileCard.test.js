@@ -12,7 +12,7 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: mocks.push })
 }))
 
-function mountCard() {
+function mountCard(profileOverrides = {}) {
   return mount(WireGuardProfileCard, {
     props: {
       profile: {
@@ -21,7 +21,8 @@ function mountCard() {
         enabled: true,
         addresses: ['0.0.0.0'],
         interface_addresses: ['10.8.0.1/24'],
-        tags: []
+        tags: [],
+        ...profileOverrides,
       },
       clientCount: 2
     },
@@ -71,5 +72,12 @@ describe('WireGuardProfileCard', () => {
     expect(mocks.push).toHaveBeenCalledWith({
       path: '/wireguard-profiles/7'
     })
+  })
+})
+
+describe('WireGuardProfileCard agent ownership badge', () => {
+  it('renders profile agent_name without page agent', () => {
+    const wrapper = mountCard({ agent_name: 'wg-node', agent_id: 'w1' })
+    expect(wrapper.text()).toContain('wg-node')
   })
 })

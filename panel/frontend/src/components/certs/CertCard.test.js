@@ -81,3 +81,15 @@ describe('CertCard issuing/error display (R3)', () => {
     expect(wrapper.text()).not.toContain('第')
   })
 })
+
+describe('CertCard agent ownership badge', () => {
+  it('renders agent_name without page agent prop', () => {
+    const wrapper = mountCert({ agent_name: 'edge-a', agent_id: 'a1' })
+    expect(wrapper.text()).toContain('edge-a')
+  })
+
+  it('falls back to agent_id when agent_name is absent', () => {
+    const wrapper = mountCert({ agent_id: 'node-7' })
+    expect(wrapper.text()).toContain('node-7')
+  })
+})

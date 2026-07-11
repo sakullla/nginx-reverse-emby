@@ -8,6 +8,7 @@
           <th>公网端点</th>
           <th>传输模式</th>
           <th>TLS</th>
+          <th>节点</th>
           <th>标签</th>
           <th style="width: 80px">操作</th>
         </tr>
@@ -27,6 +28,9 @@
             </BaseBadge>
           </td>
           <td class="rules-table__mono">{{ tlsLabel(listener) }}</td>
+          <td>
+            <AgentBadge :item="listener" />
+          </td>
           <td>
             <div class="rules-table__tags">
               <span v-for="tag in (listener.tags || [])" :key="tag" class="tag">{{ tag }}</span>
@@ -50,7 +54,7 @@
           </td>
         </tr>
         <tr v-if="!listeners.length" class="empty-state-row">
-          <td :colspan="7" class="empty-state">暂无数据</td>
+          <td :colspan="8" class="empty-state">暂无数据</td>
         </tr>
       </tbody>
     </table>
@@ -60,6 +64,7 @@
 <script setup>
 import { getStatusBadge, getTransportBadge } from '../../utils/enumLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 
 function tlsLabel(l) {
   if (l.tls_mode === 'pin_and_ca') return 'Pin + CA'

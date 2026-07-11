@@ -8,6 +8,7 @@
           <th>公网端点</th>
           <th>端口</th>
           <th>客户端数</th>
+          <th>节点</th>
           <th>标签</th>
           <th style="width: 80px">操作</th>
         </tr>
@@ -23,6 +24,9 @@
           <td class="rules-table__mono">{{ profile.public_endpoint || '-' }}</td>
           <td class="rules-table__mono">{{ profile.listen_port || '-' }}</td>
           <td class="rules-table__mono">{{ clientCount(profile) }}</td>
+          <td>
+            <AgentBadge :item="profile" />
+          </td>
           <td>
             <div class="rules-table__tags">
               <span v-for="tag in (profile.tags || [])" :key="tag" class="tag">{{ tag }}</span>
@@ -46,7 +50,7 @@
           </td>
         </tr>
         <tr v-if="!profiles.length" class="empty-state-row">
-          <td :colspan="7" class="empty-state">暂无数据</td>
+          <td :colspan="8" class="empty-state">暂无数据</td>
         </tr>
       </tbody>
     </table>
@@ -56,6 +60,7 @@
 <script setup>
 import { getStatusBadge } from '../../utils/enumLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 
 function clientCount(profile) {
   return Number(profile.client_count || 0)

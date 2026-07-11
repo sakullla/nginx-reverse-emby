@@ -36,3 +36,10 @@ describe('L4RuleItem', () => {
     expect(wrapper.text()).toContain('代理')
   })
 })
+
+describe('L4RuleItem agent ownership badge', () => {
+  it('renders item agent_name without page selected agent', () => {
+    const wrapper = mountItem({ agent_name: 'l4-node', agent_id: 'l4a' })
+    expect(wrapper.text()).toContain('l4-node')
+  })
+})

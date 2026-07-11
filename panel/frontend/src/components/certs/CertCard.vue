@@ -11,6 +11,7 @@
         {{ cert.scope === 'ip' ? 'IP' : '域名' }}
       </BaseBadge>
       <BaseBadge :tone="certTone" dot>{{ statusLabel }}</BaseBadge>
+      <AgentBadge :item="cert" />
     </template>
     <template #header-right>
       <BaseIconButton
@@ -79,6 +80,7 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import {
   getCertificateSourceLabel,

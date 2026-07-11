@@ -9,6 +9,7 @@
       <BaseBadge :tone="listener.enabled ? 'success' : 'neutral'" dot>
         {{ listener.enabled ? '启用' : '已禁用' }}
       </BaseBadge>
+      <AgentBadge :item="listener" />
     </template>
 
     <template #header-right>
@@ -92,6 +93,7 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import TrafficBar from '../traffic/TrafficBar.vue'
 import { formatBytes, normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'

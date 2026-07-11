@@ -33,3 +33,10 @@ describe('RelayCard transport display', () => {
     expect(wrapper.text()).not.toContain('TLS/TCP')
   })
 })
+
+describe('RelayCard agent ownership badge', () => {
+  it('renders agent_name from listener without page agent', () => {
+    const wrapper = mountRelayCard({ agent_name: 'relay-node', agent_id: 'r1' })
+    expect(wrapper.text()).toContain('relay-node')
+  })
+})

@@ -8,6 +8,7 @@
           <th>监听地址</th>
           <th>后端地址</th>
           <th>负载均衡</th>
+          <th>节点</th>
           <th>标签</th>
           <th style="width: 80px">操作</th>
         </tr>
@@ -32,6 +33,9 @@
             </BaseBadge>
           </td>
           <td>
+            <AgentBadge :item="rule" :agent="agent" />
+          </td>
+          <td>
             <div class="rules-table__tags">
               <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
             </div>
@@ -54,7 +58,7 @@
           </td>
         </tr>
         <tr v-if="!rules.length" class="empty-state-row">
-          <td :colspan="7" class="empty-state">暂无数据</td>
+          <td :colspan="8" class="empty-state">暂无数据</td>
         </tr>
       </tbody>
     </table>
@@ -65,6 +69,7 @@
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { getStatusBadge, getProtocolBadge, getLBLabel } from '../../utils/enumLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 
 function getStatus(rule) {
   return getRuleEffectiveStatus(rule, props.agent)

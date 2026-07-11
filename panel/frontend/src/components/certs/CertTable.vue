@@ -8,6 +8,7 @@
           <th>用途</th>
           <th>类型</th>
           <th>签发时间</th>
+          <th>节点</th>
           <th>标签</th>
           <th style="width: 80px">操作</th>
         </tr>
@@ -34,6 +35,9 @@
           </td>
           <td class="rules-table__mono">{{ formatDate(cert.last_issue_at) }}</td>
           <td>
+            <AgentBadge :item="cert" />
+          </td>
+          <td>
             <div class="rules-table__tags">
               <span v-for="tag in (cert.tags || [])" :key="tag" class="tag">{{ tag }}</span>
             </div>
@@ -56,7 +60,7 @@
           </td>
         </tr>
         <tr v-if="!certificates.length" class="empty-state-row">
-          <td :colspan="7" class="empty-state">暂无数据</td>
+          <td :colspan="8" class="empty-state">暂无数据</td>
         </tr>
       </tbody>
     </table>
@@ -69,6 +73,7 @@ import {
   getCertificateUsageLabel,
 } from '../../utils/certificateTemplates'
 import BaseBadge from '../base/BaseBadge.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 
 const CERT_STATUS = {
   active: { label: '生效中', tone: 'success' },
