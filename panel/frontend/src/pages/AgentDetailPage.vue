@@ -369,11 +369,11 @@
               <span v-if="trafficAnalysisContextHint" class="traffic-scenario-modal__context-hint">{{ trafficAnalysisContextHint }}</span>
             </div>
             <section class="traffic-scenario-modal__section" data-testid="traffic-analysis-section-breakdown">
-              <header class="traffic-scenario-modal__section-header">
+              <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--analysis">
                 <h3 class="traffic-scenario-modal__section-title">分项构成</h3>
-                <p class="traffic-scenario-modal__section-desc">按规则 / 监听 / 主机接口查看用量占比，点击行可钻取趋势</p>
+                <p class="traffic-scenario-modal__section-desc">按规则 / 监听 / 主机接口查看用量与占比，点击行可钻取趋势</p>
               </header>
-              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--table">
+              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--table" data-testid="traffic-analysis-breakdown-panel">
                 <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
               </div>
             </section>
@@ -1943,16 +1943,42 @@ function packageStatusLabel(status) {
   background: var(--color-bg-surface);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
 }
+.traffic-scenario-modal__section-header--analysis {
+  gap: 0.25rem;
+}
+.traffic-scenario-modal--analysis .traffic-scenario-modal__section {
+  gap: 0.65rem;
+}
 .traffic-scenario-modal__panel--table {
-  padding: 0.625rem 0.75rem 0.75rem;
+  padding: 0.55rem 0.7rem 0.7rem;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-subtle) 35%, var(--color-bg-surface)),
+      var(--color-bg-surface) 42%
+    );
 }
 .traffic-scenario-modal__panel :deep(.traffic-breakdown) {
-  gap: 0.5rem;
+  gap: 0.45rem;
+}
+.traffic-scenario-modal__panel :deep(.traffic-breakdown__table-header) {
+  margin: 0 0.05rem;
+  padding-left: 0.65rem;
+  padding-right: 0.65rem;
+}
+.traffic-scenario-modal__panel :deep(.traffic-breakdown__row) {
+  padding-left: 0.65rem;
+  padding-right: 0.65rem;
 }
 .traffic-scenario-modal__panel :deep(.traffic-breakdown__empty) {
-  padding: 1.75rem 1rem;
+  margin-top: 0.35rem;
+  padding: 1.85rem 1rem;
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-bg-subtle) 75%, transparent);
+}
+.traffic-scenario-modal__panel :deep(.traffic-breakdown__pagination) {
+  padding-left: 0.55rem;
+  padding-right: 0.55rem;
 }
 .traffic-scenario-modal__section--secondary {
   padding-top: 0.125rem;

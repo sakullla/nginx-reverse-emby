@@ -681,6 +681,10 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="traffic-analysis-section-breakdown"]').exists()).toBe(true)
     expect(wrapper.find('.traffic-scenario-modal__section-title').text()).toContain('分项构成')
     expect(wrapper.find('.traffic-scenario-modal__panel--table').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-analysis-breakdown-panel"]').exists()).toBe(true)
+    expect(wrapper.find('.traffic-breakdown__th--usage').exists()).toBe(true)
+    expect(wrapper.find('.traffic-breakdown__share-bar').exists()).toBe(true)
+    expect(wrapper.find('.traffic-breakdown__th--io').text()).toContain('收发')
     expect(wrapper.text()).toContain('HTTP 规则 #7')
     expect(wrapper.text()).toContain('12.0 KiB')
 
@@ -689,6 +693,7 @@ describe('AgentDetailPage', () => {
     await nextTick()
     expect(wrapper.text()).toContain('L4 规则 #9')
     expect(wrapper.text()).toContain('48.0 KiB')
+    expect(wrapper.find('.traffic-breakdown__share-bar').exists()).toBe(true)
   })
 
   it('does not cleanup traffic history when confirmation is cancelled', async () => {

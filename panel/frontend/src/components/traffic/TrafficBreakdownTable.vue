@@ -191,15 +191,15 @@ function rowPercentWidth(row) {
 </script>
 
 <style scoped>
-.traffic-breakdown { display: flex; flex-direction: column; gap: 0.35rem; }
+.traffic-breakdown { display: flex; flex-direction: column; gap: 0.45rem; }
 .traffic-breakdown__tabs {
   display: flex;
-  gap: 0.25rem;
-  margin-bottom: 0.5rem;
+  gap: 0.3rem;
+  margin-bottom: 0.35rem;
   flex-wrap: wrap;
 }
 .traffic-breakdown__tab {
-  padding: 0.35rem 0.625rem;
+  padding: 0.35rem 0.7rem;
   font-size: 0.8125rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-default);
@@ -214,6 +214,7 @@ function rowPercentWidth(row) {
   border-color: var(--color-primary-100);
   color: var(--color-primary);
   font-weight: 600;
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--color-primary) 35%, transparent);
 }
 .traffic-breakdown__tab-count {
   margin-left: 0.25rem;
@@ -226,13 +227,29 @@ function rowPercentWidth(row) {
   grid-template-columns: minmax(0, 1.2fr) minmax(5.5rem, 0.7fr) minmax(7rem, 1fr) minmax(7.5rem, 0.9fr);
   gap: 0.85rem;
   align-items: center;
-  padding: 0.4rem 0.65rem;
+  padding: 0.45rem 0.7rem;
   font-size: 0.75rem;
   color: var(--color-text-tertiary);
   font-weight: 600;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border-default) 85%, transparent);
+  letter-spacing: 0.01em;
 }
-.traffic-breakdown__th--sortable { cursor: pointer; user-select: none; }
-.traffic-breakdown__th--sortable:hover { color: var(--color-text-primary); }
+.traffic-breakdown__th--sortable {
+  cursor: pointer;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.2rem;
+  border-radius: var(--radius-sm, 4px);
+  padding: 0.1rem 0.2rem;
+  margin-right: -0.2rem;
+  transition: color 0.15s, background 0.15s;
+}
+.traffic-breakdown__th--sortable:hover {
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-bg-hover) 80%, transparent);
+}
 .traffic-breakdown__th--usage,
 .traffic-breakdown__th--share { text-align: right; }
 .traffic-breakdown__th--io { text-align: right; font-weight: 500; color: var(--color-text-muted); }
@@ -241,13 +258,19 @@ function rowPercentWidth(row) {
   grid-template-columns: minmax(0, 1.2fr) minmax(5.5rem, 0.7fr) minmax(7rem, 1fr) minmax(7.5rem, 0.9fr);
   gap: 0.85rem;
   align-items: center;
-  padding: 0.6rem 0.65rem;
+  padding: 0.65rem 0.7rem;
   background: var(--color-bg-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   font-size: 0.8125rem;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 .traffic-breakdown__row--clickable { cursor: pointer; }
-.traffic-breakdown__row--clickable:hover { background: var(--color-bg-hover); }
+.traffic-breakdown__row--clickable:hover {
+  background: var(--color-bg-hover);
+  border-color: color-mix(in srgb, var(--color-border-default) 70%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+}
 .traffic-breakdown__name {
   min-width: 0;
   color: var(--color-text-primary);
@@ -318,16 +341,28 @@ function rowPercentWidth(row) {
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
-.traffic-breakdown__empty { text-align: center; color: var(--color-text-muted); padding: 1.5rem; font-size: 0.875rem; margin: 0; }
+.traffic-breakdown__empty {
+  text-align: center;
+  color: var(--color-text-muted);
+  padding: 1.75rem 1rem;
+  font-size: 0.875rem;
+  margin: 0.15rem 0 0;
+  border: 1px dashed color-mix(in srgb, var(--color-border-default) 85%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg-subtle) 70%, transparent);
+}
 .traffic-breakdown__pagination {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.5rem;
-  padding: 0.5rem 0.65rem;
+  gap: 0.45rem;
+  margin-top: 0.15rem;
+  padding: 0.55rem 0.7rem 0.15rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border-default) 75%, transparent);
   font-size: 0.8125rem;
 }
 .traffic-breakdown__page-btn {
+  min-width: 2rem;
   padding: 0.3rem 0.55rem;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
@@ -337,7 +372,10 @@ function rowPercentWidth(row) {
   cursor: pointer;
   transition: all 0.15s;
 }
-.traffic-breakdown__page-btn:hover:not(:disabled) { background: var(--color-bg-hover); }
+.traffic-breakdown__page-btn:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  border-color: color-mix(in srgb, var(--color-border-default) 60%, var(--color-primary-100));
+}
 .traffic-breakdown__page-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -345,11 +383,12 @@ function rowPercentWidth(row) {
 .traffic-breakdown__page-info {
   color: var(--color-text-secondary);
   font-weight: 600;
-  min-width: 3rem;
+  min-width: 3.25rem;
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 .traffic-breakdown__page-size {
-  padding: 0.25rem 0.5rem;
+  padding: 0.28rem 0.5rem;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-surface);
