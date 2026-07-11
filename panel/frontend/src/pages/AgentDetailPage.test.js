@@ -18,7 +18,6 @@ let mockCertificates = []
 let mockRelayListeners = []
 const routerPush = vi.fn()
 const apiCalls = {
-  applyConfig: vi.fn(),
   deleteAgent: vi.fn(),
   fetchTrafficPolicy: vi.fn(),
   fetchTrafficSummary: vi.fn(),
@@ -57,7 +56,6 @@ vi.mock('../components/DeleteConfirmDialog.vue', () => ({
 }))
 
 vi.mock('../api', () => ({
-  applyConfig: (...args) => apiCalls.applyConfig(...args),
   fetchAgentStats: vi.fn(async () => currentAgentStats),
   fetchSystemInfo: vi.fn(async () => systemInfo),
   fetchTrafficPolicy: (...args) => apiCalls.fetchTrafficPolicy(...args),
@@ -224,7 +222,6 @@ beforeEach(() => {
   apiCalls.updateTrafficPolicy.mockResolvedValue({})
   apiCalls.calibrateTraffic.mockResolvedValue({})
   apiCalls.cleanupTraffic.mockResolvedValue({})
-  apiCalls.applyConfig.mockResolvedValue({})
   apiCalls.deleteAgent.mockResolvedValue({})
 })
 
@@ -347,30 +344,9 @@ describe('AgentDetailPage', () => {
 
   it('renders operation buttons in the summary header', async () => {
     const wrapper = await mountPage()
-    expect(wrapper.find('[data-testid="detail-action-apply"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="detail-action-copy-join"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-action-apply"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-action-copy-join"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="detail-action-delete"]').exists()).toBe(true)
-  })
-
-  it('calls applyConfig when the apply button is clicked', async () => {
-    const wrapper = await mountPage()
-    await wrapper.find('[data-testid="detail-action-apply"]').trigger('click')
-    await nextTick()
-    expect(apiCalls.applyConfig).toHaveBeenCalledWith('edge-1')
-  })
-
-  it('copies the Linux join command when the copy button is clicked', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
-    Object.defineProperty(window, 'isSecureContext', { value: true, writable: true, configurable: true })
-
-    const wrapper = await mountPage()
-    await wrapper.find('[data-testid="detail-action-copy-join"]').trigger('click')
-    await nextTick()
-
-    expect(writeText).toHaveBeenCalledTimes(1)
-    expect(writeText.mock.calls[0][0]).toContain('join-agent.sh')
-    expect(writeText.mock.calls[0][0]).toContain('test-token')
   })
 
   it('shows delete confirmation and deletes the agent', async () => {

@@ -40,8 +40,6 @@ export const agentDetailLabels = {
 
   // Operations
   actions: {
-    applyConfig: '推送配置',
-    copyJoinCommand: '复制注册命令',
     deleteAgent: '删除节点',
   },
 

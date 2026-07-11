@@ -42,23 +42,6 @@
       <template #header-right>
         <div class="agent-detail-actions">
           <BaseIconButton
-            data-testid="detail-action-apply"
-            tone="primary"
-            :title="detailLabels.actions.applyConfig"
-            :disabled="applying"
-            @click="handleApplyConfig"
-          >
-            <span class="i-mdi-sync" aria-hidden="true" />
-          </BaseIconButton>
-          <BaseIconButton
-            data-testid="detail-action-copy-join"
-            tone="default"
-            :title="detailLabels.actions.copyJoinCommand"
-            @click="copyJoinCommand"
-          >
-            <span class="i-mdi-content-copy" aria-hidden="true" />
-          </BaseIconButton>
-          <BaseIconButton
             data-testid="detail-action-delete"
             tone="danger"
             :title="agent?.is_local ? '本地节点不可删除' : detailLabels.actions.deleteAgent"
@@ -498,8 +481,7 @@ import { useL4Rules } from '../hooks/useL4Rules'
 import { useCertificates } from '../hooks/useCertificates'
 import { useRelayListeners } from '../hooks/useRelayListeners'
 import { useAgents, useDeleteAgent, useUpdateAgent } from '../hooks/useAgents'
-import { applyConfig, fetchAgentStats, fetchSystemInfo } from '../api'
-import { useJoinCommand } from '../composables/useJoinCommand'
+import { fetchAgentStats, fetchSystemInfo } from '../api'
 import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSummary, useTrafficTrend, useUpdateTrafficPolicy } from '../hooks/useTraffic'
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
@@ -532,8 +514,6 @@ const { data: agentsData, isLoading } = useAgents()
 const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
-const { copyCommand: copyJoinCommand } = useJoinCommand()
-const applying = ref(false)
 const outboundProxyURL = ref('')
 
 const { data: httpRulesData } = useRules(agentId)
@@ -727,19 +707,6 @@ async function saveOutboundProxy() {
     agentId: agent.value.id,
     payload
   })
-}
-
-async function handleApplyConfig() {
-  if (!agent.value || applying.value) return
-  applying.value = true
-  try {
-    await applyConfig(agent.value.id)
-    messageStore.success('配置已推送')
-  } catch (error) {
-    messageStore.error(error, '推送配置失败')
-  } finally {
-    applying.value = false
-  }
 }
 
 function showDeleteConfirm() {
