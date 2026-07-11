@@ -116,11 +116,21 @@ describe('TrafficSummaryCards', () => {
     const metrics = wrapper.findAll('.traffic-summary-card__metric')
     expect(metrics[0].classes()).toContain('traffic-summary-card__metric--primary')
     expect(metrics[1].classes()).toContain('traffic-summary-card__metric--primary')
+    expect(metrics[1].classes()).toContain('traffic-summary-card__metric--hero')
     expect(metrics[4].classes()).toContain('traffic-summary-card__metric--primary')
   })
 
-  it('uses a five-column desktop grid', () => {
+  it('marks uplink/downlink as secondary metrics', () => {
+    const wrapper = mountCards()
+    const metrics = wrapper.findAll('.traffic-summary-card__metric')
+    expect(metrics[2].classes()).toContain('traffic-summary-card__metric--secondary')
+    expect(metrics[3].classes()).toContain('traffic-summary-card__metric--secondary')
+  })
+
+  it('uses a weighted five-track desktop grid with remaining widest', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/components/traffic/TrafficSummaryCards.vue'), 'utf8')
-    expect(source).toContain('grid-template-columns: repeat(5, 1fr);')
+    expect(source).toContain(
+      'grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.55fr) minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.1fr);'
+    )
   })
 })
