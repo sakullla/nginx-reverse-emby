@@ -162,4 +162,32 @@ describe('TrafficSummaryCards', () => {
     expect(wrapper.find('[data-testid="traffic-summary-loading"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="traffic-summary-remaining"]').text()).toBe('无限制')
   })
+
+  it('exposes secondary analysis/management actions on total and remaining primaries', async () => {
+    const wrapper = mountCards()
+    const analysis = wrapper.get('[data-testid="traffic-summary-open-analysis"]')
+    const management = wrapper.get('[data-testid="traffic-summary-open-management"]')
+    expect(analysis.text()).toBe('分析')
+    expect(management.text()).toBe('管理')
+    expect(analysis.element.disabled).toBe(false)
+    expect(management.element.disabled).toBe(false)
+
+    await analysis.trigger('click')
+    await management.trigger('click')
+    expect(wrapper.emitted('open-analysis')).toHaveLength(1)
+    expect(wrapper.emitted('open-management')).toHaveLength(1)
+
+    // Primary values stay the dominant text, not the action labels.
+    expect(wrapper.get('[data-testid="traffic-summary-used"]').text()).toContain('1.00 GiB')
+    expect(wrapper.get('[data-testid="traffic-summary-remaining"]').text()).toContain('2.00 GiB')
+  })
+
+  it('does not mount scenario actions while loading', () => {
+    const wrapper = mountCards({
+      loading: true,
+      summary: {}
+    })
+    expect(wrapper.find('[data-testid="traffic-summary-open-analysis"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="traffic-summary-open-management"]').exists()).toBe(false)
+  })
 })

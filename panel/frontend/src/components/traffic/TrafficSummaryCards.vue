@@ -17,6 +17,15 @@
             <path d="M12 2a10 10 0 0 1 10 10H12V2z"/>
           </svg>
           <span class="traffic-summary-card__label">总流量</span>
+          <button
+            type="button"
+            class="traffic-summary-card__action"
+            data-testid="traffic-summary-open-analysis"
+            :disabled="showLoading"
+            @click.stop="$emit('open-analysis')"
+          >
+            分析
+          </button>
         </div>
         <span class="traffic-summary-card__value" data-testid="traffic-summary-used">{{ formatBytes(summary.used_bytes) }}</span>
         <span v-if="usedSub" class="traffic-summary-card__sub" data-testid="traffic-summary-used-sub">{{ usedSub }}</span>
@@ -34,6 +43,15 @@
             <path d="M16.24 7.76l2.83-2.83"/>
           </svg>
           <span class="traffic-summary-card__label">剩余</span>
+          <button
+            type="button"
+            class="traffic-summary-card__action"
+            data-testid="traffic-summary-open-management"
+            :disabled="showLoading"
+            @click.stop="$emit('open-management')"
+          >
+            管理
+          </button>
         </div>
         <span class="traffic-summary-card__value" data-testid="traffic-summary-remaining">{{ remainingDisplay }}</span>
         <span v-if="remainingSub" class="traffic-summary-card__sub" data-testid="traffic-summary-remaining-sub">{{ remainingSub }}</span>
@@ -94,6 +112,8 @@ const props = defineProps({
   /** When true, show loading placeholder and never treat empty summary as unlimited. */
   loading: { type: Boolean, default: false }
 })
+
+defineEmits(['open-analysis', 'open-management'])
 
 const showLoading = computed(() => props.loading === true)
 
@@ -192,6 +212,29 @@ const rateRows = computed(() => {
   align-items: center;
   gap: 0.375rem;
   margin-bottom: 0.2rem;
+}
+.traffic-summary-card__action {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.2;
+  padding: 0.125rem 0.25rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.traffic-summary-card__action:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--color-bg-subtle);
+}
+.traffic-summary-card__action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  color: var(--color-text-muted);
 }
 .traffic-summary-card__icon {
   color: var(--color-text-tertiary);
