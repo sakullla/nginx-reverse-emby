@@ -314,14 +314,14 @@
               :network-metrics="networkMetrics"
             />
             <div class="traffic-monitor__divider" />
-            <div class="traffic-tab__trend">
+            <div class="traffic-tab__trend traffic-tab__trend--demoted">
               <div class="traffic-tab__trend-header">
-                <span>流量趋势</span>
-                <div class="traffic-trend__controls" role="group" aria-label="趋势粒度">
+                <span class="traffic-tab__trend-title">流量趋势</span>
+                <div class="traffic-trend__controls traffic-trend__controls--compact" role="group" aria-label="趋势粒度">
                   <button
                     v-for="option in trafficTrendGranularityOptions"
                     :key="option.value"
-                    class="traffic-trend__mode traffic-trend__mode--large"
+                    class="traffic-trend__mode"
                     :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
                     type="button"
                     @click="trafficTrendGranularity = option.value"
@@ -330,12 +330,14 @@
                   </button>
                 </div>
               </div>
-              <TrafficTrendChart
-                :points="trafficTrendPoints"
-                :granularity="trafficTrendGranularity"
-                :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
-                :refresh-key="agentStatsRefreshKey"
-              />
+              <div class="traffic-tab__trend-chart">
+                <TrafficTrendChart
+                  :points="trafficTrendPoints"
+                  :granularity="trafficTrendGranularity"
+                  :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
+                  :refresh-key="agentStatsRefreshKey"
+                />
+              </div>
             </div>
           </BaseListCard>
 
@@ -1541,12 +1543,70 @@ function packageStatusLabel(status) {
   flex-shrink: 0;
 }
 
-.traffic-tab__trend { display: flex; flex-direction: column; gap: 0.75rem; }
-.traffic-tab__trend-header { display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); }
+.traffic-tab__trend { display: flex; flex-direction: column; gap: 0.5rem; }
+.traffic-tab__trend--demoted {
+  gap: 0.375rem;
+  padding: 0.25rem 0 0;
+  opacity: 0.96;
+}
+.traffic-tab__trend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+}
+.traffic-tab__trend-title {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  letter-spacing: 0.01em;
+}
+.traffic-tab__trend-chart {
+  max-height: 11.5rem;
+  min-height: 8.5rem;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  padding: 0.375rem 0.5rem 0.25rem;
+}
+.traffic-tab__trend-chart :deep(canvas),
+.traffic-tab__trend-chart :deep(svg) {
+  max-height: 10.5rem;
+}
 .traffic-tab__breakdown { }
-.traffic-trend__controls { display: inline-flex; gap: 2px; padding: 2px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
-.traffic-trend__mode { min-width: 3.25rem; padding: 0.45rem 0.85rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.875rem; font-weight: 600; cursor: pointer; font-family: inherit; }
-.traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
+.traffic-trend__controls {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+.traffic-trend__controls--compact {
+  padding: 1px;
+}
+.traffic-trend__mode {
+  min-width: 2.5rem;
+  padding: 0.28rem 0.55rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+}
+.traffic-trend__mode--active {
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+}
 .empty-hint {
   text-align: center;
   color: var(--color-text-muted);
@@ -1655,24 +1715,46 @@ function packageStatusLabel(status) {
 .traffic-sections {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2-5, 0.625rem);
 }
 .traffic-section-card__title {
-  font-size: 1rem;
-  font-weight: 600;
+  font-size: 0.9375rem;
+  font-weight: 650;
   color: var(--color-text-primary);
+  letter-spacing: -0.01em;
 }
 .traffic-section-card__icon {
   color: var(--color-primary);
   flex-shrink: 0;
 }
-.traffic-card:deep(.base-list-card__body) { gap: 1rem; }
+.traffic-card:deep(.base-list-card__body) {
+  gap: 0.875rem;
+}
 .traffic-card--health {
   border-color: var(--color-border-default);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+.traffic-card--health:deep(.base-list-card__header) {
+  padding-bottom: 0.125rem;
 }
 .traffic-secondary {
   background: var(--color-bg-subtle);
   border-style: dashed;
+  border-color: var(--color-border-subtle);
+  opacity: 0.96;
+}
+.traffic-secondary:deep(.collapsible-section__header),
+.traffic-secondary:deep(.collapsible-section__trigger) {
+  min-height: 2.5rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+.traffic-secondary:deep(.collapsible-section__title) {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
 }
 .traffic-secondary :deep(.collapsible-section__body) {
   padding-top: 0.25rem;
@@ -1680,7 +1762,8 @@ function packageStatusLabel(status) {
 .traffic-monitor__divider {
   height: 1px;
   background: var(--color-border-subtle);
-  margin: 0.25rem 0;
+  margin: 0.125rem 0 0.25rem;
+  opacity: 0.9;
 }
 .traffic-maintenance { display: flex; flex-direction: column; gap: 1rem; }
 .traffic-maintenance__divider { height: 1px; background: var(--color-border-subtle); }
