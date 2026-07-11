@@ -136,12 +136,11 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListenersList, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import { parseIdQuery } from '../hooks/useIdSearch'
-import { fetchTrafficSummary } from '../api'
+import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
@@ -152,7 +151,6 @@ import ListPagination from '../components/common/ListPagination.vue'
 import RelayTable from '../components/relay/RelayTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
-import { summaryBucketForObject } from '../utils/trafficStats.js'
 import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
@@ -215,20 +213,12 @@ const displayListeners = computed(() => {
 })
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
-const { data: trafficSummaryData } = useQuery({
-  queryKey: ['traffic-summary', agentId],
-  queryFn: () => fetchTrafficSummary(agentId.value),
-  enabled: () => !!agentId.value && trafficStatsEnabled.value,
-  refetchInterval: 10_000
+const { agentNodeTotal, trafficFor: trafficForListener } = useTrafficSummaryForResources({
+  agentId,
+  items: displayListeners,
+  trafficStatsEnabled,
+  mapName: 'relay_listeners'
 })
-
-const agentNodeTotal = computed(() => trafficSummaryData.value?.used_bytes || 0)
-
-function trafficForListener(listener) {
-  return trafficStatsEnabled.value
-    ? summaryBucketForObject(trafficSummaryData.value, 'relay_listeners', listener?.id)
-    : null
-}
 
 const showAddForm = ref(false)
 const editingListener = ref(null)

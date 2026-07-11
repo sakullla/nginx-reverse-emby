@@ -193,13 +193,13 @@
 <script setup>
 import { ref, computed, watchEffect, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useRulesList, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchTrafficSummary, fetchAllAgentsRules } from '../api'
+import { fetchAllAgentsRules } from '../api'
 import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import RuleForm from '../components/RuleForm.vue'
 import RuleCard from '../components/rules/RuleCard.vue'
@@ -213,7 +213,6 @@ import ListPagination from '../components/common/ListPagination.vue'
 import RuleTable from '../components/rules/RuleTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { messageStore } from '../stores/messages'
-import { summaryBucketForObject } from '../utils/trafficStats.js'
 import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
@@ -282,20 +281,12 @@ const rules = computed(() => _rulesPage.value?.items ?? [])
 const listTotal = computed(() => _rulesPage.value?.total ?? 0)
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
-const { data: trafficSummaryData } = useQuery({
-  queryKey: ['traffic-summary', agentId],
-  queryFn: () => fetchTrafficSummary(agentId.value),
-  enabled: () => !!agentId.value && trafficStatsEnabled.value,
-  refetchInterval: 10_000
+const { agentNodeTotal, trafficFor: trafficForRule } = useTrafficSummaryForResources({
+  agentId,
+  items: rules,
+  trafficStatsEnabled,
+  mapName: 'http_rules'
 })
-
-const agentNodeTotal = computed(() => trafficSummaryData.value?.used_bytes || 0)
-
-function trafficForRule(rule) {
-  return trafficStatsEnabled.value
-    ? summaryBucketForObject(trafficSummaryData.value, 'http_rules', rule?.id)
-    : null
-}
 
 function handleAgentSelect(id) {
   router.replace({ query: { ...route.query, agentId: id } })

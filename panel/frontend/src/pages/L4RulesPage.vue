@@ -191,13 +191,13 @@
 <script setup>
 import { ref, computed, watchEffect, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useL4RulesList, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
 import { useDiagnoseL4Rule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchTrafficSummary, fetchAllAgentsL4Rules } from '../api'
+import { fetchAllAgentsL4Rules } from '../api'
 import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import L4RuleForm from '../components/L4RuleForm.vue'
 import L4RuleItem from '../components/l4/L4RuleItem.vue'
@@ -211,7 +211,6 @@ import ListPagination from '../components/common/ListPagination.vue'
 import L4RuleTable from '../components/l4/L4RuleTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { messageStore } from '../stores/messages'
-import { summaryBucketForObject } from '../utils/trafficStats.js'
 import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
@@ -268,22 +267,15 @@ const { data: _rulesPage, isLoading } = useL4RulesList({
   q: listQ,
   enabled: hasAgentFilter
 })
+const rules = computed(() => _rulesPage.value?.items ?? [])
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
-const { data: trafficSummaryData } = useQuery({
-  queryKey: ['traffic-summary', agentId],
-  queryFn: () => fetchTrafficSummary(agentId.value),
-  enabled: () => !!agentId.value && trafficStatsEnabled.value,
-  refetchInterval: 10_000
+const { agentNodeTotal, trafficFor: trafficForRule } = useTrafficSummaryForResources({
+  agentId,
+  items: rules,
+  trafficStatsEnabled,
+  mapName: 'l4_rules'
 })
-
-const agentNodeTotal = computed(() => trafficSummaryData.value?.used_bytes || 0)
-
-function trafficForRule(rule) {
-  return trafficStatsEnabled.value
-    ? summaryBucketForObject(trafficSummaryData.value, 'l4_rules', rule?.id)
-    : null
-}
 
 
 function requireMutationAgent(resource, actionLabel = '操作') {
@@ -332,7 +324,6 @@ const createL4Rule = useCreateL4Rule(agentId)
 const updateL4Rule = useUpdateL4Rule(agentId)
 const deleteL4Rule = useDeleteL4Rule(agentId)
 const diagnoseL4Rule = useDiagnoseL4Rule(agentId)
-const rules = computed(() => _rulesPage.value?.items ?? [])
 const listTotal = computed(() => _rulesPage.value?.total ?? 0)
 
 const searchInputRef = ref(null)
