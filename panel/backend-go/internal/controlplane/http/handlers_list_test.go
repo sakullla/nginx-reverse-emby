@@ -165,6 +165,49 @@ func TestPaginatedResourceListEndpoints(t *testing.T) {
 		t.Fatalf("GET /certificates legacy = %d body=%s", resp.Code, resp.Body.String())
 	}
 
+	// dual-path: enabled/status alone still route to ListPage (paginated envelope)
+	req = httptest.NewRequest(http.MethodGet, "/panel-api/certificates?enabled=true", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /certificates?enabled=true = %d body=%s", resp.Code, resp.Body.String())
+	}
+	certBody = struct {
+		OK           bool                         `json:"ok"`
+		Certificates []service.ManagedCertificate `json:"certificates"`
+		Total        int                          `json:"total"`
+		Page         int                          `json:"page"`
+		PageSize     int                          `json:"page_size"`
+	}{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &certBody); err != nil {
+		t.Fatalf("decode enabled cert body: %v", err)
+	}
+	if !certBody.OK || certBody.Page == 0 || certBody.PageSize == 0 {
+		t.Fatalf("enabled dual-path should use ListPage envelope: %+v", certBody)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/panel-api/certificates?status=active", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /certificates?status=active = %d body=%s", resp.Code, resp.Body.String())
+	}
+	certBody = struct {
+		OK           bool                         `json:"ok"`
+		Certificates []service.ManagedCertificate `json:"certificates"`
+		Total        int                          `json:"total"`
+		Page         int                          `json:"page"`
+		PageSize     int                          `json:"page_size"`
+	}{}
+	if err := json.Unmarshal(resp.Body.Bytes(), &certBody); err != nil {
+		t.Fatalf("decode status cert body: %v", err)
+	}
+	if !certBody.OK || certBody.Page == 0 || certBody.PageSize == 0 {
+		t.Fatalf("status dual-path should use ListPage envelope: %+v", certBody)
+	}
+
 	// local /rules alias remains non-paginated agent list
 	req = httptest.NewRequest(http.MethodGet, "/panel-api/rules", nil)
 	req.Header.Set("X-Panel-Token", "secret")

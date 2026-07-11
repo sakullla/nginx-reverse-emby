@@ -204,6 +204,9 @@ func (s *relayService) ListPage(ctx context.Context, query ListQuery) ([]RelayLi
 		if !matchesListQuery(query.Q, listener.Name, listener.PublicHost, listener.ListenHost, strconv.Itoa(listener.ListenPort), listener.AgentID, listener.AgentName, strings.Join(listener.Tags, " ")) {
 			continue
 		}
+		if !matchesEnabledFilter(query.Enabled, listener.Enabled) {
+			continue
+		}
 		filtered = append(filtered, listener)
 	}
 	page, meta := ApplyPage(filtered, query)

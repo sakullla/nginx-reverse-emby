@@ -63,3 +63,42 @@ func TestMatchesListQuery(t *testing.T) {
 		t.Fatal("expected no match")
 	}
 }
+
+func TestMatchesEnabledFilter(t *testing.T) {
+	if !matchesEnabledFilter(nil, true) || !matchesEnabledFilter(nil, false) {
+		t.Fatal("nil enabled should match any value")
+	}
+	yes := true
+	no := false
+	if !matchesEnabledFilter(&yes, true) {
+		t.Fatal("true filter should match true")
+	}
+	if matchesEnabledFilter(&yes, false) {
+		t.Fatal("true filter should reject false")
+	}
+	if !matchesEnabledFilter(&no, false) {
+		t.Fatal("false filter should match false")
+	}
+	if matchesEnabledFilter(&no, true) {
+		t.Fatal("false filter should reject true")
+	}
+}
+
+func TestMatchesStatusFilter(t *testing.T) {
+	if !matchesStatusFilter("", "active") {
+		t.Fatal("empty status should match")
+	}
+	if !matchesStatusFilter("  Active  ", "active") {
+		t.Fatal("status match should be case-insensitive and trimmed")
+	}
+	if matchesStatusFilter("pending", "active") {
+		t.Fatal("status mismatch should reject")
+	}
+}
+
+func TestNormalizeListQueryTrimsStatus(t *testing.T) {
+	got := NormalizeListQuery(ListQuery{Status: "  active  "})
+	if got.Status != "active" {
+		t.Fatalf("status = %q", got.Status)
+	}
+}

@@ -127,6 +127,9 @@ func (s *ruleService) ListPage(ctx context.Context, query ListQuery) ([]HTTPRule
 		if !matchesListQuery(query.Q, rule.FrontendURL, rule.AgentID, rule.AgentName, strings.Join(rule.Tags, " ")) {
 			continue
 		}
+		if !matchesEnabledFilter(query.Enabled, rule.Enabled) {
+			continue
+		}
 		filtered = append(filtered, rule)
 	}
 	page, meta := ApplyPage(filtered, query)

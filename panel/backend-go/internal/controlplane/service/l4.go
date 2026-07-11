@@ -197,6 +197,9 @@ func (s *l4Service) ListPage(ctx context.Context, query ListQuery) ([]L4Rule, Pa
 		if !matchesListQuery(query.Q, identity, rule.Name, rule.ListenHost, strconv.Itoa(rule.ListenPort), rule.Protocol, rule.AgentID, rule.AgentName, strings.Join(rule.Tags, " ")) {
 			continue
 		}
+		if !matchesEnabledFilter(query.Enabled, rule.Enabled) {
+			continue
+		}
 		filtered = append(filtered, rule)
 	}
 	page, meta := ApplyPage(filtered, query)

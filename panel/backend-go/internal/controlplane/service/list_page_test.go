@@ -99,6 +99,65 @@ func TestRuleServiceListPageFilterPaginationAndAgentName(t *testing.T) {
 	}
 }
 
+func TestRuleServiceListPageEnabledFilterBeforePagination(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{
+			{ID: "edge", Name: "Edge Node"},
+			{ID: "local", Name: "Local Node"},
+		},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {
+				{ID: 1, AgentID: "local", FrontendURL: "https://local-on.example.com", Enabled: true},
+				{ID: 2, AgentID: "local", FrontendURL: "https://local-off.example.com", Enabled: false},
+			},
+			"edge": {
+				{ID: 3, AgentID: "edge", FrontendURL: "https://edge-on.example.com", Enabled: true},
+				{ID: 4, AgentID: "edge", FrontendURL: "https://edge-off.example.com", Enabled: false},
+			},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+		LocalAgentName:   "Local Node",
+	}, store)
+
+	enabled := true
+	page, meta, err := svc.ListPage(context.Background(), ListQuery{Enabled: &enabled, Page: 1, PageSize: 1})
+	if err != nil {
+		t.Fatalf("enabled ListPage error = %v", err)
+	}
+	if meta.Total != 2 {
+		t.Fatalf("enabled total = %d, want 2", meta.Total)
+	}
+	if len(page) != 1 || !page[0].Enabled {
+		t.Fatalf("enabled page = %#v", page)
+	}
+
+	disabled := false
+	page, meta, err = svc.ListPage(context.Background(), ListQuery{Enabled: &disabled, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("disabled ListPage error = %v", err)
+	}
+	if meta.Total != 2 || len(page) != 2 {
+		t.Fatalf("disabled page=%v meta=%+v", page, meta)
+	}
+	for _, rule := range page {
+		if rule.Enabled {
+			t.Fatalf("expected disabled only, got %#v", rule)
+		}
+	}
+
+	// omit enabled: no filter, total remains 4
+	_, meta, err = svc.ListPage(context.Background(), ListQuery{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("omit enabled error = %v", err)
+	}
+	if meta.Total != 4 {
+		t.Fatalf("omit enabled total = %d, want 4", meta.Total)
+	}
+}
+
 func TestL4ServiceListPageAcrossAgents(t *testing.T) {
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{
@@ -224,6 +283,61 @@ func TestCertificateServiceListPageAgentFilter(t *testing.T) {
 	}
 	if meta.Total != 1 || page[0].ID != 2 {
 		t.Fatalf("q page=%v meta=%+v", page, meta)
+	}
+}
+
+func TestCertificateServiceListPageEnabledAndStatusFilters(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{
+			{ID: "edge", Name: "Edge"},
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{ID: 1, Domain: "a.example.com", TargetAgentIDs: `["local"]`, Enabled: true, Status: "active"},
+			{ID: 2, Domain: "b.example.com", TargetAgentIDs: `["edge"]`, Enabled: false, Status: "active"},
+			{ID: 3, Domain: "c.example.com", TargetAgentIDs: `["local","edge"]`, Enabled: true, Status: "pending"},
+			{ID: 4, Domain: "d.example.com", TargetAgentIDs: `["edge"]`, Enabled: true, Status: "issuing"},
+		},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+		LocalAgentName:   "Local",
+	}, store)
+
+	enabled := true
+	page, meta, err := svc.ListPage(context.Background(), ListQuery{Enabled: &enabled, Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("enabled error = %v", err)
+	}
+	if meta.Total != 3 {
+		t.Fatalf("enabled total = %d, want 3", meta.Total)
+	}
+	for _, cert := range page {
+		if !cert.Enabled {
+			t.Fatalf("expected enabled only: %#v", cert)
+		}
+	}
+
+	page, meta, err = svc.ListPage(context.Background(), ListQuery{Status: "pending", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("status error = %v", err)
+	}
+	if meta.Total != 1 || len(page) != 1 || page[0].ID != 3 {
+		t.Fatalf("status page=%v meta=%+v", page, meta)
+	}
+
+	// combined filters + pagination total consistency
+	page, meta, err = svc.ListPage(context.Background(), ListQuery{
+		Enabled:  &enabled,
+		Status:   "active",
+		Page:     1,
+		PageSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("combined error = %v", err)
+	}
+	if meta.Total != 1 || len(page) != 1 || page[0].ID != 1 {
+		t.Fatalf("combined page=%v meta=%+v", page, meta)
 	}
 }
 

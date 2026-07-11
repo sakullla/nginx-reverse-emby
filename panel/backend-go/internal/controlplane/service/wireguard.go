@@ -206,6 +206,9 @@ func (s *wireGuardProfileService) ListPage(ctx context.Context, query ListQuery)
 		if !matchesListQuery(query.Q, profile.Name, profile.PublicEndpoint, profile.AgentID, profile.AgentName, strings.Join(profile.Tags, " ")) {
 			continue
 		}
+		if !matchesEnabledFilter(query.Enabled, profile.Enabled) {
+			continue
+		}
 		filtered = append(filtered, profile)
 	}
 	page, meta := ApplyPage(filtered, query)

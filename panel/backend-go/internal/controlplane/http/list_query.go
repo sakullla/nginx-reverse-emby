@@ -17,7 +17,24 @@ func parseListQuery(r *http.Request) service.ListQuery {
 		Page:     page,
 		PageSize: pageSize,
 		Q:        q.Get("q"),
+		Enabled:  parseOptionalBoolQuery(q.Get("enabled")),
+		Status:   q.Get("status"),
 	})
+}
+
+// parseOptionalBoolQuery accepts true/false (case-insensitive, also 1/0).
+// Empty or unrecognized values yield nil (no filter).
+func parseOptionalBoolQuery(raw string) *bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "1":
+		v := true
+		return &v
+	case "false", "0":
+		v := false
+		return &v
+	default:
+		return nil
+	}
 }
 
 func writeListPageJSON(w http.ResponseWriter, collectionKey string, items any, meta service.PageMeta) {

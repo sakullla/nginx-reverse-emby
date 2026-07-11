@@ -47,7 +47,7 @@ func (d Dependencies) handleCertificates(w http.ResponseWriter, r *http.Request)
 func (d Dependencies) handleGlobalCertificates(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		query := r.URL.Query()
-		if query.Has("page") || query.Has("page_size") || query.Has("q") || query.Has("agent_id") {
+		if query.Has("page") || query.Has("page_size") || query.Has("q") || query.Has("agent_id") || query.Has("enabled") || query.Has("status") {
 			d.handleCertificatesList(w, r)
 			return
 		}

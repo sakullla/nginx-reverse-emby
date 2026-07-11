@@ -195,6 +195,12 @@ func (s *certificateService) ListPage(ctx context.Context, query ListQuery) ([]M
 			if !matchesListQuery(query.Q, cert.Domain, cert.Status, cert.Usage, cert.AgentID, cert.AgentName, strings.Join(cert.Tags, " "), strings.Join(cert.TargetAgentIDs, " ")) {
 				continue
 			}
+			if !matchesEnabledFilter(query.Enabled, cert.Enabled) {
+				continue
+			}
+			if !matchesStatusFilter(query.Status, cert.Status) {
+				continue
+			}
 			filtered = append(filtered, cert)
 		}
 	} else {
@@ -205,6 +211,12 @@ func (s *certificateService) ListPage(ctx context.Context, query ListQuery) ([]M
 				cert.AgentName = resolveAgentDisplayName(names, cert.AgentID)
 			}
 			if !matchesListQuery(query.Q, cert.Domain, cert.Status, cert.Usage, cert.AgentID, cert.AgentName, strings.Join(cert.Tags, " "), strings.Join(cert.TargetAgentIDs, " ")) {
+				continue
+			}
+			if !matchesEnabledFilter(query.Enabled, cert.Enabled) {
+				continue
+			}
+			if !matchesStatusFilter(query.Status, cert.Status) {
 				continue
 			}
 			filtered = append(filtered, cert)

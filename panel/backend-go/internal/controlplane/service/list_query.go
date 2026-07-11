@@ -15,11 +15,15 @@ const (
 
 // ListQuery is the shared list filter/pagination contract for resource list APIs.
 // Empty AgentID means all agents; non-empty filters to that agent.
+// Enabled nil means no enabled filter; non-nil filters to that value.
+// Empty Status means no status filter; non-empty matches status case-insensitively.
 type ListQuery struct {
 	AgentID  string
 	Page     int
 	PageSize int
 	Q        string
+	Enabled  *bool
+	Status   string
 }
 
 // PageMeta is returned with every paginated list response.
@@ -34,6 +38,7 @@ type PageMeta struct {
 func NormalizeListQuery(query ListQuery) ListQuery {
 	query.AgentID = strings.TrimSpace(query.AgentID)
 	query.Q = strings.TrimSpace(query.Q)
+	query.Status = strings.TrimSpace(query.Status)
 	if query.Page < 1 {
 		query.Page = 1
 	}
@@ -84,6 +89,23 @@ func matchesListQuery(q string, parts ...string) bool {
 		}
 	}
 	return false
+}
+
+// matchesEnabledFilter returns true when Enabled is nil, or when value equals *Enabled.
+func matchesEnabledFilter(enabled *bool, value bool) bool {
+	if enabled == nil {
+		return true
+	}
+	return value == *enabled
+}
+
+// matchesStatusFilter returns true when status filter is empty, or when value matches case-insensitively.
+func matchesStatusFilter(status string, value string) bool {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(value), status)
 }
 
 func agentDisplayNameMap(ctx context.Context, cfg config.Config, store agentLister) (map[string]string, error) {
