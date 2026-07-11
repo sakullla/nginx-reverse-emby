@@ -118,41 +118,50 @@ function updateField(key, value) {
 .traffic-policy-form__cards {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
+  gap: 0.875rem;
 }
 .traffic-policy-form__card {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-surface) 92%, var(--color-bg-subtle)),
+      var(--color-bg-surface)
+    );
+  border: 1px solid color-mix(in srgb, var(--color-border-default) 90%, transparent);
   border-radius: var(--radius-lg);
-  padding: 1rem;
+  padding: 0.875rem 1rem 1rem;
   min-width: 0;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
 }
 .traffic-policy-form__card--full {
   grid-column: 1 / -1;
 }
 .traffic-policy-form__card-title {
   margin: 0 0 0.75rem;
-  font-size: 0.9375rem;
-  font-weight: 600;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border-subtle) 85%, transparent);
+  font-size: 0.875rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
   color: var(--color-text-primary);
 }
 .traffic-policy-form__card-body {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.7rem;
 }
-.traffic-policy-form__field { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
-.traffic-policy-form__field--switch { flex-direction: row; align-items: center; justify-content: space-between; }
+.traffic-policy-form__field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+.traffic-policy-form__field--switch { flex-direction: row; align-items: center; justify-content: space-between; gap: 0.75rem; }
 .traffic-policy-form__label {
   color: var(--color-text-secondary);
   font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 550;
 }
 .traffic-policy-form__badge {
   margin-left: 0.35rem;
-  padding: 0.05rem 0.35rem;
+  padding: 0.05rem 0.4rem;
   border-radius: 999px;
-  background: var(--color-bg-subtle);
+  background: color-mix(in srgb, var(--color-bg-subtle) 88%, transparent);
   color: var(--color-text-muted);
   font-size: 0.6875rem;
   font-weight: 500;
@@ -167,15 +176,26 @@ function updateField(key, value) {
   color: var(--color-text-primary);
   padding: 0.5rem 0.625rem;
   font-size: 0.875rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.traffic-policy-form__input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--color-primary, #3b82f6) 55%, var(--color-border-default));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary, #3b82f6) 16%, transparent);
 }
 .traffic-policy-form__hint {
   color: var(--color-text-muted);
   font-size: 0.75rem;
+  line-height: 1.4;
 }
 .traffic-policy-form__quota { display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem; gap: 0.5rem; }
 .traffic-policy-form__footer {
   display: flex;
   justify-content: flex-end;
+  padding-top: 0.125rem;
+}
+.traffic-policy-form__save {
+  min-width: 5.5rem;
 }
 @media (max-width: 720px) {
   .traffic-policy-form__cards {

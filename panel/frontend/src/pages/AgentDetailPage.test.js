@@ -698,7 +698,12 @@ describe('AgentDetailPage', () => {
     await nextTick()
 
     expect(wrapper.find('[data-testid="traffic-management-modal-body"]').exists()).toBe(true)
+    expect(wrapper.find('.traffic-scenario-modal--management').exists()).toBe(true)
     expect(wrapper.text()).toContain('剩余/额度管理')
+    expect(wrapper.find('[data-testid="traffic-management-section-policy"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-management-section-history"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-management-section-policy"] .traffic-scenario-modal__section-title').text()).toContain('额度与策略')
+    expect(wrapper.find('[data-testid="traffic-management-section-history"] .traffic-scenario-modal__section-title').text()).toContain('历史与维护')
     expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').exists()).toBe(true)
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')

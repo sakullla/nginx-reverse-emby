@@ -395,18 +395,31 @@
               </div>
               <span v-if="trafficManagementContextHint" class="traffic-scenario-modal__context-hint">{{ trafficManagementContextHint }}</span>
             </div>
-            <div class="traffic-maintenance">
-              <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
-              <div class="traffic-maintenance__divider" />
-              <TrafficHistoryManager
-                :policy="trafficPolicyForm"
-                :calibrating="calibrateTrafficMutation.isPending.value"
-                :cleaning="cleanupTrafficMutation.isPending.value"
-                @calibrate="calibrateModalVisible = true"
-                @calibrate-zero="showCalibrateZeroConfirm"
-                @cleanup="showCleanupConfirm"
-              />
-            </div>
+            <section class="traffic-scenario-modal__section traffic-scenario-modal__section--primary" data-testid="traffic-management-section-policy">
+              <header class="traffic-scenario-modal__section-header">
+                <h3 class="traffic-scenario-modal__section-title">额度与策略</h3>
+                <p class="traffic-scenario-modal__section-desc">调整月额度、阻断与计费策略，保存后立即生效</p>
+              </header>
+              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--policy">
+                <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
+              </div>
+            </section>
+            <section class="traffic-scenario-modal__section traffic-scenario-modal__section--secondary" data-testid="traffic-management-section-history">
+              <header class="traffic-scenario-modal__section-header">
+                <h3 class="traffic-scenario-modal__section-title">历史与维护</h3>
+                <p class="traffic-scenario-modal__section-desc">查看保留策略摘要，执行校准或清理过期数据</p>
+              </header>
+              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--history">
+                <TrafficHistoryManager
+                  :policy="trafficPolicyForm"
+                  :calibrating="calibrateTrafficMutation.isPending.value"
+                  :cleaning="cleanupTrafficMutation.isPending.value"
+                  @calibrate="calibrateModalVisible = true"
+                  @calibrate-zero="showCalibrateZeroConfirm"
+                  @cleanup="showCleanupConfirm"
+                />
+              </div>
+            </section>
           </div>
         </BaseModal>
 
@@ -1941,12 +1954,33 @@ function packageStatusLabel(status) {
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-bg-subtle) 75%, transparent);
 }
-.traffic-maintenance { display: flex; flex-direction: column; gap: 1rem; }
-.traffic-maintenance__divider { height: 1px; background: var(--color-border-subtle); }
-.traffic-maintenance :deep(.traffic-policy-form__cards) { gap: 1rem; }
-.traffic-maintenance :deep(.traffic-policy-form__card) { background: transparent; border: none; padding: 0; border-radius: 0; }
-.traffic-maintenance :deep(.traffic-policy-form__card-title) { font-size: 0.9375rem; }
-.traffic-maintenance :deep(.traffic-history-manager) { gap: 0.75rem; }
+.traffic-scenario-modal__section--secondary {
+  padding-top: 0.125rem;
+}
+.traffic-scenario-modal__panel--policy {
+  padding: 0.875rem;
+}
+.traffic-scenario-modal__panel--history {
+  padding: 0.875rem 1rem;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-subtle) 55%, var(--color-bg-surface)),
+      var(--color-bg-surface)
+    );
+}
+.traffic-scenario-modal__panel--policy :deep(.traffic-policy-form) {
+  gap: 0.875rem;
+}
+.traffic-scenario-modal__panel--policy :deep(.traffic-policy-form__cards) {
+  gap: 0.75rem;
+}
+.traffic-scenario-modal__panel--policy :deep(.traffic-policy-form__card) {
+  box-shadow: 0 1px 1px color-mix(in srgb, var(--color-text-primary) 3%, transparent);
+}
+.traffic-scenario-modal__panel--history :deep(.traffic-history-manager) {
+  gap: 0.875rem;
+}
 @media (max-width: 720px) {
   .traffic-scenario-modal__context {
     align-items: flex-start;
