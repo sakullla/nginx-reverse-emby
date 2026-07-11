@@ -558,8 +558,11 @@ describe('AgentDetailPage', () => {
 
   it('renders traffic section when traffic stats are enabled', async () => {
     const wrapper = await mountPage()
-    // Outer traffic section is default-expanded; health overview is always on.
+    // Outer traffic section is present but collapsed by default; expand to see health overview.
     expect(wrapper.text()).toContain('流量统计')
+    expect(wrapper.find('.traffic-card--health').exists()).toBe(false)
+
+    await expandSection(wrapper, '流量统计')
     expect(wrapper.text()).toContain('健康概览')
     expect(wrapper.find('.traffic-card--health').exists()).toBe(true)
     expect(wrapper.find('.traffic-summary-cards').exists()).toBe(true)
@@ -584,8 +587,9 @@ describe('AgentDetailPage', () => {
 
   it('keeps health overview visible and demotes analysis/management to nested collapsibles', async () => {
     const wrapper = await mountPage()
+    await expandSection(wrapper, '流量统计')
 
-    // Health overview card always present without expanding nested sections.
+    // After expanding outer traffic, health overview is on without expanding nested sections.
     const healthCard = wrapper.find('.traffic-card--health')
     expect(healthCard.exists()).toBe(true)
     expect(healthCard.find('.traffic-section-card__title').text()).toBe('健康概览')
@@ -605,6 +609,7 @@ describe('AgentDetailPage', () => {
 
   it('renders accounted traffic breakdowns after expanding analysis', async () => {
     const wrapper = await mountPage()
+    await expandSection(wrapper, '流量统计')
     await expandSection(wrapper, '分析')
 
     expect(wrapper.text()).toContain('分析')
@@ -620,6 +625,7 @@ describe('AgentDetailPage', () => {
 
   it('does not cleanup traffic history when confirmation is cancelled', async () => {
     const wrapper = await mountPage()
+    await expandSection(wrapper, '流量统计')
     await expandSection(wrapper, '管理')
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
@@ -634,6 +640,7 @@ describe('AgentDetailPage', () => {
 
   it('cleans up traffic history after confirmation', async () => {
     const wrapper = await mountPage()
+    await expandSection(wrapper, '流量统计')
     await expandSection(wrapper, '管理')
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
@@ -647,6 +654,7 @@ describe('AgentDetailPage', () => {
 
   it('calibrates traffic current usage to zero after confirmation', async () => {
     const wrapper = await mountPage()
+    await expandSection(wrapper, '流量统计')
     await expandSection(wrapper, '管理')
 
     await wrapper.findAll('button').find((button) => button.text() === '从现在归零').trigger('click')

@@ -293,7 +293,6 @@
         v-if="trafficStatsEnabled"
         class="agent-detail__section"
         :title="detailLabels.sections.traffic"
-        default-expanded
       >
         <div class="traffic-sections">
           <BaseListCard class="traffic-card traffic-card--health agent-detail__panel agent-detail__panel--inset" :clickable="false">
@@ -1565,8 +1564,8 @@ function packageStatusLabel(status) {
   letter-spacing: 0.01em;
 }
 .traffic-tab__trend-chart {
-  max-height: 10rem;
-  min-height: 7.25rem;
+  max-height: 18rem;
+  min-height: 14rem;
   overflow: hidden;
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-bg-subtle) 88%, var(--color-bg-surface));
@@ -1575,7 +1574,7 @@ function packageStatusLabel(status) {
 }
 .traffic-tab__trend-chart :deep(canvas),
 .traffic-tab__trend-chart :deep(svg) {
-  max-height: 9rem;
+  max-height: 16rem;
 }
 .traffic-tab__breakdown { }
 .traffic-trend__controls {
