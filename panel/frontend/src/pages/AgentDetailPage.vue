@@ -289,14 +289,19 @@
         </BaseListCard>
       </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection v-if="trafficStatsEnabled" class="agent-detail__section" :title="detailLabels.sections.traffic">
+      <TrafficCollapsibleSection
+        v-if="trafficStatsEnabled"
+        class="agent-detail__section"
+        :title="detailLabels.sections.traffic"
+        default-expanded
+      >
         <div class="traffic-sections">
-          <BaseListCard class="traffic-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
+          <BaseListCard class="traffic-card traffic-card--health agent-detail__panel agent-detail__panel--inset" :clickable="false">
             <template #header-left>
               <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
               </svg>
-              <span class="traffic-section-card__title">监控</span>
+              <span class="traffic-section-card__title">{{ detailLabels.sections.trafficHealth }}</span>
             </template>
             <template #header-right>
               <BaseBadge :tone="trafficSummary.blocked ? 'danger' : 'success'" size="sm">
@@ -334,27 +339,19 @@
             </div>
           </BaseListCard>
 
-          <BaseListCard class="traffic-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-            <template #header-left>
-              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="8"/>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-              </svg>
-              <span class="traffic-section-card__title">分析</span>
-            </template>
+          <TrafficCollapsibleSection
+            class="traffic-secondary"
+            :title="detailLabels.sections.trafficAnalysis"
+          >
             <div class="traffic-tab__breakdown">
               <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
             </div>
-          </BaseListCard>
+          </TrafficCollapsibleSection>
 
-          <BaseListCard class="traffic-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-            <template #header-left>
-              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-              </svg>
-              <span class="traffic-section-card__title">管理</span>
-            </template>
+          <TrafficCollapsibleSection
+            class="traffic-secondary"
+            :title="detailLabels.sections.trafficManagement"
+          >
             <div class="traffic-maintenance">
               <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
               <div class="traffic-maintenance__divider" />
@@ -367,7 +364,7 @@
                 @cleanup="showCleanupConfirm"
               />
             </div>
-          </BaseListCard>
+          </TrafficCollapsibleSection>
         </div>
 
         <TrafficTrendModal
@@ -1670,6 +1667,16 @@ function packageStatusLabel(status) {
   flex-shrink: 0;
 }
 .traffic-card:deep(.base-list-card__body) { gap: 1rem; }
+.traffic-card--health {
+  border-color: var(--color-border-default);
+}
+.traffic-secondary {
+  background: var(--color-bg-subtle);
+  border-style: dashed;
+}
+.traffic-secondary :deep(.collapsible-section__body) {
+  padding-top: 0.25rem;
+}
 .traffic-monitor__divider {
   height: 1px;
   background: var(--color-border-subtle);
