@@ -856,12 +856,7 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		if strings.TrimSpace(next.MaterialHash) == "" {
 			next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
 		}
-		next.NotAfter = issueResult.NotAfter
-		if strings.TrimSpace(next.NotAfter) == "" {
-			if leaf, err := parseManagedCertificateLeaf([]byte(strings.TrimSpace(issuedMaterial.CertPEM))); err == nil {
-				next.NotAfter = leaf.NotAfter.UTC().Format(time.RFC3339)
-			}
-		}
+		next.NotAfter = managedCertificateNotAfterFromPEM(issuedMaterial.CertPEM, next.NotAfter)
 		next.ACMEInfo = issueResult.ACMEInfo
 		next.Revision = highestManagedCertificateRevisionForService(persistRows) + 1
 
