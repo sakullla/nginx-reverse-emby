@@ -18,8 +18,8 @@ export function useL4Rules(agentId) {
 }
 
 /**
- * Paginated L4 rules list (T1 /l4-rules).
- * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabled?: any }} options
+ * Paginated L4 rules list (/l4-rules).
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, enabled?: any }} options
  */
 export function useL4RulesList(options = {}) {
   return useResourceListQuery({
@@ -28,6 +28,8 @@ export function useL4RulesList(options = {}) {
     page: options.page,
     pageSize: options.pageSize,
     q: options.q,
+    enabledFilter: options.enabledFilter,
+    status: options.status,
     enabled: options.enabled,
     fetcher: (params) => api.fetchL4RulesPage(params)
   })

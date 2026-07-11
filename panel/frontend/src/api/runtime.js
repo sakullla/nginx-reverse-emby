@@ -263,11 +263,12 @@ function parseDownloadFilename(contentDisposition, fallback = 'nre-backup.tar.gz
 }
 
 /**
- * Build query params for control-plane list endpoints (T1 contract).
+ * Build query params for control-plane list endpoints (T1/T2 contract).
  * Empty / all-agents filter omits agent_id so the backend returns every node.
  * page defaults to 1, page_size to 20 (clamped server-side to max 100).
+ * Optional enabled (boolean) and status (string) are omitted when unset.
  */
-export function buildListQueryParams({ agentId, agentFilter, page, pageSize, q } = {}) {
+export function buildListQueryParams({ agentId, agentFilter, page, pageSize, q, enabled, status } = {}) {
   const params = {}
   const rawAgent = agentId != null ? agentId : agentFilter
   if (rawAgent != null && rawAgent !== '' && rawAgent !== '__all__' && rawAgent !== 'all' && rawAgent !== '*') {
@@ -279,6 +280,11 @@ export function buildListQueryParams({ agentId, agentFilter, page, pageSize, q }
   params.page_size = Number.isInteger(sizeNum) && sizeNum > 0 ? sizeNum : 20
   const query = q == null ? '' : String(q).trim()
   if (query) params.q = query
+  if (typeof enabled === 'boolean') {
+    params.enabled = enabled
+  }
+  const statusValue = status == null ? '' : String(status).trim()
+  if (statusValue) params.status = statusValue
   return params
 }
 

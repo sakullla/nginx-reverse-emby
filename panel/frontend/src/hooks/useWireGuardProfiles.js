@@ -30,8 +30,8 @@ export function useWireGuardProfiles(agentId) {
 }
 
 /**
- * Paginated WireGuard profiles list (T1 /wireguard-profiles).
- * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabled?: any }} options
+ * Paginated WireGuard profiles list (/wireguard-profiles).
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, enabled?: any }} options
  */
 export function useWireGuardProfilesList(options = {}) {
   return useResourceListQuery({
@@ -40,6 +40,8 @@ export function useWireGuardProfilesList(options = {}) {
     page: options.page,
     pageSize: options.pageSize,
     q: options.q,
+    enabledFilter: options.enabledFilter,
+    status: options.status,
     enabled: options.enabled,
     fetcher: (params) => api.fetchWireGuardProfilesPage(params)
   })

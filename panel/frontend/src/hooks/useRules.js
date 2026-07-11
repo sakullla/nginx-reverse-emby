@@ -18,8 +18,8 @@ export function useRules(agentId) {
 }
 
 /**
- * Paginated HTTP rules list (T1 /http-rules).
- * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabled?: any }} options
+ * Paginated HTTP rules list (/http-rules).
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, enabled?: any }} options
  */
 export function useRulesList(options = {}) {
   return useResourceListQuery({
@@ -28,6 +28,8 @@ export function useRulesList(options = {}) {
     page: options.page,
     pageSize: options.pageSize,
     q: options.q,
+    enabledFilter: options.enabledFilter,
+    status: options.status,
     enabled: options.enabled,
     fetcher: (params) => api.fetchHttpRulesPage(params)
   })

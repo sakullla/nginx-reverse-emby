@@ -78,6 +78,24 @@ describe('buildListQueryParams', () => {
       page_size: 20
     })
   })
+
+  it('includes enabled/status only when set', () => {
+    expect(runtime.buildListQueryParams({ enabled: true })).toEqual({
+      page: 1,
+      page_size: 20,
+      enabled: true
+    })
+    expect(runtime.buildListQueryParams({ enabled: false, status: ' pending ' })).toEqual({
+      page: 1,
+      page_size: 20,
+      enabled: false,
+      status: 'pending'
+    })
+    expect(runtime.buildListQueryParams({ enabled: 'true', status: '' })).toEqual({
+      page: 1,
+      page_size: 20
+    })
+  })
 })
 
 describe('normalizeListPageResponse', () => {

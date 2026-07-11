@@ -3037,6 +3037,13 @@ function paginateMockItems(items, params = {}) {
       }
     })
   }
+  if (typeof params.enabled === 'boolean') {
+    filtered = filtered.filter((item) => Boolean(item?.enabled) === params.enabled)
+  }
+  const status = params.status == null ? '' : String(params.status).trim().toLowerCase()
+  if (status) {
+    filtered = filtered.filter((item) => String(item?.status || '').trim().toLowerCase() === status)
+  }
   const total = filtered.length
   const start = (page - 1) * pageSize
   return {

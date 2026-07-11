@@ -2,12 +2,27 @@ import { useQuery } from '@tanstack/vue-query'
 import { computed, unref } from 'vue'
 import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 
+function normalizeOptionalEnabledFilter(value) {
+  const raw = unref(value)
+  if (raw === true || raw === false) return raw
+  return undefined
+}
+
+function normalizeOptionalStatusFilter(value) {
+  const raw = unref(value)
+  if (raw == null) return ''
+  return String(raw).trim()
+}
+
 /**
  * Shared vue-query wrapper for control-plane paginated list endpoints.
  *
- * queryKey shape: [resourceKey, agentFilter|null|'__all__', page, pageSize, q]
+ * queryKey shape: [resourceKey, agentFilter, page, pageSize, q, enabledFilter, status]
  * - concrete agent id → backend agent_id
  * - all / blank → omit agent_id (all agents)
+ * - enabledFilter boolean → backend enabled; undefined omits
+ * - status non-empty → backend status; empty omits
+ * - `enabled` remains the vue-query enable flag (not the list filter)
  */
 export function useResourceListQuery({
   resourceKey,
@@ -15,6 +30,8 @@ export function useResourceListQuery({
   page = 1,
   pageSize = 20,
   q = '',
+  enabledFilter,
+  status = '',
   fetcher,
   enabled
 } = {}) {
@@ -30,12 +47,16 @@ export function useResourceListQuery({
     const pageNum = Number(unref(page))
     const sizeNum = Number(unref(pageSize))
     const query = unref(q)
+    const listEnabled = normalizeOptionalEnabledFilter(enabledFilter)
+    const listStatus = normalizeOptionalStatusFilter(status)
     return [
       resourceKey,
       filter,
       Number.isInteger(pageNum) && pageNum > 0 ? pageNum : 1,
       Number.isInteger(sizeNum) && sizeNum > 0 ? sizeNum : 20,
-      query == null ? '' : String(query).trim()
+      query == null ? '' : String(query).trim(),
+      listEnabled === undefined ? null : listEnabled,
+      listStatus
     ]
   })
 
@@ -50,11 +71,15 @@ export function useResourceListQuery({
       const pageNum = Number(unref(page))
       const sizeNum = Number(unref(pageSize))
       const query = unref(q)
+      const listEnabled = normalizeOptionalEnabledFilter(enabledFilter)
+      const listStatus = normalizeOptionalStatusFilter(status)
       return fetcher({
         agentId: isAllAgentsFilter(filter) ? undefined : (filter || undefined),
         page: Number.isInteger(pageNum) && pageNum > 0 ? pageNum : 1,
         pageSize: Number.isInteger(sizeNum) && sizeNum > 0 ? sizeNum : 20,
-        q: query == null ? '' : String(query).trim()
+        q: query == null ? '' : String(query).trim(),
+        enabled: listEnabled,
+        status: listStatus || undefined
       })
     },
     placeholderData: (previousData) => previousData
