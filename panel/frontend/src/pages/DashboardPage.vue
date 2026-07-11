@@ -5,32 +5,60 @@
         <h1 class="dashboard__title">集群概览</h1>
         <p class="dashboard__subtitle">实时监控所有节点状态</p>
       </div>
-      <div class="dashboard__actions">
-        <RouterLink to="/agents" class="dashboard__action">
-          查看全部节点
-        </RouterLink>
-        <RouterLink to="/agents" class="dashboard__action">
-          查看离线节点
+      <div class="dashboard__actions dashboard__actions--cards">
+        <RouterLink to="/agents" class="dashboard__action-card">
+          <span class="dashboard__action-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <ellipse cx="12" cy="5" rx="9" ry="3"/>
+              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+            </svg>
+          </span>
+          <span class="dashboard__action-label">查看全部节点</span>
         </RouterLink>
         <RouterLink
           v-if="defaultAgentId"
           :to="`/rules?agentId=${defaultAgentId}`"
-          class="dashboard__action dashboard__action--primary"
+          class="dashboard__action-card dashboard__action-card--primary"
         >
-          创建 HTTP 规则
+          <span class="dashboard__action-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+          </span>
+          <span class="dashboard__action-label">创建 HTTP 规则</span>
         </RouterLink>
-        <span v-else class="dashboard__action dashboard__action--disabled" title="暂无可用节点">
-          创建 HTTP 规则
+        <span v-else class="dashboard__action-card dashboard__action-card--disabled" title="暂无可用节点">
+          <span class="dashboard__action-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+          </span>
+          <span class="dashboard__action-label">创建 HTTP 规则</span>
         </span>
         <RouterLink
           v-if="defaultAgentId"
           :to="`/l4?agentId=${defaultAgentId}`"
-          class="dashboard__action dashboard__action--primary"
+          class="dashboard__action-card dashboard__action-card--primary"
         >
-          创建 L4 规则
+          <span class="dashboard__action-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+            </svg>
+          </span>
+          <span class="dashboard__action-label">创建 L4 规则</span>
         </RouterLink>
-        <span v-else class="dashboard__action dashboard__action--disabled" title="暂无可用节点">
-          创建 L4 规则
+        <span v-else class="dashboard__action-card dashboard__action-card--disabled" title="暂无可用节点">
+          <span class="dashboard__action-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+            </svg>
+          </span>
+          <span class="dashboard__action-label">创建 L4 规则</span>
         </span>
       </div>
     </div>
@@ -202,56 +230,89 @@ function navigateToAgent(agent) {
 .dashboard__actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: stretch;
   justify-content: flex-end;
-  gap: var(--space-2);
+  gap: var(--space-3);
   flex-shrink: 0;
 }
 
-.dashboard__action {
-  display: inline-flex;
+.dashboard__actions--cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  width: 100%;
+  max-width: 480px;
+}
+
+.dashboard__action-card {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  padding: var(--space-2) var(--space-3);
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2);
   font-size: var(--text-sm);
   font-weight: 500;
   color: var(--color-text-secondary);
   background: var(--color-bg-surface);
   border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   text-decoration: none;
   transition: color var(--duration-fast) var(--ease-default),
     background var(--duration-fast) var(--ease-default),
-    border-color var(--duration-fast) var(--ease-default);
-  white-space: nowrap;
+    border-color var(--duration-fast) var(--ease-default),
+    transform var(--duration-fast) var(--ease-default);
+  min-width: 0;
 }
 
-.dashboard__action:hover {
+.dashboard__action-card:hover {
   color: var(--color-text-primary);
   background: var(--color-bg-hover);
   border-color: var(--color-border-strong);
+  transform: translateY(-1px);
 }
 
-.dashboard__action--primary {
+.dashboard__action-card--primary {
   color: var(--color-primary);
   border-color: var(--color-primary-subtle);
   background: var(--color-primary-subtle);
 }
 
-.dashboard__action--primary:hover {
+.dashboard__action-card--primary:hover {
   color: var(--color-primary-hover);
   background: var(--color-primary-subtle);
   border-color: var(--color-primary);
 }
 
-.dashboard__action--disabled {
+.dashboard__action-card--disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.dashboard__action--disabled:hover {
+.dashboard__action-card--disabled:hover {
   color: var(--color-text-secondary);
   background: var(--color-bg-surface);
   border-color: var(--color-border-default);
+  transform: none;
+}
+
+.dashboard__action-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-hover);
+  color: currentColor;
+  flex-shrink: 0;
+}
+
+.dashboard__action-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .stats-grid {
@@ -336,6 +397,11 @@ function navigateToAgent(agent) {
 
   .dashboard__actions {
     justify-content: flex-start;
+  }
+
+  .dashboard__actions--cards {
+    max-width: none;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .stats-grid {
