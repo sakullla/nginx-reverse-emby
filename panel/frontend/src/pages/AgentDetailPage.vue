@@ -1,10 +1,11 @@
 <template>
   <div class="agent-detail" v-if="agent">
+    <div class="agent-detail__stack">
     <div class="agent-detail__back">
       <RouterLink to="/agents" class="back-link">← {{ detailLabels.backToAgents }}</RouterLink>
     </div>
 
-    <BaseListCard class="agent-detail__summary-card" :title="agent.name" :status="statusTone" :clickable="false">
+    <BaseListCard class="agent-detail__summary-card agent-detail__panel" :title="agent.name" :status="statusTone" :clickable="false">
       <template #header-left>
         <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
         <BaseBadge tone="primary" size="sm" class="agent-detail__mode-badge">{{ getModeLabel(agent.mode) }}</BaseBadge>
@@ -162,7 +163,11 @@
       </div>
     </BaseListCard>
 
-    <div v-if="agent.last_apply_status === 'failed' && agent.last_apply_message" class="agent-detail__error">
+    <div
+      v-if="agent.last_apply_status === 'failed' && agent.last_apply_message"
+      class="agent-detail__error agent-detail__alert"
+      role="alert"
+    >
       <div class="error-block">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/>
@@ -176,9 +181,9 @@
       </div>
     </div>
 
-    <div class="agent-detail__sections">
-      <TrafficCollapsibleSection :title="detailLabels.sections.rules" :subtitle="rulesSubtitle" default-expanded>
-        <BaseListCard class="rules-list-card" :clickable="false">
+    <div class="agent-detail__sections agent-detail__detail-panels">
+      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.rules" :subtitle="rulesSubtitle" default-expanded>
+        <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
           <div class="rules-list">
             <div class="rules-list__header-row">
               <span class="rules-list__col rules-list__col--primary">入口地址</span>
@@ -195,14 +200,14 @@
             >
               <span class="rules-list__col rules-list__col--primary" data-label="入口地址" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
               <span class="rules-list__col rules-list__col--meta" data-label="类型 / 状态">
-                <span class="rule-type-badge" :class="`rule-type-badge--${rule._type}`">{{ ruleTypeLabel(rule) }}</span>
-                <span class="rule-status-badge" :class="rule.enabled !== false ? 'rule-status-badge--enabled' : 'rule-status-badge--disabled'">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</span>
+                <BaseBadge :tone="rule._type === 'http' ? 'primary' : 'success'" size="sm">{{ ruleTypeLabel(rule) }}</BaseBadge>
+                <BaseBadge :tone="rule.enabled !== false ? 'success' : 'neutral'" size="sm">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
               </span>
               <span class="rules-list__col rules-list__col--secondary" data-label="后端地址" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
               <span class="rules-list__col rules-list__col--tags" data-label="标签">
                 <span v-if="rule.tags && rule.tags.length" class="rule-tags">
-                  <span v-for="tag in rule.tags.slice(0, 3)" :key="tag" class="rule-tag">{{ tag }}</span>
-                  <span v-if="rule.tags.length > 3" class="rule-tag rule-tag--more">+{{ rule.tags.length - 3 }}</span>
+                  <BaseBadge v-for="tag in rule.tags.slice(0, 3)" :key="tag" tone="neutral" size="sm">{{ tag }}</BaseBadge>
+                  <BaseBadge v-if="rule.tags.length > 3" tone="neutral" size="sm">+{{ rule.tags.length - 3 }}</BaseBadge>
                 </span>
                 <span v-else class="rules-list__empty-cell">—</span>
               </span>
@@ -213,8 +218,8 @@
         </BaseListCard>
       </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
-        <BaseListCard class="rules-list-card" :clickable="false">
+      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
+        <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
           <div class="simple-list">
             <div
               v-for="cert in certificates"
@@ -236,8 +241,8 @@
         </BaseListCard>
       </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
-        <BaseListCard class="rules-list-card" :clickable="false">
+      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
+        <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
           <div class="simple-list">
             <div
               v-for="listener in relayListeners"
@@ -259,9 +264,9 @@
         </BaseListCard>
       </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection v-if="trafficStatsEnabled" :title="detailLabels.sections.traffic">
+      <TrafficCollapsibleSection v-if="trafficStatsEnabled" class="agent-detail__section" :title="detailLabels.sections.traffic">
         <div class="traffic-sections">
-          <BaseListCard class="traffic-card" :clickable="false">
+          <BaseListCard class="traffic-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
             <template #header-left>
               <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -269,12 +274,9 @@
               <span class="traffic-section-card__title">监控</span>
             </template>
             <template #header-right>
-              <span
-                class="traffic-overview__status"
-                :class="trafficSummary.blocked ? 'traffic-overview__status--danger' : 'traffic-overview__status--success'"
-              >
+              <BaseBadge :tone="trafficSummary.blocked ? 'danger' : 'success'" size="sm">
                 {{ trafficSummary.blocked ? '已阻断' : '正常' }}
-              </span>
+              </BaseBadge>
             </template>
             <TrafficSummaryCards
               :summary="trafficSummary"
@@ -307,7 +309,7 @@
             </div>
           </BaseListCard>
 
-          <BaseListCard class="traffic-card" :clickable="false">
+          <BaseListCard class="traffic-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
             <template #header-left>
               <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="11" cy="11" r="8"/>
@@ -320,7 +322,7 @@
             </div>
           </BaseListCard>
 
-          <BaseListCard class="traffic-card" :clickable="false">
+          <BaseListCard class="traffic-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
             <template #header-left>
               <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="3"/>
@@ -361,9 +363,9 @@
         />
       </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection :title="detailLabels.sections.systemInfo">
+      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.systemInfo">
         <div class="info-sections">
-          <BaseListCard class="info-card" :title="detailLabels.systemCards.package" :clickable="false">
+          <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.package" :clickable="false">
             <div class="info-grid">
               <div class="info-row info-row--clean"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
               <div class="info-row info-row--clean"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
@@ -374,7 +376,7 @@
             </div>
           </BaseListCard>
 
-          <BaseListCard class="info-card" :title="detailLabels.systemCards.identity" :clickable="false">
+          <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.identity" :clickable="false">
             <div class="info-grid">
               <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
               <div class="info-row info-row--clean"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
@@ -382,9 +384,12 @@
             </div>
           </BaseListCard>
 
-          <BaseListCard class="info-card" :title="detailLabels.systemCards.sync" :clickable="false">
+          <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.sync" :clickable="false">
             <div class="info-grid">
-              <div class="info-row info-row--clean"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
+              <div class="info-row info-row--clean">
+                <span>同步状态</span>
+                <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
+              </div>
               <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
             </div>
           </BaseListCard>
@@ -392,13 +397,17 @@
       </TrafficCollapsibleSection>
 
       <TrafficCollapsibleSection
+        class="agent-detail__section"
         :title="detailLabels.sections.syncEvents"
         :subtitle="syncStatusLabel"
         :default-expanded="agent.last_apply_status === 'failed'"
       >
-        <BaseListCard class="info-card" :clickable="false">
+        <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
           <div class="info-grid">
-            <div class="info-row info-row--clean"><span>{{ detailLabels.sync.status }}</span><span>{{ agent.last_apply_status || '—' }}</span></div>
+            <div class="info-row info-row--clean">
+              <span>{{ detailLabels.sync.status }}</span>
+              <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
+            </div>
             <div class="info-row info-row--clean"><span>{{ detailLabels.sync.message }}</span><span>{{ agent.last_apply_message || '—' }}</span></div>
             <div class="info-row info-row--clean"><span>{{ detailLabels.sync.time }}</span><span>{{ agent.last_apply_at ? new Date(agent.last_apply_at).toLocaleString() : '—' }}</span></div>
           </div>
@@ -415,18 +424,19 @@
       @confirm="onConfirmDialogConfirm"
       @cancel="confirmDialog.visible = false"
     />
+    </div>
   </div>
-  <div v-else-if="isLoading" class="agent-detail__loading">
+  <div v-else-if="isLoading" class="agent-detail agent-detail__loading">
     <div class="spinner"></div>
   </div>
-  <div v-else class="agent-detail__not-found">
+  <div v-else class="agent-detail agent-detail__not-found">
     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
       <circle cx="12" cy="12" r="10"/>
       <line x1="12" y1="8" x2="12" y2="12"/>
       <line x1="12" y1="16" x2="12.01" y2="16"/>
     </svg>
-    <p>节点不存在或已删除</p>
-    <RouterLink to="/agents" class="btn btn-secondary">返回节点管理</RouterLink>
+    <p>{{ detailLabels.notFoundTitle }}</p>
+    <RouterLink to="/agents" class="agent-detail__not-found-link">{{ detailLabels.backToAgents }}</RouterLink>
   </div>
 </template>
 
@@ -1081,14 +1091,40 @@ function packageStatusLabel(status) {
   margin: 0 auto;
 }
 
-.agent-detail__back { margin-bottom: 1rem; }
-.back-link { color: var(--color-text-secondary); font-size: 0.875rem; text-decoration: none; }
-.back-link:hover { color: var(--color-primary); }
+.agent-detail__stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.agent-detail__back {
+  margin-bottom: 0;
+}
+
+.back-link {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+
+.back-link:hover {
+  color: var(--color-primary);
+}
+
+.agent-detail__panel {
+  border-radius: var(--radius-xl);
+}
+
+.agent-detail__panel--inset {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  box-shadow: none;
+}
 
 .agent-detail__summary-card {
   position: relative;
   overflow: hidden;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0;
 }
 
 .agent-detail__summary-card::before {
@@ -1319,13 +1355,51 @@ function packageStatusLabel(status) {
   font-family: var(--font-mono);
 }
 
-.agent-detail__error { margin-bottom: 1rem; }
-.error-block { display: flex; align-items: flex-start; gap: 0.75rem; padding: 1rem; background: var(--color-danger-50); border: 1px solid var(--color-danger); border-radius: var(--radius-lg); color: var(--color-danger); }
-.error-block svg { flex-shrink: 0; margin-top: 1px; }
-.error-block__title { font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; }
-.error-block__text { font-size: 0.8125rem; line-height: 1.5; color: var(--color-danger); opacity: 0.95; word-break: break-word; }
+.agent-detail__error,
+.agent-detail__alert {
+  margin-bottom: 0;
+}
 
-.agent-detail__sections { display: flex; flex-direction: column; gap: var(--space-3); }
+.error-block {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-danger-50);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-xl);
+  color: var(--color-danger);
+}
+
+.error-block svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.error-block__title {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-1);
+}
+
+.error-block__text {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--color-danger);
+  opacity: 0.95;
+  word-break: break-word;
+}
+
+.agent-detail__sections,
+.agent-detail__detail-panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.agent-detail__section {
+  min-width: 0;
+}
 
 .simple-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .simple-list__row {
@@ -1432,30 +1506,11 @@ function packageStatusLabel(status) {
   .rules-list__col--tags { justify-content: flex-start; }
   .rule-tags { justify-content: flex-start; }
 }
-.rule-type-badge { display: inline-flex; align-items: center; justify-content: center; padding: 0.15rem 0.4rem; border-radius: var(--radius-sm); font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; }
-.rule-type-badge--http { background: var(--color-primary-subtle); color: var(--color-primary); }
-.rule-type-badge--l4 { background: var(--color-success-subtle, #dcfce7); color: var(--color-success, #16a34a); }
-.rule-status-badge { font-size: 0.75rem; font-weight: 500; }
-.rule-status-badge--enabled { color: var(--color-success); }
-.rule-status-badge--disabled { color: var(--color-text-muted); }
-.rule-tags { display: flex; gap: 0.375rem; flex-wrap: wrap; justify-content: flex-end; }
-.rule-tag { display: inline-flex; align-items: center; padding: 0.125rem 0.375rem; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); font-size: 0.6875rem; color: var(--color-text-secondary); }
-.rule-tag--more { background: transparent; border-style: dashed; }
-.traffic-overview__status {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.2rem 0.6rem;
-  border-radius: var(--radius-full);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-.traffic-overview__status--success {
-  background: var(--color-success-subtle, #dcfce7);
-  color: var(--color-success, #16a34a);
-}
-.traffic-overview__status--danger {
-  background: var(--color-danger-50);
-  color: var(--color-danger);
+.rule-tags {
+  display: flex;
+  gap: var(--space-1-5);
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .traffic-tab__trend { display: flex; flex-direction: column; gap: 0.75rem; }
 .traffic-tab__trend-header { display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); }
@@ -1463,28 +1518,116 @@ function packageStatusLabel(status) {
 .traffic-trend__controls { display: inline-flex; gap: 2px; padding: 2px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
 .traffic-trend__mode { min-width: 3.25rem; padding: 0.45rem 0.85rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.875rem; font-weight: 600; cursor: pointer; font-family: inherit; }
 .traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
-.empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
-.info-sections { display: flex; flex-direction: column; gap: 1rem; }
-.info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
+.empty-hint {
+  text-align: center;
+  color: var(--color-text-muted);
+  padding: var(--space-8);
+  font-size: var(--text-sm);
+}
+
+.info-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
 .info-row,
-.info-row--clean { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; }
-.info-row--clean { padding: 0.625rem 1rem; }
+.info-row--clean {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+}
+
+.info-row--clean {
+  padding: var(--space-2-5) var(--space-4);
+}
+
 .info-row span:first-child,
-.info-row--clean span:first-child { color: var(--color-text-secondary); }
+.info-row--clean span:first-child {
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
 .info-row span:last-child,
-.info-row--clean span:last-child { color: var(--color-text-primary); font-weight: 500; }
-.agent-detail__loading { display: flex; justify-content: center; padding: 3rem; }
-.agent-detail__not-found { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
-.agent-detail__not-found p { margin: 0; font-size: 1rem; }
-.spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.btn { padding: 10px 24px; border-radius: var(--radius-full); font-size: var(--text-sm); font-weight: var(--font-semibold); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); border: 1.5px solid transparent; font-family: inherit; display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; }
-.btn-primary { background: var(--color-primary); color: white; }
-.btn-primary:hover { background: var(--color-primary-hover); }
-.btn-secondary { background: transparent; color: var(--color-text-secondary); border: 1.5px solid var(--color-border-default); }
-.btn-secondary:hover { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-subtle); }
-.btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.traffic-sections { display: flex; flex-direction: column; gap: 1rem; }
+.info-row--clean span:last-child {
+  color: var(--color-text-primary);
+  font-weight: 500;
+  min-width: 0;
+  text-align: right;
+}
+
+.agent-detail__loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-12, 3rem);
+}
+
+.agent-detail__not-found {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-12, 4rem) var(--space-8);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.agent-detail__not-found p {
+  margin: 0;
+  font-size: var(--text-base, 1rem);
+}
+
+.agent-detail__not-found-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2-5) var(--space-6);
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  text-decoration: none;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.agent-detail__not-found-link:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--color-border-default);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.traffic-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
 .traffic-section-card__title {
   font-size: 1rem;
   font-weight: 600;

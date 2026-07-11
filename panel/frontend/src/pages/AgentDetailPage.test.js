@@ -290,6 +290,11 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('.agent-detail__primary-band [data-testid="detail-sync-status"]').exists()).toBe(false)
     expect(wrapper.find('.agent-detail__sync-signal').exists()).toBe(false)
 
+    // Whole-page stack keeps summary + detail panels in one rhythm.
+    expect(wrapper.find('.agent-detail__stack').exists()).toBe(true)
+    expect(wrapper.find('.agent-detail__summary-card').classes()).toContain('agent-detail__panel')
+    expect(wrapper.find('.agent-detail__detail-panels').exists()).toBe(true)
+
     // Address stays secondary under the title; metrics grid is the main body.
     expect(wrapper.find('.agent-detail__meta-row').exists()).toBe(true)
     expect(wrapper.find('.agent-detail__secondary-band').exists()).toBe(true)
@@ -416,6 +421,12 @@ describe('AgentDetailPage', () => {
     expect(rows[2].text()).toContain('L4')
     expect(rows[2].text()).toContain('tcp://0.0.0.0:25565')
     expect(rows[2].text()).toContain('192.168.1.20:25565')
+
+    // Detail lists reuse BaseBadge instead of parallel local badge classes.
+    const source = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
+    expect(source).not.toContain('rule-type-badge')
+    expect(source).not.toContain('rule-status-badge')
+    expect(wrapper.find('.agent-detail__panel--inset').exists()).toBe(true)
   })
 
   it('navigates to rule edit page when a rule row is clicked', async () => {
