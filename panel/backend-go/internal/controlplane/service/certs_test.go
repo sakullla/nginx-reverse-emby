@@ -417,6 +417,17 @@ func TestCertificateServiceCreateUploadedPersistsValidatedMaterialAndHash(t *tes
 	if created.LastIssueAt == "" {
 		t.Fatal("created.LastIssueAt is empty")
 	}
+	if created.NotAfter == "" {
+		t.Fatal("created.NotAfter is empty")
+	}
+	leafCert, err := parseManagedCertificateLeaf([]byte(leaf.CertPEM))
+	if err != nil {
+		t.Fatalf("parse leaf cert: %v", err)
+	}
+	wantNotAfter := leafCert.NotAfter.UTC().Format(time.RFC3339)
+	if created.NotAfter != wantNotAfter {
+		t.Fatalf("created.NotAfter = %q, want %q", created.NotAfter, wantNotAfter)
+	}
 }
 
 func TestCertificateServiceCreatePreservesPreferredIDWhenNonConflicting(t *testing.T) {
