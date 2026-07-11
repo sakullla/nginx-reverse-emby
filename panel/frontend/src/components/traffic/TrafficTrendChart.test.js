@@ -29,6 +29,30 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
   })
 
+  it('shows empty 暂无数据 when points are empty and not loading', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: { points: [] },
+      ...mountOptions
+    })
+    expect(wrapper.find('[data-testid="traffic-trend-empty"]').text()).toContain('暂无数据')
+    expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
+  })
+
+  it('shows loading placeholder instead of empty or chart when loading', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        loading: true,
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ]
+      },
+      ...mountOptions
+    })
+    expect(wrapper.find('[data-testid="traffic-trend-loading"]').text()).toContain('加载中')
+    expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('暂无数据')
+  })
+
   it('computes series from points prop', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: {
