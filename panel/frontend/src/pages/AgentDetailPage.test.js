@@ -408,7 +408,7 @@ describe('AgentDetailPage', () => {
     const wrapper = await mountPage()
 
     expect(wrapper.text()).toContain('规则列表')
-    const rows = wrapper.findAll('.rules-list__row')
+    const rows = wrapper.findAll('[data-testid="detail-rules-list"] .simple-list__row')
     expect(rows.length).toBe(3)
 
     expect(rows[0].text()).toContain('HTTP')
@@ -433,13 +433,45 @@ describe('AgentDetailPage', () => {
     mockHttpRules = [{ id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: [] }]
 
     const wrapper = await mountPage()
-    const row = wrapper.find('.rules-list__row')
+    const row = wrapper.find('[data-testid="detail-rules-list"] .simple-list__row')
     await row.trigger('click')
     await nextTick()
 
     expect(routerPush).toHaveBeenCalledWith(expect.objectContaining({
       path: '/rules',
       query: expect.objectContaining({ agentId: 'edge-1', search: '#id=1' })
+    }))
+  })
+
+  it('navigates to certificate and listener pages when detail rows are clicked', async () => {
+    mockCertificates = [{ id: 11, domain: 'cdn.example.com', name: 'edge-cert', status: 'active', enabled: true, tags: [] }]
+    mockRelayListeners = [{
+      id: 21,
+      name: 'public-relay',
+      listen_host: '0.0.0.0',
+      listen_port: 8443,
+      public_host: 'relay.example.com',
+      public_port: 8443,
+      transport_mode: 'quic',
+      tags: [],
+      enabled: true,
+    }]
+
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '证书列表')
+    await wrapper.find('[data-testid="detail-certificates-list"] .simple-list__row').trigger('click')
+    await nextTick()
+    expect(routerPush).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/certs',
+      query: expect.objectContaining({ agentId: 'edge-1', search: '#id=11' })
+    }))
+
+    await expandSection(wrapper, '监听列表')
+    await wrapper.find('[data-testid="detail-listeners-list"] .simple-list__row').trigger('click')
+    await nextTick()
+    expect(routerPush).toHaveBeenCalledWith(expect.objectContaining({
+      path: '/relay-listeners',
+      query: expect.objectContaining({ agentId: 'edge-1', search: '#id=21' })
     }))
   })
 

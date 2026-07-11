@@ -184,35 +184,39 @@
     <div class="agent-detail__sections agent-detail__detail-panels">
       <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.rules" :subtitle="rulesSubtitle" default-expanded>
         <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="rules-list">
-            <div class="rules-list__header-row">
-              <span class="rules-list__col rules-list__col--primary">入口地址</span>
-              <span class="rules-list__col rules-list__col--meta">类型 / 状态</span>
-              <span class="rules-list__col rules-list__col--secondary">后端地址</span>
-              <span class="rules-list__col rules-list__col--tags">标签</span>
-            </div>
-
+          <div class="simple-list" data-testid="detail-rules-list">
             <div
               v-for="rule in allRules"
               :key="`${rule._type}-${rule.id}`"
-              class="rules-list__row"
+              class="simple-list__row simple-list__row--clickable"
               @click="navigateToRule(rule)"
             >
-              <span class="rules-list__col rules-list__col--primary" data-label="入口地址" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
-              <span class="rules-list__col rules-list__col--meta" data-label="类型 / 状态">
+              <div class="simple-list__main">
+                <span class="simple-list__primary" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
+                <span
+                  v-if="ruleBackend(rule)"
+                  class="simple-list__secondary"
+                  :title="ruleBackend(rule)"
+                >{{ ruleBackend(rule) }}</span>
+                <div v-if="listTags(rule.tags).length" class="simple-list__tags">
+                  <BaseBadge
+                    v-for="tag in listTags(rule.tags).slice(0, 3)"
+                    :key="tag"
+                    tone="primary"
+                    size="sm"
+                  >{{ tag }}</BaseBadge>
+                  <BaseBadge
+                    v-if="listTags(rule.tags).length > 3"
+                    tone="neutral"
+                    size="sm"
+                  >+{{ listTags(rule.tags).length - 3 }}</BaseBadge>
+                </div>
+              </div>
+              <div class="simple-list__side">
                 <BaseBadge :tone="rule._type === 'http' ? 'primary' : 'success'" size="sm">{{ ruleTypeLabel(rule) }}</BaseBadge>
                 <BaseBadge :tone="rule.enabled !== false ? 'success' : 'neutral'" size="sm">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
-              </span>
-              <span class="rules-list__col rules-list__col--secondary" data-label="后端地址" :title="ruleBackend(rule)">{{ ruleBackend(rule) }}</span>
-              <span class="rules-list__col rules-list__col--tags" data-label="标签">
-                <span v-if="rule.tags && rule.tags.length" class="rule-tags">
-                  <BaseBadge v-for="tag in rule.tags.slice(0, 3)" :key="tag" tone="neutral" size="sm">{{ tag }}</BaseBadge>
-                  <BaseBadge v-if="rule.tags.length > 3" tone="neutral" size="sm">+{{ rule.tags.length - 3 }}</BaseBadge>
-                </span>
-                <span v-else class="rules-list__empty-cell">—</span>
-              </span>
+              </div>
             </div>
-
             <p v-if="!allRules.length" class="empty-hint">{{ detailLabels.empty.rules }}</p>
           </div>
         </BaseListCard>
@@ -220,11 +224,12 @@
 
       <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
         <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list">
+          <div class="simple-list" data-testid="detail-certificates-list">
             <div
               v-for="cert in certificates"
               :key="cert.id"
-              class="simple-list__row"
+              class="simple-list__row simple-list__row--clickable"
+              @click="navigateToCertificate(cert)"
             >
               <div class="simple-list__main">
                 <span class="simple-list__primary" :title="certificatePrimary(cert)">{{ certificatePrimary(cert) }}</span>
@@ -258,11 +263,12 @@
 
       <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
         <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list">
+          <div class="simple-list" data-testid="detail-listeners-list">
             <div
               v-for="listener in relayListeners"
               :key="listener.id"
-              class="simple-list__row"
+              class="simple-list__row simple-list__row--clickable"
+              @click="navigateToListener(listener)"
             >
               <div class="simple-list__main">
                 <span class="simple-list__primary" :title="listenerPrimary(listener)">{{ listenerPrimary(listener) }}</span>
@@ -1164,15 +1170,26 @@ function listenerTransportLabel(listener) {
   return ''
 }
 
-function navigateToRule(rule) {
-  const path = rule._type === 'http' ? '/rules' : '/l4'
+function navigateToManagedList(path, id) {
   router.push({
     path,
     query: {
       agentId: agentId.value,
-      search: `#id=${rule.id}`
+      search: `#id=${id}`
     }
   })
+}
+
+function navigateToRule(rule) {
+  navigateToManagedList(rule._type === 'http' ? '/rules' : '/l4', rule.id)
+}
+
+function navigateToCertificate(cert) {
+  navigateToManagedList('/certs', cert.id)
+}
+
+function navigateToListener(listener) {
+  navigateToManagedList('/relay-listeners', listener.id)
 }
 
 function shortSha(value) {
@@ -1516,6 +1533,10 @@ function packageStatusLabel(status) {
   border-radius: var(--radius-lg);
   font-size: var(--text-sm);
 }
+.simple-list__row--clickable {
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
 .simple-list__row:hover { background: var(--color-bg-hover); }
 .simple-list__main {
   min-width: 0;
@@ -1556,81 +1577,6 @@ function packageStatusLabel(status) {
   flex-shrink: 0;
 }
 
-.rules-list { display: flex; flex-direction: column; gap: 0.25rem; }
-.rules-list__header-row,
-.rules-list__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) auto minmax(0, 1fr) minmax(0, 0.9fr);
-  grid-template-areas: 'primary meta secondary tags';
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.625rem 0.75rem;
-  font-size: 0.8125rem;
-}
-.rules-list__header-row { font-weight: 600; color: var(--color-text-secondary); border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 0.5rem; }
-.rules-list__row { cursor: pointer; border-radius: var(--radius-lg); transition: background-color 150ms ease; }
-.rules-list__row:hover { background: var(--color-bg-subtle); }
-.rules-list__col { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rules-list__col--primary {
-  grid-area: primary;
-  color: var(--color-text-primary);
-  font-weight: 600;
-}
-.rules-list__col--meta {
-  grid-area: meta;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  flex-wrap: wrap;
-}
-.rules-list__col--secondary {
-  grid-area: secondary;
-  color: var(--color-text-tertiary);
-  font-size: 0.75rem;
-}
-.rules-list__col--tags { grid-area: tags; display: flex; justify-content: flex-end; }
-.rules-list__empty-cell { color: var(--color-text-muted); }
-@media (max-width: 900px) {
-  .rules-list__header-row { display: none; }
-  .rules-list__row {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      'meta'
-      'primary'
-      'secondary'
-      'tags';
-    gap: 0.375rem 0.5rem;
-    padding: 0.75rem;
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border-subtle);
-  }
-  .rules-list__row:hover { background: var(--color-bg-hover); }
-  .rules-list__col--primary,
-  .rules-list__col--secondary {
-    white-space: normal;
-    word-break: break-all;
-    overflow: visible;
-  }
-  .rules-list__col--secondary {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-  }
-  .rules-list__col--secondary::before {
-    content: attr(data-label) ':';
-    flex-shrink: 0;
-    font-size: 0.75rem;
-    color: var(--color-text-tertiary);
-  }
-  .rules-list__col--tags { justify-content: flex-start; }
-  .rule-tags { justify-content: flex-start; }
-}
-.rule-tags {
-  display: flex;
-  gap: var(--space-1-5);
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
 .traffic-tab__trend { display: flex; flex-direction: column; gap: 0.75rem; }
 .traffic-tab__trend-header { display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); }
 .traffic-tab__breakdown { }
