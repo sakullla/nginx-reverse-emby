@@ -9,8 +9,25 @@
           </svg>
           <span class="traffic-summary-card__label">总流量</span>
         </div>
-        <span class="traffic-summary-card__value">{{ formatBytes(summary.used_bytes) }}</span>
-        <span v-if="percent != null" class="traffic-summary-card__sub">占额度 {{ percent }}%</span>
+        <span class="traffic-summary-card__value" data-testid="traffic-summary-used">{{ formatBytes(summary.used_bytes) }}</span>
+        <span v-if="usedSub" class="traffic-summary-card__sub" data-testid="traffic-summary-used-sub">{{ usedSub }}</span>
+      </div>
+      <div class="traffic-summary-card__metric traffic-summary-card__metric--primary">
+        <div class="traffic-summary-card__header">
+          <svg class="traffic-summary-card__icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2v4"/>
+            <path d="M12 18v4"/>
+            <path d="M4.93 4.93l2.83 2.83"/>
+            <path d="M16.24 16.24l2.83 2.83"/>
+            <path d="M2 12h4"/>
+            <path d="M18 12h4"/>
+            <path d="M4.93 19.07l2.83-2.83"/>
+            <path d="M16.24 7.76l2.83-2.83"/>
+          </svg>
+          <span class="traffic-summary-card__label">剩余</span>
+        </div>
+        <span class="traffic-summary-card__value" data-testid="traffic-summary-remaining">{{ remainingDisplay }}</span>
+        <span v-if="remainingSub" class="traffic-summary-card__sub" data-testid="traffic-summary-remaining-sub">{{ remainingSub }}</span>
       </div>
       <div class="traffic-summary-card__metric">
         <div class="traffic-summary-card__header">
@@ -58,7 +75,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { formatBytes, usagePercent } from '../../utils/trafficStats.js'
+import { formatBytes, formatQuota, usagePercent } from '../../utils/trafficStats.js'
 import { rate } from '../../utils/agentMetrics.js'
 
 const props = defineProps({
@@ -68,6 +85,29 @@ const props = defineProps({
 })
 
 const percent = computed(() => usagePercent(props.summary.used_bytes, props.summary.monthly_quota_bytes))
+
+const hasQuota = computed(() => props.summary.monthly_quota_bytes != null && props.summary.monthly_quota_bytes !== '')
+
+const usedSub = computed(() => {
+  if (!hasQuota.value) return null
+  if (percent.value == null) return null
+  return `占额度 ${percent.value}% · 额度 ${formatQuota(props.summary.monthly_quota_bytes, '无限制')}`
+})
+
+const remainingDisplay = computed(() => {
+  if (!hasQuota.value) return '无限制'
+  if (props.summary.remaining_bytes != null && props.summary.remaining_bytes !== '') {
+    return formatBytes(props.summary.remaining_bytes)
+  }
+  const used = Number(props.summary.used_bytes) || 0
+  const quota = Number(props.summary.monthly_quota_bytes) || 0
+  return formatBytes(Math.max(0, quota - used))
+})
+
+const remainingSub = computed(() => {
+  if (!hasQuota.value) return '未设置月额度'
+  return null
+})
 
 const rateRows = computed(() => {
   const rx = props.networkMetrics?.rx_bytes_per_second
@@ -92,7 +132,7 @@ const rateRows = computed(() => {
 }
 .traffic-summary-cards__grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 0.75rem;
 }
 .traffic-summary-card__metric {
@@ -164,7 +204,10 @@ const rateRows = computed(() => {
   text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
 }
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
+  .traffic-summary-cards__grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 720px) {
   .traffic-summary-cards__grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 480px) {
