@@ -111,26 +111,28 @@ describe('TrafficSummaryCards', () => {
     }
   })
 
-  it('highlights used, remaining and current-rate metrics', () => {
+  it('keeps total and remaining as equal primary metrics without hero emphasis', () => {
     const wrapper = mountCards()
     const metrics = wrapper.findAll('.traffic-summary-card__metric')
     expect(metrics[0].classes()).toContain('traffic-summary-card__metric--primary')
     expect(metrics[1].classes()).toContain('traffic-summary-card__metric--primary')
-    expect(metrics[1].classes()).toContain('traffic-summary-card__metric--hero')
-    expect(metrics[4].classes()).toContain('traffic-summary-card__metric--primary')
+    expect(metrics[1].classes()).not.toContain('traffic-summary-card__metric--hero')
+    expect(metrics.every((metric) => !metric.classes().includes('traffic-summary-card__metric--hero'))).toBe(true)
   })
 
-  it('marks uplink/downlink as secondary metrics', () => {
+  it('marks uplink/downlink/current-rate as a secondary block', () => {
     const wrapper = mountCards()
     const metrics = wrapper.findAll('.traffic-summary-card__metric')
     expect(metrics[2].classes()).toContain('traffic-summary-card__metric--secondary')
     expect(metrics[3].classes()).toContain('traffic-summary-card__metric--secondary')
+    expect(metrics[4].classes()).toContain('traffic-summary-card__metric--secondary')
   })
 
-  it('uses a weighted five-track desktop grid with remaining widest', () => {
+  it('uses equal primary tracks and equal secondary rate tracks on desktop', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/components/traffic/TrafficSummaryCards.vue'), 'utf8')
     expect(source).toContain(
-      'grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.55fr) minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.1fr);'
+      'grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 0.95fr) minmax(0, 0.95fr) minmax(0, 0.95fr);'
     )
+    expect(source).not.toContain('traffic-summary-card__metric--hero')
   })
 })

@@ -12,7 +12,7 @@
         <span class="traffic-summary-card__value" data-testid="traffic-summary-used">{{ formatBytes(summary.used_bytes) }}</span>
         <span v-if="usedSub" class="traffic-summary-card__sub" data-testid="traffic-summary-used-sub">{{ usedSub }}</span>
       </div>
-      <div class="traffic-summary-card__metric traffic-summary-card__metric--primary traffic-summary-card__metric--hero">
+      <div class="traffic-summary-card__metric traffic-summary-card__metric--primary">
         <div class="traffic-summary-card__header">
           <svg class="traffic-summary-card__icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 2v4"/>
@@ -49,7 +49,7 @@
         </div>
         <span class="traffic-summary-card__value">{{ formatBytes(summary.rx_bytes) }}</span>
       </div>
-      <div class="traffic-summary-card__metric traffic-summary-card__metric--primary">
+      <div class="traffic-summary-card__metric traffic-summary-card__metric--secondary">
         <div class="traffic-summary-card__header">
           <svg class="traffic-summary-card__icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -132,8 +132,8 @@ const rateRows = computed(() => {
 }
 .traffic-summary-cards__grid {
   display: grid;
-  /* remaining (col2) widest; up/down narrower secondary track */
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.55fr) minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.1fr);
+  /* total/remaining equal primary; uplink/downlink/rate equal secondary block */
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 0.95fr) minmax(0, 0.95fr) minmax(0, 0.95fr);
   gap: 0.375rem 0.625rem;
   align-items: stretch;
 }
@@ -158,23 +158,11 @@ const rateRows = computed(() => {
   opacity: 1;
   background: transparent;
 }
-.traffic-summary-card__metric--hero {
-  padding: 0.625rem 0.75rem;
-  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface));
-  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, var(--color-border-default));
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-primary) 10%, transparent);
-}
-.traffic-summary-card__metric--hero:hover {
-  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-surface));
-}
 .traffic-summary-card__header {
   display: flex;
   align-items: center;
   gap: 0.375rem;
   margin-bottom: 0.2rem;
-}
-.traffic-summary-card__metric--hero .traffic-summary-card__header {
-  margin-bottom: 0.3rem;
 }
 .traffic-summary-card__icon {
   color: var(--color-text-tertiary);
@@ -182,11 +170,6 @@ const rateRows = computed(() => {
 }
 .traffic-summary-card__metric--primary .traffic-summary-card__icon {
   color: var(--color-primary);
-}
-.traffic-summary-card__metric--hero .traffic-summary-card__icon {
-  color: var(--color-primary);
-  width: 18px;
-  height: 18px;
 }
 .traffic-summary-card__metric--secondary .traffic-summary-card__icon {
   color: var(--color-text-muted);
@@ -200,11 +183,6 @@ const rateRows = computed(() => {
   font-size: 0.75rem;
   font-weight: 500;
   letter-spacing: 0.01em;
-}
-.traffic-summary-card__metric--hero .traffic-summary-card__label {
-  color: var(--color-text-secondary);
-  font-weight: 600;
-  font-size: 0.8125rem;
 }
 .traffic-summary-card__metric--secondary .traffic-summary-card__label {
   color: var(--color-text-muted);
@@ -223,13 +201,6 @@ const rateRows = computed(() => {
   font-size: 1.1875rem;
   color: var(--color-text-primary);
 }
-.traffic-summary-card__metric--hero .traffic-summary-card__value {
-  font-size: 1.625rem;
-  font-weight: 800;
-  letter-spacing: -0.025em;
-  line-height: 1.15;
-  color: var(--color-text-primary);
-}
 .traffic-summary-card__metric--secondary .traffic-summary-card__value {
   font-size: 0.8125rem;
   font-weight: 500;
@@ -242,15 +213,11 @@ const rateRows = computed(() => {
   margin-top: 0.2rem;
   line-height: 1.35;
 }
-.traffic-summary-card__metric--hero .traffic-summary-card__sub {
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-}
 .traffic-summary-card__value--rates {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
-  font-size: 0.9375rem;
+  font-size: 0.8125rem;
 }
 .traffic-summary-card__rate-row {
   display: flex;
@@ -271,23 +238,17 @@ const rateRows = computed(() => {
 }
 @media (max-width: 1100px) {
   .traffic-summary-cards__grid {
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.5fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 1fr);
   }
 }
 @media (max-width: 720px) {
   .traffic-summary-cards__grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
-  }
-  .traffic-summary-card__metric--hero {
-    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
 @media (max-width: 480px) {
   .traffic-summary-cards__grid {
     grid-template-columns: 1fr;
-  }
-  .traffic-summary-card__metric--hero {
-    grid-column: auto;
   }
 }
 </style>
