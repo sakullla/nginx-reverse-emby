@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -43,6 +44,7 @@ type TrafficService interface {
 
 type RuleService interface {
 	List(context.Context, string) ([]service.HTTPRule, error)
+	ListPage(context.Context, service.ListQuery) ([]service.HTTPRule, service.PageMeta, error)
 	Get(context.Context, string, int) (service.HTTPRule, error)
 	Create(context.Context, string, service.HTTPRuleInput) (service.HTTPRule, error)
 	Update(context.Context, string, int, service.HTTPRuleInput) (service.HTTPRule, error)
@@ -51,6 +53,7 @@ type RuleService interface {
 
 type L4RuleService interface {
 	List(context.Context, string) ([]service.L4Rule, error)
+	ListPage(context.Context, service.ListQuery) ([]service.L4Rule, service.PageMeta, error)
 	Get(context.Context, string, int) (service.L4Rule, error)
 	Create(context.Context, string, service.L4RuleInput) (service.L4Rule, error)
 	Update(context.Context, string, int, service.L4RuleInput) (service.L4Rule, error)
@@ -81,6 +84,7 @@ type EgressProfileService interface {
 
 type RelayListenerService interface {
 	List(context.Context, string) ([]service.RelayListener, error)
+	ListPage(context.Context, service.ListQuery) ([]service.RelayListener, service.PageMeta, error)
 	Create(context.Context, string, service.RelayListenerInput) (service.RelayListener, error)
 	Update(context.Context, string, int, service.RelayListenerInput) (service.RelayListener, error)
 	Delete(context.Context, string, int) (service.RelayListener, error)
@@ -88,6 +92,7 @@ type RelayListenerService interface {
 
 type WireGuardProfileService interface {
 	List(context.Context, string) ([]service.WireGuardProfile, error)
+	ListPage(context.Context, service.ListQuery) ([]service.WireGuardProfile, service.PageMeta, error)
 	Create(context.Context, string, service.WireGuardProfileInput) (service.WireGuardProfile, error)
 	Update(context.Context, string, int, service.WireGuardProfileInput) (service.WireGuardProfile, error)
 	Delete(context.Context, string, int) (service.WireGuardProfile, error)
@@ -104,6 +109,7 @@ type WireGuardClientService interface {
 
 type CertificateService interface {
 	List(context.Context, string) ([]service.ManagedCertificate, error)
+	ListPage(context.Context, service.ListQuery) ([]service.ManagedCertificate, service.PageMeta, error)
 	Create(context.Context, string, service.ManagedCertificateInput) (service.ManagedCertificate, error)
 	Update(context.Context, string, int, service.ManagedCertificateInput) (service.ManagedCertificate, error)
 	Delete(context.Context, string, int) (service.ManagedCertificate, error)
@@ -249,6 +255,10 @@ func (s unavailableWireGuardProfileService) List(context.Context, string) ([]ser
 	return nil, s.err()
 }
 
+func (s unavailableWireGuardProfileService) ListPage(context.Context, service.ListQuery) ([]service.WireGuardProfile, service.PageMeta, error) {
+	return nil, service.PageMeta{}, s.err()
+}
+
 func (s unavailableWireGuardProfileService) Create(context.Context, string, service.WireGuardProfileInput) (service.WireGuardProfile, error) {
 	return service.WireGuardProfile{}, s.err()
 }
@@ -294,6 +304,26 @@ func (s unavailableWireGuardClientService) ClientURI(context.Context, string, in
 
 func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
 	return a.agent.ListHTTPRules(ctx, agentID)
+}
+
+func (a agentRuleServiceAdapter) ListPage(ctx context.Context, query service.ListQuery) ([]service.HTTPRule, service.PageMeta, error) {
+	rules, err := a.List(ctx, query.AgentID)
+	if err != nil {
+		return nil, service.PageMeta{}, err
+	}
+	query = service.NormalizeListQuery(query)
+	filtered := make([]service.HTTPRule, 0, len(rules))
+	for _, rule := range rules {
+		if query.Q != "" {
+			hay := strings.ToLower(rule.FrontendURL + " " + rule.AgentID + " " + rule.AgentName)
+			if !strings.Contains(hay, strings.ToLower(query.Q)) {
+				continue
+			}
+		}
+		filtered = append(filtered, rule)
+	}
+	page, meta := service.ApplyPage(filtered, query)
+	return page, meta, nil
 }
 
 func (a agentRuleServiceAdapter) Get(ctx context.Context, agentID string, id int) (service.HTTPRule, error) {
@@ -379,6 +409,10 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificates)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificate)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates/{id}/issue", resolved.requirePanelToken(http.HandlerFunc(resolved.handleIssueCertificate)))
+		mux.Handle(prefix+"/http-rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleHTTPRulesList)))
+		mux.Handle(prefix+"/l4-rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleL4RulesList)))
+		mux.Handle(prefix+"/relay-listeners", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRelayListenersList)))
+		mux.Handle(prefix+"/wireguard-profiles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleWireGuardProfilesList)))
 		mux.Handle(prefix+"/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handleGlobalCertificates)))
 		mux.Handle(prefix+"/certificates/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleGlobalCertificate)))
 		mux.Handle(prefix+"/certificates/{id}/issue", resolved.requirePanelToken(http.HandlerFunc(resolved.handleIssueCertificate)))

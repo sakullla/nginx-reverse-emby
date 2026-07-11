@@ -48,6 +48,7 @@ type L4Tuning struct {
 type L4Rule struct {
 	ID                   int              `json:"id"`
 	AgentID              string           `json:"agent_id"`
+	AgentName            string           `json:"agent_name,omitempty"`
 	Name                 string           `json:"name"`
 	Protocol             string           `json:"protocol"`
 	ListenHost           string           `json:"listen_host"`
@@ -149,6 +150,59 @@ func (s *l4Service) List(ctx context.Context, agentID string) ([]L4Rule, error) 
 	}
 	return rules, nil
 }
+
+func (s *l4Service) ListPage(ctx context.Context, query ListQuery) ([]L4Rule, PageMeta, error) {
+	query = NormalizeListQuery(query)
+	names, err := agentDisplayNameMap(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+
+	var rows []storage.L4RuleRow
+	if query.AgentID != "" {
+		resolvedID, err := s.ensureAgentSupportsL4(ctx, query.AgentID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+		rows, err = s.store.ListL4Rules(ctx, resolvedID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	} else {
+		agentIDs, err := s.allKnownAgentIDs(ctx)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+		rows = make([]storage.L4RuleRow, 0)
+		for _, agentID := range agentIDs {
+			agentRows, listErr := s.store.ListL4Rules(ctx, agentID)
+			if listErr != nil {
+				return nil, PageMeta{}, listErr
+			}
+			rows = append(rows, agentRows...)
+		}
+	}
+
+	filtered := make([]L4Rule, 0, len(rows))
+	for _, row := range rows {
+		rule := l4RuleFromRow(row)
+		if strings.TrimSpace(rule.AgentID) == "" {
+			rule.AgentID = row.AgentID
+		}
+		rule.AgentName = resolveAgentDisplayName(names, rule.AgentID)
+		identity := rule.Name
+		if identity == "" {
+			identity = rule.ListenHost + ":" + strconv.Itoa(rule.ListenPort)
+		}
+		if !matchesListQuery(query.Q, identity, rule.Name, rule.ListenHost, strconv.Itoa(rule.ListenPort), rule.Protocol, rule.AgentID, rule.AgentName, strings.Join(rule.Tags, " ")) {
+			continue
+		}
+		filtered = append(filtered, rule)
+	}
+	page, meta := ApplyPage(filtered, query)
+	return page, meta, nil
+}
+
 
 func (s *l4Service) Get(ctx context.Context, agentID string, id int) (L4Rule, error) {
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)

@@ -213,6 +213,24 @@ func (f fakeL4RuleService) List(_ context.Context, agentID string) ([]service.L4
 	return rules, nil
 }
 
+func (f fakeL4RuleService) ListPage(_ context.Context, query service.ListQuery) ([]service.L4Rule, service.PageMeta, error) {
+	query = service.NormalizeListQuery(query)
+	var items []service.L4Rule
+	if query.AgentID != "" {
+		rules, err := f.List(context.Background(), query.AgentID)
+		if err != nil {
+			return nil, service.PageMeta{}, err
+		}
+		items = rules
+	} else {
+		for _, rules := range f.rules {
+			items = append(items, rules...)
+		}
+	}
+	page, meta := service.ApplyPage(items, query)
+	return page, meta, nil
+}
+
 func (f fakeL4RuleService) Get(_ context.Context, agentID string, id int) (service.L4Rule, error) {
 	if f.state != nil {
 		f.state.getAgentIDs = append(f.state.getAgentIDs, agentID)
@@ -277,6 +295,25 @@ func (f fakeRuleService) List(_ context.Context, agentID string) ([]service.HTTP
 		return nil, service.ErrAgentNotFound
 	}
 	return rules, nil
+}
+
+func (f fakeRuleService) ListPage(_ context.Context, query service.ListQuery) ([]service.HTTPRule, service.PageMeta, error) {
+	query = service.NormalizeListQuery(query)
+	var items []service.HTTPRule
+	if query.AgentID != "" {
+		rules, err := f.List(context.Background(), query.AgentID)
+		if err != nil {
+			return nil, service.PageMeta{}, err
+		}
+		items = rules
+	} else {
+		for agentID, rules := range f.rules {
+			_ = agentID
+			items = append(items, rules...)
+		}
+	}
+	page, meta := service.ApplyPage(items, query)
+	return page, meta, nil
 }
 
 func (f fakeRuleService) Get(_ context.Context, agentID string, id int) (service.HTTPRule, error) {
@@ -503,6 +540,24 @@ func (f fakeRelayListenerService) List(_ context.Context, agentID string) ([]ser
 	return listeners, nil
 }
 
+func (f fakeRelayListenerService) ListPage(_ context.Context, query service.ListQuery) ([]service.RelayListener, service.PageMeta, error) {
+	query = service.NormalizeListQuery(query)
+	var items []service.RelayListener
+	if query.AgentID != "" {
+		listeners, err := f.List(context.Background(), query.AgentID)
+		if err != nil {
+			return nil, service.PageMeta{}, err
+		}
+		items = listeners
+	} else {
+		for _, listeners := range f.listeners {
+			items = append(items, listeners...)
+		}
+	}
+	page, meta := service.ApplyPage(items, query)
+	return page, meta, nil
+}
+
 func (f fakeRelayListenerService) Create(_ context.Context, _ string, input service.RelayListenerInput) (service.RelayListener, error) {
 	if f.state != nil {
 		f.state.createdInputs = append(f.state.createdInputs, input)
@@ -552,6 +607,26 @@ func (f fakeCertificateService) List(_ context.Context, agentID string) ([]servi
 		return nil, service.ErrAgentNotFound
 	}
 	return certs, nil
+}
+
+func (f fakeCertificateService) ListPage(_ context.Context, query service.ListQuery) ([]service.ManagedCertificate, service.PageMeta, error) {
+	query = service.NormalizeListQuery(query)
+	var items []service.ManagedCertificate
+	if query.AgentID != "" {
+		certs, err := f.List(context.Background(), query.AgentID)
+		if err != nil {
+			return nil, service.PageMeta{}, err
+		}
+		items = certs
+	} else if certs, ok := f.certificates[""]; ok {
+		items = append(items, certs...)
+	} else {
+		for _, certs := range f.certificates {
+			items = append(items, certs...)
+		}
+	}
+	page, meta := service.ApplyPage(items, query)
+	return page, meta, nil
 }
 
 func (f fakeCertificateService) Create(_ context.Context, agentID string, input service.ManagedCertificateInput) (service.ManagedCertificate, error) {

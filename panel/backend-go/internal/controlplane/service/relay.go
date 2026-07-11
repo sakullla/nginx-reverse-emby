@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ type RelayPin struct {
 type RelayListener struct {
 	ID                      int        `json:"id"`
 	AgentID                 string     `json:"agent_id"`
+	AgentName               string     `json:"agent_name,omitempty"`
 	Name                    string     `json:"name"`
 	BindHosts               []string   `json:"bind_hosts"`
 	ListenHost              string     `json:"listen_host"`
@@ -167,6 +169,47 @@ func (s *relayService) List(ctx context.Context, agentID string) ([]RelayListene
 	}
 	return listeners, nil
 }
+
+func (s *relayService) ListPage(ctx context.Context, query ListQuery) ([]RelayListener, PageMeta, error) {
+	query = NormalizeListQuery(query)
+	names, err := agentDisplayNameMap(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+
+	var rows []storage.RelayListenerRow
+	if query.AgentID != "" {
+		resolvedID, err := s.ensureAgentExists(ctx, query.AgentID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+		rows, err = s.store.ListRelayListeners(ctx, resolvedID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	} else {
+		rows, err = s.store.ListRelayListeners(ctx, "")
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	}
+
+	filtered := make([]RelayListener, 0, len(rows))
+	for _, row := range rows {
+		listener := relayListenerFromRow(row)
+		if strings.TrimSpace(listener.AgentID) == "" {
+			listener.AgentID = row.AgentID
+		}
+		listener.AgentName = resolveAgentDisplayName(names, listener.AgentID)
+		if !matchesListQuery(query.Q, listener.Name, listener.PublicHost, listener.ListenHost, strconv.Itoa(listener.ListenPort), listener.AgentID, listener.AgentName, strings.Join(listener.Tags, " ")) {
+			continue
+		}
+		filtered = append(filtered, listener)
+	}
+	page, meta := ApplyPage(filtered, query)
+	return page, meta, nil
+}
+
 
 func (s *relayService) Create(ctx context.Context, agentID string, input RelayListenerInput) (RelayListener, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)

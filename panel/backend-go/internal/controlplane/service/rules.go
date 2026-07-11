@@ -93,6 +93,46 @@ func (s *ruleService) List(ctx context.Context, agentID string) ([]HTTPRule, err
 	return rules, nil
 }
 
+func (s *ruleService) ListPage(ctx context.Context, query ListQuery) ([]HTTPRule, PageMeta, error) {
+	query = NormalizeListQuery(query)
+	names, err := agentDisplayNameMap(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+
+	var rows []storage.HTTPRuleRow
+	if query.AgentID != "" {
+		resolvedID, err := s.ensureAgentExists(ctx, query.AgentID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+		rows, err = s.store.ListHTTPRules(ctx, resolvedID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	} else {
+		rows, err = s.listRulesAcrossAllAgents(ctx)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	}
+
+	filtered := make([]HTTPRule, 0, len(rows))
+	for _, row := range rows {
+		rule := httpRuleFromRow(row)
+		if strings.TrimSpace(rule.AgentID) == "" {
+			rule.AgentID = row.AgentID
+		}
+		rule.AgentName = resolveAgentDisplayName(names, rule.AgentID)
+		if !matchesListQuery(query.Q, rule.FrontendURL, rule.AgentID, rule.AgentName, strings.Join(rule.Tags, " ")) {
+			continue
+		}
+		filtered = append(filtered, rule)
+	}
+	page, meta := ApplyPage(filtered, query)
+	return page, meta, nil
+}
+
 func (s *ruleService) Get(ctx context.Context, agentID string, id int) (HTTPRule, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {

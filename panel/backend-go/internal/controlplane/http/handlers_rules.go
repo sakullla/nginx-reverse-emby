@@ -96,3 +96,18 @@ func (d Dependencies) handleLocalRule(w http.ResponseWriter, r *http.Request) {
 	r.SetPathValue("agentID", d.Config.LocalAgentID)
 	d.handleAgentRule(w, r)
 }
+
+
+func (d Dependencies) handleHTTPRulesList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	rules, meta, err := d.RuleService.ListPage(r.Context(), parseListQuery(r))
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeListPageJSON(w, "rules", rules, meta)
+}

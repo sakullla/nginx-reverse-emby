@@ -45,9 +45,30 @@ func (d Dependencies) handleCertificates(w http.ResponseWriter, r *http.Request)
 }
 
 func (d Dependencies) handleGlobalCertificates(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		query := r.URL.Query()
+		if query.Has("page") || query.Has("page_size") || query.Has("q") || query.Has("agent_id") {
+			d.handleCertificatesList(w, r)
+			return
+		}
+	}
 	r = r.Clone(r.Context())
 	r.SetPathValue("agentID", "")
 	d.handleCertificates(w, r)
+}
+
+func (d Dependencies) handleCertificatesList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	certs, meta, err := d.CertificateService.ListPage(r.Context(), parseListQuery(r))
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeListPageJSON(w, "certificates", certs, meta)
 }
 
 func (d Dependencies) handleCertificate(w http.ResponseWriter, r *http.Request) {

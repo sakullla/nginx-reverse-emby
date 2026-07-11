@@ -104,3 +104,18 @@ func (d Dependencies) handleRelayListener(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 	}
 }
+
+
+func (d Dependencies) handleRelayListenersList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	listeners, meta, err := d.RelayListenerService.ListPage(r.Context(), parseListQuery(r))
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeListPageJSON(w, "listeners", listeners, meta)
+}

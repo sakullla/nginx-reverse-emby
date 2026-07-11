@@ -354,3 +354,18 @@ func parseWireGuardClientPathID(w http.ResponseWriter, raw string) (int, bool) {
 	}
 	return id, true
 }
+
+
+func (d Dependencies) handleWireGuardProfilesList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	profiles, meta, err := d.WireGuardProfileService.ListPage(r.Context(), parseListQuery(r))
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeListPageJSON(w, "profiles", profiles, meta)
+}

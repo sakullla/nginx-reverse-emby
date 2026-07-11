@@ -99,6 +99,7 @@ type HTTPCustomHeader struct {
 type HTTPRule struct {
 	ID                       int                `json:"id"`
 	AgentID                  string             `json:"agent_id"`
+	AgentName                string             `json:"agent_name,omitempty"`
 	FrontendURL              string             `json:"frontend_url"`
 	BackendURL               string             `json:"-"`
 	Backends                 []HTTPRuleBackend  `json:"backends"`

@@ -36,6 +36,7 @@ type WireGuardPeer struct {
 type WireGuardProfile struct {
 	ID                 int             `json:"id"`
 	AgentID            string          `json:"agent_id"`
+	AgentName          string          `json:"agent_name,omitempty"`
 	Name               string          `json:"name"`
 	Mode               string          `json:"mode"`
 	PrivateKey         string          `json:"private_key,omitempty"`
@@ -161,6 +162,56 @@ func (s *wireGuardProfileService) List(ctx context.Context, agentID string) ([]W
 	}
 	return profiles, nil
 }
+
+func (s *wireGuardProfileService) ListPage(ctx context.Context, query ListQuery) ([]WireGuardProfile, PageMeta, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return nil, PageMeta{}, ErrWireGuardDisabled
+	}
+	query = NormalizeListQuery(query)
+	names, err := agentDisplayNameMap(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+
+	var rows []storage.WireGuardProfileRow
+	if query.AgentID != "" {
+		resolvedID, err := s.ensureAgentExists(ctx, query.AgentID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+		rows, err = s.store.ListWireGuardProfiles(ctx, resolvedID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	} else {
+		rows, err = s.listAllWireGuardProfiles(ctx)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	}
+
+	filtered := make([]WireGuardProfile, 0, len(rows))
+	for _, row := range rows {
+		profile := wireGuardProfileFromRow(row)
+		if strings.TrimSpace(profile.AgentID) == "" {
+			profile.AgentID = row.AgentID
+		}
+		profile.AgentName = resolveAgentDisplayName(names, profile.AgentID)
+		clients, clientErr := s.store.ListWireGuardClients(ctx, profile.AgentID, profile.ID)
+		if clientErr != nil {
+			return nil, PageMeta{}, clientErr
+		}
+		profile.ClientCount = len(clients)
+		profile = redactWireGuardProfile(profile)
+		if !matchesListQuery(query.Q, profile.Name, profile.PublicEndpoint, profile.AgentID, profile.AgentName, strings.Join(profile.Tags, " ")) {
+			continue
+		}
+		filtered = append(filtered, profile)
+	}
+	page, meta := ApplyPage(filtered, query)
+	return page, meta, nil
+}
+
 
 func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID string) (WireGuardProfile, error) {
 	if !s.cfg.WireGuardModuleEnabled() {

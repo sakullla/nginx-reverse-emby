@@ -100,3 +100,18 @@ func redactL4Rule(rule service.L4Rule) service.L4Rule {
 	rule.ProxyEntryAuth.Password = ""
 	return rule
 }
+
+
+func (d Dependencies) handleL4RulesList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	rules, meta, err := d.L4RuleService.ListPage(r.Context(), parseListQuery(r))
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeListPageJSON(w, "rules", redactL4Rules(rules), meta)
+}

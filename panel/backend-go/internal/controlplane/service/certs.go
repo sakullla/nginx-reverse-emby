@@ -60,6 +60,8 @@ type ManagedCertificate struct {
 	Scope           string                                   `json:"scope"`
 	IssuerMode      string                                   `json:"issuer_mode"`
 	TargetAgentIDs  []string                                 `json:"target_agent_ids"`
+	AgentID         string                                   `json:"agent_id,omitempty"`
+	AgentName       string                                   `json:"agent_name,omitempty"`
 	Status          string                                   `json:"status"`
 	LastIssueAt     string                                   `json:"last_issue_at"`
 	LastError       string                                   `json:"last_error"`
@@ -163,6 +165,56 @@ func (s *certificateService) List(ctx context.Context, agentID string) ([]Manage
 	}
 	return certs, nil
 }
+
+func (s *certificateService) ListPage(ctx context.Context, query ListQuery) ([]ManagedCertificate, PageMeta, error) {
+	query = NormalizeListQuery(query)
+	names, err := agentDisplayNameMap(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+
+	rows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+
+	filtered := make([]ManagedCertificate, 0, len(rows))
+	if query.AgentID != "" {
+		resolvedID, err := s.ensureAgentExists(ctx, query.AgentID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+		for _, row := range rows {
+			cert := managedCertificateFromRow(row)
+			if !containsString(cert.TargetAgentIDs, resolvedID) {
+				continue
+			}
+			cert = overlayManagedCertificateForAgent(cert, resolvedID)
+			cert.AgentID = resolvedID
+			cert.AgentName = resolveAgentDisplayName(names, resolvedID)
+			if !matchesListQuery(query.Q, cert.Domain, cert.Status, cert.Usage, cert.AgentID, cert.AgentName, strings.Join(cert.Tags, " "), strings.Join(cert.TargetAgentIDs, " ")) {
+				continue
+			}
+			filtered = append(filtered, cert)
+		}
+	} else {
+		for _, row := range rows {
+			cert := managedCertificateFromRow(row)
+			if len(cert.TargetAgentIDs) > 0 {
+				cert.AgentID = cert.TargetAgentIDs[0]
+				cert.AgentName = resolveAgentDisplayName(names, cert.AgentID)
+			}
+			if !matchesListQuery(query.Q, cert.Domain, cert.Status, cert.Usage, cert.AgentID, cert.AgentName, strings.Join(cert.Tags, " "), strings.Join(cert.TargetAgentIDs, " ")) {
+				continue
+			}
+			filtered = append(filtered, cert)
+		}
+	}
+
+	page, meta := ApplyPage(filtered, query)
+	return page, meta, nil
+}
+
 
 func (s *certificateService) Create(ctx context.Context, agentID string, input ManagedCertificateInput) (ManagedCertificate, error) {
 	resolvedID := strings.TrimSpace(agentID)
