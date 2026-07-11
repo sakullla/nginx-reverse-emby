@@ -128,38 +128,53 @@ const rateRows = computed(() => {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
-  padding: 1rem 1.125rem;
+  padding: 0.875rem 1rem;
 }
 .traffic-summary-cards__grid {
   display: grid;
   /* remaining (col2) widest; up/down narrower secondary track */
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.55fr) minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.1fr);
-  gap: 0.5rem 0.75rem;
-  align-items: start;
+  gap: 0.375rem 0.625rem;
+  align-items: stretch;
 }
 .traffic-summary-card__metric {
   min-width: 0;
   text-align: left;
   padding: 0.375rem 0.5rem;
   border-radius: var(--radius-md);
-  transition: background-color 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 .traffic-summary-card__metric:hover {
   background: var(--color-bg-subtle);
 }
-.traffic-summary-card__metric--hero {
+.traffic-summary-card__metric--primary {
   padding: 0.5rem 0.625rem;
-  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-bg-surface));
-  border: 1px solid color-mix(in srgb, var(--color-primary) 18%, var(--color-border-default));
+}
+.traffic-summary-card__metric--secondary {
+  padding: 0.25rem 0.375rem;
+  opacity: 0.88;
+}
+.traffic-summary-card__metric--secondary:hover {
+  opacity: 1;
+  background: transparent;
+}
+.traffic-summary-card__metric--hero {
+  padding: 0.625rem 0.75rem;
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, var(--color-border-default));
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 .traffic-summary-card__metric--hero:hover {
-  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-surface));
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-surface));
 }
 .traffic-summary-card__header {
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.2rem;
+}
+.traffic-summary-card__metric--hero .traffic-summary-card__header {
+  margin-bottom: 0.3rem;
 }
 .traffic-summary-card__icon {
   color: var(--color-text-tertiary);
@@ -168,10 +183,16 @@ const rateRows = computed(() => {
 .traffic-summary-card__metric--primary .traffic-summary-card__icon {
   color: var(--color-primary);
 }
+.traffic-summary-card__metric--hero .traffic-summary-card__icon {
+  color: var(--color-primary);
+  width: 18px;
+  height: 18px;
+}
 .traffic-summary-card__metric--secondary .traffic-summary-card__icon {
   color: var(--color-text-muted);
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
+  opacity: 0.85;
 }
 .traffic-summary-card__label {
   display: block;
@@ -180,9 +201,15 @@ const rateRows = computed(() => {
   font-weight: 500;
   letter-spacing: 0.01em;
 }
+.traffic-summary-card__metric--hero .traffic-summary-card__label {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
 .traffic-summary-card__metric--secondary .traffic-summary-card__label {
   color: var(--color-text-muted);
   font-weight: 400;
+  font-size: 0.6875rem;
 }
 .traffic-summary-card__value {
   display: block;
@@ -193,32 +220,37 @@ const rateRows = computed(() => {
   line-height: 1.25;
 }
 .traffic-summary-card__metric--primary .traffic-summary-card__value {
-  font-size: 1.25rem;
+  font-size: 1.1875rem;
   color: var(--color-text-primary);
 }
 .traffic-summary-card__metric--hero .traffic-summary-card__value {
-  font-size: 1.5rem;
+  font-size: 1.625rem;
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
   color: var(--color-text-primary);
 }
 .traffic-summary-card__metric--secondary .traffic-summary-card__value {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
 }
 .traffic-summary-card__sub {
   display: block;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
-  margin-top: 0.25rem;
+  margin-top: 0.2rem;
   line-height: 1.35;
+}
+.traffic-summary-card__metric--hero .traffic-summary-card__sub {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
 }
 .traffic-summary-card__value--rates {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
-  font-size: 1rem;
+  font-size: 0.9375rem;
 }
 .traffic-summary-card__rate-row {
   display: flex;
