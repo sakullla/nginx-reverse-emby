@@ -1,16 +1,22 @@
 import { provide, inject, ref } from 'vue'
+import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 
 const AgentContextKey = Symbol('AgentContext')
 
 export function AgentProvider({ children }) {
-  const selectedAgentId = ref(localStorage.getItem('selected_agent_id') || 'local')
+  const selectedAgentId = ref(normalizeAgentFilter(localStorage.getItem('selected_agent_id')) || 'local')
 
   function selectAgent(id) {
-    selectedAgentId.value = id
-    localStorage.setItem('selected_agent_id', id)
+    const next = normalizeAgentFilter(id)
+    selectedAgentId.value = next
+    if (next) {
+      localStorage.setItem('selected_agent_id', next)
+    } else {
+      localStorage.removeItem('selected_agent_id')
+    }
   }
 
-  provide(AgentContextKey, { selectedAgentId, selectAgent })
+  provide(AgentContextKey, { selectedAgentId, selectAgent, isAllAgentsFilter })
 
   return children
 }

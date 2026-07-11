@@ -1,3 +1,5 @@
+import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+
 export function reconcileSelectedAgent({
   currentSelectedAgentId,
   agents,
@@ -20,8 +22,28 @@ export function reconcileSelectedAgent({
     }
   }
 
+  const current = normalizeAgentFilter(currentSelectedAgentId)
+
+  // Explicit "all agents" memory is valid whenever at least one agent exists.
+  // Never auto-promote to all; only preserve a user-chosen sentinel.
+  if (isAllAgentsFilter(current)) {
+    return {
+      nextSelectedAgentId: current,
+      persist: false,
+      clear: false
+    }
+  }
+
   const ids = new Set(agents.map(agent => agent.id))
-  if (currentSelectedAgentId && ids.has(currentSelectedAgentId)) {
+  if (current && ids.has(current)) {
+    return {
+      nextSelectedAgentId: current,
+      persist: false,
+      clear: false
+    }
+  }
+
+  if (!systemInfo && !systemInfoAttempted && !current) {
     return {
       nextSelectedAgentId: currentSelectedAgentId,
       persist: false,
@@ -29,14 +51,7 @@ export function reconcileSelectedAgent({
     }
   }
 
-  if (!systemInfo && !systemInfoAttempted && !currentSelectedAgentId) {
-    return {
-      nextSelectedAgentId: currentSelectedAgentId,
-      persist: false,
-      clear: false
-    }
-  }
-
+  // Invalid / missing selection falls back to a concrete default node — never all.
   const defaultId = systemInfo?.default_agent_id
     || agents.find(agent => agent.id === 'local')?.id
     || agents[0]?.id

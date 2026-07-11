@@ -2,6 +2,7 @@ import { defineComponent, h, provide, inject, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
 import { fetchSystemInfo } from '../api'
+import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { useAuthState } from './useAuthState'
 import { reconcileSelectedAgent } from './agentSelection.js'
 
@@ -10,16 +11,18 @@ const AgentContextKey = Symbol('AgentContext')
 export const AgentProvider = defineComponent({
   name: 'AgentProvider',
   setup(props, { slots }) {
-    const savedId = localStorage.getItem('selected_agent_id')
+    const savedId = normalizeAgentFilter(localStorage.getItem('selected_agent_id'))
     const selectedAgentId = ref(savedId || null)
     const route = useRoute()
 
     // Sync URL query agentId into persistent context so sidebar navigation
     // (which uses static paths without query params) preserves the selection.
+    // Supports concrete agent ids and the all-agents sentinel (`__all__`).
     watch(() => route.query.agentId, (id) => {
-      if (id && id !== selectedAgentId.value) {
-        selectedAgentId.value = id
-        localStorage.setItem('selected_agent_id', id)
+      const next = normalizeAgentFilter(id)
+      if (next && next !== selectedAgentId.value) {
+        selectedAgentId.value = next
+        localStorage.setItem('selected_agent_id', next)
       }
     }, { immediate: true })
 
@@ -71,16 +74,24 @@ export const AgentProvider = defineComponent({
     })
 
     function selectAgent(id) {
-      selectedAgentId.value = id
-      localStorage.setItem('selected_agent_id', id)
-      recordAgentUsage(id)
+      const next = normalizeAgentFilter(id)
+      selectedAgentId.value = next
+      if (next) {
+        localStorage.setItem('selected_agent_id', next)
+      } else {
+        localStorage.removeItem('selected_agent_id')
+      }
+      // Only track concrete nodes in recent usage; "all" is a filter, not a node.
+      if (next && !isAllAgentsFilter(next)) {
+        recordAgentUsage(next)
+      }
     }
 
     const RECENT_AGENTS_KEY = 'nre_recent_agent_ids'
     const MAX_RECENT_AGENTS = 20
 
     function recordAgentUsage(id) {
-      if (!id) return
+      if (!id || isAllAgentsFilter(id)) return
       try {
         const raw = localStorage.getItem(RECENT_AGENTS_KEY)
         const list = raw ? JSON.parse(raw) : []
