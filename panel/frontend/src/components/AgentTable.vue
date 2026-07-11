@@ -28,7 +28,7 @@
           </td>
           <td><AgentStatusBadge :agent="agent" /></td>
           <td>
-            <span class="mode-badge">{{ getModeLabel(agent.mode) }}</span>
+            <BaseBadge tone="primary" size="sm">{{ getModeLabel(agent.mode) }}</BaseBadge>
           </td>
           <td>{{ agent.http_rules_count || 0 }}</td>
           <td>{{ agent.l4_rules_count || 0 }}</td>
@@ -57,6 +57,7 @@
 
 <script setup>
 import AgentStatusBadge from './AgentStatusBadge.vue'
+import BaseBadge from './base/BaseBadge.vue'
 import { getModeLabel, getHostname, timeAgo } from '../utils/agentHelpers.js'
 
 const props = defineProps({
@@ -117,14 +118,6 @@ function handleRowClick(agent) {
   font-size: var(--text-xs);
   color: var(--color-text-tertiary);
   font-family: var(--font-mono);
-}
-.mode-badge {
-  font-size: var(--text-xs);
-  padding: var(--space-1) var(--space-2);
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  border-radius: var(--radius-full);
-  font-weight: var(--font-medium);
 }
 .agent-table__actions {
   display: flex;

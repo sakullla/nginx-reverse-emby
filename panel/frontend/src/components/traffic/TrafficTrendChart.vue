@@ -1,7 +1,7 @@
 <template>
-  <div class="traffic-trend-chart">
+  <div class="traffic-trend-chart" :class="{ 'traffic-trend-chart--loading': loading }">
     <apexchart
-      v-if="hasData"
+      v-if="hasData && !loading"
       :key="chartKey"
       type="area"
       :options="chartOptions"
@@ -9,8 +9,14 @@
       height="100%"
       width="100%"
     />
-    <div v-else class="traffic-trend-chart__empty">
-      <span class="traffic-trend-chart__empty-text">暂无数据</span>
+    <div
+      v-else
+      class="traffic-trend-chart__empty"
+      :data-testid="loading ? 'traffic-trend-loading' : 'traffic-trend-empty'"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="traffic-trend-chart__empty-text">{{ loading ? '加载中…' : '暂无数据' }}</span>
     </div>
   </div>
 </template>
@@ -25,7 +31,9 @@ const props = defineProps({
   granularity: { type: String, default: 'day' },
   quotaBytes: { type: Number, default: null },
   budgetBytes: { type: Number, default: null },
-  refreshKey: { type: [Number, String], default: '' }
+  refreshKey: { type: [Number, String], default: '' },
+  /** First-load placeholder; default false so Dashboard/other callers stay empty-vs-data only. */
+  loading: { type: Boolean, default: false }
 })
 
 const hasData = computed(() => {

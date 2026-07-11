@@ -21,15 +21,32 @@ describe('TrafficHistoryManager', () => {
   it('renders retention policy summary and action buttons', () => {
     const wrapper = mountManager()
     expect(wrapper.find('.traffic-history-manager__summary').exists()).toBe(true)
+    expect(wrapper.text()).toContain('当前保留策略')
+    expect(wrapper.text()).toContain('只读摘要')
+    expect(wrapper.text()).toContain('危险操作 · 需确认')
     expect(wrapper.text()).toContain('小时 30 天')
     expect(wrapper.text()).toContain('日 3 个月')
     expect(wrapper.text()).toContain('月 36 个月')
 
+    expect(wrapper.find('[data-testid="traffic-history-actions-main"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-history-actions-danger"]').exists()).toBe(true)
     const buttons = wrapper.findAll('.traffic-history-manager__actions button')
     expect(buttons.length).toBe(3)
     expect(buttons[0].text()).toBe('校准为指定值')
     expect(buttons[1].text()).toBe('从现在归零')
     expect(buttons[2].text()).toBe('清理过期数据')
+  })
+
+  it('isolates danger actions with stronger danger chrome and confirm hint', () => {
+    const wrapper = mountManager()
+    const danger = wrapper.find('[data-testid="traffic-history-danger-block"]')
+    expect(danger.exists()).toBe(true)
+    expect(danger.classes()).toContain('traffic-history-manager__action-block--danger')
+    expect(danger.text()).toContain('危险操作 · 需确认')
+    expect(danger.text()).toMatch(/二次确认|不可撤销|误清/)
+    expect(danger.find('[data-testid="traffic-history-actions-danger"] .btn-danger').exists()).toBe(true)
+    const main = wrapper.find('[data-testid="traffic-history-actions-main"]')
+    expect(main.element.closest('.traffic-history-manager__action-block--danger')).toBeNull()
   })
 
   it('emits calibrate on calibrate button click', async () => {

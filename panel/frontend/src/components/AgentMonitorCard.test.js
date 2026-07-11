@@ -44,17 +44,34 @@ describe('AgentMonitorCard', () => {
 
     expect(wrapper.find('[data-testid="monitor-card-name"]').text()).toBe('Edge 1')
 
-    expect(wrapper.find('[data-testid="monitor-card-cpu-value"]').text()).toContain('1.0 / 8 核')
-    expect(wrapper.find('[data-testid="monitor-card-cpu-percent"]').text()).toContain('12.4%')
+    const cpuTile = wrapper.find('[data-testid="monitor-card-cpu"]')
+    expect(cpuTile.text()).toContain('CPU')
+    expect(cpuTile.text()).toContain('1.0 / 8 核')
+    expect(cpuTile.find('.base-metric-bar__fill').attributes('style')).toContain('width: 12.4%')
 
-    expect(wrapper.find('[data-testid="monitor-card-memory-value"]').text()).toContain('10.0 GiB / 16.0 GiB')
-    expect(wrapper.find('[data-testid="monitor-card-memory-percent"]').text()).toContain('63.8%')
+    const memoryTile = wrapper.find('[data-testid="monitor-card-memory"]')
+    expect(memoryTile.text()).toContain('内存')
+    expect(memoryTile.text()).toContain('10.0 GiB / 16.0 GiB')
+    expect(memoryTile.find('.base-metric-bar__fill').attributes('style')).toContain('width: 63.8%')
 
-    expect(wrapper.find('[data-testid="monitor-card-disk-value"]').text()).toContain('398.0 GiB / 512.0 GiB')
-    expect(wrapper.find('[data-testid="monitor-card-disk-percent"]').text()).toContain('77.0%')
+    const diskTile = wrapper.find('[data-testid="monitor-card-disk"]')
+    expect(diskTile.text()).toContain('磁盘')
+    expect(diskTile.text()).toContain('398.0 GiB / 512.0 GiB')
+    expect(diskTile.find('.base-metric-bar__fill').attributes('style')).toContain('width: 77%')
 
-    expect(wrapper.find('[data-testid="monitor-card-network-down"]').text()).toContain('2.00 KiB/s')
-    expect(wrapper.find('[data-testid="monitor-card-network-up"]').text()).toContain('1.00 KiB/s')
+    const networkTile = wrapper.find('[data-testid="monitor-card-network"]')
+    expect(networkTile.find('[data-testid="agent-metric-tile-network-down"]').text()).toContain('2.00 KiB/s')
+    expect(networkTile.find('[data-testid="agent-metric-tile-network-up"]').text()).toContain('1.00 KiB/s')
+  })
+
+  it('renders a CPU icon that exists in the mdi icon set', () => {
+    const wrapper = mountCard()
+
+    // `i-mdi-cpu` does not exist in @iconify-json/mdi, so it renders empty.
+    // Use `i-mdi-cpu-64-bit` (or another existing mdi icon) so the icon is visible.
+    const cpuIcon = wrapper.find('[data-testid="monitor-card-cpu"] .i-mdi-cpu-64-bit')
+    expect(cpuIcon.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="monitor-card-cpu"] .i-mdi-cpu').exists()).toBe(false)
   })
 
   it('emits details event when clicking detail button or card', async () => {
@@ -87,11 +104,11 @@ describe('AgentMonitorCard', () => {
       }
     })
 
-    expect(wrapper.find('[data-testid="monitor-card-cpu-percent"]').text()).toContain('—')
-    expect(wrapper.find('[data-testid="monitor-card-memory-percent"]').text()).toContain('—')
-    expect(wrapper.find('[data-testid="monitor-card-disk-percent"]').text()).toContain('—')
-    expect(wrapper.find('[data-testid="monitor-card-network-down"]').text()).toContain('—')
-    expect(wrapper.find('[data-testid="monitor-card-network-up"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="monitor-card-cpu"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="monitor-card-memory"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="monitor-card-disk"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="agent-metric-tile-network-down"]').text()).toContain('—')
+    expect(wrapper.find('[data-testid="agent-metric-tile-network-up"]').text()).toContain('—')
 
     expect(wrapper.text()).not.toContain('0%')
     expect(wrapper.text()).not.toContain('0 B/s')

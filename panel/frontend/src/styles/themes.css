@@ -70,6 +70,17 @@
   /* Layout */
   --sidebar-width: 220px;
   --header-height: 56px;
+
+  /* Dashboard metric tiles — per-theme overrides below */
+  --color-dashboard-tile-bg: var(--color-bg-subtle);
+  --color-dashboard-tile-border: var(--color-border-default);
+  --color-dashboard-tile-header-bg: rgba(255, 255, 255, 0.25);
+  --color-dashboard-tile-shadow: var(--shadow-sm);
+
+  /* Semantic subtle backgrounds — themes may override */
+  --color-success-subtle: var(--color-success-50);
+  --color-danger-subtle: var(--color-danger-50);
+  --color-warning-subtle: var(--color-warning-50);
 }
 
 /* =============================================
@@ -110,13 +121,22 @@
 
   --color-success: #059669;
   --color-success-50: rgba(5, 150, 105, 0.09);
+  --color-success-subtle: rgba(5, 150, 105, 0.10);
   --color-success-glow: rgba(5, 150, 105, 0.20);
   --color-danger: #dc2626;
   --color-danger-50: rgba(220, 38, 38, 0.08);
+  --color-danger-subtle: rgba(220, 38, 38, 0.10);
   --color-danger-glow: rgba(220, 38, 38, 0.18);
   --color-warning: #d97706;
   --color-warning-50: rgba(217, 119, 6, 0.09);
+  --color-warning-subtle: rgba(217, 119, 6, 0.10);
   --color-warning-glow: rgba(217, 119, 6, 0.20);
+
+  /* Dashboard metric tiles */
+  --color-dashboard-tile-bg: #e9f7ef;
+  --color-dashboard-tile-border: var(--color-border-default);
+  --color-dashboard-tile-header-bg: rgba(5, 150, 105, 0.06);
+  --color-dashboard-tile-shadow: var(--shadow-sm);
 
   --shadow-xs: 0 1px 2px rgba(16, 35, 29, 0.04);
   --shadow-sm: 0 1px 3px rgba(16, 35, 29, 0.06), 0 1px 2px rgba(16, 35, 29, 0.04);
@@ -166,13 +186,22 @@
 
   --color-success: #10b981;
   --color-success-50: rgba(16, 185, 129, 0.08);
+  --color-success-subtle: rgba(16, 185, 129, 0.10);
   --color-success-glow: rgba(16, 185, 129, 0.20);
   --color-danger: #ef4444;
   --color-danger-50: rgba(239, 68, 68, 0.08);
+  --color-danger-subtle: rgba(239, 68, 68, 0.10);
   --color-danger-glow: rgba(239, 68, 68, 0.20);
   --color-warning: #f59e0b;
   --color-warning-50: rgba(245, 158, 11, 0.08);
+  --color-warning-subtle: rgba(245, 158, 11, 0.10);
   --color-warning-glow: rgba(245, 158, 11, 0.20);
+
+  /* Dashboard metric tiles */
+  --color-dashboard-tile-bg: #fdf2f8;
+  --color-dashboard-tile-border: var(--color-border-default);
+  --color-dashboard-tile-header-bg: rgba(236, 72, 153, 0.05);
+  --color-dashboard-tile-shadow: var(--shadow-sm);
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -222,13 +251,22 @@
 
   --color-success: #34d399;
   --color-success-50: rgba(52, 211, 153, 0.10);
+  --color-success-subtle: rgba(52, 211, 153, 0.12);
   --color-success-glow: rgba(52, 211, 153, 0.25);
   --color-danger: #f87171;
   --color-danger-50: rgba(248, 113, 113, 0.10);
+  --color-danger-subtle: rgba(248, 113, 113, 0.12);
   --color-danger-glow: rgba(248, 113, 113, 0.25);
   --color-warning: #fbbf24;
   --color-warning-50: rgba(251, 191, 36, 0.10);
+  --color-warning-subtle: rgba(251, 191, 36, 0.12);
   --color-warning-glow: rgba(251, 191, 36, 0.25);
+
+  /* Dashboard metric tiles */
+  --color-dashboard-tile-bg: rgba(255, 255, 255, 0.04);
+  --color-dashboard-tile-border: var(--color-border-subtle);
+  --color-dashboard-tile-header-bg: rgba(244, 114, 182, 0.08);
+  --color-dashboard-tile-shadow: var(--shadow-sm);
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.30), 0 1px 2px rgba(0, 0, 0, 0.20);
@@ -278,13 +316,22 @@
 
   --color-success: #34d399;
   --color-success-50: rgba(52, 211, 153, 0.10);
+  --color-success-subtle: rgba(52, 211, 153, 0.12);
   --color-success-glow: rgba(52, 211, 153, 0.25);
   --color-danger: #f87171;
   --color-danger-50: rgba(248, 113, 113, 0.10);
+  --color-danger-subtle: rgba(248, 113, 113, 0.12);
   --color-danger-glow: rgba(248, 113, 113, 0.25);
   --color-warning: #fbbf24;
   --color-warning-50: rgba(251, 191, 36, 0.10);
+  --color-warning-subtle: rgba(251, 191, 36, 0.12);
   --color-warning-glow: rgba(251, 191, 36, 0.25);
+
+  /* Dashboard metric tiles */
+  --color-dashboard-tile-bg: rgba(255, 255, 255, 0.04);
+  --color-dashboard-tile-border: var(--color-border-subtle);
+  --color-dashboard-tile-header-bg: rgba(96, 165, 250, 0.08);
+  --color-dashboard-tile-shadow: var(--shadow-sm);
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.30), 0 1px 2px rgba(0, 0, 0, 0.20);
@@ -341,13 +388,22 @@
   /* Semantic: slightly adjusted for indigo harmony */
   --color-success: #10b981;
   --color-success-50: rgba(16, 185, 129, 0.08);
+  --color-success-subtle: rgba(16, 185, 129, 0.10);
   --color-success-glow: rgba(16, 185, 129, 0.20);
   --color-danger: #ef4444;
   --color-danger-50: rgba(239, 68, 68, 0.08);
+  --color-danger-subtle: rgba(239, 68, 68, 0.10);
   --color-danger-glow: rgba(239, 68, 68, 0.20);
   --color-warning: #f59e0b;
   --color-warning-50: rgba(245, 158, 11, 0.08);
+  --color-warning-subtle: rgba(245, 158, 11, 0.10);
   --color-warning-glow: rgba(245, 158, 11, 0.20);
+
+  /* Dashboard metric tiles */
+  --color-dashboard-tile-bg: #f1f5f9;
+  --color-dashboard-tile-border: var(--color-border-default);
+  --color-dashboard-tile-header-bg: rgba(79, 70, 229, 0.04);
+  --color-dashboard-tile-shadow: var(--shadow-sm);
 
   /* Shadows: slate-tinted for depth cohesion */
   --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
