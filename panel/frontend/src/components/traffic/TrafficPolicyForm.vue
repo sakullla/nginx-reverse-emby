@@ -4,11 +4,11 @@
       <div class="traffic-policy-form__card traffic-policy-form__card--primary" data-testid="traffic-policy-card-quota">
         <div class="traffic-policy-form__card-heading">
           <span class="traffic-policy-form__card-badge">优先</span>
-          <h4 class="traffic-policy-form__card-title">额度与阻断</h4>
+          <h4 class="traffic-policy-form__card-title">额度与计费</h4>
         </div>
-        <p class="traffic-policy-form__card-lead">先确认月额度与超额阻断，这是策略主决策面</p>
-        <div class="traffic-policy-form__card-body">
-          <label class="traffic-policy-form__field">
+        <p class="traffic-policy-form__card-lead">先确认月额度、超额阻断与计费方向/周期，这是策略主决策面</p>
+        <div class="traffic-policy-form__card-body traffic-policy-form__card-body--grid">
+          <label class="traffic-policy-form__field traffic-policy-form__field--span-2">
             <span class="traffic-policy-form__label">月额度</span>
             <div class="traffic-policy-form__quota">
               <input :value="modelValue.monthly_quota_value" class="traffic-policy-form__input" type="text" placeholder="留空表示无限制" @input="updateField('monthly_quota_value', $event.target.value)">
@@ -21,14 +21,6 @@
             <span class="traffic-policy-form__label">超额阻断</span>
             <input :checked="modelValue.block_when_exceeded" type="checkbox" @change="updateField('block_when_exceeded', $event.target.checked)">
           </label>
-        </div>
-      </div>
-
-      <div class="traffic-policy-form__card" data-testid="traffic-policy-card-billing">
-        <div class="traffic-policy-form__card-heading">
-          <h4 class="traffic-policy-form__card-title">计费方向与周期</h4>
-        </div>
-        <div class="traffic-policy-form__card-body">
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">方向</span>
             <select :value="modelValue.direction" class="traffic-policy-form__input" @change="updateField('direction', $event.target.value)">
@@ -49,7 +41,7 @@
         <div class="traffic-policy-form__card-heading">
           <h4 class="traffic-policy-form__card-title">数据保留策略</h4>
         </div>
-        <div class="traffic-policy-form__card-body">
+        <div class="traffic-policy-form__card-body traffic-policy-form__card-body--grid traffic-policy-form__card-body--retention">
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">
               小时粒度保留
@@ -77,7 +69,7 @@
         </div>
       </div>
 
-      <div class="traffic-policy-form__card traffic-policy-form__card--full traffic-policy-form__card--muted" data-testid="traffic-policy-card-advanced">
+      <div class="traffic-policy-form__card traffic-policy-form__card--muted" data-testid="traffic-policy-card-advanced">
         <div class="traffic-policy-form__card-heading">
           <h4 class="traffic-policy-form__card-title">高级设置</h4>
         </div>
@@ -127,7 +119,7 @@ function updateField(key, value) {
 }
 .traffic-policy-form__cards {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.875rem;
 }
 .traffic-policy-form__card {
@@ -159,9 +151,6 @@ function updateField(key, value) {
   border-style: dashed;
   box-shadow: none;
   background: color-mix(in srgb, var(--color-bg-subtle) 45%, var(--color-bg-surface));
-}
-.traffic-policy-form__card--full {
-  grid-column: 1 / -1;
 }
 .traffic-policy-form__card-heading {
   display: flex;
@@ -206,12 +195,24 @@ function updateField(key, value) {
   flex-direction: column;
   gap: 0.7rem;
 }
+.traffic-policy-form__card-body--grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem 0.875rem;
+  align-items: start;
+}
+.traffic-policy-form__card-body--retention {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .traffic-policy-form__field {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 0.3rem;
   min-width: 0;
+}
+.traffic-policy-form__field--span-2 {
+  grid-column: 1 / -1;
 }
 .traffic-policy-form__field--switch {
   flex-direction: row;
@@ -295,10 +296,11 @@ function updateField(key, value) {
   min-width: 5.5rem;
 }
 @media (max-width: 720px) {
-  .traffic-policy-form__cards {
+  .traffic-policy-form__card-body--grid,
+  .traffic-policy-form__card-body--retention {
     grid-template-columns: 1fr;
   }
-  .traffic-policy-form__card--full {
+  .traffic-policy-form__field--span-2 {
     grid-column: auto;
   }
 }

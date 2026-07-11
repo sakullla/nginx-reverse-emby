@@ -23,14 +23,16 @@ describe('TrafficPolicyForm', () => {
     })
   }
 
-  it('renders remaining-scene sections with quota/block first', () => {
+  it('renders three-card primary stack with quota/billing merged first', () => {
     const wrapper = mountForm()
     const titles = wrapper.findAll('.traffic-policy-form__card-title').map((el) => el.text())
-    expect(titles).toEqual(['额度与阻断', '计费方向与周期', '数据保留策略', '高级设置'])
+    expect(titles).toEqual(['额度与计费', '数据保留策略', '高级设置'])
     expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-policy-card-quota"].traffic-policy-form__card--primary').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').text()).toContain('优先')
-    expect(wrapper.find('[data-testid="traffic-policy-card-billing"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').text()).toContain('方向')
+    expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').text()).toContain('月周期起始日')
+    expect(wrapper.find('[data-testid="traffic-policy-card-billing"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="traffic-policy-card-retention"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-policy-card-advanced"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-policy-card-advanced"].traffic-policy-form__card--muted').exists()).toBe(true)
