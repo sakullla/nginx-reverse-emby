@@ -4,17 +4,17 @@
       <div class='certs-page__header-left'>
         <h1 class='certs-page__title'>证书管理</h1>
         <p class='certs-page__subtitle'>
-          <template v-if='agentId'>
-            {{ certificates.length }} 项证书 · {{ activeCount }} 生效中<template v-if='issuingCount'> · {{ issuingCount }} 签发中</template> · 模板优先创建
+          <template v-if='hasAgentFilter'>
+            共 {{ listTotal }} 项 · 本页 {{ certificates.length }} 项 · {{ activeCount }} 生效中<template v-if='issuingCount'> · {{ issuingCount }} 签发中</template>
           </template>
           <template v-else>
-            请先选择一个节点
+            暂无可用节点
           </template>
         </p>
       </div>
       <div class='certs-page__header-right'>
-        <ViewToggle v-if='agentId && certificates.length' v-model:view='view' />
-        <div v-if='agentId && certificates.length' class='search-wrapper' @click='focusSearch'>
+        <ViewToggle v-if='hasAgentFilter && (listTotal > 0 || listQ || searchQuery)' v-model:view='view' />
+        <div v-if='hasAgentFilter' class='search-wrapper' @click='focusSearch'>
           <svg class='search-icon-btn' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
             <circle cx='11' cy='11' r='8' />
             <line x1='21' y1='21' x2='16.65' y2='16.65' />
@@ -27,7 +27,7 @@
             </svg>
           </button>
         </div>
-        <button v-if='agentId' class='btn btn-primary' @click='showAddForm = true'>
+        <button v-if='canCreate' class='btn btn-primary' @click='showAddForm = true'>
           <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
             <line x1='12' y1='5' x2='12' y2='19' />
             <line x1='5' y1='12' x2='19' y2='12' />
@@ -38,18 +38,18 @@
     </div>
 
     <QuickAgentSelect
-      :agentId="agentId"
+      :agentId="agentFilter"
       :agents="allAgents"
       @update:agentId="handleAgentSelect"
     />
 
-    <div v-if='!agentId' class='certs-page__prompt'>
+    <div v-if='!allAgents.length' class='certs-page__prompt'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
         <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
         <path d='M7 11V7a5 5 0 0 1 10 0v4' />
       </svg>
-      <p>请从上方选择一个节点来管理证书</p>
-      <p class="certs-page__prompt-hint">或前往节点管理页面添加新节点</p>
+      <p>暂无可用节点</p>
+      <p class="certs-page__prompt-hint">请先加入节点后再管理证书</p>
       <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
@@ -57,7 +57,7 @@
       <div class='spinner'></div>
     </div>
 
-    <div v-show='certificates.length && filteredCerts.length && view === "card"' class='cert-grid'>
+    <div v-show='hasAgentFilter && filteredCerts.length && view === "card"' class='cert-grid'>
       <CertCard
         v-for='cert in filteredCerts'
         :key='cert.id'
@@ -69,13 +69,21 @@
     </div>
 
     <CertTable
-      v-show='agentId && filteredCerts.length && view === "list"'
+      v-show='hasAgentFilter && filteredCerts.length && view === "list"'
       :certificates='filteredCerts'
       @edit='startEdit'
       @delete='startDelete'
     />
 
-    <div v-if='agentId && certificates.length && !filteredCerts.length && !isIdExactMatch' class='certs-page__empty'>
+    <ListPagination
+      v-if="hasAgentFilter && listTotal > 0"
+      :page="page"
+      :page-size="pageSize"
+      :total="listTotal"
+      @update:page="page = $event"
+    />
+
+    <div v-if='hasAgentFilter && certificates.length && !filteredCerts.length && !isIdExactMatch' class='certs-page__empty'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
         <circle cx='11' cy='11' r='8' />
         <line x1='21' y1='21' x2='16.65' y2='16.65' />
@@ -83,13 +91,14 @@
       <p>没有匹配的证书</p>
     </div>
 
-    <div v-if='agentId && !isLoading && !certificates.length' class='certs-page__empty'>
+    <div v-if='hasAgentFilter && !isLoading && !certificates.length' class='certs-page__empty'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
         <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
         <path d='M7 11V7a5 5 0 0 1 10 0v4' />
       </svg>
       <p>暂无证书</p>
-      <button class='btn btn-primary' @click='showAddForm = true'>从模板创建第一个证书</button>
+      <button v-if='canCreate' class='btn btn-primary' @click='showAddForm = true'>从模板创建第一个证书</button>
+      <p v-else class='certs-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
     </div>
 
     <BaseModal
@@ -127,15 +136,17 @@ import { computed, ref, watchEffect, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
-import { useCertificates, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
+import { useCertificatesList, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
 import CertificateForm from '../components/CertificateForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import CertCard from '../components/certs/CertCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
+import ListPagination from '../components/common/ListPagination.vue'
 import CertTable from '../components/certs/CertTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
+import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import {
   isSystemRelayCA
 } from '../utils/certificateTemplates'
@@ -150,22 +161,52 @@ const agentContext = useAgent()
 const { selectedAgentId } = agentContext
 const { data: agentsData } = useAgents()
 const allAgents = computed(() => agentsData.value ?? [])
+const registeredAgentIds = computed(() => new Set((agentsData.value || []).map((agent) => String(agent.id))))
 
-const agentId = computed(() => route.query.agentId || selectedAgentId.value)
+const agentFilter = computed(() => {
+  const raw = normalizeAgentFilter(route.query.agentId || selectedAgentId.value)
+  if (!raw) return null
+  if (isAllAgentsFilter(raw)) return raw
+  return registeredAgentIds.value.has(String(raw)) ? raw : null
+})
+const agentId = computed(() => {
+  const filter = agentFilter.value
+  if (!filter || isAllAgentsFilter(filter)) return null
+  return filter
+})
+const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
+const canCreate = computed(() => Boolean(agentId.value))
 
-const { data: certsData, isLoading } = useCertificates(agentId)
+const page = ref(1)
+const pageSize = 20
+const searchQuery = ref('')
+const listQ = computed(() => {
+  const raw = searchQuery.value.trim()
+  if (!raw) return ''
+  if (/^#id=\S+$/.test(raw)) return ''
+  return raw
+})
+watch([agentFilter, listQ], () => { page.value = 1 })
+
+const { data: certsPage, isLoading } = useCertificatesList({
+  agentFilter,
+  page,
+  pageSize,
+  q: listQ,
+  enabled: hasAgentFilter
+})
 
 function handleAgentSelect(id) {
   router.replace({ query: { ...route.query, agentId: id } })
 }
 const deleteCertificate = useDeleteCertificate(agentId)
 const issueCertificate = useIssueCertificate(agentId)
-const certificates = computed(() => certsData.value ?? [])
+const certificates = computed(() => certsPage.value?.items ?? [])
+const listTotal = computed(() => certsPage.value?.total ?? 0)
 const showAddForm = ref(false)
 const editingCert = ref(null)
 const deletingCert = ref(null)
 
-const searchQuery = ref('')
 const searchInputRef = ref(null)
 function focusSearch() {
   searchInputRef.value?.focus()
@@ -188,11 +229,7 @@ const filteredCerts = computed(() => {
   if (!raw) return certificates.value
   const idMatch = raw.match(/^#id=(\S+)$/)
   if (idMatch) return certificates.value.filter((cert) => String(cert.id) === idMatch[1])
-  const query = raw.toLowerCase()
-  return certificates.value.filter((cert) =>
-    cert.domain.toLowerCase().includes(query) ||
-    (cert.tags || []).some((tag) => String(tag).toLowerCase().includes(query))
-  )
+  return certificates.value
 })
 
 // R3: Cross-agent #id= resolution — if not found in current agent, search all agents

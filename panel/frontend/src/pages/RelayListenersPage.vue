@@ -3,12 +3,12 @@
     <div class='relay-page__header'>
       <div class='relay-page__header-left'>
         <h1 class='relay-page__title'>Relay 监听器</h1>
-        <p v-if='agentId' class='relay-page__subtitle'>{{ listeners.length }} 个监听器 · 默认自动签发证书 · 自动 Relay CA + Pin 信任</p>
-        <p v-else class='relay-page__subtitle'>请先选择一个节点</p>
+        <p v-if='hasAgentFilter' class='relay-page__subtitle'>共 {{ listTotal }} 个 · 本页 {{ listeners.length }} 个 · 默认自动签发证书</p>
+        <p v-else class='relay-page__subtitle'>暂无可用节点</p>
       </div>
       <div class='relay-page__header-right'>
-        <ViewToggle v-if='agentId && listeners.length' v-model:view='view' />
-        <button v-if='agentId' class='btn btn-primary' @click='showAddForm = true'>
+        <ViewToggle v-if='hasAgentFilter && listTotal > 0' v-model:view='view' />
+        <button v-if='canCreate' class='btn btn-primary' @click='showAddForm = true'>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -18,32 +18,33 @@
     </div>
 
     <QuickAgentSelect
-      :agentId="agentId"
+      :agentId="agentFilter"
       :agents="allAgents"
       @update:agentId="handleAgentSelect"
     />
 
-    <!-- No agent selected -->
-    <div v-if='!agentId' class='relay-page__prompt'>
+    <!-- No agents available -->
+    <div v-if='!allAgents.length' class='relay-page__prompt'>
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
       </svg>
-      <p>请从上方选择一个节点来管理 Relay 监听器</p>
-      <p class="relay-page__prompt-hint">或前往节点管理页面添加新节点</p>
+      <p>暂无可用节点</p>
+      <p class="relay-page__prompt-hint">请先加入节点后再管理 Relay 监听器</p>
       <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
-    <!-- Agent selected, no listeners -->
-    <div v-else-if='!listeners.length && !isLoading' class='relay-page__empty'>
+    <!-- Filter active, no listeners -->
+    <div v-else-if='hasAgentFilter && !listeners.length && !isLoading' class='relay-page__empty'>
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
       </svg>
       <p>暂无 Relay 监听器</p>
-      <button class='btn btn-primary' @click='showAddForm = true'>创建第一个监听器</button>
+      <button v-if='canCreate' class='btn btn-primary' @click='showAddForm = true'>创建第一个监听器</button>
+      <p v-else class='relay-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
     </div>
 
     <!-- Listener card grid -->
-    <div v-show='agentId && displayListeners.length && view === "card"' class='relay-grid'>
+    <div v-show='hasAgentFilter && displayListeners.length && view === "card"' class='relay-grid'>
       <RelayCard
         v-for='listener in displayListeners'
         :key='listener.id'
@@ -59,11 +60,19 @@
 
     <!-- Listener list table -->
     <RelayTable
-      v-show='agentId && displayListeners.length && view === "list"'
+      v-show='hasAgentFilter && displayListeners.length && view === "list"'
       :listeners='displayListeners'
       @edit='startEdit'
       @toggle='toggleListener'
       @delete='startDelete'
+    />
+
+    <ListPagination
+      v-if="hasAgentFilter && listTotal > 0"
+      :page="page"
+      :page-size="pageSize"
+      :total="listTotal"
+      @update:page="page = $event"
     />
 
     <!-- Loading -->
@@ -104,12 +113,12 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
-import { useRelayListeners, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
+import { useRelayListenersList, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import { parseIdQuery } from '../hooks/useIdSearch'
 import { fetchTrafficSummary } from '../api'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
@@ -118,10 +127,12 @@ import BaseModal from '../components/base/BaseModal.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
+import ListPagination from '../components/common/ListPagination.vue'
 import RelayTable from '../components/relay/RelayTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
+import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -132,18 +143,35 @@ const systemInfo = agentContext.systemInfo || ref(null)
 const { data: agentsData } = useAgents()
 const allAgents = computed(() => agentsData.value ?? [])
 
-const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
 const registeredAgentIds = computed(() => new Set((agentsData.value || []).map((agent) => String(agent.id))))
-const agentId = computed(() => {
-  const id = selectedOrRouteAgentId.value
-  if (!id) return null
-  return registeredAgentIds.value.has(String(id)) ? id : null
+const agentFilter = computed(() => {
+  const raw = normalizeAgentFilter(route.query.agentId || selectedAgentId.value)
+  if (!raw) return null
+  if (isAllAgentsFilter(raw)) return raw
+  return registeredAgentIds.value.has(String(raw)) ? raw : null
 })
+const agentId = computed(() => {
+  const filter = agentFilter.value
+  if (!filter || isAllAgentsFilter(filter)) return null
+  return filter
+})
+const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
+const canCreate = computed(() => Boolean(agentId.value))
 
-const { data: listenersData, isLoading } = useRelayListeners(agentId)
+const page = ref(1)
+const pageSize = 20
+watch(agentFilter, () => { page.value = 1 })
+
+const { data: listenersPage, isLoading } = useRelayListenersList({
+  agentFilter,
+  page,
+  pageSize,
+  enabled: hasAgentFilter
+})
 const deleteRelayListener = useDeleteRelayListener(agentId)
 const updateRelayListener = useUpdateRelayListener(agentId)
-const listeners = computed(() => listenersData.value ?? [])
+const listeners = computed(() => listenersPage.value?.items ?? [])
+const listTotal = computed(() => listenersPage.value?.total ?? 0)
 
 // Consume route deep-link search=#id=N (from agent detail / global search).
 // Match → filter to that listener; no match / no search → full list (no crash, no redesign).

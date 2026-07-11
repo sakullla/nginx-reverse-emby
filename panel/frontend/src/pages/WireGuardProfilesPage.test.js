@@ -55,6 +55,15 @@ vi.mock('../hooks/useWireGuardProfiles', () => ({
     data: ref(mocks.profilesData),
     isLoading: ref(false)
   }),
+  useWireGuardProfilesList: () => ({
+    data: ref({
+      items: mocks.profilesData,
+      total: Array.isArray(mocks.profilesData) ? mocks.profilesData.length : 0,
+      page: 1,
+      page_size: 20
+    }),
+    isLoading: ref(false)
+  }),
   useCreateWireGuardProfile: () => ({ isPending: ref(false), mutateAsync: vi.fn() }),
   useUpdateWireGuardProfile: () => ({ isPending: ref(false), mutateAsync: mocks.profileUpdateMutate }),
   useDeleteWireGuardProfile: () => ({ isPending: ref(false), mutate: vi.fn() }),

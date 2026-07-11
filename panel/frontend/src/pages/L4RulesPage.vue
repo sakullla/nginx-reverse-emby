@@ -4,24 +4,24 @@
       <div class="rules-page__header-left">
         <h1 class="rules-page__title">L4 规则</h1>
         <p class="rules-page__subtitle">
-          <template v-if="agentId">
-            {{ rules.length }} 条规则 · 启用 {{ enabledCount }} 条
+          <template v-if="hasAgentFilter">
+            共 {{ listTotal }} 条 · 本页 {{ rules.length }} 条 · 启用 {{ enabledCount }} 条
           </template>
           <template v-else>
-            请先选择一个节点
+            暂无可用节点
           </template>
         </p>
       </div>
       <div class="rules-page__header-right">
-        <ViewToggle v-if="agentId && rules.length" v-model:view="view" />
-        <div class="search-wrapper" v-if="agentId && rules.length" @click="focusSearch">
+        <ViewToggle v-if="hasAgentFilter && (listTotal > 0 || listQ || searchQuery)" v-model:view="view" />
+        <div class="search-wrapper" v-if="hasAgentFilter" @click="focusSearch">
           <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input ref="searchInputRef" v-model="searchQuery" name="l4-rule-search" class="search-input" placeholder="搜索协议 / 地址 / 端口 / 标签 / #id=...">
           <button v-if="searchQuery" class="clear-btn" @click.stop="searchQuery = ''">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <button v-if="agentId" class="btn btn-primary" @click="showAddForm = true">
+        <button v-if="canCreate" class="btn btn-primary" @click="showAddForm = true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -31,32 +31,33 @@
     </div>
 
     <QuickAgentSelect
-      :agentId="agentId"
+      :agentId="agentFilter"
       :agents="allAgents"
       @update:agentId="handleAgentSelect"
     />
 
-    <!-- No agent selected -->
-    <div v-if="!agentId" class="rules-page__prompt">
+    <!-- No agents available -->
+    <div v-if="!allAgents.length" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
       </svg>
-      <p>请从上方选择一个节点来管理 L4 规则</p>
-      <p class="rules-page__prompt-hint">或前往节点管理页面添加新节点</p>
+      <p>暂无可用节点</p>
+      <p class="rules-page__prompt-hint">请先加入节点后再管理 L4 规则</p>
       <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
-    <!-- Agent selected, no rules -->
-    <div v-else-if="!rules.length && !isLoading" class="rules-page__empty">
+    <!-- Filter active, no rules -->
+    <div v-else-if="hasAgentFilter && !rules.length && !isLoading" class="rules-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
       </svg>
       <p>暂无 L4 规则</p>
-      <button class="btn btn-primary" @click="showAddForm = true">添加第一条规则</button>
+      <button v-if="canCreate" class="btn btn-primary" @click="showAddForm = true">添加第一条规则</button>
+      <p v-else class="rules-page__prompt-hint">全部节点视图下请先选择具体节点再新建</p>
     </div>
 
     <!-- No search results -->
-    <div v-if="agentId && rules.length && !filteredRules.length" class="rules-page__prompt">
+    <div v-if="hasAgentFilter && rules.length && !filteredRules.length" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
       </svg>
@@ -64,7 +65,7 @@
     </div>
 
     <!-- Rule card grid -->
-    <div v-show="agentId && filteredRules.length && view === 'card'" class="rule-grid">
+    <div v-show="hasAgentFilter && filteredRules.length && view === 'card'" class="rule-grid">
       <L4RuleItem
         v-for="rule in filteredRules"
         :key="rule.id"
@@ -83,12 +84,20 @@
 
     <!-- Rule list table -->
     <L4RuleTable
-      v-show="agentId && filteredRules.length && view === 'list'"
+      v-show="hasAgentFilter && filteredRules.length && view === 'list'"
       :rules="filteredRules"
       :agent="selectedAgent"
       @edit="startEdit"
       @toggle="toggleRule"
       @delete="startDelete"
+    />
+
+    <ListPagination
+      v-if="hasAgentFilter && listTotal > 0"
+      :page="page"
+      :page-size="pageSize"
+      :total="listTotal"
+      @update:page="page = $event"
     />
 
     <!-- Loading -->
@@ -163,7 +172,7 @@ import { ref, computed, watchEffect, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
-import { useL4Rules, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
+import { useL4RulesList, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
 import { useDiagnoseL4Rule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
 import { fetchTrafficSummary, fetchAllAgentsL4Rules } from '../api'
@@ -177,10 +186,12 @@ import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
+import ListPagination from '../components/common/ListPagination.vue'
 import L4RuleTable from '../components/l4/L4RuleTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { messageStore } from '../stores/messages'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
+import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -188,20 +199,43 @@ const { view } = useViewToggle('l4rules')
 const agentContext = useAgent()
 const { selectedAgentId } = agentContext
 const systemInfo = agentContext.systemInfo || ref(null)
-const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
-
 // Agents list for sync status derivation
 const { data: agentsData } = useAgents()
 const allAgents = computed(() => agentsData.value ?? [])
 const registeredAgentIds = computed(() => new Set((agentsData.value || []).map((agent) => String(agent.id))))
-const agentId = computed(() => {
-  const id = selectedOrRouteAgentId.value
-  if (!id) return null
-  return registeredAgentIds.value.has(String(id)) ? id : null
+const agentFilter = computed(() => {
+  const raw = normalizeAgentFilter(route.query.agentId || selectedAgentId.value)
+  if (!raw) return null
+  if (isAllAgentsFilter(raw)) return raw
+  return registeredAgentIds.value.has(String(raw)) ? raw : null
 })
+const agentId = computed(() => {
+  const filter = agentFilter.value
+  if (!filter || isAllAgentsFilter(filter)) return null
+  return filter
+})
+const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
+const canCreate = computed(() => Boolean(agentId.value))
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 
-const { data: _rulesData, isLoading } = useL4Rules(agentId)
+const page = ref(1)
+const pageSize = 20
+const searchQuery = ref('')
+const listQ = computed(() => {
+  const raw = searchQuery.value.trim()
+  if (!raw) return ''
+  if (/^#id=\S+$/.test(raw)) return ''
+  return raw
+})
+watch([agentFilter, listQ], () => { page.value = 1 })
+
+const { data: _rulesPage, isLoading } = useL4RulesList({
+  agentFilter,
+  page,
+  pageSize,
+  q: listQ,
+  enabled: hasAgentFilter
+})
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
 const { data: trafficSummaryData } = useQuery({
@@ -227,10 +261,9 @@ const createL4Rule = useCreateL4Rule(agentId)
 const updateL4Rule = useUpdateL4Rule(agentId)
 const deleteL4Rule = useDeleteL4Rule(agentId)
 const diagnoseL4Rule = useDiagnoseL4Rule(agentId)
-const rules = computed(() => _rulesData.value ?? [])
+const rules = computed(() => _rulesPage.value?.items ?? [])
+const listTotal = computed(() => _rulesPage.value?.total ?? 0)
 
-// Search
-const searchQuery = ref('')
 const searchInputRef = ref(null)
 function focusSearch() { searchInputRef.value?.focus() }
 
@@ -257,14 +290,7 @@ const filteredRules = computed(() => {
   if (!raw) return rules.value
   const idMatch = raw.match(/^#id=(\S+)$/)
   if (idMatch) return rules.value.filter(rule => String(rule.id) === idMatch[1])
-  const q = raw.toLowerCase()
-  return rules.value.filter(rule =>
-    String(rule.protocol || '').toLowerCase().includes(q) ||
-    String(rule.listen_host || '').toLowerCase().includes(q) ||
-    l4BackendAddresses(rule).some((address) => address.toLowerCase().includes(q)) ||
-    String(rule.listen_port || '').includes(q) ||
-    (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
-  )
+  return rules.value
 })
 
 // R3: Cross-agent #id= resolution — if not found in current agent, search all agents

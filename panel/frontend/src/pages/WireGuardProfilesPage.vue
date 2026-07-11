@@ -3,14 +3,14 @@
     <div class="wg-page__header">
       <div>
         <h1 class="wg-page__title">WireGuard 配置</h1>
-        <p v-if="agentId" class="wg-page__subtitle">
-          {{ profiles.length }} 个配置 · {{ enabledCount }} 个启用
+        <p v-if="hasAgentFilter" class="wg-page__subtitle">
+          共 {{ listTotal }} 个 · 本页 {{ profiles.length }} 个 · {{ enabledCount }} 个启用
         </p>
-        <p v-else class="wg-page__subtitle">请先选择一个节点</p>
+        <p v-else class="wg-page__subtitle">暂无可用节点</p>
       </div>
       <div class="wg-page__header-actions">
-        <ViewToggle v-if="agentId && profiles.length && !selectedProfileId" v-model:view="view" />
-        <button v-if="agentId && !selectedProfileId" class="btn btn--primary" @click="startCreateProfile">
+        <ViewToggle v-if="hasAgentFilter && listTotal > 0 && !selectedProfileId" v-model:view="view" />
+        <button v-if="canCreate && !selectedProfileId" class="btn btn--primary" @click="startCreateProfile">
           <span>+</span>
           新建 Profile
         </button>
@@ -18,28 +18,29 @@
     </div>
 
     <QuickAgentSelect
-      :agentId="agentId"
+      :agentId="agentFilter"
       :agents="allAgents"
       @update:agentId="handleAgentSelect"
     />
 
-    <div v-if="!agentId" class="wg-page__empty">
-      <p>请从上方选择一个节点来管理 WireGuard 配置</p>
+    <div v-if="!allAgents.length" class="wg-page__empty">
+      <p>暂无可用节点</p>
       <RouterLink to="/agents" class="btn btn--primary">加入节点</RouterLink>
     </div>
 
-    <div v-else-if="isLoading" class="wg-page__empty">
+    <div v-else-if="isLoading && !selectedProfileId" class="wg-page__empty">
       <div class="spinner" />
     </div>
 
     <!-- Profile List View -->
-    <template v-else-if="!selectedProfileId">
+    <template v-else-if="hasAgentFilter && !selectedProfileId">
       <div v-if="!profiles.length" class="wg-page__empty">
         <p>暂无 WireGuard 配置</p>
-        <button class="btn btn--primary" @click="startCreateProfile">创建第一个 Profile</button>
+        <button v-if="canCreate" class="btn btn--primary" @click="startCreateProfile">创建第一个 Profile</button>
+        <p v-else class="wg-page__subtitle">全部节点视图下请先选择具体节点再新建</p>
       </div>
 
-      <div v-show="view === 'card'" class="profile-grid">
+      <div v-show="view === 'card' && profiles.length" class="profile-grid">
         <WireGuardProfileCard
           v-for="profile in profiles"
           :key="profile.id"
@@ -52,16 +53,24 @@
       </div>
 
       <WGProfileTable
-        v-show="view === 'list'"
+        v-show="view === 'list' && profiles.length"
         :profiles="profiles"
         @toggle="toggleProfileEnabled"
         @edit="startEditProfile"
         @delete="deletingProfile = $event"
       />
+
+      <ListPagination
+        v-if="listTotal > 0"
+        :page="page"
+        :page-size="pageSize"
+        :total="listTotal"
+        @update:page="page = $event"
+      />
     </template>
 
     <!-- Client Management View -->
-    <template v-else>
+    <template v-else-if="selectedProfileId">
       <div class="client-view">
         <button class="btn btn--secondary btn--sm back-btn" @click="closeClientView">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -179,7 +188,7 @@ import { useAgents } from '../hooks/useAgents'
 import { fetchWireGuardClients, fetchWireGuardClientConfig, fetchWireGuardClientURI } from '../api'
 import { messageStore } from '../stores/messages'
 import {
-  useWireGuardProfiles,
+  useWireGuardProfilesList,
   useCreateWireGuardProfile,
   useUpdateWireGuardProfile,
   useDeleteWireGuardProfile,
@@ -193,8 +202,10 @@ import BaseBadge from '../components/base/BaseBadge.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import WireGuardProfileCard from '../components/wireguard/WireGuardProfileCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
+import ListPagination from '../components/common/ListPagination.vue'
 import WGProfileTable from '../components/wireguard/WGProfileTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
+import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import WireGuardProfileForm from '../components/wireguard/WireGuardProfileForm.vue'
 import WireGuardClientList from '../components/wireguard/WireGuardClientList.vue'
 import WireGuardClientForm from '../components/wireguard/WireGuardClientForm.vue'
@@ -209,18 +220,36 @@ const { data: agentsData } = useAgents()
 
 const allAgents = computed(() => agentsData.value ?? [])
 const registeredAgentIds = computed(() => new Set(allAgents.value.map((a) => String(a.id))))
-const agentId = computed(() => {
-  const id = route.query.agentId || selectedAgentId.value
-  if (!id) return null
-  return registeredAgentIds.value.has(String(id)) ? id : null
+const agentFilter = computed(() => {
+  const raw = normalizeAgentFilter(route.query.agentId || selectedAgentId.value)
+  if (!raw) return null
+  if (isAllAgentsFilter(raw)) return raw
+  return registeredAgentIds.value.has(String(raw)) ? raw : null
 })
+const agentId = computed(() => {
+  const filter = agentFilter.value
+  if (!filter || isAllAgentsFilter(filter)) return null
+  return filter
+})
+const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
+const canCreate = computed(() => Boolean(agentId.value))
 
-const { data: profilesData, isLoading } = useWireGuardProfiles(agentId)
+const page = ref(1)
+const pageSize = 20
+watch(agentFilter, () => { page.value = 1 })
+
+const { data: profilesPage, isLoading } = useWireGuardProfilesList({
+  agentFilter,
+  page,
+  pageSize,
+  enabled: hasAgentFilter
+})
 const createProfile = useCreateWireGuardProfile(agentId)
 const updateProfile = useUpdateWireGuardProfile(agentId)
 const deleteProfile = useDeleteWireGuardProfile(agentId)
 
-const profiles = computed(() => profilesData.value ?? [])
+const profiles = computed(() => profilesPage.value?.items ?? [])
+const listTotal = computed(() => profilesPage.value?.total ?? 0)
 const enabledCount = computed(() => profiles.value.filter((p) => p.enabled !== false).length)
 const isProfileSaving = computed(() => createProfile.isPending.value || updateProfile.isPending.value)
 
