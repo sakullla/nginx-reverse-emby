@@ -74,6 +74,7 @@ type ManagedCertificate struct {
 	NextRetryAtUnix int64                                    `json:"next_retry_at_unix"`
 	RetryCount      int                                      `json:"retry_count"`
 	BackoffClass    string                                   `json:"backoff_class"`
+	NotAfter        string                                   `json:"not_after"`
 }
 
 type ManagedCertificateInput struct {
@@ -96,6 +97,7 @@ type ManagedCertificateInput struct {
 	PrivateKeyPEM   *string                                   `json:"private_key_pem,omitempty"`
 	CAPEM           *string                                   `json:"ca_pem,omitempty"`
 	SelfSigned      *bool                                     `json:"self_signed,omitempty"`
+	NotAfter        *string                                   `json:"not_after,omitempty"`
 }
 
 type certificateService struct {
@@ -213,6 +215,7 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 	}
 	if hasUploadMaterial {
 		cert.MaterialHash = hashManagedCertificateMaterial(uploadMaterial.CertPEM, uploadMaterial.KeyPEM)
+		cert.NotAfter = managedCertificateNotAfterFromPEM(uploadMaterial.CertPEM, cert.NotAfter)
 		if cert.Enabled && cert.IssuerMode == "local_http01" {
 			cert.Status = "pending"
 			cert.LastError = ""
@@ -306,6 +309,7 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	}
 	if hasUploadMaterial {
 		next.MaterialHash = hashManagedCertificateMaterial(uploadMaterial.CertPEM, uploadMaterial.KeyPEM)
+		next.NotAfter = managedCertificateNotAfterFromPEM(uploadMaterial.CertPEM, next.NotAfter)
 		if next.Enabled && next.IssuerMode == "local_http01" {
 			next.Status = "pending"
 			next.LastError = ""
@@ -568,6 +572,7 @@ func (s *certificateService) issueLocalHTTP01InternalCA(ctx context.Context, row
 	next.LastError = ""
 	next.MaterialHash = materialHash
 	next.Revision = maxRevision + 1
+	next.NotAfter = managedCertificateNotAfterFromPEM(material.CertPEM, next.NotAfter)
 	for _, targetAgentID := range requestedTargetIDs {
 		next = updateManagedCertificateAgentReport(next, targetAgentID, ManagedCertificateHeartbeatReport{
 			Status:       "active",
@@ -851,6 +856,12 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 		if strings.TrimSpace(next.MaterialHash) == "" {
 			next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
 		}
+		next.NotAfter = issueResult.NotAfter
+		if strings.TrimSpace(next.NotAfter) == "" {
+			if leaf, err := parseManagedCertificateLeaf([]byte(strings.TrimSpace(issuedMaterial.CertPEM))); err == nil {
+				next.NotAfter = leaf.NotAfter.UTC().Format(time.RFC3339)
+			}
+		}
 		next.ACMEInfo = issueResult.ACMEInfo
 		next.Revision = highestManagedCertificateRevisionForService(persistRows) + 1
 
@@ -927,6 +938,7 @@ func (s *certificateService) syncStaticLocalCertificate(ctx context.Context, row
 	next.LastError = ""
 	next.MaterialHash = materialHash
 	next.Revision = managedCertificateMutationRevision(current, maxRevision, bumpRevision)
+	next.NotAfter = managedCertificateNotAfterFromPEM(material.CertPEM, next.NotAfter)
 	for _, targetAgentID := range requestedTargetIDs {
 		next = updateManagedCertificateAgentReport(next, targetAgentID, ManagedCertificateHeartbeatReport{
 			Status:       "active",
@@ -1706,6 +1718,11 @@ func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback Ma
 		selfSigned = *input.SelfSigned
 	}
 
+	notAfter := strings.TrimSpace(pointerString(input.NotAfter))
+	if notAfter == "" {
+		notAfter = fallback.NotAfter
+	}
+
 	return ManagedCertificate{
 		ID:              id,
 		Domain:          domain,
@@ -1727,6 +1744,7 @@ func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback Ma
 		NextRetryAtUnix: fallback.NextRetryAtUnix,
 		RetryCount:      fallback.RetryCount,
 		BackoffClass:    fallback.BackoffClass,
+		NotAfter:        notAfter,
 	}, nil
 }
 
@@ -1749,6 +1767,7 @@ func managedCertificateFromRow(row storage.ManagedCertificateRow) ManagedCertifi
 		NextRetryAtUnix: row.NextRetryAtUnix,
 		RetryCount:      row.RetryCount,
 		BackoffClass:    row.BackoffClass,
+		NotAfter:        row.NotAfter,
 		AgentReports:    map[string]ManagedCertificateAgentReport{},
 	}
 	cert.TargetAgentIDs = parseStringArray(row.TargetAgentIDs)
@@ -1779,7 +1798,16 @@ func managedCertificateToRow(cert ManagedCertificate) storage.ManagedCertificate
 		NextRetryAtUnix: cert.NextRetryAtUnix,
 		RetryCount:      cert.RetryCount,
 		BackoffClass:    cert.BackoffClass,
+		NotAfter:        cert.NotAfter,
 	}
+}
+
+func managedCertificateNotAfterFromPEM(certPEM string, fallback string) string {
+	leaf, err := parseManagedCertificateLeaf([]byte(strings.TrimSpace(certPEM)))
+	if err != nil {
+		return fallback
+	}
+	return leaf.NotAfter.UTC().Format(time.RFC3339)
 }
 
 func overlayManagedCertificateForAgent(cert ManagedCertificate, agentID string) ManagedCertificate {

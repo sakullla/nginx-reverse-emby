@@ -198,6 +198,7 @@ type ManagedCertificateRow struct {
 	NextRetryAtUnix int64  `gorm:"column:next_retry_at_unix"`
 	RetryCount      int    `gorm:"column:retry_count"`
 	BackoffClass    string `gorm:"column:backoff_class"`
+	NotAfter        string `gorm:"column:not_after"`
 }
 
 type MetaRow struct {

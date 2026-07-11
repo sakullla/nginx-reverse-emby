@@ -17,6 +17,7 @@ type managedCertificateRenewalResult struct {
 	Changed      bool
 	LastIssueAt  string
 	MaterialHash string
+	NotAfter     string
 	ACMEInfo     ManagedCertificateACMEInfo
 	Material     storage.ManagedCertificateBundle
 }
@@ -143,6 +144,10 @@ func (s *certificateService) renewSingleCertificate(
 			next.LastIssueAt = result.LastIssueAt
 		} else {
 			next.LastIssueAt = now.Format(time.RFC3339)
+		}
+		next.NotAfter = result.NotAfter
+		if next.NotAfter == "" {
+			next.NotAfter = managedCertificateNotAfterFromPEM(issuedMaterial.CertPEM, cert.NotAfter)
 		}
 	}
 	if result.MaterialHash != "" {
