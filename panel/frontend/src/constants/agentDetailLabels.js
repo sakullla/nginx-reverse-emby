@@ -84,4 +84,11 @@ export const agentDetailLabels = {
     disabled: '已禁用',
     unknown: '未知',
   },
+  // Inspection meta labels (not expiry — last_issue_at is issue time)
+  certIssuedAt: '签发',
+  listenerTransport: {
+    quic: 'QUIC',
+    wireguard: 'WireGuard',
+    tls_tcp: 'TLS/TCP',
+  },
 }

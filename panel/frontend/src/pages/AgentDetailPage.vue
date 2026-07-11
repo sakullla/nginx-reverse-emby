@@ -233,8 +233,23 @@
                   class="simple-list__secondary"
                   :title="certificateSecondary(cert)"
                 >{{ certificateSecondary(cert) }}</span>
+                <div v-if="listTags(cert.tags).length" class="simple-list__tags">
+                  <BaseBadge
+                    v-for="tag in listTags(cert.tags).slice(0, 3)"
+                    :key="tag"
+                    tone="primary"
+                    size="sm"
+                  >{{ tag }}</BaseBadge>
+                  <BaseBadge
+                    v-if="listTags(cert.tags).length > 3"
+                    tone="neutral"
+                    size="sm"
+                  >+{{ listTags(cert.tags).length - 3 }}</BaseBadge>
+                </div>
               </div>
-              <BaseBadge :tone="certificateStatusBadge(cert).tone" size="sm">{{ certificateStatusBadge(cert).label }}</BaseBadge>
+              <div class="simple-list__side">
+                <BaseBadge :tone="certificateStatusBadge(cert).tone" size="sm">{{ certificateStatusBadge(cert).label }}</BaseBadge>
+              </div>
             </div>
             <p v-if="!certificates.length" class="empty-hint">{{ detailLabels.empty.certificates }}</p>
           </div>
@@ -256,8 +271,29 @@
                   class="simple-list__secondary"
                   :title="listenerSecondary(listener)"
                 >{{ listenerSecondary(listener) }}</span>
+                <div v-if="listTags(listener.tags).length" class="simple-list__tags">
+                  <BaseBadge
+                    v-for="tag in listTags(listener.tags).slice(0, 3)"
+                    :key="tag"
+                    tone="primary"
+                    size="sm"
+                  >{{ tag }}</BaseBadge>
+                  <BaseBadge
+                    v-if="listTags(listener.tags).length > 3"
+                    tone="neutral"
+                    size="sm"
+                  >+{{ listTags(listener.tags).length - 3 }}</BaseBadge>
+                </div>
               </div>
-              <BaseBadge :tone="listener.enabled !== false ? 'success' : 'neutral'" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
+              <div class="simple-list__side">
+                <BaseBadge
+                  v-if="listenerTransportLabel(listener)"
+                  tone="neutral"
+                  subtone="secondary"
+                  size="sm"
+                >{{ listenerTransportLabel(listener) }}</BaseBadge>
+                <BaseBadge :tone="listener.enabled !== false ? 'success' : 'neutral'" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
+              </div>
             </div>
             <p v-if="!relayListeners.length" class="empty-hint">{{ detailLabels.empty.relayListeners }}</p>
           </div>
@@ -1026,15 +1062,43 @@ const CERT_STATUS = {
   error: { label: agentDetailLabels.certStatus.error, tone: 'danger' },
 }
 
+function listTags(tags) {
+  if (!Array.isArray(tags)) return []
+  return tags.map((tag) => String(tag || '').trim()).filter(Boolean)
+}
+
+function formatIssuedAt(value) {
+  if (value == null || value === '') return ''
+  try {
+    // API may return RFC3339 string or unix seconds
+    const date = typeof value === 'number'
+      ? new Date(value > 1e12 ? value : value * 1000)
+      : new Date(value)
+    if (Number.isNaN(date.getTime())) return ''
+    return date.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return ''
+  }
+}
+
 function certificatePrimary(cert) {
   return cert?.domain || cert?.name || cert?.id || '—'
 }
 
 function certificateSecondary(cert) {
+  const parts = []
   const domain = String(cert?.domain || '').trim()
   const name = String(cert?.name || '').trim()
-  if (domain && name && name !== domain) return name
-  return ''
+  if (domain && name && name !== domain) parts.push(name)
+  const issued = formatIssuedAt(cert?.last_issue_at)
+  if (issued) parts.push(`${agentDetailLabels.certIssuedAt} ${issued}`)
+  return parts.join(' · ')
 }
 
 function certificateStatusBadge(cert) {
@@ -1050,14 +1114,53 @@ function certificateStatusBadge(cert) {
   }
 }
 
+function normalizePort(port) {
+  const value = Number(port)
+  return Number.isInteger(value) && value > 0 ? value : null
+}
+
+function resolveListenerBindHosts(listener) {
+  if (Array.isArray(listener?.bind_hosts) && listener.bind_hosts.length) {
+    return listener.bind_hosts
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  }
+  const legacyHost = String(listener?.listen_host || '').trim()
+  return legacyHost ? [legacyHost] : []
+}
+
+function listenerEndpoint(listener) {
+  const publicHost = String(listener?.public_host || '').trim()
+  const bindHosts = resolveListenerBindHosts(listener)
+  const host = publicHost || bindHosts[0] || ''
+  const port = normalizePort(listener?.public_port) ?? normalizePort(listener?.listen_port)
+  if (host && port) return `${host}:${port}`
+  if (host) return host
+  if (port) return `:${port}`
+  // Legacy mock/compat only — not an API formal field
+  const legacy = String(listener?.listen_addr || '').trim()
+  return legacy
+}
+
 function listenerPrimary(listener) {
-  return listener?.name || listener?.listen_addr || listener?.id || '—'
+  return listener?.name || listenerEndpoint(listener) || listener?.id || '—'
 }
 
 function listenerSecondary(listener) {
   const name = String(listener?.name || '').trim()
-  const addr = String(listener?.listen_addr || '').trim()
-  if (name && addr && addr !== name) return addr
+  const endpoint = listenerEndpoint(listener)
+  if (name && endpoint && endpoint !== name) return endpoint
+  if (!name && endpoint) return endpoint
+  return ''
+}
+
+function listenerTransportLabel(listener) {
+  const mode = String(listener?.transport_mode || '').trim()
+  if (mode === 'quic') return agentDetailLabels.listenerTransport.quic
+  if (mode === 'wireguard') return agentDetailLabels.listenerTransport.wireguard
+  if (mode === 'tls_tcp' || mode === 'tcp' || mode === 'tls') {
+    return agentDetailLabels.listenerTransport.tls_tcp
+  }
   return ''
 }
 
@@ -1404,7 +1507,7 @@ function packageStatusLabel(status) {
 .simple-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .simple-list__row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
@@ -1416,9 +1519,10 @@ function packageStatusLabel(status) {
 .simple-list__row:hover { background: var(--color-bg-hover); }
 .simple-list__main {
   min-width: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.25rem;
 }
 .simple-list__primary {
   min-width: 0;
@@ -1435,6 +1539,21 @@ function packageStatusLabel(status) {
   white-space: nowrap;
   color: var(--color-text-tertiary);
   font-size: 0.75rem;
+}
+.simple-list__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+.simple-list__side {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+  flex-shrink: 0;
 }
 
 .rules-list { display: flex; flex-direction: column; gap: 0.25rem; }

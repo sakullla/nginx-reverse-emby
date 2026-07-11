@@ -451,8 +451,16 @@ describe('AgentDetailPage', () => {
 
   it('renders certificate rows with domain primary id and localized status', async () => {
     mockCertificates = [
-      { id: 11, domain: 'cdn.example.com', name: 'edge-cert', status: 'active', enabled: true },
-      { id: 12, domain: 'fail.example.com', name: 'fail-cert', status: 'error', enabled: true },
+      {
+        id: 11,
+        domain: 'cdn.example.com',
+        name: 'edge-cert',
+        status: 'active',
+        enabled: true,
+        tags: ['edge', 'cdn'],
+        last_issue_at: '2026-06-01T08:30:00Z',
+      },
+      { id: 12, domain: 'fail.example.com', name: 'fail-cert', status: 'error', enabled: true, tags: [] },
     ]
     const wrapper = await mountPage()
     await expandSection(wrapper, '证书列表')
@@ -462,14 +470,35 @@ describe('AgentDetailPage', () => {
     expect(rows[0].text()).toContain('cdn.example.com')
     expect(rows[0].text()).toContain('edge-cert')
     expect(rows[0].text()).toContain('生效中')
+    expect(rows[0].text()).toContain('edge')
+    expect(rows[0].text()).toContain('cdn')
+    expect(rows[0].text()).toContain('签发')
+    expect(rows[0].text()).not.toContain('到期')
     expect(rows[1].text()).toContain('fail.example.com')
     expect(rows[1].text()).toContain('签发失败')
   })
 
   it('renders relay listener rows with primary name, secondary address, and enabled status', async () => {
     mockRelayListeners = [
-      { id: 21, name: 'public-relay', listen_addr: '0.0.0.0:8443', enabled: true },
-      { id: 22, name: 'offline-relay', listen_addr: '127.0.0.1:9000', enabled: false },
+      {
+        id: 21,
+        name: 'public-relay',
+        listen_host: '0.0.0.0',
+        listen_port: 8443,
+        public_host: 'relay.example.com',
+        public_port: 8443,
+        transport_mode: 'quic',
+        tags: ['public', 'edge'],
+        enabled: true,
+      },
+      {
+        id: 22,
+        name: 'offline-relay',
+        listen_host: '127.0.0.1',
+        listen_port: 9000,
+        tags: [],
+        enabled: false,
+      },
     ]
     const wrapper = await mountPage()
     await expandSection(wrapper, '监听列表')
@@ -477,10 +506,24 @@ describe('AgentDetailPage', () => {
     const rows = wrapper.findAll('.simple-list__row')
     expect(rows.length).toBeGreaterThanOrEqual(2)
     expect(rows[0].text()).toContain('public-relay')
-    expect(rows[0].text()).toContain('0.0.0.0:8443')
+    expect(rows[0].text()).toContain('relay.example.com:8443')
+    expect(rows[0].text()).toContain('public')
+    expect(rows[0].text()).toContain('edge')
+    expect(rows[0].text()).toContain('QUIC')
     expect(rows[0].text()).toContain('启用')
     expect(rows[1].text()).toContain('offline-relay')
+    expect(rows[1].text()).toContain('127.0.0.1:9000')
     expect(rows[1].text()).toContain('禁用')
+  })
+
+  it('keeps certificate and listener empty states when lists are empty', async () => {
+    mockCertificates = []
+    mockRelayListeners = []
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '证书列表')
+    expect(wrapper.text()).toContain('该节点暂无证书')
+    await expandSection(wrapper, '监听列表')
+    expect(wrapper.text()).toContain('该节点暂无监听')
   })
 
   it('renders system info and sync events sections', async () => {
