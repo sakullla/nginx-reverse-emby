@@ -388,26 +388,42 @@
           :show-footer="false"
         >
           <div class="traffic-scenario-modal traffic-scenario-modal--management" data-testid="traffic-management-modal-body">
-            <div class="traffic-scenario-modal__context" data-testid="traffic-management-context">
+            <div class="traffic-scenario-modal__context traffic-scenario-modal__context--status" data-testid="traffic-management-context">
               <div class="traffic-scenario-modal__context-main">
+                <span class="traffic-scenario-modal__context-kicker">扫读当前状态</span>
                 <span class="traffic-scenario-modal__context-label">当前剩余</span>
                 <span class="traffic-scenario-modal__context-value">{{ trafficRemainingDisplay }}</span>
               </div>
-              <span v-if="trafficManagementContextHint" class="traffic-scenario-modal__context-hint">{{ trafficManagementContextHint }}</span>
+              <div v-if="trafficManagementContextHint" class="traffic-scenario-modal__context-meta">
+                <span
+                  class="traffic-scenario-modal__context-hint"
+                  :class="{
+                    'traffic-scenario-modal__context-hint--alert': trafficManagementContextTone === 'alert',
+                    'traffic-scenario-modal__context-hint--muted': trafficManagementContextTone === 'muted',
+                  }"
+                >{{ trafficManagementContextHint }}</span>
+                <span class="traffic-scenario-modal__context-guide">先看清额度与阻断，再决定是否修改策略</span>
+              </div>
             </div>
             <section class="traffic-scenario-modal__section traffic-scenario-modal__section--primary" data-testid="traffic-management-section-policy">
-              <header class="traffic-scenario-modal__section-header">
-                <h3 class="traffic-scenario-modal__section-title">额度与策略</h3>
-                <p class="traffic-scenario-modal__section-desc">调整月额度、阻断与计费策略，保存后立即生效</p>
+              <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--primary">
+                <div class="traffic-scenario-modal__section-heading">
+                  <span class="traffic-scenario-modal__section-badge">主区</span>
+                  <h3 class="traffic-scenario-modal__section-title">额度与策略</h3>
+                </div>
+                <p class="traffic-scenario-modal__section-desc">优先确认月额度与超额阻断，再调整计费、保留与上报；保存后立即生效</p>
               </header>
               <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--policy">
                 <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
               </div>
             </section>
             <section class="traffic-scenario-modal__section traffic-scenario-modal__section--secondary" data-testid="traffic-management-section-history">
-              <header class="traffic-scenario-modal__section-header">
-                <h3 class="traffic-scenario-modal__section-title">历史与维护</h3>
-                <p class="traffic-scenario-modal__section-desc">查看保留策略摘要，执行校准或清理过期数据</p>
+              <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--secondary">
+                <div class="traffic-scenario-modal__section-heading">
+                  <span class="traffic-scenario-modal__section-badge traffic-scenario-modal__section-badge--secondary">次区</span>
+                  <h3 class="traffic-scenario-modal__section-title">历史与维护</h3>
+                </div>
+                <p class="traffic-scenario-modal__section-desc">次要维护面：查看保留策略摘要，必要时执行校准或清理；危险操作仍需确认</p>
               </header>
               <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--history">
                 <TrafficHistoryManager
@@ -671,8 +687,15 @@ const trafficManagementContextHint = computed(() => {
   if (quota == null || quota === '') return '未设置月额度'
   return `额度 ${formatQuota(quota, '无限制')}`
 })
+const trafficManagementContextTone = computed(() => {
+  if (trafficSummaryLoading.value) return 'muted'
+  if (trafficSummary.value.blocked) return 'alert'
+  const quota = trafficSummary.value.monthly_quota_bytes
+  if (quota == null || quota === '') return 'muted'
+  return 'default'
+})
 const trafficAnalysisModalSubtitle = computed(() => '按分项构成查看总流量，点击行可钻取趋势')
-const trafficManagementModalSubtitle = computed(() => '优先调整额度与阻断，再管理计费、保留与历史维护')
+const trafficManagementModalSubtitle = computed(() => '先扫读当前剩余与额度状态，再调整主区策略；历史维护放在次区')
 const trafficBreakdownTabs = computed(() => [
   {
     id: 'http',
@@ -1980,20 +2003,108 @@ function packageStatusLabel(status) {
   padding-left: 0.55rem;
   padding-right: 0.55rem;
 }
+.traffic-scenario-modal--management {
+  gap: 1.25rem;
+}
+.traffic-scenario-modal__context--status {
+  align-items: flex-start;
+  padding: 1rem 1.05rem;
+  border-color: color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 55%, var(--color-border-default));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-primary-50) 72%, transparent),
+      color-mix(in srgb, var(--color-bg-subtle) 70%, transparent) 42%,
+      color-mix(in srgb, var(--color-bg-surface) 94%, transparent)
+    );
+}
+.traffic-scenario-modal__context-kicker {
+  color: var(--color-text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.traffic-scenario-modal__context-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.3rem;
+  min-width: 0;
+  max-width: 18.5rem;
+}
+.traffic-scenario-modal__context-hint--alert {
+  color: var(--color-danger, #dc2626);
+  font-weight: 650;
+}
+.traffic-scenario-modal__context-hint--muted {
+  color: var(--color-text-tertiary);
+}
+.traffic-scenario-modal__context-guide {
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  text-align: right;
+}
+.traffic-scenario-modal__section-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.traffic-scenario-modal__section-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 70%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-primary-50) 70%, var(--color-bg-surface));
+  color: var(--color-text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.traffic-scenario-modal__section-badge--secondary {
+  border-color: color-mix(in srgb, var(--color-border-default) 90%, transparent);
+  background: color-mix(in srgb, var(--color-bg-subtle) 85%, var(--color-bg-surface));
+  color: var(--color-text-tertiary);
+}
+.traffic-scenario-modal__section-header--primary .traffic-scenario-modal__section-title {
+  font-size: 1rem;
+  font-weight: 700;
+}
+.traffic-scenario-modal__section-header--secondary .traffic-scenario-modal__section-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.traffic-scenario-modal__section--primary {
+  gap: 0.8rem;
+}
 .traffic-scenario-modal__section--secondary {
-  padding-top: 0.125rem;
+  padding-top: 0.35rem;
+  margin-top: 0.15rem;
+  border-top: 1px dashed color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
+  gap: 0.65rem;
 }
 .traffic-scenario-modal__panel--policy {
-  padding: 0.875rem;
+  padding: 0.95rem;
+  border-color: color-mix(in srgb, var(--color-border-default) 92%, var(--color-primary-50));
+  box-shadow:
+    0 1px 2px color-mix(in srgb, var(--color-text-primary) 5%, transparent),
+    0 8px 20px color-mix(in srgb, var(--color-text-primary) 3%, transparent);
 }
 .traffic-scenario-modal__panel--history {
-  padding: 0.875rem 1rem;
+  padding: 0.8rem 0.9rem;
+  border-style: dashed;
   background:
     linear-gradient(
       180deg,
-      color-mix(in srgb, var(--color-bg-subtle) 55%, var(--color-bg-surface)),
+      color-mix(in srgb, var(--color-bg-subtle) 70%, var(--color-bg-surface)),
       var(--color-bg-surface)
     );
+  box-shadow: none;
 }
 .traffic-scenario-modal__panel--policy :deep(.traffic-policy-form) {
   gap: 0.875rem;
@@ -2011,7 +2122,12 @@ function packageStatusLabel(status) {
   .traffic-scenario-modal__context {
     align-items: flex-start;
   }
-  .traffic-scenario-modal__context-hint {
+  .traffic-scenario-modal__context-meta {
+    align-items: flex-start;
+    max-width: none;
+  }
+  .traffic-scenario-modal__context-hint,
+  .traffic-scenario-modal__context-guide {
     max-width: none;
     text-align: left;
   }
