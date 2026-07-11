@@ -1,8 +1,12 @@
 <template>
   <div class="traffic-policy-form">
     <div class="traffic-policy-form__cards">
-      <div class="traffic-policy-form__card" data-testid="traffic-policy-card-quota">
-        <h4 class="traffic-policy-form__card-title">额度与阻断</h4>
+      <div class="traffic-policy-form__card traffic-policy-form__card--primary" data-testid="traffic-policy-card-quota">
+        <div class="traffic-policy-form__card-heading">
+          <span class="traffic-policy-form__card-badge">优先</span>
+          <h4 class="traffic-policy-form__card-title">额度与阻断</h4>
+        </div>
+        <p class="traffic-policy-form__card-lead">先确认月额度与超额阻断，这是策略主决策面</p>
         <div class="traffic-policy-form__card-body">
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">月额度</span>
@@ -21,7 +25,9 @@
       </div>
 
       <div class="traffic-policy-form__card" data-testid="traffic-policy-card-billing">
-        <h4 class="traffic-policy-form__card-title">计费方向与周期</h4>
+        <div class="traffic-policy-form__card-heading">
+          <h4 class="traffic-policy-form__card-title">计费方向与周期</h4>
+        </div>
         <div class="traffic-policy-form__card-body">
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">方向</span>
@@ -40,7 +46,9 @@
       </div>
 
       <div class="traffic-policy-form__card" data-testid="traffic-policy-card-retention">
-        <h4 class="traffic-policy-form__card-title">数据保留策略</h4>
+        <div class="traffic-policy-form__card-heading">
+          <h4 class="traffic-policy-form__card-title">数据保留策略</h4>
+        </div>
         <div class="traffic-policy-form__card-body">
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">
@@ -69,8 +77,10 @@
         </div>
       </div>
 
-      <div class="traffic-policy-form__card traffic-policy-form__card--full" data-testid="traffic-policy-card-advanced">
-        <h4 class="traffic-policy-form__card-title">高级设置</h4>
+      <div class="traffic-policy-form__card traffic-policy-form__card--full traffic-policy-form__card--muted" data-testid="traffic-policy-card-advanced">
+        <div class="traffic-policy-form__card-heading">
+          <h4 class="traffic-policy-form__card-title">高级设置</h4>
+        </div>
         <div class="traffic-policy-form__card-body">
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">流量统计上报周期</span>
@@ -133,17 +143,63 @@ function updateField(key, value) {
   min-width: 0;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
 }
+.traffic-policy-form__card--primary {
+  border-color: color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 65%, var(--color-border-default));
+  box-shadow:
+    0 1px 2px color-mix(in srgb, var(--color-text-primary) 5%, transparent),
+    0 8px 18px color-mix(in srgb, var(--color-text-primary) 3%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary-50) 42%, var(--color-bg-surface)),
+      var(--color-bg-surface) 48%
+    );
+}
+.traffic-policy-form__card--muted {
+  border-style: dashed;
+  box-shadow: none;
+  background: color-mix(in srgb, var(--color-bg-subtle) 45%, var(--color-bg-surface));
+}
 .traffic-policy-form__card--full {
   grid-column: 1 / -1;
 }
-.traffic-policy-form__card-title {
-  margin: 0 0 0.75rem;
+.traffic-policy-form__card-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.55rem;
   padding-bottom: 0.5rem;
   border-bottom: 1px solid color-mix(in srgb, var(--color-border-subtle) 85%, transparent);
+}
+.traffic-policy-form__card-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 70%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-primary-50) 75%, var(--color-bg-surface));
+  color: var(--color-text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+.traffic-policy-form__card-title {
+  margin: 0;
   font-size: 0.875rem;
   font-weight: 650;
   letter-spacing: 0.01em;
   color: var(--color-text-primary);
+}
+.traffic-policy-form__card--primary .traffic-policy-form__card-title {
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+.traffic-policy-form__card-lead {
+  margin: 0 0 0.7rem;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 .traffic-policy-form__card-body {
   display: flex;
