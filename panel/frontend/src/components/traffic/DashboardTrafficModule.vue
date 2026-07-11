@@ -1,44 +1,14 @@
 <template>
   <div v-if="visible" class="dashboard-traffic">
     <div class="dashboard-traffic__header">
-      <div class="dashboard-traffic__header-left">
-        <h2 class="dashboard-traffic__title">流量统计</h2>
-        <div class="dashboard-traffic__stats-inline" v-if="statsVisible">
-          <span class="dt-stat-inline" :class="{ 'dt-stat-inline--alert': blockedCount > 0 }">
-            <span class="dt-stat-inline__label">阻断</span>
-            <span class="dt-stat-inline__value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
-          </span>
-          <span class="dt-stat-inline">
-            <span class="dt-stat-inline__label">已用/额度</span>
-            <span class="dt-stat-inline__value">{{ formatBytes(selectedSummary?.used_bytes || 0) }} / {{ selectedSummary?.quota_bytes != null ? formatBytes(selectedSummary.quota_bytes) : '—' }}</span>
-          </span>
-          <span class="dt-stat-inline">
-            <span class="dt-stat-inline__label">剩余</span>
-            <span class="dt-stat-inline__value" :class="{ 'dt-stat-inline__value--success': (selectedSummary?.remaining_bytes || 0) > 0 }">{{ remainingLabel }}</span>
-          </span>
-        </div>
-      </div>
-      <div class="dashboard-traffic__toolbar">
-        <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
-          <button
-            v-for="option in granularityOptions"
-            :key="option.value"
-            type="button"
-            class="dashboard-traffic__granularity-btn"
-            :class="{ 'dashboard-traffic__granularity-btn--active': granularity === option.value }"
-            @click="granularity = option.value"
-          >
-            {{ option.label }}
-          </button>
-        </div>
-        <AgentPicker
-          :agents="selectableAgents"
-          v-model:model-id="selectedAgentId"
-          :show-all-option="true"
-          all-label="全部节点"
-          class="dashboard-traffic__agent-picker"
-        />
-      </div>
+      <h2 class="dashboard-traffic__title">流量统计</h2>
+      <AgentPicker
+        :agents="selectableAgents"
+        v-model:model-id="selectedAgentId"
+        :show-all-option="true"
+        all-label="全部节点"
+        class="dashboard-traffic__agent-picker"
+      />
     </div>
 
     <div v-if="aggregateQuery.isLoading.value" class="dashboard-traffic__loading">
@@ -46,69 +16,101 @@
     </div>
 
     <template v-else>
-      <div class="dashboard-traffic__grid">
-        <!-- Left Column -->
-        <div class="dashboard-traffic__col">
-          <div class="dt-card">
-            <h3 class="dt-card__title">流量分布</h3>
-            <TrafficQuotaRing
-              :used-bytes="selectedSummary?.used_bytes ?? 0"
-              :quota-bytes="selectedSummary?.quota_bytes ?? null"
-              :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
-              :agents="distributionAgents"
-            />
-          </div>
-          <div class="dt-card">
-            <h3 class="dt-card__title">计费周期</h3>
-            <div class="dt-cycle">
-              <span class="dt-cycle__value">{{ cycleLabel }}</span>
-            </div>
-            <div class="dt-cycle__meta">
-              <span>方向: {{ directionLabel }}</span>
-              <span v-if="dailyBudgetText">{{ dailyBudgetText }}</span>
-            </div>
-          </div>
+      <!-- Primary: health summary -->
+      <div class="dashboard-traffic__primary dt-health-card" :class="{ 'dt-health-card--blocked': blockedCount > 0 }">
+        <div class="dt-health-card__header">
+          <span class="dt-health-card__badge" :class="healthBadgeClass" data-testid="health-badge">{{ healthBadgeText }}</span>
+          <span class="dt-health-card__meta">{{ overviewAgents.length }} 个节点</span>
         </div>
-
-        <!-- Center Column -->
-        <div class="dashboard-traffic__col dashboard-traffic__col--center">
-          <div class="dt-card dt-card--tall">
-            <h3 class="dt-card__title">流量趋势</h3>
-            <TrafficTrendChart
-              :points="trendPoints"
-              :granularity="granularity"
-              :quota-bytes="selectedSummary?.quota_bytes ?? null"
-            />
+        <div class="dt-health-card__kpi-grid" data-testid="health-kpi-grid">
+          <div class="dt-health-card__kpi dt-health-card__kpi--primary">
+            <span class="dt-health-card__kpi-label">已用</span>
+            <span class="dt-health-card__kpi-value" data-testid="kpi-used">{{ formatBytes(selectedSummary?.used_bytes || 0) }}</span>
+            <span class="dt-health-card__kpi-sub" data-testid="kpi-used-sub">{{ usedSubLabel }}</span>
           </div>
-        </div>
-
-        <!-- Right Column -->
-        <div class="dashboard-traffic__col dashboard-traffic__col--right">
-          <div class="dt-card dt-card--equal">
-            <h3 class="dt-card__title">Top 规则</h3>
-            <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule" @click="navigateToAgent(rule)">
-              <div class="dt-top-rule__info">
-                <span class="dt-top-rule__name">{{ rule.label }}</span>
-                <span class="dt-top-rule__value">{{ formatBytes(rule.accounted_bytes) }}</span>
-              </div>
-              <div class="dt-top-rule__bar">
-                <div class="dt-top-rule__fill" :style="{ width: topRulePercent(rule) + '%', background: DISTRIBUTION_COLORS[i % DISTRIBUTION_COLORS.length] }" />
-              </div>
-            </div>
-            <p v-if="!topRules.length" class="dt-card__empty">暂无规则数据</p>
+          <div class="dt-health-card__kpi dt-health-card__kpi--primary">
+            <span class="dt-health-card__kpi-label">剩余</span>
+            <span class="dt-health-card__kpi-value" data-testid="kpi-remaining">{{ remainingLabel }}</span>
+            <span class="dt-health-card__kpi-sub" data-testid="kpi-remaining-sub">{{ remainingSubLabel }}</span>
           </div>
-          <div class="dt-card dt-card--equal">
-            <h3 class="dt-card__title">Top 节点</h3>
-            <div v-for="(node, i) in topNodes" :key="'right-' + node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
-              <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
-              <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
-              <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
-            </div>
-            <p v-if="!topNodes.length" class="dt-card__empty">暂无节点数据</p>
+          <div class="dt-health-card__kpi" :class="{ 'dt-health-card__kpi--danger': blockedCount > 0 }">
+            <span class="dt-health-card__kpi-label">阻断</span>
+            <span class="dt-health-card__kpi-value" data-testid="kpi-blocked">{{ blockedCount }} / {{ overviewAgents.length }}</span>
+            <span class="dt-health-card__kpi-sub" data-testid="kpi-blocked-sub">{{ blockedSubLabel }}</span>
           </div>
         </div>
       </div>
 
+      <!-- Secondary: demoted trend -->
+      <div class="dashboard-traffic__secondary dt-section dt-section--demoted">
+        <div class="dt-section__header">
+          <h3 class="dt-section__title">流量趋势</h3>
+          <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
+            <button
+              v-for="option in granularityOptions"
+              :key="option.value"
+              type="button"
+              class="dashboard-traffic__granularity-btn"
+              :class="{ 'dashboard-traffic__granularity-btn--active': granularity === option.value }"
+              @click="granularity = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+        <div class="dt-section__body">
+          <TrafficTrendChart
+            :points="trendPoints"
+            :granularity="granularity"
+            :quota-bytes="selectedSummary?.quota_bytes ?? null"
+          />
+        </div>
+      </div>
+
+      <!-- Tertiary: distribution / cycle / top -->
+      <div class="dashboard-traffic__tertiary dt-tertiary-grid">
+        <div class="dt-card dt-card--muted">
+          <h3 class="dt-card__title">流量分布</h3>
+          <TrafficQuotaRing
+            :used-bytes="selectedSummary?.used_bytes ?? 0"
+            :quota-bytes="selectedSummary?.quota_bytes ?? null"
+            :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
+            :agents="distributionAgents"
+          />
+        </div>
+        <div class="dt-card dt-card--muted">
+          <h3 class="dt-card__title">计费周期</h3>
+          <div class="dt-cycle">
+            <span class="dt-cycle__value" data-testid="cycle-label">{{ cycleLabel }}</span>
+          </div>
+          <div class="dt-cycle__meta">
+            <span data-testid="direction-label">方向: {{ directionLabel }}</span>
+            <span v-if="dailyBudgetText" data-testid="daily-budget">{{ dailyBudgetText }}</span>
+          </div>
+        </div>
+        <div class="dt-card dt-card--muted">
+          <h3 class="dt-card__title">Top 规则</h3>
+          <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule" @click="navigateToAgent(rule)">
+            <div class="dt-top-rule__info">
+              <span class="dt-top-rule__name">{{ rule.label }}</span>
+              <span class="dt-top-rule__value">{{ formatBytes(rule.accounted_bytes) }}</span>
+            </div>
+            <div class="dt-top-rule__bar">
+              <div class="dt-top-rule__fill" :style="{ width: topRulePercent(rule) + '%', background: DISTRIBUTION_COLORS[i % DISTRIBUTION_COLORS.length] }" />
+            </div>
+          </div>
+          <p v-if="!topRules.length" class="dt-card__empty">暂无规则数据</p>
+        </div>
+        <div class="dt-card dt-card--muted">
+          <h3 class="dt-card__title">Top 节点</h3>
+          <div v-for="(node, i) in topNodes" :key="'right-' + node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
+            <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
+            <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
+            <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
+          </div>
+          <p v-if="!topNodes.length" class="dt-card__empty">暂无节点数据</p>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -236,7 +238,17 @@ const distributionAgents = computed(() => {
 })
 
 const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).length)
-const statsVisible = computed(() => overviewAgents.value.length > 0)
+
+const healthBadgeText = computed(() => {
+  if (!overviewAgents.value.length) return '无数据'
+  if (blockedCount.value > 0) return `${blockedCount.value} 个节点阻断`
+  return '正常'
+})
+const healthBadgeClass = computed(() => {
+  if (!overviewAgents.value.length) return 'dt-health-card__badge--muted'
+  if (blockedCount.value > 0) return 'dt-health-card__badge--danger'
+  return 'dt-health-card__badge--success'
+})
 
 const cycleLabel = computed(() => {
   const agents = overviewAgents.value
@@ -311,6 +323,23 @@ const remainingLabel = computed(() => {
   return formatBytes(selectedSummary.value.remaining_bytes)
 })
 
+const remainingSubLabel = computed(() => {
+  if (selectedSummary.value?.remaining_bytes == null) return '未设置额度'
+  return '可用额度'
+})
+
+const usedSubLabel = computed(() => {
+  const quota = selectedSummary.value?.quota_bytes
+  if (quota == null) return '—'
+  const pct = usagePercent(selectedSummary.value?.used_bytes || 0, quota)
+  return `占额度 ${pct ?? '—'}%`
+})
+
+const blockedSubLabel = computed(() => {
+  if (blockedCount.value === 0) return '无阻断'
+  return '需关注'
+})
+
 const dailyBudgetText = computed(() => {
   const agents = overviewAgents.value
   if (!agents.length) return ''
@@ -350,42 +379,13 @@ function normalizePoints(raw) {
   justify-content: space-between;
   padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--color-border-subtle);
+  gap: 0.75rem;
 }
 .dashboard-traffic__title {
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0;
-}
-.dashboard-traffic__toolbar {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-.dashboard-traffic__granularity {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-}
-.dashboard-traffic__granularity-btn {
-  min-width: 2.75rem;
-  padding: 0.3rem 0.55rem;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-tertiary);
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
-  font-family: inherit;
-}
-.dashboard-traffic__granularity-btn--active {
-  background: var(--color-bg-surface);
-  color: var(--color-primary);
-  box-shadow: var(--shadow-sm);
 }
 .dashboard-traffic__agent-picker {
   flex-shrink: 0;
@@ -411,48 +411,152 @@ function normalizePoints(raw) {
   padding: 2rem;
 }
 
-.dashboard-traffic__grid {
+/* Primary health card */
+.dashboard-traffic__primary {
+  margin: 1rem 1.25rem 0;
+}
+.dt-health-card {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  padding: 0.875rem 1rem;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.dt-health-card--blocked {
+  border-color: var(--color-danger, #ef4444);
+  background: color-mix(in srgb, var(--color-danger, #ef4444) 6%, var(--color-bg-surface));
+}
+.dt-health-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.dt-health-card__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.dt-health-card__badge--success {
+  background: color-mix(in srgb, var(--color-success, #34d399) 14%, transparent);
+  color: color-mix(in srgb, var(--color-success, #34d399) 75%, var(--color-text-primary));
+}
+.dt-health-card__badge--danger {
+  background: color-mix(in srgb, var(--color-danger, #ef4444) 14%, transparent);
+  color: var(--color-danger, #ef4444);
+}
+.dt-health-card__badge--muted {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+}
+.dt-health-card__meta {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+.dt-health-card__kpi-grid {
   display: grid;
-  grid-template-columns: 260px 1fr 280px;
-  gap: 1rem;
-  padding: 1rem 1.25rem;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 0.375rem 0.625rem;
+  align-items: stretch;
 }
-.dashboard-traffic__col {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-.dashboard-traffic__col--center {
+.dt-health-card__kpi {
   min-width: 0;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--radius-md);
+  transition: background-color 0.15s ease;
 }
-.dashboard-traffic__col--right {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+.dt-health-card__kpi:hover {
+  background: var(--color-bg-subtle);
 }
-.dashboard-traffic__col--right .dt-card--equal {
-  flex: 1;
+.dt-health-card__kpi--primary {
+  background: var(--color-bg-subtle);
+}
+.dt-health-card__kpi--primary:hover {
+  background: color-mix(in srgb, var(--color-bg-subtle) 80%, var(--color-bg-hover));
+}
+.dt-health-card__kpi--danger .dt-health-card__kpi-value {
+  color: var(--color-danger, #ef4444);
+}
+.dt-health-card__kpi-label {
+  display: block;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  margin-bottom: 0.2rem;
+}
+.dt-health-card__kpi-value {
+  display: block;
+  color: var(--color-text-primary);
+  font-size: 1.1875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+.dt-health-card__kpi-sub {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  margin-top: 0.2rem;
+  line-height: 1.35;
+}
+
+/* Secondary demoted section */
+.dashboard-traffic__secondary {
+  margin: 1rem 1.25rem 0;
+}
+.dt-section--demoted {
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  padding: 0.875rem 1rem;
+  opacity: 0.96;
+}
+.dt-section__header {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.625rem;
+}
+.dt-section__title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0;
+}
+.dt-section__body {
   min-height: 0;
+}
+
+/* Tertiary grid */
+.dashboard-traffic__tertiary {
+  margin: 1rem 1.25rem;
+}
+.dt-tertiary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
 }
 
 .dt-card {
   background: var(--color-bg-surface-raised, var(--color-bg-subtle));
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   padding: 0.875rem;
   min-width: 0;
 }
-.dt-card--tall {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-.dt-card--grow {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+.dt-card--muted {
+  background: var(--color-bg-subtle);
+  border-color: var(--color-border-subtle);
+  opacity: 0.95;
 }
 .dt-card__title {
   font-size: 0.7rem;
@@ -575,40 +679,30 @@ function normalizePoints(raw) {
   transition: width 0.3s;
 }
 
-.dashboard-traffic__header-left {
-  display: flex;
-  align-items: center;
-  gap: 1.25rem;
-  min-width: 0;
-}
-.dashboard-traffic__stats-inline {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-.dt-stat-inline {
+.dashboard-traffic__granularity {
   display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.75rem;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
 }
-.dt-stat-inline--alert {
-  color: var(--color-danger, #ef4444);
-}
-.dt-stat-inline__label {
+.dashboard-traffic__granularity-btn {
+  min-width: 2.75rem;
+  padding: 0.3rem 0.55rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--color-text-tertiary);
-  font-weight: 500;
-  text-transform: uppercase;
-  font-size: 0.65rem;
-  letter-spacing: 0.3px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
 }
-.dt-stat-inline__value {
-  font-weight: 700;
-  color: var(--color-text-primary);
-  font-variant-numeric: tabular-nums;
-}
-.dt-stat-inline__value--success {
-  color: var(--color-success, #34d399);
+.dashboard-traffic__granularity-btn--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
 }
 
 .spinner {
@@ -621,20 +715,21 @@ function normalizePoints(raw) {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-@media (max-width: 1023px) {
-  .dashboard-traffic__grid {
-    grid-template-columns: 1fr 1fr;
+@media (max-width: 1100px) {
+  .dt-tertiary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .dashboard-traffic__col--center {
+}
+
+@media (max-width: 768px) {
+  .dt-health-card__kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dt-health-card__kpi:last-child {
     grid-column: 1 / -1;
-    order: -1;
   }
-  .dashboard-traffic__header-left {
+  .dt-section__header {
     flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-  .dashboard-traffic__stats-inline {
-    gap: 0.75rem;
   }
 }
 
@@ -644,28 +739,35 @@ function normalizePoints(raw) {
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
   }
-  .dashboard-traffic__grid {
-    grid-template-columns: 1fr;
-    min-width: 340px;
-  }
-  .dashboard-traffic__col--center {
-    order: 0;
-  }
   .dashboard-traffic__header {
     flex-direction: column;
     align-items: flex-start;
     gap: 0.75rem;
   }
-  .dashboard-traffic__toolbar {
-    width: 100%;
-    flex-wrap: wrap;
-  }
   .dashboard-traffic__agent-picker {
-    flex: 1;
+    width: 100%;
     min-width: 0;
   }
-  .dashboard-traffic__stats-inline {
-    display: none;
+  .dashboard-traffic__agent-picker :deep(.agent-picker__trigger) {
+    width: 100%;
+    max-width: none;
+  }
+  .dashboard-traffic__primary,
+  .dashboard-traffic__secondary,
+  .dashboard-traffic__tertiary {
+    margin-left: 1rem;
+    margin-right: 1rem;
+    min-width: 340px;
+  }
+  .dt-health-card__kpi-grid {
+    grid-template-columns: 1fr;
+  }
+  .dt-health-card__kpi:last-child {
+    grid-column: auto;
+  }
+  .dt-tertiary-grid {
+    grid-template-columns: 1fr;
+    min-width: 340px;
   }
 }
 </style>

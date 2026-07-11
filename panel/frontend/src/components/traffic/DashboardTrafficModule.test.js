@@ -147,16 +147,39 @@ describe('DashboardTrafficModule', () => {
     await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day'))
   })
 
-  it('updates the traffic distribution from the selected granularity aggregate', async () => {
+  it('renders the primary health KPIs from the default aggregate', async () => {
     const wrapper = await mountModule()
 
-    const distributionSeries = () => JSON.parse(wrapper.findAll('[data-testid="apexchart"]')[0].attributes('data-series'))
-    await vi.waitFor(() => expect(distributionSeries()).toEqual([1280, 640]))
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="health-kpi-grid"]').exists()).toBe(true))
 
-    await wrapper.findAll('.dashboard-traffic__granularity-btn')[0].trigger('click')
+    expect(wrapper.find('[data-testid="kpi-used"]').text()).toContain('3.00 KiB')
+    expect(wrapper.find('[data-testid="kpi-remaining"]').text()).toBe('无限制')
+    expect(wrapper.find('[data-testid="kpi-blocked"]').text()).toBe('0 / 2')
+    expect(wrapper.find('[data-testid="health-badge"]').text()).toBe('正常')
+  })
+
+  it('highlights blocked agents in the primary health KPIs', async () => {
+    agents = [
+      { agent_id: 'edge-1', name: 'edge-1', used_bytes: 1024, quota_bytes: null, remaining_bytes: null, direction: 'both', cycle_start: '2026-05-01T00:00:00Z', cycle_end: '2026-06-01T00:00:00Z', blocked: true },
+      { agent_id: 'edge-2', name: 'edge-2', used_bytes: 2048, quota_bytes: null, remaining_bytes: null, direction: 'both', cycle_start: '2026-05-01T00:00:00Z', cycle_end: '2026-06-01T00:00:00Z', blocked: false }
+    ]
+
+    const wrapper = await mountModule()
+
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="kpi-blocked"]').text()).toBe('1 / 2'))
+    expect(wrapper.find('[data-testid="health-badge"]').text()).toBe('1 个节点阻断')
+  })
+
+  it('switches granularity and re-fetches aggregate', async () => {
+    const wrapper = await mountModule()
+
+    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day'))
+
+    const hourBtn = wrapper.findAll('.dashboard-traffic__granularity-btn').find((btn) => btn.text() === '小时')
+    expect(hourBtn).toBeTruthy()
+    await hourBtn.trigger('click')
 
     await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'hour'))
-    await vi.waitFor(() => expect(distributionSeries()).toEqual([128, 64]))
   })
 
   it('renders overlapping top rules from different agents without duplicate Vue keys', async () => {
@@ -203,10 +226,9 @@ describe('DashboardTrafficModule', () => {
     ]
 
     const wrapper = await mountModule()
-    const rightCol = wrapper.findAll('.dashboard-traffic__col')[2]
-    await vi.waitFor(() => expect(rightCol.findAll('.dt-top-item')).toHaveLength(2))
+    await vi.waitFor(() => expect(wrapper.findAll('.dt-top-item')).toHaveLength(2))
 
-    await rightCol.find('.dt-top-item').trigger('click')
+    await wrapper.find('.dt-top-item').trigger('click')
 
     expect(routerPush).toHaveBeenCalledWith({
       name: 'agent-detail',
@@ -283,7 +305,7 @@ describe('DashboardTrafficModule', () => {
 
     const wrapper = await mountModule()
 
-    await vi.waitFor(() => expect(wrapper.text()).toContain('多节点混合'))
-    expect(wrapper.text()).not.toContain('计费周期2026-05-01')
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="cycle-label"]').text()).toContain('多节点混合'))
+    expect(wrapper.find('[data-testid="cycle-label"]').text()).not.toContain('2026-05-01')
   })
 })
