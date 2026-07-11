@@ -1,22 +1,9 @@
 <template>
   <div class="traffic-policy-form">
     <div class="traffic-policy-form__cards">
-      <div class="traffic-policy-form__card">
-        <h4 class="traffic-policy-form__card-title">计费配置</h4>
+      <div class="traffic-policy-form__card" data-testid="traffic-policy-card-quota">
+        <h4 class="traffic-policy-form__card-title">额度与阻断</h4>
         <div class="traffic-policy-form__card-body">
-          <label class="traffic-policy-form__field">
-            <span class="traffic-policy-form__label">方向</span>
-            <select :value="modelValue.direction" class="traffic-policy-form__input" @change="updateField('direction', $event.target.value)">
-              <option value="both">双向</option>
-              <option value="rx">入站</option>
-              <option value="tx">出站</option>
-              <option value="max">取最大值</option>
-            </select>
-          </label>
-          <label class="traffic-policy-form__field">
-            <span class="traffic-policy-form__label">月周期起始日</span>
-            <input :value="modelValue.cycle_start_day" class="traffic-policy-form__input" type="number" min="1" max="28" @input="updateField('cycle_start_day', Number($event.target.value))">
-          </label>
           <label class="traffic-policy-form__field">
             <span class="traffic-policy-form__label">月额度</span>
             <div class="traffic-policy-form__quota">
@@ -33,7 +20,26 @@
         </div>
       </div>
 
-      <div class="traffic-policy-form__card">
+      <div class="traffic-policy-form__card" data-testid="traffic-policy-card-billing">
+        <h4 class="traffic-policy-form__card-title">计费方向与周期</h4>
+        <div class="traffic-policy-form__card-body">
+          <label class="traffic-policy-form__field">
+            <span class="traffic-policy-form__label">方向</span>
+            <select :value="modelValue.direction" class="traffic-policy-form__input" @change="updateField('direction', $event.target.value)">
+              <option value="both">双向</option>
+              <option value="rx">入站</option>
+              <option value="tx">出站</option>
+              <option value="max">取最大值</option>
+            </select>
+          </label>
+          <label class="traffic-policy-form__field">
+            <span class="traffic-policy-form__label">月周期起始日</span>
+            <input :value="modelValue.cycle_start_day" class="traffic-policy-form__input" type="number" min="1" max="28" @input="updateField('cycle_start_day', Number($event.target.value))">
+          </label>
+        </div>
+      </div>
+
+      <div class="traffic-policy-form__card" data-testid="traffic-policy-card-retention">
         <h4 class="traffic-policy-form__card-title">数据保留策略</h4>
         <div class="traffic-policy-form__card-body">
           <label class="traffic-policy-form__field">
@@ -63,7 +69,7 @@
         </div>
       </div>
 
-      <div class="traffic-policy-form__card traffic-policy-form__card--full">
+      <div class="traffic-policy-form__card traffic-policy-form__card--full" data-testid="traffic-policy-card-advanced">
         <h4 class="traffic-policy-form__card-title">高级设置</h4>
         <div class="traffic-policy-form__card-body">
           <label class="traffic-policy-form__field">
@@ -95,22 +101,31 @@ const quotaUnits = [
   { value: 'TiB', label: 'TiB' }
 ]
 
-function updateField(field, value) {
-  emit('update:modelValue', { ...props.modelValue, [field]: value })
+function updateField(key, value) {
+  emit('update:modelValue', {
+    ...props.modelValue,
+    [key]: value
+  })
 }
 </script>
 
 <style scoped>
+.traffic-policy-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
 .traffic-policy-form__cards {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem;
+  gap: 1rem;
 }
 .traffic-policy-form__card {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   padding: 1rem;
+  min-width: 0;
 }
 .traffic-policy-form__card--full {
   grid-column: 1 / -1;
@@ -129,43 +144,45 @@ function updateField(field, value) {
 .traffic-policy-form__field { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
 .traffic-policy-form__field--switch { flex-direction: row; align-items: center; justify-content: space-between; }
 .traffic-policy-form__label {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
   color: var(--color-text-secondary);
   font-size: 0.8125rem;
   font-weight: 500;
 }
 .traffic-policy-form__badge {
-  display: inline-block;
-  padding: 0.1rem 0.4rem;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
   font-size: 0.6875rem;
   font-weight: 500;
-  color: var(--color-primary);
-  background: var(--color-primary-subtle);
-  border-radius: var(--radius-sm);
-}
-.traffic-policy-form__hint {
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
+  display: inline-block;
 }
 .traffic-policy-form__input {
   width: 100%;
   min-width: 0;
-  padding: 0.5rem 0.75rem;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
+  padding: 0.5rem 0.625rem;
   font-size: 0.875rem;
-  box-sizing: border-box;
 }
-.traffic-policy-form__input:focus { outline: none; border-color: var(--color-primary); box-shadow: var(--shadow-focus); }
+.traffic-policy-form__hint {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
 .traffic-policy-form__quota { display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem; gap: 0.5rem; }
-.traffic-policy-form__unit { font-family: var(--font-mono); }
-.traffic-policy-form__footer { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
-.btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
-.btn-primary { background: var(--color-primary); color: white; }
-.btn:disabled { opacity: 0.6; cursor: not-allowed; }
-@media (max-width: 720px) { .traffic-policy-form__cards { grid-template-columns: 1fr; } }
+.traffic-policy-form__footer {
+  display: flex;
+  justify-content: flex-end;
+}
+@media (max-width: 720px) {
+  .traffic-policy-form__cards {
+    grid-template-columns: 1fr;
+  }
+  .traffic-policy-form__card--full {
+    grid-column: auto;
+  }
+}
 </style>

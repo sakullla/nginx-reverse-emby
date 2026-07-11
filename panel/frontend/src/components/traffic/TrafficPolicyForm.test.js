@@ -23,13 +23,14 @@ describe('TrafficPolicyForm', () => {
     })
   }
 
-  it('renders three card sections', () => {
+  it('renders remaining-scene sections with quota/block first', () => {
     const wrapper = mountForm()
-    const cards = wrapper.findAll('.traffic-policy-form__card')
-    expect(cards.length).toBe(3)
-    expect(wrapper.text()).toContain('计费配置')
-    expect(wrapper.text()).toContain('数据保留策略')
-    expect(wrapper.text()).toContain('高级设置')
+    const titles = wrapper.findAll('.traffic-policy-form__card-title').map((el) => el.text())
+    expect(titles).toEqual(['额度与阻断', '计费方向与周期', '数据保留策略', '高级设置'])
+    expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-policy-card-billing"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-policy-card-retention"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-policy-card-advanced"]').exists()).toBe(true)
   })
 
   it('shows retention unit badges', () => {
@@ -43,7 +44,7 @@ describe('TrafficPolicyForm', () => {
 
   it('emits update:modelValue on field change', async () => {
     const wrapper = mountForm()
-    const input = wrapper.findAll('.traffic-policy-form__card')[1]
+    const input = wrapper.find('[data-testid="traffic-policy-card-retention"]')
       .findAll('input')[0]
     await input.setValue('60')
     expect(wrapper.emitted('update:modelValue')).toBeTruthy()

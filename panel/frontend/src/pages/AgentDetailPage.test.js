@@ -585,11 +585,11 @@ describe('AgentDetailPage', () => {
     expect(apiCalls.fetchTrafficTrend).not.toHaveBeenCalled()
   })
 
-  it('keeps health overview visible and demotes analysis/management to nested collapsibles', async () => {
+  it('keeps health overview visible and embeds analysis/management into total/remaining modals', async () => {
     const wrapper = await mountPage()
     await expandSection(wrapper, '流量统计')
 
-    // After expanding outer traffic, health overview is on without expanding nested sections.
+    // After expanding outer traffic, health overview is on without opening scenario modals.
     const healthCard = wrapper.find('.traffic-card--health')
     expect(healthCard.exists()).toBe(true)
     expect(healthCard.find('.traffic-section-card__title').text()).toBe('健康概览')
@@ -600,13 +600,10 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="traffic-trend-empty"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
 
-    // Analysis/management are nested collapsibles (headers present, bodies collapsed).
-    const secondary = wrapper.findAll('.traffic-secondary')
-    expect(secondary.length).toBe(2)
-    const secondaryTitles = secondary.map((s) => s.find('.collapsible-section__title').text())
-    expect(secondaryTitles).toEqual(['分析', '管理'])
-    expect(secondary.every((s) => s.classes().includes('collapsible-section--collapsed'))).toBe(true)
-    // Breakdown/manager not mounted while nested sections stay collapsed.
+    // Independent analysis/management collapsibles are gone; scenario entries live on KPIs.
+    expect(wrapper.findAll('.traffic-secondary').length).toBe(0)
+    expect(wrapper.find('[data-testid="traffic-summary-open-analysis"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-summary-open-management"]').exists()).toBe(true)
     expect(wrapper.find('.traffic-breakdown__tab').exists()).toBe(false)
     expect(wrapper.findAll('button').some((button) => button.text() === '清理过期数据')).toBe(false)
   })
@@ -671,12 +668,15 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
   })
 
-  it('renders accounted traffic breakdowns after expanding analysis', async () => {
+  it('opens total-traffic analysis modal with breakdown composition', async () => {
     const wrapper = await mountPage()
     await expandSection(wrapper, '流量统计')
-    await expandSection(wrapper, '分析')
+    await wrapper.get('[data-testid="traffic-summary-open-analysis"]').trigger('click')
+    await nextTick()
 
-    expect(wrapper.text()).toContain('分析')
+    expect(wrapper.find('[data-testid="traffic-analysis-modal-body"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('总流量分析')
+    expect(wrapper.find('[data-testid="traffic-analysis-context"]').text()).toContain('当前总流量')
     expect(wrapper.text()).toContain('HTTP 规则 #7')
     expect(wrapper.text()).toContain('12.0 KiB')
 
@@ -690,7 +690,12 @@ describe('AgentDetailPage', () => {
   it('does not cleanup traffic history when confirmation is cancelled', async () => {
     const wrapper = await mountPage()
     await expandSection(wrapper, '流量统计')
-    await expandSection(wrapper, '管理')
+    await wrapper.get('[data-testid="traffic-summary-open-management"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="traffic-management-modal-body"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('剩余/额度管理')
+    expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').exists()).toBe(true)
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
     await nextTick()
@@ -705,7 +710,8 @@ describe('AgentDetailPage', () => {
   it('cleans up traffic history after confirmation', async () => {
     const wrapper = await mountPage()
     await expandSection(wrapper, '流量统计')
-    await expandSection(wrapper, '管理')
+    await wrapper.get('[data-testid="traffic-summary-open-management"]').trigger('click')
+    await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
     await nextTick()
@@ -719,7 +725,8 @@ describe('AgentDetailPage', () => {
   it('calibrates traffic current usage to zero after confirmation', async () => {
     const wrapper = await mountPage()
     await expandSection(wrapper, '流量统计')
-    await expandSection(wrapper, '管理')
+    await wrapper.get('[data-testid="traffic-summary-open-management"]').trigger('click')
+    await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '从现在归零').trigger('click')
     await nextTick()

@@ -320,6 +320,8 @@
               :direction="trafficPolicyForm.direction"
               :network-metrics="networkMetrics"
               :loading="trafficSummaryLoading"
+              @open-analysis="analysisModalVisible = true"
+              @open-management="managementModalVisible = true"
             />
             <div class="traffic-monitor__divider" />
             <div class="traffic-tab__trend traffic-tab__trend--demoted">
@@ -349,20 +351,40 @@
               </div>
             </div>
           </BaseListCard>
+        </div>
 
-          <TrafficCollapsibleSection
-            class="traffic-secondary"
-            :title="detailLabels.sections.trafficAnalysis"
-          >
+        <BaseModal
+          v-model="analysisModalVisible"
+          :title="detailLabels.sections.trafficAnalysisModal"
+          :subtitle="trafficAnalysisModalSubtitle"
+          size="lg"
+          :show-footer="false"
+        >
+          <div class="traffic-scenario-modal traffic-scenario-modal--analysis" data-testid="traffic-analysis-modal-body">
+            <div class="traffic-scenario-modal__context" data-testid="traffic-analysis-context">
+              <span class="traffic-scenario-modal__context-label">当前总流量</span>
+              <span class="traffic-scenario-modal__context-value">{{ trafficUsedDisplay }}</span>
+              <span v-if="trafficAnalysisContextHint" class="traffic-scenario-modal__context-hint">{{ trafficAnalysisContextHint }}</span>
+            </div>
             <div class="traffic-tab__breakdown">
               <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
             </div>
-          </TrafficCollapsibleSection>
+          </div>
+        </BaseModal>
 
-          <TrafficCollapsibleSection
-            class="traffic-secondary"
-            :title="detailLabels.sections.trafficManagement"
-          >
+        <BaseModal
+          v-model="managementModalVisible"
+          :title="detailLabels.sections.trafficManagementModal"
+          :subtitle="trafficManagementModalSubtitle"
+          size="lg"
+          :show-footer="false"
+        >
+          <div class="traffic-scenario-modal traffic-scenario-modal--management" data-testid="traffic-management-modal-body">
+            <div class="traffic-scenario-modal__context" data-testid="traffic-management-context">
+              <span class="traffic-scenario-modal__context-label">当前剩余</span>
+              <span class="traffic-scenario-modal__context-value">{{ trafficRemainingDisplay }}</span>
+              <span v-if="trafficManagementContextHint" class="traffic-scenario-modal__context-hint">{{ trafficManagementContextHint }}</span>
+            </div>
             <div class="traffic-maintenance">
               <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
               <div class="traffic-maintenance__divider" />
@@ -375,8 +397,8 @@
                 @cleanup="showCleanupConfirm"
               />
             </div>
-          </TrafficCollapsibleSection>
-        </div>
+          </div>
+        </BaseModal>
 
         <TrafficTrendModal
           v-model:visible="trendModal.visible"
@@ -504,6 +526,7 @@ import {
   normalizeTrafficPolicy,
   normalizeTrafficTrendPoints
 } from '../utils/trafficStats.js'
+import BaseModal from '../components/base/BaseModal.vue'
 import TrafficTrendChart from '../components/traffic/TrafficTrendChart.vue'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import TrafficSummaryCards from '../components/traffic/TrafficSummaryCards.vue'
@@ -582,6 +605,8 @@ const quotaUnits = [
   { value: 'TiB', label: 'TiB', factor: 1024 ** 4 }
 ]
 const trafficPolicyForm = ref(normalizeTrafficPolicyForm())
+const analysisModalVisible = ref(false)
+const managementModalVisible = ref(false)
 const trafficSummaryLoading = computed(() => Boolean(trafficSummaryQuery.isLoading.value))
 const trafficTrendLoading = computed(() => Boolean(trafficTrendQuery.isLoading.value))
 const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
@@ -596,6 +621,35 @@ const trafficHealthBadge = computed(() => {
   }
   return { tone: 'success', label: '正常' }
 })
+const trafficUsedDisplay = computed(() => {
+  if (trafficSummaryLoading.value) return '—'
+  return formatBytes(trafficSummary.value.used_bytes)
+})
+const trafficRemainingDisplay = computed(() => {
+  if (trafficSummaryLoading.value) return '—'
+  const quota = trafficSummary.value.monthly_quota_bytes
+  if (quota == null || quota === '') return '无限制'
+  if (trafficSummary.value.remaining_bytes != null && trafficSummary.value.remaining_bytes !== '') {
+    return formatBytes(trafficSummary.value.remaining_bytes)
+  }
+  const used = Number(trafficSummary.value.used_bytes) || 0
+  return formatBytes(Math.max(0, Number(quota) - used))
+})
+const trafficAnalysisContextHint = computed(() => {
+  if (trafficSummaryLoading.value) return '加载中…'
+  const quota = trafficSummary.value.monthly_quota_bytes
+  if (quota == null || quota === '') return '未设置月额度'
+  return `额度 ${formatQuota(quota, '无限制')}`
+})
+const trafficManagementContextHint = computed(() => {
+  if (trafficSummaryLoading.value) return '加载中…'
+  if (trafficSummary.value.blocked) return '当前已超额阻断'
+  const quota = trafficSummary.value.monthly_quota_bytes
+  if (quota == null || quota === '') return '未设置月额度'
+  return `额度 ${formatQuota(quota, '无限制')}`
+})
+const trafficAnalysisModalSubtitle = computed(() => '按分项构成查看总流量，点击行可钻取趋势')
+const trafficManagementModalSubtitle = computed(() => '优先调整额度与阻断，再管理计费、保留与历史维护')
 const trafficBreakdownTabs = computed(() => [
   {
     id: 'http',
@@ -1780,33 +1834,41 @@ function packageStatusLabel(status) {
   background: color-mix(in srgb, var(--color-bg-surface) 92%, transparent);
   box-shadow: none;
 }
-.traffic-secondary {
-  background: var(--color-bg-subtle);
-  border-style: dashed;
-  border-color: var(--color-border-subtle);
-  opacity: 0.96;
-}
-.traffic-secondary:deep(.collapsible-section__header),
-.traffic-secondary:deep(.collapsible-section__trigger) {
-  min-height: 2.5rem;
-  padding-top: 0.5rem;
-  padding-bottom: 0.5rem;
-  color: var(--color-text-secondary);
-  font-weight: 500;
-}
-.traffic-secondary:deep(.collapsible-section__title) {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-}
-.traffic-secondary :deep(.collapsible-section__body) {
-  padding-top: 0.25rem;
-}
 .traffic-monitor__divider {
   height: 1px;
   background: color-mix(in srgb, var(--color-border-subtle) 70%, transparent);
   margin: 0.05rem 0 0.05rem;
   opacity: 0.75;
+}
+.traffic-scenario-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.traffic-scenario-modal__context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.75rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg-subtle) 70%, transparent);
+}
+.traffic-scenario-modal__context-label {
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.traffic-scenario-modal__context-value {
+  color: var(--color-text-primary);
+  font-size: 1.125rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.traffic-scenario-modal__context-hint {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
 }
 .traffic-maintenance { display: flex; flex-direction: column; gap: 1rem; }
 .traffic-maintenance__divider { height: 1px; background: var(--color-border-subtle); }
