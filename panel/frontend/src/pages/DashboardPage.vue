@@ -66,7 +66,7 @@
     <div class="stats-grid">
       <StatCard
         :tone="nodeHealthTone"
-        size="lg"
+        size="md"
         :value="`${onlineCount} / ${agents?.length || 0}`"
         label="节点健康"
         :sub-label="offlineCount > 0 ? `${offlineCount} 个离线` : '全部在线'"
@@ -85,7 +85,7 @@
 
       <StatCard
         tone="primary"
-        size="lg"
+        size="md"
         :value="rulesCount"
         label="HTTP 规则"
         to="/rules"
@@ -101,7 +101,7 @@
 
       <StatCard
         tone="warning"
-        size="lg"
+        size="md"
         :value="l4Count"
         label="L4 规则"
         to="/l4"
@@ -114,11 +114,28 @@
           </svg>
         </template>
       </StatCard>
+
+      <StatCard
+        :tone="certTone"
+        size="md"
+        :value="certCount"
+        label="证书"
+        :sub-label="certSubLabel"
+        :to="defaultAgentId ? `/certs?agentId=${defaultAgentId}` : undefined"
+        class="card-enter stagger-4"
+      >
+        <template #icon>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </template>
+      </StatCard>
     </div>
 
-    <DashboardTrafficModule class="card-enter stagger-4" />
+    <DashboardTrafficModule class="card-enter stagger-5" />
 
-    <div v-if="agents?.length" class="dashboard-section card-enter stagger-5">
+    <div v-if="agents?.length" class="dashboard-section card-enter stagger-6">
       <div class="dashboard-section__header">
         <h2 class="dashboard-section__title">节点状态</h2>
         <RouterLink to="/agents" class="dashboard-section__link">查看全部 →</RouterLink>
@@ -154,6 +171,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
+import { useCertificates } from '../hooks/useCertificates'
 import AgentTable from '../components/AgentTable.vue'
 import StatCard from '../components/base/StatCard.vue'
 import DashboardTrafficModule from '../components/traffic/DashboardTrafficModule.vue'
@@ -184,10 +202,33 @@ const defaultAgentId = computed(() => {
   return online?.id || list[0].id
 })
 
+const { data: certs } = useCertificates(defaultAgentId)
+
 const nodeHealthTone = computed(() => {
   if (!agents.value?.length) return 'warning'
   if (offlineCount.value > 0) return 'danger'
   return 'success'
+})
+
+const certCount = computed(() => certs.value?.length || 0)
+const expiringCount = computed(() => {
+  const list = certs.value || []
+  const now = Date.now()
+  const threshold = now + 30 * 24 * 60 * 60 * 1000
+  return list.filter((cert) => {
+    const raw = cert?.not_after
+    if (!raw) return false
+    const time = new Date(raw).getTime()
+    return Number.isFinite(time) && time > now && time <= threshold
+  }).length
+})
+const certTone = computed(() => {
+  if (expiringCount.value > 0) return 'danger'
+  return 'success'
+})
+const certSubLabel = computed(() => {
+  if (expiringCount.value > 0) return `${expiringCount.value} 个即将过期`
+  return '证书正常'
 })
 
 function navigateToAgent(agent) {
@@ -317,9 +358,21 @@ function navigateToAgent(agent) {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
   margin-bottom: var(--space-8);
+}
+
+@media (max-width: 1024px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .dashboard__loading {
@@ -402,10 +455,6 @@ function navigateToAgent(agent) {
   .dashboard__actions--cards {
     max-width: none;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .stats-grid {
-    grid-template-columns: 1fr;
   }
 }
 
