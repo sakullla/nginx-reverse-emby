@@ -1545,37 +1545,37 @@ function packageStatusLabel(status) {
 
 .traffic-tab__trend { display: flex; flex-direction: column; gap: 0.5rem; }
 .traffic-tab__trend--demoted {
-  gap: 0.375rem;
-  padding: 0.25rem 0 0;
-  opacity: 0.96;
+  gap: 0.25rem;
+  padding: 0.125rem 0 0;
+  opacity: 0.9;
 }
 .traffic-tab__trend-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
-  font-size: 0.8125rem;
+  gap: 0.5rem;
+  font-size: 0.75rem;
   font-weight: 500;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-muted);
 }
 .traffic-tab__trend-title {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   font-weight: 500;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-muted);
   letter-spacing: 0.01em;
 }
 .traffic-tab__trend-chart {
-  max-height: 11.5rem;
-  min-height: 8.5rem;
+  max-height: 10rem;
+  min-height: 7.25rem;
   overflow: hidden;
   border-radius: var(--radius-md);
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
-  padding: 0.375rem 0.5rem 0.25rem;
+  background: color-mix(in srgb, var(--color-bg-subtle) 88%, var(--color-bg-surface));
+  border: 1px solid color-mix(in srgb, var(--color-border-subtle) 80%, transparent);
+  padding: 0.25rem 0.375rem 0.125rem;
 }
 .traffic-tab__trend-chart :deep(canvas),
 .traffic-tab__trend-chart :deep(svg) {
-  max-height: 10.5rem;
+  max-height: 9rem;
 }
 .traffic-tab__breakdown { }
 .traffic-trend__controls {
@@ -1588,23 +1588,26 @@ function packageStatusLabel(status) {
 }
 .traffic-trend__controls--compact {
   padding: 1px;
+  gap: 1px;
+  background: transparent;
+  border-color: transparent;
 }
 .traffic-trend__mode {
-  min-width: 2.5rem;
-  padding: 0.28rem 0.55rem;
+  min-width: 2.25rem;
+  padding: 0.2rem 0.45rem;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-muted);
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 500;
   cursor: pointer;
   font-family: inherit;
 }
 .traffic-trend__mode--active {
-  background: var(--color-bg-surface);
-  color: var(--color-text-secondary);
-  box-shadow: var(--shadow-sm);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-tertiary);
+  box-shadow: none;
   font-weight: 600;
 }
 .empty-hint {
@@ -1731,11 +1734,23 @@ function packageStatusLabel(status) {
   gap: 0.875rem;
 }
 .traffic-card--health {
-  border-color: var(--color-border-default);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-primary) 8%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 14%, var(--color-border-default));
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--color-primary) 10%, transparent),
+    0 8px 20px -16px color-mix(in srgb, var(--color-primary) 28%, transparent);
+  background: color-mix(in srgb, var(--color-bg-surface) 96%, var(--color-primary) 4%);
 }
 .traffic-card--health:deep(.base-list-card__header) {
-  padding-bottom: 0.125rem;
+  padding-bottom: 0.25rem;
+  margin-bottom: 0.125rem;
+}
+.traffic-card--health:deep(.base-list-card__body) {
+  gap: 0.625rem;
+}
+.traffic-card--health :deep(.traffic-summary-cards) {
+  border-color: color-mix(in srgb, var(--color-border-default) 70%, transparent);
+  background: color-mix(in srgb, var(--color-bg-surface) 92%, transparent);
+  box-shadow: none;
 }
 .traffic-secondary {
   background: var(--color-bg-subtle);
@@ -1761,9 +1776,9 @@ function packageStatusLabel(status) {
 }
 .traffic-monitor__divider {
   height: 1px;
-  background: var(--color-border-subtle);
-  margin: 0.125rem 0 0.25rem;
-  opacity: 0.9;
+  background: color-mix(in srgb, var(--color-border-subtle) 70%, transparent);
+  margin: 0.05rem 0 0.05rem;
+  opacity: 0.75;
 }
 .traffic-maintenance { display: flex; flex-direction: column; gap: 1rem; }
 .traffic-maintenance__divider { height: 1px; background: var(--color-border-subtle); }
