@@ -1,15 +1,15 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, unref } from 'vue'
 import * as api from '../api'
 import { messageStore } from '../stores/messages'
+import { invalidateResourceList, useResourceListQuery } from './useResourceListQuery'
 
 function invalidateWireGuardReferences(qc, agentId) {
-  qc.invalidateQueries({ queryKey: ['wireGuardProfiles', agentId] })
+  invalidateResourceList(qc, 'wireGuardProfiles')
   qc.invalidateQueries({ queryKey: ['wireGuardClients', agentId] })
   qc.invalidateQueries({ queryKey: ['agents'] })
-  qc.invalidateQueries({ queryKey: ['relayListeners', agentId] })
-  qc.invalidateQueries({ queryKey: ['relayListeners', 'all'] })
-  qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
+  invalidateResourceList(qc, 'relayListeners')
+  invalidateResourceList(qc, 'l4Rules')
 }
 
 function invalidateWireGuardClientTarget(qc, rawAgentId, rawProfileId) {
@@ -17,6 +17,7 @@ function invalidateWireGuardClientTarget(qc, rawAgentId, rawProfileId) {
   invalidateWireGuardReferences(qc, rawAgentId)
 }
 
+/** @deprecated Prefer useWireGuardProfilesList for list pages; kept for per-agent consumers. */
 export function useWireGuardProfiles(agentId) {
   return useQuery({
     queryKey: ['wireGuardProfiles', agentId],
@@ -25,6 +26,22 @@ export function useWireGuardProfiles(agentId) {
       if (!id) return []
       return api.fetchWireGuardProfiles(id)
     }
+  })
+}
+
+/**
+ * Paginated WireGuard profiles list (T1 /wireguard-profiles).
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabled?: any }} options
+ */
+export function useWireGuardProfilesList(options = {}) {
+  return useResourceListQuery({
+    resourceKey: 'wireGuardProfiles',
+    agentFilter: options.agentFilter,
+    page: options.page,
+    pageSize: options.pageSize,
+    q: options.q,
+    enabled: options.enabled,
+    fetcher: (params) => api.fetchWireGuardProfilesPage(params)
   })
 }
 

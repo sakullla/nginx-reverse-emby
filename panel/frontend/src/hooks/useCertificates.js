@@ -1,22 +1,13 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { unref, watch, onScopeDispose } from 'vue'
 import * as api from '../api'
 import { messageStore } from '../stores/messages'
+import { invalidateResourceList, useResourceListQuery } from './useResourceListQuery'
 
 // R3: 后台异步签发期间，存在 issuing 证书时智能轮询；全部离开 issuing 停止。
 const ISSUING_POLL_INTERVAL_MS = 4000
 
-export function useCertificates(agentId) {
-  const query = useQuery({
-    queryKey: ['certificates', agentId],
-    queryFn: () => {
-      const id = unref(agentId)
-      if (!id) return []
-      return api.fetchCertificates(id)
-    },
-    refetchOnWindowFocus: true,
-  })
-
+function attachIssuingPoll(query) {
   let pollTimer = null
   function stopPolling() {
     if (pollTimer !== null) {
@@ -39,7 +30,12 @@ export function useCertificates(agentId) {
 
   watch(
     () => {
-      const list = query.data.value
+      const data = query.data.value
+      const list = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.items)
+          ? data.items
+          : null
       if (!Array.isArray(list)) return false
       return list.some((cert) => cert && cert.status === 'issuing')
     },
@@ -51,8 +47,42 @@ export function useCertificates(agentId) {
   )
 
   onScopeDispose(stopPolling)
-
   return query
+}
+
+/** @deprecated Prefer useCertificatesList for list pages; kept for per-agent consumers. */
+export function useCertificates(agentId) {
+  const query = useQuery({
+    queryKey: ['certificates', agentId],
+    queryFn: () => {
+      const id = unref(agentId)
+      if (!id) return []
+      return api.fetchCertificates(id)
+    },
+    refetchOnWindowFocus: true,
+  })
+  return attachIssuingPoll(query)
+}
+
+/**
+ * Paginated certificates list (T1 /certificates?page=...).
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabled?: any }} options
+ */
+export function useCertificatesList(options = {}) {
+  const query = useResourceListQuery({
+    resourceKey: 'certificates',
+    agentFilter: options.agentFilter,
+    page: options.page,
+    pageSize: options.pageSize,
+    q: options.q,
+    enabled: options.enabled,
+    fetcher: (params) => api.fetchCertificatesPage(params)
+  })
+  return attachIssuingPoll(query)
+}
+
+function invalidateCertificates(qc) {
+  invalidateResourceList(qc, 'certificates')
 }
 
 export function useCreateCertificate(agentId) {
@@ -60,7 +90,7 @@ export function useCreateCertificate(agentId) {
   return useMutation({
     mutationFn: (payload) => api.createCertificate(unref(agentId), payload),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+      invalidateCertificates(qc)
       messageStore.success('证书已创建，签发任务已提交')
     },
     onError: (error) => {
@@ -74,7 +104,7 @@ export function useUpdateCertificate(agentId) {
   return useMutation({
     mutationFn: ({ id, ...payload }) => api.updateCertificate(unref(agentId), id, payload),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+      invalidateCertificates(qc)
       messageStore.success('证书已更新，变更已提交')
     },
     onError: (error) => {
@@ -88,7 +118,7 @@ export function useDeleteCertificate(agentId) {
   return useMutation({
     mutationFn: (id) => api.deleteCertificate(unref(agentId), id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+      invalidateCertificates(qc)
       messageStore.success('证书已删除')
     },
     onError: (error) => {
@@ -102,7 +132,7 @@ export function useIssueCertificate(agentId) {
   return useMutation({
     mutationFn: (id) => api.issueCertificate(unref(agentId), id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+      invalidateCertificates(qc)
       messageStore.success('证书签发申请已提交')
     },
     onError: (error) => {

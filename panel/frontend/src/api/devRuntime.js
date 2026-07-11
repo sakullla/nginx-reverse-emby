@@ -1,5 +1,17 @@
 export { consumeAgentMonitorStream } from './agentMonitor'
 
+// Paginated list APIs live on the real runtime client (T1 control-plane routes).
+// Re-export so DEV/prod api/index.js can resolve them by name.
+export {
+  buildListQueryParams,
+  normalizeListPageResponse,
+  fetchHttpRulesPage,
+  fetchL4RulesPage,
+  fetchCertificatesPage,
+  fetchRelayListenersPage,
+  fetchWireGuardProfilesPage
+} from './runtime.js'
+
 export {
   verifyToken,
   fetchSystemInfo,

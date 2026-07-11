@@ -262,6 +262,78 @@ function parseDownloadFilename(contentDisposition, fallback = 'nre-backup.tar.gz
   return plainMatch?.[1] || fallback
 }
 
+/**
+ * Build query params for control-plane list endpoints (T1 contract).
+ * Empty / all-agents filter omits agent_id so the backend returns every node.
+ * page defaults to 1, page_size to 20 (clamped server-side to max 100).
+ */
+export function buildListQueryParams({ agentId, agentFilter, page, pageSize, q } = {}) {
+  const params = {}
+  const rawAgent = agentId != null ? agentId : agentFilter
+  if (rawAgent != null && rawAgent !== '' && rawAgent !== '__all__' && rawAgent !== 'all' && rawAgent !== '*') {
+    params.agent_id = String(rawAgent).trim()
+  }
+  const pageNum = Number(page)
+  params.page = Number.isInteger(pageNum) && pageNum > 0 ? pageNum : 1
+  const sizeNum = Number(pageSize)
+  params.page_size = Number.isInteger(sizeNum) && sizeNum > 0 ? sizeNum : 20
+  const query = q == null ? '' : String(q).trim()
+  if (query) params.q = query
+  return params
+}
+
+/**
+ * Normalize a paginated list envelope into { items, total, page, page_size }.
+ * collectionKey is the backend array field: rules | certificates | listeners | profiles.
+ */
+export function normalizeListPageResponse(data = {}, collectionKey, itemNormalizer) {
+  const rawItems = Array.isArray(data?.[collectionKey])
+    ? data[collectionKey]
+    : Array.isArray(data?.items)
+      ? data.items
+      : []
+  const items = typeof itemNormalizer === 'function'
+    ? rawItems.map((item) => itemNormalizer(item))
+    : rawItems.map((item) => ({ ...item }))
+  const total = Number(data?.total)
+  const page = Number(data?.page)
+  const pageSize = Number(data?.page_size)
+  return {
+    items,
+    total: Number.isFinite(total) && total >= 0 ? total : items.length,
+    page: Number.isInteger(page) && page > 0 ? page : 1,
+    page_size: Number.isInteger(pageSize) && pageSize > 0 ? pageSize : 20
+  }
+}
+
+async function fetchResourcePage(path, collectionKey, params = {}, itemNormalizer) {
+  const query = buildListQueryParams(params)
+  const { data } = await api.get(path, { params: query })
+  return normalizeListPageResponse(data, collectionKey, itemNormalizer)
+}
+
+export async function fetchHttpRulesPage(params = {}) {
+  return fetchResourcePage('/http-rules', 'rules', params, normalizeHttpRule)
+}
+
+export async function fetchL4RulesPage(params = {}) {
+  return fetchResourcePage('/l4-rules', 'rules', params, normalizeL4Rule)
+}
+
+export async function fetchCertificatesPage(params = {}) {
+  // Always include page so /certificates uses the paginated ListPage path
+  // (legacy full list is only returned when no list query params are present).
+  return fetchResourcePage('/certificates', 'certificates', params)
+}
+
+export async function fetchRelayListenersPage(params = {}) {
+  return fetchResourcePage('/relay-listeners', 'listeners', params)
+}
+
+export async function fetchWireGuardProfilesPage(params = {}) {
+  return fetchResourcePage('/wireguard-profiles', 'profiles', params)
+}
+
 export async function verifyToken(token) {
   const { data } = await api.get('/auth/verify', {
     headers: { 'X-Panel-Token': token }

@@ -1,9 +1,11 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { unref } from 'vue'
 import * as api from '../api'
 import { messageStore } from '../stores/messages'
+import { invalidateResourceList, useResourceListQuery } from './useResourceListQuery'
 export { useDiagnoseL4Rule } from './useDiagnostics'
 
+/** @deprecated Prefer useL4RulesList for list pages; kept for per-agent consumers. */
 export function useL4Rules(agentId) {
   return useQuery({
     queryKey: ['l4Rules', agentId],
@@ -15,13 +17,33 @@ export function useL4Rules(agentId) {
   })
 }
 
+/**
+ * Paginated L4 rules list (T1 /l4-rules).
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabled?: any }} options
+ */
+export function useL4RulesList(options = {}) {
+  return useResourceListQuery({
+    resourceKey: 'l4Rules',
+    agentFilter: options.agentFilter,
+    page: options.page,
+    pageSize: options.pageSize,
+    q: options.q,
+    enabled: options.enabled,
+    fetcher: (params) => api.fetchL4RulesPage(params)
+  })
+}
+
+function invalidateL4Rules(qc) {
+  invalidateResourceList(qc, 'l4Rules')
+  qc.invalidateQueries({ queryKey: ['agents'] })
+}
+
 export function useCreateL4Rule(agentId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (payload) => api.createL4Rule(unref(agentId), payload),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
-      qc.invalidateQueries({ queryKey: ['agents'] })
+      invalidateL4Rules(qc)
       messageStore.success('L4 规则创建成功')
     },
     onError: (error) => {
@@ -35,8 +57,7 @@ export function useUpdateL4Rule(agentId) {
   return useMutation({
     mutationFn: ({ id, ...payload }) => api.updateL4Rule(unref(agentId), id, payload),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
-      qc.invalidateQueries({ queryKey: ['agents'] })
+      invalidateL4Rules(qc)
       messageStore.success('L4 规则更新成功')
     },
     onError: (error) => {
@@ -50,8 +71,7 @@ export function useDeleteL4Rule(agentId) {
   return useMutation({
     mutationFn: (id) => api.deleteL4Rule(unref(agentId), id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
-      qc.invalidateQueries({ queryKey: ['agents'] })
+      invalidateL4Rules(qc)
       messageStore.success('L4 规则已删除')
     },
     onError: (error) => {
