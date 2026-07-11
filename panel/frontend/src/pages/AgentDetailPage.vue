@@ -2004,11 +2004,14 @@ function packageStatusLabel(status) {
   padding-right: 0.55rem;
 }
 .traffic-scenario-modal--management {
+  --traffic-mgmt-inset-x: 1rem;
+  --traffic-mgmt-inset-y: 0.95rem;
+  --traffic-mgmt-section-gap: 0.75rem;
   gap: 1.25rem;
 }
-.traffic-scenario-modal__context--status {
+.traffic-scenario-modal--management .traffic-scenario-modal__context--status {
   align-items: flex-start;
-  padding: 1rem 1.05rem;
+  padding: var(--traffic-mgmt-inset-y) var(--traffic-mgmt-inset-x);
   border-color: color-mix(in srgb, var(--color-primary-200, var(--color-primary-50)) 55%, var(--color-border-default));
   background:
     linear-gradient(
@@ -2079,24 +2082,26 @@ function packageStatusLabel(status) {
   font-weight: 600;
   color: var(--color-text-secondary);
 }
-.traffic-scenario-modal__section--primary {
-  gap: 0.8rem;
+.traffic-scenario-modal--management .traffic-scenario-modal__section--primary,
+.traffic-scenario-modal--management .traffic-scenario-modal__section--secondary {
+  gap: var(--traffic-mgmt-section-gap);
 }
-.traffic-scenario-modal__section--secondary {
+.traffic-scenario-modal--management .traffic-scenario-modal__section--secondary {
   padding-top: 0.35rem;
   margin-top: 0.15rem;
   border-top: 1px dashed color-mix(in srgb, var(--color-border-subtle) 88%, transparent);
-  gap: 0.65rem;
 }
-.traffic-scenario-modal__panel--policy {
-  padding: 0.95rem;
+.traffic-scenario-modal--management .traffic-scenario-modal__panel--policy,
+.traffic-scenario-modal--management .traffic-scenario-modal__panel--history {
+  padding: var(--traffic-mgmt-inset-y) var(--traffic-mgmt-inset-x);
+}
+.traffic-scenario-modal--management .traffic-scenario-modal__panel--policy {
   border-color: color-mix(in srgb, var(--color-border-default) 92%, var(--color-primary-50));
   box-shadow:
     0 1px 2px color-mix(in srgb, var(--color-text-primary) 5%, transparent),
     0 8px 20px color-mix(in srgb, var(--color-text-primary) 3%, transparent);
 }
-.traffic-scenario-modal__panel--history {
-  padding: 0.8rem 0.9rem;
+.traffic-scenario-modal--management .traffic-scenario-modal__panel--history {
   border-style: dashed;
   background:
     linear-gradient(
@@ -2106,16 +2111,16 @@ function packageStatusLabel(status) {
     );
   box-shadow: none;
 }
-.traffic-scenario-modal__panel--policy :deep(.traffic-policy-form) {
+.traffic-scenario-modal--management .traffic-scenario-modal__panel--policy :deep(.traffic-policy-form) {
   gap: 0.875rem;
 }
-.traffic-scenario-modal__panel--policy :deep(.traffic-policy-form__cards) {
+.traffic-scenario-modal--management .traffic-scenario-modal__panel--policy :deep(.traffic-policy-form__cards) {
   gap: 0.75rem;
 }
-.traffic-scenario-modal__panel--policy :deep(.traffic-policy-form__card) {
+.traffic-scenario-modal--management .traffic-scenario-modal__panel--policy :deep(.traffic-policy-form__card) {
   box-shadow: 0 1px 1px color-mix(in srgb, var(--color-text-primary) 3%, transparent);
 }
-.traffic-scenario-modal__panel--history :deep(.traffic-history-manager) {
+.traffic-scenario-modal--management .traffic-scenario-modal__panel--history :deep(.traffic-history-manager) {
   gap: 0.875rem;
 }
 @media (max-width: 720px) {
