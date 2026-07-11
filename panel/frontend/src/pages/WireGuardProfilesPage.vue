@@ -42,9 +42,14 @@
     <!-- Profile List View -->
     <template v-else-if="hasAgentFilter && !selectedProfileId">
       <div v-if="!profiles.length" class="wg-page__empty">
-        <p>暂无 WireGuard 配置</p>
-        <button v-if="canCreate" class="btn btn--primary" @click="startCreateProfile">创建第一个 Profile</button>
-        <p v-else class="wg-page__subtitle">全部节点视图下请先选择具体节点再新建</p>
+        <template v-if="hasActiveFilters">
+          <p>没有匹配的 WireGuard 配置</p>
+        </template>
+        <template v-else>
+          <p>暂无 WireGuard 配置</p>
+          <button v-if="canCreate" class="btn btn--primary" @click="startCreateProfile">创建第一个 Profile</button>
+          <p v-else class="wg-page__subtitle">全部节点视图下请先选择具体节点再新建</p>
+        </template>
       </div>
 
       <div v-show="view === 'card' && profiles.length" class="profile-grid">
@@ -305,6 +310,11 @@ const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
 function onStatusUpdate({ key, value }) {
   if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
 }
+const hasActiveFilters = computed(() => (
+  Boolean(listQ.value)
+  || Boolean(String(searchQuery.value || '').trim())
+  || enabledStatusValue.value !== ''
+))
 
 watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
 

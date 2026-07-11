@@ -89,9 +89,14 @@
         <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
         <path d='M7 11V7a5 5 0 0 1 10 0v4' />
       </svg>
-      <p>暂无证书</p>
-      <button v-if='canCreate' class='btn btn-primary' @click="startCreate">从模板创建第一个证书</button>
-      <p v-else class='certs-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
+      <template v-if='hasActiveFilters'>
+        <p>没有匹配的证书</p>
+      </template>
+      <template v-else>
+        <p>暂无证书</p>
+        <button v-if='canCreate' class='btn btn-primary' @click="startCreate">从模板创建第一个证书</button>
+        <p v-else class='certs-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
+      </template>
     </div>
 
     <BaseModal
@@ -236,12 +241,19 @@ const certStatusFields = [
     label: '证书状态',
     options: [
       { value: '', label: '全部状态' },
-      { value: 'active', label: '生效' },
-      { value: 'pending', label: '签发中' },
-      { value: 'error', label: '错误' }
+      { value: 'active', label: '生效中' },
+      { value: 'pending', label: '待签发' },
+      { value: 'issuing', label: '签发中' },
+      { value: 'error', label: '签发失败' }
     ]
   }
 ]
+const hasActiveFilters = computed(() => (
+  Boolean(listQ.value)
+  || Boolean(String(searchQuery.value || '').trim())
+  || enabledStatusValue.value !== ''
+  || certStatusValue.value !== ''
+))
 const statusValues = computed(() => ({
   enabled: enabledStatusValue.value,
   status: certStatusValue.value

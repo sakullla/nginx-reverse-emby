@@ -52,9 +52,14 @@
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
       </svg>
-      <p>暂无规则</p>
-      <button v-if="canCreate" class="btn btn-primary" @click="startCreate">添加第一条规则</button>
-      <p v-else class="rules-page__prompt-hint">全部节点视图下请先选择具体节点再新建</p>
+      <template v-if="hasActiveFilters">
+        <p>没有匹配的规则</p>
+      </template>
+      <template v-else>
+        <p>暂无规则</p>
+        <button v-if="canCreate" class="btn btn-primary" @click="startCreate">添加第一条规则</button>
+        <p v-else class="rules-page__prompt-hint">全部节点视图下请先选择具体节点再新建</p>
+      </template>
     </div>
 
     <!-- No search results -->
@@ -285,6 +290,11 @@ const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
 function onStatusUpdate({ key, value }) {
   if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
 }
+const hasActiveFilters = computed(() => (
+  Boolean(listQ.value)
+  || Boolean(String(searchQuery.value || '').trim())
+  || enabledStatusValue.value !== ''
+))
 
 watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
 

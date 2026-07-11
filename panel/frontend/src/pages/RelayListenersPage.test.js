@@ -20,10 +20,11 @@ function selectDisplayListeners(listeners, search) {
 }
 
 describe('RelayListenersPage deep-link #id=', () => {
-  it('consumes route.query.search via parseIdQuery and displayListeners', () => {
+  it('consumes searchQuery (synced from route.query.search) via parseIdQuery and displayListeners', () => {
     const page = readPage()
     expect(page).toContain("import { parseIdQuery } from '../hooks/useIdSearch'")
-    expect(page).toContain('parseIdQuery(route.query.search)')
+    expect(page).toContain('searchQuery.value = route.query.search ?? \'\'')
+    expect(page).toContain('parseIdQuery(searchQuery.value)')
     expect(page).toContain('const displayListeners = computed')
     expect(page).toContain('v-for=\'listener in displayListeners\'')
     expect(page).toContain(":listeners='displayListeners'")

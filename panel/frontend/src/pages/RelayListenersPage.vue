@@ -44,9 +44,14 @@
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
       </svg>
-      <p>暂无 Relay 监听器</p>
-      <button v-if='canCreate' class='btn btn-primary' @click="startCreate">创建第一个监听器</button>
-      <p v-else class='relay-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
+      <template v-if='hasActiveFilters'>
+        <p>没有匹配的 Relay 监听器</p>
+      </template>
+      <template v-else>
+        <p>暂无 Relay 监听器</p>
+        <button v-if='canCreate' class='btn btn-primary' @click="startCreate">创建第一个监听器</button>
+        <p v-else class='relay-page__prompt-hint'>全部节点视图下请先选择具体节点再新建</p>
+      </template>
     </div>
 
     <!-- Listener card grid -->
@@ -140,7 +145,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
@@ -225,6 +230,11 @@ const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
 function onStatusUpdate({ key, value }) {
   if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
 }
+const hasActiveFilters = computed(() => (
+  Boolean(listQ.value)
+  || Boolean(String(searchQuery.value || '').trim())
+  || enabledStatusValue.value !== ''
+))
 
 watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
 
@@ -241,10 +251,16 @@ const updateRelayListener = useUpdateRelayListener(agentId)
 const listeners = computed(() => listenersPage.value?.items ?? [])
 const listTotal = computed(() => listenersPage.value?.total ?? 0)
 
+// Keep filter-bar search in sync with route deep-link (?search=#id=N).
+watchEffect(() => {
+  searchQuery.value = route.query.search ?? ''
+})
+
 // Consume route deep-link search=#id=N (from agent detail / global search).
+// Prefer filter-bar searchQuery so deep-link and manual search share one source.
 // Match → filter to that listener; no match / no search → full list (no crash, no redesign).
 const displayListeners = computed(() => {
-  const idQuery = parseIdQuery(route.query.search)
+  const idQuery = parseIdQuery(searchQuery.value)
   if (!idQuery) return listeners.value
   const matched = listeners.value.filter((listener) => String(listener.id) === idQuery.id)
   return matched.length ? matched : listeners.value
