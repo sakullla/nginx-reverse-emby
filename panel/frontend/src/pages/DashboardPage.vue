@@ -1,16 +1,48 @@
 <template>
   <div class="dashboard">
     <div class="dashboard__header animate-fade-in-up">
-      <h1 class="dashboard__title">集群概览</h1>
-      <p class="dashboard__subtitle">实时监控所有节点状态</p>
+      <div class="dashboard__header-text">
+        <h1 class="dashboard__title">集群概览</h1>
+        <p class="dashboard__subtitle">实时监控所有节点状态</p>
+      </div>
+      <div class="dashboard__actions">
+        <RouterLink to="/agents" class="dashboard__action">
+          查看全部节点
+        </RouterLink>
+        <RouterLink to="/agents" class="dashboard__action">
+          查看离线节点
+        </RouterLink>
+        <RouterLink
+          v-if="defaultAgentId"
+          :to="`/rules?agentId=${defaultAgentId}`"
+          class="dashboard__action dashboard__action--primary"
+        >
+          创建 HTTP 规则
+        </RouterLink>
+        <span v-else class="dashboard__action dashboard__action--disabled" title="暂无可用节点">
+          创建 HTTP 规则
+        </span>
+        <RouterLink
+          v-if="defaultAgentId"
+          :to="`/l4?agentId=${defaultAgentId}`"
+          class="dashboard__action dashboard__action--primary"
+        >
+          创建 L4 规则
+        </RouterLink>
+        <span v-else class="dashboard__action dashboard__action--disabled" title="暂无可用节点">
+          创建 L4 规则
+        </span>
+      </div>
     </div>
 
     <div class="stats-grid">
       <StatCard
-        tone="primary"
+        :tone="nodeHealthTone"
+        size="lg"
         :value="`${onlineCount} / ${agents?.length || 0}`"
+        label="节点健康"
+        :sub-label="offlineCount > 0 ? `${offlineCount} 个离线` : '全部在线'"
         :progress="onlinePercent"
-        label="在线节点"
         to="/agents"
         class="card-enter stagger-1"
       >
@@ -24,26 +56,12 @@
       </StatCard>
 
       <StatCard
-        :tone="offlineCount > 0 ? 'danger' : 'success'"
-        :value="offlineCount"
-        label="离线节点"
-        to="/agents"
-        class="card-enter stagger-2"
-      >
-        <template #icon>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M15 9l-6 6M9 9l6 6"/>
-          </svg>
-        </template>
-      </StatCard>
-
-      <StatCard
         tone="primary"
+        size="lg"
         :value="rulesCount"
         label="HTTP 规则"
         to="/rules"
-        class="card-enter stagger-3"
+        class="card-enter stagger-2"
       >
         <template #icon>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -55,10 +73,11 @@
 
       <StatCard
         tone="warning"
+        size="lg"
         :value="l4Count"
         label="L4 规则"
         to="/l4"
-        class="card-enter stagger-4"
+        class="card-enter stagger-3"
       >
         <template #icon>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -69,9 +88,9 @@
       </StatCard>
     </div>
 
-    <DashboardTrafficModule class="card-enter stagger-5" />
+    <DashboardTrafficModule class="card-enter stagger-4" />
 
-    <div v-if="agents?.length" class="dashboard-section card-enter stagger-6">
+    <div v-if="agents?.length" class="dashboard-section card-enter stagger-5">
       <div class="dashboard-section__header">
         <h2 class="dashboard-section__title">节点状态</h2>
         <RouterLink to="/agents" class="dashboard-section__link">查看全部 →</RouterLink>
@@ -98,7 +117,7 @@
         <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
       </svg>
       <p>暂无节点</p>
-      <p class="dashboard__empty-hint">点击顶部导航栏「加入节点」来添加第一个 Agent</p>
+      <p class="dashboard__empty-hint">点击顶部「加入节点」或顶部导航栏「加入节点」来添加第一个 Agent</p>
     </div>
   </div>
 </template>
@@ -121,11 +140,6 @@ const onlinePercent = computed(() => {
   return total > 0 ? Math.round((onlineCount.value / total) * 100) : 0
 })
 
-const onlinePercentLabel = computed(() => {
-  const total = agents.value?.length || 0
-  return total > 0 ? `${onlinePercent.value}%` : ''
-})
-
 const rulesCount = computed(() => {
   return agents.value?.reduce((sum, a) => sum + (a.http_rules_count || 0), 0) || 0
 })
@@ -134,6 +148,19 @@ const l4Count = computed(() => {
 })
 
 const displayedAgents = computed(() => (agents.value || []).slice(0, 8))
+
+const defaultAgentId = computed(() => {
+  const list = agents.value || []
+  if (!list.length) return ''
+  const online = list.find(a => a.status === 'online')
+  return online?.id || list[0].id
+})
+
+const nodeHealthTone = computed(() => {
+  if (!agents.value?.length) return 'warning'
+  if (offlineCount.value > 0) return 'danger'
+  return 'success'
+})
 
 function navigateToAgent(agent) {
   router.push(`/agents/${agent.id}`)
@@ -147,7 +174,15 @@ function navigateToAgent(agent) {
 }
 
 .dashboard__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
   margin-bottom: var(--space-8);
+}
+
+.dashboard__header-text {
+  min-width: 0;
 }
 
 .dashboard__title {
@@ -164,9 +199,64 @@ function navigateToAgent(agent) {
   margin: 0;
 }
 
+.dashboard__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.dashboard__action {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  text-decoration: none;
+  transition: color var(--duration-fast) var(--ease-default),
+    background var(--duration-fast) var(--ease-default),
+    border-color var(--duration-fast) var(--ease-default);
+  white-space: nowrap;
+}
+
+.dashboard__action:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-strong);
+}
+
+.dashboard__action--primary {
+  color: var(--color-primary);
+  border-color: var(--color-primary-subtle);
+  background: var(--color-primary-subtle);
+}
+
+.dashboard__action--primary:hover {
+  color: var(--color-primary-hover);
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary);
+}
+
+.dashboard__action--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dashboard__action--disabled:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-default);
+}
+
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: var(--space-4);
   margin-bottom: var(--space-8);
 }
@@ -238,10 +328,22 @@ function navigateToAgent(agent) {
   text-decoration: underline;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 768px) {
+  .dashboard__header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dashboard__actions {
+    justify-content: flex-start;
+  }
+
   .stats-grid {
     grid-template-columns: 1fr;
   }
+}
+
+@media (max-width: 640px) {
   .dashboard__title {
     font-size: var(--text-xl);
   }
