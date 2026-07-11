@@ -206,12 +206,37 @@ function updateField(key, value) {
   flex-direction: column;
   gap: 0.7rem;
 }
-.traffic-policy-form__field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
-.traffic-policy-form__field--switch { flex-direction: row; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.traffic-policy-form__field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.traffic-policy-form__field--switch {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.75rem;
+  min-height: 2.25rem;
+}
+.traffic-policy-form__field--switch .traffic-policy-form__label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.traffic-policy-form__field--switch input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
 .traffic-policy-form__label {
+  display: block;
   color: var(--color-text-secondary);
   font-size: 0.8125rem;
   font-weight: 550;
+  line-height: 1.35;
+  min-height: 1.15rem;
 }
 .traffic-policy-form__badge {
   margin-left: 0.35rem;
@@ -224,6 +249,8 @@ function updateField(key, value) {
   display: inline-block;
 }
 .traffic-policy-form__input {
+  display: block;
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
   border: 1px solid var(--color-border-default);
@@ -232,6 +259,8 @@ function updateField(key, value) {
   color: var(--color-text-primary);
   padding: 0.5rem 0.625rem;
   font-size: 0.875rem;
+  line-height: 1.35;
+  min-height: 2.25rem;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .traffic-policy-form__input:focus {
@@ -244,7 +273,19 @@ function updateField(key, value) {
   font-size: 0.75rem;
   line-height: 1.4;
 }
-.traffic-policy-form__quota { display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem; gap: 0.5rem; }
+.traffic-policy-form__quota {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.5rem;
+  align-items: stretch;
+  gap: 0.5rem;
+  width: 100%;
+}
+.traffic-policy-form__quota .traffic-policy-form__input {
+  width: 100%;
+}
+.traffic-policy-form__unit {
+  min-width: 0;
+}
 .traffic-policy-form__footer {
   display: flex;
   justify-content: flex-end;
