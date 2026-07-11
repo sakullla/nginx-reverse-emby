@@ -558,10 +558,12 @@ describe('AgentDetailPage', () => {
 
   it('renders traffic section when traffic stats are enabled', async () => {
     const wrapper = await mountPage()
+    // Outer traffic section is default-expanded; health overview is always on.
     expect(wrapper.text()).toContain('流量统计')
-    await expandSection(wrapper, '流量统计')
-
-    expect(wrapper.text()).toContain('监控')
+    expect(wrapper.text()).toContain('健康概览')
+    expect(wrapper.find('.traffic-card--health').exists()).toBe(true)
+    expect(wrapper.find('.traffic-summary-cards').exists()).toBe(true)
+    expect(wrapper.text()).toContain('剩余')
     expect(wrapper.text()).toContain('分析')
     expect(wrapper.text()).toContain('管理')
     expect(apiCalls.fetchTrafficPolicy).toHaveBeenCalledWith('edge-1')
@@ -580,18 +582,30 @@ describe('AgentDetailPage', () => {
     expect(apiCalls.fetchTrafficTrend).not.toHaveBeenCalled()
   })
 
-  it('groups traffic sections into monitor, analysis and management cards', async () => {
+  it('keeps health overview visible and demotes analysis/management to nested collapsibles', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
 
-    const trafficCards = wrapper.findAll('.traffic-card')
-    const titles = trafficCards.map((card) => card.find('.traffic-section-card__title').text())
-    expect(titles).toEqual(['监控', '分析', '管理'])
+    // Health overview card always present without expanding nested sections.
+    const healthCard = wrapper.find('.traffic-card--health')
+    expect(healthCard.exists()).toBe(true)
+    expect(healthCard.find('.traffic-section-card__title').text()).toBe('健康概览')
+    expect(wrapper.find('.traffic-summary-cards').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="traffic-summary-remaining"]').exists()).toBe(true)
+
+    // Analysis/management are nested collapsibles (headers present, bodies collapsed).
+    const secondary = wrapper.findAll('.traffic-secondary')
+    expect(secondary.length).toBe(2)
+    const secondaryTitles = secondary.map((s) => s.find('.collapsible-section__title').text())
+    expect(secondaryTitles).toEqual(['分析', '管理'])
+    expect(secondary.every((s) => s.classes().includes('collapsible-section--collapsed'))).toBe(true)
+    // Breakdown/manager not mounted while nested sections stay collapsed.
+    expect(wrapper.find('.traffic-breakdown__tab').exists()).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text() === '清理过期数据')).toBe(false)
   })
 
-  it('renders accounted traffic breakdowns in traffic section', async () => {
+  it('renders accounted traffic breakdowns after expanding analysis', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
+    await expandSection(wrapper, '分析')
 
     expect(wrapper.text()).toContain('分析')
     expect(wrapper.text()).toContain('HTTP 规则 #7')
@@ -606,7 +620,7 @@ describe('AgentDetailPage', () => {
 
   it('does not cleanup traffic history when confirmation is cancelled', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
+    await expandSection(wrapper, '管理')
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
     await nextTick()
@@ -620,7 +634,7 @@ describe('AgentDetailPage', () => {
 
   it('cleans up traffic history after confirmation', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
+    await expandSection(wrapper, '管理')
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
     await nextTick()
@@ -633,7 +647,7 @@ describe('AgentDetailPage', () => {
 
   it('calibrates traffic current usage to zero after confirmation', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
+    await expandSection(wrapper, '管理')
 
     await wrapper.findAll('button').find((button) => button.text() === '从现在归零').trigger('click')
     await nextTick()
