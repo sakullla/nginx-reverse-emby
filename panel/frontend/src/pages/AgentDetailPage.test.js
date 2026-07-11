@@ -675,8 +675,12 @@ describe('AgentDetailPage', () => {
     await nextTick()
 
     expect(wrapper.find('[data-testid="traffic-analysis-modal-body"]').exists()).toBe(true)
+    expect(wrapper.find('.traffic-scenario-modal--analysis').exists()).toBe(true)
     expect(wrapper.text()).toContain('总流量分析')
     expect(wrapper.find('[data-testid="traffic-analysis-context"]').text()).toContain('当前总流量')
+    expect(wrapper.find('[data-testid="traffic-analysis-section-breakdown"]').exists()).toBe(true)
+    expect(wrapper.find('.traffic-scenario-modal__section-title').text()).toContain('分项构成')
+    expect(wrapper.find('.traffic-scenario-modal__panel--table').exists()).toBe(true)
     expect(wrapper.text()).toContain('HTTP 规则 #7')
     expect(wrapper.text()).toContain('12.0 KiB')
 

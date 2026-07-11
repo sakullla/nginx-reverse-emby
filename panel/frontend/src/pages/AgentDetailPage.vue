@@ -362,13 +362,21 @@
         >
           <div class="traffic-scenario-modal traffic-scenario-modal--analysis" data-testid="traffic-analysis-modal-body">
             <div class="traffic-scenario-modal__context" data-testid="traffic-analysis-context">
-              <span class="traffic-scenario-modal__context-label">当前总流量</span>
-              <span class="traffic-scenario-modal__context-value">{{ trafficUsedDisplay }}</span>
+              <div class="traffic-scenario-modal__context-main">
+                <span class="traffic-scenario-modal__context-label">当前总流量</span>
+                <span class="traffic-scenario-modal__context-value">{{ trafficUsedDisplay }}</span>
+              </div>
               <span v-if="trafficAnalysisContextHint" class="traffic-scenario-modal__context-hint">{{ trafficAnalysisContextHint }}</span>
             </div>
-            <div class="traffic-tab__breakdown">
-              <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
-            </div>
+            <section class="traffic-scenario-modal__section" data-testid="traffic-analysis-section-breakdown">
+              <header class="traffic-scenario-modal__section-header">
+                <h3 class="traffic-scenario-modal__section-title">分项构成</h3>
+                <p class="traffic-scenario-modal__section-desc">按规则 / 监听 / 主机接口查看用量占比，点击行可钻取趋势</p>
+              </header>
+              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--table">
+                <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
+              </div>
+            </section>
           </div>
         </BaseModal>
 
@@ -381,8 +389,10 @@
         >
           <div class="traffic-scenario-modal traffic-scenario-modal--management" data-testid="traffic-management-modal-body">
             <div class="traffic-scenario-modal__context" data-testid="traffic-management-context">
-              <span class="traffic-scenario-modal__context-label">当前剩余</span>
-              <span class="traffic-scenario-modal__context-value">{{ trafficRemainingDisplay }}</span>
+              <div class="traffic-scenario-modal__context-main">
+                <span class="traffic-scenario-modal__context-label">当前剩余</span>
+                <span class="traffic-scenario-modal__context-value">{{ trafficRemainingDisplay }}</span>
+              </div>
               <span v-if="trafficManagementContextHint" class="traffic-scenario-modal__context-hint">{{ trafficManagementContextHint }}</span>
             </div>
             <div class="traffic-maintenance">
@@ -1843,32 +1853,93 @@ function packageStatusLabel(status) {
 .traffic-scenario-modal {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 1.125rem;
 }
 .traffic-scenario-modal__context {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem 0.75rem;
-  padding: 0.75rem 0.875rem;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--color-bg-subtle) 70%, transparent);
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border-default) 80%, transparent);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-primary-50) 55%, transparent),
+      color-mix(in srgb, var(--color-bg-subtle) 80%, transparent) 48%,
+      color-mix(in srgb, var(--color-bg-surface) 90%, transparent)
+    );
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-bg-surface) 70%, transparent);
+}
+.traffic-scenario-modal__context-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
 }
 .traffic-scenario-modal__context-label {
   color: var(--color-text-tertiary);
   font-size: 0.75rem;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .traffic-scenario-modal__context-value {
   color: var(--color-text-primary);
-  font-size: 1.125rem;
+  font-size: 1.375rem;
   font-weight: 700;
+  line-height: 1.15;
   font-variant-numeric: tabular-nums;
 }
 .traffic-scenario-modal__context-hint {
-  color: var(--color-text-muted);
+  color: var(--color-text-secondary);
   font-size: 0.75rem;
+  line-height: 1.4;
+  max-width: 18rem;
+  text-align: right;
+}
+.traffic-scenario-modal__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.traffic-scenario-modal__section-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.traffic-scenario-modal__section-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  color: var(--color-text-primary);
+}
+.traffic-scenario-modal__section-desc {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--color-text-muted);
+}
+.traffic-scenario-modal__panel {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+}
+.traffic-scenario-modal__panel--table {
+  padding: 0.625rem 0.75rem 0.75rem;
+}
+.traffic-scenario-modal__panel :deep(.traffic-breakdown) {
+  gap: 0.5rem;
+}
+.traffic-scenario-modal__panel :deep(.traffic-breakdown__empty) {
+  padding: 1.75rem 1rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg-subtle) 75%, transparent);
 }
 .traffic-maintenance { display: flex; flex-direction: column; gap: 1rem; }
 .traffic-maintenance__divider { height: 1px; background: var(--color-border-subtle); }
@@ -1876,5 +1947,14 @@ function packageStatusLabel(status) {
 .traffic-maintenance :deep(.traffic-policy-form__card) { background: transparent; border: none; padding: 0; border-radius: 0; }
 .traffic-maintenance :deep(.traffic-policy-form__card-title) { font-size: 0.9375rem; }
 .traffic-maintenance :deep(.traffic-history-manager) { gap: 0.75rem; }
+@media (max-width: 720px) {
+  .traffic-scenario-modal__context {
+    align-items: flex-start;
+  }
+  .traffic-scenario-modal__context-hint {
+    max-width: none;
+    text-align: left;
+  }
+}
 
 </style>
