@@ -378,8 +378,9 @@ const deletingRule = ref(null)
 const showDiagnostic = ref(false)
 const diagnosticRule = ref(null)
 const diagnosticTaskId = ref('')
+const diagnosticAgentId = ref('')
 const initialDiagnosticTask = ref(null)
-const { data: diagnosticTaskData } = useDiagnosticTask(agentId, diagnosticTaskId)
+const { data: diagnosticTaskData } = useDiagnosticTask(diagnosticAgentId, diagnosticTaskId)
 const diagnosticTask = computed(() => diagnosticTaskData.value?.task || initialDiagnosticTask.value)
 
 
@@ -480,6 +481,7 @@ async function openDiagnostic(rule) {
   const target = requireMutationAgent(rule, '诊断')
   if (!target) return
   diagnosticRule.value = rule
+  diagnosticAgentId.value = target
   showDiagnostic.value = true
   try {
     const response = await diagnoseRule.mutateAsync({ id: rule.id, agentId: target })
@@ -501,11 +503,12 @@ function closeForm() {
 function closeDiagnostic() {
   showDiagnostic.value = false
   diagnosticRule.value = null
+  diagnosticAgentId.value = ''
   diagnosticTaskId.value = ''
   initialDiagnosticTask.value = null
 }
 
-async async async function confirmDelete() {
+async function confirmDelete() {
   if (!deletingRule.value) return
   const target = requireMutationAgent(deletingRule.value, '删除')
   if (!target) return

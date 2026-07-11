@@ -408,8 +408,9 @@ const deletingRule = ref(null)
 const showDiagnostic = ref(false)
 const diagnosticRule = ref(null)
 const diagnosticTaskId = ref('')
+const diagnosticAgentId = ref('')
 const initialDiagnosticTask = ref(null)
-const { data: diagnosticTaskData } = useDiagnosticTask(agentId, diagnosticTaskId)
+const { data: diagnosticTaskData } = useDiagnosticTask(diagnosticAgentId, diagnosticTaskId)
 const diagnosticTask = computed(() => diagnosticTaskData.value?.task || initialDiagnosticTask.value)
 
 const trendModal = ref({ visible: false, agentId: '', scopeType: '', scopeId: '', scopeLabel: '' })
@@ -427,26 +428,55 @@ function openTrendModal(rule) {
   }
 }
 
+function toggleRule(rule) {
+  const target = requireMutationAgent(rule, '启停')
+  if (!target) return
+  updateL4Rule.mutate({ id: rule.id, enabled: !rule.enabled, agentId: target })
+}
+
 function startEdit(rule) {
   const target = requireMutationAgent(rule, '编辑')
   if (!target) return
   formAgentId.value = target
   editingRule.value = rule
 }
+
 function handleCopy(rule) {
   const resolved = resolveCopyTargetAgentId(agentFilter.value, allAgents.value, {
     systemInfo: systemInfo?.value,
   })
-  if (resolved.agentId) formAgentId.value = resolved.agentId
-  else {
+  if (resolved.agentId) {
+    formAgentId.value = resolved.agentId
+  } else if (resolved.needsSelection) {
     const source = String(rule?.agent_id || '').trim()
-    if (!source) { messageStore.error('全部节点视图下复制请先选择目标节点'); return }
-    formAgentId.value = source
+    if (source) formAgentId.value = source
+    else {
+      messageStore.error('全部节点视图下复制请先选择目标节点')
+      return
+    }
+  } else {
+    messageStore.error('请先选择节点后再复制')
+    return
   }
   const { id, ...rest } = rule
   copyingRule.value = rest
   showCopyModal.value = true
 }
+
+function startDelete(rule) {
+  deletingRule.value = rule
+}
+
+function closeForm() {
+  showAddForm.value = false
+  editingRule.value = null
+}
+
+function closeCopy() {
+  showCopyModal.value = false
+  copyingRule.value = null
+}
+
 function confirmDelete() {
   if (!deletingRule.value) return
   const target = requireMutationAgent(deletingRule.value, '删除')
@@ -454,12 +484,14 @@ function confirmDelete() {
   deleteL4Rule.mutate({ id: deletingRule.value.id, agentId: target })
   deletingRule.value = null
 }
+
 async function openDiagnostic(rule) {
+  const target = requireMutationAgent(rule, '诊断')
+  if (!target) return
   diagnosticRule.value = rule
+  diagnosticAgentId.value = target
   showDiagnostic.value = true
   try {
-    const target = requireMutationAgent(rule, '诊断')
-    if (!target) return
     const response = await diagnoseL4Rule.mutateAsync({ id: rule.id, agentId: target })
     initialDiagnosticTask.value = response.task || null
     diagnosticTaskId.value = response.task_id
@@ -468,7 +500,14 @@ async function openDiagnostic(rule) {
     messageStore.error(error, '启动 L4 规则诊断失败')
   }
 }
-function closeDiagnostic() { showDiagnostic.value = false; diagnosticRule.value = null; diagnosticTaskId.value = ''; initialDiagnosticTask.value = null }
+
+function closeDiagnostic() {
+  showDiagnostic.value = false
+  diagnosticRule.value = null
+  diagnosticAgentId.value = ''
+  diagnosticTaskId.value = ''
+  initialDiagnosticTask.value = null
+}
 </script>
 
 <style scoped>

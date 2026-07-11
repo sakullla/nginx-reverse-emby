@@ -373,19 +373,7 @@ function requireMutationAgent(resource, actionLabel = '操作') {
 }
 
 function startCreate() {
-  const resolved = resolveCreateAgentId(agentFilter.value, allAgents.value, {
-    systemInfo: systemInfo?.value,
-  })
-  if (resolved.agentId) {
-    formAgentId.value = resolved.agentId
-    showAddForm.value = true
-    return
-  }
-  if (resolved.needsSelection) {
-    showCreateAgentPicker.value = true
-    return
-  }
-  messageStore.error('请先选择节点后再新建')
+  startCreateProfile()
 }
 
 function confirmCreateAgent(agent) {
@@ -396,6 +384,7 @@ function confirmCreateAgent(agent) {
   }
   formAgentId.value = id
   showCreateAgentPicker.value = false
+  editingProfile.value = null
   showProfileForm.value = true
 }
 
@@ -409,7 +398,8 @@ function startCreateProfile() {
   })
   if (resolved.agentId) {
     formAgentId.value = resolved.agentId
-    showAddForm.value = true
+    editingProfile.value = null
+    showProfileForm.value = true
     return
   }
   if (resolved.needsSelection) {
