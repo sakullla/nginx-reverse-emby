@@ -218,6 +218,276 @@ func TestExecutorLocksPointerBeforeReadingSnapshot(t *testing.T) {
 	}
 }
 
+func TestExecutorRemoteRevisionCurrentFloorWithoutPointer(t *testing.T) {
+	store := newRevisionTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-floor", Name: "edge-floor", Platform: "linux-amd64",
+		DesiredRevision: 8, CurrentRevision: 11,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if _, found, err := store.GetAgentRevisionPointer(t.Context(), "edge-floor"); err != nil {
+		t.Fatalf("GetAgentRevisionPointer(before) error = %v", err)
+	} else if found {
+		t.Fatal("remote agent unexpectedly has a revision pointer before mutation")
+	}
+	executor := NewExecutor(
+		store,
+		WithClock(func() time.Time { return time.Date(2026, 7, 12, 5, 0, 0, 0, time.UTC) }),
+		WithOperationIDGenerator(func() (string, error) { return "op-remote-current-floor", nil }),
+	)
+
+	result, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", Request: map[string]any{"frontend_url": "https://edge-floor.example.com"},
+		Targets: []Target{{AgentID: "edge-floor"}}, ResourceState: httpRuleResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			return tx.SaveHTTPRules(ctx, "edge-floor", []storage.HTTPRuleRow{{
+				ID: 1, AgentID: "edge-floor", FrontendURL: "https://edge-floor.example.com",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+				Revision: int(revisions["edge-floor"]),
+			}})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(result.Agents) != 1 || result.Agents[0].DesiredRevision != 12 {
+		t.Fatalf("result agents = %+v, want edge-floor revision 12", result.Agents)
+	}
+	rules, err := store.ListHTTPRules(t.Context(), "edge-floor")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].Revision != 12 {
+		t.Fatalf("stored rules = %+v, want revision 12", rules)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "edge-floor")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	if len(revisions) != 1 || revisions[0].OperationID != result.Operation.ID || revisions[0].Revision != 12 {
+		t.Fatalf("stored revisions = %+v, want operation %s revision 12", revisions, result.Operation.ID)
+	}
+	pointer, found, err := store.GetAgentRevisionPointer(t.Context(), "edge-floor")
+	if err != nil || !found {
+		t.Fatalf("GetAgentRevisionPointer(after) found=%t error=%v", found, err)
+	}
+	if pointer.DesiredRevision != 12 {
+		t.Fatalf("pointer = %+v, want desired revision 12", pointer)
+	}
+	agents, err := store.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 || agents[0].DesiredRevision != 8 || agents[0].CurrentRevision != 11 {
+		t.Fatalf("legacy agent row changed = %+v", agents)
+	}
+}
+
+func TestExecutorRemoteRevisionCurrentFloorNoOpDoesNotAllocate(t *testing.T) {
+	store := newRevisionTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-floor-noop", Name: "edge-floor-noop", Platform: "linux-amd64",
+		DesiredRevision: 8, CurrentRevision: 11,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	original := storage.HTTPRuleRow{
+		ID: 1, AgentID: "edge-floor-noop", FrontendURL: "https://edge-floor-noop.example.com",
+		BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true, Revision: 8,
+	}
+	if err := store.SaveHTTPRules(t.Context(), "edge-floor-noop", []storage.HTTPRuleRow{original}); err != nil {
+		t.Fatalf("SaveHTTPRules(seed) error = %v", err)
+	}
+	executor := NewExecutor(
+		store,
+		WithOperationIDGenerator(func() (string, error) { return "op-remote-current-floor-noop", nil }),
+	)
+
+	result, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.update", Request: map[string]any{"frontend_url": original.FrontendURL},
+		Targets: []Target{{AgentID: "edge-floor-noop"}}, ResourceState: httpRuleResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			next := original
+			next.Revision = int(revisions["edge-floor-noop"])
+			return tx.SaveHTTPRules(ctx, "edge-floor-noop", []storage.HTTPRuleRow{next})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !result.NoOp || len(result.Agents) != 1 || result.Agents[0].DesiredRevision != 11 {
+		t.Fatalf("no-op result = %+v, want applied current revision 11", result)
+	}
+	if result.Operation.Status != storage.OperationStatusApplied {
+		t.Fatalf("operation status = %q, want applied", result.Operation.Status)
+	}
+	rules, err := store.ListHTTPRules(t.Context(), "edge-floor-noop")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].Revision != original.Revision {
+		t.Fatalf("rules after no-op = %+v, want original revision %d", rules, original.Revision)
+	}
+	if revisions, err := store.ListAgentRevisions(t.Context(), "edge-floor-noop"); err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	} else if len(revisions) != 0 {
+		t.Fatalf("no-op created revisions: %+v", revisions)
+	}
+	if _, found, err := store.GetAgentRevisionPointer(t.Context(), "edge-floor-noop"); err != nil {
+		t.Fatalf("GetAgentRevisionPointer() error = %v", err)
+	} else if found {
+		t.Fatal("no-op created a revision pointer")
+	}
+}
+
+func TestExecutorExistingPointerRevisionFloorWinsRemoteState(t *testing.T) {
+	store := newRevisionTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-pointer-floor", Name: "edge-pointer-floor", Platform: "linux-amd64",
+		DesiredRevision: 8, CurrentRevision: 11,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	seedRevisionPointer(t, store, storage.AgentRevisionPointerRow{
+		AgentID: "edge-pointer-floor", DesiredRevision: 14,
+		AppliedRevision: 13, LastKnownGoodRevision: 12,
+	})
+	executor := newDeterministicExecutor(store)
+
+	result, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", Request: map[string]any{"agent": "edge-pointer-floor"},
+		Targets: []Target{{AgentID: "edge-pointer-floor"}}, ResourceState: httpRuleResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			return tx.SaveHTTPRules(ctx, "edge-pointer-floor", []storage.HTTPRuleRow{{
+				ID: 1, AgentID: "edge-pointer-floor", FrontendURL: "https://pointer-floor.example.com",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+				Revision: int(revisions["edge-pointer-floor"]),
+			}})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(result.Agents) != 1 || result.Agents[0].DesiredRevision != 15 {
+		t.Fatalf("result agents = %+v, want revision 15", result.Agents)
+	}
+}
+
+func TestExecutorMultiAgentRevisionFloorsRemainIndependent(t *testing.T) {
+	store := newRevisionTestStore(t)
+	for _, agent := range []storage.AgentRow{
+		{ID: "edge-floor-a", Name: "edge-floor-a", Platform: "linux-amd64", DesiredRevision: 2, CurrentRevision: 5},
+		{ID: "edge-floor-b", Name: "edge-floor-b", Platform: "linux-amd64", DesiredRevision: 9, CurrentRevision: 4},
+	} {
+		if err := store.SaveAgent(t.Context(), agent); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agent.ID, err)
+		}
+	}
+	seedRevisionPointer(t, store, storage.AgentRevisionPointerRow{
+		AgentID: "edge-floor-b", DesiredRevision: 12, AppliedRevision: 10, LastKnownGoodRevision: 10,
+	})
+	executor := newDeterministicExecutor(store)
+
+	result, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "multi-agent.create", Request: map[string]any{"version": 1},
+		Targets: []Target{{AgentID: "edge-floor-a"}, {AgentID: "edge-floor-b"}}, ResourceState: httpRuleResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			for index, agentID := range []string{"edge-floor-a", "edge-floor-b"} {
+				if err := tx.SaveHTTPRules(ctx, agentID, []storage.HTTPRuleRow{{
+					ID: index + 1, AgentID: agentID, FrontendURL: "https://" + agentID + ".example.com",
+					BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+					Revision: int(revisions[agentID]),
+				}}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	got := make(map[string]int64, len(result.Agents))
+	for _, agent := range result.Agents {
+		got[agent.AgentID] = agent.DesiredRevision
+	}
+	if got["edge-floor-a"] != 6 || got["edge-floor-b"] != 13 {
+		t.Fatalf("allocated revisions = %+v, want edge-floor-a=6 edge-floor-b=13", got)
+	}
+}
+
+func TestExecutorRevisionFloorValidationFailureRollsBackEverything(t *testing.T) {
+	store := newRevisionTestStore(t)
+	for _, agent := range []storage.AgentRow{
+		{ID: "edge-floor-fail-a", Name: "edge-floor-fail-a", Platform: "linux-amd64", CurrentRevision: 5},
+		{ID: "edge-floor-fail-b", Name: "edge-floor-fail-b", Platform: "linux-amd64", DesiredRevision: 9},
+	} {
+		if err := store.SaveAgent(t.Context(), agent); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agent.ID, err)
+		}
+	}
+	seedRevisionPointer(t, store, storage.AgentRevisionPointerRow{
+		AgentID: "edge-floor-fail-b", DesiredRevision: 12, AppliedRevision: 10, LastKnownGoodRevision: 10,
+	})
+	executor := NewExecutor(
+		store,
+		WithOperationIDGenerator(func() (string, error) { return "op-floor-validation-fail", nil }),
+		WithSnapshotValidator(ValidatorFunc(func(_ context.Context, input SnapshotValidation) error {
+			if input.Target.AgentID == "edge-floor-fail-b" {
+				return NewError(ErrorCodeUnprocessable, "reject floor mutation", nil)
+			}
+			return nil
+		})),
+	)
+
+	_, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "multi-agent.update", Request: map[string]any{"version": 2},
+		Targets: []Target{{AgentID: "edge-floor-fail-a"}, {AgentID: "edge-floor-fail-b"}}, ResourceState: httpRuleResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			for index, agentID := range []string{"edge-floor-fail-a", "edge-floor-fail-b"} {
+				if err := tx.SaveHTTPRules(ctx, agentID, []storage.HTTPRuleRow{{
+					ID: index + 1, AgentID: agentID, FrontendURL: "https://" + agentID + ".example.com",
+					BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+					Revision: int(revisions[agentID]),
+				}}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+	if ErrorCodeOf(err) != ErrorCodeUnprocessable {
+		t.Fatalf("Execute() error = %v, code = %q", err, ErrorCodeOf(err))
+	}
+	for _, agentID := range []string{"edge-floor-fail-a", "edge-floor-fail-b"} {
+		if rows, listErr := store.ListHTTPRules(t.Context(), agentID); listErr != nil {
+			t.Fatalf("ListHTTPRules(%s) error = %v", agentID, listErr)
+		} else if len(rows) != 0 {
+			t.Fatalf("rules for %s survived rollback: %+v", agentID, rows)
+		}
+		if rows, listErr := store.ListAgentRevisions(t.Context(), agentID); listErr != nil {
+			t.Fatalf("ListAgentRevisions(%s) error = %v", agentID, listErr)
+		} else if len(rows) != 0 {
+			t.Fatalf("revisions for %s survived rollback: %+v", agentID, rows)
+		}
+	}
+	if _, found, getErr := store.GetAgentRevisionPointer(t.Context(), "edge-floor-fail-a"); getErr != nil {
+		t.Fatalf("GetAgentRevisionPointer(edge-floor-fail-a) error = %v", getErr)
+	} else if found {
+		t.Fatal("new pointer for edge-floor-fail-a survived rollback")
+	}
+	pointer, found, err := store.GetAgentRevisionPointer(t.Context(), "edge-floor-fail-b")
+	if err != nil || !found || pointer.DesiredRevision != 12 {
+		t.Fatalf("seed pointer after rollback = %+v found=%t error=%v", pointer, found, err)
+	}
+	if _, found, getErr := store.GetOperation(t.Context(), "op-floor-validation-fail"); getErr != nil {
+		t.Fatalf("GetOperation() error = %v", getErr)
+	} else if found {
+		t.Fatal("operation survived validation rollback")
+	}
+}
+
 func TestExecutorConcurrentDifferentKeysAllocateUniqueRevisions(t *testing.T) {
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
@@ -751,6 +1021,22 @@ func newRevisionTestStore(t *testing.T) *storage.GormStore {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func seedRevisionPointer(t *testing.T, store *storage.GormStore, pointer storage.AgentRevisionPointerRow) {
+	t.Helper()
+	now := time.Date(2026, 7, 12, 4, 59, 0, 0, time.UTC)
+	pointer.UpdatedAt = now
+	if err := store.CreateRevisionLedger(t.Context(), storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: "seed-pointer-" + pointer.AgentID, Kind: "test.seed_pointer",
+			Status: storage.OperationStatusApplied, PrimaryAgentID: pointer.AgentID,
+			CreatedAt: now, UpdatedAt: now,
+		},
+		Pointers: []storage.AgentRevisionPointerRow{pointer},
+	}); err != nil {
+		t.Fatalf("CreateRevisionLedger(seed %s) error = %v", pointer.AgentID, err)
+	}
 }
 
 func httpRuleResourceState(ctx context.Context, store *storage.GormStore, target Target) (any, error) {

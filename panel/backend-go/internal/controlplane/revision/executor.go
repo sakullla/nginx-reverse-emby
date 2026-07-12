@@ -35,6 +35,8 @@ type Target struct {
 	ApplyTimeoutSeconds int                     `json:"apply_timeout_seconds,omitempty"`
 	DrainTimeoutSeconds int                     `json:"drain_timeout_seconds,omitempty"`
 	IntentResources     IntentResourceSelection `json:"intent_resources,omitempty"`
+	persistedDesired    int64
+	persistedCurrent    int64
 }
 
 // IntentResourceSelection identifies global resources that this mutation
@@ -291,7 +293,14 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			}
 			beforeResourceDigests[target.AgentID] = resourceDigest
 			pointer := pointers[target.AgentID]
-			floor := maxRevision(snapshot.Revision, pointer.DesiredRevision, pointer.AppliedRevision, pointer.LastKnownGoodRevision)
+			floor := maxRevision(
+				snapshot.Revision,
+				pointer.DesiredRevision,
+				pointer.AppliedRevision,
+				pointer.LastKnownGoodRevision,
+				target.persistedDesired,
+				target.persistedCurrent,
+			)
 			if floor == math.MaxInt64 {
 				return storage.RevisionMutationDecision{}, wrapError(ErrorCodeConflict, "agent %q revision space is exhausted", target.AgentID)
 			}
@@ -352,8 +361,16 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			resourceChanged := resourceDigest != beforeResourceDigests[target.AgentID]
 			pointer := pointers[target.AgentID]
 			if beforeDigest == afterDigest && !resourceChanged {
-				desired := maxRevision(before[target.AgentID].Revision, pointer.DesiredRevision)
-				if desired != pointer.AppliedRevision {
+				desired := maxRevision(
+					before[target.AgentID].Revision,
+					pointer.DesiredRevision,
+					pointer.AppliedRevision,
+					pointer.LastKnownGoodRevision,
+					target.persistedDesired,
+					target.persistedCurrent,
+				)
+				applied := maxRevision(pointer.AppliedRevision, pointer.LastKnownGoodRevision, target.persistedCurrent)
+				if desired != applied {
 					allApplied = false
 				}
 				agentResults = append(agentResults, AgentMutationResult{
@@ -673,6 +690,12 @@ func buildStorageSnapshotMode(ctx context.Context, store *storage.GormStore, tar
 
 func resolveTargetMetadata(ctx context.Context, store *storage.GormStore, target Target) (Target, error) {
 	if target.Local {
+		state, err := store.LoadLocalAgentState(ctx)
+		if err != nil {
+			return Target{}, err
+		}
+		target.persistedDesired = int64(state.DesiredRevision)
+		target.persistedCurrent = int64(state.CurrentRevision)
 		return target, nil
 	}
 	agents, err := store.ListAgents(ctx)
@@ -689,6 +712,8 @@ func resolveTargetMetadata(ctx context.Context, store *storage.GormStore, target
 		if strings.TrimSpace(target.Platform) == "" {
 			target.Platform = agent.Platform
 		}
+		target.persistedDesired = int64(agent.DesiredRevision)
+		target.persistedCurrent = int64(agent.CurrentRevision)
 		target.Capabilities = nil
 		if strings.TrimSpace(agent.CapabilitiesJSON) != "" {
 			if err := json.Unmarshal([]byte(agent.CapabilitiesJSON), &target.Capabilities); err != nil {
