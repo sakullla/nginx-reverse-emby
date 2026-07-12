@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -73,6 +74,38 @@ type WireGuardProfileInput struct {
 	MTU                   int             `json:"mtu"`
 	Enabled               *bool           `json:"enabled,omitempty"`
 	Tags                  []string        `json:"tags"`
+}
+
+type wireGuardPeerSecretIntent struct {
+	Index              int    `json:"index"`
+	PresharedKeySHA256 string `json:"preshared_key_sha256"`
+}
+
+type wireGuardProfileIntent struct {
+	Input            WireGuardProfileInput       `json:"input"`
+	PrivateKeySHA256 string                      `json:"private_key_sha256,omitempty"`
+	PeerSecrets      []wireGuardPeerSecretIntent `json:"peer_secrets,omitempty"`
+}
+
+func wireGuardProfileMutationIntent(input WireGuardProfileInput) wireGuardProfileIntent {
+	intent := wireGuardProfileIntent{Input: input}
+	intent.Input.Peers = append([]WireGuardPeer(nil), input.Peers...)
+	if input.PrivateKey != "" {
+		digest := sha256.Sum256([]byte(input.PrivateKey))
+		intent.PrivateKeySHA256 = fmt.Sprintf("%x", digest[:])
+	}
+	intent.Input.PrivateKey = ""
+	for index := range intent.Input.Peers {
+		if intent.Input.Peers[index].PresharedKey == "" {
+			continue
+		}
+		digest := sha256.Sum256([]byte(intent.Input.Peers[index].PresharedKey))
+		intent.PeerSecrets = append(intent.PeerSecrets, wireGuardPeerSecretIntent{
+			Index: index, PresharedKeySHA256: fmt.Sprintf("%x", digest[:]),
+		})
+		intent.Input.Peers[index].PresharedKey = ""
+	}
+	return intent
 }
 
 func (i *WireGuardProfileInput) UnmarshalJSON(data []byte) error {
@@ -288,7 +321,7 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
 		Kind:             "wireguard_profile.create",
 		DependencyAction: revision.DependencyActionApply,
-		Request:          input,
+		Request:          wireGuardProfileMutationIntent(input),
 		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
 			return wireGuardMutationResourceState(ctx, tx, s.cfg, target)
@@ -397,9 +430,9 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 		Kind:             "wireguard_profile.update",
 		DependencyAction: revision.DependencyActionApply,
 		Request: struct {
-			ID    int                   `json:"id"`
-			Input WireGuardProfileInput `json:"input"`
-		}{ID: id, Input: input},
+			ID     int                    `json:"id"`
+			Intent wireGuardProfileIntent `json:"intent"`
+		}{ID: id, Intent: wireGuardProfileMutationIntent(input)},
 		Targets: configMutationTargets(s.cfg, targetAgentIDs, nil),
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
 			return wireGuardMutationResourceState(ctx, tx, s.cfg, target)

@@ -20,6 +20,24 @@ const (
 	testWireGuardPresharedKeyB = "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE="
 )
 
+func TestWireGuardProfileMutationIntentExcludesPrivateMaterial(t *testing.T) {
+	input := testWireGuardProfileInput()
+	raw, err := json.Marshal(wireGuardProfileMutationIntent(input))
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, secret := range []string{input.PrivateKey, input.Peers[0].PresharedKey} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("mutation intent contains private material %q: %s", secret, raw)
+		}
+	}
+	for _, field := range []string{"private_key_sha256", "preshared_key_sha256"} {
+		if !strings.Contains(string(raw), field) {
+			t.Fatalf("mutation intent = %s, want %q", raw, field)
+		}
+	}
+}
+
 func TestWireGuardProfileCreateRedactsSecretsOnRead(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)

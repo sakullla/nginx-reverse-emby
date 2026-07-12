@@ -114,7 +114,7 @@ func (s *certificateService) renewSingleCertificate(
 			return false, fmt.Errorf("renew certificate %d: %w", cert.ID, err)
 		}
 	}
-	next, err := s.persistManagedCertificateRenewalResult(ctx, rows, index, cert, result, issuedMaterial)
+	next, persisted, err := s.persistManagedCertificateRenewalResult(ctx, rows, index, cert, result, issuedMaterial)
 	if err != nil {
 		if managedCertificateMaterialRestoreFailed(err) {
 			return false, err
@@ -127,7 +127,7 @@ func (s *certificateService) renewSingleCertificate(
 	if next.Revision > *maxRevision {
 		*maxRevision = next.Revision
 	}
-	return result.Changed, nil
+	return result.Changed && persisted, nil
 }
 
 func (s *certificateService) persistManagedCertificateRenewalResult(
@@ -137,16 +137,26 @@ func (s *certificateService) persistManagedCertificateRenewalResult(
 	current ManagedCertificate,
 	result managedCertificateRenewalResult,
 	issuedMaterial storage.ManagedCertificateBundle,
-) (ManagedCertificate, error) {
+) (ManagedCertificate, bool, error) {
 	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
-		return ManagedCertificate{}, err
+		return ManagedCertificate{}, false, err
 	}
+	expectedGeneration := managedCertificateGenerationFor(current)
+	freshRows, fresh, freshIndex, matched, err := s.loadManagedCertificateGeneration(ctx, current.ID, expectedGeneration)
+	if err != nil {
+		return ManagedCertificate{}, false, err
+	}
+	if !matched {
+		return fresh, false, nil
+	}
+	rows, current, targetIndex = freshRows, fresh, freshIndex
 	if s.mutationExecutor == nil || s.revisionMutation {
-		return s.persistManagedCertificateRenewalResultLegacy(ctx, rows, targetIndex, current, result, issuedMaterial)
+		next, persistErr := s.persistManagedCertificateRenewalResultLegacy(ctx, rows, targetIndex, current, result, issuedMaterial)
+		return next, !managedCertificateEqual(current, next), persistErr
 	}
 	targetAgentIDs, err := s.certificateMutationTargetAgentIDs(ctx, current)
 	if err != nil {
-		return ManagedCertificate{}, err
+		return ManagedCertificate{}, false, err
 	}
 	postCommitActions := make([]func(), 0)
 	rollbackActions := make([]func() error, 0)
@@ -167,7 +177,8 @@ func (s *certificateService) persistManagedCertificateRenewalResult(
 				return loadErr
 			}
 			fresh, freshIndex, found := findManagedCertificateByID(freshRows, current.ID)
-			if !found || fresh.Domain != current.Domain || !s.isManagedCertificateRenewalCandidate(fresh, s.now().UTC()) {
+			if !found || !expectedGeneration.Matches(fresh) || !s.isManagedCertificateRenewalCandidate(fresh, s.now().UTC()) {
+				next = fresh
 				return nil
 			}
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
@@ -179,16 +190,17 @@ func (s *certificateService) persistManagedCertificateRenewalResult(
 		},
 	})
 	if err != nil {
-		return ManagedCertificate{}, certificateMutationRollbackError(err, rollbackActions)
+		return ManagedCertificate{}, false, certificateMutationRollbackError(err, rollbackActions)
 	}
 	if !persisted {
-		return current, nil
+		return next, false, nil
 	}
 	if mutationResult.NoOp {
-		return s.certificateByID(ctx, "", current.ID)
+		current, loadErr := s.certificateByID(ctx, "", current.ID)
+		return current, false, loadErr
 	}
 	runConfigPostCommitActions(postCommitActions)
-	return next, nil
+	return next, true, nil
 }
 
 func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
@@ -199,6 +211,14 @@ func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
 	result managedCertificateRenewalResult,
 	issuedMaterial storage.ManagedCertificateBundle,
 ) (ManagedCertificate, error) {
+	if targetIndex < 0 || targetIndex >= len(rows) {
+		return current, nil
+	}
+	fresh := managedCertificateFromRow(rows[targetIndex])
+	if !managedCertificateGenerationFor(current).Matches(fresh) {
+		return fresh, nil
+	}
+	current = fresh
 	var restore func() error
 	if result.Changed {
 		var err error
@@ -249,7 +269,10 @@ func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 		if restore != nil && !s.revisionMutation {
 			if restoreErr := restore(); restoreErr != nil {
-				return ManagedCertificate{}, fmt.Errorf("save renewed certificate metadata for %s: %w (restore failed: %v)", current.Domain, err, restoreErr)
+				return ManagedCertificate{}, &managedCertificateMaterialRestoreError{
+					writeErr:   fmt.Errorf("save renewed certificate metadata for %s: %w", current.Domain, err),
+					restoreErr: restoreErr,
+				}
 			}
 		}
 		return ManagedCertificate{}, err
@@ -315,6 +338,15 @@ func (s *certificateService) recordManagedCertificateRenewalFailure(ctx context.
 	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
 		return ManagedCertificate{}, err
 	}
+	expectedGeneration := managedCertificateGenerationFor(cert)
+	freshRows, fresh, freshIndex, matched, err := s.loadManagedCertificateGeneration(ctx, cert.ID, expectedGeneration)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if !matched {
+		return fresh, nil
+	}
+	rows, cert, index = freshRows, fresh, freshIndex
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.recordManagedCertificateRenewalFailureLegacy(ctx, cert, failureErr, rows, index)
 	}
@@ -325,6 +357,7 @@ func (s *certificateService) recordManagedCertificateRenewalFailure(ctx context.
 	postCommitActions := make([]func(), 0)
 	rollbackActions := make([]func() error, 0)
 	next := cert
+	persisted := false
 	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
 		Kind:             "certificate.renew.failure",
 		DependencyAction: revision.DependencyActionApply,
@@ -340,10 +373,12 @@ func (s *certificateService) recordManagedCertificateRenewalFailure(ctx context.
 				return loadErr
 			}
 			fresh, freshIndex, found := findManagedCertificateByID(freshRows, cert.ID)
-			if !found || fresh.Domain != cert.Domain {
+			if !found || !expectedGeneration.Matches(fresh) {
+				next = fresh
 				return nil
 			}
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
+			persisted = true
 			next, loadErr = txService.recordManagedCertificateRenewalFailureLegacy(ctx, fresh, failureErr, freshRows, freshIndex)
 			return loadErr
 		},
@@ -351,11 +386,22 @@ func (s *certificateService) recordManagedCertificateRenewalFailure(ctx context.
 	if err != nil {
 		return ManagedCertificate{}, certificateMutationRollbackError(err, rollbackActions)
 	}
+	if !persisted {
+		return next, nil
+	}
 	runConfigPostCommitActions(postCommitActions)
 	return next, nil
 }
 
 func (s *certificateService) recordManagedCertificateRenewalFailureLegacy(ctx context.Context, cert ManagedCertificate, failureErr error, rows []storage.ManagedCertificateRow, index int) (ManagedCertificate, error) {
+	if index < 0 || index >= len(rows) {
+		return cert, nil
+	}
+	fresh := managedCertificateFromRow(rows[index])
+	if !managedCertificateGenerationFor(cert).Matches(fresh) {
+		return fresh, nil
+	}
+	cert = fresh
 	next := applyManagedCertificateRenewalFailureBackoff(cert, failureErr, s.now().UTC())
 	next.Status = "error"
 	next.LastError = failureErr.Error()
