@@ -223,6 +223,7 @@ beforeEach(() => {
   apiCalls.calibrateTraffic.mockResolvedValue({})
   apiCalls.cleanupTraffic.mockResolvedValue({})
   apiCalls.deleteAgent.mockResolvedValue({})
+  apiCalls.updateAgent.mockResolvedValue({})
 })
 
 describe('AgentDetailPage', () => {
@@ -760,5 +761,51 @@ describe('AgentDetailPage', () => {
     await nextTick()
 
     expect(apiCalls.calibrateTraffic).toHaveBeenCalledWith('edge-1', { used_bytes: 0 })
+  })
+
+  it('shows IPv4/IPv6/domain/status in the summary card when reported', async () => {
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = '2001:db8::10'
+    agentRecord.ddns_domain = 'edge.example.com'
+    agentRecord.ddns_status = { status: 'ok' }
+    const wrapper = await mountPage()
+
+    expect(wrapper.find('[data-testid="detail-meta-domain"]').text()).toContain('edge.example.com')
+    expect(wrapper.find('[data-testid="detail-meta-ipv4"]').text()).toContain('203.0.113.10')
+    expect(wrapper.find('[data-testid="detail-meta-ipv6"]').text()).toContain('2001:db8::10')
+    expect(wrapper.find('[data-testid="detail-meta-ddns-status"]').text()).toContain('已解析')
+  })
+
+  it('shows IPv4/IPv6/domain/status in the system info identity card', async () => {
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = '2001:db8::10'
+    agentRecord.ddns_domain = 'edge.example.com'
+    agentRecord.ddns_status = { status: 'error' }
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '系统信息')
+
+    expect(wrapper.find('[data-testid="detail-identity-ipv4"]').text()).toContain('203.0.113.10')
+    expect(wrapper.find('[data-testid="detail-identity-ipv6"]').text()).toContain('2001:db8::10')
+    expect(wrapper.find('[data-testid="detail-identity-domain"]').text()).toContain('edge.example.com')
+    expect(wrapper.find('[data-testid="detail-identity-ddns-status"]').text()).toContain('解析失败')
+  })
+
+  it('opens the DDNS config modal seeded from ddns_config and saves the payload', async () => {
+    agentRecord.ddns_config = { domain: 'edge.example.com', ipv4: { enabled: true, source: 'public_api' } }
+    const wrapper = await mountPage()
+
+    await wrapper.find('[data-testid="detail-action-ddns"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="agent-ddns-form-domain"]').element.value).toBe('edge.example.com')
+
+    await wrapper.find('[data-testid="agent-ddns-form-save"]').trigger('click')
+    await nextTick()
+
+    expect(apiCalls.updateAgent).toHaveBeenCalledWith({
+      agentId: 'edge-1',
+      payload: { ddns_config: expect.objectContaining({ domain: 'edge.example.com' }) }
+    })
   })
 })

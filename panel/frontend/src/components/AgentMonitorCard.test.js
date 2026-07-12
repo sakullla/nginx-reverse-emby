@@ -119,6 +119,24 @@ describe('AgentMonitorCard', () => {
     expect(wrapper.find('.agent-monitor-card__status').text()).toContain('在线')
   })
 
+  it('prefers the DDNS domain in the endpoint label', () => {
+    const wrapper = mountCard({ ddns_domain: 'edge.example.com', last_seen_ip: '203.0.113.9' })
+    expect(wrapper.find('[data-testid="monitor-card-endpoint"]').text()).toBe('edge.example.com')
+  })
+
+  it('appends a DDNS resolution status badge when status is present', () => {
+    const wrapper = mountCard({ ddns_domain: 'edge.example.com', ddns_status: { status: 'ok' } })
+    const badge = wrapper.find('[data-testid="monitor-card-ddns-status"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('已解析')
+    expect(badge.classes().join(' ')).toContain('base-badge--success')
+  })
+
+  it('omits the DDNS status badge when no status is reported', () => {
+    const wrapper = mountCard({ ddns_domain: 'edge.example.com' })
+    expect(wrapper.find('[data-testid="monitor-card-ddns-status"]').exists()).toBe(false)
+  })
+
   it('renders offline status badge', () => {
     const wrapper = mountCard({ status: 'offline' })
     expect(wrapper.find('.agent-monitor-card__status').text()).toContain('离线')

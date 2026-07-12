@@ -172,4 +172,67 @@ describe('useAgentMonitorStream', () => {
 
     wrapper.unmount()
   })
+
+  it('does not regress cached DDNS fields when a monitor update omits them', async () => {
+    const queryClient = createQueryClient()
+    queryClient.setQueryData(['agents'], [{
+      id: 'edge-1',
+      name: 'Edge 1',
+      status: 'online',
+      last_seen_ipv4: '203.0.113.10',
+      last_seen_ipv6: '2001:db8::10',
+      ddns_domain: 'edge.example.com',
+      ddns_status: { status: 'ok' }
+    }])
+    // The update carries status only — DDNS fields must be retained from cache.
+    api.consumeAgentMonitorStream.mockImplementation(async ({ onMessage }) => {
+      onMessage({ type: 'update', payload: { agent: { id: 'edge-1', status: 'offline' } } })
+    })
+
+    const { wrapper } = mountHarness(queryClient, { reconnectDelay: -1 })
+    await nextTick()
+    await vi.dynamicImportSettled()
+
+    const merged = queryClient.getQueryData(['agents'])[0]
+    expect(merged).toMatchObject({
+      status: 'offline',
+      last_seen_ipv4: '203.0.113.10',
+      last_seen_ipv6: '2001:db8::10',
+      ddns_domain: 'edge.example.com',
+      ddns_status: { status: 'ok' }
+    })
+    wrapper.unmount()
+  })
+
+  it('merges DDNS fields carried by a monitor snapshot into the agents cache', async () => {
+    const queryClient = createQueryClient()
+    queryClient.setQueryData(['agents'], [{ id: 'edge-1', name: 'Edge 1', status: 'offline' }])
+    api.consumeAgentMonitorStream.mockImplementation(async ({ onMessage }) => {
+      onMessage({
+        type: 'snapshot',
+        payload: {
+          agents: [{
+            id: 'edge-1',
+            name: 'Edge 1',
+            status: 'online',
+            last_seen_ipv4: '203.0.113.77',
+            ddns_domain: 'edge.example.com',
+            ddns_status: { status: 'idle' }
+          }]
+        }
+      })
+    })
+
+    const { wrapper } = mountHarness(queryClient, { reconnectDelay: -1 })
+    await nextTick()
+    await vi.dynamicImportSettled()
+
+    const merged = queryClient.getQueryData(['agents'])[0]
+    expect(merged).toMatchObject({
+      last_seen_ipv4: '203.0.113.77',
+      ddns_domain: 'edge.example.com',
+      ddns_status: { status: 'idle' }
+    })
+    wrapper.unmount()
+  })
 })
