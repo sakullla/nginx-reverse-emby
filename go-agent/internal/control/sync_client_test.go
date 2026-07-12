@@ -700,3 +700,94 @@ func TestNewSyncClientAppliesConfiguredHTTPTransportTimeouts(t *testing.T) {
 		t.Fatalf("IdleConnTimeout = %v", client.transport.IdleConnTimeout)
 	}
 }
+
+type fakeDDNSReporter struct {
+	ipv4, ipv6 string
+}
+
+func (f fakeDDNSReporter) LastSeenIPs(context.Context) (string, string) {
+	return f.ipv4, f.ipv6
+}
+
+func TestHeartbeatSyncSendsDDNSLastSeenIPsFromReporter(t *testing.T) {
+	reqs := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reqs <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"desired_version":"1.2.3","desired_revision":7}}`)
+	}))
+	defer server.Close()
+
+	client := NewSyncClient(SyncClientConfig{
+		MasterURL:      server.URL,
+		AgentToken:     "token",
+		AgentID:        "node",
+		AgentName:      "local",
+		CurrentVersion: "0.1.0",
+		Platform:       "linux-amd64",
+		DDNSReporter:   fakeDDNSReporter{ipv4: "203.0.113.42", ipv6: "2001:db8::42"},
+	}, server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if _, err := client.Sync(ctx, SyncRequest{CurrentRevision: 7}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	select {
+	case body := <-reqs:
+		var payload struct {
+			LastSeenIPv4 string `json:"last_seen_ipv4"`
+			LastSeenIPv6 string `json:"last_seen_ipv6"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error = %v", err)
+		}
+		if payload.LastSeenIPv4 != "203.0.113.42" {
+			t.Fatalf("last_seen_ipv4 = %q, want 203.0.113.42: %s", payload.LastSeenIPv4, string(body))
+		}
+		if payload.LastSeenIPv6 != "2001:db8::42" {
+			t.Fatalf("last_seen_ipv6 = %q, want 2001:db8::42: %s", payload.LastSeenIPv6, string(body))
+		}
+	case <-ctx.Done():
+		t.Fatal("heartbeat not sent")
+	}
+}
+
+func TestHeartbeatSyncOmitsDDNSIPsWhenNoReporter(t *testing.T) {
+	reqs := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reqs <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"desired_version":"1.2.3","desired_revision":7}}`)
+	}))
+	defer server.Close()
+
+	client := NewSyncClient(SyncClientConfig{
+		MasterURL:      server.URL,
+		AgentToken:     "token",
+		AgentID:        "node",
+		AgentName:      "local",
+		CurrentVersion: "0.1.0",
+		Platform:       "linux-amd64",
+	}, server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if _, err := client.Sync(ctx, SyncRequest{CurrentRevision: 7}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	select {
+	case body := <-reqs:
+		if bytes.Contains(body, []byte(`last_seen_ipv4`)) || bytes.Contains(body, []byte(`last_seen_ipv6`)) {
+			t.Fatalf("expected DDNS IP fields omitted without reporter, got %s", string(body))
+		}
+	case <-ctx.Done():
+		t.Fatal("heartbeat not sent")
+	}
+}

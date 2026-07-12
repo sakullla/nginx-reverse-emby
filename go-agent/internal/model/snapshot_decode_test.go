@@ -397,3 +397,65 @@ func TestSnapshotDecodePreservesTrafficBlockingConfig(t *testing.T) {
 		t.Fatalf("TrafficBlockReason = %q", snapshot.AgentConfig.TrafficBlockReason)
 	}
 }
+
+func TestSnapshotDecodePreservesDDNSConfig(t *testing.T) {
+	raw := []byte(`{
+		"ddns_config":{
+			"domain":"edge.example.com",
+			"ipv4":{"enabled":true,"source":"public_api"},
+			"ipv6":{"enabled":true,"source":"interface","interface":"eth0"}
+		}
+	}`)
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.DDNSConfig == nil {
+		t.Fatal("expected DDNSConfig to decode")
+	}
+	if snapshot.DDNSConfig.Domain != "edge.example.com" {
+		t.Fatalf("DDNSConfig.Domain = %q, want edge.example.com", snapshot.DDNSConfig.Domain)
+	}
+	if !snapshot.DDNSConfig.IPv4.Enabled || snapshot.DDNSConfig.IPv4.Source != "public_api" || snapshot.DDNSConfig.IPv4.Interface != "" {
+		t.Fatalf("unexpected ipv4 family: %+v", snapshot.DDNSConfig.IPv4)
+	}
+	if !snapshot.DDNSConfig.IPv6.Enabled || snapshot.DDNSConfig.IPv6.Source != "interface" || snapshot.DDNSConfig.IPv6.Interface != "eth0" {
+		t.Fatalf("unexpected ipv6 family: %+v", snapshot.DDNSConfig.IPv6)
+	}
+}
+
+// TestDDNSConfigJSONCarriesNoCredential enforces R7 at the agent wire layer:
+// the dispatched DDNSExtractConfig is exactly domain + ipv4 + ipv6 with no
+// token/secret/key/password surface. Cloudflare credentials live only in the
+// master environment and never reach the agent.
+func TestDDNSConfigJSONCarriesNoCredential(t *testing.T) {
+	raw, err := json.Marshal(DDNSExtractConfig{
+		Domain: "edge.example.com",
+		IPv4:   DDNSFamily{Enabled: true, Source: "public_api"},
+		IPv6:   DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(DDNSExtractConfig) error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(DDNSExtractConfig) error = %v", err)
+	}
+	if len(decoded) != 3 {
+		t.Fatalf("DDNSExtractConfig JSON top-level keys = %d, want exactly 3 (domain+ipv4+ipv6): %s", len(decoded), raw)
+	}
+	for _, key := range []string{"domain", "ipv4", "ipv6"} {
+		if _, ok := decoded[key]; !ok {
+			t.Fatalf("DDNSExtractConfig JSON missing expected key %q: %s", key, raw)
+		}
+	}
+
+	lower := strings.ToLower(string(raw))
+	for _, forbidden := range []string{"token", "secret", "api_key", "apikey", "password", "credential"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("DDNSExtractConfig wire JSON leaked credential-ish key %q: %s", forbidden, raw)
+		}
+	}
+}

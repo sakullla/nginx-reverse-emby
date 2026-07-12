@@ -8,6 +8,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	moduleddns "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/ddns"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	modulehostmetrics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/hostmetrics"
@@ -137,6 +138,7 @@ type configuredModules struct {
 	traffic     core.TrafficReporter
 	hostMetrics core.HostMetricsReporter
 	certReports core.ManagedCertificateReporter
+	ddns        *moduleddns.Module
 }
 
 func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (configuredModules, error) {
@@ -150,6 +152,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		Enabled:    cfg.TrafficStatsEnabled,
 		EnabledSet: true,
 	})
+	ddnsModule := moduleddns.NewModule(moduleddns.Config{})
 	registry, err := newAppModuleRegistry([]agentmodule.Module{
 		certModule,
 		diagnosticModule,
@@ -159,6 +162,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName}),
 		newL4ModuleFromConfig(cfg),
 		trafficModule,
+		ddnsModule,
 	})
 	if err != nil {
 		return configuredModules{}, err
@@ -169,6 +173,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		traffic:     trafficModule,
 		hostMetrics: modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
 		certReports: certModule,
+		ddns:        ddnsModule,
 	}, nil
 }
 
@@ -236,6 +241,7 @@ func New(cfg Config) (*App, error) {
 			SHA256:   cfg.RuntimePackageSHA256,
 		},
 		HTTPTransport: cfg.HTTPTransport,
+		DDNSReporter:  modules.ddns,
 	}, nil)
 	taskClient := control.NewTaskClient(control.TaskClientConfig{
 		MasterURL:     cfg.MasterURL,

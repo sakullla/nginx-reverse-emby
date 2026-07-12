@@ -10,11 +10,35 @@ type AgentConfig struct {
 	TrafficBlockReason   string `json:"traffic_block_reason,omitempty"`
 }
 
+// DDNSExtractConfig is the per-agent dynamic DNS extraction configuration the
+// master dispatches to the agent via the heartbeat Snapshot. JSON tags mirror
+// the control-plane wire contract exactly (panel controlplane DDNSConfig) so
+// the field round-trips without translation.
+//
+// SECURITY (R7): this struct carries only the domain plus per-family extraction
+// strategy. It MUST NOT carry any Cloudflare credential — tokens live only in
+// the master process environment and are never dispatched to agents.
+type DDNSExtractConfig struct {
+	Domain string     `json:"domain,omitempty"`
+	IPv4   DDNSFamily `json:"ipv4,omitempty"`
+	IPv6   DDNSFamily `json:"ipv6,omitempty"`
+}
+
+// DDNSFamily describes how one address family is extracted on the agent.
+// Source is "public_api" (probe a public echo endpoint) or "interface" (read
+// the address of the named network interface). IPv4 and IPv6 are independent.
+type DDNSFamily struct {
+	Enabled   bool   `json:"enabled"`
+	Source    string `json:"source,omitempty"`
+	Interface string `json:"interface,omitempty"`
+}
+
 type Snapshot struct {
 	DesiredVersion      string                     `json:"desired_version"`
 	Revision            int64                      `json:"desired_revision"`
 	VersionPackage      *VersionPackage            `json:"version_package,omitempty"`
 	AgentConfig         AgentConfig                `json:"agent_config,omitempty"`
+	DDNSConfig          *DDNSExtractConfig         `json:"ddns_config,omitempty"`
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
