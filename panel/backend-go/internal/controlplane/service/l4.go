@@ -254,7 +254,7 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 			return l4RuleMutationResourceState(ctx, tx, s.cfg)
 		},
 		ReplayResourceField: "rule",
-		ReplayResource:      func() any { return created },
+		ReplayResource:      func() any { return redactL4RuleForPanelReplay(created) },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &l4Service{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -418,7 +418,7 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 			return l4RuleMutationResourceState(ctx, tx, s.cfg)
 		},
 		ReplayResourceField: "rule",
-		ReplayResource:      func() any { return updated },
+		ReplayResource:      func() any { return redactL4RuleForPanelReplay(updated) },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &l4Service{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -597,7 +597,7 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 			return l4RuleMutationResourceState(ctx, tx, s.cfg)
 		},
 		ReplayResourceField: "rule",
-		ReplayResource:      func() any { return deleted },
+		ReplayResource:      func() any { return redactL4RuleForPanelReplay(deleted) },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &l4Service{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -608,6 +608,11 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 		},
 	})
 	return deleted, err
+}
+
+func redactL4RuleForPanelReplay(rule L4Rule) L4Rule {
+	rule.ProxyEntryAuth.Password = ""
+	return rule
 }
 
 func (s *l4Service) deleteLegacy(ctx context.Context, agentID string, id int) (L4Rule, error) {

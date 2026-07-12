@@ -139,6 +139,22 @@ func TestMutationEndpointsReturnAcceptedEnvelopeAndReplayOriginalResource(t *tes
 		t.Fatalf("deleted egress profile = %+v, created = %+v", got, profile)
 	}
 
+	const l4Body = `{"name":"Authenticated proxy entry","protocol":"tcp","listen_mode":"proxy","listen_host":"0.0.0.0","listen_port":9443,"proxy_entry_auth":{"enabled":true,"username":"proxy-user","password":"entry-secret"},"enabled":true}`
+	l4Created := performPanelMutation(t, router, http.MethodPost, "/panel-api/agents/local/l4-rules", l4Body, "create-l4-secret")
+	if l4Created.Code != http.StatusAccepted || strings.Contains(l4Created.Body.String(), "entry-secret") {
+		t.Fatalf("L4 create status/body = %d %s, want redacted 202", l4Created.Code, l4Created.Body.String())
+	}
+	simulateCommittedMutationBeforeEnvelopePersistence(t, store, "create-l4-secret")
+	l4Replayed := performPanelMutation(t, router, http.MethodPost, "/panel-api/agents/local/l4-rules", l4Body, "create-l4-secret")
+	if l4Replayed.Code != http.StatusAccepted || strings.Contains(l4Replayed.Body.String(), "entry-secret") {
+		t.Fatalf("L4 replay status/body = %d %s, want redacted 202", l4Replayed.Code, l4Replayed.Body.String())
+	}
+	l4Rule := mutationResource(t, decodeAcceptedMutation(t, l4Replayed), "rule")
+	proxyAuth, ok := l4Rule["proxy_entry_auth"].(map[string]any)
+	if !ok || proxyAuth["password"] != nil && proxyAuth["password"] != "" {
+		t.Fatalf("replayed L4 proxy auth = %#v, want password omitted", l4Rule["proxy_entry_auth"])
+	}
+
 	ruleID := int(firstRule["id"].(float64))
 	deletePath := "/panel-api/agents/local/rules/" + strconv.Itoa(ruleID)
 	deleted := performPanelMutation(t, router, http.MethodDelete, deletePath, "", "delete-rule-1")

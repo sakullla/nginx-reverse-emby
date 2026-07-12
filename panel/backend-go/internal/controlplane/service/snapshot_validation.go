@@ -137,7 +137,8 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 		if rule.ListenPort < 1 || rule.ListenPort > 65535 {
 			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has an invalid listen port", rule.ID), nil)
 		}
-		if len(rule.Backends) == 0 {
+		proxyEntry := strings.EqualFold(strings.TrimSpace(rule.ListenMode), "proxy")
+		if len(rule.Backends) == 0 && !proxyEntry {
 			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has no backend", rule.ID), nil)
 		}
 		for _, backend := range rule.Backends {

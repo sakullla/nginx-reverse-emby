@@ -295,6 +295,21 @@ func TestFullSnapshotValidatorAllowsHTTPVirtualHostsToShareIngress(t *testing.T)
 	}
 }
 
+func TestFullSnapshotValidatorAllowsProxyEntryWithoutBackend(t *testing.T) {
+	snapshot := storage.Snapshot{L4Rules: []storage.L4Rule{{
+		ID: 1, AgentID: "edge-1", Protocol: "tcp", ListenMode: "proxy",
+		ListenHost: "127.0.0.1", ListenPort: 1080,
+	}}}
+
+	err := (FullSnapshotValidator{}).Validate(t.Context(), revision.SnapshotValidation{
+		Target:   revision.Target{AgentID: "edge-1"},
+		Snapshot: snapshot,
+	})
+	if err != nil {
+		t.Fatalf("Validate(proxy entry) error = %v", err)
+	}
+}
+
 func validSnapshotForValidation() storage.Snapshot {
 	profileID := 7
 	egressID := 8
