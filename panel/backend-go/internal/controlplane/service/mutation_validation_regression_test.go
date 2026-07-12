@@ -195,8 +195,9 @@ func TestMutationExecutorDoesNotLeakEgressIntentAcrossAgents(t *testing.T) {
 		},
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			if err := tx.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
-				ID: profileID, Name: "capable-wg-egress", Type: "wireguard", WireGuardConfigJSON: `{}`,
-				Enabled: true, Revision: revisions["edge-capable"],
+				ID: profileID, Name: "capable-wg-egress", Type: "wireguard",
+				WireGuardConfigJSON: `{"private_key":"` + testWireGuardPrivateKey + `","addresses":["10.90.0.2/32"],"peers":[]}`,
+				Enabled:             true, Revision: revisions["edge-capable"],
 			}}); err != nil {
 				return err
 			}
@@ -210,6 +211,86 @@ func TestMutationExecutorDoesNotLeakEgressIntentAcrossAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v, want selected capable-agent egress intent isolated from unrelated target", err)
 	}
+}
+
+func TestMutationExecutorRejectsInvalidStandaloneEgressPayloads(t *testing.T) {
+	tests := []struct {
+		name string
+		row  storage.EgressProfileRow
+	}{
+		{
+			name: "unsupported-type",
+			row:  storage.EgressProfileRow{ID: 31, Name: "invalid", Type: "ssh", Enabled: true},
+		},
+		{
+			name: "invalid-proxy-url",
+			row: storage.EgressProfileRow{
+				ID: 32, Name: "invalid-proxy", Type: "socks",
+				ProxyURL: "http://127.0.0.1:1080", Enabled: true,
+			},
+		},
+		{
+			name: "malformed-wireguard-json",
+			row: storage.EgressProfileRow{
+				ID: 33, Name: "invalid-wireguard", Type: "wireguard",
+				WireGuardConfigJSON: `{`, Enabled: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newMutationValidationStore(t)
+			agentID := "edge-validating"
+			if err := store.SaveAgent(t.Context(), storage.AgentRow{
+				ID: agentID, Name: agentID, Platform: "linux-amd64",
+				CapabilitiesJSON: `["wireguard","egress_profiles"]`,
+			}); err != nil {
+				t.Fatalf("SaveAgent() error = %v", err)
+			}
+			operationID := "op-" + tt.name
+			key := "key-" + tt.name
+			err := executeStandaloneEgressValidationMutation(t, store, operationID, key, revision.Target{
+				AgentID: agentID,
+				IntentResources: revision.IntentResourceSelection{
+					EgressProfileIDs: []int{tt.row.ID},
+				},
+			}, tt.row)
+			if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
+				t.Fatalf("Execute() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
+			}
+			assertStandaloneEgressMutationRolledBack(t, store, agentID, operationID, key)
+		})
+	}
+}
+
+func TestMutationExecutorUsesPersistedRemoteCapabilities(t *testing.T) {
+	store := newMutationValidationStore(t)
+	agentID := "edge-overclaimed"
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: agentID, Name: agentID, Platform: "linux-amd64",
+		CapabilitiesJSON: `["egress_profiles"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	profileID := 41
+	operationID := "op-overclaimed-capabilities"
+	key := "overclaimed-capabilities"
+	err := executeStandaloneEgressValidationMutation(t, store, operationID, key, revision.Target{
+		AgentID:      agentID,
+		Capabilities: []string{"wireguard", "egress_profiles"},
+		IntentResources: revision.IntentResourceSelection{
+			EgressProfileIDs: []int{profileID},
+		},
+	}, storage.EgressProfileRow{
+		ID: profileID, Name: "valid-wireguard", Type: "wireguard", Enabled: true,
+		WireGuardConfigJSON: `{"private_key":"` + testWireGuardPrivateKey + `","addresses":["10.91.0.2/32"],"peers":[]}`,
+	})
+	if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
+		t.Fatalf("Execute() error = %v, code = %q, want persisted capability rejection %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
+	}
+	assertStandaloneEgressMutationRolledBack(t, store, agentID, operationID, key)
 }
 
 func TestMutationExecutorRejectsHTTPAndL4ListenerConflict(t *testing.T) {
@@ -295,6 +376,62 @@ func l4MutationResourceState(ctx context.Context, tx *storage.GormStore, target 
 		rows[i].Revision = 0
 	}
 	return rows, nil
+}
+
+func executeStandaloneEgressValidationMutation(
+	t *testing.T,
+	store *storage.GormStore,
+	operationID string,
+	idempotencyKey string,
+	target revision.Target,
+	row storage.EgressProfileRow,
+) error {
+	t.Helper()
+	executor := newMutationValidationExecutor(store, operationID)
+	_, err := executor.Execute(t.Context(), revision.MutationRequest{
+		Kind: "egress_profile.create", IdempotencyKey: idempotencyKey,
+		Request: map[string]any{"id": row.ID, "type": row.Type}, Targets: []revision.Target{target},
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+			profiles, err := tx.ListEgressProfiles(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for i := range profiles {
+				profiles[i].Revision = 0
+			}
+			return map[string]any{"egress_profiles": profiles}, nil
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			row.Revision = revisions[target.AgentID]
+			return tx.SaveEgressProfiles(ctx, []storage.EgressProfileRow{row})
+		},
+	})
+	return err
+}
+
+func assertStandaloneEgressMutationRolledBack(
+	t *testing.T,
+	store *storage.GormStore,
+	agentID string,
+	operationID string,
+	idempotencyKey string,
+) {
+	t.Helper()
+	if rows, err := store.ListEgressProfiles(t.Context()); err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	} else if len(rows) != 0 {
+		t.Fatalf("egress profiles survived rollback: %+v", rows)
+	}
+	if rows, err := store.ListAgentRevisions(t.Context(), agentID); err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	} else {
+		for _, row := range rows {
+			if row.OperationID == operationID {
+				t.Fatalf("revision for operation %q survived rollback: %+v", operationID, row)
+			}
+		}
+	}
+	assertMutationValidationLedgerRolledBack(t, store, operationID, idempotencyKey)
 }
 
 func assertMutationValidationLedgerRolledBack(t *testing.T, store *storage.GormStore, operationID, idempotencyKey string) {

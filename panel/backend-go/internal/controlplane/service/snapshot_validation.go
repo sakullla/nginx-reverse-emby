@@ -142,6 +142,11 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 	if err := validateUniqueSnapshotIDs("egress profile", egressSnapshotIDs(snapshot.EgressProfiles)); err != nil {
 		return err
 	}
+	for _, profile := range snapshot.EgressProfiles {
+		if err := validateSnapshotEgressProfile(profile); err != nil {
+			return err
+		}
+	}
 	certificateIDs := make([]int, 0, len(snapshot.Certificates))
 	for _, row := range snapshot.Certificates {
 		certificateIDs = append(certificateIDs, row.ID)
@@ -157,6 +162,80 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 		return err
 	}
 	return nil
+}
+
+func validateSnapshotEgressProfile(profile storage.EgressProfile) error {
+	profileType := strings.ToLower(strings.TrimSpace(profile.Type))
+	if profile.WireGuardConfigInvalid {
+		return revision.NewError(
+			revision.ErrorCodeUnprocessable,
+			fmt.Sprintf("egress profile %d has invalid wireguard_config JSON", profile.ID),
+			nil,
+		)
+	}
+	invalidPayload := func(message string, cause error) error {
+		return revision.NewError(
+			revision.ErrorCodeUnprocessable,
+			fmt.Sprintf("egress profile %d %s", profile.ID, message),
+			cause,
+		)
+	}
+
+	switch profileType {
+	case "direct":
+		if strings.TrimSpace(profile.ProxyURL) != "" || profile.WireGuardConfig != nil {
+			return invalidPayload("direct type cannot include proxy_url or wireguard_config", nil)
+		}
+	case "socks":
+		if err := requireEgressProxyURLScheme(profile.ProxyURL, "socks", "socks5", "socks5h"); err != nil {
+			return invalidPayload("has invalid socks proxy_url", err)
+		}
+		if profile.WireGuardConfig != nil {
+			return invalidPayload("socks type cannot include wireguard_config", nil)
+		}
+	case "http":
+		if err := requireEgressProxyURLScheme(profile.ProxyURL, "http"); err != nil {
+			return invalidPayload("has invalid HTTP proxy_url", err)
+		}
+		if profile.WireGuardConfig != nil {
+			return invalidPayload("HTTP type cannot include wireguard_config", nil)
+		}
+	case "wireguard":
+		if strings.TrimSpace(profile.ProxyURL) != "" {
+			return invalidPayload("wireguard type cannot include proxy_url", nil)
+		}
+		if err := requireEgressWireGuardConfig(snapshotEgressWireGuardConfig(profile.WireGuardConfig)); err != nil {
+			return invalidPayload("has invalid wireguard_config", err)
+		}
+	default:
+		return invalidPayload("type must be direct, socks, http, or wireguard", nil)
+	}
+	return nil
+}
+
+func snapshotEgressWireGuardConfig(input *storage.EgressWireGuardConfig) *EgressWireGuardConfig {
+	if input == nil {
+		return nil
+	}
+	peers := make([]WireGuardPeer, len(input.Peers))
+	for i, peer := range input.Peers {
+		peers[i] = WireGuardPeer{
+			Name:                       peer.Name,
+			PublicKey:                  peer.PublicKey,
+			PresharedKey:               peer.PresharedKey,
+			Endpoint:                   peer.Endpoint,
+			AllowedIPs:                 append([]string(nil), peer.AllowedIPs...),
+			Reserved:                   append([]byte(nil), peer.Reserved...),
+			PersistentKeepaliveSeconds: peer.PersistentKeepaliveSeconds,
+		}
+	}
+	return &EgressWireGuardConfig{
+		PrivateKey: input.PrivateKey,
+		Addresses:  append([]string(nil), input.Addresses...),
+		Peers:      peers,
+		DNS:        append([]string(nil), input.DNS...),
+		MTU:        input.MTU,
+	}
 }
 
 func validateSnapshotReferences(snapshot storage.Snapshot) error {

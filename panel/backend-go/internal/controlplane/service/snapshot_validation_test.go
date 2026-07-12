@@ -158,7 +158,9 @@ func validSnapshotForValidation() storage.Snapshot {
 		WireGuardProfiles: []storage.WireGuardProfile{{
 			ID: profileID, AgentID: "edge-1", Name: "wg", ListenPort: 51820, Enabled: true,
 		}},
-		EgressProfiles:      []storage.EgressProfile{{ID: egressID, Name: "proxy", Type: "http", Enabled: true}},
+		EgressProfiles: []storage.EgressProfile{{
+			ID: egressID, Name: "proxy", Type: "http", ProxyURL: "http://127.0.0.1:3128", Enabled: true,
+		}},
 		Certificates:        []storage.ManagedCertificateBundle{{ID: certificateID, Domain: "edge.example.com", CertPEM: "cert", KeyPEM: "key"}},
 		CertificatePolicies: []storage.ManagedCertificatePolicy{{ID: certificateID, Domain: "edge.example.com", Enabled: true}},
 	}

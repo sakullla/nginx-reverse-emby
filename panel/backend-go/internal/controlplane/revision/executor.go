@@ -510,7 +510,11 @@ func normalizeTargets(input []Target) ([]Target, error) {
 			return nil, wrapError(ErrorCodeInvalidRequest, "affected agent %q is duplicated", target.AgentID)
 		}
 		seen[target.AgentID] = struct{}{}
-		target.Capabilities = normalizedCapabilities(target.Capabilities)
+		if target.Local {
+			target.Capabilities = normalizedCapabilities(target.Capabilities)
+		} else {
+			target.Capabilities = nil
+		}
 		intentEgressProfileIDs, err := normalizedIntentResourceIDs(target.IntentResources.EgressProfileIDs)
 		if err != nil {
 			return nil, wrapError(ErrorCodeInvalidRequest, "affected agent %q %v", target.AgentID, err)
@@ -671,12 +675,13 @@ func resolveTargetMetadata(ctx context.Context, store *storage.GormStore, target
 		if strings.TrimSpace(target.Platform) == "" {
 			target.Platform = agent.Platform
 		}
-		if len(target.Capabilities) == 0 && strings.TrimSpace(agent.CapabilitiesJSON) != "" {
+		target.Capabilities = nil
+		if strings.TrimSpace(agent.CapabilitiesJSON) != "" {
 			if err := json.Unmarshal([]byte(agent.CapabilitiesJSON), &target.Capabilities); err != nil {
 				return Target{}, NewError(ErrorCodeInternal, fmt.Sprintf("agent %q capabilities are invalid", target.AgentID), err)
 			}
-			target.Capabilities = normalizedCapabilities(target.Capabilities)
 		}
+		target.Capabilities = normalizedCapabilities(target.Capabilities)
 		return target, nil
 	}
 	return Target{}, wrapError(ErrorCodeNotFound, "agent %q was not found", target.AgentID)

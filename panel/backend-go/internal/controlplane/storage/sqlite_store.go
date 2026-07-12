@@ -2599,29 +2599,31 @@ func snapshotEgressProfiles(rows []EgressProfileRow, includeDisabled bool) []Egr
 		if !includeDisabled && !row.Enabled {
 			continue
 		}
+		wireGuardConfig, wireGuardConfigInvalid := parseEgressWireGuardConfig(row.WireGuardConfigJSON)
 		profiles = append(profiles, EgressProfile{
-			ID:              row.ID,
-			Name:            row.Name,
-			Type:            row.Type,
-			ProxyURL:        row.ProxyURL,
-			WireGuardConfig: parseEgressWireGuardConfig(row.WireGuardConfigJSON),
-			Enabled:         row.Enabled,
-			Description:     row.Description,
-			Revision:        row.Revision,
+			ID:                     row.ID,
+			Name:                   row.Name,
+			Type:                   row.Type,
+			ProxyURL:               row.ProxyURL,
+			WireGuardConfig:        wireGuardConfig,
+			WireGuardConfigInvalid: wireGuardConfigInvalid,
+			Enabled:                row.Enabled,
+			Description:            row.Description,
+			Revision:               row.Revision,
 		})
 	}
 	return profiles
 }
 
-func parseEgressWireGuardConfig(raw string) *EgressWireGuardConfig {
+func parseEgressWireGuardConfig(raw string) (*EgressWireGuardConfig, bool) {
 	if strings.TrimSpace(raw) == "" {
-		return nil
+		return nil, false
 	}
 	var config EgressWireGuardConfig
 	if err := json.Unmarshal([]byte(raw), &config); err != nil {
-		return nil
+		return nil, true
 	}
-	return &config
+	return &config, false
 }
 
 func (s *GormStore) relayListenerAgentNames(ctx context.Context, rows []RelayListenerRow) (map[string]string, error) {

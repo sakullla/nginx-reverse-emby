@@ -185,14 +185,15 @@ type WireGuardProfile struct {
 }
 
 type EgressProfile struct {
-	ID              int                    `json:"id"`
-	Name            string                 `json:"name"`
-	Type            string                 `json:"type"`
-	ProxyURL        string                 `json:"proxy_url,omitempty"`
-	WireGuardConfig *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
-	Enabled         bool                   `json:"enabled"`
-	Description     string                 `json:"description,omitempty"`
-	Revision        int64                  `json:"revision"`
+	ID                     int                    `json:"id"`
+	Name                   string                 `json:"name"`
+	Type                   string                 `json:"type"`
+	ProxyURL               string                 `json:"proxy_url,omitempty"`
+	WireGuardConfig        *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
+	WireGuardConfigInvalid bool                   `json:"-"`
+	Enabled                bool                   `json:"enabled"`
+	Description            string                 `json:"description,omitempty"`
+	Revision               int64                  `json:"revision"`
 }
 
 type EgressWireGuardConfig struct {
