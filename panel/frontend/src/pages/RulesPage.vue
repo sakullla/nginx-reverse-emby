@@ -78,7 +78,7 @@
         :rule="rule"
         :agent="selectedAgent"
         :traffic="trafficForRule(rule)"
-        :agent-node-total="agentNodeTotal"
+        :agent-node-total="nodeTotalFor(rule)"
         @edit="startEdit"
         @toggle="toggleRule"
         @copy="handleCopy"
@@ -181,7 +181,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watchEffect, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useRulesList, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
@@ -301,7 +301,7 @@ const rules = computed(() => _rulesPage.value?.items ?? [])
 const listTotal = computed(() => _rulesPage.value?.total ?? 0)
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
-const { agentNodeTotal, trafficFor: trafficForRule } = useTrafficSummaryForResources({
+const { nodeTotalFor, trafficFor: trafficForRule } = useTrafficSummaryForResources({
   agentId,
   items: rules,
   trafficStatsEnabled,
@@ -328,10 +328,15 @@ function formatHttpBackend(rule) {
   return `${backends[0]} +${backends.length - 1}`
 }
 
-// Pre-fill search from global search navigation; reset when param is cleared
-watchEffect(() => {
-  searchQuery.value = route.query.search ?? ''
-})
+// Pre-fill / clear search only when the route deep-link search param changes.
+// Do not use watchEffect over route.query — other keys (agentId) would wipe typed input.
+watch(
+  () => route.query.search,
+  (search) => {
+    searchQuery.value = search == null ? '' : String(search)
+  },
+  { immediate: true },
+)
 
 const filteredRules = computed(() => {
   const raw = searchQuery.value.trim()

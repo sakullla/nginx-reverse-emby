@@ -50,24 +50,35 @@ describe('RuleCard redesign', () => {
     expect(wrapper.find('button[title="删除"]').exists()).toBe(false)
   })
 
+  async function clickMenuItem(wrapper, id) {
+    document.body
+      .querySelectorAll('[data-testid="base-action-menu-panel"]')
+      .forEach((el) => {
+        el.style.display = 'none'
+        el.setAttribute('aria-hidden', 'true')
+      })
+    await wrapper.find('.base-action-menu__trigger').trigger('click')
+    await nextTick()
+    await nextTick()
+    const panel = document.body.querySelector(
+      '[data-testid="base-action-menu-panel"]:not([aria-hidden="true"])',
+    )
+    const item = panel?.querySelector(`[data-testid="base-action-menu-item-${id}"]`)
+    expect(item).toBeTruthy()
+    item.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    await nextTick()
+  }
+
   it('puts copy/diagnose/delete in more menu and emits original events', async () => {
     const wrapper = mountRule()
-    await wrapper.find('.base-action-menu__trigger').trigger('click')
-    await nextTick()
-    await wrapper.find('[data-testid="base-action-menu-item-copy"]').trigger('click')
-    await nextTick()
+    await clickMenuItem(wrapper, 'copy')
     expect(wrapper.emitted('copy')).toBeTruthy()
 
-    await wrapper.find('.base-action-menu__trigger').trigger('click')
-    await nextTick()
-    await wrapper.find('[data-testid="base-action-menu-item-diagnose"]').trigger('click')
-    await nextTick()
+    await clickMenuItem(wrapper, 'diagnose')
     expect(wrapper.emitted('diagnose')).toBeTruthy()
 
-    await wrapper.find('.base-action-menu__trigger').trigger('click')
-    await nextTick()
-    await wrapper.find('[data-testid="base-action-menu-item-delete"]').trigger('click')
-    await nextTick()
+    await clickMenuItem(wrapper, 'delete')
     expect(wrapper.emitted('delete')).toBeTruthy()
   })
 })

@@ -12,8 +12,8 @@ function mountCard(props = {}, slots = {}) {
   })
 }
 
-describe('BaseListCard status strip', () => {
-  it('sets data-status when status is provided', () => {
+describe('BaseListCard', () => {
+  it('sets data-status when status is provided (badge contract; no left strip)', () => {
     const wrapper = mountCard({ status: 'success' })
     const root = wrapper.find('.base-list-card')
     expect(root.attributes('data-status')).toBe('success')
@@ -28,7 +28,7 @@ describe('BaseListCard status strip', () => {
   })
 
   it.each(['success', 'warning', 'danger', 'neutral'])(
-    'accepts status=%s for strip contract',
+    'accepts status=%s for data-status contract',
     (status) => {
       const wrapper = mountCard({ status })
       expect(wrapper.find('.base-list-card').attributes('data-status')).toBe(status)

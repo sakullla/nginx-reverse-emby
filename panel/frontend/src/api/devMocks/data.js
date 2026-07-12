@@ -3025,17 +3025,62 @@ function resolveMockListPagination(params = {}) {
   }
 }
 
+/**
+ * Build a search haystack for mock list filtering.
+ * Mirrors backend matchesListQuery field coverage and deliberately omits
+ * technical defaults (e.g. L4 listen_mode always "tcp") that would make
+ * protocol search match every row.
+ */
+function mockItemSearchText(item) {
+  if (!item || typeof item !== 'object') return ''
+  const parts = []
+  const push = (value) => {
+    if (value == null || value === '') return
+    if (Array.isArray(value)) {
+      value.forEach(push)
+      return
+    }
+    if (typeof value === 'object') return
+    parts.push(String(value))
+  }
+
+  push(item.id)
+  push(item.name)
+  push(item.domain)
+  push(item.protocol)
+  push(item.listen_host)
+  push(item.listen_port)
+  push(item.frontend_url)
+  push(item.public_host)
+  push(item.public_port)
+  push(item.bind_hosts)
+  push(item.agent_id)
+  push(item.agent_name)
+  push(item.status)
+  push(item.usage)
+  push(item.interface_name)
+  push(item.addresses)
+  push(item.tags)
+  if (Array.isArray(item.backends)) {
+    for (const backend of item.backends) {
+      push(backend?.host)
+      push(backend?.port)
+      push(backend?.url)
+    }
+  }
+  return parts.join(' ').toLowerCase()
+}
+
+function mockItemMatchesQuery(item, q) {
+  if (!q) return true
+  return mockItemSearchText(item).includes(q)
+}
+
 function paginateMockItems(items, params = {}) {
   const { page, pageSize, q } = resolveMockListPagination(params)
   let filtered = Array.isArray(items) ? items : []
   if (q) {
-    filtered = filtered.filter((item) => {
-      try {
-        return JSON.stringify(item).toLowerCase().includes(q)
-      } catch {
-        return false
-      }
-    })
+    filtered = filtered.filter((item) => mockItemMatchesQuery(item, q))
   }
   if (typeof params.enabled === 'boolean') {
     filtered = filtered.filter((item) => Boolean(item?.enabled) === params.enabled)

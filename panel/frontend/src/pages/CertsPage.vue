@@ -137,7 +137,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watchEffect, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
@@ -313,9 +313,14 @@ const showAddForm = ref(false)
 const editingCert = ref(null)
 const deletingCert = ref(null)
 
-watchEffect(() => {
-  searchQuery.value = route.query.search ?? ''
-})
+// Pre-fill / clear search only when the route deep-link search param changes.
+watch(
+  () => route.query.search,
+  (search) => {
+    searchQuery.value = search == null ? '' : String(search)
+  },
+  { immediate: true },
+)
 
 const isIdExactMatch = computed(() => {
   const raw = searchQuery.value.trim()

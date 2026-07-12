@@ -61,7 +61,7 @@
         :key='listener.id'
         :listener='listener'
         :traffic='trafficForListener(listener)'
-        :agent-node-total='agentNodeTotal'
+        :agent-node-total='nodeTotalFor(listener)'
         @edit='startEdit'
         @toggle='toggleListener'
         @delete='startDelete'
@@ -131,7 +131,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, watchEffect } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
@@ -239,9 +239,14 @@ const listeners = computed(() => listenersPage.value?.items ?? [])
 const listTotal = computed(() => listenersPage.value?.total ?? 0)
 
 // Keep filter-bar search in sync with route deep-link (?search=#id=N).
-watchEffect(() => {
-  searchQuery.value = route.query.search ?? ''
-})
+// Only track the search param so agentId / other query changes do not wipe typed input.
+watch(
+  () => route.query.search,
+  (search) => {
+    searchQuery.value = search == null ? '' : String(search)
+  },
+  { immediate: true },
+)
 
 // Consume route deep-link search=#id=N (from agent detail / global search).
 // Prefer filter-bar searchQuery so deep-link and manual search share one source.
@@ -254,7 +259,7 @@ const displayListeners = computed(() => {
 })
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
-const { agentNodeTotal, trafficFor: trafficForListener } = useTrafficSummaryForResources({
+const { nodeTotalFor, trafficFor: trafficForListener } = useTrafficSummaryForResources({
   agentId,
   items: displayListeners,
   trafficStatsEnabled,

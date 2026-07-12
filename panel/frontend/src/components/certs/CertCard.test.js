@@ -107,13 +107,28 @@ describe('CertCard redesign', () => {
   })
 
   it('keeps delete in more menu for non-system certs', async () => {
+    document.body
+      .querySelectorAll('[data-testid="base-action-menu-panel"]')
+      .forEach((el) => {
+        el.style.display = 'none'
+        el.setAttribute('aria-hidden', 'true')
+      })
     const wrapper = mount(CertCard, {
       props: { cert: baseCert() },
       attachTo: document.body,
     })
     expect(wrapper.find('button[title="删除"]').exists()).toBe(false)
     await wrapper.find('.base-action-menu__trigger').trigger('click')
-    await wrapper.find('[data-testid="base-action-menu-item-delete"]').trigger('click')
+    await Promise.resolve()
+    await Promise.resolve()
+    const panel = document.body.querySelector(
+      '[data-testid="base-action-menu-panel"]:not([aria-hidden="true"])',
+    )
+    const item = panel?.querySelector('[data-testid="base-action-menu-item-delete"]')
+    expect(item).toBeTruthy()
+    item.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await Promise.resolve()
+    await Promise.resolve()
     expect(wrapper.emitted('delete')).toBeTruthy()
   })
 

@@ -211,4 +211,53 @@ describe('rule list traffic usage', () => {
     await expectTrafficUsageDisabled(L4RulesPage)
     await expectTrafficUsageDisabled(RelayListenersPage)
   })
+
+  it('loads per-agent traffic summary under all-agents filter using item agent_id', async () => {
+    const { ALL_AGENTS_FILTER } = await import('../utils/agentFilter.js')
+    routeQuery = { agentId: ALL_AGENTS_FILTER }
+    selectedAgentId = ALL_AGENTS_FILTER
+    agentsData = [
+      { id: 'edge-1', name: 'edge-1', desired_revision: 1, current_revision: 1, last_apply_status: 'success' },
+      { id: 'edge-2', name: 'edge-2', desired_revision: 1, current_revision: 1, last_apply_status: 'success' },
+    ]
+    rulesData = [
+      {
+        id: 7,
+        agent_id: 'edge-1',
+        frontend_url: 'https://app.example.test',
+        backends: [{ url: 'http://origin.example.test' }],
+        enabled: true,
+      },
+      {
+        id: 8,
+        agent_id: 'edge-2',
+        frontend_url: 'https://other.example.test',
+        backends: [{ url: 'http://origin2.example.test' }],
+        enabled: true,
+      },
+    ]
+    apiCalls.fetchTrafficSummary.mockImplementation(async (id) => {
+      if (id === 'edge-1') {
+        return {
+          used_bytes: 4096,
+          http_rules: [{ scope_type: 'http_rule', scope_id: '7', rx_bytes: 1024, tx_bytes: 2048, accounted_bytes: 3072 }],
+        }
+      }
+      if (id === 'edge-2') {
+        return {
+          used_bytes: 8192,
+          http_rules: [{ scope_type: 'http_rule', scope_id: '8', rx_bytes: 512, tx_bytes: 512, accounted_bytes: 1024 }],
+        }
+      }
+      return { http_rules: [] }
+    })
+
+    const { default: RulesPage } = await import('./RulesPage.vue')
+    const wrapper = await mountPage(RulesPage)
+
+    expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-1')
+    expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-2')
+    expect(wrapper.text()).toContain('用量 3.00 KiB')
+    expect(wrapper.text()).toContain('用量 1.00 KiB')
+  })
 })

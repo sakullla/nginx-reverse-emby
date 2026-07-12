@@ -58,24 +58,47 @@ describe('L4RuleItem redesign', () => {
     expect(wrapper.text()).not.toMatch(/(^|[^已])启用/)
   })
 
+  async function openMenu(wrapper) {
+    // Close any other open teleported menus first.
+    document.body
+      .querySelectorAll('[data-testid="base-action-menu-panel"]')
+      .forEach((el) => {
+        el.style.display = 'none'
+        el.setAttribute('aria-hidden', 'true')
+      })
+    await wrapper.find('.base-action-menu__trigger').trigger('click')
+    await nextTick()
+    await nextTick()
+  }
+
+  function openPanel() {
+    return document.body.querySelector(
+      '[data-testid="base-action-menu-panel"]:not([aria-hidden="true"])',
+    )
+  }
+
+  function bodyMenuItem(id) {
+    return openPanel()?.querySelector(`[data-testid="base-action-menu-item-${id}"]`) || null
+  }
+
   it('exposes toggle and edit; secondary actions in menu', async () => {
     const wrapper = mountItem({ protocol: 'tcp' })
     expect(wrapper.find('button[title="停用"]').exists()).toBe(true)
     expect(wrapper.find('button[title="编辑"]').exists()).toBe(true)
     expect(wrapper.find('button[title="诊断"]').exists()).toBe(false)
 
-    await wrapper.find('.base-action-menu__trigger').trigger('click')
-    await nextTick()
-    expect(wrapper.find('[data-testid="base-action-menu-item-diagnose"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="base-action-menu-item-copy"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="base-action-menu-item-delete"]').exists()).toBe(true)
+    await openMenu(wrapper)
+    expect(bodyMenuItem('diagnose')).toBeTruthy()
+    expect(bodyMenuItem('copy')).toBeTruthy()
+    expect(bodyMenuItem('delete')).toBeTruthy()
   })
 
   it('omits diagnose for non-TCP protocols', async () => {
     const wrapper = mountItem({ protocol: 'udp' })
-    await wrapper.find('.base-action-menu__trigger').trigger('click')
-    await nextTick()
-    expect(wrapper.find('[data-testid="base-action-menu-item-diagnose"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="base-action-menu-item-delete"]').exists()).toBe(true)
+    await openMenu(wrapper)
+    const panel = openPanel()
+    expect(panel).toBeTruthy()
+    expect(panel.querySelector('[data-testid="base-action-menu-item-diagnose"]')).toBeNull()
+    expect(panel.querySelector('[data-testid="base-action-menu-item-delete"]')).toBeTruthy()
   })
 })
