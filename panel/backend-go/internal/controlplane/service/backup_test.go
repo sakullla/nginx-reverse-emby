@@ -7724,3 +7724,119 @@ func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenMaterialMissing(t *
 		t.Fatal("target relay CA material was replaced")
 	}
 }
+
+// TestBackupServiceRoundTripsAgentDDNSConfigWithoutCredentials locks in the
+// backup contract for the DDNS config: the per-agent domain + extraction
+// strategy survives export/import, and the serialized ddns_config carries no
+// Cloudflare credential surface (R7 — CF tokens never enter backups).
+func TestBackupServiceRoundTripsAgentDDNSConfigWithoutCredentials(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "ddns-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+	original := storage.DDNSConfig{
+		Domain: "edge.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		IPv6:   storage.DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+	}
+	originalJSON, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal original ddns config: %v", err)
+	}
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:             "edge-ddns",
+		Name:           "Edge DDNS",
+		AgentToken:     "token-ddns",
+		DdnsConfigJSON: string(originalJSON),
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	// An unconfigured agent exercises the pointer omitempty path: its ddns_config
+	// must be dropped from the backup and stay empty after import.
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "edge-plain",
+		Name:       "Edge Plain",
+		AgentToken: "token-plain",
+	}); err != nil {
+		t.Fatalf("SaveAgent(plain) error = %v", err)
+	}
+
+	sourceSvc := NewBackupService(cfg, sourceStore)
+	archive, _, err := sourceSvc.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "ddns-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	targetSvc := NewBackupService(cfg, targetStore)
+	if _, err := targetSvc.Import(ctx, archive); err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+
+	agents, err := targetStore.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("agents len = %d, want 2", len(agents))
+	}
+	byID := map[string]storage.AgentRow{}
+	for _, row := range agents {
+		byID[row.ID] = row
+	}
+	var restored storage.DDNSConfig
+	if err := json.Unmarshal([]byte(byID["edge-ddns"].DdnsConfigJSON), &restored); err != nil {
+		t.Fatalf("unmarshal restored ddns_config %q: %v", byID["edge-ddns"].DdnsConfigJSON, err)
+	}
+	if restored != original {
+		t.Fatalf("restored ddns_config = %+v, want %+v", restored, original)
+	}
+	if byID["edge-plain"].DdnsConfigJSON != "" {
+		t.Fatalf("unconfigured agent ddns_config = %q, want empty (pointer omitempty)", byID["edge-plain"].DdnsConfigJSON)
+	}
+
+	// R7: the backed-up ddns_config payload must expose only domain + ipv4 + ipv6.
+	lower := strings.ToLower(byID["edge-ddns"].DdnsConfigJSON)
+	for _, forbidden := range []string{"token", "secret", "api_key", "apikey", "password", "credential"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("backed-up ddns_config leaked credential-ish key %q: %s", forbidden, byID["edge-ddns"].DdnsConfigJSON)
+		}
+	}
+}
+
+// TestBackupDDNSConfigHelpersNilEmpty covers the pointer helpers directly: nil
+// and all-disabled configs round-trip to "" so unconfigured agents stay clean,
+// and a populated config survives a marshal/parse cycle without credentials.
+func TestBackupDDNSConfigHelpersNilEmpty(t *testing.T) {
+	if got := parseBackupDDNSConfig(""); got != nil {
+		t.Fatalf("parseBackupDDNSConfig(empty) = %+v, want nil", got)
+	}
+	if got := parseBackupDDNSConfig(`{"domain":"","ipv4":{"enabled":false},"ipv6":{"enabled":false}}`); got != nil {
+		t.Fatalf("parseBackupDDNSConfig(all-disabled) = %+v, want nil", got)
+	}
+	if got := parseBackupDDNSConfig("{not-json"); got != nil {
+		t.Fatalf("parseBackupDDNSConfig(malformed) = %+v, want nil", got)
+	}
+	if got := marshalDDNSConfigJSON(nil); got != "" {
+		t.Fatalf("marshalDDNSConfigJSON(nil) = %q, want empty", got)
+	}
+	populated := &storage.DDNSConfig{
+		Domain: "edge.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}
+	marshaled := marshalDDNSConfigJSON(populated)
+	parsed := parseBackupDDNSConfig(marshaled)
+	if parsed == nil {
+		t.Fatalf("parseBackupDDNSConfig(marshaled) = nil, want populated")
+	}
+	if *parsed != *populated {
+		t.Fatalf("round-trip = %+v, want %+v", *parsed, *populated)
+	}
+}

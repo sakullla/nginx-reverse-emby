@@ -27,6 +27,10 @@ type AgentRow struct {
 	TrafficBlockReason     string `gorm:"column:traffic_block_reason;not null;default:''"`
 	LastSeenAt             string `gorm:"column:last_seen_at"`
 	LastSeenIP             string `gorm:"column:last_seen_ip"`
+	LastSeenIPv4           string `gorm:"column:last_seen_ipv4;not null;default:''"`
+	LastSeenIPv6           string `gorm:"column:last_seen_ipv6;not null;default:''"`
+	DdnsConfigJSON         string `gorm:"column:ddns_config;not null;default:''"`
+	DdnsStatusJSON         string `gorm:"column:ddns_status;not null;default:''"`
 	IsLocal                bool   `gorm:"column:is_local"`
 }
 

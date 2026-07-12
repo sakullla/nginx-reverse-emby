@@ -367,6 +367,10 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB, wireGuardEnab
 		{column: "traffic_stats_interval", sql: `ALTER TABLE agents ADD COLUMN traffic_stats_interval TEXT NOT NULL DEFAULT ''`},
 		{column: "traffic_blocked", sql: `ALTER TABLE agents ADD COLUMN traffic_blocked INTEGER NOT NULL DEFAULT 0`},
 		{column: "traffic_block_reason", sql: `ALTER TABLE agents ADD COLUMN traffic_block_reason TEXT NOT NULL DEFAULT ''`},
+		{column: "last_seen_ipv4", sql: `ALTER TABLE agents ADD COLUMN last_seen_ipv4 TEXT NOT NULL DEFAULT ''`},
+		{column: "last_seen_ipv6", sql: `ALTER TABLE agents ADD COLUMN last_seen_ipv6 TEXT NOT NULL DEFAULT ''`},
+		{column: "ddns_config", sql: `ALTER TABLE agents ADD COLUMN ddns_config TEXT NOT NULL DEFAULT ''`},
+		{column: "ddns_status", sql: `ALTER TABLE agents ADD COLUMN ddns_status TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, migration := range agentColumnMigrations {
 		if tx.Migrator().HasColumn(&AgentRow{}, migration.column) {

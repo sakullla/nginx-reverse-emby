@@ -1240,6 +1240,7 @@ func (s *backupService) importAgents(ctx context.Context, existing []storage.Age
 			TagsJSON:               marshalJSON(normalizeTags(item.Tags), "[]"),
 			CapabilitiesJSON:       marshalJSON(normalizeTags(item.Capabilities), "[]"),
 			Mode:                   strings.TrimSpace(item.Mode),
+			DdnsConfigJSON:         marshalDDNSConfigJSON(item.DdnsConfig),
 		}
 		if err := s.store.SaveAgent(ctx, row); err != nil {
 			return nil, err
@@ -2142,7 +2143,45 @@ func backupAgentFromRow(row storage.AgentRow) BackupAgent {
 		Tags:                   parseStringArray(row.TagsJSON),
 		Capabilities:           parseStringArray(row.CapabilitiesJSON),
 		Mode:                   row.Mode,
+		DdnsConfig:             parseBackupDDNSConfig(row.DdnsConfigJSON),
 	}
+}
+
+// parseBackupDDNSConfig decodes a persisted ddns_config JSON column into the
+// typed config for backup export. The config never contains Cloudflare
+// credentials (R7); only the domain and per-family extraction strategy are
+// backed up. Empty, malformed, or all-disabled values yield nil so the field is
+// omitted (omitempty on a pointer) for unconfigured agents.
+func parseBackupDDNSConfig(raw string) *storage.DDNSConfig {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var cfg storage.DDNSConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Domain) == "" && !cfg.IPv4.Enabled && !cfg.IPv6.Enabled {
+		return nil
+	}
+	return &cfg
+}
+
+// marshalDDNSConfigJSON serializes the DDNS config back into the ddns_config
+// column on import. A nil or empty config (no domain and nothing enabled)
+// serializes to "" so unconfigured agents stay unconfigured.
+func marshalDDNSConfigJSON(cfg *storage.DDNSConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	if strings.TrimSpace(cfg.Domain) == "" && !cfg.IPv4.Enabled && !cfg.IPv6.Enabled {
+		return ""
+	}
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 func backupTrafficPolicyFromRow(row storage.AgentTrafficPolicyRow) BackupTrafficPolicy {

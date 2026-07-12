@@ -1,6 +1,10 @@
 package service
 
-import "time"
+import (
+	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+)
 
 const (
 	BackupPackageVersion         = 1
@@ -49,23 +53,24 @@ type BackupBundle struct {
 }
 
 type BackupAgent struct {
-	ID                     string   `json:"id"`
-	Name                   string   `json:"name"`
-	AgentURL               string   `json:"agent_url,omitempty"`
-	AgentToken             string   `json:"agent_token,omitempty"`
-	Version                string   `json:"version,omitempty"`
-	Platform               string   `json:"platform,omitempty"`
-	RuntimePackageVersion  string   `json:"runtime_package_version,omitempty"`
-	RuntimePackagePlatform string   `json:"runtime_package_platform,omitempty"`
-	RuntimePackageArch     string   `json:"runtime_package_arch,omitempty"`
-	RuntimePackageSHA256   string   `json:"runtime_package_sha256,omitempty"`
-	DesiredVersion         string   `json:"desired_version,omitempty"`
-	DesiredRevision        int      `json:"desired_revision,omitempty"`
-	OutboundProxyURL       string   `json:"outbound_proxy_url,omitempty"`
-	TrafficStatsInterval   string   `json:"traffic_stats_interval,omitempty"`
-	Tags                   []string `json:"tags,omitempty"`
-	Capabilities           []string `json:"capabilities,omitempty"`
-	Mode                   string   `json:"mode,omitempty"`
+	ID                     string              `json:"id"`
+	Name                   string              `json:"name"`
+	AgentURL               string              `json:"agent_url,omitempty"`
+	AgentToken             string              `json:"agent_token,omitempty"`
+	Version                string              `json:"version,omitempty"`
+	Platform               string              `json:"platform,omitempty"`
+	RuntimePackageVersion  string              `json:"runtime_package_version,omitempty"`
+	RuntimePackagePlatform string              `json:"runtime_package_platform,omitempty"`
+	RuntimePackageArch     string              `json:"runtime_package_arch,omitempty"`
+	RuntimePackageSHA256   string              `json:"runtime_package_sha256,omitempty"`
+	DesiredVersion         string              `json:"desired_version,omitempty"`
+	DesiredRevision        int                 `json:"desired_revision,omitempty"`
+	OutboundProxyURL       string              `json:"outbound_proxy_url,omitempty"`
+	TrafficStatsInterval   string              `json:"traffic_stats_interval,omitempty"`
+	Tags                   []string            `json:"tags,omitempty"`
+	Capabilities           []string            `json:"capabilities,omitempty"`
+	Mode                   string              `json:"mode,omitempty"`
+	DdnsConfig             *storage.DDNSConfig `json:"ddns_config,omitempty"`
 }
 
 type BackupHTTPRule struct {

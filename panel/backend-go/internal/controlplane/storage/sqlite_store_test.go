@@ -7356,3 +7356,142 @@ func containsPolicyID(values []ManagedCertificatePolicy, expected int) bool {
 	}
 	return false
 }
+
+// mustGetAgentByID returns the single normalized agent row with the given id,
+// failing the test if it is missing. It backs the DDNS heartbeat assertions.
+func mustGetAgentByID(t *testing.T, store *GormStore, agentID string) AgentRow {
+	t.Helper()
+	agents, err := store.ListAgents(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	for _, row := range agents {
+		if row.ID == agentID {
+			return row
+		}
+	}
+	t.Fatalf("agent %q not found", agentID)
+	return AgentRow{}
+}
+
+// TestSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported pins the contract that
+// agent-reported IPv4/IPv6 overwrite the stored value only when non-empty, so a
+// family that is transiently unavailable does not clobber the last known address.
+// It also proves the heartbeat path never touches ddns_config / ddns_status,
+// which are owned by the service/master DDNS writer.
+func TestSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	if err := store.SaveAgent(ctx, AgentRow{
+		ID:             "edge-ddns",
+		Name:           "edge-ddns",
+		AgentToken:     "token",
+		LastSeenIPv4:   "203.0.113.4",
+		LastSeenIPv6:   "2001:db8::4",
+		DdnsConfigJSON: `{"domain":"edge.example.com","ipv4":{"enabled":true}}`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.SaveAgentHeartbeat(ctx, AgentRow{
+		ID:           "edge-ddns",
+		LastSeenIPv4: "203.0.113.9",
+		LastSeenIPv6: "2001:db8::9",
+	}); err != nil {
+		t.Fatalf("SaveAgentHeartbeat(update) error = %v", err)
+	}
+	got := mustGetAgentByID(t, store, "edge-ddns")
+	if got.LastSeenIPv4 != "203.0.113.9" || got.LastSeenIPv6 != "2001:db8::9" {
+		t.Fatalf("heartbeat did not update reported IPs: %+v", got)
+	}
+
+	// Only IPv6 is reported this cycle; IPv4 must keep its last known value.
+	if err := store.SaveAgentHeartbeat(ctx, AgentRow{
+		ID:           "edge-ddns",
+		LastSeenIPv4: "",
+		LastSeenIPv6: "2001:db8::12",
+	}); err != nil {
+		t.Fatalf("SaveAgentHeartbeat(partial) error = %v", err)
+	}
+	got = mustGetAgentByID(t, store, "edge-ddns")
+	if got.LastSeenIPv4 != "203.0.113.9" {
+		t.Fatalf("empty v4 report clobbered last known v4: %+v", got)
+	}
+	if got.LastSeenIPv6 != "2001:db8::12" {
+		t.Fatalf("reported v6 not updated: %+v", got)
+	}
+
+	// The heartbeat path Selects neither ddns_config nor ddns_status, so the
+	// master-owned DDNS config must survive every heartbeat untouched.
+	if got.DdnsConfigJSON != `{"domain":"edge.example.com","ipv4":{"enabled":true}}` {
+		t.Fatalf("heartbeat altered ddns_config: %+v", got)
+	}
+	if got.DdnsStatusJSON != "" {
+		t.Fatalf("heartbeat wrote ddns_status: %+v", got)
+	}
+}
+
+// TestLoadAgentSnapshotExposesDDNSConfig verifies the snapshot wire contract
+// surfaces the per-agent DDNS configuration (domain + per-family strategy) so
+// the desired-state dispatch can carry it to the agent.
+func TestLoadAgentSnapshotExposesDDNSConfig(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := t.Context()
+
+	if err := store.SaveAgent(ctx, AgentRow{
+		ID:             "edge-ddns",
+		Name:           "edge-ddns",
+		DdnsConfigJSON: `{"domain":"edge.example.com","ipv4":{"enabled":true,"source":"public_api"},"ipv6":{"enabled":true,"source":"interface","interface":"eth0"}}`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(ctx, "edge-ddns", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.DDNSConfig == nil {
+		t.Fatalf("DDNSConfig = nil, want populated")
+	}
+	if snapshot.DDNSConfig.Domain != "edge.example.com" {
+		t.Fatalf("Domain = %q", snapshot.DDNSConfig.Domain)
+	}
+	if !snapshot.DDNSConfig.IPv4.Enabled || snapshot.DDNSConfig.IPv4.Source != "public_api" {
+		t.Fatalf("IPv4 = %+v", snapshot.DDNSConfig.IPv4)
+	}
+	if !snapshot.DDNSConfig.IPv6.Enabled || snapshot.DDNSConfig.IPv6.Source != "interface" || snapshot.DDNSConfig.IPv6.Interface != "eth0" {
+		t.Fatalf("IPv6 = %+v", snapshot.DDNSConfig.IPv6)
+	}
+}
+
+// TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled guards the empty-state
+// contract: a missing, all-disabled, or malformed ddns_config yields a nil
+// pointer so the wire payload omits the field entirely (omitempty).
+func TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := t.Context()
+
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "empty", raw: ""},
+		{name: "all_disabled", raw: `{"domain":"","ipv4":{"enabled":false},"ipv6":{"enabled":false}}`},
+		{name: "malformed", raw: "{not-json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agentID := "edge-ddns-" + tc.name
+			if err := store.SaveAgent(ctx, AgentRow{ID: agentID, Name: agentID, DdnsConfigJSON: tc.raw}); err != nil {
+				t.Fatalf("SaveAgent() error = %v", err)
+			}
+			snapshot, err := store.LoadAgentSnapshot(ctx, agentID, AgentSnapshotInput{})
+			if err != nil {
+				t.Fatalf("LoadAgentSnapshot() error = %v", err)
+			}
+			if snapshot.DDNSConfig != nil {
+				t.Fatalf("DDNSConfig = %+v, want nil for %s", snapshot.DDNSConfig, tc.name)
+			}
+		})
+	}
+}
