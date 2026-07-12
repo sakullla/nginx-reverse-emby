@@ -80,6 +80,7 @@ type ResourceStateReader func(context.Context, *storage.GormStore, Target) (any,
 type MutationRequest struct {
 	OperationID      string
 	Kind             string
+	DependencyAction DependencyAction
 	IdempotencyScope string
 	IdempotencyKey   string
 	IdempotencyTTL   time.Duration
@@ -90,9 +91,10 @@ type MutationRequest struct {
 }
 
 type mutationFingerprintEnvelope struct {
-	Kind    string   `json:"kind"`
-	Targets []Target `json:"targets"`
-	Request any      `json:"request"`
+	Kind             string           `json:"kind"`
+	DependencyAction DependencyAction `json:"dependency_action,omitempty"`
+	Targets          []Target         `json:"targets"`
+	Request          any              `json:"request"`
 }
 
 type AgentMutationResult struct {
@@ -194,12 +196,16 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 	if request.ResourceState == nil {
 		return MutationResult{}, wrapError(ErrorCodeInvalidRequest, "resource state reader is required")
 	}
+	if err := validateDependencyAction(request.DependencyAction); err != nil {
+		return MutationResult{}, err
+	}
 	targets, err := normalizeTargets(request.Targets)
 	if err != nil {
 		return MutationResult{}, err
 	}
 	fingerprint, err := RequestFingerprint(mutationFingerprintEnvelope{
-		Kind: kind, Targets: idempotencyFingerprintTargets(targets), Request: request.Request,
+		Kind: kind, DependencyAction: request.DependencyAction,
+		Targets: idempotencyFingerprintTargets(targets), Request: request.Request,
 	})
 	if err != nil {
 		return MutationResult{}, err
@@ -300,6 +306,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		allNoOp := true
 		allApplied := true
 		changedTargets := 0
+		after := make(map[string]storage.Snapshot, len(resolvedTargets))
 		agentResults := make([]AgentMutationResult, 0, len(resolvedTargets))
 		for _, target := range resolvedTargets {
 			snapshot, buildErr := e.snapshotBuilder.Build(ctx, tx, target)
@@ -324,6 +331,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 					return storage.RevisionMutationDecision{}, validateErr
 				}
 			}
+			after[target.AgentID] = snapshot
 
 			beforeDigest, digestErr := SemanticSnapshotDigest(before[target.AgentID])
 			if digestErr != nil {
@@ -392,6 +400,12 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				"affected agent set contains both changed and unchanged final states",
 				nil,
 			)
+		}
+		if err := appendDependencyPlan(
+			&ledger, operationID, request.DependencyAction, resolvedTargets,
+			allocated, before, after, now,
+		); err != nil {
+			return storage.RevisionMutationDecision{}, err
 		}
 
 		status := storage.OperationStatusPending

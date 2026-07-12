@@ -65,6 +65,8 @@ type CoordinatorLease struct {
 type CoordinatorClaimRequest struct {
 	AgentID                    string
 	LeaseID                    string
+	ExpectedOperationID        string
+	ExpectedRevision           int64
 	Now                        time.Time
 	DefaultApplyTimeoutSeconds int
 	DefaultDrainTimeoutSeconds int
@@ -205,8 +207,12 @@ func (s *GormStore) GetCoordinatorGeneration(ctx context.Context, agentID, gener
 func (s *GormStore) ClaimLatestAgentRevision(ctx context.Context, request CoordinatorClaimRequest) (CoordinatorClaimResult, error) {
 	request.AgentID = strings.TrimSpace(request.AgentID)
 	request.LeaseID = strings.TrimSpace(request.LeaseID)
+	request.ExpectedOperationID = strings.TrimSpace(request.ExpectedOperationID)
 	if request.AgentID == "" || request.LeaseID == "" {
 		return CoordinatorClaimResult{}, fmt.Errorf("agent id and lease id are required")
+	}
+	if (request.ExpectedOperationID == "") != (request.ExpectedRevision == 0) || request.ExpectedRevision < 0 {
+		return CoordinatorClaimResult{}, fmt.Errorf("expected operation id and positive revision must be provided together")
 	}
 	request.Now = coordinatorTime(request.Now)
 	var result CoordinatorClaimResult
@@ -217,6 +223,24 @@ func (s *GormStore) ClaimLatestAgentRevision(ctx context.Context, request Coordi
 				return nil
 			}
 			return err
+		}
+		if request.ExpectedOperationID != "" {
+			if pointer.DesiredRevision != request.ExpectedRevision {
+				return nil
+			}
+			var expected AgentRevisionRow
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("agent_id = ? AND revision = ?", request.AgentID, request.ExpectedRevision).
+				First(&expected).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if expected.OperationID != request.ExpectedOperationID {
+				return nil
+			}
 		}
 
 		active, err := lockActiveCoordinatorAttempts(tx, request.AgentID)

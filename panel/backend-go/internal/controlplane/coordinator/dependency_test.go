@@ -4,12 +4,148 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+func TestCoordinatorClaimsOnlyPersistedApplyFrontier(t *testing.T) {
+	now := time.Date(2026, 7, 12, 23, 10, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	seedDependencyOperation(t, store, now)
+	coord := newTestCoordinator(t, store, now, 0.5)
+
+	loaded, err := coord.LoadDependencyPlan(t.Context(), "operation-dependency")
+	if err != nil {
+		t.Fatalf("LoadDependencyPlan() error = %v", err)
+	}
+	claimed, err := coord.ClaimDependencyFrontier(t.Context(), loaded.OperationID)
+	if err != nil {
+		t.Fatalf("ClaimDependencyFrontier() error = %v", err)
+	}
+	if len(claimed.Claims) != 1 || claimed.Claims[0].Node.AgentID != "edge-b" || claimed.Claims[0].Result.Lease == nil {
+		t.Fatalf("claims = %+v, want one edge-b lease", claimed.Claims)
+	}
+	if attempts, err := store.ListCoordinatorAttempts(t.Context(), "edge-a", 1); err != nil {
+		t.Fatalf("ListCoordinatorAttempts(edge-a) error = %v", err)
+	} else if len(attempts) != 0 {
+		t.Fatalf("non-frontier edge-a attempts = %+v, want none", attempts)
+	}
+
+	lease := *claimed.Claims[0].Result.Lease
+	if _, err := coord.Start(t.Context(), StartRequest{Lease: lease, GenerationID: "generation-b"}); err != nil {
+		t.Fatalf("Start(edge-b) error = %v", err)
+	}
+	if _, err := coord.Applied(t.Context(), AppliedReport{Lease: lease, GenerationID: "generation-b"}); err != nil {
+		t.Fatalf("Applied(edge-b) error = %v", err)
+	}
+	claimed, err = coord.ClaimDependencyFrontier(t.Context(), loaded.OperationID)
+	if err != nil {
+		t.Fatalf("ClaimDependencyFrontier(after edge-b) error = %v", err)
+	}
+	if len(claimed.Claims) != 1 || claimed.Claims[0].Node.AgentID != "edge-a" || claimed.Claims[0].Result.Lease == nil {
+		t.Fatalf("released claims = %+v, want one edge-a lease", claimed.Claims)
+	}
+}
+
+func TestCoordinatorClaimsEveryIndependentFrontierNode(t *testing.T) {
+	now := time.Date(2026, 7, 12, 23, 15, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	plan, err := dependency.NewPlan("operation-independent", dependency.ActionApply, []dependency.Node{
+		{AgentID: "edge-a", Revision: 1}, {AgentID: "edge-b", Revision: 1},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewPlan() error = %v", err)
+	}
+	createDependencyLedger(t, store, now, plan.OperationID, 1, map[string]storage.Snapshot{
+		"edge-a": {Revision: 1}, "edge-b": {Revision: 1},
+	}, 0, plan)
+	coord := newTestCoordinator(t, store, now, 0.5)
+
+	claimed, err := coord.ClaimDependencyFrontier(t.Context(), plan.OperationID)
+	if err != nil {
+		t.Fatalf("ClaimDependencyFrontier() error = %v", err)
+	}
+	if len(claimed.Claims) != 2 {
+		t.Fatalf("claims = %+v, want both independent agents", claimed.Claims)
+	}
+	for _, claim := range claimed.Claims {
+		if claim.Result.Lease == nil || claim.Result.Lease.Revision != 1 {
+			t.Fatalf("claim = %+v, want revision 1 lease", claim)
+		}
+	}
+}
+
+func TestCoordinatorClaimsPersistedDeletePlanInReverseOrder(t *testing.T) {
+	now := time.Date(2026, 7, 12, 23, 20, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	seedDependencyDeleteOperation(t, store, now)
+	coord := newTestCoordinator(t, store, now, 0.5)
+
+	claimed, err := coord.ClaimDependencyFrontier(t.Context(), "operation-dependency-delete")
+	if err != nil {
+		t.Fatalf("ClaimDependencyFrontier(delete) error = %v", err)
+	}
+	if len(claimed.Claims) != 1 || claimed.Claims[0].Node.AgentID != "edge-a" || claimed.Claims[0].Result.Lease == nil {
+		t.Fatalf("delete claims = %+v, want caller edge-a first", claimed.Claims)
+	}
+	if attempts, err := store.ListCoordinatorAttempts(t.Context(), "edge-b", 2); err != nil {
+		t.Fatalf("ListCoordinatorAttempts(edge-b) error = %v", err)
+	} else if len(attempts) != 0 {
+		t.Fatalf("delete dependency edge-b attempts = %+v, want none", attempts)
+	}
+}
+
+func TestCoordinatorRebuildsIdenticalDegradedAuditAfterRestart(t *testing.T) {
+	now := time.Date(2026, 7, 12, 23, 25, 0, 0, time.UTC)
+	dbPath := filepath.Join(t.TempDir(), "dependency-restart.db")
+	store := openCoordinatorTestStore(t, dbPath)
+	plan, err := dependency.NewPlan("operation-degraded", dependency.ActionApply, []dependency.Node{
+		{AgentID: "edge-a", Revision: 1},
+		{AgentID: "edge-b", Revision: 1},
+		{AgentID: "edge-c", Revision: 1},
+	}, []dependency.Edge{
+		{FromAgentID: "edge-a", ToAgentID: "edge-b", Kind: dependency.EdgeKindRelayLayer},
+		{FromAgentID: "edge-c", ToAgentID: "edge-a", Kind: dependency.EdgeKindRelayLayer},
+	})
+	if err != nil {
+		t.Fatalf("NewPlan() error = %v", err)
+	}
+	seedDependencyAuditLedger(t, store, now, plan)
+	coord := newTestCoordinator(t, store, now, 0.5)
+
+	before, err := coord.EvaluateDependencyOperation(t.Context(), plan.OperationID)
+	if err != nil {
+		t.Fatalf("EvaluateDependencyOperation() error = %v", err)
+	}
+	if before.Status != dependency.StatusDegraded {
+		t.Fatalf("status = %q, want degraded", before.Status)
+	}
+	blocked, found := before.Result("edge-c")
+	if !found || !reflect.DeepEqual(blocked.BlockedBy, []string{"edge-a"}) {
+		t.Fatalf("edge-c result = %+v, found %v; want blocked_by edge-a", blocked, found)
+	}
+	if succeeded, found := before.Result("edge-b"); !found || succeeded.State != dependency.StateSucceeded {
+		t.Fatalf("edge-b result = %+v, found %v; successful fact was not preserved", succeeded, found)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened := openCoordinatorTestStore(t, dbPath)
+	restarted := newTestCoordinator(t, reopened, now, 0.5)
+	after, err := restarted.EvaluateDependencyOperation(t.Context(), plan.OperationID)
+	if err != nil {
+		t.Fatalf("EvaluateDependencyOperation(restarted) error = %v", err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("restart evaluation = %+v, want %+v", after, before)
+	}
+}
 
 func TestCoordinatorRebuildsDependencyPlanFromPersistedRevisionArtifacts(t *testing.T) {
 	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
@@ -185,6 +321,14 @@ func seedDependencyOperation(t *testing.T, store *storage.GormStore, now time.Ti
 			AgentID: agentID, Revision: 1, ArtifactID: artifactID, Role: "snapshot", CreatedAt: now,
 		})
 	}
+	plan, err := dependency.BuildPlan(ledger.Operation.ID, dependency.ActionApply, []dependency.SnapshotRevision{
+		{AgentID: "edge-a", Revision: 1, Snapshot: snapshots["edge-a"]},
+		{AgentID: "edge-b", Revision: 1, Snapshot: snapshots["edge-b"]},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan(dependency) error = %v", err)
+	}
+	appendDependencyPlanArtifact(t, &ledger, plan, now)
 	if err := store.CreateRevisionLedger(t.Context(), ledger); err != nil {
 		t.Fatalf("CreateRevisionLedger(dependency) error = %v", err)
 	}
@@ -192,7 +336,7 @@ func seedDependencyOperation(t *testing.T, store *storage.GormStore, now time.Ti
 
 func seedDependencyDeleteOperation(t *testing.T, store *storage.GormStore, now time.Time) {
 	t.Helper()
-	createDependencyLedger(t, store, now, "operation-dependency-before-delete", 1, map[string]storage.Snapshot{
+	before := map[string]storage.Snapshot{
 		"edge-a": {
 			Revision: 1,
 			Rules:    []storage.HTTPRule{{ID: 1, AgentID: "edge-a", RelayLayers: [][]int{{10}}}},
@@ -201,14 +345,22 @@ func seedDependencyDeleteOperation(t *testing.T, store *storage.GormStore, now t
 			Revision:       1,
 			RelayListeners: []storage.RelayListener{{ID: 10, AgentID: "edge-b", Enabled: true}},
 		},
-	}, 1)
+	}
+	createDependencyLedger(t, store, now, "operation-dependency-before-delete", 1, before, 1)
+	plan, err := dependency.BuildPlan("operation-dependency-delete", dependency.ActionDelete, []dependency.SnapshotRevision{
+		{AgentID: "edge-a", Revision: 2, Snapshot: before["edge-a"]},
+		{AgentID: "edge-b", Revision: 2, Snapshot: before["edge-b"]},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan(delete) error = %v", err)
+	}
 	createDependencyLedger(t, store, now.Add(time.Second), "operation-dependency-delete", 2, map[string]storage.Snapshot{
 		"edge-a": {Revision: 2},
 		"edge-b": {Revision: 2},
-	}, 1)
+	}, 1, plan)
 }
 
-func createDependencyLedger(t *testing.T, store *storage.GormStore, now time.Time, operationID string, revision int64, snapshots map[string]storage.Snapshot, applied int64) {
+func createDependencyLedger(t *testing.T, store *storage.GormStore, now time.Time, operationID string, revision int64, snapshots map[string]storage.Snapshot, applied int64, plans ...dependency.Plan) {
 	t.Helper()
 	ledger := storage.RevisionLedgerWrite{
 		Operation: storage.OperationRow{
@@ -249,7 +401,82 @@ func createDependencyLedger(t *testing.T, store *storage.GormStore, now time.Tim
 			AgentID: agentID, Revision: revision, ArtifactID: artifactID, Role: "snapshot", CreatedAt: now,
 		})
 	}
+	for _, plan := range plans {
+		appendDependencyPlanArtifact(t, &ledger, plan, now)
+	}
 	if err := store.CreateRevisionLedger(t.Context(), ledger); err != nil {
 		t.Fatalf("CreateRevisionLedger(%s) error = %v", operationID, err)
+	}
+}
+
+func appendDependencyPlanArtifact(t *testing.T, ledger *storage.RevisionLedgerWrite, plan dependency.Plan, now time.Time) {
+	t.Helper()
+	payload, err := plan.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal(dependency plan) error = %v", err)
+	}
+	digest := plan.Digest()
+	artifactID := "dependency-plan-" + digest
+	ledger.Artifacts = append(ledger.Artifacts, storage.GenerationArtifactRow{
+		ID: artifactID, Kind: storage.GenerationArtifactKindDependencyPlan, SHA256: digest,
+		Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now,
+	})
+	for _, revision := range ledger.Revisions {
+		ledger.ArtifactRefs = append(ledger.ArtifactRefs, storage.AgentRevisionArtifactRow{
+			AgentID: revision.AgentID, Revision: revision.Revision, ArtifactID: artifactID,
+			Role: storage.RevisionArtifactRoleDependencyPlan, CreatedAt: now,
+		})
+	}
+}
+
+func seedDependencyAuditLedger(t *testing.T, store *storage.GormStore, now time.Time, plan dependency.Plan) {
+	t.Helper()
+	ledger := storage.RevisionLedgerWrite{Operation: storage.OperationRow{
+		ID: plan.OperationID, Kind: "test_dependency", Status: storage.OperationStatusFailed,
+		PrimaryAgentID: "edge-a", CreatedAt: now, UpdatedAt: now,
+	}}
+	states := map[string]string{
+		"edge-a": storage.AgentRevisionStateFailed,
+		"edge-b": storage.AgentRevisionStateApplied,
+		"edge-c": storage.AgentRevisionStatePending,
+	}
+	for _, node := range plan.Nodes {
+		snapshot := storage.Snapshot{Revision: node.Revision}
+		payload, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatalf("marshal %s snapshot: %v", node.AgentID, err)
+		}
+		digestBytes := sha256.Sum256(payload)
+		digest := hex.EncodeToString(digestBytes[:])
+		artifactID := "snapshot-" + digest
+		ledger.Artifacts = append(ledger.Artifacts, storage.GenerationArtifactRow{
+			ID: artifactID, Kind: "agent_snapshot", SHA256: digest,
+			Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now,
+		})
+		revision := storage.AgentRevisionRow{
+			AgentID: node.AgentID, Revision: node.Revision, OperationID: plan.OperationID,
+			State: states[node.AgentID], SnapshotArtifactID: artifactID, SnapshotDigest: digest,
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: now, UpdatedAt: now,
+		}
+		applied := int64(0)
+		if revision.State == storage.AgentRevisionStateApplied {
+			applied = node.Revision
+			appliedAt := now
+			revision.AppliedAt = &appliedAt
+		}
+		if revision.State == storage.AgentRevisionStateFailed {
+			failedAt := now
+			revision.AttemptCount = 5
+			revision.FailedAt = &failedAt
+		}
+		ledger.Revisions = append(ledger.Revisions, revision)
+		ledger.Pointers = append(ledger.Pointers, storage.AgentRevisionPointerRow{
+			AgentID: node.AgentID, DesiredRevision: node.Revision,
+			AppliedRevision: applied, LastKnownGoodRevision: applied, UpdatedAt: now,
+		})
+	}
+	appendDependencyPlanArtifact(t, &ledger, plan, now)
+	if err := store.CreateRevisionLedger(t.Context(), ledger); err != nil {
+		t.Fatalf("CreateRevisionLedger(degraded audit) error = %v", err)
 	}
 }

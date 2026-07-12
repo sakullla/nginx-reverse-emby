@@ -30,3 +30,53 @@ func TestCoordinatorRetryDelayUsesCappedFullJitter(t *testing.T) {
 		t.Fatalf("jitter=1 delay = %v, want clamped below 30s", got)
 	}
 }
+
+func TestCoordinatorClaimFencesExpectedOperationAndRevision(t *testing.T) {
+	now := time.Date(2026, 7, 12, 23, 30, 0, 0, time.UTC)
+	store := newTrafficTestStore(t, true)
+	for _, seed := range []struct {
+		revision    int64
+		operationID string
+	}{{revision: 1, operationID: "operation-old"}, {revision: 2, operationID: "operation-new"}} {
+		revision, operationID := seed.revision, seed.operationID
+		if err := store.CreateRevisionLedger(t.Context(), RevisionLedgerWrite{
+			Operation: OperationRow{
+				ID: operationID, Kind: "test_claim_fence", Status: OperationStatusPending,
+				PrimaryAgentID: "edge-a", CreatedAt: now, UpdatedAt: now,
+			},
+			Revisions: []AgentRevisionRow{{
+				AgentID: "edge-a", Revision: revision, OperationID: operationID,
+				State: AgentRevisionStatePending, ApplyTimeoutSeconds: 60,
+				DrainTimeoutSeconds: 600, CreatedAt: now, UpdatedAt: now,
+			}},
+			Pointers: []AgentRevisionPointerRow{{
+				AgentID: "edge-a", DesiredRevision: revision, UpdatedAt: now,
+			}},
+		}); err != nil {
+			t.Fatalf("CreateRevisionLedger(%s) error = %v", operationID, err)
+		}
+	}
+
+	result, err := store.ClaimLatestAgentRevision(t.Context(), CoordinatorClaimRequest{
+		AgentID: "edge-a", LeaseID: "lease-old-plan", Now: now,
+		ExpectedOperationID: "operation-old", ExpectedRevision: 1,
+	})
+	if err != nil {
+		t.Fatalf("ClaimLatestAgentRevision() error = %v", err)
+	}
+	if result.Lease != nil || result.Busy || len(result.SupersededRevisions) != 0 {
+		t.Fatalf("claim result = %+v, want fenced no-op", result)
+	}
+	if attempts, err := store.ListCoordinatorAttempts(t.Context(), "edge-a", 2); err != nil {
+		t.Fatalf("ListCoordinatorAttempts() error = %v", err)
+	} else if len(attempts) != 0 {
+		t.Fatalf("newer revision attempts = %+v, want none", attempts)
+	}
+	old, found, err := store.GetCoordinatorRevision(t.Context(), "edge-a", 1)
+	if err != nil || !found {
+		t.Fatalf("GetCoordinatorRevision(old) = %+v, found %v, error %v", old, found, err)
+	}
+	if old.State != AgentRevisionStatePending {
+		t.Fatalf("old revision state = %q, want unchanged pending", old.State)
+	}
+}
