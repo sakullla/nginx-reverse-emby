@@ -1,17 +1,36 @@
 package coordinator
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+type interleavingDependencyRepository struct {
+	*storage.GormStore
+	beforeClaim   chan struct{}
+	continueClaim chan struct{}
+	once          sync.Once
+}
+
+func (r *interleavingDependencyRepository) ClaimLatestAgentRevision(ctx context.Context, request storage.CoordinatorClaimRequest) (storage.CoordinatorClaimResult, error) {
+	r.once.Do(func() { close(r.beforeClaim) })
+	select {
+	case <-r.continueClaim:
+		return r.GormStore.ClaimLatestAgentRevision(ctx, request)
+	case <-ctx.Done():
+		return storage.CoordinatorClaimResult{}, ctx.Err()
+	}
+}
 
 func TestCoordinatorClaimsOnlyPersistedApplyFrontier(t *testing.T) {
 	now := time.Date(2026, 7, 12, 23, 10, 0, 0, time.UTC)
@@ -76,6 +95,65 @@ func TestCoordinatorClaimsEveryIndependentFrontierNode(t *testing.T) {
 	for _, claim := range claimed.Claims {
 		if claim.Result.Lease == nil || claim.Result.Lease.Revision != 1 {
 			t.Fatalf("claim = %+v, want revision 1 lease", claim)
+		}
+	}
+}
+
+func TestCoordinatorConcurrentDesiredAdvanceFencesStaleFrontierClaim(t *testing.T) {
+	now := time.Date(2026, 7, 12, 23, 18, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	seedDependencyOperation(t, store, now)
+	repository := &interleavingDependencyRepository{
+		GormStore: store, beforeClaim: make(chan struct{}), continueClaim: make(chan struct{}),
+	}
+	ids := &sequenceIDs{}
+	coord, err := New(repository, Options{
+		Clock: &fakeClock{now: now}, Random: &sequenceRandom{values: []float64{0.5}}, NewID: ids.New,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	type claimOutcome struct {
+		result DependencyFrontierClaimResult
+		err    error
+	}
+	outcome := make(chan claimOutcome, 1)
+	claimCtx, cancelClaim := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancelClaim()
+	go func() {
+		result, claimErr := coord.ClaimDependencyFrontier(claimCtx, "operation-dependency")
+		outcome <- claimOutcome{result: result, err: claimErr}
+	}()
+
+	select {
+	case <-repository.beforeClaim:
+	case <-claimCtx.Done():
+		t.Fatalf("frontier claim did not reach the controlled interleaving: %v", claimCtx.Err())
+	}
+	appendPendingRevision(t, store, now.Add(time.Second), "edge-b", 2, 0, 60, 600)
+	close(repository.continueClaim)
+	var claimed claimOutcome
+	select {
+	case claimed = <-outcome:
+	case <-claimCtx.Done():
+		t.Fatalf("frontier claim did not complete after interleaving: %v", claimCtx.Err())
+	}
+	if claimed.err != nil {
+		t.Fatalf("ClaimDependencyFrontier() error = %v", claimed.err)
+	}
+	if len(claimed.result.Claims) != 1 || claimed.result.Claims[0].Node.AgentID != "edge-b" {
+		t.Fatalf("claims = %+v, want stale edge-b frontier attempt", claimed.result.Claims)
+	}
+	if claimed.result.Claims[0].Result.Lease != nil {
+		t.Fatalf("stale plan claimed newer desired revision: %+v", claimed.result.Claims[0].Result.Lease)
+	}
+	for _, revision := range []int64{1, 2} {
+		attempts, err := store.ListCoordinatorAttempts(t.Context(), "edge-b", revision)
+		if err != nil {
+			t.Fatalf("ListCoordinatorAttempts(%d) error = %v", revision, err)
+		}
+		if len(attempts) != 0 {
+			t.Fatalf("edge-b revision %d attempts = %+v, want none", revision, attempts)
 		}
 	}
 }

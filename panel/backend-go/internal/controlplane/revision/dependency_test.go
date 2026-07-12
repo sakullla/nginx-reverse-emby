@@ -2,11 +2,16 @@ package revision
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 func TestExecutorPersistsDependencyPlanWithRevisionLedger(t *testing.T) {
@@ -140,6 +145,40 @@ func TestExecutorDependencyCycleRollsBackResourcesAndLedger(t *testing.T) {
 	}
 }
 
+func TestExecutorMissingDependencyRollsBackEveryMutationTable(t *testing.T) {
+	store, observer := newDependencyMutationAuditStore(t)
+	seedDependencyAgents(t, store, "edge-a")
+	before := dependencyMutationTableCounts(t, observer)
+	executor := NewExecutor(
+		store,
+		WithClock(func() time.Time { return time.Date(2026, 7, 12, 23, 32, 0, 0, time.UTC) }),
+		WithOperationIDGenerator(func() (string, error) { return "operation-dependency-missing", nil }),
+	)
+
+	_, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "relay_graph.create", DependencyAction: DependencyActionApply,
+		IdempotencyKey: "dependency-missing", Request: map[string]any{"listener_id": 999},
+		Targets: []Target{{AgentID: "edge-a"}}, ResourceState: dependencyResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			return tx.SaveHTTPRules(ctx, "edge-a", []storage.HTTPRuleRow{{
+				ID: 1, AgentID: "edge-a", FrontendURL: "https://edge-a.example.com",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, LoadBalancingJSON: `{"strategy":"adaptive"}`,
+				RelayLayersJSON: `[[999]]`, Enabled: true, Revision: int(revisions["edge-a"]),
+			}})
+		},
+	})
+	if ErrorCodeOf(err) != ErrorCodeUnprocessable {
+		t.Fatalf("Execute() error = %v, code = %q", err, ErrorCodeOf(err))
+	}
+	if !errors.Is(err, dependency.ErrMissingDependency) {
+		t.Fatalf("Execute() cause = %v, want missing dependency", err)
+	}
+	after := dependencyMutationTableCounts(t, observer)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("mutation table counts changed after missing dependency: before=%v after=%v", before, after)
+	}
+}
+
 func TestExecutorPersistsDeletePlanFromPreMutationSnapshots(t *testing.T) {
 	store := newRevisionTestStore(t)
 	seedDependencyAgents(t, store, "edge-a", "edge-b")
@@ -264,4 +303,43 @@ func dependencyResourceState(ctx context.Context, store *storage.GormStore, targ
 		Rules     []storage.HTTPRuleRow
 		Listeners []storage.RelayListenerRow
 	}{Rules: rules, Listeners: listeners}, nil
+}
+
+func newDependencyMutationAuditStore(t *testing.T) (*storage.GormStore, *gorm.DB) {
+	t.Helper()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	observer, err := gorm.Open(sqlite.Open(filepath.Join(dataRoot, "panel.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open audit observer: %v", err)
+	}
+	t.Cleanup(func() {
+		if db, dbErr := observer.DB(); dbErr == nil {
+			_ = db.Close()
+		}
+	})
+	return store, observer
+}
+
+func dependencyMutationTableCounts(t *testing.T, db *gorm.DB) map[string]int64 {
+	t.Helper()
+	tables := []string{
+		"rules", "relay_listeners", "operations", "agent_revisions",
+		"agent_revision_pointers", "agent_revision_attempts", "agent_generations",
+		"revision_events", "generation_artifacts", "agent_revision_artifacts",
+		"idempotency_records",
+	}
+	counts := make(map[string]int64, len(tables))
+	for _, table := range tables {
+		var count int64
+		if err := db.WithContext(t.Context()).Table(table).Count(&count).Error; err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		counts[table] = count
+	}
+	return counts
 }
