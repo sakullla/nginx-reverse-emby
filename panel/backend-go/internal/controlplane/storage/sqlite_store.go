@@ -1481,13 +1481,16 @@ func filterEgressProfilesForSnapshot(
 	if len(rows) == 0 {
 		return rows
 	}
+	if includeDisabled {
+		return append([]EgressProfileRow(nil), rows...)
+	}
 	executorIDs := egressProfileExecutorIDs(agentID, httpRows, l4Rows, relayRows)
 	if len(executorIDs) == 0 {
 		return nil
 	}
 	filtered := make([]EgressProfileRow, 0, len(executorIDs))
 	for _, row := range rows {
-		if !includeDisabled && !row.Enabled {
+		if !row.Enabled {
 			continue
 		}
 		if _, ok := executorIDs[row.ID]; ok {

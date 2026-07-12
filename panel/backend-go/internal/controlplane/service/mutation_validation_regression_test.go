@@ -107,7 +107,7 @@ func TestMutationExecutorRequiresWireGuardCapabilityForWireGuardEgress(t *testin
 	_, err := executor.Execute(t.Context(), revision.MutationRequest{
 		Kind: "egress_profile.create", IdempotencyKey: "wireguard-egress-capability", Request: map[string]any{"profile": 1},
 		Targets: []revision.Target{{AgentID: "edge-egress"}},
-		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
 			profiles, err := tx.ListEgressProfiles(ctx)
 			if err != nil {
 				return nil, err
@@ -115,26 +115,12 @@ func TestMutationExecutorRequiresWireGuardCapabilityForWireGuardEgress(t *testin
 			for i := range profiles {
 				profiles[i].Revision = 0
 			}
-			rules, err := tx.ListHTTPRules(ctx, target.AgentID)
-			if err != nil {
-				return nil, err
-			}
-			for i := range rules {
-				rules[i].Revision = 0
-			}
-			return map[string]any{"egress_profiles": profiles, "rules": rules}, nil
+			return map[string]any{"egress_profiles": profiles}, nil
 		},
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
-			if err := tx.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
+			return tx.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
 				ID: profileID, Name: "wg-egress", Type: "wireguard", WireGuardConfigJSON: `{}`,
 				Enabled: true, Revision: revisions["edge-egress"],
-			}}); err != nil {
-				return err
-			}
-			return tx.SaveHTTPRules(ctx, "edge-egress", []storage.HTTPRuleRow{{
-				ID: 1, AgentID: "edge-egress", FrontendURL: "http://edge-egress.example.com:8080",
-				BackendsJSON: `[{"url":"http://127.0.0.1:8081"}]`, Enabled: true,
-				EgressProfileID: &profileID, Revision: int(revisions["edge-egress"]),
 			}})
 		},
 	})
