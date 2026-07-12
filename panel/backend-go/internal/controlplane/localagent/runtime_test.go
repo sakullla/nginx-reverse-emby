@@ -27,7 +27,8 @@ type bridgeStoreStub struct {
 }
 
 type embeddedRuntimeStub struct {
-	start func(context.Context) error
+	start         func(context.Context) error
+	applyRevision func(context.Context, goagentembedded.Snapshot) error
 }
 
 type localTrafficSummaryStub struct {
@@ -85,6 +86,13 @@ func (s embeddedRuntimeStub) Run(ctx context.Context) error {
 }
 
 func (s embeddedRuntimeStub) SyncNow(context.Context) error {
+	return nil
+}
+
+func (s embeddedRuntimeStub) ApplyRevision(ctx context.Context, snapshot goagentembedded.Snapshot) error {
+	if s.applyRevision != nil {
+		return s.applyRevision(ctx, snapshot)
+	}
 	return nil
 }
 

@@ -19,6 +19,7 @@ type Store interface {
 type embeddedRuntimeRunner interface {
 	Run(context.Context) error
 	SyncNow(context.Context) error
+	ApplyRevision(context.Context, goagentembedded.Snapshot) error
 	DiagnoseSnapshot(context.Context, goagentembedded.Snapshot, goagentembedded.DiagnosticRequest) (map[string]any, error)
 }
 
@@ -92,6 +93,13 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.runtime.SyncNow(ctx)
+}
+
+func (r *Runtime) ApplyRevision(ctx context.Context, snapshot Snapshot) error {
+	if r == nil || r.runtime == nil {
+		return errors.New("embedded runtime is not initialized")
+	}
+	return r.runtime.ApplyRevision(ctx, toEmbeddedSnapshot(snapshot))
 }
 
 func (r *Runtime) SyncSource() *SyncSource {

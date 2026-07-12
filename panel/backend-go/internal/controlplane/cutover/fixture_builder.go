@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -330,7 +331,7 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 		return err
 	}
 
-	return store.SaveLocalRuntimeState(ctx, fixture.localAgentID, storage.RuntimeState{
+	if err := store.SaveLocalRuntimeState(ctx, fixture.localAgentID, storage.RuntimeState{
 		NodeID:          fixture.localAgentID,
 		CurrentRevision: int64(fixture.seededLocalCurrentRevision),
 		Status:          "error",
@@ -339,6 +340,49 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 			"last_apply_status":   fixture.seededLocalApplyStatus,
 			"last_apply_message":  fixture.seededLocalApplyMessage,
 		},
+	}); err != nil {
+		return err
+	}
+	return seedCutoverRevisionLedger(ctx, store, fixture)
+}
+
+func seedCutoverRevisionLedger(ctx context.Context, store *storage.SQLiteStore, fixture *cutoverFixture) error {
+	snapshot, err := store.LoadLocalSnapshot(ctx, fixture.localAgentID)
+	if err != nil {
+		return err
+	}
+	if snapshot.Revision != int64(fixture.expectedRevision) {
+		return fmt.Errorf("cutover snapshot revision = %d, want %d", snapshot.Revision, fixture.expectedRevision)
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(payload)
+	digestText := hex.EncodeToString(digest[:])
+	now := time.Now().UTC()
+	operationID := "cutover-bootstrap-operation"
+	artifactID := "cutover-bootstrap-snapshot"
+	revision := int64(fixture.expectedRevision)
+	appliedRevision := int64(fixture.seededLocalCurrentRevision)
+	return store.CreateRevisionLedger(ctx, storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: operationID, Kind: "cutover.bootstrap", Status: storage.OperationStatusPending,
+			PrimaryAgentID: fixture.localAgentID, CreatedAt: now, UpdatedAt: now,
+		},
+		Revisions: []storage.AgentRevisionRow{{
+			AgentID: fixture.localAgentID, Revision: revision, OperationID: operationID,
+			State: storage.AgentRevisionStatePending, SnapshotArtifactID: artifactID, SnapshotDigest: digestText,
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: now, UpdatedAt: now,
+		}},
+		Pointers: []storage.AgentRevisionPointerRow{{
+			AgentID: fixture.localAgentID, DesiredRevision: revision, AppliedRevision: appliedRevision,
+			LastKnownGoodRevision: appliedRevision, UpdatedAt: now,
+		}},
+		Artifacts: []storage.GenerationArtifactRow{{
+			ID: artifactID, Kind: "agent_snapshot", SHA256: digestText,
+			Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now,
+		}},
 	})
 }
 

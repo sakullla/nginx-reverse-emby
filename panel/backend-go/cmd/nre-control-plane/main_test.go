@@ -20,8 +20,8 @@ import (
 )
 
 type localAgentRuntimeStub struct {
-	start   func(context.Context) error
-	syncNow func(context.Context) error
+	start         func(context.Context) error
+	applyRevision func(context.Context, storage.Snapshot) error
 }
 
 func (s localAgentRuntimeStub) Start(ctx context.Context) error {
@@ -31,9 +31,9 @@ func (s localAgentRuntimeStub) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s localAgentRuntimeStub) SyncNow(ctx context.Context) error {
-	if s.syncNow != nil {
-		return s.syncNow(ctx)
+func (s localAgentRuntimeStub) ApplyRevision(ctx context.Context, snapshot storage.Snapshot) error {
+	if s.applyRevision != nil {
+		return s.applyRevision(ctx, snapshot)
 	}
 	return nil
 }
@@ -80,6 +80,25 @@ func TestDockerBuildInjectsControlPlaneVersionMetadata(t *testing.T) {
 	}
 }
 
+func TestProductionWiringHasNoDirectLocalApplyTrigger(t *testing.T) {
+	files := []string{
+		"main.go",
+		filepath.Join("..", "..", "internal", "controlplane", "app", "app.go"),
+	}
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(data)
+		for _, forbidden := range []string{"SetLocalApplyTrigger", "LocalApplyTrigger()", "runtime.SyncNow"} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s contains forbidden synchronous apply wiring %q", path, forbidden)
+			}
+		}
+	}
+}
+
 type closeTrackingHandler struct {
 	http.Handler
 	closed bool
@@ -88,55 +107,6 @@ type closeTrackingHandler struct {
 func (h *closeTrackingHandler) Close() error {
 	h.closed = true
 	return nil
-}
-
-func TestNewLocalAgentStarterUsesConfiguredStore(t *testing.T) {
-	cfg := config.Default()
-	cfg.EnableLocalAgent = true
-	cfg.DatabaseDriver = "mysql"
-	cfg.DatabaseDSN = "nre:nre@tcp(mysql:3306)/nre?parseTime=true"
-	cfg.DataDir = "/tmp/nre-data"
-	cfg.LocalAgentID = "edge-1"
-	cfg.TrafficStatsEnabled = false
-
-	previousOpenConfiguredStore := openConfiguredStore
-	previousNewLocalAgentRuntime := newLocalAgentRuntime
-	t.Cleanup(func() {
-		openConfiguredStore = previousOpenConfiguredStore
-		newLocalAgentRuntime = previousNewLocalAgentRuntime
-	})
-
-	var gotStoreCfg storage.StoreConfig
-	store := &storage.GormStore{}
-	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
-		gotStoreCfg = storage.StoreConfigFromConfig(gotCfg)
-		return store, nil
-	}
-	newLocalAgentRuntime = func(_ config.Config, gotStore localagent.Store) (localAgentRuntime, error) {
-		if gotStore != store {
-			t.Fatalf("store = %p, want %p", gotStore, store)
-		}
-		return localAgentRuntimeStub{}, nil
-	}
-
-	if _, err := newLocalAgentStarter(cfg); err != nil {
-		t.Fatalf("newLocalAgentStarter() error = %v", err)
-	}
-	if gotStoreCfg.Driver != "mysql" {
-		t.Fatalf("Driver = %q", gotStoreCfg.Driver)
-	}
-	if gotStoreCfg.DSN != "nre:nre@tcp(mysql:3306)/nre?parseTime=true" {
-		t.Fatalf("DSN = %q", gotStoreCfg.DSN)
-	}
-	if gotStoreCfg.DataRoot != "/tmp/nre-data" {
-		t.Fatalf("DataRoot = %q", gotStoreCfg.DataRoot)
-	}
-	if gotStoreCfg.LocalAgentID != "edge-1" {
-		t.Fatalf("LocalAgentID = %q", gotStoreCfg.LocalAgentID)
-	}
-	if gotStoreCfg.TrafficStatsEnabled {
-		t.Fatal("TrafficStatsEnabled = true, want false")
-	}
 }
 
 func TestMigrateStorageCommandRequiresSourceAndTarget(t *testing.T) {
@@ -528,56 +498,6 @@ func TestNewControlPlaneAppClosesStoresWhenHandlerBuildFails(t *testing.T) {
 	}
 }
 
-func TestNewLocalAgentStarterBuildsSQLiteStoreAndInvokesRuntime(t *testing.T) {
-	cfg := config.Default()
-	cfg.EnableLocalAgent = true
-	cfg.DataDir = t.TempDir()
-	cfg.LocalAgentID = "local-test"
-	cfg.LocalAgentName = "local-test"
-
-	started := false
-	previousNewLocalAgentRuntime := newLocalAgentRuntime
-	t.Cleanup(func() {
-		newLocalAgentRuntime = previousNewLocalAgentRuntime
-	})
-
-	newLocalAgentRuntime = func(gotCfg config.Config, store localagent.Store) (localAgentRuntime, error) {
-		if gotCfg.LocalAgentID != "local-test" {
-			t.Fatalf("LocalAgentID = %q", gotCfg.LocalAgentID)
-		}
-		sqliteStore, ok := store.(*storage.SQLiteStore)
-		if !ok {
-			t.Fatalf("store type = %T, want *storage.SQLiteStore", store)
-		}
-		if _, err := sqliteStore.LoadLocalSnapshot(t.Context(), gotCfg.LocalAgentID); err != nil {
-			t.Fatalf("LoadLocalSnapshot() error = %v", err)
-		}
-		t.Cleanup(func() {
-			_ = sqliteStore.Close()
-		})
-		return localAgentRuntimeStub{
-			start: func(context.Context) error {
-				started = true
-				return nil
-			},
-		}, nil
-	}
-
-	starter, err := newLocalAgentStarter(cfg)
-	if err != nil {
-		t.Fatalf("newLocalAgentStarter() error = %v", err)
-	}
-	if starter == nil {
-		t.Fatal("newLocalAgentStarter() returned nil starter")
-	}
-	if err := starter(t.Context()); err != nil {
-		t.Fatalf("starter() error = %v", err)
-	}
-	if !started {
-		t.Fatal("starter did not invoke runtime Start")
-	}
-}
-
 func TestNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
@@ -678,7 +598,7 @@ func TestNewControlPlaneAppProvidesBackupServiceWhenLocalAgentEnabled(t *testing
 	}
 }
 
-func TestNewControlPlaneAppWiresLocalMonitorRefreshToRuntimeSync(t *testing.T) {
+func TestNewControlPlaneAppDoesNotWireMonitorRefreshToRuntimeApply(t *testing.T) {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -695,7 +615,7 @@ func TestNewControlPlaneAppWiresLocalMonitorRefreshToRuntimeSync(t *testing.T) {
 		newLocalAgentRuntime = previousNewLocalAgentRuntime
 	})
 
-	syncCalls := 0
+	applyCalls := 0
 	newHandler = func(config.Config) (http.Handler, error) {
 		return http.NewServeMux(), nil
 	}
@@ -705,8 +625,8 @@ func TestNewControlPlaneAppWiresLocalMonitorRefreshToRuntimeSync(t *testing.T) {
 				_ = sqliteStore.Close()
 			})
 		}
-		return localAgentRuntimeStub{syncNow: func(context.Context) error {
-			syncCalls++
+		return localAgentRuntimeStub{applyRevision: func(context.Context, storage.Snapshot) error {
+			applyCalls++
 			return nil
 		}}, nil
 	}
@@ -714,8 +634,8 @@ func TestNewControlPlaneAppWiresLocalMonitorRefreshToRuntimeSync(t *testing.T) {
 		if _, err := deps.AgentService.MonitorSnapshot(t.Context()); err != nil {
 			return nil, err
 		}
-		if syncCalls != 1 {
-			return nil, errors.New("AgentService monitor snapshot did not trigger runtime sync")
+		if applyCalls != 0 {
+			return nil, errors.New("AgentService monitor snapshot triggered runtime apply")
 		}
 		return http.NewServeMux(), nil
 	}
@@ -833,8 +753,8 @@ func TestNewControlPlaneAppProvidesWireGuardClientServiceWhenLocalAgentEnabled(t
 		if client.ID == 0 || client.ProfileID != profile.ID {
 			return nil, errors.New("WireGuardClientService did not create a client for the profile")
 		}
-		if localApplyCalls != 1 {
-			return nil, errors.New("WireGuardClientService did not trigger local apply")
+		if localApplyCalls != 0 {
+			return nil, errors.New("WireGuardClientService triggered synchronous local apply")
 		}
 		return http.NewServeMux(), nil
 	}
@@ -844,7 +764,7 @@ func TestNewControlPlaneAppProvidesWireGuardClientServiceWhenLocalAgentEnabled(t
 				_ = sqliteStore.Close()
 			})
 		}
-		return localAgentRuntimeStub{syncNow: func(context.Context) error {
+		return localAgentRuntimeStub{applyRevision: func(context.Context, storage.Snapshot) error {
 			localApplyCalls++
 			return nil
 		}}, nil

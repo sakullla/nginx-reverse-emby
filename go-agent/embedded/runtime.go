@@ -87,6 +87,7 @@ type RelayTimeoutConfig struct {
 
 type Runtime struct {
 	app      embeddedAppRunner
+	ready    <-chan struct{}
 	closeMu  sync.Mutex
 	closed   bool
 	closeErr error
@@ -125,6 +126,8 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 		return nil, err
 	}
 
+	ready := make(chan struct{})
+	var readyOnce sync.Once
 	runtimeApp, err := newEmbeddedApp(agentapp.Config{
 		AgentID:              cfg.AgentID,
 		AgentName:            cfg.AgentName,
@@ -160,12 +163,17 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 			FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
 			IdleTimeout:      cfg.RelayTimeouts.IdleTimeout,
 		},
-	}, persistentStore, syncClientAdapter{source: source})
+	}, persistentStore, syncClientAdapter{
+		source: source,
+		onSync: func() {
+			readyOnce.Do(func() { close(ready) })
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	return &Runtime{app: runtimeApp}, nil
+	return &Runtime{app: runtimeApp, ready: ready}, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -174,6 +182,26 @@ func (r *Runtime) Run(ctx context.Context) error {
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.app.SyncNow(ctx)
+}
+
+// ApplyRevision is the only embedded sync path allowed to advance runtime
+// configuration. Periodic syncs still publish telemetry, but replay the
+// currently applied revision until the coordinator supplies an approved snapshot.
+func (r *Runtime) ApplyRevision(ctx context.Context, snapshot Snapshot) error {
+	if r == nil || r.app == nil {
+		return errors.New("embedded runtime is not initialized")
+	}
+	if snapshot.Revision <= 0 {
+		return errors.New("approved snapshot revision must be positive")
+	}
+	if r.ready != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-r.ready:
+		}
+	}
+	return r.app.SyncNow(context.WithValue(ctx, approvedRevisionContextKey{}, sanitizeSnapshot(snapshot)))
 }
 
 func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, req DiagnosticRequest) (map[string]any, error) {
@@ -206,15 +234,24 @@ func (r *Runtime) Close() error {
 
 type syncClientAdapter struct {
 	source SyncSource
+	onSync func()
 }
 
 func (a syncClientAdapter) Sync(ctx context.Context, request agentapp.SyncRequest) (agentapp.Snapshot, error) {
-	snapshot, err := a.source.Sync(ctx, SyncRequest(request))
+	_, err := a.source.Sync(ctx, SyncRequest(request))
+	if a.onSync != nil {
+		a.onSync()
+	}
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return sanitizeSnapshot(snapshot), nil
+	if snapshot, ok := ctx.Value(approvedRevisionContextKey{}).(Snapshot); ok {
+		return sanitizeSnapshot(snapshot), nil
+	}
+	return Snapshot{Revision: int64(request.CurrentRevision)}, nil
 }
+
+type approvedRevisionContextKey struct{}
 
 type persistentBridgeStore struct {
 	delegate agentcore.Store

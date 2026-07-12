@@ -149,8 +149,10 @@ func tryStartCutoverHarness(t *testing.T, options cutoverHarnessOptions) (*cutov
 
 	agentService := service.NewAgentService(cfg, apiStore)
 	certificateService := service.NewCertificateService(cfg, apiStore)
-	agentService.SetLocalApplyTrigger(runtime.SyncNow)
-	certificateService.SetLocalApplyTrigger(runtime.SyncNow)
+	revisionWorker, err := localagent.NewRevisionWorker(cfg.LocalAgentID, agentService.RevisionAPI(), apiStore, runtime)
+	if err != nil {
+		return nil, fmt.Errorf("localagent.NewRevisionWorker(): %w", err)
+	}
 
 	router, err := controlplanehttp.NewRouter(controlplanehttp.Dependencies{
 		Config:               cfg,
@@ -179,7 +181,7 @@ func tryStartCutoverHarness(t *testing.T, options cutoverHarnessOptions) (*cutov
 	harness.cancelRun = cancelRun
 	harness.runDone = runDone
 	go func() {
-		runDone <- runtime.Start(runCtx)
+		runDone <- localagent.RunRevisionRuntime(runCtx, runtime, revisionWorker)
 	}()
 
 	if _, err := waitForStableLocalApplyState(apiStore, fixture.expectedRevision, 4*time.Second); err != nil {

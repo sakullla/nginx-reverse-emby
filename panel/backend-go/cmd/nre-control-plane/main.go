@@ -30,7 +30,7 @@ var (
 
 type localAgentRuntime interface {
 	Start(context.Context) error
-	SyncNow(context.Context) error
+	ApplyRevision(context.Context, storage.Snapshot) error
 	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
 }
 
@@ -80,7 +80,7 @@ var runControlPlaneFromEnv = func() error {
 	// store, decoupled from the HTTP request or renewal-loop store lifecycles.
 	service.ManagedCertificateDispatcher().SetSignFunc(service.ManagedCertificateBackgroundSigner(cfg, func() (storage.Store, error) {
 		return openConfiguredStore(cfg)
-	}, application.LocalApplyTrigger()))
+	}, nil))
 	startManagedCertificateIssuanceRecovery(ctx, cfg, nil)
 	if err := application.Run(ctx); err != nil {
 		return err
@@ -430,32 +430,6 @@ func startTrafficCleanupLoop(ctx context.Context, cfg config.Config, logger *log
 	}()
 }
 
-var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error) {
-	if !cfg.EnableLocalAgent {
-		return nil, nil
-	}
-
-	store, err := openConfiguredStore(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	runtime, err := newLocalAgentRuntime(cfg, store)
-	if err != nil {
-		_ = store.Close()
-		return nil, err
-	}
-	if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
-		trafficCfg, err := service.NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
-		if err != nil {
-			_ = store.Close()
-			return nil, err
-		}
-		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(trafficCfg, store))
-	}
-	return runtime.Start, nil
-}
-
 func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error) {
 	if !cfg.EnableLocalAgent {
 		handler, err := newHandler(cfg)
@@ -509,22 +483,10 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(trafficCfg, serviceStore))
 	}
 
-	agentSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	agentSvc.SetLocalMonitorRefreshTrigger(runtime.SyncNow)
-	ruleSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	l4Svc.SetLocalApplyTrigger(runtime.SyncNow)
-	relaySvc.SetLocalApplyTrigger(runtime.SyncNow)
-	certSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	egressSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	if triggerSvc, ok := any(wireGuardSvc).(interface {
-		SetLocalApplyTrigger(func(context.Context) error)
-	}); ok {
-		triggerSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	}
-	if triggerSvc, ok := any(wireGuardClientSvc).(interface {
-		SetLocalApplyTrigger(func(context.Context) error)
-	}); ok {
-		triggerSvc.SetLocalApplyTrigger(runtime.SyncNow)
+	revisionWorker, err := localagent.NewRevisionWorker(cfg.LocalAgentID, agentSvc.RevisionAPI(), serviceStore, runtime)
+	if err != nil {
+		_ = closeStores()
+		return nil, err
 	}
 
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
@@ -567,8 +529,9 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		}
 	}
 
-	controlPlaneApp := app.New(cfg, handler, logger, runtime.Start)
-	controlPlaneApp.SetLocalApplyTrigger(runtime.SyncNow)
+	controlPlaneApp := app.New(cfg, handler, logger, func(ctx context.Context) error {
+		return localagent.RunRevisionRuntime(ctx, runtime, revisionWorker)
+	})
 	controlPlaneApp.SetCleanup(closeApp)
 	return controlPlaneApp, nil
 }
