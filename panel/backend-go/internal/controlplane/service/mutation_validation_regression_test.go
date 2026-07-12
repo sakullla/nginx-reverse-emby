@@ -293,6 +293,86 @@ func TestMutationExecutorUsesPersistedRemoteCapabilities(t *testing.T) {
 	assertStandaloneEgressMutationRolledBack(t, store, agentID, operationID, key)
 }
 
+func TestMutationExecutorRequiresWireGuardProfileForWireGuardModes(t *testing.T) {
+	tests := []struct {
+		name           string
+		kind           string
+		resourceState  revision.ResourceStateReader
+		mutate         revision.ResourceMutation
+		assertResource func(*testing.T, *storage.GormStore)
+	}{
+		{
+			name:          "l4",
+			kind:          "l4_rule.create",
+			resourceState: l4MutationResourceState,
+			mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+				return tx.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
+					ID: 51, AgentID: "local", Name: "missing-wg-profile", Protocol: "udp",
+					ListenMode: "wireguard", ListenHost: "0.0.0.0", ListenPort: 51820,
+					BackendsJSON: `[{"host":"127.0.0.1","port":9001}]`, Enabled: true,
+					Revision: int(revisions["local"]),
+				}})
+			},
+			assertResource: func(t *testing.T, store *storage.GormStore) {
+				t.Helper()
+				if rows, err := store.ListL4Rules(t.Context(), "local"); err != nil {
+					t.Fatalf("ListL4Rules() error = %v", err)
+				} else if len(rows) != 0 {
+					t.Fatalf("L4 rule survived rollback: %+v", rows)
+				}
+			},
+		},
+		{
+			name: "relay",
+			kind: "relay_listener.create",
+			resourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+				listeners, err := tx.ListRelayListeners(ctx, target.AgentID)
+				if err != nil {
+					return nil, err
+				}
+				for i := range listeners {
+					listeners[i].Revision = 0
+				}
+				return map[string]any{"relay_listeners": listeners}, nil
+			},
+			mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+				return tx.SaveRelayListeners(ctx, "local", []storage.RelayListenerRow{{
+					ID: 52, AgentID: "local", Name: "missing-wg-profile",
+					ListenHost: "0.0.0.0", ListenPort: 7443, PublicHost: "relay.example.com", PublicPort: 7443,
+					TransportMode: "wireguard", Enabled: true, Revision: int(revisions["local"]),
+				}})
+			},
+			assertResource: func(t *testing.T, store *storage.GormStore) {
+				t.Helper()
+				if rows, err := store.ListRelayListeners(t.Context(), "local"); err != nil {
+					t.Fatalf("ListRelayListeners() error = %v", err)
+				} else if len(rows) != 0 {
+					t.Fatalf("relay listener survived rollback: %+v", rows)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newMutationValidationStore(t)
+			operationID := "op-wireguard-mode-" + tt.name
+			key := "wireguard-mode-" + tt.name
+			executor := newMutationValidationExecutor(store, operationID)
+			_, err := executor.Execute(t.Context(), revision.MutationRequest{
+				Kind: tt.kind, IdempotencyKey: key, Request: map[string]any{"mode": "wireguard"},
+				Targets:       []revision.Target{{AgentID: "local", Local: true, Capabilities: []string{"wireguard"}}},
+				ResourceState: tt.resourceState, Mutate: tt.mutate,
+			})
+			if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
+				t.Fatalf("Execute() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
+			}
+			tt.assertResource(t, store)
+			assertMutationRevisionLedgerRolledBack(t, store, "local", operationID, key)
+		})
+	}
+}
+
 func TestMutationExecutorRejectsHTTPAndL4ListenerConflict(t *testing.T) {
 	store := newMutationValidationStore(t)
 	executor := newMutationValidationExecutor(store, "op-http-l4-conflict")
@@ -422,6 +502,17 @@ func assertStandaloneEgressMutationRolledBack(
 	} else if len(rows) != 0 {
 		t.Fatalf("egress profiles survived rollback: %+v", rows)
 	}
+	assertMutationRevisionLedgerRolledBack(t, store, agentID, operationID, idempotencyKey)
+}
+
+func assertMutationRevisionLedgerRolledBack(
+	t *testing.T,
+	store *storage.GormStore,
+	agentID string,
+	operationID string,
+	idempotencyKey string,
+) {
+	t.Helper()
 	if rows, err := store.ListAgentRevisions(t.Context(), agentID); err != nil {
 		t.Fatalf("ListAgentRevisions() error = %v", err)
 	} else {

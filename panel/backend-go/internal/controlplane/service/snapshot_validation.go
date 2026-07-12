@@ -285,7 +285,11 @@ func validateSnapshotReferences(snapshot storage.Snapshot) error {
 		if err := validateRelayLayerReferences("L4 rule", rule.ID, rule.RelayLayers, relays); err != nil {
 			return err
 		}
-		if err := validateWireGuardReference("L4 rule", rule.ID, rule.WireGuardProfileID, wireGuard); err != nil {
+		validateWireGuard := validateWireGuardReference
+		if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+			validateWireGuard = validateRequiredWireGuardReference
+		}
+		if err := validateWireGuard("L4 rule", rule.ID, rule.WireGuardProfileID, wireGuard); err != nil {
 			return err
 		}
 		if err := validateEgressReference("L4 rule", rule.ID, rule.EgressProfileID, egress); err != nil {
@@ -293,7 +297,11 @@ func validateSnapshotReferences(snapshot storage.Snapshot) error {
 		}
 	}
 	for _, listener := range snapshot.RelayListeners {
-		if err := validateWireGuardReference("relay listener", listener.ID, listener.WireGuardProfileID, wireGuard); err != nil {
+		validateWireGuard := validateWireGuardReference
+		if strings.EqualFold(strings.TrimSpace(listener.TransportMode), "wireguard") {
+			validateWireGuard = validateRequiredWireGuardReference
+		}
+		if err := validateWireGuard("relay listener", listener.ID, listener.WireGuardProfileID, wireGuard); err != nil {
 			return err
 		}
 		if listener.CertificateID != nil {
@@ -526,6 +534,17 @@ func validateWireGuardReference(kind string, resourceID int, profileID *int, pro
 		return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s %d references disabled wireguard profile %d", kind, resourceID, *profileID), nil)
 	}
 	return nil
+}
+
+func validateRequiredWireGuardReference(kind string, resourceID int, profileID *int, profiles map[int]storage.WireGuardProfile) error {
+	if profileID == nil {
+		return revision.NewError(
+			revision.ErrorCodeUnprocessable,
+			fmt.Sprintf("%s %d requires wireguard_profile_id", kind, resourceID),
+			nil,
+		)
+	}
+	return validateWireGuardReference(kind, resourceID, profileID, profiles)
 }
 
 func validateEgressReference(kind string, resourceID int, profileID *int, profiles map[int]storage.EgressProfile) error {
