@@ -127,6 +127,26 @@ type CoordinatorDrainRequest struct {
 	Now          time.Time
 }
 
+type CoordinatorActionIdempotency struct {
+	Scope                  string
+	Key                    string
+	RequestFingerprint     string
+	HTTPRequestFingerprint string
+	ExpiresAt              time.Time
+}
+
+type CoordinatorRetryRequest struct {
+	AgentID     string
+	Revision    int64
+	Now         time.Time
+	Idempotency CoordinatorActionIdempotency
+}
+
+type CoordinatorRetryResult struct {
+	Revision AgentRevisionRow
+	Replayed bool
+}
+
 type CoordinatorReconcileRequest struct {
 	AgentID string
 	Now     time.Time
@@ -146,12 +166,14 @@ type CoordinatorRollbackRequest struct {
 	Now                        time.Time
 	DefaultApplyTimeoutSeconds int
 	DefaultDrainTimeoutSeconds int
+	Idempotency                CoordinatorActionIdempotency
 }
 
 type CoordinatorRollbackResult struct {
 	Operation OperationRow
 	Revision  AgentRevisionRow
 	Pointer   AgentRevisionPointerRow
+	Replayed  bool
 }
 
 type CoordinatorJournalRequest struct {
@@ -830,56 +852,104 @@ func (s *GormStore) ListCoordinatorAgentIDs(ctx context.Context) ([]string, erro
 }
 
 func (s *GormStore) RetryCoordinatorRevision(ctx context.Context, agentID string, revisionNumber int64, now time.Time) (AgentRevisionRow, error) {
-	agentID = strings.TrimSpace(agentID)
-	now = coordinatorTime(now)
-	if agentID == "" || revisionNumber < 0 {
-		return AgentRevisionRow{}, fmt.Errorf("agent id and revision are required")
+	result, err := s.RetryCoordinatorRevisionIdempotent(ctx, CoordinatorRetryRequest{
+		AgentID: agentID, Revision: revisionNumber, Now: now,
+	})
+	return result.Revision, err
+}
+
+func (s *GormStore) RetryCoordinatorRevisionIdempotent(ctx context.Context, request CoordinatorRetryRequest) (CoordinatorRetryResult, error) {
+	request.AgentID = strings.TrimSpace(request.AgentID)
+	request.Now = coordinatorTime(request.Now)
+	if request.AgentID == "" || request.Revision < 0 {
+		return CoordinatorRetryResult{}, fmt.Errorf("agent id and revision are required")
 	}
-	var result AgentRevisionRow
+	if err := validateCoordinatorActionIdempotency(request.Idempotency, request.Now); err != nil {
+		return CoordinatorRetryResult{}, err
+	}
+	var result CoordinatorRetryResult
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		pointer, err := lockCoordinatorPointer(tx, agentID)
+		if replay, found, err := loadCoordinatorActionReplayTx(tx, request.Idempotency, request.Now); err != nil {
+			return err
+		} else if found {
+			if replay.AgentID != request.AgentID || replay.DesiredRevision != request.Revision {
+				return coordinatorStateConflict("idempotency response does not match retry target")
+			}
+			var revision AgentRevisionRow
+			if err := tx.Where("agent_id = ? AND revision = ?", request.AgentID, request.Revision).First(&revision).Error; err != nil {
+				return err
+			}
+			result = CoordinatorRetryResult{Revision: revision, Replayed: true}
+			return nil
+		}
+		pointer, err := lockCoordinatorPointer(tx, request.AgentID)
 		if err != nil {
 			return err
 		}
-		if pointer.DesiredRevision != revisionNumber {
-			return coordinatorStateConflict("revision %d is not current desired revision %d", revisionNumber, pointer.DesiredRevision)
+		if pointer.DesiredRevision != request.Revision {
+			return coordinatorStateConflict("revision %d is not current desired revision %d", request.Revision, pointer.DesiredRevision)
 		}
-		active, err := lockActiveCoordinatorAttempts(tx, agentID)
+		active, err := lockActiveCoordinatorAttempts(tx, request.AgentID)
 		if err != nil {
 			return err
 		}
 		if len(active) > 0 {
-			return coordinatorStateConflict("agent %q has an active attempt", agentID)
+			return coordinatorStateConflict("agent %q has an active attempt", request.AgentID)
 		}
+		var revision AgentRevisionRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("agent_id = ? AND revision = ?", agentID, revisionNumber).
-			First(&result).Error; err != nil {
+			Where("agent_id = ? AND revision = ?", request.AgentID, request.Revision).
+			First(&revision).Error; err != nil {
 			return err
 		}
-		if result.State != AgentRevisionStateFailed {
-			return coordinatorStateConflict("revision %d is in state %q, want failed", revisionNumber, result.State)
+		if revision.State != AgentRevisionStateFailed {
+			return coordinatorStateConflict("revision %d is in state %q, want failed", request.Revision, revision.State)
 		}
-		result.RetryCycle++
-		result.AttemptCount = 0
-		result.State = AgentRevisionStatePending
-		result.NextAttemptAt = nil
-		result.ErrorCode = ""
-		result.ErrorMessage = ""
-		result.FailedAt = nil
-		result.UpdatedAt = now
+		revision.RetryCycle++
+		revision.AttemptCount = 0
+		revision.State = AgentRevisionStatePending
+		revision.NextAttemptAt = nil
+		revision.ErrorCode = ""
+		revision.ErrorMessage = ""
+		revision.FailedAt = nil
+		revision.UpdatedAt = request.Now
 		if err := tx.Model(&AgentRevisionRow{}).
-			Where("agent_id = ? AND revision = ? AND state = ?", agentID, revisionNumber, AgentRevisionStateFailed).
+			Where("agent_id = ? AND revision = ? AND state = ?", request.AgentID, request.Revision, AgentRevisionStateFailed).
 			Updates(map[string]any{
-				"retry_cycle": result.RetryCycle, "attempt_count": 0, "state": AgentRevisionStatePending,
-				"next_attempt_at": nil, "error_code": "", "error_message": "", "failed_at": nil, "updated_at": now,
+				"retry_cycle": revision.RetryCycle, "attempt_count": 0, "state": AgentRevisionStatePending,
+				"next_attempt_at": nil, "error_code": "", "error_message": "", "failed_at": nil, "updated_at": request.Now,
 			}).Error; err != nil {
 			return err
 		}
-		if err := appendCoordinatorEventTx(tx, result, "revision_retry_requested", now, map[string]any{"retry_cycle": result.RetryCycle}); err != nil {
+		if err := appendCoordinatorEventTx(tx, revision, "revision_retry_requested", request.Now, map[string]any{"retry_cycle": revision.RetryCycle}); err != nil {
 			return err
 		}
-		return refreshCoordinatorOperationTx(tx, result.OperationID, now)
+		if err := refreshCoordinatorOperationTx(tx, revision.OperationID, request.Now); err != nil {
+			return err
+		}
+		if err := persistCoordinatorActionReplayTx(tx, request.Idempotency, coordinatorActionReplayPayload{
+			OperationID: revision.OperationID, AgentID: revision.AgentID,
+			DesiredRevision: revision.Revision, ApplyStatus: revision.State,
+			HTTPRequestFingerprint: request.Idempotency.HTTPRequestFingerprint,
+		}, request.Now); err != nil {
+			return err
+		}
+		result = CoordinatorRetryResult{Revision: revision}
+		return nil
 	})
+	if err != nil && coordinatorActionIdempotencyEnabled(request.Idempotency) {
+		if replayed, found, replayErr := s.loadCoordinatorActionReplay(ctx, request.Idempotency, request.Now); replayErr != nil {
+			return CoordinatorRetryResult{}, replayErr
+		} else if found && replayed.AgentID == request.AgentID && replayed.DesiredRevision == request.Revision {
+			revision, revisionFound, revisionErr := s.GetCoordinatorRevision(ctx, request.AgentID, request.Revision)
+			if revisionErr != nil {
+				return CoordinatorRetryResult{}, revisionErr
+			}
+			if revisionFound {
+				return CoordinatorRetryResult{Revision: revision, Replayed: true}, nil
+			}
+		}
+	}
 	return result, err
 }
 
@@ -890,8 +960,32 @@ func (s *GormStore) CopyLastKnownGoodCoordinatorRevision(ctx context.Context, re
 	if request.AgentID == "" || request.OperationID == "" {
 		return CoordinatorRollbackResult{}, fmt.Errorf("agent id and operation id are required")
 	}
+	if err := validateCoordinatorActionIdempotency(request.Idempotency, request.Now); err != nil {
+		return CoordinatorRollbackResult{}, err
+	}
 	var result CoordinatorRollbackResult
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if replay, found, err := loadCoordinatorActionReplayTx(tx, request.Idempotency, request.Now); err != nil {
+			return err
+		} else if found {
+			if replay.AgentID != request.AgentID || replay.OperationID == "" || replay.DesiredRevision <= 0 {
+				return coordinatorStateConflict("idempotency response does not match rollback target")
+			}
+			var operation OperationRow
+			if err := tx.Where("id = ?", replay.OperationID).First(&operation).Error; err != nil {
+				return err
+			}
+			var revision AgentRevisionRow
+			if err := tx.Where("agent_id = ? AND revision = ?", request.AgentID, replay.DesiredRevision).First(&revision).Error; err != nil {
+				return err
+			}
+			pointer, err := lockCoordinatorPointer(tx, request.AgentID)
+			if err != nil {
+				return err
+			}
+			result = CoordinatorRollbackResult{Operation: operation, Revision: revision, Pointer: pointer, Replayed: true}
+			return nil
+		}
 		pointer, err := lockCoordinatorPointer(tx, request.AgentID)
 		if err != nil {
 			return err
@@ -974,10 +1068,146 @@ func (s *GormStore) CopyLastKnownGoodCoordinatorRevision(ctx context.Context, re
 		}); err != nil {
 			return err
 		}
+		if err := persistCoordinatorActionReplayTx(tx, request.Idempotency, coordinatorActionReplayPayload{
+			OperationID: operation.ID, AgentID: revision.AgentID,
+			DesiredRevision: revision.Revision, ApplyStatus: operation.Status,
+			HTTPRequestFingerprint: request.Idempotency.HTTPRequestFingerprint,
+		}, request.Now); err != nil {
+			return err
+		}
 		result = CoordinatorRollbackResult{Operation: operation, Revision: revision, Pointer: pointer}
 		return nil
 	})
+	if err != nil && coordinatorActionIdempotencyEnabled(request.Idempotency) {
+		if replayed, found, replayErr := s.loadCoordinatorActionReplay(ctx, request.Idempotency, request.Now); replayErr != nil {
+			return CoordinatorRollbackResult{}, replayErr
+		} else if found && replayed.AgentID == request.AgentID && replayed.OperationID != "" && replayed.DesiredRevision > 0 {
+			operation, operationFound, operationErr := s.GetOperation(ctx, replayed.OperationID)
+			if operationErr != nil {
+				return CoordinatorRollbackResult{}, operationErr
+			}
+			revision, revisionFound, revisionErr := s.GetCoordinatorRevision(ctx, request.AgentID, replayed.DesiredRevision)
+			if revisionErr != nil {
+				return CoordinatorRollbackResult{}, revisionErr
+			}
+			pointer, pointerFound, pointerErr := s.GetAgentRevisionPointer(ctx, request.AgentID)
+			if pointerErr != nil {
+				return CoordinatorRollbackResult{}, pointerErr
+			}
+			if operationFound && revisionFound && pointerFound {
+				return CoordinatorRollbackResult{Operation: operation, Revision: revision, Pointer: pointer, Replayed: true}, nil
+			}
+		}
+	}
 	return result, err
+}
+
+type coordinatorActionReplayPayload struct {
+	OperationID            string       `json:"operation_id"`
+	AgentID                string       `json:"agent_id"`
+	DesiredRevision        int64        `json:"desired_revision"`
+	ApplyStatus            string       `json:"apply_status"`
+	HTTPRequestFingerprint string       `json:"http_request_fingerprint,omitempty"`
+	Operation              OperationRow `json:"operation,omitempty"`
+}
+
+func coordinatorActionIdempotencyEnabled(input CoordinatorActionIdempotency) bool {
+	return strings.TrimSpace(input.Key) != ""
+}
+
+func validateCoordinatorActionIdempotency(input CoordinatorActionIdempotency, now time.Time) error {
+	if !coordinatorActionIdempotencyEnabled(input) {
+		return nil
+	}
+	if strings.TrimSpace(input.Scope) == "" || strings.TrimSpace(input.RequestFingerprint) == "" || !input.ExpiresAt.After(now) {
+		return fmt.Errorf("idempotency scope, fingerprint, and future expiry are required")
+	}
+	return nil
+}
+
+func loadCoordinatorActionReplayTx(
+	tx *gorm.DB,
+	input CoordinatorActionIdempotency,
+	now time.Time,
+) (coordinatorActionReplayPayload, bool, error) {
+	if !coordinatorActionIdempotencyEnabled(input) {
+		return coordinatorActionReplayPayload{}, false, nil
+	}
+	var record IdempotencyRecordRow
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("scope = ? AND key = ?", strings.TrimSpace(input.Scope), strings.TrimSpace(input.Key)).
+		First(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return coordinatorActionReplayPayload{}, false, nil
+	}
+	if err != nil {
+		return coordinatorActionReplayPayload{}, false, err
+	}
+	if !record.ExpiresAt.After(now) {
+		if err := tx.Where("scope = ? AND key = ? AND operation_id = ?", record.Scope, record.Key, record.OperationID).
+			Delete(&IdempotencyRecordRow{}).Error; err != nil {
+			return coordinatorActionReplayPayload{}, false, err
+		}
+		return coordinatorActionReplayPayload{}, false, nil
+	}
+	if record.RequestFingerprint != strings.TrimSpace(input.RequestFingerprint) {
+		return coordinatorActionReplayPayload{}, false, coordinatorStateConflict("idempotency key was already used with a different request")
+	}
+	payload, err := decodeCoordinatorActionReplay(record.ResponseJSON)
+	return payload, err == nil, err
+}
+
+func (s *GormStore) loadCoordinatorActionReplay(
+	ctx context.Context,
+	input CoordinatorActionIdempotency,
+	now time.Time,
+) (coordinatorActionReplayPayload, bool, error) {
+	if !coordinatorActionIdempotencyEnabled(input) {
+		return coordinatorActionReplayPayload{}, false, nil
+	}
+	record, found, err := s.GetIdempotencyRecord(ctx, input.Scope, input.Key)
+	if err != nil || !found || !record.ExpiresAt.After(now) {
+		return coordinatorActionReplayPayload{}, false, err
+	}
+	if record.RequestFingerprint != strings.TrimSpace(input.RequestFingerprint) {
+		return coordinatorActionReplayPayload{}, false, coordinatorStateConflict("idempotency key was already used with a different request")
+	}
+	payload, err := decodeCoordinatorActionReplay(record.ResponseJSON)
+	return payload, err == nil, err
+}
+
+func decodeCoordinatorActionReplay(responseJSON string) (coordinatorActionReplayPayload, error) {
+	var payload coordinatorActionReplayPayload
+	if err := json.Unmarshal([]byte(responseJSON), &payload); err != nil {
+		return coordinatorActionReplayPayload{}, fmt.Errorf("decode coordinator action idempotency response: %w", err)
+	}
+	if payload.OperationID == "" {
+		payload.OperationID = payload.Operation.ID
+	}
+	if payload.OperationID == "" || payload.AgentID == "" || payload.DesiredRevision <= 0 {
+		return coordinatorActionReplayPayload{}, fmt.Errorf("coordinator action idempotency response is incomplete")
+	}
+	return payload, nil
+}
+
+func persistCoordinatorActionReplayTx(
+	tx *gorm.DB,
+	input CoordinatorActionIdempotency,
+	payload coordinatorActionReplayPayload,
+	now time.Time,
+) error {
+	if !coordinatorActionIdempotencyEnabled(input) {
+		return nil
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode coordinator action idempotency response: %w", err)
+	}
+	return tx.Create(&IdempotencyRecordRow{
+		Scope: strings.TrimSpace(input.Scope), Key: strings.TrimSpace(input.Key),
+		RequestFingerprint: strings.TrimSpace(input.RequestFingerprint), OperationID: payload.OperationID,
+		ResponseJSON: string(encoded), CreatedAt: now, ExpiresAt: input.ExpiresAt.UTC(),
+	}).Error
 }
 
 func (s *GormStore) ReconcileCoordinatorJournal(ctx context.Context, request CoordinatorJournalRequest) (CoordinatorJournalResult, error) {

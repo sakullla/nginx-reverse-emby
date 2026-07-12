@@ -1013,6 +1013,13 @@ func (s *backupService) importBundleWithRevisions(ctx context.Context, archive [
 			ResourceState: func(context.Context, *storage.GormStore, revision.Target) (any, error) {
 				return mutationApplied, nil
 			},
+			ReplayExtra: func() map[string]any {
+				return map[string]any{
+					"manifest": result.Manifest,
+					"summary":  result.Summary,
+					"report":   result.Report,
+				}
+			},
 			Mutate: func(mutateCtx context.Context, mutationStore *storage.GormStore, revisions map[string]int64) error {
 				mutationApplied = true
 				rows, err := mutationStore.ListAgents(mutateCtx)

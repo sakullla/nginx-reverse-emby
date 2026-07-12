@@ -239,11 +239,13 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 	materialRollbacks := make([]func() error, 0)
 	var created RelayListener
 	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
-		Kind:             "relay_listener.create",
-		DependencyAction: revision.DependencyActionApply,
-		Request:          input,
-		Targets:          configMutationTargets(s.cfg, []string{resolvedID}, nil),
-		ResourceState:    relayListenerMutationResourceState,
+		Kind:                "relay_listener.create",
+		DependencyAction:    revision.DependencyActionApply,
+		Request:             input,
+		Targets:             configMutationTargets(s.cfg, []string{resolvedID}, nil),
+		ResourceState:       relayListenerMutationResourceState,
+		ReplayResourceField: "listener",
+		ReplayResource:      func() any { return created },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &relayService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -390,8 +392,10 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 			ID    int                `json:"id"`
 			Input RelayListenerInput `json:"input"`
 		}{ID: id, Input: input},
-		Targets:       configMutationTargets(s.cfg, targetAgentIDs, nil),
-		ResourceState: relayListenerMutationResourceState,
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       relayListenerMutationResourceState,
+		ReplayResourceField: "listener",
+		ReplayResource:      func() any { return updated },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &relayService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -559,11 +563,13 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 	postCommitActions := make([]func(), 0)
 	var deleted RelayListener
 	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
-		Kind:             "relay_listener.delete",
-		DependencyAction: revision.DependencyActionDelete,
-		Request:          map[string]int{"id": id},
-		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
-		ResourceState:    relayListenerMutationResourceState,
+		Kind:                "relay_listener.delete",
+		DependencyAction:    revision.DependencyActionDelete,
+		Request:             map[string]int{"id": id},
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       relayListenerMutationResourceState,
+		ReplayResourceField: "listener",
+		ReplayResource:      func() any { return deleted },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &relayService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,

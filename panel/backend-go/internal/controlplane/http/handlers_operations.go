@@ -2,7 +2,6 @@ package http
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,15 +11,12 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
 const maxIdempotentMutationBodyBytes = 32 << 20
-
-type panelMutationFingerprintKey struct{}
 
 func (d Dependencies) withMutationContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,22 +49,49 @@ func (d Dependencies) writeMutationResource(
 	}
 
 	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if result.Replayed && idempotencyKey != "" && d.RevisionService != nil {
-		if cached, found, err := d.waitForMutationResponse(
-			r, idempotencyKey, result.Operation.ID,
-		); err == nil && found {
-			delete(cached, "operation")
-			delete(cached, "http_request_fingerprint")
-			cached["replayed"] = true
-			w.Header().Set("Idempotency-Replayed", "true")
-			if statusURL, _ := cached["status_url"].(string); statusURL != "" {
-				w.Header().Set("Location", statusURL)
-			}
-			writeJSON(w, http.StatusAccepted, cached)
+	if result.Replayed {
+		field, replayResource, ok, err := decodeMutationReplayResource(result)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorPayload("persisted mutation replay resource is invalid"))
 			return
 		}
+		if ok {
+			resourceField = field
+			resource = replayResource
+		}
+		replayExtra, ok, err := decodeMutationReplayExtra(result)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorPayload("persisted mutation replay response fields are invalid"))
+			return
+		}
+		if ok {
+			extra = replayExtra
+		}
 	}
+	payload, statusURL := buildAcceptedMutationPayload(r, result, resourceField, resource, extra)
 
+	if idempotencyKey != "" && d.RevisionService != nil {
+		cached := cachedMutationPayload(payload, result)
+		if encoded, err := json.Marshal(cached); err == nil {
+			_ = d.RevisionService.SaveMutationResponse(
+				r.Context(), service.PanelIdempotencyScope, idempotencyKey, result.Operation.ID, encoded,
+			)
+		}
+	}
+	if result.Replayed {
+		w.Header().Set("Idempotency-Replayed", "true")
+	}
+	w.Header().Set("Location", statusURL)
+	writeJSON(w, http.StatusAccepted, payload)
+}
+
+func buildAcceptedMutationPayload(
+	r *http.Request,
+	result revision.MutationResult,
+	resourceField string,
+	resource any,
+	extra map[string]any,
+) (map[string]any, string) {
 	prefix := requestAPIPrefix(r)
 	statusURL := prefix + "/operations/" + url.PathEscape(result.Operation.ID)
 	agents := make([]map[string]any, 0, len(result.Agents))
@@ -104,47 +127,49 @@ func (d Dependencies) writeMutationResource(
 	if resourceField != "" {
 		payload[resourceField] = resource
 	}
-
-	if idempotencyKey != "" && d.RevisionService != nil && !result.Replayed {
-		cached := clonePayload(payload)
-		cached["operation"] = result.Operation
-		if fingerprint, ok := r.Context().Value(panelMutationFingerprintKey{}).(string); ok && fingerprint != "" {
-			cached["http_request_fingerprint"] = fingerprint
-		}
-		if encoded, err := json.Marshal(cached); err == nil {
-			_ = d.RevisionService.SaveMutationResponse(
-				r.Context(), service.PanelIdempotencyScope, idempotencyKey, result.Operation.ID, encoded,
-			)
-		}
-	}
-	w.Header().Set("Location", statusURL)
-	writeJSON(w, http.StatusAccepted, payload)
+	return payload, statusURL
 }
 
-func (d Dependencies) waitForMutationResponse(r *http.Request, idempotencyKey, operationID string) (map[string]any, bool, error) {
-	const (
-		pollInterval = 5 * time.Millisecond
-		maxWait      = 500 * time.Millisecond
-	)
-	deadline := time.NewTimer(maxWait)
-	defer deadline.Stop()
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-	for {
-		payload, found, err := d.RevisionService.LoadMutationResponse(
-			r.Context(), service.PanelIdempotencyScope, idempotencyKey, operationID,
-		)
-		if err != nil || found {
-			return payload, found, err
-		}
-		select {
-		case <-r.Context().Done():
-			return nil, false, r.Context().Err()
-		case <-deadline.C:
-			return nil, false, nil
-		case <-ticker.C:
-		}
+func cachedMutationPayload(payload map[string]any, result revision.MutationResult) map[string]any {
+	cached := clonePayload(payload)
+	cached["operation"] = result.Operation
+	if result.HTTPRequestFingerprint != "" {
+		cached["http_request_fingerprint"] = result.HTTPRequestFingerprint
 	}
+	if result.ReplayResourceField != "" && len(result.ReplayResource) > 0 {
+		cached["replay_resource_field"] = result.ReplayResourceField
+		cached["replay_resource"] = result.ReplayResource
+	}
+	if len(result.ReplayExtra) > 0 {
+		cached["replay_extra"] = result.ReplayExtra
+	}
+	return cached
+}
+
+func decodeMutationReplayResource(result revision.MutationResult) (string, any, bool, error) {
+	field := strings.TrimSpace(result.ReplayResourceField)
+	if field == "" || len(result.ReplayResource) == 0 {
+		return "", nil, false, nil
+	}
+	var resource any
+	if err := json.Unmarshal(result.ReplayResource, &resource); err != nil {
+		return "", nil, false, err
+	}
+	return field, resource, true, nil
+}
+
+func decodeMutationReplayExtra(result revision.MutationResult) (map[string]any, bool, error) {
+	if len(result.ReplayExtra) == 0 {
+		return nil, false, nil
+	}
+	var extra map[string]any
+	if err := json.Unmarshal(result.ReplayExtra, &extra); err != nil {
+		return nil, false, err
+	}
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	return extra, true, nil
 }
 
 func (d Dependencies) replayPanelMutation(w http.ResponseWriter, r *http.Request) bool {
@@ -164,7 +189,7 @@ func (d Dependencies) replayPanelMutation(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
 		return true
 	}
-	*r = *r.WithContext(contextWithPanelMutationFingerprint(r, fingerprint))
+	*r = *r.WithContext(revision.WithMutationHTTPRequestFingerprint(r.Context(), fingerprint))
 	if d.RevisionService == nil {
 		return false
 	}
@@ -186,8 +211,48 @@ func (d Dependencies) replayPanelMutation(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusConflict, errorPayload("idempotency key was already used with a different request"))
 		return true
 	}
+	if _, complete := payload["status_url"]; !complete {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorPayload("persisted idempotency response is invalid"))
+			return true
+		}
+		var result revision.MutationResult
+		if err := json.Unmarshal(encoded, &result); err != nil || result.Operation.ID == "" {
+			writeJSON(w, http.StatusInternalServerError, errorPayload("persisted idempotency response is invalid"))
+			return true
+		}
+		field, resource, hasResource, err := decodeMutationReplayResource(result)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorPayload("persisted mutation replay resource is invalid"))
+			return true
+		}
+		extra, hasExtra, err := decodeMutationReplayExtra(result)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorPayload("persisted mutation replay response fields are invalid"))
+			return true
+		}
+		if !hasResource && !hasExtra {
+			writeJSON(w, http.StatusInternalServerError, errorPayload("persisted mutation replay response is incomplete"))
+			return true
+		}
+		result.Replayed = true
+		response, statusURL := buildAcceptedMutationPayload(r, result, field, resource, extra)
+		if cached, err := json.Marshal(cachedMutationPayload(response, result)); err == nil {
+			_ = d.RevisionService.SaveMutationResponse(
+				r.Context(), service.PanelIdempotencyScope, key, result.Operation.ID, cached,
+			)
+		}
+		w.Header().Set("Idempotency-Replayed", "true")
+		w.Header().Set("Location", statusURL)
+		writeJSON(w, http.StatusAccepted, response)
+		return true
+	}
 	delete(payload, "operation")
 	delete(payload, "http_request_fingerprint")
+	delete(payload, "replay_resource_field")
+	delete(payload, "replay_resource")
+	delete(payload, "replay_extra")
 	payload["replayed"] = true
 	w.Header().Set("Idempotency-Replayed", "true")
 	if statusURL, _ := payload["status_url"].(string); statusURL != "" {
@@ -195,10 +260,6 @@ func (d Dependencies) replayPanelMutation(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusAccepted, payload)
 	return true
-}
-
-func contextWithPanelMutationFingerprint(r *http.Request, fingerprint string) context.Context {
-	return context.WithValue(r.Context(), panelMutationFingerprintKey{}, fingerprint)
 }
 
 func panelMutationRequestFingerprint(r *http.Request) (string, error) {
@@ -265,6 +326,11 @@ func (d Dependencies) writeRevisionAccepted(w http.ResponseWriter, r *http.Reque
 	payload["apply_status"] = status.ApplyStatus
 	payload["status_url"] = statusURL
 	payload["agents"] = []service.AgentRevisionStatus{status}
+	payload["replayed"] = status.Replayed
+	d.persistActionResponse(r, status.OperationID, status.HTTPRequestFingerprint, payload)
+	if status.Replayed {
+		w.Header().Set("Idempotency-Replayed", "true")
+	}
 	w.Header().Set("Location", statusURL)
 	writeJSON(w, http.StatusAccepted, payload)
 }
@@ -291,8 +357,31 @@ func (d Dependencies) writeOperationAccepted(w http.ResponseWriter, r *http.Requ
 	payload["status_url"] = statusURL
 	payload["no_op"] = status.NoOp
 	payload["agents"] = status.Agents
+	payload["replayed"] = status.Replayed
+	d.persistActionResponse(r, status.OperationID, status.HTTPRequestFingerprint, payload)
+	if status.Replayed {
+		w.Header().Set("Idempotency-Replayed", "true")
+	}
 	w.Header().Set("Location", statusURL)
 	writeJSON(w, http.StatusAccepted, payload)
+}
+
+func (d Dependencies) persistActionResponse(r *http.Request, operationID, fingerprint string, payload map[string]any) {
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || d.RevisionService == nil {
+		return
+	}
+	cached := clonePayload(payload)
+	if fingerprint != "" {
+		cached["http_request_fingerprint"] = fingerprint
+	}
+	encoded, err := json.Marshal(cached)
+	if err != nil {
+		return
+	}
+	_ = d.RevisionService.SaveMutationResponse(
+		r.Context(), service.PanelIdempotencyScope, key, operationID, encoded,
+	)
 }
 
 func clonePayload(input map[string]any) map[string]any {

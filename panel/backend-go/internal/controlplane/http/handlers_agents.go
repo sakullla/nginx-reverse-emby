@@ -3,7 +3,6 @@ package http
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -104,21 +103,7 @@ func redactAgentSummaries(agents []service.AgentSummary) []service.AgentSummary 
 }
 
 func redactAgentSummary(agent service.AgentSummary) service.AgentSummary {
-	agent.OutboundProxyURL = redactProxyURL(agent.OutboundProxyURL)
-	return agent
-}
-
-func redactProxyURL(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.User == nil {
-		return raw
-	}
-	password, ok := parsed.User.Password()
-	if !ok || password == "" {
-		return raw
-	}
-	parsed.User = url.UserPassword(parsed.User.Username(), "xxxxx")
-	return parsed.String()
+	return service.RedactAgentSummary(agent)
 }
 
 func (d Dependencies) handleAgentStats(w http.ResponseWriter, r *http.Request) {

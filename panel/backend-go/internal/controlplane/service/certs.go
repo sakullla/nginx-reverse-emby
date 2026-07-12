@@ -586,11 +586,13 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 	rollbackActions := make([]func() error, 0)
 	var created ManagedCertificate
 	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
-		Kind:             "certificate.create",
-		DependencyAction: revision.DependencyActionApply,
-		Request:          managedCertificateMutationIntent(input),
-		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
-		ResourceState:    managedCertificateMutationResourceState,
+		Kind:                "certificate.create",
+		DependencyAction:    revision.DependencyActionApply,
+		Request:             managedCertificateMutationIntent(input),
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       managedCertificateMutationResourceState,
+		ReplayResourceField: "certificate",
+		ReplayResource:      func() any { return created },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
 			var mutateErr error
@@ -728,8 +730,10 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 			ID     int                      `json:"id"`
 			Intent managedCertificateIntent `json:"intent"`
 		}{ID: id, Intent: managedCertificateMutationIntent(input)},
-		Targets:       configMutationTargets(s.cfg, targetAgentIDs, nil),
-		ResourceState: managedCertificateMutationResourceState,
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       managedCertificateMutationResourceState,
+		ReplayResourceField: "certificate",
+		ReplayResource:      func() any { return updated },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
 			var mutateErr error
@@ -872,11 +876,13 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 	rollbackActions := make([]func() error, 0)
 	var deleted ManagedCertificate
 	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
-		Kind:             "certificate.delete",
-		DependencyAction: revision.DependencyActionDelete,
-		Request:          map[string]any{"id": id, "agent_id": resolvedID},
-		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
-		ResourceState:    managedCertificateMutationResourceState,
+		Kind:                "certificate.delete",
+		DependencyAction:    revision.DependencyActionDelete,
+		Request:             map[string]any{"id": id, "agent_id": resolvedID},
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       managedCertificateMutationResourceState,
+		ReplayResourceField: "certificate",
+		ReplayResource:      func() any { return deleted },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
 			var mutateErr error
@@ -1014,11 +1020,13 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	rollbackActions := make([]func() error, 0)
 	var issued ManagedCertificate
 	result, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
-		Kind:             "certificate.issue",
-		DependencyAction: revision.DependencyActionApply,
-		Request:          map[string]any{"id": id, "agent_id": requestedAgentID},
-		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
-		ResourceState:    managedCertificateMutationResourceState,
+		Kind:                "certificate.issue",
+		DependencyAction:    revision.DependencyActionApply,
+		Request:             map[string]any{"id": id, "agent_id": requestedAgentID},
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       managedCertificateMutationResourceState,
+		ReplayResourceField: "certificate",
+		ReplayResource:      func() any { return issued },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
 			var mutateErr error

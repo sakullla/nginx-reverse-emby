@@ -326,6 +326,8 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
 			return wireGuardMutationResourceState(ctx, tx, s.cfg, target)
 		},
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return created },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &wireGuardProfileService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -437,6 +439,8 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
 			return wireGuardMutationResourceState(ctx, tx, s.cfg, target)
 		},
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return updated },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &wireGuardProfileService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -548,6 +552,8 @@ func (s *wireGuardProfileService) Delete(ctx context.Context, agentID string, id
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
 			return wireGuardMutationResourceState(ctx, tx, s.cfg, target)
 		},
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return deleted },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &wireGuardProfileService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,

@@ -80,16 +80,20 @@ type ResourceMutation func(context.Context, *storage.GormStore, map[string]int64
 type ResourceStateReader func(context.Context, *storage.GormStore, Target) (any, error)
 
 type MutationRequest struct {
-	OperationID      string
-	Kind             string
-	DependencyAction DependencyAction
-	IdempotencyScope string
-	IdempotencyKey   string
-	IdempotencyTTL   time.Duration
-	Request          any
-	Targets          []Target
-	ResourceState    ResourceStateReader
-	Mutate           ResourceMutation
+	OperationID            string
+	Kind                   string
+	DependencyAction       DependencyAction
+	IdempotencyScope       string
+	IdempotencyKey         string
+	IdempotencyTTL         time.Duration
+	Request                any
+	Targets                []Target
+	ResourceState          ResourceStateReader
+	Mutate                 ResourceMutation
+	ReplayResourceField    string
+	ReplayResource         func() any
+	ReplayExtra            func() map[string]any
+	httpRequestFingerprint string
 }
 
 type mutationFingerprintEnvelope struct {
@@ -107,10 +111,14 @@ type AgentMutationResult struct {
 }
 
 type MutationResult struct {
-	Operation storage.OperationRow  `json:"operation"`
-	Agents    []AgentMutationResult `json:"agents"`
-	NoOp      bool                  `json:"no_op"`
-	Replayed  bool                  `json:"replayed"`
+	Operation              storage.OperationRow  `json:"operation"`
+	Agents                 []AgentMutationResult `json:"agents"`
+	NoOp                   bool                  `json:"no_op"`
+	Replayed               bool                  `json:"replayed"`
+	HTTPRequestFingerprint string                `json:"http_request_fingerprint,omitempty"`
+	ReplayResourceField    string                `json:"replay_resource_field,omitempty"`
+	ReplayResource         json.RawMessage       `json:"replay_resource,omitempty"`
+	ReplayExtra            json.RawMessage       `json:"replay_extra,omitempty"`
 }
 
 type Executor struct {
@@ -439,6 +447,30 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		result = MutationResult{Operation: operation, Agents: agentResults, NoOp: allNoOp}
 		ledger.Operation = operation
 		if key != "" {
+			resourceField := strings.TrimSpace(request.ReplayResourceField)
+			if resourceField != "" {
+				if request.ReplayResource == nil {
+					return storage.RevisionMutationDecision{}, NewError(
+						ErrorCodeInternal,
+						fmt.Sprintf("mutation %q does not provide its durable replay resource", kind),
+						nil,
+					)
+				}
+				replayResource, marshalErr := json.Marshal(request.ReplayResource())
+				if marshalErr != nil {
+					return storage.RevisionMutationDecision{}, NewError(ErrorCodeInternal, "mutation replay resource could not be persisted", marshalErr)
+				}
+				result.ReplayResourceField = resourceField
+				result.ReplayResource = replayResource
+			}
+			if request.ReplayExtra != nil {
+				replayExtra, marshalErr := json.Marshal(request.ReplayExtra())
+				if marshalErr != nil {
+					return storage.RevisionMutationDecision{}, NewError(ErrorCodeInternal, "mutation replay response fields could not be persisted", marshalErr)
+				}
+				result.ReplayExtra = replayExtra
+			}
+			result.HTTPRequestFingerprint = strings.TrimSpace(request.httpRequestFingerprint)
 			responseJSON, marshalErr := json.Marshal(result)
 			if marshalErr != nil {
 				return storage.RevisionMutationDecision{}, NewError(ErrorCodeInternal, "mutation result could not be persisted", marshalErr)

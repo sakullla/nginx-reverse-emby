@@ -318,6 +318,8 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
 			return httpRuleMutationResourceState(ctx, tx, s.cfg)
 		},
+		ReplayResourceField: "rule",
+		ReplayResource:      func() any { return created },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &ruleService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -532,6 +534,8 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
 			return httpRuleMutationResourceState(ctx, tx, s.cfg)
 		},
+		ReplayResourceField: "rule",
+		ReplayResource:      func() any { return updated },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &ruleService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -774,6 +778,8 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
 			return httpRuleMutationResourceState(ctx, tx, s.cfg)
 		},
+		ReplayResourceField: "rule",
+		ReplayResource:      func() any { return deleted },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &ruleService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,

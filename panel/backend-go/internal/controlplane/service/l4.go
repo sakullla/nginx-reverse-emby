@@ -253,6 +253,8 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
 			return l4RuleMutationResourceState(ctx, tx, s.cfg)
 		},
+		ReplayResourceField: "rule",
+		ReplayResource:      func() any { return created },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &l4Service{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -415,6 +417,8 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
 			return l4RuleMutationResourceState(ctx, tx, s.cfg)
 		},
+		ReplayResourceField: "rule",
+		ReplayResource:      func() any { return updated },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &l4Service{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -592,6 +596,8 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
 			return l4RuleMutationResourceState(ctx, tx, s.cfg)
 		},
+		ReplayResourceField: "rule",
+		ReplayResource:      func() any { return deleted },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &l4Service{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,

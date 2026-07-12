@@ -575,6 +575,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	}
 	if configChanged {
 		if s.settingsMutation != nil {
+			var replaySummary AgentSummary
 			target := revision.Target{AgentID: row.ID}
 			validationTarget := revision.Target{
 				AgentID:      row.ID,
@@ -595,8 +596,10 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 					"outbound_proxy_url":     row.OutboundProxyURL,
 					"traffic_stats_interval": row.TrafficStatsInterval,
 				},
-				Targets:       []revision.Target{target},
-				ResourceState: agentSettingsCapabilityState,
+				Targets:             []revision.Target{target},
+				ResourceState:       agentSettingsCapabilityState,
+				ReplayResourceField: "agent",
+				ReplayResource:      func() any { return replaySummary },
 				Mutate: func(mutateCtx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 					row.DesiredRevision = int(revisions[row.ID])
 					if err := tx.SaveAgent(mutateCtx, row); err != nil {
@@ -610,9 +613,14 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 					if err != nil {
 						return err
 					}
-					return (FullSnapshotValidator{}).Validate(mutateCtx, revision.SnapshotValidation{
+					if err := (FullSnapshotValidator{}).Validate(mutateCtx, revision.SnapshotValidation{
 						Target: validationTarget, Snapshot: snapshot, IntentSnapshot: &intentSnapshot,
-					})
+					}); err != nil {
+						return err
+					}
+					replaySummary, err = s.summaryForRowWithStore(mutateCtx, tx, row)
+					replaySummary = RedactAgentSummary(replaySummary)
+					return err
 				},
 			})
 			if err != nil {
@@ -1256,15 +1264,19 @@ func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
 }
 
 func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) (AgentSummary, error) {
-	rules, err := s.store.ListHTTPRules(ctx, row.ID)
+	return s.summaryForRowWithStore(ctx, s.store, row)
+}
+
+func (s *agentService) summaryForRowWithStore(ctx context.Context, store agentStore, row storage.AgentRow) (AgentSummary, error) {
+	rules, err := store.ListHTTPRules(ctx, row.ID)
 	if err != nil {
 		return AgentSummary{}, err
 	}
-	l4Rules, err := s.store.ListL4Rules(ctx, row.ID)
+	l4Rules, err := store.ListL4Rules(ctx, row.ID)
 	if err != nil {
 		return AgentSummary{}, err
 	}
-	snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+	snapshot, err := store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
 		DesiredVersion:  row.DesiredVersion,
 		DesiredRevision: row.DesiredRevision,
 		CurrentRevision: row.CurrentRevision,
@@ -1312,6 +1324,20 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		HTTPRulesCount:         len(rules),
 		L4RulesCount:           len(l4Rules),
 	}, nil
+}
+
+func RedactAgentSummary(agent AgentSummary) AgentSummary {
+	parsed, err := url.Parse(agent.OutboundProxyURL)
+	if err != nil || parsed.User == nil {
+		return agent
+	}
+	password, ok := parsed.User.Password()
+	if !ok || password == "" {
+		return agent
+	}
+	parsed.User = url.UserPassword(parsed.User.Username(), "xxxxx")
+	agent.OutboundProxyURL = parsed.String()
+	return agent
 }
 
 func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) string {

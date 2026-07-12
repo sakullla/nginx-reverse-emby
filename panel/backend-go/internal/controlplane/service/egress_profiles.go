@@ -146,11 +146,13 @@ func (s *egressProfileService) Create(ctx context.Context, input EgressProfileIn
 	}
 	var created EgressProfile
 	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
-		Kind:             "egress_profile.create",
-		DependencyAction: revision.DependencyActionApply,
-		Request:          input,
-		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
-		ResourceState:    egressProfileMutationResourceState,
+		Kind:                "egress_profile.create",
+		DependencyAction:    revision.DependencyActionApply,
+		Request:             input,
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       egressProfileMutationResourceState,
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return created },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &egressProfileService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -217,8 +219,10 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 			ID    int                `json:"id"`
 			Input EgressProfileInput `json:"input"`
 		}{ID: id, Input: input},
-		Targets:       configMutationTargets(s.cfg, targetAgentIDs, []int{id}),
-		ResourceState: egressProfileMutationResourceState,
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, []int{id}),
+		ResourceState:       egressProfileMutationResourceState,
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return updated },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &egressProfileService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
@@ -340,11 +344,13 @@ func (s *egressProfileService) Delete(ctx context.Context, id int) (EgressProfil
 	}
 	var deleted EgressProfile
 	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
-		Kind:             "egress_profile.delete",
-		DependencyAction: revision.DependencyActionDelete,
-		Request:          map[string]int{"id": id},
-		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
-		ResourceState:    egressProfileMutationResourceState,
+		Kind:                "egress_profile.delete",
+		DependencyAction:    revision.DependencyActionDelete,
+		Request:             map[string]int{"id": id},
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       egressProfileMutationResourceState,
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return deleted },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &egressProfileService{
 				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,

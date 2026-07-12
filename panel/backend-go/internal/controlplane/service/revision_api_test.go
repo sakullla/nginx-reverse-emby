@@ -165,12 +165,98 @@ func TestRevisionAPIRemotePullClaimsOnlyCallerFrontierAndRejectsStaleReport(t *t
 	}
 }
 
+func TestRevisionAPIRejectsExpiredDrainReportWithoutMutation(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Now().UTC()
+	finishedAt := now.Add(-time.Hour)
+	seedRevisionOperation(t, store, revisionOperationSeed{
+		OperationID: "op-expired-drain",
+		Now:         now.Add(-2 * time.Hour),
+		States:      map[string]string{"edge-expired": storage.AgentRevisionStateApplied},
+		Attempts: []storage.AgentRevisionAttemptRow{{
+			AgentID: "edge-expired", Revision: 1, RetryCycle: 0, Attempt: 1,
+			LeaseID: "lease-expired", State: storage.AgentRevisionAttemptStateApplied,
+			StartedAt: now.Add(-2 * time.Hour), DeadlineAt: now.Add(-time.Hour), FinishedAt: &finishedAt,
+		}},
+		Generations: []storage.AgentGenerationRow{{
+			AgentID: "edge-expired", GenerationID: "generation-expired", Revision: 1,
+			State: storage.GenerationStateDraining, CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-time.Hour),
+		}},
+	})
+	api := newRevisionAPITestService(t, store)
+	report := RemoteRevisionReport{
+		AgentID: "edge-expired", Revision: 1, RetryCycle: 0, Attempt: 1,
+		LeaseID: "lease-expired", GenerationID: "generation-expired",
+		Status: storage.AgentRevisionDrainStateDrained,
+	}
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-expired", report); !errors.Is(err, coordinator.ErrLeaseConflict) {
+		t.Fatalf("expired drain report error = %v, want lease conflict", err)
+	}
+	generation, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-expired", "generation-expired")
+	if err != nil || !found || generation.State != storage.GenerationStateDraining || generation.DrainedAt != nil {
+		t.Fatalf("generation after expired report = %+v found=%v error=%v", generation, found, err)
+	}
+}
+
+func TestRevisionAPIAcceptsCurrentAppliedAttemptDrainingPreviousGeneration(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Now().UTC()
+	finishedAt := now.Add(-time.Second)
+	seedRevisionOperation(t, store, revisionOperationSeed{
+		OperationID: "op-current-drain",
+		Revision:    2,
+		Now:         now.Add(-time.Minute),
+		States:      map[string]string{"edge-current": storage.AgentRevisionStateApplied},
+		Attempts: []storage.AgentRevisionAttemptRow{{
+			AgentID: "edge-current", Revision: 2, RetryCycle: 0, Attempt: 1,
+			LeaseID: "lease-current", State: storage.AgentRevisionAttemptStateApplied,
+			StartedAt: now.Add(-time.Minute), DeadlineAt: now.Add(time.Minute), FinishedAt: &finishedAt,
+		}},
+		Generations: []storage.AgentGenerationRow{
+			{
+				AgentID: "edge-current", GenerationID: "generation-previous", Revision: 1,
+				State: storage.GenerationStateDraining, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-time.Second),
+			},
+			{
+				AgentID: "edge-current", GenerationID: "generation-current", Revision: 2,
+				State: storage.GenerationStateActive, CreatedAt: now.Add(-time.Second), UpdatedAt: now.Add(-time.Second),
+			},
+		},
+	})
+	api := newRevisionAPITestService(t, store)
+	report := RemoteRevisionReport{
+		AgentID: "edge-current", Revision: 2, RetryCycle: 0, Attempt: 1,
+		LeaseID: "lease-current", GenerationID: "generation-previous",
+		Status: storage.AgentRevisionDrainStateDrained,
+	}
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-current", report); err != nil {
+		t.Fatalf("current drain report error = %v", err)
+	}
+	generation, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-current", "generation-previous")
+	if err != nil || !found || generation.State != storage.AgentRevisionDrainStateDrained || generation.DrainedAt == nil {
+		t.Fatalf("previous generation after drain = %+v found=%v error=%v", generation, found, err)
+	}
+}
+
 type revisionOperationSeed struct {
 	OperationID string
+	Revision    int64
 	Now         time.Time
 	States      map[string]string
 	Edges       []dependency.Edge
 	Events      []storage.RevisionEventRow
+	Attempts    []storage.AgentRevisionAttemptRow
+	Generations []storage.AgentGenerationRow
 }
 
 func seedRevisionOperation(t *testing.T, store *storage.GormStore, seed revisionOperationSeed) {
@@ -180,15 +266,21 @@ func seedRevisionOperation(t *testing.T, store *storage.GormStore, seed revision
 		agentIDs = append(agentIDs, agentID)
 	}
 	sortStrings(agentIDs)
+	revisionNumber := seed.Revision
+	if revisionNumber <= 0 {
+		revisionNumber = 1
+	}
 	ledger := storage.RevisionLedgerWrite{
 		Operation: storage.OperationRow{
 			ID: seed.OperationID, Kind: "test.mutation", Status: storage.OperationStatusPending,
 			PrimaryAgentID: agentIDs[0], CreatedAt: seed.Now, UpdatedAt: seed.Now,
 		},
 	}
+	ledger.Attempts = append(ledger.Attempts, seed.Attempts...)
+	ledger.Generations = append(ledger.Generations, seed.Generations...)
 	nodes := make([]dependency.Node, 0, len(agentIDs))
 	for _, agentID := range agentIDs {
-		payload, digest, err := revision.CanonicalSnapshotPayload(storage.Snapshot{Revision: 1})
+		payload, digest, err := revision.CanonicalSnapshotPayload(storage.Snapshot{Revision: revisionNumber})
 		if err != nil {
 			t.Fatalf("CanonicalSnapshotPayload() error = %v", err)
 		}
@@ -198,16 +290,27 @@ func seedRevisionOperation(t *testing.T, store *storage.GormStore, seed revision
 			Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: seed.Now,
 		})
 		row := storage.AgentRevisionRow{
-			AgentID: agentID, Revision: 1, OperationID: seed.OperationID,
+			AgentID: agentID, Revision: revisionNumber, OperationID: seed.OperationID,
 			State: seed.States[agentID], SnapshotArtifactID: artifactID, SnapshotDigest: digest,
 			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: seed.Now, UpdatedAt: seed.Now,
 		}
-		pointer := storage.AgentRevisionPointerRow{AgentID: agentID, DesiredRevision: 1, UpdatedAt: seed.Now}
+		for _, attempt := range seed.Attempts {
+			if attempt.AgentID == agentID && attempt.Revision == revisionNumber && attempt.Attempt > row.AttemptCount {
+				row.RetryCycle = attempt.RetryCycle
+				row.AttemptCount = attempt.Attempt
+			}
+		}
+		for _, generation := range seed.Generations {
+			if generation.AgentID == agentID && generation.Revision == revisionNumber && generation.State == storage.GenerationStateActive {
+				row.GenerationID = generation.GenerationID
+			}
+		}
+		pointer := storage.AgentRevisionPointerRow{AgentID: agentID, DesiredRevision: revisionNumber, UpdatedAt: seed.Now}
 		if row.State == storage.AgentRevisionStateApplied {
 			appliedAt := seed.Now
 			row.AppliedAt = &appliedAt
-			pointer.AppliedRevision = 1
-			pointer.LastKnownGoodRevision = 1
+			pointer.AppliedRevision = revisionNumber
+			pointer.LastKnownGoodRevision = revisionNumber
 		}
 		if row.State == storage.AgentRevisionStateFailed {
 			failedAt := seed.Now
@@ -216,7 +319,7 @@ func seedRevisionOperation(t *testing.T, store *storage.GormStore, seed revision
 		}
 		ledger.Revisions = append(ledger.Revisions, row)
 		ledger.Pointers = append(ledger.Pointers, pointer)
-		nodes = append(nodes, dependency.Node{AgentID: agentID, Revision: 1})
+		nodes = append(nodes, dependency.Node{AgentID: agentID, Revision: revisionNumber})
 	}
 	plan, err := dependency.NewPlan(seed.OperationID, dependency.ActionApply, nodes, seed.Edges)
 	if err != nil {

@@ -14,10 +14,14 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency"
+	revisionpkg "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-const PanelIdempotencyScope = "panel"
+const (
+	PanelIdempotencyScope     = "panel"
+	panelActionIdempotencyTTL = 24 * time.Hour
+)
 
 var (
 	ErrRevisionNotFound  = errors.New("revision record not found")
@@ -42,52 +46,65 @@ type RevisionRepository interface {
 type RevisionAPI struct {
 	repository  RevisionRepository
 	coordinator *coordinator.Coordinator
+	now         func() time.Time
 }
 
 func NewRevisionAPI(repository RevisionRepository, revisionCoordinator *coordinator.Coordinator) *RevisionAPI {
 	if repository == nil || revisionCoordinator == nil {
 		return nil
 	}
-	return &RevisionAPI{repository: repository, coordinator: revisionCoordinator}
+	return &RevisionAPI{repository: repository, coordinator: revisionCoordinator, now: time.Now}
 }
 
+type remoteLeasePhase int
+
+const (
+	remoteLeasePhaseLeased remoteLeasePhase = iota
+	remoteLeasePhaseStarted
+	remoteLeasePhaseDrain
+)
+
 type OperationStatus struct {
-	OperationID  string                `json:"operation_id"`
-	Kind         string                `json:"kind"`
-	ApplyStatus  string                `json:"apply_status"`
-	PrimaryAgent string                `json:"primary_agent_id"`
-	NoOp         bool                  `json:"no_op"`
-	Degraded     bool                  `json:"degraded"`
-	ErrorCode    string                `json:"error_code,omitempty"`
-	ErrorMessage string                `json:"error_message,omitempty"`
-	Agents       []AgentRevisionStatus `json:"agents"`
-	CreatedAt    time.Time             `json:"created_at"`
-	UpdatedAt    time.Time             `json:"updated_at"`
-	CompletedAt  *time.Time            `json:"completed_at,omitempty"`
+	OperationID            string                `json:"operation_id"`
+	Kind                   string                `json:"kind"`
+	ApplyStatus            string                `json:"apply_status"`
+	PrimaryAgent           string                `json:"primary_agent_id"`
+	NoOp                   bool                  `json:"no_op"`
+	Degraded               bool                  `json:"degraded"`
+	ErrorCode              string                `json:"error_code,omitempty"`
+	ErrorMessage           string                `json:"error_message,omitempty"`
+	Agents                 []AgentRevisionStatus `json:"agents"`
+	CreatedAt              time.Time             `json:"created_at"`
+	UpdatedAt              time.Time             `json:"updated_at"`
+	CompletedAt            *time.Time            `json:"completed_at,omitempty"`
+	Replayed               bool                  `json:"-"`
+	HTTPRequestFingerprint string                `json:"-"`
 }
 
 type AgentRevisionStatus struct {
-	OperationID           string               `json:"operation_id"`
-	AgentID               string               `json:"agent_id"`
-	DesiredRevision       int64                `json:"desired_revision"`
-	AppliedRevision       int64                `json:"applied_revision"`
-	LastKnownGoodRevision int64                `json:"last_known_good_revision"`
-	ApplyStatus           string               `json:"apply_status"`
-	DrainStatus           string               `json:"drain_status,omitempty"`
-	BlockedBy             []string             `json:"blocked_by"`
-	NoOp                  bool                 `json:"no_op"`
-	RetryCycle            int                  `json:"retry_cycle"`
-	AttemptCount          int                  `json:"attempt_count"`
-	NextAttemptAt         *time.Time           `json:"next_attempt_at,omitempty"`
-	GenerationID          string               `json:"generation_id,omitempty"`
-	ErrorCode             string               `json:"error_code,omitempty"`
-	ErrorMessage          string               `json:"error_message,omitempty"`
-	Attempts              []RevisionAttempt    `json:"attempts"`
-	Generations           []RevisionGeneration `json:"generations"`
-	CreatedAt             time.Time            `json:"created_at"`
-	UpdatedAt             time.Time            `json:"updated_at"`
-	AppliedAt             *time.Time           `json:"applied_at,omitempty"`
-	FailedAt              *time.Time           `json:"failed_at,omitempty"`
+	OperationID            string               `json:"operation_id"`
+	AgentID                string               `json:"agent_id"`
+	DesiredRevision        int64                `json:"desired_revision"`
+	AppliedRevision        int64                `json:"applied_revision"`
+	LastKnownGoodRevision  int64                `json:"last_known_good_revision"`
+	ApplyStatus            string               `json:"apply_status"`
+	DrainStatus            string               `json:"drain_status,omitempty"`
+	BlockedBy              []string             `json:"blocked_by"`
+	NoOp                   bool                 `json:"no_op"`
+	RetryCycle             int                  `json:"retry_cycle"`
+	AttemptCount           int                  `json:"attempt_count"`
+	NextAttemptAt          *time.Time           `json:"next_attempt_at,omitempty"`
+	GenerationID           string               `json:"generation_id,omitempty"`
+	ErrorCode              string               `json:"error_code,omitempty"`
+	ErrorMessage           string               `json:"error_message,omitempty"`
+	Attempts               []RevisionAttempt    `json:"attempts"`
+	Generations            []RevisionGeneration `json:"generations"`
+	CreatedAt              time.Time            `json:"created_at"`
+	UpdatedAt              time.Time            `json:"updated_at"`
+	AppliedAt              *time.Time           `json:"applied_at,omitempty"`
+	FailedAt               *time.Time           `json:"failed_at,omitempty"`
+	Replayed               bool                 `json:"-"`
+	HTTPRequestFingerprint string               `json:"-"`
 }
 
 type RevisionAttempt struct {
@@ -305,18 +322,41 @@ func (s *RevisionAPI) getAgentRevisionStatus(ctx context.Context, agentID string
 }
 
 func (s *RevisionAPI) Retry(ctx context.Context, agentID string, revision int64) (AgentRevisionStatus, error) {
-	if _, err := s.coordinator.Retry(ctx, strings.TrimSpace(agentID), revision); err != nil {
+	agentID = strings.TrimSpace(agentID)
+	idempotency, err := s.panelActionIdempotency(ctx, "revision.retry", agentID, revision)
+	if err != nil {
 		return AgentRevisionStatus{}, err
 	}
-	return s.GetAgentRevisionStatus(ctx, agentID, revision)
+	result, err := s.coordinator.RetryIdempotent(ctx, agentID, revision, idempotency)
+	if err != nil {
+		return AgentRevisionStatus{}, err
+	}
+	status, err := s.GetAgentRevisionStatus(ctx, agentID, revision)
+	if err != nil {
+		return AgentRevisionStatus{}, err
+	}
+	status.Replayed = result.Replayed
+	status.HTTPRequestFingerprint = idempotency.HTTPRequestFingerprint
+	return status, nil
 }
 
 func (s *RevisionAPI) Rollback(ctx context.Context, agentID string) (OperationStatus, error) {
-	result, err := s.coordinator.Rollback(ctx, strings.TrimSpace(agentID))
+	agentID = strings.TrimSpace(agentID)
+	idempotency, err := s.panelActionIdempotency(ctx, "revision.rollback", agentID, 0)
 	if err != nil {
 		return OperationStatus{}, err
 	}
-	return s.GetOperationStatus(ctx, result.Operation.ID)
+	result, err := s.coordinator.RollbackIdempotent(ctx, agentID, idempotency)
+	if err != nil {
+		return OperationStatus{}, err
+	}
+	status, err := s.GetOperationStatus(ctx, result.Operation.ID)
+	if err != nil {
+		return OperationStatus{}, err
+	}
+	status.Replayed = result.Replayed
+	status.HTTPRequestFingerprint = idempotency.HTTPRequestFingerprint
+	return status, nil
 }
 
 func (s *RevisionAPI) ListEvents(ctx context.Context, query RevisionEventQuery) (RevisionEventPage, error) {
@@ -425,7 +465,7 @@ func (s *RevisionAPI) StartRemoteRevision(ctx context.Context, agentID string, i
 	if err := requireRemoteAgentIdentity(agentID, input.AgentID); err != nil {
 		return AgentRevisionStatus{}, err
 	}
-	lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID)
+	lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseLeased)
 	if err != nil {
 		return AgentRevisionStatus{}, err
 	}
@@ -443,16 +483,16 @@ func (s *RevisionAPI) ReportRemoteRevision(ctx context.Context, agentID string, 
 	if err := requireRemoteAgentIdentity(agentID, input.AgentID); err != nil {
 		return AgentRevisionStatus{}, err
 	}
-	lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID)
-	if err != nil {
-		return AgentRevisionStatus{}, err
-	}
 	generationID := strings.TrimSpace(input.GenerationID)
 	if generationID == "" {
 		return AgentRevisionStatus{}, fmt.Errorf("%w: generation id is required", ErrInvalidArgument)
 	}
 	switch strings.ToLower(strings.TrimSpace(input.Status)) {
 	case storage.AgentRevisionStateFailed:
+		lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseStarted)
+		if err != nil {
+			return AgentRevisionStatus{}, err
+		}
 		if _, err := s.coordinator.Fail(ctx, coordinator.FailureReport{
 			Lease: lease, GenerationID: generationID,
 			ErrorCode: strings.TrimSpace(input.ErrorCode), ErrorMessage: strings.TrimSpace(input.ErrorMessage),
@@ -460,16 +500,23 @@ func (s *RevisionAPI) ReportRemoteRevision(ctx context.Context, agentID string, 
 			return AgentRevisionStatus{}, err
 		}
 	case storage.AgentRevisionStateApplied, storage.AgentRevisionDrainStateDraining:
+		lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseStarted)
+		if err != nil {
+			return AgentRevisionStatus{}, err
+		}
 		if _, err := s.coordinator.Applied(ctx, coordinator.AppliedReport{Lease: lease, GenerationID: generationID}); err != nil {
 			return AgentRevisionStatus{}, err
 		}
 	case storage.AgentRevisionDrainStateDrained, storage.AgentRevisionDrainStateForced:
+		if _, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseDrain); err != nil {
+			return AgentRevisionStatus{}, err
+		}
 		generation, found, err := s.repository.GetCoordinatorGeneration(ctx, agentID, generationID)
 		if err != nil {
 			return AgentRevisionStatus{}, err
 		}
-		if !found || generation.Revision != input.Revision {
-			return AgentRevisionStatus{}, fmt.Errorf("%w: generation %q", ErrRevisionNotFound, generationID)
+		if !found || generation.State != storage.GenerationStateDraining || generation.Revision >= input.Revision {
+			return AgentRevisionStatus{}, fmt.Errorf("%w: generation %q is not the draining predecessor for revision %d", coordinator.ErrLeaseConflict, generationID, input.Revision)
 		}
 		forced := input.Forced || strings.EqualFold(input.Status, storage.AgentRevisionDrainStateForced)
 		row, err := s.coordinator.Drained(ctx, coordinator.DrainReport{
@@ -494,12 +541,17 @@ func (s *RevisionAPI) SaveMutationResponse(ctx context.Context, scope, key, oper
 		scope = PanelIdempotencyScope
 	}
 	var payload struct {
-		Operation storage.OperationRow `json:"operation"`
+		Operation   storage.OperationRow `json:"operation"`
+		OperationID string               `json:"operation_id"`
 	}
 	if err := json.Unmarshal(response, &payload); err != nil {
 		return fmt.Errorf("decode mutation response: %w", err)
 	}
-	if payload.Operation.ID != strings.TrimSpace(operationID) {
+	persistedOperationID := strings.TrimSpace(payload.Operation.ID)
+	if persistedOperationID == "" {
+		persistedOperationID = strings.TrimSpace(payload.OperationID)
+	}
+	if persistedOperationID != strings.TrimSpace(operationID) {
 		return fmt.Errorf("mutation response operation does not match idempotency record")
 	}
 	updated, err := s.repository.UpdateIdempotencyResponseJSON(ctx, scope, key, operationID, string(response))
@@ -510,6 +562,38 @@ func (s *RevisionAPI) SaveMutationResponse(ctx context.Context, scope, key, oper
 		return fmt.Errorf("idempotency response record was not found")
 	}
 	return nil
+}
+
+func (s *RevisionAPI) panelActionIdempotency(
+	ctx context.Context,
+	kind, agentID string,
+	revision int64,
+) (storage.CoordinatorActionIdempotency, error) {
+	scope, key, enabled := revisionpkg.MutationIdempotencyFromContext(ctx)
+	if !enabled {
+		return storage.CoordinatorActionIdempotency{}, nil
+	}
+	if scope == "" {
+		scope = PanelIdempotencyScope
+	}
+	httpFingerprint := revisionpkg.MutationHTTPRequestFingerprintFromContext(ctx)
+	fingerprint := httpFingerprint
+	if fingerprint == "" {
+		var err error
+		fingerprint, err = revisionpkg.RequestFingerprint(struct {
+			Kind     string `json:"kind"`
+			AgentID  string `json:"agent_id"`
+			Revision int64  `json:"revision,omitempty"`
+		}{Kind: kind, AgentID: agentID, Revision: revision})
+		if err != nil {
+			return storage.CoordinatorActionIdempotency{}, err
+		}
+	}
+	now := s.nowUTC()
+	return storage.CoordinatorActionIdempotency{
+		Scope: scope, Key: key, RequestFingerprint: fingerprint,
+		HTTPRequestFingerprint: httpFingerprint, ExpiresAt: now.Add(panelActionIdempotencyTTL),
+	}, nil
 }
 
 func (s *RevisionAPI) LoadMutationResponse(ctx context.Context, scope, key, operationID string) (map[string]any, bool, error) {
@@ -539,7 +623,7 @@ func (s *RevisionAPI) LoadMutationResponseByKey(ctx context.Context, scope, key 
 	if err != nil || !found {
 		return nil, false, err
 	}
-	if !record.ExpiresAt.After(time.Now().UTC()) {
+	if !record.ExpiresAt.After(s.nowUTC()) {
 		return nil, false, nil
 	}
 	var payload map[string]any
@@ -547,7 +631,10 @@ func (s *RevisionAPI) LoadMutationResponseByKey(ctx context.Context, scope, key 
 		return nil, false, fmt.Errorf("decode persisted mutation response: %w", err)
 	}
 	_, isEnvelope := payload["status_url"]
-	return payload, isEnvelope, nil
+	_, hasFingerprint := payload["http_request_fingerprint"]
+	_, hasReplayResource := payload["replay_resource"]
+	_, hasReplayExtra := payload["replay_extra"]
+	return payload, isEnvelope || (hasFingerprint && (hasReplayResource || hasReplayExtra)), nil
 }
 
 func (s *RevisionAPI) operationAgentRevisionRefs(ctx context.Context, operation storage.OperationRow, revisions []storage.AgentRevisionRow) ([]operationAgentRevisionRef, error) {
@@ -646,7 +733,7 @@ func (s *RevisionAPI) currentRemoteLease(ctx context.Context, row storage.AgentR
 	if err != nil {
 		return coordinator.Lease{}, false, err
 	}
-	now := time.Now().UTC()
+	now := s.nowUTC()
 	for index := len(attempts) - 1; index >= 0; index-- {
 		attempt := attempts[index]
 		if attempt.RetryCycle != row.RetryCycle || !attempt.DeadlineAt.After(now) {
@@ -689,7 +776,14 @@ func (s *RevisionAPI) loadRemoteSnapshot(ctx context.Context, artifactID, expect
 	return snapshot, nil
 }
 
-func (s *RevisionAPI) loadAuthoritativeLease(ctx context.Context, agentID string, revision int64, retryCycle, attempt int, leaseID string) (coordinator.Lease, error) {
+func (s *RevisionAPI) loadAuthoritativeLease(
+	ctx context.Context,
+	agentID string,
+	revision int64,
+	retryCycle, attempt int,
+	leaseID string,
+	phase remoteLeasePhase,
+) (coordinator.Lease, error) {
 	agentID = strings.TrimSpace(agentID)
 	leaseID = strings.TrimSpace(leaseID)
 	if agentID == "" || revision < 0 || retryCycle < 0 || attempt <= 0 || leaseID == "" {
@@ -702,6 +796,9 @@ func (s *RevisionAPI) loadAuthoritativeLease(ctx context.Context, agentID string
 	if !found {
 		return coordinator.Lease{}, fmt.Errorf("%w: revision %s/%d", ErrRevisionNotFound, agentID, revision)
 	}
+	if row.RetryCycle != retryCycle {
+		return coordinator.Lease{}, fmt.Errorf("%w: lease retry cycle is stale", coordinator.ErrLeaseConflict)
+	}
 	attempts, err := s.repository.ListCoordinatorAttempts(ctx, agentID, revision)
 	if err != nil {
 		return coordinator.Lease{}, err
@@ -709,6 +806,34 @@ func (s *RevisionAPI) loadAuthoritativeLease(ctx context.Context, agentID string
 	for _, candidate := range attempts {
 		if candidate.RetryCycle != retryCycle || candidate.Attempt != attempt || !constantTimeStringEqual(candidate.LeaseID, leaseID) {
 			continue
+		}
+		now := s.nowUTC()
+		switch phase {
+		case remoteLeasePhaseLeased:
+			if candidate.State != storage.AgentRevisionAttemptStateLeased || candidate.Attempt != row.AttemptCount+1 || !now.Before(candidate.DeadlineAt) {
+				return coordinator.Lease{}, fmt.Errorf("%w: lease is not the current unexpired leased attempt", coordinator.ErrLeaseConflict)
+			}
+		case remoteLeasePhaseStarted:
+			if candidate.State != storage.AgentRevisionAttemptStateStarted || row.State != storage.AgentRevisionStateApplying || candidate.Attempt != row.AttemptCount || !now.Before(candidate.DeadlineAt) {
+				return coordinator.Lease{}, fmt.Errorf("%w: lease is not the current unexpired started attempt", coordinator.ErrLeaseConflict)
+			}
+		case remoteLeasePhaseDrain:
+			if candidate.State != storage.AgentRevisionAttemptStateApplied || row.State != storage.AgentRevisionStateApplied || candidate.Attempt != row.AttemptCount || row.AppliedAt == nil {
+				return coordinator.Lease{}, fmt.Errorf("%w: lease is not the current applied attempt", coordinator.ErrLeaseConflict)
+			}
+			drainTimeout := time.Duration(row.DrainTimeoutSeconds) * time.Second
+			if drainTimeout <= 0 || !now.Before(row.AppliedAt.Add(drainTimeout)) {
+				return coordinator.Lease{}, fmt.Errorf("%w: drain report deadline expired", coordinator.ErrLeaseConflict)
+			}
+			pointer, found, pointerErr := s.repository.GetAgentRevisionPointer(ctx, agentID)
+			if pointerErr != nil {
+				return coordinator.Lease{}, pointerErr
+			}
+			if !found || pointer.AppliedRevision != revision {
+				return coordinator.Lease{}, fmt.Errorf("%w: revision %d is no longer the current applied revision", coordinator.ErrLeaseConflict, revision)
+			}
+		default:
+			return coordinator.Lease{}, fmt.Errorf("%w: unsupported lease phase", coordinator.ErrLeaseConflict)
 		}
 		return coordinator.Lease{
 			AgentID: agentID, Revision: revision, RetryCycle: retryCycle, Attempt: attempt,
@@ -719,6 +844,13 @@ func (s *RevisionAPI) loadAuthoritativeLease(ctx context.Context, agentID string
 		}, nil
 	}
 	return coordinator.Lease{}, fmt.Errorf("%w: lease is not current", coordinator.ErrLeaseConflict)
+}
+
+func (s *RevisionAPI) nowUTC() time.Time {
+	if s != nil && s.now != nil {
+		return s.now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func requireRemoteAgentIdentity(authenticatedAgentID, reportedAgentID string) error {

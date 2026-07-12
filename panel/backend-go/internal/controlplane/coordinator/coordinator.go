@@ -48,6 +48,10 @@ type Repository interface {
 	ReconcileCoordinatorJournal(context.Context, storage.CoordinatorJournalRequest) (storage.CoordinatorJournalResult, error)
 }
 
+type idempotentActionRepository interface {
+	RetryCoordinatorRevisionIdempotent(context.Context, storage.CoordinatorRetryRequest) (storage.CoordinatorRetryResult, error)
+}
+
 type Options struct {
 	Clock        Clock
 	Random       Random
@@ -215,12 +219,39 @@ func (c *Coordinator) ReconcileStartup(ctx context.Context) (StartupReconcileRes
 }
 
 func (c *Coordinator) Retry(ctx context.Context, agentID string, revision int64) (storage.AgentRevisionRow, error) {
-	return c.repository.RetryCoordinatorRevision(ctx, agentID, revision, c.now())
+	result, err := c.RetryIdempotent(ctx, agentID, revision, storage.CoordinatorActionIdempotency{})
+	return result.Revision, err
+}
+
+func (c *Coordinator) RetryIdempotent(
+	ctx context.Context,
+	agentID string,
+	revision int64,
+	idempotency storage.CoordinatorActionIdempotency,
+) (storage.CoordinatorRetryResult, error) {
+	if repository, ok := c.repository.(idempotentActionRepository); ok {
+		return repository.RetryCoordinatorRevisionIdempotent(ctx, storage.CoordinatorRetryRequest{
+			AgentID: agentID, Revision: revision, Now: c.now(), Idempotency: idempotency,
+		})
+	}
+	if strings.TrimSpace(idempotency.Key) != "" {
+		return storage.CoordinatorRetryResult{}, fmt.Errorf("coordinator repository does not support idempotent retry")
+	}
+	revisionRow, err := c.repository.RetryCoordinatorRevision(ctx, agentID, revision, c.now())
+	return storage.CoordinatorRetryResult{Revision: revisionRow}, err
 }
 
 type RollbackResult = storage.CoordinatorRollbackResult
 
 func (c *Coordinator) Rollback(ctx context.Context, agentID string) (RollbackResult, error) {
+	return c.RollbackIdempotent(ctx, agentID, storage.CoordinatorActionIdempotency{})
+}
+
+func (c *Coordinator) RollbackIdempotent(
+	ctx context.Context,
+	agentID string,
+	idempotency storage.CoordinatorActionIdempotency,
+) (RollbackResult, error) {
 	operationID, err := c.newID("rollback")
 	if err != nil {
 		return RollbackResult{}, fmt.Errorf("generate rollback operation id: %w", err)
@@ -229,6 +260,7 @@ func (c *Coordinator) Rollback(ctx context.Context, agentID string) (RollbackRes
 		AgentID: agentID, OperationID: operationID, Now: c.now(),
 		DefaultApplyTimeoutSeconds: durationSeconds(c.applyTimeout),
 		DefaultDrainTimeoutSeconds: durationSeconds(c.drainTimeout),
+		Idempotency:                idempotency,
 	})
 }
 

@@ -236,6 +236,150 @@ func TestManualRetryStartsNewCycleAndRollbackCopiesLKGAsNewRevision(t *testing.T
 	}
 }
 
+func TestCoordinatorActionsAreDurablyIdempotentAcrossConcurrentStores(t *testing.T) {
+	now := time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC)
+	dbPath := filepath.Join(t.TempDir(), "coordinator-actions.db")
+	storeA := openCoordinatorTestStore(t, dbPath)
+	seedRevisions(t, storeA, now, "edge-retry", 2, 1, map[int64]string{
+		1: storage.AgentRevisionStateApplied,
+		2: storage.AgentRevisionStateFailed,
+	})
+	artifact := snapshotArtifact(t, "edge-rollback-lkg", storage.Snapshot{
+		Revision:            1,
+		Rules:               []storage.HTTPRule{},
+		L4Rules:             []storage.L4Rule{},
+		RelayListeners:      []storage.RelayListener{},
+		WireGuardProfiles:   []storage.WireGuardProfile{},
+		EgressProfiles:      []storage.EgressProfile{},
+		Certificates:        []storage.ManagedCertificateBundle{},
+		CertificatePolicies: []storage.ManagedCertificatePolicy{},
+	}, now)
+	seedRevisionsWithArtifact(t, storeA, now, "edge-rollback", artifact, 1, 1, map[int64]string{
+		1: storage.AgentRevisionStateApplied,
+	})
+	storeB := openCoordinatorTestStore(t, dbPath)
+
+	newCoordinator := func(store *storage.GormStore, suffix string) *Coordinator {
+		t.Helper()
+		coord, err := New(store, Options{
+			Clock:  &fakeClock{now: now},
+			Random: &sequenceRandom{values: []float64{0.5}},
+			NewID:  func(prefix string) (string, error) { return prefix + "-" + suffix, nil },
+		})
+		if err != nil {
+			t.Fatalf("New(%s) error = %v", suffix, err)
+		}
+		return coord
+	}
+	coordA := newCoordinator(storeA, "store-a")
+	coordB := newCoordinator(storeB, "store-b")
+
+	retryIdempotency := storage.CoordinatorActionIdempotency{
+		Scope: "panel", Key: "retry-once", RequestFingerprint: "retry-fingerprint",
+		HTTPRequestFingerprint: "retry-http-fingerprint", ExpiresAt: now.Add(time.Hour),
+	}
+	retryStart := make(chan struct{})
+	retryResults := make(chan storage.CoordinatorRetryResult, 2)
+	retryErrors := make(chan error, 2)
+	var retryGroup sync.WaitGroup
+	for _, coord := range []*Coordinator{coordA, coordB} {
+		retryGroup.Add(1)
+		go func(coord *Coordinator) {
+			defer retryGroup.Done()
+			<-retryStart
+			result, err := coord.RetryIdempotent(context.Background(), "edge-retry", 2, retryIdempotency)
+			retryResults <- result
+			retryErrors <- err
+		}(coord)
+	}
+	close(retryStart)
+	retryGroup.Wait()
+	close(retryResults)
+	close(retryErrors)
+	for err := range retryErrors {
+		if err != nil {
+			t.Fatalf("concurrent RetryIdempotent() error = %v", err)
+		}
+	}
+	retryReplays := 0
+	for result := range retryResults {
+		if result.Revision.Revision != 2 || result.Revision.RetryCycle != 1 || result.Revision.State != storage.AgentRevisionStatePending {
+			t.Fatalf("concurrent retry result = %+v", result)
+		}
+		if result.Replayed {
+			retryReplays++
+		}
+	}
+	if retryReplays != 1 {
+		t.Fatalf("concurrent retry replay count = %d, want 1", retryReplays)
+	}
+	if row, found, err := storeA.GetCoordinatorRevision(t.Context(), "edge-retry", 2); err != nil || !found || row.RetryCycle != 1 {
+		t.Fatalf("retry revision after concurrent calls = %+v found=%v error=%v", row, found, err)
+	}
+	conflictingRetry := retryIdempotency
+	conflictingRetry.RequestFingerprint = "different-retry-fingerprint"
+	if _, err := coordA.RetryIdempotent(t.Context(), "edge-retry", 2, conflictingRetry); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("RetryIdempotent(different fingerprint) error = %v, want ErrStateConflict", err)
+	}
+
+	rollbackIdempotency := storage.CoordinatorActionIdempotency{
+		Scope: "panel", Key: "rollback-once", RequestFingerprint: "rollback-fingerprint",
+		HTTPRequestFingerprint: "rollback-http-fingerprint", ExpiresAt: now.Add(time.Hour),
+	}
+	rollbackStart := make(chan struct{})
+	rollbackResults := make(chan RollbackResult, 2)
+	rollbackErrors := make(chan error, 2)
+	var rollbackGroup sync.WaitGroup
+	for _, coord := range []*Coordinator{coordA, coordB} {
+		rollbackGroup.Add(1)
+		go func(coord *Coordinator) {
+			defer rollbackGroup.Done()
+			<-rollbackStart
+			result, err := coord.RollbackIdempotent(context.Background(), "edge-rollback", rollbackIdempotency)
+			rollbackResults <- result
+			rollbackErrors <- err
+		}(coord)
+	}
+	close(rollbackStart)
+	rollbackGroup.Wait()
+	close(rollbackResults)
+	close(rollbackErrors)
+	for err := range rollbackErrors {
+		if err != nil {
+			t.Fatalf("concurrent RollbackIdempotent() error = %v", err)
+		}
+	}
+	rollbackOperationID := ""
+	rollbackReplays := 0
+	for result := range rollbackResults {
+		if result.Revision.Revision != 2 || result.Operation.ID == "" {
+			t.Fatalf("concurrent rollback result = %+v", result)
+		}
+		if rollbackOperationID == "" {
+			rollbackOperationID = result.Operation.ID
+		} else if result.Operation.ID != rollbackOperationID {
+			t.Fatalf("concurrent rollback operation IDs = %q and %q", rollbackOperationID, result.Operation.ID)
+		}
+		if result.Replayed {
+			rollbackReplays++
+		}
+	}
+	if rollbackReplays != 1 {
+		t.Fatalf("concurrent rollback replay count = %d, want 1", rollbackReplays)
+	}
+	if pointer := mustPointer(t, storeA, "edge-rollback"); pointer.DesiredRevision != 2 || pointer.AppliedRevision != 1 {
+		t.Fatalf("rollback pointer after concurrent calls = %+v", pointer)
+	}
+	if revisions, err := storeA.ListAgentRevisions(t.Context(), "edge-rollback"); err != nil || len(revisions) != 2 {
+		t.Fatalf("rollback revisions after concurrent calls = %+v error=%v, want exactly 2", revisions, err)
+	}
+	conflictingRollback := rollbackIdempotency
+	conflictingRollback.RequestFingerprint = "different-rollback-fingerprint"
+	if _, err := coordA.RollbackIdempotent(t.Context(), "edge-rollback", conflictingRollback); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("RollbackIdempotent(different fingerprint) error = %v, want ErrStateConflict", err)
+	}
+}
+
 func TestJournalReconciliationAndAppliedPointersAreMonotonic(t *testing.T) {
 	now := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)

@@ -24,6 +24,8 @@ type mutationContext struct {
 
 type mutationContextKey struct{}
 
+type mutationHTTPRequestFingerprintKey struct{}
+
 func WithMutationContext(ctx context.Context, options MutationContextOptions) (context.Context, *MutationCapture) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -40,9 +42,34 @@ func WithMutationContext(ctx context.Context, options MutationContextOptions) (c
 	return context.WithValue(ctx, mutationContextKey{}, value), capture
 }
 
+func WithMutationHTTPRequestFingerprint(ctx context.Context, fingerprint string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, mutationHTTPRequestFingerprintKey{}, strings.TrimSpace(fingerprint))
+}
+
 func MutationCaptureFromContext(ctx context.Context) (*MutationCapture, bool) {
 	value, ok := mutationContextFromContext(ctx)
 	return value.capture, ok && value.capture != nil
+}
+
+func MutationIdempotencyFromContext(ctx context.Context) (scope, key string, ok bool) {
+	value, found := mutationContextFromContext(ctx)
+	if !found {
+		return "", "", false
+	}
+	scope = strings.TrimSpace(value.options.IdempotencyScope)
+	key = strings.TrimSpace(value.options.IdempotencyKey)
+	return scope, key, key != ""
+}
+
+func MutationHTTPRequestFingerprintFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	fingerprint, _ := ctx.Value(mutationHTTPRequestFingerprintKey{}).(string)
+	return strings.TrimSpace(fingerprint)
 }
 
 func (c *MutationCapture) Result() (MutationResult, bool) {
@@ -70,6 +97,9 @@ func applyMutationContext(ctx context.Context, request MutationRequest) Mutation
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" {
 		request.IdempotencyKey = value.options.IdempotencyKey
+	}
+	if fingerprint, ok := ctx.Value(mutationHTTPRequestFingerprintKey{}).(string); ok {
+		request.httpRequestFingerprint = strings.TrimSpace(fingerprint)
 	}
 	return request
 }
