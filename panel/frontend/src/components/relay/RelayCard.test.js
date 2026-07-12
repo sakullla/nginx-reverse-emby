@@ -40,3 +40,38 @@ describe('RelayCard agent ownership badge', () => {
     expect(wrapper.text()).toContain('relay-node')
   })
 })
+
+describe('RelayCard redesign', () => {
+  it('uses listener name as title and 生效中 status', () => {
+    const wrapper = mountRelayCard({ name: 'edge-relay', enabled: true })
+    expect(wrapper.find('.base-list-card__title').text()).toBe('edge-relay')
+    expect(wrapper.text()).toContain('生效中')
+  })
+
+  it('shows 已禁用 when disabled', () => {
+    const wrapper = mountRelayCard({ enabled: false })
+    expect(wrapper.text()).toContain('已禁用')
+  })
+
+  it('exposes toggle/edit and puts delete in more menu', async () => {
+    const wrapper = mount(RelayCard, {
+      props: {
+        listener: {
+          id: 5,
+          name: 'relay-wg-local',
+          enabled: true,
+          bind_hosts: ['10.8.0.1'],
+          listen_port: 19001,
+          tags: [],
+        },
+      },
+      attachTo: document.body,
+    })
+    expect(wrapper.find('button[title="停用"]').exists()).toBe(true)
+    expect(wrapper.find('button[title="编辑"]').exists()).toBe(true)
+    expect(wrapper.find('button[title="删除"]').exists()).toBe(false)
+    await wrapper.find('.base-action-menu__trigger').trigger('click')
+    await wrapper.find('[data-testid="base-action-menu-item-delete"]').trigger('click')
+    expect(wrapper.emitted('delete')).toBeTruthy()
+  })
+})

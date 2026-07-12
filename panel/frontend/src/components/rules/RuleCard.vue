@@ -2,6 +2,7 @@
   <BaseListCard
     :status="statusTone"
     :disabled="!rule.enabled"
+    :title="rule.frontend_url || ''"
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ rule.id }}</BaseBadge>
@@ -21,41 +22,16 @@
           <polygon points="5 3 19 12 5 21 5 3"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton title="复制" @click="$emit('copy', rule)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="9" y="9" width="13" height="13" rx="2"/>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-        </svg>
-      </BaseIconButton>
       <BaseIconButton title="编辑" @click="$emit('edit', rule)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton tone="primary" title="诊断" @click="$emit('diagnose', rule)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 12h4l2-6 4 12 2-6h6"/>
-        </svg>
-      </BaseIconButton>
-      <BaseIconButton tone="danger" title="删除" @click="$emit('delete', rule)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-        </svg>
-      </BaseIconButton>
+      <BaseActionMenu :items="moreItems" @select="onMoreSelect" />
     </template>
 
     <div class="rule-card__mapping">
-      <div class="rule-card__url-row">
-        <span class="rule-card__url-icon">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-          </svg>
-        </span>
-        <code class="rule-card__url">{{ rule.frontend_url }}</code>
-      </div>
       <div class="rule-card__url-row">
         <span class="rule-card__url-icon">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -86,11 +62,13 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
+import BaseActionMenu from '../base/BaseActionMenu.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
+import { syncStatusLabel, syncStatusTone } from '../../utils/resourceCardStatus.js'
 import TrafficBar from '../traffic/TrafficBar.vue'
-import { formatBytes, normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
+import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   rule: { type: Object, required: true },
@@ -99,25 +77,11 @@ const props = defineProps({
   agentNodeTotal: { type: Number, default: 0 },
 })
 
-defineEmits(['edit', 'toggle', 'copy', 'diagnose', 'delete', 'traffic-click'])
-
-const STATUS_TONE = {
-  active: 'success',
-  pending: 'warning',
-  failed: 'danger',
-  disabled: 'neutral',
-}
-
-const STATUS_LABEL = {
-  active: '生效中',
-  pending: '待同步',
-  failed: '同步失败',
-  disabled: '已禁用',
-}
+const emit = defineEmits(['edit', 'toggle', 'copy', 'diagnose', 'delete', 'traffic-click'])
 
 const status = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
-const statusTone = computed(() => STATUS_TONE[status.value] || 'neutral')
-const statusLabel = computed(() => STATUS_LABEL[status.value] || '未知')
+const statusTone = computed(() => syncStatusTone(status.value))
+const statusLabel = computed(() => syncStatusLabel(status.value))
 
 const isHttps = computed(() => String(props.rule.frontend_url || '').startsWith('https'))
 
@@ -141,6 +105,18 @@ const backendsTooltip = computed(() => backends.value.join('\n'))
 const hasTraffic = computed(() => props.traffic != null)
 const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
 const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags.length > 0)
+
+const moreItems = computed(() => [
+  { id: 'copy', label: '复制' },
+  { id: 'diagnose', label: '诊断' },
+  { id: 'delete', label: '删除', tone: 'danger' },
+])
+
+function onMoreSelect(item) {
+  if (item.id === 'copy') emit('copy', props.rule)
+  else if (item.id === 'diagnose') emit('diagnose', props.rule)
+  else if (item.id === 'delete') emit('delete', props.rule)
+}
 </script>
 
 <style scoped>
@@ -162,7 +138,6 @@ const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags
   color: var(--color-text-tertiary);
   flex-shrink: 0;
 }
-.rule-card__url,
 .rule-card__backend {
   font-family: var(--font-mono);
   font-size: 0.875rem;

@@ -1,13 +1,13 @@
 <template>
   <BaseListCard
-    :status="listener.enabled ? 'success' : 'neutral'"
+    :status="statusTone"
     :disabled="!listener.enabled"
+    :title="listener.name || ''"
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ listener.id }}</BaseBadge>
-      <span class="relay-card__name">{{ listener.name }}</span>
-      <BaseBadge :tone="listener.enabled ? 'success' : 'neutral'" dot>
-        {{ listener.enabled ? '启用' : '已禁用' }}
+      <BaseBadge :tone="statusTone" dot>
+        {{ statusLabel }}
       </BaseBadge>
       <AgentBadge :item="listener" />
     </template>
@@ -32,12 +32,7 @@
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton tone="danger" title="删除" @click="$emit('delete', listener)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-        </svg>
-      </BaseIconButton>
+      <BaseActionMenu :items="moreItems" @select="onMoreSelect" />
     </template>
 
     <div class="relay-card__mapping">
@@ -93,10 +88,12 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
+import BaseActionMenu from '../base/BaseActionMenu.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import TrafficBar from '../traffic/TrafficBar.vue'
-import { formatBytes, normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
+import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
+import { enabledStatusLabel, enabledStatusTone } from '../../utils/resourceCardStatus.js'
 
 const props = defineProps({
   listener: { type: Object, required: true },
@@ -104,7 +101,10 @@ const props = defineProps({
   agentNodeTotal: { type: Number, default: 0 },
 })
 
-defineEmits(['edit', 'delete', 'toggle', 'traffic-click'])
+const emit = defineEmits(['edit', 'delete', 'toggle', 'traffic-click'])
+
+const statusTone = computed(() => enabledStatusTone(!!props.listener.enabled))
+const statusLabel = computed(() => enabledStatusLabel(!!props.listener.enabled))
 
 function normalizePort(port) {
   const value = Number(port)
@@ -170,6 +170,14 @@ const fallbackLabel = computed(() => {
 const hasTraffic = computed(() => props.traffic != null)
 const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
 const hasTags = computed(() => Array.isArray(props.listener.tags) && props.listener.tags.length > 0)
+
+const moreItems = computed(() => [
+  { id: 'delete', label: '删除', tone: 'danger' },
+])
+
+function onMoreSelect(item) {
+  if (item.id === 'delete') emit('delete', props.listener)
+}
 </script>
 
 <style scoped>
@@ -206,15 +214,6 @@ const hasTags = computed(() => Array.isArray(props.listener.tags) && props.liste
   justify-content: center;
   color: var(--color-text-tertiary);
   flex-shrink: 0;
-}
-.relay-card__name {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
 }
 .relay-card__meta {
   display: flex;

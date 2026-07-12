@@ -93,3 +93,36 @@ describe('CertCard agent ownership badge', () => {
     expect(wrapper.text()).toContain('node-7')
   })
 })
+
+describe('CertCard redesign', () => {
+  it('uses domain as title', () => {
+    const wrapper = mountCert({ domain: 'cdn.example.com' })
+    expect(wrapper.find('.base-list-card__title').text()).toBe('cdn.example.com')
+  })
+
+  it('maps issuing data-status to warning while badge says 签发中', () => {
+    const wrapper = mountCert({ status: 'issuing' })
+    expect(wrapper.find('.base-list-card').attributes('data-status')).toBe('warning')
+    expect(wrapper.text()).toContain('签发中')
+  })
+
+  it('keeps delete in more menu for non-system certs', async () => {
+    const wrapper = mount(CertCard, {
+      props: { cert: baseCert() },
+      attachTo: document.body,
+    })
+    expect(wrapper.find('button[title="删除"]').exists()).toBe(false)
+    await wrapper.find('.base-action-menu__trigger').trigger('click')
+    await wrapper.find('[data-testid="base-action-menu-item-delete"]').trigger('click')
+    expect(wrapper.emitted('delete')).toBeTruthy()
+  })
+
+  it('hides delete menu for system Relay CA', () => {
+    const wrapper = mountCert({
+      domain: 'relay-ca',
+      tags: ['system:relay-ca'],
+    })
+    expect(wrapper.find('.base-action-menu').exists()).toBe(false)
+    expect(wrapper.find('button[title="删除"]').exists()).toBe(false)
+  })
+})
