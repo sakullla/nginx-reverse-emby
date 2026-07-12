@@ -31,6 +31,49 @@ func TestDefaultUsesNormalizedControlPlaneDataDir(t *testing.T) {
 	if got := strings.Join(cfg.WireGuardAutoAddressPools, ","); got != "10.8.x.1/24,fd10:8:x::1/64" {
 		t.Fatalf("WireGuardAutoAddressPools = %q", got)
 	}
+	if cfg.RevisionCoordinator.ApplyTimeout != time.Minute {
+		t.Fatalf("RevisionCoordinator.ApplyTimeout = %v, want 1m", cfg.RevisionCoordinator.ApplyTimeout)
+	}
+	if cfg.RevisionCoordinator.DrainTimeout != 10*time.Minute {
+		t.Fatalf("RevisionCoordinator.DrainTimeout = %v, want 10m", cfg.RevisionCoordinator.DrainTimeout)
+	}
+}
+
+func TestLoadFromEnvParsesRevisionCoordinatorSettings(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_REVISION_APPLY_TIMEOUT", "45s")
+	t.Setenv("NRE_REVISION_DRAIN_TIMEOUT", "7m")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.RevisionCoordinator.ApplyTimeout != 45*time.Second || cfg.RevisionCoordinator.DrainTimeout != 7*time.Minute {
+		t.Fatalf("revision timeouts = (%v,%v)", cfg.RevisionCoordinator.ApplyTimeout, cfg.RevisionCoordinator.DrainTimeout)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidRevisionCoordinatorSettings(t *testing.T) {
+	testCases := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "apply timeout", key: "NRE_REVISION_APPLY_TIMEOUT", value: "0s"},
+		{name: "drain timeout", key: "NRE_REVISION_DRAIN_TIMEOUT", value: "bad"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NRE_PANEL_TOKEN", "secret")
+			t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+			t.Setenv(tc.key, tc.value)
+			_, err := LoadFromEnv()
+			if err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("LoadFromEnv() error = %v, want %s validation", err, tc.key)
+			}
+		})
+	}
 }
 
 func TestLoadFromEnvReadsWireGuardAutoAddressPools(t *testing.T) {

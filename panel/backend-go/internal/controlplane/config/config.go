@@ -23,6 +23,8 @@ const (
 	defaultHeartbeatInterval = 30 * time.Second
 	defaultManagedCertRenew  = 24 * time.Hour
 	defaultTrafficCleanup    = 24 * time.Hour
+	defaultRevisionApply     = 60 * time.Second
+	defaultRevisionDrain     = 10 * time.Minute
 )
 
 var defaultWireGuardAutoAddressPools = []string{"10.8.x.1/24", "fd10:8:x::1/64"}
@@ -61,6 +63,7 @@ type Config struct {
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
 	WireGuardAutoAddressPools         []string
+	RevisionCoordinator               RevisionCoordinatorConfig
 	AppVersion                        string
 	BuildTime                         string
 	GoVersion                         string
@@ -91,6 +94,11 @@ type RelayTimeoutConfig struct {
 	HandshakeTimeout time.Duration
 	FrameTimeout     time.Duration
 	IdleTimeout      time.Duration
+}
+
+type RevisionCoordinatorConfig struct {
+	ApplyTimeout time.Duration
+	DrainTimeout time.Duration
 }
 
 func Default() Config {
@@ -134,6 +142,10 @@ func Default() Config {
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
 		WireGuardAutoAddressPools:       append([]string(nil), defaultWireGuardAutoAddressPools...),
+		RevisionCoordinator: RevisionCoordinatorConfig{
+			ApplyTimeout: defaultRevisionApply,
+			DrainTimeout: defaultRevisionDrain,
+		},
 	}
 }
 
@@ -243,6 +255,20 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, errors.New("NRE_HEARTBEAT_INTERVAL must be positive")
 		}
 		cfg.HeartbeatInterval = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_REVISION_APPLY_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_REVISION_APPLY_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.RevisionCoordinator.ApplyTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_REVISION_DRAIN_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_REVISION_DRAIN_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.RevisionCoordinator.DrainTimeout = dur
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP3_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)
