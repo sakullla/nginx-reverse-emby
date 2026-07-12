@@ -82,6 +82,34 @@ function onKey(e) {
     box-shadow 200ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
+/* Status strip — shared across list cards (was only on AgentMonitorCard) */
+.base-list-card[data-status]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--color-text-muted, #9ca3af);
+  transition: background 150ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.base-list-card[data-status="success"]::before {
+  background: var(--color-success, #059669);
+}
+
+.base-list-card[data-status="warning"]::before {
+  background: var(--color-warning, #d97706);
+}
+
+.base-list-card[data-status="danger"]::before {
+  background: var(--color-danger, #dc2626);
+}
+
+.base-list-card[data-status="neutral"]::before {
+  background: var(--color-text-muted, #9ca3af);
+}
+
 .base-list-card--clickable {
   cursor: pointer;
 }

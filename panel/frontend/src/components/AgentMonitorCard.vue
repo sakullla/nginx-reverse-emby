@@ -105,44 +105,7 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 </script>
 
 <style scoped>
-.agent-monitor-card {
-  --amc-status-success: var(--color-success, #059669);
-  --amc-status-warning: var(--color-warning, #d97706);
-  --amc-status-danger: var(--color-danger, #dc2626);
-  --amc-status-neutral: var(--color-text-muted, #9ca3af);
-}
-
-:deep(.base-list-card) {
-  position: relative;
-  overflow: hidden;
-}
-
-:deep(.base-list-card)::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  background: var(--amc-status-neutral);
-  transition: background 150ms ease;
-}
-
-:deep(.base-list-card[data-status="success"])::before {
-  background: var(--amc-status-success);
-}
-
-:deep(.base-list-card[data-status="warning"])::before {
-  background: var(--amc-status-warning);
-}
-
-:deep(.base-list-card[data-status="danger"])::before {
-  background: var(--amc-status-danger);
-}
-
-:deep(.base-list-card[data-status="neutral"])::before {
-  background: var(--amc-status-neutral);
-}
+/* Status strip lives on BaseListCard via data-status; do not re-draw here. */
 
 .agent-monitor-card__status {
   flex-shrink: 0;
