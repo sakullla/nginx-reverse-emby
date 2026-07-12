@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -515,7 +516,15 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		row.TagsJSON = marshalStringArray(normalizeAgentTags(*input.Tags))
 	}
 	if input.Capabilities != nil {
-		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(*input.Capabilities))
+		previousCapabilities := canonicalCapabilities(parseStringArray(row.CapabilitiesJSON))
+		nextCapabilities := canonicalCapabilities(*input.Capabilities)
+		if isLocal {
+			nextCapabilities = canonicalCapabilities(defaultLocalCapabilities)
+		}
+		if !slices.Equal(previousCapabilities, nextCapabilities) {
+			configChanged = true
+		}
+		row.CapabilitiesJSON = marshalStringArray(nextCapabilities)
 	}
 	if input.OutboundProxyURL != nil {
 		previousOutboundProxyURL := strings.TrimSpace(row.OutboundProxyURL)
@@ -547,25 +556,43 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	if configChanged {
 		if s.settingsMutation != nil {
 			target := revision.Target{AgentID: row.ID}
+			validationTarget := revision.Target{
+				AgentID:      row.ID,
+				Capabilities: canonicalCapabilities(parseStringArray(row.CapabilitiesJSON)),
+			}
 			if isLocal {
 				target.Local = true
 				target.Capabilities = append([]string(nil), defaultLocalCapabilities...)
+				validationTarget.Local = true
+				validationTarget.Capabilities = append([]string(nil), defaultLocalCapabilities...)
 			}
 			_, err := s.settingsMutation.Execute(ctx, revision.MutationRequest{
 				Kind: "agent.settings.update",
 				Request: map[string]any{
 					"agent_id":               row.ID,
+					"capabilities":           validationTarget.Capabilities,
 					"desired_version":        row.DesiredVersion,
 					"outbound_proxy_url":     row.OutboundProxyURL,
 					"traffic_stats_interval": row.TrafficStatsInterval,
 				},
-				Targets: []revision.Target{target},
-				ResourceState: func(context.Context, *storage.GormStore, revision.Target) (any, error) {
-					return struct{}{}, nil
-				},
+				Targets:       []revision.Target{target},
+				ResourceState: agentSettingsCapabilityState,
 				Mutate: func(mutateCtx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 					row.DesiredRevision = int(revisions[row.ID])
-					return tx.SaveAgent(mutateCtx, row)
+					if err := tx.SaveAgent(mutateCtx, row); err != nil {
+						return err
+					}
+					snapshot, err := buildAgentSettingsSnapshot(mutateCtx, tx, validationTarget)
+					if err != nil {
+						return err
+					}
+					intentSnapshot, err := buildAgentSettingsIntentSnapshot(mutateCtx, tx, validationTarget)
+					if err != nil {
+						return err
+					}
+					return (FullSnapshotValidator{}).Validate(mutateCtx, revision.SnapshotValidation{
+						Target: validationTarget, Snapshot: snapshot, IntentSnapshot: &intentSnapshot,
+					})
 				},
 			})
 			if err != nil {
@@ -784,6 +811,14 @@ func (s *agentService) Apply(ctx context.Context, agentID string) (ApplyAgentRes
 }
 
 func buildAgentSettingsSnapshot(ctx context.Context, tx *storage.GormStore, target revision.Target) (storage.Snapshot, error) {
+	return buildAgentSettingsSnapshotMode(ctx, tx, target, false)
+}
+
+func buildAgentSettingsIntentSnapshot(ctx context.Context, tx *storage.GormStore, target revision.Target) (storage.Snapshot, error) {
+	return buildAgentSettingsSnapshotMode(ctx, tx, target, true)
+}
+
+func buildAgentSettingsSnapshotMode(ctx context.Context, tx *storage.GormStore, target revision.Target, intent bool) (storage.Snapshot, error) {
 	if target.Local {
 		state, err := tx.LoadLocalAgentState(ctx)
 		if err != nil {
@@ -805,10 +840,14 @@ func buildAgentSettingsSnapshot(ctx context.Context, tx *storage.GormStore, targ
 			}
 			break
 		}
-		return tx.LoadAgentSnapshot(ctx, target.AgentID, storage.AgentSnapshotInput{
+		input := storage.AgentSnapshotInput{
 			DesiredVersion: desiredVersion, DesiredRevision: desiredRevision,
 			CurrentRevision: state.CurrentRevision, Platform: runtime.GOOS + "-" + runtime.GOARCH,
-		})
+		}
+		if intent {
+			return tx.LoadAgentIntentSnapshot(ctx, target.AgentID, input)
+		}
+		return tx.LoadAgentSnapshot(ctx, target.AgentID, input)
 	}
 	rows, err := tx.ListAgents(ctx)
 	if err != nil {
@@ -818,12 +857,32 @@ func buildAgentSettingsSnapshot(ctx context.Context, tx *storage.GormStore, targ
 		if row.ID != target.AgentID {
 			continue
 		}
-		return tx.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+		input := storage.AgentSnapshotInput{
 			DesiredVersion: row.DesiredVersion, DesiredRevision: row.DesiredRevision,
 			CurrentRevision: row.CurrentRevision, Platform: row.Platform,
-		})
+		}
+		if intent {
+			return tx.LoadAgentIntentSnapshot(ctx, row.ID, input)
+		}
+		return tx.LoadAgentSnapshot(ctx, row.ID, input)
 	}
 	return storage.Snapshot{}, ErrAgentNotFound
+}
+
+func agentSettingsCapabilityState(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+	if target.Local {
+		return canonicalCapabilities(defaultLocalCapabilities), nil
+	}
+	rows, err := tx.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.ID == target.AgentID {
+			return canonicalCapabilities(parseStringArray(row.CapabilitiesJSON)), nil
+		}
+	}
+	return nil, ErrAgentNotFound
 }
 
 func (s *agentService) localSettingsRow(ctx context.Context) (storage.AgentRow, error) {
@@ -840,13 +899,17 @@ func (s *agentService) localSettingsRow(ctx context.Context) (storage.AgentRow, 
 	if err != nil {
 		return storage.AgentRow{}, err
 	}
+	return localAgentSettingsRow(s.cfg, state), nil
+}
+
+func localAgentSettingsRow(cfg config.Config, state storage.LocalAgentStateRow) storage.AgentRow {
 	return storage.AgentRow{
-		ID: s.cfg.LocalAgentID, Name: s.cfg.LocalAgentName, AgentToken: "local",
+		ID: cfg.LocalAgentID, Name: cfg.LocalAgentName, AgentToken: "local",
 		DesiredVersion: state.DesiredVersion, DesiredRevision: state.DesiredRevision,
 		CurrentRevision: state.CurrentRevision, LastApplyRevision: state.LastApplyRevision,
 		LastApplyStatus: state.LastApplyStatus, LastApplyMessage: state.LastApplyMessage,
 		Mode: "local", IsLocal: true, CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities),
-	}, nil
+	}
 }
 
 func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, agentToken string) (HeartbeatReply, error) {
@@ -1548,6 +1611,12 @@ func normalizeCapabilities(values []string) []string {
 		seen[item] = struct{}{}
 		normalized = append(normalized, item)
 	}
+	return normalized
+}
+
+func canonicalCapabilities(values []string) []string {
+	normalized := normalizeCapabilities(values)
+	slices.Sort(normalized)
 	return normalized
 }
 

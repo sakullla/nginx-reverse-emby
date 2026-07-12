@@ -7812,6 +7812,23 @@ func TestBackupServiceImportCommitsLocalAndRemoteRevisionsWithOneDependencyPlan(
 	if dependencyArtifact.Kind != storage.GenerationArtifactKindDependencyPlan || len(dependencyArtifact.Payload) == 0 {
 		t.Fatalf("dependency artifact = %+v", dependencyArtifact)
 	}
+	agentSvc := NewAgentService(config.Config{
+		EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local",
+	}, store)
+	localSummary, err := agentSvc.Get(ctx, "local")
+	if err != nil {
+		t.Fatalf("AgentService.Get(local) error = %v", err)
+	}
+	if int64(localSummary.DesiredRevision) != localRevision.Revision {
+		t.Fatalf("local summary desired revision = %d, ledger revision = %d", localSummary.DesiredRevision, localRevision.Revision)
+	}
+	summaries, err := agentSvc.List(ctx)
+	if err != nil {
+		t.Fatalf("AgentService.List() error = %v", err)
+	}
+	if len(summaries) == 0 || summaries[0].ID != "local" || int64(summaries[0].DesiredRevision) != localRevision.Revision {
+		t.Fatalf("agent summaries after backup import = %+v, local ledger revision = %d", summaries, localRevision.Revision)
+	}
 }
 
 func TestBackupServiceImportValidationFailureRollsBackResourcesAndRevisionLedger(t *testing.T) {

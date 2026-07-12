@@ -809,6 +809,66 @@ func TestAgentServiceUpdateLocalCommitsDesiredVersionAndRuntimeConfigInOneRevisi
 	}
 }
 
+func TestAgentServiceUpdateCapabilityOnlyUsesRevisionValidation(t *testing.T) {
+	ctx := t.Context()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-capability", Name: "Edge Capability", AgentToken: "token-capability",
+		Platform: "linux-amd64", CapabilitiesJSON: `["http_rules","wireguard"]`,
+		DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	svc := NewAgentService(config.Config{}, store)
+	addedCapabilities := []string{"http_rules", "wireguard", "l4"}
+	updated, err := svc.Update(ctx, "edge-capability", UpdateAgentRequest{Capabilities: &addedCapabilities})
+	if err != nil {
+		t.Fatalf("Update(add capability) error = %v", err)
+	}
+	revisions, err := store.ListAgentRevisions(ctx, "edge-capability")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(add capability) error = %v", err)
+	}
+	if len(revisions) != 1 || int64(updated.DesiredRevision) != revisions[0].Revision {
+		t.Fatalf("capability-only update summary=%+v revisions=%+v", updated, revisions)
+	}
+
+	if err := store.SaveWireGuardProfiles(ctx, "edge-capability", []storage.WireGuardProfileRow{{
+		ID: 1, AgentID: "edge-capability", Name: "required-wireguard", Mode: "generic_wireguard",
+		PrivateKey: testWireGuardPrivateKey, ListenPort: 51820, AddressesJSON: `["10.88.0.1/24"]`,
+		BindAddressesJSON: `[]`, PeersJSON: `[]`, DNSJSON: `[]`, Enabled: true, Revision: int(revisions[0].Revision),
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+
+	beforeRevisions := len(revisions)
+	removedCapabilities := []string{"http_rules", "l4"}
+	_, err = svc.Update(ctx, "edge-capability", UpdateAgentRequest{Capabilities: &removedCapabilities})
+	if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
+		t.Fatalf("Update(remove required capability) error = %v, code = %q", err, revision.ErrorCodeOf(err))
+	}
+	revisions, err = store.ListAgentRevisions(ctx, "edge-capability")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(remove capability) error = %v", err)
+	}
+	if len(revisions) != beforeRevisions {
+		t.Fatalf("revision count after rejected capability removal = %d, want %d", len(revisions), beforeRevisions)
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 || agents[0].CapabilitiesJSON != `["http_rules","l4","wireguard"]` {
+		t.Fatalf("agent capabilities after rejected removal = %+v", agents)
+	}
+}
+
 func TestAgentServiceUpdateRejectsInvalidOutboundProxyURL(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{}

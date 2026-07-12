@@ -1019,6 +1019,7 @@ func (s *backupService) importBundleWithRevisions(ctx context.Context, archive [
 				if err != nil {
 					return err
 				}
+				updatedAgents := make(map[string]struct{}, len(rows))
 				for _, row := range rows {
 					revisionNumber, ok := revisions[row.ID]
 					if !ok {
@@ -1027,6 +1028,22 @@ func (s *backupService) importBundleWithRevisions(ctx context.Context, archive [
 					row.DesiredRevision = int(revisionNumber)
 					if err := mutationStore.SaveAgent(mutateCtx, row); err != nil {
 						return err
+					}
+					updatedAgents[row.ID] = struct{}{}
+				}
+				if s.cfg.EnableLocalAgent {
+					localRevision, hasLocalRevision := revisions[s.cfg.LocalAgentID]
+					_, localUpdated := updatedAgents[s.cfg.LocalAgentID]
+					if hasLocalRevision && !localUpdated {
+						state, err := mutationStore.LoadLocalAgentState(mutateCtx)
+						if err != nil {
+							return err
+						}
+						localRow := localAgentSettingsRow(s.cfg, state)
+						localRow.DesiredRevision = int(localRevision)
+						if err := mutationStore.SaveAgent(mutateCtx, localRow); err != nil {
+							return err
+						}
 					}
 				}
 				return nil
