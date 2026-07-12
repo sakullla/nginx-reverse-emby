@@ -133,6 +133,10 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 			_ = store.Close()
 			return nil, err
 		}
+		if err := store.BootstrapRevisionLedger(context.Background()); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
 	}
 	return store, nil
 }

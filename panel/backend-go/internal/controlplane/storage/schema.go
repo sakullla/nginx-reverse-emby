@@ -61,6 +61,15 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&LocalAgentStateRow{},
 		&VersionPolicyRow{},
 		&MetaRow{},
+		&OperationRow{},
+		&AgentRevisionRow{},
+		&AgentRevisionPointerRow{},
+		&AgentRevisionAttemptRow{},
+		&AgentGenerationRow{},
+		&RevisionEventRow{},
+		&IdempotencyRecordRow{},
+		&GenerationArtifactRow{},
+		&AgentRevisionArtifactRow{},
 	); err != nil {
 		return err
 	}
