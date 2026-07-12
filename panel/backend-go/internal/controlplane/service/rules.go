@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -19,11 +20,27 @@ import (
 func newConfigMutationExecutor(store any) *revision.Executor {
 	revisionStore, ok := store.(revision.Store)
 	if !ok {
-		// Narrow in-memory test stores retain their direct persistence path.
-		// Production GormStore values always satisfy revision.Store.
 		return nil
 	}
 	return NewMutationExecutor(revisionStore)
+}
+
+var errRevisionMutationStoreRequired = errors.New("revision mutation store is required")
+
+// legacyConfigMutationStore is an in-package opt-in for narrow unit-test stores.
+// Runtime stores must support revision mutations instead of silently falling back.
+type legacyConfigMutationStore interface {
+	allowLegacyConfigMutationFallback()
+}
+
+func requireConfigMutationStore(store any, executor *revision.Executor, revisionMutation bool) error {
+	if executor != nil || revisionMutation {
+		return nil
+	}
+	if _, ok := store.(legacyConfigMutationStore); ok {
+		return nil
+	}
+	return errRevisionMutationStoreRequired
 }
 
 func configMutationTargets(cfg config.Config, agentIDs []string, intentEgressProfileIDs []int) []revision.Target {
@@ -277,6 +294,9 @@ func (s *ruleService) Get(ctx context.Context, agentID string, id int) (HTTPRule
 }
 
 func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRuleInput) (HTTPRule, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return HTTPRule{}, err
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.createLegacy(ctx, agentID, input)
 	}
@@ -481,6 +501,9 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 }
 
 func (s *ruleService) Update(ctx context.Context, agentID string, id int, input HTTPRuleInput) (HTTPRule, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return HTTPRule{}, err
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.updateLegacy(ctx, agentID, id, input)
 	}
@@ -723,6 +746,9 @@ func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, 
 }
 
 func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPRule, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return HTTPRule{}, err
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.deleteLegacy(ctx, agentID, id)
 	}

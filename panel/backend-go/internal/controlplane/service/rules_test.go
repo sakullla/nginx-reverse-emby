@@ -32,6 +32,40 @@ type fakeRuleStore struct {
 	trafficDeleteHook func()
 }
 
+func (*fakeRuleStore) allowLegacyConfigMutationFallback() {}
+
+type revisionIncapableRuleStore struct {
+	ruleStore
+}
+
+func TestRuleServiceRejectsRevisionIncapableStoreWithoutWritesOrApply(t *testing.T) {
+	legacy := &fakeRuleStore{
+		rulesByAgent:       map[string][]storage.HTTPRuleRow{"local": {}},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRuleService(testConfig(), &revisionIncapableRuleStore{ruleStore: legacy})
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return nil
+	})
+
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://revision-store-required.example.test"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "revision mutation store") {
+		t.Fatalf("Create() error = %v, want revision mutation store error", err)
+	}
+	if len(legacy.rulesByAgent["local"]) != 0 {
+		t.Fatalf("rules after rejected create = %+v", legacy.rulesByAgent["local"])
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
+	}
+}
+
 type trafficScopeDeleteCall struct {
 	agentID   string
 	scopeType string
