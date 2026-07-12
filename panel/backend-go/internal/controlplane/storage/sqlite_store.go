@@ -673,6 +673,21 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 		Create(&row).Error
 }
 
+// UpdateDdnsStatusColumn writes only the ddns_status column for agentID. It is a
+// targeted update, intentionally NOT a full-row upsert, so the DDNS reconciler
+// (which may hold a stale row across a slow Cloudflare call) cannot clobber
+// concurrent full-row writes from heartbeats or admin edits. A missing row is a
+// no-op. Column-driven Update is used so an empty value still writes.
+func (s *GormStore) UpdateDdnsStatusColumn(ctx context.Context, agentID, statusJSON string) error {
+	if strings.TrimSpace(agentID) == "" {
+		return nil
+	}
+	return s.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ?", agentID).
+		Update("ddns_status", statusJSON).Error
+}
+
 func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error {
 	normalizeAgentRow(&row)
 	var current AgentRow

@@ -7431,6 +7431,55 @@ func TestSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported(t *testing.T) {
 	}
 }
 
+// TestUpdateDdnsStatusColumnWritesOnlyStatus proves the DDNS reconciler's
+// persistence path is a narrow column update: writing ddns_status must not touch
+// any other column (admin config, reported IPs, token, name), so a stale
+// reconciler read cannot clobber concurrent writes during the Cloudflare window.
+func TestUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	if err := store.SaveAgent(ctx, AgentRow{
+		ID:             "edge-ddns",
+		Name:           "edge-ddns",
+		AgentToken:     "rotated-token",
+		LastSeenIPv4:   "203.0.113.4",
+		LastSeenIPv6:   "2001:db8::4",
+		DdnsConfigJSON: `{"domain":"edge.example.com","ipv4":{"enabled":true}}`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.UpdateDdnsStatusColumn(ctx, "edge-ddns", `{"status":"ok"}`); err != nil {
+		t.Fatalf("UpdateDdnsStatusColumn() error = %v", err)
+	}
+	got := mustGetAgentByID(t, store, "edge-ddns")
+	if got.DdnsStatusJSON != `{"status":"ok"}` {
+		t.Fatalf("ddns_status not written: %q", got.DdnsStatusJSON)
+	}
+	// Every other column the reconciler does not own must be untouched.
+	if got.DdnsConfigJSON != `{"domain":"edge.example.com","ipv4":{"enabled":true}}` {
+		t.Fatalf("narrow update clobbered ddns_config: %q", got.DdnsConfigJSON)
+	}
+	if got.AgentToken != "rotated-token" {
+		t.Fatalf("narrow update clobbered agent_token: %q", got.AgentToken)
+	}
+	if got.LastSeenIPv4 != "203.0.113.4" || got.LastSeenIPv6 != "2001:db8::4" {
+		t.Fatalf("narrow update clobbered reported IPs: %+v", got)
+	}
+	if got.Name != "edge-ddns" {
+		t.Fatalf("narrow update clobbered name: %q", got.Name)
+	}
+
+	// Empty agentID is a documented no-op and must not error.
+	if err := store.UpdateDdnsStatusColumn(ctx, "", `{"status":"ok"}`); err != nil {
+		t.Fatalf("UpdateDdnsStatusColumn(empty id) error = %v", err)
+	}
+	// Unknown agent is a no-op (0 rows affected), not an error.
+	if err := store.UpdateDdnsStatusColumn(ctx, "missing", `{"status":"ok"}`); err != nil {
+		t.Fatalf("UpdateDdnsStatusColumn(unknown id) error = %v", err)
+	}
+}
+
 // TestLoadAgentSnapshotExposesDDNSConfig verifies the snapshot wire contract
 // surfaces the per-agent DDNS configuration (domain + per-family strategy) so
 // the desired-state dispatch can carry it to the agent.

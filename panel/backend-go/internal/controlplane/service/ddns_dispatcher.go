@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log"
 	"sync"
 )
 
@@ -31,6 +32,9 @@ func newDDNSDispatcher(queueDepth int) *ddnsDispatcher {
 
 // start launches the single worker goroutine that drains the queue. It runs
 // until ctx is cancelled; stop() must be called to wait for in-flight work.
+// Each reconcile runs inside a recover guard so a panic in process (nil client,
+// malformed response, future bug) is contained to one agent and never crashes
+// the control-plane process — the worker keeps draining.
 func (d *ddnsDispatcher) start(ctx context.Context, process func(context.Context, string)) {
 	d.wg.Add(1)
 	go func() {
@@ -40,8 +44,15 @@ func (d *ddnsDispatcher) start(ctx context.Context, process func(context.Context
 			case <-ctx.Done():
 				return
 			case agentID := <-d.queue:
-				process(ctx, agentID)
-				d.release(agentID)
+				func() {
+					defer d.release(agentID)
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[ddns] reconcile for agent %q panicked (contained, worker continues): %v", agentID, r)
+						}
+					}()
+					process(ctx, agentID)
+				}()
 			}
 		}
 	}()

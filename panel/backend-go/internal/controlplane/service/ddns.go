@@ -13,15 +13,14 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-// ddnsStore is the narrow storage surface the DDNS reconciler needs. It is
-// satisfied by the production store (ListAgents + SaveAgent). The reconciler
-// cannot edit storage/**, so it reuses these existing full-row methods: it reads
-// the agent row, mutates only DdnsStatusJSON, and writes the row back. A
-// heartbeat landing between read and write only races the (redundant) IP
-// columns, which the next heartbeat corrects — acceptable for MVP.
+// ddnsStore is the narrow storage surface the DDNS reconciler needs.
+// ListAgents reads rows for the sweep; UpdateDdnsStatusColumn writes ONLY the
+// ddns_status column via a targeted update (not a full-row upsert), so the
+// reconciler can never clobber concurrent full-row writes from heartbeats or
+// admin edits during the Cloudflare call window.
 type ddnsStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
-	SaveAgent(context.Context, storage.AgentRow) error
+	UpdateDdnsStatusColumn(ctx context.Context, agentID, statusJSON string) error
 }
 
 // DDNSService is the master-side dynamic DNS reconciler. It implements
@@ -39,9 +38,14 @@ type DDNSService struct {
 
 	startOnce sync.Once
 	stopOnce  sync.Once
-	ctx       context.Context
 	cancel    context.CancelFunc
-	done      chan struct{}
+	sweepWG   sync.WaitGroup
+
+	// sweepInitialDelay / sweepInterval override the sweep cadence; they default
+	// to 30s initial + cfg.DDNS.Interval in runSweepLoop and exist so tests can
+	// drive the loop on a millisecond timescale without sleeping for 30s.
+	sweepInitialDelay time.Duration
+	sweepInterval     time.Duration
 }
 
 // NewDDNSService constructs a reconciler that uses cf to upsert Cloudflare
@@ -57,36 +61,38 @@ func NewDDNSService(cfg config.Config, store ddnsStore, cf cloudflareDNSClient, 
 		cf:         cf,
 		now:        now,
 		dispatcher: newDDNSDispatcher(64),
-		done:       make(chan struct{}),
 	}
 }
 
 // Start launches the dispatcher worker and the background sweep loop. It is
-// idempotent. The goroutines run until Close cancels the internal context.
+// idempotent. The goroutines run under a single internal context that Close
+// cancels; Close then waits for both to exit before returning.
 func (s *DDNSService) Start() {
 	s.startOnce.Do(func() {
 		if s.cf == nil {
 			s.cf = newHTTPCloudflareClient(s.cfg.DDNS.APIBase, s.cfg.DDNS.Timeout)
 		}
-		s.ctx, s.cancel = context.WithCancel(context.Background())
-		s.dispatcher.start(s.ctx, s.reconcileAgent)
-		go s.runSweepLoop(s.ctx)
+		ctx, cancel := context.WithCancel(context.Background())
+		s.cancel = cancel
+		s.dispatcher.start(ctx, s.reconcileAgent)
+		s.sweepWG.Add(1)
+		go func() {
+			defer s.sweepWG.Done()
+			s.runSweepLoop(ctx)
+		}()
 	})
 }
 
-// Close cancels the internal context and waits for the worker + sweep loop to
-// stop. It is idempotent.
+// Close cancels the internal context and blocks until the dispatcher worker and
+// sweep loop have both exited, so shutdown never races a goroutine that still
+// holds the store. It is idempotent and safe to call when Start was never called.
 func (s *DDNSService) Close() {
 	s.stopOnce.Do(func() {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		s.dispatcher.stop()
-		select {
-		case <-s.done:
-		default:
-			close(s.done)
-		}
+		s.dispatcher.stop() // waits for the worker to observe ctx.Done
+		s.sweepWG.Wait()    // waits for the sweep loop to observe ctx.Done
 	})
 }
 
@@ -105,23 +111,23 @@ func (s *DDNSService) ReconcileAfterHeartbeat(_ context.Context, agentID string)
 // every agent with a DDNS config. This picks up retries (honoring backoff) and
 // agents whose heartbeats have paused but still need their records refreshed.
 func (s *DDNSService) runSweepLoop(ctx context.Context) {
-	defer func() {
-		select {
-		case <-s.done:
-		default:
-			close(s.done)
-		}
-	}()
-	interval := s.cfg.DDNS.Interval
+	interval := s.sweepInterval
+	if interval <= 0 {
+		interval = s.cfg.DDNS.Interval
+	}
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
-	initial := time.NewTimer(30 * time.Second)
-	defer initial.Stop()
+	initial := s.sweepInitialDelay
+	if initial <= 0 {
+		initial = 30 * time.Second
+	}
+	initialTimer := time.NewTimer(initial)
+	defer initialTimer.Stop()
 	select {
 	case <-ctx.Done():
 		return
-	case <-initial.C:
+	case <-initialTimer.C:
 		s.sweep(ctx)
 	}
 	ticker := time.NewTicker(interval)
@@ -171,26 +177,33 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 	if !ok {
 		return
 	}
+	prior := parseDDNSStatus(row.DdnsStatusJSON)
 	cfg := parseDDNSConfig(row.DdnsConfigJSON)
 
-	// Disabled master (no token): record the reason once and stop. No Cloudflare
-	// call is ever made without a credential.
+	// Disabled master (no token): record the reason and stop. No Cloudflare call
+	// is ever made without a credential. Skip the write once it has settled so a
+	// busy agent (per-heartbeat enqueue + per-sweep) does not amplify DB writes.
 	if !s.cfg.DDNS.Enabled || strings.TrimSpace(s.cfg.DDNS.Token) == "" {
-		s.persistStatus(ctx, row, storage.DdnsStatus{Status: "disabled", LastError: "cloudflare token not configured"})
+		if prior.Status != "disabled" {
+			s.persistStatus(ctx, agentID, storage.DdnsStatus{Status: "disabled", LastError: "cloudflare token not configured"})
+		}
 		return
 	}
 	if cfg == nil || strings.TrimSpace(cfg.Domain) == "" {
-		s.persistStatus(ctx, row, storage.DdnsStatus{Status: "idle", LastError: ""})
+		if prior.Status != "idle" {
+			s.persistStatus(ctx, agentID, storage.DdnsStatus{Status: "idle", LastError: ""})
+		}
 		return
 	}
 
 	desired := s.desiredRecords(cfg, row)
 	if len(desired) == 0 {
-		s.persistStatus(ctx, row, storage.DdnsStatus{Status: "idle", LastError: ""})
+		if prior.Status != "idle" {
+			s.persistStatus(ctx, agentID, storage.DdnsStatus{Status: "idle", LastError: ""})
+		}
 		return
 	}
 
-	prior := parseDDNSStatus(row.DdnsStatusJSON)
 	// Backoff gate: a failed agent waits until NextRetryAtUnix before touching
 	// Cloudflare again, preventing retry storms.
 	if prior.RetryCount > 0 && prior.NextRetryAtUnix > s.now().Unix() {
@@ -202,25 +215,25 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 		class := ddnsBackoffClass(err)
 		delay := ddnsBackoffDelay(class, extractDDNSRetryAfter(err), retryCount)
 		status := storage.DdnsStatus{
-			Status:            "error",
-			LastError:         truncateDDNSError(err.Error()),
-			RetryCount:        retryCount,
-			NextRetryAtUnix:   s.now().Add(delay).Unix(),
-			BackoffClass:      class,
-			LastResolvedIPv4:  prior.LastResolvedIPv4,
-			LastResolvedIPv6:  prior.LastResolvedIPv6,
+			Status:           "error",
+			LastError:        truncateDDNSError(err.Error()),
+			RetryCount:       retryCount,
+			NextRetryAtUnix:  s.now().Add(delay).Unix(),
+			BackoffClass:     class,
+			LastResolvedIPv4: prior.LastResolvedIPv4,
+			LastResolvedIPv6: prior.LastResolvedIPv6,
 		}
-		s.persistStatus(ctx, row, status)
+		s.persistStatus(ctx, agentID, status)
 		return
 	}
 
 	status := storage.DdnsStatus{
-		Status:            "ok",
+		Status:           "ok",
 		LastSuccessAtUnix: s.now().Unix(),
 		LastResolvedIPv4:  resolvedContent(desired, "A"),
 		LastResolvedIPv6:  resolvedContent(desired, "AAAA"),
 	}
-	s.persistStatus(ctx, row, status)
+	s.persistStatus(ctx, agentID, status)
 }
 
 // desiredRecord pairs a Cloudflare record type with the address to publish.
@@ -262,14 +275,18 @@ func (s *DDNSService) lookupAgent(ctx context.Context, agentID string) (storage.
 	return storage.AgentRow{}, false
 }
 
-func (s *DDNSService) persistStatus(ctx context.Context, row storage.AgentRow, status storage.DdnsStatus) {
+// persistStatus writes only the ddns_status column for agentID. It deliberately
+// uses a narrow column update (not a full-row upsert) so a reconcile that read a
+// stale row cannot clobber concurrent full-row writes from heartbeats or admin
+// edits (agent config, desired_revision, token rotation) landed during the
+// Cloudflare call window.
+func (s *DDNSService) persistStatus(ctx context.Context, agentID string, status storage.DdnsStatus) {
 	encoded, err := json.Marshal(status)
 	if err != nil {
 		return
 	}
-	row.DdnsStatusJSON = string(encoded)
-	if err := s.store.SaveAgent(ctx, row); err != nil {
-		log.Printf("[ddns] persist status for agent %q failed: %v", row.ID, err)
+	if err := s.store.UpdateDdnsStatusColumn(ctx, agentID, string(encoded)); err != nil {
+		log.Printf("[ddns] persist status for agent %q failed: %v", agentID, err)
 	}
 }
 

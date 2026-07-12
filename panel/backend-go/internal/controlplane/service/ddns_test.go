@@ -17,11 +17,14 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-// fakeDDNSStore is an in-memory ddnsStore for service-level tests.
+// fakeDDNSStore is an in-memory ddnsStore for service-level tests. Its
+// UpdateDdnsStatusColumn mirrors the production narrow update: it touches ONLY
+// the ddns_status column, leaving every other field (admin config, reported IPs,
+// token, etc.) untouched so tests can assert no clobbering.
 type fakeDDNSStore struct {
-	mu    sync.Mutex
-	rows  map[string]storage.AgentRow
-	saved []storage.AgentRow
+	mu         sync.Mutex
+	rows       map[string]storage.AgentRow
+	statusWrites int
 }
 
 func newFakeDDNSStore(rows ...storage.AgentRow) *fakeDDNSStore {
@@ -42,11 +45,13 @@ func (f *fakeDDNSStore) ListAgents(context.Context) ([]storage.AgentRow, error) 
 	return out, nil
 }
 
-func (f *fakeDDNSStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
+func (f *fakeDDNSStore) UpdateDdnsStatusColumn(_ context.Context, agentID, statusJSON string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rows[row.ID] = row
-	f.saved = append(f.saved, row)
+	row := f.rows[agentID]
+	row.DdnsStatusJSON = statusJSON
+	f.rows[agentID] = row
+	f.statusWrites++
 	return nil
 }
 
@@ -318,6 +323,165 @@ func TestDDNSExtractRetryAfterParsesHint(t *testing.T) {
 	delay := ddnsBackoffDelay("transient", 7*time.Minute, 0)
 	if delay != 7*time.Minute {
 		t.Errorf("expected retryAfter (7m) to override base within cap, got %v", delay)
+	}
+}
+
+// TestHTTPCloudflareClientSurfacesRetryAfterHeader proves F3 end-to-end: a 429
+// with a Retry-After header is decoded by do(), embedded in the error message,
+// parsed back by extractDDNSRetryAfter, and classified as rate_limited — so the
+// reconciler honors the server's requested wait rather than a fixed backoff.
+func TestHTTPCloudflareClientSurfacesRetryAfterHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/zones" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": []cfZone{{ID: "zone-1", Name: "example.com"}}, "result_info": map[string]int{"total_pages": 1}})
+			return
+		}
+		w.Header().Set("Retry-After", "45")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1015,"message":"You are being rate limited"}],"result":null}`))
+	}))
+	defer srv.Close()
+
+	client := newHTTPCloudflareClient(srv.URL, 5*time.Second)
+	_, err := client.EnsureRecord(context.Background(), "tok", "host.example.com", "A", "203.0.113.10", 120)
+	if err == nil {
+		t.Fatal("expected a 429 error, got nil")
+	}
+	if got := extractDDNSRetryAfter(err); got != 45*time.Second {
+		t.Fatalf("extractDDNSRetryAfter = %v, want 45s (err=%v)", got, err)
+	}
+	if class := ddnsBackoffClass(err); class != "rate_limited" {
+		t.Fatalf("ddnsBackoffClass = %q, want rate_limited (err=%v)", class, err)
+	}
+	if !strings.Contains(err.Error(), "retry_after_seconds=45") {
+		t.Fatalf("error message must embed the retry_after_seconds hint, got %q", err.Error())
+	}
+}
+
+// TestDDNSSweepReconcilesConfiguredAgentAndSkipsEmpty covers F4 directly: a
+// single sweep reconciles agents with a DDNS config + reported IP and leaves
+// agents without a config untouched (no Cloudflare call).
+func TestDDNSSweepReconcilesConfiguredAgentAndSkipsEmpty(t *testing.T) {
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
+	configured := ddnsConfigRow("a1", storage.DDNSConfig{
+		Domain: "host.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", "")
+	empty := storage.AgentRow{ID: "a2", LastSeenIPv4: "203.0.113.99"}
+	store := newFakeDDNSStore(configured, empty)
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
+
+	svc.sweep(context.Background())
+
+	if status := store.status("a1"); status.Status != "ok" {
+		t.Fatalf("sweep must reconcile configured agent to ok, got %+v", status)
+	}
+	if store.status("a2").Status != "" {
+		t.Fatalf("sweep must not write status for unconfigured agent, got %+v", store.status("a2"))
+	}
+	if got := cf.callCount(); got != 1 {
+		t.Fatalf("expected exactly 1 Cloudflare call (configured agent only), got %d", got)
+	}
+}
+
+// TestDDNSSweepLoopRunsPeriodicallyAndStopsOnCancel covers F4 loop coverage:
+// with an injected millisecond cadence the loop reconciles repeatedly, then
+// Close() returns within a deadline (the loop observed ctx.Done and exited).
+func TestDDNSSweepLoopRunsPeriodicallyAndStopsOnCancel(t *testing.T) {
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
+	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
+		Domain: "host.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", ""))
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
+	svc.sweepInitialDelay = 5 * time.Millisecond
+	svc.sweepInterval = 15 * time.Millisecond
+	svc.Start()
+
+	// Wait for the loop to reconcile more than once (periodic), proving the
+	// ticker re-fires and each tick re-sweeps the configured agent.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && cf.callCount() < 3 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := cf.callCount(); got < 3 {
+		t.Fatalf("expected the sweep loop to fire periodically (>=3 reconciles), got %d", got)
+	}
+
+	// Close must observe ctx.Done and return; if the loop doesn't honor
+	// cancellation this blocks until the test timeout fails it.
+	done := make(chan struct{})
+	go func() { svc.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() did not return within 2s; sweep loop failed to observe ctx.Done")
+	}
+}
+
+// TestDDNSPersistStatusDoesNotClobberConcurrentColumns covers F5: persistStatus
+// writes ONLY ddns_status. A concurrent full-row write (simulated by a fresh
+// admin value for an unrelated column) landed after the reconciler read the row
+// must survive the DDNS status persist.
+func TestDDNSPersistStatusDoesNotClobberConcurrentColumns(t *testing.T) {
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
+	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
+		Domain: "host.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", ""))
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
+
+	svc.reconcileAgent(context.Background(), "a1")
+
+	// Simulate a concurrent admin edit to an unrelated field after the reconcile
+	// read its (stale) row, then trigger another reconcile. The ddns_config the
+	// admin wrote must survive — persistStatus only touches ddns_status.
+	store.mu.Lock()
+	row := store.rows["a1"]
+	row.DdnsConfigJSON = `{"domain":"admin-edited.example.com","ipv4":{"enabled":true}}`
+	store.rows["a1"] = row
+	store.mu.Unlock()
+
+	svc.reconcileAgent(context.Background(), "a1")
+
+	store.mu.Lock()
+	got := store.rows["a1"]
+	store.mu.Unlock()
+	if !strings.Contains(got.DdnsConfigJSON, "admin-edited.example.com") {
+		t.Fatalf("narrow persist must not clobber admin ddns_config edit, got %q", got.DdnsConfigJSON)
+	}
+	if got.LastSeenIPv4 != "203.0.113.10" {
+		t.Fatalf("narrow persist must not clobber reported IP, got %q", got.LastSeenIPv4)
+	}
+	if status := store.status("a1"); status.Status != "ok" {
+		t.Fatalf("status should still be ok, got %+v", status)
+	}
+}
+
+func TestDDNSDisabledIdleWritesSkipOnceSettled(t *testing.T) {
+	// F6: a disabled master records status once; subsequent reconciles (per
+	// heartbeat / per sweep) must not re-write the same disabled status.
+	cf := &fakeCFClient{}
+	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
+		Domain: "host.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", ""))
+	cfg := enabledDDNSConfig()
+	cfg.DDNS.Enabled = false
+	cfg.DDNS.Token = ""
+	svc := NewDDNSService(cfg, store, cf, time.Now)
+
+	svc.reconcileAgent(context.Background(), "a1")
+	firstWrites := store.statusWrites
+	svc.reconcileAgent(context.Background(), "a1")
+	svc.reconcileAgent(context.Background(), "a1")
+
+	if store.statusWrites != firstWrites {
+		t.Fatalf("disabled status should be written once, got %d writes after first (%d)", store.statusWrites, firstWrites)
+	}
+	if got := cf.callCount(); got != 0 {
+		t.Fatalf("disabled master must never call Cloudflare, got %d", got)
 	}
 }
 

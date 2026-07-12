@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -214,7 +215,7 @@ func (c *httpCloudflareClient) getJSON(ctx context.Context, token, path string, 
 	if err != nil {
 		return 0, err
 	}
-	raw, status, err := c.do(req, token)
+	raw, status, retryAfter, err := c.do(req, token)
 	if err != nil {
 		return 0, err
 	}
@@ -223,7 +224,7 @@ func (c *httpCloudflareClient) getJSON(ctx context.Context, token, path string, 
 		return 0, fmt.Errorf("ddns: decode cloudflare response: %w", err)
 	}
 	if status >= 400 || !resp.Success {
-		return 0, cfError(status, raw, resp.Errors)
+		return 0, cfError(status, raw, resp.Errors, retryAfter)
 	}
 	var paged cfPagedResult
 	_ = json.Unmarshal(raw, &paged)
@@ -245,7 +246,7 @@ func (c *httpCloudflareClient) sendJSON(ctx context.Context, token, method, path
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	raw, status, err := c.do(req, token)
+	raw, status, retryAfter, err := c.do(req, token)
 	if err != nil {
 		return 0, err
 	}
@@ -254,7 +255,7 @@ func (c *httpCloudflareClient) sendJSON(ctx context.Context, token, method, path
 		return 0, fmt.Errorf("ddns: decode cloudflare response: %w", err)
 	}
 	if status != expectStatus || !resp.Success {
-		return 0, cfError(status, raw, resp.Errors)
+		return 0, cfError(status, raw, resp.Errors, retryAfter)
 	}
 	if result != nil {
 		if err := json.Unmarshal(resp.Result, result); err != nil {
@@ -269,26 +270,41 @@ func (c *httpCloudflareClient) sendJSONNoResult(ctx context.Context, token, meth
 	return err
 }
 
-func (c *httpCloudflareClient) do(req *http.Request, token string) ([]byte, int, error) {
+func (c *httpCloudflareClient) do(req *http.Request, token string) ([]byte, int, time.Duration, error) {
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("ddns: cloudflare request failed: %w", err)
+		return nil, 0, 0, fmt.Errorf("ddns: cloudflare request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		return nil, resp.StatusCode, fmt.Errorf("ddns: read cloudflare response: %w", readErr)
+		return nil, resp.StatusCode, 0, fmt.Errorf("ddns: read cloudflare response: %w", readErr)
 	}
-	return raw, resp.StatusCode, nil
+	return raw, resp.StatusCode, parseRetryAfter(resp.Header.Get("Retry-After")), nil
+}
+
+// parseRetryAfter parses a Cloudflare Retry-After response header. Cloudflare
+// emits the delta-seconds form (an integer); the HTTP-date form is ignored (rare
+// in practice, and the reconciler treats an unknown hint as "no hint").
+func parseRetryAfter(header string) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(header)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
 }
 
 // cfError builds an error from a non-success Cloudflare response, preserving a
 // Retry-After hint (seconds) when the API signals rate limiting (HTTP 429) so
 // the reconciler backoff can honor it. The hint is embedded as
 // "retry_after_seconds=N" in the message, mirroring the certificate issuer.
-func cfError(status int, raw []byte, entries []cfErrorEntry) error {
+func cfError(status int, raw []byte, entries []cfErrorEntry, retryAfter time.Duration) error {
 	msg := fmt.Sprintf("ddns: cloudflare returned status %d", status)
 	if len(entries) > 0 && strings.TrimSpace(entries[0].Message) != "" {
 		msg = fmt.Sprintf("%s: %s", msg, entries[0].Message)
@@ -300,9 +316,12 @@ func cfError(status int, raw []byte, entries []cfErrorEntry) error {
 		msg = fmt.Sprintf("ddns: cloudflare returned status %d: %s", status, probe.Errors[0].Message)
 	}
 	if status == http.StatusTooManyRequests {
-		// Retry-After is surfaced by do() via headers in callers that need it;
-		// the reconciler parses the numeric hint if present in the message.
 		msg += " (rate_limited)"
+	}
+	// retryAfter is captured by do() from the response header and embedded so the
+	// reconciler's extractDDNSRetryAfter can honor the server's requested wait.
+	if retryAfter > 0 {
+		msg += fmt.Sprintf(" (retry_after_seconds=%d)", int(retryAfter.Seconds()))
 	}
 	return errors.New(msg)
 }
