@@ -12,11 +12,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -49,6 +51,12 @@ type agentStore interface {
 
 type agentHeartbeatStore interface {
 	SaveAgentHeartbeat(context.Context, storage.AgentRow) error
+}
+
+type agentRevisionActionStore interface {
+	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
+	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
+	RetryCoordinatorRevision(context.Context, string, int64, time.Time) (storage.AgentRevisionRow, error)
 }
 
 type AgentSummary struct {
@@ -197,6 +205,7 @@ type UpdateAgentRequest struct {
 	AgentURL             *string   `json:"agent_url,omitempty"`
 	AgentToken           *string   `json:"agent_token,omitempty"`
 	Version              *string   `json:"version,omitempty"`
+	DesiredVersion       *string   `json:"desired_version,omitempty"`
 	Tags                 *[]string `json:"tags,omitempty"`
 	Capabilities         *[]string `json:"capabilities,omitempty"`
 	OutboundProxyURL     *string   `json:"outbound_proxy_url,omitempty"`
@@ -215,8 +224,9 @@ type agentService struct {
 	cfg                        config.Config
 	store                      agentStore
 	trafficService             heartbeatTrafficService
+	settingsMutation           *revision.Executor
+	revisionActions            agentRevisionActionStore
 	now                        func() time.Time
-	localApplyTrigger          func(context.Context) error
 	localMonitorRefreshTrigger func(context.Context) error
 	bundledCacheMu             sync.Mutex
 	bundledCache               map[string]bundledPackageCacheEntry
@@ -245,6 +255,15 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 		bundledCache:       make(map[string]bundledPackageCacheEntry),
 		monitorSubscribers: make(map[chan AgentMonitorUpdate]struct{}),
 	}
+	if mutationStore, ok := store.(revision.Store); ok {
+		svc.settingsMutation = NewMutationExecutor(
+			mutationStore,
+			revision.WithSnapshotBuilder(revision.SnapshotBuilderFunc(buildAgentSettingsSnapshot)),
+		)
+	}
+	if actionStore, ok := store.(agentRevisionActionStore); ok {
+		svc.revisionActions = actionStore
+	}
 	if trafficStore, ok := store.(trafficStore); ok {
 		trafficCfg, err := NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
 		if err == nil {
@@ -270,7 +289,7 @@ func (s *agentService) SetTrafficService(trafficService heartbeatTrafficService)
 }
 
 func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
-	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
+	_ = trigger
 }
 
 func (s *agentService) SetLocalMonitorRefreshTrigger(trigger func(context.Context) error) {
@@ -438,11 +457,17 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 }
 
 func (s *agentService) Update(ctx context.Context, agentID string, input UpdateAgentRequest) (AgentSummary, error) {
-	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		return AgentSummary{}, fmt.Errorf("%w: local agent cannot be modified", ErrInvalidArgument)
+	isLocal := s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID
+	var row storage.AgentRow
+	var err error
+	if isLocal {
+		if s.settingsMutation == nil {
+			return AgentSummary{}, fmt.Errorf("%w: local agent cannot be modified", ErrInvalidArgument)
+		}
+		row, err = s.localSettingsRow(ctx)
+	} else {
+		row, err = s.findAgentByID(ctx, agentID)
 	}
-
-	row, err := s.findAgentByID(ctx, agentID)
 	if err != nil {
 		return AgentSummary{}, err
 	}
@@ -478,13 +503,20 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	if input.Version != nil {
 		row.Version = strings.TrimSpace(*input.Version)
 	}
+	configChanged := false
+	if input.DesiredVersion != nil {
+		desiredVersion := strings.TrimSpace(*input.DesiredVersion)
+		if desiredVersion != strings.TrimSpace(row.DesiredVersion) {
+			configChanged = true
+		}
+		row.DesiredVersion = desiredVersion
+	}
 	if input.Tags != nil {
 		row.TagsJSON = marshalStringArray(normalizeAgentTags(*input.Tags))
 	}
 	if input.Capabilities != nil {
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(*input.Capabilities))
 	}
-	configChanged := false
 	if input.OutboundProxyURL != nil {
 		previousOutboundProxyURL := strings.TrimSpace(row.OutboundProxyURL)
 		outboundProxyURL, err := normalizeOutboundProxyURLUpdate(*input.OutboundProxyURL, row.OutboundProxyURL)
@@ -513,6 +545,37 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		}
 	}
 	if configChanged {
+		if s.settingsMutation != nil {
+			target := revision.Target{AgentID: row.ID}
+			if isLocal {
+				target.Local = true
+				target.Capabilities = append([]string(nil), defaultLocalCapabilities...)
+			}
+			_, err := s.settingsMutation.Execute(ctx, revision.MutationRequest{
+				Kind: "agent.settings.update",
+				Request: map[string]any{
+					"agent_id":               row.ID,
+					"desired_version":        row.DesiredVersion,
+					"outbound_proxy_url":     row.OutboundProxyURL,
+					"traffic_stats_interval": row.TrafficStatsInterval,
+				},
+				Targets: []revision.Target{target},
+				ResourceState: func(context.Context, *storage.GormStore, revision.Target) (any, error) {
+					return struct{}{}, nil
+				},
+				Mutate: func(mutateCtx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+					row.DesiredRevision = int(revisions[row.ID])
+					return tx.SaveAgent(mutateCtx, row)
+				},
+			})
+			if err != nil {
+				return AgentSummary{}, err
+			}
+			if isLocal {
+				return s.localSummary(ctx)
+			}
+			return s.summaryForRow(ctx, row)
+		}
 		allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 		if err != nil {
 			return AgentSummary{}, err
@@ -522,6 +585,9 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {
 		return AgentSummary{}, err
+	}
+	if isLocal {
+		return s.localSummary(ctx)
 	}
 	return s.summaryForRow(ctx, row)
 }
@@ -666,65 +732,120 @@ func localFallbackStats() AgentStats {
 }
 
 func (s *agentService) Apply(ctx context.Context, agentID string) (ApplyAgentResult, error) {
-	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		snapshot, err := s.store.LoadLocalSnapshot(ctx, s.cfg.LocalAgentID)
+	isLocal := s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID
+	var row storage.AgentRow
+	if !isLocal {
+		var err error
+		row, err = s.findAgentByID(ctx, agentID)
 		if err != nil {
 			return ApplyAgentResult{}, err
 		}
-
-		if s.localApplyTrigger == nil {
-			return ApplyAgentResult{
-				Message:         "waiting for embedded local agent to apply",
-				DesiredRevision: snapshot.Revision,
-				Pending:         true,
-			}, nil
-		}
-		if err := s.localApplyTrigger(ctx); err != nil {
-			return ApplyAgentResult{}, err
-		}
-
-		state, err := s.store.LoadLocalAgentState(ctx)
+	}
+	if s.revisionActions != nil {
+		pointer, found, err := s.revisionActions.GetAgentRevisionPointer(ctx, agentID)
 		if err != nil {
 			return ApplyAgentResult{}, err
 		}
-		if state.CurrentRevision < int(snapshot.Revision) ||
-			state.LastApplyRevision < int(snapshot.Revision) ||
-			!strings.EqualFold(strings.TrimSpace(state.LastApplyStatus), "success") {
-			return ApplyAgentResult{
-				Message:         "waiting for embedded local agent to apply",
-				DesiredRevision: snapshot.Revision,
-				Pending:         true,
-			}, nil
+		if found {
+			desired := pointer.DesiredRevision
+			revisionRow, revisionFound, err := s.revisionActions.GetCoordinatorRevision(ctx, agentID, desired)
+			if err != nil {
+				return ApplyAgentResult{}, err
+			}
+			message := "current desired revision is already scheduled"
+			if revisionFound && revisionRow.State == storage.AgentRevisionStateFailed {
+				if _, err := s.revisionActions.RetryCoordinatorRevision(ctx, agentID, desired, s.now().UTC()); err != nil {
+					return ApplyAgentResult{}, err
+				}
+				message = "retry scheduled for current desired revision"
+			}
+			return ApplyAgentResult{Message: message, DesiredRevision: desired, Pending: true}, nil
 		}
-		return ApplyAgentResult{
-			Message:         "applied",
-			DesiredRevision: snapshot.Revision,
-		}, nil
 	}
 
-	row, err := s.findAgentByID(ctx, agentID)
+	var snapshot storage.Snapshot
+	var err error
+	if isLocal {
+		snapshot, err = s.store.LoadLocalSnapshot(ctx, s.cfg.LocalAgentID)
+	} else {
+		snapshot, err = s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+			DesiredVersion: row.DesiredVersion, DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision, Platform: row.Platform,
+		})
+	}
 	if err != nil {
 		return ApplyAgentResult{}, err
-	}
-	snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
-		DesiredVersion:  row.DesiredVersion,
-		DesiredRevision: row.DesiredRevision,
-		CurrentRevision: row.CurrentRevision,
-		Platform:        row.Platform,
-	})
-	if err != nil {
-		return ApplyAgentResult{}, err
-	}
-	if row.DesiredRevision < int(snapshot.Revision) {
-		row.DesiredRevision = int(snapshot.Revision)
-		if err := s.store.SaveAgent(ctx, row); err != nil {
-			return ApplyAgentResult{}, err
-		}
 	}
 	return ApplyAgentResult{
-		Message:         "waiting for agent heartbeat to apply",
+		Message:         "current desired revision is already scheduled",
 		DesiredRevision: snapshot.Revision,
 		Pending:         true,
+	}, nil
+}
+
+func buildAgentSettingsSnapshot(ctx context.Context, tx *storage.GormStore, target revision.Target) (storage.Snapshot, error) {
+	if target.Local {
+		state, err := tx.LoadLocalAgentState(ctx)
+		if err != nil {
+			return storage.Snapshot{}, err
+		}
+		desiredVersion := state.DesiredVersion
+		desiredRevision := state.DesiredRevision
+		rows, err := tx.ListAgents(ctx)
+		if err != nil {
+			return storage.Snapshot{}, err
+		}
+		for _, row := range rows {
+			if row.ID != target.AgentID {
+				continue
+			}
+			desiredVersion = row.DesiredVersion
+			if row.DesiredRevision > desiredRevision {
+				desiredRevision = row.DesiredRevision
+			}
+			break
+		}
+		return tx.LoadAgentSnapshot(ctx, target.AgentID, storage.AgentSnapshotInput{
+			DesiredVersion: desiredVersion, DesiredRevision: desiredRevision,
+			CurrentRevision: state.CurrentRevision, Platform: runtime.GOOS + "-" + runtime.GOARCH,
+		})
+	}
+	rows, err := tx.ListAgents(ctx)
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	for _, row := range rows {
+		if row.ID != target.AgentID {
+			continue
+		}
+		return tx.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+			DesiredVersion: row.DesiredVersion, DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision, Platform: row.Platform,
+		})
+	}
+	return storage.Snapshot{}, ErrAgentNotFound
+}
+
+func (s *agentService) localSettingsRow(ctx context.Context) (storage.AgentRow, error) {
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return storage.AgentRow{}, err
+	}
+	for _, row := range rows {
+		if row.ID == s.cfg.LocalAgentID {
+			return row, nil
+		}
+	}
+	state, err := s.store.LoadLocalAgentState(ctx)
+	if err != nil {
+		return storage.AgentRow{}, err
+	}
+	return storage.AgentRow{
+		ID: s.cfg.LocalAgentID, Name: s.cfg.LocalAgentName, AgentToken: "local",
+		DesiredVersion: state.DesiredVersion, DesiredRevision: state.DesiredRevision,
+		CurrentRevision: state.CurrentRevision, LastApplyRevision: state.LastApplyRevision,
+		LastApplyStatus: state.LastApplyStatus, LastApplyMessage: state.LastApplyMessage,
+		Mode: "local", IsLocal: true, CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities),
 	}, nil
 }
 
@@ -1010,21 +1131,44 @@ func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
 	if err != nil {
 		return AgentSummary{}, err
 	}
+	agentRows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	var settings storage.AgentRow
+	for _, row := range agentRows {
+		if row.ID == s.cfg.LocalAgentID {
+			settings = row
+			break
+		}
+	}
+	desiredVersion := localState.DesiredVersion
+	desiredRevision := localState.DesiredRevision
+	if settings.ID != "" {
+		desiredVersion = settings.DesiredVersion
+		if settings.DesiredRevision > desiredRevision {
+			desiredRevision = settings.DesiredRevision
+		}
+	}
 	return AgentSummary{
-		ID:                s.cfg.LocalAgentID,
-		Name:              s.cfg.LocalAgentName,
-		DesiredVersion:    localState.DesiredVersion,
-		Mode:              "local",
-		DesiredRevision:   localState.DesiredRevision,
-		CurrentRevision:   localState.CurrentRevision,
-		LastApplyRevision: localState.LastApplyRevision,
-		LastApplyStatus:   localState.LastApplyStatus,
-		LastApplyMessage:  localState.LastApplyMessage,
-		Status:            "online",
-		IsLocal:           true,
-		Capabilities:      append([]string(nil), defaultLocalCapabilities...),
-		HTTPRulesCount:    len(localRules),
-		L4RulesCount:      len(localL4Rules),
+		ID:                   s.cfg.LocalAgentID,
+		Name:                 s.cfg.LocalAgentName,
+		Version:              settings.Version,
+		Platform:             settings.Platform,
+		DesiredVersion:       desiredVersion,
+		OutboundProxyURL:     strings.TrimSpace(settings.OutboundProxyURL),
+		TrafficStatsInterval: strings.TrimSpace(settings.TrafficStatsInterval),
+		Mode:                 "local",
+		DesiredRevision:      desiredRevision,
+		CurrentRevision:      localState.CurrentRevision,
+		LastApplyRevision:    localState.LastApplyRevision,
+		LastApplyStatus:      localState.LastApplyStatus,
+		LastApplyMessage:     localState.LastApplyMessage,
+		Status:               "online",
+		IsLocal:              true,
+		Capabilities:         append([]string(nil), defaultLocalCapabilities...),
+		HTTPRulesCount:       len(localRules),
+		L4RulesCount:         len(localL4Rules),
 	}, nil
 }
 

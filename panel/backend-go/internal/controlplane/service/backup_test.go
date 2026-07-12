@@ -4203,6 +4203,14 @@ func TestBackupServicePreviewUsesExistingRelayListenerForConflictValidation(t *t
 					t.Fatalf("SaveAgent(%s) error = %v", agent.ID, err)
 				}
 			}
+			if tt.existingTransport == "wireguard" {
+				if err := targetStore.SaveWireGuardProfiles(ctx, relayAgentID, []storage.WireGuardProfileRow{{
+					ID: 41, AgentID: relayAgentID, Name: "relay-wireguard", Mode: "generic_wireguard",
+					Enabled: true, AddressesJSON: `[]`, BindAddressesJSON: `[]`, PeersJSON: `[]`, DNSJSON: `[]`, TagsJSON: `[]`, Revision: 2,
+				}}); err != nil {
+					t.Fatalf("SaveWireGuardProfiles(existing) error = %v", err)
+				}
+			}
 			if err := targetStore.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{{
 				ID:              21,
 				Domain:          "relay.example.com",
@@ -7722,5 +7730,159 @@ func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenMaterialMissing(t *
 	}
 	if currentCA.CertPEM != targetCA.CertPEM || currentCA.KeyPEM != targetCA.KeyPEM {
 		t.Fatal("target relay CA material was replaced")
+	}
+}
+
+func TestBackupServiceImportCommitsLocalAndRemoteRevisionsWithOneDependencyPlan(t *testing.T) {
+	ctx := t.Context()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-target", Name: "Edge Target", AgentToken: "target-token",
+		Platform: "linux-amd64", CapabilitiesJSON: `["http_rules"]`,
+		DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	localBefore, err := store.ListAgentRevisions(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(local before) error = %v", err)
+	}
+	remoteBefore, err := store.ListAgentRevisions(ctx, "edge-target")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(remote before) error = %v", err)
+	}
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion: BackupPackageVersion, SourceArchitecture: BackupSourceArchitectureGo,
+			SourceLocalAgentID: "source-local", ExportedAt: time.Date(2026, 7, 12, 22, 30, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{
+			{ID: "source-local", Name: "Source Local", AgentToken: "source-local-token", Mode: "local"},
+			{ID: "source-edge", Name: "Edge Target", AgentToken: "source-edge-token", Platform: "linux-amd64", Capabilities: []string{"http_rules"}},
+		},
+		HTTPRules: []BackupHTTPRule{
+			{ID: 11, AgentID: "source-local", FrontendURL: "https://local-import.example.com", Backends: []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}}, Enabled: true},
+			{ID: 12, AgentID: "source-edge", FrontendURL: "https://remote-import.example.com", Backends: []HTTPRuleBackend{{URL: "http://127.0.0.1:8097"}}, Enabled: true},
+		},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+	result, err := NewBackupService(config.Config{
+		EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local",
+	}, store).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.HTTPRules != 2 {
+		t.Fatalf("import result = %+v", result)
+	}
+	assertBackupSkippedConflictReason(t, result, "agent", "Source Local", "local agent remapped to target")
+	assertBackupSkippedConflictReason(t, result, "agent", "Edge Target", "agent name already exists")
+
+	localAfter, err := store.ListAgentRevisions(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(local after) error = %v", err)
+	}
+	remoteAfter, err := store.ListAgentRevisions(ctx, "edge-target")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(remote after) error = %v", err)
+	}
+	if len(localAfter) != len(localBefore)+1 || len(remoteAfter) != len(remoteBefore)+1 {
+		t.Fatalf("revision counts local %d->%d remote %d->%d", len(localBefore), len(localAfter), len(remoteBefore), len(remoteAfter))
+	}
+	localRevision := localAfter[len(localAfter)-1]
+	remoteRevision := remoteAfter[len(remoteAfter)-1]
+	if localRevision.OperationID == "" || localRevision.OperationID != remoteRevision.OperationID {
+		t.Fatalf("local revision = %+v, remote revision = %+v", localRevision, remoteRevision)
+	}
+	if localRevision.State != storage.AgentRevisionStatePending || remoteRevision.State != storage.AgentRevisionStatePending {
+		t.Fatalf("local/remote states = %q/%q", localRevision.State, remoteRevision.State)
+	}
+	dependencyArtifact, found, err := store.GetOperationDependencyArtifact(ctx, localRevision.OperationID)
+	if err != nil || !found {
+		t.Fatalf("GetOperationDependencyArtifact() found=%v error=%v", found, err)
+	}
+	if dependencyArtifact.Kind != storage.GenerationArtifactKindDependencyPlan || len(dependencyArtifact.Payload) == 0 {
+		t.Fatalf("dependency artifact = %+v", dependencyArtifact)
+	}
+}
+
+func TestBackupServiceImportValidationFailureRollsBackResourcesAndRevisionLedger(t *testing.T) {
+	ctx := t.Context()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveAgent(ctx, storage.AgentRow{
+			ID: agentID, Name: agentID, AgentToken: "token-" + agentID,
+			Platform: "linux-amd64", CapabilitiesJSON: `["http_rules"]`,
+			DesiredRevision: 1, CurrentRevision: 1, LastApplyStatus: "success",
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+	if err := store.SaveRelayListeners(ctx, "edge-a", []storage.RelayListenerRow{{
+		ID: 101, AgentID: "edge-a", Name: "relay-a", ListenHost: "127.0.0.1", ListenPort: 7101,
+		Enabled: true, TransportMode: "tls_tcp", BindHostsJSON: `[]`, TrustedCACertificateIDs: `[]`, TagsJSON: `[]`, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(edge-a) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(ctx, "edge-b", []storage.RelayListenerRow{{
+		ID: 102, AgentID: "edge-b", Name: "relay-b", ListenHost: "127.0.0.1", ListenPort: 7102,
+		Enabled: true, TransportMode: "tls_tcp", BindHostsJSON: `[]`, TrustedCACertificateIDs: `[]`, TagsJSON: `[]`, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(edge-b) error = %v", err)
+	}
+	revisionsBefore := map[string][]storage.AgentRevisionRow{}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		revisionsBefore[agentID], err = store.ListAgentRevisions(ctx, agentID)
+		if err != nil {
+			t.Fatalf("ListAgentRevisions(%s before) error = %v", agentID, err)
+		}
+	}
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{PackageVersion: BackupPackageVersion, SourceArchitecture: BackupSourceArchitectureGo, ExportedAt: time.Now().UTC()},
+		Agents: []BackupAgent{
+			{ID: "source-a", Name: "edge-a", AgentToken: "source-a", Platform: "linux-amd64", Capabilities: []string{"http_rules"}},
+			{ID: "source-b", Name: "edge-b", AgentToken: "source-b", Platform: "linux-amd64", Capabilities: []string{"http_rules"}},
+		},
+		HTTPRules: []BackupHTTPRule{
+			{ID: 11, AgentID: "source-a", FrontendURL: "https://cycle-a.example.com", Backends: []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}}, RelayLayers: [][]int{{102}}, Enabled: true},
+			{ID: 12, AgentID: "source-b", FrontendURL: "https://cycle-b.example.com", Backends: []HTTPRuleBackend{{URL: "http://127.0.0.1:8097"}}, RelayLayers: [][]int{{101}}, Enabled: true},
+		},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+	_, err = NewBackupService(config.Config{LocalAgentID: "local"}, store).Import(ctx, archive)
+	if err == nil {
+		t.Fatal("Import() error = nil, want dependency cycle validation failure")
+	}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		rules, listErr := store.ListHTTPRules(ctx, agentID)
+		if listErr != nil {
+			t.Fatalf("ListHTTPRules(%s) error = %v", agentID, listErr)
+		}
+		if len(rules) != 0 {
+			t.Fatalf("rules for %s after failed import = %+v", agentID, rules)
+		}
+		revisionsAfter, listErr := store.ListAgentRevisions(ctx, agentID)
+		if listErr != nil {
+			t.Fatalf("ListAgentRevisions(%s after) error = %v", agentID, listErr)
+		}
+		if len(revisionsAfter) != len(revisionsBefore[agentID]) {
+			t.Fatalf("%s revision count changed from %d to %d after failed import", agentID, len(revisionsBefore[agentID]), len(revisionsAfter))
+		}
 	}
 }

@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -685,6 +687,125 @@ func TestAgentServiceUpdateBumpsDesiredRevisionOnceWhenRuntimeConfigFieldsChange
 
 	if store.savedAgent.DesiredRevision != 8 {
 		t.Fatalf("DesiredRevision = %d, want 8", store.savedAgent.DesiredRevision)
+	}
+}
+
+func TestAgentServiceUpdateCommitsDesiredVersionAndRuntimeConfigInOneRevision(t *testing.T) {
+	ctx := t.Context()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-version", Name: "Edge Version", AgentToken: "token-version",
+		Platform: "linux-amd64", CapabilitiesJSON: `["http_rules"]`,
+		DesiredVersion: "1.0.0", DesiredRevision: 1, CurrentRevision: 1,
+		LastApplyRevision: 1, LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.SaveVersionPolicies(ctx, []storage.VersionPolicyRow{{
+		ID: "stable", Channel: "stable", DesiredVersion: "2.0.0",
+		PackagesJSON: `[{"platform":"linux-amd64","url":"https://example.com/nre-agent","sha256":"package-sha"}]`,
+		TagsJSON:     `[]`,
+	}}); err != nil {
+		t.Fatalf("SaveVersionPolicies() error = %v", err)
+	}
+
+	svc := NewAgentService(config.Config{}, store)
+	updated, err := svc.Update(ctx, "edge-version", UpdateAgentRequest{
+		DesiredVersion:       stringPtr("2.0.0"),
+		OutboundProxyURL:     stringPtr("socks://127.0.0.1:1080"),
+		TrafficStatsInterval: stringPtr("1m"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.DesiredVersion != "2.0.0" || updated.OutboundProxyURL != "socks://127.0.0.1:1080" || updated.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("Update() = %+v", updated)
+	}
+
+	revisions, err := store.ListAgentRevisions(ctx, "edge-version")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	if len(revisions) != 1 || revisions[0].State != storage.AgentRevisionStatePending || revisions[0].DesiredVersion != "2.0.0" {
+		t.Fatalf("revisions = %+v, want one pending 2.0.0 revision", revisions)
+	}
+	if int64(updated.DesiredRevision) != revisions[0].Revision {
+		t.Fatalf("summary desired revision = %d, ledger revision = %d", updated.DesiredRevision, revisions[0].Revision)
+	}
+	artifact, found, err := store.GetGenerationArtifact(ctx, revisions[0].SnapshotArtifactID)
+	if err != nil || !found {
+		t.Fatalf("GetGenerationArtifact() found=%v error=%v", found, err)
+	}
+	var snapshot storage.Snapshot
+	if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.DesiredVersion != "2.0.0" || snapshot.VersionPackage == nil || snapshot.VersionPackage.SHA256 != "package-sha" {
+		t.Fatalf("snapshot version assignment = %+v", snapshot)
+	}
+	if snapshot.AgentConfig.OutboundProxyURL != "socks://127.0.0.1:1080" || snapshot.AgentConfig.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("snapshot agent config = %+v", snapshot.AgentConfig)
+	}
+}
+
+func TestAgentServiceUpdateLocalCommitsDesiredVersionAndRuntimeConfigInOneRevision(t *testing.T) {
+	ctx := t.Context()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	if err := store.SaveVersionPolicies(ctx, []storage.VersionPolicyRow{{
+		ID: "local-stable", Channel: "stable", DesiredVersion: "2.0.0",
+		PackagesJSON: fmt.Sprintf(`[{"platform":%q,"url":"https://example.com/local-agent","sha256":"local-package-sha"}]`, platform),
+		TagsJSON:     `[]`,
+	}}); err != nil {
+		t.Fatalf("SaveVersionPolicies() error = %v", err)
+	}
+	before, err := store.ListAgentRevisions(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(before) error = %v", err)
+	}
+
+	svc := NewAgentService(config.Config{EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local"}, store)
+	updated, err := svc.Update(ctx, "local", UpdateAgentRequest{
+		DesiredVersion:       stringPtr("2.0.0"),
+		OutboundProxyURL:     stringPtr("http://127.0.0.1:8080"),
+		TrafficStatsInterval: stringPtr("45s"),
+	})
+	if err != nil {
+		t.Fatalf("Update(local) error = %v", err)
+	}
+	if !updated.IsLocal || updated.DesiredVersion != "2.0.0" || updated.OutboundProxyURL != "http://127.0.0.1:8080" || updated.TrafficStatsInterval != "45s" {
+		t.Fatalf("Update(local) = %+v", updated)
+	}
+	after, err := store.ListAgentRevisions(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(after) error = %v", err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("local revision count = %d -> %d", len(before), len(after))
+	}
+	revisionRow := after[len(after)-1]
+	artifact, found, err := store.GetGenerationArtifact(ctx, revisionRow.SnapshotArtifactID)
+	if err != nil || !found {
+		t.Fatalf("GetGenerationArtifact() found=%v error=%v", found, err)
+	}
+	var snapshot storage.Snapshot
+	if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.DesiredVersion != "2.0.0" || snapshot.VersionPackage == nil || snapshot.VersionPackage.SHA256 != "local-package-sha" {
+		t.Fatalf("local snapshot version assignment = %+v", snapshot)
+	}
+	if snapshot.AgentConfig.OutboundProxyURL != "http://127.0.0.1:8080" || snapshot.AgentConfig.TrafficStatsInterval != "45s" {
+		t.Fatalf("local snapshot config = %+v", snapshot.AgentConfig)
 	}
 }
 
@@ -2465,15 +2586,18 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply(remote) error = %v", err)
 	}
-	if remoteApply.Message != "waiting for agent heartbeat to apply" || store.savedAgent.DesiredRevision != 5 {
+	if remoteApply.Message != "current desired revision is already scheduled" || !remoteApply.Pending || remoteApply.DesiredRevision != 5 {
 		t.Fatalf("Apply(remote) = %+v, savedAgent = %+v", remoteApply, store.savedAgent)
+	}
+	if store.savedAgentCalls != 0 {
+		t.Fatalf("Apply(remote) savedAgentCalls = %d, want retry intent without desired bump", store.savedAgentCalls)
 	}
 
 	localApply, err := svc.Apply(context.Background(), "local")
 	if err != nil {
 		t.Fatalf("Apply(local) error = %v", err)
 	}
-	if localApply.Message != "waiting for embedded local agent to apply" || !localApply.Pending {
+	if localApply.Message != "current desired revision is already scheduled" || !localApply.Pending {
 		t.Fatalf("Apply(local) = %+v", localApply)
 	}
 	if store.saveRuntimeCalls != 0 {
@@ -2481,99 +2605,77 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 	}
 }
 
-func TestAgentServiceApplyLocalUsesTriggerForSynchronousEmbeddedApply(t *testing.T) {
-	cfg := config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-		LocalAgentName:   "Local",
-	}
-	store := &fakeStore{
-		localState: storage.LocalAgentStateRow{
-			DesiredRevision:   1,
-			CurrentRevision:   1,
-			LastApplyRevision: 1,
-			LastApplyStatus:   "success",
-		},
-		localSnapshot: storage.Snapshot{DesiredVersion: "1.2.3", Revision: 4},
-	}
-	svc := NewAgentService(cfg, store)
+func TestAgentServiceApplyRetriesCurrentDesiredForLocalAndRemoteWithoutSynchronousTrigger(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		agentID string
+		local   bool
+	}{
+		{name: "local", agentID: "local", local: true},
+		{name: "remote", agentID: "edge-retry"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := t.Context()
+			store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatalf("NewSQLiteStore() error = %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			if !testCase.local {
+				if err := store.SaveAgent(ctx, storage.AgentRow{
+					ID: testCase.agentID, Name: "Edge Retry", AgentToken: "token-retry",
+					CapabilitiesJSON: `["http_rules"]`, DesiredRevision: 4, CurrentRevision: 3,
+					LastApplyRevision: 3, LastApplyStatus: "error",
+				}); err != nil {
+					t.Fatalf("SaveAgent() error = %v", err)
+				}
+			}
+			snapshot := storage.Snapshot{
+				Revision: 4, Rules: []storage.HTTPRule{}, L4Rules: []storage.L4Rule{},
+				RelayListeners: []storage.RelayListener{}, WireGuardProfiles: []storage.WireGuardProfile{},
+				EgressProfiles: []storage.EgressProfile{}, Certificates: []storage.ManagedCertificateBundle{},
+				CertificatePolicies: []storage.ManagedCertificatePolicy{},
+			}
+			payload, digest, err := revision.CanonicalSnapshotPayload(snapshot)
+			if err != nil {
+				t.Fatalf("CanonicalSnapshotPayload() error = %v", err)
+			}
+			now := time.Date(2026, 7, 12, 22, 0, 0, 0, time.UTC)
+			operationID := "apply-retry-" + testCase.name
+			artifactID := "snapshot-" + digest
+			if err := store.CreateRevisionLedger(ctx, storage.RevisionLedgerWrite{
+				Operation: storage.OperationRow{ID: operationID, Kind: "test.seed", Status: storage.OperationStatusPending, PrimaryAgentID: testCase.agentID, CreatedAt: now, UpdatedAt: now},
+				Revisions: []storage.AgentRevisionRow{{AgentID: testCase.agentID, Revision: 4, OperationID: operationID, State: storage.AgentRevisionStateFailed, SnapshotArtifactID: artifactID, SnapshotDigest: digest, AttemptCount: 5, CreatedAt: now, UpdatedAt: now}},
+				Pointers:  []storage.AgentRevisionPointerRow{{AgentID: testCase.agentID, DesiredRevision: 4, AppliedRevision: 3, LastKnownGoodRevision: 3, UpdatedAt: now}},
+				Artifacts: []storage.GenerationArtifactRow{{ID: artifactID, Kind: "agent_snapshot", SHA256: digest, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now}},
+			}); err != nil {
+				t.Fatalf("CreateRevisionLedger() error = %v", err)
+			}
 
-	triggerCalls := 0
-	svc.SetLocalApplyTrigger(func(context.Context) error {
-		triggerCalls++
-		store.localState = storage.LocalAgentStateRow{
-			DesiredRevision:   4,
-			CurrentRevision:   4,
-			LastApplyRevision: 4,
-			LastApplyStatus:   "success",
-		}
-		return nil
-	})
-
-	localApply, err := svc.Apply(context.Background(), "local")
-	if err != nil {
-		t.Fatalf("Apply(local) error = %v", err)
-	}
-	if localApply.Message != "applied" || localApply.Pending || localApply.DesiredRevision != 4 {
-		t.Fatalf("Apply(local) = %+v", localApply)
-	}
-	if triggerCalls != 1 {
-		t.Fatalf("triggerCalls = %d", triggerCalls)
-	}
-	if store.saveRuntimeCalls != 0 {
-		t.Fatalf("Apply(local) should rely on runtime callback, saveRuntimeCalls = %d", store.saveRuntimeCalls)
-	}
-}
-
-func TestAgentServiceApplyLocalDetachesCanceledTriggerContext(t *testing.T) {
-	cfg := config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-		LocalAgentName:   "Local",
-	}
-	store := &fakeStore{
-		localState: storage.LocalAgentStateRow{
-			DesiredRevision:   1,
-			CurrentRevision:   1,
-			LastApplyRevision: 1,
-			LastApplyStatus:   "success",
-		},
-		localSnapshot: storage.Snapshot{DesiredVersion: "1.2.3", Revision: 4},
-	}
-	svc := NewAgentService(cfg, store)
-
-	type requestContextKey string
-	requestCtx := context.WithValue(context.Background(), requestContextKey("trace"), "apply-local")
-	requestCtx, cancel := context.WithCancel(requestCtx)
-	cancel()
-
-	triggerCalls := 0
-	svc.SetLocalApplyTrigger(func(ctx context.Context) error {
-		triggerCalls++
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("trigger ctx err = %v", err)
-		}
-		if got := ctx.Value(requestContextKey("trace")); got != "apply-local" {
-			return fmt.Errorf("trigger ctx trace = %v", got)
-		}
-		store.localState = storage.LocalAgentStateRow{
-			DesiredRevision:   4,
-			CurrentRevision:   4,
-			LastApplyRevision: 4,
-			LastApplyStatus:   "success",
-		}
-		return nil
-	})
-
-	localApply, err := svc.Apply(requestCtx, "local")
-	if err != nil {
-		t.Fatalf("Apply(local) error = %v", err)
-	}
-	if localApply.Message != "applied" || localApply.Pending || localApply.DesiredRevision != 4 {
-		t.Fatalf("Apply(local) = %+v", localApply)
-	}
-	if triggerCalls != 1 {
-		t.Fatalf("triggerCalls = %d", triggerCalls)
+			svc := NewAgentService(config.Config{EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local"}, store)
+			triggerCalls := 0
+			svc.SetLocalApplyTrigger(func(context.Context) error {
+				triggerCalls++
+				return errors.New("synchronous trigger must not run")
+			})
+			result, err := svc.Apply(ctx, testCase.agentID)
+			if err != nil {
+				t.Fatalf("Apply() error = %v", err)
+			}
+			if !result.Pending || result.DesiredRevision != 4 {
+				t.Fatalf("Apply() = %+v, want asynchronous pending retry", result)
+			}
+			if triggerCalls != 0 {
+				t.Fatalf("triggerCalls = %d, want 0", triggerCalls)
+			}
+			retried, found, err := store.GetCoordinatorRevision(ctx, testCase.agentID, 4)
+			if err != nil || !found {
+				t.Fatalf("GetCoordinatorRevision() found=%v error=%v", found, err)
+			}
+			if retried.State != storage.AgentRevisionStatePending || retried.RetryCycle != 1 || retried.AttemptCount != 0 {
+				t.Fatalf("retried revision = %+v", retried)
+			}
+		})
 	}
 }
 

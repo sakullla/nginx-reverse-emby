@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -39,9 +41,10 @@ const (
 const backupSystemRelayCAReplacementConflictReason = "existing relay certificates depend on current system relay ca"
 
 type backupService struct {
-	cfg   config.Config
-	store backupStore
-	now   func() time.Time
+	cfg           config.Config
+	store         backupStore
+	mutationStore revision.Store
+	now           func() time.Time
 }
 
 type modifiedAgentRevisions map[string]int
@@ -91,11 +94,15 @@ func AllExportOptions() BackupExportOptions {
 }
 
 func NewBackupService(cfg config.Config, store backupStore) *backupService {
-	return &backupService{
+	service := &backupService{
 		cfg:   cfg,
 		store: store,
 		now:   time.Now,
 	}
+	if mutationStore, ok := store.(revision.Store); ok {
+		service.mutationStore = mutationStore
+	}
+	return service
 }
 
 func (s *backupService) Export(ctx context.Context) ([]byte, string, error) {
@@ -905,14 +912,261 @@ func (s *backupService) Import(ctx context.Context, archive []byte) (BackupImpor
 	if err != nil {
 		return BackupImportResult{}, err
 	}
-	result, err := s.importBundle(ctx, bundle)
+	if s.mutationStore == nil {
+		result, err := s.importBundle(ctx, bundle)
+		if err != nil {
+			if rollbackErr := s.restoreState(ctx, snapshot); rollbackErr != nil {
+				return BackupImportResult{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+			return BackupImportResult{}, err
+		}
+		return result, nil
+	}
+
+	result, err := s.importBundleWithRevisions(ctx, archive, bundle, snapshot)
 	if err != nil {
-		if rollbackErr := s.restoreState(ctx, snapshot); rollbackErr != nil {
-			return BackupImportResult{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+		if rollbackErr := s.restoreBackupCertificateMaterials(ctx, snapshot, bundle); rollbackErr != nil {
+			return BackupImportResult{}, fmt.Errorf("%v (material rollback failed: %v)", err, rollbackErr)
 		}
 		return BackupImportResult{}, err
 	}
 	return result, nil
+}
+
+var errBackupImportPlanRollback = errors.New("backup import plan rollback")
+
+type backupNestedRevisionStore struct {
+	tx       *storage.GormStore
+	decision storage.RevisionMutationDecision
+}
+
+func (s *backupNestedRevisionStore) WithRevisionMutation(_ context.Context, mutate storage.RevisionMutationFunc) error {
+	decision, err := mutate(s.tx)
+	if err != nil {
+		return err
+	}
+	s.decision = decision
+	return nil
+}
+
+func (s *backupNestedRevisionStore) GetIdempotencyRecord(ctx context.Context, scope, key string) (storage.IdempotencyRecordRow, bool, error) {
+	return s.tx.GetIdempotencyRecord(ctx, scope, key)
+}
+
+func (s *backupService) importBundleWithRevisions(ctx context.Context, archive []byte, bundle BackupBundle, snapshot backupStateSnapshot) (BackupImportResult, error) {
+	var plannedAgents modifiedAgentRevisions
+	err := s.mutationStore.WithRevisionMutation(ctx, func(tx *storage.GormStore) (storage.RevisionMutationDecision, error) {
+		planner := NewBackupService(s.cfg, tx)
+		planner.now = s.now
+		_, modifiedAgents, err := planner.importBundleTracked(ctx, bundle, false)
+		if err != nil {
+			return storage.RevisionMutationDecision{}, err
+		}
+		if err := planner.expandBackupDependencyTargets(ctx, modifiedAgents); err != nil {
+			return storage.RevisionMutationDecision{}, err
+		}
+		plannedAgents = cloneModifiedAgentRevisions(modifiedAgents)
+		return storage.RevisionMutationDecision{}, errBackupImportPlanRollback
+	})
+	if materialErr := s.restoreBackupCertificateMaterials(ctx, snapshot, bundle); materialErr != nil {
+		return BackupImportResult{}, materialErr
+	}
+	if err != nil && !errors.Is(err, errBackupImportPlanRollback) {
+		return BackupImportResult{}, err
+	}
+
+	archiveDigest := sha256.Sum256(archive)
+	var result BackupImportResult
+	err = s.mutationStore.WithRevisionMutation(ctx, func(tx *storage.GormStore) (storage.RevisionMutationDecision, error) {
+		transactionService := NewBackupService(s.cfg, tx)
+		transactionService.now = s.now
+		imported, modifiedAgents, err := transactionService.importBundleTracked(ctx, bundle, false)
+		if err != nil {
+			return storage.RevisionMutationDecision{}, err
+		}
+		if err := transactionService.expandBackupDependencyTargets(ctx, modifiedAgents); err != nil {
+			return storage.RevisionMutationDecision{}, err
+		}
+		if !modifiedAgentRevisionSetsEqual(plannedAgents, modifiedAgents) {
+			return storage.RevisionMutationDecision{}, fmt.Errorf("backup accepted agent set changed during import planning")
+		}
+		result = imported
+		if len(modifiedAgents) == 0 {
+			return storage.RevisionMutationDecision{}, nil
+		}
+
+		targets := backupRevisionTargets(s.cfg, modifiedAgents)
+		nestedStore := &backupNestedRevisionStore{tx: tx}
+		executor := revision.NewExecutor(
+			nestedStore,
+			revision.WithSnapshotBuilder(revision.SnapshotBuilderFunc(buildAgentSettingsSnapshot)),
+		)
+		mutationApplied := false
+		_, err = executor.Execute(ctx, revision.MutationRequest{
+			Kind:             "backup.import",
+			DependencyAction: revision.DependencyActionApply,
+			Request: map[string]any{
+				"archive_sha256": fmt.Sprintf("%x", archiveDigest[:]),
+				"agents":         sortedModifiedAgentIDs(modifiedAgents),
+			},
+			Targets: targets,
+			ResourceState: func(context.Context, *storage.GormStore, revision.Target) (any, error) {
+				return mutationApplied, nil
+			},
+			Mutate: func(mutateCtx context.Context, mutationStore *storage.GormStore, revisions map[string]int64) error {
+				mutationApplied = true
+				rows, err := mutationStore.ListAgents(mutateCtx)
+				if err != nil {
+					return err
+				}
+				for _, row := range rows {
+					revisionNumber, ok := revisions[row.ID]
+					if !ok {
+						continue
+					}
+					row.DesiredRevision = int(revisionNumber)
+					if err := mutationStore.SaveAgent(mutateCtx, row); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		})
+		if err != nil {
+			return storage.RevisionMutationDecision{}, err
+		}
+		return nestedStore.decision, nil
+	})
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	return result, nil
+}
+
+func backupRevisionTargets(cfg config.Config, modifiedAgents modifiedAgentRevisions) []revision.Target {
+	agentIDs := sortedModifiedAgentIDs(modifiedAgents)
+	targets := make([]revision.Target, 0, len(agentIDs))
+	for _, agentID := range agentIDs {
+		target := revision.Target{AgentID: agentID}
+		if cfg.EnableLocalAgent && agentID == cfg.LocalAgentID {
+			target.Local = true
+			target.Capabilities = append([]string(nil), defaultLocalCapabilities...)
+		}
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func sortedModifiedAgentIDs(modifiedAgents modifiedAgentRevisions) []string {
+	agentIDs := make([]string, 0, len(modifiedAgents))
+	for agentID := range modifiedAgents {
+		agentIDs = append(agentIDs, agentID)
+	}
+	slices.Sort(agentIDs)
+	return agentIDs
+}
+
+func cloneModifiedAgentRevisions(input modifiedAgentRevisions) modifiedAgentRevisions {
+	result := make(modifiedAgentRevisions, len(input))
+	for agentID, revisionNumber := range input {
+		result[agentID] = revisionNumber
+	}
+	return result
+}
+
+func modifiedAgentRevisionSetsEqual(left, right modifiedAgentRevisions) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for agentID := range left {
+		if _, ok := right[agentID]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *backupService) expandBackupDependencyTargets(ctx context.Context, modifiedAgents modifiedAgentRevisions) error {
+	for {
+		added := false
+		for _, agentID := range sortedModifiedAgentIDs(modifiedAgents) {
+			var snapshot storage.Snapshot
+			var err error
+			if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+				localStore, ok := s.store.(interface {
+					LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error)
+				})
+				if !ok {
+					return fmt.Errorf("backup local snapshot store is unavailable")
+				}
+				snapshot, err = localStore.LoadLocalSnapshot(ctx, agentID)
+			} else {
+				row, findErr := backupAgentRowByID(ctx, s.store, agentID)
+				if findErr != nil {
+					return findErr
+				}
+				snapshot, err = s.store.LoadAgentSnapshot(ctx, agentID, storage.AgentSnapshotInput{
+					DesiredVersion: row.DesiredVersion, DesiredRevision: row.DesiredRevision,
+					CurrentRevision: row.CurrentRevision, Platform: row.Platform,
+				})
+			}
+			if err != nil {
+				return err
+			}
+			for _, listener := range snapshot.RelayListeners {
+				owner := strings.TrimSpace(listener.AgentID)
+				if owner == "" {
+					continue
+				}
+				if _, exists := modifiedAgents[owner]; exists {
+					continue
+				}
+				modifiedAgents[owner] = 1
+				added = true
+			}
+		}
+		if !added {
+			return nil
+		}
+	}
+}
+
+func backupAgentRowByID(ctx context.Context, store backupStore, agentID string) (storage.AgentRow, error) {
+	rows, err := store.ListAgents(ctx)
+	if err != nil {
+		return storage.AgentRow{}, err
+	}
+	for _, row := range rows {
+		if row.ID == agentID {
+			return row, nil
+		}
+	}
+	return storage.AgentRow{}, fmt.Errorf("backup dependency agent %q was not found", agentID)
+}
+
+func (s *backupService) restoreBackupCertificateMaterials(ctx context.Context, snapshot backupStateSnapshot, bundle BackupBundle) error {
+	materialRows := make([]storage.ManagedCertificateRow, 0, len(bundle.Materials))
+	seen := map[string]struct{}{}
+	for _, material := range bundle.Materials {
+		domain := strings.TrimSpace(material.Domain)
+		if domain == "" {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		materialRows = append(materialRows, storage.ManagedCertificateRow{Domain: domain})
+	}
+	if err := s.store.CleanupManagedCertificateMaterial(ctx, materialRows, nil); err != nil {
+		return err
+	}
+	for domain, material := range snapshot.certificateMaterials {
+		if err := s.store.SaveManagedCertificateMaterial(ctx, domain, material); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) {
@@ -1066,16 +1320,22 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 }
 
 func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (BackupImportResult, error) {
+	result, _, err := s.importBundleTracked(ctx, bundle, true)
+	return result, err
+}
+
+func (s *backupService) importBundleTracked(ctx context.Context, bundle BackupBundle, bumpLegacyDesired bool) (BackupImportResult, modifiedAgentRevisions, error) {
 	bundle = normalizeLegacyBackupEgressProfiles(bundle)
 	result := newBackupImportResult(bundle.Manifest)
+	modifiedAgents := modifiedAgentRevisions{}
 
 	agentRows, err := s.store.ListAgents(ctx)
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
-	agentIDMap, err := s.importAgents(ctx, agentRows, bundle.Agents, &result)
+	agentIDMap, err := s.importAgents(ctx, agentRows, bundle.Agents, &result, modifiedAgents)
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 
 	if srcID := strings.TrimSpace(bundle.Manifest.SourceLocalAgentID); srcID != "" && s.cfg.EnableLocalAgent {
@@ -1086,66 +1346,67 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 
 	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
-	modifiedAgents := modifiedAgentRevisions{}
 
 	certRows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 	certIDMap, err := s.importCertificates(ctx, certRows, bundle.Certificates, bundle.Materials, agentIDMap, &result, modifiedAgents, allocator)
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 
 	wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, err := s.importWireGuardProfiles(ctx, bundle.WireGuardProfiles, agentIDMap, &result, modifiedAgents, allocator)
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 	if err := s.importWireGuardClients(ctx, bundle.WireGuardClients, agentIDMap, wireGuardProfileIDMap, importedWireGuardProfileIDs, skippedConflictWireGuardProfileIDs, &result, modifiedAgents, allocator); err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 	egressProfileIDMap, err := s.importEgressProfiles(ctx, bundle.EgressProfiles, &result, allocator)
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 
 	listenerRows, err := s.store.ListRelayListeners(ctx, "")
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 	listenerIDMap, err := s.importRelayListeners(ctx, listenerRows, bundle.RelayListeners, agentIDMap, certIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, &result, modifiedAgents, allocator)
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 
 	policyRows, err := s.store.ListVersionPolicies(ctx)
 	if err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 	if err := s.importVersionPolicies(ctx, policyRows, bundle.VersionPolicies, &result); err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 
 	if err := s.importTrafficPolicies(ctx, bundle.TrafficPolicies, agentIDMap, &result); err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 	if err := s.importTrafficBaselines(ctx, bundle.TrafficBaselines, agentIDMap, &result); err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 
 	if err := s.importHTTPRules(ctx, bundle.HTTPRules, agentIDMap, listenerIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, egressProfileIDMap, &result, modifiedAgents, allocator); err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
 	if err := s.importL4Rules(ctx, bundle.L4Rules, agentIDMap, listenerIDMap, wireGuardProfileIDMap, enabledWireGuardProfileIDs, importedWireGuardProfileIDs, egressProfileIDMap, &result, modifiedAgents, allocator); err != nil {
-		return BackupImportResult{}, err
+		return BackupImportResult{}, nil, err
 	}
-	if err := s.bumpModifiedAgents(ctx, modifiedAgents); err != nil {
-		return BackupImportResult{}, err
+	if bumpLegacyDesired {
+		if err := s.bumpModifiedAgents(ctx, modifiedAgents); err != nil {
+			return BackupImportResult{}, nil, err
+		}
 	}
 
-	return result, nil
+	return result, modifiedAgents, nil
 }
 
 func (s *backupService) bumpModifiedAgents(ctx context.Context, modifiedAgents modifiedAgentRevisions) error {
@@ -1180,7 +1441,7 @@ func (s *backupService) bumpModifiedAgents(ctx context.Context, modifiedAgents m
 	return nil
 }
 
-func (s *backupService) importAgents(ctx context.Context, existing []storage.AgentRow, incoming []BackupAgent, result *BackupImportResult) (map[string]string, error) {
+func (s *backupService) importAgents(ctx context.Context, existing []storage.AgentRow, incoming []BackupAgent, result *BackupImportResult, modifiedAgents modifiedAgentRevisions) (map[string]string, error) {
 	agentIDMap := map[string]string{}
 	existingByID := make(map[string]storage.AgentRow, len(existing))
 	existingByName := make(map[string]storage.AgentRow, len(existing))
@@ -1248,6 +1509,11 @@ func (s *backupService) importAgents(ctx context.Context, existing []storage.Age
 		existingByName[row.Name] = row
 		agentIDMap[item.ID] = row.ID
 		result.addImported("agent", row.Name)
+		modifiedRevision := row.DesiredRevision
+		if modifiedRevision < 1 {
+			modifiedRevision = 1
+		}
+		modifiedAgents[row.ID] = modifiedRevision
 	}
 	return agentIDMap, nil
 }
