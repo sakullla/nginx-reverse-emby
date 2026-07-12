@@ -192,6 +192,7 @@ func (s *certificateService) persistManagedCertificateRenewalResult(
 	if err != nil {
 		return ManagedCertificate{}, false, certificateMutationRollbackError(err, rollbackActions)
 	}
+	runConfigPostCommitActions(postCommitActions)
 	if !persisted {
 		return next, false, nil
 	}
@@ -199,7 +200,6 @@ func (s *certificateService) persistManagedCertificateRenewalResult(
 		current, loadErr := s.certificateByID(ctx, "", current.ID)
 		return current, false, loadErr
 	}
-	runConfigPostCommitActions(postCommitActions)
 	return next, true, nil
 }
 
@@ -220,13 +220,17 @@ func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
 	}
 	current = fresh
 	var restore func() error
+	var commitMaterial func()
+	materialRegistered := false
 	if result.Changed {
 		var err error
-		restore, err = saveManagedCertificateMaterialWithRollback(ctx, s.store, current.Domain, issuedMaterial)
+		commitMaterial, restore, err = stageManagedCertificateMaterialWithRollback(ctx, s.store, current.Domain, issuedMaterial)
 		if err != nil {
 			return ManagedCertificate{}, err
 		}
-		if s.revisionMutation && s.rollbackActions != nil {
+		materialRegistered = s.revisionMutation && s.postCommitActions != nil && s.rollbackActions != nil
+		if materialRegistered {
+			*s.postCommitActions = append(*s.postCommitActions, commitMaterial)
 			*s.rollbackActions = append(*s.rollbackActions, restore)
 		}
 	}
@@ -262,12 +266,15 @@ func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
 	}
 	next.Revision = s.certificateMutationRevision(next.Revision)
 	if managedCertificateEqual(current, next) {
+		if commitMaterial != nil && !materialRegistered {
+			commitMaterial()
+		}
 		return current, nil
 	}
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	rows[targetIndex] = managedCertificateToRow(next)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
-		if restore != nil && !s.revisionMutation {
+		if restore != nil && !materialRegistered {
 			if restoreErr := restore(); restoreErr != nil {
 				return ManagedCertificate{}, &managedCertificateMaterialRestoreError{
 					writeErr:   fmt.Errorf("save renewed certificate metadata for %s: %w", current.Domain, err),
@@ -276,6 +283,9 @@ func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
 			}
 		}
 		return ManagedCertificate{}, err
+	}
+	if commitMaterial != nil && !materialRegistered {
+		commitMaterial()
 	}
 	s.cleanupManagedCertificateMaterialAfterMutation(ctx, originalRows, rows)
 	if result.Changed {

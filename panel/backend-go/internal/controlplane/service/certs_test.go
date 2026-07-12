@@ -147,6 +147,72 @@ func TestManagedCertificateMaterialRollbackReturnsTypedRestoreFailure(t *testing
 	}
 }
 
+func TestManagedCertificateMaterialStagesSerializeOverlappingRollbacks(t *testing.T) {
+	const domain = "overlapping-rollback.example.com"
+	store := &relayCertStore{
+		materialsByHost: map[string]relayMaterial{
+			domain: {CertPEM: "original-cert", KeyPEM: "original-key"},
+		},
+	}
+	_, rollbackA, err := stageManagedCertificateMaterialWithRollback(t.Context(), store, domain, storage.ManagedCertificateBundle{
+		Domain: domain, CertPEM: "attempt-a-cert", KeyPEM: "attempt-a-key",
+	})
+	if err != nil {
+		t.Fatalf("stageManagedCertificateMaterialWithRollback(A) error = %v", err)
+	}
+	t.Cleanup(func() { _ = rollbackA() })
+
+	type stageResult struct {
+		rollback func() error
+		err      error
+	}
+	started := make(chan struct{})
+	stagedB := make(chan stageResult, 1)
+	go func() {
+		close(started)
+		_, rollback, stageErr := stageManagedCertificateMaterialWithRollback(t.Context(), store, domain, storage.ManagedCertificateBundle{
+			Domain: domain, CertPEM: "attempt-b-cert", KeyPEM: "attempt-b-key",
+		})
+		stagedB <- stageResult{rollback: rollback, err: stageErr}
+	}()
+	<-started
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		managedCertificateMaterialLocksMu.Lock()
+		entry := managedCertificateMaterialLocks[domain]
+		waiters := 0
+		if entry != nil {
+			waiters = entry.waiters
+		}
+		managedCertificateMaterialLocksMu.Unlock()
+		if waiters == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second material stage did not wait behind the first transaction")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := rollbackA(); err != nil {
+		t.Fatalf("rollback A error = %v", err)
+	}
+	resultB := <-stagedB
+	if resultB.err != nil {
+		t.Fatalf("stageManagedCertificateMaterialWithRollback(B) error = %v", resultB.err)
+	}
+	t.Cleanup(func() { _ = resultB.rollback() })
+	if err := resultB.rollback(); err != nil {
+		t.Fatalf("rollback B error = %v", err)
+	}
+
+	material := store.materialsByHost[domain]
+	if material.CertPEM != "original-cert" || material.KeyPEM != "original-key" {
+		t.Fatalf("material after overlapping rollbacks = %+v, want original material", material)
+	}
+}
+
 type concurrentManagedCertificateMaterialStore struct {
 	*relayCertStore
 	replacement storage.ManagedCertificateBundle

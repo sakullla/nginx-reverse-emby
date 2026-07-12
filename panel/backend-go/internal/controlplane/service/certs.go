@@ -333,6 +333,45 @@ func managedCertificateMaterialEqual(left, right storage.ManagedCertificateBundl
 		left.CertPEM == right.CertPEM && left.KeyPEM == right.KeyPEM
 }
 
+func restoreManagedCertificateMaterialCAS(
+	ctx context.Context,
+	store storage.Store,
+	domain string,
+	previous storage.ManagedCertificateBundle,
+	previousFound bool,
+	written storage.ManagedCertificateBundle,
+) error {
+	cleanupCtx, cancel := managedCertificateMaterialCleanupContext(ctx)
+	defer cancel()
+	current, currentFound, err := store.LoadManagedCertificateMaterial(cleanupCtx, domain)
+	if err != nil {
+		return typedManagedCertificateMaterialRestoreError(err)
+	}
+	if previousFound && currentFound && managedCertificateMaterialEqual(current, previous) {
+		return nil
+	}
+	if !previousFound && !currentFound {
+		return nil
+	}
+	if !currentFound || !managedCertificateMaterialEqual(current, written) {
+		return typedManagedCertificateMaterialRestoreError(
+			fmt.Errorf("certificate material for %q changed before rollback", domain),
+		)
+	}
+	if previousFound {
+		return typedManagedCertificateMaterialRestoreError(
+			store.SaveManagedCertificateMaterial(cleanupCtx, domain, previous),
+		)
+	}
+	return typedManagedCertificateMaterialRestoreError(
+		store.CleanupManagedCertificateMaterial(
+			cleanupCtx,
+			[]storage.ManagedCertificateRow{{Domain: domain}},
+			nil,
+		),
+	)
+}
+
 func saveManagedCertificateMaterialWithRollback(
 	ctx context.Context,
 	store storage.Store,
@@ -353,37 +392,7 @@ func saveManagedCertificateMaterialWithRollback(
 		once.Do(func() {
 			unlock := managedCertificateMaterialLock(domain)
 			defer unlock()
-			cleanupCtx, cancel := managedCertificateMaterialCleanupContext(ctx)
-			defer cancel()
-			current, currentFound, loadErr := store.LoadManagedCertificateMaterial(cleanupCtx, domain)
-			if loadErr != nil {
-				restoreErr = typedManagedCertificateMaterialRestoreError(loadErr)
-				return
-			}
-			if previousFound && currentFound && managedCertificateMaterialEqual(current, previous) {
-				return
-			}
-			if !previousFound && !currentFound {
-				return
-			}
-			if !currentFound || !managedCertificateMaterialEqual(current, bundle) {
-				conflict := fmt.Errorf("certificate material for %q changed before rollback", domain)
-				restoreErr = typedManagedCertificateMaterialRestoreError(conflict)
-				return
-			}
-			if previousFound {
-				restoreErr = typedManagedCertificateMaterialRestoreError(
-					store.SaveManagedCertificateMaterial(cleanupCtx, domain, previous),
-				)
-				return
-			}
-			restoreErr = typedManagedCertificateMaterialRestoreError(
-				store.CleanupManagedCertificateMaterial(
-					cleanupCtx,
-					[]storage.ManagedCertificateRow{{Domain: domain}},
-					nil,
-				),
-			)
+			restoreErr = restoreManagedCertificateMaterialCAS(ctx, store, domain, previous, previousFound, bundle)
 		})
 		return restoreErr
 	}
@@ -398,14 +407,52 @@ func saveManagedCertificateMaterialWithRollback(
 	return restore, nil
 }
 
+func stageManagedCertificateMaterialWithRollback(
+	ctx context.Context,
+	store storage.Store,
+	domain string,
+	bundle storage.ManagedCertificateBundle,
+) (func(), func() error, error) {
+	domain = strings.TrimSpace(domain)
+	bundle.Domain = domain
+	unlock := managedCertificateMaterialLock(domain)
+	previous, previousFound, err := store.LoadManagedCertificateMaterial(ctx, domain)
+	if err != nil {
+		unlock()
+		return nil, nil, err
+	}
+	var once sync.Once
+	var restoreErr error
+	commit := func() {
+		once.Do(unlock)
+	}
+	rollback := func() error {
+		once.Do(func() {
+			defer unlock()
+			restoreErr = restoreManagedCertificateMaterialCAS(ctx, store, domain, previous, previousFound, bundle)
+		})
+		return restoreErr
+	}
+	if err := store.SaveManagedCertificateMaterial(ctx, domain, bundle); err != nil {
+		if rollbackErr := rollback(); rollbackErr != nil {
+			return nil, nil, &managedCertificateMaterialRestoreError{writeErr: err, restoreErr: rollbackErr}
+		}
+		return nil, nil, err
+	}
+	return commit, rollback, nil
+}
+
 func (s *certificateService) saveManagedCertificateMaterial(ctx context.Context, domain string, bundle storage.ManagedCertificateBundle) error {
-	restore, err := saveManagedCertificateMaterialWithRollback(ctx, s.store, domain, bundle)
+	commit, restore, err := stageManagedCertificateMaterialWithRollback(ctx, s.store, domain, bundle)
 	if err != nil {
 		return err
 	}
-	if s.revisionMutation && s.rollbackActions != nil {
+	if s.revisionMutation && s.postCommitActions != nil && s.rollbackActions != nil {
+		*s.postCommitActions = append(*s.postCommitActions, commit)
 		*s.rollbackActions = append(*s.rollbackActions, restore)
+		return nil
 	}
+	commit()
 	return nil
 }
 
@@ -693,10 +740,10 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	if err != nil {
 		return ManagedCertificate{}, certificateMutationRollbackError(err, rollbackActions)
 	}
+	runConfigPostCommitActions(postCommitActions)
 	if result.NoOp {
 		return s.certificateByID(ctx, resolvedID, id)
 	}
-	runConfigPostCommitActions(postCommitActions)
 	return updated, nil
 }
 
@@ -982,10 +1029,10 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	if err != nil {
 		return ManagedCertificate{}, certificateMutationRollbackError(err, rollbackActions)
 	}
+	runConfigPostCommitActions(postCommitActions)
 	if result.NoOp {
 		return s.certificateByID(ctx, "", id)
 	}
-	runConfigPostCommitActions(postCommitActions)
 	return issued, nil
 }
 
@@ -1446,10 +1493,10 @@ func (s *certificateService) persistManagedCertificateIssueSuccess(
 	if err != nil {
 		return ManagedCertificate{}, certificateMutationRollbackError(err, rollbackActions)
 	}
+	runConfigPostCommitActions(postCommitActions)
 	if !persisted {
 		return ManagedCertificate{}, nil
 	}
-	runConfigPostCommitActions(postCommitActions)
 	return next, nil
 }
 
@@ -1469,11 +1516,13 @@ func (s *certificateService) persistManagedCertificateIssueSuccessLegacy(
 		return fresh, nil
 	}
 	current = fresh
-	restore, err := saveManagedCertificateMaterialWithRollback(ctx, s.store, current.Domain, issuedMaterial)
+	commitMaterial, restore, err := stageManagedCertificateMaterialWithRollback(ctx, s.store, current.Domain, issuedMaterial)
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
-	if s.revisionMutation && s.rollbackActions != nil {
+	materialRegistered := s.revisionMutation && s.postCommitActions != nil && s.rollbackActions != nil
+	if materialRegistered {
+		*s.postCommitActions = append(*s.postCommitActions, commitMaterial)
 		*s.rollbackActions = append(*s.rollbackActions, restore)
 	}
 
@@ -1498,7 +1547,7 @@ func (s *certificateService) persistManagedCertificateIssueSuccessLegacy(
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	rows[targetIndex] = managedCertificateToRow(next)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
-		if !s.revisionMutation {
+		if !materialRegistered {
 			if restoreErr := restore(); restoreErr != nil {
 				return ManagedCertificate{}, &managedCertificateMaterialRestoreError{
 					writeErr: fmt.Errorf("save issued certificate metadata: %w", err), restoreErr: restoreErr,
@@ -1506,6 +1555,9 @@ func (s *certificateService) persistManagedCertificateIssueSuccessLegacy(
 			}
 		}
 		return ManagedCertificate{}, err
+	}
+	if !materialRegistered {
+		commitMaterial()
 	}
 	s.cleanupManagedCertificateMaterialAfterMutation(ctx, originalRows, rows)
 	if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
