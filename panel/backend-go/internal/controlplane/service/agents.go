@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -58,6 +59,11 @@ type agentRevisionActionStore interface {
 	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
 	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
 	RetryCoordinatorRevision(context.Context, string, int64, time.Time) (storage.AgentRevisionRow, error)
+}
+
+type agentRevisionRepository interface {
+	RevisionRepository
+	coordinator.Repository
 }
 
 type AgentSummary struct {
@@ -227,6 +233,7 @@ type agentService struct {
 	trafficService             heartbeatTrafficService
 	settingsMutation           *revision.Executor
 	revisionActions            agentRevisionActionStore
+	revisionAPI                *RevisionAPI
 	now                        func() time.Time
 	localMonitorRefreshTrigger func(context.Context) error
 	bundledCacheMu             sync.Mutex
@@ -265,6 +272,12 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 	if actionStore, ok := store.(agentRevisionActionStore); ok {
 		svc.revisionActions = actionStore
 	}
+	if repository, ok := store.(agentRevisionRepository); ok {
+		revisionCoordinator, err := coordinator.New(repository, coordinator.OptionsFromConfig(cfg.RevisionCoordinator))
+		if err == nil {
+			svc.revisionAPI = NewRevisionAPI(repository, revisionCoordinator)
+		}
+	}
 	if trafficStore, ok := store.(trafficStore); ok {
 		trafficCfg, err := NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
 		if err == nil {
@@ -272,6 +285,13 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 		}
 	}
 	return svc
+}
+
+func (s *agentService) RevisionAPI() *RevisionAPI {
+	if s == nil {
+		return nil
+	}
+	return s.revisionAPI
 }
 
 func agentTrafficStatsEnabled(cfg config.Config) bool {

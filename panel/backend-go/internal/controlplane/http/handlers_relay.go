@@ -45,10 +45,7 @@ func (d Dependencies) handleRelayListeners(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"ok":       true,
-			"listener": listener,
-		})
+		d.writeMutationResource(w, r, http.StatusCreated, "listener", listener, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -85,10 +82,7 @@ func (d Dependencies) handleRelayListener(w http.ResponseWriter, r *http.Request
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":       true,
-			"listener": listener,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "listener", listener, nil)
 	case http.MethodDelete:
 		listener, err := d.RelayListenerService.Delete(r.Context(), agentID, listenerID)
 		if err != nil {
@@ -96,15 +90,11 @@ func (d Dependencies) handleRelayListener(w http.ResponseWriter, r *http.Request
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":       true,
-			"listener": listener,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "listener", listener, nil)
 	default:
 		http.NotFound(w, r)
 	}
 }
-
 
 func (d Dependencies) handleRelayListenersList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

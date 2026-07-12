@@ -107,8 +107,7 @@ func (d Dependencies) handleBackupImport(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, status, payload)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":       true,
+	d.writeMutationResource(w, r, http.StatusOK, "", nil, map[string]any{
 		"manifest": result.Manifest,
 		"summary":  result.Summary,
 		"report":   result.Report,

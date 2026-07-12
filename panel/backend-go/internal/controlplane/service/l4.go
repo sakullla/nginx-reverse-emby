@@ -1474,17 +1474,15 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 			continue
 		}
 		if l4TransparentWireGuardProfileConflicts(rule, next) {
-			return fmt.Errorf(
-				"%w: WireGuard transparent inbound profile %s already has rule #%d",
-				ErrInvalidArgument,
+			return newConflictError(
+				"WireGuard transparent inbound profile %s already has rule #%d",
 				l4WireGuardProfileConflictLabel(next),
 				rule.ID,
 			)
 		}
 		if l4ListenConflicts(rule, next) {
-			return fmt.Errorf(
-				"%w: listen %s:%s:%d conflicts with rule #%d",
-				ErrInvalidArgument,
+			return newConflictError(
+				"listen %s:%s:%d conflicts with rule #%d",
 				next.Protocol,
 				nextListenHost,
 				next.ListenPort,

@@ -35,10 +35,7 @@ func (d Dependencies) handleAgentRules(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"ok":   true,
-			"rule": rule,
-		})
+		d.writeMutationResource(w, r, http.StatusCreated, "rule", rule, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -71,10 +68,7 @@ func (d Dependencies) handleAgentRule(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":   true,
-			"rule": rule,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "rule", rule, nil)
 	case http.MethodDelete:
 		rule, err := d.RuleService.Delete(r.Context(), agentID, ruleID)
 		if err != nil {
@@ -82,10 +76,7 @@ func (d Dependencies) handleAgentRule(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":   true,
-			"rule": rule,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "rule", rule, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -96,7 +87,6 @@ func (d Dependencies) handleLocalRule(w http.ResponseWriter, r *http.Request) {
 	r.SetPathValue("agentID", d.Config.LocalAgentID)
 	d.handleAgentRule(w, r)
 }
-
 
 func (d Dependencies) handleHTTPRulesList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

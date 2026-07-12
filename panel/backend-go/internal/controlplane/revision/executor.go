@@ -188,6 +188,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	request = applyMutationContext(ctx, request)
 	kind := strings.TrimSpace(request.Kind)
 	if kind == "" {
 		return MutationResult{}, wrapError(ErrorCodeInvalidRequest, "operation kind is required")
@@ -223,7 +224,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		if replay, found, err := e.loadReplay(ctx, scope, key, fingerprint, now); err != nil {
 			return MutationResult{}, err
 		} else if found {
-			return replay, nil
+			return publishMutationResult(ctx, replay), nil
 		}
 	}
 
@@ -240,7 +241,6 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 	}
 
 	var result MutationResult
-	var replayed bool
 	err = e.store.WithRevisionMutation(ctx, func(tx *storage.GormStore) (storage.RevisionMutationDecision, error) {
 		var expiredIdempotencyRecord *storage.IdempotencyRecordRow
 		if key != "" {
@@ -250,7 +250,6 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			}
 			if found {
 				result = replay
-				replayed = true
 				return storage.RevisionMutationDecision{}, nil
 			}
 			expiredIdempotencyRecord = expired
@@ -470,15 +469,12 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			if replay, found, replayErr := e.loadReplay(ctx, scope, key, fingerprint, now); replayErr != nil {
 				return MutationResult{}, replayErr
 			} else if found {
-				return replay, nil
+				return publishMutationResult(ctx, replay), nil
 			}
 		}
 		return MutationResult{}, err
 	}
-	if replayed {
-		return result, nil
-	}
-	return result, nil
+	return publishMutationResult(ctx, result), nil
 }
 
 func (e *Executor) loadReplay(ctx context.Context, scope, key, fingerprint string, now time.Time) (MutationResult, bool, error) {

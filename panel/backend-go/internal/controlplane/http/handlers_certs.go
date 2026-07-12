@@ -35,10 +35,7 @@ func (d Dependencies) handleCertificates(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"ok":          true,
-			"certificate": cert,
-		})
+		d.writeMutationResource(w, r, http.StatusCreated, "certificate", cert, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -92,10 +89,7 @@ func (d Dependencies) handleCertificate(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":          true,
-			"certificate": cert,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "certificate", cert, nil)
 	case http.MethodDelete:
 		cert, err := d.CertificateService.Delete(r.Context(), agentID, certID)
 		if err != nil {
@@ -103,10 +97,7 @@ func (d Dependencies) handleCertificate(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":          true,
-			"certificate": cert,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "certificate", cert, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -156,8 +147,5 @@ func (d Dependencies) handleIssueCertificate(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, status, body)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"certificate": cert,
-	})
+	d.writeMutationResource(w, r, http.StatusOK, "certificate", cert, nil)
 }

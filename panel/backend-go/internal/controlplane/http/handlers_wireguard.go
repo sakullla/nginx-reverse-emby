@@ -93,10 +93,7 @@ func (d Dependencies) handleWireGuardProfileImportURI(w http.ResponseWriter, r *
 		writeJSON(w, status, body)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"ok":      true,
-		"profile": profile,
-	})
+	d.writeMutationResource(w, r, http.StatusCreated, "profile", profile, nil)
 }
 
 func (d Dependencies) handleWireGuardProfiles(w http.ResponseWriter, r *http.Request) {
@@ -126,10 +123,7 @@ func (d Dependencies) handleWireGuardProfiles(w http.ResponseWriter, r *http.Req
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"ok":      true,
-			"profile": profile,
-		})
+		d.writeMutationResource(w, r, http.StatusCreated, "profile", profile, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -156,10 +150,7 @@ func (d Dependencies) handleWireGuardProfile(w http.ResponseWriter, r *http.Requ
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":      true,
-			"profile": profile,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "profile", profile, nil)
 	case http.MethodDelete:
 		profile, err := d.WireGuardProfileService.Delete(r.Context(), agentID, profileID)
 		if err != nil {
@@ -167,10 +158,7 @@ func (d Dependencies) handleWireGuardProfile(w http.ResponseWriter, r *http.Requ
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":      true,
-			"profile": profile,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "profile", profile, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -207,10 +195,7 @@ func (d Dependencies) handleWireGuardProfileClients(w http.ResponseWriter, r *ht
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"ok":     true,
-			"client": client,
-		})
+		d.writeMutationResource(w, r, http.StatusCreated, "client", client, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -240,10 +225,7 @@ func (d Dependencies) handleWireGuardProfileClient(w http.ResponseWriter, r *htt
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":     true,
-			"client": client,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "client", client, nil)
 	case http.MethodDelete:
 		client, err := d.WireGuardClientService.DeleteClient(r.Context(), agentID, profileID, clientID)
 		if err != nil {
@@ -251,10 +233,7 @@ func (d Dependencies) handleWireGuardProfileClient(w http.ResponseWriter, r *htt
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":     true,
-			"client": client,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "client", client, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -354,7 +333,6 @@ func parseWireGuardClientPathID(w http.ResponseWriter, raw string) (int, bool) {
 	}
 	return id, true
 }
-
 
 func (d Dependencies) handleWireGuardProfilesList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

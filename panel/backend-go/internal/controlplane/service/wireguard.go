@@ -1287,9 +1287,8 @@ func validateUniqueEnabledWireGuardListenPorts(rows []storage.WireGuardProfileRo
 			continue
 		}
 		if existing, ok := seenByPort[row.ListenPort]; ok {
-			return fmt.Errorf(
-				"%w: duplicate listen_port %d for enabled wireguard profiles %d and %d",
-				ErrInvalidArgument,
+			return newConflictError(
+				"duplicate listen_port %d for enabled wireguard profiles %d and %d",
 				row.ListenPort,
 				existing.ID,
 				row.ID,

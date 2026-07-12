@@ -39,6 +39,14 @@ type DependencyFrontierClaimResult struct {
 	Claims     []DependencyNodeClaim
 }
 
+type DependencyAgentClaimResult struct {
+	Plan       dependency.Plan
+	Evaluation dependency.Evaluation
+	Node       dependency.Node
+	Claim      ClaimResult
+	Eligible   bool
+}
+
 func (c *Coordinator) LoadDependencyPlan(ctx context.Context, operationID string) (dependency.Plan, error) {
 	repository, ok := c.repository.(persistedDependencyRepository)
 	if !ok {
@@ -99,6 +107,42 @@ func (c *Coordinator) ClaimDependencyFrontier(ctx context.Context, operationID s
 		if claimErr != nil {
 			return result, claimErr
 		}
+	}
+	return result, nil
+}
+
+// ClaimDependencyAgent claims only the authenticated caller's frontier node.
+// Remote pulls must not reserve leases for other independently ready agents.
+func (c *Coordinator) ClaimDependencyAgent(ctx context.Context, operationID, agentID string) (DependencyAgentClaimResult, error) {
+	plan, err := c.LoadDependencyPlan(ctx, operationID)
+	if err != nil {
+		return DependencyAgentClaimResult{}, err
+	}
+	evaluation, err := c.EvaluateDependencyPlan(ctx, plan)
+	result := DependencyAgentClaimResult{Plan: plan, Evaluation: evaluation}
+	if err != nil {
+		return result, err
+	}
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return result, fmt.Errorf("agent id is required")
+	}
+	for _, node := range plan.Nodes {
+		if node.AgentID == agentID {
+			result.Node = node
+			break
+		}
+	}
+	if result.Node.AgentID == "" {
+		return result, fmt.Errorf("%w: operation %q has no revision for agent %q", dependency.ErrMissingDependency, plan.OperationID, agentID)
+	}
+	for _, node := range evaluation.Frontier {
+		if node.AgentID != agentID {
+			continue
+		}
+		result.Eligible = true
+		result.Claim, err = c.claimDependencyNode(ctx, plan.OperationID, node)
+		return result, err
 	}
 	return result, nil
 }

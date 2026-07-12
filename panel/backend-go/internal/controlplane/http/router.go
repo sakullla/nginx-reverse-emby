@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -124,6 +126,20 @@ type BackupService interface {
 	Preview(context.Context, []byte) (service.BackupImportResult, error)
 }
 
+type RevisionService interface {
+	GetOperationStatus(context.Context, string) (service.OperationStatus, error)
+	GetAgentRevisionStatus(context.Context, string, int64) (service.AgentRevisionStatus, error)
+	Retry(context.Context, string, int64) (service.AgentRevisionStatus, error)
+	Rollback(context.Context, string) (service.OperationStatus, error)
+	ListEvents(context.Context, service.RevisionEventQuery) (service.RevisionEventPage, error)
+	PullRemoteRevision(context.Context, string) (service.RemoteRevisionPull, error)
+	StartRemoteRevision(context.Context, string, service.RemoteRevisionStart) (service.AgentRevisionStatus, error)
+	ReportRemoteRevision(context.Context, string, service.RemoteRevisionReport) (service.AgentRevisionStatus, error)
+	SaveMutationResponse(context.Context, string, string, string, []byte) error
+	LoadMutationResponse(context.Context, string, string, string) (map[string]any, bool, error)
+	LoadMutationResponseByKey(context.Context, string, string) (map[string]any, bool, error)
+}
+
 type Dependencies struct {
 	Config                       config.Config
 	SystemService                SystemService
@@ -139,6 +155,7 @@ type Dependencies struct {
 	TaskService                  TaskService
 	BackupService                BackupService
 	TrafficService               TrafficService
+	RevisionService              RevisionService
 	MonitorStreamRefreshInterval time.Duration
 	MonitorStreamMaxAge          time.Duration
 	cleanup                      func() error
@@ -366,6 +383,9 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/public/agent-assets/", http.HandlerFunc(resolved.handlePublicAgentAsset))
 		mux.Handle(prefix+"/agents/register", http.HandlerFunc(resolved.handleRegisterAgent))
 		mux.Handle(prefix+"/agents/heartbeat", http.HandlerFunc(resolved.handleHeartbeat))
+		mux.Handle(prefix+"/agent-revisions/pull", http.HandlerFunc(resolved.handleRemoteRevisionPull))
+		mux.Handle(prefix+"/agent-revisions/{revision}/start", http.HandlerFunc(resolved.handleRemoteRevisionStart))
+		mux.Handle(prefix+"/agent-revisions/{revision}/report", http.HandlerFunc(resolved.handleRemoteRevisionReport))
 		mux.Handle(prefix+"/agents/task-session", http.HandlerFunc(resolved.handleAgentTaskSession))
 		mux.Handle(prefix+"/agents/task-stream", http.HandlerFunc(resolved.handleAgentTaskStream))
 		mux.Handle(prefix+"/agent-tasks/{taskID}/updates", http.HandlerFunc(resolved.handleAgentTaskUpdate))
@@ -380,6 +400,11 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgent)))
 		mux.Handle(prefix+"/agents/{agentID}/stats", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentStats)))
 		mux.Handle(prefix+"/agents/{agentID}/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleApplyAgent)))
+		mux.Handle(prefix+"/agents/{agentID}/revisions/rollback", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRevisionRollback)))
+		mux.Handle(prefix+"/agents/{agentID}/revisions/{revision}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRevisionStatus)))
+		mux.Handle(prefix+"/agents/{agentID}/revisions/{revision}/retry", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRevisionRetry)))
+		mux.Handle(prefix+"/operations/{operationID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleOperationStatus)))
+		mux.Handle(prefix+"/revision-events", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRevisionEvents)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-policy", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficPolicy)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-summary", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficSummary)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-trend", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficTrend)))
@@ -424,11 +449,12 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/version-policies/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicy)))
 	}
 	mux.Handle("/", resolved.staticHandler())
+	handler := resolved.withMutationContext(mux)
 
 	if resolved.cleanup != nil {
-		return closeableHandler{Handler: mux, close: resolved.cleanup}, nil
+		return closeableHandler{Handler: handler, close: resolved.cleanup}, nil
 	}
-	return mux, nil
+	return handler, nil
 }
 
 type closeableHandler struct {
@@ -462,6 +488,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if d.RuleService == nil {
 		if legacy, ok := any(d.AgentService).(legacyRuleListService); ok {
 			d.RuleService = agentRuleServiceAdapter{agent: legacy}
+		}
+	}
+	if d.RevisionService == nil {
+		if provider, ok := d.AgentService.(interface{ RevisionAPI() *service.RevisionAPI }); ok {
+			d.RevisionService = provider.RevisionAPI()
 		}
 	}
 
@@ -569,6 +600,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 		d.TrafficService = service.NewTrafficService(trafficCfg, store)
 	}
+	if d.RevisionService == nil {
+		if provider, ok := d.AgentService.(interface{ RevisionAPI() *service.RevisionAPI }); ok {
+			d.RevisionService = provider.RevisionAPI()
+		}
+	}
 
 	return d, nil
 }
@@ -596,6 +632,9 @@ func (d Dependencies) canOpenConfiguredStore() bool {
 
 func mapServiceError(err error) (int, map[string]any) {
 	var trafficErr service.TrafficServiceError
+	if status := revision.HTTPStatus(err); status != http.StatusInternalServerError && status != 0 {
+		return status, errorPayload(err.Error())
+	}
 	switch {
 	case errors.As(err, &trafficErr) && trafficErr.Code == service.ErrCodeTrafficStatsDisabled:
 		return http.StatusNotFound, trafficStatsDisabledPayload()
@@ -605,6 +644,14 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusNotFound, wireGuardDisabledPayload()
 	case errors.Is(err, service.ErrAgentUnauthorized):
 		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
+	case errors.Is(err, service.ErrRevisionForbidden):
+		return http.StatusForbidden, errorPayload(err.Error())
+	case errors.Is(err, service.ErrRevisionNotFound), errors.Is(err, coordinator.ErrNotFound):
+		return http.StatusNotFound, errorPayload(err.Error())
+	case errors.Is(err, coordinator.ErrLeaseConflict), errors.Is(err, coordinator.ErrStateConflict):
+		return http.StatusConflict, errorPayload(err.Error())
+	case errors.Is(err, service.ErrConflict):
+		return http.StatusConflict, errorPayload(err.Error())
 	case errors.Is(err, service.ErrAgentNotFound):
 		return http.StatusNotFound, errorPayload("agent not found")
 	case errors.Is(err, service.ErrWireGuardProfileNotFound):

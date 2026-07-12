@@ -1803,9 +1803,8 @@ func ensureUniqueRelayListen(listeners []RelayListener, next RelayListener, excl
 			continue
 		}
 		if conflictHost, ok := relayBindHostConflictsWithExisting(listener.BindHosts, next.BindHosts); ok {
-			return fmt.Errorf(
-				"%w: relay listen %s:%d on host %s conflicts with relay listener #%d",
-				ErrInvalidArgument,
+			return newConflictError(
+				"relay listen %s:%d on host %s conflicts with relay listener #%d",
 				nextTransport,
 				next.ListenPort,
 				conflictHost,

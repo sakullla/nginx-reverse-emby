@@ -52,6 +52,13 @@ type RevisionPruneResult struct {
 	IdempotencyRecordsDeleted int64
 }
 
+type RevisionEventQuery struct {
+	AfterID     uint64
+	Limit       int
+	OperationID string
+	AgentID     string
+}
+
 func (s *GormStore) CreateRevisionLedger(ctx context.Context, input RevisionLedgerWrite) error {
 	if strings.TrimSpace(input.Operation.ID) == "" {
 		return fmt.Errorf("operation id is required")
@@ -151,6 +158,52 @@ func (s *GormStore) ListAgentRevisions(ctx context.Context, agentID string) ([]A
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (s *GormStore) ListCoordinatorGenerations(ctx context.Context, agentID string) ([]AgentGenerationRow, error) {
+	var rows []AgentGenerationRow
+	if err := s.db.WithContext(ctx).
+		Where("agent_id = ?", strings.TrimSpace(agentID)).
+		Order("created_at, generation_id").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (s *GormStore) ListRevisionEvents(ctx context.Context, query RevisionEventQuery) ([]RevisionEventRow, error) {
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	db := s.db.WithContext(ctx).Where("id > ?", query.AfterID)
+	if operationID := strings.TrimSpace(query.OperationID); operationID != "" {
+		db = db.Where("operation_id = ?", operationID)
+	}
+	if agentID := strings.TrimSpace(query.AgentID); agentID != "" {
+		db = db.Where("agent_id = ?", agentID)
+	}
+	var rows []RevisionEventRow
+	if err := db.Order("id").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (s *GormStore) UpdateIdempotencyResponseJSON(ctx context.Context, scope, key, operationID, responseJSON string) (bool, error) {
+	scope = strings.TrimSpace(scope)
+	key = strings.TrimSpace(key)
+	operationID = strings.TrimSpace(operationID)
+	if scope == "" || key == "" || operationID == "" || strings.TrimSpace(responseJSON) == "" {
+		return false, fmt.Errorf("idempotency response identity and payload are required")
+	}
+	result := s.db.WithContext(ctx).Model(&IdempotencyRecordRow{}).
+		Where("scope = ? AND key = ? AND operation_id = ?", scope, key, operationID).
+		Update("response_json", responseJSON)
+	return result.RowsAffected == 1, result.Error
 }
 
 func (s *GormStore) GetGenerationArtifact(ctx context.Context, artifactID string) (GenerationArtifactRow, bool, error) {

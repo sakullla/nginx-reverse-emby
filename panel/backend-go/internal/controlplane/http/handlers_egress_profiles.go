@@ -33,10 +33,7 @@ func (d Dependencies) handleEgressProfiles(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"ok":      true,
-			"profile": profile,
-		})
+		d.writeMutationResource(w, r, http.StatusCreated, "profile", profile, nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -56,10 +53,7 @@ func (d Dependencies) handleEgressProfile(w http.ResponseWriter, r *http.Request
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":      true,
-			"profile": profile,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "profile", profile, nil)
 	case http.MethodPut:
 		var payload service.EgressProfileInput
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -72,10 +66,7 @@ func (d Dependencies) handleEgressProfile(w http.ResponseWriter, r *http.Request
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":      true,
-			"profile": profile,
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "profile", profile, nil)
 	case http.MethodDelete:
 		profile, err := d.EgressProfileService.Delete(r.Context(), profileID)
 		if err != nil {

@@ -2112,7 +2112,7 @@ func validateUniqueHTTPFrontendBinding(rows []storage.HTTPRuleRow) error {
 			continue
 		}
 		if existingID, exists := seen[binding]; exists && existingID != row.ID {
-			return fmt.Errorf("%w: frontend_url conflicts with existing rule: %d", ErrInvalidArgument, existingID)
+			return newConflictError("frontend_url conflicts with existing rule: %d", existingID)
 		}
 		seen[binding] = row.ID
 	}
@@ -2127,7 +2127,7 @@ func validateUniqueHTTPWireGuardEntryRoutes(rows []storage.HTTPRuleRow) error {
 			continue
 		}
 		if existingID, exists := seen[key]; exists && existingID != row.ID {
-			return fmt.Errorf("%w: wireguard entry route conflicts with existing rule: %d", ErrInvalidArgument, existingID)
+			return newConflictError("wireguard entry route conflicts with existing rule: %d", existingID)
 		}
 		seen[key] = row.ID
 	}
