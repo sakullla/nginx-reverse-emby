@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -710,6 +712,109 @@ func TestEgressProfileServiceUpdateDoesNotPartiallyWriteAgentRows(t *testing.T) 
 		t.Fatalf("GetOperationDependencyArtifact() error = %v", err)
 	} else if !found {
 		t.Fatal("egress update dependency plan artifact was not persisted")
+	}
+}
+
+func TestEgressProfileServiceUpdateUsesCompleteRelayClosureAndRejectsMissingListener(t *testing.T) {
+	store, observer := newDependencyLifecycleAuditStore(t)
+	for _, row := range []storage.AgentRow{
+		{ID: "rule-owner", Name: "rule-owner", Platform: "linux-amd64", CapabilitiesJSON: `["http_rules","egress_profiles"]`},
+		{ID: "relay-mid", Name: "relay-mid", Platform: "linux-amd64", CapabilitiesJSON: `["egress_profiles"]`},
+		{ID: "relay-final", Name: "relay-final", Platform: "linux-amd64", CapabilitiesJSON: `["egress_profiles"]`},
+	} {
+		if err := store.SaveAgent(t.Context(), row); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", row.ID, err)
+		}
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-mid", []storage.RelayListenerRow{{
+		ID: 101, AgentID: "relay-mid", Name: "relay-mid", ListenHost: "127.0.0.1", ListenPort: 17101,
+		PublicHost: "relay-mid.example.test", PublicPort: 17101, Enabled: true, TransportMode: "tls_tcp", Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-mid) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-final", []storage.RelayListenerRow{{
+		ID: 102, AgentID: "relay-final", Name: "relay-final", ListenHost: "127.0.0.1", ListenPort: 17102,
+		PublicHost: "relay-final.example.test", PublicPort: 17102, Enabled: true, TransportMode: "tls_tcp", Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-final) error = %v", err)
+	}
+
+	svc := NewEgressProfileService(store)
+	profile := createTestEgressProfile(t, svc)
+	if err := store.SaveHTTPRules(t.Context(), "rule-owner", []storage.HTTPRuleRow{{
+		ID: 201, AgentID: "rule-owner", FrontendURL: "http://egress-relay.example.test:18091",
+		BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, EgressProfileID: &profile.ID,
+		RelayLayersJSON: `[[101],[102]]`, Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(rule-owner) error = %v", err)
+	}
+	updated, err := svc.Update(t.Context(), profile.ID, EgressProfileInput{
+		ProxyURL: stringPtrEgress("socks5://127.0.0.1:2080"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	operationID := ""
+	for _, agentID := range []string{"rule-owner", "relay-mid", "relay-final"} {
+		revisions, listErr := store.ListAgentRevisions(t.Context(), agentID)
+		if listErr != nil {
+			t.Fatalf("ListAgentRevisions(%s) error = %v", agentID, listErr)
+		}
+		if len(revisions) == 0 {
+			t.Fatalf("no revision recorded for %s", agentID)
+		}
+		if operationID == "" {
+			operationID = revisions[len(revisions)-1].OperationID
+		} else if revisions[len(revisions)-1].OperationID != operationID {
+			t.Fatalf("operation id for %s = %q, want %q", agentID, revisions[len(revisions)-1].OperationID, operationID)
+		}
+	}
+	artifact, found, err := store.GetOperationDependencyArtifact(t.Context(), operationID)
+	if err != nil || !found {
+		t.Fatalf("GetOperationDependencyArtifact() found=%v error=%v", found, err)
+	}
+	plan, err := dependency.ParsePlan(artifact.Payload)
+	if err != nil {
+		t.Fatalf("ParsePlan() error = %v", err)
+	}
+	wantEdges := [][2]string{
+		{"relay-mid", "relay-final"},
+		{"rule-owner", "relay-final"},
+		{"rule-owner", "relay-mid"},
+	}
+	gotEdges := make([][2]string, 0, len(plan.Edges))
+	for _, edge := range plan.Edges {
+		gotEdges = append(gotEdges, [2]string{edge.FromAgentID, edge.ToAgentID})
+	}
+	if !reflect.DeepEqual(gotEdges, wantEdges) {
+		t.Fatalf("dependency edges = %+v, want %+v", gotEdges, wantEdges)
+	}
+
+	if err := store.SaveHTTPRules(t.Context(), "rule-owner", []storage.HTTPRuleRow{{
+		ID: 201, AgentID: "rule-owner", FrontendURL: "http://egress-relay.example.test:18091",
+		BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, EgressProfileID: &profile.ID,
+		RelayLayersJSON: `[[101],[999]]`, Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(missing listener) error = %v", err)
+	}
+	before := dependencyLifecycleTableCounts(t, observer)
+	_, err = svc.Update(t.Context(), profile.ID, EgressProfileInput{
+		ProxyURL: stringPtrEgress("socks5://127.0.0.1:3080"),
+	})
+	if err == nil {
+		t.Fatal("Update() with missing relay listener error = nil")
+	}
+	after := dependencyLifecycleTableCounts(t, observer)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("table counts changed after missing dependency: before=%v after=%v", before, after)
+	}
+	stored, err := svc.Get(t.Context(), profile.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if stored.ProxyURL != updated.ProxyURL {
+		t.Fatalf("profile after missing dependency = %+v, want prior update %+v", stored, updated)
 	}
 }
 

@@ -130,6 +130,9 @@ func (s *egressProfileService) Get(ctx context.Context, id int) (EgressProfile, 
 }
 
 func (s *egressProfileService) Create(ctx context.Context, input EgressProfileInput) (EgressProfile, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return EgressProfile{}, err
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.createLegacy(ctx, input)
 	}
@@ -186,6 +189,9 @@ func (s *egressProfileService) createLegacy(ctx context.Context, input EgressPro
 }
 
 func (s *egressProfileService) Update(ctx context.Context, id int, input EgressProfileInput) (EgressProfile, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return EgressProfile{}, err
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.updateLegacy(ctx, id, input)
 	}
@@ -318,6 +324,9 @@ func (s *egressProfileService) updateLegacy(ctx context.Context, id int, input E
 }
 
 func (s *egressProfileService) Delete(ctx context.Context, id int) (EgressProfile, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return EgressProfile{}, err
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.deleteLegacy(ctx, id)
 	}
@@ -474,6 +483,12 @@ func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
+	relayByID := make(map[int]storage.RelayListenerRow, len(relayRows))
+	for _, relay := range relayRows {
+		if relay.ID > 0 {
+			relayByID[relay.ID] = relay
+		}
+	}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
 		return nil, err
@@ -483,25 +498,32 @@ func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context
 		knownAgents[strings.TrimSpace(agentID)] = struct{}{}
 	}
 	affected := make(map[string]struct{})
-	addAgent := func(agentID string) {
+	addAgent := func(agentID, dependency string) error {
 		agentID = strings.TrimSpace(agentID)
 		if agentID == "" {
-			return
+			return fmt.Errorf("%w: %s has no agent", ErrAgentNotFound, dependency)
 		}
 		if _, ok := knownAgents[agentID]; !ok {
-			return
+			return fmt.Errorf("%w: %s references agent %q", ErrAgentNotFound, dependency, agentID)
 		}
 		affected[agentID] = struct{}{}
+		return nil
 	}
-	addRuleExecutors := func(ruleAgentID string, relayLayersJSON string) {
+	addRuleExecutors := func(ruleAgentID string, relayLayersJSON string) error {
+		if err := addAgent(ruleAgentID, "egress profile rule owner"); err != nil {
+			return err
+		}
 		relayLayers := parseIntLayers(relayLayersJSON)
-		if len(relayLayers) == 0 {
-			addAgent(ruleAgentID)
-			return
+		for _, listenerID := range flattenRelayLayers(relayLayers) {
+			listener, ok := relayByID[listenerID]
+			if !ok || !listener.Enabled {
+				return fmt.Errorf("%w: relay listener not found or disabled: %d", ErrInvalidArgument, listenerID)
+			}
+			if err := addAgent(listener.AgentID, fmt.Sprintf("relay listener %d", listenerID)); err != nil {
+				return err
+			}
 		}
-		for agentID := range egressProfileFinalHopAgentIDs(relayLayers, relayRows) {
-			addAgent(agentID)
-		}
+		return nil
 	}
 	for _, reference := range references {
 		switch reference.Kind {
@@ -511,7 +533,13 @@ func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context
 				return nil, err
 			}
 			if ok && row.Enabled {
-				addRuleExecutors(row.AgentID, row.RelayLayersJSON)
+				ruleAgentID := strings.TrimSpace(row.AgentID)
+				if ruleAgentID == "" {
+					ruleAgentID = reference.AgentID
+				}
+				if err := addRuleExecutors(ruleAgentID, row.RelayLayersJSON); err != nil {
+					return nil, err
+				}
 			}
 		case "l4":
 			row, ok, err := s.referencedL4Rule(ctx, reference)
@@ -519,7 +547,13 @@ func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context
 				return nil, err
 			}
 			if ok && row.Enabled {
-				addRuleExecutors(row.AgentID, row.RelayLayersJSON)
+				ruleAgentID := strings.TrimSpace(row.AgentID)
+				if ruleAgentID == "" {
+					ruleAgentID = reference.AgentID
+				}
+				if err := addRuleExecutors(ruleAgentID, row.RelayLayersJSON); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

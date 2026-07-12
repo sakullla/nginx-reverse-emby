@@ -230,6 +230,9 @@ func (s *l4Service) Get(ctx context.Context, agentID string, id int) (L4Rule, er
 }
 
 func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInput) (L4Rule, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return L4Rule{}, err
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.createLegacy(ctx, agentID, input)
 	}
@@ -382,6 +385,9 @@ func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4Ru
 }
 
 func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4RuleInput) (L4Rule, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return L4Rule{}, err
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.updateLegacy(ctx, agentID, id, input)
 	}
@@ -559,6 +565,9 @@ func (s *l4Service) updateLegacy(ctx context.Context, agentID string, id int, in
 }
 
 func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return L4Rule{}, err
+	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.deleteLegacy(ctx, agentID, id)
 	}

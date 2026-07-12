@@ -21,6 +21,21 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+func TestRelayMaterialRollbacksRunAllActions(t *testing.T) {
+	calls := make([]string, 0, 3)
+	err := runRelayMaterialRollbacks([]func() error{
+		func() error { calls = append(calls, "first"); return nil },
+		func() error { calls = append(calls, "second"); return errors.New("restore failed") },
+		func() error { calls = append(calls, "third"); return nil },
+	})
+	if err == nil {
+		t.Fatal("runRelayMaterialRollbacks() error = nil")
+	}
+	if got := strings.Join(calls, ","); got != "third,second,first" {
+		t.Fatalf("rollback calls = %q, want all actions in reverse order", got)
+	}
+}
+
 type relayMaterial struct {
 	CertPEM string
 	KeyPEM  string
@@ -151,6 +166,89 @@ func TestRelayServiceUpdateCreatesCrossAgentDependencyPlan(t *testing.T) {
 	}
 }
 
+type rejectAfterRelayMutationStore struct {
+	*storage.GormStore
+	err error
+}
+
+func (s *rejectAfterRelayMutationStore) WithRevisionMutation(ctx context.Context, mutate storage.RevisionMutationFunc) error {
+	return s.GormStore.WithRevisionMutation(ctx, func(tx *storage.GormStore) (storage.RevisionMutationDecision, error) {
+		decision, err := mutate(tx)
+		if err != nil {
+			return decision, err
+		}
+		return decision, s.err
+	})
+}
+
+func TestRelayServiceCreateRestoresSameDomainMaterialWhenRevisionCommitFails(t *testing.T) {
+	store := newMutationValidationStore(t)
+	oldMaterial := storage.ManagedCertificateBundle{
+		Domain: relayCADomainIdentity, CertPEM: "old-invalid-cert", KeyPEM: "old-invalid-key",
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
+		ID: 10, Domain: relayCADomainIdentity, Enabled: true, Scope: "domain", IssuerMode: "local_http01",
+		TargetAgentIDs: `["local"]`, Status: "error", Usage: "relay_ca", CertificateType: "internal_ca",
+		SelfSigned: true, TagsJSON: `["system:relay-ca","system"]`, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	if err := store.SaveManagedCertificateMaterial(t.Context(), oldMaterial.Domain, oldMaterial); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial(old) error = %v", err)
+	}
+	beforeRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(before) error = %v", err)
+	}
+
+	originalNonce := relayListenerAutoCertificateNonce
+	relayListenerAutoCertificateNonce = func() string { return "rollbacknonce" }
+	t.Cleanup(func() { relayListenerAutoCertificateNonce = originalNonce })
+	failingStore := &rejectAfterRelayMutationStore{GormStore: store, err: errors.New("forced revision commit failure")}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, failingStore)
+	_, err = svc.Create(t.Context(), "local", RelayListenerInput{
+		Name: stringPtr("rollback-relay"), ListenPort: intPtrService(19444), PublicHost: stringPtr("rollback.example.test"),
+		Enabled: boolPtr(true), CertificateSource: stringPtr("auto_relay_ca"), TrustModeSource: stringPtr("auto"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "forced revision commit failure") {
+		t.Fatalf("Create() error = %v, want forced revision commit failure", err)
+	}
+	restored, found, err := store.LoadManagedCertificateMaterial(t.Context(), oldMaterial.Domain)
+	if err != nil || !found {
+		t.Fatalf("LoadManagedCertificateMaterial(old) found=%v error=%v", found, err)
+	}
+	if restored.CertPEM != oldMaterial.CertPEM || restored.KeyPEM != oldMaterial.KeyPEM {
+		t.Fatalf("same-domain material after rollback = %+v, want original %+v", restored, oldMaterial)
+	}
+	leafDomain := relayListenerAutoCertificateDomain(RelayListener{ID: 1, PublicHost: "rollback.example.test"}, "local")
+	if _, found, err := store.LoadManagedCertificateMaterial(t.Context(), leafDomain); err != nil {
+		t.Fatalf("LoadManagedCertificateMaterial(leaf) error = %v", err)
+	} else if found {
+		t.Fatalf("new relay leaf material %q survived rollback", leafDomain)
+	}
+	rows, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].Domain != relayCADomainIdentity {
+		t.Fatalf("managed certificate rows after rollback = %+v", rows)
+	}
+	listeners, err := store.ListRelayListeners(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListRelayListeners() error = %v", err)
+	}
+	if len(listeners) != 0 {
+		t.Fatalf("relay listeners after rollback = %+v", listeners)
+	}
+	afterRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(after) error = %v", err)
+	}
+	if len(afterRevisions) != len(beforeRevisions) {
+		t.Fatalf("revision count changed after failed commit: before=%d after=%d", len(beforeRevisions), len(afterRevisions))
+	}
+}
+
 type relayCertStore struct {
 	agents                          []storage.AgentRow
 	httpRulesByID                   map[string][]storage.HTTPRuleRow
@@ -179,6 +277,8 @@ type relayCertStore struct {
 	trafficDeleteErr                error
 	trafficDeleteHook               func()
 }
+
+func (*relayCertStore) allowLegacyConfigMutationFallback() {}
 
 func (s *relayCertStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
 	return append([]storage.AgentRow(nil), s.agents...), nil
