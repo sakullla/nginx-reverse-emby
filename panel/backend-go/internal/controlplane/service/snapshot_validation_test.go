@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
@@ -15,6 +16,163 @@ func TestFullSnapshotValidatorAcceptsCompleteResourceGraph(t *testing.T) {
 		Snapshot: snapshot,
 	}); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestFullSnapshotValidatorAllowsRemoteWireGuardProviderWithoutConsumerCapability(t *testing.T) {
+	profileID := 7
+	snapshot := storage.Snapshot{
+		Rules: []storage.HTTPRule{{
+			ID: 1, AgentID: "consumer", FrontendURL: "https://consumer.example.com",
+			Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			RelayLayers: [][]int{{5}},
+		}},
+		RelayListeners: []storage.RelayListener{{
+			ID: 5, AgentID: "provider", Name: "wireguard relay", Enabled: true,
+			TransportMode: "wireguard", WireGuardProfileID: &profileID,
+		}},
+		WireGuardProfiles: []storage.WireGuardProfile{{
+			ID: profileID, AgentID: "provider", Name: "provider profile", Enabled: true,
+		}},
+	}
+
+	err := (FullSnapshotValidator{}).Validate(t.Context(), revision.SnapshotValidation{
+		Target:   revision.Target{AgentID: "consumer"},
+		Snapshot: snapshot,
+	})
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestFullSnapshotValidatorPreservesWireGuardProviderDependencyValidation(t *testing.T) {
+	profileID := 7
+	wireGuardRelay := func(agentID string) storage.RelayListener {
+		return storage.RelayListener{
+			ID: 5, AgentID: agentID, Name: "wireguard relay", Enabled: true,
+			TransportMode: "wireguard", WireGuardProfileID: &profileID,
+		}
+	}
+	wireGuardProfile := func(agentID string, enabled bool) storage.WireGuardProfile {
+		return storage.WireGuardProfile{
+			ID: profileID, AgentID: agentID, Name: "wireguard profile", Enabled: enabled,
+		}
+	}
+
+	tests := []struct {
+		name         string
+		target       revision.Target
+		snapshot     storage.Snapshot
+		wantCode     revision.ErrorCode
+		wantContains string
+	}{
+		{
+			name:   "target profile still requires wireguard capability",
+			target: revision.Target{AgentID: "consumer"},
+			snapshot: storage.Snapshot{
+				WireGuardProfiles: []storage.WireGuardProfile{wireGuardProfile("consumer", true)},
+			},
+			wantCode:     revision.ErrorCodeUnprocessable,
+			wantContains: "requires the wireguard capability",
+		},
+		{
+			name:   "remote relay copy may omit provider profile",
+			target: revision.Target{AgentID: "consumer"},
+			snapshot: storage.Snapshot{
+				RelayListeners: []storage.RelayListener{wireGuardRelay("provider")},
+			},
+		},
+		{
+			name:   "target relay rejects missing profile",
+			target: revision.Target{AgentID: "consumer", Capabilities: []string{"wireguard"}},
+			snapshot: storage.Snapshot{
+				RelayListeners: []storage.RelayListener{wireGuardRelay("consumer")},
+			},
+			wantCode:     revision.ErrorCodeNotFound,
+			wantContains: "missing wireguard profile",
+		},
+		{
+			name:   "target relay rejects disabled profile",
+			target: revision.Target{AgentID: "consumer", Capabilities: []string{"wireguard"}},
+			snapshot: storage.Snapshot{
+				RelayListeners:    []storage.RelayListener{wireGuardRelay("consumer")},
+				WireGuardProfiles: []storage.WireGuardProfile{wireGuardProfile("consumer", false)},
+			},
+			wantCode:     revision.ErrorCodeUnprocessable,
+			wantContains: "disabled wireguard profile",
+		},
+		{
+			name:   "target relay rejects profile owned by another agent",
+			target: revision.Target{AgentID: "consumer", Capabilities: []string{"wireguard"}},
+			snapshot: storage.Snapshot{
+				RelayListeners:    []storage.RelayListener{wireGuardRelay("consumer")},
+				WireGuardProfiles: []storage.WireGuardProfile{wireGuardProfile("provider", true)},
+			},
+			wantCode:     revision.ErrorCodeUnprocessable,
+			wantContains: "belongs to agent",
+		},
+		{
+			name:   "remote relay rejects disabled provider profile copy",
+			target: revision.Target{AgentID: "consumer"},
+			snapshot: storage.Snapshot{
+				RelayListeners:    []storage.RelayListener{wireGuardRelay("provider")},
+				WireGuardProfiles: []storage.WireGuardProfile{wireGuardProfile("provider", false)},
+			},
+			wantCode:     revision.ErrorCodeUnprocessable,
+			wantContains: "disabled wireguard profile",
+		},
+		{
+			name:   "remote relay rejects profile copy owned by another provider",
+			target: revision.Target{AgentID: "consumer"},
+			snapshot: storage.Snapshot{
+				RelayListeners:    []storage.RelayListener{wireGuardRelay("provider")},
+				WireGuardProfiles: []storage.WireGuardProfile{wireGuardProfile("other-provider", true)},
+			},
+			wantCode:     revision.ErrorCodeUnprocessable,
+			wantContains: "belongs to agent",
+		},
+		{
+			name:   "target HTTP rule rejects remote profile",
+			target: revision.Target{AgentID: "consumer", Capabilities: []string{"wireguard"}},
+			snapshot: storage.Snapshot{
+				Rules: []storage.HTTPRule{{
+					ID: 1, AgentID: "consumer", FrontendURL: "https://consumer.example.com",
+					Backends:           []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+					WireGuardProfileID: &profileID,
+				}},
+				WireGuardProfiles: []storage.WireGuardProfile{wireGuardProfile("provider", true)},
+			},
+			wantCode:     revision.ErrorCodeUnprocessable,
+			wantContains: "belongs to agent",
+		},
+		{
+			name:   "target snapshot rejects HTTP rule owned by another agent",
+			target: revision.Target{AgentID: "consumer"},
+			snapshot: storage.Snapshot{
+				Rules: []storage.HTTPRule{{
+					ID: 1, AgentID: "provider", FrontendURL: "https://provider.example.com",
+					Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+				}},
+			},
+			wantCode:     revision.ErrorCodeUnprocessable,
+			wantContains: "belongs to agent",
+		},
+	}
+
+	validator := FullSnapshotValidator{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validator.Validate(t.Context(), revision.SnapshotValidation{
+				Target:   tt.target,
+				Snapshot: tt.snapshot,
+			})
+			if revision.ErrorCodeOf(err) != tt.wantCode {
+				t.Fatalf("Validate() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), tt.wantCode)
+			}
+			if tt.wantContains != "" && !strings.Contains(err.Error(), tt.wantContains) {
+				t.Fatalf("Validate() error = %v, want message containing %q", err, tt.wantContains)
+			}
+		})
 	}
 }
 
