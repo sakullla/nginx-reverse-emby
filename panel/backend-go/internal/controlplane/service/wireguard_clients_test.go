@@ -59,6 +59,55 @@ func TestWireGuardClientCreateAllocatesAddressAndGeneratesConfig(t *testing.T) {
 	}
 }
 
+func TestWireGuardClientCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
+	profileInput := testWireGuardProfileInput()
+	profileInput.InterfaceAddresses = []string{"10.18.0.1/24"}
+	profileInput.PublicEndpoint = "wg.example.com:51820"
+	profile, err := profileSvc.Create(t.Context(), "local", profileInput)
+	if err != nil {
+		t.Fatalf("Create(profile) error = %v", err)
+	}
+	baseline, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(baseline) error = %v", err)
+	}
+	applyCalls := 0
+	clientSvc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+
+	client, err := clientSvc.CreateClient(t.Context(), "local", profile.ID, WireGuardClientInput{Name: "phone"})
+	if err != nil {
+		t.Fatalf("CreateClient() error = %v", err)
+	}
+	if _, err := clientSvc.UpdateClient(t.Context(), "local", profile.ID, client.ID, WireGuardClientInput{Name: "tablet"}); err != nil {
+		t.Fatalf("UpdateClient() error = %v", err)
+	}
+	if _, err := clientSvc.DeleteClient(t.Context(), "local", profile.ID, client.ID); err != nil {
+		t.Fatalf("DeleteClient() error = %v", err)
+	}
+
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	if len(revisions) != len(baseline)+3 {
+		t.Fatalf("revision count = %d, want baseline + 3 (%d)", len(revisions), len(baseline)+3)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
+	}
+	for _, revisionRow := range revisions[len(baseline):] {
+		if _, found, err := store.GetOperationDependencyArtifact(t.Context(), revisionRow.OperationID); err != nil {
+			t.Fatalf("GetOperationDependencyArtifact(%s) error = %v", revisionRow.OperationID, err)
+		} else if !found {
+			t.Fatalf("operation %s has no dependency artifact", revisionRow.OperationID)
+		}
+	}
+}
+
 func TestWireGuardClientCreateHonorsExplicitAllowedIPs(t *testing.T) {
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)

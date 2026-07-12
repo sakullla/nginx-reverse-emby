@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,322 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+func TestCertificateMutationRollbackErrorRunsAllActions(t *testing.T) {
+	mutationErr := errors.New("mutation failed")
+	calls := make([]string, 0, 3)
+	err := certificateMutationRollbackError(mutationErr, []func() error{
+		func() error { calls = append(calls, "first"); return nil },
+		func() error { calls = append(calls, "second"); return errors.New("restore failed") },
+		func() error { calls = append(calls, "third"); return nil },
+	})
+	if !errors.Is(err, mutationErr) {
+		t.Fatalf("rollback error = %v, want wrapped mutation error", err)
+	}
+	if got := strings.Join(calls, ","); got != "third,second,first" {
+		t.Fatalf("rollback calls = %q, want all actions in reverse order", got)
+	}
+}
+
+func TestCertificateCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	svc := NewCertificateService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+	baseline, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(baseline) error = %v", err)
+	}
+
+	created, err := svc.Create(t.Context(), "", ManagedCertificateInput{
+		Domain:          stringPtr("durable-cert.example.com"),
+		Enabled:         boolPtr(true),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("local_http01"),
+		TargetAgentIDs:  &[]string{"local"},
+		Usage:           stringPtr("https"),
+		CertificateType: stringPtr("acme"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	tags := []string{"durable"}
+	if _, err := svc.Update(t.Context(), "", created.ID, ManagedCertificateInput{Tags: &tags}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if _, err := svc.Delete(t.Context(), "", created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	if len(revisions) != len(baseline)+3 {
+		t.Fatalf("revision count = %d, want baseline + 3 (%d)", len(revisions), len(baseline)+3)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
+	}
+	for _, revisionRow := range revisions[len(baseline):] {
+		if _, found, err := store.GetOperationDependencyArtifact(t.Context(), revisionRow.OperationID); err != nil {
+			t.Fatalf("GetOperationDependencyArtifact(%s) error = %v", revisionRow.OperationID, err)
+		} else if !found {
+			t.Fatalf("operation %s has no dependency artifact", revisionRow.OperationID)
+		}
+	}
+}
+
+func TestCertificateSharedDetachCreatesPendingRevisionsForBothAgents(t *testing.T) {
+	store := newCertificateRevisionTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-cert", Name: "edge-cert", CapabilitiesJSON: `["cert_install"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
+		ID: 31, Domain: "shared-durable.example.com", Enabled: true, Scope: "domain",
+		IssuerMode: "local_http01", TargetAgentIDs: `["local","edge-cert"]`,
+		Status: "active", CertificateType: "acme", Usage: "https", Revision: 4,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	svc := NewCertificateService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+
+	if _, err := svc.Delete(t.Context(), "local", 31); err != nil {
+		t.Fatalf("Delete(detach) error = %v", err)
+	}
+	localRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(local) error = %v", err)
+	}
+	edgeRevisions, err := store.ListAgentRevisions(t.Context(), "edge-cert")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(edge-cert) error = %v", err)
+	}
+	localRevisions = nonLegacyCertificateRevisions(localRevisions)
+	edgeRevisions = nonLegacyCertificateRevisions(edgeRevisions)
+	if len(localRevisions) != 1 || len(edgeRevisions) != 1 || localRevisions[0].OperationID != edgeRevisions[0].OperationID {
+		t.Fatalf("detach revisions local=%+v edge=%+v, want one coherent operation", localRevisions, edgeRevisions)
+	}
+	operation, found, err := store.GetOperation(t.Context(), localRevisions[0].OperationID)
+	if err != nil || !found {
+		t.Fatalf("GetOperation() found=%t error=%v", found, err)
+	}
+	if operation.Status != storage.OperationStatusPending {
+		t.Fatalf("operation status = %q, want pending", operation.Status)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
+	}
+	rows, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	remaining := managedCertificateFromRow(rows[0])
+	if !reflect.DeepEqual(remaining.TargetAgentIDs, []string{"edge-cert"}) {
+		t.Fatalf("remaining targets = %+v, want edge-cert", remaining.TargetAgentIDs)
+	}
+}
+
+func TestCertificateRenewalPersistsPendingOperationWithoutSyntheticApply(t *testing.T) {
+	store := newCertificateRevisionTestStore(t)
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
+		ID: 41, Domain: "renew-durable.example.com", Enabled: true, Scope: "domain",
+		IssuerMode: "master_cf_dns", TargetAgentIDs: `["local"]`, Status: "pending",
+		CertificateType: "acme", Usage: "https", Revision: 3,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{41: {Changed: false}},
+	}
+	svc := newCertificateServiceWithRenewal(
+		config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store, issuer,
+	)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+
+	if err := svc.RunRenewalPass(t.Context()); err != nil {
+		t.Fatalf("RunRenewalPass() error = %v", err)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	revisions = nonLegacyCertificateRevisions(revisions)
+	if len(revisions) != 1 {
+		t.Fatalf("renewal revisions = %+v, want one", revisions)
+	}
+	operation, found, err := store.GetOperation(t.Context(), revisions[0].OperationID)
+	if err != nil || !found {
+		t.Fatalf("GetOperation() found=%t error=%v", found, err)
+	}
+	if operation.Status != storage.OperationStatusPending {
+		t.Fatalf("renewal operation status = %q, want pending", operation.Status)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
+	}
+	rows, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	if got := managedCertificateFromRow(rows[0]); got.Status != "active" || got.Revision != int(revisions[0].Revision) {
+		t.Fatalf("renewed certificate = %+v, revision row = %+v", got, revisions[0])
+	}
+}
+
+func TestManagedCertificateBackgroundIssueFinalizesThroughRevisionMutation(t *testing.T) {
+	store := newCertificateRevisionTestStore(t)
+	issuedMaterial := mustCreateSelfSignedCA(t, "Durable Background Issue")
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
+		ID: 51, Domain: "issue-durable.example.com", Enabled: true, Scope: "domain",
+		IssuerMode: "master_cf_dns", TargetAgentIDs: `["local"]`, Status: "issuing",
+		CertificateType: "acme", Usage: "https", Revision: 6,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{51: {
+			Changed: true,
+			Material: storage.ManagedCertificateBundle{
+				CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+				KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+			},
+		}},
+	}
+	svc := newCertificateServiceWithRenewal(
+		config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store, issuer,
+	)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+	rows, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	current, index, found := findManagedCertificateByID(rows, 51)
+	if !found {
+		t.Fatal("certificate 51 not found")
+	}
+
+	if _, err := svc.issueManagedCertificateInBackground(t.Context(), rows, index, current, 6); err != nil {
+		t.Fatalf("issueManagedCertificateInBackground() error = %v", err)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	revisions = nonLegacyCertificateRevisions(revisions)
+	if len(revisions) != 1 {
+		t.Fatalf("background issue revisions = %+v, want one", revisions)
+	}
+	operation, found, err := store.GetOperation(t.Context(), revisions[0].OperationID)
+	if err != nil || !found {
+		t.Fatalf("GetOperation() found=%t error=%v", found, err)
+	}
+	if operation.Status != storage.OperationStatusPending {
+		t.Fatalf("background issue operation status = %q, want pending", operation.Status)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
+	}
+}
+
+func TestCertificateMaterialAndLedgerRollbackTogetherOnDependencyFailure(t *testing.T) {
+	store, observer := newDependencyLifecycleAuditStore(t)
+	oldMaterial := mustCreateSelfSignedCA(t, "Durable Old Material")
+	newMaterial := mustCreateSelfSignedCA(t, "Durable New Material")
+	domain := "material-rollback.example.com"
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
+		ID: 61, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "local_http01",
+		TargetAgentIDs: `["local"]`, Status: "active", MaterialHash: "old-hash",
+		CertificateType: "uploaded", Usage: "https", Revision: 2,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	oldBundle := storage.ManagedCertificateBundle{
+		Domain: domain, CertPEM: strings.TrimSpace(oldMaterial.CertPEM), KeyPEM: strings.TrimSpace(oldMaterial.KeyPEM),
+	}
+	if err := store.SaveManagedCertificateMaterial(t.Context(), domain, oldBundle); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial(old) error = %v", err)
+	}
+	missingEgressID := 999
+	if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{{
+		ID: 1, AgentID: "local", FrontendURL: "https://" + domain,
+		BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, Enabled: true,
+		EgressProfileID: &missingEgressID, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	before := dependencyLifecycleTableCounts(t, observer)
+	svc := NewCertificateService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	_, err := svc.Update(t.Context(), "", 61, ManagedCertificateInput{
+		CertificatePEM: stringPtr(strings.TrimSpace(newMaterial.CertPEM)),
+		PrivateKeyPEM:  stringPtr(strings.TrimSpace(newMaterial.KeyPEM)),
+		CAPEM:          stringPtr(""),
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing egress profile") {
+		t.Fatalf("Update() error = %v, want dependency validation failure", err)
+	}
+	after := dependencyLifecycleTableCounts(t, observer)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("mutation tables changed after rejected certificate update: before=%v after=%v", before, after)
+	}
+	material, found, err := store.LoadManagedCertificateMaterial(t.Context(), domain)
+	if err != nil || !found {
+		t.Fatalf("LoadManagedCertificateMaterial() found=%t error=%v", found, err)
+	}
+	if material.CertPEM != oldBundle.CertPEM || material.KeyPEM != oldBundle.KeyPEM {
+		t.Fatalf("material changed after rollback: got cert/key lengths %d/%d", len(material.CertPEM), len(material.KeyPEM))
+	}
+	rows, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	if got := managedCertificateFromRow(rows[0]); got.MaterialHash != "old-hash" || got.Revision != 2 {
+		t.Fatalf("metadata changed after rollback: %+v", got)
+	}
+}
+
+func newCertificateRevisionTestStore(t *testing.T) *storage.SQLiteStore {
+	t.Helper()
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func nonLegacyCertificateRevisions(rows []storage.AgentRevisionRow) []storage.AgentRevisionRow {
+	result := make([]storage.AgentRevisionRow, 0, len(rows))
+	for _, row := range rows {
+		if !row.LegacyBaseline {
+			result = append(result, row)
+		}
+	}
+	return result
+}
 
 func TestCertificateServiceListOverlaysAgentReportFields(t *testing.T) {
 	store := &relayCertStore{

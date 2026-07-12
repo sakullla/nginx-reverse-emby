@@ -58,6 +58,53 @@ func TestWireGuardProfileCreateRedactsSecretsOnRead(t *testing.T) {
 	}
 }
 
+func TestWireGuardProfileCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	store, svc := newTestWireGuardProfileService(t)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+
+	baseline, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(baseline) error = %v", err)
+	}
+	created, err := svc.Create(t.Context(), "local", testWireGuardProfileInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	update := testWireGuardProfileInput()
+	update.Name = "wg relay updated"
+	update.PrivateKey = redactedProxyPassword
+	update.Peers[0].PresharedKey = redactedProxyPassword
+	if _, err := svc.Update(t.Context(), "local", created.ID, update); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if _, err := svc.Delete(t.Context(), "local", created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	if len(revisions) != len(baseline)+3 {
+		t.Fatalf("revision count = %d, want baseline + 3 (%d)", len(revisions), len(baseline)+3)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
+	}
+	for _, revisionRow := range revisions[len(baseline):] {
+		if _, found, err := store.GetOperationDependencyArtifact(t.Context(), revisionRow.OperationID); err != nil {
+			t.Fatalf("GetOperationDependencyArtifact(%s) error = %v", revisionRow.OperationID, err)
+		} else if !found {
+			t.Fatalf("operation %s has no dependency artifact", revisionRow.OperationID)
+		}
+	}
+}
+
 func TestWireGuardProfileCreateGeneratesBlankPrivateKey(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
@@ -940,8 +987,29 @@ func TestWireGuardProfileUpdateBumpsAgentsThatReferenceRelayProfile(t *testing.T
 	if client.ID == "" {
 		t.Fatal("client-agent not found")
 	}
-	if client.DesiredRevision <= client.CurrentRevision {
-		t.Fatalf("client-agent revisions = desired %d current %d, want desired bumped above current", client.DesiredRevision, client.CurrentRevision)
+	if client.DesiredRevision != 50 || client.CurrentRevision != 50 {
+		t.Fatalf("client-agent legacy revisions = desired %d current %d, want unchanged at 50", client.DesiredRevision, client.CurrentRevision)
+	}
+	pointer, found, err := store.GetAgentRevisionPointer(ctx, "client-agent")
+	if err != nil {
+		t.Fatalf("GetAgentRevisionPointer(client-agent) error = %v", err)
+	}
+	if !found || pointer.DesiredRevision <= int64(client.CurrentRevision) {
+		t.Fatalf("client-agent revision pointer = %+v, found=%t, want desired above current %d", pointer, found, client.CurrentRevision)
+	}
+	revisions, err := store.ListAgentRevisions(ctx, "client-agent")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(client-agent) error = %v", err)
+	}
+	foundPending := false
+	for _, revisionRow := range revisions {
+		if revisionRow.Revision == pointer.DesiredRevision && revisionRow.State == storage.AgentRevisionStatePending {
+			foundPending = true
+			break
+		}
+	}
+	if !foundPending {
+		t.Fatalf("client-agent revisions = %+v, want pending durable revision %d", revisions, pointer.DesiredRevision)
 	}
 }
 
@@ -1413,21 +1481,21 @@ func TestWireGuardProfileRevisionUsesRemoteAgentFloor(t *testing.T) {
 	}
 }
 
-func TestWireGuardProfileLocalApplyTriggerFiresForLocalMutations(t *testing.T) {
+func TestWireGuardProfileLocalApplyTriggerDoesNotRunForDurableMutations(t *testing.T) {
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 	triggered := 0
 	svc.SetLocalApplyTrigger(func(context.Context) error {
 		triggered++
-		return nil
+		return errors.New("synchronous apply must not run")
 	})
 
 	created, err := svc.Create(ctx, "local", testWireGuardProfileInput())
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if triggered != 1 {
-		t.Fatalf("trigger count after Create() = %d, want 1", triggered)
+	if triggered != 0 {
+		t.Fatalf("trigger count after Create() = %d, want 0", triggered)
 	}
 
 	update := testWireGuardProfileInput()
@@ -1436,15 +1504,15 @@ func TestWireGuardProfileLocalApplyTriggerFiresForLocalMutations(t *testing.T) {
 	if _, err := svc.Update(ctx, "local", created.ID, update); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if triggered != 2 {
-		t.Fatalf("trigger count after Update() = %d, want 2", triggered)
+	if triggered != 0 {
+		t.Fatalf("trigger count after Update() = %d, want 0", triggered)
 	}
 
 	if _, err := svc.Delete(ctx, "local", created.ID); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
-	if triggered != 3 {
-		t.Fatalf("trigger count after Delete() = %d, want 3", triggered)
+	if triggered != 0 {
+		t.Fatalf("trigger count after Delete() = %d, want 0", triggered)
 	}
 }
 
