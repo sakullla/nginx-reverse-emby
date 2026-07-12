@@ -59,8 +59,13 @@ func BuildPlan(operationID string, action Action, revisions []SnapshotRevision) 
 
 		for _, listener := range entry.Snapshot.RelayListeners {
 			listenerAgentID := strings.TrimSpace(listener.AgentID)
+			if listenerAgentID == "" {
+				return Plan{}, fmt.Errorf("%w: relay listener %d has no owner in snapshot %q", ErrInvalidPlan, listener.ID, agentID)
+			}
+			// Consumer snapshots include remote listener copies needed at runtime;
+			// the owner's snapshot remains authoritative for dependency validation.
 			if listenerAgentID != agentID {
-				return Plan{}, fmt.Errorf("%w: relay listener %d belongs to agent %q in snapshot %q", ErrInvalidPlan, listener.ID, listenerAgentID, agentID)
+				continue
 			}
 			if _, exists := listeners[listener.ID]; exists {
 				return Plan{}, fmt.Errorf("%w: relay listener id %d is duplicated", ErrInvalidPlan, listener.ID)
@@ -85,6 +90,9 @@ func BuildPlan(operationID string, action Action, revisions []SnapshotRevision) 
 
 	for agentID, snapshot := range snapshots {
 		for _, listener := range snapshot.RelayListeners {
+			if strings.TrimSpace(listener.AgentID) != agentID {
+				continue
+			}
 			if !listener.Enabled || !strings.EqualFold(strings.TrimSpace(listener.TransportMode), "wireguard") {
 				continue
 			}

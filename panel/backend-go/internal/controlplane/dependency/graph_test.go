@@ -80,6 +80,36 @@ func TestBuildPlanExtractsRelayEgressAndWireGuardDependencies(t *testing.T) {
 	}
 }
 
+func TestBuildPlanAcceptsRemoteRelayCopiesInConsumerSnapshots(t *testing.T) {
+	profileID := 5
+	remoteListener := storage.RelayListener{
+		ID: 10, AgentID: "edge-b", Enabled: true,
+		TransportMode: "wireguard", WireGuardProfileID: &profileID,
+	}
+	plan, err := BuildPlan("operation-remote-copy", ActionApply, []SnapshotRevision{
+		{
+			AgentID: "edge-a", Revision: 1,
+			Snapshot: storage.Snapshot{
+				Revision:       1,
+				Rules:          []storage.HTTPRule{{ID: 1, AgentID: "edge-a", RelayLayers: [][]int{{10}}}},
+				RelayListeners: []storage.RelayListener{remoteListener},
+			},
+		},
+		{
+			AgentID: "edge-b", Revision: 1,
+			Snapshot: storage.Snapshot{
+				Revision:          1,
+				RelayListeners:    []storage.RelayListener{remoteListener},
+				WireGuardProfiles: []storage.WireGuardProfile{{ID: profileID, AgentID: "edge-b", Enabled: true}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	assertEdge(t, plan, "edge-a", "edge-b", EdgeKindRelayLayer)
+}
+
 func TestBuildPlanRejectsInvalidSnapshotDependenciesAndCycles(t *testing.T) {
 	testCases := []struct {
 		name      string
@@ -90,6 +120,15 @@ func TestBuildPlanRejectsInvalidSnapshotDependenciesAndCycles(t *testing.T) {
 			name: "missing relay listener",
 			revisions: []SnapshotRevision{{AgentID: "edge-a", Revision: 1, Snapshot: storage.Snapshot{
 				Revision: 1, Rules: []storage.HTTPRule{{ID: 1, AgentID: "edge-a", RelayLayers: [][]int{{99}}}},
+			}}},
+			wantError: ErrMissingDependency,
+		},
+		{
+			name: "remote relay copy without owner snapshot",
+			revisions: []SnapshotRevision{{AgentID: "edge-a", Revision: 1, Snapshot: storage.Snapshot{
+				Revision:       1,
+				Rules:          []storage.HTTPRule{{ID: 1, AgentID: "edge-a", RelayLayers: [][]int{{10}}}},
+				RelayListeners: []storage.RelayListener{{ID: 10, AgentID: "edge-b", Enabled: true}},
 			}}},
 			wantError: ErrMissingDependency,
 		},
