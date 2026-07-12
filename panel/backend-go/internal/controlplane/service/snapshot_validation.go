@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
@@ -44,7 +45,13 @@ func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snaps
 	}
 	requiresEgress := false
 	for _, profile := range snapshot.EgressProfiles {
-		requiresEgress = requiresEgress || profile.Enabled
+		if !profile.Enabled {
+			continue
+		}
+		requiresEgress = true
+		if strings.EqualFold(strings.TrimSpace(profile.Type), "wireguard") || profile.WireGuardConfig != nil {
+			requiresWireGuard = true
+		}
 	}
 	for _, rule := range snapshot.Rules {
 		requiresWireGuard = requiresWireGuard || rule.WireGuardEntryEnabled || rule.WireGuardProfileID != nil
@@ -165,12 +172,23 @@ func validateSnapshotReferences(snapshot storage.Snapshot) error {
 	for _, profile := range snapshot.EgressProfiles {
 		egress[profile.ID] = profile
 	}
-	certificates := map[int]bool{}
+	type certificateReference struct {
+		enabled bool
+		usable  bool
+	}
+	certificates := map[int]certificateReference{}
 	for _, certificate := range snapshot.Certificates {
-		certificates[certificate.ID] = true
+		certificates[certificate.ID] = certificateReference{enabled: true, usable: true}
 	}
 	for _, policy := range snapshot.CertificatePolicies {
-		certificates[policy.ID] = certificates[policy.ID] || policy.Enabled
+		reference := certificates[policy.ID]
+		if policy.Enabled {
+			reference.enabled = true
+			if !isMasterIssuedSnapshotCertificate(policy.IssuerMode) {
+				reference.usable = true
+			}
+		}
+		certificates[policy.ID] = reference
 	}
 
 	for _, rule := range snapshot.Rules {
@@ -200,21 +218,27 @@ func validateSnapshotReferences(snapshot storage.Snapshot) error {
 			return err
 		}
 		if listener.CertificateID != nil {
-			enabled, found := certificates[*listener.CertificateID]
+			reference, found := certificates[*listener.CertificateID]
 			if !found {
 				return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("relay listener %d references missing certificate %d", listener.ID, *listener.CertificateID), nil)
 			}
-			if !enabled {
+			if !reference.enabled {
 				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references disabled certificate %d", listener.ID, *listener.CertificateID), nil)
+			}
+			if !reference.usable {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references unavailable certificate %d", listener.ID, *listener.CertificateID), nil)
 			}
 		}
 		for _, certificateID := range listener.TrustedCACertificateIDs {
-			enabled, found := certificates[certificateID]
+			reference, found := certificates[certificateID]
 			if !found {
 				return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("relay listener %d references missing trusted CA %d", listener.ID, certificateID), nil)
 			}
-			if !enabled {
+			if !reference.enabled {
 				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references disabled trusted CA %d", listener.ID, certificateID), nil)
+			}
+			if !reference.usable {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references unavailable trusted CA %d", listener.ID, certificateID), nil)
 			}
 		}
 	}
@@ -231,15 +255,21 @@ type snapshotListenerClaim struct {
 func validateSnapshotListenerClaims(snapshot storage.Snapshot) error {
 	claims := make([]snapshotListenerClaim, 0)
 	for _, rule := range snapshot.Rules {
-		if rule.WireGuardEntryEnabled {
-			if rule.WireGuardProfileID != nil {
-				continue
+		if !rule.WireGuardEntryEnabled {
+			claim, err := snapshotHTTPListenerClaim(rule)
+			if err != nil {
+				return err
 			}
-			claims = append(claims, snapshotListenerClaim{
-				network: "udp", host: rule.WireGuardEntryListenHost, port: rule.WireGuardEntryListenPort,
-				owner: fmt.Sprintf("HTTP rule %d wireguard entry", rule.ID),
-			})
+			claims = append(claims, claim)
+			continue
 		}
+		if rule.WireGuardProfileID != nil {
+			continue
+		}
+		claims = append(claims, snapshotListenerClaim{
+			network: "udp", host: rule.WireGuardEntryListenHost, port: rule.WireGuardEntryListenPort,
+			owner: fmt.Sprintf("HTTP rule %d wireguard entry", rule.ID),
+		})
 	}
 	for _, rule := range snapshot.L4Rules {
 		if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
@@ -307,6 +337,39 @@ func validateSnapshotListenerClaims(snapshot storage.Snapshot) error {
 		}
 	}
 	return nil
+}
+
+func snapshotHTTPListenerClaim(rule storage.HTTPRule) (snapshotListenerClaim, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
+	if err != nil || parsed.Host == "" {
+		return snapshotListenerClaim{}, revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an invalid frontend", rule.ID), err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	port := 0
+	if rawPort := parsed.Port(); rawPort != "" {
+		port, err = strconv.Atoi(rawPort)
+		if err != nil {
+			return snapshotListenerClaim{}, revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an invalid frontend port", rule.ID), err)
+		}
+	} else {
+		switch scheme {
+		case "http":
+			port = 80
+		case "https":
+			port = 443
+		default:
+			return snapshotListenerClaim{}, revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an unsupported frontend scheme", rule.ID), nil)
+		}
+	}
+	return snapshotListenerClaim{
+		network: "tcp", host: "0.0.0.0", port: port,
+		owner: fmt.Sprintf("HTTP %s ingress", scheme),
+	}, nil
+}
+
+func isMasterIssuedSnapshotCertificate(mode string) bool {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	return mode == "" || mode == "master_cf_dns"
 }
 
 func canonicalSnapshotFrontend(raw string) (string, error) {

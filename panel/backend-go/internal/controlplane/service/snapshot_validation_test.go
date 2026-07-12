@@ -119,6 +119,24 @@ func TestFullSnapshotValidatorRejectsDisabledRelayAndCertificateReferences(t *te
 	}
 }
 
+func TestFullSnapshotValidatorAllowsHTTPVirtualHostsToShareIngress(t *testing.T) {
+	snapshot := validSnapshotForValidation()
+	second := snapshot.Rules[0]
+	second.ID = 2
+	second.FrontendURL = "https://second.example.com"
+	snapshot.Rules = append(snapshot.Rules, second)
+
+	err := (FullSnapshotValidator{}).Validate(t.Context(), revision.SnapshotValidation{
+		Target: revision.Target{
+			AgentID: "edge-1", Capabilities: []string{"wireguard", "egress_profiles"},
+		},
+		Snapshot: snapshot,
+	})
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func validSnapshotForValidation() storage.Snapshot {
 	profileID := 7
 	egressID := 8

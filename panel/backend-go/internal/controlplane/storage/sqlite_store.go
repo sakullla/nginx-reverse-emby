@@ -360,13 +360,13 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, egressRows, relevantCertRows, egressScopeRevision)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
-		Rules:               SnapshotHTTPRules(httpRows),
-		L4Rules:             SnapshotL4Rules(l4Rows),
+		Rules:               snapshotHTTPRules(httpRows, !runtimeFiltered),
+		L4Rules:             snapshotL4Rules(l4Rows, !runtimeFiltered),
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		WireGuardProfiles:   snapshotWireGuardProfiles(wireGuardRows, !runtimeFiltered),
 		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
-		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains),
+		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
 	}, nil
 }
 
@@ -2454,6 +2454,10 @@ func relayLayersReferenceMissingListener(layersJSON string, available map[int]st
 }
 
 func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
+	return snapshotHTTPRules(rows, false)
+}
+
+func snapshotHTTPRules(rows []HTTPRuleRow, intent bool) []HTTPRule {
 	rules := make([]HTTPRule, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
@@ -2465,11 +2469,15 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 				wireGuardEntryListenPort = port
 			}
 		}
+		backends := parseHTTPBackends(row.BackendsJSON)
+		if intent {
+			backends = parseHTTPBackendsForIntent(row.BackendsJSON)
+		}
 		rules = append(rules, HTTPRule{
 			ID:                       row.ID,
 			AgentID:                  row.AgentID,
 			FrontendURL:              row.FrontendURL,
-			Backends:                 parseHTTPBackends(row.BackendsJSON),
+			Backends:                 backends,
 			LoadBalancing:            parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			ProxyRedirect:            row.ProxyRedirect,
 			PassProxyHeaders:         row.PassProxyHeaders,
@@ -2508,10 +2516,18 @@ func snapshotHTTPFrontendListenPort(raw string) (int, bool) {
 }
 
 func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
+	return snapshotL4Rules(rows, false)
+}
+
+func snapshotL4Rules(rows []L4RuleRow, intent bool) []L4Rule {
 	rules := make([]L4Rule, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
 			continue
+		}
+		backends := parseL4Backends(row.BackendsJSON)
+		if intent {
+			backends = parseL4BackendsForIntent(row.BackendsJSON)
 		}
 		rules = append(rules, L4Rule{
 			ID:                   row.ID,
@@ -2520,7 +2536,7 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			Protocol:             defaultString(row.Protocol, "tcp"),
 			ListenHost:           defaultString(row.ListenHost, "0.0.0.0"),
 			ListenPort:           row.ListenPort,
-			Backends:             parseL4Backends(row.BackendsJSON),
+			Backends:             backends,
 			LoadBalancing:        parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			Tuning:               parseL4Tuning(row.TuningJSON),
 			RelayLayers:          parseIntLayers(row.RelayLayersJSON),
@@ -2674,13 +2690,13 @@ func (s *GormStore) snapshotCertificateBundles(rows []ManagedCertificateRow) []M
 	return bundles
 }
 
-func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string, materialByDomain map[string]bool) []ManagedCertificatePolicy {
+func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string, materialByDomain map[string]bool, includeUnpublished bool) []ManagedCertificatePolicy {
 	policies := make([]ManagedCertificatePolicy, 0, len(rows))
 	for _, row := range rows {
 		// Master-issued (control-plane) certificates are installed, not issued, by agents:
 		// withhold the policy until material exists so agents don't attempt local
 		// master_cf_dns issuance, which non-master agents reject and fail the heartbeat on.
-		if isMasterIssuedCertificateMode(defaultString(row.IssuerMode, "master_cf_dns")) && !materialByDomain[strings.TrimSpace(row.Domain)] {
+		if !includeUnpublished && isMasterIssuedCertificateMode(defaultString(row.IssuerMode, "master_cf_dns")) && !materialByDomain[strings.TrimSpace(row.Domain)] {
 			continue
 		}
 		view := buildManagedCertificateViewForAgent(row, agentID)
@@ -2835,19 +2851,26 @@ func resolveVersionPackageForPlatform(rows []VersionPolicyRow, desiredVersion st
 }
 
 func parseHTTPBackends(raw string) []HTTPBackend {
+	values := parseHTTPBackendsForIntent(raw)
+	normalized := make([]HTTPBackend, 0, len(values))
+	for _, value := range values {
+		if value.URL == "" {
+			continue
+		}
+		normalized = append(normalized, value)
+	}
+	return normalized
+}
+
+func parseHTTPBackendsForIntent(raw string) []HTTPBackend {
 	var values []HTTPBackend
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
 		return []HTTPBackend{}
 	}
-	normalized := make([]HTTPBackend, 0, len(values))
-	for _, value := range values {
-		url := strings.TrimSpace(value.URL)
-		if url == "" {
-			continue
-		}
-		normalized = append(normalized, HTTPBackend{URL: url})
+	for i := range values {
+		values[i].URL = strings.TrimSpace(values[i].URL)
 	}
-	return normalized
+	return values
 }
 
 func parseHTTPHeaders(raw string) []HTTPHeader {
@@ -2881,19 +2904,26 @@ func parseLoadBalancingStrategy(raw string) LoadBalancing {
 }
 
 func parseL4Backends(raw string) []L4Backend {
+	values := parseL4BackendsForIntent(raw)
+	normalized := make([]L4Backend, 0, len(values))
+	for _, value := range values {
+		if value.Host == "" || value.Port < 1 || value.Port > 65535 {
+			continue
+		}
+		normalized = append(normalized, value)
+	}
+	return normalized
+}
+
+func parseL4BackendsForIntent(raw string) []L4Backend {
 	var values []L4Backend
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
 		return []L4Backend{}
 	}
-	normalized := make([]L4Backend, 0, len(values))
-	for _, value := range values {
-		host := strings.TrimSpace(value.Host)
-		if host == "" || value.Port < 1 || value.Port > 65535 {
-			continue
-		}
-		normalized = append(normalized, L4Backend{Host: host, Port: value.Port})
+	for i := range values {
+		values[i].Host = strings.TrimSpace(values[i].Host)
 	}
-	return normalized
+	return values
 }
 
 func parseL4Tuning(raw string) L4Tuning {
