@@ -61,10 +61,29 @@ type Config struct {
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
 	WireGuardAutoAddressPools         []string
+	DDNS                              DDNSRuntimeConfig
 	AppVersion                        string
 	BuildTime                         string
 	GoVersion                         string
 	ProjectURL                        string
+}
+
+// DDNSRuntimeConfig configures the master-side dynamic DNS reconciler that
+// upserts Cloudflare A/AAAA records from the IPv4/IPv6 addresses agents report
+// in their heartbeats.
+//
+// SECURITY (R7): Token is read exclusively from the master process environment
+// (CLOUDFLARE_DNS_API_TOKEN & aliases, shared with managed certificate issuance).
+// It is never persisted to the database, never included in backups, never
+// exposed via AgentSummary/API responses, and never dispatched to agents. When
+// the token is absent, DDNS is disabled and the reconciler becomes a no-op.
+type DDNSRuntimeConfig struct {
+	Enabled  bool
+	Token    string
+	APIBase  string
+	Interval time.Duration
+	Timeout  time.Duration
+	TTL      int
 }
 
 type HTTPTransportConfig struct {
@@ -420,6 +439,39 @@ func LoadFromEnv() (Config, error) {
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
 	cfToken := strings.TrimSpace(firstEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token"))
 	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && cfToken != ""
+
+	// DDNS reconciler reuses the Cloudflare token from the environment (R7: env
+	// only). Absent token => disabled (reconciler becomes a safe no-op).
+	cfg.DDNS.Token = cfToken
+	cfg.DDNS.Enabled = cfToken != ""
+	cfg.DDNS.APIBase = strings.TrimSpace(firstEnv("NRE_DDNS_API_BASE", "DDNS_API_BASE"))
+	if cfg.DDNS.APIBase == "" {
+		cfg.DDNS.APIBase = "https://api.cloudflare.com/client/v4"
+	}
+	cfg.DDNS.TTL = 120
+	if val := strings.TrimSpace(firstEnv("NRE_DDNS_TTL", "DDNS_TTL")); val != "" {
+		ttl, err := strconv.Atoi(val)
+		if err != nil || ttl < 1 {
+			return Config{}, fmt.Errorf("invalid NRE_DDNS_TTL: %w", err)
+		}
+		cfg.DDNS.TTL = ttl
+	}
+	cfg.DDNS.Timeout = 15 * time.Second
+	if val := strings.TrimSpace(firstEnv("NRE_DDNS_TIMEOUT_MS", "DDNS_TIMEOUT_MS")); val != "" {
+		ms, err := strconv.Atoi(val)
+		if err != nil || ms <= 0 {
+			return Config{}, fmt.Errorf("invalid NRE_DDNS_TIMEOUT_MS: %w", err)
+		}
+		cfg.DDNS.Timeout = time.Duration(ms) * time.Millisecond
+	}
+	cfg.DDNS.Interval = 5 * time.Minute
+	if val := strings.TrimSpace(firstEnv("NRE_DDNS_INTERVAL_MS", "DDNS_INTERVAL_MS")); val != "" {
+		ms, err := strconv.Atoi(val)
+		if err != nil || ms <= 0 {
+			return Config{}, fmt.Errorf("invalid NRE_DDNS_INTERVAL_MS: %w", err)
+		}
+		cfg.DDNS.Interval = time.Duration(ms) * time.Millisecond
+	}
 
 	cfg.ProjectURL = strings.TrimSpace(os.Getenv("NRE_PROJECT_URL"))
 

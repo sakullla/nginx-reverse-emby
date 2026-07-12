@@ -476,6 +476,12 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 
 	systemSvc := service.NewSystemService(cfg, serviceStore)
 	agentSvc := service.NewAgentService(cfg, serviceStore)
+	// DDNS reconciler: heartbeats enqueue per-agent Cloudflare A/AAAA updates;
+	// Start launches the dispatcher worker + fallback sweep loop using an internal
+	// context cancelled by Close on shutdown. CF token comes from cfg (env, R7).
+	ddnsSvc := service.NewDDNSService(cfg, serviceStore, nil, nil)
+	agentSvc.SetDDNSReconciler(ddnsSvc)
+	ddnsSvc.Start()
 	ruleSvc := service.NewRuleService(cfg, serviceStore)
 	l4Svc := service.NewL4RuleService(cfg, serviceStore)
 	versionSvc := service.NewVersionPolicyService(serviceStore)
@@ -555,6 +561,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	}
 	closeApp := func() error {
 		taskErr := taskSvc.Close()
+		ddnsSvc.Close()
 		storeErr := closeStores()
 		return errors.Join(taskErr, storeErr)
 	}
