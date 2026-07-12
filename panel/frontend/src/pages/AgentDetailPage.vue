@@ -851,7 +851,12 @@ function openBreakdownTrendModal(row) {
 
 watch(agent, (value) => {
   outboundProxyURL.value = value?.outbound_proxy_url || ''
-  ddnsForm.value = normalizeDdnsForm(value?.ddns_config)
+  // Re-seed the DDNS form from the latest dispatched config only while the
+  // modal is closed, so a live SSE monitor update never discards in-progress
+  // edits the user is making in the open form.
+  if (!ddnsModalVisible.value) {
+    ddnsForm.value = normalizeDdnsForm(value?.ddns_config)
+  }
   if (value) {
     trafficPolicyForm.value = {
       ...trafficPolicyForm.value,

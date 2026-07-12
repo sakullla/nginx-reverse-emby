@@ -106,7 +106,6 @@ export const agentDetailLabels = {
     metaIpv4: 'IPv4',
     metaIpv6: 'IPv6',
     metaStatus: '解析状态',
-    savedMessage: 'DDNS 域名配置已更新',
     statusLabel: {
       ok: '已解析',
       error: '解析失败',

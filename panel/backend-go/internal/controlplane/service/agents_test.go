@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -2831,6 +2832,12 @@ func TestAgentServiceUpdateAppliesDDNSConfigAndBumpsRevision(t *testing.T) {
 	if agent.DdnsDomain != "edge.example.com" {
 		t.Fatalf("summary DdnsDomain = %q, want edge.example.com", agent.DdnsDomain)
 	}
+	// The full dispatched config is exposed on the read path so the edit form can
+	// seed family state instead of opening empty and clobbering the config (R7:
+	// DDNSConfig carries no credential).
+	if agent.DdnsConfig == nil || agent.DdnsConfig.Domain != "edge.example.com" {
+		t.Fatalf("summary DdnsConfig = %+v, want domain edge.example.com", agent.DdnsConfig)
+	}
 }
 
 func TestAgentServiceUpdateLeavesDDNSConfigUntouchedWhenOmitted(t *testing.T) {
@@ -2863,15 +2870,22 @@ func TestAgentServiceUpdateLeavesDDNSConfigUntouchedWhenOmitted(t *testing.T) {
 
 // TestAgentSummaryJSONCarriesNoCredential verifies the AgentSummary wire shape
 // that redactAgentSummary operates on never exposes a token/secret key — the
-// precondition that lets the handler redact only the proxy password (R7).
+// precondition that lets the handler redact only the proxy password (R7). The
+// full dispatched ddns_config is exposed so the edit form can round-trip family
+// state; it must carry only domain + per-family {enabled,source,interface}.
 func TestAgentSummaryJSONCarriesNoCredential(t *testing.T) {
 	summary := AgentSummary{
-		ID:               "edge-ddns",
-		Name:             "Edge DDNS",
-		LastSeenIPv4:     "203.0.113.9",
-		LastSeenIPv6:     "2001:db8::1",
-		DdnsDomain:       "edge.example.com",
-		DdnsStatus:       storage.DdnsStatus{Status: "ok", LastResolvedIPv4: "203.0.113.9"},
+		ID:           "edge-ddns",
+		Name:         "Edge DDNS",
+		LastSeenIPv4: "203.0.113.9",
+		LastSeenIPv6: "2001:db8::1",
+		DdnsDomain:   "edge.example.com",
+		DdnsStatus:   storage.DdnsStatus{Status: "ok", LastResolvedIPv4: "203.0.113.9"},
+		DdnsConfig: &storage.DDNSConfig{
+			Domain: "edge.example.com",
+			IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+			IPv6:   storage.DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+		},
 		OutboundProxyURL: "socks://user:secret@127.0.0.1:1080",
 	}
 	raw, err := json.Marshal(summary)
@@ -2887,9 +2901,25 @@ func TestAgentSummaryJSONCarriesNoCredential(t *testing.T) {
 			t.Fatalf("AgentSummary JSON leaked credential key %q: %s", key, raw)
 		}
 	}
-	for _, key := range []string{"last_seen_ipv4", "last_seen_ipv6", "ddns_domain", "ddns_status"} {
+	for _, key := range []string{"last_seen_ipv4", "last_seen_ipv6", "ddns_domain", "ddns_status", "ddns_config"} {
 		if _, ok := payload[key]; !ok {
-			t.Fatalf("AgentSummary JSON missing DDNS display field %q: %s", key, raw)
+			t.Fatalf("AgentSummary JSON missing DDNS field %q: %s", key, raw)
+		}
+	}
+	// R7: the exposed ddns_config object may carry only domain + family state,
+	// never a Cloudflare credential. This is the read path the edit form seeds
+	// from, so a leaked credential here would reach the browser.
+	configMap, ok := payload["ddns_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("ddns_config is %T, want map: %s", payload["ddns_config"], raw)
+	}
+	for key := range configMap {
+		switch key {
+		case "domain", "ipv4", "ipv6":
+		default:
+			if matched, _ := regexp.MatchString(`token|secret|api[_-]?key|password|credential`, key); matched {
+				t.Fatalf("ddns_config leaked credential-like key %q: %s", key, raw)
+			}
 		}
 	}
 }

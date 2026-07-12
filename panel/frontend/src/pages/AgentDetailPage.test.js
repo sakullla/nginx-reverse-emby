@@ -790,22 +790,47 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="detail-identity-ddns-status"]').text()).toContain('解析失败')
   })
 
-  it('opens the DDNS config modal seeded from ddns_config and saves the payload', async () => {
-    agentRecord.ddns_config = { domain: 'edge.example.com', ipv4: { enabled: true, source: 'public_api' } }
+  it('opens the DDNS config modal seeded from ddns_config and round-trips the family state', async () => {
+    agentRecord.ddns_config = {
+      domain: 'edge.example.com',
+      ipv4: { enabled: true, source: 'public_api' },
+      ipv6: { enabled: true, source: 'interface', interface: 'eth0' }
+    }
     const wrapper = await mountPage()
 
     await wrapper.find('[data-testid="detail-action-ddns"]').trigger('click')
     await nextTick()
 
     expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
+    // The form must seed the full contract ddns_config (the read path the backend
+    // now exposes), not just the domain — the interface input renders only when
+    // source==='interface', so its value proves family state was seeded.
     expect(wrapper.find('[data-testid="agent-ddns-form-domain"]').element.value).toBe('edge.example.com')
+    expect(wrapper.find('[data-testid="agent-ddns-form-ipv6-interface"]').element.value).toBe('eth0')
 
     await wrapper.find('[data-testid="agent-ddns-form-save"]').trigger('click')
     await nextTick()
 
     expect(apiCalls.updateAgent).toHaveBeenCalledWith({
       agentId: 'edge-1',
-      payload: { ddns_config: expect.objectContaining({ domain: 'edge.example.com' }) }
+      payload: { ddns_config: expect.objectContaining({
+        domain: 'edge.example.com',
+        ipv6: expect.objectContaining({ enabled: true, source: 'interface', interface: 'eth0' })
+      }) }
     })
+  })
+
+  it('opens the DDNS config modal empty for an unconfigured agent', async () => {
+    // No ddns_config on the agent record — the form must seed empty and never
+    // invent family state that would clobber a real config on save.
+    const wrapper = await mountPage()
+
+    await wrapper.find('[data-testid="detail-action-ddns"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="agent-ddns-form-domain"]').element.value).toBe('')
+    expect(wrapper.find('[data-testid="agent-ddns-form-ipv4-enabled"]').element.checked).toBe(false)
+    expect(wrapper.find('[data-testid="agent-ddns-form-ipv6-enabled"]').element.checked).toBe(false)
   })
 })

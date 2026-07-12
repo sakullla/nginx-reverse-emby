@@ -52,39 +52,40 @@ type agentHeartbeatStore interface {
 }
 
 type AgentSummary struct {
-	ID                     string             `json:"id"`
-	Name                   string             `json:"name"`
-	AgentURL               string             `json:"agent_url"`
-	Version                string             `json:"version"`
-	Platform               string             `json:"platform"`
-	RuntimePackageVersion  string             `json:"runtime_package_version"`
-	RuntimePackagePlatform string             `json:"runtime_package_platform"`
-	RuntimePackageArch     string             `json:"runtime_package_arch"`
-	RuntimePackageSHA256   string             `json:"runtime_package_sha256"`
-	DesiredPackageSHA256   string             `json:"desired_package_sha256"`
-	PackageSyncStatus      string             `json:"package_sync_status"`
-	DesiredVersion         string             `json:"desired_version"`
-	Tags                   []string           `json:"tags"`
-	OutboundProxyURL       string             `json:"outbound_proxy_url"`
-	TrafficStatsInterval   string             `json:"traffic_stats_interval"`
-	Mode                   string             `json:"mode"`
-	DesiredRevision        int                `json:"desired_revision"`
-	CurrentRevision        int                `json:"current_revision"`
-	LastApplyRevision      int                `json:"last_apply_revision"`
-	LastApplyStatus        string             `json:"last_apply_status"`
-	LastApplyMessage       string             `json:"last_apply_message"`
-	LastSeenAt             string             `json:"last_seen_at"`
-	Status                 string             `json:"status"`
-	Error                  string             `json:"error"`
-	IsLocal                bool               `json:"is_local"`
-	LastSeenIP             string             `json:"last_seen_ip"`
-	LastSeenIPv4           string             `json:"last_seen_ipv4"`
-	LastSeenIPv6           string             `json:"last_seen_ipv6"`
-	DdnsDomain             string             `json:"ddns_domain"`
-	DdnsStatus             storage.DdnsStatus `json:"ddns_status,omitempty"`
-	Capabilities           []string           `json:"capabilities"`
-	HTTPRulesCount         int                `json:"http_rules_count"`
-	L4RulesCount           int                `json:"l4_rules_count"`
+	ID                     string              `json:"id"`
+	Name                   string              `json:"name"`
+	AgentURL               string              `json:"agent_url"`
+	Version                string              `json:"version"`
+	Platform               string              `json:"platform"`
+	RuntimePackageVersion  string              `json:"runtime_package_version"`
+	RuntimePackagePlatform string              `json:"runtime_package_platform"`
+	RuntimePackageArch     string              `json:"runtime_package_arch"`
+	RuntimePackageSHA256   string              `json:"runtime_package_sha256"`
+	DesiredPackageSHA256   string              `json:"desired_package_sha256"`
+	PackageSyncStatus      string              `json:"package_sync_status"`
+	DesiredVersion         string              `json:"desired_version"`
+	Tags                   []string            `json:"tags"`
+	OutboundProxyURL       string              `json:"outbound_proxy_url"`
+	TrafficStatsInterval   string              `json:"traffic_stats_interval"`
+	Mode                   string              `json:"mode"`
+	DesiredRevision        int                 `json:"desired_revision"`
+	CurrentRevision        int                 `json:"current_revision"`
+	LastApplyRevision      int                 `json:"last_apply_revision"`
+	LastApplyStatus        string              `json:"last_apply_status"`
+	LastApplyMessage       string              `json:"last_apply_message"`
+	LastSeenAt             string              `json:"last_seen_at"`
+	Status                 string              `json:"status"`
+	Error                  string              `json:"error"`
+	IsLocal                bool                `json:"is_local"`
+	LastSeenIP             string              `json:"last_seen_ip"`
+	LastSeenIPv4           string              `json:"last_seen_ipv4"`
+	LastSeenIPv6           string              `json:"last_seen_ipv6"`
+	DdnsDomain             string              `json:"ddns_domain"`
+	DdnsStatus             storage.DdnsStatus  `json:"ddns_status,omitempty"`
+	DdnsConfig             *storage.DDNSConfig `json:"ddns_config,omitempty"`
+	Capabilities           []string            `json:"capabilities"`
+	HTTPRulesCount         int                 `json:"http_rules_count"`
+	L4RulesCount           int                 `json:"l4_rules_count"`
 }
 
 type HTTPRuleBackend struct {
@@ -1110,9 +1111,11 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		desiredPackageSHA256 = strings.TrimSpace(snapshot.VersionPackage.SHA256)
 		packageSyncStatus = derivePackageSyncStatus(row, snapshot.VersionPackage)
 	}
-	// DDNS display fields: domain comes from the dispatched config snapshot (nil
-	// when unconfigured), resolution status from the master-written runtime
-	// column. Neither carries a Cloudflare credential (R7).
+	// DDNS fields: domain is flattened for display; the full dispatched config is
+	// also exposed so the edit form can seed and round-trip family state without
+	// clobbering it; resolution status comes from the master-written runtime
+	// column. None carries a Cloudflare credential — DDNSConfig holds only domain
+	// + per-family {enabled,source,interface} (R7).
 	ddnsDomain := ""
 	if snapshot.DDNSConfig != nil {
 		ddnsDomain = strings.TrimSpace(snapshot.DDNSConfig.Domain)
@@ -1149,6 +1152,7 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		LastSeenIPv6:           row.LastSeenIPv6,
 		DdnsDomain:             ddnsDomain,
 		DdnsStatus:             parseDdnsStatus(row.DdnsStatusJSON),
+		DdnsConfig:             snapshot.DDNSConfig,
 		Capabilities:           parseStringArray(row.CapabilitiesJSON),
 		HTTPRulesCount:         len(rules),
 		L4RulesCount:           len(l4Rules),
