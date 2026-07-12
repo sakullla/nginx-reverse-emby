@@ -16,6 +16,7 @@ import (
 
 const (
 	revisionLedgerBaselineMarkerKey = "migration.agent_revision_ledger_baseline.v1"
+	revisionSnapshotArtifactRole    = "snapshot"
 
 	OperationStatusPending = "pending"
 	OperationStatusApplied = "applied"
@@ -83,16 +84,7 @@ func (s *GormStore) CreateRevisionLedger(ctx context.Context, input RevisionLedg
 			}
 		}
 		for i := range input.Pointers {
-			row := input.Pointers[i]
-			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "agent_id"}},
-				DoUpdates: clause.AssignmentColumns([]string{
-					"desired_revision",
-					"applied_revision",
-					"last_known_good_revision",
-					"updated_at",
-				}),
-			}).Create(&row).Error; err != nil {
+			if err := upsertMonotonicRevisionPointer(tx, input.Pointers[i]); err != nil {
 				return err
 			}
 		}
@@ -111,10 +103,11 @@ func (s *GormStore) CreateRevisionLedger(ctx context.Context, input RevisionLedg
 				return err
 			}
 		}
-		if len(input.ArtifactRefs) > 0 {
-			if err := tx.Create(&input.ArtifactRefs).Error; err != nil {
-				return err
-			}
+		if err := ensureRevisionSnapshotArtifacts(tx, input.Revisions); err != nil {
+			return err
+		}
+		if err := createRevisionArtifactRefs(tx, input.ArtifactRefs); err != nil {
+			return err
 		}
 		if len(input.IdempotencyRecords) > 0 {
 			if err := tx.Create(&input.IdempotencyRecords).Error; err != nil {
@@ -273,13 +266,23 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 		}
 		result.IdempotencyRecordsDeleted = expired.RowsAffected
 
-		var referencedArtifactIDs []string
-		if err := tx.Model(&AgentRevisionArtifactRow{}).Distinct("artifact_id").Pluck("artifact_id", &referencedArtifactIDs).Error; err != nil {
+		var explicitArtifactIDs []string
+		if err := tx.Model(&AgentRevisionArtifactRow{}).Distinct("artifact_id").Pluck("artifact_id", &explicitArtifactIDs).Error; err != nil {
 			return err
 		}
+		var snapshotArtifactIDs []string
+		if err := tx.Model(&AgentRevisionRow{}).
+			Where("snapshot_artifact_id <> ?", "").
+			Distinct("snapshot_artifact_id").
+			Pluck("snapshot_artifact_id", &snapshotArtifactIDs).Error; err != nil {
+			return err
+		}
+		referencedArtifactIDs := uniqueNonEmptyStrings(explicitArtifactIDs, snapshotArtifactIDs)
 		artifacts := tx.Model(&GenerationArtifactRow{})
 		if len(referencedArtifactIDs) > 0 {
 			artifacts = artifacts.Where("id NOT IN ?", referencedArtifactIDs)
+		} else {
+			artifacts = artifacts.Where("1 = 1")
 		}
 		deletedArtifacts := artifacts.Delete(&GenerationArtifactRow{})
 		if deletedArtifacts.Error != nil {
@@ -321,6 +324,178 @@ func createImmutableArtifact(tx *gorm.DB, row GenerationArtifactRow) error {
 		return fmt.Errorf("generation artifact %q is immutable", row.ID)
 	}
 	return nil
+}
+
+func upsertMonotonicRevisionPointer(tx *gorm.DB, row AgentRevisionPointerRow) error {
+	row.AgentID = strings.TrimSpace(row.AgentID)
+	if row.AgentID == "" {
+		return fmt.Errorf("agent revision pointer agent id is required")
+	}
+	if row.DesiredRevision < 0 || row.AppliedRevision < 0 || row.LastKnownGoodRevision < 0 {
+		return fmt.Errorf("agent revision pointer for %q has a negative revision", row.AgentID)
+	}
+
+	inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
+	if inserted.Error != nil {
+		return inserted.Error
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		updated := tx.Model(&AgentRevisionPointerRow{}).
+			Where(
+				"agent_id = ? AND desired_revision <= ? AND applied_revision <= ? AND last_known_good_revision <= ?",
+				row.AgentID,
+				row.DesiredRevision,
+				row.AppliedRevision,
+				row.LastKnownGoodRevision,
+			).
+			Updates(map[string]any{
+				"desired_revision":         row.DesiredRevision,
+				"applied_revision":         row.AppliedRevision,
+				"last_known_good_revision": row.LastKnownGoodRevision,
+				"updated_at": gorm.Expr(
+					"CASE WHEN updated_at < ? THEN ? ELSE updated_at END",
+					row.UpdatedAt,
+					row.UpdatedAt,
+				),
+			})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected > 0 {
+			return nil
+		}
+
+		var current AgentRevisionPointerRow
+		if err := tx.Where("agent_id = ?", row.AgentID).First(&current).Error; err != nil {
+			return err
+		}
+		if current.DesiredRevision > row.DesiredRevision ||
+			current.AppliedRevision > row.AppliedRevision ||
+			current.LastKnownGoodRevision > row.LastKnownGoodRevision {
+			return fmt.Errorf(
+				"agent revision pointer for %q is stale: current=(%d,%d,%d) incoming=(%d,%d,%d)",
+				row.AgentID,
+				current.DesiredRevision,
+				current.AppliedRevision,
+				current.LastKnownGoodRevision,
+				row.DesiredRevision,
+				row.AppliedRevision,
+				row.LastKnownGoodRevision,
+			)
+		}
+		if current.DesiredRevision == row.DesiredRevision &&
+			current.AppliedRevision == row.AppliedRevision &&
+			current.LastKnownGoodRevision == row.LastKnownGoodRevision {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("agent revision pointer for %q could not be advanced atomically", row.AgentID)
+}
+
+func ensureRevisionSnapshotArtifacts(tx *gorm.DB, revisions []AgentRevisionRow) error {
+	for _, revision := range revisions {
+		artifactID := strings.TrimSpace(revision.SnapshotArtifactID)
+		digest := strings.TrimSpace(revision.SnapshotDigest)
+		if artifactID == "" {
+			if digest != "" {
+				return fmt.Errorf("agent revision %q/%d has a snapshot digest without an artifact", revision.AgentID, revision.Revision)
+			}
+			continue
+		}
+		if digest == "" {
+			return fmt.Errorf("agent revision %q/%d snapshot digest is required", revision.AgentID, revision.Revision)
+		}
+
+		var artifact GenerationArtifactRow
+		if err := tx.Where("id = ?", artifactID).First(&artifact).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return fmt.Errorf("agent revision %q/%d snapshot artifact %q does not exist", revision.AgentID, revision.Revision, artifactID)
+			}
+			return err
+		}
+		if err := validateGenerationArtifact(artifact); err != nil {
+			return err
+		}
+		if !strings.EqualFold(digest, artifact.SHA256) {
+			return fmt.Errorf("agent revision %q/%d snapshot digest does not match artifact %q", revision.AgentID, revision.Revision, artifactID)
+		}
+
+		createdAt := revision.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = artifact.CreatedAt
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&AgentRevisionArtifactRow{
+			AgentID:    strings.TrimSpace(revision.AgentID),
+			Revision:   revision.Revision,
+			ArtifactID: artifactID,
+			Role:       revisionSnapshotArtifactRole,
+			CreatedAt:  createdAt,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func createRevisionArtifactRefs(tx *gorm.DB, refs []AgentRevisionArtifactRow) error {
+	for _, ref := range refs {
+		ref.AgentID = strings.TrimSpace(ref.AgentID)
+		ref.ArtifactID = strings.TrimSpace(ref.ArtifactID)
+		ref.Role = strings.TrimSpace(ref.Role)
+		if ref.AgentID == "" || ref.Revision < 0 || ref.ArtifactID == "" || ref.Role == "" {
+			return fmt.Errorf("agent revision artifact reference identity is invalid")
+		}
+		var revision AgentRevisionRow
+		if err := tx.
+			Where("agent_id = ? AND revision = ?", ref.AgentID, ref.Revision).
+			First(&revision).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return fmt.Errorf("agent revision artifact reference %q/%d has no revision", ref.AgentID, ref.Revision)
+			}
+			return err
+		}
+		if ref.Role == revisionSnapshotArtifactRole && strings.TrimSpace(revision.SnapshotArtifactID) != ref.ArtifactID {
+			return fmt.Errorf(
+				"agent revision artifact reference %q/%d snapshot %q does not match canonical artifact %q",
+				ref.AgentID,
+				ref.Revision,
+				ref.ArtifactID,
+				revision.SnapshotArtifactID,
+			)
+		}
+		var artifactCount int64
+		if err := tx.Model(&GenerationArtifactRow{}).Where("id = ?", ref.ArtifactID).Count(&artifactCount).Error; err != nil {
+			return err
+		}
+		if artifactCount == 0 {
+			return fmt.Errorf("agent revision artifact reference %q/%d has no artifact %q", ref.AgentID, ref.Revision, ref.ArtifactID)
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&ref).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func uniqueNonEmptyStrings(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+	for _, group := range groups {
+		for _, value := range group {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if _, exists := seen[value]; exists {
+				continue
+			}
+			seen[value] = struct{}{}
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func (s *GormStore) buildRevisionBaselineSeeds(ctx context.Context) ([]RevisionLedgerWrite, error) {
@@ -508,15 +683,16 @@ func createRevisionLedgerInTransaction(tx *gorm.DB, input RevisionLedgerWrite) e
 			return err
 		}
 	}
-	if len(input.Pointers) > 0 {
-		if err := tx.Create(&input.Pointers).Error; err != nil {
+	for _, pointer := range input.Pointers {
+		if err := upsertMonotonicRevisionPointer(tx, pointer); err != nil {
 			return err
 		}
 	}
-	if len(input.ArtifactRefs) > 0 {
-		if err := tx.Create(&input.ArtifactRefs).Error; err != nil {
-			return err
-		}
+	if err := ensureRevisionSnapshotArtifacts(tx, input.Revisions); err != nil {
+		return err
+	}
+	if err := createRevisionArtifactRefs(tx, input.ArtifactRefs); err != nil {
+		return err
 	}
 	return nil
 }

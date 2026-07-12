@@ -1,10 +1,15 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -246,6 +251,279 @@ func TestPruneRevisionHistoryPreservesPointersAndDraining(t *testing.T) {
 	}
 	if len(idempotencyKeys) != 1 || idempotencyKeys[0] != "live" {
 		t.Fatalf("idempotency keys = %v, want [live]", idempotencyKeys)
+	}
+}
+
+func TestCreateRevisionLedgerRejectsConcurrentStalePointers(t *testing.T) {
+	ctx := t.Context()
+	store := newTrafficTestStore(t, true)
+	clearRevisionLedgerForTest(t, store)
+	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.UTC)
+
+	if err := store.CreateRevisionLedger(ctx, revisionLedgerWriteForPointer("op-current", "edge-1", 10, now)); err != nil {
+		t.Fatalf("CreateRevisionLedger(current) error = %v", err)
+	}
+
+	const staleWrites = 8
+	errors := make(chan error, staleWrites)
+	var workers sync.WaitGroup
+	for revision := int64(1); revision <= staleWrites; revision++ {
+		revision := revision
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			errors <- store.CreateRevisionLedger(ctx, revisionLedgerWriteForPointer(
+				fmt.Sprintf("op-stale-%d", revision),
+				"edge-1",
+				revision,
+				now.Add(time.Duration(revision)*time.Second),
+			))
+		}()
+	}
+	workers.Wait()
+	close(errors)
+	for err := range errors {
+		if err == nil {
+			t.Fatal("CreateRevisionLedger(stale) error = nil")
+		}
+	}
+
+	pointer, found, err := store.GetAgentRevisionPointer(ctx, "edge-1")
+	if err != nil {
+		t.Fatalf("GetAgentRevisionPointer() error = %v", err)
+	}
+	if !found || pointer.DesiredRevision != 10 || pointer.AppliedRevision != 10 || pointer.LastKnownGoodRevision != 10 {
+		t.Fatalf("pointer = %+v, found = %v", pointer, found)
+	}
+	revisions, err := store.ListAgentRevisions(ctx, "edge-1")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	if len(revisions) != 1 || revisions[0].Revision != 10 {
+		t.Fatalf("revisions = %+v, want only revision 10", revisions)
+	}
+}
+
+func TestCreateRevisionLedgerRequiresAndReferencesSnapshotArtifact(t *testing.T) {
+	ctx := t.Context()
+	store := newTrafficTestStore(t, true)
+	clearRevisionLedgerForTest(t, store)
+	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.UTC)
+
+	missingErr := store.CreateRevisionLedger(ctx, RevisionLedgerWrite{
+		Operation: OperationRow{ID: "op-missing-artifact", Kind: "test", Status: OperationStatusPending, CreatedAt: now, UpdatedAt: now},
+		Revisions: []AgentRevisionRow{{
+			AgentID: "edge-1", Revision: 1, State: AgentRevisionStatePending,
+			SnapshotArtifactID: "missing", SnapshotDigest: "missing",
+			CreatedAt: now, UpdatedAt: now,
+		}},
+	})
+	if missingErr == nil {
+		t.Fatal("CreateRevisionLedger(missing artifact) error = nil")
+	}
+	if _, found, err := store.GetOperation(ctx, "op-missing-artifact"); err != nil {
+		t.Fatalf("GetOperation(missing artifact) error = %v", err)
+	} else if found {
+		t.Fatal("operation survived missing artifact rollback")
+	}
+
+	artifact := generationArtifactForTest("snapshot-edge-1-2", []byte(`{"revision":2}`), now)
+	if err := store.CreateRevisionLedger(ctx, RevisionLedgerWrite{
+		Operation: OperationRow{ID: "op-with-artifact", Kind: "test", Status: OperationStatusPending, CreatedAt: now, UpdatedAt: now},
+		Artifacts: []GenerationArtifactRow{artifact},
+		Revisions: []AgentRevisionRow{{
+			AgentID: "edge-1", Revision: 2, State: AgentRevisionStatePending,
+			SnapshotArtifactID: artifact.ID, SnapshotDigest: artifact.SHA256,
+			CreatedAt: now, UpdatedAt: now,
+		}},
+		Pointers: []AgentRevisionPointerRow{{
+			AgentID: "edge-1", DesiredRevision: 2, UpdatedAt: now,
+		}},
+	}); err != nil {
+		t.Fatalf("CreateRevisionLedger(with artifact) error = %v", err)
+	}
+
+	var refs []AgentRevisionArtifactRow
+	if err := store.db.Where("agent_id = ? AND revision = ? AND role = ?", "edge-1", 2, "snapshot").Find(&refs).Error; err != nil {
+		t.Fatalf("list canonical snapshot refs: %v", err)
+	}
+	if len(refs) != 1 || refs[0].ArtifactID != artifact.ID {
+		t.Fatalf("canonical snapshot refs = %+v", refs)
+	}
+
+	if _, err := store.PruneRevisionHistory(ctx, RevisionRetentionPolicy{
+		Now:         now.Add(60 * 24 * time.Hour),
+		MaxAge:      24 * time.Hour,
+		MaxPerAgent: 1,
+	}); err != nil {
+		t.Fatalf("PruneRevisionHistory() error = %v", err)
+	}
+	if _, found, err := store.GetGenerationArtifact(ctx, artifact.ID); err != nil {
+		t.Fatalf("GetGenerationArtifact() error = %v", err)
+	} else if !found {
+		t.Fatal("pointer-pinned snapshot artifact was pruned")
+	}
+}
+
+func TestPruneRevisionHistoryHandlesEmptyLedgerAndOrphanArtifacts(t *testing.T) {
+	ctx := t.Context()
+	store := newTrafficTestStore(t, true)
+	clearRevisionLedgerForTest(t, store)
+	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.UTC)
+
+	if _, err := store.PruneRevisionHistory(ctx, RevisionRetentionPolicy{Now: now}); err != nil {
+		t.Fatalf("PruneRevisionHistory(empty) error = %v", err)
+	}
+
+	orphan := generationArtifactForTest("orphan-artifact", []byte("orphan"), now.Add(-time.Hour))
+	if err := store.db.Create(&orphan).Error; err != nil {
+		t.Fatalf("create orphan artifact: %v", err)
+	}
+	if err := store.db.Create(&IdempotencyRecordRow{
+		Scope: "panel", Key: "expired", RequestFingerprint: "request", OperationID: "missing-operation",
+		CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(-time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("create expired idempotency record: %v", err)
+	}
+
+	result, err := store.PruneRevisionHistory(ctx, RevisionRetentionPolicy{Now: now})
+	if err != nil {
+		t.Fatalf("PruneRevisionHistory(orphan) error = %v", err)
+	}
+	if result.ArtifactsDeleted != 1 || result.IdempotencyRecordsDeleted != 1 {
+		t.Fatalf("prune result = %+v", result)
+	}
+}
+
+func TestCreateRevisionLedgerPreservesAttemptHistory(t *testing.T) {
+	ctx := t.Context()
+	store := newTrafficTestStore(t, true)
+	clearRevisionLedgerForTest(t, store)
+	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.UTC)
+	finishedAt := now.Add(time.Second)
+
+	if err := store.CreateRevisionLedger(ctx, RevisionLedgerWrite{
+		Operation: OperationRow{ID: "op-attempts", Kind: "test", Status: OperationStatusPending, CreatedAt: now, UpdatedAt: now},
+		Revisions: []AgentRevisionRow{{AgentID: "edge-1", Revision: 4, State: AgentRevisionStatePending, CreatedAt: now, UpdatedAt: now}},
+		Pointers:  []AgentRevisionPointerRow{{AgentID: "edge-1", DesiredRevision: 4, UpdatedAt: now}},
+		Attempts: []AgentRevisionAttemptRow{
+			{AgentID: "edge-1", Revision: 4, RetryCycle: 0, Attempt: 1, LeaseID: "lease-1", State: "failed", StartedAt: now, DeadlineAt: now.Add(time.Minute), FinishedAt: &finishedAt, Error: "prepare failed"},
+			{AgentID: "edge-1", Revision: 4, RetryCycle: 0, Attempt: 2, LeaseID: "lease-2", State: "started", StartedAt: now.Add(2 * time.Second), DeadlineAt: now.Add(time.Minute)},
+		},
+	}); err != nil {
+		t.Fatalf("CreateRevisionLedger() error = %v", err)
+	}
+
+	var attempts []AgentRevisionAttemptRow
+	if err := store.db.Where("agent_id = ? AND revision = ?", "edge-1", 4).Order("attempt").Find(&attempts).Error; err != nil {
+		t.Fatalf("list attempts: %v", err)
+	}
+	if len(attempts) != 2 || attempts[0].LeaseID != "lease-1" || attempts[1].LeaseID != "lease-2" {
+		t.Fatalf("attempts = %+v", attempts)
+	}
+}
+
+func TestBootstrapRevisionLedgerIsIdempotentAcrossFileReopen(t *testing.T) {
+	ctx := t.Context()
+	dataRoot := t.TempDir()
+	config := StoreConfig{Driver: "sqlite", DataRoot: dataRoot, LocalAgentID: "local"}
+
+	store, err := NewStore(config)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	clearRevisionLedgerForTest(t, store)
+	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-reopen", Name: "edge-reopen", DesiredRevision: 5, CurrentRevision: 2}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	reopened, err := NewStore(config)
+	if err != nil {
+		t.Fatalf("NewStore(reopened) error = %v", err)
+	}
+	pointer, found, err := reopened.GetAgentRevisionPointer(ctx, "edge-reopen")
+	if err != nil {
+		t.Fatalf("GetAgentRevisionPointer(reopened) error = %v", err)
+	}
+	if !found || pointer.DesiredRevision != 5 || pointer.AppliedRevision != 2 {
+		t.Fatalf("reopened pointer = %+v, found = %v", pointer, found)
+	}
+	before, err := reopened.ListAgentRevisions(ctx, "edge-reopen")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(reopened) error = %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("Close(reopened) error = %v", err)
+	}
+
+	again, err := NewStore(config)
+	if err != nil {
+		t.Fatalf("NewStore(again) error = %v", err)
+	}
+	t.Cleanup(func() { _ = again.Close() })
+	after, err := again.ListAgentRevisions(ctx, "edge-reopen")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(again) error = %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("revisions after second reopen = %d, want %d", len(after), len(before))
+	}
+}
+
+func TestBootstrapSchemaFailurePreservesLegacyData(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("db.DB() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := db.Exec("CREATE TABLE legacy_guard (id INTEGER PRIMARY KEY, value TEXT NOT NULL)").Error; err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if err := db.Exec("INSERT INTO legacy_guard (id, value) VALUES (1, 'preserve-me')").Error; err != nil {
+		t.Fatalf("seed legacy table: %v", err)
+	}
+	if err := db.Exec("CREATE TABLE operations (id TEXT PRIMARY KEY)").Error; err != nil {
+		t.Fatalf("create incompatible operations table: %v", err)
+	}
+	if err := db.Exec("INSERT INTO operations (id) VALUES ('legacy-operation')").Error; err != nil {
+		t.Fatalf("seed incompatible operations table: %v", err)
+	}
+
+	if err := BootstrapSchema(t.Context(), db, SchemaOptionsForDriver("sqlite", false)); err == nil {
+		t.Fatal("BootstrapSchema() error = nil, want incompatible migration error")
+	}
+	var value string
+	if err := db.Raw("SELECT value FROM legacy_guard WHERE id = 1").Scan(&value).Error; err != nil {
+		t.Fatalf("read legacy table after failed migration: %v", err)
+	}
+	if value != "preserve-me" {
+		t.Fatalf("legacy value = %q, want preserve-me", value)
+	}
+}
+
+func revisionLedgerWriteForPointer(operationID, agentID string, revision int64, now time.Time) RevisionLedgerWrite {
+	return RevisionLedgerWrite{
+		Operation: OperationRow{ID: operationID, Kind: "test", Status: OperationStatusPending, CreatedAt: now, UpdatedAt: now},
+		Revisions: []AgentRevisionRow{{AgentID: agentID, Revision: revision, State: AgentRevisionStateApplied, CreatedAt: now, UpdatedAt: now}},
+		Pointers: []AgentRevisionPointerRow{{
+			AgentID: agentID, DesiredRevision: revision, AppliedRevision: revision, LastKnownGoodRevision: revision, UpdatedAt: now,
+		}},
+	}
+}
+
+func generationArtifactForTest(id string, payload []byte, createdAt time.Time) GenerationArtifactRow {
+	digest := sha256.Sum256(payload)
+	return GenerationArtifactRow{
+		ID: id, Kind: "agent_snapshot", SHA256: hex.EncodeToString(digest[:]),
+		Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: createdAt,
 	}
 }
 
