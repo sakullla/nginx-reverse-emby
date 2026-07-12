@@ -1,6 +1,6 @@
 <template>
   <div class="resource-list-filter-bar">
-    <div class="resource-list-filter-bar__fields">
+    <div class="resource-list-filter-bar__toolbar">
       <div class="resource-list-filter-bar__field resource-list-filter-bar__field--agent">
         <label v-if="showLabels" class="resource-list-filter-bar__label">节点</label>
         <AgentSearchSelect
@@ -12,36 +12,103 @@
 
       <div v-if="showSearch" class="resource-list-filter-bar__field resource-list-filter-bar__field--search">
         <label v-if="showLabels" class="resource-list-filter-bar__label">搜索</label>
-        <input
-          class="resource-list-filter-bar__input"
-          type="search"
-          :value="q"
-          :placeholder="searchPlaceholder"
-          aria-label="搜索资源"
-          @input="onSearchInput"
-        />
+        <div class="resource-list-filter-bar__search-shell">
+          <svg
+            class="resource-list-filter-bar__search-icon"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            aria-hidden="true"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input
+            class="resource-list-filter-bar__input"
+            type="search"
+            :value="q"
+            :placeholder="searchPlaceholder"
+            aria-label="搜索资源"
+            @input="onSearchInput"
+          />
+        </div>
       </div>
 
       <div
-        v-for="field in statusFields"
-        :key="field.key"
-        class="resource-list-filter-bar__field"
+        v-if="hasStatusFields"
+        class="resource-list-filter-bar__field resource-list-filter-bar__field--filter"
+        ref="filterRootRef"
       >
-        <label v-if="showLabels" class="resource-list-filter-bar__label">{{ field.label }}</label>
-        <select
-          class="resource-list-filter-bar__select"
-          :value="statusValues[field.key] ?? field.defaultValue ?? ''"
-          :aria-label="field.label || field.key"
-          @change="onStatusChange(field.key, $event.target.value)"
+        <button
+          type="button"
+          class="resource-list-filter-bar__filter-trigger"
+          :class="{ 'resource-list-filter-bar__filter-trigger--active': activeFilterCount > 0 || panelOpen }"
+          :aria-expanded="panelOpen ? 'true' : 'false'"
+          aria-haspopup="dialog"
+          @click="togglePanel"
         >
-          <option
-            v-for="option in field.options || []"
-            :key="`${field.key}:${option.value}`"
-            :value="option.value"
+          <svg
+            class="resource-list-filter-bar__filter-icon"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            aria-hidden="true"
           >
-            {{ option.label }}
-          </option>
-        </select>
+            <path d="M4 5h16l-6 7v5l-4 2v-7L4 5z" />
+          </svg>
+          <span>筛选</span>
+          <span
+            v-if="activeFilterCount > 0"
+            class="resource-list-filter-bar__filter-badge"
+          >{{ activeFilterCount }}</span>
+        </button>
+
+        <div
+          v-if="panelOpen"
+          class="resource-list-filter-bar__panel"
+          role="dialog"
+          aria-label="筛选条件"
+        >
+          <div class="resource-list-filter-bar__panel-header">
+            <span class="resource-list-filter-bar__panel-title">筛选条件</span>
+            <button
+              type="button"
+              class="resource-list-filter-bar__reset"
+              :disabled="activeFilterCount === 0"
+              @click="resetStatusFilters"
+            >
+              重置
+            </button>
+          </div>
+
+          <div
+            v-for="field in statusFields"
+            :key="field.key"
+            class="resource-list-filter-bar__panel-field"
+          >
+            <label class="resource-list-filter-bar__label">{{ field.label || field.key }}</label>
+            <select
+              class="resource-list-filter-bar__select"
+              :value="statusValues[field.key] ?? field.defaultValue ?? ''"
+              :aria-label="field.label || field.key"
+              @change="onStatusChange(field.key, $event.target.value)"
+            >
+              <option
+                v-for="option in field.options || []"
+                :key="`${field.key}:${option.value}`"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+        </div>
       </div>
 
       <slot name="extra" />
@@ -54,6 +121,7 @@
 </template>
 
 <script setup>
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AgentSearchSelect from './AgentSearchSelect.vue'
 
 const props = defineProps({
@@ -79,6 +147,23 @@ const emit = defineEmits([
   'change'
 ])
 
+const panelOpen = ref(false)
+const filterRootRef = ref(null)
+
+const hasStatusFields = computed(() => Array.isArray(props.statusFields) && props.statusFields.length > 0)
+
+const activeFilterCount = computed(() => {
+  if (!hasStatusFields.value) return 0
+  return props.statusFields.reduce((count, field) => {
+    const current = props.statusValues?.[field.key]
+    const resolved = current === undefined || current === null
+      ? (field.defaultValue ?? '')
+      : current
+    const baseline = field.defaultValue ?? ''
+    return String(resolved) === String(baseline) ? count : count + 1
+  }, 0)
+})
+
 function onAgentUpdate(value) {
   emit('update:agentId', value)
   emit('change', { type: 'agentId', value })
@@ -94,23 +179,64 @@ function onStatusChange(key, value) {
   emit('update:status', { key, value })
   emit('change', { type: 'status', key, value })
 }
+
+function togglePanel() {
+  panelOpen.value = !panelOpen.value
+}
+
+function closePanel() {
+  panelOpen.value = false
+}
+
+function resetStatusFilters() {
+  for (const field of props.statusFields || []) {
+    const baseline = field.defaultValue ?? ''
+    const current = props.statusValues?.[field.key]
+    const resolved = current === undefined || current === null ? baseline : current
+    if (String(resolved) === String(baseline)) continue
+    onStatusChange(field.key, baseline)
+  }
+}
+
+function handleClickOutside(event) {
+  if (!panelOpen.value) return
+  if (filterRootRef.value && !filterRootRef.value.contains(event.target)) {
+    closePanel()
+  }
+}
+
+function handleEscape(event) {
+  if (event.key === 'Escape' && panelOpen.value) {
+    closePanel()
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleClickOutside)
+  document.addEventListener('keydown', handleEscape)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', handleClickOutside)
+  document.removeEventListener('keydown', handleEscape)
+})
 </script>
 
 <style scoped>
 .resource-list-filter-bar {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: 0.75rem 1rem;
-  margin-bottom: 1.25rem;
+  gap: 0.625rem 0.75rem;
+  margin-bottom: 1rem;
 }
 
-.resource-list-filter-bar__fields {
+.resource-list-filter-bar__toolbar {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.625rem 0.75rem;
+  align-items: center;
+  gap: 0.5rem;
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -118,18 +244,29 @@ function onStatusChange(key, value) {
 .resource-list-filter-bar__field {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  min-width: 140px;
+  gap: 0.2rem;
+  min-width: 0;
 }
 
 .resource-list-filter-bar__field--agent {
-  min-width: 200px;
-  flex: 0 1 240px;
+  width: 11.5rem;
+  flex: 0 0 11.5rem;
+}
+
+.resource-list-filter-bar__field--agent :deep(.agent-search-select) {
+  min-width: 0;
+  width: 100%;
 }
 
 .resource-list-filter-bar__field--search {
-  min-width: 180px;
-  flex: 1 1 220px;
+  flex: 0 1 16rem;
+  max-width: 18rem;
+  min-width: 11rem;
+}
+
+.resource-list-filter-bar__field--filter {
+  position: relative;
+  flex: 0 0 auto;
 }
 
 .resource-list-filter-bar__label {
@@ -137,10 +274,154 @@ function onStatusChange(key, value) {
   color: var(--color-text-muted);
 }
 
-.resource-list-filter-bar__input,
+.resource-list-filter-bar__search-shell {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 34px;
+  padding: 0 0.7rem;
+  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--color-border-default);
+  background: var(--color-bg-surface);
+  transition: border-color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__search-shell:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.resource-list-filter-bar__search-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.resource-list-filter-bar__input {
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.875rem;
+  font-family: inherit;
+  outline: none;
+  padding: 0.35rem 0;
+}
+
+.resource-list-filter-bar__input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.resource-list-filter-bar__filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 34px;
+  padding: 0.35rem 0.7rem;
+  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--color-border-default);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-default),
+              background var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__filter-trigger:hover {
+  border-color: var(--color-primary);
+  background: var(--color-bg-hover);
+}
+
+.resource-list-filter-bar__filter-trigger:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.resource-list-filter-bar__filter-trigger--active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.resource-list-filter-bar__filter-icon {
+  flex-shrink: 0;
+}
+
+.resource-list-filter-bar__filter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: var(--color-on-primary, #fff);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.resource-list-filter-bar__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: var(--z-dropdown);
+  width: min(16rem, 80vw);
+  padding: 0.75rem;
+  background: var(--color-bg-surface-raised);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.resource-list-filter-bar__panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.resource-list-filter-bar__panel-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.resource-list-filter-bar__reset {
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0.15rem 0.25rem;
+}
+
+.resource-list-filter-bar__reset:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.resource-list-filter-bar__panel-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
 .resource-list-filter-bar__select {
-  min-height: 38px;
-  padding: 0.45rem 0.75rem;
+  min-height: 34px;
+  width: 100%;
+  padding: 0.4rem 0.65rem;
   border-radius: var(--radius-lg);
   border: 1.5px solid var(--color-border-default);
   background: var(--color-bg-surface);
@@ -149,20 +430,11 @@ function onStatusChange(key, value) {
   font-family: inherit;
   outline: none;
   box-sizing: border-box;
+  cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-default),
               box-shadow var(--duration-fast) var(--ease-default);
 }
 
-.resource-list-filter-bar__input {
-  width: 100%;
-}
-
-.resource-list-filter-bar__select {
-  min-width: 140px;
-  cursor: pointer;
-}
-
-.resource-list-filter-bar__input:focus,
 .resource-list-filter-bar__select:focus {
   border-color: var(--color-primary);
   box-shadow: var(--shadow-focus);
@@ -176,15 +448,16 @@ function onStatusChange(key, value) {
 }
 
 @media (max-width: 768px) {
-  .resource-list-filter-bar__field,
   .resource-list-filter-bar__field--agent,
   .resource-list-filter-bar__field--search {
-    min-width: 100%;
+    width: 100%;
     flex: 1 1 100%;
+    max-width: none;
   }
 
-  .resource-list-filter-bar__select {
-    width: 100%;
+  .resource-list-filter-bar__panel {
+    left: auto;
+    right: 0;
   }
 }
 </style>

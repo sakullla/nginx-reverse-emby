@@ -28,15 +28,22 @@ function mountBar(props = {}) {
       statusFields: [enabledField],
       statusValues: { enabled: '' },
       ...props
-    }
+    },
+    attachTo: document.body
   })
 }
 
 describe('ResourceListFilterBar', () => {
-  it('renders agent select, search input, and configured status field', () => {
+  it('keeps agent and search on the main bar and hides status until filter opens', async () => {
     const wrapper = mountBar()
     expect(wrapper.find('.agent-search-select').exists()).toBe(true)
     expect(wrapper.find('.resource-list-filter-bar__input').exists()).toBe(true)
+    expect(wrapper.find('.resource-list-filter-bar__filter-trigger').exists()).toBe(true)
+    expect(wrapper.find('.resource-list-filter-bar__panel').exists()).toBe(false)
+    expect(wrapper.find('.resource-list-filter-bar__select').exists()).toBe(false)
+
+    await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
+    expect(wrapper.find('.resource-list-filter-bar__panel').exists()).toBe(true)
     expect(wrapper.find('.resource-list-filter-bar__select').exists()).toBe(true)
     expect(wrapper.find('option[value="true"]').exists()).toBe(true)
   })
@@ -54,12 +61,31 @@ describe('ResourceListFilterBar', () => {
     expect(wrapper.emitted('update:q')?.[0]).toEqual(['emby'])
   })
 
-  it('emits status updates for configured fields and can hide search', async () => {
+  it('emits status updates from the filter panel and can hide search', async () => {
     const wrapper = mountBar({ showSearch: false })
     expect(wrapper.find('.resource-list-filter-bar__input').exists()).toBe(false)
 
+    await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
     const select = wrapper.find('.resource-list-filter-bar__select')
     await select.setValue('true')
     expect(wrapper.emitted('update:status')?.[0]).toEqual([{ key: 'enabled', value: 'true' }])
+  })
+
+  it('shows an active badge when status differs from default and can reset', async () => {
+    const wrapper = mountBar({ statusValues: { enabled: 'true' } })
+    const badge = wrapper.find('.resource-list-filter-bar__filter-badge')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('1')
+
+    await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
+    await wrapper.find('.resource-list-filter-bar__reset').trigger('click')
+    expect(wrapper.emitted('update:status')).toEqual([
+      [{ key: 'enabled', value: '' }]
+    ])
+  })
+
+  it('hides the filter trigger when there are no status fields', () => {
+    const wrapper = mountBar({ statusFields: [] })
+    expect(wrapper.find('.resource-list-filter-bar__filter-trigger').exists()).toBe(false)
   })
 })

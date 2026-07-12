@@ -122,26 +122,12 @@
     />
   </div>
 
-    <div v-if="showCreateAgentPicker" class="modal-overlay" @click.self="showCreateAgentPicker = false">
-      <div class="modal create-agent-picker">
-        <h3>选择新建所属节点</h3>
-        <p class="create-agent-picker__hint">全部节点视图下必须指定资源归属节点。</p>
-        <div class="create-agent-picker__list">
-          <button
-            v-for="agent in allAgents"
-            :key="agent.id"
-            type="button"
-            class="btn btn-secondary create-agent-picker__item"
-            @click="confirmCreateAgent(agent)"
-          >
-            {{ agent.name || agent.id }}
-          </button>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-secondary" @click="showCreateAgentPicker = false">取消</button>
-        </div>
-      </div>
-    </div>
+    <CreateAgentPicker
+      :visible="showCreateAgentPicker"
+      :agents="allAgents"
+      @select="confirmCreateAgent"
+      @cancel="showCreateAgentPicker = false"
+    />
 </template>
 
 <script setup>
@@ -156,6 +142,7 @@ import RelayListenerForm from '../components/RelayListenerForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vue'
+import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'

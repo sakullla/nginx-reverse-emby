@@ -25,10 +25,23 @@
           v-model="searchQuery"
           type="search"
           class="agent-search-select__search-input"
-          placeholder="搜索节点名称或 ID..."
+          placeholder="搜索节点..."
           aria-label="搜索节点"
           @keydown.esc.prevent="close"
         />
+      </div>
+
+      <div class="agent-search-select__filters">
+        <button
+          v-for="opt in statusOptions"
+          :key="opt.value"
+          type="button"
+          class="agent-search-select__filter-btn"
+          :class="`agent-search-select__filter-btn--${opt.value || 'all'} ${statusFilter === opt.value ? 'agent-search-select__filter-btn--active' : ''}`"
+          @click="statusFilter = opt.value"
+        >
+          {{ opt.label }}
+        </button>
       </div>
 
       <div class="agent-search-select__list">
@@ -44,7 +57,7 @@
         </button>
 
         <button
-          v-for="agent in filteredAgents"
+          v-for="agent in displayedAgents"
           :key="agent.id"
           type="button"
           class="agent-search-select__option"
@@ -58,12 +71,32 @@
             :class="`agent-search-select__status-dot--${getAgentStatus(agent)}`"
           />
           <span class="agent-search-select__option-name">{{ agent.name || agent.id }}</span>
-          <span v-if="agent.id && agent.name" class="agent-search-select__option-id">{{ agent.id }}</span>
+          <span class="agent-search-select__option-time">{{ timeAgo(agent.last_seen_at) }}</span>
         </button>
 
-        <div v-if="!filteredAgents.length" class="agent-search-select__empty">
+        <div v-if="!displayedAgents.length" class="agent-search-select__empty">
           没有匹配的节点
         </div>
+      </div>
+
+      <div class="agent-search-select__sort">
+        <span>排序:</span>
+        <button
+          type="button"
+          class="agent-search-select__sort-btn"
+          :class="{ 'agent-search-select__sort-btn--active': sortBy === 'last_seen', 'agent-search-select__sort-btn--last_seen': true }"
+          @click="sortBy = 'last_seen'"
+        >
+          最近活跃
+        </button>
+        <button
+          type="button"
+          class="agent-search-select__sort-btn"
+          :class="{ 'agent-search-select__sort-btn--active': sortBy === 'name', 'agent-search-select__sort-btn--name': true }"
+          @click="sortBy = 'name'"
+        >
+          名称
+        </button>
       </div>
     </div>
   </div>
@@ -71,7 +104,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { getAgentStatus } from '../../utils/agentHelpers.js'
+import { getAgentStatus, timeAgo } from '../../utils/agentHelpers.js'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../../utils/agentFilter.js'
 
 const props = defineProps({
@@ -83,8 +116,16 @@ const emit = defineEmits(['update:modelValue'])
 
 const open = ref(false)
 const searchQuery = ref('')
+const statusFilter = ref('')
+const sortBy = ref('last_seen')
 const rootRef = ref(null)
 const searchInputRef = ref(null)
+
+const statusOptions = [
+  { value: '', label: '全部' },
+  { value: 'online', label: '在线' },
+  { value: 'offline', label: '离线' }
+]
 
 const isAllSelected = computed(() => {
   const normalized = normalizeAgentFilter(props.modelValue)
@@ -104,16 +145,28 @@ const selectedLabel = computed(() => {
   return id || '全部节点'
 })
 
-const filteredAgents = computed(() => {
-  const list = Array.isArray(props.agents) ? [...props.agents] : []
-  list.sort((a, b) => String(a?.name || a?.id || '').localeCompare(String(b?.name || b?.id || '')))
+const displayedAgents = computed(() => {
+  let result = [...(props.agents || [])]
+
+  if (statusFilter.value) {
+    result = result.filter((agent) => getAgentStatus(agent) === statusFilter.value)
+  }
+
   const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return list
-  return list.filter((agent) => {
-    const name = String(agent?.name || '').toLowerCase()
-    const id = String(agent?.id || '').toLowerCase()
-    return name.includes(q) || id.includes(q)
+  if (q) {
+    result = result.filter((agent) =>
+      String(agent.name || '').toLowerCase().includes(q)
+    )
+  }
+
+  result.sort((a, b) => {
+    if (sortBy.value === 'name') {
+      return String(a.name || '').localeCompare(String(b.name || ''))
+    }
+    return new Date(b.last_seen_at || 0) - new Date(a.last_seen_at || 0)
   })
+
+  return result
 })
 
 function selectAll() {
@@ -130,11 +183,13 @@ function selectAgent(agent) {
 function close() {
   open.value = false
   searchQuery.value = ''
+  statusFilter.value = ''
+  sortBy.value = 'last_seen'
 }
 
 function toggleOpen() {
   open.value = !open.value
-  if (!open.value) searchQuery.value = ''
+  if (!open.value) close()
 }
 
 function handleClickOutside(event) {
@@ -164,8 +219,8 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   align-items: center;
   gap: 0.5rem;
   width: 100%;
-  min-height: 38px;
-  padding: 0.45rem 0.75rem;
+  min-height: 34px;
+  padding: 0.35rem 0.65rem;
   border-radius: var(--radius-lg);
   border: 1.5px solid var(--color-border-default);
   background: var(--color-bg-surface);
@@ -221,7 +276,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 
 .agent-search-select__search-input {
   width: 100%;
-  padding: 0.4rem 0.65rem;
+  padding: 0.35rem 0.55rem;
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
@@ -237,8 +292,39 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   box-shadow: var(--shadow-focus);
 }
 
+.agent-search-select__filters {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  overflow-x: auto;
+}
+
+.agent-search-select__filter-btn {
+  padding: 0.25rem 0.625rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+  transition: background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default);
+}
+
+.agent-search-select__filter-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.agent-search-select__filter-btn--active {
+  background: var(--color-primary);
+  color: white;
+}
+
 .agent-search-select__list {
-  max-height: 280px;
+  max-height: 240px;
   overflow-y: auto;
   padding: 0.25rem;
   scrollbar-width: thin;
@@ -277,8 +363,8 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   white-space: nowrap;
 }
 
-.agent-search-select__option-id {
-  font-size: 0.75rem;
+.agent-search-select__option-time {
+  font-size: 0.7rem;
   color: var(--color-text-muted);
   flex-shrink: 0;
 }
@@ -288,6 +374,39 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   text-align: center;
   font-size: 0.8125rem;
   color: var(--color-text-muted);
+}
+
+.agent-search-select__sort {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.agent-search-select__sort-btn {
+  padding: 0.125rem 0.375rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default);
+}
+
+.agent-search-select__sort-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.agent-search-select__sort-btn--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 500;
 }
 
 .agent-search-select__status-dot {

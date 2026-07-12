@@ -4,9 +4,9 @@ import AgentSearchSelect from './AgentSearchSelect.vue'
 import { ALL_AGENTS_FILTER } from '../../utils/agentFilter.js'
 
 const agents = [
-  { id: 'local', name: '本机', status: 'online' },
-  { id: 'edge-1', name: 'Edge One', status: 'online' },
-  { id: 'edge-2', name: 'Edge Two', status: 'offline' }
+  { id: 'local', name: '本机', status: 'online', last_seen_at: new Date(Date.now() - 30_000).toISOString() },
+  { id: 'edge-1', name: 'Edge One', status: 'online', last_seen_at: new Date(Date.now() - 120_000).toISOString() },
+  { id: 'edge-2', name: 'Edge Two', status: 'offline', last_seen_at: new Date(Date.now() - 86_400_000).toISOString() }
 ]
 
 function mountSelect(props = {}) {
@@ -31,7 +31,19 @@ describe('AgentSearchSelect', () => {
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([ALL_AGENTS_FILTER])
   })
 
-  it('filters agents by name and id, and shows empty state when none match', async () => {
+  it('does not display agent ids in the dropdown or trigger', async () => {
+    const wrapper = mountSelect({ modelValue: 'edge-1' })
+    expect(wrapper.text()).toContain('Edge One')
+    expect(wrapper.text()).not.toContain('edge-1')
+
+    await wrapper.find('.agent-search-select__trigger').trigger('click')
+    expect(wrapper.text()).toContain('Edge One')
+    expect(wrapper.text()).not.toContain('edge-1')
+    expect(wrapper.text()).not.toContain('edge-2')
+    expect(wrapper.find('.agent-search-select__option-id').exists()).toBe(false)
+  })
+
+  it('filters agents by name only and shows empty state when none match', async () => {
     const wrapper = mountSelect()
     await wrapper.find('.agent-search-select__trigger').trigger('click')
 
@@ -42,13 +54,41 @@ describe('AgentSearchSelect', () => {
     expect(wrapper.text()).toContain('Edge Two')
     expect(wrapper.text()).not.toContain('本机')
 
-    await input.setValue('edge-2')
-    expect(wrapper.text()).toContain('Edge Two')
-    expect(wrapper.text()).not.toContain('Edge One')
-
     await input.setValue('no-such-agent')
     expect(wrapper.find('.agent-search-select__empty').exists()).toBe(true)
     expect(wrapper.text()).toContain('没有匹配的节点')
+  })
+
+  it('shows last seen time in options instead of id', async () => {
+    const wrapper = mountSelect()
+    await wrapper.find('.agent-search-select__trigger').trigger('click')
+    expect(wrapper.find('.agent-search-select__option-time').exists()).toBe(true)
+    expect(wrapper.text()).toContain('刚刚')
+  })
+
+  it('filters by online/offline status', async () => {
+    const wrapper = mountSelect()
+    await wrapper.find('.agent-search-select__trigger').trigger('click')
+
+    await wrapper.find('.agent-search-select__filter-btn--offline').trigger('click')
+    expect(wrapper.text()).toContain('Edge Two')
+    expect(wrapper.text()).not.toContain('Edge One')
+    expect(wrapper.text()).not.toContain('本机')
+
+    await wrapper.find('.agent-search-select__filter-btn--online').trigger('click')
+    expect(wrapper.text()).toContain('Edge One')
+    expect(wrapper.text()).toContain('本机')
+    expect(wrapper.text()).not.toContain('Edge Two')
+  })
+
+  it('sorts by name when sort-by-name is selected', async () => {
+    const wrapper = mountSelect()
+    await wrapper.find('.agent-search-select__trigger').trigger('click')
+
+    await wrapper.find('.agent-search-select__sort-btn--name').trigger('click')
+    const names = wrapper.findAll('.agent-search-select__option-name')
+      .map((node) => node.text())
+    expect(names).toEqual(['全部节点', '本机', 'Edge One', 'Edge Two'])
   })
 
   it('emits concrete agent id on select and is single-select only', async () => {
@@ -62,7 +102,6 @@ describe('AgentSearchSelect', () => {
 
     const emitted = wrapper.emitted('update:modelValue')
     expect(emitted?.[0]?.[0]).toBe('edge-1')
-    // no multi-select: only one value emitted per click
     expect(emitted?.[0]).toHaveLength(1)
   })
 })
