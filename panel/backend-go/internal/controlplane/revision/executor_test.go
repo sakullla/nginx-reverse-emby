@@ -87,6 +87,135 @@ func TestExecutorConcurrentSameKeyReplaysAndDifferentFingerprintConflicts(t *tes
 
 }
 
+func TestExecutorIdempotencyFingerprintIncludesKindAndTargets(t *testing.T) {
+	tests := []struct {
+		name       string
+		secondKind string
+		second     Target
+	}{
+		{
+			name:       "different operation kind",
+			secondKind: "http_rule.update",
+			second:     Target{AgentID: "local", Local: true},
+		},
+		{
+			name:       "different target",
+			secondKind: "http_rule.create",
+			second:     Target{AgentID: "edge-2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newRevisionTestStore(t)
+			if err := store.SaveAgent(t.Context(), storage.AgentRow{
+				ID: "edge-2", Name: "edge-2", Platform: "linux-amd64",
+			}); err != nil {
+				t.Fatalf("SaveAgent() error = %v", err)
+			}
+			executor := newDeterministicExecutor(store)
+			requestBody := map[string]any{"frontend_url": "https://edge.example.com"}
+			mutation := func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+				return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+					ID: 1, AgentID: "local", FrontendURL: "https://edge.example.com",
+					BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+					Revision: int(revisions["local"]),
+				}})
+			}
+			if _, err := executor.Execute(t.Context(), MutationRequest{
+				Kind: "http_rule.create", IdempotencyKey: "envelope-key", Request: requestBody,
+				Targets: []Target{{AgentID: "local", Local: true}}, ResourceState: httpRuleResourceState,
+				Mutate: mutation,
+			}); err != nil {
+				t.Fatalf("Execute(first) error = %v", err)
+			}
+
+			_, err := executor.Execute(t.Context(), MutationRequest{
+				Kind: tt.secondKind, IdempotencyKey: "envelope-key", Request: requestBody,
+				Targets: []Target{tt.second}, ResourceState: httpRuleResourceState,
+				Mutate: mutation,
+			})
+			if ErrorCodeOf(err) != ErrorCodeConflict {
+				t.Fatalf("Execute(second) error = %v, code = %q, want %q", err, ErrorCodeOf(err), ErrorCodeConflict)
+			}
+		})
+	}
+}
+
+func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing.T) {
+	store := newRevisionTestStore(t)
+	executor := newDeterministicExecutor(store)
+	requestBody := map[string]any{"frontend_url": "https://edge.example.com"}
+	mutation := func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+		return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+			ID: 1, AgentID: "local", FrontendURL: "https://edge.example.com",
+			BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+			Revision: int(revisions["local"]),
+		}})
+	}
+	first, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
+		Targets: []Target{{
+			AgentID: "local", Local: true, DesiredVersion: " v1 ", Platform: " linux-amd64 ",
+			Capabilities: []string{" WireGuard ", "egress_profiles", "wireguard"},
+		}},
+		ResourceState: httpRuleResourceState, Mutate: mutation,
+	})
+	if err != nil {
+		t.Fatalf("Execute(first) error = %v", err)
+	}
+	second, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
+		Targets: []Target{{
+			AgentID: "local", Local: true, DesiredVersion: "v1", Platform: "linux-amd64",
+			Capabilities:        []string{"egress_profiles", "wireguard"},
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+		}},
+		ResourceState: httpRuleResourceState, Mutate: mutation,
+	})
+	if err != nil {
+		t.Fatalf("Execute(second) error = %v", err)
+	}
+	if !second.Replayed || second.Operation.ID != first.Operation.ID {
+		t.Fatalf("second result = %+v, first operation = %q", second, first.Operation.ID)
+	}
+}
+
+func TestExecutorLocksPointerBeforeReadingSnapshot(t *testing.T) {
+	store := newRevisionTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-lock", Name: "edge-lock", Platform: "linux-amd64",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	executor := NewExecutor(
+		store,
+		WithSnapshotBuilder(SnapshotBuilderFunc(func(ctx context.Context, tx *storage.GormStore, target Target) (storage.Snapshot, error) {
+			if _, found, err := tx.GetAgentRevisionPointer(ctx, target.AgentID); err != nil {
+				return storage.Snapshot{}, err
+			} else if !found {
+				return storage.Snapshot{}, fmt.Errorf("snapshot read before agent pointer lock")
+			}
+			return buildStorageSnapshot(ctx, tx, target)
+		})),
+	)
+
+	_, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", Request: map[string]any{"frontend_url": "https://edge-lock.example.com"},
+		Targets: []Target{{AgentID: "edge-lock"}}, ResourceState: httpRuleResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			return tx.SaveHTTPRules(ctx, "edge-lock", []storage.HTTPRuleRow{{
+				ID: 1, AgentID: "edge-lock", FrontendURL: "https://edge-lock.example.com",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+				Revision: int(revisions["edge-lock"]),
+			}})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
 func TestExecutorConcurrentDifferentKeysAllocateUniqueRevisions(t *testing.T) {
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
@@ -144,6 +273,166 @@ func TestExecutorConcurrentDifferentKeysAllocateUniqueRevisions(t *testing.T) {
 		if _, found := seen[revisionNumber]; !found {
 			t.Fatalf("revision %d was not allocated: %v", revisionNumber, seen)
 		}
+	}
+}
+
+func TestExecutorConcurrentExpiredIdempotencyKeyReuseExecutesOnce(t *testing.T) {
+	store := newRevisionTestStore(t)
+	firstNow := time.Date(2026, 7, 12, 5, 0, 0, 0, time.UTC)
+	first := NewExecutor(
+		store,
+		WithClock(func() time.Time { return firstNow }),
+		WithOperationIDGenerator(func() (string, error) { return "op-expired-old", nil }),
+	)
+	if _, err := first.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", IdempotencyKey: "expired-concurrent", IdempotencyTTL: time.Minute,
+		Request: map[string]any{"version": 1}, Targets: []Target{{AgentID: "local", Local: true}},
+		ResourceState: httpRuleResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+				ID: 1, AgentID: "local", FrontendURL: "https://old.example.com",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+				Revision: int(revisions["local"]),
+			}})
+		},
+	}); err != nil {
+		t.Fatalf("Execute(seed) error = %v", err)
+	}
+
+	var operationSequence atomic.Int64
+	var mutationCalls atomic.Int32
+	executor := NewExecutor(
+		store,
+		WithClock(func() time.Time { return firstNow.Add(2 * time.Minute) }),
+		WithOperationIDGenerator(func() (string, error) {
+			return fmt.Sprintf("op-expired-new-%d", operationSequence.Add(1)), nil
+		}),
+	)
+	request := MutationRequest{
+		Kind: "http_rule.update", IdempotencyKey: "expired-concurrent",
+		Request: map[string]any{"version": 2}, Targets: []Target{{AgentID: "local", Local: true}},
+		ResourceState: httpRuleResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			mutationCalls.Add(1)
+			return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+				ID: 1, AgentID: "local", FrontendURL: "https://new.example.com",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+				Revision: int(revisions["local"]),
+			}})
+		},
+	}
+
+	const callers = 8
+	results := make(chan MutationResult, callers)
+	errors := make(chan error, callers)
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for range callers {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			result, err := executor.Execute(context.Background(), request)
+			results <- result
+			errors <- err
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("Execute(reuse) error = %v", err)
+		}
+	}
+	if mutationCalls.Load() != 1 {
+		t.Fatalf("mutation calls = %d, want 1", mutationCalls.Load())
+	}
+	operationID := ""
+	nonReplayed := 0
+	for result := range results {
+		if operationID == "" {
+			operationID = result.Operation.ID
+		}
+		if result.Operation.ID != operationID || result.Operation.ID == "op-expired-old" {
+			t.Fatalf("result operation = %q, want one renewed operation %q", result.Operation.ID, operationID)
+		}
+		if !result.Replayed {
+			nonReplayed++
+		}
+	}
+	if nonReplayed != 1 {
+		t.Fatalf("non-replayed results = %d, want 1", nonReplayed)
+	}
+}
+
+func TestExecutorConcurrentEquivalentFinalStateCreatesOneRevision(t *testing.T) {
+	store := newRevisionTestStore(t)
+	executor := newDeterministicExecutor(store)
+	var mutationCalls atomic.Int32
+	start := make(chan struct{})
+	results := make(chan MutationResult, 2)
+	errors := make(chan error, 2)
+	var workers sync.WaitGroup
+	for index := range 2 {
+		index := index
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			result, err := executor.Execute(context.Background(), MutationRequest{
+				Kind: "http_rule.update", IdempotencyKey: fmt.Sprintf("equivalent-%d", index),
+				Request: map[string]any{"frontend_url": "https://same.example.com"},
+				Targets: []Target{{AgentID: "local", Local: true}}, ResourceState: httpRuleResourceState,
+				Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+					mutationCalls.Add(1)
+					return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+						ID: 1, AgentID: "local", FrontendURL: "https://same.example.com",
+						BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+						Revision: int(revisions["local"]),
+					}})
+				},
+			})
+			results <- result
+			errors <- err
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("Execute(equivalent) error = %v", err)
+		}
+	}
+	if mutationCalls.Load() != 2 {
+		t.Fatalf("mutation calls = %d, want 2 serialized attempts", mutationCalls.Load())
+	}
+	noOps := 0
+	operationIDs := map[string]struct{}{}
+	for result := range results {
+		operationIDs[result.Operation.ID] = struct{}{}
+		if result.NoOp {
+			noOps++
+		}
+	}
+	if noOps != 1 {
+		t.Fatalf("no-op results = %d, want 1", noOps)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	created := 0
+	for _, row := range revisions {
+		if _, found := operationIDs[row.OperationID]; found {
+			created++
+		}
+	}
+	if created != 1 {
+		t.Fatalf("revisions created by equivalent operations = %d, want 1: %+v", created, revisions)
 	}
 }
 

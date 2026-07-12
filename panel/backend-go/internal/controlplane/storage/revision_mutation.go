@@ -13,12 +13,15 @@ import (
 type RevisionMutationDecision struct {
 	Ledger                   *RevisionLedgerWrite
 	RollbackResources        bool
-	DeleteIdempotencyRecords []IdempotencyRecordKey
+	DeleteIdempotencyRecords []IdempotencyRecordMatch
 }
 
-type IdempotencyRecordKey struct {
-	Scope string
-	Key   string
+type IdempotencyRecordMatch struct {
+	Scope              string
+	Key                string
+	RequestFingerprint string
+	OperationID        string
+	ExpiresAt          time.Time
 }
 
 type RevisionMutationFunc func(*GormStore) (RevisionMutationDecision, error)
@@ -51,9 +54,12 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 		}
 		for _, recordKey := range decision.DeleteIdempotencyRecords {
 			if err := tx.Where(
-				"scope = ? AND key = ?",
+				"scope = ? AND key = ? AND request_fingerprint = ? AND operation_id = ? AND expires_at = ?",
 				strings.TrimSpace(recordKey.Scope),
 				strings.TrimSpace(recordKey.Key),
+				recordKey.RequestFingerprint,
+				recordKey.OperationID,
+				recordKey.ExpiresAt,
 			).Delete(&IdempotencyRecordRow{}).Error; err != nil {
 				return err
 			}
@@ -92,8 +98,20 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 }
 
 func (s *GormStore) GetIdempotencyRecord(ctx context.Context, scope, key string) (IdempotencyRecordRow, bool, error) {
+	return s.getIdempotencyRecord(ctx, scope, key, false)
+}
+
+func (s *GormStore) LockIdempotencyRecord(ctx context.Context, scope, key string) (IdempotencyRecordRow, bool, error) {
+	return s.getIdempotencyRecord(ctx, scope, key, true)
+}
+
+func (s *GormStore) getIdempotencyRecord(ctx context.Context, scope, key string, lock bool) (IdempotencyRecordRow, bool, error) {
 	var row IdempotencyRecordRow
-	err := s.db.WithContext(ctx).
+	query := s.db.WithContext(ctx)
+	if lock {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.
 		Where("scope = ? AND key = ?", strings.TrimSpace(scope), strings.TrimSpace(key)).
 		First(&row).Error
 	if err == nil {

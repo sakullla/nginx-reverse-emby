@@ -17,16 +17,20 @@ func (FullSnapshotValidator) Validate(_ context.Context, input revision.Snapshot
 	if strings.TrimSpace(input.Target.AgentID) == "" {
 		return revision.NewError(revision.ErrorCodeInvalidRequest, "snapshot target agent is required", nil)
 	}
-	if err := validateSnapshotCapabilities(input.Target, input.Snapshot); err != nil {
+	snapshot := input.Snapshot
+	if input.IntentSnapshot != nil {
+		snapshot = *input.IntentSnapshot
+	}
+	if err := validateSnapshotCapabilities(input.Target, snapshot); err != nil {
 		return err
 	}
-	if err := validateSnapshotResources(input.Snapshot); err != nil {
+	if err := validateSnapshotResources(snapshot); err != nil {
 		return err
 	}
-	if err := validateSnapshotReferences(input.Snapshot); err != nil {
+	if err := validateSnapshotReferences(snapshot); err != nil {
 		return err
 	}
-	return validateSnapshotListenerClaims(input.Snapshot)
+	return validateSnapshotListenerClaims(snapshot)
 }
 
 func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snapshot) error {
@@ -34,8 +38,14 @@ func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snaps
 	for _, capability := range target.Capabilities {
 		capabilities[strings.ToLower(strings.TrimSpace(capability))] = struct{}{}
 	}
-	requiresWireGuard := len(snapshot.WireGuardProfiles) > 0
-	requiresEgress := len(snapshot.EgressProfiles) > 0
+	requiresWireGuard := false
+	for _, profile := range snapshot.WireGuardProfiles {
+		requiresWireGuard = requiresWireGuard || profile.Enabled
+	}
+	requiresEgress := false
+	for _, profile := range snapshot.EgressProfiles {
+		requiresEgress = requiresEgress || profile.Enabled
+	}
 	for _, rule := range snapshot.Rules {
 		requiresWireGuard = requiresWireGuard || rule.WireGuardEntryEnabled || rule.WireGuardProfileID != nil
 		requiresEgress = requiresEgress || rule.EgressProfileID != nil
@@ -155,12 +165,12 @@ func validateSnapshotReferences(snapshot storage.Snapshot) error {
 	for _, profile := range snapshot.EgressProfiles {
 		egress[profile.ID] = profile
 	}
-	certificates := map[int]struct{}{}
+	certificates := map[int]bool{}
 	for _, certificate := range snapshot.Certificates {
-		certificates[certificate.ID] = struct{}{}
+		certificates[certificate.ID] = true
 	}
 	for _, policy := range snapshot.CertificatePolicies {
-		certificates[policy.ID] = struct{}{}
+		certificates[policy.ID] = certificates[policy.ID] || policy.Enabled
 	}
 
 	for _, rule := range snapshot.Rules {
@@ -190,13 +200,21 @@ func validateSnapshotReferences(snapshot storage.Snapshot) error {
 			return err
 		}
 		if listener.CertificateID != nil {
-			if _, found := certificates[*listener.CertificateID]; !found {
+			enabled, found := certificates[*listener.CertificateID]
+			if !found {
 				return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("relay listener %d references missing certificate %d", listener.ID, *listener.CertificateID), nil)
+			}
+			if !enabled {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references disabled certificate %d", listener.ID, *listener.CertificateID), nil)
 			}
 		}
 		for _, certificateID := range listener.TrustedCACertificateIDs {
-			if _, found := certificates[certificateID]; !found {
+			enabled, found := certificates[certificateID]
+			if !found {
 				return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("relay listener %d references missing trusted CA %d", listener.ID, certificateID), nil)
+			}
+			if !enabled {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references disabled trusted CA %d", listener.ID, certificateID), nil)
 			}
 		}
 	}
@@ -342,8 +360,12 @@ func egressSnapshotIDs(rows []storage.EgressProfile) []int {
 func validateRelayLayerReferences(kind string, resourceID int, layers [][]int, relays map[int]storage.RelayListener) error {
 	for _, layer := range layers {
 		for _, relayID := range layer {
-			if _, found := relays[relayID]; !found {
+			listener, found := relays[relayID]
+			if !found {
 				return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("%s %d references missing relay listener %d", kind, resourceID, relayID), nil)
+			}
+			if !listener.Enabled {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s %d references disabled relay listener %d", kind, resourceID, relayID), nil)
 			}
 		}
 	}

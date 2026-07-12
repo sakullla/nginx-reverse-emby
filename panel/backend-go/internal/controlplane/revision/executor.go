@@ -37,8 +37,9 @@ type Target struct {
 }
 
 type SnapshotValidation struct {
-	Target   Target
-	Snapshot storage.Snapshot
+	Target         Target
+	Snapshot       storage.Snapshot
+	IntentSnapshot *storage.Snapshot
 }
 
 type SnapshotValidator interface {
@@ -81,6 +82,12 @@ type MutationRequest struct {
 	Mutate           ResourceMutation
 }
 
+type mutationFingerprintEnvelope struct {
+	Kind    string   `json:"kind"`
+	Targets []Target `json:"targets"`
+	Request any      `json:"request"`
+}
+
 type AgentMutationResult struct {
 	AgentID         string `json:"agent_id"`
 	DesiredRevision int64  `json:"desired_revision"`
@@ -96,12 +103,13 @@ type MutationResult struct {
 }
 
 type Executor struct {
-	store           Store
-	snapshotBuilder SnapshotBuilder
-	validators      []SnapshotValidator
-	now             func() time.Time
-	operationID     func() (string, error)
-	idempotencyTTL  time.Duration
+	store                 Store
+	snapshotBuilder       SnapshotBuilder
+	intentSnapshotBuilder SnapshotBuilder
+	validators            []SnapshotValidator
+	now                   func() time.Time
+	operationID           func() (string, error)
+	idempotencyTTL        time.Duration
 }
 
 type Option func(*Executor)
@@ -126,6 +134,7 @@ func WithSnapshotBuilder(builder SnapshotBuilder) Option {
 	return func(executor *Executor) {
 		if builder != nil {
 			executor.snapshotBuilder = builder
+			executor.intentSnapshotBuilder = builder
 		}
 	}
 }
@@ -148,11 +157,12 @@ func WithIdempotencyTTL(ttl time.Duration) Option {
 
 func NewExecutor(store Store, options ...Option) *Executor {
 	executor := &Executor{
-		store:           store,
-		snapshotBuilder: SnapshotBuilderFunc(buildStorageSnapshot),
-		now:             time.Now,
-		operationID:     newOperationID,
-		idempotencyTTL:  defaultIdempotencyTTL,
+		store:                 store,
+		snapshotBuilder:       SnapshotBuilderFunc(buildStorageSnapshot),
+		intentSnapshotBuilder: SnapshotBuilderFunc(buildStorageIntentSnapshot),
+		now:                   time.Now,
+		operationID:           newOperationID,
+		idempotencyTTL:        defaultIdempotencyTTL,
 	}
 	for _, option := range options {
 		option(executor)
@@ -181,7 +191,9 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 	if err != nil {
 		return MutationResult{}, err
 	}
-	fingerprint, err := RequestFingerprint(request.Request)
+	fingerprint, err := RequestFingerprint(mutationFingerprintEnvelope{
+		Kind: kind, Targets: idempotencyFingerprintTargets(targets), Request: request.Request,
+	})
 	if err != nil {
 		return MutationResult{}, err
 	}
@@ -215,7 +227,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 	var result MutationResult
 	var replayed bool
 	err = e.store.WithRevisionMutation(ctx, func(tx *storage.GormStore) (storage.RevisionMutationDecision, error) {
-		expiredIdempotencyKey := false
+		var expiredIdempotencyRecord *storage.IdempotencyRecordRow
 		if key != "" {
 			replay, found, expired, replayErr := loadReplayFromStore(ctx, tx, scope, key, fingerprint, now)
 			if replayErr != nil {
@@ -226,8 +238,18 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				replayed = true
 				return storage.RevisionMutationDecision{}, nil
 			}
-			expiredIdempotencyKey = expired
+			expiredIdempotencyRecord = expired
 		}
+
+		pointers := make(map[string]storage.AgentRevisionPointerRow, len(targets))
+		for _, target := range targets {
+			pointer, pointerErr := tx.LockAgentRevisionPointer(ctx, target.AgentID, now)
+			if pointerErr != nil {
+				return storage.RevisionMutationDecision{}, pointerErr
+			}
+			pointers[target.AgentID] = pointer
+		}
+
 		resolvedTargets := make([]Target, len(targets))
 		for i, target := range targets {
 			resolvedTarget, resolveErr := resolveTargetMetadata(ctx, tx, target)
@@ -239,7 +261,6 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 
 		before := make(map[string]storage.Snapshot, len(resolvedTargets))
 		beforeResourceDigests := make(map[string]string, len(resolvedTargets))
-		pointers := make(map[string]storage.AgentRevisionPointerRow, len(resolvedTargets))
 		allocated := make(map[string]int64, len(resolvedTargets))
 		for _, target := range resolvedTargets {
 			snapshot, buildErr := e.snapshotBuilder.Build(ctx, tx, target)
@@ -256,11 +277,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				return storage.RevisionMutationDecision{}, stateErr
 			}
 			beforeResourceDigests[target.AgentID] = resourceDigest
-			pointer, pointerErr := tx.LockAgentRevisionPointer(ctx, target.AgentID, now)
-			if pointerErr != nil {
-				return storage.RevisionMutationDecision{}, pointerErr
-			}
-			pointers[target.AgentID] = pointer
+			pointer := pointers[target.AgentID]
 			floor := maxRevision(snapshot.Revision, pointer.DesiredRevision, pointer.AppliedRevision, pointer.LastKnownGoodRevision)
 			if floor == math.MaxInt64 {
 				return storage.RevisionMutationDecision{}, wrapError(ErrorCodeConflict, "agent %q revision space is exhausted", target.AgentID)
@@ -282,8 +299,17 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			if buildErr != nil {
 				return storage.RevisionMutationDecision{}, buildErr
 			}
+			validationSnapshot := snapshot
+			if len(e.validators) > 0 && e.intentSnapshotBuilder != nil {
+				validationSnapshot, buildErr = e.intentSnapshotBuilder.Build(ctx, tx, target)
+				if buildErr != nil {
+					return storage.RevisionMutationDecision{}, buildErr
+				}
+			}
 			for _, validator := range e.validators {
-				if validateErr := validator.Validate(ctx, SnapshotValidation{Target: target, Snapshot: snapshot}); validateErr != nil {
+				if validateErr := validator.Validate(ctx, SnapshotValidation{
+					Target: target, Snapshot: snapshot, IntentSnapshot: &validationSnapshot,
+				}); validateErr != nil {
 					return storage.RevisionMutationDecision{}, validateErr
 				}
 			}
@@ -386,10 +412,13 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			})
 		}
 		decision := storage.RevisionMutationDecision{Ledger: &ledger, RollbackResources: allNoOp}
-		if expiredIdempotencyKey {
-			decision.DeleteIdempotencyRecords = append(decision.DeleteIdempotencyRecords, storage.IdempotencyRecordKey{
-				Scope: scope,
-				Key:   key,
+		if expiredIdempotencyRecord != nil {
+			decision.DeleteIdempotencyRecords = append(decision.DeleteIdempotencyRecords, storage.IdempotencyRecordMatch{
+				Scope:              expiredIdempotencyRecord.Scope,
+				Key:                expiredIdempotencyRecord.Key,
+				RequestFingerprint: expiredIdempotencyRecord.RequestFingerprint,
+				OperationID:        expiredIdempotencyRecord.OperationID,
+				ExpiresAt:          expiredIdempotencyRecord.ExpiresAt,
 			})
 		}
 		return decision, nil
@@ -421,19 +450,19 @@ func (e *Executor) loadReplay(ctx context.Context, scope, key, fingerprint strin
 	return decodeReplay(record, fingerprint)
 }
 
-func loadReplayFromStore(ctx context.Context, store *storage.GormStore, scope, key, fingerprint string, now time.Time) (MutationResult, bool, bool, error) {
-	record, found, err := store.GetIdempotencyRecord(ctx, scope, key)
+func loadReplayFromStore(ctx context.Context, store *storage.GormStore, scope, key, fingerprint string, now time.Time) (MutationResult, bool, *storage.IdempotencyRecordRow, error) {
+	record, found, err := store.LockIdempotencyRecord(ctx, scope, key)
 	if err != nil {
-		return MutationResult{}, false, false, err
+		return MutationResult{}, false, nil, err
 	}
 	if !found {
-		return MutationResult{}, false, false, nil
+		return MutationResult{}, false, nil, nil
 	}
 	if !record.ExpiresAt.After(now) {
-		return MutationResult{}, false, true, nil
+		return MutationResult{}, false, &record, nil
 	}
 	result, replayed, err := decodeReplay(record, fingerprint)
-	return result, replayed, false, err
+	return result, replayed, nil, err
 }
 
 func decodeReplay(record storage.IdempotencyRecordRow, fingerprint string) (MutationResult, bool, error) {
@@ -495,8 +524,30 @@ func normalizedCapabilities(input []string) []string {
 	return result
 }
 
+func idempotencyFingerprintTargets(input []Target) []Target {
+	result := append([]Target(nil), input...)
+	for i := range result {
+		result[i].DesiredVersion = strings.TrimSpace(result[i].DesiredVersion)
+		result[i].Platform = strings.TrimSpace(result[i].Platform)
+		result[i].ApplyTimeoutSeconds = resolvedApplyTimeout(result[i])
+		result[i].DrainTimeoutSeconds = resolvedDrainTimeout(result[i])
+	}
+	return result
+}
+
 func buildStorageSnapshot(ctx context.Context, store *storage.GormStore, target Target) (storage.Snapshot, error) {
+	return buildStorageSnapshotMode(ctx, store, target, false)
+}
+
+func buildStorageIntentSnapshot(ctx context.Context, store *storage.GormStore, target Target) (storage.Snapshot, error) {
+	return buildStorageSnapshotMode(ctx, store, target, true)
+}
+
+func buildStorageSnapshotMode(ctx context.Context, store *storage.GormStore, target Target, intent bool) (storage.Snapshot, error) {
 	if target.Local {
+		if intent {
+			return store.LoadLocalIntentSnapshot(ctx, target.AgentID)
+		}
 		return store.LoadLocalSnapshot(ctx, target.AgentID)
 	}
 	agents, err := store.ListAgents(ctx)
@@ -515,10 +566,14 @@ func buildStorageSnapshot(ctx context.Context, store *storage.GormStore, target 
 		if platform == "" {
 			platform = agent.Platform
 		}
-		return store.LoadAgentSnapshot(ctx, target.AgentID, storage.AgentSnapshotInput{
+		input := storage.AgentSnapshotInput{
 			DesiredVersion: desiredVersion, DesiredRevision: agent.DesiredRevision,
 			CurrentRevision: agent.CurrentRevision, Platform: platform,
-		})
+		}
+		if intent {
+			return store.LoadAgentIntentSnapshot(ctx, target.AgentID, input)
+		}
+		return store.LoadAgentSnapshot(ctx, target.AgentID, input)
 	}
 	return storage.Snapshot{}, wrapError(ErrorCodeNotFound, "agent %q was not found", target.AgentID)
 }

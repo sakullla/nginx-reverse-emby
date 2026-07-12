@@ -222,19 +222,35 @@ func (s *GormStore) LoadLocalRuntimeState(ctx context.Context) (RuntimeState, er
 }
 
 func (s *GormStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
+	return s.loadLocalSnapshot(ctx, agentID, true)
+}
+
+func (s *GormStore) LoadLocalIntentSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
+	return s.loadLocalSnapshot(ctx, agentID, false)
+}
+
+func (s *GormStore) loadLocalSnapshot(ctx context.Context, agentID string, runtimeFiltered bool) (Snapshot, error) {
 	localState, err := s.LoadLocalAgentState(ctx)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return s.LoadAgentSnapshot(ctx, agentID, AgentSnapshotInput{
+	return s.loadAgentSnapshot(ctx, agentID, AgentSnapshotInput{
 		DesiredVersion:  localState.DesiredVersion,
 		DesiredRevision: localState.DesiredRevision,
 		CurrentRevision: localState.CurrentRevision,
 		Platform:        runtime.GOOS + "-" + runtime.GOARCH,
-	})
+	}, runtimeFiltered)
 }
 
 func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
+	return s.loadAgentSnapshot(ctx, agentID, input, true)
+}
+
+func (s *GormStore) LoadAgentIntentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
+	return s.loadAgentSnapshot(ctx, agentID, input, false)
+}
+
+func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput, runtimeFiltered bool) (Snapshot, error) {
 	resolvedAgentID := s.resolveAgentID(agentID)
 
 	httpRows, err := s.ListHTTPRules(ctx, resolvedAgentID)
@@ -246,7 +262,9 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
-	l4Rows = filterSyncL4RuleRows(l4Rows)
+	if runtimeFiltered {
+		l4Rows = filterSyncL4RuleRows(l4Rows)
+	}
 
 	relayRows, err := s.loadRelayListenersForSync(ctx, resolvedAgentID, httpRows, l4Rows)
 	if err != nil {
@@ -268,31 +286,35 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
-	allL4Rows = filterSyncL4RuleRows(allL4Rows)
+	if runtimeFiltered {
+		allL4Rows = filterSyncL4RuleRows(allL4Rows)
+	}
 	allRelayRows, err := s.ListRelayListeners(ctx, "")
 	if err != nil {
 		return Snapshot{}, err
 	}
-	egressRows := filterEgressProfilesForSnapshot(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
+	egressRows := filterEgressProfilesForSnapshot(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows, !runtimeFiltered)
 	egressScopeRevision := egressProfileScopeRevision(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
-	wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
-	if err != nil {
-		return Snapshot{}, err
-	}
 	wireGuardRows, err = s.attachWireGuardRelayPeersForSnapshot(ctx, resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	wireGuardRows = filterWireGuardProfilesForSnapshotGraph(resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows, wireGuardClientRows)
-	supportsWireGuard, err := s.agentSupportsWireGuardSnapshots(ctx, resolvedAgentID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if !supportsWireGuard {
-		relayRows = filterRelayListenerRowsWithoutWireGuard(relayRows)
-		httpRows = filterHTTPRuleRowsWithoutWireGuard(httpRows, relayRows)
-		l4Rows = filterL4RuleRowsWithoutWireGuard(l4Rows, relayRows)
-		wireGuardRows = nil
+	if runtimeFiltered {
+		wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		wireGuardRows = filterWireGuardProfilesForSnapshotGraph(resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows, wireGuardClientRows)
+		supportsWireGuard, err := s.agentSupportsWireGuardSnapshots(ctx, resolvedAgentID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if !supportsWireGuard {
+			relayRows = filterRelayListenerRowsWithoutWireGuard(relayRows)
+			httpRows = filterHTTPRuleRowsWithoutWireGuard(httpRows, relayRows)
+			l4Rows = filterL4RuleRowsWithoutWireGuard(l4Rows, relayRows)
+			wireGuardRows = nil
+		}
 	}
 
 	certRows, err := s.ListManagedCertificates(ctx)
@@ -341,8 +363,8 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		Rules:               SnapshotHTTPRules(httpRows),
 		L4Rules:             SnapshotL4Rules(l4Rows),
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
-		WireGuardProfiles:   SnapshotWireGuardProfiles(wireGuardRows),
-		EgressProfiles:      SnapshotEgressProfiles(egressRows),
+		WireGuardProfiles:   snapshotWireGuardProfiles(wireGuardRows, !runtimeFiltered),
+		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains),
 	}, nil
@@ -1454,6 +1476,7 @@ func filterEgressProfilesForSnapshot(
 	httpRows []HTTPRuleRow,
 	l4Rows []L4RuleRow,
 	relayRows []RelayListenerRow,
+	includeDisabled bool,
 ) []EgressProfileRow {
 	if len(rows) == 0 {
 		return rows
@@ -1464,7 +1487,7 @@ func filterEgressProfilesForSnapshot(
 	}
 	filtered := make([]EgressProfileRow, 0, len(executorIDs))
 	for _, row := range rows {
-		if !row.Enabled {
+		if !includeDisabled && !row.Enabled {
 			continue
 		}
 		if _, ok := executorIDs[row.ID]; ok {
@@ -2515,9 +2538,13 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 }
 
 func SnapshotWireGuardProfiles(rows []WireGuardProfileRow) []WireGuardProfile {
+	return snapshotWireGuardProfiles(rows, false)
+}
+
+func snapshotWireGuardProfiles(rows []WireGuardProfileRow, includeDisabled bool) []WireGuardProfile {
 	profiles := make([]WireGuardProfile, 0, len(rows))
 	for _, row := range rows {
-		if !row.Enabled {
+		if !includeDisabled && !row.Enabled {
 			continue
 		}
 		profiles = append(profiles, WireGuardProfile{
@@ -2542,9 +2569,13 @@ func SnapshotWireGuardProfiles(rows []WireGuardProfileRow) []WireGuardProfile {
 }
 
 func SnapshotEgressProfiles(rows []EgressProfileRow) []EgressProfile {
+	return snapshotEgressProfiles(rows, false)
+}
+
+func snapshotEgressProfiles(rows []EgressProfileRow, includeDisabled bool) []EgressProfile {
 	profiles := make([]EgressProfile, 0, len(rows))
 	for _, row := range rows {
-		if !row.Enabled {
+		if !includeDisabled && !row.Enabled {
 			continue
 		}
 		profiles = append(profiles, EgressProfile{

@@ -82,6 +82,43 @@ func TestFullSnapshotValidatorClassifiesReferenceCapabilityAndConflictErrors(t *
 	}
 }
 
+func TestFullSnapshotValidatorRejectsDisabledRelayAndCertificateReferences(t *testing.T) {
+	validator := FullSnapshotValidator{}
+	tests := []struct {
+		name   string
+		mutate func(*storage.Snapshot)
+	}{
+		{
+			name: "disabled relay",
+			mutate: func(snapshot *storage.Snapshot) {
+				snapshot.RelayListeners[0].Enabled = false
+			},
+		},
+		{
+			name: "disabled certificate policy",
+			mutate: func(snapshot *storage.Snapshot) {
+				snapshot.Certificates = nil
+				snapshot.CertificatePolicies[0].Enabled = false
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := validSnapshotForValidation()
+			tt.mutate(&snapshot)
+			err := validator.Validate(t.Context(), revision.SnapshotValidation{
+				Target: revision.Target{
+					AgentID: "edge-1", Capabilities: []string{"wireguard", "egress_profiles"},
+				},
+				Snapshot: snapshot,
+			})
+			if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
+				t.Fatalf("Validate() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
+			}
+		})
+	}
+}
+
 func validSnapshotForValidation() storage.Snapshot {
 	profileID := 7
 	egressID := 8
