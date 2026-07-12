@@ -39,6 +39,68 @@ func TestEgressProfileServiceCreateRedactsProxyURLInOutput(t *testing.T) {
 	}
 }
 
+func TestEgressProfileServiceCreateAndNoOpUpdateUseRevisionMutation(t *testing.T) {
+	store := newEgressProfileTestStore(t)
+	svc := NewEgressProfileService(store)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+	baselineRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() baseline error = %v", err)
+	}
+
+	created, err := svc.Create(t.Context(), EgressProfileInput{
+		Name:    stringPtrEgress("uow direct"),
+		Type:    stringPtrEgress("direct"),
+		Enabled: boolPtrEgress(true),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after create = %d, want 0", applyCalls)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after create error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+1 {
+		t.Fatalf("revision count after create = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
+	}
+	storedRevision := created.Revision
+
+	updated, err := svc.Update(t.Context(), created.ID, EgressProfileInput{})
+	if err != nil {
+		t.Fatalf("no-op Update() error = %v", err)
+	}
+	if updated.Revision != storedRevision {
+		t.Fatalf("no-op Update() revision = %d, want persisted revision %d", updated.Revision, storedRevision)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after no-op update error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+1 {
+		t.Fatalf("revision count after no-op update = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after no-op update = %d, want 0", applyCalls)
+	}
+	if _, err := svc.Delete(t.Context(), created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after delete error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+2 {
+		t.Fatalf("revision count after delete = %d, want baseline + 2 (%d)", len(revisions), len(baselineRevisions)+2)
+	}
+}
+
 func TestEgressProfileServiceCreateUsesGlobalRevisionFloor(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
@@ -464,10 +526,11 @@ func TestEgressProfileServiceUpdateBumpsReferencedRemoteAgentRevision(t *testing
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
-		ID:              "edge-a",
-		Name:            "edge-a",
-		DesiredRevision: 50,
-		CurrentRevision: 50,
+		ID:               "edge-a",
+		Name:             "edge-a",
+		CapabilitiesJSON: `["egress_profiles"]`,
+		DesiredRevision:  50,
+		CurrentRevision:  50,
 	}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
@@ -497,11 +560,18 @@ func TestEgressProfileServiceUpdateBumpsReferencedRemoteAgentRevision(t *testing
 	if err != nil {
 		t.Fatalf("ListAgents() error = %v", err)
 	}
-	if len(agents) != 1 || agents[0].DesiredRevision != updated.Revision {
-		t.Fatalf("agent revisions after update = %+v, want desired revision %d", agents, updated.Revision)
+	if len(agents) != 1 || agents[0].DesiredRevision != 50 {
+		t.Fatalf("agent rows after update = %+v, want legacy desired revision unchanged at 50", agents)
+	}
+	pointer, found, err := store.GetAgentRevisionPointer(t.Context(), "edge-a")
+	if err != nil {
+		t.Fatalf("GetAgentRevisionPointer() error = %v", err)
+	}
+	if !found || pointer.DesiredRevision != int64(updated.Revision) {
+		t.Fatalf("revision pointer after update = %+v, found=%v, want desired revision %d", pointer, found, updated.Revision)
 	}
 	snapshot, err := store.LoadAgentSnapshot(t.Context(), "edge-a", storage.AgentSnapshotInput{
-		DesiredRevision: agents[0].DesiredRevision,
+		DesiredRevision: int(updated.Revision),
 		CurrentRevision: 50,
 	})
 	if err != nil {
@@ -512,13 +582,14 @@ func TestEgressProfileServiceUpdateBumpsReferencedRemoteAgentRevision(t *testing
 	}
 }
 
-func TestEgressProfileServiceUpdateRollsBackProfileWhenRemoteRevisionBumpFails(t *testing.T) {
+func TestEgressProfileServiceUpdateDoesNotUseSaveAgentCompatibilityHook(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
-		ID:              "edge-a",
-		Name:            "edge-a",
-		DesiredRevision: 50,
-		CurrentRevision: 50,
+		ID:               "edge-a",
+		Name:             "edge-a",
+		CapabilitiesJSON: `["egress_profiles"]`,
+		DesiredRevision:  50,
+		CurrentRevision:  50,
 	}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
@@ -541,27 +612,34 @@ func TestEgressProfileServiceUpdateRollsBackProfileWhenRemoteRevisionBumpFails(t
 		saveAgentErrs: []error{errors.New("save agent failed")},
 	}
 	failingSvc := NewEgressProfileService(failingStore)
-	_, err := failingSvc.Update(t.Context(), profile.ID, EgressProfileInput{
+	updated, err := failingSvc.Update(t.Context(), profile.ID, EgressProfileInput{
 		ProxyURL: stringPtrEgress("socks5://127.0.0.1:2080"),
 	})
-	if err == nil {
-		t.Fatal("Update() error = nil")
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
 	}
 
 	rows, err := store.ListEgressProfiles(t.Context())
 	if err != nil {
 		t.Fatalf("ListEgressProfiles() error = %v", err)
 	}
-	if len(rows) != 1 || rows[0].ProxyURL != "socks5://127.0.0.1:1080" {
-		t.Fatalf("egress profiles after failed revision bump = %+v, want original proxy URL", rows)
+	if len(rows) != 1 || rows[0].ProxyURL != "socks5://127.0.0.1:2080" {
+		t.Fatalf("egress profiles after update = %+v, want committed proxy URL", rows)
+	}
+	pointer, found, err := store.GetAgentRevisionPointer(t.Context(), "edge-a")
+	if err != nil {
+		t.Fatalf("GetAgentRevisionPointer() error = %v", err)
+	}
+	if !found || pointer.DesiredRevision != int64(updated.Revision) {
+		t.Fatalf("revision pointer = %+v, found=%v, want desired revision %d", pointer, found, updated.Revision)
 	}
 }
 
-func TestEgressProfileServiceUpdateRestoresAgentRevisionsWhenPartialBumpFails(t *testing.T) {
+func TestEgressProfileServiceUpdateDoesNotPartiallyWriteAgentRows(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	for _, row := range []storage.AgentRow{
-		{ID: "edge-a", Name: "edge-a", DesiredRevision: 50, CurrentRevision: 50},
-		{ID: "edge-b", Name: "edge-b", DesiredRevision: 60, CurrentRevision: 60},
+		{ID: "edge-a", Name: "edge-a", CapabilitiesJSON: `["egress_profiles"]`, DesiredRevision: 50, CurrentRevision: 50},
+		{ID: "edge-b", Name: "edge-b", CapabilitiesJSON: `["egress_profiles"]`, DesiredRevision: 60, CurrentRevision: 60},
 	} {
 		if err := store.SaveAgent(t.Context(), row); err != nil {
 			t.Fatalf("SaveAgent(%s) error = %v", row.ID, err)
@@ -588,11 +666,11 @@ func TestEgressProfileServiceUpdateRestoresAgentRevisionsWhenPartialBumpFails(t 
 		saveAgentErrs: []error{nil, errors.New("save second agent failed")},
 	}
 	failingSvc := NewEgressProfileService(failingStore)
-	_, err := failingSvc.Update(t.Context(), profile.ID, EgressProfileInput{
+	updated, err := failingSvc.Update(t.Context(), profile.ID, EgressProfileInput{
 		ProxyURL: stringPtrEgress("socks5://127.0.0.1:2080"),
 	})
-	if err == nil {
-		t.Fatal("Update() error = nil")
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
 	}
 
 	agents, err := store.ListAgents(t.Context())
@@ -604,17 +682,45 @@ func TestEgressProfileServiceUpdateRestoresAgentRevisionsWhenPartialBumpFails(t 
 		desired[row.ID] = row.DesiredRevision
 	}
 	if desired["edge-a"] != 50 || desired["edge-b"] != 60 {
-		t.Fatalf("agent DesiredRevision after partial bump failure = %+v, want edge-a=50 edge-b=60", desired)
+		t.Fatalf("agent DesiredRevision after update = %+v, want edge-a=50 edge-b=60", desired)
+	}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		pointer, found, err := store.GetAgentRevisionPointer(t.Context(), agentID)
+		if err != nil {
+			t.Fatalf("GetAgentRevisionPointer(%s) error = %v", agentID, err)
+		}
+		if !found || pointer.DesiredRevision <= 0 || pointer.DesiredRevision > int64(updated.Revision) {
+			t.Fatalf("revision pointer %s = %+v, found=%v, want committed desired revision", agentID, pointer, found)
+		}
+	}
+	edgeARevisions, err := store.ListAgentRevisions(t.Context(), "edge-a")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(edge-a) error = %v", err)
+	}
+	edgeBRevisions, err := store.ListAgentRevisions(t.Context(), "edge-b")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(edge-b) error = %v", err)
+	}
+	edgeARevision := edgeARevisions[len(edgeARevisions)-1]
+	edgeBRevision := edgeBRevisions[len(edgeBRevisions)-1]
+	if edgeARevision.OperationID == "" || edgeBRevision.OperationID != edgeARevision.OperationID {
+		t.Fatalf("operation ids edge-a=%q edge-b=%q, want one multi-agent operation", edgeARevision.OperationID, edgeBRevision.OperationID)
+	}
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), edgeARevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() error = %v", err)
+	} else if !found {
+		t.Fatal("egress update dependency plan artifact was not persisted")
 	}
 }
 
-func TestEgressProfileServiceUpdateReportsRollbackFailure(t *testing.T) {
+func TestEgressProfileServiceUpdateRollsBackOnRevisionMutationFailure(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
-		ID:              "edge-a",
-		Name:            "edge-a",
-		DesiredRevision: 50,
-		CurrentRevision: 50,
+		ID:               "edge-a",
+		Name:             "edge-a",
+		CapabilitiesJSON: `["egress_profiles"]`,
+		DesiredRevision:  50,
+		CurrentRevision:  50,
 	}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
@@ -633,20 +739,26 @@ func TestEgressProfileServiceUpdateReportsRollbackFailure(t *testing.T) {
 	}
 
 	failingStore := &failingSaveAgentEgressProfileStore{
-		SQLiteStore:           store,
-		saveAgentErrs:         []error{errors.New("save agent failed")},
-		saveEgressProfileErrs: []error{nil, errors.New("rollback profiles failed")},
+		SQLiteStore:         store,
+		revisionMutationErr: errors.New("revision mutation failed"),
 	}
 	failingSvc := NewEgressProfileService(failingStore)
 	_, err := failingSvc.Update(t.Context(), profile.ID, EgressProfileInput{
 		ProxyURL: stringPtrEgress("socks5://127.0.0.1:2080"),
 	})
-	if err == nil || !strings.Contains(err.Error(), "rollback failed") || !strings.Contains(err.Error(), "rollback profiles failed") {
-		t.Fatalf("Update() error = %v, want rollback failure detail", err)
+	if err == nil || !strings.Contains(err.Error(), "revision mutation failed") {
+		t.Fatalf("Update() error = %v, want revision mutation failure", err)
+	}
+	rows, listErr := store.ListEgressProfiles(t.Context())
+	if listErr != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", listErr)
+	}
+	if len(rows) != 1 || rows[0].ProxyURL != "socks5://127.0.0.1:1080" {
+		t.Fatalf("egress profiles after failed UoW = %+v, want original proxy URL", rows)
 	}
 }
 
-func TestEgressProfileServiceUpdateTriggersLocalApplyWhenLocalExecutorUsesProfile(t *testing.T) {
+func TestEgressProfileServiceUpdateDoesNotTriggerLocalApplyWhenLocalExecutorUsesProfile(t *testing.T) {
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	applyCalls := 0
@@ -672,8 +784,8 @@ func TestEgressProfileServiceUpdateTriggersLocalApplyWhenLocalExecutorUsesProfil
 	}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if applyCalls != 1 {
-		t.Fatalf("local apply calls = %d, want 1", applyCalls)
+	if applyCalls != 0 {
+		t.Fatalf("local apply calls = %d, want 0", applyCalls)
 	}
 }
 
@@ -958,6 +1070,14 @@ type failingSaveAgentEgressProfileStore struct {
 	*storage.SQLiteStore
 	saveAgentErrs         []error
 	saveEgressProfileErrs []error
+	revisionMutationErr   error
+}
+
+func (s *failingSaveAgentEgressProfileStore) WithRevisionMutation(ctx context.Context, mutate storage.RevisionMutationFunc) error {
+	if s.revisionMutationErr != nil {
+		return s.revisionMutationErr
+	}
+	return s.SQLiteStore.WithRevisionMutation(ctx, mutate)
 }
 
 func (s *failingSaveAgentEgressProfileStore) SaveAgent(ctx context.Context, row storage.AgentRow) error {

@@ -234,6 +234,76 @@ func newL4RuleServiceTestStore(t *testing.T) *fakeL4Store {
 	}
 }
 
+func TestL4RuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	store := newMutationValidationStore(t)
+	svc := NewL4RuleService(testConfig(), store)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+	baselineRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() baseline error = %v", err)
+	}
+
+	created, err := svc.Create(t.Context(), "local", L4RuleInput{
+		Protocol:   stringPtrL4("tcp"),
+		ListenHost: stringPtrL4("127.0.0.1"),
+		ListenPort: intPtrL4(19090),
+		Backends:   &[]L4Backend{{Host: "127.0.0.1", Port: 8096}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after create = %d, want 0", applyCalls)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after create error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+1 {
+		t.Fatalf("revision count after create = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
+	}
+	createRevision := revisions[len(revisions)-1]
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), createRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() after create error = %v", err)
+	} else if !found {
+		t.Fatal("create dependency plan artifact was not persisted")
+	}
+	updated, err := svc.Update(t.Context(), "local", created.ID, L4RuleInput{
+		Tags: &[]string{"updated"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(updated.Tags) != 1 || updated.Tags[0] != "updated" {
+		t.Fatalf("Update() tags = %v, want [updated]", updated.Tags)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after update error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+2 {
+		t.Fatalf("revision count after update = %d, want baseline + 2 (%d)", len(revisions), len(baselineRevisions)+2)
+	}
+
+	if _, err := svc.Delete(t.Context(), "local", created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after delete = %d, want 0", applyCalls)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after delete error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+3 {
+		t.Fatalf("revision count after delete = %d, want baseline + 3 (%d)", len(revisions), len(baselineRevisions)+3)
+	}
+}
+
 func TestL4RuleServiceCreateRejectsUDPHTTPProxyEgressProfile(t *testing.T) {
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 20, Name: "http", Type: "http", ProxyURL: "http://127.0.0.1:8080", Enabled: true})

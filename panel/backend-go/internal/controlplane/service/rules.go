@@ -12,8 +12,125 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+func newConfigMutationExecutor(store any) *revision.Executor {
+	revisionStore, ok := store.(revision.Store)
+	if !ok {
+		// Narrow in-memory test stores retain their direct persistence path.
+		// Production GormStore values always satisfy revision.Store.
+		return nil
+	}
+	return NewMutationExecutor(revisionStore)
+}
+
+func configMutationTargets(cfg config.Config, agentIDs []string, intentEgressProfileIDs []int) []revision.Target {
+	agentIDs = uniqueAgentIDs(agentIDs)
+	targets := make([]revision.Target, 0, len(agentIDs))
+	for _, agentID := range agentIDs {
+		local := cfg.EnableLocalAgent && agentID == cfg.LocalAgentID
+		target := revision.Target{AgentID: agentID, Local: local}
+		if local {
+			target.Capabilities = append([]string(nil), defaultLocalCapabilities...)
+		}
+		if len(intentEgressProfileIDs) > 0 {
+			target.IntentResources.EgressProfileIDs = append([]int(nil), intentEgressProfileIDs...)
+		}
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func configMutationRevision(revisions map[string]int64, agentID string, fallback int) int {
+	if revisionNumber := revisions[strings.TrimSpace(agentID)]; revisionNumber > 0 {
+		return int(revisionNumber)
+	}
+	return fallback
+}
+
+func maxConfigMutationRevision(revisions map[string]int64, fallback int) int {
+	result := fallback
+	for _, revisionNumber := range revisions {
+		if int(revisionNumber) > result {
+			result = int(revisionNumber)
+		}
+	}
+	return result
+}
+
+type configDependencyStore interface {
+	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
+	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
+}
+
+func expandConfigDependencyAgentIDs(ctx context.Context, store configDependencyStore, seeds []string) ([]string, error) {
+	listeners, err := store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	listenerAgentIDs := make(map[int]string, len(listeners))
+	for _, listener := range listeners {
+		if listener.ID > 0 {
+			listenerAgentIDs[listener.ID] = strings.TrimSpace(listener.AgentID)
+		}
+	}
+
+	seen := make(map[string]struct{})
+	queue := uniqueAgentIDs(seeds)
+	for len(queue) > 0 {
+		agentID := queue[0]
+		queue = queue[1:]
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		seen[agentID] = struct{}{}
+		addLayers := func(layersJSON string) {
+			for _, listenerID := range flattenRelayLayers(parseIntLayers(layersJSON)) {
+				dependencyAgentID := listenerAgentIDs[listenerID]
+				if dependencyAgentID == "" {
+					continue
+				}
+				if _, ok := seen[dependencyAgentID]; !ok {
+					queue = append(queue, dependencyAgentID)
+				}
+			}
+		}
+		httpRules, err := store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range httpRules {
+			if row.Enabled {
+				addLayers(row.RelayLayersJSON)
+			}
+		}
+		l4Rules, err := store.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range l4Rules {
+			if row.Enabled {
+				addLayers(row.RelayLayersJSON)
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for agentID := range seen {
+		result = append(result, agentID)
+	}
+	return uniqueAgentIDs(result), nil
+}
+
+func runConfigPostCommitActions(actions []func()) {
+	for _, action := range actions {
+		if action != nil {
+			action()
+		}
+	}
+}
 
 type HTTPRuleInput struct {
 	ID                       *int                `json:"id,omitempty"`
@@ -58,10 +175,14 @@ type ruleService struct {
 	cfg               config.Config
 	store             ruleStore
 	localApplyTrigger func(context.Context) error
+	mutationExecutor  *revision.Executor
+	revisionMutation  bool
+	revisionNumbers   map[string]int64
+	postCommitActions *[]func()
 }
 
 func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
-	return &ruleService{cfg: cfg, store: store}
+	return &ruleService{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(store)}
 }
 
 func (s *ruleService) SetLocalApplyTrigger(trigger func(context.Context) error) {
@@ -69,6 +190,9 @@ func (s *ruleService) SetLocalApplyTrigger(trigger func(context.Context) error) 
 }
 
 func (s *ruleService) triggerLocalApply(ctx context.Context, agentID string) error {
+	if s.revisionMutation {
+		return nil
+	}
 	if !s.cfg.EnableLocalAgent || agentID != s.cfg.LocalAgentID || s.localApplyTrigger == nil {
 		return nil
 	}
@@ -153,6 +277,45 @@ func (s *ruleService) Get(ctx context.Context, agentID string, id int) (HTTPRule
 }
 
 func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRuleInput) (HTTPRule, error) {
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.createLegacy(ctx, agentID, input)
+	}
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	targetAgentIDs, err := s.ruleMutationAgentIDs(ctx, resolvedID, nil, &input)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	postCommitActions := make([]func(), 0)
+	var created HTTPRule
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "http_rule.create",
+		DependencyAction: revision.DependencyActionApply,
+		Request:          input,
+		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+			return httpRuleMutationResourceState(ctx, tx, s.cfg)
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &ruleService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+				postCommitActions: &postCommitActions,
+			}
+			var mutateErr error
+			created, mutateErr = txService.createLegacy(ctx, resolvedID, input)
+			return mutateErr
+		},
+	})
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	runConfigPostCommitActions(postCommitActions)
+	return created, nil
+}
+
+func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HTTPRuleInput) (HTTPRule, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return HTTPRule{}, err
@@ -216,7 +379,7 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
-	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	if err := validateUniqueHTTPFrontendBinding(append(rows, httpRuleToRow(rule))); err != nil {
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
@@ -306,15 +469,67 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		}
 	}
 	if certRowsChanged {
-		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+		s.runAfterRevisionCommit(func() {
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+		})
 	}
 	for _, certID := range autoManagedDNSIssueIDs {
-		ManagedCertificateDispatcher().Submit(certID)
+		certID := certID
+		s.runAfterRevisionCommit(func() { ManagedCertificateDispatcher().Submit(certID) })
 	}
 	return rule, nil
 }
 
 func (s *ruleService) Update(ctx context.Context, agentID string, id int, input HTTPRuleInput) (HTTPRule, error) {
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.updateLegacy(ctx, agentID, id, input)
+	}
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	current, err := s.Get(ctx, resolvedID, id)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	targetAgentIDs, err := s.ruleMutationAgentIDs(ctx, resolvedID, &current, &input)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	postCommitActions := make([]func(), 0)
+	var updated HTTPRule
+	result, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "http_rule.update",
+		DependencyAction: revision.DependencyActionApply,
+		Request: struct {
+			ID    int           `json:"id"`
+			Input HTTPRuleInput `json:"input"`
+		}{ID: id, Input: input},
+		Targets: configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+			return httpRuleMutationResourceState(ctx, tx, s.cfg)
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &ruleService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+				postCommitActions: &postCommitActions,
+			}
+			var mutateErr error
+			updated, mutateErr = txService.updateLegacy(ctx, resolvedID, id, input)
+			return mutateErr
+		},
+	})
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	if result.NoOp {
+		return s.Get(ctx, resolvedID, id)
+	}
+	runConfigPostCommitActions(postCommitActions)
+	return updated, nil
+}
+
+func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, input HTTPRuleInput) (HTTPRule, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return HTTPRule{}, err
@@ -386,7 +601,7 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		rollbackDefaultWireGuard()
 		return HTTPRule{}, err
 	}
-	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows...)
 	nextRows[targetIndex] = httpRuleToRow(rule)
@@ -496,15 +711,61 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		}
 	}
 	if certRowsChanged {
-		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+		s.runAfterRevisionCommit(func() {
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+		})
 	}
 	for _, certID := range autoManagedDNSIssueIDs {
-		ManagedCertificateDispatcher().Submit(certID)
+		certID := certID
+		s.runAfterRevisionCommit(func() { ManagedCertificateDispatcher().Submit(certID) })
 	}
 	return rule, nil
 }
 
 func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPRule, error) {
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.deleteLegacy(ctx, agentID, id)
+	}
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	current, err := s.Get(ctx, resolvedID, id)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	targetAgentIDs, err := s.ruleMutationAgentIDs(ctx, resolvedID, &current, nil)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	postCommitActions := make([]func(), 0)
+	var deleted HTTPRule
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "http_rule.delete",
+		DependencyAction: revision.DependencyActionDelete,
+		Request:          map[string]int{"id": id},
+		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+			return httpRuleMutationResourceState(ctx, tx, s.cfg)
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &ruleService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+				postCommitActions: &postCommitActions,
+			}
+			var mutateErr error
+			deleted, mutateErr = txService.deleteLegacy(ctx, resolvedID, id)
+			return mutateErr
+		},
+	})
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	runConfigPostCommitActions(postCommitActions)
+	return deleted, nil
+}
+
+func (s *ruleService) deleteLegacy(ctx context.Context, agentID string, id int) (HTTPRule, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return HTTPRule{}, err
@@ -589,7 +850,9 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		return rollbackPostSave(err)
 	}
 	if certRowsChanged {
-		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+		s.runAfterRevisionCommit(func() {
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+		})
 	}
 	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "http_rule", deleted.ID)
 	return deleted, nil
@@ -617,6 +880,9 @@ func (s *ruleService) ensureAgentExists(ctx context.Context, agentID string) (st
 }
 
 func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {
+	if s.revisionMutation {
+		return nil
+	}
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
 		return nil
 	}
@@ -639,6 +905,9 @@ func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID str
 }
 
 func (s *ruleService) bumpRelayLayerWireGuardCallers(ctx context.Context, agentIDs []string, revision int, deferLocalApply bool) error {
+	if s.revisionMutation {
+		return nil
+	}
 	for _, agentID := range agentIDs {
 		if err := s.bumpRemoteDesiredRevision(ctx, agentID, revision); err != nil {
 			return err
@@ -651,6 +920,113 @@ func (s *ruleService) bumpRelayLayerWireGuardCallers(ctx context.Context, agentI
 		}
 	}
 	return nil
+}
+
+func (s *ruleService) runAfterRevisionCommit(action func()) {
+	if action == nil {
+		return
+	}
+	if s.revisionMutation && s.postCommitActions != nil {
+		*s.postCommitActions = append(*s.postCommitActions, action)
+		return
+	}
+	action()
+}
+
+func (s *ruleService) ruleMutationAgentIDs(
+	ctx context.Context,
+	ruleAgentID string,
+	current *HTTPRule,
+	input *HTTPRuleInput,
+) ([]string, error) {
+	agentIDs := []string{ruleAgentID}
+	listeners, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	listenersByID := make(map[int]storage.RelayListenerRow, len(listeners))
+	for _, listener := range listeners {
+		if listener.ID > 0 {
+			listenersByID[listener.ID] = listener
+		}
+	}
+
+	addGraphTargets := func(layers [][]int, egressProfileID *int) error {
+		for _, listenerID := range flattenRelayLayers(layers) {
+			if listener, ok := listenersByID[listenerID]; ok {
+				agentIDs = append(agentIDs, listener.AgentID)
+			}
+		}
+		agentIDs = append(agentIDs, wireGuardRelayLayerCallerAgentIDs(ruleAgentID, layers, listenersByID)...)
+		executors, err := egressProfileExecutorAgentIDsForMutation(ctx, s.store, ruleAgentID, layers, egressProfileID)
+		if err != nil {
+			return err
+		}
+		agentIDs = append(agentIDs, executors...)
+		return nil
+	}
+
+	var currentLayers [][]int
+	var currentEgressProfileID *int
+	currentEnabled := false
+	if current != nil {
+		currentLayers = cloneIntLayers(current.RelayLayers)
+		currentEgressProfileID = copyOptionalInt(current.EgressProfileID)
+		currentEnabled = current.Enabled
+		if currentEnabled {
+			if err := addGraphTargets(currentLayers, currentEgressProfileID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if input == nil {
+		return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+	}
+
+	nextLayers := currentLayers
+	if input.RelayLayers != nil {
+		nextLayers = cloneIntLayers(*input.RelayLayers)
+	}
+	nextEgressProfileID := currentEgressProfileID
+	if input.EgressProfileID != nil {
+		nextEgressProfileID = nil
+		if *input.EgressProfileID > 0 {
+			value := *input.EgressProfileID
+			nextEgressProfileID = &value
+		}
+	}
+	nextEnabled := true
+	if current != nil {
+		nextEnabled = currentEnabled
+	}
+	if input.Enabled != nil {
+		nextEnabled = *input.Enabled
+	}
+	if nextEnabled {
+		if err := addGraphTargets(nextLayers, nextEgressProfileID); err != nil {
+			return nil, err
+		}
+	}
+	return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+}
+
+func httpRuleMutationResourceState(ctx context.Context, tx *storage.GormStore, cfg config.Config) (any, error) {
+	agentIDs, err := allKnownAgentIDs(ctx, cfg, tx)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]storage.HTTPRuleRow, 0)
+	for _, agentID := range agentIDs {
+		agentRows, err := tx.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for i := range agentRows {
+			agentRows[i].Revision = 0
+		}
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
 }
 
 func (s *ruleService) listRulesAcrossAllAgents(ctx context.Context) ([]storage.HTTPRuleRow, error) {

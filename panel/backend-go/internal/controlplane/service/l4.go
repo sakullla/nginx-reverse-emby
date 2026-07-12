@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -100,6 +101,9 @@ type l4Service struct {
 	cfg               config.Config
 	store             storage.Store
 	localApplyTrigger func(context.Context) error
+	mutationExecutor  *revision.Executor
+	revisionMutation  bool
+	revisionNumbers   map[string]int64
 }
 
 type wireGuardClientRowStore interface {
@@ -119,7 +123,7 @@ type wireGuardProfileRollbackTarget struct {
 }
 
 func NewL4RuleService(cfg config.Config, store storage.Store) *l4Service {
-	return &l4Service{cfg: cfg, store: store}
+	return &l4Service{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(store)}
 }
 
 func (s *l4Service) SetLocalApplyTrigger(trigger func(context.Context) error) {
@@ -127,6 +131,9 @@ func (s *l4Service) SetLocalApplyTrigger(trigger func(context.Context) error) {
 }
 
 func (s *l4Service) triggerLocalApply(ctx context.Context, agentID string) error {
+	if s.revisionMutation {
+		return nil
+	}
 	if !s.cfg.EnableLocalAgent || agentID != s.cfg.LocalAgentID || s.localApplyTrigger == nil {
 		return nil
 	}
@@ -206,7 +213,6 @@ func (s *l4Service) ListPage(ctx context.Context, query ListQuery) ([]L4Rule, Pa
 	return page, meta, nil
 }
 
-
 func (s *l4Service) Get(ctx context.Context, agentID string, id int) (L4Rule, error) {
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
 	if err != nil {
@@ -224,6 +230,39 @@ func (s *l4Service) Get(ctx context.Context, agentID string, id int) (L4Rule, er
 }
 
 func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInput) (L4Rule, error) {
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.createLegacy(ctx, agentID, input)
+	}
+	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	targetAgentIDs, err := s.l4MutationAgentIDs(ctx, resolvedID, nil, &input)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	var created L4Rule
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "l4_rule.create",
+		DependencyAction: revision.DependencyActionApply,
+		Request:          input,
+		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+			return l4RuleMutationResourceState(ctx, tx, s.cfg)
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &l4Service{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+			}
+			var mutateErr error
+			created, mutateErr = txService.createLegacy(ctx, resolvedID, input)
+			return mutateErr
+		},
+	})
+	return created, err
+}
+
+func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4RuleInput) (L4Rule, error) {
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
 	if err != nil {
 		return L4Rule{}, err
@@ -305,7 +344,7 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
-	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	egressExecutorAgentIDs, egressExecutorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedID, rule.RelayLayers, rule.EgressProfileID, rule.Revision)
 	if err != nil {
 		rollbackDefaultWireGuard()
@@ -343,6 +382,52 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 }
 
 func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4RuleInput) (L4Rule, error) {
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.updateLegacy(ctx, agentID, id, input)
+	}
+	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	current, err := s.Get(ctx, resolvedID, id)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	targetAgentIDs, err := s.l4MutationAgentIDs(ctx, resolvedID, &current, &input)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	var updated L4Rule
+	result, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "l4_rule.update",
+		DependencyAction: revision.DependencyActionApply,
+		Request: struct {
+			ID    int         `json:"id"`
+			Input L4RuleInput `json:"input"`
+		}{ID: id, Input: input},
+		Targets: configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+			return l4RuleMutationResourceState(ctx, tx, s.cfg)
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &l4Service{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+			}
+			var mutateErr error
+			updated, mutateErr = txService.updateLegacy(ctx, resolvedID, id, input)
+			return mutateErr
+		},
+	})
+	if err != nil {
+		return L4Rule{}, err
+	}
+	if result.NoOp {
+		return s.Get(ctx, resolvedID, id)
+	}
+	return updated, nil
+}
+
+func (s *l4Service) updateLegacy(ctx context.Context, agentID string, id int, input L4RuleInput) (L4Rule, error) {
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
 	if err != nil {
 		return L4Rule{}, err
@@ -430,7 +515,7 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
-	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	egressExecutorAgentIDs, egressExecutorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedID, rule.RelayLayers, rule.EgressProfileID, rule.Revision)
 	if err != nil {
 		rollbackDefaultWireGuard()
@@ -474,6 +559,43 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 }
 
 func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule, error) {
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.deleteLegacy(ctx, agentID, id)
+	}
+	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	current, err := s.Get(ctx, resolvedID, id)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	targetAgentIDs, err := s.l4MutationAgentIDs(ctx, resolvedID, &current, nil)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	var deleted L4Rule
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "l4_rule.delete",
+		DependencyAction: revision.DependencyActionDelete,
+		Request:          map[string]int{"id": id},
+		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+			return l4RuleMutationResourceState(ctx, tx, s.cfg)
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &l4Service{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+			}
+			var mutateErr error
+			deleted, mutateErr = txService.deleteLegacy(ctx, resolvedID, id)
+			return mutateErr
+		},
+	})
+	return deleted, err
+}
+
+func (s *l4Service) deleteLegacy(ctx context.Context, agentID string, id int) (L4Rule, error) {
 	resolvedID, err := s.ensureAgentSupportsL4(ctx, agentID)
 	if err != nil {
 		return L4Rule{}, err
@@ -536,6 +658,9 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 }
 
 func (s *l4Service) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {
+	if s.revisionMutation {
+		return nil
+	}
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
 		return nil
 	}
@@ -558,6 +683,9 @@ func (s *l4Service) bumpRemoteDesiredRevision(ctx context.Context, agentID strin
 }
 
 func (s *l4Service) bumpRelayLayerWireGuardCallers(ctx context.Context, agentIDs []string, revision int) error {
+	if s.revisionMutation {
+		return nil
+	}
 	for _, agentID := range agentIDs {
 		if err := s.bumpRemoteDesiredRevision(ctx, agentID, revision); err != nil {
 			return err
@@ -567,6 +695,102 @@ func (s *l4Service) bumpRelayLayerWireGuardCallers(ctx context.Context, agentIDs
 		}
 	}
 	return nil
+}
+
+func (s *l4Service) l4MutationAgentIDs(
+	ctx context.Context,
+	ruleAgentID string,
+	current *L4Rule,
+	input *L4RuleInput,
+) ([]string, error) {
+	agentIDs := []string{ruleAgentID}
+	listeners, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	listenersByID := make(map[int]storage.RelayListenerRow, len(listeners))
+	for _, listener := range listeners {
+		if listener.ID > 0 {
+			listenersByID[listener.ID] = listener
+		}
+	}
+
+	addGraphTargets := func(layers [][]int, egressProfileID *int) error {
+		for _, listenerID := range flattenRelayLayers(layers) {
+			if listener, ok := listenersByID[listenerID]; ok {
+				agentIDs = append(agentIDs, listener.AgentID)
+			}
+		}
+		agentIDs = append(agentIDs, wireGuardRelayLayerCallerAgentIDs(ruleAgentID, layers, listenersByID)...)
+		executors, err := egressProfileExecutorAgentIDsForMutation(ctx, s.store, ruleAgentID, layers, egressProfileID)
+		if err != nil {
+			return err
+		}
+		agentIDs = append(agentIDs, executors...)
+		return nil
+	}
+
+	var currentLayers [][]int
+	var currentEgressProfileID *int
+	currentEnabled := false
+	if current != nil {
+		currentLayers = cloneIntLayers(current.RelayLayers)
+		currentEgressProfileID = copyOptionalInt(current.EgressProfileID)
+		currentEnabled = current.Enabled
+		if currentEnabled {
+			if err := addGraphTargets(currentLayers, currentEgressProfileID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if input == nil {
+		return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+	}
+
+	nextLayers := currentLayers
+	if input.RelayLayers != nil {
+		nextLayers = cloneIntLayers(*input.RelayLayers)
+	}
+	nextEgressProfileID := currentEgressProfileID
+	if input.EgressProfileID != nil {
+		nextEgressProfileID = nil
+		if *input.EgressProfileID > 0 {
+			value := *input.EgressProfileID
+			nextEgressProfileID = &value
+		}
+	}
+	nextEnabled := true
+	if current != nil {
+		nextEnabled = currentEnabled
+	}
+	if input.Enabled != nil {
+		nextEnabled = *input.Enabled
+	}
+	if nextEnabled {
+		if err := addGraphTargets(nextLayers, nextEgressProfileID); err != nil {
+			return nil, err
+		}
+	}
+	return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+}
+
+func l4RuleMutationResourceState(ctx context.Context, tx *storage.GormStore, cfg config.Config) (any, error) {
+	agentIDs, err := allKnownAgentIDs(ctx, cfg, tx)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]storage.L4RuleRow, 0)
+	for _, agentID := range agentIDs {
+		agentRows, err := tx.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for i := range agentRows {
+			agentRows[i].Revision = 0
+		}
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
 }
 
 func (s *l4Service) ensureAgentSupportsL4(ctx context.Context, agentID string) (string, error) {

@@ -26,6 +26,131 @@ type relayMaterial struct {
 	KeyPEM  string
 }
 
+func TestRelayServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	store := newMutationValidationStore(t)
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+	baselineRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() baseline error = %v", err)
+	}
+
+	created, err := svc.Create(t.Context(), "local", RelayListenerInput{
+		Name:       stringPtr("uow-relay"),
+		ListenHost: stringPtr("127.0.0.1"),
+		ListenPort: intPtrService(19443),
+		Enabled:    boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after create = %d, want 0", applyCalls)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after create error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+1 {
+		t.Fatalf("revision count after create = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
+	}
+	createRevision := revisions[len(revisions)-1]
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), createRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() after create error = %v", err)
+	} else if !found {
+		t.Fatal("create dependency plan artifact was not persisted")
+	}
+	updated, err := svc.Update(t.Context(), "local", created.ID, RelayListenerInput{
+		Name: stringPtr("uow-relay-updated"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.Name != "uow-relay-updated" {
+		t.Fatalf("Update() name = %q, want uow-relay-updated", updated.Name)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after update error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+2 {
+		t.Fatalf("revision count after update = %d, want baseline + 2 (%d)", len(revisions), len(baselineRevisions)+2)
+	}
+
+	if _, err := svc.Delete(t.Context(), "local", created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after delete = %d, want 0", applyCalls)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after delete error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+3 {
+		t.Fatalf("revision count after delete = %d, want baseline + 3 (%d)", len(revisions), len(baselineRevisions)+3)
+	}
+}
+
+func TestRelayServiceUpdateCreatesCrossAgentDependencyPlan(t *testing.T) {
+	store := newMutationValidationStore(t)
+	for _, agent := range []storage.AgentRow{
+		{ID: "rule-edge", Name: "rule-edge", Platform: "linux-amd64", CapabilitiesJSON: `["http_rules"]`},
+		{ID: "relay-edge", Name: "relay-edge", Platform: "linux-amd64", CapabilitiesJSON: `[]`},
+	} {
+		if err := store.SaveAgent(t.Context(), agent); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agent.ID, err)
+		}
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-edge", []storage.RelayListenerRow{{
+		ID: 70, AgentID: "relay-edge", Name: "relay", ListenHost: "127.0.0.1", ListenPort: 17443,
+		PublicHost: "relay-edge.example.test", PublicPort: 17443, Enabled: true, TransportMode: "tls_tcp", Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "rule-edge", []storage.HTTPRuleRow{{
+		ID: 71, AgentID: "rule-edge", FrontendURL: "http://relay-consumer.example.test:18084",
+		BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, RelayLayersJSON: `[[70]]`, Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+	updated, err := svc.Update(t.Context(), "relay-edge", 70, RelayListenerInput{
+		Name:              stringPtr("relay-updated"),
+		CertificateSource: stringPtr("auto_relay_ca"),
+		TrustModeSource:   stringPtr("auto"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.Name != "relay-updated" || updated.CertificateID == nil {
+		t.Fatalf("Update() = %+v, want renamed listener with managed certificate", updated)
+	}
+	ruleRevisions, err := store.ListAgentRevisions(t.Context(), "rule-edge")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(rule-edge) error = %v", err)
+	}
+	relayRevisions, err := store.ListAgentRevisions(t.Context(), "relay-edge")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(relay-edge) error = %v", err)
+	}
+	ruleRevision := ruleRevisions[len(ruleRevisions)-1]
+	relayRevision := relayRevisions[len(relayRevisions)-1]
+	if ruleRevision.OperationID == "" || relayRevision.OperationID != ruleRevision.OperationID {
+		t.Fatalf("operation ids rule=%q relay=%q, want one multi-agent operation", ruleRevision.OperationID, relayRevision.OperationID)
+	}
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), ruleRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() error = %v", err)
+	} else if !found {
+		t.Fatal("relay update dependency plan artifact was not persisted")
+	}
+}
+
 type relayCertStore struct {
 	agents                          []storage.AgentRow
 	httpRulesByID                   map[string][]storage.HTTPRuleRow

@@ -223,6 +223,156 @@ func testConfig() config.Config {
 	return config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
 }
 
+func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	store := newMutationValidationStore(t)
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
+		ID: 1, Domain: "sub.zouter.skl.onl", Enabled: true, Scope: "domain", IssuerMode: "local_http01",
+		TargetAgentIDs: `["local"]`, Status: "active", Usage: "https", CertificateType: "acme", Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	svc := NewRuleService(testConfig(), store)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+	baselineRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() baseline error = %v", err)
+	}
+
+	created, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://sub.zouter.skl.onl"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after create = %d, want 0", applyCalls)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after create error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+1 {
+		t.Fatalf("revision count after create = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
+	}
+	createRevision := revisions[len(revisions)-1]
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), createRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() after create error = %v", err)
+	} else if !found {
+		t.Fatal("create dependency plan artifact was not persisted")
+	}
+	updated, err := svc.Update(t.Context(), "local", created.ID, HTTPRuleInput{
+		Tags: &[]string{"updated"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(updated.Tags) != 1 || updated.Tags[0] != "updated" {
+		t.Fatalf("Update() tags = %v, want [updated]", updated.Tags)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after update error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+2 {
+		t.Fatalf("revision count after update = %d, want baseline + 2 (%d)", len(revisions), len(baselineRevisions)+2)
+	}
+
+	deleted, err := svc.Delete(t.Context(), "local", created.ID)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != created.ID {
+		t.Fatalf("Delete() id = %d, want %d", deleted.ID, created.ID)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after delete = %d, want 0", applyCalls)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after delete error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+3 {
+		t.Fatalf("revision count after delete = %d, want baseline + 3 (%d)", len(revisions), len(baselineRevisions)+3)
+	}
+	deleteRevision := revisions[len(revisions)-1]
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), deleteRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() after delete error = %v", err)
+	} else if !found {
+		t.Fatal("delete dependency plan artifact was not persisted")
+	}
+}
+
+func TestRuleServiceCrossAgentRelayPlanAndMissingDependencyAreAtomic(t *testing.T) {
+	store := newMutationValidationStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "relay-edge", Name: "relay-edge", Platform: "linux-amd64", CapabilitiesJSON: `[]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-edge", []storage.RelayListenerRow{{
+		ID: 70, AgentID: "relay-edge", Name: "relay", ListenHost: "127.0.0.1", ListenPort: 17443,
+		PublicHost: "relay-edge.example.test", PublicPort: 17443, Enabled: true, TransportMode: "tls_tcp", Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	svc := NewRuleService(testConfig(), store)
+	created, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://relay-plan.example.test:18082"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers: &[][]int{{70}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	localRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(local) error = %v", err)
+	}
+	relayRevisions, err := store.ListAgentRevisions(t.Context(), "relay-edge")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(relay-edge) error = %v", err)
+	}
+	localRevision := localRevisions[len(localRevisions)-1]
+	relayRevision := relayRevisions[len(relayRevisions)-1]
+	if localRevision.OperationID == "" || relayRevision.OperationID != localRevision.OperationID {
+		t.Fatalf("operation ids local=%q relay=%q, want one multi-agent operation", localRevision.OperationID, relayRevision.OperationID)
+	}
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), localRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() error = %v", err)
+	} else if !found {
+		t.Fatal("multi-agent dependency plan artifact was not persisted")
+	}
+
+	beforeLocalRevisionCount := len(localRevisions)
+	_, err = svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://missing-relay.example.test:18083"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers: &[][]int{{999}},
+	})
+	if err == nil {
+		t.Fatal("Create() with missing relay error = nil")
+	}
+	rows, listErr := store.ListHTTPRules(t.Context(), "local")
+	if listErr != nil {
+		t.Fatalf("ListHTTPRules() error = %v", listErr)
+	}
+	if len(rows) != 1 || rows[0].ID != created.ID {
+		t.Fatalf("HTTP rules after rejected mutation = %+v, want only rule %d", rows, created.ID)
+	}
+	localRevisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(local) after rejection error = %v", err)
+	}
+	if len(localRevisions) != beforeLocalRevisionCount {
+		t.Fatalf("local revision count after rejected mutation = %d, want %d", len(localRevisions), beforeLocalRevisionCount)
+	}
+}
+
 type egressProfileSeedStore interface {
 	SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error
 }
