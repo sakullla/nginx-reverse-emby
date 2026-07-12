@@ -52,35 +52,39 @@ type agentHeartbeatStore interface {
 }
 
 type AgentSummary struct {
-	ID                     string   `json:"id"`
-	Name                   string   `json:"name"`
-	AgentURL               string   `json:"agent_url"`
-	Version                string   `json:"version"`
-	Platform               string   `json:"platform"`
-	RuntimePackageVersion  string   `json:"runtime_package_version"`
-	RuntimePackagePlatform string   `json:"runtime_package_platform"`
-	RuntimePackageArch     string   `json:"runtime_package_arch"`
-	RuntimePackageSHA256   string   `json:"runtime_package_sha256"`
-	DesiredPackageSHA256   string   `json:"desired_package_sha256"`
-	PackageSyncStatus      string   `json:"package_sync_status"`
-	DesiredVersion         string   `json:"desired_version"`
-	Tags                   []string `json:"tags"`
-	OutboundProxyURL       string   `json:"outbound_proxy_url"`
-	TrafficStatsInterval   string   `json:"traffic_stats_interval"`
-	Mode                   string   `json:"mode"`
-	DesiredRevision        int      `json:"desired_revision"`
-	CurrentRevision        int      `json:"current_revision"`
-	LastApplyRevision      int      `json:"last_apply_revision"`
-	LastApplyStatus        string   `json:"last_apply_status"`
-	LastApplyMessage       string   `json:"last_apply_message"`
-	LastSeenAt             string   `json:"last_seen_at"`
-	Status                 string   `json:"status"`
-	Error                  string   `json:"error"`
-	IsLocal                bool     `json:"is_local"`
-	LastSeenIP             string   `json:"last_seen_ip"`
-	Capabilities           []string `json:"capabilities"`
-	HTTPRulesCount         int      `json:"http_rules_count"`
-	L4RulesCount           int      `json:"l4_rules_count"`
+	ID                     string             `json:"id"`
+	Name                   string             `json:"name"`
+	AgentURL               string             `json:"agent_url"`
+	Version                string             `json:"version"`
+	Platform               string             `json:"platform"`
+	RuntimePackageVersion  string             `json:"runtime_package_version"`
+	RuntimePackagePlatform string             `json:"runtime_package_platform"`
+	RuntimePackageArch     string             `json:"runtime_package_arch"`
+	RuntimePackageSHA256   string             `json:"runtime_package_sha256"`
+	DesiredPackageSHA256   string             `json:"desired_package_sha256"`
+	PackageSyncStatus      string             `json:"package_sync_status"`
+	DesiredVersion         string             `json:"desired_version"`
+	Tags                   []string           `json:"tags"`
+	OutboundProxyURL       string             `json:"outbound_proxy_url"`
+	TrafficStatsInterval   string             `json:"traffic_stats_interval"`
+	Mode                   string             `json:"mode"`
+	DesiredRevision        int                `json:"desired_revision"`
+	CurrentRevision        int                `json:"current_revision"`
+	LastApplyRevision      int                `json:"last_apply_revision"`
+	LastApplyStatus        string             `json:"last_apply_status"`
+	LastApplyMessage       string             `json:"last_apply_message"`
+	LastSeenAt             string             `json:"last_seen_at"`
+	Status                 string             `json:"status"`
+	Error                  string             `json:"error"`
+	IsLocal                bool               `json:"is_local"`
+	LastSeenIP             string             `json:"last_seen_ip"`
+	LastSeenIPv4           string             `json:"last_seen_ipv4"`
+	LastSeenIPv6           string             `json:"last_seen_ipv6"`
+	DdnsDomain             string             `json:"ddns_domain"`
+	DdnsStatus             storage.DdnsStatus `json:"ddns_status,omitempty"`
+	Capabilities           []string           `json:"capabilities"`
+	HTTPRulesCount         int                `json:"http_rules_count"`
+	L4RulesCount           int                `json:"l4_rules_count"`
 }
 
 type HTTPRuleBackend struct {
@@ -133,6 +137,8 @@ type HeartbeatRequest struct {
 	Capabilities              []string                            `json:"capabilities"`
 	Stats                     AgentStats                          `json:"stats"`
 	LastSeenIP                string                              `json:"last_seen_ip"`
+	LastSeenIPv4              string                              `json:"last_seen_ipv4"`
+	LastSeenIPv6              string                              `json:"last_seen_ipv6"`
 	LastApplyStatus           string                              `json:"last_apply_status"`
 	LastApplyMessage          string                              `json:"last_apply_message"`
 	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
@@ -156,6 +162,7 @@ type HeartbeatReply struct {
 	EgressProfiles       []storage.EgressProfile            `json:"egress_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
+	DDNSConfig           *storage.DDNSConfig                `json:"ddns_config,omitempty"`
 	OutboundProxyURL     string                             `json:"-"`
 	TrafficStatsInterval string                             `json:"-"`
 	TrafficStatsEnabled  *bool                              `json:"-"`
@@ -192,14 +199,15 @@ type RegisterRequest struct {
 }
 
 type UpdateAgentRequest struct {
-	Name                 *string   `json:"name,omitempty"`
-	AgentURL             *string   `json:"agent_url,omitempty"`
-	AgentToken           *string   `json:"agent_token,omitempty"`
-	Version              *string   `json:"version,omitempty"`
-	Tags                 *[]string `json:"tags,omitempty"`
-	Capabilities         *[]string `json:"capabilities,omitempty"`
-	OutboundProxyURL     *string   `json:"outbound_proxy_url,omitempty"`
-	TrafficStatsInterval *string   `json:"traffic_stats_interval,omitempty"`
+	Name                 *string             `json:"name,omitempty"`
+	AgentURL             *string             `json:"agent_url,omitempty"`
+	AgentToken           *string             `json:"agent_token,omitempty"`
+	Version              *string             `json:"version,omitempty"`
+	Tags                 *[]string           `json:"tags,omitempty"`
+	Capabilities         *[]string           `json:"capabilities,omitempty"`
+	OutboundProxyURL     *string             `json:"outbound_proxy_url,omitempty"`
+	TrafficStatsInterval *string             `json:"traffic_stats_interval,omitempty"`
+	DdnsConfig           *storage.DDNSConfig `json:"ddns_config,omitempty"`
 }
 
 type AgentStats map[string]any
@@ -217,6 +225,7 @@ type agentService struct {
 	now                        func() time.Time
 	localApplyTrigger          func(context.Context) error
 	localMonitorRefreshTrigger func(context.Context) error
+	ddnsReconciler             DDNSReconciler
 	bundledCacheMu             sync.Mutex
 	bundledCache               map[string]bundledPackageCacheEntry
 	monitorMu                  sync.Mutex
@@ -227,6 +236,17 @@ type heartbeatTrafficService interface {
 	IngestHeartbeat(context.Context, string, AgentStats) error
 	Summary(context.Context, string) (TrafficSummary, error)
 	BlockState(context.Context, string) (bool, string, error)
+}
+
+// DDNSReconciler triggers master-side A/AAAA reconciliation after an agent
+// heartbeat reports fresh IPs. It is implemented by the DDNS service (see
+// service/ddns*.go) and injected via SetDDNSReconciler. The Heartbeat path
+// invokes it fire-and-forget: the caller swallows any panic and ignores the
+// outcome, so DNS resolution issues can never break the heartbeat main path.
+// The method carries no Cloudflare credential — the implementer reads CF tokens
+// from the master environment exclusively (R7).
+type DDNSReconciler interface {
+	ReconcileAfterHeartbeat(ctx context.Context, agentID string)
 }
 
 type bundledPackageCacheEntry struct {
@@ -274,6 +294,22 @@ func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error)
 
 func (s *agentService) SetLocalMonitorRefreshTrigger(trigger func(context.Context) error) {
 	s.localMonitorRefreshTrigger = wrapLocalApplyTrigger(trigger)
+}
+
+// SetDDNSReconciler injects the master DDNS reconciler (T5). nil leaves the
+// heartbeat path with a no-op trigger, which is the default until wired.
+func (s *agentService) SetDDNSReconciler(reconciler DDNSReconciler) {
+	s.ddnsReconciler = reconciler
+}
+
+// triggerDDNSReconcile fires the master DDNS reconciler after a heartbeat,
+// swallowing any panic so DNS issues never break the heartbeat main path.
+func (s *agentService) triggerDDNSReconcile(ctx context.Context, agentID string) {
+	if s.ddnsReconciler == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	s.ddnsReconciler.ReconcileAfterHeartbeat(ctx, agentID)
 }
 
 func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
@@ -510,6 +546,14 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		if trafficStatsInterval != previousTrafficStatsInterval {
 			configChanged = true
 		}
+	}
+	// DDNS config is an optional, pointer-guarded update (nil = leave untouched,
+	// matching Tags/Capabilities). Any explicit update — including clearing via
+	// an empty struct — re-serializes the column and bumps the desired revision so
+	// the new config is dispatched to the agent. No credential is stored (R7).
+	if input.DdnsConfig != nil {
+		row.DdnsConfigJSON = marshalDDNSConfigJSON(input.DdnsConfig)
+		configChanged = true
 	}
 	if configChanged {
 		allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
@@ -784,6 +828,14 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if strings.TrimSpace(request.LastSeenIP) != "" {
 		row.LastSeenIP = strings.TrimSpace(request.LastSeenIP)
 	}
+	// Agent-reported address families overwrite only when non-empty, mirroring the
+	// storage layer: a family transiently absent this cycle keeps its last value.
+	if v4 := strings.TrimSpace(request.LastSeenIPv4); v4 != "" {
+		row.LastSeenIPv4 = v4
+	}
+	if v6 := strings.TrimSpace(request.LastSeenIPv6); v6 != "" {
+		row.LastSeenIPv6 = v6
+	}
 	row.CurrentRevision = int(request.CurrentRevision)
 	if request.LastApplyRevision > 0 {
 		row.LastApplyRevision = int(request.LastApplyRevision)
@@ -803,6 +855,10 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 			return HeartbeatReply{}, err
 		}
 	}
+	// Fire-and-forget: fresh reported IPs may warrant a master-side A/AAAA
+	// refresh. This MUST NOT affect the heartbeat return — triggerDDNSReconcile
+	// swallows panics and the reconciler handles its own errors (R-主链路阻塞).
+	s.triggerDDNSReconcile(ctx, row.ID)
 	if err := s.reconcileManagedCertificatesFromHeartbeat(ctx, row, request); err != nil {
 		return HeartbeatReply{}, err
 	}
@@ -833,6 +889,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
+		DDNSConfig:           snapshot.DDNSConfig,
 		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
 		TrafficStatsInterval: strings.TrimSpace(row.TrafficStatsInterval),
 		TrafficStatsEnabled:  heartbeatBoolPtr(trafficStatsEnabled),
@@ -852,6 +909,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.EgressProfiles = nil
 		reply.Certificates = nil
 		reply.CertificatePolicies = nil
+		reply.DDNSConfig = nil
 	}
 	return reply, nil
 }
@@ -1052,6 +1110,13 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		desiredPackageSHA256 = strings.TrimSpace(snapshot.VersionPackage.SHA256)
 		packageSyncStatus = derivePackageSyncStatus(row, snapshot.VersionPackage)
 	}
+	// DDNS display fields: domain comes from the dispatched config snapshot (nil
+	// when unconfigured), resolution status from the master-written runtime
+	// column. Neither carries a Cloudflare credential (R7).
+	ddnsDomain := ""
+	if snapshot.DDNSConfig != nil {
+		ddnsDomain = strings.TrimSpace(snapshot.DDNSConfig.Domain)
+	}
 
 	return AgentSummary{
 		ID:                     row.ID,
@@ -1080,10 +1145,29 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		Error:                  "",
 		IsLocal:                false,
 		LastSeenIP:             row.LastSeenIP,
+		LastSeenIPv4:           row.LastSeenIPv4,
+		LastSeenIPv6:           row.LastSeenIPv6,
+		DdnsDomain:             ddnsDomain,
+		DdnsStatus:             parseDdnsStatus(row.DdnsStatusJSON),
 		Capabilities:           parseStringArray(row.CapabilitiesJSON),
 		HTTPRulesCount:         len(rules),
 		L4RulesCount:           len(l4Rules),
 	}, nil
+}
+
+// parseDdnsStatus decodes the master-written runtime DDNS status column for
+// display. Empty/malformed values yield a zero status (omitted from JSON). The
+// status never contains credentials — it is runtime resolution state only (R7).
+func parseDdnsStatus(raw string) storage.DdnsStatus {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return storage.DdnsStatus{}
+	}
+	var status storage.DdnsStatus
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		return storage.DdnsStatus{}
+	}
+	return status
 }
 
 func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) string {

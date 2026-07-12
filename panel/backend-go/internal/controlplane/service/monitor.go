@@ -23,18 +23,22 @@ type AgentMonitorUpdate struct {
 }
 
 type AgentMonitorAgent struct {
-	ID         string               `json:"id"`
-	Name       string               `json:"name"`
-	Status     string               `json:"status"`
-	LastSeenAt string               `json:"last_seen_at"`
-	LastSeenIP string               `json:"last_seen_ip"`
-	Version    string               `json:"version"`
-	Platform   string               `json:"platform"`
-	Mode       string               `json:"mode"`
-	Tags       []string             `json:"tags"`
-	IsLocal    bool                 `json:"is_local"`
-	Metrics    AgentMonitorMetrics  `json:"metrics"`
-	Traffic    *AgentMonitorTraffic `json:"traffic"`
+	ID           string               `json:"id"`
+	Name         string               `json:"name"`
+	Status       string               `json:"status"`
+	LastSeenAt   string               `json:"last_seen_at"`
+	LastSeenIP   string               `json:"last_seen_ip"`
+	LastSeenIPv4 string               `json:"last_seen_ipv4"`
+	LastSeenIPv6 string               `json:"last_seen_ipv6"`
+	DdnsDomain   string               `json:"ddns_domain"`
+	DdnsStatus   storage.DdnsStatus   `json:"ddns_status,omitempty"`
+	Version      string               `json:"version"`
+	Platform     string               `json:"platform"`
+	Mode         string               `json:"mode"`
+	Tags         []string             `json:"tags"`
+	IsLocal      bool                 `json:"is_local"`
+	Metrics      AgentMonitorMetrics  `json:"metrics"`
+	Traffic      *AgentMonitorTraffic `json:"traffic"`
 }
 
 type AgentMonitorMetrics struct {
@@ -224,18 +228,22 @@ func (s *agentService) monitorSummaryForRow(row storage.AgentRow) AgentSummary {
 func (s *agentService) monitorAgentFromSummary(ctx context.Context, summary AgentSummary, stats AgentStats) AgentMonitorAgent {
 	metrics := monitorMetricsFromStats(stats, summary.Status)
 	return AgentMonitorAgent{
-		ID:         summary.ID,
-		Name:       summary.Name,
-		Status:     summary.Status,
-		LastSeenAt: summary.LastSeenAt,
-		LastSeenIP: summary.LastSeenIP,
-		Version:    summary.Version,
-		Platform:   summary.Platform,
-		Mode:       summary.Mode,
-		Tags:       append([]string(nil), summary.Tags...),
-		IsLocal:    summary.IsLocal,
-		Metrics:    metrics,
-		Traffic:    s.monitorTraffic(ctx, summary.ID),
+		ID:           summary.ID,
+		Name:         summary.Name,
+		Status:       summary.Status,
+		LastSeenAt:   summary.LastSeenAt,
+		LastSeenIP:   summary.LastSeenIP,
+		LastSeenIPv4: summary.LastSeenIPv4,
+		LastSeenIPv6: summary.LastSeenIPv6,
+		DdnsDomain:   summary.DdnsDomain,
+		DdnsStatus:   summary.DdnsStatus,
+		Version:      summary.Version,
+		Platform:     summary.Platform,
+		Mode:         summary.Mode,
+		Tags:         append([]string(nil), summary.Tags...),
+		IsLocal:      summary.IsLocal,
+		Metrics:      metrics,
+		Traffic:      s.monitorTraffic(ctx, summary.ID),
 	}
 }
 

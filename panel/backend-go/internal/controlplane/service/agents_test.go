@@ -2677,3 +2677,219 @@ func TestAgentServiceDeleteRejectsLocalAgentWithEnglishError(t *testing.T) {
 		t.Fatalf("Delete() error = %v", err)
 	}
 }
+
+// fakeDDNSReconciler records ReconcileAfterHeartbeat invocations and can be
+// configured to panic, exercising the fire-and-forget contract on the heartbeat
+// main path.
+type fakeDDNSReconciler struct {
+	calledIDs []string
+	panicOn   bool
+}
+
+func (f *fakeDDNSReconciler) ReconcileAfterHeartbeat(_ context.Context, agentID string) {
+	f.calledIDs = append(f.calledIDs, agentID)
+	if f.panicOn {
+		panic("simulated ddns reconciler failure")
+	}
+}
+
+func TestAgentServiceHeartbeatWritesReportedIPv4IPv6OnlyWhenNonEmpty(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-ddns",
+			Name:            "remote-ddns",
+			AgentToken:      "token-remote-ddns",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+			LastSeenIPv4:    "198.51.100.7",
+			LastSeenIPv6:    "2001:db8::dead",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	if _, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		LastSeenIPv4:    "203.0.113.42",
+		// LastSeenIPv6 omitted this cycle -> previous value must be retained.
+	}, "token-remote-ddns"); err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if store.savedAgent.LastSeenIPv4 != "203.0.113.42" {
+		t.Fatalf("saved LastSeenIPv4 = %q, want non-empty overwrite", store.savedAgent.LastSeenIPv4)
+	}
+	if store.savedAgent.LastSeenIPv6 != "2001:db8::dead" {
+		t.Fatalf("saved LastSeenIPv6 = %q, want previous retained", store.savedAgent.LastSeenIPv6)
+	}
+
+	// Second cycle: only IPv6 reported this time; IPv4 must persist.
+	if _, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		LastSeenIPv6:    "2001:db8::1",
+	}, "token-remote-ddns"); err != nil {
+		t.Fatalf("Heartbeat() second error = %v", err)
+	}
+	if store.savedAgent.LastSeenIPv4 != "203.0.113.42" {
+		t.Fatalf("saved LastSeenIPv4 = %q, want previous retained", store.savedAgent.LastSeenIPv4)
+	}
+	if store.savedAgent.LastSeenIPv6 != "2001:db8::1" {
+		t.Fatalf("saved LastSeenIPv6 = %q, want non-empty overwrite", store.savedAgent.LastSeenIPv6)
+	}
+}
+
+func TestAgentServiceHeartbeatWithNilDDNSReconcilerReturnsNormally(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-ddns",
+			Name:            "remote-ddns",
+			AgentToken:      "token-remote-ddns",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	svc := NewAgentService(config.Config{}, store)
+	if svc.ddnsReconciler != nil {
+		t.Fatalf("default ddnsReconciler = %v, want nil until injected", svc.ddnsReconciler)
+	}
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{CurrentRevision: 1}, "token-remote-ddns")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if reply.DesiredRevision != 2 {
+		t.Fatalf("reply DesiredRevision = %d, want 2", reply.DesiredRevision)
+	}
+}
+
+func TestAgentServiceHeartbeatInvokesAndSurvivesPanickingDDNSReconciler(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-ddns",
+			Name:            "remote-ddns",
+			AgentToken:      "token-remote-ddns",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	reconciler := &fakeDDNSReconciler{panicOn: true}
+	svc := NewAgentService(config.Config{}, store)
+	svc.SetDDNSReconciler(reconciler)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		LastSeenIPv4:    "203.0.113.99",
+	}, "token-remote-ddns")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v after reconciler panic (must not break main path)", err)
+	}
+	if reply.DesiredRevision != 2 {
+		t.Fatalf("reply DesiredRevision = %d, want 2", reply.DesiredRevision)
+	}
+	if len(reconciler.calledIDs) != 1 || reconciler.calledIDs[0] != "remote-ddns" {
+		t.Fatalf("reconciler calledIDs = %+v, want [remote-ddns]", reconciler.calledIDs)
+	}
+}
+
+func TestAgentServiceUpdateAppliesDDNSConfigAndBumpsRevision(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-ddns",
+			Name:             "Edge DDNS",
+			AgentToken:       "token-ddns",
+			CapabilitiesJSON: `["http_rules"]`,
+			DesiredRevision:  7,
+			CurrentRevision:  7,
+			LastApplyStatus:  "success",
+		}},
+		// summaryForRow derives DdnsDomain from the dispatched snapshot config.
+		snapshot: storage.Snapshot{DDNSConfig: &storage.DDNSConfig{Domain: "edge.example.com"}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	ddns := &storage.DDNSConfig{
+		Domain: "edge.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		IPv6:   storage.DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+	}
+	agent, err := svc.Update(context.Background(), "edge-ddns", UpdateAgentRequest{DdnsConfig: ddns})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !strings.Contains(store.savedAgent.DdnsConfigJSON, "edge.example.com") {
+		t.Fatalf("saved DdnsConfigJSON = %q, want domain persisted", store.savedAgent.DdnsConfigJSON)
+	}
+	// R7: no credential may ever live in the DDNS config column.
+	if strings.Contains(strings.ToLower(store.savedAgent.DdnsConfigJSON), "token") {
+		t.Fatalf("DdnsConfigJSON leaked credential-like key: %q", store.savedAgent.DdnsConfigJSON)
+	}
+	assertRevisionAboveFloor(t, "saved DesiredRevision", store.savedAgent.DesiredRevision, 7)
+	if agent.DdnsDomain != "edge.example.com" {
+		t.Fatalf("summary DdnsDomain = %q, want edge.example.com", agent.DdnsDomain)
+	}
+}
+
+func TestAgentServiceUpdateLeavesDDNSConfigUntouchedWhenOmitted(t *testing.T) {
+	storedConfig := `{"domain":"keep.example.com","ipv4":{"enabled":true,"source":"public_api"}}`
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-ddns",
+			Name:             "Edge DDNS",
+			AgentToken:       "token-ddns",
+			CapabilitiesJSON: `["http_rules"]`,
+			DdnsConfigJSON:   storedConfig,
+			DesiredRevision:  9,
+			CurrentRevision:  9,
+			LastApplyStatus:  "success",
+		}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	renamed := "Edge Renamed"
+	if _, err := svc.Update(context.Background(), "edge-ddns", UpdateAgentRequest{Name: &renamed}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if store.savedAgent.DdnsConfigJSON != storedConfig {
+		t.Fatalf("saved DdnsConfigJSON = %q, want untouched when DdnsConfig is nil", store.savedAgent.DdnsConfigJSON)
+	}
+	if store.savedAgent.DesiredRevision != 9 {
+		t.Fatalf("saved DesiredRevision = %d, want 9 (no bump when ddns config omitted)", store.savedAgent.DesiredRevision)
+	}
+}
+
+// TestAgentSummaryJSONCarriesNoCredential verifies the AgentSummary wire shape
+// that redactAgentSummary operates on never exposes a token/secret key — the
+// precondition that lets the handler redact only the proxy password (R7).
+func TestAgentSummaryJSONCarriesNoCredential(t *testing.T) {
+	summary := AgentSummary{
+		ID:               "edge-ddns",
+		Name:             "Edge DDNS",
+		LastSeenIPv4:     "203.0.113.9",
+		LastSeenIPv6:     "2001:db8::1",
+		DdnsDomain:       "edge.example.com",
+		DdnsStatus:       storage.DdnsStatus{Status: "ok", LastResolvedIPv4: "203.0.113.9"},
+		OutboundProxyURL: "socks://user:secret@127.0.0.1:1080",
+	}
+	raw, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("json.Marshal(summary) error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(summary) error = %v", err)
+	}
+	for _, key := range []string{"agent_token", "token", "register_token", "ddns_token", "cf_token", "api_key", "secret"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("AgentSummary JSON leaked credential key %q: %s", key, raw)
+		}
+	}
+	for _, key := range []string{"last_seen_ipv4", "last_seen_ipv6", "ddns_domain", "ddns_status"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("AgentSummary JSON missing DDNS display field %q: %s", key, raw)
+		}
+	}
+}
