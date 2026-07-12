@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -68,6 +69,34 @@ func TestCoordinatorClaimsOnlyPersistedApplyFrontier(t *testing.T) {
 	}
 	if len(claimed.Claims) != 1 || claimed.Claims[0].Node.AgentID != "edge-a" || claimed.Claims[0].Result.Lease == nil {
 		t.Fatalf("released claims = %+v, want one edge-a lease", claimed.Claims)
+	}
+}
+
+func TestCoordinatorOrdinaryClaimCannotBypassPersistedFrontier(t *testing.T) {
+	now := time.Date(2026, 7, 12, 23, 12, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	seedDependencyOperation(t, store, now)
+	coord := newTestCoordinator(t, store, now, 0.5)
+
+	claimed, err := coord.Claim(t.Context(), "edge-a")
+	if !errors.Is(err, ErrDependencyClaimRequired) {
+		t.Fatalf("Claim(edge-a) = %+v, error %v; want dependency-scoped rejection", claimed, err)
+	}
+	if claimed.Lease != nil {
+		t.Fatalf("ordinary claim bypassed frontier with lease %+v", claimed.Lease)
+	}
+	if attempts, listErr := store.ListCoordinatorAttempts(t.Context(), "edge-a", 1); listErr != nil {
+		t.Fatalf("ListCoordinatorAttempts(edge-a) error = %v", listErr)
+	} else if len(attempts) != 0 {
+		t.Fatalf("ordinary claim created non-frontier attempts: %+v", attempts)
+	}
+
+	frontier, err := coord.ClaimDependencyFrontier(t.Context(), "operation-dependency")
+	if err != nil {
+		t.Fatalf("ClaimDependencyFrontier() error = %v", err)
+	}
+	if len(frontier.Claims) != 1 || frontier.Claims[0].Node.AgentID != "edge-b" || frontier.Claims[0].Result.Lease == nil {
+		t.Fatalf("frontier claims = %+v, want one edge-b lease", frontier.Claims)
 	}
 }
 
@@ -244,7 +273,14 @@ func TestCoordinatorRebuildsDependencyPlanFromPersistedRevisionArtifacts(t *test
 		t.Fatalf("initial frontier = %+v, want edge-b", evaluation.Frontier)
 	}
 
-	lease := mustClaim(t, coord, "edge-b")
+	claimed, err := coord.ClaimDependencyFrontier(t.Context(), plan.OperationID)
+	if err != nil {
+		t.Fatalf("ClaimDependencyFrontier() error = %v", err)
+	}
+	if len(claimed.Claims) != 1 || claimed.Claims[0].Node.AgentID != "edge-b" || claimed.Claims[0].Result.Lease == nil {
+		t.Fatalf("dependency claims = %+v, want one edge-b lease", claimed.Claims)
+	}
+	lease := *claimed.Claims[0].Result.Lease
 	if _, err := coord.Start(t.Context(), StartRequest{Lease: lease, GenerationID: "generation-b"}); err != nil {
 		t.Fatalf("Start(edge-b) error = %v", err)
 	}

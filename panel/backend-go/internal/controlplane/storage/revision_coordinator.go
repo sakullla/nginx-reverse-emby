@@ -42,10 +42,11 @@ const (
 )
 
 var (
-	ErrCoordinatorLeaseConflict   = errors.New("revision coordinator lease conflict")
-	ErrCoordinatorStateConflict   = errors.New("revision coordinator state conflict")
-	ErrCoordinatorNotFound        = errors.New("revision coordinator record not found")
-	ErrCoordinatorReconcileNeeded = errors.New("revision coordinator reconciliation required")
+	ErrCoordinatorLeaseConflict           = errors.New("revision coordinator lease conflict")
+	ErrCoordinatorStateConflict           = errors.New("revision coordinator state conflict")
+	ErrCoordinatorNotFound                = errors.New("revision coordinator record not found")
+	ErrCoordinatorReconcileNeeded         = errors.New("revision coordinator reconciliation required")
+	ErrCoordinatorDependencyClaimRequired = errors.New("revision coordinator dependency-scoped claim required")
 )
 
 type CoordinatorLease struct {
@@ -240,6 +241,16 @@ func (s *GormStore) ClaimLatestAgentRevision(ctx context.Context, request Coordi
 			}
 			if expected.OperationID != request.ExpectedOperationID {
 				return nil
+			}
+		} else {
+			var dependencyPlanRefs int64
+			if err := tx.Model(&AgentRevisionArtifactRow{}).
+				Where("agent_id = ? AND revision = ? AND role = ?", request.AgentID, pointer.DesiredRevision, RevisionArtifactRoleDependencyPlan).
+				Count(&dependencyPlanRefs).Error; err != nil {
+				return err
+			}
+			if dependencyPlanRefs > 0 {
+				return fmt.Errorf("%w: agent %q revision %d", ErrCoordinatorDependencyClaimRequired, request.AgentID, pointer.DesiredRevision)
 			}
 		}
 

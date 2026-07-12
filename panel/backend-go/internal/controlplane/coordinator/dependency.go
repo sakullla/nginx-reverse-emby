@@ -13,6 +13,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+var ErrDependencyClaimRequired = storage.ErrCoordinatorDependencyClaimRequired
+
 type dependencyRepository interface {
 	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
 	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
