@@ -106,7 +106,12 @@ func TestMutationExecutorRequiresWireGuardCapabilityForWireGuardEgress(t *testin
 
 	_, err := executor.Execute(t.Context(), revision.MutationRequest{
 		Kind: "egress_profile.create", IdempotencyKey: "wireguard-egress-capability", Request: map[string]any{"profile": 1},
-		Targets: []revision.Target{{AgentID: "edge-egress"}},
+		Targets: []revision.Target{{
+			AgentID: "edge-egress",
+			IntentResources: revision.IntentResourceSelection{
+				EgressProfileIDs: []int{profileID},
+			},
+		}},
 		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
 			profiles, err := tx.ListEgressProfiles(ctx)
 			if err != nil {
@@ -138,6 +143,73 @@ func TestMutationExecutorRequiresWireGuardCapabilityForWireGuardEgress(t *testin
 		t.Fatalf("HTTP rule survived rollback: %+v", rows)
 	}
 	assertMutationValidationLedgerRolledBack(t, store, "op-wireguard-egress-capability", "wireguard-egress-capability")
+}
+
+func TestMutationExecutorDoesNotLeakEgressIntentAcrossAgents(t *testing.T) {
+	store := newMutationValidationStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-capable", Name: "edge-capable", Platform: "linux-amd64",
+		CapabilitiesJSON: `["wireguard","egress_profiles"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(edge-capable) error = %v", err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-unrelated", Name: "edge-unrelated", Platform: "linux-amd64",
+		CapabilitiesJSON: `[]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(edge-unrelated) error = %v", err)
+	}
+
+	profileID := 21
+	executor := newMutationValidationExecutor(store, "op-egress-target-isolation")
+	_, err := executor.Execute(t.Context(), revision.MutationRequest{
+		Kind: "config_set.update", IdempotencyKey: "egress-target-isolation", Request: map[string]any{"profile": profileID, "rule": 2},
+		Targets: []revision.Target{
+			{
+				AgentID: "edge-capable",
+				IntentResources: revision.IntentResourceSelection{
+					EgressProfileIDs: []int{profileID},
+				},
+			},
+			{AgentID: "edge-unrelated"},
+		},
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+			if target.AgentID == "edge-capable" {
+				profiles, err := tx.ListEgressProfiles(ctx)
+				if err != nil {
+					return nil, err
+				}
+				for i := range profiles {
+					profiles[i].Revision = 0
+				}
+				return map[string]any{"egress_profiles": profiles}, nil
+			}
+			rules, err := tx.ListHTTPRules(ctx, target.AgentID)
+			if err != nil {
+				return nil, err
+			}
+			for i := range rules {
+				rules[i].Revision = 0
+			}
+			return map[string]any{"rules": rules}, nil
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			if err := tx.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
+				ID: profileID, Name: "capable-wg-egress", Type: "wireguard", WireGuardConfigJSON: `{}`,
+				Enabled: true, Revision: revisions["edge-capable"],
+			}}); err != nil {
+				return err
+			}
+			return tx.SaveHTTPRules(ctx, "edge-unrelated", []storage.HTTPRuleRow{{
+				ID: 2, AgentID: "edge-unrelated", FrontendURL: "http://unrelated.example.com:8080",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8082"}]`, Enabled: true,
+				Revision: int(revisions["edge-unrelated"]),
+			}})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want selected capable-agent egress intent isolated from unrelated target", err)
+	}
 }
 
 func TestMutationExecutorRejectsHTTPAndL4ListenerConflict(t *testing.T) {

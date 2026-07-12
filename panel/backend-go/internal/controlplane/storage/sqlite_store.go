@@ -1481,16 +1481,13 @@ func filterEgressProfilesForSnapshot(
 	if len(rows) == 0 {
 		return rows
 	}
-	if includeDisabled {
-		return append([]EgressProfileRow(nil), rows...)
-	}
 	executorIDs := egressProfileExecutorIDs(agentID, httpRows, l4Rows, relayRows)
 	if len(executorIDs) == 0 {
 		return nil
 	}
 	filtered := make([]EgressProfileRow, 0, len(executorIDs))
 	for _, row := range rows {
-		if !row.Enabled {
+		if !includeDisabled && !row.Enabled {
 			continue
 		}
 		if _, ok := executorIDs[row.ID]; ok {
@@ -2589,6 +2586,11 @@ func snapshotWireGuardProfiles(rows []WireGuardProfileRow, includeDisabled bool)
 
 func SnapshotEgressProfiles(rows []EgressProfileRow) []EgressProfile {
 	return snapshotEgressProfiles(rows, false)
+}
+
+// SnapshotEgressProfilesForIntent preserves disabled rows for pre-commit validation.
+func SnapshotEgressProfilesForIntent(rows []EgressProfileRow) []EgressProfile {
+	return snapshotEgressProfiles(rows, true)
 }
 
 func snapshotEgressProfiles(rows []EgressProfileRow, includeDisabled bool) []EgressProfile {

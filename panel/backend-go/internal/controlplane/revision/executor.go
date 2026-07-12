@@ -27,13 +27,20 @@ type Store interface {
 }
 
 type Target struct {
-	AgentID             string   `json:"agent_id"`
-	Local               bool     `json:"local,omitempty"`
-	DesiredVersion      string   `json:"desired_version,omitempty"`
-	Platform            string   `json:"platform,omitempty"`
-	Capabilities        []string `json:"capabilities,omitempty"`
-	ApplyTimeoutSeconds int      `json:"apply_timeout_seconds,omitempty"`
-	DrainTimeoutSeconds int      `json:"drain_timeout_seconds,omitempty"`
+	AgentID             string                  `json:"agent_id"`
+	Local               bool                    `json:"local,omitempty"`
+	DesiredVersion      string                  `json:"desired_version,omitempty"`
+	Platform            string                  `json:"platform,omitempty"`
+	Capabilities        []string                `json:"capabilities,omitempty"`
+	ApplyTimeoutSeconds int                     `json:"apply_timeout_seconds,omitempty"`
+	DrainTimeoutSeconds int                     `json:"drain_timeout_seconds,omitempty"`
+	IntentResources     IntentResourceSelection `json:"intent_resources,omitempty"`
+}
+
+// IntentResourceSelection identifies global resources that this mutation
+// associates with one target even before the target's runtime graph references them.
+type IntentResourceSelection struct {
+	EgressProfileIDs []int `json:"egress_profile_ids,omitempty"`
 }
 
 type SnapshotValidation struct {
@@ -305,6 +312,10 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				if buildErr != nil {
 					return storage.RevisionMutationDecision{}, buildErr
 				}
+				validationSnapshot, buildErr = includeSelectedIntentResources(ctx, tx, target, validationSnapshot)
+				if buildErr != nil {
+					return storage.RevisionMutationDecision{}, buildErr
+				}
 			}
 			for _, validator := range e.validators {
 				if validateErr := validator.Validate(ctx, SnapshotValidation{
@@ -500,9 +511,31 @@ func normalizeTargets(input []Target) ([]Target, error) {
 		}
 		seen[target.AgentID] = struct{}{}
 		target.Capabilities = normalizedCapabilities(target.Capabilities)
+		intentEgressProfileIDs, err := normalizedIntentResourceIDs(target.IntentResources.EgressProfileIDs)
+		if err != nil {
+			return nil, wrapError(ErrorCodeInvalidRequest, "affected agent %q %v", target.AgentID, err)
+		}
+		target.IntentResources.EgressProfileIDs = intentEgressProfileIDs
 		result = append(result, target)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].AgentID < result[j].AgentID })
+	return result, nil
+}
+
+func normalizedIntentResourceIDs(input []int) ([]int, error) {
+	seen := make(map[int]struct{}, len(input))
+	result := make([]int, 0, len(input))
+	for _, id := range input {
+		if id <= 0 {
+			return nil, fmt.Errorf("intent egress profile id must be positive")
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	sort.Ints(result)
 	return result, nil
 }
 
@@ -541,6 +574,48 @@ func buildStorageSnapshot(ctx context.Context, store *storage.GormStore, target 
 
 func buildStorageIntentSnapshot(ctx context.Context, store *storage.GormStore, target Target) (storage.Snapshot, error) {
 	return buildStorageSnapshotMode(ctx, store, target, true)
+}
+
+func includeSelectedIntentResources(
+	ctx context.Context,
+	store *storage.GormStore,
+	target Target,
+	snapshot storage.Snapshot,
+) (storage.Snapshot, error) {
+	if len(target.IntentResources.EgressProfileIDs) == 0 {
+		return snapshot, nil
+	}
+
+	selectedIDs := make(map[int]struct{}, len(target.IntentResources.EgressProfileIDs))
+	for _, id := range target.IntentResources.EgressProfileIDs {
+		selectedIDs[id] = struct{}{}
+	}
+	rows, err := store.ListEgressProfiles(ctx)
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	selectedRows := make([]storage.EgressProfileRow, 0, len(selectedIDs))
+	for _, row := range rows {
+		if _, selected := selectedIDs[row.ID]; selected {
+			selectedRows = append(selectedRows, row)
+		}
+	}
+
+	existingIDs := make(map[int]struct{}, len(snapshot.EgressProfiles))
+	for _, profile := range snapshot.EgressProfiles {
+		existingIDs[profile.ID] = struct{}{}
+	}
+	for _, profile := range storage.SnapshotEgressProfilesForIntent(selectedRows) {
+		if _, exists := existingIDs[profile.ID]; exists {
+			continue
+		}
+		snapshot.EgressProfiles = append(snapshot.EgressProfiles, profile)
+		existingIDs[profile.ID] = struct{}{}
+	}
+	sort.Slice(snapshot.EgressProfiles, func(i, j int) bool {
+		return snapshot.EgressProfiles[i].ID < snapshot.EgressProfiles[j].ID
+	})
+	return snapshot, nil
 }
 
 func buildStorageSnapshotMode(ctx context.Context, store *storage.GormStore, target Target, intent bool) (storage.Snapshot, error) {

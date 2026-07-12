@@ -157,7 +157,8 @@ func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing
 		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
 		Targets: []Target{{
 			AgentID: "local", Local: true, DesiredVersion: " v1 ", Platform: " linux-amd64 ",
-			Capabilities: []string{" WireGuard ", "egress_profiles", "wireguard"},
+			Capabilities:    []string{" WireGuard ", "egress_profiles", "wireguard"},
+			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{9, 7, 9}},
 		}},
 		ResourceState: httpRuleResourceState, Mutate: mutation,
 	})
@@ -170,6 +171,7 @@ func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing
 			AgentID: "local", Local: true, DesiredVersion: "v1", Platform: "linux-amd64",
 			Capabilities:        []string{"egress_profiles", "wireguard"},
 			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{7, 9}},
 		}},
 		ResourceState: httpRuleResourceState, Mutate: mutation,
 	})
