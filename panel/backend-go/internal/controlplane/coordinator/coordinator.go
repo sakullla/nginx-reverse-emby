@@ -177,15 +177,16 @@ func (c *Coordinator) Applied(ctx context.Context, report AppliedReport) (Applie
 }
 
 type DrainReport struct {
-	AgentID      string
 	GenerationID string
+	Lease        Lease
 	Forced       bool
 	ForceReason  string
 }
 
 func (c *Coordinator) Drained(ctx context.Context, report DrainReport) (storage.AgentRevisionRow, error) {
+	lease := storage.CoordinatorLease(report.Lease)
 	return c.repository.CompleteCoordinatorDrain(ctx, storage.CoordinatorDrainRequest{
-		AgentID: report.AgentID, GenerationID: report.GenerationID,
+		AgentID: lease.AgentID, GenerationID: report.GenerationID, Lease: lease,
 		Forced: report.Forced, ForceReason: report.ForceReason, Now: c.now(),
 	})
 }

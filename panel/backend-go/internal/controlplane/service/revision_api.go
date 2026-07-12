@@ -508,19 +508,13 @@ func (s *RevisionAPI) ReportRemoteRevision(ctx context.Context, agentID string, 
 			return AgentRevisionStatus{}, err
 		}
 	case storage.AgentRevisionDrainStateDrained, storage.AgentRevisionDrainStateForced:
-		if _, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseDrain); err != nil {
-			return AgentRevisionStatus{}, err
-		}
-		generation, found, err := s.repository.GetCoordinatorGeneration(ctx, agentID, generationID)
+		lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseDrain)
 		if err != nil {
 			return AgentRevisionStatus{}, err
 		}
-		if !found || generation.State != storage.GenerationStateDraining || generation.Revision >= input.Revision {
-			return AgentRevisionStatus{}, fmt.Errorf("%w: generation %q is not the draining predecessor for revision %d", coordinator.ErrLeaseConflict, generationID, input.Revision)
-		}
 		forced := input.Forced || strings.EqualFold(input.Status, storage.AgentRevisionDrainStateForced)
 		row, err := s.coordinator.Drained(ctx, coordinator.DrainReport{
-			AgentID: agentID, GenerationID: generationID, Forced: forced,
+			Lease: lease, GenerationID: generationID, Forced: forced,
 			ForceReason: strings.TrimSpace(input.ForceReason),
 		})
 		if err != nil {

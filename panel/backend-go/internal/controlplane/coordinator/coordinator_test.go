@@ -612,7 +612,26 @@ func TestAppliedTransitionIsMonotonicAndDrainCompletesSeparately(t *testing.T) {
 	if replayed.Revision.DrainState != storage.AgentRevisionDrainStateDraining {
 		t.Fatalf("journal replay drain state = %q, want draining", replayed.Revision.DrainState)
 	}
-	drained, err := coord.Drained(t.Context(), DrainReport{AgentID: "edge-1", GenerationID: "generation-2"})
+	invalidLeases := []struct {
+		name  string
+		lease Lease
+	}{
+		{name: "empty", lease: Lease{}},
+		{name: "retry cycle", lease: func() Lease { value := lease3; value.RetryCycle++; return value }()},
+		{name: "attempt", lease: func() Lease { value := lease3; value.Attempt++; return value }()},
+		{name: "lease id", lease: func() Lease { value := lease3; value.LeaseID = "wrong-lease"; return value }()},
+	}
+	for _, tc := range invalidLeases {
+		t.Run("drain rejects stale "+tc.name, func(t *testing.T) {
+			if _, err := coord.Drained(t.Context(), DrainReport{Lease: tc.lease, GenerationID: "generation-2"}); !errors.Is(err, ErrLeaseConflict) {
+				t.Fatalf("Drained(%s) error = %v, want ErrLeaseConflict", tc.name, err)
+			}
+		})
+	}
+	if _, err := coord.Drained(t.Context(), DrainReport{Lease: lease3, GenerationID: "generation-3"}); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("Drained(current generation) error = %v, want ErrLeaseConflict", err)
+	}
+	drained, err := coord.Drained(t.Context(), DrainReport{Lease: lease3, GenerationID: "generation-2"})
 	if err != nil {
 		t.Fatalf("Drained() error = %v", err)
 	}

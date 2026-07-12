@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -122,6 +123,7 @@ type CoordinatorApplyResult struct {
 type CoordinatorDrainRequest struct {
 	AgentID      string
 	GenerationID string
+	Lease        CoordinatorLease
 	Forced       bool
 	ForceReason  string
 	Now          time.Time
@@ -657,6 +659,15 @@ func (s *GormStore) CompleteCoordinatorDrain(ctx context.Context, request Coordi
 	request.AgentID = strings.TrimSpace(request.AgentID)
 	request.GenerationID = strings.TrimSpace(request.GenerationID)
 	request.Now = coordinatorTime(request.Now)
+	request.Lease.AgentID = strings.TrimSpace(request.Lease.AgentID)
+	request.Lease.LeaseID = strings.TrimSpace(request.Lease.LeaseID)
+	if request.Lease.AgentID == "" || request.Lease.Revision <= 0 || request.Lease.RetryCycle < 0 ||
+		request.Lease.Attempt <= 0 || request.Lease.LeaseID == "" {
+		return AgentRevisionRow{}, coordinatorLeaseConflict("drain lease identity is incomplete")
+	}
+	if request.AgentID == "" {
+		request.AgentID = request.Lease.AgentID
+	}
 	if request.AgentID == "" || request.GenerationID == "" {
 		return AgentRevisionRow{}, fmt.Errorf("agent id and generation id are required")
 	}
@@ -673,6 +684,9 @@ func (s *GormStore) CompleteCoordinatorDrain(ctx context.Context, request Coordi
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return fmt.Errorf("%w: generation %q", ErrCoordinatorNotFound, request.GenerationID)
 			}
+			return err
+		}
+		if err := validateCoordinatorDrainLeaseTx(tx, pointer, generation, request); err != nil {
 			return err
 		}
 		if generation.State == AgentRevisionDrainStateDrained || generation.State == AgentRevisionDrainStateForced {
@@ -719,6 +733,67 @@ func (s *GormStore) CompleteCoordinatorDrain(ctx context.Context, request Coordi
 		})
 	})
 	return result, err
+}
+
+func validateCoordinatorDrainLeaseTx(
+	tx *gorm.DB,
+	pointer AgentRevisionPointerRow,
+	generation AgentGenerationRow,
+	request CoordinatorDrainRequest,
+) error {
+	lease := request.Lease
+	if lease.AgentID == "" || lease.AgentID != request.AgentID || lease.Revision <= 0 ||
+		lease.RetryCycle < 0 || lease.Attempt <= 0 || lease.LeaseID == "" {
+		return coordinatorLeaseConflict("drain lease identity is incomplete")
+	}
+	if pointer.AppliedRevision != lease.Revision {
+		return coordinatorLeaseConflict("revision %d is no longer the current applied revision %d", lease.Revision, pointer.AppliedRevision)
+	}
+
+	var revision AgentRevisionRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("agent_id = ? AND revision = ?", lease.AgentID, lease.Revision).
+		First(&revision).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return coordinatorLeaseConflict("drain revision %d is not available", lease.Revision)
+		}
+		return err
+	}
+	if revision.State != AgentRevisionStateApplied || revision.RetryCycle != lease.RetryCycle ||
+		revision.AttemptCount != lease.Attempt || revision.AppliedAt == nil {
+		return coordinatorLeaseConflict("drain lease is not the current applied attempt")
+	}
+
+	var attempt AgentRevisionAttemptRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("agent_id = ? AND revision = ? AND retry_cycle = ? AND attempt = ?", lease.AgentID, lease.Revision, lease.RetryCycle, lease.Attempt).
+		First(&attempt).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return coordinatorLeaseConflict("drain attempt is not available")
+		}
+		return err
+	}
+	if attempt.State != AgentRevisionAttemptStateApplied || !coordinatorLeaseIDEqual(attempt.LeaseID, lease.LeaseID) {
+		return coordinatorLeaseConflict("drain lease is not the current applied attempt")
+	}
+
+	drainTimeout := time.Duration(revision.DrainTimeoutSeconds) * time.Second
+	if drainTimeout <= 0 || !request.Now.Before(revision.AppliedAt.Add(drainTimeout)) {
+		return coordinatorLeaseConflict("drain report deadline expired")
+	}
+	if generation.State != GenerationStateDraining || generation.Revision >= lease.Revision {
+		return coordinatorLeaseConflict("generation %q is not a draining predecessor for revision %d", generation.GenerationID, lease.Revision)
+	}
+	return nil
+}
+
+func coordinatorLeaseIDEqual(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || len(left) != len(right) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
 }
 
 func (s *GormStore) ReconcileCoordinatorAgent(ctx context.Context, request CoordinatorReconcileRequest) (CoordinatorReconcileResult, error) {

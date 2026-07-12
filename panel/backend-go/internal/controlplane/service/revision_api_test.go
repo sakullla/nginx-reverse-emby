@@ -248,6 +248,81 @@ func TestRevisionAPIAcceptsCurrentAppliedAttemptDrainingPreviousGeneration(t *te
 	}
 }
 
+func TestRevisionAPIRejectsDrainWhenAppliedPointerAdvancesAfterLeaseValidation(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Now().UTC()
+	finishedAt := now.Add(-time.Second)
+	seedRevisionOperation(t, store, revisionOperationSeed{
+		OperationID: "op-drain-race",
+		Revision:    2,
+		Now:         now.Add(-time.Minute),
+		States:      map[string]string{"edge-race": storage.AgentRevisionStateApplied},
+		Attempts: []storage.AgentRevisionAttemptRow{{
+			AgentID: "edge-race", Revision: 2, RetryCycle: 0, Attempt: 1,
+			LeaseID: "lease-race", State: storage.AgentRevisionAttemptStateApplied,
+			StartedAt: now.Add(-time.Minute), DeadlineAt: now.Add(time.Minute), FinishedAt: &finishedAt,
+		}},
+		Generations: []storage.AgentGenerationRow{
+			{
+				AgentID: "edge-race", GenerationID: "generation-previous", Revision: 1,
+				State: storage.GenerationStateDraining, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-time.Second),
+			},
+			{
+				AgentID: "edge-race", GenerationID: "generation-current", Revision: 2,
+				State: storage.GenerationStateActive, CreatedAt: now.Add(-time.Second), UpdatedAt: now.Add(-time.Second),
+			},
+		},
+	})
+
+	interleaving := &drainInterleavingStore{GormStore: store}
+	interleaving.beforeDrain = func() {
+		seedRevisionOperation(t, store, revisionOperationSeed{
+			OperationID: "op-newer-applied", Revision: 3, Now: now,
+			States: map[string]string{"edge-race": storage.AgentRevisionStateApplied},
+			Generations: []storage.AgentGenerationRow{{
+				AgentID: "edge-race", GenerationID: "generation-newer", Revision: 3,
+				State: storage.GenerationStateActive, CreatedAt: now, UpdatedAt: now,
+			}},
+		})
+	}
+	coord, err := coordinator.New(interleaving, coordinator.Options{})
+	if err != nil {
+		t.Fatalf("coordinator.New() error = %v", err)
+	}
+	api := NewRevisionAPI(interleaving, coord)
+	report := RemoteRevisionReport{
+		AgentID: "edge-race", Revision: 2, RetryCycle: 0, Attempt: 1,
+		LeaseID: "lease-race", GenerationID: "generation-previous",
+		Status: storage.AgentRevisionDrainStateDrained,
+	}
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-race", report); !errors.Is(err, coordinator.ErrLeaseConflict) {
+		t.Fatalf("drain after applied pointer advance error = %v, want lease conflict", err)
+	}
+	generation, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-race", "generation-previous")
+	if err != nil || !found || generation.State != storage.GenerationStateDraining || generation.DrainedAt != nil {
+		t.Fatalf("generation after interleaved drain = %+v found=%v error=%v", generation, found, err)
+	}
+}
+
+type drainInterleavingStore struct {
+	*storage.GormStore
+	beforeDrain func()
+}
+
+func (s *drainInterleavingStore) CompleteCoordinatorDrain(ctx context.Context, request storage.CoordinatorDrainRequest) (storage.AgentRevisionRow, error) {
+	if s.beforeDrain != nil {
+		beforeDrain := s.beforeDrain
+		s.beforeDrain = nil
+		beforeDrain()
+	}
+	return s.GormStore.CompleteCoordinatorDrain(ctx, request)
+}
+
 type revisionOperationSeed struct {
 	OperationID string
 	Revision    int64
