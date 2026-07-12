@@ -188,6 +188,20 @@ func (s *GormStore) ListCoordinatorAttempts(ctx context.Context, agentID string,
 	return rows, err
 }
 
+func (s *GormStore) GetCoordinatorGeneration(ctx context.Context, agentID, generationID string) (AgentGenerationRow, bool, error) {
+	var row AgentGenerationRow
+	err := s.db.WithContext(ctx).
+		Where("agent_id = ? AND generation_id = ?", strings.TrimSpace(agentID), strings.TrimSpace(generationID)).
+		First(&row).Error
+	if err == nil {
+		return row, true, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return AgentGenerationRow{}, false, nil
+	}
+	return AgentGenerationRow{}, false, err
+}
+
 func (s *GormStore) ClaimLatestAgentRevision(ctx context.Context, request CoordinatorClaimRequest) (CoordinatorClaimResult, error) {
 	request.AgentID = strings.TrimSpace(request.AgentID)
 	request.LeaseID = strings.TrimSpace(request.LeaseID)
@@ -504,6 +518,12 @@ func (s *GormStore) ApplyAgentRevisionAttempt(ctx context.Context, request Coord
 		}
 		if !request.Now.Before(attempt.DeadlineAt) {
 			return coordinatorLeaseConflict("lease %q expired", request.Lease.LeaseID)
+		}
+		if pointer.DesiredRevision != request.Lease.Revision {
+			return coordinatorLeaseConflict("revision %d is no longer desired; current desired revision is %d", request.Lease.Revision, pointer.DesiredRevision)
+		}
+		if pointer.AppliedRevision > request.Lease.Revision {
+			return coordinatorLeaseConflict("revision %d is older than applied revision %d", request.Lease.Revision, pointer.AppliedRevision)
 		}
 		var revision AgentRevisionRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).

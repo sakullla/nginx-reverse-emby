@@ -348,6 +348,16 @@ func TestHigherDesiredSupersedesStartedLeaseBeforeClaimingLatest(t *testing.T) {
 		t.Fatalf("Start(revision 2) error = %v", err)
 	}
 	appendPendingRevision(t, store, now.Add(time.Second), "edge-1", 3, 1, 60, 600)
+	if _, err := coord.Applied(t.Context(), AppliedReport{Lease: oldLease, GenerationID: "generation-2"}); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("Applied(old lease after desired advance) error = %v, want ErrLeaseConflict", err)
+	}
+	pointer := mustPointer(t, store, "edge-1")
+	if pointer.DesiredRevision != 3 || pointer.AppliedRevision != 1 || pointer.LastKnownGoodRevision != 1 {
+		t.Fatalf("old apply changed pointer: %+v", pointer)
+	}
+	if _, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-1", "generation-2"); err != nil || found {
+		t.Fatalf("GetCoordinatorGeneration(old apply) = found %v, error %v; want no generation", found, err)
+	}
 
 	latest := mustClaim(t, coord, "edge-1")
 	if latest.Revision != 3 {
@@ -362,6 +372,51 @@ func TestHigherDesiredSupersedesStartedLeaseBeforeClaimingLatest(t *testing.T) {
 	attempts := mustAttempts(t, store, "edge-1", 2)
 	if len(attempts) != 1 || attempts[0].State != storage.AgentRevisionAttemptStateSuperseded {
 		t.Fatalf("old attempts = %+v, want superseded", attempts)
+	}
+}
+
+func TestRollbackFencesInFlightApplyBeforeActivatingGeneration(t *testing.T) {
+	now := time.Date(2026, 7, 12, 16, 30, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	artifact := snapshotArtifact(t, "edge-rollback-race", storage.Snapshot{
+		DesiredVersion: "v1.2.3", Revision: 1,
+		Rules: []storage.HTTPRule{}, L4Rules: []storage.L4Rule{},
+		RelayListeners: []storage.RelayListener{}, WireGuardProfiles: []storage.WireGuardProfile{},
+		EgressProfiles: []storage.EgressProfile{}, Certificates: []storage.ManagedCertificateBundle{},
+		CertificatePolicies: []storage.ManagedCertificatePolicy{},
+	}, now)
+	seedRevisionsWithArtifact(t, store, now, "edge-1", artifact, 2, 1, map[int64]string{
+		1: storage.AgentRevisionStateApplied,
+		2: storage.AgentRevisionStatePending,
+	})
+	coord := newTestCoordinator(t, store, now, 0.5)
+	oldLease := mustClaim(t, coord, "edge-1")
+	if _, err := coord.Start(t.Context(), StartRequest{Lease: oldLease, GenerationID: "generation-2"}); err != nil {
+		t.Fatalf("Start(revision 2) error = %v", err)
+	}
+	rollback, err := coord.Rollback(t.Context(), "edge-1")
+	if err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if rollback.Revision.Revision != 3 {
+		t.Fatalf("rollback revision = %d, want 3", rollback.Revision.Revision)
+	}
+	if _, err := coord.Applied(t.Context(), AppliedReport{Lease: oldLease, GenerationID: "generation-2"}); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("Applied(old lease after rollback) error = %v, want ErrLeaseConflict", err)
+	}
+	pointer := mustPointer(t, store, "edge-1")
+	if pointer.DesiredRevision != 3 || pointer.AppliedRevision != 1 || pointer.LastKnownGoodRevision != 1 {
+		t.Fatalf("old apply changed rollback pointer: %+v", pointer)
+	}
+	if row := mustRevision(t, store, "edge-1", 2); row.State != storage.AgentRevisionStateApplying {
+		t.Fatalf("old revision state = %q, want applying until claim/reconcile fences it", row.State)
+	}
+	if _, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-1", "generation-2"); err != nil || found {
+		t.Fatalf("GetCoordinatorGeneration(old rollback apply) = found %v, error %v; want no generation", found, err)
+	}
+	latest := mustClaim(t, coord, "edge-1")
+	if latest.Revision != 3 {
+		t.Fatalf("latest lease revision = %d, want rollback revision 3", latest.Revision)
 	}
 }
 
