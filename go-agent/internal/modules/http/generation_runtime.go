@@ -1,0 +1,707 @@
+package http
+
+import (
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net"
+	stdhttp "net/http"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
+)
+
+const httpIngressBacklog = 256
+
+type HTTPSessionRegistrar interface {
+	RegisterSession(string, generation.EntityKey, string, generation.Session) (*generation.SessionHandle, error)
+}
+
+type httpIngressManager struct {
+	mu       sync.Mutex
+	bindings map[string]*httpIngressBinding
+	closed   bool
+}
+
+type httpIngressBinding struct {
+	key    string
+	stream *ingress.StreamBroker
+	packet *ingress.PacketBroker
+	refs   int
+}
+
+type httpIngressLease struct {
+	manager *httpIngressManager
+	binding *httpIngressBinding
+	stream  *ingress.StreamEndpoint
+	packet  *ingress.PacketEndpoint
+
+	releaseOnce sync.Once
+	releaseErr  error
+}
+
+func newHTTPIngressManager() *httpIngressManager {
+	return &httpIngressManager{bindings: make(map[string]*httpIngressBinding)}
+}
+
+func (m *httpIngressManager) acquire(ctx context.Context, generationID string, spec runtimeListenerSpec, providers Providers, http3Enabled bool) (*httpIngressLease, error) {
+	if m == nil {
+		return nil, errors.New("http ingress manager is not configured")
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	binding := m.bindings[spec.bindingKey]
+	if binding == nil {
+		listener, err := listenRuntimeSpecTCP(ctx, spec, providers)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		binding = &httpIngressBinding{
+			key:    spec.bindingKey,
+			stream: ingress.NewStreamBroker(listener),
+		}
+		if binding.stream == nil {
+			_ = listener.Close()
+			m.mu.Unlock()
+			return nil, errors.New("create HTTP stream broker")
+		}
+		m.bindings[spec.bindingKey] = binding
+	}
+	if http3Enabled && spec.scheme == "https" && binding.packet == nil {
+		packet, err := http3ListenPacket("udp", spec.address)
+		if err != nil {
+			if binding.refs == 0 {
+				delete(m.bindings, spec.bindingKey)
+				_ = binding.stream.Close()
+			}
+			m.mu.Unlock()
+			return nil, fmt.Errorf("http3 stable ingress %s: %w", spec.bindingKey, err)
+		}
+		if tuner, ok := packet.(model.UDPBufferTuner); ok {
+			model.TuneUDPBuffers(tuner)
+		}
+		binding.packet = ingress.NewPacketBroker(packet, "udp", newQUICConnectionClassifier())
+		if binding.packet == nil {
+			_ = packet.Close()
+			if binding.refs == 0 {
+				delete(m.bindings, spec.bindingKey)
+				_ = binding.stream.Close()
+			}
+			m.mu.Unlock()
+			return nil, errors.New("create HTTP/3 packet broker")
+		}
+	}
+
+	lease := &httpIngressLease{
+		manager: m,
+		binding: binding,
+		stream:  binding.stream.NewEndpoint(generationID, httpIngressBacklog),
+	}
+	if lease.stream == nil {
+		m.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	if http3Enabled && spec.scheme == "https" {
+		lease.packet = binding.packet.NewEndpoint(generationID, httpIngressBacklog)
+		if lease.packet == nil {
+			_ = lease.stream.Close()
+			m.mu.Unlock()
+			return nil, net.ErrClosed
+		}
+	}
+	binding.refs++
+	m.mu.Unlock()
+	return lease, nil
+}
+
+func (l *httpIngressLease) activate() error {
+	if l == nil || l.binding == nil {
+		return net.ErrClosed
+	}
+	previousStream, err := l.binding.stream.Activate(l.stream)
+	if err != nil {
+		return err
+	}
+	if l.packet == nil {
+		return nil
+	}
+	if _, err := l.binding.packet.Activate(l.packet); err != nil {
+		if previousStream != nil {
+			_, _ = l.binding.stream.Activate(previousStream)
+		}
+		return err
+	}
+	return nil
+}
+
+func (l *httpIngressLease) release() error {
+	if l == nil {
+		return nil
+	}
+	l.releaseOnce.Do(func() {
+		l.releaseErr = errors.Join(closePacketEndpoint(l.packet), closeStreamEndpoint(l.stream))
+		if l.manager == nil || l.binding == nil {
+			return
+		}
+		l.manager.mu.Lock()
+		l.binding.refs--
+		if l.binding.refs > 0 || l.manager.bindings[l.binding.key] != l.binding {
+			l.manager.mu.Unlock()
+			return
+		}
+		delete(l.manager.bindings, l.binding.key)
+		packet := l.binding.packet
+		stream := l.binding.stream
+		l.manager.mu.Unlock()
+		if packet != nil {
+			l.releaseErr = errors.Join(l.releaseErr, packet.Close())
+		}
+		if stream != nil {
+			l.releaseErr = errors.Join(l.releaseErr, stream.Close())
+		}
+	})
+	return l.releaseErr
+}
+
+func (m *httpIngressManager) close() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	m.closed = true
+	bindings := make([]*httpIngressBinding, 0, len(m.bindings))
+	for _, binding := range m.bindings {
+		bindings = append(bindings, binding)
+	}
+	m.bindings = make(map[string]*httpIngressBinding)
+	m.mu.Unlock()
+	var closeErr error
+	for _, binding := range bindings {
+		if binding.packet != nil {
+			closeErr = errors.Join(closeErr, binding.packet.Close())
+		}
+		if binding.stream != nil {
+			closeErr = errors.Join(closeErr, binding.stream.Close())
+		}
+	}
+	return closeErr
+}
+
+func closeStreamEndpoint(endpoint *ingress.StreamEndpoint) error {
+	if endpoint == nil {
+		return nil
+	}
+	return endpoint.Close()
+}
+
+func closePacketEndpoint(endpoint *ingress.PacketEndpoint) error {
+	if endpoint == nil {
+		return nil
+	}
+	return endpoint.Close()
+}
+
+const quicServerConnectionIDLength = 4
+
+type quicConnectionClassifier struct{}
+
+func newQUICConnectionClassifier() ingress.PacketClassifier { return quicConnectionClassifier{} }
+
+func (quicConnectionClassifier) Classify(payload []byte, metadata ingress.PacketMetadata) (ingress.AssociationKey, bool) {
+	return classifyQUICConnection(payload, metadata)
+}
+
+func classifyQUICConnection(payload []byte, _ ingress.PacketMetadata) (ingress.AssociationKey, bool) {
+	if len(payload) == 0 || payload[0]&0x40 == 0 {
+		return "", false
+	}
+	if payload[0]&0x80 == 0 {
+		if len(payload) < 1+quicServerConnectionIDLength {
+			return "", false
+		}
+		return ingress.AssociationKey("quic:" + hex.EncodeToString(payload[1:1+quicServerConnectionIDLength])), true
+	}
+	// Long-header QUIC packets carry an explicit destination connection ID.
+	if len(payload) < 6 {
+		return "", false
+	}
+	dcidLen := int(payload[5])
+	if dcidLen == 0 || len(payload) < 6+dcidLen {
+		return "", false
+	}
+	return ingress.AssociationKey("quic:" + hex.EncodeToString(payload[6:6+dcidLen])), true
+}
+
+func prepareGenerationRuntime(
+	ctx context.Context,
+	generationID string,
+	rules []model.HTTPRule,
+	relayListeners []model.RelayListener,
+	providers Providers,
+	backendCache *model.Cache,
+	sharedTransport *stdhttp.Transport,
+	http3Enabled bool,
+	resilience StreamResilienceOptions,
+	ingressManager *httpIngressManager,
+	sessionRegistrar HTTPSessionRegistrar,
+) (*Runtime, error) {
+	rules = generationHTTPRules(rules)
+	specs, err := buildRuntimeListenerSpecs(ctx, rules, relayListeners, providers)
+	if err != nil {
+		return nil, err
+	}
+	if backendCache == nil {
+		backendCache = model.NewCache(model.BackendCacheConfig{})
+	}
+	if sharedTransport == nil {
+		sharedTransport = NewSharedTransport()
+	}
+	runtime := &Runtime{
+		bindings: make([]string, 0, len(specs)),
+		tracker:  newHTTPSessionTracker(generationID, sessionRegistrar),
+	}
+	for _, spec := range specs {
+		proxy, err := newServerWithResilience(spec.listener, relayListeners, providers, backendCache, sharedTransport, resilience)
+		if err != nil {
+			_ = runtime.Close()
+			return nil, err
+		}
+		handler := &generationHTTPHandler{server: proxy, tracker: runtime.tracker}
+		lease, err := ingressManager.acquire(ctx, generationID, spec, providers, http3Enabled)
+		if err != nil {
+			_ = runtime.Close()
+			return nil, err
+		}
+		runtime.ingressLeases = append(runtime.ingressLeases, lease)
+
+		listener := net.Listener(lease.stream)
+		if spec.scheme == "https" {
+			listener, err = newTLSListener(ctx, listener, spec, providers.TLS)
+			if err != nil {
+				_ = runtime.Close()
+				return nil, err
+			}
+		}
+		server := &stdhttp.Server{
+			Handler: handler,
+			BaseContext: func(_ net.Listener) context.Context {
+				if ctx != nil {
+					return ctx
+				}
+				return context.Background()
+			},
+		}
+		errCh := make(chan error, 1)
+		runtime.listeners = append(runtime.listeners, listener)
+		runtime.servers = append(runtime.servers, server)
+		runtime.bindings = append(runtime.bindings, spec.bindingKey)
+		runtime.serveErrors = append(runtime.serveErrors, errCh)
+		go func(srv *stdhttp.Server, ln net.Listener) {
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+				errCh <- err
+			}
+		}(server, listener)
+
+		if http3Enabled && spec.scheme == "https" {
+			handle, err := startHTTP3ServerOnPacket(ctx, handler, spec, providers.TLS, lease.packet)
+			if err != nil {
+				_ = runtime.Close()
+				return nil, err
+			}
+			runtime.http3Servers = append(runtime.http3Servers, handle)
+			runtime.serveErrors = append(runtime.serveErrors, handle.serveErr)
+		}
+	}
+	return runtime, nil
+}
+
+func generationHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
+	active := make([]model.HTTPRule, 0, len(rules))
+	for _, rule := range rules {
+		// Persisted rules always have an ID. Keep ID-less rules for the legacy
+		// standalone APIs and tests, where Enabled historically defaulted false.
+		if rule.ID > 0 && !rule.Enabled {
+			continue
+		}
+		active = append(active, rule)
+	}
+	return active
+}
+
+func (r *Runtime) Ready() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	errorsToCheck := append([]<-chan error(nil), r.serveErrors...)
+	r.mu.Unlock()
+	for _, errCh := range errorsToCheck {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				return err
+			}
+		default:
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) Activate() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	leases := append([]*httpIngressLease(nil), r.ingressLeases...)
+	r.mu.Unlock()
+	for _, lease := range leases {
+		if err := lease.activate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) BeginDrain() {
+	if r == nil {
+		return
+	}
+	r.drainOnce.Do(func() {
+		r.mu.Lock()
+		servers := append([]*stdhttp.Server(nil), r.servers...)
+		http3Servers := append([]*http3ServerHandle(nil), r.http3Servers...)
+		r.mu.Unlock()
+		go func() {
+			var wg sync.WaitGroup
+			for _, server := range servers {
+				if server == nil {
+					continue
+				}
+				wg.Add(1)
+				go func(srv *stdhttp.Server) {
+					defer wg.Done()
+					_ = srv.Shutdown(context.Background())
+				}(server)
+			}
+			for _, server := range http3Servers {
+				if server == nil || server.server == nil {
+					continue
+				}
+				wg.Add(1)
+				go func(handle *http3ServerHandle) {
+					defer wg.Done()
+					_ = handle.server.Shutdown(context.Background())
+				}(server)
+			}
+			wg.Wait()
+			if r.tracker != nil {
+				r.tracker.wait()
+			}
+			_ = r.Close()
+		}()
+	})
+}
+
+type httpSessionTracker struct {
+	mu         sync.Mutex
+	generation string
+	registrar  HTTPSessionRegistrar
+	nextID     uint64
+	active     int
+	idle       chan struct{}
+	sessions   map[string]map[*httpRequestSession]struct{}
+}
+
+type httpRequestSession struct {
+	cancel   context.CancelFunc
+	external *generation.SessionHandle
+	once     sync.Once
+}
+
+func newHTTPSessionTracker(generationID string, registrar HTTPSessionRegistrar) *httpSessionTracker {
+	idle := make(chan struct{})
+	close(idle)
+	return &httpSessionTracker{
+		generation: generationID,
+		registrar:  registrar,
+		idle:       idle,
+		sessions:   make(map[string]map[*httpRequestSession]struct{}),
+	}
+}
+
+func (t *httpSessionTracker) start(entity string, cancel context.CancelFunc) *httpRequestSession {
+	if t == nil {
+		return nil
+	}
+	session := &httpRequestSession{cancel: cancel}
+	t.mu.Lock()
+	if t.active == 0 {
+		t.idle = make(chan struct{})
+	}
+	t.active++
+	t.nextID++
+	sessionID := fmt.Sprintf("request-%d", t.nextID)
+	entries := t.sessions[entity]
+	if entries == nil {
+		entries = make(map[*httpRequestSession]struct{})
+		t.sessions[entity] = entries
+	}
+	entries[session] = struct{}{}
+	t.mu.Unlock()
+	if t.registrar != nil {
+		handle, err := t.registrar.RegisterSession(
+			t.generation,
+			generation.EntityKey{Module: "http", ID: entity},
+			sessionID,
+			session,
+		)
+		if err == nil {
+			session.external = handle
+		}
+	}
+	return session
+}
+
+func (t *httpSessionTracker) finish(entity string, session *httpRequestSession) {
+	if t == nil || session == nil {
+		return
+	}
+	session.once.Do(func() {
+		t.mu.Lock()
+		if entries := t.sessions[entity]; entries != nil {
+			delete(entries, session)
+			if len(entries) == 0 {
+				delete(t.sessions, entity)
+			}
+		}
+		t.active--
+		if t.active == 0 {
+			close(t.idle)
+		}
+		t.mu.Unlock()
+		if session.external != nil {
+			session.external.Finish()
+		}
+		session.cancel()
+	})
+}
+
+func (t *httpSessionTracker) wait() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	idle := t.idle
+	t.mu.Unlock()
+	<-idle
+}
+
+func (t *httpSessionTracker) force(entities map[string]struct{}) {
+	if t == nil || len(entities) == 0 {
+		return
+	}
+	var sessions []*httpRequestSession
+	t.mu.Lock()
+	for entity := range entities {
+		for session := range t.sessions[entity] {
+			sessions = append(sessions, session)
+		}
+	}
+	t.mu.Unlock()
+	for _, session := range sessions {
+		session.cancel()
+	}
+}
+
+func (t *httpSessionTracker) forceAll() {
+	if t == nil {
+		return
+	}
+	var sessions []*httpRequestSession
+	t.mu.Lock()
+	for _, entries := range t.sessions {
+		for session := range entries {
+			sessions = append(sessions, session)
+		}
+	}
+	t.mu.Unlock()
+	for _, session := range sessions {
+		session.cancel()
+	}
+}
+
+type generationHTTPHandler struct {
+	server  *Server
+	tracker *httpSessionTracker
+}
+
+func (h *generationHTTPHandler) ServeHTTP(w stdhttp.ResponseWriter, req *stdhttp.Request) {
+	if h == nil || h.server == nil {
+		stdhttp.NotFound(w, req)
+		return
+	}
+	entry := h.server.routeFor(normalizeHost(req.Host), req.URL.Path)
+	if entry == nil {
+		h.server.ServeHTTP(w, req)
+		return
+	}
+	ctx, cancel := context.WithCancel(req.Context())
+	entity := httpRuleEntityID(entry.rule)
+	session := h.tracker.start(entity, cancel)
+	defer h.tracker.finish(entity, session)
+	h.server.ServeHTTP(w, req.WithContext(ctx))
+}
+
+func (r *Runtime) revokeRules(entities map[string]struct{}) {
+	if r == nil || r.tracker == nil {
+		return
+	}
+	r.tracker.force(entities)
+}
+
+func httpRuleEntityID(rule model.HTTPRule) string {
+	if rule.ID > 0 {
+		return strconv.Itoa(rule.ID)
+	}
+	return strings.ToLower(strings.TrimSpace(rule.FrontendURL))
+}
+
+func revokedHTTPRuleEntities(previous, next []model.HTTPRule) map[string]struct{} {
+	nextRules := make(map[string]model.HTTPRule, len(next))
+	for _, rule := range next {
+		nextRules[httpRuleEntityID(rule)] = rule
+	}
+	revoked := make(map[string]struct{})
+	for _, rule := range previous {
+		entity := httpRuleEntityID(rule)
+		nextRule, exists := nextRules[entity]
+		if !exists || (rule.Enabled && !nextRule.Enabled) {
+			revoked[entity] = struct{}{}
+		}
+	}
+	return revoked
+}
+
+type httpGenerationTransaction struct {
+	module           *Module
+	runtime          *Runtime
+	previousRuntime  *Runtime
+	previousState    runtimeState
+	nextState        runtimeState
+	revokedEntities  map[string]struct{}
+	published        bool
+	destroyed        bool
+	finalizedSuccess bool
+}
+
+func (t *httpGenerationTransaction) RegisterProviders(reg module.ProviderRegistry) error {
+	if t == nil || t.module == nil {
+		return nil
+	}
+	return reg.Provide(module.ProviderDiagnosticsHTTPSource, httpDiagnosticsSource{cache: t.module.cache})
+}
+
+func (t *httpGenerationTransaction) Ready(context.Context) error {
+	if t == nil || t.runtime == nil {
+		return nil
+	}
+	return t.runtime.Ready()
+}
+
+func (t *httpGenerationTransaction) publish() error {
+	if t == nil || t.module == nil || t.published {
+		return nil
+	}
+	if err := t.runtime.Activate(); err != nil {
+		return err
+	}
+	t.module.mu.Lock()
+	t.module.runtime = t.runtime
+	t.module.blockState.Store(t.nextState.blockState)
+	t.module.storeLastAppliedStateLocked(t.nextState)
+	t.module.mu.Unlock()
+	if t.previousRuntime != nil {
+		t.previousRuntime.revokeRules(t.revokedEntities)
+	}
+	t.published = true
+	return nil
+}
+
+func (t *httpGenerationTransaction) Publish() {
+	if err := t.publish(); err != nil {
+		panic(fmt.Sprintf("http generation publication invariant failed: %v", err))
+	}
+}
+
+func (t *httpGenerationTransaction) Commit() error {
+	if err := t.Ready(context.Background()); err != nil {
+		return err
+	}
+	return t.publish()
+}
+
+func (t *httpGenerationTransaction) Rollback() error {
+	if t == nil || t.destroyed {
+		return nil
+	}
+	if t.published && t.previousRuntime != nil {
+		if err := t.previousRuntime.Activate(); err != nil {
+			return err
+		}
+	}
+	if t.module != nil && t.published {
+		t.module.mu.Lock()
+		t.module.runtime = t.previousRuntime
+		t.module.blockState.Store(t.previousState.blockState)
+		t.module.storeLastAppliedStateLocked(t.previousState)
+		t.module.mu.Unlock()
+	}
+	t.published = false
+	return t.Destroy(context.Background())
+}
+
+func (t *httpGenerationTransaction) Destroy(context.Context) error {
+	if t == nil || t.destroyed {
+		return nil
+	}
+	t.destroyed = true
+	if t.runtime == nil {
+		return nil
+	}
+	return t.runtime.Close()
+}
+
+func (t *httpGenerationTransaction) FinalizeCommitSuccess() {
+	if t == nil || !t.published || t.finalizedSuccess {
+		return
+	}
+	t.finalizedSuccess = true
+	if t.previousRuntime != nil {
+		t.previousRuntime.BeginDrain()
+	}
+}
+
+type httpDiagnosticsSource struct{ cache *model.Cache }
+
+func (s httpDiagnosticsSource) Cache() *model.Cache { return s.cache }
+
+var _ module.GenerationTransaction = (*httpGenerationTransaction)(nil)
+var _ interface{ Publish() } = (*httpGenerationTransaction)(nil)
+var _ generation.Session = (*httpRequestSession)(nil)
+
+func (s *httpRequestSession) ForceClose(context.Context, string) error {
+	if s != nil && s.cancel != nil {
+		s.cancel()
+	}
+	return nil
+}

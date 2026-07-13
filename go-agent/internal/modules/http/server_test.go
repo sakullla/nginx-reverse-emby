@@ -624,9 +624,9 @@ func TestServerUsesBackendAuthorityForHTTPSUpstreamsResolvedToIP(t *testing.T) {
 }
 
 func TestStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
-	failures := 0
+	var failures atomic.Int32
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		failures++
+		failures.Add(1)
 		hj, ok := w.(http.Hijacker)
 		if !ok {
 			t.Fatalf("response writer does not support hijack")
@@ -674,8 +674,8 @@ func TestStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read body: %v", err)
 	}
-	if string(body) != "ok" || failures == 0 {
-		t.Fatalf("expected retry to healthy backend; failures=%d body=%q", failures, string(body))
+	if string(body) != "ok" || failures.Load() == 0 {
+		t.Fatalf("expected retry to healthy backend; failures=%d body=%q", failures.Load(), string(body))
 	}
 }
 
@@ -1254,13 +1254,19 @@ func TestRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
 	selectedPath := []int{101, 201}
 	transport := NewSharedTransport()
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		setSelectedRelaySelection(ctx, selectedAddress, selectedPath)
 		client, server := net.Pipe()
 		go func() {
 			defer server.Close()
+			request, err := http.ReadRequest(bufio.NewReader(server))
+			if err != nil {
+				return
+			}
+			if request.Body != nil {
+				_ = request.Body.Close()
+			}
 			_, _ = io.WriteString(server, "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nok")
 		}()
-		return client, nil
+		return newSelectedRelayConn(client, selectedAddress, selectedPath), nil
 	}
 	entry := &routeEntry{
 		rule: rule,
@@ -2119,9 +2125,9 @@ func TestRouteEntrySkipsRedirectDialAddressAlreadyInBackoff(t *testing.T) {
 }
 
 func TestRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
-	requests := 0
+	var requests atomic.Int32
 	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		hj, ok := w.(http.Hijacker)
 		if !ok {
 			t.Fatalf("response writer does not support hijack")
@@ -2161,8 +2167,8 @@ func TestRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected POST request to fail without same-backend retry")
 	}
-	if requests != 1 {
-		t.Fatalf("expected exactly one backend attempt for unsafe method, got %d", requests)
+	if requests.Load() != 1 {
+		t.Fatalf("expected exactly one backend attempt for unsafe method, got %d", requests.Load())
 	}
 }
 

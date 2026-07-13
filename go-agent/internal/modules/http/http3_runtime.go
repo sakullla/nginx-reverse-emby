@@ -12,9 +12,10 @@ import (
 )
 
 type http3ServerHandle struct {
-	server  *http3.Server
-	packet  net.PacketConn
-	binding string
+	server   *http3.Server
+	packet   net.PacketConn
+	binding  string
+	serveErr chan error
 }
 
 var http3ListenPacket = func(network, address string) (net.PacketConn, error) {
@@ -22,11 +23,9 @@ var http3ListenPacket = func(network, address string) (net.PacketConn, error) {
 }
 
 func startHTTP3Server(ctx context.Context, handler http.Handler, spec runtimeListenerSpec, provider TLSMaterialProvider) (*http3ServerHandle, error) {
-	tlsConfig, err := newInboundTLSConfig(ctx, spec, provider)
-	if err != nil {
+	if _, err := newInboundTLSConfig(ctx, spec, provider); err != nil {
 		return nil, err
 	}
-
 	packetConn, err := http3ListenPacket("udp", spec.address)
 	if err != nil {
 		return nil, err
@@ -35,20 +34,33 @@ func startHTTP3Server(ctx context.Context, handler http.Handler, spec runtimeLis
 		model.TuneUDPBuffers(tuner)
 	}
 
+	return startHTTP3ServerOnPacket(ctx, handler, spec, provider, packetConn)
+}
+
+func startHTTP3ServerOnPacket(ctx context.Context, handler http.Handler, spec runtimeListenerSpec, provider TLSMaterialProvider, packetConn net.PacketConn) (*http3ServerHandle, error) {
+	if packetConn == nil {
+		return nil, net.ErrClosed
+	}
+	tlsConfig, err := newInboundTLSConfig(ctx, spec, provider)
+	if err != nil {
+		return nil, err
+	}
 	server := &http3.Server{
 		Addr:      spec.address,
 		Handler:   handler,
 		TLSConfig: http3.ConfigureTLSConfig(tlsConfig),
 	}
 	handle := &http3ServerHandle{
-		server:  server,
-		packet:  packetConn,
-		binding: spec.bindingKey,
+		server:   server,
+		packet:   packetConn,
+		binding:  spec.bindingKey,
+		serveErr: make(chan error, 1),
 	}
 
 	go func() {
-		if err := server.Serve(packetConn); err != nil && !errors.Is(err, net.ErrClosed) {
+		if err := server.Serve(packetConn); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("[proxy] http3 serve error on %s: %v", spec.bindingKey, err)
+			handle.serveErr <- err
 		}
 	}()
 

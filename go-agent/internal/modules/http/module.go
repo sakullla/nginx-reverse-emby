@@ -2,7 +2,7 @@ package http
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	stdhttp "net/http"
 	"reflect"
 	"strings"
@@ -14,11 +14,12 @@ import (
 )
 
 type Config struct {
-	AgentID         string
-	HTTP3Enabled    bool
-	Transport       TransportOptions
-	Resilience      StreamResilienceOptions
-	BackendFailures model.BackendCacheConfig
+	AgentID          string
+	HTTP3Enabled     bool
+	Transport        TransportOptions
+	Resilience       StreamResilienceOptions
+	BackendFailures  model.BackendCacheConfig
+	SessionRegistrar HTTPSessionRegistrar
 }
 
 type Module struct {
@@ -31,6 +32,8 @@ type Module struct {
 	http3Enabled bool
 	blockState   trafficBlockStateValue
 	localAgentID string
+	ingress      *httpIngressManager
+	sessions     HTTPSessionRegistrar
 
 	lastRules          []model.HTTPRule
 	lastRelayListeners []model.RelayListener
@@ -47,6 +50,8 @@ func NewModule(cfg Config) *Module {
 		options:      cfg.Resilience,
 		http3Enabled: cfg.HTTP3Enabled,
 		localAgentID: strings.TrimSpace(cfg.AgentID),
+		ingress:      newHTTPIngressManager(),
+		sessions:     cfg.SessionRegistrar,
 	}
 }
 
@@ -89,7 +94,13 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	if tx == nil {
 		return nil
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if finalizer, ok := tx.(interface{ FinalizeCommitSuccess() }); ok {
+		finalizer.FinalizeCommitSuccess()
+	}
+	return nil
 }
 
 func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
@@ -97,108 +108,41 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		return nil, nil
 	}
 	currentBlockState := m.trafficBlockStateFromProvider(req.Providers)
-	previousBlockState := m.currentTrafficBlockStateLocked()
-	if httpEffectiveInputsEqual(req.Previous, req.Next) {
-		return m.trafficBlockStateTransaction(previousBlockState, currentBlockState), nil
-	}
 	providers, err := m.runtimeProviders(req.Providers, req.Next.EgressProfiles)
+	if err != nil {
+		return nil, err
+	}
+	generationContext, err := module.NewGenerationContext(req.Previous, req.Next)
 	if err != nil {
 		return nil, err
 	}
 
 	m.mu.Lock()
-	oldRuntime := m.runtime
-	rollbackState := m.committedRuntimeStateLocked()
+	previousRuntime := m.runtime
+	previousState := m.committedRuntimeStateLocked()
 	m.mu.Unlock()
 
 	rules := cloneHTTPRules(req.Next.Rules)
 	relayListeners := cloneRelayListeners(req.Next.RelayListeners)
 	egressProfiles := cloneEgressProfiles(req.Next.EgressProfiles)
-
-	if len(rules) == 0 {
-		committed := false
-		return module.TransactionFuncs{
-			CommitFunc: func() error {
-				m.mu.Lock()
-				previous := m.runtime
-				m.runtime = nil
-				m.blockState.Store(currentBlockState)
-				m.storeLastAppliedStateLocked(runtimeState{})
-				committed = true
-				m.mu.Unlock()
-				if previous != nil {
-					return previous.Close()
-				}
-				return nil
-			},
-			RollbackFunc: func() error {
-				if committed {
-					return m.restoreRuntimeState(ctx, rollbackState, true)
-				}
-				return nil
-			},
-		}, nil
-	}
-
-	bindings, err := BindingKeys(ctx, rules, relayListeners, providers)
+	nextRuntime, err := prepareGenerationRuntime(ctx, generationContext.ID(), rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options, m.ingress, m.sessions)
 	if err != nil {
-		return nil, err
-	}
-	closeFirst := oldRuntime != nil && bindingKeysOverlap(oldRuntime.BindingKeys(), bindings)
-	oldClosed := false
-	if closeFirst && oldRuntime != nil {
-		if err := oldRuntime.Close(); err != nil {
-			return nil, err
-		}
-		oldClosed = true
-	}
-
-	nextRuntime, err := StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
-	if err != nil {
-		if oldClosed {
-			if restoreErr := m.restoreRuntimeState(ctx, rollbackState, true); restoreErr != nil {
-				return nil, fmt.Errorf("%w; restore failed: %v", err, restoreErr)
-			}
-		}
 		return nil, err
 	}
 	nextRuntime.SetTrafficBlockState(currentBlockState)
-
-	committed := false
-	return module.TransactionFuncs{
-		CommitFunc: func() error {
-			m.mu.Lock()
-			previous := m.runtime
-			m.runtime = nextRuntime
-			m.blockState.Store(currentBlockState)
-			m.storeLastAppliedStateLocked(runtimeState{
-				rules:          rules,
-				relayListeners: relayListeners,
-				egressProfiles: egressProfiles,
-				providers:      snapshotProviders(providers, egressProfiles),
-				blockState:     currentBlockState,
-			})
-			committed = true
-			m.mu.Unlock()
-			if previous != nil && !oldClosed {
-				if err := previous.Close(); err != nil {
-					return err
-				}
-			}
-			return nil
+	return &httpGenerationTransaction{
+		module:          m,
+		runtime:         nextRuntime,
+		previousRuntime: previousRuntime,
+		previousState:   previousState,
+		nextState: runtimeState{
+			rules:          rules,
+			relayListeners: relayListeners,
+			egressProfiles: egressProfiles,
+			providers:      snapshotProviders(providers, egressProfiles),
+			blockState:     currentBlockState,
 		},
-		RollbackFunc: func() error {
-			var firstErr error
-			if nextRuntime != nil {
-				firstErr = nextRuntime.Close()
-			}
-			if oldClosed || committed {
-				if err := m.restoreRuntimeState(ctx, rollbackState, true); err != nil && firstErr == nil {
-					firstErr = err
-				}
-			}
-			return firstErr
-		},
+		revokedEntities: revokedHTTPRuleEntities(req.Previous.Rules, req.Next.Rules),
 	}, nil
 }
 
@@ -223,10 +167,11 @@ func (m *Module) Close() error {
 	runtime := m.runtime
 	m.runtime = nil
 	m.mu.Unlock()
+	var closeErr error
 	if runtime != nil {
-		return runtime.Close()
+		closeErr = runtime.Close()
 	}
-	return nil
+	return errors.Join(closeErr, m.ingress.close())
 }
 
 func (m *Module) UpdateTrafficBlockState(state TrafficBlockState) {

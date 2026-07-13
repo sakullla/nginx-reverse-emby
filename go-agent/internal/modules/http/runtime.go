@@ -19,11 +19,17 @@ import (
 )
 
 type Runtime struct {
-	mu           sync.Mutex
-	bindings     []string
-	servers      []*http.Server
-	http3Servers []*http3ServerHandle
-	listeners    []net.Listener
+	mu            sync.Mutex
+	bindings      []string
+	servers       []*http.Server
+	http3Servers  []*http3ServerHandle
+	listeners     []net.Listener
+	ingressLeases []*httpIngressLease
+	serveErrors   []<-chan error
+	tracker       *httpSessionTracker
+	closeOnce     sync.Once
+	drainOnce     sync.Once
+	closeErr      error
 }
 
 type runtimeListenerSpec struct {
@@ -154,29 +160,45 @@ func StartWithResourcesAndOptions(
 }
 
 func (r *Runtime) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	if r == nil {
+		return nil
+	}
+	r.closeOnce.Do(func() {
+		r.mu.Lock()
+		servers := r.servers
+		http3Servers := r.http3Servers
+		listeners := r.listeners
+		leases := r.ingressLeases
+		tracker := r.tracker
+		r.servers = nil
+		r.http3Servers = nil
+		r.listeners = nil
+		r.ingressLeases = nil
+		r.mu.Unlock()
 
-	var closeErr error
-	for _, server := range r.http3Servers {
-		if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
-			closeErr = err
+		if tracker != nil {
+			tracker.forceAll()
 		}
-	}
-	for _, server := range r.servers {
-		if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) && closeErr == nil {
-			closeErr = err
+		for _, server := range http3Servers {
+			if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				r.closeErr = errors.Join(r.closeErr, err)
+			}
 		}
-	}
-	for _, listener := range r.listeners {
-		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
-			closeErr = err
+		for _, server := range servers {
+			if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				r.closeErr = errors.Join(r.closeErr, err)
+			}
 		}
-	}
-	r.servers = nil
-	r.http3Servers = nil
-	r.listeners = nil
-	return closeErr
+		for _, listener := range listeners {
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				r.closeErr = errors.Join(r.closeErr, err)
+			}
+		}
+		for _, lease := range leases {
+			r.closeErr = errors.Join(r.closeErr, lease.release())
+		}
+	})
+	return r.closeErr
 }
 
 func (r *Runtime) BindingKeys() []string {
@@ -191,7 +213,14 @@ func (r *Runtime) SetTrafficBlockState(state TrafficBlockState) {
 	defer r.mu.Unlock()
 
 	for _, server := range r.servers {
-		if proxyServer, ok := server.Handler.(*Server); ok {
+		switch handler := server.Handler.(type) {
+		case *Server:
+			handler.SetTrafficBlockState(state)
+		case *generationHTTPHandler:
+			proxyServer := handler.server
+			if proxyServer == nil {
+				continue
+			}
 			proxyServer.SetTrafficBlockState(state)
 		}
 	}
