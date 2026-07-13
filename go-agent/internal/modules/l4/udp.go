@@ -546,12 +546,19 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 	hasTransparentTarget := target != ""
 	reservationKey := udpSessionKey(listener, peer, target)
 
+	s.admissionMu.RLock()
+	if !s.ruleAdmissionAllowedLocked(rule.ID) {
+		s.admissionMu.RUnlock()
+		releaseUDPAssociation(listener, peer, associationTarget)
+		return nil, errL4SessionAdmissionClosed
+	}
 	s.udpMu.Lock()
 	blocked := s.currentTrafficBlockState().Blocked
 	if existing := s.existingUDPSessionLocked(listener, peer, target); existing != nil {
 		if blocked {
 			key := existing.key
 			s.udpMu.Unlock()
+			s.admissionMu.RUnlock()
 			s.closeUDPSession(key)
 			return nil, nil
 		}
@@ -559,9 +566,11 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 		if ready == nil {
 			existing.lastActive = s.currentTime()
 			s.udpMu.Unlock()
+			s.admissionMu.RUnlock()
 			return existing, nil
 		}
 		s.udpMu.Unlock()
+		s.admissionMu.RUnlock()
 		<-ready
 		if existing.initErr != nil {
 			return nil, existing.initErr
@@ -570,6 +579,7 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 	}
 	if blocked {
 		s.udpMu.Unlock()
+		s.admissionMu.RUnlock()
 		releaseUDPAssociation(listener, peer, associationTarget)
 		return nil, nil
 	}
@@ -586,13 +596,15 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 	}
 	s.udpSessions[reservationKey] = session
 	s.udpMu.Unlock()
+	s.admissionMu.RUnlock()
 
 	upstream, candidate, err := s.dialUDPUpstreamForTarget(rule, target)
 	if err != nil {
 		s.udpMu.Lock()
-		session.initErr = err
-		delete(s.udpSessions, reservationKey)
-		close(session.ready)
+		if s.udpSessions[reservationKey] == session {
+			delete(s.udpSessions, reservationKey)
+		}
+		failUDPSessionInitializationLocked(session, err)
 		s.udpMu.Unlock()
 		releaseUDPAssociation(listener, peer, associationTarget)
 		return nil, err
@@ -600,18 +612,37 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 	target = candidate.address
 	key := udpSessionKey(listener, peer, target)
 
+	s.admissionMu.RLock()
 	s.udpMu.Lock()
+	if !s.ruleAdmissionAllowedLocked(rule.ID) || s.udpSessions[reservationKey] != session || session.initErr != nil {
+		if s.udpSessions[reservationKey] == session {
+			delete(s.udpSessions, reservationKey)
+		}
+		installErr := session.initErr
+		if installErr == nil {
+			installErr = errL4SessionAdmissionClosed
+		}
+		failUDPSessionInitializationLocked(session, installErr)
+		s.udpMu.Unlock()
+		s.admissionMu.RUnlock()
+		_ = upstream.Close()
+		releaseUDPAssociation(listener, peer, associationTarget)
+		return nil, installErr
+	}
 	delete(s.udpSessions, reservationKey)
 	if existing := s.udpSessions[key]; existing != nil {
+		existingReady := existing.ready
+		existingErr := existing.initErr
+		failUDPSessionInitializationLocked(session, existingErr)
 		s.udpMu.Unlock()
+		s.admissionMu.RUnlock()
 		_ = upstream.Close()
-		session.initErr = existing.initErr
-		close(session.ready)
-		if existing.ready != nil {
-			<-existing.ready
+		if existingReady != nil {
+			<-existingReady
+			existingErr = existing.initErr
 		}
-		if existing.initErr != nil {
-			return nil, existing.initErr
+		if existingErr != nil {
+			return nil, existingErr
 		}
 		return existing, nil
 	}
@@ -629,6 +660,7 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 	session.ready = nil
 	s.udpSessions[key] = session
 	s.udpMu.Unlock()
+	s.admissionMu.RUnlock()
 
 	handle, err := s.registerSession(rule.ID, "udp", l4UDPSession{server: s, key: key})
 	if err != nil {
@@ -657,6 +689,9 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, e
 }
 
 func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udpUpstream, l4Candidate, error) {
+	if s.udpDialer != nil {
+		return s.udpDialer(rule, target)
+	}
 	if target = strings.TrimSpace(target); target != "" {
 		candidate := l4Candidate{
 			address:       target,
@@ -951,6 +986,9 @@ func (s *Server) closeUDPSession(key string) {
 	s.udpMu.Lock()
 	session := s.udpSessions[key]
 	delete(s.udpSessions, key)
+	if session != nil && session.ready != nil {
+		failUDPSessionInitializationLocked(session, net.ErrClosed)
+	}
 	s.udpMu.Unlock()
 
 	if session != nil && session.upstream != nil {
@@ -968,6 +1006,11 @@ func (s *Server) closeUDPSessions() {
 	s.udpMu.Lock()
 	sessions := s.udpSessions
 	s.udpSessions = make(map[string]*udpSession)
+	for _, session := range sessions {
+		if session != nil && session.ready != nil {
+			failUDPSessionInitializationLocked(session, net.ErrClosed)
+		}
+	}
 	s.udpMu.Unlock()
 
 	for _, session := range sessions {
@@ -980,6 +1023,22 @@ func (s *Server) closeUDPSessions() {
 				session.sessionHandle.Finish()
 			}
 		}
+	}
+}
+
+func failUDPSessionInitializationLocked(session *udpSession, err error) {
+	if session == nil {
+		return
+	}
+	if err == nil {
+		err = net.ErrClosed
+	}
+	if session.initErr == nil {
+		session.initErr = err
+	}
+	if session.ready != nil {
+		close(session.ready)
+		session.ready = nil
 	}
 }
 

@@ -421,7 +421,7 @@ func l4RuleBindingKey(rule model.L4Rule) string {
 		protocol = "udp"
 	}
 	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		return "wireguard:" + strconv.Itoa(valueOrZeroWireGuardProfileID(rule.WireGuardProfileID)) + ":" + protocol + ":" + l4RuleListenAddress(rule)
+		return "wireguard:" + strconv.Itoa(valueOrZeroWireGuardProfileID(rule.WireGuardProfileID)) + ":" + wireGuardInboundMode(rule) + ":" + protocol + ":" + l4RuleListenAddress(rule)
 	}
 	return protocol + ":" + l4RuleListenAddress(rule)
 }

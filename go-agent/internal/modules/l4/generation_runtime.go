@@ -20,6 +20,8 @@ import (
 
 const l4IngressBacklog = 256
 
+var errL4SessionAdmissionClosed = errors.New("l4 session admission is closed")
+
 type L4GenerationSelector interface {
 	ActiveGeneration() *module.GenerationView
 }
@@ -233,13 +235,23 @@ func (s *Server) registerSession(ruleID int, kind string, session generation.Ses
 	if s == nil || s.sessions == nil {
 		return nil, nil
 	}
-	return s.sessions.start(ruleID, kind, session), nil
+	s.admissionMu.RLock()
+	defer s.admissionMu.RUnlock()
+	if !s.ruleAdmissionAllowedLocked(ruleID) {
+		return nil, errL4SessionAdmissionClosed
+	}
+	tracked, err := s.sessions.start(ruleID, kind, session)
+	if err != nil {
+		_ = session.ForceClose(context.Background(), "session_registration_failed")
+	}
+	return tracked, err
 }
 
 func (s *Server) revokeRules(entities map[string]struct{}) {
 	if s == nil || len(entities) == 0 {
 		return
 	}
+	s.revokeRuleAdmissions(entities)
 	if s.sessions != nil {
 		s.sessions.force(entities)
 	}
@@ -366,9 +378,9 @@ func newL4SessionTracker(generationID string, registrar L4SessionRegistrar, regi
 	}
 }
 
-func (t *l4SessionTracker) start(ruleID int, kind string, session generation.Session) *l4TrackedSession {
+func (t *l4SessionTracker) start(ruleID int, kind string, session generation.Session) (*l4TrackedSession, error) {
 	if t == nil || session == nil {
-		return nil
+		return nil, nil
 	}
 	entity := strconv.Itoa(ruleID)
 	t.mu.Lock()
@@ -388,9 +400,12 @@ func (t *l4SessionTracker) start(ruleID int, kind string, session generation.Ses
 	registrationReady := t.registrationReady
 	t.mu.Unlock()
 	if registrationReady {
-		t.register(tracked)
+		if err := t.register(tracked); err != nil {
+			t.finish(tracked)
+			return nil, err
+		}
 	}
-	return tracked
+	return tracked, nil
 }
 
 func (t *l4SessionTracker) enableRegistration() {
@@ -411,13 +426,17 @@ func (t *l4SessionTracker) enableRegistration() {
 	}
 	t.mu.Unlock()
 	for _, session := range sessions {
-		t.register(session)
+		if err := t.register(session); err != nil {
+			log.Printf("[l4] close unregistered session %s/%s: %v", t.generation, session.id, err)
+			_ = session.ForceClose(context.Background(), "session_registration_failed")
+			session.Finish()
+		}
 	}
 }
 
-func (t *l4SessionTracker) register(session *l4TrackedSession) {
+func (t *l4SessionTracker) register(session *l4TrackedSession) error {
 	if t == nil || t.registrar == nil || session == nil || strings.TrimSpace(t.generation) == "" {
-		return
+		return nil
 	}
 	session.registerOnce.Do(func() {
 		handle, err := t.registrar.RegisterSession(
@@ -439,6 +458,10 @@ func (t *l4SessionTracker) register(session *l4TrackedSession) {
 			handle.Finish()
 		}
 	})
+	session.mu.Lock()
+	err := session.registrationErr
+	session.mu.Unlock()
+	return err
 }
 
 func (t *l4SessionTracker) finish(session *l4TrackedSession) {
@@ -574,7 +597,7 @@ func (m *l4IngressManager) acquire(ctx context.Context, generationID string, rul
 		binding = &l4IngressBinding{key: key}
 		var err error
 		switch {
-		case stringsEqualFold(rule.Protocol, "tcp"):
+		case l4RuleIsTCP(rule):
 			listener, listenErr := server.listenTCP(rule, l4ListenAddress(rule))
 			err = listenErr
 			if err == nil {
@@ -622,6 +645,12 @@ func (m *l4IngressManager) acquire(ctx context.Context, generationID string, rul
 			})
 		}
 		m.bindings[key] = binding
+	} else {
+		wantsStream := l4RuleIsTCP(rule)
+		wantsTransparent := isWireGuardTransparentForwardRule(rule)
+		if (binding.stream != nil) != wantsStream || binding.transparent != wantsTransparent {
+			return nil, fmt.Errorf("L4 binding %s has incompatible listener kind", key)
+		}
 	}
 
 	lease := &l4IngressLease{manager: m, binding: binding, transparent: binding.transparent}
@@ -859,6 +888,11 @@ func (c *virtualTransparentUDPConn) LocalAddr() net.Addr { return c.endpoint.Loc
 
 func stringsEqualFold(left, right string) bool {
 	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+}
+
+func l4RuleIsTCP(rule model.L4Rule) bool {
+	protocol := strings.TrimSpace(rule.Protocol)
+	return protocol == "" || strings.EqualFold(protocol, "tcp")
 }
 
 var _ module.GenerationTransaction = (*l4GenerationTransaction)(nil)

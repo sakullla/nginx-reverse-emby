@@ -3,10 +3,12 @@ package l4
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -335,10 +337,132 @@ func TestL4RuleEntityChangesRevokeOnlyDeleteAndDisable(t *testing.T) {
 	}
 }
 
+func TestL4UDPInitializationCannotOutliveRevocationOrClose(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		cancel func(*Server)
+	}{
+		{name: "revoke", cancel: func(server *Server) { server.revokeRules(map[string]struct{}{"7": {}}) }},
+		{name: "close", cancel: func(server *Server) { _ = server.Close() }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := newBareL4GenerationServer("g1", nil)
+			defer server.Close()
+			listenerConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+			if err != nil {
+				t.Fatalf("ListenUDP() error = %v", err)
+			}
+			defer listenerConn.Close()
+			listener := packetUDPListener{PacketConn: listenerConn}
+
+			dialStarted := make(chan struct{})
+			releaseDial := make(chan struct{})
+			upstream, upstreamPeer := net.Pipe()
+			defer upstreamPeer.Close()
+			server.udpDialer = func(model.L4Rule, string) (udpUpstream, l4Candidate, error) {
+				close(dialStarted)
+				<-releaseDial
+				return &connUDPUpstream{conn: upstream}, l4Candidate{address: "127.0.0.1:9000"}, nil
+			}
+			rule := model.L4Rule{ID: 7, Enabled: true, Protocol: "udp"}
+			type result struct {
+				session *udpSession
+				err     error
+			}
+			resultCh := make(chan result, 1)
+			go func() {
+				session, err := server.sessionForUDPFlow(rule, listener, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 32000}, "")
+				resultCh <- result{session: session, err: err}
+			}()
+			select {
+			case <-dialStarted:
+			case <-time.After(time.Second):
+				t.Fatal("UDP dial did not reach the controlled blocker")
+			}
+			testCase.cancel(server)
+			close(releaseDial)
+			select {
+			case result := <-resultCh:
+				if result.session != nil || result.err == nil {
+					t.Fatalf("sessionForUDPFlow() = %+v, want canceled initialization", result)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("UDP initialization did not converge after cancellation")
+			}
+			if got := server.udpSessionCount(); got != 0 {
+				t.Fatalf("UDP session count = %d, want 0", got)
+			}
+			_ = upstreamPeer.SetReadDeadline(time.Now().Add(time.Second))
+			if _, err := upstreamPeer.Read(make([]byte, 1)); err == nil {
+				t.Fatal("canceled UDP upstream remained open")
+			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				t.Fatal("canceled UDP upstream remained open until timeout")
+			}
+		})
+	}
+}
+
+func TestL4SessionRegistrationFailureClosesImmediateAndDeferredSessions(t *testing.T) {
+	registerErr := errors.New("register failed")
+	for _, registrationReady := range []bool{true, false} {
+		t.Run(fmt.Sprintf("ready=%t", registrationReady), func(t *testing.T) {
+			registrar := l4GenerationFailingRegistrar{err: registerErr}
+			server := newBareL4GenerationServer("g1", registrar)
+			server.sessions = newL4SessionTracker("g1", registrar, registrationReady)
+			defer server.Close()
+			target, peer := net.Pipe()
+			defer peer.Close()
+			handle, err := server.registerSession(9, "tcp", l4ConnectionSession{conn: target})
+			if registrationReady {
+				if !errors.Is(err, registerErr) || handle != nil {
+					t.Fatalf("registerSession() = %v, %v", handle, err)
+				}
+			} else {
+				if err != nil || handle == nil {
+					t.Fatalf("deferred registerSession() = %v, %v", handle, err)
+				}
+				server.sessions.enableRegistration()
+			}
+			assertL4GenerationPipeClosed(t, peer, "registration failure")
+			server.sessions.mu.Lock()
+			remaining := len(server.sessions.sessions)
+			server.sessions.mu.Unlock()
+			if remaining != 0 {
+				t.Fatalf("local session entities = %d, want 0", remaining)
+			}
+		})
+	}
+}
+
+func TestL4GenerationWireGuardBindingIdentityIncludesListenerKind(t *testing.T) {
+	profileID := 7
+	addressRule := model.L4Rule{
+		ID: 1, Enabled: true, Protocol: "udp", ListenMode: "wireguard",
+		WireGuardProfileID: &profileID, WireGuardInboundMode: "address",
+		ListenHost: "0.0.0.0", WireGuardListenHost: "10.64.0.2", ListenPort: 51820,
+	}
+	transparentRule := addressRule
+	transparentRule.WireGuardInboundMode = "transparent"
+	addressKey := l4RuleBindingKey(addressRule)
+	transparentKey := l4RuleBindingKey(transparentRule)
+	if addressKey == transparentKey {
+		t.Fatalf("address and transparent binding keys are both %q", addressKey)
+	}
+	if !strings.Contains(addressKey, ":address:") || !strings.Contains(transparentKey, ":transparent:") {
+		t.Fatalf("binding keys do not encode listener kinds: %q, %q", addressKey, transparentKey)
+	}
+}
+
 type l4GenerationNoopRegistrar struct{}
 
 func (l4GenerationNoopRegistrar) RegisterSession(string, generation.EntityKey, string, generation.Session) (*generation.SessionHandle, error) {
 	return nil, nil
+}
+
+type l4GenerationFailingRegistrar struct{ err error }
+
+func (r l4GenerationFailingRegistrar) RegisterSession(string, generation.EntityKey, string, generation.Session) (*generation.SessionHandle, error) {
+	return nil, r.err
 }
 
 func prepareL4GenerationCandidate(t *testing.T, registry *module.Registry, previous, next model.Snapshot) module.PreparedGeneration {

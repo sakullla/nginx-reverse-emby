@@ -9,6 +9,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,14 +76,18 @@ type Server struct {
 	finalHopDialer      relay.FinalHopDialer
 	egressDialer        moduleegress.Dialer
 	tcpDialer           func(context.Context, string, string) (net.Conn, error)
+	udpDialer           func(model.L4Rule, string) (udpUpstream, l4Candidate, error)
 
-	tcpMu        sync.Mutex
-	tcpConns     map[net.Conn]int
-	closing      bool
-	generationID string
-	sessions     *l4SessionTracker
-	closeOnce    sync.Once
-	drainOnce    sync.Once
+	tcpMu           sync.Mutex
+	tcpConns        map[net.Conn]int
+	closing         bool
+	generationID    string
+	sessions        *l4SessionTracker
+	closeOnce       sync.Once
+	drainOnce       sync.Once
+	admissionMu     sync.RWMutex
+	admissionClosed bool
+	revokedRules    map[int]struct{}
 
 	trafficBlockState trafficBlockStateValue
 
@@ -197,6 +202,7 @@ func newServerWithOptions(
 		egressDialer:          moduleegress.Dialer{Resolver: options.egressResolver, OverlayRuntime: options.egressOverlayRuntime},
 		tcpDialer:             (&net.Dialer{}).DialContext,
 		generationID:          options.generationID,
+		revokedRules:          make(map[int]struct{}),
 	}
 	s.sessions = newL4SessionTracker(options.generationID, options.sessionRegistrar, options.registrationReady)
 	for _, rule := range rules {
@@ -275,6 +281,9 @@ func (s *Server) Close() error {
 		return nil
 	}
 	s.closeOnce.Do(func() {
+		s.admissionMu.Lock()
+		s.admissionClosed = true
+		s.admissionMu.Unlock()
 		if s.cancel != nil {
 			s.cancel()
 		}
@@ -301,6 +310,30 @@ func (s *Server) Close() error {
 		s.wg.Wait()
 	})
 	return nil
+}
+
+func (s *Server) ruleAdmissionAllowedLocked(ruleID int) bool {
+	if s == nil || s.admissionClosed {
+		return false
+	}
+	_, revoked := s.revokedRules[ruleID]
+	return !revoked
+}
+
+func (s *Server) revokeRuleAdmissions(entities map[string]struct{}) {
+	if s == nil || len(entities) == 0 {
+		return
+	}
+	s.admissionMu.Lock()
+	if s.revokedRules == nil {
+		s.revokedRules = make(map[int]struct{})
+	}
+	for entity := range entities {
+		if ruleID, err := strconv.Atoi(entity); err == nil {
+			s.revokedRules[ruleID] = struct{}{}
+		}
+	}
+	s.admissionMu.Unlock()
 }
 
 func (s *Server) BeginDrain() {
