@@ -40,14 +40,15 @@ func (realClock) Now() time.Time                             { return time.Now()
 func (realClock) AfterFunc(d time.Duration, fn func()) Timer { return time.AfterFunc(d, fn) }
 
 type drainEntry struct {
-	generation Generation
-	status     model.GenerationDrainStatus
-	revoked    map[EntityKey]string
-	timer      Timer
-	cleanupMu  sync.Mutex
-	finalState string
-	destroyed  bool
-	destroyErr error
+	generation  Generation
+	status      model.GenerationDrainStatus
+	revoked     map[EntityKey]string
+	timer       Timer
+	lifecycleMu sync.Mutex
+	finalState  string
+	destroyed   bool
+	released    bool
+	destroyErr  error
 }
 type DrainController struct {
 	mu       sync.Mutex
@@ -148,12 +149,20 @@ func (c *DrainController) onEmpty(id string) {
 		return
 	}
 	c.mu.Lock()
+	entry := c.entries[id]
+	if entry == nil || entry.status.State != model.GenerationDrainStateDraining {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+	entry.lifecycleMu.Lock()
+	defer entry.lifecycleMu.Unlock()
+	c.mu.Lock()
 	if c.registry.GenerationCount(id) != 0 {
 		c.mu.Unlock()
 		return
 	}
-	entry := c.entries[id]
-	if entry == nil || entry.status.State != model.GenerationDrainStateDraining {
+	if entry.status.State != model.GenerationDrainStateDraining {
 		c.mu.Unlock()
 		return
 	}
@@ -167,27 +176,55 @@ func (c *DrainController) onEmpty(id string) {
 	c.completeCleanup(context.Background(), entry)
 }
 func (c *DrainController) enforceLimit(ctx context.Context) error {
-	c.mu.Lock()
-	var draining []string
-	for _, id := range c.order {
-		if e := c.entries[id]; e != nil && e.status.State == model.GenerationDrainStateDraining {
-			draining = append(draining, id)
+	attempted := make(map[string]bool)
+	var forceErr error
+	for {
+		c.mu.Lock()
+		live := 0
+		oldest := ""
+		for _, id := range c.order {
+			entry := c.entries[id]
+			if entry == nil || entry.released {
+				continue
+			}
+			live++
+			if id != c.active && oldest == "" && !attempted[id] {
+				oldest = id
+			}
 		}
+		c.mu.Unlock()
+		if live <= 2 {
+			return forceErr
+		}
+		if oldest == "" {
+			return errors.Join(forceErr, errors.New("generation limit cannot release another retired generation"))
+		}
+		attempted[oldest] = true
+		forceErr = errors.Join(forceErr, c.force(ctx, oldest, model.GenerationForceReasonGenerationLimit))
 	}
-	c.mu.Unlock()
-	var err error
-	for len(draining) > 1 {
-		err = errors.Join(err, c.force(ctx, draining[0], model.GenerationForceReasonGenerationLimit))
-		draining = draining[1:]
-	}
-	return err
 }
 func (c *DrainController) force(ctx context.Context, id, reason string) error {
 	c.mu.Lock()
 	entry := c.entries[id]
-	if entry == nil || entry.status.State != model.GenerationDrainStateDraining {
+	c.mu.Unlock()
+	if entry == nil {
+		return nil
+	}
+	entry.lifecycleMu.Lock()
+	defer entry.lifecycleMu.Unlock()
+	c.mu.Lock()
+	if entry.released {
 		c.mu.Unlock()
 		return nil
+	}
+	if entry.status.State == model.GenerationDrainStateCleanupFailed && c.registry.GenerationCount(id) == 0 {
+		c.mu.Unlock()
+		return c.completeCleanup(ctx, entry)
+	}
+	if entry.status.State != model.GenerationDrainStateDraining && entry.status.State != model.GenerationDrainStateCleanupFailed {
+		err := entry.destroyErr
+		c.mu.Unlock()
+		return err
 	}
 	if entry.timer != nil {
 		entry.timer.Stop()
@@ -219,10 +256,13 @@ func (c *DrainController) RetryCleanup(ctx context.Context, id string) error {
 	}
 	c.mu.Lock()
 	entry := c.entries[id]
+	c.mu.Unlock()
 	if entry == nil {
-		c.mu.Unlock()
 		return errors.New("unknown generation")
 	}
+	entry.lifecycleMu.Lock()
+	defer entry.lifecycleMu.Unlock()
+	c.mu.Lock()
 	if entry.status.State != model.GenerationDrainStateCleanupFailed {
 		c.mu.Unlock()
 		return errors.New("generation cleanup is not retryable")
@@ -236,8 +276,6 @@ func (c *DrainController) RetryCleanup(ctx context.Context, id string) error {
 }
 
 func (c *DrainController) completeCleanup(ctx context.Context, entry *drainEntry) error {
-	entry.cleanupMu.Lock()
-	defer entry.cleanupMu.Unlock()
 	if !entry.destroyed {
 		entry.destroyErr = entry.generation.Resource.Destroy(ctx)
 		if entry.destroyErr == nil {
@@ -256,6 +294,7 @@ func (c *DrainController) completeCleanup(ctx context.Context, entry *drainEntry
 	entry.status.State = entry.finalState
 	entry.status.CleanupError = ""
 	entry.status.CompletedAt = c.clock.Now()
+	entry.released = true
 	return nil
 }
 func (c *DrainController) Snapshot() model.GenerationDrainSnapshot {

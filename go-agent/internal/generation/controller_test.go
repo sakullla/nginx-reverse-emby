@@ -232,6 +232,91 @@ func TestTerminalForceWaitsForInFlightSelectiveClose(t *testing.T) {
 	}
 }
 
+func TestThirdGenerationWaitsForInFlightTimeoutForce(t *testing.T) {
+	clock := newFakeClock(time.Unix(100, 0))
+	controller := NewDrainController(clock)
+	first := &recordingResource{}
+	session := &blockingErrorSession{entered: make(chan struct{}), release: make(chan struct{})}
+	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: first}, nil, time.Minute)
+	_, _ = controller.RegisterSession("g1", EntityKey{Module: "http", ID: "first"}, "s1", session)
+	_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Second)
+	_, _ = controller.RegisterSession("g2", EntityKey{Module: "http", ID: "second"}, "s2", &recordingSession{})
+
+	timeoutDone := make(chan struct{})
+	go func() {
+		clock.Advance(time.Second)
+		close(timeoutDone)
+	}()
+	<-session.entered
+	activateDone := make(chan error, 1)
+	go func() {
+		activateDone <- controller.Activate(context.Background(), Generation{ID: "g3", Revision: 3, Resource: &recordingResource{}}, nil, time.Minute)
+	}()
+	waitForActiveGeneration(t, controller, "g3")
+	select {
+	case err := <-activateDone:
+		t.Fatalf("third generation returned before timeout force completed: %v", err)
+	default:
+	}
+	if first.destroyed != 0 {
+		t.Fatal("third generation destroyed resources before timeout force completed")
+	}
+
+	close(session.release)
+	<-timeoutDone
+	if err := <-activateDone; err != nil {
+		t.Fatal(err)
+	}
+	status := statusOf(t, controller.Snapshot(), "g1")
+	if status.State != model.GenerationDrainStateForced || status.ForceReason != model.GenerationForceReasonTimeout || first.destroyed != 1 {
+		t.Fatalf("timeout/limit overlap = %+v destroyed=%d", status, first.destroyed)
+	}
+}
+
+func TestGenerationLimitAccountsForCleanupFailedResources(t *testing.T) {
+	clock := newFakeClock(time.Unix(100, 0))
+	controller := NewDrainController(clock)
+	first := &retryResource{failures: 100}
+	second := &recordingResource{}
+	secondSession := &recordingSession{}
+	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: first}, nil, time.Minute)
+	_, _ = controller.RegisterSession("g1", EntityKey{Module: "http", ID: "first"}, "s1", &recordingSession{})
+	_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: second}, nil, time.Second)
+	_, _ = controller.RegisterSession("g2", EntityKey{Module: "http", ID: "second"}, "s2", secondSession)
+	clock.Advance(time.Second)
+	if stateOf(t, controller.Snapshot(), "g1") != model.GenerationDrainStateCleanupFailed {
+		t.Fatalf("g1 did not retain failed cleanup: %+v", controller.Snapshot())
+	}
+
+	err := controller.Activate(context.Background(), Generation{ID: "g3", Revision: 3, Resource: &recordingResource{}}, nil, time.Minute)
+	if err == nil {
+		t.Fatal("third generation did not report oldest cleanup failure")
+	}
+	firstStatus := statusOf(t, controller.Snapshot(), "g1")
+	secondStatus := statusOf(t, controller.Snapshot(), "g2")
+	if firstStatus.State != model.GenerationDrainStateCleanupFailed || first.attempts != 2 {
+		t.Fatalf("oldest cleanup retry = %+v attempts=%d", firstStatus, first.attempts)
+	}
+	if secondStatus.State != model.GenerationDrainStateForced || secondStatus.ForceReason != model.GenerationForceReasonGenerationLimit || second.destroyed != 1 || secondSession.closed != 1 {
+		t.Fatalf("fallback generation release = %+v destroyed=%d closed=%d", secondStatus, second.destroyed, secondSession.closed)
+	}
+	if snapshot := controller.Snapshot(); snapshot.ActiveGenerationID != "g3" || stateOf(t, snapshot, "g3") != model.GenerationDrainStateApplied {
+		t.Fatalf("active generation after cleanup failure = %+v", snapshot)
+	}
+}
+
+func waitForActiveGeneration(t *testing.T, controller *DrainController, id string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if controller.Snapshot().ActiveGenerationID == id {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("generation %s did not become active", id)
+}
+
 func waitForTerminalForce(t *testing.T, handle *SessionHandle) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
