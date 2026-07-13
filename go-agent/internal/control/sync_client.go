@@ -185,8 +185,11 @@ func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, erro
 	if pull.Lease == nil || len(envelope.Revision.Snapshot) == 0 || bytes.Equal(envelope.Revision.Snapshot, []byte("null")) {
 		return model.RevisionPull{}, errors.New("revision pull returned an incomplete update")
 	}
+	if err := validateRevisionLeaseMetadata(*pull.Lease, pull.DesiredRevision, time.Now().UTC()); err != nil {
+		return model.RevisionPull{}, err
+	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(envelope.Revision.Snapshot))
-	if strings.TrimSpace(pull.Lease.SnapshotDigest) == "" || !strings.EqualFold(digest, pull.Lease.SnapshotDigest) {
+	if !strings.EqualFold(digest, pull.Lease.SnapshotDigest) {
 		return model.RevisionPull{}, errors.New("revision snapshot digest does not match lease")
 	}
 	var snapshot model.Snapshot
@@ -196,12 +199,30 @@ func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, erro
 	if !snapshot.HasFullRevisionPayload() {
 		return model.RevisionPull{}, errors.New("revision pull snapshot is not a full snapshot")
 	}
+	if snapshot.Revision != pull.Lease.Revision || snapshot.DesiredVersion != pull.Lease.DesiredVersion {
+		return model.RevisionPull{}, errors.New("revision pull snapshot identity does not match lease")
+	}
 	if agentID := strings.TrimSpace(c.cfg.AgentID); agentID != "" && strings.TrimSpace(pull.Lease.AgentID) != agentID {
 		return model.RevisionPull{}, errors.New("revision pull lease belongs to a different agent")
 	}
 	pull.Snapshot = &snapshot
 	pull.VerifiedSnapshotDigest = digest
 	return pull, nil
+}
+
+func validateRevisionLeaseMetadata(lease model.RevisionLease, desiredRevision int64, now time.Time) error {
+	if lease.DeadlineAt.IsZero() || !now.Before(lease.DeadlineAt) {
+		return errors.New("revision lease deadline is missing or expired")
+	}
+	if lease.ApplyTimeoutSeconds <= 0 || lease.DrainTimeoutSeconds <= 0 {
+		return errors.New("revision lease timeout metadata must be positive")
+	}
+	if strings.TrimSpace(lease.AgentID) == "" || lease.Revision <= 0 || lease.Revision != desiredRevision ||
+		lease.RetryCycle < 0 || lease.Attempt <= 0 || strings.TrimSpace(lease.LeaseID) == "" ||
+		strings.TrimSpace(lease.SnapshotDigest) == "" {
+		return errors.New("revision lease identity is inconsistent")
+	}
+	return nil
 }
 
 func (c *SyncClient) StartRevision(ctx context.Context, input model.RevisionStart) error {

@@ -58,6 +58,28 @@ func TestFilesystemStorePersistsGenerationJournalAndLastKnownGood(t *testing.T) 
 	}
 }
 
+func TestFilesystemStoreFreshRevisionStateLoadsAsEmpty(t *testing.T) {
+	store, err := NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFilesystem() error = %v", err)
+	}
+	applied, err := store.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("LoadAppliedSnapshot() on fresh store error = %v", err)
+	}
+	journal, err := store.LoadGenerationJournal()
+	if err != nil {
+		t.Fatalf("LoadGenerationJournal() on fresh store error = %v", err)
+	}
+	lastKnownGood, err := store.LoadLastKnownGoodSnapshot()
+	if err != nil {
+		t.Fatalf("LoadLastKnownGoodSnapshot() on fresh store error = %v", err)
+	}
+	if !isZeroSnapshot(applied) || journal.Version != 0 || !isZeroSnapshot(lastKnownGood) {
+		t.Fatalf("fresh applied/journal/LKG = %+v/%+v/%+v, want empty state", applied, journal, lastKnownGood)
+	}
+}
+
 func TestFilesystemStoreFallsBackToLastKnownGoodWhenAppliedIsCorrupt(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFilesystem(dir)

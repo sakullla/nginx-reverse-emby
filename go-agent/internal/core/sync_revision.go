@@ -276,7 +276,7 @@ func validateRevisionPull(pull model.RevisionPull) (model.RevisionLease, model.S
 	if strings.TrimSpace(lease.AgentID) == "" || lease.Revision <= 0 || lease.RetryCycle < 0 || lease.Attempt <= 0 ||
 		lease.ApplyTimeoutSeconds <= 0 || lease.DrainTimeoutSeconds <= 0 ||
 		strings.TrimSpace(lease.LeaseID) == "" || snapshot.Revision != lease.Revision ||
-		pull.DesiredRevision != lease.Revision {
+		pull.DesiredRevision != lease.Revision || snapshot.DesiredVersion != lease.DesiredVersion {
 		return model.RevisionLease{}, model.Snapshot{}, "", errors.New("revision pull identity is inconsistent")
 	}
 	if lease.DeadlineAt.IsZero() || !time.Now().UTC().Before(lease.DeadlineAt) {

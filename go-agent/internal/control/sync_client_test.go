@@ -100,7 +100,7 @@ func TestPullRevisionRejectsDigestValidIncompleteSnapshot(t *testing.T) {
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"%s","deadline_at":"2099-01-01T00:00:00Z"},"snapshot":%s}}`, digest, snapshotJSON)
+		fmt.Fprintf(w, `{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"%s","apply_timeout_seconds":60,"drain_timeout_seconds":600,"deadline_at":"2099-01-01T00:00:00Z"},"snapshot":%s}}`, digest, snapshotJSON)
 	}))
 	defer server.Close()
 
@@ -116,7 +116,7 @@ func TestPullRevisionRejectsLeaseForDifferentAgent(t *testing.T) {
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-2","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"%s","deadline_at":"2099-01-01T00:00:00Z"},"snapshot":%s}}`, digest, snapshotJSON)
+		fmt.Fprintf(w, `{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-2","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"%s","desired_version":"1.2.3","apply_timeout_seconds":60,"drain_timeout_seconds":600,"deadline_at":"2099-01-01T00:00:00Z"},"snapshot":%s}}`, digest, snapshotJSON)
 	}))
 	defer server.Close()
 
@@ -127,10 +127,41 @@ func TestPullRevisionRejectsLeaseForDifferentAgent(t *testing.T) {
 	}
 }
 
+func TestPullRevisionRejectsInvalidLeaseTimingMetadata(t *testing.T) {
+	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
+	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
+	for _, tc := range []struct {
+		name     string
+		apply    int
+		drain    int
+		deadline string
+		want     string
+	}{
+		{name: "zero deadline", apply: 60, drain: 600, deadline: "0001-01-01T00:00:00Z", want: "deadline"},
+		{name: "expired deadline", apply: 60, drain: 600, deadline: "2000-01-01T00:00:00Z", want: "deadline"},
+		{name: "zero apply timeout", apply: 0, drain: 600, deadline: "2099-01-01T00:00:00Z", want: "timeout"},
+		{name: "zero drain timeout", apply: 60, drain: 0, deadline: "2099-01-01T00:00:00Z", want: "timeout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"%s","apply_timeout_seconds":%d,"drain_timeout_seconds":%d,"deadline_at":"%s"},"snapshot":%s}}`, digest, tc.apply, tc.drain, tc.deadline, snapshotJSON)
+			}))
+			defer server.Close()
+
+			client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-secret", AgentID: "edge-1"}, server.Client())
+			_, err := client.PullRevision(t.Context())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("PullRevision() error = %v, want %s rejection", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestPullRevisionRejectsSnapshotWhoseRawDigestDoesNotMatchLease(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","deadline_at":"2099-01-01T00:00:00Z"},"snapshot":{"desired_version":"1.2.3","desired_revision":7,"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}}}`))
+		_, _ = w.Write([]byte(`{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","apply_timeout_seconds":60,"drain_timeout_seconds":600,"deadline_at":"2099-01-01T00:00:00Z"},"snapshot":{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}}}`))
 	}))
 	defer server.Close()
 

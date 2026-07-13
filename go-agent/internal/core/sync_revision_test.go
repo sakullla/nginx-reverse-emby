@@ -385,6 +385,51 @@ func TestRevisionSyncRestoresPersistedAppliedSnapshotBeforeNoUpdate(t *testing.T
 	assertEventOrder(t, events, "runtime:restore:6", "heartbeat", "pull")
 }
 
+func TestRevisionSyncBootstrapsFreshAndLegacyFilesystemStores(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		seedLegacy       bool
+		wantRuntimeApply int
+	}{
+		{name: "fresh directory", wantRuntimeApply: 1},
+		{name: "legacy applied only", seedLegacy: true, wantRuntimeApply: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := NewFilesystem(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewFilesystem() error = %v", err)
+			}
+			if tc.seedLegacy {
+				if err := store.SaveAppliedSnapshot(revisionSnapshot(6)); err != nil {
+					t.Fatalf("seed legacy applied snapshot: %v", err)
+				}
+			}
+			applyCalls := 0
+			runtime := NewRuntimeWithActivator(func(_ context.Context, _, _ model.Snapshot) error {
+				applyCalls++
+				return nil
+			})
+			client := &revisionClientStub{pull: revisionPull(7, "lease-7", "digest-7")}
+			controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+			if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+				t.Fatalf("PerformSync() error = %v", err)
+			}
+			if applyCalls != tc.wantRuntimeApply || runtime.ActiveSnapshot().Revision != 7 {
+				t.Fatalf("apply calls/active = %d/%d, want %d/7", applyCalls, runtime.ActiveSnapshot().Revision, tc.wantRuntimeApply)
+			}
+			journal, err := store.LoadGenerationJournal()
+			if err != nil || journal.Active == nil || !journal.Active.Acknowledged {
+				t.Fatalf("final journal = %+v error=%v, want acknowledged active", journal, err)
+			}
+			lastKnownGood, err := store.LoadLastKnownGoodSnapshot()
+			if err != nil || lastKnownGood.Revision != 7 {
+				t.Fatalf("final LKG = %+v error=%v, want revision 7", lastKnownGood, err)
+			}
+		})
+	}
+}
+
 func TestRevisionSyncRejectsZeroDeadlineLease(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)
@@ -629,7 +674,8 @@ func revisionPull(revision int64, leaseID, digest string) model.RevisionPull {
 func revisionLease(revision int64, leaseID, digest string) model.RevisionLease {
 	return model.RevisionLease{
 		AgentID: "edge-1", Revision: revision, Attempt: 1, LeaseID: leaseID,
-		SnapshotDigest: digest, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+		SnapshotDigest: digest, DesiredVersion: fmt.Sprintf("v%d", revision),
+		ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
 		DeadlineAt: time.Now().Add(time.Hour),
 	}
 }
