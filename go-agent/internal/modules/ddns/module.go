@@ -18,19 +18,28 @@ const (
 	// The runtime apply runs every heartbeat; this throttle prevents hammering
 	// the public echo endpoints while still detecting IP rotation promptly.
 	defaultMinExtractInterval = 5 * time.Minute
-	defaultIPv4PublicAPIURL   = "https://api.ipify.org"
-	defaultIPv6PublicAPIURL   = "https://api6.ipify.org"
+	// defaultIPv4/IPv6PublicAPIURL list independent public echo endpoints, tried
+	// in order until one returns a valid address for the family. Three distinct
+	// providers give default single-point resilience without any env override.
+	// Each endpoint must return a bare IP (<=64-byte body); extract trims and
+	// validates the family. Override per deployment via NRE_DDNS_*_PUBLIC_API_URL.
+	defaultIPv4PublicAPIURL = "https://api.ipify.org,https://ipv4.icanhazip.com,https://v4.ident.me"
+	defaultIPv6PublicAPIURL = "https://api6.ipify.org,https://ipv6.icanhazip.com,https://v6.ident.me"
 )
 
 // Config configures the DDNS extraction module. All fields are optional; zero
-// values select production defaults (ipify endpoints, a bounded HTTP client,
-// and a 5-minute extract throttle).
+// values select production defaults (redundant echo endpoints, a bounded HTTP
+// client, and a 5-minute extract throttle).
 type Config struct {
 	// Client is used for public_api probes. If nil, a client with a bounded
 	// timeout is constructed. Tests inject an httptest-backed client.
 	Client *http.Client
 	// IPv4PublicAPIURL / IPv6PublicAPIURL override the default public echo
-	// endpoints, primarily for tests.
+	// endpoints. Each may be a single URL or a comma-separated list (tried in
+	// order; the first to return a valid IP wins) so a single hung upstream
+	// can't black-hole extraction. Empty selects the redundant default endpoint
+	// set. Set via the NRE_DDNS_IPV4_PUBLIC_API_URL /
+	// NRE_DDNS_IPV6_PUBLIC_API_URL agent env vars.
 	IPv4PublicAPIURL string
 	IPv6PublicAPIURL string
 	// MinExtractInterval bounds the public-probe cadence. Config changes always

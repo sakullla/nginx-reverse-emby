@@ -184,3 +184,16 @@ func TestModuleNameAndDescriptor(t *testing.T) {
 		t.Fatalf("Capabilities = %+v, want ddns_extract", caps)
 	}
 }
+
+func TestNewModuleDefaultsToMultiplePublicAPIEndpoints(t *testing.T) {
+	// Out of the box the default echo set must carry more than one provider so a
+	// single hung/blacklisted upstream can't black-hole DDNS extraction before
+	// the operator sets NRE_DDNS_*_PUBLIC_API_URL.
+	m := NewModule(Config{})
+	if v4 := splitPublicAPIURLs(m.cfg.IPv4PublicAPIURL); len(v4) < 2 {
+		t.Fatalf("default IPv4 endpoints = %v, want at least 2 distinct providers", v4)
+	}
+	if v6 := splitPublicAPIURLs(m.cfg.IPv6PublicAPIURL); len(v6) < 2 {
+		t.Fatalf("default IPv6 endpoints = %v, want at least 2 distinct providers", v6)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -66,6 +67,55 @@ func TestExtractPublicAPIFailureReturnsEmpty(t *testing.T) {
 			server, client := newEchoServer(t, tc.status, tc.body)
 			if got := ExtractIPv4(context.Background(), model.DDNSFamily{Enabled: true, Source: "public_api"}, client, server.URL); got != "" {
 				t.Fatalf("ExtractIPv4 = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestExtractPublicAPIFallsThroughToNextURL(t *testing.T) {
+	// First endpoint returns garbage; extraction must fall through to the
+	// second comma-separated URL and return its address.
+	badServer, client := newEchoServer(t, http.StatusOK, "not-an-ip")
+	goodServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "203.0.113.77")
+	}))
+	t.Cleanup(goodServer.Close)
+	urls := badServer.URL + ", " + goodServer.URL
+	got := ExtractIPv4(context.Background(), model.DDNSFamily{Enabled: true, Source: "public_api"}, client, urls)
+	if got != "203.0.113.77" {
+		t.Fatalf("ExtractIPv4 multi-URL = %q, want 203.0.113.77", got)
+	}
+}
+
+func TestExtractPublicAPIAllURLsFailReturnsEmpty(t *testing.T) {
+	a, client := newEchoServer(t, http.StatusInternalServerError, "")
+	b, _ := newEchoServer(t, http.StatusOK, "garbage")
+	got := ExtractIPv4(context.Background(), model.DDNSFamily{Enabled: true, Source: "public_api"}, client, a.URL+","+b.URL)
+	if got != "" {
+		t.Fatalf("ExtractIPv4 all-fail = %q, want empty", got)
+	}
+}
+
+func TestSplitPublicAPIURLs(t *testing.T) {
+	cases := []struct {
+		name string
+		csv  string
+		want []string
+	}{
+		{name: "single", csv: "https://api.ipify.org", want: []string{"https://api.ipify.org"}},
+		{name: "multiple", csv: "https://a,https://b,https://c", want: []string{"https://a", "https://b", "https://c"}},
+		{name: "trim spaces", csv: " https://a , https://b ", want: []string{"https://a", "https://b"}},
+		{name: "drop empties", csv: "https://a,, https://b,", want: []string{"https://a", "https://b"}},
+		{name: "dedup preserves order", csv: "https://a,https://b,https://a", want: []string{"https://a", "https://b"}},
+		{name: "blank", csv: "   ", want: []string{}},
+		{name: "empty", csv: "", want: []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitPublicAPIURLs(tc.csv)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("splitPublicAPIURLs(%q) = %#v, want %#v", tc.csv, got, tc.want)
 			}
 		})
 	}

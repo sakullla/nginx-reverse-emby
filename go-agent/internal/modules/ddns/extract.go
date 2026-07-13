@@ -49,8 +49,27 @@ func extractFamily(ctx context.Context, family model.DDNSFamily, client *http.Cl
 	}
 }
 
-func extractPublicAPI(ctx context.Context, client *http.Client, url string, wantV6 bool) string {
-	if client == nil || strings.TrimSpace(url) == "" {
+func extractPublicAPI(ctx context.Context, client *http.Client, urlsCSV string, wantV6 bool) string {
+	if client == nil {
+		return ""
+	}
+	// Try each endpoint in the caller's priority order; the first to return a
+	// valid IP for the requested family wins. A hung/garbage upstream simply
+	// yields "" so we fall through to the next, giving single-point resilience
+	// when multiple URLs are configured (comma-separated).
+	for _, url := range splitPublicAPIURLs(urlsCSV) {
+		if ip := probePublicAPI(ctx, client, url, wantV6); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+// probePublicAPI hits a single echo endpoint and returns the validated IP for
+// the requested family, or "" on any failure. Best-effort and timeout-bounded
+// so a slow upstream never stalls the heartbeat apply chain.
+func probePublicAPI(ctx context.Context, client *http.Client, url string, wantV6 bool) string {
+	if strings.TrimSpace(url) == "" {
 		return ""
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, defaultExtractTimeout)
@@ -77,6 +96,32 @@ func extractPublicAPI(ctx context.Context, client *http.Client, url string, want
 		return ""
 	}
 	return candidate
+}
+
+// splitPublicAPIURLs parses a comma-separated list of public echo endpoints,
+// trimming whitespace, dropping empties, and de-duplicating while preserving the
+// caller's priority order. A single URL (the common case) yields a one-element
+// slice. Examples:
+//
+//	"https://a, https://b"      -> ["https://a", "https://b"]
+//	"https://a,, https://a"     -> ["https://a"]
+//	"  "                        -> []
+func splitPublicAPIURLs(csv string) []string {
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		url := strings.TrimSpace(p)
+		if url == "" {
+			continue
+		}
+		if _, dup := seen[url]; dup {
+			continue
+		}
+		seen[url] = struct{}{}
+		out = append(out, url)
+	}
+	return out
 }
 
 func extractInterface(name string, wantV6 bool) string {

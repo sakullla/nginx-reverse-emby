@@ -152,7 +152,10 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		Enabled:    cfg.TrafficStatsEnabled,
 		EnabledSet: true,
 	})
-	ddnsModule := moduleddns.NewModule(moduleddns.Config{})
+	ddnsModule := moduleddns.NewModule(moduleddns.Config{
+		IPv4PublicAPIURL: cfg.DDNS.IPv4PublicAPIURL,
+		IPv6PublicAPIURL: cfg.DDNS.IPv6PublicAPIURL,
+	})
 	registry, err := newAppModuleRegistry([]agentmodule.Module{
 		certModule,
 		diagnosticModule,
