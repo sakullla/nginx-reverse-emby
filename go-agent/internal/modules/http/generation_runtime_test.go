@@ -11,6 +11,7 @@ import (
 	stdhttp "net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,12 +101,15 @@ func TestHTTPGenerationCandidatePublishesNewSessionsWithoutInterruptingOldReques
 func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 	oldStarted := make(chan struct{})
 	releaseOld := make(chan struct{})
+	var oldStartedOnce sync.Once
+	var releaseOldOnce sync.Once
 	oldBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
-		close(oldStarted)
+		oldStartedOnce.Do(func() { close(oldStarted) })
 		<-releaseOld
 		_, _ = io.WriteString(w, "old-h2")
 	}))
 	defer oldBackend.Close()
+	defer releaseOldOnce.Do(func() { close(releaseOld) })
 	newBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		_, _ = io.WriteString(w, "new-h2")
 	}))
@@ -168,7 +172,7 @@ func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 	if newBody != "new-h2" || newProto != 2 {
 		t.Fatalf("new HTTP/2 response = %q over HTTP/%d", newBody, newProto)
 	}
-	close(releaseOld)
+	releaseOldOnce.Do(func() { close(releaseOld) })
 	select {
 	case result := <-oldResult:
 		if result.err != nil {
@@ -301,6 +305,56 @@ func TestHTTPGenerationProductionModuleRegistersRequestWithDrainController(t *te
 	}
 	if got := generationTestDrainSessionCount(controller, generationContext.ID()); got != 0 {
 		t.Fatalf("shared generation session count after completion = %d, want 0", got)
+	}
+}
+
+func TestHTTPGenerationReconcilesSessionsAfterPartialDrainActivationFailure(t *testing.T) {
+	controller := generation.NewDrainController(nil)
+	if err := controller.Activate(context.Background(), generation.Generation{
+		ID: "old", Revision: 1, Resource: generationTestDrainResource{},
+	}, nil, time.Minute); err != nil {
+		t.Fatalf("activate old generation: %v", err)
+	}
+	oldHandle, err := controller.RegisterSession(
+		"old",
+		generation.EntityKey{Module: "http", ID: "1"},
+		"failing-old-session",
+		generationTestFailingSession{},
+	)
+	if err != nil {
+		t.Fatalf("register old session: %v", err)
+	}
+	defer oldHandle.Finish()
+
+	_, cancel := context.WithCancel(context.Background())
+	tracker := newHTTPSessionTracker("next", controller, false)
+	session := tracker.start("2", cancel)
+	tx := &httpGenerationTransaction{
+		runtime:            &Runtime{tracker: tracker},
+		generationID:       "next",
+		generationRevision: 2,
+		drainController:    controller,
+		drainTimeout:       time.Minute,
+		manageDrain:        true,
+		entityChanges: []generation.EntityChange{{
+			Entity: generation.EntityKey{Module: "http", ID: "1"},
+			Action: generation.EntityDeleted,
+		}},
+		published: true,
+	}
+	tx.FinalizeCommitSuccess()
+	if !tx.finalizedSuccess {
+		t.Fatal("partially successful drain activation was not finalized")
+	}
+	if got := controller.Snapshot().ActiveGenerationID; got != "next" {
+		t.Fatalf("active generation = %q, want next", got)
+	}
+	if got := generationTestDrainSessionCount(controller, "next"); got != 1 {
+		t.Fatalf("reconciled next-generation session count = %d, want 1", got)
+	}
+	tracker.finish(session)
+	if got := generationTestDrainSessionCount(controller, "next"); got != 0 {
+		t.Fatalf("next-generation session count after finish = %d, want 0", got)
 	}
 }
 
@@ -718,6 +772,9 @@ func TestClassifyQUICConnectionUsesLongHeaderDestinationCID(t *testing.T) {
 	if !ok || newKey == key {
 		t.Fatalf("same-peer new Initial = %q, %v, want a new owner", newKey, ok)
 	}
+	if retransmitKey, ok := classifier.Classify(newInitial, metadata); !ok || retransmitKey != newKey {
+		t.Fatalf("retransmitted new Initial = %q, %v, want %q", retransmitKey, ok, newKey)
+	}
 	rotatedOldCID, err := oldGenerator.GenerateConnectionID()
 	if err != nil {
 		t.Fatalf("rotate old CID: %v", err)
@@ -799,6 +856,54 @@ func TestQUICClassifierMaintenanceCostIsIndependentOfCacheCardinality(t *testing
 	}
 }
 
+func TestQUICClassifierBoundsPacketBrokerAssociationsDuringCIDChurn(t *testing.T) {
+	const connections = 256
+	physical := newGenerationTestPacketConn(connections * 2)
+	classifier := newQUICConnectionClassifier()
+	classifier.cacheLimit = 32
+	classifier.cacheTTL = time.Hour
+	broker := ingress.NewPacketBroker(physical, "udp", ingress.ClassifierFunc(classifier.classifyForBroker))
+	if broker == nil {
+		t.Fatal("NewPacketBroker() returned nil")
+	}
+	defer broker.Close()
+	classifier.setAssociationReleaser(func(key ingress.AssociationKey) { broker.Release(key) })
+	endpoint := broker.NewEndpoint("generation-1", 1024)
+	if _, err := broker.Activate(endpoint); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	received := make(chan struct{}, connections*2)
+	go func() {
+		buffer := make([]byte, 64)
+		for {
+			if _, _, err := endpoint.ReadFrom(buffer); err != nil {
+				return
+			}
+			received <- struct{}{}
+		}
+	}()
+	for index := 0; index < connections; index++ {
+		initial := []byte{0xc0, 0, 0, 0, 1, 4, byte(index >> 8), byte(index), 0xaa, 0x55}
+		shortCID := make([]byte, quicServerConnectionIDLength)
+		shortCID[0] = byte(index >> 8)
+		shortCID[1] = byte(index)
+		short := append([]byte{0x40}, shortCID...)
+		physical.deliver(initial, &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 40000})
+		physical.deliver(short, &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 40000})
+	}
+	deadline := time.After(5 * time.Second)
+	for index := 0; index < connections*2; index++ {
+		select {
+		case <-received:
+		case <-deadline:
+			t.Fatalf("received %d of %d churn packets", index, connections*2)
+		}
+	}
+	if got := broker.AssociationCount(); got > classifier.cacheLimit {
+		t.Fatalf("packet broker association count = %d, cache limit %d", got, classifier.cacheLimit)
+	}
+}
+
 func TestQUICClassifierExpiresStaleFallbackAliases(t *testing.T) {
 	classifier := newQUICConnectionClassifier()
 	now := time.Unix(100, 0)
@@ -823,6 +928,63 @@ func TestQUICClassifierExpiresStaleFallbackAliases(t *testing.T) {
 		t.Fatal("stale remote alias was not expired")
 	}
 }
+
+type generationTestDrainResource struct{}
+
+func (generationTestDrainResource) Destroy(context.Context) error { return nil }
+
+type generationTestFailingSession struct{}
+
+func (generationTestFailingSession) ForceClose(context.Context, string) error {
+	return errors.New("forced close failed")
+}
+
+type generationTestPacket struct {
+	payload []byte
+	remote  net.Addr
+}
+
+type generationTestPacketConn struct {
+	packets chan generationTestPacket
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newGenerationTestPacketConn(backlog int) *generationTestPacketConn {
+	return &generationTestPacketConn{
+		packets: make(chan generationTestPacket, backlog),
+		closed:  make(chan struct{}),
+	}
+}
+
+func (c *generationTestPacketConn) deliver(payload []byte, remote net.Addr) {
+	c.packets <- generationTestPacket{payload: append([]byte(nil), payload...), remote: remote}
+}
+
+func (c *generationTestPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
+	select {
+	case packet := <-c.packets:
+		return copy(buffer, packet.payload), packet.remote, nil
+	case <-c.closed:
+		return 0, nil, net.ErrClosed
+	}
+}
+
+func (c *generationTestPacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
+	return len(payload), nil
+}
+
+func (c *generationTestPacketConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
+func (*generationTestPacketConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 443}
+}
+func (*generationTestPacketConn) SetDeadline(time.Time) error      { return nil }
+func (*generationTestPacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (*generationTestPacketConn) SetWriteDeadline(time.Time) error { return nil }
 
 type generationTestResolver map[module.ProviderRef]any
 

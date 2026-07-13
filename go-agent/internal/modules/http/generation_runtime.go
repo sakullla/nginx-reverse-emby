@@ -26,7 +26,10 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-const httpIngressBacklog = 256
+const (
+	httpIngressBacklog          = 256
+	httpShutdownPropagationWait = 10 * time.Millisecond
+)
 
 type HTTPSessionRegistrar interface {
 	RegisterSession(string, generation.EntityKey, string, generation.Session) (*generation.SessionHandle, error)
@@ -107,7 +110,7 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 			model.TuneUDPBuffers(tuner)
 		}
 		binding.quicClassifier = newQUICConnectionClassifier()
-		binding.packet = ingress.NewPacketBroker(packet, "udp", binding.quicClassifier)
+		binding.packet = ingress.NewPacketBroker(packet, "udp", ingress.ClassifierFunc(binding.quicClassifier.classifyForBroker))
 		if binding.packet == nil {
 			_ = packet.Close()
 			if binding.refs == 0 {
@@ -117,6 +120,9 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 			m.mu.Unlock()
 			return nil, errors.New("create HTTP/3 packet broker")
 		}
+		binding.quicClassifier.setAssociationReleaser(func(key ingress.AssociationKey) {
+			binding.packet.Release(key)
+		})
 	}
 
 	lease := &httpIngressLease{
@@ -252,6 +258,7 @@ const (
 	quicCIDNonceLength           = 8
 	quicCIDCacheLimit            = 4096
 	quicCIDCacheTTL              = 10 * time.Minute
+	quicInvalidAssociation       = ingress.AssociationKey("quic:invalid")
 )
 
 type quicCIDOwnership struct {
@@ -276,27 +283,39 @@ type quicGenerationRoute struct {
 }
 
 type quicConnectionClassifier struct {
-	mu               sync.Mutex
-	byCID            map[string]*quicCIDOwnership
-	byRemote         map[string]*quicRemoteState
-	cidLRU           list.List
-	remoteLRU        list.List
-	routes           map[string]quicGenerationRoute
-	now              func() time.Time
-	cacheLimit       int
-	cacheTTL         time.Duration
-	maintenanceSteps uint64
+	mu                 sync.Mutex
+	byCID              map[string]*quicCIDOwnership
+	byRemote           map[string]*quicRemoteState
+	cidLRU             list.List
+	remoteLRU          list.List
+	routes             map[string]quicGenerationRoute
+	now                func() time.Time
+	cacheLimit         int
+	cacheTTL           time.Duration
+	maintenanceSteps   uint64
+	associationRefs    map[ingress.AssociationKey]int
+	releaseAssociation func(ingress.AssociationKey)
 }
 
 func newQUICConnectionClassifier() *quicConnectionClassifier {
 	return &quicConnectionClassifier{
-		byCID:      make(map[string]*quicCIDOwnership),
-		byRemote:   make(map[string]*quicRemoteState),
-		routes:     make(map[string]quicGenerationRoute),
-		now:        time.Now,
-		cacheLimit: quicCIDCacheLimit,
-		cacheTTL:   quicCIDCacheTTL,
+		byCID:           make(map[string]*quicCIDOwnership),
+		byRemote:        make(map[string]*quicRemoteState),
+		routes:          make(map[string]quicGenerationRoute),
+		now:             time.Now,
+		cacheLimit:      quicCIDCacheLimit,
+		cacheTTL:        quicCIDCacheTTL,
+		associationRefs: make(map[ingress.AssociationKey]int),
 	}
+}
+
+func (c *quicConnectionClassifier) setAssociationReleaser(release func(ingress.AssociationKey)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.releaseAssociation = release
+	c.mu.Unlock()
 }
 
 func (c *quicConnectionClassifier) Classify(payload []byte, metadata ingress.PacketMetadata) (ingress.AssociationKey, bool) {
@@ -348,6 +367,14 @@ func (c *quicConnectionClassifier) Classify(payload []byte, metadata ingress.Pac
 	return owner, true
 }
 
+func (c *quicConnectionClassifier) classifyForBroker(payload []byte, metadata ingress.PacketMetadata) (ingress.AssociationKey, bool) {
+	key, ok := c.Classify(payload, metadata)
+	if !ok {
+		return quicInvalidAssociation, true
+	}
+	return key, true
+}
+
 func (c *quicConnectionClassifier) bindGeneration(generator *generationConnectionIDGenerator, remote net.Addr) bool {
 	if c == nil || generator == nil || remote == nil {
 		return false
@@ -362,6 +389,7 @@ func (c *quicConnectionClassifier) bindGeneration(generator *generationConnectio
 	if route.refs == 0 {
 		route.secret = generator.secret
 		route.owner = state.owner
+		c.retainAssociationLocked(route.owner)
 	}
 	route.refs++
 	c.routes[generator.routeID] = route
@@ -377,6 +405,7 @@ func (c *quicConnectionClassifier) releaseGeneration(routeID string) {
 	route := c.routes[routeID]
 	if route.refs <= 1 {
 		delete(c.routes, routeID)
+		c.releaseAssociationLocked(route.owner)
 		return
 	}
 	route.refs--
@@ -439,6 +468,10 @@ func (c *quicConnectionClassifier) enforceLimitLocked() {
 
 func (c *quicConnectionClassifier) rememberCIDLocked(key string, owner ingress.AssociationKey, now time.Time) {
 	if ownership := c.byCID[key]; ownership != nil {
+		if ownership.owner != owner {
+			c.releaseAssociationLocked(ownership.owner)
+			c.retainAssociationLocked(owner)
+		}
 		ownership.owner = owner
 		c.touchCIDLocked(ownership, now)
 		return
@@ -446,6 +479,7 @@ func (c *quicConnectionClassifier) rememberCIDLocked(key string, owner ingress.A
 	ownership := &quicCIDOwnership{key: key, owner: owner, lastSeen: now}
 	ownership.element = c.cidLRU.PushBack(ownership)
 	c.byCID[key] = ownership
+	c.retainAssociationLocked(owner)
 }
 
 func (c *quicConnectionClassifier) touchCIDLocked(ownership *quicCIDOwnership, now time.Time) {
@@ -456,12 +490,19 @@ func (c *quicConnectionClassifier) touchCIDLocked(ownership *quicCIDOwnership, n
 func (c *quicConnectionClassifier) removeCIDLocked(ownership *quicCIDOwnership) {
 	delete(c.byCID, ownership.key)
 	c.cidLRU.Remove(ownership.element)
+	c.releaseAssociationLocked(ownership.owner)
 }
 
 func (c *quicConnectionClassifier) rememberRemoteLocked(key string, owner ingress.AssociationKey, established bool, now time.Time) {
 	if state := c.byRemote[key]; state != nil {
+		if state.owner != owner {
+			c.releaseAssociationLocked(state.owner)
+			c.retainAssociationLocked(owner)
+			state.established = established
+		} else {
+			state.established = state.established || established
+		}
 		state.owner = owner
-		state.established = state.established || established
 		state.lastSeen = now
 		c.remoteLRU.MoveToBack(state.element)
 		return
@@ -469,11 +510,34 @@ func (c *quicConnectionClassifier) rememberRemoteLocked(key string, owner ingres
 	state := &quicRemoteState{key: key, owner: owner, established: established, lastSeen: now}
 	state.element = c.remoteLRU.PushBack(state)
 	c.byRemote[key] = state
+	c.retainAssociationLocked(owner)
 }
 
 func (c *quicConnectionClassifier) removeRemoteLocked(state *quicRemoteState) {
 	delete(c.byRemote, state.key)
 	c.remoteLRU.Remove(state.element)
+	c.releaseAssociationLocked(state.owner)
+}
+
+func (c *quicConnectionClassifier) retainAssociationLocked(owner ingress.AssociationKey) {
+	if owner != "" {
+		c.associationRefs[owner]++
+	}
+}
+
+func (c *quicConnectionClassifier) releaseAssociationLocked(owner ingress.AssociationKey) {
+	if owner == "" {
+		return
+	}
+	refs := c.associationRefs[owner]
+	if refs > 1 {
+		c.associationRefs[owner] = refs - 1
+		return
+	}
+	delete(c.associationRefs, owner)
+	if refs == 1 && c.releaseAssociation != nil {
+		c.releaseAssociation(owner)
+	}
 }
 
 type generationConnectionIDGenerator struct {
@@ -669,10 +733,14 @@ func (r *Runtime) BeginDrain() {
 		http3Servers := append([]*http3ServerHandle(nil), r.http3Servers...)
 		r.mu.Unlock()
 		var wg sync.WaitGroup
+		shutdownStarted := make([]<-chan struct{}, 0, len(servers))
 		for _, server := range servers {
 			if server == nil {
 				continue
 			}
+			started := make(chan struct{})
+			server.RegisterOnShutdown(func() { close(started) })
+			shutdownStarted = append(shutdownStarted, started)
 			wg.Add(1)
 			go func(srv *stdhttp.Server) {
 				defer wg.Done()
@@ -689,6 +757,12 @@ func (r *Runtime) BeginDrain() {
 				_ = handle.server.Shutdown(context.Background())
 			}(server)
 		}
+		for _, started := range shutdownStarted {
+			<-started
+		}
+		// net/http queues HTTP/2 graceful-shutdown callbacks asynchronously.
+		// Do not return cutover completion while GOAWAY is still only queued.
+		time.Sleep(httpShutdownPropagationWait)
 		go func() {
 			if r.tracker != nil {
 				r.tracker.wait()
@@ -1130,22 +1204,45 @@ func (t *httpGenerationTransaction) FinalizeCommitSuccess() {
 	if t == nil || !t.published || t.finalizedSuccess {
 		return
 	}
-	t.finalizedSuccess = true
+	installed := true
 	if t.manageDrain && t.drainController != nil {
-		if err := t.drainController.Activate(context.Background(), generation.Generation{
+		err := t.drainController.Activate(context.Background(), generation.Generation{
 			ID:       t.generationID,
 			Revision: t.generationRevision,
 			Resource: httpDrainResource{runtime: t.runtime},
-		}, t.entityChanges, t.drainTimeout); err != nil {
+		}, t.entityChanges, t.drainTimeout)
+		installed = httpDrainGenerationIsActive(t.drainController, t.generationID, t.generationRevision)
+		if err != nil {
 			log.Printf("[proxy] register HTTP generation drain %s: %v", t.generationID, err)
-		} else if t.runtime != nil && t.runtime.tracker != nil {
+		}
+		if installed && t.runtime != nil && t.runtime.tracker != nil {
 			t.runtime.tracker.enableRegistration()
 		}
 	}
+	if !installed {
+		return
+	}
+	t.finalizedSuccess = true
 	if t.previousRuntime != nil {
 		t.previousRuntime.revokeRules(t.revokedEntities)
 		t.previousRuntime.BeginDrain()
 	}
+}
+
+func httpDrainGenerationIsActive(controller *generation.DrainController, generationID string, revision int64) bool {
+	if controller == nil {
+		return false
+	}
+	snapshot := controller.Snapshot()
+	if snapshot.ActiveGenerationID != generationID {
+		return false
+	}
+	for _, status := range snapshot.Generations {
+		if status.GenerationID == generationID && status.Revision == revision {
+			return true
+		}
+	}
+	return false
 }
 
 type httpDiagnosticsSource struct{ cache *model.Cache }
