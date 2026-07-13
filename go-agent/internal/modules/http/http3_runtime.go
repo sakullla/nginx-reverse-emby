@@ -41,7 +41,7 @@ func startHTTP3Server(ctx context.Context, handler http.Handler, spec runtimeLis
 		model.TuneUDPBuffers(tuner)
 	}
 
-	handle, err := startHTTP3ServerOnPacket(ctx, handler, spec, provider, packetConn)
+	handle, err := startHTTP3ServerOnPacket(ctx, handler, spec, provider, packetConn, nil)
 	if err != nil {
 		_ = packetConn.Close()
 		return nil, err
@@ -49,7 +49,7 @@ func startHTTP3Server(ctx context.Context, handler http.Handler, spec runtimeLis
 	return handle, nil
 }
 
-func startHTTP3ServerOnPacket(ctx context.Context, handler http.Handler, spec runtimeListenerSpec, provider TLSMaterialProvider, packetConn net.PacketConn) (*http3ServerHandle, error) {
+func startHTTP3ServerOnPacket(ctx context.Context, handler http.Handler, spec runtimeListenerSpec, provider TLSMaterialProvider, packetConn net.PacketConn, classifier *quicConnectionClassifier) (*http3ServerHandle, error) {
 	if packetConn == nil {
 		return nil, net.ErrClosed
 	}
@@ -63,6 +63,22 @@ func startHTTP3ServerOnPacket(ctx context.Context, handler http.Handler, spec ru
 		TLSConfig: http3.ConfigureTLSConfig(tlsConfig),
 	}
 	transport := &quic.Transport{Conn: packetConn}
+	if classifier != nil {
+		generator, err := newGenerationConnectionIDGenerator()
+		if err != nil {
+			return nil, err
+		}
+		transport.ConnectionIDGenerator = generator
+		transport.ConnContext = func(connCtx context.Context, info *quic.ClientInfo) (context.Context, error) {
+			if classifier.bindGeneration(generator, info.RemoteAddr) {
+				go func() {
+					<-connCtx.Done()
+					classifier.releaseGeneration(generator.routeID)
+				}()
+			}
+			return connCtx, nil
+		}
+	}
 	listener, err := http3ListenQUIC(transport, server.TLSConfig, server.QUICConfig)
 	if err != nil {
 		_ = transport.Close()

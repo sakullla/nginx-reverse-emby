@@ -3,16 +3,22 @@ package http
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	stdhttp "net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -32,10 +38,11 @@ type httpIngressManager struct {
 }
 
 type httpIngressBinding struct {
-	key    string
-	stream *ingress.StreamBroker
-	packet *ingress.PacketBroker
-	refs   int
+	key            string
+	stream         *ingress.StreamBroker
+	packet         *ingress.PacketBroker
+	quicClassifier *quicConnectionClassifier
+	refs           int
 }
 
 type httpIngressLease struct {
@@ -98,7 +105,8 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		if tuner, ok := packet.(model.UDPBufferTuner); ok {
 			model.TuneUDPBuffers(tuner)
 		}
-		binding.packet = ingress.NewPacketBroker(packet, "udp", newQUICConnectionClassifier())
+		binding.quicClassifier = newQUICConnectionClassifier()
+		binding.packet = ingress.NewPacketBroker(packet, "udp", binding.quicClassifier)
 		if binding.packet == nil {
 			_ = packet.Close()
 			if binding.refs == 0 {
@@ -238,23 +246,48 @@ func closePacketEndpoint(endpoint *ingress.PacketEndpoint) error {
 	return endpoint.Close()
 }
 
-const quicServerConnectionIDLength = 4
+const (
+	quicServerConnectionIDLength = 16
+	quicCIDNonceLength           = 8
+	quicCIDCacheLimit            = 4096
+	quicCIDCacheTTL              = 10 * time.Minute
+)
+
+type quicCIDOwnership struct {
+	owner    ingress.AssociationKey
+	lastSeen time.Time
+}
 
 type quicRemoteState struct {
 	owner       ingress.AssociationKey
 	established bool
+	lastSeen    time.Time
+}
+
+type quicGenerationRoute struct {
+	secret [sha256.Size]byte
+	owner  ingress.AssociationKey
+	refs   int
 }
 
 type quicConnectionClassifier struct {
-	mu       sync.Mutex
-	byCID    map[string]ingress.AssociationKey
-	byRemote map[string]quicRemoteState
+	mu         sync.Mutex
+	byCID      map[string]quicCIDOwnership
+	byRemote   map[string]quicRemoteState
+	routes     map[string]quicGenerationRoute
+	now        func() time.Time
+	cacheLimit int
+	cacheTTL   time.Duration
 }
 
-func newQUICConnectionClassifier() ingress.PacketClassifier {
+func newQUICConnectionClassifier() *quicConnectionClassifier {
 	return &quicConnectionClassifier{
-		byCID:    make(map[string]ingress.AssociationKey),
-		byRemote: make(map[string]quicRemoteState),
+		byCID:      make(map[string]quicCIDOwnership),
+		byRemote:   make(map[string]quicRemoteState),
+		routes:     make(map[string]quicGenerationRoute),
+		now:        time.Now,
+		cacheLimit: quicCIDCacheLimit,
+		cacheTTL:   quicCIDCacheTTL,
 	}
 }
 
@@ -271,37 +304,175 @@ func (c *quicConnectionClassifier) Classify(payload []byte, metadata ingress.Pac
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if owner := c.byCID[cidKey]; owner != "" {
+	now := c.now()
+	c.pruneLocked(now)
+	if owner := c.generatedCIDOwnerLocked(cid); owner != "" {
+		if remote != "" {
+			c.byRemote[remote] = quicRemoteState{owner: owner, established: !longHeader, lastSeen: now}
+		}
+		return owner, true
+	}
+	if ownership := c.byCID[cidKey]; ownership.owner != "" {
+		ownership.lastSeen = now
+		c.byCID[cidKey] = ownership
 		if remote != "" {
 			state := c.byRemote[remote]
-			state.owner = owner
+			state.owner = ownership.owner
+			state.lastSeen = now
 			if !longHeader {
 				state.established = true
 			}
 			c.byRemote[remote] = state
 		}
-		return owner, true
+		return ownership.owner, true
 	}
 	if state := c.byRemote[remote]; remote != "" && state.owner != "" {
 		// Handshake packets and unseen short-header CIDs are aliases of the
 		// connection already pinned for this peer. Once short headers have
 		// established it, a fresh Initial starts a new connection instead.
 		if !longHeader || packetType != quicLongHeaderInitial || !state.established {
-			c.byCID[cidKey] = state.owner
+			c.byCID[cidKey] = quicCIDOwnership{owner: state.owner, lastSeen: now}
+			state.lastSeen = now
 			if !longHeader {
 				state.established = true
-				c.byRemote[remote] = state
 			}
+			c.byRemote[remote] = state
+			c.enforceLimitLocked()
 			return state.owner, true
 		}
 	}
 	owner := ingress.AssociationKey("quic:" + cidKey)
-	c.byCID[cidKey] = owner
+	c.byCID[cidKey] = quicCIDOwnership{owner: owner, lastSeen: now}
 	if remote != "" {
-		c.byRemote[remote] = quicRemoteState{owner: owner, established: !longHeader}
+		c.byRemote[remote] = quicRemoteState{owner: owner, established: !longHeader, lastSeen: now}
 	}
+	c.enforceLimitLocked()
 	return owner, true
 }
+
+func (c *quicConnectionClassifier) bindGeneration(generator *generationConnectionIDGenerator, remote net.Addr) bool {
+	if c == nil || generator == nil || remote == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := c.byRemote[remote.String()]
+	if state.owner == "" {
+		return false
+	}
+	route := c.routes[generator.routeID]
+	if route.refs == 0 {
+		route.secret = generator.secret
+		route.owner = state.owner
+	}
+	route.refs++
+	c.routes[generator.routeID] = route
+	return true
+}
+
+func (c *quicConnectionClassifier) releaseGeneration(routeID string) {
+	if c == nil || routeID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	route := c.routes[routeID]
+	if route.refs <= 1 {
+		delete(c.routes, routeID)
+		return
+	}
+	route.refs--
+	c.routes[routeID] = route
+}
+
+func (c *quicConnectionClassifier) generatedCIDOwnerLocked(cid []byte) ingress.AssociationKey {
+	if len(cid) != quicServerConnectionIDLength {
+		return ""
+	}
+	nonce := cid[:quicCIDNonceLength]
+	tag := cid[quicCIDNonceLength:]
+	for _, route := range c.routes {
+		mac := hmac.New(sha256.New, route.secret[:])
+		_, _ = mac.Write(nonce)
+		if hmac.Equal(tag, mac.Sum(nil)[:quicServerConnectionIDLength-quicCIDNonceLength]) {
+			return route.owner
+		}
+	}
+	return ""
+}
+
+func (c *quicConnectionClassifier) pruneLocked(now time.Time) {
+	if c.cacheTTL <= 0 {
+		return
+	}
+	cutoff := now.Add(-c.cacheTTL)
+	for cid, ownership := range c.byCID {
+		if ownership.lastSeen.Before(cutoff) {
+			delete(c.byCID, cid)
+		}
+	}
+	for remote, state := range c.byRemote {
+		if state.lastSeen.Before(cutoff) {
+			delete(c.byRemote, remote)
+		}
+	}
+}
+
+func (c *quicConnectionClassifier) enforceLimitLocked() {
+	limit := c.cacheLimit
+	if limit < 1 {
+		limit = 1
+	}
+	for len(c.byCID) > limit {
+		oldestKey := ""
+		var oldest time.Time
+		for key, ownership := range c.byCID {
+			if oldestKey == "" || ownership.lastSeen.Before(oldest) {
+				oldestKey = key
+				oldest = ownership.lastSeen
+			}
+		}
+		delete(c.byCID, oldestKey)
+	}
+	for len(c.byRemote) > limit {
+		oldestKey := ""
+		var oldest time.Time
+		for key, state := range c.byRemote {
+			if oldestKey == "" || state.lastSeen.Before(oldest) {
+				oldestKey = key
+				oldest = state.lastSeen
+			}
+		}
+		delete(c.byRemote, oldestKey)
+	}
+}
+
+type generationConnectionIDGenerator struct {
+	secret  [sha256.Size]byte
+	routeID string
+}
+
+func newGenerationConnectionIDGenerator() (*generationConnectionIDGenerator, error) {
+	generator := &generationConnectionIDGenerator{}
+	if _, err := rand.Read(generator.secret[:]); err != nil {
+		return nil, err
+	}
+	generator.routeID = hex.EncodeToString(generator.secret[:quicCIDNonceLength])
+	return generator, nil
+}
+
+func (g *generationConnectionIDGenerator) GenerateConnectionID() (quic.ConnectionID, error) {
+	connectionID := make([]byte, quicServerConnectionIDLength)
+	if _, err := rand.Read(connectionID[:quicCIDNonceLength]); err != nil {
+		return quic.ConnectionID{}, err
+	}
+	mac := hmac.New(sha256.New, g.secret[:])
+	_, _ = mac.Write(connectionID[:quicCIDNonceLength])
+	copy(connectionID[quicCIDNonceLength:], mac.Sum(nil))
+	return quic.ConnectionIDFromBytes(connectionID), nil
+}
+
+func (*generationConnectionIDGenerator) ConnectionIDLen() int { return quicServerConnectionIDLength }
 
 const quicLongHeaderInitial byte = 0
 
@@ -395,7 +566,7 @@ func prepareGenerationRuntime(
 		}(server, listener)
 
 		if http3Enabled && spec.scheme == "https" {
-			handle, err := startHTTP3ServerOnPacket(ctx, handler, spec, providers.TLS, lease.packet)
+			handle, err := startHTTP3ServerOnPacket(ctx, handler, spec, providers.TLS, lease.packet, lease.binding.quicClassifier)
 			if err != nil {
 				_ = runtime.Close()
 				return nil, err
@@ -423,6 +594,17 @@ func (r *Runtime) Ready() error {
 	// TCP endpoints are fully constructed before their Serve goroutines start,
 	// and HTTP/3 creates its QUIC listener synchronously. There is no deferred
 	// startup result to poll here.
+	return nil
+}
+
+func (r *Runtime) Destroy(context.Context) error { return r.Close() }
+
+type httpDrainResource struct{ runtime *Runtime }
+
+func (r httpDrainResource) Destroy(context.Context) error {
+	if r.runtime != nil {
+		r.runtime.BeginDrain()
+	}
 	return nil
 }
 
@@ -458,16 +640,6 @@ func (r *Runtime) BeginDrain() {
 		r.mu.Unlock()
 		go func() {
 			var wg sync.WaitGroup
-			for _, server := range servers {
-				if server == nil {
-					continue
-				}
-				wg.Add(1)
-				go func(srv *stdhttp.Server) {
-					defer wg.Done()
-					_ = srv.Shutdown(context.Background())
-				}(server)
-			}
 			for _, server := range http3Servers {
 				if server == nil || server.server == nil {
 					continue
@@ -478,10 +650,20 @@ func (r *Runtime) BeginDrain() {
 					_ = handle.server.Shutdown(context.Background())
 				}(server)
 			}
-			wg.Wait()
 			if r.tracker != nil {
 				r.tracker.wait()
 			}
+			for _, server := range servers {
+				if server == nil {
+					continue
+				}
+				wg.Add(1)
+				go func(srv *stdhttp.Server) {
+					defer wg.Done()
+					_ = srv.Shutdown(context.Background())
+				}(server)
+			}
+			wg.Wait()
 			_ = r.Close()
 		}()
 	})
@@ -753,16 +935,43 @@ func revokedHTTPRuleEntities(previous, next []model.HTTPRule) map[string]struct{
 	return revoked
 }
 
+func httpRuleEntityChanges(previous, next []model.HTTPRule) []generation.EntityChange {
+	nextRules := make(map[string]model.HTTPRule, len(next))
+	for _, rule := range next {
+		nextRules[httpRuleEntityID(rule)] = rule
+	}
+	changes := make([]generation.EntityChange, 0, len(previous))
+	for _, rule := range previous {
+		entity := generation.EntityKey{Module: "http", ID: httpRuleEntityID(rule)}
+		nextRule, exists := nextRules[entity.ID]
+		switch {
+		case !exists:
+			changes = append(changes, generation.EntityChange{Entity: entity, Action: generation.EntityDeleted})
+		case rule.Enabled && !nextRule.Enabled:
+			changes = append(changes, generation.EntityChange{Entity: entity, Action: generation.EntityDisabled})
+		case !reflect.DeepEqual(rule, nextRule):
+			changes = append(changes, generation.EntityChange{Entity: entity, Action: generation.EntityModified})
+		}
+	}
+	return changes
+}
+
 type httpGenerationTransaction struct {
-	module           *Module
-	runtime          *Runtime
-	previousRuntime  *Runtime
-	previousState    runtimeState
-	nextState        runtimeState
-	revokedEntities  map[string]struct{}
-	published        bool
-	destroyed        bool
-	finalizedSuccess bool
+	module             *Module
+	runtime            *Runtime
+	previousRuntime    *Runtime
+	previousState      runtimeState
+	nextState          runtimeState
+	generationID       string
+	generationRevision int64
+	drainController    *generation.DrainController
+	drainTimeout       time.Duration
+	manageDrain        bool
+	revokedEntities    map[string]struct{}
+	entityChanges      []generation.EntityChange
+	published          bool
+	destroyed          bool
+	finalizedSuccess   bool
 }
 
 func (t *httpGenerationTransaction) RegisterProviders(reg module.ProviderRegistry) error {
@@ -844,6 +1053,15 @@ func (t *httpGenerationTransaction) FinalizeCommitSuccess() {
 		return
 	}
 	t.finalizedSuccess = true
+	if t.manageDrain && t.drainController != nil {
+		if err := t.drainController.Activate(context.Background(), generation.Generation{
+			ID:       t.generationID,
+			Revision: t.generationRevision,
+			Resource: httpDrainResource{runtime: t.runtime},
+		}, t.entityChanges, t.drainTimeout); err != nil {
+			log.Printf("[proxy] register HTTP generation drain %s: %v", t.generationID, err)
+		}
+	}
 	if t.previousRuntime != nil {
 		t.previousRuntime.revokeRules(t.revokedEntities)
 		t.previousRuntime.BeginDrain()

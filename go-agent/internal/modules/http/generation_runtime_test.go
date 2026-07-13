@@ -146,6 +146,13 @@ func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("old HTTP/2 stream did not reach backend")
 	}
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, first)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	if got := generationTestDrainSessionCount(mod.SessionController(), firstContext.ID()); got != 1 {
+		t.Fatalf("old HTTP/2 drain session count = %d, want 1", got)
+	}
 
 	secondTx := prepareHTTPGenerationForTest(t, mod, resolver, first, second)
 	if err := secondTx.Commit(); err != nil {
@@ -227,7 +234,7 @@ func TestHTTPGenerationDeleteRevokesOnlyTargetRequest(t *testing.T) {
 	}
 }
 
-func TestHTTPGenerationRegistersRequestWithSharedDrainRegistry(t *testing.T) {
+func TestHTTPGenerationProductionModuleRegistersRequestWithDrainController(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
@@ -246,9 +253,12 @@ func TestHTTPGenerationRegistersRequestWithSharedDrainRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerationContext() error = %v", err)
 	}
-	registry := generation.NewSessionRegistry(nil)
-	mod := NewModule(Config{SessionRegistrar: generationTestSessionRegistrar{registry: registry}})
+	mod := NewModule(Config{})
 	defer mod.Close()
+	controller := mod.SessionController()
+	if controller == nil {
+		t.Fatal("production HTTP module has no drain controller")
+	}
 	tx := prepareHTTPGenerationForTest(t, mod, generationTestResolver{}, model.Snapshot{}, next)
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("Commit() error = %v", err)
@@ -265,7 +275,7 @@ func TestHTTPGenerationRegistersRequestWithSharedDrainRegistry(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("request did not reach backend")
 	}
-	if got := registry.GenerationCount(generationContext.ID()); got != 1 {
+	if got := generationTestDrainSessionCount(controller, generationContext.ID()); got != 1 {
 		t.Fatalf("shared generation session count = %d, want 1", got)
 	}
 	close(release)
@@ -274,8 +284,52 @@ func TestHTTPGenerationRegistersRequestWithSharedDrainRegistry(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("request did not finish")
 	}
-	if got := registry.GenerationCount(generationContext.ID()); got != 0 {
+	if got := generationTestDrainSessionCount(controller, generationContext.ID()); got != 0 {
 		t.Fatalf("shared generation session count after completion = %d, want 0", got)
+	}
+}
+
+func TestHTTPGenerationProductionDrainTimeoutClosesHijack(t *testing.T) {
+	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		hijacker := w.(stdhttp.Hijacker)
+		connection, readWriter, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("backend Hijack() error = %v", err)
+			return
+		}
+		defer connection.Close()
+		_, _ = readWriter.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		_ = readWriter.Flush()
+		_, _ = connection.Read(make([]byte, 1))
+	}))
+	defer backend.Close()
+
+	port := pickFreeTCPUDPPort(t)
+	frontend := fmt.Sprintf("http://127.0.0.1:%d", port)
+	first := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{
+		ID: 19, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: backend.URL}},
+	}}}
+	second := model.Snapshot{Revision: 2, Rules: cloneHTTPRules(first.Rules)}
+	mod := NewModule(Config{DrainTimeout: 100 * time.Millisecond})
+	defer mod.Close()
+	firstTx := prepareHTTPGenerationForTest(t, mod, generationTestResolver{}, model.Snapshot{}, first)
+	if err := firstTx.Commit(); err != nil {
+		t.Fatalf("first Commit() error = %v", err)
+	}
+	firstTx.FinalizeCommitSuccess()
+	connection, reader := generationTestOpenUpgrade(t, port)
+	defer connection.Close()
+
+	secondTx := prepareHTTPGenerationForTest(t, mod, generationTestResolver{}, first, second)
+	if err := secondTx.Commit(); err != nil {
+		t.Fatalf("second Commit() error = %v", err)
+	}
+	secondTx.FinalizeCommitSuccess()
+	_ = connection.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := reader.ReadByte(); err == nil {
+		t.Fatal("hijacked connection remained open after production drain timeout")
+	} else if networkErr, ok := err.(net.Error); ok && networkErr.Timeout() {
+		t.Fatalf("production drain timeout did not force hijack: %v", err)
 	}
 }
 
@@ -544,7 +598,18 @@ func TestHTTP3CIDAssociationStaysOnOldGenerationAcrossCutover(t *testing.T) {
 		t.Fatalf("write initial: %v", err)
 	}
 	requireGenerationPacket(t, oldLease.packet, initial)
-	short := []byte{0x40, 0xca, 0xfe, 0xba, 0xbe}
+	oldGenerator, err := newGenerationConnectionIDGenerator()
+	if err != nil {
+		t.Fatalf("new old-generation CID generator: %v", err)
+	}
+	if !oldLease.binding.quicClassifier.bindGeneration(oldGenerator, client.LocalAddr()) {
+		t.Fatal("bind old-generation CID route failed")
+	}
+	oldCID, err := oldGenerator.GenerateConnectionID()
+	if err != nil {
+		t.Fatalf("generate old CID: %v", err)
+	}
+	short := append([]byte{0x40}, oldCID.Bytes()...)
 	if _, err := client.Write(short); err != nil {
 		t.Fatalf("write first short header: %v", err)
 	}
@@ -553,17 +618,37 @@ func TestHTTP3CIDAssociationStaysOnOldGenerationAcrossCutover(t *testing.T) {
 	if _, err := newLease.activate(); err != nil {
 		t.Fatalf("activate new: %v", err)
 	}
-	rotatedShort := []byte{0x40, 0xfa, 0xce, 0xca, 0xfe}
-	if _, err := client.Write(rotatedShort); err != nil {
-		t.Fatalf("write rotated short header: %v", err)
-	}
-	requireGenerationPacket(t, oldLease.packet, rotatedShort)
-
 	newInitial := []byte{0xc0, 0, 0, 0, 1, 4, 0x11, 0x22, 0x33, 0x44}
 	if _, err := client.Write(newInitial); err != nil {
 		t.Fatalf("write new initial: %v", err)
 	}
 	requireGenerationPacket(t, newLease.packet, newInitial)
+	newGenerator, err := newGenerationConnectionIDGenerator()
+	if err != nil {
+		t.Fatalf("new new-generation CID generator: %v", err)
+	}
+	if !newLease.binding.quicClassifier.bindGeneration(newGenerator, client.LocalAddr()) {
+		t.Fatal("bind new-generation CID route failed")
+	}
+
+	rotatedOldCID, err := oldGenerator.GenerateConnectionID()
+	if err != nil {
+		t.Fatalf("rotate old CID: %v", err)
+	}
+	rotatedOld := append([]byte{0x40}, rotatedOldCID.Bytes()...)
+	if _, err := client.Write(rotatedOld); err != nil {
+		t.Fatalf("write rotated old CID: %v", err)
+	}
+	requireGenerationPacket(t, oldLease.packet, rotatedOld)
+	newCID, err := newGenerator.GenerateConnectionID()
+	if err != nil {
+		t.Fatalf("generate new CID: %v", err)
+	}
+	newShort := append([]byte{0x40}, newCID.Bytes()...)
+	if _, err := client.Write(newShort); err != nil {
+		t.Fatalf("write new-generation short header: %v", err)
+	}
+	requireGenerationPacket(t, newLease.packet, newShort)
 }
 
 func requireGenerationPacket(t *testing.T, endpoint *ingress.PacketEndpoint, expected []byte) {
@@ -593,7 +678,18 @@ func TestClassifyQUICConnectionUsesLongHeaderDestinationCID(t *testing.T) {
 	if _, ok := classifier.Classify([]byte{0x40, 1, 2, 3}, metadata); ok {
 		t.Fatal("truncated short header unexpectedly classified")
 	}
-	shortPacket := []byte{0x40, 0xca, 0xfe, 0xba, 0xbe}
+	oldGenerator, err := newGenerationConnectionIDGenerator()
+	if err != nil {
+		t.Fatalf("new generator: %v", err)
+	}
+	if !classifier.bindGeneration(oldGenerator, firstRemote) {
+		t.Fatal("bind generation route failed")
+	}
+	connectionID, err := oldGenerator.GenerateConnectionID()
+	if err != nil {
+		t.Fatalf("GenerateConnectionID() error = %v", err)
+	}
+	shortPacket := append([]byte{0x40}, connectionID.Bytes()...)
 	shortKey, ok := classifier.Classify(shortPacket, metadata)
 	if !ok || shortKey != key {
 		t.Fatalf("short-header alias = %q, %v, want %q", shortKey, ok, key)
@@ -601,6 +697,74 @@ func TestClassifyQUICConnectionUsesLongHeaderDestinationCID(t *testing.T) {
 	migratedKey, ok := classifier.Classify(shortPacket, ingress.PacketMetadata{RemoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.20"), Port: 54432}})
 	if !ok || migratedKey != key {
 		t.Fatalf("migrated CID alias = %q, %v, want %q", migratedKey, ok, key)
+	}
+	newInitial := []byte{0xc0, 0, 0, 0, 1, 4, 0x11, 0x22, 0x33, 0x44}
+	newKey, ok := classifier.Classify(newInitial, metadata)
+	if !ok || newKey == key {
+		t.Fatalf("same-peer new Initial = %q, %v, want a new owner", newKey, ok)
+	}
+	rotatedOldCID, err := oldGenerator.GenerateConnectionID()
+	if err != nil {
+		t.Fatalf("rotate old CID: %v", err)
+	}
+	rotatedOld := append([]byte{0x40}, rotatedOldCID.Bytes()...)
+	if rotatedKey, ok := classifier.Classify(rotatedOld, metadata); !ok || rotatedKey != key {
+		t.Fatalf("old rotation after new connection = %q, %v, want %q", rotatedKey, ok, key)
+	}
+	classifier.releaseGeneration(oldGenerator.routeID)
+	classifier.mu.Lock()
+	_, routeExists := classifier.routes[oldGenerator.routeID]
+	classifier.mu.Unlock()
+	if routeExists {
+		t.Fatal("closed generation CID route was retained")
+	}
+}
+
+func TestQUICClassifierBoundsUntrustedCIDAndRemoteChurn(t *testing.T) {
+	classifier := newQUICConnectionClassifier()
+	classifier.cacheLimit = 32
+	for index := 0; index < 256; index++ {
+		payload := []byte{0xc0, 0, 0, 0, 1, 4, byte(index >> 8), byte(index), 0xaa, 0x55}
+		metadata := ingress.PacketMetadata{RemoteAddr: &net.UDPAddr{
+			IP:   net.IPv4(192, 0, 2, byte(index%250+1)),
+			Port: 10000 + index,
+		}}
+		if _, ok := classifier.Classify(payload, metadata); !ok {
+			t.Fatalf("churn packet %d was not classified", index)
+		}
+	}
+	classifier.mu.Lock()
+	defer classifier.mu.Unlock()
+	if len(classifier.byCID) > classifier.cacheLimit {
+		t.Fatalf("CID cache size = %d, limit %d", len(classifier.byCID), classifier.cacheLimit)
+	}
+	if len(classifier.byRemote) > classifier.cacheLimit {
+		t.Fatalf("remote cache size = %d, limit %d", len(classifier.byRemote), classifier.cacheLimit)
+	}
+}
+
+func TestQUICClassifierExpiresStaleFallbackAliases(t *testing.T) {
+	classifier := newQUICConnectionClassifier()
+	now := time.Unix(100, 0)
+	classifier.now = func() time.Time { return now }
+	classifier.cacheTTL = time.Minute
+	remote := &net.UDPAddr{IP: net.ParseIP("192.0.2.44"), Port: 40000}
+	oldPacket := []byte{0xc0, 0, 0, 0, 1, 4, 0xde, 0xad, 0xbe, 0xef}
+	if _, ok := classifier.Classify(oldPacket, ingress.PacketMetadata{RemoteAddr: remote}); !ok {
+		t.Fatal("old packet was not classified")
+	}
+	now = now.Add(2 * time.Minute)
+	newPacket := []byte{0xc0, 0, 0, 0, 1, 4, 0x11, 0x22, 0x33, 0x44}
+	if _, ok := classifier.Classify(newPacket, ingress.PacketMetadata{RemoteAddr: &net.UDPAddr{IP: net.ParseIP("192.0.2.45"), Port: 40001}}); !ok {
+		t.Fatal("new packet was not classified")
+	}
+	classifier.mu.Lock()
+	defer classifier.mu.Unlock()
+	if _, ok := classifier.byCID["deadbeef"]; ok {
+		t.Fatal("stale CID alias was not expired")
+	}
+	if _, ok := classifier.byRemote[remote.String()]; ok {
+		t.Fatal("stale remote alias was not expired")
 	}
 }
 
@@ -615,12 +779,6 @@ type generationTestTLSMaterial struct{}
 
 func (generationTestTLSMaterial) ServerCertificateForHost(context.Context, string) (*tls.Certificate, error) {
 	return nil, nil
-}
-
-type generationTestSessionRegistrar struct{ registry *generation.SessionRegistry }
-
-func (r generationTestSessionRegistrar) RegisterSession(generationID string, entity generation.EntityKey, sessionID string, session generation.Session) (*generation.SessionHandle, error) {
-	return r.registry.Register(generationID, entity, sessionID, session)
 }
 
 func prepareHTTPGenerationForTest(t *testing.T, mod *Module, resolver module.ProviderResolver, previous, next model.Snapshot) *httpGenerationTransaction {
@@ -686,4 +844,33 @@ func generationTestHTTP2GET(target string) (string, int, error) {
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	return string(body), response.ProtoMajor, err
+}
+
+func generationTestOpenUpgrade(t *testing.T, port int) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	connection, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	_, _ = fmt.Fprintf(connection, "GET / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n", port)
+	reader := bufio.NewReader(connection)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			_ = connection.Close()
+			t.Fatalf("read upgrade response: %v", err)
+		}
+		if line == "\r\n" {
+			return connection, reader
+		}
+	}
+}
+
+func generationTestDrainSessionCount(controller *generation.DrainController, generationID string) int {
+	for _, status := range controller.Snapshot().Generations {
+		if status.GenerationID == generationID {
+			return status.SessionCount
+		}
+	}
+	return 0
 }

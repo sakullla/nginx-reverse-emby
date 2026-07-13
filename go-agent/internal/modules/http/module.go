@@ -7,19 +7,24 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 type Config struct {
-	AgentID          string
-	HTTP3Enabled     bool
-	Transport        TransportOptions
-	Resilience       StreamResilienceOptions
-	BackendFailures  model.BackendCacheConfig
-	SessionRegistrar HTTPSessionRegistrar
+	AgentID                string
+	HTTP3Enabled           bool
+	Transport              TransportOptions
+	Resilience             StreamResilienceOptions
+	BackendFailures        model.BackendCacheConfig
+	SessionRegistrar       HTTPSessionRegistrar
+	DrainController        *generation.DrainController
+	DrainTimeout           time.Duration
+	ExternalDrainLifecycle bool
 }
 
 type Module struct {
@@ -34,6 +39,9 @@ type Module struct {
 	localAgentID string
 	ingress      *httpIngressManager
 	sessions     HTTPSessionRegistrar
+	drain        *generation.DrainController
+	drainTimeout time.Duration
+	manageDrain  bool
 
 	lastRules          []model.HTTPRule
 	lastRelayListeners []model.RelayListener
@@ -44,6 +52,21 @@ type Module struct {
 func NewModule(cfg Config) *Module {
 	transport := NewSharedTransport()
 	ApplyTransportOptions(transport, cfg.Transport)
+	drain := cfg.DrainController
+	if drain == nil {
+		drain = generation.NewDrainController(nil)
+	}
+	sessions := cfg.SessionRegistrar
+	manageDrain := !cfg.ExternalDrainLifecycle
+	if sessions == nil {
+		sessions = drain
+	} else if cfg.DrainController == nil {
+		manageDrain = false
+	}
+	drainTimeout := cfg.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = 10 * time.Minute
+	}
 	return &Module{
 		cache:        model.NewCache(cfg.BackendFailures),
 		transport:    transport,
@@ -51,8 +74,18 @@ func NewModule(cfg Config) *Module {
 		http3Enabled: cfg.HTTP3Enabled,
 		localAgentID: strings.TrimSpace(cfg.AgentID),
 		ingress:      newHTTPIngressManager(),
-		sessions:     cfg.SessionRegistrar,
+		sessions:     sessions,
+		drain:        drain,
+		drainTimeout: drainTimeout,
+		manageDrain:  manageDrain,
 	}
+}
+
+func (m *Module) SessionController() *generation.DrainController {
+	if m == nil {
+		return nil
+	}
+	return m.drain
 }
 
 func (m *Module) Name() string {
@@ -131,10 +164,15 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	}
 	nextRuntime.SetTrafficBlockState(currentBlockState)
 	return &httpGenerationTransaction{
-		module:          m,
-		runtime:         nextRuntime,
-		previousRuntime: previousRuntime,
-		previousState:   previousState,
+		module:             m,
+		runtime:            nextRuntime,
+		previousRuntime:    previousRuntime,
+		previousState:      previousState,
+		generationID:       generationContext.ID(),
+		generationRevision: generationContext.Revision(),
+		drainController:    m.drain,
+		drainTimeout:       m.drainTimeout,
+		manageDrain:        m.manageDrain,
 		nextState: runtimeState{
 			rules:          rules,
 			relayListeners: relayListeners,
@@ -143,6 +181,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 			blockState:     currentBlockState,
 		},
 		revokedEntities: revokedHTTPRuleEntities(req.Previous.Rules, req.Next.Rules),
+		entityChanges:   httpRuleEntityChanges(req.Previous.Rules, req.Next.Rules),
 	}, nil
 }
 
