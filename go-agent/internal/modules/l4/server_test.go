@@ -1086,10 +1086,10 @@ func TestWireGuardTransparentTCPInboundForwardsViaRuntimeWildcardListener(t *tes
 		t.Fatalf("BindingKeys() = %+v, want [%s]", keys, wantKey)
 	}
 	dialTargets := make(chan string, 1)
-	srv.tcpDialer = func(ctx context.Context, network, address string) (net.Conn, error) {
+	srv.setTCPDialerForTest(func(ctx context.Context, network, address string) (net.Conn, error) {
 		dialTargets <- address
 		return (&net.Dialer{}).DialContext(ctx, network, fmt.Sprintf("127.0.0.1:%d", backend.Port()))
-	}
+	})
 
 	client, err := net.Dial("tcp", wireGuardListener.Addr().String())
 	if err != nil {
@@ -2038,7 +2038,7 @@ func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
-	srv.now = func() time.Time { return now }
+	srv.setNowForTest(func() time.Time { return now })
 	defer srv.Close()
 
 	client, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
@@ -4628,8 +4628,8 @@ func TestUDPProxyReusesSessionUpstreamSocket(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if len(srv.udpSessions) != 1 {
-		t.Fatalf("expected a single reused udp session, got %d", len(srv.udpSessions))
+	if sessionCount := srv.udpSessionCount(); sessionCount != 1 {
+		t.Fatalf("expected a single reused udp session, got %d", sessionCount)
 	}
 	seenPeersMu.Lock()
 	defer seenPeersMu.Unlock()
@@ -4692,7 +4692,7 @@ func TestUDPProxyRetriesNextBackendAfterReplyTimeout(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	defer srv.Close()
-	srv.udpReplyTimeout = 200 * time.Millisecond
+	srv.setUDPTimeoutsForTest(200*time.Millisecond, 0)
 
 	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
 	if err != nil {
@@ -4788,7 +4788,7 @@ func TestUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	defer srv.Close()
-	srv.udpReplyTimeout = 200 * time.Millisecond
+	srv.setUDPTimeoutsForTest(200*time.Millisecond, 0)
 
 	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
 	if err != nil {
@@ -4898,8 +4898,7 @@ func TestUDPProxyExpiresIdleSessions(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	defer srv.Close()
-	srv.udpSessionIdleTimeout = 50 * time.Millisecond
-	srv.udpReplyTimeout = 50 * time.Millisecond
+	srv.setUDPTimeoutsForTest(50*time.Millisecond, 50*time.Millisecond)
 
 	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
 	if err != nil {
@@ -4920,12 +4919,12 @@ func TestUDPProxyExpiresIdleSessions(t *testing.T) {
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if len(srv.udpSessions) == 0 {
+		if srv.udpSessionCount() == 0 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("expected idle udp session to expire, still have %d sessions", len(srv.udpSessions))
+	t.Fatalf("expected idle udp session to expire, still have %d sessions", srv.udpSessionCount())
 }
 
 func TestProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *testing.T) {

@@ -2,13 +2,16 @@ package l4
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
@@ -16,8 +19,13 @@ import (
 )
 
 type Config struct {
-	AgentID         string
-	BackendFailures model.BackendCacheConfig
+	AgentID                string
+	BackendFailures        model.BackendCacheConfig
+	GenerationSelector     L4GenerationSelector
+	SessionRegistrar       L4SessionRegistrar
+	DrainController        *generation.DrainController
+	DrainTimeout           time.Duration
+	ExternalDrainLifecycle bool
 }
 
 type Module struct {
@@ -27,6 +35,11 @@ type Module struct {
 	cache        *model.Cache
 	localAgentID string
 	blockState   trafficBlockStateValue
+	ingress      *l4IngressManager
+	sessions     L4SessionRegistrar
+	drain        *generation.DrainController
+	drainTimeout time.Duration
+	manageDrain  bool
 
 	lastRules          []model.L4Rule
 	lastRelayListeners []model.RelayListener
@@ -35,10 +48,39 @@ type Module struct {
 }
 
 func NewModule(cfg Config) *Module {
+	drain := cfg.DrainController
+	if drain == nil {
+		drain = generation.NewDrainController(nil)
+	}
+	sessions := cfg.SessionRegistrar
+	manageDrain := !cfg.ExternalDrainLifecycle
+	if sessions == nil {
+		sessions = drain
+	} else if cfg.DrainController == nil {
+		manageDrain = false
+	}
+	drainTimeout := cfg.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = 10 * time.Minute
+	}
+	ingressManager := newL4IngressManager()
+	ingressManager.selector = cfg.GenerationSelector
 	return &Module{
 		cache:        model.NewCache(cfg.BackendFailures),
 		localAgentID: strings.TrimSpace(cfg.AgentID),
+		ingress:      ingressManager,
+		sessions:     sessions,
+		drain:        drain,
+		drainTimeout: drainTimeout,
+		manageDrain:  manageDrain,
 	}
+}
+
+func (m *Module) SessionController() *generation.DrainController {
+	if m == nil {
+		return nil
+	}
+	return m.drain
 }
 
 func (m *Module) Name() string {
@@ -86,6 +128,9 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	}
 	currentBlockState := m.trafficBlockStateFromProvider(req.Providers)
 	previousBlockState := m.currentTrafficBlockStateLocked()
+	if m.ingress != nil && m.ingress.selector != nil {
+		return m.prepareGeneration(ctx, req, previousBlockState, currentBlockState)
+	}
 	if l4EffectiveInputsEqual(req.Previous, req.Next) {
 		return m.trafficBlockStateTransaction(previousBlockState, currentBlockState), nil
 	}
@@ -220,9 +265,9 @@ func (m *Module) Close() error {
 	m.server = nil
 	m.mu.Unlock()
 	if server != nil {
-		return server.Close()
+		return errors.Join(server.Close(), m.ingress.close())
 	}
-	return nil
+	return m.ingress.close()
 }
 
 func (m *Module) UpdateTrafficBlockState(state TrafficBlockState) {

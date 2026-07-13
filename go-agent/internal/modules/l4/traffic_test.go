@@ -497,7 +497,7 @@ func TestRelayTCPInitialPayloadCountsOnlyAsL4RX(t *testing.T) {
 			},
 		},
 		relayPathDialer: dialer,
-		tcpConns:        make(map[net.Conn]struct{}),
+		tcpConns:        make(map[net.Conn]int),
 	}
 	rule := model.L4Rule{
 		ID:          42,

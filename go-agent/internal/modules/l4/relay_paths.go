@@ -68,7 +68,7 @@ func (s *Server) dialTCPUpstreamCandidates(rule model.L4Rule, dialOptions relay.
 			return nil, l4Candidate{}, 0, ctxErr
 		}
 		target := candidate.address
-		start := s.now()
+		start := s.currentTime()
 		var upstream net.Conn
 		if !ruleUsesRelay(rule) {
 			upstream, err = s.dialTCPLocalEgress(rule, target)
@@ -83,7 +83,7 @@ func (s *Server) dialTCPUpstreamCandidates(rule model.L4Rule, dialOptions relay.
 			lastErr = err
 			continue
 		}
-		connectDuration := s.now().Sub(start)
+		connectDuration := s.currentTime().Sub(start)
 		return upstream, candidate, connectDuration, nil
 	}
 	if lastErr != nil {
@@ -94,7 +94,7 @@ func (s *Server) dialTCPUpstreamCandidates(rule model.L4Rule, dialOptions relay.
 
 func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
 	candidate := l4Candidate{address: target}
-	start := s.now()
+	start := s.currentTime()
 	var upstream net.Conn
 	var err error
 	if ruleUsesRelay(rule) {
@@ -105,11 +105,11 @@ func (s *Server) dialTransparentTCPUpstream(rule model.L4Rule, target string, di
 	if err != nil {
 		return nil, candidate, 0, err
 	}
-	return upstream, candidate, s.now().Sub(start), nil
+	return upstream, candidate, s.currentTime().Sub(start), nil
 }
 
 func (s *Server) dialTCPDirect(target string) (net.Conn, error) {
-	dialer := s.tcpDialer
+	dialer := s.currentTCPDialer()
 	if dialer == nil {
 		dialer = (&net.Dialer{}).DialContext
 	}

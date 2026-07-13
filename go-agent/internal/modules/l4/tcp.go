@@ -21,11 +21,15 @@ func (s *Server) startTCPListener(rule model.L4Rule) error {
 	if err != nil {
 		return err
 	}
+	s.startTCPListenerOn(ln, rule)
+	return nil
+}
+
+func (s *Server) startTCPListenerOn(ln net.Listener, rule model.L4Rule) {
 	s.tcpListeners = append(s.tcpListeners, ln)
 
 	s.wg.Add(1)
 	go s.tcpAcceptLoop(ln, rule)
-	return nil
 }
 
 func (s *Server) listenTCP(rule model.L4Rule, addr string) (net.Listener, error) {
@@ -50,7 +54,7 @@ func (s *Server) tcpAcceptLoop(ln net.Listener, rule model.L4Rule) {
 			continue
 		}
 
-		s.trackTCPConn(conn)
+		s.trackTCPConn(conn, rule.ID)
 		s.wg.Add(1)
 		go func(c net.Conn) {
 			defer s.wg.Done()
@@ -67,6 +71,13 @@ func isTemporaryAcceptError(err error) bool {
 func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	defer s.untrackTCPConn(client)
 	defer client.Close()
+	sessionHandle, err := s.registerSession(rule.ID, "tcp", l4ConnectionSession{conn: client})
+	if err != nil {
+		return
+	}
+	if sessionHandle != nil {
+		defer sessionHandle.Finish()
+	}
 
 	if state := s.currentTrafficBlockState(); state.Blocked {
 		return
@@ -98,7 +109,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	if err != nil {
 		return
 	}
-	s.trackTCPConn(upstream)
+	s.trackTCPConn(upstream, rule.ID)
 	defer s.untrackTCPConn(upstream)
 	defer upstream.Close()
 
@@ -179,7 +190,7 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, 
 		_ = model.WriteClientRequestFailure(client, req, http.StatusBadGateway)
 		return
 	}
-	s.trackTCPConn(upstream)
+	s.trackTCPConn(upstream, rule.ID)
 	defer s.untrackTCPConn(upstream)
 	defer upstream.Close()
 	if err := model.WriteClientRequestSuccess(client, req); err != nil {
