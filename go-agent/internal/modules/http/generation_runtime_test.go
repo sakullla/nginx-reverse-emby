@@ -2,6 +2,7 @@ package http
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -437,6 +438,9 @@ func TestHTTPGenerationViewPublishIsTheOnlySelectorVisibilityPoint(t *testing.T)
 	if err := firstCandidate.Ready(context.Background()); err != nil {
 		t.Fatalf("first Ready() error = %v", err)
 	}
+	if body, err := generationTestGETResult(frontend + "/"); err == nil {
+		t.Fatalf("first ready-only response = %q, want no published endpoint", body)
+	}
 	firstView, _ := firstCandidate.Publish()
 	if got := generationTestGET(t, frontend+"/"); got != "old-view" {
 		t.Fatalf("first published response = %q, want old-view", got)
@@ -484,6 +488,243 @@ func TestHTTPGenerationViewPublishIsTheOnlySelectorVisibilityPoint(t *testing.T)
 	}
 	if got := generationTestGET(t, frontend+"/"); got != "new-view" {
 		t.Fatalf("response after candidate destroy = %q, want new-view", got)
+	}
+	if err := firstView.Destroy(context.Background()); err != nil {
+		t.Fatalf("destroy first view: %v", err)
+	}
+	defer secondView.Destroy(context.Background())
+}
+
+func TestHTTPGenerationViewKeepsAddedBindingInactiveUntilPublish(t *testing.T) {
+	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
+		_, _ = io.WriteString(w, strings.TrimPrefix(req.URL.Path, "/"))
+	}))
+	defer backend.Close()
+
+	registry := module.NewRegistry()
+	if err := registry.Register(&generationTestTLSModule{provider: &testTLSProvider{}}); err != nil {
+		t.Fatalf("register TLS module: %v", err)
+	}
+	mod := NewModule(Config{GenerationSelector: registry, SessionRegistrar: generationTestNoopSessionRegistrar{}})
+	defer mod.Close()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("register HTTP module: %v", err)
+	}
+
+	firstFrontend := fmt.Sprintf("http://127.0.0.1:%d", pickFreeTCPUDPPort(t))
+	addedFrontend := fmt.Sprintf("http://127.0.0.1:%d", pickFreeTCPUDPPort(t))
+	first := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{
+		ID: 21, Enabled: true, FrontendURL: firstFrontend, Backends: []model.HTTPBackend{{URL: backend.URL}},
+	}}}
+	second := model.Snapshot{Revision: 2, Rules: []model.HTTPRule{
+		{ID: 21, Enabled: true, FrontendURL: firstFrontend, Backends: []model.HTTPBackend{{URL: backend.URL}}},
+		{ID: 22, Enabled: true, FrontendURL: addedFrontend, Backends: []model.HTTPBackend{{URL: backend.URL}}},
+	}}
+
+	firstCandidate := prepareRegistryGenerationForTest(t, registry, model.Snapshot{}, first)
+	firstView, _ := firstCandidate.Publish()
+	if got := generationTestGET(t, firstFrontend+"/old-binding"); got != "old-binding" {
+		t.Fatalf("first binding response = %q", got)
+	}
+
+	secondCandidate := prepareRegistryGenerationForTest(t, registry, first, second)
+	if body, err := generationTestGETResult(addedFrontend + "/candidate-binding"); err == nil {
+		t.Fatalf("ready-only added binding response = %q, want no active endpoint", body)
+	}
+	if got := generationTestGET(t, firstFrontend+"/old-binding"); got != "old-binding" {
+		t.Fatalf("old binding during readiness = %q", got)
+	}
+	if err := secondCandidate.Destroy(context.Background()); err != nil {
+		t.Fatalf("destroy unpublished added binding: %v", err)
+	}
+	if got := generationTestGET(t, firstFrontend+"/old-binding"); got != "old-binding" {
+		t.Fatalf("old binding after candidate destroy = %q", got)
+	}
+	if body, err := generationTestGETResult(addedFrontend + "/destroyed-binding"); err == nil {
+		t.Fatalf("destroyed added binding response = %q, want closed binding", body)
+	}
+	secondCandidate = prepareRegistryGenerationForTest(t, registry, first, second)
+	secondView, previousView := secondCandidate.Publish()
+	if previousView != firstView {
+		t.Fatal("added-binding Publish() did not retire first view")
+	}
+	if got := generationTestGET(t, addedFrontend+"/candidate-binding"); got != "candidate-binding" {
+		t.Fatalf("published added binding response = %q", got)
+	}
+	if err := firstView.Destroy(context.Background()); err != nil {
+		t.Fatalf("destroy first view: %v", err)
+	}
+	defer secondView.Destroy(context.Background())
+}
+
+func TestHTTPGenerationViewReadinessFailurePreservesPublishedRuntime(t *testing.T) {
+	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = io.WriteString(w, "last-known-good")
+	}))
+	defer backend.Close()
+	registry := module.NewRegistry()
+	provider := &testTLSProvider{certificates: map[string]tls.Certificate{
+		"edge.example.test": mustIssueProxyTLSCertificate(t, "edge.example.test"),
+	}}
+	if err := registry.Register(&generationTestTLSModule{provider: provider}); err != nil {
+		t.Fatalf("register TLS module: %v", err)
+	}
+	mod := NewModule(Config{
+		HTTP3Enabled:       true,
+		GenerationSelector: registry,
+		SessionRegistrar:   generationTestNoopSessionRegistrar{},
+	})
+	defer mod.Close()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("register HTTP module: %v", err)
+	}
+
+	activeFrontend := fmt.Sprintf("http://127.0.0.1:%d", pickFreeTCPUDPPort(t))
+	failedPort := pickFreeTCPUDPPort(t)
+	failedFrontend := fmt.Sprintf("https://edge.example.test:%d", failedPort)
+	first := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{
+		ID: 51, Enabled: true, FrontendURL: activeFrontend, Backends: []model.HTTPBackend{{URL: backend.URL}},
+	}}}
+	second := model.Snapshot{Revision: 2, Rules: []model.HTTPRule{
+		{ID: 51, Enabled: true, FrontendURL: activeFrontend, Backends: []model.HTTPBackend{{URL: backend.URL}}},
+		{ID: 52, Enabled: true, FrontendURL: failedFrontend, Backends: []model.HTTPBackend{{URL: backend.URL}}},
+	}}
+	firstCandidate := prepareRegistryGenerationForTest(t, registry, model.Snapshot{}, first)
+	firstView, _ := firstCandidate.Publish()
+	defer firstView.Destroy(context.Background())
+
+	originalListenQUIC := http3ListenQUIC
+	http3ListenQUIC = func(*quic.Transport, *tls.Config, *quic.Config) (*quic.Listener, error) {
+		return nil, errors.New("candidate QUIC readiness failed")
+	}
+	t.Cleanup(func() { http3ListenQUIC = originalListenQUIC })
+	secondContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("second NewGenerationContext() error = %v", err)
+	}
+	if _, err := registry.PrepareGeneration(context.Background(), secondContext); err == nil || !strings.Contains(err.Error(), "candidate QUIC readiness failed") {
+		t.Fatalf("second PrepareGeneration() error = %v, want QUIC readiness failure", err)
+	}
+	if got := generationTestGET(t, activeFrontend+"/"); got != "last-known-good" {
+		t.Fatalf("active response after readiness failure = %q", got)
+	}
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", failedPort))
+	if err != nil {
+		t.Fatalf("failed candidate binding leaked after readiness failure: %v", err)
+	}
+	_ = listener.Close()
+}
+
+func TestHTTPGenerationViewKeepsPublishedTLSCertificateUntilPublish(t *testing.T) {
+	host := "edge.example.test"
+	port := pickFreeTCPUDPPort(t)
+	frontend := fmt.Sprintf("https://%s:%d", host, port)
+	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = io.WriteString(w, "tls")
+	}))
+	defer backend.Close()
+	oldCertificate := mustIssueProxyTLSCertificate(t, host)
+	newCertificate := mustIssueProxyTLSCertificate(t, host)
+
+	registry := module.NewRegistry()
+	tlsModule := &generationTestTLSModule{providers: map[int64]TLSMaterialProvider{
+		1: &testTLSProvider{certificates: map[string]tls.Certificate{host: oldCertificate}},
+		2: &testTLSProvider{certificates: map[string]tls.Certificate{host: newCertificate}},
+	}}
+	if err := registry.Register(tlsModule); err != nil {
+		t.Fatalf("register TLS module: %v", err)
+	}
+	mod := NewModule(Config{GenerationSelector: registry, SessionRegistrar: generationTestNoopSessionRegistrar{}})
+	defer mod.Close()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("register HTTP module: %v", err)
+	}
+	first := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{
+		ID: 31, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: backend.URL}},
+	}}}
+	second := first
+	second.Revision = 2
+
+	firstCandidate := prepareRegistryGenerationForTest(t, registry, model.Snapshot{}, first)
+	if err := generationTestTLSHandshakeError(port, host); err == nil {
+		t.Fatal("first ready-only TLS handshake succeeded before publication")
+	}
+	firstView, _ := firstCandidate.Publish()
+	if got := generationTestTLSPeerCertificate(t, port, host); !bytes.Equal(got, oldCertificate.Certificate[0]) {
+		t.Fatal("first published TLS certificate does not match old generation")
+	}
+
+	secondCandidate := prepareRegistryGenerationForTest(t, registry, first, second)
+	if got := generationTestTLSPeerCertificate(t, port, host); !bytes.Equal(got, oldCertificate.Certificate[0]) {
+		t.Fatal("candidate TLS certificate became visible before publication")
+	}
+	secondView, previousView := secondCandidate.Publish()
+	if previousView != firstView {
+		t.Fatal("TLS Publish() did not retire first view")
+	}
+	if got := generationTestTLSPeerCertificate(t, port, host); !bytes.Equal(got, newCertificate.Certificate[0]) {
+		t.Fatal("new TLS certificate did not become visible after publication")
+	}
+	if err := firstView.Destroy(context.Background()); err != nil {
+		t.Fatalf("destroy first view: %v", err)
+	}
+	defer secondView.Destroy(context.Background())
+}
+
+func TestHTTPGenerationViewKeepsHTTP3OnPublishedEndpointUntilPublish(t *testing.T) {
+	oldBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = io.WriteString(w, "old-h3-view")
+	}))
+	defer oldBackend.Close()
+	newBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = io.WriteString(w, "new-h3-view")
+	}))
+	defer newBackend.Close()
+
+	host := "edge.example.test"
+	port := pickFreeTCPUDPPort(t)
+	frontend := fmt.Sprintf("https://%s:%d", host, port)
+	target := fmt.Sprintf("https://127.0.0.1:%d", port)
+	provider := &testTLSProvider{certificates: map[string]tls.Certificate{host: mustIssueProxyTLSCertificate(t, host)}}
+	registry := module.NewRegistry()
+	if err := registry.Register(&generationTestTLSModule{provider: provider}); err != nil {
+		t.Fatalf("register TLS module: %v", err)
+	}
+	mod := NewModule(Config{
+		HTTP3Enabled:       true,
+		GenerationSelector: registry,
+		SessionRegistrar:   generationTestNoopSessionRegistrar{},
+	})
+	defer mod.Close()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("register HTTP module: %v", err)
+	}
+	first := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{
+		ID: 41, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: oldBackend.URL}},
+	}}}
+	second := model.Snapshot{Revision: 2, Rules: []model.HTTPRule{{
+		ID: 41, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: newBackend.URL}},
+	}}}
+
+	firstCandidate := prepareRegistryGenerationForTest(t, registry, model.Snapshot{}, first)
+	if body, err := generationTestHTTP3GETOnce(target+"/", fmt.Sprintf("%s:%d", host, port), host, time.Second); err == nil {
+		t.Fatalf("first ready-only HTTP/3 response = %q, want no published endpoint", body)
+	}
+	firstView, _ := firstCandidate.Publish()
+	if got := generationTestHTTP3GETOnceRequired(t, target+"/", fmt.Sprintf("%s:%d", host, port), host); got != "old-h3-view" {
+		t.Fatalf("first published HTTP/3 response = %q", got)
+	}
+
+	secondCandidate := prepareRegistryGenerationForTest(t, registry, first, second)
+	if got := generationTestHTTP3GETOnceRequired(t, target+"/", fmt.Sprintf("%s:%d", host, port), host); got != "old-h3-view" {
+		t.Fatalf("ready-only HTTP/3 response = %q, want old view", got)
+	}
+	secondView, previousView := secondCandidate.Publish()
+	if previousView != firstView {
+		t.Fatal("HTTP/3 Publish() did not retire first view")
+	}
+	if got := generationTestHTTP3GETOnceRequired(t, target+"/", fmt.Sprintf("%s:%d", host, port), host); got != "new-h3-view" {
+		t.Fatalf("published HTTP/3 response = %q, want new view", got)
 	}
 	if err := firstView.Destroy(context.Background()); err != nil {
 		t.Fatalf("destroy first view: %v", err)
@@ -1139,7 +1380,8 @@ func (generationTestNoopSessionRegistrar) RegisterSession(
 }
 
 type generationTestTLSModule struct {
-	provider TLSMaterialProvider
+	provider  TLSMaterialProvider
+	providers map[int64]TLSMaterialProvider
 }
 
 func (*generationTestTLSModule) Name() string { return "generation-test-tls" }
@@ -1152,15 +1394,28 @@ func (*generationTestTLSModule) Descriptor() module.ModuleDescriptor {
 }
 
 func (m *generationTestTLSModule) RegisterProviders(reg module.ProviderRegistry) error {
-	return reg.Provide(module.ProviderTLSMaterial, m.provider)
+	return reg.Provide(module.ProviderTLSMaterial, m.providerForRevision(0))
 }
 
 func (*generationTestTLSModule) Capabilities(module.SnapshotView) []module.Capability { return nil }
 func (*generationTestTLSModule) Apply(context.Context, module.ApplyRequest) error     { return nil }
 func (*generationTestTLSModule) Stop(context.Context) error                           { return nil }
 
-func (m *generationTestTLSModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
-	return generationTestTLSTransaction{provider: m.provider}, nil
+func (m *generationTestTLSModule) Prepare(_ context.Context, request module.ApplyRequest) (module.ModuleTransaction, error) {
+	return generationTestTLSTransaction{provider: m.providerForRevision(request.Next.Revision)}, nil
+}
+
+func (m *generationTestTLSModule) providerForRevision(revision int64) TLSMaterialProvider {
+	if m == nil {
+		return nil
+	}
+	if provider := m.providers[revision]; provider != nil {
+		return provider
+	}
+	if m.provider != nil {
+		return m.provider
+	}
+	return m.providers[1]
 }
 
 type generationTestTLSTransaction struct {
@@ -1252,6 +1507,28 @@ func prepareHTTPGenerationForTest(t *testing.T, mod *Module, resolver module.Pro
 	return generationTx
 }
 
+func prepareRegistryGenerationForTest(
+	t *testing.T,
+	registry *module.Registry,
+	previous model.Snapshot,
+	next model.Snapshot,
+) module.PreparedGeneration {
+	t.Helper()
+	generationContext, err := module.NewGenerationContext(previous, next)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	candidate, err := registry.PrepareGeneration(context.Background(), generationContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if err := candidate.Ready(context.Background()); err != nil {
+		_ = candidate.Destroy(context.Background())
+		t.Fatalf("Ready() error = %v", err)
+	}
+	return candidate
+}
+
 func generationTestGET(t *testing.T, target string) string {
 	t.Helper()
 	body, err := generationTestGETResult(target)
@@ -1276,6 +1553,34 @@ func generationTestGETResult(target string) (string, error) {
 		return "", err
 	}
 	return string(body), nil
+}
+
+func generationTestTLSHandshakeError(port int, host string) error {
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	connection, err := tls.DialWithDialer(dialer, "tcp", fmt.Sprintf("127.0.0.1:%d", port), &tls.Config{
+		ServerName: host, InsecureSkipVerify: true, // test certificate
+	})
+	if connection != nil {
+		_ = connection.Close()
+	}
+	return err
+}
+
+func generationTestTLSPeerCertificate(t *testing.T, port int, host string) []byte {
+	t.Helper()
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	connection, err := tls.DialWithDialer(dialer, "tcp", fmt.Sprintf("127.0.0.1:%d", port), &tls.Config{
+		ServerName: host, InsecureSkipVerify: true, // test certificate
+	})
+	if err != nil {
+		t.Fatalf("TLS dial: %v", err)
+	}
+	defer connection.Close()
+	certificates := connection.ConnectionState().PeerCertificates
+	if len(certificates) == 0 {
+		t.Fatal("TLS peer returned no certificate")
+	}
+	return append([]byte(nil), certificates[0].Raw...)
 }
 
 func generationTestHTTP2GET(target string) (string, int, error) {
@@ -1323,6 +1628,24 @@ func generationTestHTTP3GET(client *stdhttp.Client, target, host string) (string
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	return string(body), err
+}
+
+func generationTestHTTP3GETOnce(target, requestHost, serverName string, timeout time.Duration) (string, error) {
+	transport := &http3.Transport{TLSClientConfig: &tls.Config{
+		ServerName: serverName, InsecureSkipVerify: true, // test certificate
+	}}
+	defer transport.Close()
+	client := &stdhttp.Client{Transport: transport, Timeout: timeout}
+	return generationTestHTTP3GET(client, target, requestHost)
+}
+
+func generationTestHTTP3GETOnceRequired(t *testing.T, target, requestHost, serverName string) string {
+	t.Helper()
+	body, err := generationTestHTTP3GETOnce(target, requestHost, serverName, 5*time.Second)
+	if err != nil {
+		t.Fatalf("HTTP/3 GET %s: %v", target, err)
+	}
+	return body
 }
 
 func generationTestOpenUpgrade(t *testing.T, port int) (net.Conn, *bufio.Reader) {

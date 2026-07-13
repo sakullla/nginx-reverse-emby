@@ -96,6 +96,22 @@ func (m *httpIngressManager) currentRuntime() *Runtime {
 	return m.legacyActive.Load()
 }
 
+func (m *httpIngressManager) currentStreamEndpoint(bindingKey string) *ingress.StreamEndpoint {
+	runtime := m.currentRuntime()
+	if runtime == nil {
+		return nil
+	}
+	return runtime.streamEndpoint(bindingKey)
+}
+
+func (m *httpIngressManager) currentPacketEndpoint(bindingKey string) *ingress.PacketEndpoint {
+	runtime := m.currentRuntime()
+	if runtime == nil {
+		return nil
+	}
+	return runtime.packetEndpoint(bindingKey)
+}
+
 func (m *httpIngressManager) acquire(ctx context.Context, generationID string, spec runtimeListenerSpec, providers Providers, http3Enabled bool) (*httpIngressLease, error) {
 	if m == nil {
 		return nil, errors.New("http ingress manager is not configured")
@@ -120,6 +136,12 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 			_ = listener.Close()
 			m.mu.Unlock()
 			return nil, errors.New("create HTTP stream broker")
+		}
+		if m.selector != nil {
+			bindingKey := spec.bindingKey
+			binding.stream.SetSelector(func() *ingress.StreamEndpoint {
+				return m.currentStreamEndpoint(bindingKey)
+			})
 		}
 		m.bindings[spec.bindingKey] = binding
 	}
@@ -146,6 +168,12 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 			}
 			m.mu.Unlock()
 			return nil, errors.New("create HTTP/3 packet broker")
+		}
+		if m.selector != nil {
+			bindingKey := spec.bindingKey
+			binding.packet.SetSelector(func() *ingress.PacketEndpoint {
+				return m.currentPacketEndpoint(bindingKey)
+			})
 		}
 		binding.quicClassifier.setAssociationReleaser(func(key ingress.AssociationKey) {
 			binding.packet.Release(key)
@@ -720,9 +748,6 @@ func (r *Runtime) Ready() error {
 	// TCP endpoints are fully constructed before their Serve goroutines start,
 	// and HTTP/3 creates its QUIC listener synchronously. There is no deferred
 	// startup result to poll here.
-	if r != nil && r.ingress != nil && r.ingress.selector != nil {
-		return r.stage()
-	}
 	return nil
 }
 
@@ -739,6 +764,9 @@ func (r httpDrainResource) Destroy(context.Context) error {
 
 func (r *Runtime) Activate() error {
 	if r == nil {
+		return nil
+	}
+	if r.ingress != nil && r.ingress.selector != nil {
 		return nil
 	}
 	if err := r.stage(); err != nil {
@@ -781,6 +809,34 @@ func (r *Runtime) stage() error {
 		r.mu.Unlock()
 	})
 	return r.stageErr
+}
+
+func (r *Runtime) streamEndpoint(bindingKey string) *ingress.StreamEndpoint {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, lease := range r.ingressLeases {
+		if lease != nil && lease.binding != nil && lease.binding.key == bindingKey {
+			return lease.stream
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) packetEndpoint(bindingKey string) *ingress.PacketEndpoint {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, lease := range r.ingressLeases {
+		if lease != nil && lease.binding != nil && lease.binding.key == bindingKey {
+			return lease.packet
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) BeginDrain() {
