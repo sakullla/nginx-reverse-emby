@@ -2,6 +2,7 @@ package http
 
 import (
 	"bufio"
+	"container/list"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -254,14 +255,18 @@ const (
 )
 
 type quicCIDOwnership struct {
+	key      string
 	owner    ingress.AssociationKey
 	lastSeen time.Time
+	element  *list.Element
 }
 
 type quicRemoteState struct {
+	key         string
 	owner       ingress.AssociationKey
 	established bool
 	lastSeen    time.Time
+	element     *list.Element
 }
 
 type quicGenerationRoute struct {
@@ -271,19 +276,22 @@ type quicGenerationRoute struct {
 }
 
 type quicConnectionClassifier struct {
-	mu         sync.Mutex
-	byCID      map[string]quicCIDOwnership
-	byRemote   map[string]quicRemoteState
-	routes     map[string]quicGenerationRoute
-	now        func() time.Time
-	cacheLimit int
-	cacheTTL   time.Duration
+	mu               sync.Mutex
+	byCID            map[string]*quicCIDOwnership
+	byRemote         map[string]*quicRemoteState
+	cidLRU           list.List
+	remoteLRU        list.List
+	routes           map[string]quicGenerationRoute
+	now              func() time.Time
+	cacheLimit       int
+	cacheTTL         time.Duration
+	maintenanceSteps uint64
 }
 
 func newQUICConnectionClassifier() *quicConnectionClassifier {
 	return &quicConnectionClassifier{
-		byCID:      make(map[string]quicCIDOwnership),
-		byRemote:   make(map[string]quicRemoteState),
+		byCID:      make(map[string]*quicCIDOwnership),
+		byRemote:   make(map[string]*quicRemoteState),
 		routes:     make(map[string]quicGenerationRoute),
 		now:        time.Now,
 		cacheLimit: quicCIDCacheLimit,
@@ -308,43 +316,33 @@ func (c *quicConnectionClassifier) Classify(payload []byte, metadata ingress.Pac
 	c.pruneLocked(now)
 	if owner := c.generatedCIDOwnerLocked(cid); owner != "" {
 		if remote != "" {
-			c.byRemote[remote] = quicRemoteState{owner: owner, established: !longHeader, lastSeen: now}
+			c.rememberRemoteLocked(remote, owner, !longHeader, now)
 		}
+		c.enforceLimitLocked()
 		return owner, true
 	}
-	if ownership := c.byCID[cidKey]; ownership.owner != "" {
-		ownership.lastSeen = now
-		c.byCID[cidKey] = ownership
+	if ownership := c.byCID[cidKey]; ownership != nil {
+		c.touchCIDLocked(ownership, now)
 		if remote != "" {
-			state := c.byRemote[remote]
-			state.owner = ownership.owner
-			state.lastSeen = now
-			if !longHeader {
-				state.established = true
-			}
-			c.byRemote[remote] = state
+			c.rememberRemoteLocked(remote, ownership.owner, !longHeader, now)
 		}
 		return ownership.owner, true
 	}
-	if state := c.byRemote[remote]; remote != "" && state.owner != "" {
+	if state := c.byRemote[remote]; remote != "" && state != nil {
 		// Handshake packets and unseen short-header CIDs are aliases of the
 		// connection already pinned for this peer. Once short headers have
 		// established it, a fresh Initial starts a new connection instead.
 		if !longHeader || packetType != quicLongHeaderInitial || !state.established {
-			c.byCID[cidKey] = quicCIDOwnership{owner: state.owner, lastSeen: now}
-			state.lastSeen = now
-			if !longHeader {
-				state.established = true
-			}
-			c.byRemote[remote] = state
+			c.rememberCIDLocked(cidKey, state.owner, now)
+			c.rememberRemoteLocked(remote, state.owner, !longHeader, now)
 			c.enforceLimitLocked()
 			return state.owner, true
 		}
 	}
 	owner := ingress.AssociationKey("quic:" + cidKey)
-	c.byCID[cidKey] = quicCIDOwnership{owner: owner, lastSeen: now}
+	c.rememberCIDLocked(cidKey, owner, now)
 	if remote != "" {
-		c.byRemote[remote] = quicRemoteState{owner: owner, established: !longHeader, lastSeen: now}
+		c.rememberRemoteLocked(remote, owner, !longHeader, now)
 	}
 	c.enforceLimitLocked()
 	return owner, true
@@ -357,7 +355,7 @@ func (c *quicConnectionClassifier) bindGeneration(generator *generationConnectio
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state := c.byRemote[remote.String()]
-	if state.owner == "" {
+	if state == nil {
 		return false
 	}
 	route := c.routes[generator.routeID]
@@ -406,15 +404,21 @@ func (c *quicConnectionClassifier) pruneLocked(now time.Time) {
 		return
 	}
 	cutoff := now.Add(-c.cacheTTL)
-	for cid, ownership := range c.byCID {
-		if ownership.lastSeen.Before(cutoff) {
-			delete(c.byCID, cid)
+	for element := c.cidLRU.Front(); element != nil; element = c.cidLRU.Front() {
+		c.maintenanceSteps++
+		ownership := element.Value.(*quicCIDOwnership)
+		if !ownership.lastSeen.Before(cutoff) {
+			break
 		}
+		c.removeCIDLocked(ownership)
 	}
-	for remote, state := range c.byRemote {
-		if state.lastSeen.Before(cutoff) {
-			delete(c.byRemote, remote)
+	for element := c.remoteLRU.Front(); element != nil; element = c.remoteLRU.Front() {
+		c.maintenanceSteps++
+		state := element.Value.(*quicRemoteState)
+		if !state.lastSeen.Before(cutoff) {
+			break
 		}
+		c.removeRemoteLocked(state)
 	}
 }
 
@@ -424,27 +428,52 @@ func (c *quicConnectionClassifier) enforceLimitLocked() {
 		limit = 1
 	}
 	for len(c.byCID) > limit {
-		oldestKey := ""
-		var oldest time.Time
-		for key, ownership := range c.byCID {
-			if oldestKey == "" || ownership.lastSeen.Before(oldest) {
-				oldestKey = key
-				oldest = ownership.lastSeen
-			}
-		}
-		delete(c.byCID, oldestKey)
+		c.maintenanceSteps++
+		c.removeCIDLocked(c.cidLRU.Front().Value.(*quicCIDOwnership))
 	}
 	for len(c.byRemote) > limit {
-		oldestKey := ""
-		var oldest time.Time
-		for key, state := range c.byRemote {
-			if oldestKey == "" || state.lastSeen.Before(oldest) {
-				oldestKey = key
-				oldest = state.lastSeen
-			}
-		}
-		delete(c.byRemote, oldestKey)
+		c.maintenanceSteps++
+		c.removeRemoteLocked(c.remoteLRU.Front().Value.(*quicRemoteState))
 	}
+}
+
+func (c *quicConnectionClassifier) rememberCIDLocked(key string, owner ingress.AssociationKey, now time.Time) {
+	if ownership := c.byCID[key]; ownership != nil {
+		ownership.owner = owner
+		c.touchCIDLocked(ownership, now)
+		return
+	}
+	ownership := &quicCIDOwnership{key: key, owner: owner, lastSeen: now}
+	ownership.element = c.cidLRU.PushBack(ownership)
+	c.byCID[key] = ownership
+}
+
+func (c *quicConnectionClassifier) touchCIDLocked(ownership *quicCIDOwnership, now time.Time) {
+	ownership.lastSeen = now
+	c.cidLRU.MoveToBack(ownership.element)
+}
+
+func (c *quicConnectionClassifier) removeCIDLocked(ownership *quicCIDOwnership) {
+	delete(c.byCID, ownership.key)
+	c.cidLRU.Remove(ownership.element)
+}
+
+func (c *quicConnectionClassifier) rememberRemoteLocked(key string, owner ingress.AssociationKey, established bool, now time.Time) {
+	if state := c.byRemote[key]; state != nil {
+		state.owner = owner
+		state.established = state.established || established
+		state.lastSeen = now
+		c.remoteLRU.MoveToBack(state.element)
+		return
+	}
+	state := &quicRemoteState{key: key, owner: owner, established: established, lastSeen: now}
+	state.element = c.remoteLRU.PushBack(state)
+	c.byRemote[key] = state
+}
+
+func (c *quicConnectionClassifier) removeRemoteLocked(state *quicRemoteState) {
+	delete(c.byRemote, state.key)
+	c.remoteLRU.Remove(state.element)
 }
 
 type generationConnectionIDGenerator struct {
@@ -509,6 +538,7 @@ func prepareGenerationRuntime(
 	resilience StreamResilienceOptions,
 	ingressManager *httpIngressManager,
 	sessionRegistrar HTTPSessionRegistrar,
+	registrationReady bool,
 ) (*Runtime, error) {
 	rules = generationHTTPRules(rules)
 	specs, err := buildRuntimeListenerSpecs(ctx, rules, relayListeners, providers)
@@ -523,7 +553,7 @@ func prepareGenerationRuntime(
 	}
 	runtime := &Runtime{
 		bindings: make([]string, 0, len(specs)),
-		tracker:  newHTTPSessionTracker(generationID, sessionRegistrar),
+		tracker:  newHTTPSessionTracker(generationID, sessionRegistrar, registrationReady),
 	}
 	for _, spec := range specs {
 		proxy, err := newServerWithResilience(spec.listener, relayListeners, providers, backendCache, sharedTransport, resilience)
@@ -638,30 +668,30 @@ func (r *Runtime) BeginDrain() {
 		servers := append([]*stdhttp.Server(nil), r.servers...)
 		http3Servers := append([]*http3ServerHandle(nil), r.http3Servers...)
 		r.mu.Unlock()
-		go func() {
-			var wg sync.WaitGroup
-			for _, server := range http3Servers {
-				if server == nil || server.server == nil {
-					continue
-				}
-				wg.Add(1)
-				go func(handle *http3ServerHandle) {
-					defer wg.Done()
-					_ = handle.server.Shutdown(context.Background())
-				}(server)
+		var wg sync.WaitGroup
+		for _, server := range servers {
+			if server == nil {
+				continue
 			}
+			wg.Add(1)
+			go func(srv *stdhttp.Server) {
+				defer wg.Done()
+				_ = srv.Shutdown(context.Background())
+			}(server)
+		}
+		for _, server := range http3Servers {
+			if server == nil || server.server == nil {
+				continue
+			}
+			wg.Add(1)
+			go func(handle *http3ServerHandle) {
+				defer wg.Done()
+				_ = handle.server.Shutdown(context.Background())
+			}(server)
+		}
+		go func() {
 			if r.tracker != nil {
 				r.tracker.wait()
-			}
-			for _, server := range servers {
-				if server == nil {
-					continue
-				}
-				wg.Add(1)
-				go func(srv *stdhttp.Server) {
-					defer wg.Done()
-					_ = srv.Shutdown(context.Background())
-				}(server)
 			}
 			wg.Wait()
 			_ = r.Close()
@@ -670,25 +700,29 @@ func (r *Runtime) BeginDrain() {
 }
 
 type httpSessionTracker struct {
-	mu         sync.Mutex
-	generation string
-	registrar  HTTPSessionRegistrar
-	nextID     uint64
-	active     int
-	idle       chan struct{}
-	sessions   map[string]map[*httpRequestSession]struct{}
+	mu                sync.Mutex
+	generation        string
+	registrar         HTTPSessionRegistrar
+	registrationReady bool
+	nextID            uint64
+	active            int
+	idle              chan struct{}
+	sessions          map[string]map[*httpRequestSession]struct{}
 }
 
 type httpRequestSession struct {
-	tracker  *httpSessionTracker
-	entity   string
-	cancel   context.CancelFunc
-	external *generation.SessionHandle
+	tracker   *httpSessionTracker
+	entity    string
+	cancel    context.CancelFunc
+	external  *generation.SessionHandle
+	sessionID string
 
-	mu         sync.Mutex
-	hijacked   bool
-	connection net.Conn
-	once       sync.Once
+	mu              sync.Mutex
+	hijacked        bool
+	connection      net.Conn
+	registrationErr error
+	finished        bool
+	once            sync.Once
 }
 
 type trackedHijackedConn struct {
@@ -698,14 +732,15 @@ type trackedHijackedConn struct {
 	err     error
 }
 
-func newHTTPSessionTracker(generationID string, registrar HTTPSessionRegistrar) *httpSessionTracker {
+func newHTTPSessionTracker(generationID string, registrar HTTPSessionRegistrar, registrationReady bool) *httpSessionTracker {
 	idle := make(chan struct{})
 	close(idle)
 	return &httpSessionTracker{
-		generation: generationID,
-		registrar:  registrar,
-		idle:       idle,
-		sessions:   make(map[string]map[*httpRequestSession]struct{}),
+		generation:        generationID,
+		registrar:         registrar,
+		registrationReady: registrationReady,
+		idle:              idle,
+		sessions:          make(map[string]map[*httpRequestSession]struct{}),
 	}
 }
 
@@ -720,26 +755,65 @@ func (t *httpSessionTracker) start(entity string, cancel context.CancelFunc) *ht
 	}
 	t.active++
 	t.nextID++
-	sessionID := fmt.Sprintf("request-%d", t.nextID)
+	session.sessionID = fmt.Sprintf("request-%d", t.nextID)
 	entries := t.sessions[entity]
 	if entries == nil {
 		entries = make(map[*httpRequestSession]struct{})
 		t.sessions[entity] = entries
 	}
 	entries[session] = struct{}{}
+	registrationReady := t.registrationReady
 	t.mu.Unlock()
-	if t.registrar != nil {
-		handle, err := t.registrar.RegisterSession(
-			t.generation,
-			generation.EntityKey{Module: "http", ID: entity},
-			sessionID,
-			session,
-		)
-		if err == nil {
-			session.external = handle
-		}
+	if registrationReady {
+		t.register(session)
 	}
 	return session
+}
+
+func (t *httpSessionTracker) enableRegistration() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.registrationReady {
+		t.mu.Unlock()
+		return
+	}
+	t.registrationReady = true
+	var sessions []*httpRequestSession
+	for _, entries := range t.sessions {
+		for session := range entries {
+			sessions = append(sessions, session)
+		}
+	}
+	t.mu.Unlock()
+	for _, session := range sessions {
+		t.register(session)
+	}
+}
+
+func (t *httpSessionTracker) register(session *httpRequestSession) {
+	if t == nil || t.registrar == nil || session == nil {
+		return
+	}
+	handle, err := t.registrar.RegisterSession(
+		t.generation,
+		generation.EntityKey{Module: "http", ID: session.entity},
+		session.sessionID,
+		session,
+	)
+	session.mu.Lock()
+	session.registrationErr = err
+	finished := session.finished
+	if err == nil && !finished {
+		session.external = handle
+	}
+	session.mu.Unlock()
+	if err != nil {
+		log.Printf("[proxy] register HTTP session %s/%s: %v", t.generation, session.sessionID, err)
+	} else if finished && handle != nil {
+		handle.Finish()
+	}
 }
 
 func (t *httpSessionTracker) requestDone(session *httpRequestSession) {
@@ -759,6 +833,10 @@ func (t *httpSessionTracker) finish(session *httpRequestSession) {
 		return
 	}
 	session.once.Do(func() {
+		session.mu.Lock()
+		session.finished = true
+		external := session.external
+		session.mu.Unlock()
 		t.mu.Lock()
 		if entries := t.sessions[session.entity]; entries != nil {
 			delete(entries, session)
@@ -773,8 +851,8 @@ func (t *httpSessionTracker) finish(session *httpRequestSession) {
 			close(t.idle)
 		}
 		t.mu.Unlock()
-		if session.external != nil {
-			session.external.Finish()
+		if external != nil {
+			external.Finish()
 		}
 		session.cancel()
 	})
@@ -1060,6 +1138,8 @@ func (t *httpGenerationTransaction) FinalizeCommitSuccess() {
 			Resource: httpDrainResource{runtime: t.runtime},
 		}, t.entityChanges, t.drainTimeout); err != nil {
 			log.Printf("[proxy] register HTTP generation drain %s: %v", t.generationID, err)
+		} else if t.runtime != nil && t.runtime.tracker != nil {
+			t.runtime.tracker.enableRegistration()
 		}
 	}
 	if t.previousRuntime != nil {

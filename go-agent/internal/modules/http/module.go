@@ -158,7 +158,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	rules := cloneHTTPRules(req.Next.Rules)
 	relayListeners := cloneRelayListeners(req.Next.RelayListeners)
 	egressProfiles := cloneEgressProfiles(req.Next.EgressProfiles)
-	nextRuntime, err := prepareGenerationRuntime(ctx, generationContext.ID(), rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options, m.ingress, m.sessions)
+	nextRuntime, err := prepareGenerationRuntime(ctx, generationContext.ID(), rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options, m.ingress, m.sessions, !m.manageDrain)
 	if err != nil {
 		return nil, err
 	}

@@ -130,6 +130,8 @@ func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 		t.Fatalf("first Commit() error = %v", err)
 	}
 	firstTx.FinalizeCommitSuccess()
+	h2Client := generationTestHTTP2Client(frontend)
+	defer h2Client.CloseIdleConnections()
 
 	type h2Result struct {
 		body  string
@@ -138,7 +140,7 @@ func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 	}
 	oldResult := make(chan h2Result, 1)
 	go func() {
-		body, proto, err := generationTestHTTP2GET(frontend + "/slow")
+		body, proto, err := generationTestHTTP2GETWithClient(h2Client, frontend+"/slow")
 		oldResult <- h2Result{body: body, proto: proto, err: err}
 	}()
 	select {
@@ -159,7 +161,7 @@ func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 		t.Fatalf("second Commit() error = %v", err)
 	}
 	secondTx.FinalizeCommitSuccess()
-	newBody, newProto, err := generationTestHTTP2GET(frontend + "/")
+	newBody, newProto, err := generationTestHTTP2GETWithClient(h2Client, frontend+"/")
 	if err != nil {
 		t.Fatalf("new HTTP/2 request: %v", err)
 	}
@@ -263,7 +265,6 @@ func TestHTTPGenerationProductionModuleRegistersRequestWithDrainController(t *te
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("Commit() error = %v", err)
 	}
-	tx.FinalizeCommitSuccess()
 
 	done := make(chan struct{})
 	go func() {
@@ -275,6 +276,10 @@ func TestHTTPGenerationProductionModuleRegistersRequestWithDrainController(t *te
 	case <-time.After(3 * time.Second):
 		t.Fatal("request did not reach backend")
 	}
+	if got := generationTestDrainSessionCount(controller, generationContext.ID()); got != 0 {
+		t.Fatalf("pre-finalize generation session count = %d, want 0", got)
+	}
+	tx.FinalizeCommitSuccess()
 	if got := generationTestDrainSessionCount(controller, generationContext.ID()); got != 1 {
 		t.Fatalf("shared generation session count = %d, want 1", got)
 	}
@@ -283,6 +288,16 @@ func TestHTTPGenerationProductionModuleRegistersRequestWithDrainController(t *te
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("request did not finish")
+	}
+	trackerIdle := make(chan struct{})
+	go func() {
+		tx.runtime.tracker.wait()
+		close(trackerIdle)
+	}()
+	select {
+	case <-trackerIdle:
+	case <-time.After(3 * time.Second):
+		t.Fatal("request session did not finish")
 	}
 	if got := generationTestDrainSessionCount(controller, generationContext.ID()); got != 0 {
 		t.Fatalf("shared generation session count after completion = %d, want 0", got)
@@ -743,6 +758,47 @@ func TestQUICClassifierBoundsUntrustedCIDAndRemoteChurn(t *testing.T) {
 	}
 }
 
+func TestQUICClassifierMaintenanceCostIsIndependentOfCacheCardinality(t *testing.T) {
+	classifier := newQUICConnectionClassifier()
+	classifier.cacheLimit = 4096
+	classifier.cacheTTL = time.Hour
+	now := time.Unix(100, 0)
+	classifier.now = func() time.Time { return now }
+
+	const entries = 2048
+	for index := 0; index < entries; index++ {
+		payload := []byte{0xc0, 0, 0, 0, 1, 4, byte(index >> 8), byte(index), 0xaa, 0x55}
+		metadata := ingress.PacketMetadata{RemoteAddr: &net.UDPAddr{
+			IP:   net.IPv4(192, 0, byte(index/250+1), byte(index%250+1)),
+			Port: 10000 + index,
+		}}
+		if _, ok := classifier.Classify(payload, metadata); !ok {
+			t.Fatalf("fill packet %d was not classified", index)
+		}
+	}
+
+	hotPayload := []byte{0xc0, 0, 0, 0, 1, 4, 0x07, 0xff, 0xaa, 0x55}
+	hotMetadata := ingress.PacketMetadata{RemoteAddr: &net.UDPAddr{
+		IP:   net.IPv4(192, 0, 9, 48),
+		Port: 12047,
+	}}
+	classifier.mu.Lock()
+	before := classifier.maintenanceSteps
+	classifier.mu.Unlock()
+	const packets = 512
+	for index := 0; index < packets; index++ {
+		if _, ok := classifier.Classify(hotPayload, hotMetadata); !ok {
+			t.Fatalf("hot packet %d was not classified", index)
+		}
+	}
+	classifier.mu.Lock()
+	steps := classifier.maintenanceSteps - before
+	classifier.mu.Unlock()
+	if steps > packets*4 {
+		t.Fatalf("maintenance steps = %d for %d packets with %d cached entries", steps, packets, entries)
+	}
+}
+
 func TestQUICClassifierExpiresStaleFallbackAliases(t *testing.T) {
 	classifier := newQUICConnectionClassifier()
 	now := time.Unix(100, 0)
@@ -824,6 +880,12 @@ func generationTestGETResult(target string) (string, error) {
 }
 
 func generationTestHTTP2GET(target string) (string, int, error) {
+	client := generationTestHTTP2Client(target)
+	defer client.CloseIdleConnections()
+	return generationTestHTTP2GETWithClient(client, target)
+}
+
+func generationTestHTTP2Client(target string) *stdhttp.Client {
 	transport := &stdhttp.Transport{
 		Proxy:             nil,
 		ForceAttemptHTTP2: true,
@@ -836,7 +898,10 @@ func generationTestHTTP2GET(target string) (string, int, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort("127.0.0.1", frontend.URL.Port()))
 		},
 	}
-	client := &stdhttp.Client{Transport: transport, Timeout: 5 * time.Second}
+	return &stdhttp.Client{Transport: transport, Timeout: 5 * time.Second}
+}
+
+func generationTestHTTP2GETWithClient(client *stdhttp.Client, target string) (string, int, error) {
 	response, err := client.Get(target)
 	if err != nil {
 		return "", 0, err
