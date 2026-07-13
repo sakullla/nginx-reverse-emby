@@ -185,7 +185,10 @@ func (c *SyncController) performRevisionSyncPlan(
 	candidateApplied := snapshot
 	if err := c.Runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		return c.failRevisionAttempt(ctx, client, store, journal, candidate, errors.Join(err, rollbackErr))
+		if rollbackErr != nil {
+			return c.recordRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidate.Revision)
+		}
+		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	candidate.Phase = model.GenerationPhaseCutover
 	candidate.UpdatedAt = time.Now().UTC()
@@ -195,14 +198,20 @@ func (c *SyncController) performRevisionSyncPlan(
 			return c.recordRuntimeError(err)
 		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		return c.failRevisionAttempt(ctx, client, store, journal, candidate, errors.Join(err, rollbackErr))
+		if rollbackErr != nil {
+			return c.recordRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidate.Revision)
+		}
+		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	if err := c.Store.SaveAppliedSnapshot(candidateApplied); err != nil {
 		if isFilesystemCommitUncertain(err) {
 			return c.recordRuntimeError(err)
 		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		return c.failRevisionAttempt(ctx, client, store, journal, candidate, errors.Join(err, rollbackErr))
+		if rollbackErr != nil {
+			return c.recordRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidate.Revision)
+		}
+		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	if err := c.persistRuntimeState(true); err != nil {
 		if isFilesystemCommitUncertain(err) {
@@ -210,7 +219,10 @@ func (c *SyncController) performRevisionSyncPlan(
 		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		restoreErr := c.Store.SaveAppliedSnapshot(previousApplied)
-		return c.failRevisionAttempt(ctx, client, store, journal, candidate, errors.Join(err, rollbackErr, restoreErr))
+		if rollbackErr != nil || restoreErr != nil {
+			return c.recordRuntimeErrorWithRevision(errors.Join(err, rollbackErr, restoreErr), candidate.Revision)
+		}
+		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	return c.finishRevisionAcknowledgement(ctx, client, store, journal, candidate, candidateApplied)
 }

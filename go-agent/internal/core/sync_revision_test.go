@@ -358,8 +358,11 @@ func TestRevisionSyncDoesNotReportFailedBeforeFailedJournalIsDurable(t *testing.
 	events := []string{}
 	store := newRevisionTestStore(&events)
 	store.failGenerationPhase = model.GenerationPhaseFailed
-	runtime := NewRuntimeWithActivator(func(_ context.Context, _, _ model.Snapshot) error {
-		return errors.New("candidate apply failed")
+	runtime := NewRuntimeWithActivator(func(_ context.Context, _, next model.Snapshot) error {
+		if next.Revision == 7 {
+			return errors.New("candidate apply failed")
+		}
+		return nil
 	})
 	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
 	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
@@ -373,6 +376,75 @@ func TestRevisionSyncDoesNotReportFailedBeforeFailedJournalIsDurable(t *testing.
 	}
 	if store.journal.Candidate == nil || store.journal.Candidate.Phase != model.GenerationPhaseStarted {
 		t.Fatalf("durable journal = %+v, want prior started phase", store.journal)
+	}
+}
+
+func TestRevisionSyncKeepsCutoverWhenPreviousAppliedRestoreFails(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	previous := revisionSnapshot(6)
+	store.applied = previous
+	store.lkg = previous
+	store.runtime = RuntimeState{CurrentRevision: 6, Metadata: map[string]string{"current_revision": "6"}}
+	store.failRuntimeState = true
+	store.failOnAppliedSave = 2
+	runtime := NewRuntime()
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "applied persistence fail") {
+		t.Fatalf("PerformSync() error = %v, want previous applied restore failure", err)
+	}
+	if len(client.reports) != 0 {
+		t.Fatalf("reports = %+v, want no failed report while candidate remains durable applied", client.reports)
+	}
+	if store.applied.Revision != 7 || store.journal.Candidate == nil || store.journal.Candidate.Phase != model.GenerationPhaseCutover {
+		t.Fatalf("applied/journal = %d/%+v, want recoverable candidate cutover", store.applied.Revision, store.journal)
+	}
+
+	store.failRuntimeState = false
+	store.failOnAppliedSave = 0
+	restartedRuntime := NewRuntime()
+	restartedController := &SyncController{Store: store, Runtime: restartedRuntime, SyncClient: client}
+	if err := restartedController.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync(restart) error = %v", err)
+	}
+	if restartedRuntime.ActiveSnapshot().Revision != 7 || len(client.starts) != 1 || len(client.reports) != 1 || client.reports[0].Status != "applied" {
+		t.Fatalf("restart active/start/report = %d/%d/%+v, want recovered applied revision 7", restartedRuntime.ActiveSnapshot().Revision, len(client.starts), client.reports)
+	}
+}
+
+func TestRevisionSyncDoesNotReportFailedWhenRuntimeRollbackFails(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	previous := revisionSnapshot(6)
+	store.applied = previous
+	store.lkg = previous
+	runtime := NewRuntimeWithActivator(func(_ context.Context, prior, next model.Snapshot) error {
+		if next.Revision == 7 || prior.Revision == 7 {
+			return errors.New("runtime transition failed")
+		}
+		return nil
+	})
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "runtime rollback") {
+		t.Fatalf("PerformSync() error = %v, want runtime rollback failure", err)
+	}
+	if len(client.reports) != 0 {
+		t.Fatalf("reports = %+v, want no failed report before rollback is confirmed", client.reports)
+	}
+	if store.journal.Candidate == nil || store.journal.Candidate.Phase != model.GenerationPhaseStarted {
+		t.Fatalf("journal = %+v, want prior started phase retained", store.journal)
 	}
 }
 
