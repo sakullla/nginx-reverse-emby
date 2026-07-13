@@ -61,6 +61,12 @@ type PacketEndpoint struct {
 	closing    atomic.Bool
 }
 
+type PacketEndpointSelector func() *PacketEndpoint
+
+type packetEndpointSelector struct {
+	selectEndpoint PacketEndpointSelector
+}
+
 type packetEndpointWriter struct {
 	broker   *PacketBroker
 	endpoint *PacketEndpoint
@@ -144,6 +150,7 @@ type PacketBroker struct {
 	defaultBacklog int
 	classifiers    []PacketClassifier
 	active         atomic.Pointer[PacketEndpoint]
+	selector       atomic.Pointer[packetEndpointSelector]
 	received       atomic.Uint64
 	dropped        atomic.Uint64
 
@@ -244,6 +251,19 @@ func (b *PacketBroker) Active() *PacketEndpoint {
 		return nil
 	}
 	return b.active.Load()
+}
+
+// SetSelector overrides legacy Activate routing for new packet associations.
+// Passing nil restores legacy routing through Active.
+func (b *PacketBroker) SetSelector(selector PacketEndpointSelector) {
+	if b == nil {
+		return
+	}
+	if selector == nil {
+		b.selector.Store(nil)
+		return
+	}
+	b.selector.Store(&packetEndpointSelector{selectEndpoint: selector})
 }
 
 func (b *PacketBroker) LocalAddr() net.Addr {
@@ -363,16 +383,41 @@ func (b *PacketBroker) readLoop() {
 
 func (b *PacketBroker) endpointFor(key AssociationKey) (*PacketEndpoint, bool) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if endpoint := b.associations[key]; endpoint != nil {
+		b.mu.Unlock()
 		return endpoint, false
 	}
-	endpoint := b.active.Load()
-	if endpoint == nil {
+	b.mu.Unlock()
+
+	endpoint := b.selectedEndpoint()
+	if endpoint == nil || endpoint.broker != b {
 		return nil, false
 	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if existing := b.associations[key]; existing != nil {
+		return existing, false
+	}
+	select {
+	case <-b.closed:
+		return nil, false
+	default:
+	}
+	if _, ok := b.endpoints[endpoint]; !ok || endpoint.closing.Load() {
+		return nil, false
+	}
+	endpoint.conn.Activate()
+	b.published[endpoint] = struct{}{}
 	b.associations[key] = endpoint
 	return endpoint, true
+}
+
+func (b *PacketBroker) selectedEndpoint() *PacketEndpoint {
+	if selector := b.selector.Load(); selector != nil {
+		return selector.selectEndpoint()
+	}
+	return b.active.Load()
 }
 
 func (b *PacketBroker) releaseIfTarget(key AssociationKey, endpoint *PacketEndpoint) {

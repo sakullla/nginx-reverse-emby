@@ -25,6 +25,12 @@ type StreamEndpoint struct {
 	closeErr   error
 }
 
+type StreamEndpointSelector func() *StreamEndpoint
+
+type streamEndpointSelector struct {
+	selectEndpoint StreamEndpointSelector
+}
+
 func (e *StreamEndpoint) Generation() string {
 	if e == nil {
 		return ""
@@ -52,6 +58,7 @@ type StreamBroker struct {
 	listener       net.Listener
 	defaultBacklog int
 	active         atomic.Pointer[StreamEndpoint]
+	selector       atomic.Pointer[streamEndpointSelector]
 	accepted       atomic.Uint64
 	dropped        atomic.Uint64
 
@@ -150,6 +157,19 @@ func (b *StreamBroker) Active() *StreamEndpoint {
 	return b.active.Load()
 }
 
+// SetSelector overrides legacy Activate routing for newly accepted streams.
+// Passing nil restores legacy routing through Active.
+func (b *StreamBroker) SetSelector(selector StreamEndpointSelector) {
+	if b == nil {
+		return
+	}
+	if selector == nil {
+		b.selector.Store(nil)
+		return
+	}
+	b.selector.Store(&streamEndpointSelector{selectEndpoint: selector})
+}
+
 func (b *StreamBroker) Addr() net.Addr {
 	if b == nil || b.listener == nil {
 		return nil
@@ -222,16 +242,32 @@ func (b *StreamBroker) acceptLoop() {
 }
 
 func (b *StreamBroker) deliverStream(conn net.Conn) error {
+	endpoint := b.selectedEndpoint()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	endpoint := b.active.Load()
-	if endpoint == nil {
+	select {
+	case <-b.closed:
+		return net.ErrClosed
+	default:
+	}
+	if endpoint == nil || endpoint.broker != b {
 		return net.ErrClosed
 	}
+	if _, ok := b.endpoints[endpoint]; !ok {
+		return net.ErrClosed
+	}
+	endpoint.listener.Activate()
 	if b.beforeStreamDeliver != nil {
 		b.beforeStreamDeliver(endpoint)
 	}
 	return endpoint.listener.Deliver(conn)
+}
+
+func (b *StreamBroker) selectedEndpoint() *StreamEndpoint {
+	if selector := b.selector.Load(); selector != nil {
+		return selector.selectEndpoint()
+	}
+	return b.active.Load()
 }
 
 func retryableNetworkError(err error) bool {

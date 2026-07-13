@@ -3,12 +3,15 @@ package ingress
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/moduleutil"
 )
 
 func TestPacketBrokerPinsAssociationAcrossCutover(t *testing.T) {
@@ -45,6 +48,126 @@ func TestPacketBrokerPinsAssociationAcrossCutover(t *testing.T) {
 	readPacket(t, newEndpoint, "reassigned")
 	if got := broker.AssociationCount(); got != 2 {
 		t.Fatalf("AssociationCount() = %d, want 2 active tuples", got)
+	}
+}
+
+func TestPacketBrokerSelectorPinsAssociationsAndKeepsCandidateInvisible(t *testing.T) {
+	broker, err := ListenPacket(context.Background(), "udp", "127.0.0.1:0", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+
+	oldEndpoint := broker.NewEndpoint("old", 8)
+	candidate := broker.NewEndpoint("candidate", 8)
+	var selected atomic.Pointer[PacketEndpoint]
+	selected.Store(oldEndpoint)
+	broker.SetSelector(selected.Load)
+	if _, err := candidate.WriteTo([]byte("prepublish"), testPacketAddr("remote")); !errors.Is(err, moduleutil.ErrVirtualEndpointInactive) {
+		t.Fatalf("candidate WriteTo() error = %v, want inactive", err)
+	}
+
+	oldClient := dialUDP(t, broker.LocalAddr().String())
+	defer oldClient.Close()
+	writeUDP(t, oldClient, "old-1")
+	readPacket(t, oldEndpoint, "old-1")
+
+	selected.Store(candidate)
+	writeUDP(t, oldClient, "old-2")
+	readPacket(t, oldEndpoint, "old-2")
+	newClient := dialUDP(t, broker.LocalAddr().String())
+	defer newClient.Close()
+	writeUDP(t, newClient, "new")
+	readPacket(t, candidate, "new")
+
+	oldKey := FiveTupleAssociationKey("udp", broker.LocalAddr(), oldClient.LocalAddr())
+	if !broker.Release(oldKey) {
+		t.Fatal("old association was not pinned")
+	}
+	writeUDP(t, oldClient, "reselected")
+	readPacket(t, candidate, "reselected")
+	if err := candidate.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := broker.AssociationCount(); got != 0 {
+		t.Fatalf("AssociationCount() = %d after selected endpoint close", got)
+	}
+}
+
+func TestPacketBrokerSelectorNilAndClosedEndpointDoNotCreateAssociations(t *testing.T) {
+	broker, err := ListenPacket(context.Background(), "udp", "127.0.0.1:0", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+
+	client := dialUDP(t, broker.LocalAddr().String())
+	defer client.Close()
+	broker.SetSelector(func() *PacketEndpoint { return nil })
+	writeUDP(t, client, "nil")
+	waitPacketDrops(t, broker, 1)
+	if got := broker.AssociationCount(); got != 0 {
+		t.Fatalf("AssociationCount() = %d after nil selection", got)
+	}
+
+	closed := broker.NewEndpoint("closed", 4)
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	broker.SetSelector(func() *PacketEndpoint { return closed })
+	writeUDP(t, client, "closed")
+	waitPacketDrops(t, broker, 2)
+	if got := broker.AssociationCount(); got != 0 {
+		t.Fatalf("AssociationCount() = %d after closed selection", got)
+	}
+}
+
+func TestPacketBrokerSelectorSwapIsRaceSafe(t *testing.T) {
+	physical := newDeadlineBoundaryPacketConn()
+	broker := NewPacketBroker(physical, "udp")
+	defer broker.Close()
+	first := broker.NewEndpoint("first", 128)
+	second := broker.NewEndpoint("second", 128)
+
+	firstSelector := func() *PacketEndpoint { return first }
+	secondSelector := func() *PacketEndpoint { return second }
+	broker.SetSelector(firstSelector)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for index := 0; index < 1000; index++ {
+			if index%2 == 0 {
+				broker.SetSelector(secondSelector)
+			} else {
+				broker.SetSelector(firstSelector)
+			}
+		}
+	}()
+	for index := 0; index < 1000; index++ {
+		endpoint, created := broker.endpointFor(AssociationKey(fmt.Sprintf("key-%d", index)))
+		if !created || (endpoint != first && endpoint != second) {
+			t.Fatalf("endpointFor(%d) = %p/%v", index, endpoint, created)
+		}
+	}
+	<-done
+}
+
+func TestPacketBrokerNilSelectorRestoresLegacyActivation(t *testing.T) {
+	physical := newDeadlineBoundaryPacketConn()
+	broker := NewPacketBroker(physical, "udp")
+	defer broker.Close()
+	legacy := broker.NewEndpoint("legacy", 2)
+	candidate := broker.NewEndpoint("candidate", 2)
+	if _, err := broker.Activate(legacy); err != nil {
+		t.Fatal(err)
+	}
+	broker.SetSelector(func() *PacketEndpoint { return candidate })
+	if endpoint, created := broker.endpointFor("selector"); !created || endpoint != candidate {
+		t.Fatalf("selector endpoint = %p/%v, want candidate", endpoint, created)
+	}
+	broker.SetSelector(nil)
+	if endpoint, created := broker.endpointFor("legacy"); !created || endpoint != legacy {
+		t.Fatalf("legacy endpoint = %p/%v, want active endpoint", endpoint, created)
 	}
 }
 
@@ -301,6 +424,17 @@ func readPacket(t *testing.T, endpoint *PacketEndpoint, want string) {
 	}
 	if got := string(buf[:n]); got != want {
 		t.Fatalf("ReadFrom() payload = %q, want %q", got, want)
+	}
+}
+
+func waitPacketDrops(t *testing.T, broker *PacketBroker, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for broker.Stats().Dropped < want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := broker.Stats().Dropped; got < want {
+		t.Fatalf("Dropped = %d, want at least %d", got, want)
 	}
 }
 

@@ -94,6 +94,96 @@ func TestStreamBrokerSingleBindGateAndAtomicTargetSwap(t *testing.T) {
 	}
 }
 
+func TestStreamBrokerSelectorKeepsRegisteredEndpointInvisibleUntilSelected(t *testing.T) {
+	broker, err := ListenStream(context.Background(), "tcp", "127.0.0.1:0", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+
+	oldEndpoint := broker.NewEndpoint("old", 8)
+	candidate := broker.NewEndpoint("candidate", 8)
+	var selected atomic.Pointer[StreamEndpoint]
+	selected.Store(oldEndpoint)
+	broker.SetSelector(selected.Load)
+
+	oldClient := dialTCP(t, broker.Addr().String())
+	defer oldClient.Close()
+	oldConn := acceptStream(t, oldEndpoint)
+	defer oldConn.Close()
+
+	selected.Store(candidate)
+	newClient := dialTCP(t, broker.Addr().String())
+	defer newClient.Close()
+	newConn := acceptStream(t, candidate)
+	defer newConn.Close()
+
+	if _, err := oldClient.Write([]byte("pinned")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, len("pinned"))
+	if _, err := oldConn.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != "pinned" {
+		t.Fatalf("old connection payload = %q", buf)
+	}
+}
+
+func TestStreamBrokerSelectorNilAndClosedEndpointDropNewStreams(t *testing.T) {
+	broker, err := ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+
+	endpoint := broker.NewEndpoint("candidate", 4)
+	broker.SetSelector(func() *StreamEndpoint { return nil })
+	client := dialTCP(t, broker.Addr().String())
+	_ = client.Close()
+	waitStreamDrops(t, broker, 1)
+
+	if err := endpoint.Close(); err != nil {
+		t.Fatal(err)
+	}
+	broker.SetSelector(func() *StreamEndpoint { return endpoint })
+	client = dialTCP(t, broker.Addr().String())
+	_ = client.Close()
+	waitStreamDrops(t, broker, 2)
+}
+
+func TestStreamBrokerSelectorSwapIsRaceSafe(t *testing.T) {
+	broker, err := ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	first := broker.NewEndpoint("first", 4)
+	second := broker.NewEndpoint("second", 4)
+	firstSelector := func() *StreamEndpoint { return first }
+	secondSelector := func() *StreamEndpoint { return second }
+	broker.SetSelector(firstSelector)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for index := 0; index < 1000; index++ {
+			if index%2 == 0 {
+				broker.SetSelector(secondSelector)
+			} else {
+				broker.SetSelector(firstSelector)
+			}
+		}
+	}()
+	for index := 0; index < 1000; index++ {
+		endpoint := broker.selectedEndpoint()
+		if endpoint != first && endpoint != second {
+			t.Fatalf("selectedEndpoint() = %p", endpoint)
+		}
+	}
+	<-done
+}
+
 func TestStreamBrokerDropsWhenActiveEndpointBackpressures(t *testing.T) {
 	broker, err := ListenStream(context.Background(), "tcp", "127.0.0.1:0", 1)
 	if err != nil {
@@ -207,6 +297,17 @@ func acceptStream(t *testing.T, endpoint *StreamEndpoint) net.Conn {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Accept() timed out")
 		return nil
+	}
+}
+
+func waitStreamDrops(t *testing.T, broker *StreamBroker, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for broker.Stats().Dropped < want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := broker.Stats().Dropped; got < want {
+		t.Fatalf("Dropped = %d, want at least %d", got, want)
 	}
 }
 
