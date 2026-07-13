@@ -27,13 +27,12 @@ var (
 // Registry is intended for single-threaded startup composition. Module names
 // and descriptors should remain stable after registration.
 type Registry struct {
-	modules []Module
-	byName  map[string]Module
+	modules   []Module
+	byName    map[string]Module
+	providers providerSet
 
 	generationMu sync.Mutex
 	active       atomic.Pointer[GenerationView]
-	retiredMu    sync.Mutex
-	retired      []*GenerationView
 }
 
 // GenerationContext is the immutable input shared by every module candidate.
@@ -69,13 +68,12 @@ func (c GenerationContext) SnapshotHash() string     { return c.snapshotHash }
 func (c GenerationContext) Previous() model.Snapshot { return cloneGenerationSnapshot(c.previous) }
 func (c GenerationContext) Snapshot() model.Snapshot { return cloneGenerationSnapshot(c.snapshot) }
 
-// GenerationTransaction moves every fallible operation into Ready. Publish
-// must only swap in-memory state and cannot report failure. Destroy owns only
-// resources prepared for this transaction; it must not restore another view.
+// GenerationTransaction owns isolated candidate state. Ready may validate or
+// probe that state but must not mutate live module state. GenerationView is
+// the only publication point; Destroy releases only candidate-owned resources.
 type GenerationTransaction interface {
 	ModuleTransaction
 	Ready(context.Context) error
-	Publish()
 	Destroy(context.Context) error
 }
 
@@ -173,9 +171,8 @@ type generationCandidate struct {
 }
 
 type preparedModuleTransaction struct {
-	name       string
-	legacy     ModuleTransaction
-	generation GenerationTransaction
+	name        string
+	transaction GenerationTransaction
 }
 
 func NewRegistry() *Registry {
@@ -292,49 +289,51 @@ func (r *Registry) Apply(ctx context.Context, previous, next model.Snapshot) err
 	if r == nil {
 		return nil
 	}
-	generationContext, err := NewGenerationContext(previous, next)
+	ordered, providers, err := r.registeredProviderSet()
 	if err != nil {
 		return err
 	}
-	candidate, err := r.PrepareGeneration(ctx, generationContext)
-	if err != nil {
-		return err
-	}
-	if err := candidate.Ready(ctx); err != nil {
-		return errors.Join(err, candidate.Destroy(ctx))
-	}
-	_, retired := candidate.Publish()
-	if retired != nil {
-		r.retainRetired(retired)
-	}
-	return nil
-}
 
-func (r *Registry) retainRetired(view *GenerationView) {
-	if r == nil || view == nil {
-		return
-	}
-	r.retiredMu.Lock()
-	r.retired = append(r.retired, view)
-	r.retiredMu.Unlock()
-}
-
-func (r *Registry) destroyRetired(ctx context.Context) error {
-	if r == nil {
-		return nil
-	}
-	r.retiredMu.Lock()
-	retired := r.retired
-	r.retired = nil
-	r.retiredMu.Unlock()
-
-	var errs []error
-	for i := len(retired) - 1; i >= 0; i-- {
-		if err := retired[i].Destroy(ctx); err != nil {
-			errs = append(errs, err)
+	request := ApplyRequest{Previous: previous, Next: next, Providers: providers}
+	var transactions []ModuleTransaction
+	for _, mod := range ordered {
+		if transactional, ok := mod.(TransactionalModule); ok {
+			transaction, err := transactional.Prepare(ctx, request)
+			if err != nil {
+				return rollbackPrepared(transactions, fmt.Errorf("module %s prepare: %w", strings.TrimSpace(mod.Name()), err))
+			}
+			if transaction != nil {
+				transactions = append(transactions, transaction)
+				if providerTransaction, ok := transaction.(interface {
+					RegisterProviders(ProviderRegistry) error
+				}); ok {
+					if err := providerTransaction.RegisterProviders(replacingProviderRegistry{ProviderRegistry: providers}); err != nil {
+						return rollbackPrepared(transactions, fmt.Errorf("module %s register prepared providers: %w", strings.TrimSpace(mod.Name()), err))
+					}
+				}
+			}
+			continue
+		}
+		if err := mod.Apply(ctx, request); err != nil {
+			return rollbackPrepared(transactions, fmt.Errorf("module %s apply: %w", strings.TrimSpace(mod.Name()), err))
 		}
 	}
-	return errors.Join(errs...)
+	for _, transaction := range transactions {
+		if err := transaction.Commit(); err != nil {
+			return rollbackPrepared(transactions, fmt.Errorf("commit module transaction: %w", err))
+		}
+	}
+	for i := len(transactions) - 1; i >= 0; i-- {
+		finalizer, ok := transactions[i].(interface{ FinalizeCommit() error })
+		if !ok {
+			continue
+		}
+		if err := finalizer.FinalizeCommit(); err != nil {
+			return rollbackPrepared(transactions, fmt.Errorf("finalize module transaction: %w", err))
+		}
+	}
+	r.providers = providers
+	return nil
 }
 
 func (r *Registry) PrepareGeneration(ctx context.Context, generationContext GenerationContext) (PreparedGeneration, error) {
@@ -361,26 +360,33 @@ func (r *Registry) PrepareGeneration(ctx context.Context, generationContext Gene
 
 	for _, mod := range ordered {
 		name := strings.TrimSpace(mod.Name())
-		var transaction ModuleTransaction
-		if transactional, ok := mod.(TransactionalModule); ok {
-			transaction, err = transactional.Prepare(ctx, request)
-		} else {
-			err = mod.Apply(ctx, request)
+		transactional, ok := mod.(TransactionalModule)
+		if !ok {
+			return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s does not implement generation transactions", name))
 		}
+		transaction, err := transactional.Prepare(ctx, request)
 		if err != nil {
 			return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s prepare: %w", name, err))
 		}
 		if transaction == nil {
-			continue
+			return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s did not prepare a generation transaction", name))
 		}
-		prepared := preparedModuleTransaction{name: name, legacy: transaction}
-		if generation, ok := transaction.(GenerationTransaction); ok {
-			prepared.generation = generation
+		generation, ok := transaction.(GenerationTransaction)
+		if !ok {
+			rollbackErr := transaction.Rollback()
+			return nil, candidate.abortPreparation(ctx, errors.Join(
+				fmt.Errorf("module %s prepared an incompatible generation transaction", name),
+				rollbackErr,
+			))
 		}
-		candidate.transactions = append(candidate.transactions, prepared)
-		if providerTransaction, ok := transaction.(interface {
+		candidate.transactions = append(candidate.transactions, preparedModuleTransaction{name: name, transaction: generation})
+		providerTransaction, registersProviders := transaction.(interface {
 			RegisterProviders(ProviderRegistry) error
-		}); ok {
+		})
+		if len(mod.Descriptor().Provides) > 0 && !registersProviders {
+			return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s did not prepare generation-owned providers", name))
+		}
+		if registersProviders {
 			if err := providerTransaction.RegisterProviders(replacingProviderRegistry{ProviderRegistry: providers}); err != nil {
 				return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s register prepared providers: %w", name, err))
 			}
@@ -420,27 +426,8 @@ func (c *generationCandidate) Ready(ctx context.Context) error {
 	}
 
 	for _, transaction := range c.transactions {
-		if transaction.generation != nil {
-			if err := transaction.generation.Ready(ctx); err != nil {
-				return fmt.Errorf("module %s readiness: %w", transaction.name, err)
-			}
-			continue
-		}
-		if err := transaction.legacy.Commit(); err != nil {
-			return fmt.Errorf("module %s readiness compatibility commit: %w", transaction.name, err)
-		}
-	}
-	for i := len(c.transactions) - 1; i >= 0; i-- {
-		transaction := c.transactions[i]
-		if transaction.generation != nil {
-			continue
-		}
-		finalizer, ok := transaction.legacy.(interface{ FinalizeCommit() error })
-		if !ok {
-			continue
-		}
-		if err := finalizer.FinalizeCommit(); err != nil {
-			return fmt.Errorf("module %s readiness compatibility finalize: %w", transaction.name, err)
+		if err := transaction.transaction.Ready(ctx); err != nil {
+			return fmt.Errorf("module %s readiness: %w", transaction.name, err)
 		}
 	}
 	c.ready = true
@@ -460,11 +447,6 @@ func (c *generationCandidate) Publish() (active, previous *GenerationView) {
 		panic("module: publish called before generation readiness")
 	}
 
-	for _, transaction := range c.transactions {
-		if transaction.generation != nil {
-			transaction.generation.Publish()
-		}
-	}
 	active = &GenerationView{
 		context:      c.context,
 		providers:    c.providers,
@@ -555,10 +537,10 @@ func (r *Registry) Resolve(ref ProviderRef) (any, bool) {
 		return nil, false
 	}
 	active := r.ActiveGeneration()
-	if active == nil {
-		return nil, false
+	if active != nil {
+		return active.Resolve(ref)
 	}
-	return active.Resolve(ref)
+	return r.providers.Resolve(ref)
 }
 
 func (r *Registry) StopAll(ctx context.Context) error {
@@ -576,7 +558,7 @@ func (r *Registry) StopAll(ctx context.Context) error {
 			firstErr = fmt.Errorf("module %s stop: %w", strings.TrimSpace(module.Name()), err)
 		}
 	}
-	return errors.Join(firstErr, r.destroyRetired(ctx))
+	return firstErr
 }
 
 type providerSet struct {
@@ -697,12 +679,7 @@ func destroyCandidateTransactions(ctx context.Context, transactions []preparedMo
 	var errs []error
 	for i := len(transactions) - 1; i >= 0; i-- {
 		transaction := transactions[i]
-		var err error
-		if transaction.generation != nil {
-			err = transaction.generation.Destroy(ctx)
-		} else {
-			err = transaction.legacy.Rollback()
-		}
+		err := transaction.transaction.Destroy(ctx)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("destroy module %s candidate: %w", transaction.name, err))
 		}
@@ -714,10 +691,7 @@ func destroyPublishedTransactions(ctx context.Context, transactions []preparedMo
 	var errs []error
 	for i := len(transactions) - 1; i >= 0; i-- {
 		transaction := transactions[i]
-		if transaction.generation == nil {
-			continue
-		}
-		if err := transaction.generation.Destroy(ctx); err != nil {
+		if err := transaction.transaction.Destroy(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("destroy module %s generation: %w", transaction.name, err))
 		}
 	}

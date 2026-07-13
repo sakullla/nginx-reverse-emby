@@ -143,11 +143,14 @@ func TestModuleKeepsPreparedTrafficStateInvisibleUntilPublish(t *testing.T) {
 	}
 
 	candidate.Publish()
-	if trafficmodule.Enabled() {
-		t.Fatal("traffic stats remained enabled after publish")
+	if !trafficmodule.Enabled() {
+		t.Fatal("sole-view publish mutated legacy traffic state")
 	}
-	if got := mod.TrafficBlockState(); !got.Blocked || got.Reason != "quota" {
-		t.Fatalf("TrafficBlockState() after publish = %+v", got)
+	if got := mod.TrafficBlockState(); got.Blocked {
+		t.Fatalf("legacy TrafficBlockState() after publish = %+v, want unblocked", got)
+	}
+	if got, ok := trafficmodule.BlockStateFromProvider(registry); !ok || !got.Blocked || got.Reason != "quota" {
+		t.Fatalf("candidate TrafficBlockState() after publish = %+v/%v", got, ok)
 	}
 }
 

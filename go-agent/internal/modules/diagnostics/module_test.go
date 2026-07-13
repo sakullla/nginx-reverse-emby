@@ -95,8 +95,8 @@ func TestModuleKeepsPreparedDiagnosticsStateInvisibleUntilPublish(t *testing.T) 
 	}
 
 	candidate.Publish()
-	if mod.Handler() == nil || mod.Handler() == firstHandler {
-		t.Fatal("diagnostics handler was not replaced at publish")
+	if mod.Handler() != firstHandler {
+		t.Fatal("sole-view publish mutated the legacy diagnostics handler")
 	}
 }
 
@@ -209,7 +209,25 @@ func (m staticProviderModule) Capabilities(module.SnapshotView) []module.Capabil
 
 func (m staticProviderModule) Apply(context.Context, module.ApplyRequest) error { return nil }
 
+func (m staticProviderModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	return staticProviderTransaction{ref: m.provides, provider: m.provider}, nil
+}
+
 func (m staticProviderModule) Stop(context.Context) error { return nil }
+
+type staticProviderTransaction struct {
+	ref      module.ProviderRef
+	provider any
+}
+
+func (t staticProviderTransaction) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(t.ref, t.provider)
+}
+
+func (staticProviderTransaction) Ready(context.Context) error   { return nil }
+func (staticProviderTransaction) Destroy(context.Context) error { return nil }
+func (staticProviderTransaction) Commit() error                 { return nil }
+func (staticProviderTransaction) Rollback() error               { return nil }
 
 func mustRegister(t *testing.T, registry *module.Registry, candidate module.Module) {
 	t.Helper()

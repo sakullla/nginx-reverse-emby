@@ -3,8 +3,10 @@ package module_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -347,6 +349,9 @@ func TestRegistryGenerationCandidateIsInvisibleUntilPublish(t *testing.T) {
 	if previous != nil {
 		t.Fatalf("first previous view = %+v, want nil", previous)
 	}
+	if len(mod.published) != 0 {
+		t.Fatalf("module publish calls after view publication = %v, want none", mod.published)
+	}
 	if got := resolvedGeneration(t, registry, providerRef); got != 1 {
 		t.Fatalf("active provider generation = %d, want 1", got)
 	}
@@ -378,6 +383,9 @@ func TestRegistryGenerationCandidateIsInvisibleUntilPublish(t *testing.T) {
 	}
 	if secondView.ProviderHash() == firstView.ProviderHash() {
 		t.Fatal("provider hash did not change with the published generation")
+	}
+	if len(mod.published) != 0 {
+		t.Fatalf("module publish calls after second view publication = %v, want none", mod.published)
 	}
 }
 
@@ -422,28 +430,130 @@ func TestRegistryReadinessFailureKeepsActiveGenerationAndDestroysOnlyCandidate(t
 	}
 }
 
-func TestRegistryApplyRetainsPreviousGenerationUntilStop(t *testing.T) {
+func TestRegistryGenerationPublicationSwapsOneConsistentView(t *testing.T) {
 	registry := module.NewRegistry()
 	providerRef := module.ProviderRef("test.generation")
 	mod := &generationRecordingModule{name: "generation", providerRef: providerRef}
 	mustRegister(t, registry, mod)
 
-	first := model.Snapshot{Revision: 1}
-	if err := registry.Apply(context.Background(), model.Snapshot{}, first); err != nil {
-		t.Fatalf("Apply(first) error = %v", err)
+	publishGeneration := func(previous, next int64) {
+		t.Helper()
+		candidate, err := registry.PrepareGeneration(context.Background(), mustGenerationContext(t,
+			model.Snapshot{Revision: previous}, model.Snapshot{Revision: next}))
+		if err != nil {
+			t.Fatalf("PrepareGeneration(%d) error = %v", next, err)
+		}
+		if err := candidate.Ready(context.Background()); err != nil {
+			t.Fatalf("Ready(%d) error = %v", next, err)
+		}
+		candidate.Publish()
 	}
-	if err := registry.Apply(context.Background(), first, model.Snapshot{Revision: 2}); err != nil {
-		t.Fatalf("Apply(second) error = %v", err)
-	}
-	if len(mod.destroyed) != 0 {
-		t.Fatalf("destroyed generations after cutover = %v, want none", mod.destroyed)
-	}
+	publishGeneration(0, 1)
 
-	if err := registry.StopAll(context.Background()); err != nil {
-		t.Fatalf("StopAll() error = %v", err)
+	stop := make(chan struct{})
+	failures := make(chan string, 1)
+	var observers sync.WaitGroup
+	observers.Add(1)
+	go func() {
+		defer observers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			view := registry.ActiveGeneration()
+			if view == nil {
+				continue
+			}
+			provider, ok := view.Resolve(providerRef)
+			revision, typeOK := provider.(int64)
+			if !ok || !typeOK || revision != view.Revision() {
+				select {
+				case failures <- fmt.Sprintf("view revision/provider = %d/%v (%T)", view.Revision(), provider, provider):
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	for revision := int64(2); revision <= 100; revision++ {
+		publishGeneration(revision-1, revision)
 	}
-	if got := mod.destroyed; !reflect.DeepEqual(got, []int64{1}) {
-		t.Fatalf("destroyed generations after stop = %v, want [1]", got)
+	close(stop)
+	observers.Wait()
+	select {
+	case failure := <-failures:
+		t.Fatal(failure)
+	default:
+	}
+	if len(mod.published) != 0 {
+		t.Fatalf("module publish calls = %v, want none", mod.published)
+	}
+}
+
+func TestRegistryPrepareGenerationRejectsNonTransactionalModuleWithoutApplying(t *testing.T) {
+	registry := module.NewRegistry()
+	applyCalls := 0
+	mod := &recordingModule{name: "legacy", apply: func(context.Context, module.ApplyRequest) error {
+		applyCalls++
+		return nil
+	}}
+	mustRegister(t, registry, mod)
+
+	generationContext := mustGenerationContext(t, model.Snapshot{}, model.Snapshot{Revision: 1})
+	if _, err := registry.PrepareGeneration(context.Background(), generationContext); err == nil {
+		t.Fatal("PrepareGeneration() error = nil, want incompatible module rejection")
+	}
+	if applyCalls != 0 {
+		t.Fatalf("legacy Apply calls = %d, want 0", applyCalls)
+	}
+}
+
+func TestRegistryPrepareGenerationRejectsLegacyTransactionWithoutCommit(t *testing.T) {
+	registry := module.NewRegistry()
+	commitCalls := 0
+	rollbackCalls := 0
+	mod := &transactionalRecordingModule{recordingModule: recordingModule{name: "legacy-transaction"}, prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+		return module.TransactionFuncs{
+			CommitFunc: func() error {
+				commitCalls++
+				return nil
+			},
+			RollbackFunc: func() error {
+				rollbackCalls++
+				return nil
+			},
+		}, nil
+	}}
+	mustRegister(t, registry, mod)
+
+	generationContext := mustGenerationContext(t, model.Snapshot{}, model.Snapshot{Revision: 1})
+	if _, err := registry.PrepareGeneration(context.Background(), generationContext); err == nil {
+		t.Fatal("PrepareGeneration() error = nil, want incompatible transaction rejection")
+	}
+	if commitCalls != 0 {
+		t.Fatalf("legacy Commit calls = %d, want 0", commitCalls)
+	}
+	if rollbackCalls != 1 {
+		t.Fatalf("legacy Rollback calls = %d, want 1", rollbackCalls)
+	}
+}
+
+func TestRegistryPrepareGenerationRejectsLiveProviderFallback(t *testing.T) {
+	registry := module.NewRegistry()
+	mod := &transactionalRecordingModule{
+		recordingModule: recordingModule{name: "provider-without-candidate", provides: []module.ProviderRef{"test.provider"}},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			return generationWithoutProviderTransaction{}, nil
+		},
+	}
+	mustRegister(t, registry, mod)
+
+	generationContext := mustGenerationContext(t, model.Snapshot{}, model.Snapshot{Revision: 1})
+	if _, err := registry.PrepareGeneration(context.Background(), generationContext); err == nil {
+		t.Fatal("PrepareGeneration() error = nil, want generation-owned provider rejection")
 	}
 }
 
@@ -507,8 +617,16 @@ type generationRecordingModule struct {
 	providerRef  module.ProviderRef
 	failRevision int64
 	readyErr     error
+	published    []int64
 	destroyed    []int64
 }
+
+type generationWithoutProviderTransaction struct{}
+
+func (generationWithoutProviderTransaction) Ready(context.Context) error   { return nil }
+func (generationWithoutProviderTransaction) Destroy(context.Context) error { return nil }
+func (generationWithoutProviderTransaction) Commit() error                 { return nil }
+func (generationWithoutProviderTransaction) Rollback() error               { return nil }
 
 func (m *generationRecordingModule) Name() string { return m.name }
 
@@ -554,7 +672,9 @@ func (t *generationRecordingTransaction) Ready(context.Context) error {
 	return nil
 }
 
-func (*generationRecordingTransaction) Publish() {}
+func (t *generationRecordingTransaction) Publish() {
+	t.module.published = append(t.module.published, t.revision)
+}
 
 func (t *generationRecordingTransaction) Destroy(context.Context) error {
 	t.module.destroyed = append(t.module.destroyed, t.revision)

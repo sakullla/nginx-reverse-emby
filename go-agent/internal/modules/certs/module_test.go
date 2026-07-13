@@ -73,8 +73,11 @@ func TestModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testin
 
 	candidate.Publish()
 	assertTLSMaterialHasCertificate(t, registry, 2, "second.example.test")
-	if _, err := manager.ServerCertificate(context.Background(), 1); err == nil {
-		t.Fatal("manager retained old certificate as active after publish")
+	if _, err := manager.ServerCertificate(context.Background(), 1); err != nil {
+		t.Fatalf("legacy manager lost old certificate before T34 consumer migration: %v", err)
+	}
+	if _, err := manager.ServerCertificate(context.Background(), 2); err == nil {
+		t.Fatal("sole-view publish mutated the legacy manager")
 	}
 }
 
