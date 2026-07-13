@@ -15,20 +15,61 @@ type Session interface {
 }
 
 type SessionHandle struct {
-	once   sync.Once
-	finish func()
+	mu            sync.Mutex
+	state         sessionHandleState
+	finishPending bool
+	finish        func()
 }
 
 func (h *SessionHandle) Finish() {
-	if h != nil && h.claim() {
+	if h != nil && h.finishNaturally() {
 		h.finish()
 	}
 }
 
-func (h *SessionHandle) claim() bool {
-	claimed := false
-	h.once.Do(func() { claimed = true })
-	return claimed
+type sessionHandleState uint8
+
+const (
+	sessionHandleActive sessionHandleState = iota
+	sessionHandleForcing
+	sessionHandleFinished
+)
+
+func (h *SessionHandle) finishNaturally() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	switch h.state {
+	case sessionHandleActive:
+		h.state = sessionHandleFinished
+		return true
+	case sessionHandleForcing:
+		h.finishPending = true
+	}
+	return false
+}
+
+func (h *SessionHandle) claimForce() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.state != sessionHandleActive {
+		return false
+	}
+	h.state = sessionHandleForcing
+	return true
+}
+
+func (h *SessionHandle) completeForce(terminal bool) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.state != sessionHandleForcing {
+		return false
+	}
+	if terminal || h.finishPending {
+		h.state = sessionHandleFinished
+		return true
+	}
+	h.state = sessionHandleActive
+	return false
 }
 
 type sessionRecord struct {
@@ -114,12 +155,12 @@ func (r *SessionRegistry) GenerationCount(generation string) int {
 }
 
 func (r *SessionRegistry) ForceEntities(ctx context.Context, generation string, entities map[EntityKey]string) (int, error) {
-	return r.force(ctx, generation, func(k EntityKey) (string, bool) { reason, ok := entities[k]; return reason, ok })
+	return r.force(ctx, generation, false, func(k EntityKey) (string, bool) { reason, ok := entities[k]; return reason, ok })
 }
 func (r *SessionRegistry) ForceGeneration(ctx context.Context, generation, reason string) (int, error) {
-	return r.force(ctx, generation, func(EntityKey) (string, bool) { return reason, true })
+	return r.force(ctx, generation, true, func(EntityKey) (string, bool) { return reason, true })
 }
-func (r *SessionRegistry) force(ctx context.Context, generation string, selectReason func(EntityKey) (string, bool)) (int, error) {
+func (r *SessionRegistry) force(ctx context.Context, generation string, terminal bool, selectReason func(EntityKey) (string, bool)) (int, error) {
 	if r == nil {
 		return 0, nil
 	}
@@ -137,13 +178,18 @@ func (r *SessionRegistry) force(ctx context.Context, generation string, selectRe
 	var closeErr error
 	forced := 0
 	for _, rec := range records {
-		if !rec.handle.claim() {
+		if !rec.handle.claimForce() {
 			continue
 		}
 		reason, _ := selectReason(rec.entity)
-		closeErr = errors.Join(closeErr, rec.session.ForceClose(ctx, reason))
-		r.finish(rec)
-		forced++
+		err := rec.session.ForceClose(ctx, reason)
+		closeErr = errors.Join(closeErr, err)
+		if rec.handle.completeForce(terminal || err == nil) {
+			r.finish(rec)
+		}
+		if terminal || err == nil {
+			forced++
+		}
 	}
 	return forced, closeErr
 }

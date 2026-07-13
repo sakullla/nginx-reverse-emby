@@ -7,6 +7,7 @@ const (
 	GenerationDrainStateDraining         = "draining"
 	GenerationDrainStateDrained          = "drained"
 	GenerationDrainStateForced           = "forced"
+	GenerationDrainStateCleanupFailed    = "cleanup_failed"
 	GenerationForceReasonTimeout         = "timeout"
 	GenerationForceReasonGenerationLimit = "generation_limit"
 	GenerationForceReasonEntityDeleted   = "entity_deleted"
@@ -20,6 +21,7 @@ type GenerationDrainStatus struct {
 	SessionCount       int       `json:"session_count"`
 	ForcedSessionCount int       `json:"forced_session_count,omitempty"`
 	ForceReason        string    `json:"force_reason,omitempty"`
+	CleanupError       string    `json:"cleanup_error,omitempty"`
 	AppliedAt          time.Time `json:"applied_at"`
 	DrainStartedAt     time.Time `json:"drain_started_at,omitempty"`
 	CompletedAt        time.Time `json:"completed_at,omitempty"`
@@ -31,5 +33,10 @@ type GenerationDrainSnapshot struct {
 }
 
 func (s GenerationDrainStatus) RevisionReport(lease RevisionLease) RevisionReport {
-	return RevisionReport{AgentID: lease.AgentID, Revision: s.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt, LeaseID: lease.LeaseID, GenerationID: s.GenerationID, Status: s.State, Forced: s.State == GenerationDrainStateForced, ForceReason: s.ForceReason}
+	report := RevisionReport{AgentID: lease.AgentID, Revision: s.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt, LeaseID: lease.LeaseID, GenerationID: s.GenerationID, Status: s.State, Forced: s.State == GenerationDrainStateForced || s.ForceReason != "", ForceReason: s.ForceReason}
+	if s.CleanupError != "" {
+		report.ErrorCode = "generation_cleanup_failed"
+		report.ErrorMessage = s.CleanupError
+	}
+	return report
 }

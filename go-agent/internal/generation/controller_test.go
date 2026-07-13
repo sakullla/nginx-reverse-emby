@@ -144,6 +144,133 @@ func TestDrainControllerEnforcesGenerationLimitAfterEntityCloseError(t *testing.
 	}
 }
 
+func TestSelectiveCloseFailureKeepsSessionAndResourceOwned(t *testing.T) {
+	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
+	resource := &recordingResource{}
+	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: resource}, nil, time.Minute)
+	handle, _ := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "deleted"}, "s", &errorRecordingSession{err: errors.New("close failed")})
+
+	err := controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, []EntityChange{{
+		Entity: EntityKey{Module: "http", ID: "deleted"},
+		Action: EntityDeleted,
+	}}, time.Minute)
+	if err == nil {
+		t.Fatal("Activate did not report selective close failure")
+	}
+	status := statusOf(t, controller.Snapshot(), "g1")
+	if status.State != model.GenerationDrainStateDraining || status.SessionCount != 1 || resource.destroyed != 0 {
+		t.Fatalf("failed revoke lost ownership: %+v destroyed=%d", status, resource.destroyed)
+	}
+
+	handle.Finish()
+	status = statusOf(t, controller.Snapshot(), "g1")
+	if status.State != model.GenerationDrainStateDrained || resource.destroyed != 1 {
+		t.Fatalf("natural completion did not release retained ownership: %+v destroyed=%d", status, resource.destroyed)
+	}
+}
+
+func TestNaturalFinishDuringFailedSelectiveCloseReleasesOwnership(t *testing.T) {
+	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
+	resource := &recordingResource{}
+	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: resource}, nil, time.Minute)
+	session := &blockingErrorSession{entered: make(chan struct{}), release: make(chan struct{}), err: errors.New("close failed")}
+	handle, _ := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "deleted"}, "s", session)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, []EntityChange{{
+			Entity: EntityKey{Module: "http", ID: "deleted"},
+			Action: EntityDeleted,
+		}}, time.Minute)
+	}()
+	<-session.entered
+	handle.Finish()
+	close(session.release)
+	if err := <-done; err == nil {
+		t.Fatal("Activate did not report selective close failure")
+	}
+	status := statusOf(t, controller.Snapshot(), "g1")
+	if status.State != model.GenerationDrainStateDrained || status.SessionCount != 0 || resource.destroyed != 1 {
+		t.Fatalf("finish during failed close did not release ownership: %+v destroyed=%d", status, resource.destroyed)
+	}
+}
+
+func TestNaturalDestroyFailureIsAuditableAndRetryable(t *testing.T) {
+	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
+	resource := &retryResource{failures: 1}
+	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: resource}, nil, time.Minute)
+	handle, _ := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "1"}, "s", &recordingSession{})
+	_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Minute)
+	handle.Finish()
+
+	failed := statusOf(t, controller.Snapshot(), "g1")
+	if failed.State != model.GenerationDrainStateCleanupFailed || failed.CleanupError == "" || !failed.CompletedAt.IsZero() || resource.attempts != 1 {
+		t.Fatalf("cleanup failure = %+v attempts=%d", failed, resource.attempts)
+	}
+	if err := controller.RetryCleanup(context.Background(), "g1"); err != nil {
+		t.Fatal(err)
+	}
+	completed := statusOf(t, controller.Snapshot(), "g1")
+	if completed.State != model.GenerationDrainStateDrained || completed.CleanupError != "" || completed.CompletedAt.IsZero() || resource.attempts != 2 {
+		t.Fatalf("cleanup retry = %+v attempts=%d", completed, resource.attempts)
+	}
+}
+
+func TestConcurrentCleanupRetriesCommitLatestSuccessfulAttempt(t *testing.T) {
+	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
+	resource := &retryResource{failures: 2}
+	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: resource}, nil, time.Minute)
+	handle, _ := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "1"}, "s", &recordingSession{})
+	_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Minute)
+	handle.Finish()
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			results <- controller.RetryCleanup(context.Background(), "g1")
+		}()
+	}
+	close(start)
+	var failures int
+	for i := 0; i < 2; i++ {
+		if <-results != nil {
+			failures++
+		}
+	}
+	status := statusOf(t, controller.Snapshot(), "g1")
+	if failures != 1 || status.State != model.GenerationDrainStateDrained || status.CleanupError != "" || status.CompletedAt.IsZero() || resource.attempts != 3 {
+		t.Fatalf("concurrent cleanup retries: failures=%d status=%+v attempts=%d", failures, status, resource.attempts)
+	}
+}
+
+func TestForcedDestroyFailureRemainsForcedAndAuditableAfterRetry(t *testing.T) {
+	clock := newFakeClock(time.Unix(100, 0))
+	controller := NewDrainController(clock)
+	resource := &retryResource{failures: 1}
+	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: resource}, nil, time.Minute)
+	_, _ = controller.RegisterSession("g1", EntityKey{Module: "relay", ID: "1"}, "s", &recordingSession{})
+	_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Second)
+	clock.Advance(time.Second)
+
+	failed := statusOf(t, controller.Snapshot(), "g1")
+	report := failed.RevisionReport(model.RevisionLease{AgentID: "agent", Revision: 1})
+	if failed.State != model.GenerationDrainStateCleanupFailed || failed.ForceReason != model.GenerationForceReasonTimeout || failed.ForcedSessionCount != 1 || !failed.CompletedAt.IsZero() {
+		t.Fatalf("forced cleanup failure = %+v", failed)
+	}
+	if !report.Forced || report.ErrorCode != "generation_cleanup_failed" || report.ErrorMessage == "" {
+		t.Fatalf("forced cleanup report = %+v", report)
+	}
+	if err := controller.RetryCleanup(context.Background(), "g1"); err != nil {
+		t.Fatal(err)
+	}
+	completed := statusOf(t, controller.Snapshot(), "g1")
+	if completed.State != model.GenerationDrainStateForced || completed.ForceReason != model.GenerationForceReasonTimeout || completed.CompletedAt.IsZero() {
+		t.Fatalf("forced cleanup retry = %+v", completed)
+	}
+}
+
 func TestSessionFinishIsIdempotentUnderConcurrency(t *testing.T) {
 	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
 	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: &recordingResource{}}, nil, time.Minute)
@@ -330,6 +457,31 @@ func (s *atomicRecordingSession) ForceClose(context.Context, string) error {
 type errorRecordingSession struct{ err error }
 
 func (s *errorRecordingSession) ForceClose(context.Context, string) error { return s.err }
+
+type blockingErrorSession struct {
+	entered chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func (s *blockingErrorSession) ForceClose(context.Context, string) error {
+	close(s.entered)
+	<-s.release
+	return s.err
+}
+
+type retryResource struct {
+	failures int
+	attempts int
+}
+
+func (r *retryResource) Destroy(context.Context) error {
+	r.attempts++
+	if r.attempts <= r.failures {
+		return errors.New("destroy failed")
+	}
+	return nil
+}
 
 type atomicRecordingResource struct{ destroyed atomic.Int32 }
 
