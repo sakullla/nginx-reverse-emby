@@ -18,6 +18,8 @@ type SessionHandle struct {
 	mu            sync.Mutex
 	state         sessionHandleState
 	finishPending bool
+	terminalForce bool
+	forceDone     chan struct{}
 	finish        func()
 }
 
@@ -48,28 +50,48 @@ func (h *SessionHandle) finishNaturally() bool {
 	return false
 }
 
-func (h *SessionHandle) claimForce() bool {
+func (h *SessionHandle) claimForce(terminal bool) (owned bool, wait <-chan struct{}, finished bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.state != sessionHandleActive {
-		return false
+	switch h.state {
+	case sessionHandleActive:
+		h.state = sessionHandleForcing
+		h.terminalForce = terminal
+		h.forceDone = make(chan struct{})
+		return true, nil, false
+	case sessionHandleForcing:
+		if terminal {
+			h.terminalForce = true
+			return false, h.forceDone, false
+		}
+	case sessionHandleFinished:
+		return false, nil, true
 	}
-	h.state = sessionHandleForcing
-	return true
+	return false, nil, false
 }
 
-func (h *SessionHandle) completeForce(terminal bool) bool {
+func (h *SessionHandle) completeForce(success bool) (removed, terminal bool) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.state != sessionHandleForcing {
-		return false
+		h.mu.Unlock()
+		return false, false
 	}
-	if terminal || h.finishPending {
+	terminal = h.terminalForce
+	if success || terminal || h.finishPending {
 		h.state = sessionHandleFinished
-		return true
+		removed = true
+	} else {
+		h.state = sessionHandleActive
 	}
-	h.state = sessionHandleActive
-	return false
+	done := h.forceDone
+	h.forceDone = nil
+	h.terminalForce = false
+	h.mu.Unlock()
+	if removed {
+		h.finish()
+	}
+	close(done)
+	return removed, terminal
 }
 
 type sessionRecord struct {
@@ -177,19 +199,30 @@ func (r *SessionRegistry) force(ctx context.Context, generation string, terminal
 	r.mu.Unlock()
 	var closeErr error
 	forced := 0
+	var waits []<-chan struct{}
 	for _, rec := range records {
-		if !rec.handle.claimForce() {
+		owned, wait, finished := rec.handle.claimForce(terminal)
+		if finished && terminal {
+			r.finish(rec)
+			continue
+		}
+		if !owned {
+			if wait != nil {
+				waits = append(waits, wait)
+				forced++
+			}
 			continue
 		}
 		reason, _ := selectReason(rec.entity)
 		err := rec.session.ForceClose(ctx, reason)
 		closeErr = errors.Join(closeErr, err)
-		if rec.handle.completeForce(terminal || err == nil) {
-			r.finish(rec)
-		}
-		if terminal || err == nil {
+		_, terminallyRemoved := rec.handle.completeForce(err == nil)
+		if terminal || terminallyRemoved || err == nil {
 			forced++
 		}
+	}
+	for _, wait := range waits {
+		<-wait
 	}
 	return forced, closeErr
 }

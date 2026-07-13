@@ -3,6 +3,7 @@ package generation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -196,9 +197,17 @@ func (c *DrainController) force(ctx context.Context, id, reason string) error {
 	entry.finalState = model.GenerationDrainStateForced
 	c.mu.Unlock()
 	count, closeErr := c.registry.ForceGeneration(ctx, id, reason)
+	remaining := c.registry.GenerationCount(id)
 	c.mu.Lock()
 	entry.status.ForcedSessionCount = count
-	entry.status.SessionCount = 0
+	entry.status.SessionCount = remaining
+	if remaining != 0 {
+		err := fmt.Errorf("generation still owns %d sessions after terminal force", remaining)
+		entry.status.State = model.GenerationDrainStateCleanupFailed
+		entry.status.CleanupError = err.Error()
+		c.mu.Unlock()
+		return errors.Join(closeErr, err)
+	}
 	c.mu.Unlock()
 	destroyErr := c.completeCleanup(ctx, entry)
 	return errors.Join(closeErr, destroyErr)
@@ -217,6 +226,10 @@ func (c *DrainController) RetryCleanup(ctx context.Context, id string) error {
 	if entry.status.State != model.GenerationDrainStateCleanupFailed {
 		c.mu.Unlock()
 		return errors.New("generation cleanup is not retryable")
+	}
+	if count := c.registry.GenerationCount(id); count != 0 {
+		c.mu.Unlock()
+		return fmt.Errorf("generation still owns %d sessions", count)
 	}
 	c.mu.Unlock()
 	return c.completeCleanup(ctx, entry)

@@ -195,6 +195,58 @@ func TestNaturalFinishDuringFailedSelectiveCloseReleasesOwnership(t *testing.T) 
 	}
 }
 
+func TestTerminalForceWaitsForInFlightSelectiveClose(t *testing.T) {
+	clock := newFakeClock(time.Unix(100, 0))
+	controller := NewDrainController(clock)
+	resource := &recordingResource{}
+	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: resource}, nil, time.Minute)
+	session := &blockingErrorSession{entered: make(chan struct{}), release: make(chan struct{}), err: errors.New("close failed")}
+	handle, _ := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "deleted"}, "s", session)
+
+	activateDone := make(chan error, 1)
+	go func() {
+		activateDone <- controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, []EntityChange{{
+			Entity: EntityKey{Module: "http", ID: "deleted"},
+			Action: EntityDeleted,
+		}}, time.Second)
+	}()
+	<-session.entered
+	forceDone := make(chan struct{})
+	go func() {
+		clock.Advance(time.Second)
+		close(forceDone)
+	}()
+	waitForTerminalForce(t, handle)
+	if resource.destroyed != 0 {
+		t.Fatal("terminal force destroyed resources while selective close was in flight")
+	}
+
+	close(session.release)
+	if err := <-activateDone; err == nil {
+		t.Fatal("Activate did not report selective close failure")
+	}
+	<-forceDone
+	status := statusOf(t, controller.Snapshot(), "g1")
+	if status.State != model.GenerationDrainStateForced || status.ForceReason != model.GenerationForceReasonTimeout || status.ForcedSessionCount != 1 || status.SessionCount != 0 || resource.destroyed != 1 {
+		t.Fatalf("terminal force overlap = %+v destroyed=%d", status, resource.destroyed)
+	}
+}
+
+func waitForTerminalForce(t *testing.T, handle *SessionHandle) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		handle.mu.Lock()
+		terminal := handle.terminalForce
+		handle.mu.Unlock()
+		if terminal {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("terminal force did not claim the in-flight session")
+}
+
 func TestNaturalDestroyFailureIsAuditableAndRetryable(t *testing.T) {
 	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
 	resource := &retryResource{failures: 1}
