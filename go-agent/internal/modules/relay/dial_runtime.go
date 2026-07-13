@@ -39,6 +39,10 @@ func (s *Server) openUpstream(network, target string, chain []Hop, options DialO
 }
 
 func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, options DialOptions) (net.Conn, DialResult, error) {
+	options.poolScope = s.poolScope
+	if strings.TrimSpace(options.OutboundProxyURL) == "" {
+		options.OutboundProxyURL = s.outboundProxyURL
+	}
 	if len(chain) > 0 {
 		options.applyOverlayRuntimeProvider()
 		if options.OverlayProvider == nil {
@@ -74,6 +78,10 @@ func (s *Server) openUDPPeerWithResult(target string, chain []Hop) (udpPacketPee
 }
 
 func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, options DialOptions) (udpPacketPeer, string, error) {
+	options.poolScope = s.poolScope
+	if strings.TrimSpace(options.OutboundProxyURL) == "" {
+		options.OutboundProxyURL = s.outboundProxyURL
+	}
 	if len(chain) > 0 {
 		options.applyOverlayRuntimeProvider()
 		if options.OverlayProvider == nil {
@@ -97,7 +105,7 @@ func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, option
 
 func (s *Server) resolveTargetCandidates(target string, chain []Hop) ([]string, error) {
 	if len(chain) > 0 {
-		return ResolveCandidatesWithOptions(s.ctx, target, chain, s.provider, DialOptions{OverlayProvider: s.overlayProvider})
+		return ResolveCandidatesWithOptions(s.ctx, target, chain, s.provider, DialOptions{OverlayProvider: s.overlayProvider, poolScope: s.poolScope, OutboundProxyURL: s.outboundProxyURL})
 	}
 
 	selector := s.finalHopSelector
@@ -267,20 +275,20 @@ func ResolveCandidatesWithOptions(ctx context.Context, target string, chain []Ho
 		if err := requireTLSMaterialProvider(provider); err != nil {
 			return nil, err
 		}
-		addresses, err := resolveCandidatesQUIC(ctx, target, chain, provider)
+		addresses, err := resolveCandidatesQUIC(ctx, target, chain, provider, options)
 		if err == nil {
 			return addresses, nil
 		}
 		if !firstHop.Listener.AllowTransportFallback {
 			return nil, err
 		}
-		return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
+		return resolveCandidatesTLSTCPMux(ctx, target, chain, provider, options)
 	}
 
 	if err := requireTLSMaterialProvider(provider); err != nil {
 		return nil, err
 	}
-	return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
+	return resolveCandidatesTLSTCPMux(ctx, target, chain, provider, options)
 }
 
 func requireTLSMaterialProvider(provider TLSMaterialProvider) error {

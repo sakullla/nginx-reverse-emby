@@ -52,6 +52,23 @@ type tlsTCPSessionPool struct {
 	sessions map[string][]*tlsTCPTunnel
 }
 
+func (p *tlsTCPSessionPool) close() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	sessions := p.sessions
+	p.sessions = make(map[string][]*tlsTCPTunnel)
+	p.mu.Unlock()
+	var closeErr error
+	for _, group := range sessions {
+		for _, session := range group {
+			closeErr = errors.Join(closeErr, session.close())
+		}
+	}
+	return closeErr
+}
+
 type tlsTCPTunnel struct {
 	key        string
 	rawConn    net.Conn
@@ -330,6 +347,10 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 		return nil, DialResult{}, err
 	}
 	trafficClass := relayDialTrafficClass(network, options)
+	pool := relayTLSTCPSessionPool
+	if options.poolScope != nil {
+		pool = options.poolScope.tls
+	}
 
 	request := relayOpenFrame{
 		Kind:        network,
@@ -342,7 +363,7 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 	var lastResult muxOpenResult
 	var lastErr error
 	for attempt := 0; attempt < tlsTCPMuxOpenAttempts(options); attempt++ {
-		tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, trafficClass, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+		tunnel, release, err := pool.getOrDial(ctx, sessionKey, trafficClass, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
 			return dialNewTLSTCPTunnelWithOptions(dialCtx, firstHop, provider, options)
 		})
 		if err != nil {
@@ -394,7 +415,11 @@ func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop,
 		return nil, err
 	}
 
-	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, model.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+	pool := relayTLSTCPSessionPool
+	if options.poolScope != nil {
+		pool = options.poolScope.tls
+	}
+	tunnel, release, err := pool.getOrDial(ctx, sessionKey, model.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
 		return dialNewTLSTCPTunnelWithOptions(dialCtx, firstHop, provider, options)
 	})
 	if err != nil {

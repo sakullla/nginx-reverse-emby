@@ -65,8 +65,22 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 				readCh:       make(chan struct{}, 1),
 				openResultCh: make(chan muxOpenResult, 1),
 			}
+			kind := "mux-stream"
+			if strings.EqualFold(request.Kind, "udp") {
+				kind = "uot-association"
+			}
+			tracked, admitted := s.server.sessions.startChild(relayListenerEntityID(listener), kind, stream.Close)
+			if !admitted {
+				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: "relay generation is draining"})
+				continue
+			}
 			s.tunnel.registerStream(stream)
-			go s.handleStream(listener, stream, request)
+			s.server.wg.Add(1)
+			go func() {
+				s.handleStream(listener, stream, request)
+				s.server.wg.Done()
+				tracked.Finish()
+			}()
 		case muxFrameTypeData:
 			if stream := s.tunnel.getStream(frame.StreamID); stream != nil {
 				stream.appendDataChunk(frame.takeReadChunk())

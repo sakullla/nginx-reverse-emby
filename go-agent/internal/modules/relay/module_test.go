@@ -174,15 +174,15 @@ func TestModuleApplyNoopsWhenEffectiveInputsUnchanged(t *testing.T) {
 	if !certificateDEREqual(got, cert) {
 		t.Fatal("initial relay listener did not serve expected certificate")
 	}
-	initialLookups := tlsProvider.lookups
+	initialLookups := tlsProvider.lookupCount()
 
 	next := previous
 	next.Rules = []model.HTTPRule{{ID: 99, FrontendURL: "http://example.test"}}
 	if err := registry.Apply(context.Background(), previous, next); err != nil {
 		t.Fatalf("unchanged relay Apply() error = %v", err)
 	}
-	if tlsProvider.lookups != initialLookups {
-		t.Fatalf("unchanged relay inputs looked up TLS material %d times after initial apply, want %d", tlsProvider.lookups, initialLookups)
+	if lookups := tlsProvider.lookupCount(); lookups != initialLookups {
+		t.Fatalf("unchanged relay inputs looked up TLS material %d times after initial apply, want %d", lookups, initialLookups)
 	}
 
 	got = dialServedCertificate(t, port)
@@ -395,14 +395,23 @@ func TestModuleRollbackRestoresWireGuardRelayOnPreviousOverlayRuntime(t *testing
 }
 
 type fakeTLSMaterialProvider struct {
+	mu           sync.Mutex
 	certificates map[int]tls.Certificate
 	lookups      int
 }
 
 func (p *fakeTLSMaterialProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.lookups++
 	cert := p.certificates[certificateID]
 	return &cert, nil
+}
+
+func (p *fakeTLSMaterialProvider) lookupCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lookups
 }
 
 func (*fakeTLSMaterialProvider) TrustedCAPool(context.Context, []int) (*x509.CertPool, error) {

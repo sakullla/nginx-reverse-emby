@@ -2,11 +2,14 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
@@ -14,24 +17,54 @@ import (
 const ProviderRuntime module.ProviderRef = "relay.runtime"
 
 type Config struct {
-	AgentID   string
-	AgentName string
+	AgentID                string
+	AgentName              string
+	SessionRegistrar       RelaySessionRegistrar
+	DrainController        *generation.DrainController
+	DrainTimeout           time.Duration
+	ExternalDrainLifecycle bool
+	GenerationSelector     RelayGenerationSelector
 }
 
 type Module struct {
 	mu sync.Mutex
 
-	agentID   string
-	agentName string
-	runtime   *Server
+	agentID      string
+	agentName    string
+	runtime      *Server
+	ingress      *relayIngressManager
+	sessions     RelaySessionRegistrar
+	drain        *generation.DrainController
+	drainTimeout time.Duration
+	manageDrain  bool
 
 	blockState trafficBlockStateValue
 }
 
 func NewModule(cfg Config) *Module {
+	drain := cfg.DrainController
+	if drain == nil {
+		drain = generation.NewDrainController(nil)
+	}
+	sessions := cfg.SessionRegistrar
+	manageDrain := !cfg.ExternalDrainLifecycle
+	if sessions == nil {
+		sessions = drain
+	} else if cfg.DrainController == nil {
+		manageDrain = false
+	}
+	drainTimeout := cfg.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = 10 * time.Minute
+	}
 	return &Module{
-		agentID:   strings.TrimSpace(cfg.AgentID),
-		agentName: strings.TrimSpace(cfg.AgentName),
+		agentID:      strings.TrimSpace(cfg.AgentID),
+		agentName:    strings.TrimSpace(cfg.AgentName),
+		ingress:      newRelayIngressManager(cfg.GenerationSelector),
+		sessions:     sessions,
+		drain:        drain,
+		drainTimeout: drainTimeout,
+		manageDrain:  manageDrain,
 	}
 }
 
@@ -67,7 +100,13 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	if tx == nil {
 		return nil
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if finalizer, ok := tx.(interface{ FinalizeCommitSuccess() }); ok {
+		finalizer.FinalizeCommitSuccess()
+	}
+	return nil
 }
 
 func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
@@ -75,83 +114,52 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		return nil, nil
 	}
 	currentBlockState := m.trafficBlockStateFromProvider(req.Providers)
-	previousBlockState := m.currentTrafficBlockState()
 	previousOutboundProxyURL := OutboundProxyURL()
 	nextOutboundProxyURL := strings.TrimSpace(req.Next.AgentConfig.OutboundProxyURL)
-	tlsMaterial, _ := req.Providers.Resolve(module.ProviderTLSMaterial)
-	overlay, _ := req.Providers.Resolve(module.ProviderOverlayRuntime)
-	finalHop, _ := req.Providers.Resolve(module.ProviderFinalHopDialer)
-	rollbackFinalHop := finalHopProviderForRollback(finalHop)
-
+	generationContext, err := module.NewGenerationContext(req.Previous, req.Next)
+	if err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	oldRuntime := m.runtime
 	m.mu.Unlock()
-
 	nextListeners := localRelayListeners(req.Next.RelayListeners, m.agentID, m.agentName)
 	previousListeners := localRelayListeners(req.Previous.RelayListeners, m.agentID, m.agentName)
-	if relayEffectiveInputsEqual(previousListeners, nextListeners, req.Previous, req.Next) {
-		return combineRelayTransactions(
-			m.trafficBlockStateTransaction(previousBlockState, currentBlockState),
-			outboundProxyURLTransaction(previousOutboundProxyURL, nextOutboundProxyURL),
-		), nil
+	if m.ingress.selector == nil && relayEffectiveInputsEqual(previousListeners, nextListeners, req.Previous, req.Next) {
+		return &relayGenerationTransaction{
+			module: m, runtime: oldRuntime, previousRuntime: oldRuntime,
+			generationID: generationContext.ID(), generationRevision: generationContext.Revision(),
+			previousBlockState: m.currentTrafficBlockState(), nextBlockState: currentBlockState,
+			previousOutboundProxyURL: previousOutboundProxyURL, nextOutboundProxyURL: nextOutboundProxyURL,
+		}, nil
 	}
-	closeFirst := bindingKeysOverlap(serverBindingKeys(oldRuntime), relayListenerBindingKeys(nextListeners))
-	oldClosed := false
-	if closeFirst && oldRuntime != nil {
-		if err := oldRuntime.Close(); err != nil {
-			return nil, err
-		}
-		oldClosed = true
+	tlsMaterial, _ := req.Providers.Resolve(module.ProviderTLSMaterial)
+	provider, ok := tlsMaterial.(TLSMaterialProvider)
+	if !ok || provider == nil {
+		return nil, fmt.Errorf("tls material provider is required")
 	}
-
-	nextRuntime, err := m.buildRuntimeForListeners(ctx, nextListeners, tlsMaterial, overlay, finalHop)
-	if err != nil {
-		if oldClosed {
-			if restoreErr := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, rollbackFinalHop); restoreErr != nil {
-				return nil, fmt.Errorf("%w; restore failed: %v", err, restoreErr)
-			}
-		}
+	overlay, _ := req.Providers.Resolve(module.ProviderOverlayRuntime)
+	finalHop, _ := req.Providers.Resolve(module.ProviderFinalHopDialer)
+	if err := validateRelayListeners(ctx, nextListeners, provider); err != nil {
 		return nil, err
 	}
-	if nextRuntime != nil {
-		nextRuntime.SetTrafficBlockState(currentBlockState)
+	var overlayProvider OverlayRuntimeProvider
+	if overlayRuntime := overlayRuntimeFromProvider(overlay); overlayRuntime != nil {
+		overlayProvider = moduleOverlayRuntimeProvider{overlay: overlayRuntime}
 	}
-
-	committed := false
-	return module.TransactionFuncs{
-		CommitFunc: func() error {
-			m.mu.Lock()
-			m.runtime = nextRuntime
-			m.blockState.Store(currentBlockState)
-			m.mu.Unlock()
-			SetOutboundProxyURL(nextOutboundProxyURL)
-			committed = true
-			if oldRuntime != nil && !oldClosed {
-				if err := oldRuntime.Close(); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-		RollbackFunc: func() error {
-			var firstErr error
-			if nextRuntime != nil {
-				firstErr = nextRuntime.Close()
-			}
-			if oldClosed || committed {
-				if committed {
-					m.blockState.Store(previousBlockState)
-					SetOutboundProxyURL(previousOutboundProxyURL)
-				}
-				if err := restoreOverlayForRollback(ctx, previousListeners, overlay); err != nil && firstErr == nil {
-					firstErr = err
-				}
-				if err := m.restoreRuntime(ctx, req.Previous, tlsMaterial, overlay, rollbackFinalHop); err != nil && firstErr == nil {
-					firstErr = err
-				}
-			}
-			return firstErr
-		},
+	nextRuntime, err := prepareRelayGenerationRuntime(ctx, generationContext.ID(), nextListeners, provider, overlayProvider, finalHopDialerFromProvider(finalHop), m.ingress, m.sessions, !m.manageDrain)
+	if err != nil {
+		return nil, err
+	}
+	nextRuntime.SetTrafficBlockState(currentBlockState)
+	nextRuntime.outboundProxyURL = nextOutboundProxyURL
+	return &relayGenerationTransaction{
+		module: m, runtime: nextRuntime, previousRuntime: oldRuntime,
+		provider: provider, generationID: generationContext.ID(), generationRevision: generationContext.Revision(),
+		previousBlockState: m.currentTrafficBlockState(), nextBlockState: currentBlockState,
+		previousOutboundProxyURL: previousOutboundProxyURL, nextOutboundProxyURL: nextOutboundProxyURL,
+		entityChanges: relayListenerEntityChanges(req.Previous.RelayListeners, req.Next.RelayListeners),
+		ownsRuntime:   true,
 	}, nil
 }
 
@@ -163,10 +171,13 @@ func (m *Module) Stop(context.Context) error {
 	runtime := m.runtime
 	m.runtime = nil
 	m.mu.Unlock()
-	if runtime != nil {
-		return runtime.Close()
+	if runtime == nil && m.ingress != nil {
+		runtime = m.ingress.currentRuntime()
 	}
-	return nil
+	if runtime != nil {
+		return errors.Join(runtime.Close(), m.ingress.close())
+	}
+	return m.ingress.close()
 }
 
 func (m *Module) Close() error {
@@ -348,6 +359,9 @@ func (m *Module) UpdateTrafficBlockState(state TrafficBlockState) {
 	m.mu.Lock()
 	runtime := m.runtime
 	m.mu.Unlock()
+	if runtime == nil && m.ingress != nil {
+		runtime = m.ingress.currentRuntime()
+	}
 	if runtime != nil {
 		runtime.SetTrafficBlockState(state)
 	}

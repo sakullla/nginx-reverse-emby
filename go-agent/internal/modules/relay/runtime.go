@@ -2,14 +2,17 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
@@ -23,6 +26,7 @@ type DialOptions struct {
 	TransparentListener module.TransparentListener
 	OverlayAgentID      string
 	OverlayProvider     OverlayRuntimeProvider
+	poolScope           *relayPoolScope
 }
 
 type FinalHopDialer interface {
@@ -36,8 +40,12 @@ type DialResult struct {
 }
 
 type StartOptions struct {
-	OverlayProvider OverlayRuntimeProvider
-	FinalHopDialer  FinalHopDialer
+	OverlayProvider   OverlayRuntimeProvider
+	FinalHopDialer    FinalHopDialer
+	GenerationID      string
+	SessionRegistrar  RelaySessionRegistrar
+	RegistrationReady bool
+	poolScope         *relayPoolScope
 }
 
 func (o DialOptions) clone() DialOptions {
@@ -55,6 +63,7 @@ func (o DialOptions) clone() DialOptions {
 			TransparentListener: o.TransparentListener,
 			OverlayAgentID:      o.OverlayAgentID,
 			OverlayProvider:     o.OverlayProvider,
+			poolScope:           o.poolScope,
 		}
 	}
 	return DialOptions{
@@ -66,6 +75,7 @@ func (o DialOptions) clone() DialOptions {
 		TransparentListener: o.TransparentListener,
 		OverlayAgentID:      o.OverlayAgentID,
 		OverlayProvider:     o.OverlayProvider,
+		poolScope:           o.poolScope,
 	}
 }
 
@@ -78,13 +88,21 @@ type Server struct {
 
 	wg sync.WaitGroup
 
-	mu            sync.Mutex
-	bindingKeys   []string
-	listeners     []net.Listener
-	quicListeners []*quicListenerHandle
-	conns         map[net.Conn]struct{}
-	quicConns     map[*quic.Conn]struct{}
-	closing       bool
+	mu               sync.Mutex
+	bindingKeys      []string
+	listeners        []net.Listener
+	quicListeners    []*quicListenerHandle
+	conns            map[net.Conn]struct{}
+	quicConns        map[*quic.Conn]struct{}
+	closing          bool
+	draining         atomic.Bool
+	sessions         *relaySessionTracker
+	ingressLeases    []*relayIngressLease
+	streamEndpoints  map[string]*ingress.StreamEndpoint
+	packetEndpoints  map[string]*ingress.PacketEndpoint
+	poolScope        *relayPoolScope
+	poolLease        *relayPoolLease
+	outboundProxyURL string
 
 	trafficBlockState trafficBlockStateValue
 }
@@ -94,18 +112,7 @@ func Start(ctx context.Context, listeners []Listener, provider TLSMaterialProvid
 }
 
 func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMaterialProvider, options StartOptions) (*Server, error) {
-	runtimeCtx, cancel := context.WithCancel(ctx)
-	server := &Server{
-		ctx:             runtimeCtx,
-		cancel:          cancel,
-		provider:        provider,
-		overlayProvider: options.OverlayProvider,
-		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
-			FinalHopDialer: options.FinalHopDialer,
-		}),
-		conns:     make(map[net.Conn]struct{}),
-		quicConns: make(map[*quic.Conn]struct{}),
-	}
+	server := newRelayServer(ctx, provider, options)
 
 	for _, listener := range listeners {
 		if !listener.Enabled {
@@ -136,6 +143,29 @@ func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMat
 	}
 
 	return server, nil
+}
+
+func newRelayServer(ctx context.Context, provider TLSMaterialProvider, options StartOptions) *Server {
+	runtimeCtx, cancel := context.WithCancel(ctx)
+	poolScope := options.poolScope
+	if poolScope == nil {
+		poolScope = newRelayPoolScope()
+	}
+	return &Server{
+		ctx:             runtimeCtx,
+		cancel:          cancel,
+		provider:        provider,
+		overlayProvider: options.OverlayProvider,
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
+			FinalHopDialer: options.FinalHopDialer,
+		}),
+		conns:           make(map[net.Conn]struct{}),
+		quicConns:       make(map[*quic.Conn]struct{}),
+		sessions:        newRelaySessionTracker(options.GenerationID, options.SessionRegistrar, options.RegistrationReady),
+		streamEndpoints: make(map[string]*ingress.StreamEndpoint),
+		packetEndpoints: make(map[string]*ingress.PacketEndpoint),
+		poolScope:       poolScope,
+	}
 }
 
 func (s *Server) startListener(listener Listener) error {
@@ -220,7 +250,39 @@ func (s *Server) Close() error {
 	s.closeConns()
 	s.closeQUICConns()
 	s.wg.Wait()
-	return nil
+	var closeErr error
+	for _, lease := range s.ingressLeases {
+		closeErr = errors.Join(closeErr, lease.release())
+	}
+	if s.poolLease != nil {
+		closeErr = errors.Join(closeErr, s.poolLease.release())
+	} else if s.poolScope != nil {
+		closeErr = errors.Join(closeErr, s.poolScope.Close())
+	}
+	return closeErr
+}
+
+func (s *Server) BeginDrain() {
+	if s == nil || !s.draining.CompareAndSwap(false, true) {
+		return
+	}
+	if s.sessions != nil {
+		s.sessions.beginDrain()
+	}
+}
+
+func (s *Server) streamEndpoint(bindingKey string) *ingress.StreamEndpoint {
+	if s == nil {
+		return nil
+	}
+	return s.streamEndpoints[bindingKey]
+}
+
+func (s *Server) packetEndpoint(bindingKey string) *ingress.PacketEndpoint {
+	if s == nil {
+		return nil
+	}
+	return s.packetEndpoints[bindingKey]
 }
 
 func (s *Server) currentTrafficBlockState() TrafficBlockState {

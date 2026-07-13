@@ -76,7 +76,25 @@ func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listen
 	}, nil
 }
 
-func (s *Server) acceptQUICLoop(ln *quic.Listener, listener Listener) {
+func startQUICListenerOnPacket(ctx context.Context, provider TLSMaterialProvider, listener Listener, packetConn net.PacketConn, classifiers ...*relayQUICClassifier) (*quicListenerHandle, error) {
+	tlsConfig, err := serverQUICTLSConfig(ctx, provider, listener)
+	if err != nil {
+		return nil, err
+	}
+	transport := &quic.Transport{Conn: packetConn}
+	if len(classifiers) > 0 {
+		if err := configureRelayQUICGenerationTransport(transport, classifiers[0]); err != nil {
+			return nil, err
+		}
+	}
+	ln, err := transport.Listen(tlsConfig, newRelayQUICConfig())
+	if err != nil {
+		return nil, err
+	}
+	return &quicListenerHandle{listener: ln, transport: transport}, nil
+}
+
+func (s *Server) acceptQUICLoop(ln *quic.Listener, listener Listener, releaseAssociation ...func(*quic.Conn)) {
 	defer s.wg.Done()
 
 	for {
@@ -93,11 +111,18 @@ func (s *Server) acceptQUICLoop(ln *quic.Listener, listener Listener) {
 		}
 
 		s.trackQUICConn(conn)
+		parent := s.sessions.start(relayListenerEntityID(listener), "quic-connection", true, func() error {
+			return conn.CloseWithError(0, "relay generation drained")
+		})
 		s.wg.Add(1)
-		go func(session *quic.Conn) {
-			defer s.wg.Done()
+		go func(session *quic.Conn, parent *relayTrackedSession) {
 			s.handleQUICConn(session, listener)
-		}(conn)
+			if len(releaseAssociation) > 0 && releaseAssociation[0] != nil {
+				releaseAssociation[0](session)
+			}
+			s.wg.Done()
+			parent.Finish()
+		}(conn, parent)
 	}
 }
 
@@ -110,11 +135,19 @@ func (s *Server) handleQUICConn(conn *quic.Conn, listener Listener) {
 			return
 		}
 
+		clientConn := &quicStreamConn{conn: conn, stream: stream}
+		tracked, admitted := s.sessions.startChild(relayListenerEntityID(listener), "quic-stream", clientConn.Close)
+		if !admitted {
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+			continue
+		}
 		s.wg.Add(1)
-		go func(stream *quic.Stream) {
-			defer s.wg.Done()
+		go func(stream *quic.Stream, tracked *relayTrackedSession) {
 			s.handleQUICStream(conn, stream, listener)
-		}(stream)
+			s.wg.Done()
+			tracked.Finish()
+		}(stream, tracked)
 	}
 }
 
@@ -296,7 +329,11 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		return nil, DialResult{}, err
 	}
 
-	session, stream, err := openQUICStream(ctx, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
+	pool := relaySessionPool
+	if options.poolScope != nil {
+		pool = options.poolScope.quic
+	}
+	session, stream, err := openQUICStreamFromPool(ctx, pool, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
 		return dialQUICRelayHop(dialCtx, firstHop.Address, tlsConfig)
 	})
 	if err != nil {
@@ -329,7 +366,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	}, nil
 }
 
-func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
+func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) ([]string, error) {
 	firstHop := chain[0]
 	tlsConfig, err := clientQUICTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
 	if err != nil {
@@ -340,7 +377,11 @@ func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, prov
 		return nil, err
 	}
 
-	session, stream, err := openQUICStream(ctx, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
+	pool := relaySessionPool
+	if len(opts) > 0 && opts[0].poolScope != nil {
+		pool = opts[0].poolScope.quic
+	}
+	session, stream, err := openQUICStreamFromPool(ctx, pool, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
 		return dialQUICRelayHop(dialCtx, firstHop.Address, tlsConfig)
 	})
 	if err != nil {
@@ -366,9 +407,13 @@ func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, prov
 }
 
 func openQUICStream(ctx context.Context, sessionKey string, dial func(context.Context) (*quic.Conn, error)) (*quic.Conn, *quic.Stream, error) {
+	return openQUICStreamFromPool(ctx, relaySessionPool, sessionKey, dial)
+}
+
+func openQUICStreamFromPool(ctx context.Context, pool *sessionPool, sessionKey string, dial func(context.Context) (*quic.Conn, error)) (*quic.Conn, *quic.Stream, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		session, err := relaySessionPool.getOrDial(ctx, sessionKey, dial)
+		session, err := pool.getOrDial(ctx, sessionKey, dial)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -381,7 +426,7 @@ func openQUICStream(ctx context.Context, sessionKey string, dial func(context.Co
 		}
 
 		lastErr = err
-		relaySessionPool.remove(sessionKey, session)
+		pool.remove(sessionKey, session)
 		_ = session.CloseWithError(0, "relay stream open failed")
 	}
 	if lastErr == nil {
