@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -26,10 +27,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-const (
-	httpIngressBacklog          = 256
-	httpShutdownPropagationWait = 10 * time.Millisecond
-)
+const httpIngressBacklog = 256
 
 type HTTPSessionRegistrar interface {
 	RegisterSession(string, generation.EntityKey, string, generation.Session) (*generation.SessionHandle, error)
@@ -46,6 +44,7 @@ type httpIngressBinding struct {
 	stream         *ingress.StreamBroker
 	packet         *ingress.PacketBroker
 	quicClassifier *quicConnectionClassifier
+	activeHandler  atomic.Pointer[generationHTTPHandler]
 	refs           int
 }
 
@@ -54,15 +53,17 @@ type httpIngressLease struct {
 	binding *httpIngressBinding
 	stream  *ingress.StreamEndpoint
 	packet  *ingress.PacketEndpoint
+	handler *generationHTTPHandler
 
 	releaseOnce sync.Once
 	releaseErr  error
 }
 
 type httpIngressActivation struct {
-	lease          *httpIngressLease
-	previousStream *ingress.StreamEndpoint
-	previousPacket *ingress.PacketEndpoint
+	lease           *httpIngressLease
+	previousStream  *ingress.StreamEndpoint
+	previousPacket  *ingress.PacketEndpoint
+	previousHandler *generationHTTPHandler
 }
 
 func newHTTPIngressManager() *httpIngressManager {
@@ -151,11 +152,13 @@ func (l *httpIngressLease) activate() (*httpIngressActivation, error) {
 	if l == nil || l.binding == nil {
 		return nil, net.ErrClosed
 	}
+	previousHandler := l.binding.activeHandler.Swap(l.handler)
 	previousStream, err := l.binding.stream.Activate(l.stream)
 	if err != nil {
+		l.binding.activeHandler.Store(previousHandler)
 		return nil, err
 	}
-	activation := &httpIngressActivation{lease: l, previousStream: previousStream}
+	activation := &httpIngressActivation{lease: l, previousStream: previousStream, previousHandler: previousHandler}
 	if l.packet == nil {
 		return activation, nil
 	}
@@ -172,6 +175,7 @@ func (a *httpIngressActivation) rollback() {
 	if a == nil || a.lease == nil || a.lease.binding == nil {
 		return
 	}
+	a.lease.binding.activeHandler.Store(a.previousHandler)
 	if a.lease.packet != nil {
 		if a.previousPacket != nil {
 			_, _ = a.lease.binding.packet.Activate(a.previousPacket)
@@ -191,6 +195,9 @@ func (l *httpIngressLease) release() error {
 		return nil
 	}
 	l.releaseOnce.Do(func() {
+		if l.binding != nil && l.handler != nil {
+			l.binding.activeHandler.CompareAndSwap(l.handler, nil)
+		}
 		l.releaseErr = errors.Join(closePacketEndpoint(l.packet), closeStreamEndpoint(l.stream))
 		if l.manager == nil || l.binding == nil {
 			return
@@ -631,6 +638,8 @@ func prepareGenerationRuntime(
 			_ = runtime.Close()
 			return nil, err
 		}
+		handler.binding = lease.binding
+		lease.handler = handler
 		runtime.ingressLeases = append(runtime.ingressLeases, lease)
 
 		listener := net.Listener(lease.stream)
@@ -733,14 +742,10 @@ func (r *Runtime) BeginDrain() {
 		http3Servers := append([]*http3ServerHandle(nil), r.http3Servers...)
 		r.mu.Unlock()
 		var wg sync.WaitGroup
-		shutdownStarted := make([]<-chan struct{}, 0, len(servers))
 		for _, server := range servers {
 			if server == nil {
 				continue
 			}
-			started := make(chan struct{})
-			server.RegisterOnShutdown(func() { close(started) })
-			shutdownStarted = append(shutdownStarted, started)
 			wg.Add(1)
 			go func(srv *stdhttp.Server) {
 				defer wg.Done()
@@ -757,12 +762,6 @@ func (r *Runtime) BeginDrain() {
 				_ = handle.server.Shutdown(context.Background())
 			}(server)
 		}
-		for _, started := range shutdownStarted {
-			<-started
-		}
-		// net/http queues HTTP/2 graceful-shutdown callbacks asynchronously.
-		// Do not return cutover completion while GOAWAY is still only queued.
-		time.Sleep(httpShutdownPropagationWait)
 		go func() {
 			if r.tracker != nil {
 				r.tracker.wait()
@@ -1038,9 +1037,20 @@ func (w *generationResponseWriter) Flush() {
 type generationHTTPHandler struct {
 	server  *Server
 	tracker *httpSessionTracker
+	binding *httpIngressBinding
 }
 
 func (h *generationHTTPHandler) ServeHTTP(w stdhttp.ResponseWriter, req *stdhttp.Request) {
+	if h != nil && h.binding != nil {
+		if active := h.binding.activeHandler.Load(); active != nil && active != h {
+			active.serveActive(w, req)
+			return
+		}
+	}
+	h.serveActive(w, req)
+}
+
+func (h *generationHTTPHandler) serveActive(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 	if h == nil || h.server == nil {
 		stdhttp.NotFound(w, req)
 		return

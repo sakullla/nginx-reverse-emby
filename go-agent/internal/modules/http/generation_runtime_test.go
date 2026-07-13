@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -164,7 +165,6 @@ func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 	if err := secondTx.Commit(); err != nil {
 		t.Fatalf("second Commit() error = %v", err)
 	}
-	secondTx.FinalizeCommitSuccess()
 	newBody, newProto, err := generationTestHTTP2GETWithClient(h2Client, frontend+"/")
 	if err != nil {
 		t.Fatalf("new HTTP/2 request: %v", err)
@@ -172,6 +172,7 @@ func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 	if newBody != "new-h2" || newProto != 2 {
 		t.Fatalf("new HTTP/2 response = %q over HTTP/%d", newBody, newProto)
 	}
+	secondTx.FinalizeCommitSuccess()
 	releaseOldOnce.Do(func() { close(releaseOld) })
 	select {
 	case result := <-oldResult:
@@ -183,6 +184,90 @@ func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("old HTTP/2 stream did not finish")
+	}
+}
+
+func TestHTTPGenerationHTTP3StreamUsesActiveHandlerAcrossCutover(t *testing.T) {
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	var oldStartedOnce sync.Once
+	var releaseOldOnce sync.Once
+	oldBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		oldStartedOnce.Do(func() { close(oldStarted) })
+		<-releaseOld
+		_, _ = io.WriteString(w, "old-h3")
+	}))
+	defer oldBackend.Close()
+	defer releaseOldOnce.Do(func() { close(releaseOld) })
+	newBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = io.WriteString(w, "new-h3")
+	}))
+	defer newBackend.Close()
+
+	port := pickFreeTCPUDPPort(t)
+	host := "edge.example.test"
+	frontend := fmt.Sprintf("https://%s:%d", host, port)
+	target := fmt.Sprintf("https://127.0.0.1:%d", port)
+	first := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{
+		ID: 3, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: oldBackend.URL}},
+	}}}
+	second := model.Snapshot{Revision: 2, Rules: []model.HTTPRule{{
+		ID: 3, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: newBackend.URL}},
+	}}}
+	resolver := generationTestResolver{module.ProviderTLSMaterial: &testTLSProvider{
+		certificates: map[string]tls.Certificate{host: mustIssueProxyTLSCertificate(t, host)},
+	}}
+	mod := NewModule(Config{HTTP3Enabled: true})
+	defer mod.Close()
+	firstTx := prepareHTTPGenerationForTest(t, mod, resolver, model.Snapshot{}, first)
+	if err := firstTx.Commit(); err != nil {
+		t.Fatalf("first Commit() error = %v", err)
+	}
+	firstTx.FinalizeCommitSuccess()
+
+	transport := &http3.Transport{TLSClientConfig: &tls.Config{
+		ServerName: host, InsecureSkipVerify: true, // test certificate
+	}}
+	defer transport.Close()
+	client := &stdhttp.Client{Transport: transport, Timeout: 5 * time.Second}
+	type h3Result struct {
+		body string
+		err  error
+	}
+	oldResult := make(chan h3Result, 1)
+	go func() {
+		body, err := generationTestHTTP3GET(client, target+"/slow", fmt.Sprintf("%s:%d", host, port))
+		oldResult <- h3Result{body: body, err: err}
+	}()
+	select {
+	case <-oldStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("old HTTP/3 stream did not reach backend")
+	}
+
+	secondTx := prepareHTTPGenerationForTest(t, mod, resolver, first, second)
+	if err := secondTx.Commit(); err != nil {
+		t.Fatalf("second Commit() error = %v", err)
+	}
+	newBody, err := generationTestHTTP3GET(client, target+"/", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		t.Fatalf("new HTTP/3 request: %v", err)
+	}
+	if newBody != "new-h3" {
+		t.Fatalf("new HTTP/3 response = %q, want new-h3", newBody)
+	}
+	secondTx.FinalizeCommitSuccess()
+	releaseOldOnce.Do(func() { close(releaseOld) })
+	select {
+	case result := <-oldResult:
+		if result.err != nil {
+			t.Fatalf("old HTTP/3 stream: %v", result.err)
+		}
+		if result.body != "old-h3" {
+			t.Fatalf("old HTTP/3 response = %q, want old-h3", result.body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("old HTTP/3 stream did not finish")
 	}
 }
 
@@ -602,6 +687,7 @@ func TestHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) 
 		if err != nil {
 			t.Fatalf("acquire old %s: %v", spec.bindingKey, err)
 		}
+		oldLease.handler = &generationHTTPHandler{}
 		if _, err := oldLease.activate(); err != nil {
 			t.Fatalf("activate old %s: %v", spec.bindingKey, err)
 		}
@@ -610,6 +696,7 @@ func TestHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) 
 		if err != nil {
 			t.Fatalf("acquire new %s: %v", spec.bindingKey, err)
 		}
+		newLease.handler = &generationHTTPHandler{}
 		newLeases = append(newLeases, newLease)
 	}
 	defer func() {
@@ -630,6 +717,9 @@ func TestHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) 
 	for index, oldLease := range oldLeases {
 		if active := oldLease.binding.stream.Active(); active != oldLease.stream {
 			t.Fatalf("binding %d active endpoint = %p, want restored old %p", index, active, oldLease.stream)
+		}
+		if active := oldLease.binding.activeHandler.Load(); active != oldLease.handler {
+			t.Fatalf("binding %d active handler = %p, want restored old %p", index, active, oldLease.handler)
 		}
 	}
 }
@@ -1071,6 +1161,21 @@ func generationTestHTTP2GETWithClient(client *stdhttp.Client, target string) (st
 	defer response.Body.Close()
 	body, err := io.ReadAll(response.Body)
 	return string(body), response.ProtoMajor, err
+}
+
+func generationTestHTTP3GET(client *stdhttp.Client, target, host string) (string, error) {
+	request, err := stdhttp.NewRequest(stdhttp.MethodGet, target, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Host = host
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	return string(body), err
 }
 
 func generationTestOpenUpgrade(t *testing.T, port int) (net.Conn, *bufio.Reader) {
