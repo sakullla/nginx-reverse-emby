@@ -55,7 +55,35 @@ type PacketEndpoint struct {
 	generation string
 	broker     *PacketBroker
 	conn       *moduleutil.VirtualPacketConn
+	writer     *packetEndpointWriter
 	closeOnce  sync.Once
+}
+
+type packetEndpointWriter struct {
+	broker   *PacketBroker
+	endpoint *PacketEndpoint
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func (w *packetEndpointWriter) WriteTo(p []byte, a net.Addr) (int, error) {
+	return w.broker.writePacket(w, p, a)
+}
+func (w *packetEndpointWriter) SetWriteDeadline(d time.Time) error {
+	w.mu.Lock()
+	w.deadline = d
+	w.mu.Unlock()
+	w.broker.writeStateMu.Lock()
+	defer w.broker.writeStateMu.Unlock()
+	if w.broker.writing == w.endpoint {
+		return w.broker.conn.SetWriteDeadline(d)
+	}
+	return nil
+}
+func (w *packetEndpointWriter) currentDeadline() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.deadline
 }
 
 func (e *PacketEndpoint) Generation() string {
@@ -104,12 +132,18 @@ type PacketBroker struct {
 	received       atomic.Uint64
 	dropped        atomic.Uint64
 
-	mu           sync.Mutex
-	associations map[AssociationKey]*PacketEndpoint
-	endpoints    map[*PacketEndpoint]struct{}
-	closed       chan struct{}
-	closeOnce    sync.Once
-	wg           sync.WaitGroup
+	mu                  sync.Mutex
+	associations        map[AssociationKey]*PacketEndpoint
+	endpoints           map[*PacketEndpoint]struct{}
+	published           map[*PacketEndpoint]struct{}
+	closed              chan struct{}
+	shutdownOnce        sync.Once
+	shutdownErr         error
+	wg                  sync.WaitGroup
+	beforePacketPublish func(*PacketEndpoint)
+	writeMu             sync.Mutex
+	writeStateMu        sync.Mutex
+	writing             *PacketEndpoint
 }
 
 func ListenPacket(ctx context.Context, network, address string, backlog int, classifiers ...PacketClassifier) (*PacketBroker, error) {
@@ -133,6 +167,7 @@ func NewPacketBroker(conn net.PacketConn, network string, classifiers ...PacketC
 		classifiers:    append([]PacketClassifier(nil), classifiers...),
 		associations:   make(map[AssociationKey]*PacketEndpoint),
 		endpoints:      make(map[*PacketEndpoint]struct{}),
+		published:      make(map[*PacketEndpoint]struct{}),
 		closed:         make(chan struct{}),
 	}
 	broker.wg.Add(1)
@@ -148,7 +183,8 @@ func (b *PacketBroker) NewEndpoint(generation string, backlog int) *PacketEndpoi
 		backlog = b.defaultBacklog
 	}
 	endpoint := &PacketEndpoint{generation: generation, broker: b}
-	endpoint.conn = moduleutil.NewVirtualPacketConn(b.LocalAddr(), backlog, b.conn.WriteTo)
+	endpoint.writer = &packetEndpointWriter{broker: b, endpoint: endpoint}
+	endpoint.conn = moduleutil.NewVirtualPacketConn(b.LocalAddr(), backlog, endpoint.writer)
 	b.mu.Lock()
 	select {
 	case <-b.closed:
@@ -177,6 +213,10 @@ func (b *PacketBroker) Activate(endpoint *PacketEndpoint) (*PacketEndpoint, erro
 		return nil, net.ErrClosed
 	}
 	endpoint.conn.Activate()
+	if b.beforePacketPublish != nil {
+		b.beforePacketPublish(endpoint)
+	}
+	b.published[endpoint] = struct{}{}
 	return b.active.Swap(endpoint), nil
 }
 
@@ -242,10 +282,15 @@ func (b *PacketBroker) Close() error {
 	if b == nil {
 		return nil
 	}
-	var closeErr error
-	b.closeOnce.Do(func() {
+	b.shutdown(nil)
+	b.wg.Wait()
+	return b.shutdownErr
+}
+
+func (b *PacketBroker) shutdown(cause error) {
+	b.shutdownOnce.Do(func() {
 		close(b.closed)
-		closeErr = b.conn.Close()
+		b.shutdownErr = errors.Join(cause, b.conn.Close())
 		b.mu.Lock()
 		endpoints := make([]*PacketEndpoint, 0, len(b.endpoints))
 		for endpoint := range b.endpoints {
@@ -253,11 +298,9 @@ func (b *PacketBroker) Close() error {
 		}
 		b.mu.Unlock()
 		for _, endpoint := range endpoints {
-			closeErr = errors.Join(closeErr, endpoint.Close())
+			b.shutdownErr = errors.Join(b.shutdownErr, endpoint.Close())
 		}
-		b.wg.Wait()
 	})
-	return closeErr
 }
 
 func (b *PacketBroker) Wait() { b.wg.Wait() }
@@ -265,6 +308,7 @@ func (b *PacketBroker) Wait() { b.wg.Wait() }
 func (b *PacketBroker) readLoop() {
 	defer b.wg.Done()
 	buffer := make([]byte, 64*1024)
+	retryAttempt := 0
 	for {
 		n, remote, err := b.conn.ReadFrom(buffer)
 		if err != nil {
@@ -274,10 +318,16 @@ func (b *PacketBroker) readLoop() {
 			default:
 			}
 			if retryableNetworkError(err) {
+				retryAttempt++
+				if !waitNetworkRetry(b.closed, retryAttempt) {
+					return
+				}
 				continue
 			}
+			b.shutdown(err)
 			return
 		}
+		retryAttempt = 0
 		b.received.Add(1)
 		payload := buffer[:n]
 		metadata := PacketMetadata{Network: b.network, LocalAddr: b.LocalAddr(), RemoteAddr: remote}
@@ -317,6 +367,7 @@ func (b *PacketBroker) releaseIfTarget(key AssociationKey, endpoint *PacketEndpo
 func (b *PacketBroker) removeEndpoint(endpoint *PacketEndpoint) {
 	b.mu.Lock()
 	delete(b.endpoints, endpoint)
+	delete(b.published, endpoint)
 	for key, target := range b.associations {
 		if target == endpoint {
 			delete(b.associations, key)
@@ -324,6 +375,30 @@ func (b *PacketBroker) removeEndpoint(endpoint *PacketEndpoint) {
 	}
 	b.active.CompareAndSwap(endpoint, nil)
 	b.mu.Unlock()
+}
+
+func (b *PacketBroker) writePacket(writer *packetEndpointWriter, payload []byte, remote net.Addr) (int, error) {
+	b.mu.Lock()
+	_, published := b.published[writer.endpoint]
+	b.mu.Unlock()
+	if !published {
+		return 0, moduleutil.ErrVirtualEndpointInactive
+	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	deadline := writer.currentDeadline()
+	b.writeStateMu.Lock()
+	b.writing = writer.endpoint
+	_ = b.conn.SetWriteDeadline(deadline)
+	b.writeStateMu.Unlock()
+	n, err := b.conn.WriteTo(payload, remote)
+	b.writeStateMu.Lock()
+	if b.writing == writer.endpoint {
+		b.writing = nil
+	}
+	_ = b.conn.SetWriteDeadline(time.Time{})
+	b.writeStateMu.Unlock()
+	return n, err
 }
 
 func addrNetwork(addr net.Addr) string {

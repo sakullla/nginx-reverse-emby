@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -11,11 +12,12 @@ import (
 func TestVirtualPacketConnGatesClonesAndWritesBack(t *testing.T) {
 	var written []byte
 	var writtenTo net.Addr
-	conn := NewVirtualPacketConn(testAddr("local"), 1, func(payload []byte, addr net.Addr) (int, error) {
+	writer := &testPacketWriter{write: func(payload []byte, addr net.Addr) (int, error) {
 		written = append([]byte(nil), payload...)
 		writtenTo = addr
 		return len(payload), nil
-	})
+	}}
+	conn := NewVirtualPacketConn(testAddr("local"), 1, writer)
 	remote := testAddr("remote")
 	payload := []byte("candidate")
 	if err := conn.Deliver(payload, remote); !errors.Is(err, ErrVirtualEndpointInactive) {
@@ -55,6 +57,19 @@ func TestVirtualPacketConnGatesClonesAndWritesBack(t *testing.T) {
 	}
 }
 
+type testPacketWriter struct {
+	write    func([]byte, net.Addr) (int, error)
+	deadline func(time.Time) error
+}
+
+func (w *testPacketWriter) WriteTo(p []byte, a net.Addr) (int, error) { return w.write(p, a) }
+func (w *testPacketWriter) SetWriteDeadline(d time.Time) error {
+	if w.deadline != nil {
+		return w.deadline(d)
+	}
+	return nil
+}
+
 func TestVirtualPacketConnReadDeadlineWakesBlockedRead(t *testing.T) {
 	conn := NewVirtualPacketConn(testAddr("local"), 1, nil)
 	conn.Activate()
@@ -74,4 +89,72 @@ func TestVirtualPacketConnReadDeadlineWakesBlockedRead(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("blocked ReadFrom did not observe updated deadline")
 	}
+}
+
+func TestVirtualPacketConnWriteDeadlineWakesBlockedWrite(t *testing.T) {
+	writer := newBlockingPacketWriter()
+	conn := NewVirtualPacketConn(testAddr("local"), 1, writer)
+	conn.Activate()
+	result := make(chan error, 1)
+	go func() { _, err := conn.WriteTo([]byte("blocked"), testAddr("remote")); result <- err }()
+	<-writer.started
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("WriteTo error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked write ignored changed deadline")
+	}
+}
+
+func TestVirtualPacketConnPreconfiguredWriteDeadlineInterruptsWrite(t *testing.T) {
+	writer := newBlockingPacketWriter()
+	conn := NewVirtualPacketConn(testAddr("local"), 1, writer)
+	conn.Activate()
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() { _, err := conn.WriteTo([]byte("blocked"), testAddr("remote")); result <- err }()
+	select {
+	case err := <-result:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("WriteTo error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked write ignored configured deadline")
+	}
+}
+
+type blockingPacketWriter struct {
+	started chan struct{}
+	unblock chan struct{}
+	once    sync.Once
+}
+
+func newBlockingPacketWriter() *blockingPacketWriter {
+	return &blockingPacketWriter{started: make(chan struct{}), unblock: make(chan struct{})}
+}
+func (w *blockingPacketWriter) WriteTo([]byte, net.Addr) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.unblock
+	return 0, os.ErrDeadlineExceeded
+}
+func (w *blockingPacketWriter) SetWriteDeadline(d time.Time) error {
+	go func() {
+		delay := time.Until(d)
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		select {
+		case <-w.unblock:
+		default:
+			close(w.unblock)
+		}
+	}()
+	return nil
 }

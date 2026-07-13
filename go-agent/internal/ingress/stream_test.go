@@ -4,9 +4,51 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestStreamBrokerLinearizesSelectedDispatchBeforeActivation(t *testing.T) {
+	broker, err := ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	oldEndpoint := broker.NewEndpoint("old", 4)
+	newEndpoint := broker.NewEndpoint("new", 4)
+	if _, err := broker.Activate(oldEndpoint); err != nil {
+		t.Fatal(err)
+	}
+	selected, release := make(chan struct{}), make(chan struct{})
+	broker.mu.Lock()
+	broker.beforeStreamDeliver = func(endpoint *StreamEndpoint) {
+		if endpoint == oldEndpoint {
+			close(selected)
+			<-release
+		}
+	}
+	broker.mu.Unlock()
+	client := dialTCP(t, broker.Addr().String())
+	defer client.Close()
+	<-selected
+	activated := make(chan error, 1)
+	go func() { _, err := broker.Activate(newEndpoint); activated <- err }()
+	select {
+	case <-activated:
+		t.Fatal("activation completed before selected dispatch")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	_ = acceptStream(t, oldEndpoint).Close()
+	if err := <-activated; err != nil {
+		t.Fatal(err)
+	}
+	if got := broker.Stats().Dropped; got != 0 {
+		t.Fatalf("Dropped = %d, want 0", got)
+	}
+}
 
 func TestStreamBrokerSingleBindGateAndAtomicTargetSwap(t *testing.T) {
 	broker, err := ListenStream(context.Background(), "tcp", "127.0.0.1:0", 8)
@@ -93,8 +135,16 @@ func TestStreamBrokerRejectsClosedEndpointActivation(t *testing.T) {
 	}
 }
 
-func TestStreamBrokerStopsAfterPermanentAcceptError(t *testing.T) {
-	broker := NewStreamBroker(permanentErrorListener{})
+func TestStreamBrokerTerminalErrorClosesEndpointsAndOwnedListener(t *testing.T) {
+	listener := newPermanentErrorListener()
+	broker := NewStreamBroker(listener)
+	endpoint := broker.NewEndpoint("generation", 1)
+	if _, err := broker.Activate(endpoint); err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan error, 1)
+	go func() { _, err := endpoint.Accept(); accepted <- err }()
+	close(listener.fail)
 	waited := make(chan struct{})
 	go func() {
 		broker.Wait()
@@ -105,8 +155,26 @@ func TestStreamBrokerStopsAfterPermanentAcceptError(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("broker accept loop spun after permanent error")
 	}
+	if err := <-accepted; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Accept error = %v", err)
+	}
+	if !listener.isClosed() {
+		t.Fatal("owned listener was not closed")
+	}
+	if err := broker.Close(); !errors.Is(err, errPermanentAccept) {
+		t.Fatalf("Close error = %v", err)
+	}
+}
+
+func TestStreamBrokerBacksOffRetryableAcceptErrors(t *testing.T) {
+	listener := newTemporaryErrorListener()
+	broker := NewStreamBroker(listener)
+	time.Sleep(30 * time.Millisecond)
+	if calls := listener.calls.Load(); calls > 20 {
+		t.Fatalf("Accept calls = %d, want bounded backoff", calls)
+	}
 	if err := broker.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
+		t.Fatal(err)
 	}
 }
 
@@ -142,10 +210,51 @@ func acceptStream(t *testing.T, endpoint *StreamEndpoint) net.Conn {
 	}
 }
 
-type permanentErrorListener struct{}
+var errPermanentAccept = errors.New("permanent accept failure")
 
-func (permanentErrorListener) Accept() (net.Conn, error) {
-	return nil, errors.New("permanent accept failure")
+type permanentErrorListener struct {
+	fail, closed chan struct{}
+	once         sync.Once
 }
-func (permanentErrorListener) Close() error   { return nil }
-func (permanentErrorListener) Addr() net.Addr { return testPacketAddr("stream") }
+
+func newPermanentErrorListener() *permanentErrorListener {
+	return &permanentErrorListener{fail: make(chan struct{}), closed: make(chan struct{})}
+}
+func (l *permanentErrorListener) Accept() (net.Conn, error) { <-l.fail; return nil, errPermanentAccept }
+func (l *permanentErrorListener) Close() error              { l.once.Do(func() { close(l.closed) }); return nil }
+func (*permanentErrorListener) Addr() net.Addr              { return testPacketAddr("stream") }
+func (l *permanentErrorListener) isClosed() bool {
+	select {
+	case <-l.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+type temporaryErrorListener struct {
+	calls  atomic.Int64
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newTemporaryErrorListener() *temporaryErrorListener {
+	return &temporaryErrorListener{closed: make(chan struct{})}
+}
+func (l *temporaryErrorListener) Accept() (net.Conn, error) {
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	default:
+		l.calls.Add(1)
+		return nil, temporaryNetError{}
+	}
+}
+func (l *temporaryErrorListener) Close() error { l.once.Do(func() { close(l.closed) }); return nil }
+func (*temporaryErrorListener) Addr() net.Addr { return testPacketAddr("temporary") }
+
+type temporaryNetError struct{}
+
+func (temporaryNetError) Error() string   { return "temporary" }
+func (temporaryNetError) Timeout() bool   { return false }
+func (temporaryNetError) Temporary() bool { return true }

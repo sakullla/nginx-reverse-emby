@@ -10,7 +10,10 @@ import (
 
 var errVirtualDeadlineChanged = errors.New("virtual packet deadline changed")
 
-type PacketWriter func([]byte, net.Addr) (int, error)
+type PacketWriter interface {
+	WriteTo([]byte, net.Addr) (int, error)
+	SetWriteDeadline(time.Time) error
+}
 
 type virtualPacket struct {
 	payload []byte
@@ -162,7 +165,7 @@ func (c *VirtualPacketConn) WriteTo(payload []byte, remote net.Addr) (int, error
 	if writer == nil {
 		return 0, net.ErrClosed
 	}
-	return writer(payload, remote)
+	return writer.WriteTo(payload, remote)
 }
 
 func (c *VirtualPacketConn) Close() error {
@@ -210,7 +213,11 @@ func (c *VirtualPacketConn) SetWriteDeadline(deadline time.Time) error {
 	}
 	c.mu.Lock()
 	c.writeDeadline = deadline
+	writer := c.writer
 	c.mu.Unlock()
+	if writer != nil {
+		return writer.SetWriteDeadline(deadline)
+	}
 	return nil
 }
 

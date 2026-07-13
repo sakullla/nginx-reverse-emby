@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/moduleutil"
 )
@@ -54,11 +55,13 @@ type StreamBroker struct {
 	accepted       atomic.Uint64
 	dropped        atomic.Uint64
 
-	mu        sync.Mutex
-	endpoints map[*StreamEndpoint]struct{}
-	closed    chan struct{}
-	closeOnce sync.Once
-	wg        sync.WaitGroup
+	mu                  sync.Mutex
+	endpoints           map[*StreamEndpoint]struct{}
+	closed              chan struct{}
+	shutdownOnce        sync.Once
+	shutdownErr         error
+	wg                  sync.WaitGroup
+	beforeStreamDeliver func(*StreamEndpoint)
 }
 
 func ListenStream(ctx context.Context, network, address string, backlog int) (*StreamBroker, error) {
@@ -165,10 +168,15 @@ func (b *StreamBroker) Close() error {
 	if b == nil {
 		return nil
 	}
-	var closeErr error
-	b.closeOnce.Do(func() {
+	b.shutdown(nil)
+	b.wg.Wait()
+	return b.shutdownErr
+}
+
+func (b *StreamBroker) shutdown(cause error) {
+	b.shutdownOnce.Do(func() {
 		close(b.closed)
-		closeErr = b.listener.Close()
+		b.shutdownErr = errors.Join(cause, b.listener.Close())
 		b.mu.Lock()
 		endpoints := make([]*StreamEndpoint, 0, len(b.endpoints))
 		for endpoint := range b.endpoints {
@@ -176,17 +184,16 @@ func (b *StreamBroker) Close() error {
 		}
 		b.mu.Unlock()
 		for _, endpoint := range endpoints {
-			closeErr = errors.Join(closeErr, endpoint.Close())
+			b.shutdownErr = errors.Join(b.shutdownErr, endpoint.Close())
 		}
-		b.wg.Wait()
 	})
-	return closeErr
 }
 
 func (b *StreamBroker) Wait() { b.wg.Wait() }
 
 func (b *StreamBroker) acceptLoop() {
 	defer b.wg.Done()
+	retryAttempt := 0
 	for {
 		conn, err := b.listener.Accept()
 		if err != nil {
@@ -196,22 +203,55 @@ func (b *StreamBroker) acceptLoop() {
 			default:
 			}
 			if retryableNetworkError(err) {
+				retryAttempt++
+				if !waitNetworkRetry(b.closed, retryAttempt) {
+					return
+				}
 				continue
 			}
+			b.shutdown(err)
 			return
 		}
+		retryAttempt = 0
 		b.accepted.Add(1)
-		endpoint := b.active.Load()
-		if endpoint == nil || endpoint.listener.Deliver(conn) != nil {
+		if b.deliverStream(conn) != nil {
 			b.dropped.Add(1)
 			_ = conn.Close()
 		}
 	}
 }
 
+func (b *StreamBroker) deliverStream(conn net.Conn) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	endpoint := b.active.Load()
+	if endpoint == nil {
+		return net.ErrClosed
+	}
+	if b.beforeStreamDeliver != nil {
+		b.beforeStreamDeliver(endpoint)
+	}
+	return endpoint.listener.Deliver(conn)
+}
+
 func retryableNetworkError(err error) bool {
 	var networkErr net.Error
 	return errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary())
+}
+
+func waitNetworkRetry(closed <-chan struct{}, attempt int) bool {
+	if attempt > 8 {
+		attempt = 8
+	}
+	delay := time.Millisecond << (attempt - 1)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-closed:
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (b *StreamBroker) removeEndpoint(endpoint *StreamEndpoint) {
