@@ -401,6 +401,10 @@ func (t *relayGenerationTransaction) publish() error {
 	t.module.runtime = t.runtime
 	t.module.blockState.Store(t.nextBlockState)
 	t.module.mu.Unlock()
+	if !t.ownsRuntime && t.runtime != nil {
+		t.runtime.SetTrafficBlockState(t.nextBlockState)
+		t.runtime.setOutboundProxyURL(t.nextOutboundProxyURL)
+	}
 	SetOutboundProxyURL(t.nextOutboundProxyURL)
 	t.published = true
 	return nil
@@ -434,6 +438,10 @@ func (t *relayGenerationTransaction) Rollback() error {
 		t.module.blockState.Store(t.previousBlockState)
 		t.module.mu.Unlock()
 		SetOutboundProxyURL(t.previousOutboundProxyURL)
+		if !t.ownsRuntime && t.runtime != nil {
+			t.runtime.SetTrafficBlockState(t.previousBlockState)
+			t.runtime.setOutboundProxyURL(t.previousOutboundProxyURL)
+		}
 	}
 	t.published = false
 	return t.Destroy(context.Background())
@@ -452,6 +460,13 @@ func (t *relayGenerationTransaction) Destroy(context.Context) error {
 
 func (t *relayGenerationTransaction) FinalizeCommitSuccess() {
 	if t == nil || !t.published || t.finalized {
+		return
+	}
+	if !t.ownsRuntime {
+		// An effective no-op reuses the currently owned runtime. Registering the
+		// same resource under another drain generation would let retirement of
+		// either entry destroy the still-active listener and pool.
+		t.finalized = true
 		return
 	}
 	installed := true

@@ -299,6 +299,25 @@ func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
 	s.trafficBlockState.Store(state)
 }
 
+func (s *Server) setOutboundProxyURL(value string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.outboundProxyURL = strings.TrimSpace(value)
+	s.mu.Unlock()
+}
+
+func (s *Server) currentOutboundProxyURL() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	value := s.outboundProxyURL
+	s.mu.Unlock()
+	return value
+}
+
 func (s *Server) BindingKeys() []string {
 	if s == nil {
 		return nil

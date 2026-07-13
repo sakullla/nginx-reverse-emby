@@ -152,7 +152,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		return nil, err
 	}
 	nextRuntime.SetTrafficBlockState(currentBlockState)
-	nextRuntime.outboundProxyURL = nextOutboundProxyURL
+	nextRuntime.setOutboundProxyURL(nextOutboundProxyURL)
 	return &relayGenerationTransaction{
 		module: m, runtime: nextRuntime, previousRuntime: oldRuntime,
 		provider: provider, generationID: generationContext.ID(), generationRevision: generationContext.Revision(),
