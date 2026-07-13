@@ -58,6 +58,7 @@ type PacketEndpoint struct {
 	writer     *packetEndpointWriter
 	closeOnce  sync.Once
 	closeErr   error
+	closing    atomic.Bool
 }
 
 type packetEndpointWriter struct {
@@ -71,11 +72,23 @@ func (w *packetEndpointWriter) WriteTo(p []byte, a net.Addr) (int, error) {
 	return w.broker.writePacket(w, p, a)
 }
 func (w *packetEndpointWriter) SetWriteDeadline(d time.Time) error {
+	if w.endpoint.closing.Load() {
+		return net.ErrClosed
+	}
 	w.mu.Lock()
+	if w.endpoint.closing.Load() {
+		w.mu.Unlock()
+		return net.ErrClosed
+	}
 	w.deadline = d
-	w.mu.Unlock()
 	w.broker.writeStateMu.Lock()
-	defer w.broker.writeStateMu.Unlock()
+	defer func() {
+		w.broker.writeStateMu.Unlock()
+		w.mu.Unlock()
+	}()
+	if w.endpoint.closing.Load() {
+		return net.ErrClosed
+	}
 	if w.broker.writing == w.endpoint {
 		return w.broker.conn.SetWriteDeadline(d)
 	}
@@ -116,6 +129,7 @@ func (e *PacketEndpoint) Close() error {
 		return nil
 	}
 	e.closeOnce.Do(func() {
+		e.closing.Store(true)
 		if e.broker != nil {
 			e.closeErr = e.broker.removeEndpoint(e)
 		}
@@ -212,6 +226,9 @@ func (b *PacketBroker) Activate(endpoint *PacketEndpoint) (*PacketEndpoint, erro
 	default:
 	}
 	if _, ok := b.endpoints[endpoint]; !ok {
+		return nil, net.ErrClosed
+	}
+	if endpoint.closing.Load() {
 		return nil, net.ErrClosed
 	}
 	endpoint.conn.Activate()
@@ -409,6 +426,11 @@ func (b *PacketBroker) writePacket(writer *packetEndpointWriter, payload []byte,
 		b.beforeWritePublish(writer.endpoint)
 	}
 	b.writeStateMu.Lock()
+	if writer.endpoint.closing.Load() {
+		b.writeStateMu.Unlock()
+		writer.mu.Unlock()
+		return 0, net.ErrClosed
+	}
 	b.writing = writer.endpoint
 	deadlineErr := b.conn.SetWriteDeadline(writer.deadline)
 	b.writeStateMu.Unlock()

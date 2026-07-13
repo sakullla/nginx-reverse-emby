@@ -111,6 +111,10 @@ func TestPacketEndpointCloseInterruptsBlockedPhysicalWrite(t *testing.T) {
 	<-physical.writeStarted
 	closed := make(chan error, 1)
 	go func() { closed <- endpoint.Close() }()
+	waitEndpointClosing(t, endpoint)
+	if err := endpoint.SetWriteDeadline(time.Time{}); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("deadline override during Close error = %v, want net.ErrClosed", err)
+	}
 	select {
 	case err := <-closed:
 		if err != nil {
@@ -124,6 +128,52 @@ func TestPacketEndpointCloseInterruptsBlockedPhysicalWrite(t *testing.T) {
 	}
 	if _, err := endpoint.WriteTo([]byte("late"), testPacketAddr("remote")); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("late WriteTo error = %v", err)
+	}
+}
+
+func TestPacketEndpointCloseWinsBeforeWriteOwnershipPublication(t *testing.T) {
+	physical := newDeadlineBoundaryPacketConn()
+	broker := NewPacketBroker(physical, "udp")
+	defer broker.Close()
+	endpoint := broker.NewEndpoint("generation", 1)
+	if _, err := broker.Activate(endpoint); err != nil {
+		t.Fatal(err)
+	}
+	boundary, release := make(chan struct{}), make(chan struct{})
+	broker.beforeWritePublish = func(target *PacketEndpoint) {
+		if target == endpoint {
+			close(boundary)
+			<-release
+		}
+	}
+	written := make(chan error, 1)
+	go func() { _, err := endpoint.WriteTo([]byte("blocked"), testPacketAddr("remote")); written <- err }()
+	<-boundary
+	closed := make(chan error, 1)
+	go func() { closed <- endpoint.Close() }()
+	waitEndpointClosing(t, endpoint)
+	close(release)
+	if err := <-written; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("WriteTo error = %v", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("Close error = %v", err)
+	}
+	select {
+	case <-physical.writeStarted:
+		t.Fatal("closing endpoint reached physical WriteTo")
+	default:
+	}
+}
+
+func waitEndpointClosing(t *testing.T, endpoint *PacketEndpoint) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for !endpoint.closing.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !endpoint.closing.Load() {
+		t.Fatal("endpoint did not enter closing state")
 	}
 }
 
