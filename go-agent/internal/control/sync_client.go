@@ -193,6 +193,12 @@ func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, erro
 	if err := json.Unmarshal(envelope.Revision.Snapshot, &snapshot); err != nil {
 		return model.RevisionPull{}, fmt.Errorf("decode revision snapshot: %w", err)
 	}
+	if !snapshot.HasFullRevisionPayload() {
+		return model.RevisionPull{}, errors.New("revision pull snapshot is not a full snapshot")
+	}
+	if agentID := strings.TrimSpace(c.cfg.AgentID); agentID != "" && strings.TrimSpace(pull.Lease.AgentID) != agentID {
+		return model.RevisionPull{}, errors.New("revision pull lease belongs to a different agent")
+	}
 	pull.Snapshot = &snapshot
 	pull.VerifiedSnapshotDigest = digest
 	return pull, nil

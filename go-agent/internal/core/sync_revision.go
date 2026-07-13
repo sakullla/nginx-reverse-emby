@@ -32,6 +32,16 @@ func (c *SyncController) performRevisionSyncPlan(
 	client RevisionSyncClient,
 	store GenerationJournalStore,
 ) error {
+	if err := c.restoreDurableRevisionRuntime(ctx); err != nil {
+		return c.recordRuntimeError(err)
+	}
+	journal, err := store.LoadGenerationJournal()
+	if err != nil {
+		return c.recordRuntimeError(err)
+	}
+	if err := validateGenerationJournal(journal); err != nil {
+		return c.recordRuntimeError(err)
+	}
 	if _, err := c.SyncClient.Sync(ctx, plan.Request); err != nil {
 		return c.recordRuntimeError(err)
 	}
@@ -48,10 +58,6 @@ func (c *SyncController) performRevisionSyncPlan(
 		return nil
 	}
 	lease, snapshot, digest, err := validateRevisionPull(pull)
-	if err != nil {
-		return c.recordRuntimeError(err)
-	}
-	journal, err := store.LoadGenerationJournal()
 	if err != nil {
 		return c.recordRuntimeError(err)
 	}
@@ -72,6 +78,9 @@ func (c *SyncController) performRevisionSyncPlan(
 	durableRevision := durableRevisionFloor(previousApplied.Revision, lastKnownGood.Revision, journal)
 	if snapshot.Revision < durableRevision {
 		return c.recordRuntimeError(fmt.Errorf("stale revision %d cannot replace durable revision %d", snapshot.Revision, durableRevision))
+	}
+	if err := validateImmutableRevisionDigest(journal, snapshot.Revision, digest); err != nil {
+		return c.recordRuntimeError(err)
 	}
 	activeDigestMatches := journal.Active != nil && journal.Active.Revision == lease.Revision &&
 		strings.EqualFold(journal.Active.SnapshotDigest, digest)
@@ -122,6 +131,9 @@ func (c *SyncController) performRevisionSyncPlan(
 		// Let the authoritative lease expire/reconcile instead of replaying a non-idempotent start.
 		return nil
 	}
+	if resumePhase == model.GenerationPhaseFailed {
+		return nil
+	}
 	if resumePhase != model.GenerationPhaseStarted && resumePhase != model.GenerationPhaseCutover {
 		candidate.Phase = model.GenerationPhaseStarting
 		candidate.UpdatedAt = time.Now().UTC()
@@ -159,20 +171,18 @@ func (c *SyncController) performRevisionSyncPlan(
 		}
 	}
 
-	existingDesired, err := c.Store.LoadDesiredSnapshot()
-	if err != nil {
+	if err := c.Store.SaveDesiredSnapshot(snapshot); err != nil {
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
-	persistedSnapshot := MergeSnapshotPayload(snapshot, existingDesired)
-	if err := c.Store.SaveDesiredSnapshot(persistedSnapshot); err != nil {
-		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
-	}
-	if err := c.handlePendingUpdate(ctx, persistedSnapshot); err != nil {
+	if err := c.handlePendingUpdate(ctx, snapshot); err != nil {
+		if errors.Is(err, ErrRestartRequested) {
+			return err
+		}
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 
 	previousApplied = c.Runtime.ActiveSnapshot()
-	candidateApplied := MergeSnapshotPayload(snapshot, previousApplied)
+	candidateApplied := snapshot
 	if err := c.Runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, errors.Join(err, rollbackErr))
@@ -263,13 +273,17 @@ func validateRevisionPull(pull model.RevisionPull) (model.RevisionLease, model.S
 	}
 	lease := *pull.Lease
 	snapshot := *pull.Snapshot
-	if strings.TrimSpace(lease.AgentID) == "" || lease.Revision <= 0 || lease.Attempt <= 0 ||
+	if strings.TrimSpace(lease.AgentID) == "" || lease.Revision <= 0 || lease.RetryCycle < 0 || lease.Attempt <= 0 ||
+		lease.ApplyTimeoutSeconds <= 0 || lease.DrainTimeoutSeconds <= 0 ||
 		strings.TrimSpace(lease.LeaseID) == "" || snapshot.Revision != lease.Revision ||
 		pull.DesiredRevision != lease.Revision {
 		return model.RevisionLease{}, model.Snapshot{}, "", errors.New("revision pull identity is inconsistent")
 	}
-	if !lease.DeadlineAt.IsZero() && !time.Now().UTC().Before(lease.DeadlineAt) {
-		return model.RevisionLease{}, model.Snapshot{}, "", errors.New("revision lease is expired")
+	if lease.DeadlineAt.IsZero() || !time.Now().UTC().Before(lease.DeadlineAt) {
+		return model.RevisionLease{}, model.Snapshot{}, "", errors.New("revision lease deadline is missing or expired")
+	}
+	if !snapshot.HasFullRevisionPayload() {
+		return model.RevisionLease{}, model.Snapshot{}, "", errors.New("revision pull snapshot is not a full snapshot")
 	}
 	digest := strings.TrimSpace(pull.VerifiedSnapshotDigest)
 	if strings.TrimSpace(lease.SnapshotDigest) == "" || !strings.EqualFold(digest, lease.SnapshotDigest) {
@@ -307,10 +321,66 @@ func durableRevisionFloor(runtimeRevision, lastKnownGoodRevision int64, journal 
 	if journal.LastKnownGood != nil {
 		floor = max(floor, journal.LastKnownGood.Revision)
 	}
-	if journal.Candidate != nil && journal.Candidate.Phase == model.GenerationPhaseCutover {
+	if journal.Candidate != nil {
 		floor = max(floor, journal.Candidate.Revision)
 	}
 	return floor
+}
+
+func validateImmutableRevisionDigest(journal model.GenerationJournal, revision int64, digest string) error {
+	for _, record := range []*model.GenerationRecord{journal.Active, journal.LastKnownGood, journal.Candidate} {
+		if record == nil || record.Revision != revision || strings.TrimSpace(record.SnapshotDigest) == "" {
+			continue
+		}
+		if !strings.EqualFold(record.SnapshotDigest, digest) {
+			return fmt.Errorf("immutable revision %d changed snapshot digest", revision)
+		}
+	}
+	return nil
+}
+
+func validateGenerationJournal(journal model.GenerationJournal) error {
+	if journal.Version == 0 {
+		if journal.Active != nil || journal.Candidate != nil || journal.LastKnownGood != nil {
+			return errors.New("unversioned generation journal contains records")
+		}
+		return nil
+	}
+	if journal.Version != 1 {
+		return fmt.Errorf("unsupported generation journal version %d", journal.Version)
+	}
+	if journal.Active != nil && journal.Active.Phase != model.GenerationPhaseActive {
+		return fmt.Errorf("active generation has invalid phase %q", journal.Active.Phase)
+	}
+	if journal.LastKnownGood != nil && journal.LastKnownGood.Phase != model.GenerationPhaseActive {
+		return fmt.Errorf("last-known-good generation has invalid phase %q", journal.LastKnownGood.Phase)
+	}
+	if journal.Candidate != nil {
+		switch journal.Candidate.Phase {
+		case model.GenerationPhasePrepared, model.GenerationPhaseStarting, model.GenerationPhaseStarted,
+			model.GenerationPhaseCutover, model.GenerationPhaseFailed:
+		default:
+			return fmt.Errorf("candidate generation has invalid phase %q", journal.Candidate.Phase)
+		}
+	}
+	return nil
+}
+
+func (c *SyncController) restoreDurableRevisionRuntime(ctx context.Context) error {
+	if !isZeroSnapshot(c.Runtime.ActiveSnapshot()) {
+		return nil
+	}
+	applied, err := c.Store.LoadAppliedSnapshot()
+	if err != nil {
+		return err
+	}
+	if isZeroSnapshot(applied) {
+		return nil
+	}
+	if err := c.Runtime.Apply(ctx, model.Snapshot{}, applied); err != nil {
+		return fmt.Errorf("restore durable applied snapshot: %w", err)
+	}
+	return c.persistRuntimeState(false)
 }
 
 func revisionGenerationID(lease model.RevisionLease) string {

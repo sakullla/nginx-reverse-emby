@@ -23,6 +23,17 @@ type RevisionPull struct {
 	VerifiedSnapshotDigest string         `json:"-"`
 }
 
+func (s Snapshot) HasFullRevisionPayload() bool {
+	return s.HasAgentConfig() &&
+		s.Rules != nil &&
+		s.L4Rules != nil &&
+		s.RelayListeners != nil &&
+		s.WireGuardProfiles != nil &&
+		s.EgressProfiles != nil &&
+		s.Certificates != nil &&
+		s.CertificatePolicies != nil
+}
+
 type RevisionStart struct {
 	AgentID      string `json:"agent_id"`
 	Revision     int64  `json:"revision"`

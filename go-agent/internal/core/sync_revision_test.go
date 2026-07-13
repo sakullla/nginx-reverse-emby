@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -107,6 +108,31 @@ func TestRevisionSyncDoesNotReplayUncertainStartAfterRestart(t *testing.T) {
 	}
 }
 
+func TestRevisionSyncRestartRequestKeepsStartedCandidate(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	pull := revisionPull(7, "lease-7", "digest-7")
+	pull.Snapshot.VersionPackage = &model.VersionPackage{
+		URL: "https://downloads.example/nre-agent", SHA256: "new-package",
+	}
+	client := &revisionClientStub{events: &events, pull: pull}
+	controller := &SyncController{
+		Store: store, Runtime: NewRuntime(), SyncClient: client,
+		Updater: &syncControllerUpdater{}, CurrentPackageSHA256: "old-package",
+	}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if !errors.Is(err, ErrRestartRequested) {
+		t.Fatalf("PerformSync() error = %v, want ErrRestartRequested", err)
+	}
+	if store.journal.Candidate == nil || store.journal.Candidate.Phase != model.GenerationPhaseStarted {
+		t.Fatalf("journal = %+v, want durable started candidate", store.journal)
+	}
+	if len(client.reports) != 0 || store.lkg.Revision != 0 {
+		t.Fatalf("restart request reports/LKG = %+v/%+v, want no failed report or cutover", client.reports, store.lkg)
+	}
+}
+
 func TestRevisionSyncRejectsRevisionOlderThanDurableActiveGeneration(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)
@@ -130,6 +156,53 @@ func TestRevisionSyncRejectsRevisionOlderThanDurableActiveGeneration(t *testing.
 	}
 	if len(client.starts) != 0 || runtime.ActiveSnapshot().Revision != 0 {
 		t.Fatalf("stale pull started=%d active=%d, want no apply", len(client.starts), runtime.ActiveSnapshot().Revision)
+	}
+}
+
+func TestRevisionSyncRejectsRevisionOlderThanStartedCandidate(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	lease := revisionLease(10, "lease-10", "digest-10")
+	store.journal = model.GenerationJournal{
+		Version: 1, AgentID: "edge-1",
+		Candidate: &model.GenerationRecord{
+			GenerationID: revisionGenerationID(lease), Revision: 10, SnapshotDigest: "digest-10",
+			Phase: model.GenerationPhaseStarted, Lease: lease,
+		},
+	}
+	client := &revisionClientStub{events: &events, pull: revisionPull(9, "lease-9", "digest-9")}
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "stale revision") {
+		t.Fatalf("PerformSync() error = %v, want started candidate revision floor", err)
+	}
+	if len(client.starts) != 0 {
+		t.Fatalf("start calls = %d, want no stale start", len(client.starts))
+	}
+}
+
+func TestRevisionSyncRejectsDifferentDigestForDurableRevision(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	lease := revisionLease(7, "lease-old", "digest-old")
+	store.journal = model.GenerationJournal{
+		Version: 1, AgentID: "edge-1",
+		Active: &model.GenerationRecord{
+			GenerationID: "generation-old", Revision: 7, SnapshotDigest: "digest-old",
+			Phase: model.GenerationPhaseActive, Lease: lease, Acknowledged: true,
+		},
+	}
+	store.lkg = revisionSnapshot(7)
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-new", "digest-new")}
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "immutable revision") {
+		t.Fatalf("PerformSync() error = %v, want immutable revision digest rejection", err)
+	}
+	if len(client.starts) != 0 {
+		t.Fatalf("start calls = %d, want no same-revision digest replacement", len(client.starts))
 	}
 }
 
@@ -193,6 +266,33 @@ func TestRevisionSyncResumesStartedLeaseWithoutDuplicateStart(t *testing.T) {
 	}
 }
 
+func TestRevisionSyncFailedCandidateWaitsForNewLease(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	lease := revisionLease(7, "lease-7", "digest-7")
+	store.journal = model.GenerationJournal{
+		Version: 1, AgentID: "edge-1",
+		Candidate: &model.GenerationRecord{
+			GenerationID: revisionGenerationID(lease), Revision: 7, SnapshotDigest: "digest-7",
+			Phase: model.GenerationPhaseFailed, Lease: lease,
+		},
+	}
+	applyCalls := 0
+	runtime := NewRuntimeWithActivator(func(_ context.Context, _, _ model.Snapshot) error {
+		applyCalls++
+		return nil
+	})
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync() error = %v", err)
+	}
+	if len(client.starts) != 0 || len(client.reports) != 0 || applyCalls != 0 {
+		t.Fatalf("failed lease replayed start/report/apply = %d/%d/%d", len(client.starts), len(client.reports), applyCalls)
+	}
+}
+
 func TestRevisionSyncRecoversCutoverWithoutDuplicateStartOrApply(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)
@@ -251,6 +351,109 @@ func TestRevisionSyncRuntimeStateFailureDoesNotOverwriteLastKnownGood(t *testing
 	}
 	if runtime.ActiveSnapshot().Revision != previous.Revision {
 		t.Fatalf("active revision = %d, want rollback to %d", runtime.ActiveSnapshot().Revision, previous.Revision)
+	}
+}
+
+func TestRevisionSyncRestoresPersistedAppliedSnapshotBeforeNoUpdate(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	stable := revisionSnapshot(6)
+	store.applied = stable
+	store.lkg = stable
+	store.journal = model.GenerationJournal{
+		Version: 1, AgentID: "edge-1",
+		Active: &model.GenerationRecord{
+			GenerationID: "generation-6", Revision: 6, SnapshotDigest: "digest-6",
+			Phase: model.GenerationPhaseActive, Lease: revisionLease(6, "lease-6", "digest-6"), Acknowledged: true,
+		},
+	}
+	applyCalls := 0
+	runtime := NewRuntimeWithActivator(func(_ context.Context, _, next model.Snapshot) error {
+		applyCalls++
+		events = append(events, fmt.Sprintf("runtime:restore:%d", next.Revision))
+		return nil
+	})
+	client := &revisionClientStub{events: &events, pull: model.RevisionPull{DesiredRevision: 6}}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync() error = %v", err)
+	}
+	if applyCalls != 1 || runtime.ActiveSnapshot().Revision != 6 {
+		t.Fatalf("restore calls/active revision = %d/%d, want restored revision 6", applyCalls, runtime.ActiveSnapshot().Revision)
+	}
+	assertEventOrder(t, events, "runtime:restore:6", "heartbeat", "pull")
+}
+
+func TestRevisionSyncRejectsZeroDeadlineLease(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	pull := revisionPull(7, "lease-7", "digest-7")
+	pull.Lease.DeadlineAt = time.Time{}
+	client := &revisionClientStub{events: &events, pull: pull}
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("PerformSync() error = %v, want zero deadline rejection", err)
+	}
+	if len(client.starts) != 0 {
+		t.Fatalf("start calls = %d, want no start for zero deadline", len(client.starts))
+	}
+}
+
+func TestRevisionSyncRejectsUnsupportedJournalVersion(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	store.journal = model.GenerationJournal{Version: 99, AgentID: "edge-1"}
+	client := &revisionClientStub{events: &events, pull: model.RevisionPull{}}
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "journal version") {
+		t.Fatalf("PerformSync() error = %v, want unsupported journal version rejection", err)
+	}
+}
+
+func TestRevisionSyncRejectsUnknownCandidatePhase(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	store.journal = model.GenerationJournal{
+		Version: 1, AgentID: "edge-1",
+		Candidate: &model.GenerationRecord{Revision: 7, Phase: "unknown"},
+	}
+	client := &revisionClientStub{events: &events, pull: model.RevisionPull{}}
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "invalid phase") {
+		t.Fatalf("PerformSync() error = %v, want unknown phase rejection", err)
+	}
+	if len(client.starts) != 0 {
+		t.Fatalf("start calls = %d, want no start from unknown phase", len(client.starts))
+	}
+}
+
+func TestRevisionSyncAppliesFullSnapshotWithoutLegacyMerge(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	previous := revisionSnapshot(6)
+	previous.Rules = []model.HTTPRule{{FrontendURL: "https://stale.example"}}
+	store.desired = previous
+	store.applied = previous
+	store.lkg = previous
+	runtime := NewRuntime()
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync() error = %v", err)
+	}
+	if store.desired.Rules == nil || len(store.desired.Rules) != 0 || store.applied.Rules == nil || len(store.applied.Rules) != 0 {
+		t.Fatalf("desired/applied rules = %+v/%+v, want explicit empty full snapshot", store.desired.Rules, store.applied.Rules)
 	}
 }
 
@@ -426,19 +629,18 @@ func revisionPull(revision int64, leaseID, digest string) model.RevisionPull {
 func revisionLease(revision int64, leaseID, digest string) model.RevisionLease {
 	return model.RevisionLease{
 		AgentID: "edge-1", Revision: revision, Attempt: 1, LeaseID: leaseID,
-		SnapshotDigest: digest, DeadlineAt: time.Now().Add(time.Hour),
+		SnapshotDigest: digest, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+		DeadlineAt: time.Now().Add(time.Hour),
 	}
 }
 
 func revisionSnapshot(revision int64) model.Snapshot {
-	return model.Snapshot{
-		DesiredVersion: fmt.Sprintf("v%d", revision),
-		Revision:       revision,
-		Rules:          []model.HTTPRule{}, L4Rules: []model.L4Rule{},
-		RelayListeners: []model.RelayListener{}, WireGuardProfiles: []model.WireGuardProfile{},
-		EgressProfiles: []model.EgressProfile{}, Certificates: []model.ManagedCertificateBundle{},
-		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	payload := fmt.Sprintf(`{"desired_version":"v%d","desired_revision":%d,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`, revision, revision)
+	var snapshot model.Snapshot
+	if err := json.Unmarshal([]byte(payload), &snapshot); err != nil {
+		panic(err)
 	}
+	return snapshot
 }
 
 func assertEventOrder(t *testing.T, events []string, expected ...string) {

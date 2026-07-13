@@ -18,7 +18,7 @@ import (
 )
 
 func TestRevisionProtocolUsesAuthenticatedPathsAndPayloads(t *testing.T) {
-	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
+	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
 	deadline := time.Now().Add(time.Minute).UTC().Truncate(time.Second)
 
@@ -75,7 +75,7 @@ func TestRevisionProtocolUsesAuthenticatedPathsAndPayloads(t *testing.T) {
 	defer server.Close()
 
 	client := NewSyncClient(SyncClientConfig{
-		MasterURL: server.URL, AgentToken: "agent-secret",
+		MasterURL: server.URL, AgentToken: "agent-secret", AgentID: "edge-1",
 	}, server.Client())
 	pull, err := client.PullRevision(t.Context())
 	if err != nil {
@@ -92,6 +92,38 @@ func TestRevisionProtocolUsesAuthenticatedPathsAndPayloads(t *testing.T) {
 	}
 	if requestIndex != len(expected) {
 		t.Fatalf("request count = %d, want %d", requestIndex, len(expected))
+	}
+}
+
+func TestPullRevisionRejectsDigestValidIncompleteSnapshot(t *testing.T) {
+	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[]}`)
+	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"%s","deadline_at":"2099-01-01T00:00:00Z"},"snapshot":%s}}`, digest, snapshotJSON)
+	}))
+	defer server.Close()
+
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-secret", AgentID: "edge-1"}, server.Client())
+	_, err := client.PullRevision(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "full snapshot") {
+		t.Fatalf("PullRevision() error = %v, want incomplete full snapshot rejection", err)
+	}
+}
+
+func TestPullRevisionRejectsLeaseForDifferentAgent(t *testing.T) {
+	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
+	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-2","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"%s","deadline_at":"2099-01-01T00:00:00Z"},"snapshot":%s}}`, digest, snapshotJSON)
+	}))
+	defer server.Close()
+
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-secret", AgentID: "edge-1"}, server.Client())
+	_, err := client.PullRevision(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "different agent") {
+		t.Fatalf("PullRevision() error = %v, want cross-agent lease rejection", err)
 	}
 }
 
