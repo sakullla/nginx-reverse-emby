@@ -141,6 +141,7 @@ type PacketBroker struct {
 	shutdownErr         error
 	wg                  sync.WaitGroup
 	beforePacketPublish func(*PacketEndpoint)
+	beforeWritePublish  func(*PacketEndpoint)
 	writeMu             sync.Mutex
 	writeStateMu        sync.Mutex
 	writing             *PacketEndpoint
@@ -365,6 +366,8 @@ func (b *PacketBroker) releaseIfTarget(key AssociationKey, endpoint *PacketEndpo
 }
 
 func (b *PacketBroker) removeEndpoint(endpoint *PacketEndpoint) {
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
 	b.mu.Lock()
 	delete(b.endpoints, endpoint)
 	delete(b.published, endpoint)
@@ -378,27 +381,39 @@ func (b *PacketBroker) removeEndpoint(endpoint *PacketEndpoint) {
 }
 
 func (b *PacketBroker) writePacket(writer *packetEndpointWriter, payload []byte, remote net.Addr) (int, error) {
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
 	b.mu.Lock()
 	_, published := b.published[writer.endpoint]
 	b.mu.Unlock()
 	if !published {
 		return 0, moduleutil.ErrVirtualEndpointInactive
 	}
-	b.writeMu.Lock()
-	defer b.writeMu.Unlock()
-	deadline := writer.currentDeadline()
+	writer.mu.Lock()
+	if b.beforeWritePublish != nil {
+		b.beforeWritePublish(writer.endpoint)
+	}
 	b.writeStateMu.Lock()
 	b.writing = writer.endpoint
-	_ = b.conn.SetWriteDeadline(deadline)
+	deadlineErr := b.conn.SetWriteDeadline(writer.deadline)
 	b.writeStateMu.Unlock()
+	writer.mu.Unlock()
+	if deadlineErr != nil {
+		b.writeStateMu.Lock()
+		if b.writing == writer.endpoint {
+			b.writing = nil
+		}
+		b.writeStateMu.Unlock()
+		return 0, deadlineErr
+	}
 	n, err := b.conn.WriteTo(payload, remote)
 	b.writeStateMu.Lock()
 	if b.writing == writer.endpoint {
 		b.writing = nil
 	}
-	_ = b.conn.SetWriteDeadline(time.Time{})
+	clearErr := b.conn.SetWriteDeadline(time.Time{})
 	b.writeStateMu.Unlock()
-	return n, err
+	return n, errors.Join(err, clearErr)
 }
 
 func addrNetwork(addr net.Addr) string {

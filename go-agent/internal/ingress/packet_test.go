@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -60,6 +61,40 @@ func TestPacketBrokerUsesPluggableClassifier(t *testing.T) {
 	}
 	if key := classifyPacket(nil, []byte("fallback"), metadata); key != FiveTupleAssociationKey("udp", metadata.LocalAddr, metadata.RemoteAddr) {
 		t.Fatalf("fallback key = %q", key)
+	}
+}
+
+func TestPacketBrokerDeadlineUpdateCannotMissWritePublication(t *testing.T) {
+	physical := newDeadlineBoundaryPacketConn()
+	broker := NewPacketBroker(physical, "udp")
+	defer broker.Close()
+	endpoint := broker.NewEndpoint("generation", 1)
+	if _, err := broker.Activate(endpoint); err != nil {
+		t.Fatal(err)
+	}
+	boundary, release := make(chan struct{}), make(chan struct{})
+	broker.beforeWritePublish = func(target *PacketEndpoint) {
+		if target == endpoint {
+			close(boundary)
+			<-release
+		}
+	}
+	written := make(chan error, 1)
+	go func() { _, err := endpoint.WriteTo([]byte("blocked"), testPacketAddr("remote")); written <- err }()
+	<-boundary
+	deadlineSet := make(chan error, 1)
+	go func() { deadlineSet <- endpoint.SetWriteDeadline(time.Now().Add(10 * time.Millisecond)) }()
+	select {
+	case <-deadlineSet:
+		t.Fatal("deadline update escaped before publication")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-deadlineSet; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-written; !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("WriteTo error = %v", err)
 	}
 }
 
@@ -250,3 +285,44 @@ func (*temporaryErrorPacketConn) LocalAddr() net.Addr                       { re
 func (*temporaryErrorPacketConn) SetDeadline(time.Time) error               { return nil }
 func (*temporaryErrorPacketConn) SetReadDeadline(time.Time) error           { return nil }
 func (*temporaryErrorPacketConn) SetWriteDeadline(time.Time) error          { return nil }
+
+type deadlineBoundaryPacketConn struct {
+	closed, writeRelease chan struct{}
+	closeOnce            sync.Once
+}
+
+func newDeadlineBoundaryPacketConn() *deadlineBoundaryPacketConn {
+	return &deadlineBoundaryPacketConn{closed: make(chan struct{}), writeRelease: make(chan struct{})}
+}
+func (c *deadlineBoundaryPacketConn) ReadFrom([]byte) (int, net.Addr, error) {
+	<-c.closed
+	return 0, nil, net.ErrClosed
+}
+func (c *deadlineBoundaryPacketConn) WriteTo([]byte, net.Addr) (int, error) {
+	<-c.writeRelease
+	return 0, os.ErrDeadlineExceeded
+}
+func (c *deadlineBoundaryPacketConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+		select {
+		case <-c.writeRelease:
+		default:
+			close(c.writeRelease)
+		}
+	})
+	return nil
+}
+func (*deadlineBoundaryPacketConn) LocalAddr() net.Addr             { return testPacketAddr("deadline") }
+func (c *deadlineBoundaryPacketConn) SetDeadline(d time.Time) error { return c.SetWriteDeadline(d) }
+func (*deadlineBoundaryPacketConn) SetReadDeadline(time.Time) error { return nil }
+func (c *deadlineBoundaryPacketConn) SetWriteDeadline(d time.Time) error {
+	if !d.IsZero() {
+		select {
+		case <-c.writeRelease:
+		default:
+			close(c.writeRelease)
+		}
+	}
+	return nil
+}
