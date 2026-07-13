@@ -25,6 +25,7 @@ type Config struct {
 	DrainController        *generation.DrainController
 	DrainTimeout           time.Duration
 	ExternalDrainLifecycle bool
+	GenerationSelector     HTTPGenerationSelector
 }
 
 type Module struct {
@@ -67,13 +68,15 @@ func NewModule(cfg Config) *Module {
 	if drainTimeout <= 0 {
 		drainTimeout = 10 * time.Minute
 	}
+	ingress := newHTTPIngressManager()
+	ingress.selector = cfg.GenerationSelector
 	return &Module{
 		cache:        model.NewCache(cfg.BackendFailures),
 		transport:    transport,
 		options:      cfg.Resilience,
 		http3Enabled: cfg.HTTP3Enabled,
 		localAgentID: strings.TrimSpace(cfg.AgentID),
-		ingress:      newHTTPIngressManager(),
+		ingress:      ingress,
 		sessions:     sessions,
 		drain:        drain,
 		drainTimeout: drainTimeout,

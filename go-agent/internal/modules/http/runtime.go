@@ -13,22 +13,29 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 type Runtime struct {
-	mu            sync.Mutex
-	bindings      []string
-	servers       []*http.Server
-	http3Servers  []*http3ServerHandle
-	listeners     []net.Listener
-	ingressLeases []*httpIngressLease
-	tracker       *httpSessionTracker
-	closeOnce     sync.Once
-	drainOnce     sync.Once
-	closeErr      error
+	mu                sync.Mutex
+	bindings          []string
+	servers           []*http.Server
+	http3Servers      []*http3ServerHandle
+	listeners         []net.Listener
+	ingressLeases     []*httpIngressLease
+	tracker           *httpSessionTracker
+	ingress           *httpIngressManager
+	handlers          map[string]*generationHTTPHandler
+	stagedActivations []*httpIngressActivation
+	stageOnce         sync.Once
+	stageErr          error
+	published         atomic.Bool
+	closeOnce         sync.Once
+	drainOnce         sync.Once
+	closeErr          error
 }
 
 type runtimeListenerSpec struct {
@@ -163,6 +170,19 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closeOnce.Do(func() {
+		if r.ingress != nil {
+			_ = r.ingress.currentRuntime()
+			if !r.published.Load() {
+				r.mu.Lock()
+				activations := r.stagedActivations
+				r.stagedActivations = nil
+				r.mu.Unlock()
+				for index := len(activations) - 1; index >= 0; index-- {
+					activations[index].rollback()
+				}
+			}
+			r.ingress.legacyActive.CompareAndSwap(r, nil)
+		}
 		r.mu.Lock()
 		servers := r.servers
 		http3Servers := r.http3Servers

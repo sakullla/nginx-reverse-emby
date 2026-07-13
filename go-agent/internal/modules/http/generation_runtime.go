@@ -33,10 +33,16 @@ type HTTPSessionRegistrar interface {
 	RegisterSession(string, generation.EntityKey, string, generation.Session) (*generation.SessionHandle, error)
 }
 
+type HTTPGenerationSelector interface {
+	ActiveGeneration() *module.GenerationView
+}
+
 type httpIngressManager struct {
-	mu       sync.Mutex
-	bindings map[string]*httpIngressBinding
-	closed   bool
+	mu           sync.Mutex
+	bindings     map[string]*httpIngressBinding
+	selector     HTTPGenerationSelector
+	legacyActive atomic.Pointer[Runtime]
+	closed       bool
 }
 
 type httpIngressBinding struct {
@@ -44,7 +50,6 @@ type httpIngressBinding struct {
 	stream         *ingress.StreamBroker
 	packet         *ingress.PacketBroker
 	quicClassifier *quicConnectionClassifier
-	activeHandler  atomic.Pointer[generationHTTPHandler]
 	refs           int
 }
 
@@ -53,21 +58,42 @@ type httpIngressLease struct {
 	binding *httpIngressBinding
 	stream  *ingress.StreamEndpoint
 	packet  *ingress.PacketEndpoint
-	handler *generationHTTPHandler
 
 	releaseOnce sync.Once
 	releaseErr  error
 }
 
 type httpIngressActivation struct {
-	lease           *httpIngressLease
-	previousStream  *ingress.StreamEndpoint
-	previousPacket  *ingress.PacketEndpoint
-	previousHandler *generationHTTPHandler
+	lease          *httpIngressLease
+	previousStream *ingress.StreamEndpoint
+	previousPacket *ingress.PacketEndpoint
 }
 
 func newHTTPIngressManager() *httpIngressManager {
 	return &httpIngressManager{bindings: make(map[string]*httpIngressBinding)}
+}
+
+func (m *httpIngressManager) currentRuntime() *Runtime {
+	if m == nil {
+		return nil
+	}
+	if m.selector != nil {
+		view := m.selector.ActiveGeneration()
+		if view == nil {
+			return nil
+		}
+		provider, ok := view.Resolve(module.ProviderDiagnosticsHTTPSource)
+		if !ok {
+			return nil
+		}
+		source, ok := provider.(httpDiagnosticsSource)
+		if !ok || source.runtime == nil {
+			return nil
+		}
+		source.runtime.published.Store(true)
+		return source.runtime
+	}
+	return m.legacyActive.Load()
 }
 
 func (m *httpIngressManager) acquire(ctx context.Context, generationID string, spec runtimeListenerSpec, providers Providers, http3Enabled bool) (*httpIngressLease, error) {
@@ -152,13 +178,11 @@ func (l *httpIngressLease) activate() (*httpIngressActivation, error) {
 	if l == nil || l.binding == nil {
 		return nil, net.ErrClosed
 	}
-	previousHandler := l.binding.activeHandler.Swap(l.handler)
 	previousStream, err := l.binding.stream.Activate(l.stream)
 	if err != nil {
-		l.binding.activeHandler.Store(previousHandler)
 		return nil, err
 	}
-	activation := &httpIngressActivation{lease: l, previousStream: previousStream, previousHandler: previousHandler}
+	activation := &httpIngressActivation{lease: l, previousStream: previousStream}
 	if l.packet == nil {
 		return activation, nil
 	}
@@ -175,7 +199,6 @@ func (a *httpIngressActivation) rollback() {
 	if a == nil || a.lease == nil || a.lease.binding == nil {
 		return
 	}
-	a.lease.binding.activeHandler.Store(a.previousHandler)
 	if a.lease.packet != nil {
 		if a.previousPacket != nil {
 			_, _ = a.lease.binding.packet.Activate(a.previousPacket)
@@ -195,9 +218,6 @@ func (l *httpIngressLease) release() error {
 		return nil
 	}
 	l.releaseOnce.Do(func() {
-		if l.binding != nil && l.handler != nil {
-			l.binding.activeHandler.CompareAndSwap(l.handler, nil)
-		}
 		l.releaseErr = errors.Join(closePacketEndpoint(l.packet), closeStreamEndpoint(l.stream))
 		if l.manager == nil || l.binding == nil {
 			return
@@ -625,6 +645,8 @@ func prepareGenerationRuntime(
 	runtime := &Runtime{
 		bindings: make([]string, 0, len(specs)),
 		tracker:  newHTTPSessionTracker(generationID, sessionRegistrar, registrationReady),
+		ingress:  ingressManager,
+		handlers: make(map[string]*generationHTTPHandler, len(specs)),
 	}
 	for _, spec := range specs {
 		proxy, err := newServerWithResilience(spec.listener, relayListeners, providers, backendCache, sharedTransport, resilience)
@@ -632,14 +654,15 @@ func prepareGenerationRuntime(
 			_ = runtime.Close()
 			return nil, err
 		}
-		handler := &generationHTTPHandler{server: proxy, tracker: runtime.tracker}
+		handler := &generationHTTPHandler{
+			server: proxy, tracker: runtime.tracker, ingress: ingressManager, bindingKey: spec.bindingKey,
+		}
 		lease, err := ingressManager.acquire(ctx, generationID, spec, providers, http3Enabled)
 		if err != nil {
 			_ = runtime.Close()
 			return nil, err
 		}
-		handler.binding = lease.binding
-		lease.handler = handler
+		runtime.handlers[spec.bindingKey] = handler
 		runtime.ingressLeases = append(runtime.ingressLeases, lease)
 
 		listener := net.Listener(lease.stream)
@@ -697,6 +720,9 @@ func (r *Runtime) Ready() error {
 	// TCP endpoints are fully constructed before their Serve goroutines start,
 	// and HTTP/3 creates its QUIC listener synchronously. There is no deferred
 	// startup result to poll here.
+	if r != nil && r.ingress != nil && r.ingress.selector != nil {
+		return r.stage()
+	}
 	return nil
 }
 
@@ -715,21 +741,46 @@ func (r *Runtime) Activate() error {
 	if r == nil {
 		return nil
 	}
-	r.mu.Lock()
-	leases := append([]*httpIngressLease(nil), r.ingressLeases...)
-	r.mu.Unlock()
-	activations := make([]*httpIngressActivation, 0, len(leases))
-	for _, lease := range leases {
-		activation, err := lease.activate()
-		if err != nil {
-			for i := len(activations) - 1; i >= 0; i-- {
-				activations[i].rollback()
-			}
-			return err
-		}
-		activations = append(activations, activation)
+	if err := r.stage(); err != nil {
+		return err
+	}
+	r.published.Store(true)
+	if r.ingress != nil && r.ingress.selector == nil {
+		r.ingress.legacyActive.Store(r)
 	}
 	return nil
+}
+
+func (r *Runtime) stage() error {
+	if r == nil {
+		return nil
+	}
+	r.stageOnce.Do(func() {
+		if r.ingress != nil {
+			if current := r.ingress.currentRuntime(); current != nil {
+				current.published.Store(true)
+			}
+		}
+		r.mu.Lock()
+		leases := append([]*httpIngressLease(nil), r.ingressLeases...)
+		r.mu.Unlock()
+		activations := make([]*httpIngressActivation, 0, len(leases))
+		for _, lease := range leases {
+			activation, err := lease.activate()
+			if err != nil {
+				for index := len(activations) - 1; index >= 0; index-- {
+					activations[index].rollback()
+				}
+				r.stageErr = err
+				return
+			}
+			activations = append(activations, activation)
+		}
+		r.mu.Lock()
+		r.stagedActivations = activations
+		r.mu.Unlock()
+	})
+	return r.stageErr
 }
 
 func (r *Runtime) BeginDrain() {
@@ -1035,14 +1086,25 @@ func (w *generationResponseWriter) Flush() {
 }
 
 type generationHTTPHandler struct {
-	server  *Server
-	tracker *httpSessionTracker
-	binding *httpIngressBinding
+	server     *Server
+	tracker    *httpSessionTracker
+	ingress    *httpIngressManager
+	bindingKey string
 }
 
 func (h *generationHTTPHandler) ServeHTTP(w stdhttp.ResponseWriter, req *stdhttp.Request) {
-	if h != nil && h.binding != nil {
-		if active := h.binding.activeHandler.Load(); active != nil && active != h {
+	if h != nil && h.ingress != nil {
+		activeRuntime := h.ingress.currentRuntime()
+		if activeRuntime == nil {
+			stdhttp.Error(w, "HTTP generation is not published", stdhttp.StatusServiceUnavailable)
+			return
+		}
+		active := activeRuntime.handlers[h.bindingKey]
+		if active == nil {
+			stdhttp.NotFound(w, req)
+			return
+		}
+		if active != h {
 			active.serveActive(w, req)
 			return
 		}
@@ -1140,7 +1202,7 @@ func (t *httpGenerationTransaction) RegisterProviders(reg module.ProviderRegistr
 	if t == nil || t.module == nil {
 		return nil
 	}
-	return reg.Provide(module.ProviderDiagnosticsHTTPSource, httpDiagnosticsSource{cache: t.module.cache})
+	return reg.Provide(module.ProviderDiagnosticsHTTPSource, httpDiagnosticsSource{cache: t.module.cache, runtime: t.runtime})
 }
 
 func (t *httpGenerationTransaction) Ready(context.Context) error {
@@ -1255,7 +1317,10 @@ func httpDrainGenerationIsActive(controller *generation.DrainController, generat
 	return false
 }
 
-type httpDiagnosticsSource struct{ cache *model.Cache }
+type httpDiagnosticsSource struct {
+	cache   *model.Cache
+	runtime *Runtime
+}
 
 func (s httpDiagnosticsSource) Cache() *model.Cache { return s.cache }
 

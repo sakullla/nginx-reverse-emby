@@ -393,6 +393,104 @@ func TestHTTPGenerationProductionModuleRegistersRequestWithDrainController(t *te
 	}
 }
 
+func TestHTTPGenerationViewPublishIsTheOnlySelectorVisibilityPoint(t *testing.T) {
+	oldBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = io.WriteString(w, "old-view")
+	}))
+	defer oldBackend.Close()
+	newBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = io.WriteString(w, "new-view")
+	}))
+	defer newBackend.Close()
+
+	registry := module.NewRegistry()
+	provider := &testTLSProvider{}
+	if err := registry.Register(&generationTestTLSModule{provider: provider}); err != nil {
+		t.Fatalf("register TLS module: %v", err)
+	}
+	mod := NewModule(Config{
+		GenerationSelector: registry,
+		SessionRegistrar:   generationTestNoopSessionRegistrar{},
+	})
+	defer mod.Close()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("register HTTP module: %v", err)
+	}
+
+	port := pickFreeTCPUDPPort(t)
+	frontend := fmt.Sprintf("http://127.0.0.1:%d", port)
+	first := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{
+		ID: 9, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: oldBackend.URL}},
+	}}}
+	second := model.Snapshot{Revision: 2, Rules: []model.HTTPRule{{
+		ID: 9, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: newBackend.URL}},
+	}}}
+
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, first)
+	if err != nil {
+		t.Fatalf("first NewGenerationContext() error = %v", err)
+	}
+	firstCandidate, err := registry.PrepareGeneration(context.Background(), firstContext)
+	if err != nil {
+		t.Fatalf("first PrepareGeneration() error = %v", err)
+	}
+	if err := firstCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("first Ready() error = %v", err)
+	}
+	firstView, _ := firstCandidate.Publish()
+	if got := generationTestGET(t, frontend+"/"); got != "old-view" {
+		t.Fatalf("first published response = %q, want old-view", got)
+	}
+
+	secondContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("second NewGenerationContext() error = %v", err)
+	}
+	secondCandidate, err := registry.PrepareGeneration(context.Background(), secondContext)
+	if err != nil {
+		t.Fatalf("second PrepareGeneration() error = %v", err)
+	}
+	if err := secondCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("second Ready() error = %v", err)
+	}
+	if got := generationTestGET(t, frontend+"/"); got != "old-view" {
+		t.Fatalf("ready-only response = %q, want old-view", got)
+	}
+	secondView, previousView := secondCandidate.Publish()
+	if previousView != firstView {
+		t.Fatal("second Publish() did not retire the first HTTP view")
+	}
+	if got := generationTestGET(t, frontend+"/"); got != "new-view" {
+		t.Fatalf("second published response = %q, want new-view", got)
+	}
+	third := first
+	third.Revision = 3
+	thirdContext, err := module.NewGenerationContext(second, third)
+	if err != nil {
+		t.Fatalf("third NewGenerationContext() error = %v", err)
+	}
+	thirdCandidate, err := registry.PrepareGeneration(context.Background(), thirdContext)
+	if err != nil {
+		t.Fatalf("third PrepareGeneration() error = %v", err)
+	}
+	if err := thirdCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("third Ready() error = %v", err)
+	}
+	if got := generationTestGET(t, frontend+"/"); got != "new-view" {
+		t.Fatalf("unpublished third-candidate response = %q, want new-view", got)
+	}
+	if err := thirdCandidate.Destroy(context.Background()); err != nil {
+		t.Fatalf("destroy unpublished third candidate: %v", err)
+	}
+	if got := generationTestGET(t, frontend+"/"); got != "new-view" {
+		t.Fatalf("response after candidate destroy = %q, want new-view", got)
+	}
+	if err := firstView.Destroy(context.Background()); err != nil {
+		t.Fatalf("destroy first view: %v", err)
+	}
+	defer secondView.Destroy(context.Background())
+}
+
 func TestHTTPGenerationReconcilesSessionsAfterPartialDrainActivationFailure(t *testing.T) {
 	controller := generation.NewDrainController(nil)
 	if err := controller.Activate(context.Background(), generation.Generation{
@@ -687,7 +785,6 @@ func TestHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) 
 		if err != nil {
 			t.Fatalf("acquire old %s: %v", spec.bindingKey, err)
 		}
-		oldLease.handler = &generationHTTPHandler{}
 		if _, err := oldLease.activate(); err != nil {
 			t.Fatalf("activate old %s: %v", spec.bindingKey, err)
 		}
@@ -696,7 +793,6 @@ func TestHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) 
 		if err != nil {
 			t.Fatalf("acquire new %s: %v", spec.bindingKey, err)
 		}
-		newLease.handler = &generationHTTPHandler{}
 		newLeases = append(newLeases, newLease)
 	}
 	defer func() {
@@ -710,7 +806,9 @@ func TestHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) 
 	if err := newLeases[1].stream.Close(); err != nil {
 		t.Fatalf("close second candidate endpoint: %v", err)
 	}
-	runtime := &Runtime{ingressLeases: newLeases}
+	oldRuntime := &Runtime{}
+	manager.legacyActive.Store(oldRuntime)
+	runtime := &Runtime{ingressLeases: newLeases, ingress: manager}
 	if err := runtime.Activate(); err == nil {
 		t.Fatal("Activate() error = nil, want second binding failure")
 	}
@@ -718,9 +816,9 @@ func TestHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) 
 		if active := oldLease.binding.stream.Active(); active != oldLease.stream {
 			t.Fatalf("binding %d active endpoint = %p, want restored old %p", index, active, oldLease.stream)
 		}
-		if active := oldLease.binding.activeHandler.Load(); active != oldLease.handler {
-			t.Fatalf("binding %d active handler = %p, want restored old %p", index, active, oldLease.handler)
-		}
+	}
+	if active := manager.legacyActive.Load(); active != oldRuntime {
+		t.Fatalf("active runtime = %p, want restored old %p", active, oldRuntime)
 	}
 }
 
@@ -1028,6 +1126,55 @@ type generationTestFailingSession struct{}
 func (generationTestFailingSession) ForceClose(context.Context, string) error {
 	return errors.New("forced close failed")
 }
+
+type generationTestNoopSessionRegistrar struct{}
+
+func (generationTestNoopSessionRegistrar) RegisterSession(
+	string,
+	generation.EntityKey,
+	string,
+	generation.Session,
+) (*generation.SessionHandle, error) {
+	return nil, nil
+}
+
+type generationTestTLSModule struct {
+	provider TLSMaterialProvider
+}
+
+func (*generationTestTLSModule) Name() string { return "generation-test-tls" }
+
+func (*generationTestTLSModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{
+		Name:     "generation-test-tls",
+		Provides: []module.ProviderRef{module.ProviderTLSMaterial},
+	}
+}
+
+func (m *generationTestTLSModule) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(module.ProviderTLSMaterial, m.provider)
+}
+
+func (*generationTestTLSModule) Capabilities(module.SnapshotView) []module.Capability { return nil }
+func (*generationTestTLSModule) Apply(context.Context, module.ApplyRequest) error     { return nil }
+func (*generationTestTLSModule) Stop(context.Context) error                           { return nil }
+
+func (m *generationTestTLSModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	return generationTestTLSTransaction{provider: m.provider}, nil
+}
+
+type generationTestTLSTransaction struct {
+	provider TLSMaterialProvider
+}
+
+func (t generationTestTLSTransaction) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(module.ProviderTLSMaterial, t.provider)
+}
+
+func (generationTestTLSTransaction) Ready(context.Context) error   { return nil }
+func (generationTestTLSTransaction) Commit() error                 { return nil }
+func (generationTestTLSTransaction) Rollback() error               { return nil }
+func (generationTestTLSTransaction) Destroy(context.Context) error { return nil }
 
 type generationTestPacket struct {
 	payload []byte
