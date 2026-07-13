@@ -74,20 +74,43 @@ func (m *Module) Prepare(_ context.Context, req module.ApplyRequest) (module.Mod
 		return nil, err
 	}
 	previous := m.committedState()
-	committed := false
-	return module.TransactionFuncs{
-		CommitFunc: func() error {
-			m.installState(next)
-			committed = true
-			return nil
-		},
-		RollbackFunc: func() error {
-			if committed {
-				m.installState(previous)
-			}
-			return nil
-		},
-	}, nil
+	return &diagnosticsTransaction{module: m, previous: previous, next: next}, nil
+}
+
+type diagnosticsTransaction struct {
+	module    *Module
+	previous  diagnosticsState
+	next      diagnosticsState
+	published bool
+}
+
+func (*diagnosticsTransaction) Ready(context.Context) error { return nil }
+
+func (t *diagnosticsTransaction) Publish() {
+	if t == nil || t.module == nil || t.published {
+		return
+	}
+	t.module.installState(t.next)
+	t.published = true
+}
+
+func (*diagnosticsTransaction) Destroy(context.Context) error { return nil }
+
+func (t *diagnosticsTransaction) Commit() error {
+	if err := t.Ready(context.Background()); err != nil {
+		return err
+	}
+	t.Publish()
+	return nil
+}
+
+func (t *diagnosticsTransaction) Rollback() error {
+	if t == nil || t.module == nil || !t.published {
+		return nil
+	}
+	t.module.installState(t.previous)
+	t.published = false
+	return nil
 }
 
 func buildDiagnosticsState(req module.ApplyRequest) (diagnosticsState, error) {
@@ -222,3 +245,5 @@ func relayProviderFromResolver(resolver module.ProviderResolver) relay.TLSMateri
 	}
 	return nil
 }
+
+var _ module.GenerationTransaction = (*diagnosticsTransaction)(nil)

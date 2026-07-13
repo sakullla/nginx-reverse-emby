@@ -64,6 +64,42 @@ func TestModuleBuildsHandlerFromDiagnosticSourceProviders(t *testing.T) {
 	}
 }
 
+func TestModuleKeepsPreparedDiagnosticsStateInvisibleUntilPublish(t *testing.T) {
+	ctx := context.Background()
+	mod := NewModule()
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "http-source", provides: module.ProviderDiagnosticsHTTPSource, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, staticProviderModule{name: "l4-source", provides: module.ProviderDiagnosticsL4Source, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, mod)
+	first := model.Snapshot{Revision: 1}
+	if err := registry.Apply(ctx, model.Snapshot{}, first); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	firstView := registry.ActiveGeneration()
+	firstHandler := mod.Handler()
+
+	second := model.Snapshot{Revision: 2}
+	generationContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	candidate, err := registry.PrepareGeneration(ctx, generationContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if err := candidate.Ready(ctx); err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+	if registry.ActiveGeneration() != firstView || mod.Handler() != firstHandler {
+		t.Fatal("diagnostics candidate became active before publish")
+	}
+
+	candidate.Publish()
+	if mod.Handler() == nil || mod.Handler() == firstHandler {
+		t.Fatal("diagnostics handler was not replaced at publish")
+	}
+}
+
 func TestModuleRollbackKeepsPreviousCommittedDiagnosticsState(t *testing.T) {
 	t.Parallel()
 

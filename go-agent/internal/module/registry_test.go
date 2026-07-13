@@ -329,6 +329,124 @@ func TestRegistryProviderResolverRegistersProvidersWithoutApplyingModules(t *tes
 	}
 }
 
+func TestRegistryGenerationCandidateIsInvisibleUntilPublish(t *testing.T) {
+	registry := module.NewRegistry()
+	providerRef := module.ProviderRef("test.generation")
+	mod := &generationRecordingModule{name: "generation", providerRef: providerRef}
+	mustRegister(t, registry, mod)
+
+	first := mustGenerationContext(t, model.Snapshot{}, model.Snapshot{Revision: 1})
+	firstCandidate, err := registry.PrepareGeneration(context.Background(), first)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(first) error = %v", err)
+	}
+	if err := firstCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready(first) error = %v", err)
+	}
+	firstView, previous := firstCandidate.Publish()
+	if previous != nil {
+		t.Fatalf("first previous view = %+v, want nil", previous)
+	}
+	if got := resolvedGeneration(t, registry, providerRef); got != 1 {
+		t.Fatalf("active provider generation = %d, want 1", got)
+	}
+
+	second := mustGenerationContext(t, model.Snapshot{Revision: 1}, model.Snapshot{Revision: 2})
+	secondCandidate, err := registry.PrepareGeneration(context.Background(), second)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(second) error = %v", err)
+	}
+	if got := resolvedGeneration(t, registry, providerRef); got != 1 {
+		t.Fatalf("provider changed during prepare: got %d want 1", got)
+	}
+	if err := secondCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready(second) error = %v", err)
+	}
+	if got := resolvedGeneration(t, registry, providerRef); got != 1 {
+		t.Fatalf("provider changed during readiness: got %d want 1", got)
+	}
+	if got := registry.ActiveGeneration().ProviderHash(); got != firstView.ProviderHash() {
+		t.Fatalf("provider hash changed before publish: got %q want %q", got, firstView.ProviderHash())
+	}
+
+	secondView, previous := secondCandidate.Publish()
+	if previous != firstView {
+		t.Fatalf("second previous view = %p, want %p", previous, firstView)
+	}
+	if got := resolvedGeneration(t, registry, providerRef); got != 2 {
+		t.Fatalf("active provider generation = %d, want 2", got)
+	}
+	if secondView.ProviderHash() == firstView.ProviderHash() {
+		t.Fatal("provider hash did not change with the published generation")
+	}
+}
+
+func TestRegistryReadinessFailureKeepsActiveGenerationAndDestroysOnlyCandidate(t *testing.T) {
+	registry := module.NewRegistry()
+	providerRef := module.ProviderRef("test.generation")
+	readyErr := errors.New("candidate not ready")
+	mod := &generationRecordingModule{name: "generation", providerRef: providerRef, failRevision: 2, readyErr: readyErr}
+	mustRegister(t, registry, mod)
+
+	firstCandidate, err := registry.PrepareGeneration(context.Background(), mustGenerationContext(t, model.Snapshot{}, model.Snapshot{Revision: 1}))
+	if err != nil {
+		t.Fatalf("PrepareGeneration(first) error = %v", err)
+	}
+	if err := firstCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready(first) error = %v", err)
+	}
+	firstView, _ := firstCandidate.Publish()
+
+	failedCandidate, err := registry.PrepareGeneration(context.Background(), mustGenerationContext(t, model.Snapshot{Revision: 1}, model.Snapshot{Revision: 2}))
+	if err != nil {
+		t.Fatalf("PrepareGeneration(second) error = %v", err)
+	}
+	if err := failedCandidate.Ready(context.Background()); !errors.Is(err, readyErr) {
+		t.Fatalf("Ready(second) error = %v, want %v", err, readyErr)
+	}
+	if err := failedCandidate.Destroy(context.Background()); err != nil {
+		t.Fatalf("Destroy(second) error = %v", err)
+	}
+
+	if registry.ActiveGeneration() != firstView {
+		t.Fatal("readiness failure replaced the active generation")
+	}
+	if got := registry.ActiveGeneration().ProviderHash(); got != firstView.ProviderHash() {
+		t.Fatalf("provider hash after failure = %q, want %q", got, firstView.ProviderHash())
+	}
+	if got := resolvedGeneration(t, registry, providerRef); got != 1 {
+		t.Fatalf("active provider after failure = %d, want 1", got)
+	}
+	if got := mod.destroyed; !reflect.DeepEqual(got, []int64{2}) {
+		t.Fatalf("destroyed generations = %v, want [2]", got)
+	}
+}
+
+func TestRegistryApplyRetainsPreviousGenerationUntilStop(t *testing.T) {
+	registry := module.NewRegistry()
+	providerRef := module.ProviderRef("test.generation")
+	mod := &generationRecordingModule{name: "generation", providerRef: providerRef}
+	mustRegister(t, registry, mod)
+
+	first := model.Snapshot{Revision: 1}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, first); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	if err := registry.Apply(context.Background(), first, model.Snapshot{Revision: 2}); err != nil {
+		t.Fatalf("Apply(second) error = %v", err)
+	}
+	if len(mod.destroyed) != 0 {
+		t.Fatalf("destroyed generations after cutover = %v, want none", mod.destroyed)
+	}
+
+	if err := registry.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll() error = %v", err)
+	}
+	if got := mod.destroyed; !reflect.DeepEqual(got, []int64{1}) {
+		t.Fatalf("destroyed generations after stop = %v, want [1]", got)
+	}
+}
+
 type fakeTLSMaterial struct{}
 
 type recordingModule struct {
@@ -382,6 +500,99 @@ func (m *recordingModule) Stop(ctx context.Context) error {
 type transactionalRecordingModule struct {
 	recordingModule
 	prepare func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error)
+}
+
+type generationRecordingModule struct {
+	name         string
+	providerRef  module.ProviderRef
+	failRevision int64
+	readyErr     error
+	destroyed    []int64
+}
+
+func (m *generationRecordingModule) Name() string { return m.name }
+
+func (m *generationRecordingModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: m.name, Provides: []module.ProviderRef{m.providerRef}}
+}
+
+func (m *generationRecordingModule) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(m.providerRef, int64(0))
+}
+
+func (*generationRecordingModule) Capabilities(module.SnapshotView) []module.Capability { return nil }
+
+func (m *generationRecordingModule) Apply(ctx context.Context, req module.ApplyRequest) error {
+	tx, err := m.Prepare(ctx, req)
+	if err != nil || tx == nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (*generationRecordingModule) Stop(context.Context) error { return nil }
+
+func (m *generationRecordingModule) Prepare(_ context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
+	revision := req.Next.Revision
+	return &generationRecordingTransaction{module: m, providerRef: m.providerRef, revision: revision}, nil
+}
+
+type generationRecordingTransaction struct {
+	module      *generationRecordingModule
+	providerRef module.ProviderRef
+	revision    int64
+}
+
+func (t *generationRecordingTransaction) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(t.providerRef, t.revision)
+}
+
+func (t *generationRecordingTransaction) Ready(context.Context) error {
+	if t.revision == t.module.failRevision {
+		return t.module.readyErr
+	}
+	return nil
+}
+
+func (*generationRecordingTransaction) Publish() {}
+
+func (t *generationRecordingTransaction) Destroy(context.Context) error {
+	t.module.destroyed = append(t.module.destroyed, t.revision)
+	return nil
+}
+
+func (t *generationRecordingTransaction) Commit() error {
+	if err := t.Ready(context.Background()); err != nil {
+		return err
+	}
+	t.Publish()
+	return nil
+}
+
+func (t *generationRecordingTransaction) Rollback() error {
+	return t.Destroy(context.Background())
+}
+
+func mustGenerationContext(t *testing.T, previous, next model.Snapshot) module.GenerationContext {
+	t.Helper()
+	ctx, err := module.NewGenerationContext(previous, next)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	return ctx
+}
+
+func resolvedGeneration(t *testing.T, resolver module.ProviderResolver, ref module.ProviderRef) int64 {
+	t.Helper()
+	provider, ok := resolver.Resolve(ref)
+	if !ok {
+		t.Fatalf("Resolve(%s) ok = false", ref)
+	}
+	revision, ok := provider.(int64)
+	if !ok {
+		t.Fatalf("Resolve(%s) = %T, want int64", ref, provider)
+	}
+	return revision
 }
 
 func (m *transactionalRecordingModule) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {

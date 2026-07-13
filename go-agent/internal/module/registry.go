@@ -2,9 +2,16 @@ package module
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -20,9 +27,155 @@ var (
 // Registry is intended for single-threaded startup composition. Module names
 // and descriptors should remain stable after registration.
 type Registry struct {
-	modules   []Module
-	byName    map[string]Module
-	providers providerSet
+	modules []Module
+	byName  map[string]Module
+
+	generationMu sync.Mutex
+	active       atomic.Pointer[GenerationView]
+	retiredMu    sync.Mutex
+	retired      []*GenerationView
+}
+
+// GenerationContext is the immutable input shared by every module candidate.
+// Snapshots are privately deep-cloned so callers cannot mutate a generation
+// through a slice or pointer retained from the control plane.
+type GenerationContext struct {
+	id           string
+	revision     int64
+	snapshotHash string
+	previous     model.Snapshot
+	snapshot     model.Snapshot
+}
+
+func NewGenerationContext(previous, next model.Snapshot) (GenerationContext, error) {
+	snapshotJSON, err := json.Marshal(next)
+	if err != nil {
+		return GenerationContext{}, fmt.Errorf("encode generation snapshot: %w", err)
+	}
+	digest := sha256.Sum256(snapshotJSON)
+	hash := hex.EncodeToString(digest[:])
+	return GenerationContext{
+		id:           fmt.Sprintf("generation-%d-%s", next.Revision, hash[:16]),
+		revision:     next.Revision,
+		snapshotHash: hash,
+		previous:     cloneGenerationSnapshot(previous),
+		snapshot:     cloneGenerationSnapshot(next),
+	}, nil
+}
+
+func (c GenerationContext) ID() string               { return c.id }
+func (c GenerationContext) Revision() int64          { return c.revision }
+func (c GenerationContext) SnapshotHash() string     { return c.snapshotHash }
+func (c GenerationContext) Previous() model.Snapshot { return cloneGenerationSnapshot(c.previous) }
+func (c GenerationContext) Snapshot() model.Snapshot { return cloneGenerationSnapshot(c.snapshot) }
+
+// GenerationTransaction moves every fallible operation into Ready. Publish
+// must only swap in-memory state and cannot report failure. Destroy owns only
+// resources prepared for this transaction; it must not restore another view.
+type GenerationTransaction interface {
+	ModuleTransaction
+	Ready(context.Context) error
+	Publish()
+	Destroy(context.Context) error
+}
+
+type PreparedGeneration interface {
+	Context() GenerationContext
+	Ready(context.Context) error
+	Publish() (active, previous *GenerationView)
+	Destroy(context.Context) error
+}
+
+type GenerationPreparer interface {
+	PrepareGeneration(context.Context, GenerationContext) (PreparedGeneration, error)
+	ActiveGeneration() *GenerationView
+}
+
+// GenerationView is immutable after publication. Its providers and snapshot
+// always belong to the same GenerationContext.
+type GenerationView struct {
+	context      GenerationContext
+	providers    providerSet
+	providerHash string
+	transactions []preparedModuleTransaction
+	destroyOnce  sync.Once
+	destroyErr   error
+}
+
+func (v *GenerationView) Context() GenerationContext {
+	if v == nil {
+		return GenerationContext{}
+	}
+	return v.context
+}
+
+func (v *GenerationView) ID() string {
+	if v == nil {
+		return ""
+	}
+	return v.context.ID()
+}
+
+func (v *GenerationView) Revision() int64 {
+	if v == nil {
+		return 0
+	}
+	return v.context.Revision()
+}
+
+func (v *GenerationView) SnapshotHash() string {
+	if v == nil {
+		return ""
+	}
+	return v.context.SnapshotHash()
+}
+
+func (v *GenerationView) Snapshot() model.Snapshot {
+	if v == nil {
+		return model.Snapshot{}
+	}
+	return v.context.Snapshot()
+}
+
+func (v *GenerationView) ProviderHash() string {
+	if v == nil {
+		return ""
+	}
+	return v.providerHash
+}
+
+func (v *GenerationView) Resolve(ref ProviderRef) (any, bool) {
+	if v == nil {
+		return nil, false
+	}
+	return v.providers.Resolve(ref)
+}
+
+func (v *GenerationView) Destroy(ctx context.Context) error {
+	if v == nil {
+		return nil
+	}
+	v.destroyOnce.Do(func() {
+		v.destroyErr = destroyPublishedTransactions(ctx, v.transactions)
+	})
+	return v.destroyErr
+}
+
+type generationCandidate struct {
+	registry     *Registry
+	context      GenerationContext
+	providers    providerSet
+	transactions []preparedModuleTransaction
+
+	mu        sync.Mutex
+	ready     bool
+	completed bool
+}
+
+type preparedModuleTransaction struct {
+	name       string
+	legacy     ModuleTransaction
+	generation GenerationTransaction
 }
 
 func NewRegistry() *Registry {
@@ -139,53 +292,217 @@ func (r *Registry) Apply(ctx context.Context, previous, next model.Snapshot) err
 	if r == nil {
 		return nil
 	}
-	ordered, providers, err := r.registeredProviderSet()
+	generationContext, err := NewGenerationContext(previous, next)
 	if err != nil {
 		return err
 	}
+	candidate, err := r.PrepareGeneration(ctx, generationContext)
+	if err != nil {
+		return err
+	}
+	if err := candidate.Ready(ctx); err != nil {
+		return errors.Join(err, candidate.Destroy(ctx))
+	}
+	_, retired := candidate.Publish()
+	if retired != nil {
+		r.retainRetired(retired)
+	}
+	return nil
+}
 
-	request := ApplyRequest{Previous: previous, Next: next, Providers: providers}
-	var transactions []ModuleTransaction
-	for _, module := range ordered {
-		if transactional, ok := module.(TransactionalModule); ok {
-			transaction, err := transactional.Prepare(ctx, request)
-			if err != nil {
-				return rollbackPrepared(transactions, fmt.Errorf("module %s prepare: %w", strings.TrimSpace(module.Name()), err))
+func (r *Registry) retainRetired(view *GenerationView) {
+	if r == nil || view == nil {
+		return
+	}
+	r.retiredMu.Lock()
+	r.retired = append(r.retired, view)
+	r.retiredMu.Unlock()
+}
+
+func (r *Registry) destroyRetired(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.retiredMu.Lock()
+	retired := r.retired
+	r.retired = nil
+	r.retiredMu.Unlock()
+
+	var errs []error
+	for i := len(retired) - 1; i >= 0; i-- {
+		if err := retired[i].Destroy(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (r *Registry) PrepareGeneration(ctx context.Context, generationContext GenerationContext) (PreparedGeneration, error) {
+	if r == nil {
+		return &generationCandidate{context: generationContext, providers: newProviderSet()}, nil
+	}
+	r.generationMu.Lock()
+
+	ordered, providers, err := r.registeredProviderSet()
+	if err != nil {
+		r.generationMu.Unlock()
+		return nil, err
+	}
+	request := ApplyRequest{
+		Previous:  generationContext.Previous(),
+		Next:      generationContext.Snapshot(),
+		Providers: providers,
+	}
+	candidate := &generationCandidate{
+		registry:  r,
+		context:   generationContext,
+		providers: providers,
+	}
+
+	for _, mod := range ordered {
+		name := strings.TrimSpace(mod.Name())
+		var transaction ModuleTransaction
+		if transactional, ok := mod.(TransactionalModule); ok {
+			transaction, err = transactional.Prepare(ctx, request)
+		} else {
+			err = mod.Apply(ctx, request)
+		}
+		if err != nil {
+			return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s prepare: %w", name, err))
+		}
+		if transaction == nil {
+			continue
+		}
+		prepared := preparedModuleTransaction{name: name, legacy: transaction}
+		if generation, ok := transaction.(GenerationTransaction); ok {
+			prepared.generation = generation
+		}
+		candidate.transactions = append(candidate.transactions, prepared)
+		if providerTransaction, ok := transaction.(interface {
+			RegisterProviders(ProviderRegistry) error
+		}); ok {
+			if err := providerTransaction.RegisterProviders(replacingProviderRegistry{ProviderRegistry: providers}); err != nil {
+				return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s register prepared providers: %w", name, err))
 			}
-			if transaction != nil {
-				transactions = append(transactions, transaction)
-				if providerTransaction, ok := transaction.(interface {
-					RegisterProviders(ProviderRegistry) error
-				}); ok {
-					if err := providerTransaction.RegisterProviders(replacingProviderRegistry{ProviderRegistry: providers}); err != nil {
-						return rollbackPrepared(transactions, fmt.Errorf("module %s register prepared providers: %w", strings.TrimSpace(module.Name()), err))
-					}
-				}
+		}
+	}
+	if err := validateRequiredProviders(ordered, providers); err != nil {
+		return nil, candidate.abortPreparation(ctx, err)
+	}
+	return candidate, nil
+}
+
+func (r *Registry) ActiveGeneration() *GenerationView {
+	if r == nil {
+		return nil
+	}
+	return r.active.Load()
+}
+
+func (c *generationCandidate) Context() GenerationContext {
+	if c == nil {
+		return GenerationContext{}
+	}
+	return c.context
+}
+
+func (c *generationCandidate) Ready(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.completed {
+		return errors.New("generation candidate is already completed")
+	}
+	if c.ready {
+		return nil
+	}
+
+	for _, transaction := range c.transactions {
+		if transaction.generation != nil {
+			if err := transaction.generation.Ready(ctx); err != nil {
+				return fmt.Errorf("module %s readiness: %w", transaction.name, err)
 			}
 			continue
 		}
-		if err := module.Apply(ctx, request); err != nil {
-			return rollbackPrepared(transactions, fmt.Errorf("module %s apply: %w", strings.TrimSpace(module.Name()), err))
+		if err := transaction.legacy.Commit(); err != nil {
+			return fmt.Errorf("module %s readiness compatibility commit: %w", transaction.name, err)
 		}
 	}
-	for _, transaction := range transactions {
-		if err := transaction.Commit(); err != nil {
-			return rollbackPrepared(transactions, fmt.Errorf("commit module transaction: %w", err))
+	for i := len(c.transactions) - 1; i >= 0; i-- {
+		transaction := c.transactions[i]
+		if transaction.generation != nil {
+			continue
 		}
-	}
-	for i := len(transactions) - 1; i >= 0; i-- {
-		finalizer, ok := transactions[i].(interface {
-			FinalizeCommit() error
-		})
+		finalizer, ok := transaction.legacy.(interface{ FinalizeCommit() error })
 		if !ok {
 			continue
 		}
 		if err := finalizer.FinalizeCommit(); err != nil {
-			return rollbackPrepared(transactions, fmt.Errorf("finalize module transaction: %w", err))
+			return fmt.Errorf("module %s readiness compatibility finalize: %w", transaction.name, err)
 		}
 	}
-	r.providers = providers
+	c.ready = true
 	return nil
+}
+
+func (c *generationCandidate) Publish() (active, previous *GenerationView) {
+	if c == nil {
+		return nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.completed {
+		return nil, nil
+	}
+	if !c.ready {
+		panic("module: publish called before generation readiness")
+	}
+
+	for _, transaction := range c.transactions {
+		if transaction.generation != nil {
+			transaction.generation.Publish()
+		}
+	}
+	active = &GenerationView{
+		context:      c.context,
+		providers:    c.providers,
+		providerHash: hashGenerationProviders(c.context, c.providers),
+		transactions: append([]preparedModuleTransaction(nil), c.transactions...),
+	}
+	if c.registry != nil {
+		previous = c.registry.active.Swap(active)
+		c.registry.generationMu.Unlock()
+	}
+	c.completed = true
+	return active, previous
+}
+
+func (c *generationCandidate) Destroy(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.completed {
+		return nil
+	}
+	c.completed = true
+	err := destroyCandidateTransactions(ctx, c.transactions)
+	if c.registry != nil {
+		c.registry.generationMu.Unlock()
+	}
+	return err
+}
+
+func (c *generationCandidate) abortPreparation(ctx context.Context, cause error) error {
+	c.completed = true
+	err := destroyCandidateTransactions(ctx, c.transactions)
+	if c.registry != nil {
+		c.registry.generationMu.Unlock()
+	}
+	return errors.Join(cause, err)
 }
 
 type replacingProviderRegistry struct {
@@ -205,6 +522,9 @@ func (r *Registry) ProviderResolver() (ProviderResolver, error) {
 	if r == nil {
 		providers := newProviderSet()
 		return providers, nil
+	}
+	if active := r.ActiveGeneration(); active != nil {
+		return active, nil
 	}
 	_, providers, err := r.registeredProviderSet()
 	if err != nil {
@@ -231,10 +551,14 @@ func (r *Registry) registeredProviderSet() ([]Module, providerSet, error) {
 }
 
 func (r *Registry) Resolve(ref ProviderRef) (any, bool) {
-	if r == nil || r.providers.providers == nil {
+	if r == nil {
 		return nil, false
 	}
-	return r.providers.Resolve(ref)
+	active := r.ActiveGeneration()
+	if active == nil {
+		return nil, false
+	}
+	return active.Resolve(ref)
 }
 
 func (r *Registry) StopAll(ctx context.Context) error {
@@ -252,7 +576,7 @@ func (r *Registry) StopAll(ctx context.Context) error {
 			firstErr = fmt.Errorf("module %s stop: %w", strings.TrimSpace(module.Name()), err)
 		}
 	}
-	return firstErr
+	return errors.Join(firstErr, r.destroyRetired(ctx))
 }
 
 type providerSet struct {
@@ -367,6 +691,143 @@ func rollbackPrepared(transactions []ModuleTransaction, cause error) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func destroyCandidateTransactions(ctx context.Context, transactions []preparedModuleTransaction) error {
+	var errs []error
+	for i := len(transactions) - 1; i >= 0; i-- {
+		transaction := transactions[i]
+		var err error
+		if transaction.generation != nil {
+			err = transaction.generation.Destroy(ctx)
+		} else {
+			err = transaction.legacy.Rollback()
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("destroy module %s candidate: %w", transaction.name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func destroyPublishedTransactions(ctx context.Context, transactions []preparedModuleTransaction) error {
+	var errs []error
+	for i := len(transactions) - 1; i >= 0; i-- {
+		transaction := transactions[i]
+		if transaction.generation == nil {
+			continue
+		}
+		if err := transaction.generation.Destroy(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("destroy module %s generation: %w", transaction.name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func hashGenerationProviders(generationContext GenerationContext, providers providerSet) string {
+	refs := make([]string, 0, len(providers.providers))
+	for ref, provider := range providers.providers {
+		refs = append(refs, fmt.Sprintf("%s=%T", ref, provider))
+	}
+	sort.Strings(refs)
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(generationContext.ID()))
+	for _, ref := range refs {
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(ref))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
+	cloned := snapshot
+	cloned.AgentConfig.TrafficStatsEnabled = cloneGenerationPtr(snapshot.AgentConfig.TrafficStatsEnabled)
+	cloned.VersionPackage = cloneGenerationPtr(snapshot.VersionPackage)
+	cloned.Rules = slices.Clone(snapshot.Rules)
+	for i, rule := range snapshot.Rules {
+		cloned.Rules[i].Backends = slices.Clone(rule.Backends)
+		cloned.Rules[i].CustomHeaders = slices.Clone(rule.CustomHeaders)
+		cloned.Rules[i].WireGuardProfileID = cloneGenerationPtr(rule.WireGuardProfileID)
+		cloned.Rules[i].EgressProfileID = cloneGenerationPtr(rule.EgressProfileID)
+		cloned.Rules[i].RelayChain = slices.Clone(rule.RelayChain)
+		cloned.Rules[i].RelayLayers = cloneGenerationLayers(rule.RelayLayers)
+		cloned.Rules[i].Tags = slices.Clone(rule.Tags)
+	}
+	cloned.L4Rules = slices.Clone(snapshot.L4Rules)
+	for i, rule := range snapshot.L4Rules {
+		cloned.L4Rules[i].Backends = slices.Clone(rule.Backends)
+		cloned.L4Rules[i].WireGuardProfileID = cloneGenerationPtr(rule.WireGuardProfileID)
+		cloned.L4Rules[i].EgressProfileID = cloneGenerationPtr(rule.EgressProfileID)
+		cloned.L4Rules[i].RelayChain = slices.Clone(rule.RelayChain)
+		cloned.L4Rules[i].RelayLayers = cloneGenerationLayers(rule.RelayLayers)
+		cloned.L4Rules[i].Tags = slices.Clone(rule.Tags)
+	}
+	cloned.RelayListeners = slices.Clone(snapshot.RelayListeners)
+	for i, listener := range snapshot.RelayListeners {
+		cloned.RelayListeners[i].BindHosts = slices.Clone(listener.BindHosts)
+		cloned.RelayListeners[i].CertificateID = cloneGenerationPtr(listener.CertificateID)
+		cloned.RelayListeners[i].WireGuardProfileID = cloneGenerationPtr(listener.WireGuardProfileID)
+		cloned.RelayListeners[i].PinSet = slices.Clone(listener.PinSet)
+		cloned.RelayListeners[i].TrustedCACertificateIDs = slices.Clone(listener.TrustedCACertificateIDs)
+		cloned.RelayListeners[i].Tags = slices.Clone(listener.Tags)
+	}
+	cloned.WireGuardProfiles = slices.Clone(snapshot.WireGuardProfiles)
+	for i, profile := range snapshot.WireGuardProfiles {
+		cloned.WireGuardProfiles[i].BindAddresses = slices.Clone(profile.BindAddresses)
+		cloned.WireGuardProfiles[i].Addresses = slices.Clone(profile.Addresses)
+		cloned.WireGuardProfiles[i].DNS = slices.Clone(profile.DNS)
+		cloned.WireGuardProfiles[i].Tags = slices.Clone(profile.Tags)
+		cloned.WireGuardProfiles[i].Peers = cloneGenerationPeers(profile.Peers)
+	}
+	cloned.EgressProfiles = slices.Clone(snapshot.EgressProfiles)
+	for i, profile := range snapshot.EgressProfiles {
+		cloned.EgressProfiles[i].WireGuardConfig = cloneGenerationEgressConfig(profile.WireGuardConfig)
+	}
+	cloned.Certificates = slices.Clone(snapshot.Certificates)
+	cloned.CertificatePolicies = slices.Clone(snapshot.CertificatePolicies)
+	for i, policy := range snapshot.CertificatePolicies {
+		cloned.CertificatePolicies[i].Tags = slices.Clone(policy.Tags)
+	}
+	return cloned
+}
+
+func cloneGenerationPtr[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneGenerationLayers(layers [][]int) [][]int {
+	if layers == nil {
+		return nil
+	}
+	cloned := make([][]int, len(layers))
+	for i, layer := range layers {
+		cloned[i] = slices.Clone(layer)
+	}
+	return cloned
+}
+
+func cloneGenerationPeers(peers []model.WireGuardPeer) []model.WireGuardPeer {
+	cloned := slices.Clone(peers)
+	for i, peer := range peers {
+		cloned[i].AllowedIPs = slices.Clone(peer.AllowedIPs)
+		cloned[i].Reserved = slices.Clone(peer.Reserved)
+	}
+	return cloned
+}
+
+func cloneGenerationEgressConfig(config *model.EgressWireGuardConfig) *model.EgressWireGuardConfig {
+	if config == nil {
+		return nil
+	}
+	cloned := *config
+	cloned.Addresses = slices.Clone(config.Addresses)
+	cloned.Peers = cloneGenerationPeers(config.Peers)
+	cloned.DNS = slices.Clone(config.DNS)
+	return &cloned
 }
 
 func dependenciesResolved(dependencies map[int]struct{}, resolved []bool) bool {

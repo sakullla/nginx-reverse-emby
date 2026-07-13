@@ -102,6 +102,55 @@ func TestModuleApplyOwnsTrafficEnabledAndBlockState(t *testing.T) {
 	}
 }
 
+func TestModuleKeepsPreparedTrafficStateInvisibleUntilPublish(t *testing.T) {
+	trafficmodule.SetEnabled(true)
+	t.Cleanup(func() {
+		trafficmodule.SetEnabled(true)
+		trafficmodule.Reset()
+	})
+	mod := trafficmodule.NewModule()
+	registry := module.NewRegistry()
+	mustRegisterTrafficTestModule(t, registry, mod)
+	first := model.Snapshot{Revision: 1}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, first); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	firstView := registry.ActiveGeneration()
+
+	disabled := false
+	second := model.Snapshot{Revision: 2, AgentConfig: model.AgentConfig{
+		TrafficStatsEnabled: &disabled,
+		TrafficBlocked:      true,
+		TrafficBlockReason:  "quota",
+	}}
+	generationContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	candidate, err := registry.PrepareGeneration(context.Background(), generationContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if err := candidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+
+	if registry.ActiveGeneration() != firstView || !trafficmodule.Enabled() {
+		t.Fatal("traffic candidate became active before publish")
+	}
+	if got := mod.TrafficBlockState(); got.Blocked {
+		t.Fatalf("TrafficBlockState() before publish = %+v, want unblocked", got)
+	}
+
+	candidate.Publish()
+	if trafficmodule.Enabled() {
+		t.Fatal("traffic stats remained enabled after publish")
+	}
+	if got := mod.TrafficBlockState(); !got.Blocked || got.Reason != "quota" {
+		t.Fatalf("TrafficBlockState() after publish = %+v", got)
+	}
+}
+
 func TestModuleRollsBackTrafficStateWhenLaterModuleFails(t *testing.T) {
 	trafficmodule.SetEnabled(true)
 	t.Cleanup(func() {

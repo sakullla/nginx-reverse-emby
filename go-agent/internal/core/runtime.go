@@ -18,6 +18,7 @@ type Runtime struct {
 	activeSnapshot model.Snapshot
 	state          model.RuntimeState
 	activator      Activator
+	generations    *GenerationManager
 }
 
 func NewRuntime() *Runtime {
@@ -36,6 +37,12 @@ func NewRuntimeWithActivator(act Activator) *Runtime {
 	}
 }
 
+func NewRuntimeWithGenerationManager(manager *GenerationManager) *Runtime {
+	runtime := NewRuntimeWithActivator(nil)
+	runtime.generations = manager
+	return runtime
+}
+
 func newRuntimeWithActivator(act Activator) *Runtime {
 	return NewRuntimeWithActivator(act)
 }
@@ -47,6 +54,11 @@ func defaultActivator(_ context.Context, previous, next model.Snapshot) error {
 }
 
 func (r *Runtime) ActiveSnapshot() model.Snapshot {
+	if r != nil && r.generations != nil {
+		if active := r.generations.ActiveGeneration(); active != nil {
+			return active.Snapshot()
+		}
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return cloneSnapshot(r.activeSnapshot)
@@ -58,6 +70,18 @@ func (r *Runtime) State() model.RuntimeState {
 
 	stateCopy := r.state
 	stateCopy.Metadata = cloneStringMap(stateCopy.Metadata)
+	if r.generations != nil {
+		if active := r.generations.ActiveGeneration(); active != nil {
+			stateCopy.CurrentRevision = active.Revision()
+			if stateCopy.Metadata == nil {
+				stateCopy.Metadata = make(map[string]string)
+			}
+			stateCopy.Metadata["current_revision"] = strconv.FormatInt(active.Revision(), 10)
+			stateCopy.Metadata["generation_id"] = active.ID()
+			stateCopy.Metadata["snapshot_hash"] = active.SnapshotHash()
+			stateCopy.Metadata["provider_hash"] = active.ProviderHash()
+		}
+	}
 	return stateCopy
 }
 
@@ -73,23 +97,41 @@ func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, c
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if checkPrevious && !isZeroSnapshot(previous) && !snapshotEqual(previous, r.activeSnapshot) {
+	activeSnapshot := r.activeSnapshotLocked()
+	if checkPrevious && !isZeroSnapshot(previous) && !snapshotEqual(previous, activeSnapshot) {
 		r.state.Status = "error"
 		return fmt.Errorf(
 			"previous snapshot mismatch: expected %s got %s",
-			describeSnapshot(r.activeSnapshot),
+			describeSnapshot(activeSnapshot),
 			describeSnapshot(previous),
 		)
 	}
 
-	if err := r.activator(ctx, previous, next); err != nil {
-		r.state.Status = "error"
-		return err
+	if r.generations != nil {
+		cutover, err := r.generations.Apply(ctx, previous, next)
+		if err != nil {
+			r.state.Status = "error"
+			return err
+		}
+		r.setActiveSnapshotLocked(cutover.Active.Snapshot())
+	} else {
+		if err := r.activator(ctx, previous, next); err != nil {
+			r.state.Status = "error"
+			return err
+		}
+		r.setActiveSnapshotLocked(next)
 	}
 
-	r.setActiveSnapshotLocked(next)
-
 	return nil
+}
+
+func (r *Runtime) activeSnapshotLocked() model.Snapshot {
+	if r.generations != nil {
+		if active := r.generations.ActiveGeneration(); active != nil {
+			return active.Snapshot()
+		}
+	}
+	return r.activeSnapshot
 }
 
 func (r *Runtime) setActiveSnapshotLocked(next model.Snapshot) {

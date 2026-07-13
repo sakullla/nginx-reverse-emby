@@ -150,21 +150,38 @@ type transaction struct {
 	nextBlockState BlockState
 
 	rollbackCounters *counterState
+	published        bool
 }
 
 func (tx *transaction) RegisterProviders(reg module.ProviderRegistry) error {
 	return reg.Provide(module.ProviderTrafficSink, tx)
 }
 
-func (tx *transaction) Commit() error {
+func (*transaction) Ready(context.Context) error { return nil }
+
+func (tx *transaction) Publish() {
 	if tx == nil || tx.module == nil {
-		return nil
+		return
+	}
+	if tx.published {
+		return
 	}
 	if tx.previousEnabled && !tx.nextEnabled {
 		state := snapshotCounterState()
 		tx.rollbackCounters = &state
 	}
 	tx.module.installState(tx.nextEnabled, tx.nextMeta, tx.nextBlockState)
+	tx.published = true
+	return
+}
+
+func (*transaction) Destroy(context.Context) error { return nil }
+
+func (tx *transaction) Commit() error {
+	if err := tx.Ready(context.Background()); err != nil {
+		return err
+	}
+	tx.Publish()
 	return nil
 }
 
@@ -172,10 +189,14 @@ func (tx *transaction) Rollback() error {
 	if tx == nil || tx.module == nil {
 		return nil
 	}
+	if !tx.published {
+		return nil
+	}
 	tx.module.installState(tx.previousEnabled, tx.previousMeta, tx.previousBlockState)
 	if tx.rollbackCounters != nil {
 		restoreCounterState(*tx.rollbackCounters)
 	}
+	tx.published = false
 	return nil
 }
 
@@ -214,3 +235,4 @@ func ensureStringMap(src map[string]string) map[string]string {
 
 var _ module.Module = (*Module)(nil)
 var _ module.TransactionalModule = (*Module)(nil)
+var _ module.GenerationTransaction = (*transaction)(nil)
