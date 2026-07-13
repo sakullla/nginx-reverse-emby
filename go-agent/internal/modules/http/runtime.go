@@ -25,7 +25,6 @@ type Runtime struct {
 	http3Servers  []*http3ServerHandle
 	listeners     []net.Listener
 	ingressLeases []*httpIngressLease
-	serveErrors   []<-chan error
 	tracker       *httpSessionTracker
 	closeOnce     sync.Once
 	drainOnce     sync.Once

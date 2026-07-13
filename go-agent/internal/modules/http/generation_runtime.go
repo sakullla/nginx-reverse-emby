@@ -1,10 +1,12 @@
 package http
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	stdhttp "net/http"
 	"strconv"
@@ -44,6 +46,12 @@ type httpIngressLease struct {
 
 	releaseOnce sync.Once
 	releaseErr  error
+}
+
+type httpIngressActivation struct {
+	lease          *httpIngressLease
+	previousStream *ingress.StreamEndpoint
+	previousPacket *ingress.PacketEndpoint
 }
 
 func newHTTPIngressManager() *httpIngressManager {
@@ -124,24 +132,43 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 	return lease, nil
 }
 
-func (l *httpIngressLease) activate() error {
+func (l *httpIngressLease) activate() (*httpIngressActivation, error) {
 	if l == nil || l.binding == nil {
-		return net.ErrClosed
+		return nil, net.ErrClosed
 	}
 	previousStream, err := l.binding.stream.Activate(l.stream)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	activation := &httpIngressActivation{lease: l, previousStream: previousStream}
 	if l.packet == nil {
-		return nil
+		return activation, nil
 	}
-	if _, err := l.binding.packet.Activate(l.packet); err != nil {
-		if previousStream != nil {
-			_, _ = l.binding.stream.Activate(previousStream)
+	previousPacket, err := l.binding.packet.Activate(l.packet)
+	if err != nil {
+		activation.rollback()
+		return nil, err
+	}
+	activation.previousPacket = previousPacket
+	return activation, nil
+}
+
+func (a *httpIngressActivation) rollback() {
+	if a == nil || a.lease == nil || a.lease.binding == nil {
+		return
+	}
+	if a.lease.packet != nil {
+		if a.previousPacket != nil {
+			_, _ = a.lease.binding.packet.Activate(a.previousPacket)
+		} else {
+			_ = a.lease.packet.Close()
 		}
-		return err
 	}
-	return nil
+	if a.previousStream != nil {
+		_, _ = a.lease.binding.stream.Activate(a.previousStream)
+	} else {
+		_ = a.lease.stream.Close()
+	}
 }
 
 func (l *httpIngressLease) release() error {
@@ -213,33 +240,90 @@ func closePacketEndpoint(endpoint *ingress.PacketEndpoint) error {
 
 const quicServerConnectionIDLength = 4
 
-type quicConnectionClassifier struct{}
-
-func newQUICConnectionClassifier() ingress.PacketClassifier { return quicConnectionClassifier{} }
-
-func (quicConnectionClassifier) Classify(payload []byte, metadata ingress.PacketMetadata) (ingress.AssociationKey, bool) {
-	return classifyQUICConnection(payload, metadata)
+type quicRemoteState struct {
+	owner       ingress.AssociationKey
+	established bool
 }
 
-func classifyQUICConnection(payload []byte, _ ingress.PacketMetadata) (ingress.AssociationKey, bool) {
-	if len(payload) == 0 || payload[0]&0x40 == 0 {
+type quicConnectionClassifier struct {
+	mu       sync.Mutex
+	byCID    map[string]ingress.AssociationKey
+	byRemote map[string]quicRemoteState
+}
+
+func newQUICConnectionClassifier() ingress.PacketClassifier {
+	return &quicConnectionClassifier{
+		byCID:    make(map[string]ingress.AssociationKey),
+		byRemote: make(map[string]quicRemoteState),
+	}
+}
+
+func (c *quicConnectionClassifier) Classify(payload []byte, metadata ingress.PacketMetadata) (ingress.AssociationKey, bool) {
+	cid, longHeader, packetType, ok := quicDestinationCID(payload)
+	if !ok {
 		return "", false
+	}
+	cidKey := hex.EncodeToString(cid)
+	remote := ""
+	if metadata.RemoteAddr != nil {
+		remote = metadata.RemoteAddr.String()
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if owner := c.byCID[cidKey]; owner != "" {
+		if remote != "" {
+			state := c.byRemote[remote]
+			state.owner = owner
+			if !longHeader {
+				state.established = true
+			}
+			c.byRemote[remote] = state
+		}
+		return owner, true
+	}
+	if state := c.byRemote[remote]; remote != "" && state.owner != "" {
+		// Handshake packets and unseen short-header CIDs are aliases of the
+		// connection already pinned for this peer. Once short headers have
+		// established it, a fresh Initial starts a new connection instead.
+		if !longHeader || packetType != quicLongHeaderInitial || !state.established {
+			c.byCID[cidKey] = state.owner
+			if !longHeader {
+				state.established = true
+				c.byRemote[remote] = state
+			}
+			return state.owner, true
+		}
+	}
+	owner := ingress.AssociationKey("quic:" + cidKey)
+	c.byCID[cidKey] = owner
+	if remote != "" {
+		c.byRemote[remote] = quicRemoteState{owner: owner, established: !longHeader}
+	}
+	return owner, true
+}
+
+const quicLongHeaderInitial byte = 0
+
+func quicDestinationCID(payload []byte) (cid []byte, longHeader bool, packetType byte, ok bool) {
+	if len(payload) == 0 || payload[0]&0x40 == 0 {
+		return nil, false, 0, false
 	}
 	if payload[0]&0x80 == 0 {
 		if len(payload) < 1+quicServerConnectionIDLength {
-			return "", false
+			return nil, false, 0, false
 		}
-		return ingress.AssociationKey("quic:" + hex.EncodeToString(payload[1:1+quicServerConnectionIDLength])), true
+		return payload[1 : 1+quicServerConnectionIDLength], false, 0, true
 	}
 	// Long-header QUIC packets carry an explicit destination connection ID.
 	if len(payload) < 6 {
-		return "", false
+		return nil, true, 0, false
 	}
 	dcidLen := int(payload[5])
 	if dcidLen == 0 || len(payload) < 6+dcidLen {
-		return "", false
+		return nil, true, 0, false
 	}
-	return ingress.AssociationKey("quic:" + hex.EncodeToString(payload[6:6+dcidLen])), true
+	return payload[6 : 6+dcidLen], true, (payload[0] >> 4) & 0x3, true
 }
 
 func prepareGenerationRuntime(
@@ -301,14 +385,12 @@ func prepareGenerationRuntime(
 				return context.Background()
 			},
 		}
-		errCh := make(chan error, 1)
 		runtime.listeners = append(runtime.listeners, listener)
 		runtime.servers = append(runtime.servers, server)
 		runtime.bindings = append(runtime.bindings, spec.bindingKey)
-		runtime.serveErrors = append(runtime.serveErrors, errCh)
 		go func(srv *stdhttp.Server, ln net.Listener) {
 			if err := srv.Serve(ln); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-				errCh <- err
+				log.Printf("[proxy] generation HTTP serve error on %s: %v", ln.Addr(), err)
 			}
 		}(server, listener)
 
@@ -319,7 +401,6 @@ func prepareGenerationRuntime(
 				return nil, err
 			}
 			runtime.http3Servers = append(runtime.http3Servers, handle)
-			runtime.serveErrors = append(runtime.serveErrors, handle.serveErr)
 		}
 	}
 	return runtime, nil
@@ -339,21 +420,9 @@ func generationHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
 }
 
 func (r *Runtime) Ready() error {
-	if r == nil {
-		return nil
-	}
-	r.mu.Lock()
-	errorsToCheck := append([]<-chan error(nil), r.serveErrors...)
-	r.mu.Unlock()
-	for _, errCh := range errorsToCheck {
-		select {
-		case err := <-errCh:
-			if err != nil {
-				return err
-			}
-		default:
-		}
-	}
+	// TCP endpoints are fully constructed before their Serve goroutines start,
+	// and HTTP/3 creates its QUIC listener synchronously. There is no deferred
+	// startup result to poll here.
 	return nil
 }
 
@@ -364,10 +433,16 @@ func (r *Runtime) Activate() error {
 	r.mu.Lock()
 	leases := append([]*httpIngressLease(nil), r.ingressLeases...)
 	r.mu.Unlock()
+	activations := make([]*httpIngressActivation, 0, len(leases))
 	for _, lease := range leases {
-		if err := lease.activate(); err != nil {
+		activation, err := lease.activate()
+		if err != nil {
+			for i := len(activations) - 1; i >= 0; i-- {
+				activations[i].rollback()
+			}
 			return err
 		}
+		activations = append(activations, activation)
 	}
 	return nil
 }
@@ -423,9 +498,22 @@ type httpSessionTracker struct {
 }
 
 type httpRequestSession struct {
+	tracker  *httpSessionTracker
+	entity   string
 	cancel   context.CancelFunc
 	external *generation.SessionHandle
-	once     sync.Once
+
+	mu         sync.Mutex
+	hijacked   bool
+	connection net.Conn
+	once       sync.Once
+}
+
+type trackedHijackedConn struct {
+	net.Conn
+	session *httpRequestSession
+	once    sync.Once
+	err     error
 }
 
 func newHTTPSessionTracker(generationID string, registrar HTTPSessionRegistrar) *httpSessionTracker {
@@ -443,7 +531,7 @@ func (t *httpSessionTracker) start(entity string, cancel context.CancelFunc) *ht
 	if t == nil {
 		return nil
 	}
-	session := &httpRequestSession{cancel: cancel}
+	session := &httpRequestSession{tracker: t, entity: entity, cancel: cancel}
 	t.mu.Lock()
 	if t.active == 0 {
 		t.idle = make(chan struct{})
@@ -472,19 +560,33 @@ func (t *httpSessionTracker) start(entity string, cancel context.CancelFunc) *ht
 	return session
 }
 
-func (t *httpSessionTracker) finish(entity string, session *httpRequestSession) {
+func (t *httpSessionTracker) requestDone(session *httpRequestSession) {
+	if t == nil || session == nil {
+		return
+	}
+	session.mu.Lock()
+	hijacked := session.hijacked
+	session.mu.Unlock()
+	if !hijacked {
+		t.finish(session)
+	}
+}
+
+func (t *httpSessionTracker) finish(session *httpRequestSession) {
 	if t == nil || session == nil {
 		return
 	}
 	session.once.Do(func() {
 		t.mu.Lock()
-		if entries := t.sessions[entity]; entries != nil {
+		if entries := t.sessions[session.entity]; entries != nil {
 			delete(entries, session)
 			if len(entries) == 0 {
-				delete(t.sessions, entity)
+				delete(t.sessions, session.entity)
 			}
 		}
-		t.active--
+		if t.active > 0 {
+			t.active--
+		}
 		if t.active == 0 {
 			close(t.idle)
 		}
@@ -519,7 +621,7 @@ func (t *httpSessionTracker) force(entities map[string]struct{}) {
 	}
 	t.mu.Unlock()
 	for _, session := range sessions {
-		session.cancel()
+		session.forceClose()
 	}
 }
 
@@ -536,8 +638,67 @@ func (t *httpSessionTracker) forceAll() {
 	}
 	t.mu.Unlock()
 	for _, session := range sessions {
-		session.cancel()
+		session.forceClose()
 	}
+}
+
+func (s *httpRequestSession) hijack(conn net.Conn) net.Conn {
+	if s == nil || conn == nil {
+		return conn
+	}
+	tracked := &trackedHijackedConn{Conn: conn, session: s}
+	s.mu.Lock()
+	s.hijacked = true
+	s.connection = tracked
+	s.mu.Unlock()
+	return tracked
+}
+
+func (s *httpRequestSession) forceClose() {
+	if s == nil {
+		return
+	}
+	s.cancel()
+	s.mu.Lock()
+	connection := s.connection
+	s.mu.Unlock()
+	if connection != nil {
+		_ = connection.Close()
+	}
+}
+
+func (c *trackedHijackedConn) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.once.Do(func() {
+		if c.Conn != nil {
+			c.err = c.Conn.Close()
+		}
+		if c.session != nil && c.session.tracker != nil {
+			c.session.tracker.finish(c.session)
+		}
+	})
+	return c.err
+}
+
+type generationResponseWriter struct {
+	stdhttp.ResponseWriter
+	session *httpRequestSession
+}
+
+func (w *generationResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	connection, readWriter, err := stdhttp.NewResponseController(w.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	return w.session.hijack(connection), readWriter, nil
+}
+
+func (w *generationResponseWriter) Unwrap() stdhttp.ResponseWriter { return w.ResponseWriter }
+
+func (w *generationResponseWriter) Flush() {
+	_ = stdhttp.NewResponseController(w.ResponseWriter).Flush()
 }
 
 type generationHTTPHandler struct {
@@ -558,8 +719,8 @@ func (h *generationHTTPHandler) ServeHTTP(w stdhttp.ResponseWriter, req *stdhttp
 	ctx, cancel := context.WithCancel(req.Context())
 	entity := httpRuleEntityID(entry.rule)
 	session := h.tracker.start(entity, cancel)
-	defer h.tracker.finish(entity, session)
-	h.server.ServeHTTP(w, req.WithContext(ctx))
+	defer h.tracker.requestDone(session)
+	h.server.ServeHTTP(&generationResponseWriter{ResponseWriter: w, session: session}, req.WithContext(ctx))
 }
 
 func (r *Runtime) revokeRules(entities map[string]struct{}) {
@@ -630,9 +791,6 @@ func (t *httpGenerationTransaction) publish() error {
 	t.module.blockState.Store(t.nextState.blockState)
 	t.module.storeLastAppliedStateLocked(t.nextState)
 	t.module.mu.Unlock()
-	if t.previousRuntime != nil {
-		t.previousRuntime.revokeRules(t.revokedEntities)
-	}
 	t.published = true
 	return nil
 }
@@ -687,6 +845,7 @@ func (t *httpGenerationTransaction) FinalizeCommitSuccess() {
 	}
 	t.finalizedSuccess = true
 	if t.previousRuntime != nil {
+		t.previousRuntime.revokeRules(t.revokedEntities)
 		t.previousRuntime.BeginDrain()
 	}
 }
@@ -700,8 +859,6 @@ var _ interface{ Publish() } = (*httpGenerationTransaction)(nil)
 var _ generation.Session = (*httpRequestSession)(nil)
 
 func (s *httpRequestSession) ForceClose(context.Context, string) error {
-	if s != nil && s.cancel != nil {
-		s.cancel()
-	}
+	s.forceClose()
 	return nil
 }
