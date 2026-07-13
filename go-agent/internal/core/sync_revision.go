@@ -258,13 +258,16 @@ func (c *SyncController) failRevisionAttempt(
 	candidate.UpdatedAt = time.Now().UTC()
 	journal.Candidate = &candidate
 	journalErr := store.SaveGenerationJournal(journal)
+	if journalErr != nil {
+		return c.recordRuntimeErrorWithRevision(errors.Join(applyErr, journalErr), candidate.Revision)
+	}
 	reportErr := client.ReportRevision(ctx, model.RevisionReport{
 		AgentID: candidate.Lease.AgentID, Revision: candidate.Lease.Revision,
 		RetryCycle: candidate.Lease.RetryCycle, Attempt: candidate.Lease.Attempt,
 		LeaseID: candidate.Lease.LeaseID, GenerationID: candidate.GenerationID,
 		Status: "failed", ErrorCode: "apply_failed", ErrorMessage: applyErr.Error(),
 	})
-	return c.recordRuntimeErrorWithRevision(errors.Join(applyErr, journalErr, reportErr), candidate.Revision)
+	return c.recordRuntimeErrorWithRevision(errors.Join(applyErr, reportErr), candidate.Revision)
 }
 
 func validateRevisionPull(pull model.RevisionPull) (model.RevisionLease, model.Snapshot, string, error) {

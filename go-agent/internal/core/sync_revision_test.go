@@ -354,6 +354,28 @@ func TestRevisionSyncRuntimeStateFailureDoesNotOverwriteLastKnownGood(t *testing
 	}
 }
 
+func TestRevisionSyncDoesNotReportFailedBeforeFailedJournalIsDurable(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	store.failGenerationPhase = model.GenerationPhaseFailed
+	runtime := NewRuntimeWithActivator(func(_ context.Context, _, _ model.Snapshot) error {
+		return errors.New("candidate apply failed")
+	})
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "failed journal persistence") {
+		t.Fatalf("PerformSync() error = %v, want failed journal persistence error", err)
+	}
+	if len(client.reports) != 0 {
+		t.Fatalf("reports = %+v, want no failed report before durable failed journal", client.reports)
+	}
+	if store.journal.Candidate == nil || store.journal.Candidate.Phase != model.GenerationPhaseStarted {
+		t.Fatalf("durable journal = %+v, want prior started phase", store.journal)
+	}
+}
+
 func TestRevisionSyncRestoresPersistedAppliedSnapshotBeforeNoUpdate(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)
@@ -595,6 +617,7 @@ type revisionTestStore struct {
 	lkg                  model.Snapshot
 	failRuntimeState     bool
 	uncertainAppliedSave bool
+	failGenerationPhase  string
 }
 
 func newRevisionTestStore(events *[]string) *revisionTestStore {
@@ -626,7 +649,6 @@ func (s *revisionTestStore) SaveRuntimeState(state RuntimeState) error {
 }
 
 func (s *revisionTestStore) SaveGenerationJournal(journal model.GenerationJournal) error {
-	s.journal = journal
 	phase := "empty"
 	acknowledged := false
 	if journal.Candidate != nil {
@@ -639,6 +661,10 @@ func (s *revisionTestStore) SaveGenerationJournal(journal model.GenerationJourna
 		phase += ":acknowledged"
 	}
 	s.record("journal:" + phase)
+	if phase == s.failGenerationPhase {
+		return errors.New("failed journal persistence")
+	}
+	s.journal = journal
 	return nil
 }
 
