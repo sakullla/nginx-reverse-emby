@@ -57,6 +57,7 @@ type PacketEndpoint struct {
 	conn       *moduleutil.VirtualPacketConn
 	writer     *packetEndpointWriter
 	closeOnce  sync.Once
+	closeErr   error
 }
 
 type packetEndpointWriter struct {
@@ -116,11 +117,11 @@ func (e *PacketEndpoint) Close() error {
 	}
 	e.closeOnce.Do(func() {
 		if e.broker != nil {
-			e.broker.removeEndpoint(e)
+			e.closeErr = e.broker.removeEndpoint(e)
 		}
-		_ = e.conn.Close()
+		e.closeErr = errors.Join(e.closeErr, e.conn.Close())
 	})
-	return nil
+	return e.closeErr
 }
 
 type PacketBroker struct {
@@ -365,19 +366,33 @@ func (b *PacketBroker) releaseIfTarget(key AssociationKey, endpoint *PacketEndpo
 	b.mu.Unlock()
 }
 
-func (b *PacketBroker) removeEndpoint(endpoint *PacketEndpoint) {
+func (b *PacketBroker) removeEndpoint(endpoint *PacketEndpoint) error {
+	b.mu.Lock()
+	delete(b.published, endpoint)
+	b.active.CompareAndSwap(endpoint, nil)
+	b.mu.Unlock()
+
+	var interruptErr error
+	b.writeStateMu.Lock()
+	if b.writing == endpoint {
+		interruptErr = b.conn.SetWriteDeadline(time.Now())
+	}
+	b.writeStateMu.Unlock()
+	if interruptErr != nil {
+		interruptErr = errors.Join(interruptErr, b.conn.Close())
+	}
+
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
 	b.mu.Lock()
 	delete(b.endpoints, endpoint)
-	delete(b.published, endpoint)
 	for key, target := range b.associations {
 		if target == endpoint {
 			delete(b.associations, key)
 		}
 	}
-	b.active.CompareAndSwap(endpoint, nil)
 	b.mu.Unlock()
+	return interruptErr
 }
 
 func (b *PacketBroker) writePacket(writer *packetEndpointWriter, payload []byte, remote net.Addr) (int, error) {

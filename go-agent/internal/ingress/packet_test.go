@@ -98,6 +98,35 @@ func TestPacketBrokerDeadlineUpdateCannotMissWritePublication(t *testing.T) {
 	}
 }
 
+func TestPacketEndpointCloseInterruptsBlockedPhysicalWrite(t *testing.T) {
+	physical := newDeadlineBoundaryPacketConn()
+	broker := NewPacketBroker(physical, "udp")
+	defer broker.Close()
+	endpoint := broker.NewEndpoint("generation", 1)
+	if _, err := broker.Activate(endpoint); err != nil {
+		t.Fatal(err)
+	}
+	written := make(chan error, 1)
+	go func() { _, err := endpoint.WriteTo([]byte("blocked"), testPacketAddr("remote")); written <- err }()
+	<-physical.writeStarted
+	closed := make(chan error, 1)
+	go func() { closed <- endpoint.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("endpoint Close did not interrupt physical write")
+	}
+	if err := <-written; !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("WriteTo error = %v", err)
+	}
+	if _, err := endpoint.WriteTo([]byte("late"), testPacketAddr("remote")); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("late WriteTo error = %v", err)
+	}
+}
+
 func TestPacketBrokerPublishesWriteGateWithActiveTarget(t *testing.T) {
 	broker, err := ListenPacket(context.Background(), "udp", "127.0.0.1:0", 2)
 	if err != nil {
@@ -287,18 +316,19 @@ func (*temporaryErrorPacketConn) SetReadDeadline(time.Time) error           { re
 func (*temporaryErrorPacketConn) SetWriteDeadline(time.Time) error          { return nil }
 
 type deadlineBoundaryPacketConn struct {
-	closed, writeRelease chan struct{}
-	closeOnce            sync.Once
+	closed, writeStarted, writeRelease chan struct{}
+	closeOnce, startOnce               sync.Once
 }
 
 func newDeadlineBoundaryPacketConn() *deadlineBoundaryPacketConn {
-	return &deadlineBoundaryPacketConn{closed: make(chan struct{}), writeRelease: make(chan struct{})}
+	return &deadlineBoundaryPacketConn{closed: make(chan struct{}), writeStarted: make(chan struct{}), writeRelease: make(chan struct{})}
 }
 func (c *deadlineBoundaryPacketConn) ReadFrom([]byte) (int, net.Addr, error) {
 	<-c.closed
 	return 0, nil, net.ErrClosed
 }
 func (c *deadlineBoundaryPacketConn) WriteTo([]byte, net.Addr) (int, error) {
+	c.startOnce.Do(func() { close(c.writeStarted) })
 	<-c.writeRelease
 	return 0, os.ErrDeadlineExceeded
 }
