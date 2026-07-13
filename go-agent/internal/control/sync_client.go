@@ -3,9 +3,13 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,6 +160,82 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	)
 
 	return snapshot, nil
+}
+
+func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, error) {
+	var envelope struct {
+		Revision struct {
+			HasUpdate       bool                 `json:"has_update"`
+			DesiredRevision int64                `json:"desired_revision"`
+			Lease           *model.RevisionLease `json:"lease,omitempty"`
+			Snapshot        json.RawMessage      `json:"snapshot,omitempty"`
+		} `json:"revision"`
+	}
+	if err := c.doRevisionRequest(ctx, "/api/agent-revisions/pull", nil, &envelope); err != nil {
+		return model.RevisionPull{}, err
+	}
+	pull := model.RevisionPull{
+		HasUpdate:       envelope.Revision.HasUpdate,
+		DesiredRevision: envelope.Revision.DesiredRevision,
+		Lease:           envelope.Revision.Lease,
+	}
+	if !pull.HasUpdate {
+		return pull, nil
+	}
+	if pull.Lease == nil || len(envelope.Revision.Snapshot) == 0 || bytes.Equal(envelope.Revision.Snapshot, []byte("null")) {
+		return model.RevisionPull{}, errors.New("revision pull returned an incomplete update")
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(envelope.Revision.Snapshot))
+	if strings.TrimSpace(pull.Lease.SnapshotDigest) == "" || !strings.EqualFold(digest, pull.Lease.SnapshotDigest) {
+		return model.RevisionPull{}, errors.New("revision snapshot digest does not match lease")
+	}
+	var snapshot model.Snapshot
+	if err := json.Unmarshal(envelope.Revision.Snapshot, &snapshot); err != nil {
+		return model.RevisionPull{}, fmt.Errorf("decode revision snapshot: %w", err)
+	}
+	pull.Snapshot = &snapshot
+	pull.VerifiedSnapshotDigest = digest
+	return pull, nil
+}
+
+func (c *SyncClient) StartRevision(ctx context.Context, input model.RevisionStart) error {
+	return c.doRevisionRequest(ctx, "/api/agent-revisions/"+strconv.FormatInt(input.Revision, 10)+"/start", input, nil)
+}
+
+func (c *SyncClient) ReportRevision(ctx context.Context, input model.RevisionReport) error {
+	return c.doRevisionRequest(ctx, "/api/agent-revisions/"+strconv.FormatInt(input.Revision, 10)+"/report", input, nil)
+}
+
+func (c *SyncClient) doRevisionRequest(ctx context.Context, path string, input any, output any) error {
+	var body io.Reader
+	if input != nil {
+		data, err := json.Marshal(input)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.MasterURL+path, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-agent-token", c.cfg.AgentToken)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		c.discardConnections()
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("revision request %s failed: %s: %s", path, resp.Status, strings.TrimSpace(string(message)))
+	}
+	if output == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(output)
 }
 
 func (c *SyncClient) discardConnections() {

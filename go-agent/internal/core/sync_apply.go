@@ -16,6 +16,17 @@ func (c *SyncController) PerformSync(ctx context.Context, req control.SyncReques
 }
 
 func (c *SyncController) PerformSyncPlan(ctx context.Context, plan SyncPlan) error {
+	if revisionClient, ok := c.SyncClient.(RevisionSyncClient); ok {
+		journalStore, ok := c.Store.(GenerationJournalStore)
+		if !ok {
+			return c.recordRuntimeError(errors.New("revision sync requires a durable generation journal store"))
+		}
+		return c.performRevisionSyncPlan(ctx, plan, revisionClient, journalStore)
+	}
+	return c.performLegacySyncPlan(ctx, plan)
+}
+
+func (c *SyncController) performLegacySyncPlan(ctx context.Context, plan SyncPlan) error {
 	snapshot, err := c.SyncClient.Sync(ctx, plan.Request)
 	if err != nil {
 		log.Printf("[agent] sync error: %v", err)

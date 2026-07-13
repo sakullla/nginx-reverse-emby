@@ -3,16 +3,143 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
+
+func TestRevisionProtocolUsesAuthenticatedPathsAndPayloads(t *testing.T) {
+	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
+	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
+	deadline := time.Now().Add(time.Minute).UTC().Truncate(time.Second)
+
+	type expectedRequest struct {
+		path string
+		body any
+	}
+	expected := []expectedRequest{
+		{path: "/api/agent-revisions/pull"},
+		{path: "/api/agent-revisions/7/start", body: model.RevisionStart{
+			AgentID: "edge-1", Revision: 7, RetryCycle: 2, Attempt: 3,
+			LeaseID: "lease-7", GenerationID: "generation-7",
+		}},
+		{path: "/api/agent-revisions/7/report", body: model.RevisionReport{
+			AgentID: "edge-1", Revision: 7, RetryCycle: 2, Attempt: 3,
+			LeaseID: "lease-7", GenerationID: "generation-7", Status: "applied",
+		}},
+	}
+	requestIndex := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requestIndex >= len(expected) {
+			t.Fatalf("unexpected revision request %s", r.URL.Path)
+		}
+		want := expected[requestIndex]
+		requestIndex++
+		if r.Method != http.MethodPost || r.URL.Path != want.path {
+			t.Fatalf("request = %s %s, want POST %s", r.Method, r.URL.Path, want.path)
+		}
+		if got := r.Header.Get("X-Agent-Token"); got != "agent-secret" {
+			t.Fatalf("X-Agent-Token = %q, want agent-secret", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if want.body == nil {
+			if len(body) != 0 {
+				t.Fatalf("pull body = %s, want empty", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"retry_cycle":2,"attempt":3,"lease_id":"lease-7","snapshot_digest":"%s","desired_version":"1.2.3","apply_timeout_seconds":30,"drain_timeout_seconds":15,"deadline_at":"%s"},"snapshot":%s}}`, digest, deadline.Format(time.RFC3339), snapshotJSON)
+			return
+		}
+		wantBody, err := json.Marshal(want.body)
+		if err != nil {
+			t.Fatalf("marshal expected body: %v", err)
+		}
+		if !bytes.Equal(body, wantBody) {
+			t.Fatalf("body = %s, want %s", body, wantBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client := NewSyncClient(SyncClientConfig{
+		MasterURL: server.URL, AgentToken: "agent-secret",
+	}, server.Client())
+	pull, err := client.PullRevision(t.Context())
+	if err != nil {
+		t.Fatalf("PullRevision() error = %v", err)
+	}
+	if pull.Snapshot == nil || pull.Snapshot.Revision != 7 || pull.VerifiedSnapshotDigest != digest {
+		t.Fatalf("PullRevision() = %+v, want verified revision 7", pull)
+	}
+	if err := client.StartRevision(t.Context(), expected[1].body.(model.RevisionStart)); err != nil {
+		t.Fatalf("StartRevision() error = %v", err)
+	}
+	if err := client.ReportRevision(t.Context(), expected[2].body.(model.RevisionReport)); err != nil {
+		t.Fatalf("ReportRevision() error = %v", err)
+	}
+	if requestIndex != len(expected) {
+		t.Fatalf("request count = %d, want %d", requestIndex, len(expected))
+	}
+}
+
+func TestPullRevisionRejectsSnapshotWhoseRawDigestDoesNotMatchLease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","deadline_at":"2099-01-01T00:00:00Z"},"snapshot":{"desired_version":"1.2.3","desired_revision":7,"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}}}`))
+	}))
+	defer server.Close()
+
+	client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-secret"}, server.Client())
+	_, err := client.PullRevision(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "snapshot digest") {
+		t.Fatalf("PullRevision() error = %v, want snapshot digest mismatch", err)
+	}
+}
+
+func TestRevisionProtocolReturnsAuthenticationAndConflictErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		statusCode int
+		call       func(*SyncClient) error
+	}{
+		{name: "unauthorized pull", statusCode: http.StatusUnauthorized, call: func(client *SyncClient) error {
+			_, err := client.PullRevision(t.Context())
+			return err
+		}},
+		{name: "conflicting start", statusCode: http.StatusConflict, call: func(client *SyncClient) error {
+			return client.StartRevision(t.Context(), model.RevisionStart{Revision: 9})
+		}},
+		{name: "conflicting report", statusCode: http.StatusConflict, call: func(client *SyncClient) error {
+			return client.ReportRevision(t.Context(), model.RevisionReport{Revision: 9})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.statusCode)
+				_, _ = w.Write([]byte(`{"ok":false,"message":"lease conflict"}`))
+			}))
+			defer server.Close()
+			client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-secret"}, server.Client())
+			err := tc.call(client)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%d", tc.statusCode)) || !strings.Contains(err.Error(), "lease conflict") {
+				t.Fatalf("revision call error = %v, want status and response message", err)
+			}
+		})
+	}
+}
 
 func TestHeartbeatSync(t *testing.T) {
 	type captured struct {
