@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -22,6 +23,7 @@ type Module struct {
 	profiles         []model.EgressProfile
 	resolver         Resolver
 	overlayRuntime   module.OverlayRuntime
+	retiredRuntimes  []*WireGuardRuntime
 }
 
 func NewModule(factory ...modulewireguard.Factory) *Module {
@@ -65,7 +67,13 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	if transaction == nil {
 		return nil
 	}
-	return transaction.Commit()
+	if err := transaction.Commit(); err != nil {
+		return err
+	}
+	if finalizer, ok := transaction.(interface{ FinalizeCommitSuccess() }); ok {
+		finalizer.FinalizeCommitSuccess()
+	}
+	return nil
 }
 
 func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
@@ -113,6 +121,7 @@ type egressTransaction struct {
 	previousOverlayRuntime   module.OverlayRuntime
 	committed                bool
 	destroyed                bool
+	finalized                bool
 }
 
 func (t *egressTransaction) RegisterProviders(reg module.ProviderRegistry) error {
@@ -169,6 +178,18 @@ func (t *egressTransaction) Commit() error {
 	return nil
 }
 
+func (t *egressTransaction) FinalizeCommitSuccess() {
+	if t == nil || !t.committed || t.finalized {
+		return
+	}
+	t.finalized = true
+	previous := t.previousWireGuardRuntime
+	t.previousWireGuardRuntime = nil
+	if t.module != nil {
+		t.module.releaseLegacyWireGuardRuntime(previous)
+	}
+}
+
 func (t *egressTransaction) Rollback() error {
 	if t == nil || t.destroyed {
 		return nil
@@ -188,10 +209,32 @@ func (t *egressTransaction) Rollback() error {
 }
 
 func (m *Module) Stop(context.Context) error {
-	if m == nil || m.wireGuardRuntime == nil {
+	if m == nil {
 		return nil
 	}
-	return m.wireGuardRuntime.Close()
+	m.mu.Lock()
+	runtimes := append([]*WireGuardRuntime{m.wireGuardRuntime}, m.retiredRuntimes...)
+	m.wireGuardRuntime = nil
+	m.retiredRuntimes = nil
+	m.mu.Unlock()
+	var closeErr error
+	for _, runtime := range runtimes {
+		if runtime != nil {
+			closeErr = errors.Join(closeErr, runtime.Close())
+		}
+	}
+	return closeErr
+}
+
+func (m *Module) releaseLegacyWireGuardRuntime(runtime *WireGuardRuntime) {
+	if m == nil || runtime == nil {
+		return
+	}
+	if err := runtime.Close(); err != nil {
+		m.mu.Lock()
+		m.retiredRuntimes = append(m.retiredRuntimes, runtime)
+		m.mu.Unlock()
+	}
 }
 
 func (m *Module) WireGuardRuntime() *WireGuardRuntime {

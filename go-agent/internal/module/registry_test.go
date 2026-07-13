@@ -557,6 +557,33 @@ func TestRegistryPrepareGenerationRejectsLiveProviderFallback(t *testing.T) {
 	}
 }
 
+func TestRegistryPrepareGenerationRejectsPartialCandidateProviderRegistration(t *testing.T) {
+	registry := module.NewRegistry()
+	firstRef := module.ProviderRef("test.provider.first")
+	secondRef := module.ProviderRef("test.provider.second")
+	mod := &transactionalRecordingModule{
+		recordingModule: recordingModule{
+			name:     "partial-candidate-provider",
+			provides: []module.ProviderRef{firstRef, secondRef},
+			register: func(reg module.ProviderRegistry) error {
+				if err := reg.Provide(firstRef, "live-first"); err != nil {
+					return err
+				}
+				return reg.Provide(secondRef, "live-second")
+			},
+		},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			return partialGenerationProviderTransaction{providerRef: firstRef}, nil
+		},
+	}
+	mustRegister(t, registry, mod)
+
+	generationContext := mustGenerationContext(t, model.Snapshot{}, model.Snapshot{Revision: 1})
+	if _, err := registry.PrepareGeneration(context.Background(), generationContext); !errors.Is(err, module.ErrMissingProvider) {
+		t.Fatalf("PrepareGeneration() error = %v, want ErrMissingProvider for omitted candidate provider", err)
+	}
+}
+
 type fakeTLSMaterial struct{}
 
 type recordingModule struct {
@@ -627,6 +654,19 @@ func (generationWithoutProviderTransaction) Ready(context.Context) error   { ret
 func (generationWithoutProviderTransaction) Destroy(context.Context) error { return nil }
 func (generationWithoutProviderTransaction) Commit() error                 { return nil }
 func (generationWithoutProviderTransaction) Rollback() error               { return nil }
+
+type partialGenerationProviderTransaction struct {
+	providerRef module.ProviderRef
+}
+
+func (t partialGenerationProviderTransaction) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(t.providerRef, "candidate")
+}
+
+func (partialGenerationProviderTransaction) Ready(context.Context) error   { return nil }
+func (partialGenerationProviderTransaction) Destroy(context.Context) error { return nil }
+func (partialGenerationProviderTransaction) Commit() error                 { return nil }
+func (partialGenerationProviderTransaction) Rollback() error               { return nil }
 
 func (m *generationRecordingModule) Name() string { return m.name }
 

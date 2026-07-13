@@ -143,6 +143,95 @@ func TestModuleApplyIgnoresUnusedInvalidWireGuardEgressProfile(t *testing.T) {
 	}
 }
 
+func TestModuleRepeatedLegacyApplyClosesReplacedWireGuardRuntime(t *testing.T) {
+	factory := &recordingFactory{}
+	mod := NewModule(factory.Create)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+	profileID := 52
+	first := model.Snapshot{
+		Rules:          []model.HTTPRule{{EgressProfileID: &profileID}},
+		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)},
+	}
+	if err := registry.Apply(context.Background(), model.Snapshot{}, first); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	if len(factory.runtimes) != 1 {
+		t.Fatalf("created runtimes after first Apply = %d, want 1", len(factory.runtimes))
+	}
+	firstRuntime := factory.runtimes[0]
+
+	second := first
+	second.EgressProfiles = []model.EgressProfile{validWireGuardEgressProfile(profileID)}
+	second.EgressProfiles[0].Revision = 2
+	if err := registry.Apply(context.Background(), first, second); err != nil {
+		t.Fatalf("Apply(second) error = %v", err)
+	}
+	if firstRuntime.closeCalls != 1 {
+		t.Fatalf("first runtime Close calls = %d, want 1", firstRuntime.closeCalls)
+	}
+	if len(factory.runtimes) != 2 {
+		t.Fatalf("created runtimes after second Apply = %d, want 2", len(factory.runtimes))
+	}
+	if factory.runtimes[1].closeCalls != 0 {
+		t.Fatalf("replacement runtime Close calls = %d, want 0", factory.runtimes[1].closeCalls)
+	}
+}
+
+func TestGenerationPublishRetainsPreviousWireGuardRuntimeUntilViewDestroy(t *testing.T) {
+	factory := &recordingFactory{}
+	mod := NewModule(factory.Create)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+	profileID := 53
+	first := model.Snapshot{
+		Revision:       1,
+		Rules:          []model.HTTPRule{{EgressProfileID: &profileID}},
+		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)},
+	}
+	firstCandidate, err := registry.PrepareGeneration(context.Background(), mustEgressGenerationContext(t, model.Snapshot{}, first))
+	if err != nil {
+		t.Fatalf("PrepareGeneration(first) error = %v", err)
+	}
+	if err := firstCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready(first) error = %v", err)
+	}
+	firstView, _ := firstCandidate.Publish()
+
+	second := first
+	second.Revision = 2
+	second.EgressProfiles = []model.EgressProfile{validWireGuardEgressProfile(profileID)}
+	second.EgressProfiles[0].Revision = 2
+	secondCandidate, err := registry.PrepareGeneration(context.Background(), mustEgressGenerationContext(t, first, second))
+	if err != nil {
+		t.Fatalf("PrepareGeneration(second) error = %v", err)
+	}
+	if err := secondCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready(second) error = %v", err)
+	}
+	secondView, previousView := secondCandidate.Publish()
+	defer secondView.Destroy(context.Background())
+
+	if previousView != firstView {
+		t.Fatal("Publish(second) did not return the first generation view")
+	}
+	if len(factory.runtimes) != 2 {
+		t.Fatalf("created runtimes = %d, want 2", len(factory.runtimes))
+	}
+	if factory.runtimes[0].closeCalls != 0 {
+		t.Fatalf("previous generation runtime Close calls after publish = %d, want 0", factory.runtimes[0].closeCalls)
+	}
+	if err := previousView.Destroy(context.Background()); err != nil {
+		t.Fatalf("Destroy(previous) error = %v", err)
+	}
+	if factory.runtimes[0].closeCalls != 1 {
+		t.Fatalf("previous generation runtime Close calls after destroy = %d, want 1", factory.runtimes[0].closeCalls)
+	}
+	if factory.runtimes[1].closeCalls != 0 {
+		t.Fatalf("active generation runtime Close calls = %d, want 0", factory.runtimes[1].closeCalls)
+	}
+}
+
 func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
 	mod := NewModule(nil)
 	previous := model.Snapshot{EgressProfiles: []model.EgressProfile{{
@@ -454,10 +543,20 @@ func assertResolvedEgressProfile(t *testing.T, resolver module.ProviderResolver,
 	}
 }
 
+func mustEgressGenerationContext(t *testing.T, previous, next model.Snapshot) module.GenerationContext {
+	t.Helper()
+	generationContext, err := module.NewGenerationContext(previous, next)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	return generationContext
+}
+
 type recordingWireGuardRuntime struct {
-	cfg     basewireguard.Config
-	network string
-	address string
+	cfg        basewireguard.Config
+	network    string
+	address    string
+	closeCalls int
 }
 
 func (r *recordingWireGuardRuntime) DialContext(_ context.Context, network string, address string) (net.Conn, error) {
@@ -485,6 +584,7 @@ func (r *recordingWireGuardRuntime) ListenTransparentUDP(context.Context, string
 }
 
 func (r *recordingWireGuardRuntime) Close() error {
+	r.closeCalls++
 	return nil
 }
 

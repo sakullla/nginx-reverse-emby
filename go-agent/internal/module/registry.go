@@ -332,6 +332,13 @@ func (r *Registry) Apply(ctx context.Context, previous, next model.Snapshot) err
 			return rollbackPrepared(transactions, fmt.Errorf("finalize module transaction: %w", err))
 		}
 	}
+	// Irreversible cleanup starts only after every rollback-capable finalizer succeeds.
+	for i := len(transactions) - 1; i >= 0; i-- {
+		finalizer, ok := transactions[i].(interface{ FinalizeCommitSuccess() })
+		if ok {
+			finalizer.FinalizeCommitSuccess()
+		}
+	}
 	r.providers = providers
 	return nil
 }
@@ -342,11 +349,12 @@ func (r *Registry) PrepareGeneration(ctx context.Context, generationContext Gene
 	}
 	r.generationMu.Lock()
 
-	ordered, providers, err := r.registeredProviderSet()
+	ordered, err := r.OrderedModules()
 	if err != nil {
 		r.generationMu.Unlock()
 		return nil, err
 	}
+	providers := newProviderSet()
 	request := ApplyRequest{
 		Previous:  generationContext.Previous(),
 		Next:      generationContext.Snapshot(),
@@ -360,6 +368,10 @@ func (r *Registry) PrepareGeneration(ctx context.Context, generationContext Gene
 
 	for _, mod := range ordered {
 		name := strings.TrimSpace(mod.Name())
+		descriptor, err := validateDescriptor(mod)
+		if err != nil {
+			return nil, candidate.abortPreparation(ctx, err)
+		}
 		transactional, ok := mod.(TransactionalModule)
 		if !ok {
 			return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s does not implement generation transactions", name))
@@ -383,12 +395,21 @@ func (r *Registry) PrepareGeneration(ctx context.Context, generationContext Gene
 		providerTransaction, registersProviders := transaction.(interface {
 			RegisterProviders(ProviderRegistry) error
 		})
-		if len(mod.Descriptor().Provides) > 0 && !registersProviders {
+		if len(descriptor.Provides) > 0 && !registersProviders {
 			return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s did not prepare generation-owned providers", name))
 		}
 		if registersProviders {
-			if err := providerTransaction.RegisterProviders(replacingProviderRegistry{ProviderRegistry: providers}); err != nil {
+			registrations := generationProviderRegistry{
+				ProviderRegistry: providers,
+				provided:         make(map[ProviderRef]struct{}, len(descriptor.Provides)),
+			}
+			if err := providerTransaction.RegisterProviders(registrations); err != nil {
 				return nil, candidate.abortPreparation(ctx, fmt.Errorf("module %s register prepared providers: %w", name, err))
+			}
+			for _, ref := range descriptor.Provides {
+				if _, ok := registrations.provided[ref]; !ok {
+					return nil, candidate.abortPreparation(ctx, fmt.Errorf("%w: module %s generation transaction did not register %s", ErrMissingProvider, name, ref))
+				}
 			}
 		}
 	}
@@ -489,6 +510,19 @@ func (c *generationCandidate) abortPreparation(ctx context.Context, cause error)
 
 type replacingProviderRegistry struct {
 	ProviderRegistry
+}
+
+type generationProviderRegistry struct {
+	ProviderRegistry
+	provided map[ProviderRef]struct{}
+}
+
+func (r generationProviderRegistry) Provide(ref ProviderRef, provider any) error {
+	if err := r.ProviderRegistry.Provide(ref, provider); err != nil {
+		return err
+	}
+	r.provided[ref] = struct{}{}
+	return nil
 }
 
 func (r replacingProviderRegistry) Provide(ref ProviderRef, provider any) error {
