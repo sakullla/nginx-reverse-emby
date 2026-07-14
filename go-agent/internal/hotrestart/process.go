@@ -45,7 +45,6 @@ const AuthorityJournalVersion = 2
 
 const (
 	authorityLockTimeout = 5 * time.Second
-	authorityLockRetry   = 10 * time.Millisecond
 )
 
 type AuthorityPhase string
@@ -125,7 +124,8 @@ func (j *FileAuthorityJournal) BeginOwned(identity Identity, parentPID int, aliv
 			recovered.Phase == AuthorityPhaseParent && recovered.ChildPID == 0 && !recovered.LaunchPending
 		childCanLaunch := owner == AuthorityOwnerChild && recovered.ChildPID == parentPID &&
 			recovered.Phase == AuthorityPhaseChild && !recovered.LaunchPending
-		if !parentCanLaunch && !childCanLaunch {
+		orphanCanLaunch := owner == AuthorityOwnerNone && !alive(recovered.ParentPID) && !alive(recovered.ChildPID)
+		if !parentCanLaunch && !childCanLaunch && !orphanCanLaunch {
 			return errors.New("current process does not own a launchable hot restart authority journal")
 		}
 		return j.beginLocked(identity, parentPID, true)
@@ -315,63 +315,40 @@ func (j *FileAuthorityJournal) acquireProcessLock() (func() error, error) {
 		return nil, err
 	}
 	lockPath := j.path + ".lock"
-	deadline := time.Now().Add(authorityLockTimeout)
-	for {
-		file, openErr := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if openErr == nil {
-			if j.lockCreated != nil {
-				j.lockCreated()
-			}
-			writeErr := func() error {
-				if _, err := file.Write(payload); err != nil {
-					return err
-				}
-				return file.Sync()
-			}()
-			closeErr := file.Close()
-			if err := errors.Join(writeErr, closeErr); err != nil {
-				_ = os.Remove(lockPath)
-				_ = releaseGuard()
-				return nil, err
-			}
-			return releaseWithGuard(func() error {
-				current, err := os.ReadFile(lockPath)
-				if err != nil {
-					return err
-				}
-				if string(current) != string(payload) {
-					return errors.New("hot restart authority journal lock ownership changed")
-				}
-				return os.Remove(lockPath)
-			}), nil
-		}
-		if !errors.Is(openErr, os.ErrExist) {
-			_ = releaseGuard()
-			return nil, openErr
-		}
-		current, readErr := os.ReadFile(lockPath)
-		var existing authorityLockRecord
-		decodeErr := json.Unmarshal(current, &existing)
-		if readErr != nil || decodeErr != nil || existing.PID <= 0 || strings.TrimSpace(existing.Token) == "" {
-			if removeErr := os.Remove(lockPath); removeErr != nil && !os.IsNotExist(removeErr) {
-				_ = releaseGuard()
-				return nil, errors.Join(readErr, decodeErr, removeErr)
-			}
-			continue
-		}
-		if !platform.ProcessAlive(existing.PID) {
-			if removeErr := os.Remove(lockPath); removeErr != nil && !os.IsNotExist(removeErr) {
-				_ = releaseGuard()
-				return nil, removeErr
-			}
-			continue
-		}
-		if time.Now().After(deadline) {
-			_ = releaseGuard()
-			return nil, errors.New("timed out acquiring hot restart authority journal lock")
-		}
-		time.Sleep(authorityLockRetry)
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		_ = releaseGuard()
+		return nil, err
 	}
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		_ = releaseGuard()
+		return nil, err
+	}
+	if j.lockCreated != nil {
+		j.lockCreated()
+	}
+	writeErr := func() error {
+		if _, err := file.Write(payload); err != nil {
+			return err
+		}
+		return file.Sync()
+	}()
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		_ = os.Remove(lockPath)
+		_ = releaseGuard()
+		return nil, err
+	}
+	return releaseWithGuard(func() error {
+		current, err := os.ReadFile(lockPath)
+		if err != nil {
+			return err
+		}
+		if string(current) != string(payload) {
+			return errors.New("hot restart authority journal lock ownership changed")
+		}
+		return os.Remove(lockPath)
+	}), nil
 }
 
 func (j *FileAuthorityJournal) loadLocked() (AuthorityRecord, error) {

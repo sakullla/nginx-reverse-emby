@@ -3,6 +3,7 @@ package hotrestart
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -526,6 +527,54 @@ func TestAuthorityJournalRecoversLockCrashBeforeHolderWrite(t *testing.T) {
 	}
 }
 
+func TestAuthorityJournalColdProcessAdoptsOrphanedAuthority(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("process liveness recovery is supported on linux")
+	}
+	for _, phase := range []string{"pending", "child_authority"} {
+		t.Run(phase, func(t *testing.T) {
+			journalPath := filepath.Join(t.TempDir(), "authority.json")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestHotRestartHelperProcess$")
+			cmd.Env = setEnv(os.Environ(), "NRE_HOT_RESTART_COLD_AUTHORITY_JOURNAL", journalPath)
+			cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_COLD_AUTHORITY_PHASE", phase)
+			if err := cmd.Run(); err != nil {
+				t.Fatal(err)
+			}
+			next := testIdentity()
+			next.Revision++
+			next.GenerationID = "generation-18"
+			next.LeaseID = "lease-18"
+			next.LaunchEpoch = "cold-restart-launch"
+			journal := NewFileAuthorityJournal(journalPath)
+			if err := journal.BeginOwned(next, os.Getpid(), platform.ProcessAlive); err != nil {
+				t.Fatalf("cold process could not adopt %s authority: %v", phase, err)
+			}
+			record, err := journal.Load()
+			if err != nil || record.ParentPID != os.Getpid() || record.Phase != AuthorityPhaseParent || !record.LaunchPending {
+				t.Fatalf("adopted authority = %+v, %v", record, err)
+			}
+		})
+	}
+}
+
+func TestAuthorityJournalGuardReclaimsStaleLockWithLiveReusedPID(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "authority.json")
+	journal := NewFileAuthorityJournal(journalPath)
+	if err := journal.Begin(testIdentity(), os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(authorityLockRecord{PID: os.Getpid(), Token: "stale-live-pid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journalPath+".lock", payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Load(); err != nil {
+		t.Fatalf("guard did not reclaim stale live-pid lock: %v", err)
+	}
+}
+
 func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 	identity := testIdentity()
 	for _, tc := range []struct {
@@ -545,6 +594,21 @@ func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 }
 
 func TestHotRestartHelperProcess(t *testing.T) {
+	if journalPath := os.Getenv("NRE_HOT_RESTART_COLD_AUTHORITY_JOURNAL"); journalPath != "" {
+		journal := NewFileAuthorityJournal(journalPath)
+		identity := testIdentity()
+		if err := journal.BeginOwned(identity, os.Getpid(), platform.ProcessAlive); err != nil {
+			os.Exit(53)
+		}
+		if os.Getenv("NRE_HOT_RESTART_COLD_AUTHORITY_PHASE") == "child_authority" {
+			for _, phase := range []AuthorityPhase{AuthorityPhaseReady, AuthorityPhaseActive, AuthorityPhaseChild} {
+				if err := journal.Advance(identity, os.Getpid(), phase); err != nil {
+					os.Exit(54)
+				}
+			}
+		}
+		return
+	}
 	if journalPath := os.Getenv("NRE_HOT_RESTART_CRASH_LOCK_JOURNAL"); journalPath != "" {
 		journal := NewFileAuthorityJournal(journalPath)
 		journal.lockCreated = func() { os.Exit(51) }
