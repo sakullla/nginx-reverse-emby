@@ -13,12 +13,17 @@ func (c *SyncController) HandlePendingUpdate(ctx context.Context, snapshot model
 }
 
 func (c *SyncController) handlePendingUpdate(ctx context.Context, snapshot model.Snapshot) error {
-	pkg, needed := c.pendingUpdatePackage(snapshot)
-	if !needed {
+	if snapshot.VersionPackage == nil {
 		return nil
 	}
 	if err := c.preflightPendingUpdate(snapshot); err != nil {
 		return c.recordRuntimeError(err)
+	}
+	pkg := *snapshot.VersionPackage
+	desiredSHA := strings.TrimSpace(pkg.SHA256)
+	currentSHA := strings.TrimSpace(c.CurrentPackageSHA256)
+	if currentSHA != "" && strings.EqualFold(currentSHA, desiredSHA) {
+		return nil
 	}
 
 	stagedPath, err := c.Updater.Stage(ctx, pkg)
@@ -35,8 +40,7 @@ func (c *SyncController) handlePendingUpdate(ctx context.Context, snapshot model
 }
 
 func (c *SyncController) preflightPendingUpdate(snapshot model.Snapshot) error {
-	pkg, needed := c.pendingUpdatePackage(snapshot)
-	if !needed {
+	if snapshot.VersionPackage == nil {
 		return nil
 	}
 	if c.Updater == nil {
@@ -48,18 +52,5 @@ func (c *SyncController) preflightPendingUpdate(snapshot model.Snapshot) error {
 	if !ok {
 		return errors.New("updater does not support package preflight")
 	}
-	return preflighter.Preflight(pkg)
-}
-
-func (c *SyncController) pendingUpdatePackage(snapshot model.Snapshot) (model.VersionPackage, bool) {
-	if !HasValidPackage(snapshot.VersionPackage) {
-		return model.VersionPackage{}, false
-	}
-	pkg := *snapshot.VersionPackage
-	desiredSHA := strings.TrimSpace(pkg.SHA256)
-	currentSHA := strings.TrimSpace(c.CurrentPackageSHA256)
-	if currentSHA != "" && strings.EqualFold(currentSHA, desiredSHA) {
-		return model.VersionPackage{}, false
-	}
-	return pkg, true
+	return preflighter.Preflight(*snapshot.VersionPackage)
 }

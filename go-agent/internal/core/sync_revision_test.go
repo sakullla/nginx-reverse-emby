@@ -411,6 +411,55 @@ func TestRevisionSyncRejectsUpdatePackageBeforeAttemptStart(t *testing.T) {
 	}
 }
 
+func TestRevisionSyncPreflightsEveryNonNilUpdatePackageBeforeAttemptStart(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		pkg        model.VersionPackage
+		currentSHA string
+	}{
+		{
+			name: "incomplete package",
+			pkg: model.VersionPackage{
+				SHA256: strings.Repeat("a", 64),
+			},
+		},
+		{
+			name: "invalid same-digest package",
+			pkg: model.VersionPackage{
+				URL: "https://downloads.example/nre-agent", SHA256: strings.Repeat("b", 64),
+			},
+			currentSHA: strings.Repeat("b", 64),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []string{}
+			store := newRevisionTestStore(&events)
+			pull := revisionPull(7, "lease-7", "digest-7")
+			pull.Snapshot.VersionPackage = &tc.pkg
+			client := &revisionClientStub{events: &events, pull: pull}
+			updater := &syncControllerUpdater{preflightErr: errors.New("invalid version package")}
+			controller := &SyncController{
+				Store: store, Runtime: NewRuntime(), SyncClient: client, Updater: updater,
+				CurrentPackageSHA256: tc.currentSHA,
+			}
+
+			err := controller.PerformSync(t.Context(), control.SyncRequest{})
+			if err == nil || !strings.Contains(err.Error(), "invalid version package") {
+				t.Fatalf("PerformSync() error = %v, want package preflight rejection", err)
+			}
+			if updater.preflightCalls != 1 || updater.stageCalls != 0 || updater.activateCalls != 0 {
+				t.Fatalf("updater preflight/stage/activate = %d/%d/%d, want 1/0/0", updater.preflightCalls, updater.stageCalls, updater.activateCalls)
+			}
+			if len(client.starts) != 0 || len(client.reports) != 0 || store.journal.Version != 0 || store.journal.Candidate != nil {
+				t.Fatalf("preflight mutated attempt start/report/journal = %d/%d/%+v", len(client.starts), len(client.reports), store.journal)
+			}
+			if store.desired.Revision != 0 || controller.Runtime.ActiveSnapshot().Revision != 0 {
+				t.Fatalf("preflight mutated desired/runtime = %d/%d", store.desired.Revision, controller.Runtime.ActiveSnapshot().Revision)
+			}
+		})
+	}
+}
+
 func TestRevisionSyncRejectsRevisionOlderThanDurableActiveGeneration(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)
