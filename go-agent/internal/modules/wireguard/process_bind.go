@@ -240,7 +240,9 @@ func (b *processWireGuardBind) Send(bufs [][]byte, endpoint conn.Endpoint) error
 	if socket == nil || socket.endpoint == nil {
 		return fmt.Errorf("wireguard process packet bind has no socket for %s", destination)
 	}
-	b.classifier.observeSend(bufs, destination)
+	if err := b.classifier.observeSend(bufs, destination); err != nil {
+		return err
+	}
 	remote := net.UDPAddrFromAddrPort(destination)
 	for _, payload := range bufs {
 		if _, err := socket.endpoint.WriteTo(payload, remote); err != nil {
@@ -302,7 +304,7 @@ func (c *processWireGuardClassifier) Classify(payload []byte, metadata ingress.P
 			return key, true
 		}
 	}
-	key, evicted := c.rememberRemoteLocked(remote)
+	key, evicted, _ := c.rememberRemoteLocked(remote)
 	release := c.release
 	c.mu.Unlock()
 	if evicted != "" && release != nil {
@@ -311,24 +313,41 @@ func (c *processWireGuardClassifier) Classify(payload []byte, metadata ingress.P
 	return key, key != ""
 }
 
-func (c *processWireGuardClassifier) observeSend(payloads [][]byte, destination netip.AddrPort) {
+func (c *processWireGuardClassifier) observeSend(payloads [][]byte, destination netip.AddrPort) error {
 	if c == nil {
-		return
+		return nil
 	}
 	remote := destination.String()
 	c.mu.Lock()
-	key, evicted := c.rememberRemoteLocked(remote)
+	key, evicted, remembered := c.rememberRemoteLocked(remote)
+	newReceivers := make([]uint32, 0, len(payloads))
 	for _, payload := range payloads {
 		sender, ok := wireGuardPacketSender(payload)
 		if !ok {
 			continue
 		}
-		if len(c.receivers) >= wireGuardAssociationLimit {
-			for existing := range c.receivers {
-				delete(c.receivers, existing)
-				break
+		if existing := c.receivers[sender]; existing != "" {
+			if existing != key {
+				release := c.release
+				c.mu.Unlock()
+				if !remembered && release != nil {
+					release(key)
+				}
+				return errors.New("wireguard process receiver index is owned by another association")
 			}
+			continue
 		}
+		newReceivers = append(newReceivers, sender)
+	}
+	if !remembered || len(c.receivers)+len(newReceivers) > wireGuardAssociationLimit {
+		release := c.release
+		c.mu.Unlock()
+		if release != nil {
+			release(key)
+		}
+		return errWireGuardAssociationLimit
+	}
+	for _, sender := range newReceivers {
 		c.receivers[sender] = key
 	}
 	release := c.release
@@ -336,32 +355,47 @@ func (c *processWireGuardClassifier) observeSend(payloads [][]byte, destination 
 	if evicted != "" && release != nil {
 		release(evicted)
 	}
+	return nil
 }
 
-func (c *processWireGuardClassifier) rememberRemoteLocked(remote string) (ingress.AssociationKey, ingress.AssociationKey) {
+func (c *processWireGuardClassifier) rememberRemoteLocked(remote string) (ingress.AssociationKey, ingress.AssociationKey, bool) {
 	remote = strings.TrimSpace(remote)
 	if remote == "" {
-		return "", ""
+		return "", "", false
 	}
 	if key := c.remotes[remote]; key != "" {
-		return key, ""
+		return key, "", true
 	}
 	var evicted ingress.AssociationKey
 	if len(c.remotes) >= wireGuardAssociationLimit && len(c.remoteFIFO) > 0 {
-		oldest := c.remoteFIFO[0]
-		c.remoteFIFO = c.remoteFIFO[1:]
-		evicted = c.remotes[oldest]
-		delete(c.remotes, oldest)
-		for receiver, key := range c.receivers {
-			if key == evicted {
-				delete(c.receivers, receiver)
+		evictAt := -1
+		for index, candidate := range c.remoteFIFO {
+			candidateKey := c.remotes[candidate]
+			if !c.receiverKeyPinnedLocked(candidateKey) {
+				evictAt = index
+				evicted = candidateKey
+				delete(c.remotes, candidate)
+				break
 			}
 		}
+		if evictAt < 0 {
+			return ingress.AssociationKey("wireguard|overflow"), "", false
+		}
+		c.remoteFIFO = append(c.remoteFIFO[:evictAt], c.remoteFIFO[evictAt+1:]...)
 	}
 	key := ingress.AssociationKey("wireguard|" + remote)
 	c.remotes[remote] = key
 	c.remoteFIFO = append(c.remoteFIFO, remote)
-	return key, evicted
+	return key, evicted, true
+}
+
+func (c *processWireGuardClassifier) receiverKeyPinnedLocked(key ingress.AssociationKey) bool {
+	for _, receiverKey := range c.receivers {
+		if receiverKey == key {
+			return true
+		}
+	}
+	return false
 }
 
 var _ conn.Bind = (*processWireGuardBind)(nil)

@@ -3,6 +3,7 @@ package wireguard
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -72,6 +73,14 @@ func TestProcessWireGuardBindHandoffPinsOldAndForwardsNew(t *testing.T) {
 	defer newClient.Close()
 	sendWireGuardInitiation(t, newClient, 21)
 	readWireGuardProcessPacket(t, childReceive[0], 21)
+
+	if err := parentRegistry.Resume(); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	afterAbort := dialWireGuardProcessClient(t, port)
+	defer afterAbort.Close()
+	sendWireGuardInitiation(t, afterAbort, 31)
+	readWireGuardProcessPacket(t, parentReceive[0], 31)
 }
 
 func TestProcessWireGuardBindCarriesProductionPackets(t *testing.T) {
@@ -147,7 +156,9 @@ func TestProcessWireGuardClassifierPinsReceiverAcrossRoaming(t *testing.T) {
 	binary.LittleEndian.PutUint32(initiation[:4], wireGuardMessageInitiation)
 	binary.LittleEndian.PutUint32(initiation[4:8], 42)
 	firstRemote := netip.MustParseAddrPort("127.0.0.1:51820")
-	classifier.observeSend([][]byte{initiation}, firstRemote)
+	if err := classifier.observeSend([][]byte{initiation}, firstRemote); err != nil {
+		t.Fatalf("observeSend() error = %v", err)
+	}
 
 	transport := make([]byte, wireGuardTransportMinSize)
 	binary.LittleEndian.PutUint32(transport[:4], wireGuardMessageTransport)
@@ -159,6 +170,39 @@ func TestProcessWireGuardClassifierPinsReceiverAcrossRoaming(t *testing.T) {
 	})
 	if !ok || key != ingress.AssociationKey("wireguard|"+firstRemote.String()) {
 		t.Fatalf("Classify() = %q, %t, want receiver pinned to %q", key, ok, firstRemote)
+	}
+}
+
+func TestProcessWireGuardClassifierKeepsActiveReceiverAtLimitAcrossRoaming(t *testing.T) {
+	classifier := newProcessWireGuardClassifier()
+	originalRemote := netip.MustParseAddrPort("127.0.0.1:51820")
+	originalKey := ingress.AssociationKey("wireguard|" + originalRemote.String())
+	classifier.remotes[originalRemote.String()] = originalKey
+	classifier.remoteFIFO = append(classifier.remoteFIFO, originalRemote.String())
+	for receiver := uint32(1); receiver <= wireGuardAssociationLimit; receiver++ {
+		classifier.receivers[receiver] = originalKey
+	}
+
+	newInitiation := make([]byte, wireGuardInitiationSize)
+	binary.LittleEndian.PutUint32(newInitiation[:4], wireGuardMessageInitiation)
+	binary.LittleEndian.PutUint32(newInitiation[4:8], uint32(wireGuardAssociationLimit+1))
+	if err := classifier.observeSend([][]byte{newInitiation}, originalRemote); !errors.Is(err, errWireGuardAssociationLimit) {
+		t.Fatalf("observeSend() error = %v, want association limit", err)
+	}
+	if got := classifier.receivers[1]; got != originalKey {
+		t.Fatalf("active receiver key = %q, want %q", got, originalKey)
+	}
+
+	transport := make([]byte, wireGuardTransportMinSize)
+	binary.LittleEndian.PutUint32(transport[:4], wireGuardMessageTransport)
+	binary.LittleEndian.PutUint32(transport[4:8], 1)
+	key, ok := classifier.Classify(transport, ingress.PacketMetadata{
+		Network:    "udp",
+		LocalAddr:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 51820},
+		RemoteAddr: &net.UDPAddr{IP: net.ParseIP("127.0.0.2"), Port: 51821},
+	})
+	if !ok || key != originalKey {
+		t.Fatalf("Classify() = %q, %t, want active receiver pin %q", key, ok, originalKey)
 	}
 }
 
