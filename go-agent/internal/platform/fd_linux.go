@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"syscall"
+	"time"
 )
 
 func SupportsHotRestart() bool {
@@ -20,6 +21,31 @@ func ProcessAlive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func AcquireFileLock(path string, timeout time.Duration) (func() error, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() error {
+				return errors.Join(syscall.Flock(int(file.Fd()), syscall.LOCK_UN), file.Close())
+			}, nil
+		}
+		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+			_ = file.Close()
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			_ = file.Close()
+			return nil, errors.New("timed out acquiring file lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func ListenerFile(listener net.Listener) (*os.File, error) {

@@ -62,6 +62,56 @@ func TestSupervisorKillsChildOnReadinessTimeout(t *testing.T) {
 	}
 }
 
+func TestSupervisorGeneratesUniqueEpochAndRejectsOverlappingLaunch(t *testing.T) {
+	requireProcessHandoff(t)
+	launch := helperLaunch(t, "hang")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	started := make(chan error, 1)
+	go func() {
+		_, err := (Supervisor{ReadyTimeout: 10 * time.Second}).Start(ctx, launch)
+		started <- err
+	}()
+
+	journal := NewFileAuthorityJournal(launch.AuthorityJournal)
+	var first AuthorityRecord
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		record, err := journal.Load()
+		if err == nil && record.LaunchPending && record.ChildPID > 0 {
+			first = record
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if first.Identity.LaunchEpoch == "" || first.Identity.LaunchEpoch == launch.Identity.LaunchEpoch {
+		t.Fatalf("generated launch identity = %+v", first.Identity)
+	}
+	if _, err := (Supervisor{ReadyTimeout: time.Second}).Start(t.Context(), launch); err == nil {
+		t.Fatal("overlapping launch succeeded before child readiness")
+	}
+	cancel()
+	select {
+	case err := <-started:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("first Start() error = %v, want context cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled launch did not stop")
+	}
+
+	readyLaunch := launch
+	readyLaunch.Env = setEnv(readyLaunch.Env, "NRE_HOT_RESTART_TEST_MODE", "parent_loss_child")
+	process, err := (Supervisor{ReadyTimeout: 5 * time.Second}).Start(t.Context(), readyLaunch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process.identity.LaunchEpoch == first.Identity.LaunchEpoch {
+		t.Fatal("retry reused the previous launch epoch")
+	}
+	_ = process.Abort()
+}
+
 func TestConcurrentTransitionsShareOneDurableResult(t *testing.T) {
 	requireProcessHandoff(t)
 	launch := helperLaunch(t, "ready")
@@ -165,14 +215,15 @@ func TestAuthorityJournalRecoveryConvergesOnOneLiveOwner(t *testing.T) {
 	if err := journal.Advance(identity, 200, AuthorityPhaseActive); err != nil {
 		t.Fatal(err)
 	}
-	owner, _, err := journal.Recover(identity, func(pid int) bool { return pid == 100 || pid == 200 })
-	if err != nil || owner != AuthorityOwnerChild {
+	owner, record, err := journal.Recover(identity, func(pid int) bool { return pid == 100 || pid == 200 })
+	if err != nil || owner != AuthorityOwnerParent || record.Phase != AuthorityPhaseActive {
 		t.Fatalf("live parent/child recovery = %q, %v", owner, err)
 	}
-	owner, record, err := journal.Recover(identity, func(pid int) bool { return pid == 100 })
+	owner, record, err = journal.Recover(identity, func(pid int) bool { return pid == 100 })
 	if err != nil || owner != AuthorityOwnerParent || record.Phase != AuthorityPhaseParent || record.ChildPID != 0 {
 		t.Fatalf("dead child recovery = %q, %+v, %v", owner, record, err)
 	}
+	journal = NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 	if err := journal.Begin(identity, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +233,43 @@ func TestAuthorityJournalRecoveryConvergesOnOneLiveOwner(t *testing.T) {
 	owner, record, err = journal.Recover(identity, func(pid int) bool { return pid == 200 })
 	if err != nil || owner != AuthorityOwnerChild || record.Phase != AuthorityPhaseReady {
 		t.Fatalf("dead parent recovery = %q, %+v, %v", owner, record, err)
+	}
+}
+
+func TestAbortWithLiveParentDoesNotTriggerChildRecovery(t *testing.T) {
+	requireProcessHandoff(t)
+	for _, checkpoint := range []string{"ready", "active"} {
+		t.Run(checkpoint, func(t *testing.T) {
+			resultPath := filepath.Join(t.TempDir(), "recovery.log")
+			launch := helperLaunch(t, "parent_loss_child")
+			launch.Env = setEnv(launch.Env, "NRE_HOT_RESTART_RECOVERY_RESULT", resultPath)
+			process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), launch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if checkpoint == "active" {
+				if err := process.Activate(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = process.Abort()
+
+			payload, err := os.ReadFile(resultPath)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			want := ""
+			if checkpoint == "active" {
+				want = "activate\n"
+			}
+			if string(payload) != want {
+				t.Fatalf("abort callbacks = %q, want %q", payload, want)
+			}
+			record, err := NewFileAuthorityJournal(launch.AuthorityJournal).Load()
+			if err != nil || record.Phase != AuthorityPhaseParent || record.ChildPID != 0 {
+				t.Fatalf("abort authority = %+v, %v", record, err)
+			}
+		})
 	}
 }
 
@@ -296,8 +384,15 @@ func TestAuthorityJournalNextIdentityRequiresCurrentProcessOwnership(t *testing.
 	newIdentity.Revision++
 	newIdentity.GenerationID = "generation-18"
 	newIdentity.LeaseID = "lease-18"
+	newIdentity.LaunchEpoch = "launch-18"
 	if err := journal.BeginOwned(newIdentity, 100, func(pid int) bool { return pid == 200 }); err == nil {
 		t.Fatal("stale parent replaced live child authority")
+	}
+	if err := journal.BeginOwned(newIdentity, 200, func(pid int) bool { return pid == 200 }); err == nil {
+		t.Fatal("child began the next launch before final authority")
+	}
+	if err := journal.Advance(oldIdentity, 200, AuthorityPhaseChild); err != nil {
+		t.Fatal(err)
 	}
 	if err := journal.BeginOwned(newIdentity, 200, func(pid int) bool { return pid == 200 }); err != nil {
 		t.Fatalf("current child owner could not begin next identity: %v", err)
@@ -306,8 +401,109 @@ func TestAuthorityJournalNextIdentityRequiresCurrentProcessOwnership(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Identity != newIdentity || record.Phase != AuthorityPhaseParent || record.ParentPID != 200 {
+	if record.Identity != newIdentity || record.Phase != AuthorityPhaseParent || record.ParentPID != 200 || !record.LaunchPending {
 		t.Fatalf("next authority record = %+v", record)
+	}
+}
+
+func TestAuthorityJournalRejectsOverlappingReadyAndActiveLaunches(t *testing.T) {
+	for _, phase := range []AuthorityPhase{AuthorityPhaseReady, AuthorityPhaseActive} {
+		t.Run(string(phase), func(t *testing.T) {
+			journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+			current := testIdentity()
+			if err := journal.Begin(current, 100); err != nil {
+				t.Fatal(err)
+			}
+			if err := journal.Advance(current, 200, AuthorityPhaseReady); err != nil {
+				t.Fatal(err)
+			}
+			if phase == AuthorityPhaseActive {
+				if err := journal.Advance(current, 200, AuthorityPhaseActive); err != nil {
+					t.Fatal(err)
+				}
+			}
+			next := current
+			next.Revision++
+			next.LaunchEpoch = "replacement-launch"
+			if err := journal.BeginOwned(next, 100, func(pid int) bool { return pid == 100 || pid == 200 }); err == nil {
+				t.Fatalf("BeginOwned() replaced live %s launch", phase)
+			}
+		})
+	}
+}
+
+func TestAuthorityJournalLaunchEpochFencesStaleChild(t *testing.T) {
+	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+	stale := testIdentity()
+	if err := journal.Begin(stale, 100); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []AuthorityPhase{AuthorityPhaseReady, AuthorityPhaseActive, AuthorityPhaseChild} {
+		if err := journal.Advance(stale, 200, phase); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replacement := stale
+	replacement.LaunchEpoch = "replacement-launch"
+	if err := journal.BeginOwned(replacement, 200, func(pid int) bool { return pid == 200 }); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.AttachChild(replacement, 200, 300); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Advance(stale, 200, AuthorityPhaseReady); err == nil {
+		t.Fatal("stale child advanced replacement launch")
+	}
+	if err := journal.Advance(replacement, 300, AuthorityPhaseReady); err != nil {
+		t.Fatalf("replacement child could not advance: %v", err)
+	}
+}
+
+func TestAuthorityJournalSerializesCrossProcessOperations(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-process lock liveness is supported on linux")
+	}
+	dir := t.TempDir()
+	journalPath := filepath.Join(dir, "authority.json")
+	readyPath := filepath.Join(dir, "lock-ready")
+	releasePath := filepath.Join(dir, "lock-release")
+	journal := NewFileAuthorityJournal(journalPath)
+	if err := journal.Begin(testIdentity(), os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHotRestartHelperProcess$")
+	cmd.Env = setEnv(os.Environ(), "NRE_HOT_RESTART_LOCK_JOURNAL", journalPath)
+	cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_LOCK_READY", readyPath)
+	cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_LOCK_RELEASE", releasePath)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	waitForFile(t, readyPath)
+
+	loaded := make(chan error, 1)
+	go func() {
+		_, err := NewFileAuthorityJournal(journalPath).Load()
+		loaded <- err
+	}()
+	select {
+	case err := <-loaded:
+		t.Fatalf("Load() bypassed cross-process journal lock: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-loaded:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Load() did not resume after cross-process journal lock release")
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -330,6 +526,10 @@ func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 }
 
 func TestHotRestartHelperProcess(t *testing.T) {
+	if journalPath := os.Getenv("NRE_HOT_RESTART_LOCK_JOURNAL"); journalPath != "" {
+		runJournalLockHelper(journalPath)
+		return
+	}
 	if parentMode := os.Getenv("NRE_HOT_RESTART_PARENT_MODE"); parentMode != "" {
 		runRecoveryParentHelper(parentMode)
 		return
@@ -404,6 +604,36 @@ func TestHotRestartHelperProcess(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 }
 
+func runJournalLockHelper(journalPath string) {
+	journal := NewFileAuthorityJournal(journalPath)
+	err := journal.withLock(func() error {
+		if err := os.WriteFile(os.Getenv("NRE_HOT_RESTART_LOCK_READY"), []byte("ready"), 0o600); err != nil {
+			return err
+		}
+		for {
+			if _, err := os.Stat(os.Getenv("NRE_HOT_RESTART_LOCK_RELEASE")); err == nil {
+				return nil
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	if err != nil {
+		os.Exit(50)
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+}
+
 func runRecoveryParentHelper(checkpoint string) {
 	journalPath := os.Getenv("NRE_HOT_RESTART_RECOVERY_JOURNAL")
 	resultPath := os.Getenv("NRE_HOT_RESTART_RECOVERY_RESULT")
@@ -451,7 +681,7 @@ func helperLaunch(t *testing.T, mode string) Launch {
 }
 
 func testIdentity() Identity {
-	return Identity{Revision: 17, SnapshotDigest: strings.Repeat("a", 64), GenerationID: "generation-17", LeaseID: "lease-17"}
+	return Identity{Revision: 17, SnapshotDigest: strings.Repeat("a", 64), GenerationID: "generation-17", LeaseID: "lease-17", LaunchEpoch: "launch-17"}
 }
 
 func requireProcessHandoff(t *testing.T) {

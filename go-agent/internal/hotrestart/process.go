@@ -2,7 +2,9 @@ package hotrestart
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +21,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-const ProtocolVersion = 1
+const ProtocolVersion = 2
 
 const (
 	envChild             = "NRE_HOT_RESTART_CHILD"
@@ -36,9 +38,15 @@ type Identity struct {
 	SnapshotDigest string `json:"snapshot_digest"`
 	GenerationID   string `json:"generation_id"`
 	LeaseID        string `json:"lease_id"`
+	LaunchEpoch    string `json:"launch_epoch"`
 }
 
-const AuthorityJournalVersion = 1
+const AuthorityJournalVersion = 2
+
+const (
+	authorityLockTimeout = 5 * time.Second
+	authorityLockRetry   = 10 * time.Millisecond
+)
 
 type AuthorityPhase string
 
@@ -53,12 +61,13 @@ const (
 )
 
 type AuthorityRecord struct {
-	Version   int            `json:"version"`
-	Identity  Identity       `json:"identity"`
-	Phase     AuthorityPhase `json:"phase"`
-	ParentPID int            `json:"parent_pid"`
-	ChildPID  int            `json:"child_pid,omitempty"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	Version       int            `json:"version"`
+	Identity      Identity       `json:"identity"`
+	Phase         AuthorityPhase `json:"phase"`
+	ParentPID     int            `json:"parent_pid"`
+	ChildPID      int            `json:"child_pid,omitempty"`
+	LaunchPending bool           `json:"launch_pending,omitempty"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
 type FileAuthorityJournal struct {
@@ -71,88 +80,161 @@ func NewFileAuthorityJournal(path string) *FileAuthorityJournal {
 }
 
 func (j *FileAuthorityJournal) Begin(identity Identity, parentPID int) error {
-	if j == nil || strings.TrimSpace(j.path) == "" || j.path == "." {
-		return errors.New("hot restart authority journal path is required")
-	}
 	if err := identity.Validate(); err != nil {
 		return err
 	}
 	if parentPID <= 0 {
 		return errors.New("hot restart parent pid is required")
 	}
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.writeLocked(AuthorityRecord{
-		Version: AuthorityJournalVersion, Identity: identity, Phase: AuthorityPhaseParent,
-		ParentPID: parentPID, UpdatedAt: time.Now().UTC(),
+	return j.withLock(func() error {
+		if _, err := os.Stat(j.path); err == nil {
+			return errors.New("hot restart authority journal already exists")
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		return j.beginLocked(identity, parentPID, false)
 	})
 }
 
 func (j *FileAuthorityJournal) BeginOwned(identity Identity, parentPID int, alive func(int) bool) error {
-	if _, err := os.Stat(j.path); os.IsNotExist(err) {
-		return j.Begin(identity, parentPID)
-	} else if err != nil {
+	if err := identity.Validate(); err != nil {
 		return err
 	}
-	existing, err := j.Load()
-	if err != nil {
-		return err
+	if parentPID <= 0 {
+		return errors.New("hot restart parent pid is required")
 	}
-	owner, recovered, err := j.Recover(existing.Identity, alive)
-	if err != nil {
-		return err
+	if alive == nil {
+		return errors.New("process liveness callback is required")
 	}
-	ownedByCurrentProcess := owner == AuthorityOwnerParent && recovered.ParentPID == parentPID ||
-		owner == AuthorityOwnerChild && recovered.ChildPID == parentPID
-	if !ownedByCurrentProcess {
-		return errors.New("current process does not own the existing hot restart authority journal")
-	}
-	return j.Begin(identity, parentPID)
+	return j.withLock(func() error {
+		if _, err := os.Stat(j.path); os.IsNotExist(err) {
+			return j.beginLocked(identity, parentPID, true)
+		} else if err != nil {
+			return err
+		}
+		existing, err := j.loadLocked()
+		if err != nil {
+			return err
+		}
+		owner, recovered, err := j.recoverLocked(existing.Identity, alive)
+		if err != nil {
+			return err
+		}
+		parentCanLaunch := owner == AuthorityOwnerParent && recovered.ParentPID == parentPID &&
+			recovered.Phase == AuthorityPhaseParent && recovered.ChildPID == 0 && !recovered.LaunchPending
+		childCanLaunch := owner == AuthorityOwnerChild && recovered.ChildPID == parentPID &&
+			recovered.Phase == AuthorityPhaseChild && !recovered.LaunchPending
+		if !parentCanLaunch && !childCanLaunch {
+			return errors.New("current process does not own a launchable hot restart authority journal")
+		}
+		return j.beginLocked(identity, parentPID, true)
+	})
 }
 
 func (j *FileAuthorityJournal) Load() (AuthorityRecord, error) {
-	if j == nil || strings.TrimSpace(j.path) == "" || j.path == "." {
-		return AuthorityRecord{}, errors.New("hot restart authority journal path is required")
-	}
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.loadLocked()
+	var record AuthorityRecord
+	err := j.withLock(func() error {
+		var err error
+		record, err = j.loadLocked()
+		return err
+	})
+	return record, err
 }
 
 func (j *FileAuthorityJournal) Advance(identity Identity, childPID int, next AuthorityPhase) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	record, err := j.loadLocked()
-	if err != nil {
-		return err
-	}
-	if record.Identity != identity || record.Version != AuthorityJournalVersion {
-		return errors.New("hot restart authority journal identity or version mismatch")
-	}
-	if childPID <= 0 || record.ChildPID != 0 && record.ChildPID != childPID {
-		return errors.New("hot restart authority journal child pid mismatch")
-	}
-	if authorityPhaseRank(next) < authorityPhaseRank(record.Phase) {
-		return errors.New("hot restart authority journal phase cannot move backward")
-	}
-	if authorityPhaseRank(next) > authorityPhaseRank(record.Phase)+1 {
-		return errors.New("hot restart authority journal phase cannot skip a checkpoint")
-	}
-	if next == record.Phase {
-		return nil
-	}
-	record.ChildPID = childPID
-	record.Phase = next
-	record.UpdatedAt = time.Now().UTC()
-	return j.writeLocked(record)
+	return j.withLock(func() error {
+		record, err := j.loadLocked()
+		if err != nil {
+			return err
+		}
+		if record.Identity != identity || record.Version != AuthorityJournalVersion {
+			return errors.New("hot restart authority journal identity or version mismatch")
+		}
+		if childPID <= 0 || record.ChildPID > 0 && record.ChildPID != childPID {
+			return errors.New("hot restart authority journal child pid mismatch")
+		}
+		if authorityPhaseRank(next) < authorityPhaseRank(record.Phase) {
+			return errors.New("hot restart authority journal phase cannot move backward")
+		}
+		if authorityPhaseRank(next) > authorityPhaseRank(record.Phase)+1 {
+			return errors.New("hot restart authority journal phase cannot skip a checkpoint")
+		}
+		changed := next != record.Phase || record.ChildPID != childPID || record.LaunchPending
+		if !changed {
+			return nil
+		}
+		record.ChildPID = childPID
+		record.Phase = next
+		if authorityPhaseRank(next) >= authorityPhaseRank(AuthorityPhaseReady) {
+			record.LaunchPending = false
+		}
+		record.UpdatedAt = time.Now().UTC()
+		return j.writeLocked(record)
+	})
 }
 
 func (j *FileAuthorityJournal) Recover(identity Identity, alive func(int) bool) (string, AuthorityRecord, error) {
 	if alive == nil {
 		return AuthorityOwnerNone, AuthorityRecord{}, errors.New("process liveness callback is required")
 	}
-	j.mu.Lock()
-	defer j.mu.Unlock()
+	var owner string
+	var record AuthorityRecord
+	err := j.withLock(func() error {
+		var err error
+		owner, record, err = j.recoverLocked(identity, alive)
+		return err
+	})
+	return owner, record, err
+}
+
+func (j *FileAuthorityJournal) AttachChild(identity Identity, parentPID, childPID int) error {
+	if parentPID <= 0 || childPID <= 0 {
+		return errors.New("hot restart parent and child pids are required")
+	}
+	return j.withLock(func() error {
+		record, err := j.loadLocked()
+		if err != nil {
+			return err
+		}
+		if record.Version != AuthorityJournalVersion || record.Identity != identity || record.ParentPID != parentPID {
+			return errors.New("hot restart authority journal launch identity mismatch")
+		}
+		if record.Phase == AuthorityPhaseReady && !record.LaunchPending && record.ChildPID == childPID {
+			return nil
+		}
+		if record.Phase != AuthorityPhaseParent || !record.LaunchPending || record.ChildPID != 0 && record.ChildPID != childPID {
+			return errors.New("hot restart authority journal has no matching pending launch")
+		}
+		record.ChildPID = childPID
+		record.UpdatedAt = time.Now().UTC()
+		return j.writeLocked(record)
+	})
+}
+
+func (j *FileAuthorityJournal) CancelLaunch(identity Identity, parentPID int) error {
+	return j.withLock(func() error {
+		record, err := j.loadLocked()
+		if err != nil {
+			return err
+		}
+		if record.Version != AuthorityJournalVersion || record.Identity != identity || record.ParentPID != parentPID ||
+			record.Phase != AuthorityPhaseParent || record.ChildPID != 0 || !record.LaunchPending {
+			return errors.New("hot restart authority journal has no cancellable launch")
+		}
+		record.LaunchPending = false
+		record.UpdatedAt = time.Now().UTC()
+		return j.writeLocked(record)
+	})
+}
+
+func (j *FileAuthorityJournal) beginLocked(identity Identity, parentPID int, pending bool) error {
+	return j.writeLocked(AuthorityRecord{
+		Version: AuthorityJournalVersion, Identity: identity, Phase: AuthorityPhaseParent,
+		ParentPID: parentPID, LaunchPending: pending, UpdatedAt: time.Now().UTC(),
+	})
+}
+
+func (j *FileAuthorityJournal) recoverLocked(identity Identity, alive func(int) bool) (string, AuthorityRecord, error) {
 	record, err := j.loadLocked()
 	if err != nil {
 		return AuthorityOwnerNone, AuthorityRecord{}, err
@@ -162,22 +244,116 @@ func (j *FileAuthorityJournal) Recover(identity Identity, alive func(int) bool) 
 	}
 	parentAlive := record.ParentPID > 0 && alive(record.ParentPID)
 	childAlive := record.ChildPID > 0 && alive(record.ChildPID)
-	owner := AuthorityOwnerNone
 	switch {
-	case childAlive && (!parentAlive || authorityPhaseRank(record.Phase) >= authorityPhaseRank(AuthorityPhaseActive)):
-		owner = AuthorityOwnerChild
+	case parentAlive && record.Phase == AuthorityPhaseChild && childAlive:
+		return AuthorityOwnerChild, record, nil
 	case parentAlive:
-		owner = AuthorityOwnerParent
-		if record.Phase != AuthorityPhaseParent || record.ChildPID != 0 {
+		if record.LaunchPending && record.ChildPID == 0 || childAlive {
+			return AuthorityOwnerParent, record, nil
+		}
+		if record.Phase != AuthorityPhaseParent || record.ChildPID != 0 || record.LaunchPending {
 			record.Phase = AuthorityPhaseParent
 			record.ChildPID = 0
+			record.LaunchPending = false
 			record.UpdatedAt = time.Now().UTC()
 			if err := j.writeLocked(record); err != nil {
 				return AuthorityOwnerNone, record, err
 			}
 		}
+		return AuthorityOwnerParent, record, nil
+	case childAlive:
+		return AuthorityOwnerChild, record, nil
+	default:
+		return AuthorityOwnerNone, record, nil
 	}
-	return owner, record, nil
+}
+
+type authorityLockRecord struct {
+	PID   int    `json:"pid"`
+	Token string `json:"token"`
+}
+
+func (j *FileAuthorityJournal) withLock(action func() error) error {
+	if j == nil || strings.TrimSpace(j.path) == "" || j.path == "." {
+		return errors.New("hot restart authority journal path is required")
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	release, err := j.acquireProcessLock()
+	if err != nil {
+		return err
+	}
+	return errors.Join(action(), release())
+}
+
+func (j *FileAuthorityJournal) acquireProcessLock() (func() error, error) {
+	if err := os.MkdirAll(filepath.Dir(j.path), 0o700); err != nil {
+		return nil, err
+	}
+	releaseGuard, err := platform.AcquireFileLock(j.path+".guard", authorityLockTimeout)
+	if err != nil {
+		return nil, err
+	}
+	releaseWithGuard := func(release func() error) func() error {
+		return func() error {
+			return errors.Join(release(), releaseGuard())
+		}
+	}
+	token, err := NewLaunchEpoch()
+	if err != nil {
+		_ = releaseGuard()
+		return nil, err
+	}
+	holder := authorityLockRecord{PID: os.Getpid(), Token: token}
+	payload, err := json.Marshal(holder)
+	if err != nil {
+		_ = releaseGuard()
+		return nil, err
+	}
+	lockPath := j.path + ".lock"
+	deadline := time.Now().Add(authorityLockTimeout)
+	for {
+		file, openErr := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if openErr == nil {
+			writeErr := func() error {
+				if _, err := file.Write(payload); err != nil {
+					return err
+				}
+				return file.Sync()
+			}()
+			closeErr := file.Close()
+			if err := errors.Join(writeErr, closeErr); err != nil {
+				_ = os.Remove(lockPath)
+				_ = releaseGuard()
+				return nil, err
+			}
+			return releaseWithGuard(func() error {
+				current, err := os.ReadFile(lockPath)
+				if err != nil {
+					return err
+				}
+				if string(current) != string(payload) {
+					return errors.New("hot restart authority journal lock ownership changed")
+				}
+				return os.Remove(lockPath)
+			}), nil
+		}
+		if !errors.Is(openErr, os.ErrExist) {
+			_ = releaseGuard()
+			return nil, openErr
+		}
+		current, readErr := os.ReadFile(lockPath)
+		var existing authorityLockRecord
+		if readErr == nil && json.Unmarshal(current, &existing) == nil && existing.PID > 0 && !platform.ProcessAlive(existing.PID) {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			_ = releaseGuard()
+			return nil, errors.New("timed out acquiring hot restart authority journal lock")
+		}
+		time.Sleep(authorityLockRetry)
+	}
 }
 
 func (j *FileAuthorityJournal) loadLocked() (AuthorityRecord, error) {
@@ -255,10 +431,18 @@ func authorityPhaseRank(phase AuthorityPhase) int {
 }
 
 func (i Identity) Validate() error {
-	if i.Revision <= 0 || strings.TrimSpace(i.SnapshotDigest) == "" || strings.TrimSpace(i.GenerationID) == "" || strings.TrimSpace(i.LeaseID) == "" {
+	if i.Revision <= 0 || strings.TrimSpace(i.SnapshotDigest) == "" || strings.TrimSpace(i.GenerationID) == "" || strings.TrimSpace(i.LeaseID) == "" || strings.TrimSpace(i.LaunchEpoch) == "" {
 		return errors.New("hot restart identity is incomplete")
 	}
 	return nil
+}
+
+func NewLaunchEpoch() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate hot restart launch epoch: %w", err)
+	}
+	return hex.EncodeToString(value), nil
 }
 
 type messageType string
@@ -319,6 +503,11 @@ func (s Supervisor) Start(ctx context.Context, launch Launch) (*ChildProcess, er
 	if strings.TrimSpace(launch.Binary) == "" {
 		return nil, errors.New("hot restart child binary is required")
 	}
+	launchEpoch, err := NewLaunchEpoch()
+	if err != nil {
+		return nil, err
+	}
+	launch.Identity.LaunchEpoch = launchEpoch
 	if err := launch.Identity.Validate(); err != nil {
 		return nil, err
 	}
@@ -326,9 +515,6 @@ func (s Supervisor) Start(ctx context.Context, launch Launch) (*ChildProcess, er
 		return nil, errors.New("stream descriptors and files must have equal length")
 	}
 	journal := NewFileAuthorityJournal(launch.AuthorityJournal)
-	if err := journal.BeginOwned(launch.Identity, os.Getpid(), platform.ProcessAlive); err != nil {
-		return nil, err
-	}
 	identityValue, err := encodedEnvironmentValue(launch.Identity)
 	if err != nil {
 		return nil, err
@@ -353,6 +539,10 @@ func (s Supervisor) Start(ctx context.Context, launch Launch) (*ChildProcess, er
 		_ = commandReader.Close()
 		_ = commandWriter.Close()
 	}
+	if err := journal.BeginOwned(launch.Identity, os.Getpid(), platform.ProcessAlive); err != nil {
+		closePipes()
+		return nil, err
+	}
 
 	args := launch.Argv
 	if len(args) > 0 {
@@ -372,10 +562,18 @@ func (s Supervisor) Start(ctx context.Context, launch Launch) (*ChildProcess, er
 	cmd.Stderr = launch.Stderr
 	if err := cmd.Start(); err != nil {
 		closePipes()
+		_ = journal.CancelLaunch(launch.Identity, os.Getpid())
 		return nil, err
 	}
 	_ = eventWriter.Close()
 	_ = commandReader.Close()
+	if err := journal.AttachChild(launch.Identity, os.Getpid(), cmd.Process.Pid); err != nil {
+		_ = cmd.Process.Kill()
+		waitErr := cmd.Wait()
+		closePipes()
+		_, _, recoverErr := journal.Recover(launch.Identity, func(pid int) bool { return pid == os.Getpid() })
+		return nil, errors.Join(err, waitErr, recoverErr)
+	}
 
 	process := newChildProcess(cmd, launch.Identity, eventReader, commandWriter, journal, s.commandTimeout())
 	readyCtx, cancel := context.WithTimeout(ctx, s.readyTimeout())
@@ -428,6 +626,7 @@ type ChildProcess struct {
 	waitMu       sync.Mutex
 	waitErr      error
 	mu           sync.Mutex
+	abortMu      sync.Mutex
 	transitionMu sync.Mutex
 	completed    map[processState]error
 	controlOnce  sync.Once
@@ -587,6 +786,8 @@ func (p *ChildProcess) Abort() error {
 	if p == nil {
 		return nil
 	}
+	p.abortMu.Lock()
+	defer p.abortMu.Unlock()
 	p.mu.Lock()
 	if p.state == processAborted {
 		p.mu.Unlock()
@@ -594,17 +795,17 @@ func (p *ChildProcess) Abort() error {
 	}
 	p.state = processAborted
 	p.mu.Unlock()
-	_ = p.closeControl()
 	if p.cmd != nil && p.cmd.Process != nil {
 		_ = p.cmd.Process.Kill()
 	}
 	waitErr := p.Wait()
+	var recoverErr error
 	if p.journal != nil && p.cmd != nil && p.cmd.Process != nil {
-		_, _, _ = p.journal.Recover(p.identity, func(pid int) bool {
+		_, _, recoverErr = p.journal.Recover(p.identity, func(pid int) bool {
 			return pid == os.Getpid()
 		})
 	}
-	return waitErr
+	return errors.Join(waitErr, recoverErr)
 }
 
 func (p *ChildProcess) Wait() error {

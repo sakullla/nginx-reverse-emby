@@ -279,7 +279,7 @@ func TestHotRestartChildIdentityMustMatchDesiredSnapshotAndJournal(t *testing.T)
 	}
 	app := &App{store: store}
 	valid := hotrestart.Identity{
-		Revision: 17, SnapshotDigest: strings.Repeat("a", 64), GenerationID: "runtime-generation-17", LeaseID: "lease-17",
+		Revision: 17, SnapshotDigest: strings.Repeat("a", 64), GenerationID: "runtime-generation-17", LeaseID: "lease-17", LaunchEpoch: "launch-17",
 	}
 	if err := app.validateHotRestartIdentity(valid, desired); err != nil {
 		t.Fatalf("validateHotRestartIdentity() error = %v", err)
