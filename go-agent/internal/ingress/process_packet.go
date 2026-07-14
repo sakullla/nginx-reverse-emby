@@ -17,8 +17,7 @@ type processPacketGate interface {
 	Activate() error
 	Pause() error
 	Resume() error
-	PrepareAuthority() error
-	TakeAuthority() error
+	ReserveAuthority() (hotrestart.PacketAuthorityReservation, error)
 	Physical() net.PacketConn
 }
 
@@ -183,16 +182,24 @@ func (r *ProcessPacketRegistry) ActivateImported() error {
 
 func (r *ProcessPacketRegistry) TakeAuthorityImported() error {
 	claims := r.snapshotClaims()
+	reservations := make([]hotrestart.PacketAuthorityReservation, 0, len(claims))
 	for _, claim := range claims {
-		if err := claim.gate.PrepareAuthority(); err != nil {
+		reservation, err := claim.gate.ReserveAuthority()
+		if err != nil {
+			for index := len(reservations) - 1; index >= 0; index-- {
+				reservations[index].Cancel()
+			}
 			return err
 		}
+		reservations = append(reservations, reservation)
 	}
-	var transferErr error
-	for _, claim := range claims {
-		transferErr = errors.Join(transferErr, claim.gate.TakeAuthority())
+	for _, reservation := range reservations {
+		reservation.Commit()
 	}
-	return transferErr
+	for _, reservation := range reservations {
+		reservation.Finish()
+	}
+	return nil
 }
 
 func (r *ProcessPacketRegistry) Export() (*hotrestart.PacketBundle, error) {

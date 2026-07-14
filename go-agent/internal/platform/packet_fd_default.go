@@ -19,3 +19,7 @@ func PacketConnFromFile(*os.File) (net.PacketConn, error) {
 func PacketHandoffFiles() (*os.File, *os.File, error) {
 	return nil, nil, errors.New("hot restart packet forwarding is only supported on linux")
 }
+
+func PacketHandoffConnFromFile(*os.File) (net.Conn, error) {
+	return nil, errors.New("hot restart packet forwarding is only supported on linux")
+}

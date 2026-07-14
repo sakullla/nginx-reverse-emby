@@ -55,4 +55,11 @@ func TestPacketConnFileRoundTripAndHandoffFilesUseCloseOnExec(t *testing.T) {
 			t.Fatal("handoff file is missing FD_CLOEXEC")
 		}
 	}
+	handoffConn, err := PacketHandoffConnFromFile(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handoffConn.Close(); err != nil {
+		t.Fatal(err)
+	}
 }

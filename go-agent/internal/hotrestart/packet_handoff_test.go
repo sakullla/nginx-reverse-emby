@@ -155,6 +155,66 @@ func TestPacketHandoffDrainsQueuedForwardingBeforeParentCrashTakeover(t *testing
 	}
 }
 
+func TestPacketAuthorityReservationBlocksCloseUntilCommit(t *testing.T) {
+	requirePacketHandoff(t)
+	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := ExportPacketConns(map[string]net.PacketConn{"packet": physical})
+	if err != nil {
+		_ = physical.Close()
+		t.Fatal(err)
+	}
+	forwarder := bundle.TakeForwarders()["packet"]
+	set, err := ImportPacketConns(bundle.Descriptors, bundle.Files)
+	if err != nil {
+		_ = forwarder.Close()
+		_ = physical.Close()
+		t.Fatal(err)
+	}
+	child := set.Conns["packet"]
+	if err := child.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		buffer := make([]byte, 64)
+		_, _, err := child.ReadFrom(buffer)
+		readDone <- err
+	}()
+	if err := forwarder.Barrier(); err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := child.ReserveAuthority()
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- child.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close() crossed an active authority reservation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	reservation.Commit()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close() crossed a committed but unfinished authority reservation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	reservation.Finish()
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-readDone; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("ReadFrom() error = %v, want closed after committed reservation", err)
+	}
+	if err := errors.Join(forwarder.Close(), bundle.Close(), physical.Close()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPacketHandoffRejectsDescriptorFileIndexAndIdentityTampering(t *testing.T) {
 	requirePacketHandoff(t)
 	for _, tc := range []struct {
@@ -182,6 +242,47 @@ func TestPacketHandoffRejectsDescriptorFileIndexAndIdentityTampering(t *testing.
 				t.Fatal("ImportPacketConns() accepted tampered descriptor")
 			}
 		})
+	}
+}
+
+func TestPacketHandoffRejectsStreamSocketAsForwardingFile(t *testing.T) {
+	requirePacketHandoff(t)
+	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer physical.Close()
+	bundle, err := ExportPacketConns(map[string]net.PacketConn{"packet": physical})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	streamFile, err := server.(*net.TCPConn).File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwardIndex := bundle.Descriptors[0].ForwardFileIndex
+	if err := bundle.Files[forwardIndex].Close(); err != nil {
+		t.Fatal(err)
+	}
+	bundle.Files[forwardIndex] = streamFile
+	if _, err := ImportPacketConns(bundle.Descriptors, bundle.Files); err == nil {
+		t.Fatal("ImportPacketConns() accepted a stream socket as the forwarding channel")
 	}
 }
 

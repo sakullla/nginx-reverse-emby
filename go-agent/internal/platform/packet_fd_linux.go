@@ -62,3 +62,35 @@ func PacketHandoffFiles() (*os.File, *os.File, error) {
 	return os.NewFile(uintptr(fds[0]), "hot-restart-packet-forward-parent"),
 		os.NewFile(uintptr(fds[1]), "hot-restart-packet-forward-child"), nil
 }
+
+func PacketHandoffConnFromFile(file *os.File) (net.Conn, error) {
+	if !SupportsHotRestart() {
+		return nil, errors.New("hot restart is unsupported on this linux architecture")
+	}
+	if file == nil {
+		return nil, errors.New("packet forwarding file is required")
+	}
+	fd := int(file.Fd())
+	socketType, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_TYPE)
+	if err != nil {
+		return nil, err
+	}
+	if socketType != unix.SOCK_SEQPACKET {
+		return nil, errors.New("packet forwarding file is not a SOCK_SEQPACKET socket")
+	}
+	local, err := unix.Getsockname(fd)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := local.(*unix.SockaddrUnix); !ok {
+		return nil, errors.New("packet forwarding file is not an AF_UNIX socket")
+	}
+	peer, err := unix.Getpeername(fd)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := peer.(*unix.SockaddrUnix); !ok {
+		return nil, errors.New("packet forwarding file has no AF_UNIX peer")
+	}
+	return net.FileConn(file)
+}

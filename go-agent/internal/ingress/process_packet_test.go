@@ -15,21 +15,47 @@ import (
 type recordingProcessPacketGate struct {
 	activateErr error
 	pauseErr    error
-	prepareErr  error
+	reserveErr  error
 	activations int
 	pauses      int
 	resumes     int
 	takes       int
+	cancels     int
 }
 
 func (g *recordingProcessPacketGate) Activate() error { g.activations++; return g.activateErr }
 func (g *recordingProcessPacketGate) Pause() error    { g.pauses++; return g.pauseErr }
 func (g *recordingProcessPacketGate) Resume() error   { g.resumes++; return nil }
-func (g *recordingProcessPacketGate) PrepareAuthority() error {
-	return g.prepareErr
+func (g *recordingProcessPacketGate) ReserveAuthority() (hotrestart.PacketAuthorityReservation, error) {
+	if g.reserveErr != nil {
+		return nil, g.reserveErr
+	}
+	return &recordingPacketAuthorityReservation{gate: g}, nil
 }
-func (g *recordingProcessPacketGate) TakeAuthority() error   { g.takes++; return nil }
 func (*recordingProcessPacketGate) Physical() net.PacketConn { return nil }
+
+type recordingPacketAuthorityReservation struct {
+	gate     *recordingProcessPacketGate
+	finished bool
+}
+
+func (r *recordingPacketAuthorityReservation) Commit() {
+	if r == nil || r.finished {
+		return
+	}
+	r.finished = true
+	r.gate.takes++
+}
+
+func (r *recordingPacketAuthorityReservation) Finish() {}
+
+func (r *recordingPacketAuthorityReservation) Cancel() {
+	if r == nil || r.finished {
+		return
+	}
+	r.finished = true
+	r.gate.cancels++
+}
 
 func TestProcessPacketHandoffKeepsOldAssociationForwardsNewAndTransfersAuthority(t *testing.T) {
 	if !platform.SupportsHotRestart() {
@@ -263,17 +289,20 @@ func TestProcessPacketActivationAndPauseCompensateEarlierGates(t *testing.T) {
 	}
 }
 
-func TestProcessPacketAuthorityPreflightPreventsPartialTakeover(t *testing.T) {
-	prepareErr := errors.New("second gate not ready")
+func TestProcessPacketAuthorityReservationPreventsPartialTakeover(t *testing.T) {
+	reserveErr := errors.New("second gate closed before reservation")
 	first := &recordingProcessPacketGate{}
-	second := &recordingProcessPacketGate{prepareErr: prepareErr}
+	second := &recordingProcessPacketGate{reserveErr: reserveErr}
 	registry := NewProcessPacketRegistry()
 	registry.claimed = []processPacketClaim{{gate: first}, {gate: second}}
-	if err := registry.TakeAuthorityImported(); !errors.Is(err, prepareErr) {
+	if err := registry.TakeAuthorityImported(); !errors.Is(err, reserveErr) {
 		t.Fatalf("TakeAuthorityImported() error = %v", err)
 	}
 	if first.takes != 0 || second.takes != 0 {
 		t.Fatalf("partial authority takeover = %d/%d", first.takes, second.takes)
+	}
+	if first.cancels != 1 {
+		t.Fatalf("first authority reservation cancels = %d, want 1", first.cancels)
 	}
 }
 

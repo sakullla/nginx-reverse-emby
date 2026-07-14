@@ -7,8 +7,9 @@ import (
 )
 
 type recordingProcessPacketAuthority struct {
-	order    *[]string
-	flushErr error
+	order       *[]string
+	flushErr    error
+	finalizeErr error
 }
 
 func (a recordingProcessPacketAuthority) BeginForwarding() error {
@@ -29,7 +30,7 @@ func (a recordingProcessPacketAuthority) Resume() error {
 }
 func (a recordingProcessPacketAuthority) FinalizeForwarding() error {
 	*a.order = append(*a.order, "finalize")
-	return nil
+	return a.finalizeErr
 }
 
 func TestHotRestartResourceProcessUsesForwardingBeforePhysicalAuthority(t *testing.T) {
@@ -84,5 +85,31 @@ func TestHotRestartResourceFlushFailureAbortsBeforeParentRollback(t *testing.T) 
 	want := []string{"pause", "forward", "activate", "packet-pause", "flush", "abort", "packet-resume", "resume"}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("barrier rollback order = %v, want %v", order, want)
+	}
+}
+
+func TestHotRestartResourcePostAckCleanupFailureRemainsCommitted(t *testing.T) {
+	var order []string
+	cleanupErr := errors.New("forwarder close failed")
+	process := &hotRestartResourceProcess{
+		hotRestartProcess: &recordingHotRestartProcess{order: &order},
+		streams:           recordingProcessStreamAuthority{order: &order},
+		packets:           recordingProcessPacketAuthority{order: &order, finalizeErr: cleanupErr},
+	}
+	if err := process.Activate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.TransferAuthority(t.Context()); err != nil {
+		t.Fatalf("TransferAuthority() reported committed cleanup debt as transfer failure: %v", err)
+	}
+	if err := process.Wait(); !errors.Is(err, cleanupErr) {
+		t.Fatalf("Wait() error = %v, want cleanup debt", err)
+	}
+	if err := process.Abort(); !errors.Is(err, cleanupErr) {
+		t.Fatalf("Abort() error = %v, want committed cleanup debt", err)
+	}
+	want := []string{"pause", "forward", "activate", "packet-pause", "flush", "authority", "finalize", "wait", "abort"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("post-ack cleanup order = %v, want %v", order, want)
 	}
 }

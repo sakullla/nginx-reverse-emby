@@ -79,7 +79,7 @@ func ExportPacketConns(conns map[string]net.PacketConn) (*PacketBundle, error) {
 			_ = bundle.Close()
 			return nil, fmt.Errorf("create packet forwarding channel %q: %w", id, err)
 		}
-		parentConn, err := net.FileConn(parentFile)
+		parentConn, err := platform.PacketHandoffConnFromFile(parentFile)
 		_ = parentFile.Close()
 		if err != nil {
 			_ = packetFile.Close()
@@ -243,7 +243,7 @@ func ImportPacketConns(descriptors []PacketDescriptor, files []*os.File) (*Packe
 			_ = set.Close()
 			return nil, fmt.Errorf("packet descriptor %q does not match inherited connection identity", id)
 		}
-		forward, err := net.FileConn(files[descriptor.ForwardFileIndex])
+		forward, err := platform.PacketHandoffConnFromFile(files[descriptor.ForwardFileIndex])
 		if err != nil {
 			_ = physical.Close()
 			_ = set.Close()
@@ -286,6 +286,19 @@ type GatedPacketConn struct {
 	closed        bool
 	closeOnce     sync.Once
 	closeErr      error
+}
+
+type PacketAuthorityReservation interface {
+	Commit()
+	Finish()
+	Cancel()
+}
+
+type packetAuthorityReservation struct {
+	conn      *GatedPacketConn
+	forward   net.Conn
+	committed bool
+	finished  bool
 }
 
 func NewAuthorityPacketConn(conn net.PacketConn) *GatedPacketConn {
@@ -547,23 +560,61 @@ func (c *GatedPacketConn) PrepareAuthority() error {
 }
 
 func (c *GatedPacketConn) TakeAuthority() error {
-	if err := c.PrepareAuthority(); err != nil {
+	reservation, err := c.ReserveAuthority()
+	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	if c.authority {
-		c.mu.Unlock()
-		return nil
-	}
-	c.authority = true
-	forward := c.forward
-	c.forward = nil
-	c.cond.Broadcast()
-	c.mu.Unlock()
-	if forward != nil {
-		_ = forward.Close()
-	}
+	reservation.Commit()
+	reservation.Finish()
 	return nil
+}
+
+func (c *GatedPacketConn) ReserveAuthority() (PacketAuthorityReservation, error) {
+	if err := c.PrepareAuthority(); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	if !c.authority && !c.barrierSeen && !c.forwardClosed {
+		c.mu.Unlock()
+		return nil, errors.New("hot restart packet authority reservation lost its readiness proof")
+	}
+	return &packetAuthorityReservation{conn: c}, nil
+}
+
+func (r *packetAuthorityReservation) Commit() {
+	if r == nil || r.conn == nil || r.finished || r.committed {
+		return
+	}
+	r.committed = true
+	conn := r.conn
+	conn.authority = true
+	r.forward = conn.forward
+	conn.forward = nil
+	conn.cond.Broadcast()
+}
+
+func (r *packetAuthorityReservation) Finish() {
+	if r == nil || r.conn == nil || r.finished || !r.committed {
+		return
+	}
+	r.finished = true
+	r.conn.mu.Unlock()
+	if r.forward != nil {
+		_ = r.forward.Close()
+		r.forward = nil
+	}
+}
+
+func (r *packetAuthorityReservation) Cancel() {
+	if r == nil || r.conn == nil || r.finished || r.committed {
+		return
+	}
+	r.finished = true
+	r.conn.mu.Unlock()
 }
 
 func (c *GatedPacketConn) Physical() net.PacketConn {

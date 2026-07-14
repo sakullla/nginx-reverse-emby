@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
 )
@@ -44,6 +45,10 @@ type hotRestartResourceProcess struct {
 	hotRestartProcess
 	streams processStreamAuthority
 	packets processPacketAuthority
+
+	mu                 sync.Mutex
+	authorityCommitted bool
+	cleanupErr         error
 }
 
 type processPacketAuthority interface {
@@ -97,8 +102,14 @@ func (p *hotRestartResourceProcess) TransferAuthority(ctx context.Context) error
 		}
 		return errors.Join(err, p.resumeParent())
 	}
+	p.mu.Lock()
+	p.authorityCommitted = true
+	p.mu.Unlock()
 	if p.packets != nil {
-		return p.packets.FinalizeForwarding()
+		cleanupErr := p.packets.FinalizeForwarding()
+		p.mu.Lock()
+		p.cleanupErr = errors.Join(p.cleanupErr, cleanupErr)
+		p.mu.Unlock()
 	}
 	return nil
 }
@@ -119,7 +130,25 @@ func (p *hotRestartResourceProcess) Abort() error {
 	if abortErr != nil {
 		return abortErr
 	}
+	p.mu.Lock()
+	committed := p.authorityCommitted
+	cleanupErr := p.cleanupErr
+	p.mu.Unlock()
+	if committed {
+		return cleanupErr
+	}
 	return p.resumeParent()
+}
+
+func (p *hotRestartResourceProcess) Wait() error {
+	if p == nil || p.hotRestartProcess == nil {
+		return nil
+	}
+	waitErr := p.hotRestartProcess.Wait()
+	p.mu.Lock()
+	cleanupErr := p.cleanupErr
+	p.mu.Unlock()
+	return errors.Join(waitErr, cleanupErr)
 }
 
 func (p *hotRestartResourceProcess) resumeParent() error {
