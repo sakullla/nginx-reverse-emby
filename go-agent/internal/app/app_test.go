@@ -580,6 +580,7 @@ type recordingHotRestartProcess struct {
 	order        *[]string
 	activateErr  error
 	authorityErr error
+	abortErr     error
 }
 
 func (p *recordingHotRestartProcess) Activate(context.Context) error {
@@ -604,7 +605,7 @@ func (p *recordingHotRestartProcess) Signal(os.Signal) error {
 
 func (p *recordingHotRestartProcess) Abort() error {
 	*p.order = append(*p.order, "abort")
-	return nil
+	return p.abortErr
 }
 
 type recordingProcessStreamAuthority struct{ order *[]string }
@@ -630,6 +631,38 @@ func TestHotRestartStreamActivationAbortsChildBeforeParentResume(t *testing.T) {
 	}
 	if want := []string{"pause", "activate", "abort", "resume"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("activation failure order = %v, want %v", order, want)
+	}
+}
+
+func TestHotRestartStreamActivationKeepsParentPausedWhenAbortFails(t *testing.T) {
+	var order []string
+	abortErr := errors.New("child termination unconfirmed")
+	process := &hotRestartStreamProcess{
+		hotRestartProcess: &recordingHotRestartProcess{
+			order: &order, activateErr: errors.New("activation failed"), abortErr: abortErr,
+		},
+		parent: recordingProcessStreamAuthority{order: &order},
+	}
+	if err := process.Activate(t.Context()); !errors.Is(err, abortErr) {
+		t.Fatalf("Activate() error = %v, want abort failure", err)
+	}
+	if want := []string{"pause", "activate", "abort"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("unconfirmed termination order = %v, want %v", order, want)
+	}
+}
+
+func TestHotRestartStreamAbortKeepsParentPausedWhenTerminationUnconfirmed(t *testing.T) {
+	var order []string
+	abortErr := errors.New("child termination unconfirmed")
+	process := &hotRestartStreamProcess{
+		hotRestartProcess: &recordingHotRestartProcess{order: &order, abortErr: abortErr},
+		parent:            recordingProcessStreamAuthority{order: &order},
+	}
+	if err := process.Abort(); !errors.Is(err, abortErr) {
+		t.Fatalf("Abort() error = %v, want termination failure", err)
+	}
+	if want := []string{"abort"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("unconfirmed abort order = %v, want %v", order, want)
 	}
 }
 

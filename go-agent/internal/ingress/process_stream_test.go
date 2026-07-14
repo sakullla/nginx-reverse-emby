@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"runtime"
@@ -139,5 +140,40 @@ func acceptProcessStream(t *testing.T, endpoint *StreamEndpoint) net.Conn {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Accept() timed out")
 		return nil
+	}
+}
+
+type failingProcessStreamGate struct {
+	resumeErr error
+	pauseErr  error
+	resumes   int
+	pauses    int
+}
+
+func (g *failingProcessStreamGate) resume() error {
+	g.resumes++
+	return g.resumeErr
+}
+
+func (g *failingProcessStreamGate) pause() error {
+	g.pauses++
+	return g.pauseErr
+}
+
+func TestProcessStreamActivationRollsBackEarlierGates(t *testing.T) {
+	resumeErr := errors.New("resume second listener")
+	rollbackErr := errors.New("pause first listener")
+	first := &failingProcessStreamGate{pauseErr: rollbackErr}
+	second := &failingProcessStreamGate{resumeErr: resumeErr}
+	registry := NewProcessStreamRegistry()
+	registry.importValidated = true
+	registry.claimed = []processStreamGate{first, second}
+
+	err := registry.ActivateImported()
+	if !errors.Is(err, resumeErr) || !errors.Is(err, rollbackErr) {
+		t.Fatalf("ActivateImported() error = %v, want resume and rollback failures", err)
+	}
+	if first.resumes != 1 || first.pauses != 1 || second.resumes != 1 || second.pauses != 0 {
+		t.Fatalf("gate calls = first resume/pause %d/%d, second %d/%d", first.resumes, first.pauses, second.resumes, second.pauses)
 	}
 }

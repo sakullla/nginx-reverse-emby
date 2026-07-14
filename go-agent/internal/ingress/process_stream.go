@@ -31,6 +31,11 @@ type processStreamListener struct {
 	closeErr  error
 }
 
+type processStreamGate interface {
+	pause() error
+	resume() error
+}
+
 func newProcessStreamListener(listener net.Listener, active bool) *processStreamListener {
 	l := &processStreamListener{listener: listener, active: active}
 	l.cond = sync.NewCond(&l.mu)
@@ -149,7 +154,7 @@ type ProcessStreamRegistry struct {
 
 	brokers         map[string]*StreamBroker
 	imported        *hotrestart.StreamSet
-	claimed         []*StreamBroker
+	claimed         []processStreamGate
 	exportSources   map[string]net.Listener
 	strict          bool
 	importValidated bool
@@ -258,7 +263,7 @@ func (r *ProcessStreamRegistry) NewBroker(ctx context.Context, id string, listen
 	broker.processID = id
 	r.brokers[id] = broker
 	if inherited {
-		r.claimed = append(r.claimed, broker)
+		r.claimed = append(r.claimed, broker.listener.(*processStreamListener))
 	}
 	return broker, nil
 }
@@ -303,16 +308,18 @@ func (r *ProcessStreamRegistry) ActivateImported() error {
 		return err
 	}
 	r.mu.Lock()
-	claimed := append([]*StreamBroker(nil), r.claimed...)
+	claimed := append([]processStreamGate(nil), r.claimed...)
 	r.mu.Unlock()
-	for _, broker := range claimed {
-		physical, ok := broker.listener.(*processStreamListener)
-		if !ok {
-			return errors.New("imported stream broker has no process gate")
+	resumed := make([]processStreamGate, 0, len(claimed))
+	for _, gate := range claimed {
+		if err := gate.resume(); err != nil {
+			activationErr := err
+			for index := len(resumed) - 1; index >= 0; index-- {
+				activationErr = errors.Join(activationErr, resumed[index].pause())
+			}
+			return activationErr
 		}
-		if err := physical.resume(); err != nil {
-			return err
-		}
+		resumed = append(resumed, gate)
 	}
 	return nil
 }

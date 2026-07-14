@@ -50,10 +50,13 @@ func (p *hotRestartStreamProcess) Activate(ctx context.Context) error {
 	}
 	if err := p.hotRestartProcess.Activate(ctx); err != nil {
 		abortErr := p.hotRestartProcess.Abort()
-		if p.parent != nil {
-			return errors.Join(err, abortErr, p.parent.Resume())
+		if abortErr != nil {
+			return errors.Join(err, abortErr)
 		}
-		return errors.Join(err, abortErr)
+		if p.parent != nil {
+			return errors.Join(err, p.parent.Resume())
+		}
+		return err
 	}
 	return nil
 }
@@ -63,8 +66,8 @@ func (p *hotRestartStreamProcess) Abort() error {
 		return nil
 	}
 	abortErr := p.hotRestartProcess.Abort()
-	if p.parent == nil {
+	if abortErr != nil || p.parent == nil {
 		return abortErr
 	}
-	return errors.Join(abortErr, p.parent.Resume())
+	return p.parent.Resume()
 }
