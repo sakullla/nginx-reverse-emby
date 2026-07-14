@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
@@ -20,6 +22,7 @@ import (
 	"os"
 	"reflect"
 	stdruntime "runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -483,11 +486,76 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 
+	return a.runControlLoop(ctx, applied)
+}
+
+func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSession) error {
+	if a == nil || child == nil {
+		return errors.New("hot restart child app and session are required")
+	}
+	defer func() {
+		_ = a.Close()
+	}()
+	desired, err := a.store.LoadDesiredSnapshot()
+	if err != nil {
+		return err
+	}
+	if err := a.validateHotRestartIdentity(child.Identity, desired); err != nil {
+		return err
+	}
+	if err := a.runtime.Apply(ctx, Snapshot{}, desired); err != nil {
+		return fmt.Errorf("prepare hot restart child generation: %w", err)
+	}
+	if err := child.Ready(); err != nil {
+		return err
+	}
+	if err := child.AwaitActivation(ctx, nil); err != nil {
+		return err
+	}
+	if err := child.AwaitAuthority(ctx, nil); err != nil {
+		return err
+	}
+	return a.runControlLoop(ctx, desired)
+}
+
+type hotRestartJournalStore interface {
+	LoadGenerationJournal() (model.GenerationJournal, error)
+}
+
+func (a *App) validateHotRestartIdentity(identity hotrestart.Identity, desired Snapshot) error {
+	if err := identity.Validate(); err != nil {
+		return err
+	}
+	store, ok := a.store.(hotRestartJournalStore)
+	if !ok {
+		return errors.New("store does not expose the generation journal required for hot restart")
+	}
+	journal, err := store.LoadGenerationJournal()
+	if err != nil {
+		return err
+	}
+	candidate := journal.Candidate
+	if candidate == nil || candidate.Phase != model.GenerationPhaseStarted || desired.Revision != identity.Revision || candidate.Revision != identity.Revision ||
+		!strings.EqualFold(strings.TrimSpace(candidate.SnapshotDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
+		candidate.Lease.LeaseID != identity.LeaseID {
+		return errors.New("hot restart identity does not match the durable desired snapshot and candidate journal")
+	}
+	generationID := candidate.RuntimeGenerationID
+	if generationID == "" {
+		generationID = candidate.GenerationID
+	}
+	if generationID != identity.GenerationID {
+		return errors.New("hot restart generation identity does not match the durable candidate journal")
+	}
+	return nil
+}
+
+func (a *App) runControlLoop(ctx context.Context, startup Snapshot) error {
 	if err := a.performSync(ctx); err != nil {
 		if errors.Is(err, core.ErrRestartRequested) {
 			return nil
 		}
-		if applied.DesiredVersion == "" && applied.Revision == 0 {
+		if startup.DesiredVersion == "" && startup.Revision == 0 {
 			return err
 		}
 	}

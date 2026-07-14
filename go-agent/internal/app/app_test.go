@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
@@ -256,6 +257,53 @@ func TestAdvertisedHotUpgradeCapabilityRequiresSelfCheck(t *testing.T) {
 		if !containsString(ready, capability) {
 			t.Fatalf("ready capabilities = %v, missing %q", ready, capability)
 		}
+	}
+}
+
+func TestHotRestartChildIdentityMustMatchDesiredSnapshotAndJournal(t *testing.T) {
+	store, err := core.NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := Snapshot{Revision: 17}
+	if err := store.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatal(err)
+	}
+	journal := model.GenerationJournal{Version: 1, Candidate: &model.GenerationRecord{
+		GenerationID: "attempt-generation-17", RuntimeGenerationID: "runtime-generation-17",
+		Revision: 17, SnapshotDigest: strings.Repeat("a", 64), Phase: model.GenerationPhaseStarted,
+		Lease: model.RevisionLease{Revision: 17, LeaseID: "lease-17"},
+	}}
+	if err := store.SaveGenerationJournal(journal); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{store: store}
+	valid := hotrestart.Identity{
+		Revision: 17, SnapshotDigest: strings.Repeat("a", 64), GenerationID: "runtime-generation-17", LeaseID: "lease-17",
+	}
+	if err := app.validateHotRestartIdentity(valid, desired); err != nil {
+		t.Fatalf("validateHotRestartIdentity() error = %v", err)
+	}
+	for _, tc := range []struct {
+		name     string
+		identity hotrestart.Identity
+		desired  Snapshot
+	}{
+		{name: "revision", identity: func() hotrestart.Identity { value := valid; value.Revision++; return value }(), desired: desired},
+		{name: "digest", identity: func() hotrestart.Identity {
+			value := valid
+			value.SnapshotDigest = strings.Repeat("b", 64)
+			return value
+		}(), desired: desired},
+		{name: "generation", identity: func() hotrestart.Identity { value := valid; value.GenerationID = "other"; return value }(), desired: desired},
+		{name: "lease", identity: func() hotrestart.Identity { value := valid; value.LeaseID = "other"; return value }(), desired: desired},
+		{name: "desired snapshot", identity: valid, desired: Snapshot{Revision: 18}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := app.validateHotRestartIdentity(tc.identity, tc.desired); err == nil {
+				t.Fatal("validateHotRestartIdentity() succeeded, want durable identity rejection")
+			}
+		})
 	}
 }
 
