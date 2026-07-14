@@ -211,6 +211,42 @@ func TestModuleManagedCertificateReportsDelegatesWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestGenerationModuleReportsOnlyFromActiveProviderView(t *testing.T) {
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	registry := module.NewRegistry()
+	mod := NewGenerationModule(manager, registry)
+	mustRegister(t, registry, mod)
+
+	generationContext, err := module.NewGenerationContext(model.Snapshot{}, model.Snapshot{Revision: 1})
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	candidate, err := registry.PrepareGeneration(context.Background(), generationContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if err := candidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+	candidate.Publish()
+
+	manager.installActiveState(&activeState{byID: map[int]*managedCertificate{
+		99: {info: CertificateInfo{ID: 99, Domain: "legacy.example.test", IssuerMode: "local_http01", Status: "pending"}},
+	}})
+	legacyReports, err := manager.ManagedCertificateReports(context.Background())
+	if err != nil || len(legacyReports) != 1 {
+		t.Fatalf("legacy manager reports = %+v, %v, want one report", legacyReports, err)
+	}
+	reports, err := mod.ManagedCertificateReports(context.Background())
+	if err != nil {
+		t.Fatalf("ManagedCertificateReports() error = %v", err)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("generation module reports = %+v, want active provider state instead of legacy manager", reports)
+	}
+}
+
 func TestModuleCloseDelegatesWhenAvailable(t *testing.T) {
 	t.Parallel()
 

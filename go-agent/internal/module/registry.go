@@ -223,6 +223,19 @@ func (r *Registry) Capabilities(snapshot SnapshotView) []Capability {
 	return capabilities
 }
 
+func (r *Registry) ValidateGenerationCompatibility() error {
+	ordered, err := r.OrderedModules()
+	if err != nil {
+		return err
+	}
+	for _, mod := range ordered {
+		if _, ok := mod.(TransactionalModule); !ok {
+			return fmt.Errorf("module %s does not implement generation transactions", strings.TrimSpace(mod.Name()))
+		}
+	}
+	return nil
+}
+
 func (r *Registry) OrderedModules() ([]Module, error) {
 	if r == nil || len(r.modules) == 0 {
 		return nil, nil
@@ -348,6 +361,10 @@ func (r *Registry) PrepareGeneration(ctx context.Context, generationContext Gene
 		return &generationCandidate{context: generationContext, providers: newProviderSet()}, nil
 	}
 	r.generationMu.Lock()
+	if err := r.ValidateGenerationCompatibility(); err != nil {
+		r.generationMu.Unlock()
+		return nil, err
+	}
 
 	ordered, err := r.OrderedModules()
 	if err != nil {

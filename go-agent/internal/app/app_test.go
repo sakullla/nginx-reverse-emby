@@ -105,6 +105,44 @@ func TestNewRegistersConfiguredModules(t *testing.T) {
 	}
 }
 
+func TestConfiguredRuntimeUsesCompatibleSoleViewGenerationPath(t *testing.T) {
+	configured, err := newConfiguredModules(Config{
+		AgentID:   "agent",
+		AgentName: "agent",
+		DataDir:   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("newConfiguredModules() error = %v", err)
+	}
+	if err := configured.registry.ValidateGenerationCompatibility(); err != nil {
+		t.Fatalf("ValidateGenerationCompatibility() error = %v", err)
+	}
+	app := &App{}
+	app.setConfiguredModules(configured)
+	t.Cleanup(func() { _ = app.Close() })
+	if app.runtime == nil {
+		t.Fatal("configured runtime is nil")
+	}
+
+	next := model.Snapshot{Revision: 1, DesiredVersion: "v1"}
+	if err := app.runtime.Apply(context.Background(), model.Snapshot{}, next); err != nil {
+		t.Fatalf("runtime.Apply() error = %v", err)
+	}
+	active := configured.registry.ActiveGeneration()
+	if active == nil || active.Revision() != 1 {
+		t.Fatalf("active generation = %+v, want revision 1", active)
+	}
+	if app.diagnosticModule.Handler() == nil {
+		t.Fatal("diagnostics direct consumer did not resolve the active generation")
+	}
+	if provider, ok := active.Resolve(agentmodule.ProviderTrafficSink); !ok || provider == nil {
+		t.Fatal("traffic provider is missing from active generation")
+	}
+	if provider, ok := active.Resolve(agentmodule.ProviderRef("certificates.reporter")); !ok || provider == nil {
+		t.Fatal("certificate reporter is missing from active generation")
+	}
+}
+
 func TestDiagnoseUsesDiagnosticModuleHandler(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

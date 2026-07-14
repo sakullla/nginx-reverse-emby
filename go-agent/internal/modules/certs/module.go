@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
@@ -19,12 +20,19 @@ type Reporter interface {
 	ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error)
 }
 
+const providerCertificateReporter module.ProviderRef = "certificates.reporter"
+
 type Module struct {
-	manager Applier
+	manager  Applier
+	selector interface{ ActiveGeneration() *module.GenerationView }
 }
 
 func NewModule(manager Applier) *Module {
 	return &Module{manager: manager}
+}
+
+func NewGenerationModule(manager Applier, selector interface{ ActiveGeneration() *module.GenerationView }) *Module {
+	return &Module{manager: manager, selector: selector}
 }
 
 func NewManagedModule(dataDir string, opts ...Option) (*Module, error) {
@@ -35,6 +43,14 @@ func NewManagedModule(dataDir string, opts ...Option) (*Module, error) {
 	return NewModule(manager), nil
 }
 
+func NewManagedGenerationModule(dataDir string, selector interface{ ActiveGeneration() *module.GenerationView }, opts ...Option) (*Module, error) {
+	manager, err := NewManager(dataDir, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return NewGenerationModule(manager, selector), nil
+}
+
 func (m *Module) Name() string {
 	return "certs"
 }
@@ -43,7 +59,10 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 	descriptor := module.ModuleDescriptor{Name: m.Name()}
 	if m != nil {
 		if _, ok := m.manager.(module.TLSMaterial); ok {
-			descriptor.Provides = []module.ProviderRef{module.ProviderTLSMaterial}
+			descriptor.Provides = append(descriptor.Provides, module.ProviderTLSMaterial)
+		}
+		if _, ok := m.manager.(Reporter); ok {
+			descriptor.Provides = append(descriptor.Provides, providerCertificateReporter)
 		}
 	}
 	return descriptor
@@ -53,11 +72,17 @@ func (m *Module) RegisterProviders(reg module.ProviderRegistry) error {
 	if m == nil || m.manager == nil {
 		return nil
 	}
-	tlsMaterial, ok := m.manager.(module.TLSMaterial)
-	if !ok {
-		return nil
+	if tlsMaterial, ok := m.manager.(module.TLSMaterial); ok {
+		if err := reg.Provide(module.ProviderTLSMaterial, tlsMaterial); err != nil {
+			return err
+		}
 	}
-	return reg.Provide(module.ProviderTLSMaterial, tlsMaterial)
+	if reporter, ok := m.manager.(Reporter); ok {
+		if err := reg.Provide(providerCertificateReporter, reporter); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
@@ -117,7 +142,11 @@ func (t *certificateTransaction) RegisterProviders(reg module.ProviderRegistry) 
 	if t == nil || t.manager == nil {
 		return nil
 	}
-	return reg.Provide(module.ProviderTLSMaterial, preparedTLSMaterial{state: t.next})
+	provider := preparedTLSMaterial{manager: t.manager, state: t.next}
+	if err := reg.Provide(module.ProviderTLSMaterial, provider); err != nil {
+		return err
+	}
+	return reg.Provide(providerCertificateReporter, provider)
 }
 
 func (*certificateTransaction) Ready(context.Context) error { return nil }
@@ -184,7 +213,8 @@ func (m *Manager) installActiveState(state *activeState) {
 }
 
 type preparedTLSMaterial struct {
-	state *activeState
+	manager *Manager
+	state   *activeState
 }
 
 func (p preparedTLSMaterial) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
@@ -254,9 +284,70 @@ func (p preparedTLSMaterial) lookup(certificateID int) (*managedCertificate, err
 	return nil, fmt.Errorf("certificate %d not found", certificateID)
 }
 
+func (p preparedTLSMaterial) ManagedCertificateReports(ctx context.Context) ([]model.ManagedCertificateReport, error) {
+	if p.manager == nil {
+		return nil, nil
+	}
+	return p.manager.managedCertificateReports(ctx, p.state)
+}
+
+func (m *Manager) managedCertificateReports(_ context.Context, state *activeState) ([]model.ManagedCertificateReport, error) {
+	entries := make([]*managedCertificate, 0)
+	if state != nil {
+		entries = make([]*managedCertificate, 0, len(state.byID))
+		for _, entry := range state.byID {
+			if entry == nil || entry.info.IssuerMode != "local_http01" {
+				continue
+			}
+			entries = append(entries, entry)
+		}
+	}
+
+	reports := make([]model.ManagedCertificateReport, 0, len(entries))
+	for _, entry := range entries {
+		report := model.ManagedCertificateReport{
+			ID:           entry.info.ID,
+			Domain:       entry.info.Domain,
+			Status:       managedCertificateReportStatus(entry),
+			MaterialHash: entry.materialHash,
+			ACMEInfo:     entry.info.ACMEInfo,
+		}
+		persisted, ok, err := m.loadManagedCertificateState(entry.info.ID)
+		if err != nil {
+			return nil, err
+		}
+		if ok && persisted.ACME != nil {
+			if renewedAt := persisted.ACME.Renewal.LastRenewedAtUnix; renewedAt > 0 {
+				report.LastIssueAt = time.Unix(renewedAt, 0).UTC().Format(time.RFC3339)
+			}
+			if lastAttempt := persisted.ACME.Renewal.LastAttemptAtUnix; lastAttempt > 0 {
+				report.UpdatedAt = time.Unix(lastAttempt, 0).UTC().Format(time.RFC3339)
+			}
+			report.LastError = persisted.ACME.Renewal.LastAttemptError
+			if status := normalizeManagedCertificateReportStatus(persisted.ACME.Renewal.LastAttemptStatus); status != "" {
+				report.Status = status
+			}
+		}
+		reports = append(reports, report)
+	}
+	return reports, nil
+}
+
 func (m *Module) ManagedCertificateReports(ctx context.Context) ([]model.ManagedCertificateReport, error) {
 	if m == nil || m.manager == nil {
 		return nil, nil
+	}
+	if m.selector != nil {
+		active := m.selector.ActiveGeneration()
+		if active == nil {
+			return nil, nil
+		}
+		provider, _ := active.Resolve(providerCertificateReporter)
+		reporter, _ := provider.(Reporter)
+		if reporter == nil {
+			return nil, nil
+		}
+		return reporter.ManagedCertificateReports(ctx)
 	}
 	reporter, ok := m.manager.(Reporter)
 	if !ok {
@@ -280,3 +371,4 @@ var _ module.TransactionalModule = (*Module)(nil)
 var _ module.GenerationTransaction = (*certificateTransaction)(nil)
 var _ module.TLSMaterial = preparedTLSMaterial{}
 var _ module.HostTLSMaterial = preparedTLSMaterial{}
+var _ Reporter = preparedTLSMaterial{}

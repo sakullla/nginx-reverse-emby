@@ -28,8 +28,56 @@ func TestModuleDescriptorUsesDiagnosticsSources(t *testing.T) {
 	if !reflect.DeepEqual(descriptor.Optional, wantOptional) {
 		t.Fatalf("Optional = %+v, want %+v", descriptor.Optional, wantOptional)
 	}
-	if len(descriptor.Provides) != 0 || len(descriptor.Requires) != 0 {
-		t.Fatalf("descriptor = %+v, want no provides/requires", descriptor)
+	if !reflect.DeepEqual(descriptor.Provides, []module.ProviderRef{providerDiagnosticsHandler}) || len(descriptor.Requires) != 0 {
+		t.Fatalf("descriptor = %+v, want diagnostics handler provider and no requires", descriptor)
+	}
+}
+
+func TestGenerationModuleReadsHandlerOnlyFromActiveView(t *testing.T) {
+	ctx := context.Background()
+	registry := module.NewRegistry()
+	mod := NewGenerationModule(registry)
+	mustRegister(t, registry, staticProviderModule{name: "http-source", provides: module.ProviderDiagnosticsHTTPSource, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, staticProviderModule{name: "l4-source", provides: module.ProviderDiagnosticsL4Source, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, mod)
+
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, model.Snapshot{Revision: 1})
+	if err != nil {
+		t.Fatalf("NewGenerationContext(first) error = %v", err)
+	}
+	first, err := registry.PrepareGeneration(ctx, firstContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(first) error = %v", err)
+	}
+	if mod.Handler() != nil {
+		t.Fatal("Handler() exposed candidate before publication")
+	}
+	if err := first.Ready(ctx); err != nil {
+		t.Fatalf("Ready(first) error = %v", err)
+	}
+	first.Publish()
+	firstHandler := mod.Handler()
+	if firstHandler == nil {
+		t.Fatal("Handler() = nil after first publication")
+	}
+
+	secondContext, err := module.NewGenerationContext(model.Snapshot{Revision: 1}, model.Snapshot{Revision: 2})
+	if err != nil {
+		t.Fatalf("NewGenerationContext(second) error = %v", err)
+	}
+	second, err := registry.PrepareGeneration(ctx, secondContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(second) error = %v", err)
+	}
+	if err := second.Ready(ctx); err != nil {
+		t.Fatalf("Ready(second) error = %v", err)
+	}
+	if mod.Handler() != firstHandler {
+		t.Fatal("Handler() changed before second publication")
+	}
+	second.Publish()
+	if mod.Handler() == nil || mod.Handler() == firstHandler {
+		t.Fatal("Handler() did not switch with the active generation view")
 	}
 }
 

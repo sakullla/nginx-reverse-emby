@@ -3,17 +3,20 @@ package diagnostics
 import (
 	"context"
 	"errors"
+	"sync"
+
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
-	"sync"
 )
 
 type Handler interface {
 	HandleTask(context.Context, control.TaskMessage) (map[string]any, error)
 }
+
+const providerDiagnosticsHandler module.ProviderRef = "diagnostics.handler"
 
 type Module struct {
 	mu sync.RWMutex
@@ -21,6 +24,7 @@ type Module struct {
 	handler    Handler
 	httpProber *HTTPProber
 	tcpProber  *TCPProber
+	selector   interface{ ActiveGeneration() *module.GenerationView }
 }
 
 type diagnosticsState struct {
@@ -33,13 +37,17 @@ func NewModule() *Module {
 	return &Module{}
 }
 
+func NewGenerationModule(selector interface{ ActiveGeneration() *module.GenerationView }) *Module {
+	return &Module{selector: selector}
+}
+
 func (m *Module) Name() string {
 	return "diagnostics"
 }
 
 func (m *Module) Descriptor() module.ModuleDescriptor {
 	return module.ModuleDescriptor{
-		Name: m.Name(),
+		Name: m.Name(), Provides: []module.ProviderRef{providerDiagnosticsHandler},
 		Optional: []module.ProviderRef{
 			module.ProviderDiagnosticsHTTPSource,
 			module.ProviderDiagnosticsL4Source,
@@ -48,8 +56,8 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 	}
 }
 
-func (m *Module) RegisterProviders(module.ProviderRegistry) error {
-	return nil
+func (m *Module) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(providerDiagnosticsHandler, diagnosticsProvider{state: m.committedState()})
 }
 
 func (m *Module) Capabilities(module.SnapshotView) []module.Capability {
@@ -82,6 +90,13 @@ type diagnosticsTransaction struct {
 	previous  diagnosticsState
 	next      diagnosticsState
 	published bool
+}
+
+func (t *diagnosticsTransaction) RegisterProviders(reg module.ProviderRegistry) error {
+	if t == nil {
+		return nil
+	}
+	return reg.Provide(providerDiagnosticsHandler, diagnosticsProvider{state: t.next})
 }
 
 func (*diagnosticsTransaction) Ready(context.Context) error { return nil }
@@ -163,6 +178,12 @@ func (m *Module) Handler() Handler {
 	if m == nil {
 		return nil
 	}
+	if provider := m.activeProvider(); provider != nil {
+		return provider.Handler()
+	}
+	if m.selector != nil {
+		return nil
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.handler
@@ -170,6 +191,12 @@ func (m *Module) Handler() Handler {
 
 func (m *Module) HTTPProber() *HTTPProber {
 	if m == nil {
+		return nil
+	}
+	if provider := m.activeProvider(); provider != nil {
+		return provider.HTTPProber()
+	}
+	if m.selector != nil {
 		return nil
 	}
 	m.mu.RLock()
@@ -181,9 +208,42 @@ func (m *Module) TCPProber() *TCPProber {
 	if m == nil {
 		return nil
 	}
+	if provider := m.activeProvider(); provider != nil {
+		return provider.TCPProber()
+	}
+	if m.selector != nil {
+		return nil
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.tcpProber
+}
+
+type diagnosticsProvider struct {
+	state diagnosticsState
+}
+
+func (p diagnosticsProvider) Handler() Handler        { return p.state.handler }
+func (p diagnosticsProvider) HTTPProber() *HTTPProber { return p.state.httpProber }
+func (p diagnosticsProvider) TCPProber() *TCPProber   { return p.state.tcpProber }
+
+func (m *Module) activeProvider() *diagnosticsProvider {
+	if m == nil || m.selector == nil {
+		return nil
+	}
+	active := m.selector.ActiveGeneration()
+	if active == nil {
+		return nil
+	}
+	provider, _ := active.Resolve(providerDiagnosticsHandler)
+	switch value := provider.(type) {
+	case diagnosticsProvider:
+		return &value
+	case *diagnosticsProvider:
+		return value
+	default:
+		return nil
+	}
 }
 
 func (m *Module) HandleTask(ctx context.Context, msg control.TaskMessage) (map[string]any, error) {

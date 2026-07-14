@@ -511,6 +511,27 @@ func TestRegistryPrepareGenerationRejectsNonTransactionalModuleWithoutApplying(t
 	}
 }
 
+func TestRegistryCompatibilityFailureOccursBeforeAnyModulePrepare(t *testing.T) {
+	registry := module.NewRegistry()
+	prepareCalls := 0
+	mustRegister(t, registry, &transactionalRecordingModule{
+		recordingModule: recordingModule{name: "compatible-first"},
+		prepare: func(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+			prepareCalls++
+			return generationWithoutProviderTransaction{}, nil
+		},
+	})
+	mustRegister(t, registry, &recordingModule{name: "legacy-later"})
+
+	generationContext := mustGenerationContext(t, model.Snapshot{}, model.Snapshot{Revision: 1})
+	if _, err := registry.PrepareGeneration(context.Background(), generationContext); err == nil {
+		t.Fatal("PrepareGeneration() error = nil, want compatibility rejection")
+	}
+	if prepareCalls != 0 {
+		t.Fatalf("prepare calls = %d, want compatibility rejection before preparation", prepareCalls)
+	}
+}
+
 func TestRegistryPrepareGenerationRejectsLegacyTransactionWithoutCommit(t *testing.T) {
 	registry := module.NewRegistry()
 	commitCalls := 0

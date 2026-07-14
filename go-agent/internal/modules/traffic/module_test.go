@@ -154,6 +154,67 @@ func TestModuleKeepsPreparedTrafficStateInvisibleUntilPublish(t *testing.T) {
 	}
 }
 
+func TestGenerationModuleReportsOnlyActiveViewConfiguration(t *testing.T) {
+	trafficmodule.Reset()
+	trafficmodule.SetEnabled(false)
+	t.Cleanup(func() {
+		trafficmodule.SetEnabled(true)
+		trafficmodule.Reset()
+	})
+
+	registry := module.NewRegistry()
+	mod := trafficmodule.NewModule(trafficmodule.Config{EnabledSet: true, Enabled: false, GenerationSelector: registry})
+	trafficmodule.AddHTTP(7, 11)
+	mustRegisterTrafficTestModule(t, registry, mod)
+	disabled := false
+	first := model.Snapshot{Revision: 1, AgentConfig: model.AgentConfig{TrafficStatsEnabled: &disabled}}
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, first)
+	if err != nil {
+		t.Fatalf("NewGenerationContext(first) error = %v", err)
+	}
+	firstCandidate, err := registry.PrepareGeneration(context.Background(), firstContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(first) error = %v", err)
+	}
+	if err := firstCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready(first) error = %v", err)
+	}
+	firstCandidate.Publish()
+	report, err := mod.TrafficReport(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("TrafficReport(first) error = %v", err)
+	}
+	if !report.StatsPresent || len(report.Stats) != 0 {
+		t.Fatalf("TrafficReport(first) = %+v, want active disabled view", report)
+	}
+
+	enabled := true
+	second := model.Snapshot{Revision: 2, AgentConfig: model.AgentConfig{TrafficStatsEnabled: &enabled}}
+	secondContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("NewGenerationContext(second) error = %v", err)
+	}
+	secondCandidate, err := registry.PrepareGeneration(context.Background(), secondContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(second) error = %v", err)
+	}
+	if err := secondCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready(second) error = %v", err)
+	}
+	report, err = mod.TrafficReport(context.Background(), nil)
+	if err != nil || !report.StatsPresent || len(report.Stats) != 0 {
+		t.Fatalf("TrafficReport(before second publish) = %+v, %v, want first disabled view", report, err)
+	}
+	secondCandidate.Publish()
+	report, err = mod.TrafficReport(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("TrafficReport(second) error = %v", err)
+	}
+	if !report.StatsPresent || report.Stats["traffic"] == nil {
+		t.Fatalf("TrafficReport(second) = %+v, want active enabled view", report)
+	}
+}
+
 func TestModuleRollsBackTrafficStateWhenLaterModuleFails(t *testing.T) {
 	trafficmodule.SetEnabled(true)
 	t.Cleanup(func() {

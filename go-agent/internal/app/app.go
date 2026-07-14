@@ -49,6 +49,7 @@ type App struct {
 	trafficReports     core.TrafficReporter
 	hostMetricsReports core.HostMetricsReporter
 	certReports        core.ManagedCertificateReporter
+	generations        *core.GenerationManager
 	relayTimeoutReset  func()
 	closeOnce          sync.Once
 	syncMu             sync.Mutex
@@ -94,7 +95,11 @@ func normalizeConstructorConfig(cfg Config) Config {
 }
 
 func newHTTPModuleFromConfig(cfg Config) *modulehttp.Module {
-	return modulehttp.NewModule(modulehttp.Config{
+	return modulehttp.NewModule(httpModuleConfigFromAppConfig(cfg))
+}
+
+func httpModuleConfigFromAppConfig(cfg Config) modulehttp.Config {
+	return modulehttp.Config{
 		AgentID:      cfg.AgentID,
 		HTTP3Enabled: cfg.HTTP3Enabled,
 		Transport: modulehttp.TransportOptions{
@@ -111,14 +116,18 @@ func newHTTPModuleFromConfig(cfg Config) *modulehttp.Module {
 			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
 		},
 		BackendFailures: backendCacheConfigFromAppConfig(cfg),
-	})
+	}
 }
 
 func newL4ModuleFromConfig(cfg Config) *modulel4.Module {
-	return modulel4.NewModule(modulel4.Config{
+	return modulel4.NewModule(l4ModuleConfigFromAppConfig(cfg))
+}
+
+func l4ModuleConfigFromAppConfig(cfg Config) modulel4.Config {
+	return modulel4.Config{
 		AgentID:         cfg.AgentID,
 		BackendFailures: backendCacheConfigFromAppConfig(cfg),
-	})
+	}
 }
 
 func backendCacheConfigFromAppConfig(cfg Config) model.BackendCacheConfig {
@@ -137,30 +146,55 @@ type configuredModules struct {
 	traffic     core.TrafficReporter
 	hostMetrics core.HostMetricsReporter
 	certReports core.ManagedCertificateReporter
+	generations *core.GenerationManager
 }
 
 func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (configuredModules, error) {
-	certModule, err := modulecerts.NewManagedModule(cfg.DataDir, certOptions...)
+	registry := agentmodule.NewRegistry()
+	drain := core.NewGenerationDrain(nil)
+	generations := core.NewManagedGenerationManager(registry, drain, 10*time.Minute)
+	certModule, err := modulecerts.NewManagedGenerationModule(cfg.DataDir, generations, certOptions...)
 	if err != nil {
 		return configuredModules{}, err
 	}
-	diagnosticModule := modulediagnostics.NewModule()
+	diagnosticModule := modulediagnostics.NewGenerationModule(generations)
 	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
-		Interfaces: cfg.TrafficInterfaces,
-		Enabled:    cfg.TrafficStatsEnabled,
-		EnabledSet: true,
+		Interfaces:         cfg.TrafficInterfaces,
+		Enabled:            cfg.TrafficStatsEnabled,
+		EnabledSet:         true,
+		GenerationSelector: generations,
 	})
-	registry, err := newAppModuleRegistry([]agentmodule.Module{
+	httpConfig := httpModuleConfigFromAppConfig(cfg)
+	httpConfig.GenerationSelector = generations
+	httpConfig.SessionRegistrar = generations
+	httpConfig.ExternalDrainLifecycle = true
+	l4Config := l4ModuleConfigFromAppConfig(cfg)
+	l4Config.GenerationSelector = generations
+	l4Config.SessionRegistrar = generations
+	l4Config.ExternalDrainLifecycle = true
+	relayConfig := modulerelay.Config{
+		AgentID: cfg.AgentID, AgentName: cfg.AgentName,
+		GenerationSelector: generations, SessionRegistrar: generations, ExternalDrainLifecycle: true,
+	}
+	modules := []agentmodule.Module{
 		certModule,
 		diagnosticModule,
 		moduleegress.NewModule(nil),
-		newHTTPModuleFromConfig(cfg),
-		configuredWireGuardModule(cfg),
-		modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName}),
-		newL4ModuleFromConfig(cfg),
+		modulehttp.NewModule(httpConfig),
+		configuredGenerationWireGuardModule(cfg, generations, generations),
+		modulerelay.NewModule(relayConfig),
+		modulel4.NewModule(l4Config),
 		trafficModule,
-	})
-	if err != nil {
+	}
+	for _, mod := range modules {
+		if mod == nil {
+			continue
+		}
+		if err := registry.Register(mod); err != nil {
+			return configuredModules{}, err
+		}
+	}
+	if err := registry.ValidateGenerationCompatibility(); err != nil {
 		return configuredModules{}, err
 	}
 	return configuredModules{
@@ -169,6 +203,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		traffic:     trafficModule,
 		hostMetrics: modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
 		certReports: certModule,
+		generations: generations,
 	}, nil
 }
 
@@ -190,6 +225,15 @@ func configuredWireGuardModule(cfg Config) agentmodule.Module {
 		return nil
 	}
 	return modulewireguard.NewManagedModule(nil)
+}
+
+func configuredGenerationWireGuardModule(cfg Config, selector modulewireguard.WireGuardGenerationSelector, sessions modulewireguard.WireGuardSessionRegistrar) agentmodule.Module {
+	if !cfg.WireGuardModuleEnabled() {
+		return nil
+	}
+	return modulewireguard.NewManagedModuleWithConfig(nil, modulewireguard.ModuleConfig{
+		GenerationSelector: selector, SessionRegistrar: sessions, ExternalDrainLifecycle: true,
+	})
 }
 
 func New(cfg Config) (*App, error) {
@@ -334,7 +378,8 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.trafficReports = modules.traffic
 	a.hostMetricsReports = modules.hostMetrics
 	a.certReports = modules.certReports
-	a.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(modules.registry))
+	a.generations = modules.generations
+	a.runtime = core.NewRuntimeWithGenerationManager(modules.generations)
 }
 
 func (a *App) ModuleNames() []string {
@@ -522,6 +567,10 @@ func (a *App) SyncNow(ctx context.Context) error {
 }
 
 func (a *App) closeLocalRuntimes() {
+	if a.generations != nil {
+		_ = a.generations.Close(context.Background())
+		a.generations = nil
+	}
 	if a.moduleRegistry != nil {
 		_ = a.moduleRegistry.StopAll(context.Background())
 		a.moduleRegistry = nil
