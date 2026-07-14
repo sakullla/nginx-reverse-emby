@@ -166,13 +166,6 @@ func (j *FileAuthorityJournal) Recover(identity Identity, alive func(int) bool) 
 	switch {
 	case childAlive && (!parentAlive || authorityPhaseRank(record.Phase) >= authorityPhaseRank(AuthorityPhaseActive)):
 		owner = AuthorityOwnerChild
-		if !parentAlive && record.Phase != AuthorityPhaseChild {
-			record.Phase = AuthorityPhaseChild
-			record.UpdatedAt = time.Now().UTC()
-			if err := j.writeLocked(record); err != nil {
-				return AuthorityOwnerNone, record, err
-			}
-		}
 	case parentAlive:
 		owner = AuthorityOwnerParent
 		if record.Phase != AuthorityPhaseParent || record.ChildPID != 0 {
@@ -437,6 +430,8 @@ type ChildProcess struct {
 	mu           sync.Mutex
 	transitionMu sync.Mutex
 	completed    map[processState]error
+	controlOnce  sync.Once
+	controlErr   error
 	state        processState
 	timeout      time.Duration
 }
@@ -502,23 +497,13 @@ func (p *ChildProcess) transition(ctx context.Context, from, to processState, co
 	}
 	if err := json.NewEncoder(p.commands).Encode(message{Version: ProtocolVersion, Type: commandType, Identity: p.identity}); err != nil {
 		p.mu.Unlock()
-		return err
+		return p.resolveTransitionFailure(to, err)
 	}
 	p.mu.Unlock()
 	waitCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 	if err := p.waitFor(waitCtx, responseType); err != nil {
-		phase := AuthorityPhaseActive
-		if to == processAuthority {
-			phase = AuthorityPhaseChild
-		}
-		if p.reconcilePhase(phase, to) {
-			p.completed[to] = nil
-			return nil
-		}
-		_ = p.Abort()
-		p.completed[to] = err
-		return err
+		return p.resolveTransitionFailure(to, err)
 	}
 	p.mu.Lock()
 	if p.state != from {
@@ -529,6 +514,20 @@ func (p *ChildProcess) transition(ctx context.Context, from, to processState, co
 	p.mu.Unlock()
 	p.completed[to] = nil
 	return nil
+}
+
+func (p *ChildProcess) resolveTransitionFailure(to processState, transitionErr error) error {
+	phase := AuthorityPhaseActive
+	if to == processAuthority {
+		phase = AuthorityPhaseChild
+	}
+	if p.reconcilePhase(phase, to) {
+		p.completed[to] = nil
+		return nil
+	}
+	_ = p.Abort()
+	p.completed[to] = transitionErr
+	return transitionErr
 }
 
 func (p *ChildProcess) reconcilePhase(phase AuthorityPhase, state processState) bool {
@@ -595,8 +594,7 @@ func (p *ChildProcess) Abort() error {
 	}
 	p.state = processAborted
 	p.mu.Unlock()
-	_ = p.commands.Close()
-	_ = p.eventFile.Close()
+	_ = p.closeControl()
 	if p.cmd != nil && p.cmd.Process != nil {
 		_ = p.cmd.Process.Kill()
 	}
@@ -615,8 +613,19 @@ func (p *ChildProcess) Wait() error {
 	}
 	<-p.done
 	p.waitMu.Lock()
-	defer p.waitMu.Unlock()
-	return p.waitErr
+	waitErr := p.waitErr
+	p.waitMu.Unlock()
+	return errors.Join(waitErr, p.closeControl())
+}
+
+func (p *ChildProcess) closeControl() error {
+	if p == nil {
+		return nil
+	}
+	p.controlOnce.Do(func() {
+		p.controlErr = errors.Join(p.commands.Close(), p.eventFile.Close())
+	})
+	return p.controlErr
 }
 
 type ChildSession struct {
@@ -691,7 +700,10 @@ func (s *ChildSession) Ready() error {
 	if err := s.journal.Advance(s.Identity, os.Getpid(), AuthorityPhaseReady); err != nil {
 		return err
 	}
-	return s.send(messageReady, nil)
+	if err := s.send(messageReady, nil); err != nil {
+		return s.recoverParentLoss(AuthorityPhaseReady, nil, err)
+	}
+	return nil
 }
 
 func (s *ChildSession) ConsumeStreamListeners() (*StreamSet, error) {
@@ -721,7 +733,7 @@ func (s *ChildSession) await(ctx context.Context, commandType, responseType mess
 	select {
 	case received := <-result:
 		if received.err != nil {
-			return received.err
+			return s.recoverParentLoss(phase, action, received.err)
 		}
 		if err := validateMessage(received.message, commandType, s.Identity); err != nil {
 			return err
@@ -736,11 +748,48 @@ func (s *ChildSession) await(ctx context.Context, commandType, responseType mess
 			_ = s.send(messageFailed, err)
 			return err
 		}
-		return s.send(responseType, nil)
+		if err := s.send(responseType, nil); err != nil {
+			return s.recoverParentLoss(phase, nil, err)
+		}
+		return nil
 	case <-ctx.Done():
 		_ = s.Close()
 		return ctx.Err()
 	}
+}
+
+func (s *ChildSession) recoverParentLoss(target AuthorityPhase, action func() error, cause error) error {
+	before, err := s.journal.Load()
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	owner, record, err := s.journal.Recover(s.Identity, func(pid int) bool {
+		if pid == before.ParentPID {
+			return false
+		}
+		return platform.ProcessAlive(pid)
+	})
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	if owner != AuthorityOwnerChild || record.ChildPID != os.Getpid() {
+		return cause
+	}
+	if authorityPhaseRank(record.Phase) >= authorityPhaseRank(target) {
+		return nil
+	}
+	if authorityPhaseRank(target) != authorityPhaseRank(record.Phase)+1 {
+		return errors.Join(cause, errors.New("hot restart child cannot skip a recovery checkpoint"))
+	}
+	if action != nil {
+		if err := action(); err != nil {
+			return errors.Join(cause, err)
+		}
+	}
+	if err := s.journal.Advance(s.Identity, os.Getpid(), target); err != nil {
+		return errors.Join(cause, err)
+	}
+	return nil
 }
 
 func (s *ChildSession) send(kind messageType, sendErr error) error {

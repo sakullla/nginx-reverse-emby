@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -178,8 +180,103 @@ func TestAuthorityJournalRecoveryConvergesOnOneLiveOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner, record, err = journal.Recover(identity, func(pid int) bool { return pid == 200 })
-	if err != nil || owner != AuthorityOwnerChild || record.Phase != AuthorityPhaseChild {
+	if err != nil || owner != AuthorityOwnerChild || record.Phase != AuthorityPhaseReady {
 		t.Fatalf("dead parent recovery = %q, %+v, %v", owner, record, err)
+	}
+}
+
+func TestChildRecoversActivationAndAuthorityAfterRealParentExit(t *testing.T) {
+	requireProcessHandoff(t)
+	for _, checkpoint := range []string{"ready", "active"} {
+		t.Run(checkpoint, func(t *testing.T) {
+			dir := t.TempDir()
+			resultPath := filepath.Join(dir, "recovery.log")
+			journalPath := filepath.Join(dir, "authority.json")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestHotRestartHelperProcess$")
+			cmd.Env = setEnv(os.Environ(), "NRE_HOT_RESTART_PARENT_MODE", checkpoint)
+			cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_RECOVERY_RESULT", resultPath)
+			cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_RECOVERY_JOURNAL", journalPath)
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("parent helper error = %v", err)
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			var result string
+			for time.Now().Before(deadline) {
+				payload, err := os.ReadFile(resultPath)
+				if err == nil {
+					result = string(payload)
+					if strings.Contains(result, "done\n") {
+						break
+					}
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if !strings.Contains(result, "activate\n") || !strings.Contains(result, "authority\n") || !strings.Contains(result, "done\n") {
+				t.Fatalf("child recovery events = %q", result)
+			}
+			record, err := NewFileAuthorityJournal(journalPath).Load()
+			if err != nil || record.Phase != AuthorityPhaseChild {
+				t.Fatalf("recovered record = %+v, %v", record, err)
+			}
+		})
+	}
+}
+
+func TestConcurrentBrokenPipeTransitionSharesFailureAndRecoversParent(t *testing.T) {
+	requireProcessHandoff(t)
+	launch := helperLaunch(t, "close_commands")
+	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 500 * time.Millisecond}).Start(t.Context(), launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- process.Activate(t.Context())
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	var first string
+	for err := range errs {
+		if err == nil {
+			t.Fatal("Activate() succeeded on broken command pipe")
+		}
+		if first == "" {
+			first = err.Error()
+		} else if err.Error() != first {
+			t.Fatalf("concurrent errors differ: %q and %q", first, err)
+		}
+	}
+	record, err := NewFileAuthorityJournal(launch.AuthorityJournal).Load()
+	if err != nil || record.Phase != AuthorityPhaseParent || record.ChildPID != 0 {
+		t.Fatalf("broken-pipe recovery = %+v, %v", record, err)
+	}
+}
+
+func TestSuccessfulWaitClosesParentControlDescriptors(t *testing.T) {
+	requireProcessHandoff(t)
+	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), helperLaunch(t, "ready"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Activate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.TransferAuthority(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := process.commands.Stat(); err == nil {
+		t.Fatal("parent command descriptor remains open after Wait")
+	}
+	if _, err := process.eventFile.Stat(); err == nil {
+		t.Fatal("parent event descriptor remains open after Wait")
 	}
 }
 
@@ -233,6 +330,10 @@ func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 }
 
 func TestHotRestartHelperProcess(t *testing.T) {
+	if parentMode := os.Getenv("NRE_HOT_RESTART_PARENT_MODE"); parentMode != "" {
+		runRecoveryParentHelper(parentMode)
+		return
+	}
 	mode := os.Getenv("NRE_HOT_RESTART_TEST_MODE")
 	if mode == "" {
 		return
@@ -252,6 +353,11 @@ func TestHotRestartHelperProcess(t *testing.T) {
 	defer cancel()
 	if err := session.Ready(); err != nil {
 		os.Exit(25)
+	}
+	if mode == "close_commands" {
+		_ = session.commands.Close()
+		time.Sleep(5 * time.Second)
+		return
 	}
 	if mode == "post_ready_crash" {
 		os.Exit(28)
@@ -275,22 +381,62 @@ func TestHotRestartHelperProcess(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 		return
 	}
-	activation := func() error { return nil }
+	activation := func() error { return appendRecoveryEvent("activate") }
 	if mode == "activation_hang" {
 		activation = func() error { select {} }
 	}
 	if err := session.AwaitActivation(ctx, activation); err != nil {
 		os.Exit(26)
 	}
-	authority := func() error { return nil }
+	authority := func() error { return appendRecoveryEvent("authority") }
 	if mode == "authority_hang" {
 		authority = func() error { select {} }
 	}
 	if err := session.AwaitAuthority(ctx, authority); err != nil {
 		os.Exit(27)
 	}
+	if mode == "parent_loss_child" {
+		if err := appendRecoveryEvent("done"); err != nil {
+			os.Exit(33)
+		}
+	}
 	// A real child enters the long-running agent loop after authority transfer.
 	time.Sleep(250 * time.Millisecond)
+}
+
+func runRecoveryParentHelper(checkpoint string) {
+	journalPath := os.Getenv("NRE_HOT_RESTART_RECOVERY_JOURNAL")
+	resultPath := os.Getenv("NRE_HOT_RESTART_RECOVERY_RESULT")
+	env := setEnv(os.Environ(), "NRE_HOT_RESTART_PARENT_MODE", "")
+	env = setEnv(env, "NRE_HOT_RESTART_TEST_MODE", "parent_loss_child")
+	env = setEnv(env, "NRE_HOT_RESTART_RECOVERY_RESULT", resultPath)
+	launch := Launch{
+		Binary: os.Args[0], Argv: []string{os.Args[0], "-test.run=^TestHotRestartHelperProcess$"},
+		Env: env, Identity: testIdentity(), AuthorityJournal: journalPath,
+	}
+	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(context.Background(), launch)
+	if err != nil {
+		os.Exit(40)
+	}
+	if checkpoint == "active" {
+		if err := process.Activate(context.Background()); err != nil {
+			os.Exit(41)
+		}
+	}
+	os.Exit(0)
+}
+
+func appendRecoveryEvent(event string) error {
+	path := os.Getenv("NRE_HOT_RESTART_RECOVERY_RESULT")
+	if path == "" {
+		return nil
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.WriteString(event + "\n")
+	return errors.Join(writeErr, file.Close())
 }
 
 func helperLaunch(t *testing.T, mode string) Launch {
