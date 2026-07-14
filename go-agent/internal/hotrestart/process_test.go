@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 
 func TestSupervisorReadinessActivationAndAuthorityOrdering(t *testing.T) {
 	requireProcessHandoff(t)
-	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), helperLaunch("ready"))
+	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), helperLaunch(t, "ready"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +40,7 @@ func TestSupervisorReadinessActivationAndAuthorityOrdering(t *testing.T) {
 func TestSupervisorRejectsChildCrashBeforeReadiness(t *testing.T) {
 	requireProcessHandoff(t)
 	var stderr bytes.Buffer
-	launch := helperLaunch("crash")
+	launch := helperLaunch(t, "crash")
 	launch.Stderr = &stderr
 	_, err := (Supervisor{ReadyTimeout: 5 * time.Second}).Start(t.Context(), launch)
 	if err == nil || !strings.Contains(err.Error(), "readiness") {
@@ -50,12 +51,166 @@ func TestSupervisorRejectsChildCrashBeforeReadiness(t *testing.T) {
 func TestSupervisorKillsChildOnReadinessTimeout(t *testing.T) {
 	requireProcessHandoff(t)
 	started := time.Now()
-	_, err := (Supervisor{ReadyTimeout: 100 * time.Millisecond}).Start(t.Context(), helperLaunch("hang"))
+	_, err := (Supervisor{ReadyTimeout: 100 * time.Millisecond}).Start(t.Context(), helperLaunch(t, "hang"))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Start() error = %v, want deadline exceeded", err)
 	}
 	if time.Since(started) > 5*time.Second {
 		t.Fatalf("timeout cleanup took %s", time.Since(started))
+	}
+}
+
+func TestConcurrentTransitionsShareOneDurableResult(t *testing.T) {
+	requireProcessHandoff(t)
+	launch := helperLaunch(t, "ready")
+	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, transition := range []func(context.Context) error{process.Activate, process.TransferAuthority} {
+		var wg sync.WaitGroup
+		errs := make(chan error, 8)
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- transition(t.Context())
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("concurrent transition error = %v", err)
+			}
+		}
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	record, err := NewFileAuthorityJournal(launch.AuthorityJournal).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Phase != AuthorityPhaseChild {
+		t.Fatalf("authority phase = %q, want %q", record.Phase, AuthorityPhaseChild)
+	}
+}
+
+func TestPostReadinessFailuresAbortChildAndRecoverParentAuthority(t *testing.T) {
+	requireProcessHandoff(t)
+	for _, tc := range []struct {
+		name       string
+		mode       string
+		transition func(*ChildProcess, context.Context) error
+	}{
+		{name: "child crash", mode: "post_ready_crash", transition: (*ChildProcess).Activate},
+		{name: "activation timeout", mode: "activation_hang", transition: (*ChildProcess).Activate},
+		{name: "authority timeout", mode: "authority_hang", transition: func(process *ChildProcess, ctx context.Context) error {
+			if err := process.Activate(ctx); err != nil {
+				return err
+			}
+			return process.TransferAuthority(ctx)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launch := helperLaunch(t, tc.mode)
+			process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 100 * time.Millisecond}).Start(t.Context(), launch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.transition(process, t.Context()); err == nil {
+				t.Fatal("transition succeeded, want post-readiness failure")
+			}
+			record, err := NewFileAuthorityJournal(launch.AuthorityJournal).Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if record.Phase != AuthorityPhaseParent || record.ChildPID != 0 {
+				t.Fatalf("recovered authority = %+v, want parent with no child", record)
+			}
+		})
+	}
+}
+
+func TestLostAcknowledgementsConvergeFromDurablePhases(t *testing.T) {
+	requireProcessHandoff(t)
+	launch := helperLaunch(t, "acks_lost")
+	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 100 * time.Millisecond}).Start(t.Context(), launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Activate(t.Context()); err != nil {
+		t.Fatalf("Activate() did not reconcile durable phase: %v", err)
+	}
+	if err := process.TransferAuthority(t.Context()); err != nil {
+		t.Fatalf("TransferAuthority() did not reconcile durable phase: %v", err)
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthorityJournalRecoveryConvergesOnOneLiveOwner(t *testing.T) {
+	journal := NewFileAuthorityJournal(t.TempDir() + string(os.PathSeparator) + "authority.json")
+	identity := testIdentity()
+	if err := journal.Begin(identity, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Advance(identity, 200, AuthorityPhaseReady); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Advance(identity, 200, AuthorityPhaseActive); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := journal.Recover(identity, func(pid int) bool { return pid == 100 || pid == 200 })
+	if err != nil || owner != AuthorityOwnerChild {
+		t.Fatalf("live parent/child recovery = %q, %v", owner, err)
+	}
+	owner, record, err := journal.Recover(identity, func(pid int) bool { return pid == 100 })
+	if err != nil || owner != AuthorityOwnerParent || record.Phase != AuthorityPhaseParent || record.ChildPID != 0 {
+		t.Fatalf("dead child recovery = %q, %+v, %v", owner, record, err)
+	}
+	if err := journal.Begin(identity, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Advance(identity, 200, AuthorityPhaseReady); err != nil {
+		t.Fatal(err)
+	}
+	owner, record, err = journal.Recover(identity, func(pid int) bool { return pid == 200 })
+	if err != nil || owner != AuthorityOwnerChild || record.Phase != AuthorityPhaseChild {
+		t.Fatalf("dead parent recovery = %q, %+v, %v", owner, record, err)
+	}
+}
+
+func TestAuthorityJournalNextIdentityRequiresCurrentProcessOwnership(t *testing.T) {
+	journal := NewFileAuthorityJournal(t.TempDir() + string(os.PathSeparator) + "authority.json")
+	oldIdentity := testIdentity()
+	if err := journal.Begin(oldIdentity, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Advance(oldIdentity, 200, AuthorityPhaseReady); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Advance(oldIdentity, 200, AuthorityPhaseActive); err != nil {
+		t.Fatal(err)
+	}
+	newIdentity := oldIdentity
+	newIdentity.Revision++
+	newIdentity.GenerationID = "generation-18"
+	newIdentity.LeaseID = "lease-18"
+	if err := journal.BeginOwned(newIdentity, 100, func(pid int) bool { return pid == 200 }); err == nil {
+		t.Fatal("stale parent replaced live child authority")
+	}
+	if err := journal.BeginOwned(newIdentity, 200, func(pid int) bool { return pid == 200 }); err != nil {
+		t.Fatalf("current child owner could not begin next identity: %v", err)
+	}
+	record, err := journal.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Identity != newIdentity || record.Phase != AuthorityPhaseParent || record.ParentPID != 200 {
+		t.Fatalf("next authority record = %+v", record)
 	}
 }
 
@@ -98,20 +253,54 @@ func TestHotRestartHelperProcess(t *testing.T) {
 	if err := session.Ready(); err != nil {
 		os.Exit(25)
 	}
-	if err := session.AwaitActivation(ctx, nil); err != nil {
+	if mode == "post_ready_crash" {
+		os.Exit(28)
+	}
+	if mode == "acks_lost" {
+		var activate message
+		if err := session.decoder.Decode(&activate); err != nil || validateMessage(activate, messageActivate, session.Identity) != nil {
+			os.Exit(29)
+		}
+		if err := session.journal.Advance(session.Identity, os.Getpid(), AuthorityPhaseActive); err != nil {
+			os.Exit(30)
+		}
+		_ = session.events.Close()
+		var authority message
+		if err := session.decoder.Decode(&authority); err != nil || validateMessage(authority, messageAuthority, session.Identity) != nil {
+			os.Exit(31)
+		}
+		if err := session.journal.Advance(session.Identity, os.Getpid(), AuthorityPhaseChild); err != nil {
+			os.Exit(32)
+		}
+		time.Sleep(500 * time.Millisecond)
+		return
+	}
+	activation := func() error { return nil }
+	if mode == "activation_hang" {
+		activation = func() error { select {} }
+	}
+	if err := session.AwaitActivation(ctx, activation); err != nil {
 		os.Exit(26)
 	}
-	if err := session.AwaitAuthority(ctx, nil); err != nil {
+	authority := func() error { return nil }
+	if mode == "authority_hang" {
+		authority = func() error { select {} }
+	}
+	if err := session.AwaitAuthority(ctx, authority); err != nil {
 		os.Exit(27)
 	}
+	// A real child enters the long-running agent loop after authority transfer.
+	time.Sleep(250 * time.Millisecond)
 }
 
-func helperLaunch(mode string) Launch {
+func helperLaunch(t *testing.T, mode string) Launch {
+	t.Helper()
 	return Launch{
-		Binary:   os.Args[0],
-		Argv:     []string{os.Args[0], "-test.run=^TestHotRestartHelperProcess$"},
-		Env:      setEnv(os.Environ(), "NRE_HOT_RESTART_TEST_MODE", mode),
-		Identity: testIdentity(),
+		Binary:           os.Args[0],
+		Argv:             []string{os.Args[0], "-test.run=^TestHotRestartHelperProcess$"},
+		Env:              setEnv(os.Environ(), "NRE_HOT_RESTART_TEST_MODE", mode),
+		Identity:         testIdentity(),
+		AuthorityJournal: t.TempDir() + string(os.PathSeparator) + "authority.json",
 	}
 }
 

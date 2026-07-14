@@ -7,10 +7,19 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"syscall"
 )
 
 func SupportsHotRestart() bool {
 	return runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64"
+}
+
+func ProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func ListenerFile(listener net.Listener) (*os.File, error) {

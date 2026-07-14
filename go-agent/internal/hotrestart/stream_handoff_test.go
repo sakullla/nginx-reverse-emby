@@ -39,6 +39,11 @@ func TestStreamHandoffKeepsInheritedListenerGatedUntilActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer set.Close()
+	for index, file := range bundle.Files {
+		if file != nil {
+			t.Fatalf("source listener file %d was not consumed", index)
+		}
+	}
 	if err := bundle.Close(); err != nil {
 		t.Fatal(err)
 	}

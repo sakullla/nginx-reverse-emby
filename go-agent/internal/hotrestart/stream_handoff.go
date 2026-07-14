@@ -122,6 +122,14 @@ type StreamSet struct {
 }
 
 func ImportStreamListeners(descriptors []StreamDescriptor, files []*os.File) (*StreamSet, error) {
+	defer func() {
+		for index, file := range files {
+			if file != nil {
+				_ = file.Close()
+				files[index] = nil
+			}
+		}
+	}()
 	set := &StreamSet{Listeners: make(map[string]*GatedListener, len(descriptors))}
 	usedFiles := make(map[int]struct{}, len(descriptors))
 	for _, descriptor := range descriptors {
