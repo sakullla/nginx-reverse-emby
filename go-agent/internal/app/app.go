@@ -326,8 +326,11 @@ func newAppModuleRegistry(modules []agentmodule.Module) (*agentmodule.Registry, 
 }
 
 type appCapabilitySource struct {
-	cfg      Config
-	registry *agentmodule.Registry
+	cfg             Config
+	registry        *agentmodule.Registry
+	platform        string
+	arch            string
+	hotUpgradeReady bool
 }
 
 func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []agentmodule.Capability {
@@ -344,6 +347,16 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 	capabilities = append(capabilities, agentmodule.Capability{Name: "egress_profiles", Enabled: true})
 	if s.cfg.HTTP3Enabled {
 		capabilities = append(capabilities, agentmodule.Capability{Name: "http3_ingress", Enabled: true})
+	}
+	platform, arch := s.platform, s.arch
+	if platform == "" {
+		platform = stdruntime.GOOS
+	}
+	if arch == "" {
+		arch = stdruntime.GOARCH
+	}
+	for _, name := range core.HotUpgradeCapabilityNames(platform, arch, s.hotUpgradeReady) {
+		capabilities = append(capabilities, agentmodule.Capability{Name: name, Enabled: true})
 	}
 	return capabilities
 }

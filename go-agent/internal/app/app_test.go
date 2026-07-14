@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	stdruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -224,6 +225,9 @@ func TestRunReturnsInitialSyncErrorWhenNoAppliedSnapshot(t *testing.T) {
 func TestAdvertisedCapabilitiesUsePanelContract(t *testing.T) {
 	got := advertisedCapabilities(Config{WireGuardEnabled: false, WireGuardExplicit: true})
 	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles"}
+	if core.SupportsPackageManifest(stdruntime.GOOS, stdruntime.GOARCH) {
+		want = append(want, core.PackageManifestCapability)
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("advertisedCapabilities() = %v, want %v", got, want)
 	}
@@ -232,9 +236,36 @@ func TestAdvertisedCapabilitiesUsePanelContract(t *testing.T) {
 func TestAdvertisedCapabilitiesIncludeConfiguredOptionalPanelCapabilities(t *testing.T) {
 	got := advertisedCapabilities(Config{HTTP3Enabled: true})
 	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress"}
+	if core.SupportsPackageManifest(stdruntime.GOOS, stdruntime.GOARCH) {
+		want = append(want, core.PackageManifestCapability)
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("advertisedCapabilities() = %v, want %v", got, want)
 	}
+}
+
+func TestAdvertisedHotUpgradeCapabilityRequiresSelfCheck(t *testing.T) {
+	base := appCapabilitySource{cfg: Config{}, platform: "linux", arch: "amd64"}
+	withoutSelfCheck := core.CapabilityNames(base)
+	if !containsString(withoutSelfCheck, core.PackageManifestCapability) || containsString(withoutSelfCheck, core.HotUpgradeCapabilityV1) {
+		t.Fatalf("capabilities without self-check = %v", withoutSelfCheck)
+	}
+	base.hotUpgradeReady = true
+	ready := core.CapabilityNames(base)
+	for _, capability := range []string{core.PackageManifestCapability, core.GenerationCapabilityV1, core.HotUpgradeCapabilityV1} {
+		if !containsString(ready, capability) {
+			t.Fatalf("ready capabilities = %v, missing %q", ready, capability)
+		}
+	}
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSnapshotActivatorAppliesOutboundProxyBeforeRegistryModules(t *testing.T) {

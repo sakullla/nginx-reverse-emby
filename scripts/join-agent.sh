@@ -214,6 +214,65 @@ resolve_script_dir() {
     CDPATH= cd -- "$dir" 2>/dev/null && pwd
 }
 
+manifest_json_value() {
+    key="$1"
+    file="$2"
+    sed -n \
+        -e "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+        -e "s/.*\"$key\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" \
+        "$file" | head -n 1
+}
+
+file_sha256() {
+    file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+        return 0
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+        return 0
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$file" | sed 's/^.*= //'
+        return 0
+    fi
+    echo "No SHA-256 utility is available (sha256sum, shasum, or openssl required)" >&2
+    return 1
+}
+
+verify_binary_manifest() {
+    binary_path="$1"
+    manifest_path="$2"
+    expected_filename="$3"
+    expected_platform="$PLATFORM-$ARCH"
+
+    [ -f "$manifest_path" ] || { echo "Package manifest missing: $manifest_path" >&2; return 1; }
+    schema_version=$(manifest_json_value schema_version "$manifest_path")
+    manifest_filename=$(manifest_json_value filename "$manifest_path")
+    manifest_platform=$(manifest_json_value platform "$manifest_path")
+    manifest_sha256=$(manifest_json_value sha256 "$manifest_path")
+    manifest_size=$(manifest_json_value size "$manifest_path")
+
+    [ "$schema_version" = "1" ] || { echo "Unsupported package manifest schema: $schema_version" >&2; return 1; }
+    [ "$manifest_filename" = "$expected_filename" ] || { echo "Package manifest filename mismatch" >&2; return 1; }
+    [ "$manifest_platform" = "$expected_platform" ] || { echo "Package manifest platform mismatch: $manifest_platform" >&2; return 1; }
+    case "$manifest_size" in ''|*[!0-9]*) echo "Package manifest size is invalid" >&2; return 1 ;; esac
+    [ "$manifest_size" -gt 0 ] || { echo "Package manifest size must be positive" >&2; return 1; }
+    case "$manifest_sha256" in
+        *[!0-9a-fA-F]*|'') echo "Package manifest SHA-256 is invalid" >&2; return 1 ;;
+    esac
+    [ "${#manifest_sha256}" -eq 64 ] || { echo "Package manifest SHA-256 length is invalid" >&2; return 1; }
+
+    actual_size=$(wc -c < "$binary_path" | tr -d '[:space:]')
+    [ "$actual_size" = "$manifest_size" ] || { echo "Package size mismatch" >&2; return 1; }
+    actual_sha256=$(file_sha256 "$binary_path") || return 1
+    [ "$(printf '%s' "$actual_sha256" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$manifest_sha256" | tr '[:upper:]' '[:lower:]')" ] || {
+        echo "Package SHA-256 mismatch" >&2
+        return 1
+    }
+}
+
 copy_or_download_binary() {
     asset_name="$1"
     dest_path="$2"
@@ -228,26 +287,29 @@ copy_or_download_binary() {
     mkdir -p "$(dirname -- "$dest_path")"
 
     if [ -n "$local_path" ] && [ -f "$local_path" ]; then
+        [ -f "$local_path.manifest.json" ] || { echo "Package manifest missing: $local_path.manifest.json" >&2; exit 1; }
         cp "$local_path" "$dest_path"
-        chmod 755 "$dest_path"
-        return 0
-    fi
-
-    if [ -n "$BINARY_URL" ]; then
+        cp "$local_path.manifest.json" "$dest_path.manifest.json"
+    elif [ -n "$BINARY_URL" ]; then
         echo "[JOIN] Downloading nre-agent from $BINARY_URL ..." >&2
         curl -fsSL --connect-timeout 15 --max-time 300 "$BINARY_URL" -o "$dest_path"
-        chmod 755 "$dest_path"
-        return 0
+        curl -fsSL --connect-timeout 15 --max-time 300 "$BINARY_URL.manifest.json" -o "$dest_path.manifest.json"
+    else
+        [ -n "$ASSET_BASE_URL" ] || {
+            echo "Missing nre-agent binary source. Re-run with --asset-base-url URL or --binary-url URL." >&2
+            exit 1
+        }
+
+        echo "[JOIN] Downloading $asset_name from $ASSET_BASE_URL ..." >&2
+        curl -fsSL --connect-timeout 15 --max-time 300 "$ASSET_BASE_URL/$asset_name" -o "$dest_path"
+        curl -fsSL --connect-timeout 15 --max-time 300 "$ASSET_BASE_URL/$asset_name.manifest.json" -o "$dest_path.manifest.json"
     fi
-
-    [ -n "$ASSET_BASE_URL" ] || {
-        echo "Missing nre-agent binary source. Re-run with --asset-base-url URL or --binary-url URL." >&2
+    if ! verify_binary_manifest "$dest_path" "$dest_path.manifest.json" "$asset_name"; then
+        rm -f "$dest_path" "$dest_path.manifest.json"
         exit 1
-    }
-
-    echo "[JOIN] Downloading $asset_name from $ASSET_BASE_URL ..." >&2
-    curl -fsSL --connect-timeout 15 --max-time 300 "$ASSET_BASE_URL/$asset_name" -o "$dest_path"
+    fi
     chmod 755 "$dest_path"
+    chmod 644 "$dest_path.manifest.json"
 }
 
 build_tags_json() {
@@ -393,6 +455,7 @@ EOF
     fi
 
     run_root_cmd mv "$BIN_TMP_PATH" "$BIN_PATH"
+    run_root_cmd mv "$BIN_TMP_PATH.manifest.json" "$BIN_PATH.manifest.json"
     if [ "$SERVICE_EXISTS" = "1" ]; then
         run_root_cmd systemctl enable nginx-reverse-emby-agent.service
         run_root_cmd systemctl start nginx-reverse-emby-agent.service
@@ -411,6 +474,7 @@ install_launchd_service() {
     SERVICE_FILE="$LAUNCHD_DIR/$SERVICE_LABEL.plist"
     START_COMMAND="set -a && . $(shell_quote "$ENV_FILE") && set +a && exec $(shell_quote "$BIN_PATH")"
     mv "$BIN_TMP_PATH" "$BIN_PATH"
+    mv "$BIN_TMP_PATH.manifest.json" "$BIN_PATH.manifest.json"
     mkdir -p "$LAUNCHD_DIR"
     cat > "$SERVICE_FILE" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -446,6 +510,7 @@ EOF
 
 install_manual_runtime() {
     mv "$BIN_TMP_PATH" "$BIN_PATH"
+    mv "$BIN_TMP_PATH.manifest.json" "$BIN_PATH.manifest.json"
     echo "[JOIN] Start command:"
     echo "  set -a && . $ENV_FILE && set +a && $BIN_PATH"
 }
@@ -798,6 +863,7 @@ run_join() {
     mkdir -p "$BIN_DIR"
     echo "[JOIN] Installing nre-agent to: $BIN_PATH"
     rm -f "$BIN_TMP_PATH"
+    rm -f "$BIN_TMP_PATH.manifest.json"
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
     persist_installed_join_script
     write_agent_env "$ENV_FILE"
@@ -867,6 +933,7 @@ run_migrate_from_main() {
     mkdir -p "$BIN_DIR"
     echo "[MIGRATE] Preparing go-agent install: $BIN_PATH"
     rm -f "$BIN_TMP_PATH"
+    rm -f "$BIN_TMP_PATH.manifest.json"
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
     persist_installed_join_script
     write_agent_env "$ENV_FILE"
