@@ -55,6 +55,22 @@ func TestGenerationManagerTreatsIdenticalSnapshotAsIdempotent(t *testing.T) {
 	}
 }
 
+func TestGenerationManagerNeverPublishesLegacyTransactionState(t *testing.T) {
+	registry := module.NewRegistry()
+	mod := &runtimeGenerationModule{name: "sole-view", providerRef: module.ProviderRef("test.sole-view")}
+	mustRegister(t, registry, mod)
+	manager := core.NewGenerationManager(registry)
+	if _, err := manager.Apply(context.Background(), model.Snapshot{}, model.Snapshot{Revision: 1}); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	if _, err := manager.Apply(context.Background(), model.Snapshot{Revision: 1}, model.Snapshot{Revision: 2}); err != nil {
+		t.Fatalf("Apply(second) error = %v", err)
+	}
+	if len(mod.published) != 0 {
+		t.Fatalf("legacy transaction Publish calls = %v, want none", mod.published)
+	}
+}
+
 func TestGenerationManagerReadinessFailurePreservesRuntimeAndProviderView(t *testing.T) {
 	registry := module.NewRegistry()
 	providerRef := module.ProviderRef("test.runtime-generation")
@@ -237,6 +253,7 @@ type runtimeGenerationModule struct {
 	failRevision int64
 	readyErr     error
 	destroyed    []int64
+	published    []int64
 }
 
 type managerTestSession struct{}
@@ -296,7 +313,9 @@ func (t *runtimeGenerationTransaction) Ready(context.Context) error {
 	return nil
 }
 
-func (*runtimeGenerationTransaction) Publish() {}
+func (t *runtimeGenerationTransaction) Publish() {
+	t.module.published = append(t.module.published, t.revision)
+}
 
 func (t *runtimeGenerationTransaction) Destroy(context.Context) error {
 	t.module.destroyed = append(t.module.destroyed, t.revision)

@@ -492,6 +492,8 @@ func (c *generationCandidate) Publish() (active, previous *GenerationView) {
 		transactions: append([]preparedModuleTransaction(nil), c.transactions...),
 	}
 	if c.registry != nil {
+		// Generation publication intentionally does not call transaction Publish
+		// or Commit; selector-mode visibility is only this atomic view swap.
 		previous = c.registry.active.Swap(active)
 		c.registry.generationMu.Unlock()
 	}

@@ -29,6 +29,11 @@ type GenerationManager struct {
 	timeout         time.Duration
 	publicationMu   sync.Mutex
 	publicationDone chan struct{}
+	sessions        generationSessionRegistrar
+}
+
+type generationSessionRegistrar interface {
+	RegisterSession(string, generation.EntityKey, string, generation.Session) (*generation.SessionHandle, error)
 }
 
 func NewGenerationManager(source module.GenerationPreparer) *GenerationManager {
@@ -42,7 +47,7 @@ func NewManagedGenerationManager(source module.GenerationPreparer, drain *Genera
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	return &GenerationManager{source: source, drain: drain, timeout: timeout}
+	return &GenerationManager{source: source, drain: drain, timeout: timeout, sessions: drain.Controller()}
 }
 
 func (m *GenerationManager) Apply(ctx context.Context, previous, next model.Snapshot) (GenerationCutover, error) {
@@ -149,16 +154,20 @@ func (m *GenerationManager) endPublication(done chan struct{}) {
 }
 
 func (m *GenerationManager) RegisterSession(generationID string, entity generation.EntityKey, sessionID string, session generation.Session) (*generation.SessionHandle, error) {
-	if m == nil || m.drain == nil || m.drain.Controller() == nil {
+	if m == nil || m.sessions == nil {
 		return nil, errors.New("generation session registrar is not configured")
 	}
-	m.publicationMu.Lock()
-	done := m.publicationDone
-	m.publicationMu.Unlock()
-	if done != nil {
+	for {
+		m.publicationMu.Lock()
+		done := m.publicationDone
+		if done == nil {
+			handle, err := m.sessions.RegisterSession(generationID, entity, sessionID, session)
+			m.publicationMu.Unlock()
+			return handle, err
+		}
+		m.publicationMu.Unlock()
 		<-done
 	}
-	return m.drain.Controller().RegisterSession(generationID, entity, sessionID, session)
 }
 
 func (m *GenerationManager) ActiveGeneration() *module.GenerationView {
