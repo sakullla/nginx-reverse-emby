@@ -2,9 +2,21 @@ package platform
 
 import (
 	"net"
+	"os"
 	"runtime"
 	"testing"
 )
+
+func TestProcessIdentityIsStableForCurrentIncarnation(t *testing.T) {
+	first, ok := ProcessIdentity(os.Getpid())
+	if !ok || first == "" {
+		t.Fatal("current process identity is unavailable")
+	}
+	second, ok := ProcessIdentity(os.Getpid())
+	if !ok || second != first {
+		t.Fatalf("process identity changed from %q to %q", first, second)
+	}
+}
 
 func TestListenerFileRoundTrip(t *testing.T) {
 	if !SupportsHotRestart() {

@@ -2,8 +2,12 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,7 +17,10 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-const hotRestartDrainTimeout = 10 * time.Minute
+const (
+	hotRestartDrainTimeout          = 10 * time.Minute
+	hotRestartSupervisorStopTimeout = 10 * time.Second
+)
 
 func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
 	if a == nil || a.store == nil {
@@ -48,7 +55,7 @@ func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
 	if err := process.TransferAuthority(ctx); err != nil {
 		return abort(fmt.Errorf("transfer hot restart authority: %w", err))
 	}
-	return core.ErrRestartRequested
+	return superviseHotRestartChild(ctx, process)
 }
 
 func (a *App) hotRestartLaunchIdentity() (hotrestart.Identity, error) {
@@ -65,8 +72,12 @@ func (a *App) hotRestartLaunchIdentity() (hotrestart.Identity, error) {
 		return hotrestart.Identity{}, err
 	}
 	candidate := journal.Candidate
+	desiredDigest, err := hotRestartSnapshotDigest(desired)
+	if err != nil {
+		return hotrestart.Identity{}, err
+	}
 	if candidate == nil || candidate.Phase != model.GenerationPhaseStarted || candidate.Revision != desired.Revision ||
-		strings.TrimSpace(candidate.SnapshotDigest) == "" || strings.TrimSpace(candidate.Lease.LeaseID) == "" {
+		!strings.EqualFold(strings.TrimSpace(candidate.SnapshotDigest), desiredDigest) || strings.TrimSpace(candidate.Lease.LeaseID) == "" {
 		return hotrestart.Identity{}, errors.New("durable candidate is not ready for hot restart")
 	}
 	generationID := strings.TrimSpace(candidate.RuntimeGenerationID)
@@ -80,6 +91,35 @@ func (a *App) hotRestartLaunchIdentity() (hotrestart.Identity, error) {
 		Revision: candidate.Revision, SnapshotDigest: candidate.SnapshotDigest,
 		GenerationID: generationID, LeaseID: candidate.Lease.LeaseID,
 	}, nil
+}
+
+func hotRestartSnapshotDigest(snapshot Snapshot) (string, error) {
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func superviseHotRestartChild(ctx context.Context, process hotRestartProcess) error {
+	waitResult := make(chan error, 1)
+	go func() { waitResult <- process.Wait() }()
+	select {
+	case err := <-waitResult:
+		return errors.Join(core.ErrRestartRequested, err)
+	case <-ctx.Done():
+	}
+	signalErr := process.Signal(os.Interrupt)
+	timer := time.NewTimer(hotRestartSupervisorStopTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-waitResult:
+		return errors.Join(core.ErrRestartRequested, signalErr, err)
+	case <-timer.C:
+		abortErr := process.Abort()
+		return errors.Join(core.ErrRestartRequested, signalErr, abortErr, <-waitResult)
+	}
 }
 
 func (a *App) setRunContext(ctx context.Context) {
@@ -106,13 +146,17 @@ func (a *App) drainHotRestartParent(ctx context.Context, target hotrestart.Ident
 		return nil
 	}
 	active := a.generations.ActiveIdentity()
-	if active.ID == "" || active.ID == target.GenerationID {
+	if active.ID == "" {
 		return nil
 	}
 	controller := a.generations.DrainController()
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.NewTimer(hotRestartDrainTimeout)
+	drainTimeout := a.hotRestartDrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = hotRestartDrainTimeout
+	}
+	timeout := time.NewTimer(drainTimeout)
 	defer timeout.Stop()
 	for {
 		found := false
@@ -132,7 +176,7 @@ func (a *App) drainHotRestartParent(ctx context.Context, target hotrestart.Ident
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timeout.C:
-			return fmt.Errorf("generation %s did not drain within %s", active.ID, hotRestartDrainTimeout)
+			return fmt.Errorf("generation %s did not drain within %s", active.ID, drainTimeout)
 		case <-ticker.C:
 		}
 	}

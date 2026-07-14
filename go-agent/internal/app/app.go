@@ -43,6 +43,8 @@ type Updater interface {
 type hotRestartProcess interface {
 	Activate(context.Context) error
 	TransferAuthority(context.Context) error
+	Wait() error
+	Signal(os.Signal) error
 	Abort() error
 }
 
@@ -50,25 +52,26 @@ type hotRestartStartFunc func(context.Context, hotrestart.Launch) (hotRestartPro
 type hotRestartDrainFunc func(context.Context, hotrestart.Identity) error
 
 type App struct {
-	cfg                Config
-	syncClient         SyncClient
-	store              core.Store
-	updater            Updater
-	runtime            *core.Runtime
-	taskClient         *control.TaskClient
-	moduleRegistry     *agentmodule.Registry
-	diagnosticModule   *modulediagnostics.Module
-	trafficReports     core.TrafficReporter
-	hostMetricsReports core.HostMetricsReporter
-	certReports        core.ManagedCertificateReporter
-	generations        *core.GenerationManager
-	relayTimeoutReset  func()
-	closeOnce          sync.Once
-	syncMu             sync.Mutex
-	runCtxMu           sync.RWMutex
-	runCtx             context.Context
-	hotRestartStart    hotRestartStartFunc
-	hotRestartDrain    hotRestartDrainFunc
+	cfg                    Config
+	syncClient             SyncClient
+	store                  core.Store
+	updater                Updater
+	runtime                *core.Runtime
+	taskClient             *control.TaskClient
+	moduleRegistry         *agentmodule.Registry
+	diagnosticModule       *modulediagnostics.Module
+	trafficReports         core.TrafficReporter
+	hostMetricsReports     core.HostMetricsReporter
+	certReports            core.ManagedCertificateReporter
+	generations            *core.GenerationManager
+	relayTimeoutReset      func()
+	closeOnce              sync.Once
+	syncMu                 sync.Mutex
+	runCtxMu               sync.RWMutex
+	runCtx                 context.Context
+	hotRestartStart        hotRestartStartFunc
+	hotRestartDrain        hotRestartDrainFunc
+	hotRestartDrainTimeout time.Duration
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -400,6 +403,7 @@ func newAppWithAllDeps(
 		return (hotrestart.Supervisor{}).Start(ctx, launch)
 	}
 	app.hotRestartDrain = app.drainHotRestartParent
+	app.hotRestartDrainTimeout = hotRestartDrainTimeout
 	app.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(nil))
 	return app
 }
@@ -556,7 +560,12 @@ func (a *App) validateHotRestartIdentity(identity hotrestart.Identity, desired S
 		return err
 	}
 	candidate := journal.Candidate
+	desiredDigest, err := hotRestartSnapshotDigest(desired)
+	if err != nil {
+		return err
+	}
 	if candidate == nil || candidate.Phase != model.GenerationPhaseStarted || desired.Revision != identity.Revision || candidate.Revision != identity.Revision ||
+		!strings.EqualFold(strings.TrimSpace(desiredDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
 		!strings.EqualFold(strings.TrimSpace(candidate.SnapshotDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
 		candidate.Lease.LeaseID != identity.LeaseID {
 		return errors.New("hot restart identity does not match the durable desired snapshot and candidate journal")

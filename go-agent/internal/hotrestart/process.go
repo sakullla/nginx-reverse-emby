@@ -41,7 +41,7 @@ type Identity struct {
 	LaunchEpoch    string `json:"launch_epoch"`
 }
 
-const AuthorityJournalVersion = 2
+const AuthorityJournalVersion = 3
 
 const (
 	authorityLockTimeout = 5 * time.Second
@@ -64,7 +64,9 @@ type AuthorityRecord struct {
 	Identity      Identity       `json:"identity"`
 	Phase         AuthorityPhase `json:"phase"`
 	ParentPID     int            `json:"parent_pid"`
+	ParentToken   string         `json:"parent_token,omitempty"`
 	ChildPID      int            `json:"child_pid,omitempty"`
+	ChildToken    string         `json:"child_token,omitempty"`
 	LaunchPending bool           `json:"launch_pending,omitempty"`
 	UpdatedAt     time.Time      `json:"updated_at"`
 }
@@ -124,7 +126,8 @@ func (j *FileAuthorityJournal) BeginOwned(identity Identity, parentPID int, aliv
 			recovered.Phase == AuthorityPhaseParent && recovered.ChildPID == 0 && !recovered.LaunchPending
 		childCanLaunch := owner == AuthorityOwnerChild && recovered.ChildPID == parentPID &&
 			recovered.Phase == AuthorityPhaseChild && !recovered.LaunchPending
-		orphanCanLaunch := owner == AuthorityOwnerNone && !alive(recovered.ParentPID) && !alive(recovered.ChildPID)
+		orphanCanLaunch := owner == AuthorityOwnerNone && !processOwnerAlive(recovered.ParentPID, recovered.ParentToken, alive) &&
+			!processOwnerAlive(recovered.ChildPID, recovered.ChildToken, alive)
 		if !parentCanLaunch && !childCanLaunch && !orphanCanLaunch {
 			return errors.New("current process does not own a launchable hot restart authority journal")
 		}
@@ -154,17 +157,24 @@ func (j *FileAuthorityJournal) Advance(identity Identity, childPID int, next Aut
 		if childPID <= 0 || record.ChildPID > 0 && record.ChildPID != childPID {
 			return errors.New("hot restart authority journal child pid mismatch")
 		}
+		childToken, tokenAvailable := platform.ProcessIdentity(childPID)
+		if record.ChildToken != "" && (!tokenAvailable || record.ChildToken != childToken) {
+			return errors.New("hot restart authority journal child incarnation mismatch")
+		}
 		if authorityPhaseRank(next) < authorityPhaseRank(record.Phase) {
 			return errors.New("hot restart authority journal phase cannot move backward")
 		}
 		if authorityPhaseRank(next) > authorityPhaseRank(record.Phase)+1 {
 			return errors.New("hot restart authority journal phase cannot skip a checkpoint")
 		}
-		changed := next != record.Phase || record.ChildPID != childPID || record.LaunchPending
+		changed := next != record.Phase || record.ChildPID != childPID || record.LaunchPending || record.ChildToken == "" && tokenAvailable
 		if !changed {
 			return nil
 		}
 		record.ChildPID = childPID
+		if tokenAvailable {
+			record.ChildToken = childToken
+		}
 		record.Phase = next
 		if authorityPhaseRank(next) >= authorityPhaseRank(AuthorityPhaseReady) {
 			record.LaunchPending = false
@@ -207,6 +217,9 @@ func (j *FileAuthorityJournal) AttachChild(identity Identity, parentPID, childPI
 			return errors.New("hot restart authority journal has no matching pending launch")
 		}
 		record.ChildPID = childPID
+		if token, ok := platform.ProcessIdentity(childPID); ok {
+			record.ChildToken = token
+		}
 		record.UpdatedAt = time.Now().UTC()
 		return j.writeLocked(record)
 	})
@@ -229,9 +242,10 @@ func (j *FileAuthorityJournal) CancelLaunch(identity Identity, parentPID int) er
 }
 
 func (j *FileAuthorityJournal) beginLocked(identity Identity, parentPID int, pending bool) error {
+	parentToken, _ := platform.ProcessIdentity(parentPID)
 	return j.writeLocked(AuthorityRecord{
 		Version: AuthorityJournalVersion, Identity: identity, Phase: AuthorityPhaseParent,
-		ParentPID: parentPID, LaunchPending: pending, UpdatedAt: time.Now().UTC(),
+		ParentPID: parentPID, ParentToken: parentToken, LaunchPending: pending, UpdatedAt: time.Now().UTC(),
 	})
 }
 
@@ -243,8 +257,8 @@ func (j *FileAuthorityJournal) recoverLocked(identity Identity, alive func(int) 
 	if record.Identity != identity || record.Version != AuthorityJournalVersion {
 		return AuthorityOwnerNone, record, errors.New("hot restart authority journal identity or version mismatch")
 	}
-	parentAlive := record.ParentPID > 0 && alive(record.ParentPID)
-	childAlive := record.ChildPID > 0 && alive(record.ChildPID)
+	parentAlive := processOwnerAlive(record.ParentPID, record.ParentToken, alive)
+	childAlive := processOwnerAlive(record.ChildPID, record.ChildToken, alive)
 	switch {
 	case parentAlive && record.Phase == AuthorityPhaseChild && childAlive:
 		return AuthorityOwnerChild, record, nil
@@ -255,6 +269,7 @@ func (j *FileAuthorityJournal) recoverLocked(identity Identity, alive func(int) 
 		if record.Phase != AuthorityPhaseParent || record.ChildPID != 0 || record.LaunchPending {
 			record.Phase = AuthorityPhaseParent
 			record.ChildPID = 0
+			record.ChildToken = ""
 			record.LaunchPending = false
 			record.UpdatedAt = time.Now().UTC()
 			if err := j.writeLocked(record); err != nil {
@@ -267,6 +282,17 @@ func (j *FileAuthorityJournal) recoverLocked(identity Identity, alive func(int) 
 	default:
 		return AuthorityOwnerNone, record, nil
 	}
+}
+
+func processOwnerAlive(pid int, token string, alive func(int) bool) bool {
+	if pid <= 0 {
+		return false
+	}
+	if strings.TrimSpace(token) != "" {
+		current, ok := platform.ProcessIdentity(pid)
+		return ok && current == token
+	}
+	return alive(pid)
 }
 
 type authorityLockRecord struct {
@@ -820,6 +846,13 @@ func (p *ChildProcess) Wait() error {
 	waitErr := p.waitErr
 	p.waitMu.Unlock()
 	return errors.Join(waitErr, p.closeControl())
+}
+
+func (p *ChildProcess) Signal(signal os.Signal) error {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return errors.New("hot restart child process is unavailable")
+	}
+	return p.cmd.Process.Signal(signal)
 }
 
 func (p *ChildProcess) closeControl() error {

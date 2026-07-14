@@ -369,6 +369,26 @@ func TestSuccessfulWaitClosesParentControlDescriptors(t *testing.T) {
 	}
 }
 
+func TestAuthoritativeChildReceivesManagerSignal(t *testing.T) {
+	requireProcessHandoff(t)
+	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), helperLaunch(t, "authority_wait"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Activate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.TransferAuthority(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err == nil {
+		t.Fatal("signaled authoritative child exited successfully")
+	}
+}
+
 func TestAuthorityJournalNextIdentityRequiresCurrentProcessOwnership(t *testing.T) {
 	journal := NewFileAuthorityJournal(t.TempDir() + string(os.PathSeparator) + "authority.json")
 	oldIdentity := testIdentity()
@@ -575,6 +595,46 @@ func TestAuthorityJournalGuardReclaimsStaleLockWithLiveReusedPID(t *testing.T) {
 	}
 }
 
+func TestAuthorityJournalRejectsReusedOwnerPIDIncarnation(t *testing.T) {
+	for _, phase := range []string{"pending_parent", "child_authority"} {
+		t.Run(phase, func(t *testing.T) {
+			journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+			current := testIdentity()
+			if err := journal.BeginOwned(current, os.Getpid(), platform.ProcessAlive); err != nil {
+				t.Fatal(err)
+			}
+			if phase == "child_authority" {
+				for _, next := range []AuthorityPhase{AuthorityPhaseReady, AuthorityPhaseActive, AuthorityPhaseChild} {
+					if err := journal.Advance(current, os.Getpid(), next); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := journal.withLock(func() error {
+				record, err := journal.loadLocked()
+				if err != nil {
+					return err
+				}
+				record.ParentToken = "stale-process-incarnation"
+				if record.ChildPID != 0 {
+					record.ChildToken = "stale-process-incarnation"
+				}
+				return journal.writeLocked(record)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			next := current
+			next.Revision++
+			next.GenerationID = "generation-18"
+			next.LeaseID = "lease-18"
+			next.LaunchEpoch = "replacement-incarnation"
+			if err := journal.BeginOwned(next, os.Getpid(), platform.ProcessAlive); err != nil {
+				t.Fatalf("reused PID blocked orphan adoption: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 	identity := testIdentity()
 	for _, tc := range []struct {
@@ -683,6 +743,9 @@ func TestHotRestartHelperProcess(t *testing.T) {
 	}
 	if err := session.AwaitAuthority(ctx, authority); err != nil {
 		os.Exit(27)
+	}
+	if mode == "authority_wait" {
+		select {}
 	}
 	if mode == "parent_loss_child" {
 		if err := appendRecoveryEvent("done"); err != nil {

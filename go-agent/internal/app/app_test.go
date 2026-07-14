@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
@@ -270,12 +272,13 @@ func TestHotRestartChildIdentityMustMatchDesiredSnapshotAndJournal(t *testing.T)
 		t.Fatal(err)
 	}
 	desired := Snapshot{Revision: 17}
+	desiredDigest := mustHotRestartSnapshotDigest(t, desired)
 	if err := store.SaveDesiredSnapshot(desired); err != nil {
 		t.Fatal(err)
 	}
 	journal := model.GenerationJournal{Version: 1, Candidate: &model.GenerationRecord{
 		GenerationID: "attempt-generation-17", RuntimeGenerationID: "runtime-generation-17",
-		Revision: 17, SnapshotDigest: strings.Repeat("a", 64), Phase: model.GenerationPhaseStarted,
+		Revision: 17, SnapshotDigest: desiredDigest, Phase: model.GenerationPhaseStarted,
 		Lease: model.RevisionLease{Revision: 17, LeaseID: "lease-17"},
 	}}
 	if err := store.SaveGenerationJournal(journal); err != nil {
@@ -283,7 +286,7 @@ func TestHotRestartChildIdentityMustMatchDesiredSnapshotAndJournal(t *testing.T)
 	}
 	app := &App{store: store}
 	valid := hotrestart.Identity{
-		Revision: 17, SnapshotDigest: strings.Repeat("a", 64), GenerationID: "runtime-generation-17", LeaseID: "lease-17", LaunchEpoch: "launch-17",
+		Revision: 17, SnapshotDigest: desiredDigest, GenerationID: "runtime-generation-17", LeaseID: "lease-17", LaunchEpoch: "launch-17",
 	}
 	if err := app.validateHotRestartIdentity(valid, desired); err != nil {
 		t.Fatalf("validateHotRestartIdentity() error = %v", err)
@@ -302,6 +305,7 @@ func TestHotRestartChildIdentityMustMatchDesiredSnapshotAndJournal(t *testing.T)
 		{name: "generation", identity: func() hotrestart.Identity { value := valid; value.GenerationID = "other"; return value }(), desired: desired},
 		{name: "lease", identity: func() hotrestart.Identity { value := valid; value.LeaseID = "other"; return value }(), desired: desired},
 		{name: "desired snapshot", identity: valid, desired: Snapshot{Revision: 18}},
+		{name: "same revision changed payload", identity: valid, desired: Snapshot{Revision: 17, DesiredVersion: "corrupt"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := app.validateHotRestartIdentity(tc.identity, tc.desired); err == nil {
@@ -311,18 +315,48 @@ func TestHotRestartChildIdentityMustMatchDesiredSnapshotAndJournal(t *testing.T)
 	}
 }
 
+func TestHotRestartLaunchRejectsCorruptedDurableDesiredPayload(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := core.NewFilesystem(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := Snapshot{Revision: 17, DesiredVersion: "1.0.0"}
+	if err := store.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveGenerationJournal(model.GenerationJournal{Version: 1, Candidate: &model.GenerationRecord{
+		GenerationID: "generation-17", Revision: 17, SnapshotDigest: mustHotRestartSnapshotDigest(t, desired),
+		Phase: model.GenerationPhaseStarted, Lease: model.RevisionLease{Revision: 17, LeaseID: "lease-17"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	corrupted, err := json.Marshal(Snapshot{Revision: 17, DesiredVersion: "corrupt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "desired-snapshot.json"), corrupted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{store: store}
+	if _, err := app.hotRestartLaunchIdentity(); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("hotRestartLaunchIdentity() error = %v, want durable digest rejection", err)
+	}
+}
+
 func TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority(t *testing.T) {
 	store, err := core.NewFilesystem(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	desired := Snapshot{Revision: 18, DesiredVersion: "2.0.0"}
+	desiredDigest := mustHotRestartSnapshotDigest(t, desired)
 	if err := store.SaveDesiredSnapshot(desired); err != nil {
 		t.Fatal(err)
 	}
 	journal := model.GenerationJournal{Version: 1, Candidate: &model.GenerationRecord{
 		GenerationID: "attempt-generation-18", RuntimeGenerationID: "runtime-generation-18",
-		Revision: 18, SnapshotDigest: strings.Repeat("b", 64), Phase: model.GenerationPhaseStarted,
+		Revision: 18, SnapshotDigest: desiredDigest, Phase: model.GenerationPhaseStarted,
 		Lease: model.RevisionLease{Revision: 18, LeaseID: "lease-18"},
 	}}
 	if err := store.SaveGenerationJournal(journal); err != nil {
@@ -335,7 +369,7 @@ func TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority(t *testi
 	app.hotRestartStart = func(_ context.Context, launch hotrestart.Launch) (hotRestartProcess, error) {
 		order = append(order, "start")
 		if launch.Binary != "/staged/nre-agent" || launch.Identity.Revision != 18 || launch.Identity.GenerationID != "runtime-generation-18" ||
-			launch.Identity.LeaseID != "lease-18" || launch.Identity.SnapshotDigest != strings.Repeat("b", 64) {
+			launch.Identity.LeaseID != "lease-18" || launch.Identity.SnapshotDigest != desiredDigest {
 			t.Fatalf("launch = %+v", launch)
 		}
 		if launch.AuthorityJournal == "" {
@@ -352,7 +386,7 @@ func TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority(t *testi
 	if !errors.Is(err, core.ErrRestartRequested) {
 		t.Fatalf("hotRestartReplacement() error = %v, want restart requested", err)
 	}
-	if want := []string{"start", "activate", "drain", "authority"}; !reflect.DeepEqual(order, want) {
+	if want := []string{"start", "activate", "drain", "authority", "wait"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("replacement order = %v, want %v", order, want)
 	}
 }
@@ -371,11 +405,12 @@ func TestNewUpdateManagerUsesHotRestartReplacement(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = app.Close() })
 	store := app.store.(*core.Filesystem)
-	if err := store.SaveDesiredSnapshot(Snapshot{Revision: 18, DesiredVersion: "2.0.0"}); err != nil {
+	desired := Snapshot{Revision: 18, DesiredVersion: "2.0.0"}
+	if err := store.SaveDesiredSnapshot(desired); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveGenerationJournal(model.GenerationJournal{Version: 1, Candidate: &model.GenerationRecord{
-		GenerationID: "generation-18", Revision: 18, SnapshotDigest: strings.Repeat("b", 64),
+		GenerationID: "generation-18", Revision: 18, SnapshotDigest: mustHotRestartSnapshotDigest(t, desired),
 		Phase: model.GenerationPhaseStarted, Lease: model.RevisionLease{Revision: 18, LeaseID: "lease-18"},
 	}}); err != nil {
 		t.Fatal(err)
@@ -405,7 +440,7 @@ func TestNewUpdateManagerUsesHotRestartReplacement(t *testing.T) {
 	if err := app.updater.Activate(stagedPath, "2.0.0"); !errors.Is(err, core.ErrRestartRequested) {
 		t.Fatalf("production updater Activate() error = %v", err)
 	}
-	if want := []string{"start", "activate", "drain", "authority"}; !reflect.DeepEqual(order, want) {
+	if want := []string{"start", "activate", "drain", "authority", "wait"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("production updater order = %v, want %v", order, want)
 	}
 }
@@ -415,11 +450,12 @@ func TestHotRestartReplacementAbortsAndRetainsParentOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveDesiredSnapshot(Snapshot{Revision: 18}); err != nil {
+	desired := Snapshot{Revision: 18}
+	if err := store.SaveDesiredSnapshot(desired); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveGenerationJournal(model.GenerationJournal{Version: 1, Candidate: &model.GenerationRecord{
-		GenerationID: "generation-18", Revision: 18, SnapshotDigest: strings.Repeat("b", 64),
+		GenerationID: "generation-18", Revision: 18, SnapshotDigest: mustHotRestartSnapshotDigest(t, desired),
 		Phase: model.GenerationPhaseStarted, Lease: model.RevisionLease{Revision: 18, LeaseID: "lease-18"},
 	}}); err != nil {
 		t.Fatal(err)
@@ -441,6 +477,105 @@ func TestHotRestartReplacementAbortsAndRetainsParentOnFailure(t *testing.T) {
 	}
 }
 
+func TestHotRestartDrainWaitsForSameGenerationParentSessions(t *testing.T) {
+	configured, err := newConfiguredModules(Config{AgentID: "agent", AgentName: "agent", DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	app.setConfiguredModules(configured)
+	t.Cleanup(func() { _ = app.Close() })
+	if err := app.runtime.Apply(t.Context(), Snapshot{}, Snapshot{Revision: 17, DesiredVersion: "1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	active := app.generations.ActiveIdentity()
+	handle, err := app.generations.RegisterSession(active.ID, generation.EntityKey{Module: "http", ID: "rule-1"}, "session-1", appDrainTestSession{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained := make(chan error, 1)
+	go func() {
+		drained <- app.drainHotRestartParent(t.Context(), hotrestart.Identity{Revision: 17, GenerationID: active.ID})
+	}()
+	select {
+	case err := <-drained:
+		t.Fatalf("drain returned with parent session still active: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	handle.Finish()
+	select {
+	case err := <-drained:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("drain did not finish after parent session completion")
+	}
+	timeoutHandle, err := app.generations.RegisterSession(active.ID, generation.EntityKey{Module: "http", ID: "rule-1"}, "session-timeout", appDrainTestSession{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer timeoutHandle.Finish()
+	app.hotRestartDrainTimeout = 100 * time.Millisecond
+	if err := app.drainHotRestartParent(t.Context(), hotrestart.Identity{Revision: 17, GenerationID: active.ID}); err == nil || !strings.Contains(err.Error(), "did not drain") {
+		t.Fatalf("timed drain error = %v", err)
+	}
+}
+
+func TestHotRestartSupervisorKeepsManagerAliveAndForwardsStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	process := &supervisedHotRestartProcess{waitStarted: make(chan struct{}), release: make(chan struct{}), signaled: make(chan os.Signal, 1)}
+	result := make(chan error, 1)
+	go func() { result <- superviseHotRestartChild(ctx, process) }()
+	<-process.waitStarted
+	select {
+	case err := <-result:
+		t.Fatalf("manager returned while authoritative child was running: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case signal := <-process.signaled:
+		if signal != os.Interrupt {
+			t.Fatalf("forwarded signal = %v, want interrupt", signal)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not forward shutdown to child")
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, core.ErrRestartRequested) {
+			t.Fatalf("supervisor result = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not reap child after forwarded shutdown")
+	}
+}
+
+type appDrainTestSession struct{}
+
+func (appDrainTestSession) ForceClose(context.Context, string) error { return nil }
+
+type supervisedHotRestartProcess struct {
+	waitStarted chan struct{}
+	release     chan struct{}
+	signaled    chan os.Signal
+}
+
+func (*supervisedHotRestartProcess) Activate(context.Context) error          { return nil }
+func (*supervisedHotRestartProcess) TransferAuthority(context.Context) error { return nil }
+func (p *supervisedHotRestartProcess) Wait() error {
+	close(p.waitStarted)
+	<-p.release
+	return nil
+}
+func (p *supervisedHotRestartProcess) Signal(signal os.Signal) error {
+	p.signaled <- signal
+	close(p.release)
+	return nil
+}
+func (p *supervisedHotRestartProcess) Abort() error { return nil }
+
 type recordingHotRestartProcess struct {
 	order        *[]string
 	activateErr  error
@@ -457,9 +592,28 @@ func (p *recordingHotRestartProcess) TransferAuthority(context.Context) error {
 	return p.authorityErr
 }
 
+func (p *recordingHotRestartProcess) Wait() error {
+	*p.order = append(*p.order, "wait")
+	return nil
+}
+
+func (p *recordingHotRestartProcess) Signal(os.Signal) error {
+	*p.order = append(*p.order, "signal")
+	return nil
+}
+
 func (p *recordingHotRestartProcess) Abort() error {
 	*p.order = append(*p.order, "abort")
 	return nil
+}
+
+func mustHotRestartSnapshotDigest(t *testing.T, snapshot Snapshot) string {
+	t.Helper()
+	digest, err := hotRestartSnapshotDigest(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
 }
 
 func containsString(values []string, expected string) bool {
