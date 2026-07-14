@@ -205,7 +205,7 @@ func TestLostAcknowledgementsConvergeFromDurablePhases(t *testing.T) {
 }
 
 func TestAuthorityJournalRecoveryConvergesOnOneLiveOwner(t *testing.T) {
-	journal := NewFileAuthorityJournal(t.TempDir() + string(os.PathSeparator) + "authority.json")
+	journal := newPIDOnlyTestAuthorityJournal(t.TempDir() + string(os.PathSeparator) + "authority.json")
 	identity := testIdentity()
 	if err := journal.Begin(identity, 100); err != nil {
 		t.Fatal(err)
@@ -224,7 +224,7 @@ func TestAuthorityJournalRecoveryConvergesOnOneLiveOwner(t *testing.T) {
 	if err != nil || owner != AuthorityOwnerParent || record.Phase != AuthorityPhaseParent || record.ChildPID != 0 {
 		t.Fatalf("dead child recovery = %q, %+v, %v", owner, record, err)
 	}
-	journal = NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+	journal = newPIDOnlyTestAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 	if err := journal.Begin(identity, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestAuthoritativeChildReceivesManagerSignal(t *testing.T) {
 }
 
 func TestAuthorityJournalNextIdentityRequiresCurrentProcessOwnership(t *testing.T) {
-	journal := NewFileAuthorityJournal(t.TempDir() + string(os.PathSeparator) + "authority.json")
+	journal := newPIDOnlyTestAuthorityJournal(t.TempDir() + string(os.PathSeparator) + "authority.json")
 	oldIdentity := testIdentity()
 	if err := journal.Begin(oldIdentity, 100); err != nil {
 		t.Fatal(err)
@@ -430,7 +430,7 @@ func TestAuthorityJournalNextIdentityRequiresCurrentProcessOwnership(t *testing.
 func TestAuthorityJournalRejectsOverlappingReadyAndActiveLaunches(t *testing.T) {
 	for _, phase := range []AuthorityPhase{AuthorityPhaseReady, AuthorityPhaseActive} {
 		t.Run(string(phase), func(t *testing.T) {
-			journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+			journal := newPIDOnlyTestAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 			current := testIdentity()
 			if err := journal.Begin(current, 100); err != nil {
 				t.Fatal(err)
@@ -454,7 +454,7 @@ func TestAuthorityJournalRejectsOverlappingReadyAndActiveLaunches(t *testing.T) 
 }
 
 func TestAuthorityJournalLaunchEpochFencesStaleChild(t *testing.T) {
-	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+	journal := newPIDOnlyTestAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 	stale := testIdentity()
 	if err := journal.Begin(stale, 100); err != nil {
 		t.Fatal(err)
@@ -477,6 +477,152 @@ func TestAuthorityJournalLaunchEpochFencesStaleChild(t *testing.T) {
 	}
 	if err := journal.Advance(replacement, 300, AuthorityPhaseReady); err != nil {
 		t.Fatalf("replacement child could not advance: %v", err)
+	}
+}
+
+func TestAuthorityJournalRequiresParentProcessIdentity(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "authority.json")
+	journal := NewFileAuthorityJournal(journalPath)
+	journal.requireProcessToken = true
+	journal.processIdentity = func(int) (string, bool) { return "", false }
+
+	if err := journal.BeginOwned(testIdentity(), 100, func(int) bool { return true }); err == nil {
+		t.Fatal("BeginOwned() succeeded without a parent process identity")
+	}
+	if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
+		t.Fatalf("journal created after parent identity failure: %v", err)
+	}
+}
+
+func TestAuthorityJournalRequiresChildProcessIdentityOnAttach(t *testing.T) {
+	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+	journal.requireProcessToken = true
+	journal.processIdentity = func(pid int) (string, bool) {
+		if pid == 100 {
+			return "parent-token", true
+		}
+		return "", false
+	}
+	identity := testIdentity()
+	if err := journal.BeginOwned(identity, 100, func(int) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := journal.AttachChild(identity, 100, 200); err == nil {
+		t.Fatal("AttachChild() succeeded without a child process identity")
+	}
+	record, err := journal.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ChildPID != 0 || record.ChildToken != "" || !record.LaunchPending {
+		t.Fatalf("failed attach changed pending authority record: %+v", record)
+	}
+}
+
+func TestAuthorityJournalRequiresChildProcessIdentityAtCheckpoint(t *testing.T) {
+	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+	journal.requireProcessToken = true
+	identityAvailable := true
+	journal.processIdentity = func(pid int) (string, bool) {
+		if pid == 100 {
+			return "parent-token", true
+		}
+		if pid == 200 && identityAvailable {
+			return "child-token", true
+		}
+		return "", false
+	}
+	identity := testIdentity()
+	if err := journal.BeginOwned(identity, 100, func(int) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.AttachChild(identity, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	identityAvailable = false
+
+	if err := journal.Advance(identity, 200, AuthorityPhaseReady); err == nil {
+		t.Fatal("Advance() succeeded after child process identity lookup failed")
+	}
+	record, err := journal.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Phase != AuthorityPhaseParent || !record.LaunchPending {
+		t.Fatalf("failed checkpoint advanced authority record: %+v", record)
+	}
+}
+
+func TestAuthorityJournalRejectsTokenlessVersionThreeRecord(t *testing.T) {
+	journalPath := filepath.Join(t.TempDir(), "authority.json")
+	payload, err := json.Marshal(AuthorityRecord{
+		Version: AuthorityJournalVersion, Identity: testIdentity(), Phase: AuthorityPhaseParent,
+		ParentPID: 100, LaunchPending: true, UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journalPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := NewFileAuthorityJournal(journalPath)
+	journal.requireProcessToken = true
+	journal.processIdentity = func(int) (string, bool) { return "current-token", true }
+
+	if _, err := journal.Load(); err == nil {
+		t.Fatal("Load() accepted a tokenless version 3 record")
+	}
+	aliveCalled := false
+	if _, _, err := journal.Recover(testIdentity(), func(int) bool {
+		aliveCalled = true
+		return true
+	}); err == nil {
+		t.Fatal("Recover() accepted a tokenless version 3 record")
+	}
+	if aliveCalled {
+		t.Fatal("Recover() fell back to raw PID liveness for a tokenless version 3 record")
+	}
+}
+
+func TestAuthorityJournalRecoveryDoesNotFallbackWhenProcessIdentityLookupFails(t *testing.T) {
+	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+	journal.requireProcessToken = true
+	journal.processIdentity = func(pid int) (string, bool) {
+		switch pid {
+		case 100:
+			return "parent-token", true
+		case 200:
+			return "child-token", true
+		default:
+			return "", false
+		}
+	}
+	identity := testIdentity()
+	if err := journal.BeginOwned(identity, 100, func(int) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.AttachChild(identity, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Advance(identity, 200, AuthorityPhaseReady); err != nil {
+		t.Fatal(err)
+	}
+
+	journal.processIdentity = func(int) (string, bool) { return "", false }
+	aliveCalled := false
+	owner, record, err := journal.Recover(identity, func(int) bool {
+		aliveCalled = true
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner != AuthorityOwnerNone {
+		t.Fatalf("Recover() owner = %q, want %q after identity lookup failure; record = %+v", owner, AuthorityOwnerNone, record)
+	}
+	if aliveCalled {
+		t.Fatal("Recover() fell back to raw PID liveness after process identity lookup failed")
 	}
 }
 
@@ -830,6 +976,13 @@ func helperLaunch(t *testing.T, mode string) Launch {
 		Identity:         testIdentity(),
 		AuthorityJournal: t.TempDir() + string(os.PathSeparator) + "authority.json",
 	}
+}
+
+func newPIDOnlyTestAuthorityJournal(path string) *FileAuthorityJournal {
+	journal := NewFileAuthorityJournal(path)
+	journal.requireProcessToken = false
+	journal.processIdentity = nil
+	return journal
 }
 
 func testIdentity() Identity {

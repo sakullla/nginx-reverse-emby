@@ -72,13 +72,18 @@ type AuthorityRecord struct {
 }
 
 type FileAuthorityJournal struct {
-	path        string
-	mu          sync.Mutex
-	lockCreated func()
+	path                string
+	mu                  sync.Mutex
+	lockCreated         func()
+	processIdentity     func(int) (string, bool)
+	requireProcessToken bool
 }
 
 func NewFileAuthorityJournal(path string) *FileAuthorityJournal {
-	return &FileAuthorityJournal{path: filepath.Clean(path)}
+	return &FileAuthorityJournal{
+		path: filepath.Clean(path), processIdentity: platform.ProcessIdentity,
+		requireProcessToken: platform.SupportsHotRestart(),
+	}
 }
 
 func (j *FileAuthorityJournal) Begin(identity Identity, parentPID int) error {
@@ -126,8 +131,8 @@ func (j *FileAuthorityJournal) BeginOwned(identity Identity, parentPID int, aliv
 			recovered.Phase == AuthorityPhaseParent && recovered.ChildPID == 0 && !recovered.LaunchPending
 		childCanLaunch := owner == AuthorityOwnerChild && recovered.ChildPID == parentPID &&
 			recovered.Phase == AuthorityPhaseChild && !recovered.LaunchPending
-		orphanCanLaunch := owner == AuthorityOwnerNone && !processOwnerAlive(recovered.ParentPID, recovered.ParentToken, alive) &&
-			!processOwnerAlive(recovered.ChildPID, recovered.ChildToken, alive)
+		orphanCanLaunch := owner == AuthorityOwnerNone && !j.processOwnerAlive(recovered.ParentPID, recovered.ParentToken, alive) &&
+			!j.processOwnerAlive(recovered.ChildPID, recovered.ChildToken, alive)
 		if !parentCanLaunch && !childCanLaunch && !orphanCanLaunch {
 			return errors.New("current process does not own a launchable hot restart authority journal")
 		}
@@ -157,7 +162,10 @@ func (j *FileAuthorityJournal) Advance(identity Identity, childPID int, next Aut
 		if childPID <= 0 || record.ChildPID > 0 && record.ChildPID != childPID {
 			return errors.New("hot restart authority journal child pid mismatch")
 		}
-		childToken, tokenAvailable := platform.ProcessIdentity(childPID)
+		childToken, tokenAvailable := j.captureProcessIdentity(childPID)
+		if j.requireProcessToken && !tokenAvailable {
+			return errors.New("hot restart child process incarnation is required")
+		}
 		if record.ChildToken != "" && (!tokenAvailable || record.ChildToken != childToken) {
 			return errors.New("hot restart authority journal child incarnation mismatch")
 		}
@@ -217,7 +225,11 @@ func (j *FileAuthorityJournal) AttachChild(identity Identity, parentPID, childPI
 			return errors.New("hot restart authority journal has no matching pending launch")
 		}
 		record.ChildPID = childPID
-		if token, ok := platform.ProcessIdentity(childPID); ok {
+		token, ok := j.captureProcessIdentity(childPID)
+		if j.requireProcessToken && !ok {
+			return errors.New("hot restart child process incarnation is required")
+		}
+		if ok {
 			record.ChildToken = token
 		}
 		record.UpdatedAt = time.Now().UTC()
@@ -242,7 +254,10 @@ func (j *FileAuthorityJournal) CancelLaunch(identity Identity, parentPID int) er
 }
 
 func (j *FileAuthorityJournal) beginLocked(identity Identity, parentPID int, pending bool) error {
-	parentToken, _ := platform.ProcessIdentity(parentPID)
+	parentToken, ok := j.captureProcessIdentity(parentPID)
+	if j.requireProcessToken && !ok {
+		return errors.New("hot restart parent process incarnation is required")
+	}
 	return j.writeLocked(AuthorityRecord{
 		Version: AuthorityJournalVersion, Identity: identity, Phase: AuthorityPhaseParent,
 		ParentPID: parentPID, ParentToken: parentToken, LaunchPending: pending, UpdatedAt: time.Now().UTC(),
@@ -257,8 +272,8 @@ func (j *FileAuthorityJournal) recoverLocked(identity Identity, alive func(int) 
 	if record.Identity != identity || record.Version != AuthorityJournalVersion {
 		return AuthorityOwnerNone, record, errors.New("hot restart authority journal identity or version mismatch")
 	}
-	parentAlive := processOwnerAlive(record.ParentPID, record.ParentToken, alive)
-	childAlive := processOwnerAlive(record.ChildPID, record.ChildToken, alive)
+	parentAlive := j.processOwnerAlive(record.ParentPID, record.ParentToken, alive)
+	childAlive := j.processOwnerAlive(record.ChildPID, record.ChildToken, alive)
 	switch {
 	case parentAlive && record.Phase == AuthorityPhaseChild && childAlive:
 		return AuthorityOwnerChild, record, nil
@@ -284,13 +299,24 @@ func (j *FileAuthorityJournal) recoverLocked(identity Identity, alive func(int) 
 	}
 }
 
-func processOwnerAlive(pid int, token string, alive func(int) bool) bool {
+func (j *FileAuthorityJournal) captureProcessIdentity(pid int) (string, bool) {
+	if j.processIdentity == nil {
+		return "", false
+	}
+	token, ok := j.processIdentity(pid)
+	return token, ok && strings.TrimSpace(token) != ""
+}
+
+func (j *FileAuthorityJournal) processOwnerAlive(pid int, token string, alive func(int) bool) bool {
 	if pid <= 0 {
 		return false
 	}
 	if strings.TrimSpace(token) != "" {
-		current, ok := platform.ProcessIdentity(pid)
+		current, ok := j.captureProcessIdentity(pid)
 		return ok && current == token
+	}
+	if j.requireProcessToken {
+		return false
 	}
 	return alive(pid)
 }
@@ -388,6 +414,9 @@ func (j *FileAuthorityJournal) loadLocked() (AuthorityRecord, error) {
 	}
 	if record.Version != AuthorityJournalVersion || record.Phase == "" {
 		return AuthorityRecord{}, errors.New("hot restart authority journal is invalid")
+	}
+	if j.requireProcessToken && (strings.TrimSpace(record.ParentToken) == "" || record.ChildPID > 0 && strings.TrimSpace(record.ChildToken) == "") {
+		return AuthorityRecord{}, errors.New("hot restart authority journal process incarnation is missing")
 	}
 	return record, nil
 }
@@ -592,8 +621,9 @@ func (s Supervisor) Start(ctx context.Context, launch Launch) (*ChildProcess, er
 		_ = cmd.Process.Kill()
 		waitErr := cmd.Wait()
 		closePipes()
+		cancelErr := journal.CancelLaunch(launch.Identity, os.Getpid())
 		_, _, recoverErr := journal.Recover(launch.Identity, func(pid int) bool { return pid == os.Getpid() })
-		return nil, errors.Join(err, waitErr, recoverErr)
+		return nil, fmt.Errorf("wait for hot restart child readiness: %w", errors.Join(err, waitErr, cancelErr, recoverErr))
 	}
 
 	process := newChildProcess(cmd, launch.Identity, eventReader, commandWriter, journal, s.commandTimeout())
