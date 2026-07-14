@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
@@ -23,6 +24,15 @@ type wireGuardGenerationFactory struct {
 
 	mu        sync.Mutex
 	endpoints map[string]*wireGuardBindEndpoint
+}
+
+func (m *Module) SetProcessPacketRegistry(registry *ingress.ProcessPacketRegistry) {
+	if m == nil || m.ingress == nil {
+		return
+	}
+	m.ingress.mu.Lock()
+	m.ingress.processPackets = registry
+	m.ingress.mu.Unlock()
 }
 
 func newWireGuardGenerationFactory(generationID string, ingress *wireGuardIngressManager, registrar WireGuardSessionRegistrar, registrationReady bool, base Factory) *wireGuardGenerationFactory {

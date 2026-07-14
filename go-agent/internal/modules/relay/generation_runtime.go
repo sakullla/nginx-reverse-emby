@@ -38,6 +38,7 @@ type relayIngressManager struct {
 	bindings       map[string]*relayIngressBinding
 	selector       RelayGenerationSelector
 	processStreams *ingress.ProcessStreamRegistry
+	processPackets *ingress.ProcessPacketRegistry
 	closed         bool
 }
 
@@ -68,6 +69,15 @@ func (m *Module) SetProcessStreamRegistry(registry *ingress.ProcessStreamRegistr
 	}
 	m.ingress.mu.Lock()
 	m.ingress.processStreams = registry
+	m.ingress.mu.Unlock()
+}
+
+func (m *Module) SetProcessPacketRegistry(registry *ingress.ProcessPacketRegistry) {
+	if m == nil || m.ingress == nil {
+		return
+	}
+	m.ingress.mu.Lock()
+	m.ingress.processPackets = registry
 	m.ingress.mu.Unlock()
 }
 
@@ -107,7 +117,7 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 	if m.closed {
 		return nil, net.ErrClosed
 	}
-	if m.processStreams != nil && m.processStreams.ImportPending() && transport != ListenerTransportModeTLSTCP {
+	if m.processStreams != nil && m.processStreams.ImportPending() && m.processPackets == nil && transport != ListenerTransportModeTLSTCP {
 		return nil, errors.New("relay packet or WireGuard ingress cannot join stream-only hot restart")
 	}
 	binding := m.bindings[key]
@@ -115,17 +125,34 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 		binding = &relayIngressBinding{key: key}
 		switch transport {
 		case ListenerTransportModeQUIC:
-			packet, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", address)
+			binding.quicClassifier = newRelayQUICClassifier()
+			listenPacket := func(ctx context.Context) (net.PacketConn, error) {
+				packet, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", address)
+				if err != nil {
+					return nil, err
+				}
+				if tuner, ok := packet.(model.UDPBufferTuner); ok {
+					model.TuneUDPBuffers(tuner)
+				}
+				return packet, nil
+			}
+			var err error
+			if m.processPackets != nil {
+				binding.packet, err = m.processPackets.NewBroker(ctx, "relay:"+key, "udp", listenPacket, binding.quicClassifier)
+			} else {
+				var packet net.PacketConn
+				packet, err = listenPacket(ctx)
+				if err == nil {
+					binding.packet = ingress.NewPacketBroker(packet, "udp", binding.quicClassifier)
+					if binding.packet == nil {
+						_ = packet.Close()
+					}
+				}
+			}
 			if err != nil {
 				return nil, err
 			}
-			if tuner, ok := packet.(model.UDPBufferTuner); ok {
-				model.TuneUDPBuffers(tuner)
-			}
-			binding.quicClassifier = newRelayQUICClassifier()
-			binding.packet = ingress.NewPacketBroker(packet, "udp", binding.quicClassifier)
 			if binding.packet == nil {
-				_ = packet.Close()
 				return nil, errors.New("create relay packet broker")
 			}
 			binding.quicClassifier.setAssociationReleaser(func(key ingress.AssociationKey) {

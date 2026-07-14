@@ -522,6 +522,7 @@ type l4IngressManager struct {
 	bindings       map[string]*l4IngressBinding
 	selector       L4GenerationSelector
 	processStreams *ingress.ProcessStreamRegistry
+	processPackets *ingress.ProcessPacketRegistry
 	closed         bool
 }
 
@@ -554,6 +555,15 @@ func (m *Module) SetProcessStreamRegistry(registry *ingress.ProcessStreamRegistr
 	}
 	m.ingress.mu.Lock()
 	m.ingress.processStreams = registry
+	m.ingress.mu.Unlock()
+}
+
+func (m *Module) SetProcessPacketRegistry(registry *ingress.ProcessPacketRegistry) {
+	if m == nil || m.ingress == nil {
+		return
+	}
+	m.ingress.mu.Lock()
+	m.ingress.processPackets = registry
 	m.ingress.mu.Unlock()
 }
 
@@ -602,7 +612,7 @@ func (m *l4IngressManager) acquire(ctx context.Context, generationID string, rul
 	if m.closed {
 		return nil, net.ErrClosed
 	}
-	if m.processStreams != nil && m.processStreams.ImportPending() && (!l4RuleIsTCP(rule) || strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")) {
+	if m.processStreams != nil && m.processStreams.ImportPending() && m.processPackets == nil && (!l4RuleIsTCP(rule) || strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")) {
 		return nil, errors.New("L4 packet or WireGuard ingress cannot join stream-only hot restart")
 	}
 	binding := m.bindings[key]
@@ -638,13 +648,20 @@ func (m *l4IngressManager) acquire(ctx context.Context, generationID string, rul
 				}
 			}
 		default:
-			listener, listenErr := server.listenUDP(rule, l4ListenAddress(rule))
-			err = listenErr
-			if err == nil {
-				binding.packet = ingress.NewPacketBroker(listener, "udp")
-				if binding.packet == nil {
-					_ = listener.Close()
-					err = errors.New("create L4 packet broker")
+			listenPacket := func(context.Context) (net.PacketConn, error) {
+				return server.listenUDP(rule, l4ListenAddress(rule))
+			}
+			if m.processPackets != nil && !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+				binding.packet, err = m.processPackets.NewBroker(ctx, "l4:"+key, "udp", listenPacket)
+			} else {
+				var listener net.PacketConn
+				listener, err = listenPacket(ctx)
+				if err == nil {
+					binding.packet = ingress.NewPacketBroker(listener, "udp")
+					if binding.packet == nil {
+						_ = listener.Close()
+						err = errors.New("create L4 packet broker")
+					}
 				}
 			}
 		}

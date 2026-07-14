@@ -42,6 +42,7 @@ type httpIngressManager struct {
 	bindings       map[string]*httpIngressBinding
 	selector       HTTPGenerationSelector
 	processStreams *ingress.ProcessStreamRegistry
+	processPackets *ingress.ProcessPacketRegistry
 	legacyActive   atomic.Pointer[Runtime]
 	closed         bool
 }
@@ -80,6 +81,15 @@ func (m *Module) SetProcessStreamRegistry(registry *ingress.ProcessStreamRegistr
 	}
 	m.ingress.mu.Lock()
 	m.ingress.processStreams = registry
+	m.ingress.mu.Unlock()
+}
+
+func (m *Module) SetProcessPacketRegistry(registry *ingress.ProcessPacketRegistry) {
+	if m == nil || m.ingress == nil {
+		return
+	}
+	m.ingress.mu.Lock()
+	m.ingress.processPackets = registry
 	m.ingress.mu.Unlock()
 }
 
@@ -131,7 +141,7 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		m.mu.Unlock()
 		return nil, net.ErrClosed
 	}
-	if m.processStreams != nil && m.processStreams.ImportPending() && (spec.wireGuardProfileID != nil || http3Enabled && spec.scheme == "https") {
+	if m.processStreams != nil && m.processStreams.ImportPending() && m.processPackets == nil && (spec.wireGuardProfileID != nil || http3Enabled && spec.scheme == "https") {
 		m.mu.Unlock()
 		return nil, errors.New("HTTP packet or WireGuard ingress cannot join stream-only hot restart")
 	}
@@ -175,7 +185,30 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		m.bindings[spec.bindingKey] = binding
 	}
 	if http3Enabled && spec.scheme == "https" && binding.packet == nil {
-		packet, err := http3ListenPacket("udp", spec.address)
+		binding.quicClassifier = newQUICConnectionClassifier()
+		listenPacket := func(context.Context) (net.PacketConn, error) {
+			packet, err := http3ListenPacket("udp", spec.address)
+			if err != nil {
+				return nil, err
+			}
+			if tuner, ok := packet.(model.UDPBufferTuner); ok {
+				model.TuneUDPBuffers(tuner)
+			}
+			return packet, nil
+		}
+		var err error
+		if m.processPackets != nil && spec.wireGuardProfileID == nil {
+			binding.packet, err = m.processPackets.NewBroker(ctx, "http:"+spec.bindingKey, "udp", listenPacket, ingress.ClassifierFunc(binding.quicClassifier.classifyForBroker))
+		} else {
+			var packet net.PacketConn
+			packet, err = listenPacket(ctx)
+			if err == nil {
+				binding.packet = ingress.NewPacketBroker(packet, "udp", ingress.ClassifierFunc(binding.quicClassifier.classifyForBroker))
+				if binding.packet == nil {
+					_ = packet.Close()
+				}
+			}
+		}
 		if err != nil {
 			if binding.refs == 0 {
 				delete(m.bindings, spec.bindingKey)
@@ -184,13 +217,7 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 			m.mu.Unlock()
 			return nil, fmt.Errorf("http3 stable ingress %s: %w", spec.bindingKey, err)
 		}
-		if tuner, ok := packet.(model.UDPBufferTuner); ok {
-			model.TuneUDPBuffers(tuner)
-		}
-		binding.quicClassifier = newQUICConnectionClassifier()
-		binding.packet = ingress.NewPacketBroker(packet, "udp", ingress.ClassifierFunc(binding.quicClassifier.classifyForBroker))
 		if binding.packet == nil {
-			_ = packet.Close()
 			if binding.refs == 0 {
 				delete(m.bindings, spec.bindingKey)
 				_ = binding.stream.Close()

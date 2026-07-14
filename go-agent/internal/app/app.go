@@ -204,16 +204,23 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 	processPackets := ingress.NewProcessPacketRegistry()
 	httpModule := modulehttp.NewModule(httpConfig)
 	httpModule.SetProcessStreamRegistry(processStreams)
+	httpModule.SetProcessPacketRegistry(processPackets)
 	relayModule := modulerelay.NewModule(relayConfig)
 	relayModule.SetProcessStreamRegistry(processStreams)
+	relayModule.SetProcessPacketRegistry(processPackets)
 	l4Module := modulel4.NewModule(l4Config)
 	l4Module.SetProcessStreamRegistry(processStreams)
+	l4Module.SetProcessPacketRegistry(processPackets)
+	wireGuardModule := configuredGenerationWireGuardModule(cfg, generations, generations)
+	if managedWireGuard, ok := wireGuardModule.(*modulewireguard.Module); ok {
+		managedWireGuard.SetProcessPacketRegistry(processPackets)
+	}
 	modules := []agentmodule.Module{
 		certModule,
 		diagnosticModule,
 		moduleegress.NewModule(nil),
 		httpModule,
-		configuredGenerationWireGuardModule(cfg, generations, generations),
+		wireGuardModule,
 		relayModule,
 		l4Module,
 		trafficModule,

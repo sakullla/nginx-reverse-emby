@@ -151,6 +151,36 @@ func TestConfiguredRuntimeUsesCompatibleSoleViewGenerationPath(t *testing.T) {
 	}
 }
 
+func TestConfiguredRuntimeInjectsProcessPacketRegistry(t *testing.T) {
+	configured, err := newConfiguredModules(Config{
+		AgentID:           "agent",
+		AgentName:         "agent",
+		DataDir:           t.TempDir(),
+		WireGuardEnabled:  false,
+		WireGuardExplicit: true,
+	})
+	if err != nil {
+		t.Fatalf("newConfiguredModules() error = %v", err)
+	}
+	set, err := configured.processPackets.Import(nil, nil)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	defer set.Close()
+	app := &App{}
+	app.setConfiguredModules(configured)
+	t.Cleanup(func() { _ = app.Close() })
+
+	next := Snapshot{Revision: 1, DesiredVersion: "v1", L4Rules: []model.L4Rule{{
+		ID: 91, AgentID: "agent", Protocol: "udp", ListenHost: "127.0.0.1", ListenPort: 39001,
+		Backends: []model.L4Backend{{Host: "127.0.0.1", Port: 9}}, Enabled: true,
+	}}}
+	err = app.runtime.Apply(t.Context(), Snapshot{}, next)
+	if err == nil || !strings.Contains(err.Error(), "inherited packet descriptor") || !strings.Contains(err.Error(), "l4:") {
+		t.Fatalf("runtime.Apply() error = %v, want missing L4 process packet descriptor", err)
+	}
+}
+
 func TestDiagnoseUsesDiagnosticModuleHandler(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

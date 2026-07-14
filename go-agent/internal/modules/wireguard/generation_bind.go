@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"golang.zx2c4.com/wireguard/conn"
 )
@@ -50,10 +51,11 @@ type ModuleConfig struct {
 }
 
 type wireGuardIngressManager struct {
-	mu       sync.Mutex
-	bindings map[string]*wireGuardBindBroker
-	selector WireGuardGenerationSelector
-	closed   bool
+	mu             sync.Mutex
+	bindings       map[string]*wireGuardBindBroker
+	selector       WireGuardGenerationSelector
+	processPackets *ingress.ProcessPacketRegistry
+	closed         bool
 }
 
 type wireGuardBindBroker struct {
@@ -142,10 +144,14 @@ func (m *wireGuardIngressManager) acquire(generationID string, cfg Config, regis
 	}
 	binding := m.bindings[key]
 	if binding == nil {
+		physical := newWireGuardBind(cfg.BindAddresses)
+		if m.processPackets != nil {
+			physical = newProcessWireGuardBind(m.processPackets, key, cfg.BindAddresses)
+		}
 		binding = &wireGuardBindBroker{
 			manager:   m,
 			key:       key,
-			physical:  newWireGuardBind(cfg.BindAddresses),
+			physical:  physical,
 			endpoints: make(map[*wireGuardBindEndpoint]struct{}),
 			receivers: make(map[uint32]*wireGuardBindEndpoint),
 			remotes:   make(map[string][]*wireGuardBindEndpoint),
