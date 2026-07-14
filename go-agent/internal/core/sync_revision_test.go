@@ -384,6 +384,33 @@ func TestRevisionSyncRestartRequestKeepsStartedCandidate(t *testing.T) {
 	}
 }
 
+func TestRevisionSyncRejectsUpdatePackageBeforeAttemptStart(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	pull := revisionPull(7, "lease-7", "digest-7")
+	pull.Snapshot.VersionPackage = &model.VersionPackage{
+		URL: "https://downloads.example/nre-agent", SHA256: strings.Repeat("a", 64),
+		Platform: "darwin-amd64", Filename: "nre-agent-darwin-amd64", Size: 1024,
+	}
+	client := &revisionClientStub{events: &events, pull: pull}
+	updater := &syncControllerUpdater{preflightErr: errors.New("hot upgrade is unsupported on platform darwin-amd64")}
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client, Updater: updater}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("PerformSync() error = %v, want package preflight rejection", err)
+	}
+	if updater.preflightCalls != 1 || updater.stageCalls != 0 || updater.activateCalls != 0 {
+		t.Fatalf("updater preflight/stage/activate = %d/%d/%d, want 1/0/0", updater.preflightCalls, updater.stageCalls, updater.activateCalls)
+	}
+	if len(client.starts) != 0 || len(client.reports) != 0 || store.journal.Version != 0 || store.journal.Candidate != nil {
+		t.Fatalf("preflight mutated attempt start/report/journal = %d/%d/%+v", len(client.starts), len(client.reports), store.journal)
+	}
+	if store.desired.Revision != 0 || controller.Runtime.ActiveSnapshot().Revision != 0 {
+		t.Fatalf("preflight mutated desired/runtime = %d/%d", store.desired.Revision, controller.Runtime.ActiveSnapshot().Revision)
+	}
+}
+
 func TestRevisionSyncRejectsRevisionOlderThanDurableActiveGeneration(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)

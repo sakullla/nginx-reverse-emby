@@ -73,6 +73,11 @@ func SupportsPackageManifest(goos, goarch string) bool {
 		(strings.EqualFold(strings.TrimSpace(goarch), "amd64") || strings.EqualFold(strings.TrimSpace(goarch), "arm64"))
 }
 
+func (m *UpdateManager) Preflight(pkg model.VersionPackage) error {
+	_, err := versionPackageManifest(pkg, m.platform)
+	return err
+}
+
 func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -84,6 +89,9 @@ func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (st
 	packageRoot := m.packageRoot()
 	targetDir := filepath.Join(packageRoot, manifest.SHA256)
 	targetPath := filepath.Join(targetDir, packageBinaryFile)
+	if err := m.validateStorePath(targetDir); err != nil {
+		return "", err
+	}
 	if info, err := os.Lstat(targetDir); err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return "", errors.New("immutable package digest path must be a directory")
@@ -106,10 +114,10 @@ func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (st
 		return "", err
 	}
 	defer reader.Close()
-	if err := os.MkdirAll(packageRoot, 0o755); err != nil {
+	if err := m.ensureStoreDirectory(packageRoot, 0o755); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	if err := m.ensureStoreDirectory(targetDir, 0o755); err != nil {
 		return "", err
 	}
 
@@ -180,14 +188,14 @@ func (m *UpdateManager) Activate(stagedPath string, desiredVersion string) error
 		return err
 	}
 	if current.Manifest.SHA256 != next.Manifest.SHA256 {
-		if err := m.writePointer(previousPointerFile, current); err != nil {
+		if err := m.writePointerConvergent(previousPointerFile, current); err != nil {
 			return fmt.Errorf("save previous package pointer: %w", err)
 		}
-		if err := m.writePointer(currentPointerFile, next); err != nil {
+		if err := m.writePointerConvergent(currentPointerFile, next); err != nil {
 			return fmt.Errorf("save current package pointer: %w", err)
 		}
 	} else if current.DesiredVersion != next.DesiredVersion {
-		if err := m.writePointer(currentPointerFile, next); err != nil {
+		if err := m.writePointerConvergent(currentPointerFile, next); err != nil {
 			return fmt.Errorf("refresh current package pointer: %w", err)
 		}
 	}
@@ -232,10 +240,10 @@ func (m *UpdateManager) restorePreviousLocked() error {
 	if err != nil {
 		return fmt.Errorf("load previous package pointer: %w", err)
 	}
-	if err := m.writePointer(currentPointerFile, previous); err != nil {
+	if err := m.writePointerConvergent(currentPointerFile, previous); err != nil {
 		return fmt.Errorf("restore current package pointer: %w", err)
 	}
-	if err := m.writePointer(previousPointerFile, current); err != nil {
+	if err := m.writePointerConvergent(previousPointerFile, current); err != nil {
 		return fmt.Errorf("retain failed package pointer: %w", err)
 	}
 	return nil
@@ -251,7 +259,7 @@ func (m *UpdateManager) ensureCurrentPackage() (PackagePointer, error) {
 	}
 	previous, previousErr := m.loadPointer(previousPointerFile)
 	if previousErr == nil {
-		if err := m.writePointer(currentPointerFile, previous); err != nil {
+		if err := m.writePointerConvergent(currentPointerFile, previous); err != nil {
 			return PackagePointer{}, fmt.Errorf("recover current package pointer: %w", err)
 		}
 		return previous, nil
@@ -294,6 +302,9 @@ func (m *UpdateManager) importExecutable(sourcePath string) (PackagePointer, err
 	}
 	targetDir := filepath.Join(m.packageRoot(), manifest.SHA256)
 	targetPath := filepath.Join(targetDir, packageBinaryFile)
+	if err := m.validateStorePath(targetDir); err != nil {
+		return PackagePointer{}, err
+	}
 	if info, err := os.Lstat(targetDir); err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return PackagePointer{}, errors.New("current package digest path must be a directory")
@@ -311,7 +322,7 @@ func (m *UpdateManager) importExecutable(sourcePath string) (PackagePointer, err
 	} else if !os.IsNotExist(err) {
 		return PackagePointer{}, err
 	}
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+	if err := m.ensureStoreDirectory(targetDir, 0o755); err != nil {
 		return PackagePointer{}, err
 	}
 	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
@@ -444,6 +455,9 @@ func (m *UpdateManager) readPackage(binaryPath string) (PackagePointer, error) {
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return PackagePointer{}, errors.New("package path is outside the immutable package store")
 	}
+	if err := m.validateStorePath(absPath); err != nil {
+		return PackagePointer{}, err
+	}
 	if filepath.Base(absPath) != packageBinaryFile {
 		return PackagePointer{}, errors.New("package path does not name the immutable binary")
 	}
@@ -534,14 +548,35 @@ func (m *UpdateManager) writePointer(name string, pointer PackagePointer) error 
 	if stored.Manifest != pointer.Manifest {
 		return errors.New("package pointer manifest does not match immutable package")
 	}
-	if err := os.MkdirAll(m.stateRoot(), 0o700); err != nil {
+	if err := m.ensureStoreDirectory(m.stateRoot(), 0o700); err != nil {
 		return err
 	}
 	return m.writeAtomicJSON(filepath.Join(m.stateRoot(), name), pointer, 0o600)
 }
 
+func (m *UpdateManager) writePointerConvergent(name string, pointer PackagePointer) error {
+	err := m.writePointer(name, pointer)
+	if err == nil {
+		return nil
+	}
+	if !isFilesystemCommitUncertain(err) {
+		return err
+	}
+	stored, loadErr := m.loadPointer(name)
+	if loadErr == nil && stored == pointer {
+		return nil
+	}
+	if loadErr == nil {
+		loadErr = errors.New("persisted package pointer has a different identity")
+	}
+	return errors.Join(err, loadErr)
+}
+
 func (m *UpdateManager) loadPointer(name string) (PackagePointer, error) {
 	pointerPath := filepath.Join(m.stateRoot(), name)
+	if err := m.validateStorePath(pointerPath); err != nil {
+		return PackagePointer{}, err
+	}
 	info, err := os.Lstat(pointerPath)
 	if err != nil {
 		return PackagePointer{}, err
@@ -571,7 +606,10 @@ func (m *UpdateManager) loadPointer(name string) (PackagePointer, error) {
 }
 
 func (m *UpdateManager) writeAtomicJSON(path string, value any, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := m.ensureStoreDirectory(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := m.validateStorePath(path); err != nil {
 		return err
 	}
 	payload, err := json.Marshal(value)
@@ -611,6 +649,100 @@ func (m *UpdateManager) writeAtomicJSON(path string, value any, mode os.FileMode
 		return &filesystemCommitUncertainError{err: err}
 	}
 	return nil
+}
+
+func (m *UpdateManager) validateStorePath(path string) error {
+	root, rel, err := m.storeRelativePath(path)
+	if err != nil {
+		return err
+	}
+	current := root
+	for _, component := range splitRelativePath(rel) {
+		current = filepath.Join(current, component)
+		info, statErr := os.Lstat(current)
+		if os.IsNotExist(statErr) {
+			return nil
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("update store path contains symlink: %s", current)
+		}
+	}
+	return nil
+}
+
+func (m *UpdateManager) ensureStoreDirectory(path string, mode os.FileMode) error {
+	root, rel, err := m.storeRelativePath(path)
+	if err != nil {
+		return err
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return err
+		}
+	} else if !rootInfo.IsDir() {
+		return errors.New("update store root is not a directory")
+	}
+	components := splitRelativePath(rel)
+	current := root
+	for index, component := range components {
+		parent := current
+		current = filepath.Join(current, component)
+		info, statErr := os.Lstat(current)
+		if statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("update store directory is not a real directory: %s", current)
+			}
+			continue
+		}
+		if !os.IsNotExist(statErr) {
+			return statErr
+		}
+		createMode := os.FileMode(0o755)
+		if index == len(components)-1 {
+			createMode = mode
+		}
+		if err := os.Mkdir(current, createMode); err != nil {
+			return err
+		}
+		if err := m.syncDirectory(parent); err != nil {
+			return &filesystemCommitUncertainError{err: err}
+		}
+	}
+	return nil
+}
+
+func (m *UpdateManager) storeRelativePath(path string) (string, string, error) {
+	root := m.root
+	if strings.TrimSpace(root) == "" {
+		root = "."
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", "", err
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", err
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", errors.New("update store path escapes the data root")
+	}
+	return absRoot, rel, nil
+}
+
+func splitRelativePath(path string) []string {
+	if path == "." || path == "" {
+		return nil
+	}
+	return strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' })
 }
 
 func (m *UpdateManager) resolveArgv(binaryPath string) []string {

@@ -82,6 +82,9 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err := validateImmutableRevisionDigest(journal, snapshot.Revision, digest); err != nil {
 		return c.recordRuntimeError(err)
 	}
+	if err := c.preflightPendingUpdate(snapshot); err != nil {
+		return c.recordRuntimeError(err)
+	}
 	runtimeIdentity, managedGeneration, err := c.Runtime.CandidateGenerationIdentity(previousApplied, snapshot)
 	if err != nil {
 		return c.recordRuntimeError(err)

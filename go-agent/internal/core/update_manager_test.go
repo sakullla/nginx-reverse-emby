@@ -191,25 +191,77 @@ func TestActivateBootstrapsMatchingRunningContentWithoutManifestConflict(t *test
 	}
 }
 
-func TestStageRejectsSymlinkedDigestDirectory(t *testing.T) {
+func TestStageRejectsSymlinkedStoreAncestors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated Windows privileges")
+	}
+	for _, ancestor := range []string{"updates", "packages", "digest"} {
+		t.Run(ancestor, func(t *testing.T) {
+			dir := t.TempDir()
+			payload := []byte("payload")
+			sourcePath := writeTestBinary(t, dir, "source-agent", payload)
+			pkg := testVersionPackage(sourcePath, payload)
+			outside := t.TempDir()
+			var linkPath string
+			switch ancestor {
+			case "updates":
+				linkPath = filepath.Join(dir, updateDirectory)
+			case "packages":
+				if err := os.Mkdir(filepath.Join(dir, updateDirectory), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				linkPath = filepath.Join(dir, updateDirectory, updatePackageDir)
+			case "digest":
+				if err := os.MkdirAll(filepath.Join(dir, updateDirectory, updatePackageDir), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				linkPath = filepath.Join(dir, updateDirectory, updatePackageDir, pkg.SHA256)
+			}
+			if err := os.Symlink(outside, linkPath); err != nil {
+				t.Fatal(err)
+			}
+			mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
+			if _, err := mgr.Stage(t.Context(), pkg); err == nil || !strings.Contains(strings.ToLower(err.Error()), "symlink") && !strings.Contains(err.Error(), "real directory") {
+				t.Fatalf("Stage() error = %v, want ancestor symlink rejection", err)
+			}
+			entries, err := os.ReadDir(outside)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("outside directory mutated: entries=%v error=%v", entries, err)
+			}
+		})
+	}
+}
+
+func TestActivateRejectsSymlinkedStateDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires elevated Windows privileges")
 	}
 	dir := t.TempDir()
-	payload := []byte("payload")
+	payload := []byte("new-agent")
+	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", payload)
-	pkg := testVersionPackage(sourcePath, payload)
-	packageRoot := filepath.Join(dir, updateDirectory, updatePackageDir)
-	if err := os.MkdirAll(packageRoot, 0o755); err != nil {
+	execCalls := 0
+	mgr := testUpdateManager(dir, targetPath, func(string, []string, []string) error {
+		execCalls++
+		return ErrRestartRequested
+	})
+	stagedPath, err := mgr.Stage(t.Context(), testVersionPackage(sourcePath, payload))
+	if err != nil {
 		t.Fatal(err)
 	}
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(packageRoot, pkg.SHA256)); err != nil {
+	if err := os.Symlink(outside, mgr.stateRoot()); err != nil {
 		t.Fatal(err)
 	}
-	mgr := testUpdateManager(dir, filepath.Join(dir, "current-agent"), nil)
-	if _, err := mgr.Stage(t.Context(), pkg); err == nil || !strings.Contains(err.Error(), "must be a directory") {
-		t.Fatalf("Stage() error = %v, want symlink rejection", err)
+	if err := mgr.Activate(stagedPath, "2.0.0"); err == nil || !strings.Contains(strings.ToLower(err.Error()), "symlink") {
+		t.Fatalf("Activate() error = %v, want state symlink rejection", err)
+	}
+	if execCalls != 0 {
+		t.Fatalf("exec calls = %d, want 0", execCalls)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("outside state directory mutated: entries=%v error=%v", entries, err)
 	}
 }
 
@@ -282,6 +334,44 @@ func TestActivateRecoversWhenCurrentPointerWriteFailsAfterPrevious(t *testing.T)
 	}
 }
 
+func TestActivateReconcilesUncertainPointerDirectorySync(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failAt int
+	}{
+		{name: "previous pointer", failAt: 1},
+		{name: "current pointer", failAt: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
+			sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
+			execCalls := 0
+			mgr := testUpdateManager(dir, targetPath, func(string, []string, []string) error {
+				execCalls++
+				return ErrRestartRequested
+			})
+			stagedPath, err := mgr.Stage(t.Context(), testVersionPackage(sourcePath, []byte("new-agent")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			failUpdateStateDirectorySync(mgr, tc.failAt)
+
+			if err := mgr.Activate(stagedPath, "2.0.0"); !errors.Is(err, ErrRestartRequested) {
+				t.Fatalf("Activate() error = %v", err)
+			}
+			current, currentErr := mgr.CurrentPackage()
+			previous, previousErr := mgr.PreviousPackage()
+			if currentErr != nil || previousErr != nil || current.Manifest.SHA256 != sumSHA256([]byte("new-agent")) || previous.Manifest.SHA256 != sumSHA256([]byte("old-agent")) {
+				t.Fatalf("reconciled current/previous = %+v/%+v, errors = %v/%v", current, previous, currentErr, previousErr)
+			}
+			if execCalls != 1 {
+				t.Fatalf("exec calls = %d, want 1", execCalls)
+			}
+		})
+	}
+}
+
 func TestRestorePreviousSwapsDurablePackagePointers(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
@@ -301,6 +391,43 @@ func TestRestorePreviousSwapsDurablePackagePointers(t *testing.T) {
 	previous, _ := mgr.PreviousPackage()
 	if current.Manifest.SHA256 != sumSHA256([]byte("old-agent")) || previous.Manifest.SHA256 != sumSHA256([]byte("new-agent")) {
 		t.Fatalf("restored pointers current/previous = %+v/%+v", current, previous)
+	}
+}
+
+func TestRestorePreviousReconcilesUncertainCurrentPointer(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
+	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
+	mgr := testUpdateManager(dir, targetPath, func(string, []string, []string) error { return ErrRestartRequested })
+	stagedPath, err := mgr.Stage(t.Context(), testVersionPackage(sourcePath, []byte("new-agent")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Activate(stagedPath, "2.0.0"); !errors.Is(err, ErrRestartRequested) {
+		t.Fatal(err)
+	}
+	failUpdateStateDirectorySync(mgr, 1)
+	if err := mgr.RestorePrevious(); err != nil {
+		t.Fatalf("RestorePrevious() error = %v", err)
+	}
+	current, _ := mgr.CurrentPackage()
+	previous, _ := mgr.PreviousPackage()
+	if current.Manifest.SHA256 != sumSHA256([]byte("old-agent")) || previous.Manifest.SHA256 != sumSHA256([]byte("new-agent")) {
+		t.Fatalf("reconciled restore current/previous = %+v/%+v", current, previous)
+	}
+}
+
+func failUpdateStateDirectorySync(mgr *UpdateManager, failAt int) {
+	original := mgr.syncDirectory
+	calls := 0
+	mgr.syncDirectory = func(path string) error {
+		if filepath.Clean(path) == filepath.Clean(mgr.stateRoot()) {
+			calls++
+			if calls == failAt {
+				return errors.New("injected update state directory sync failure")
+			}
+		}
+		return original(path)
 	}
 }
 

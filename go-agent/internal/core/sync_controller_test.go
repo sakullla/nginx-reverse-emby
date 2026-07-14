@@ -1081,12 +1081,19 @@ func (c *syncControllerSequenceClient) Sync(context.Context, control.SyncRequest
 }
 
 type syncControllerUpdater struct {
+	preflightCalls  int
 	stageCalls      int
 	activateCalls   int
 	packages        []model.VersionPackage
 	desiredVersions []string
+	preflightErr    error
 	stageErr        error
 	activateErr     error
+}
+
+func (u *syncControllerUpdater) Preflight(model.VersionPackage) error {
+	u.preflightCalls++
+	return u.preflightErr
 }
 
 func (u *syncControllerUpdater) Stage(_ context.Context, pkg model.VersionPackage) (string, error) {
