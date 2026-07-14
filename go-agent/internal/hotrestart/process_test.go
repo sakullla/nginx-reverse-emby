@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -850,6 +851,13 @@ func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 	}
 }
 
+func TestSetEnvRemovesDuplicateProtectedValues(t *testing.T) {
+	env := setEnv([]string{"KEEP=1", "NRE_HOT_RESTART_PACKETS=stale", "NRE_HOT_RESTART_PACKETS=attacker"}, "NRE_HOT_RESTART_PACKETS", "trusted")
+	if got := strings.Join(env, ","); got != "KEEP=1,NRE_HOT_RESTART_PACKETS=trusted" {
+		t.Fatalf("setEnv() = %q", got)
+	}
+}
+
 func TestHotRestartHelperProcess(t *testing.T) {
 	if journalPath := os.Getenv("NRE_HOT_RESTART_COLD_AUTHORITY_JOURNAL"); journalPath != "" {
 		journal := NewFileAuthorityJournal(journalPath)
@@ -892,6 +900,13 @@ func TestHotRestartHelperProcess(t *testing.T) {
 		os.Exit(24)
 	}
 	defer session.Close()
+	if mode == "packet" {
+		set, err := session.ConsumePacketConns()
+		if err != nil {
+			os.Exit(34)
+		}
+		defer set.Close()
+	}
 	if mode == "hang" {
 		select {}
 	}
@@ -1026,6 +1041,58 @@ func helperLaunch(t *testing.T, mode string) Launch {
 		Env:              setEnv(os.Environ(), "NRE_HOT_RESTART_TEST_MODE", mode),
 		Identity:         testIdentity(),
 		AuthorityJournal: t.TempDir() + string(os.PathSeparator) + "authority.json",
+	}
+}
+
+func TestSupervisorPassesAuthenticatedPacketDescriptorFiles(t *testing.T) {
+	requireProcessHandoff(t)
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer packet.Close()
+	bundle, err := ExportPacketConns(map[string]net.PacketConn{"packet": packet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	launch := helperLaunch(t, "packet")
+	launch.PacketDescriptors = bundle.Descriptors
+	launch.PacketFiles = bundle.Files
+	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Activate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.TransferAuthority(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupervisorRejectsPacketDescriptorFileIndexReuseBeforeLaunch(t *testing.T) {
+	requireProcessHandoff(t)
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer packet.Close()
+	bundle, err := ExportPacketConns(map[string]net.PacketConn{"packet": packet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	descriptors := append([]PacketDescriptor(nil), bundle.Descriptors...)
+	descriptors[0].ForwardFileIndex = descriptors[0].FileIndex
+	launch := helperLaunch(t, "packet")
+	launch.PacketDescriptors = descriptors
+	launch.PacketFiles = bundle.Files
+	if _, err := (Supervisor{}).Start(t.Context(), launch); err == nil {
+		t.Fatal("Supervisor.Start() accepted packet descriptor file index reuse")
 	}
 }
 

@@ -21,16 +21,18 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-const ProtocolVersion = 2
+const ProtocolVersion = 3
 
 const (
 	envChild             = "NRE_HOT_RESTART_CHILD"
 	envIdentity          = "NRE_HOT_RESTART_IDENTITY"
 	envStreamDescriptors = "NRE_HOT_RESTART_STREAMS"
+	envPacketDescriptors = "NRE_HOT_RESTART_PACKETS"
 	envAuthorityJournal  = "NRE_HOT_RESTART_AUTHORITY_JOURNAL"
 	envEventFD           = "NRE_HOT_RESTART_EVENT_FD"
 	envCommandFD         = "NRE_HOT_RESTART_COMMAND_FD"
 	envStreamFDStart     = "NRE_HOT_RESTART_STREAM_FD_START"
+	envPacketFDStart     = "NRE_HOT_RESTART_PACKET_FD_START"
 )
 
 type Identity struct {
@@ -550,6 +552,8 @@ type Launch struct {
 	Identity          Identity
 	StreamDescriptors []StreamDescriptor
 	StreamFiles       []*os.File
+	PacketDescriptors []PacketDescriptor
+	PacketFiles       []*os.File
 	AuthorityJournal  string
 	Stdout            io.Writer
 	Stderr            io.Writer
@@ -575,12 +579,19 @@ func (s Supervisor) Start(ctx context.Context, launch Launch) (*ChildProcess, er
 	if len(launch.StreamDescriptors) != len(launch.StreamFiles) {
 		return nil, errors.New("stream descriptors and files must have equal length")
 	}
+	if err := validatePacketFileIndexes(launch.PacketDescriptors, launch.PacketFiles); err != nil {
+		return nil, err
+	}
 	journal := NewFileAuthorityJournal(launch.AuthorityJournal)
 	identityValue, err := encodedEnvironmentValue(launch.Identity)
 	if err != nil {
 		return nil, err
 	}
 	streamValue, err := encodedEnvironmentValue(launch.StreamDescriptors)
+	if err != nil {
+		return nil, err
+	}
+	packetValue, err := encodedEnvironmentValue(launch.PacketDescriptors)
 	if err != nil {
 		return nil, err
 	}
@@ -614,11 +625,14 @@ func (s Supervisor) Start(ctx context.Context, launch Launch) (*ChildProcess, er
 	cmd.Env = setEnv(cmd.Env, envChild, "1")
 	cmd.Env = setEnv(cmd.Env, envIdentity, identityValue)
 	cmd.Env = setEnv(cmd.Env, envStreamDescriptors, streamValue)
+	cmd.Env = setEnv(cmd.Env, envPacketDescriptors, packetValue)
 	cmd.Env = setEnv(cmd.Env, envAuthorityJournal, launch.AuthorityJournal)
 	cmd.Env = setEnv(cmd.Env, envEventFD, "3")
 	cmd.Env = setEnv(cmd.Env, envCommandFD, "4")
 	cmd.Env = setEnv(cmd.Env, envStreamFDStart, "5")
+	cmd.Env = setEnv(cmd.Env, envPacketFDStart, strconv.Itoa(5+len(launch.StreamFiles)))
 	cmd.ExtraFiles = append([]*os.File{eventWriter, commandReader}, launch.StreamFiles...)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, launch.PacketFiles...)
 	cmd.Stdout = launch.Stdout
 	cmd.Stderr = launch.Stderr
 	if err := cmd.Start(); err != nil {
@@ -910,6 +924,8 @@ type ChildSession struct {
 	Identity          Identity
 	StreamDescriptors []StreamDescriptor
 	StreamFiles       []*os.File
+	PacketDescriptors []PacketDescriptor
+	PacketFiles       []*os.File
 	events            *os.File
 	commands          *os.File
 	decoder           *json.Decoder
@@ -934,6 +950,10 @@ func OpenChildSessionFromEnvironment() (*ChildSession, bool, error) {
 	if err := decodeEnvironmentValue(os.Getenv(envStreamDescriptors), &descriptors); err != nil {
 		return nil, true, err
 	}
+	var packetDescriptors []PacketDescriptor
+	if err := decodeEnvironmentValue(os.Getenv(envPacketDescriptors), &packetDescriptors); err != nil {
+		return nil, true, err
+	}
 	eventFD, err := environmentFD(envEventFD)
 	if err != nil {
 		return nil, true, err
@@ -945,6 +965,13 @@ func OpenChildSessionFromEnvironment() (*ChildSession, bool, error) {
 	streamStart, err := environmentFD(envStreamFDStart)
 	if err != nil {
 		return nil, true, err
+	}
+	packetStart, err := environmentFD(envPacketFDStart)
+	if err != nil {
+		return nil, true, err
+	}
+	if eventFD != 3 || commandFD != 4 || streamStart != 5 || packetStart != streamStart+len(descriptors) {
+		return nil, true, errors.New("hot restart inherited file descriptor layout is invalid")
 	}
 	events := os.NewFile(uintptr(eventFD), "hot-restart-events")
 	commands := os.NewFile(uintptr(commandFD), "hot-restart-commands")
@@ -958,7 +985,7 @@ func OpenChildSessionFromEnvironment() (*ChildSession, bool, error) {
 		return nil, true, errors.New("hot restart authority journal path is required")
 	}
 	session := &ChildSession{
-		Identity: identity, StreamDescriptors: descriptors, events: events, commands: commands,
+		Identity: identity, StreamDescriptors: descriptors, PacketDescriptors: packetDescriptors, events: events, commands: commands,
 		journal: NewFileAuthorityJournal(journalPath),
 	}
 	session.encoder = json.NewEncoder(events)
@@ -970,6 +997,19 @@ func OpenChildSessionFromEnvironment() (*ChildSession, bool, error) {
 			return nil, true, errors.New("hot restart stream file descriptor is invalid")
 		}
 		session.StreamFiles = append(session.StreamFiles, file)
+	}
+	packetFileCount := len(packetDescriptors) * 2
+	for index := 0; index < packetFileCount; index++ {
+		file := os.NewFile(uintptr(packetStart+index), fmt.Sprintf("hot-restart-packet-%d", index))
+		if file == nil {
+			_ = session.Close()
+			return nil, true, errors.New("hot restart packet file descriptor is invalid")
+		}
+		session.PacketFiles = append(session.PacketFiles, file)
+	}
+	if err := validatePacketFileIndexes(packetDescriptors, session.PacketFiles); err != nil {
+		_ = session.Close()
+		return nil, true, err
 	}
 	return session, true, nil
 }
@@ -990,6 +1030,15 @@ func (s *ChildSession) ConsumeStreamListeners() (*StreamSet, error) {
 	}
 	set, err := ImportStreamListeners(s.StreamDescriptors, s.StreamFiles)
 	s.StreamFiles = nil
+	return set, err
+}
+
+func (s *ChildSession) ConsumePacketConns() (*PacketSet, error) {
+	if s == nil {
+		return nil, errors.New("hot restart child session is required")
+	}
+	set, err := ImportPacketConns(s.PacketDescriptors, s.PacketFiles)
+	s.PacketFiles = nil
 	return set, err
 }
 
@@ -1088,9 +1137,45 @@ func (s *ChildSession) Close() error {
 				s.closeErr = errors.Join(s.closeErr, file.Close())
 			}
 		}
+		for _, file := range s.PacketFiles {
+			if file != nil {
+				s.closeErr = errors.Join(s.closeErr, file.Close())
+			}
+		}
 		s.closeErr = errors.Join(s.closeErr, s.commands.Close(), s.events.Close())
 	})
 	return s.closeErr
+}
+
+func validatePacketFileIndexes(descriptors []PacketDescriptor, files []*os.File) error {
+	if len(files) != len(descriptors)*2 {
+		return errors.New("packet descriptors must map bijectively to physical and forwarding files")
+	}
+	used := make(map[int]struct{}, len(files))
+	ids := make(map[string]struct{}, len(descriptors))
+	for _, descriptor := range descriptors {
+		id := strings.TrimSpace(descriptor.ID)
+		if id == "" || strings.TrimSpace(descriptor.Network) == "" || strings.TrimSpace(descriptor.Address) == "" {
+			return errors.New("packet descriptor identity is incomplete")
+		}
+		if _, exists := ids[id]; exists {
+			return fmt.Errorf("duplicate packet descriptor %q", id)
+		}
+		ids[id] = struct{}{}
+		for _, index := range []int{descriptor.FileIndex, descriptor.ForwardFileIndex} {
+			if index < 0 || index >= len(files) || files[index] == nil {
+				return fmt.Errorf("packet descriptor %q has an invalid file index", id)
+			}
+			if _, exists := used[index]; exists {
+				return fmt.Errorf("packet descriptor %q reuses a file index", id)
+			}
+			used[index] = struct{}{}
+		}
+	}
+	if len(used) != len(files) {
+		return errors.New("packet descriptor file index coverage is incomplete")
+	}
+	return nil
 }
 
 func encodedEnvironmentValue(value any) (string, error) {
@@ -1119,11 +1204,11 @@ func environmentFD(name string) (int, error) {
 
 func setEnv(env []string, key, value string) []string {
 	prefix := key + "="
-	for index := range env {
-		if strings.HasPrefix(env[index], prefix) {
-			env[index] = prefix + value
-			return env
+	result := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
 		}
 	}
-	return append(env, prefix+value)
+	return append(result, prefix+value)
 }

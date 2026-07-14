@@ -74,6 +74,7 @@ type App struct {
 	hotRestartDrain        hotRestartDrainFunc
 	hotRestartDrainTimeout time.Duration
 	processStreams         *ingress.ProcessStreamRegistry
+	processPackets         *ingress.ProcessPacketRegistry
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -169,6 +170,7 @@ type configuredModules struct {
 	certReports    core.ManagedCertificateReporter
 	generations    *core.GenerationManager
 	processStreams *ingress.ProcessStreamRegistry
+	processPackets *ingress.ProcessPacketRegistry
 }
 
 func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (configuredModules, error) {
@@ -199,6 +201,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		GenerationSelector: generations, SessionRegistrar: generations, ExternalDrainLifecycle: true,
 	}
 	processStreams := ingress.NewProcessStreamRegistry()
+	processPackets := ingress.NewProcessPacketRegistry()
 	httpModule := modulehttp.NewModule(httpConfig)
 	httpModule.SetProcessStreamRegistry(processStreams)
 	relayModule := modulerelay.NewModule(relayConfig)
@@ -234,6 +237,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		certReports:    certModule,
 		generations:    generations,
 		processStreams: processStreams,
+		processPackets: processPackets,
 	}, nil
 }
 
@@ -410,8 +414,9 @@ func newAppWithAllDeps(
 		taskClient:     taskClient,
 		runCtx:         context.Background(),
 		processStreams: ingress.NewProcessStreamRegistry(),
+		processPackets: ingress.NewProcessPacketRegistry(),
 	}
-	app.hotRestartStart = app.startHotRestartWithStreams
+	app.hotRestartStart = app.startHotRestartWithResources
 	app.hotRestartDrain = app.drainHotRestartParent
 	app.hotRestartDrainTimeout = hotRestartDrainTimeout
 	app.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(nil))
@@ -429,6 +434,7 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.certReports = modules.certReports
 	a.generations = modules.generations
 	a.processStreams = modules.processStreams
+	a.processPackets = modules.processPackets
 	a.runtime = core.NewRuntimeWithGenerationManager(modules.generations)
 }
 
@@ -542,25 +548,37 @@ func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSes
 	if a.processStreams == nil {
 		return errors.New("hot restart process stream registry is required")
 	}
+	if a.processPackets == nil {
+		return errors.New("hot restart process packet registry is required")
+	}
 	streamSet, err := a.processStreams.Import(child.StreamDescriptors, child.StreamFiles)
 	child.StreamFiles = nil
 	if err != nil {
 		return fmt.Errorf("import hot restart stream listeners: %w", err)
 	}
 	defer streamSet.Close()
+	packetSet, err := a.processPackets.Import(child.PacketDescriptors, child.PacketFiles)
+	child.PacketFiles = nil
+	if err != nil {
+		return fmt.Errorf("import hot restart packet connections: %w", err)
+	}
+	defer packetSet.Close()
 	if err := a.runtime.Apply(ctx, Snapshot{}, desired); err != nil {
 		return fmt.Errorf("prepare hot restart child generation: %w", err)
 	}
 	if err := a.processStreams.ValidateImported(); err != nil {
 		return fmt.Errorf("validate hot restart stream listeners: %w", err)
 	}
+	if err := a.processPackets.ValidateImported(); err != nil {
+		return fmt.Errorf("validate hot restart packet connections: %w", err)
+	}
 	if err := child.Ready(); err != nil {
 		return err
 	}
-	if err := child.AwaitActivation(ctx, a.processStreams.ActivateImported); err != nil {
+	if err := child.AwaitActivation(ctx, a.activateHotRestartChildResources); err != nil {
 		return err
 	}
-	if err := child.AwaitAuthority(ctx, nil); err != nil {
+	if err := child.AwaitAuthority(ctx, a.processPackets.TakeAuthorityImported); err != nil {
 		return err
 	}
 	return a.runControlLoop(ctx, desired)
@@ -712,6 +730,10 @@ func (a *App) closeLocalRuntimes() {
 	if a.processStreams != nil {
 		_ = a.processStreams.Close()
 		a.processStreams = nil
+	}
+	if a.processPackets != nil {
+		_ = a.processPackets.Close()
+		a.processPackets = nil
 	}
 	if a.relayTimeoutReset != nil {
 		a.relayTimeoutReset()

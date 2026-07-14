@@ -154,19 +154,32 @@ type PacketBroker struct {
 	received       atomic.Uint64
 	dropped        atomic.Uint64
 
-	mu                  sync.Mutex
-	associations        map[AssociationKey]*PacketEndpoint
-	endpoints           map[*PacketEndpoint]struct{}
-	published           map[*PacketEndpoint]struct{}
-	closed              chan struct{}
-	shutdownOnce        sync.Once
-	shutdownErr         error
-	wg                  sync.WaitGroup
-	beforePacketPublish func(*PacketEndpoint)
-	beforeWritePublish  func(*PacketEndpoint)
-	writeMu             sync.Mutex
-	writeStateMu        sync.Mutex
-	writing             *PacketEndpoint
+	mu                   sync.Mutex
+	associations         map[AssociationKey]*PacketEndpoint
+	endpoints            map[*PacketEndpoint]struct{}
+	published            map[*PacketEndpoint]struct{}
+	closed               chan struct{}
+	shutdownOnce         sync.Once
+	shutdownErr          error
+	wg                   sync.WaitGroup
+	beforePacketPublish  func(*PacketEndpoint)
+	beforeWritePublish   func(*PacketEndpoint)
+	beforeProcessForward func()
+	writeMu              sync.Mutex
+	writeStateMu         sync.Mutex
+	writing              *PacketEndpoint
+	processRegistry      *ProcessPacketRegistry
+	processID            string
+	processForward       packetForwarder
+	forwardAssociations  map[AssociationKey]struct{}
+	processReadMu        sync.Mutex
+	processReadCond      *sync.Cond
+	processReadPaused    bool
+	processReadInFlight  bool
+}
+
+type packetForwarder interface {
+	Send([]byte, net.Addr) error
 }
 
 func ListenPacket(ctx context.Context, network, address string, backlog int, classifiers ...PacketClassifier) (*PacketBroker, error) {
@@ -180,19 +193,25 @@ func ListenPacket(ctx context.Context, network, address string, backlog int, cla
 }
 
 func NewPacketBroker(conn net.PacketConn, network string, classifiers ...PacketClassifier) *PacketBroker {
+	return newPacketBroker(conn, network, classifiers...)
+}
+
+func newPacketBroker(conn net.PacketConn, network string, classifiers ...PacketClassifier) *PacketBroker {
 	if conn == nil {
 		return nil
 	}
 	broker := &PacketBroker{
-		conn:           conn,
-		network:        network,
-		defaultBacklog: 1,
-		classifiers:    append([]PacketClassifier(nil), classifiers...),
-		associations:   make(map[AssociationKey]*PacketEndpoint),
-		endpoints:      make(map[*PacketEndpoint]struct{}),
-		published:      make(map[*PacketEndpoint]struct{}),
-		closed:         make(chan struct{}),
+		conn:                conn,
+		network:             network,
+		defaultBacklog:      1,
+		classifiers:         append([]PacketClassifier(nil), classifiers...),
+		associations:        make(map[AssociationKey]*PacketEndpoint),
+		endpoints:           make(map[*PacketEndpoint]struct{}),
+		published:           make(map[*PacketEndpoint]struct{}),
+		forwardAssociations: make(map[AssociationKey]struct{}),
+		closed:              make(chan struct{}),
 	}
+	broker.processReadCond = sync.NewCond(&broker.processReadMu)
 	broker.wg.Add(1)
 	go broker.readLoop()
 	return broker
@@ -278,10 +297,12 @@ func (b *PacketBroker) Release(key AssociationKey) bool {
 		return false
 	}
 	b.mu.Lock()
-	_, ok := b.associations[key]
+	_, local := b.associations[key]
+	_, forwarded := b.forwardAssociations[key]
 	delete(b.associations, key)
+	delete(b.forwardAssociations, key)
 	b.mu.Unlock()
-	return ok
+	return local || forwarded
 }
 
 func (b *PacketBroker) ReleaseGeneration(generation string) int {
@@ -323,12 +344,18 @@ func (b *PacketBroker) Close() error {
 	}
 	b.shutdown(nil)
 	b.wg.Wait()
+	if b.processRegistry != nil {
+		b.processRegistry.remove(b.processID, b)
+	}
 	return b.shutdownErr
 }
 
 func (b *PacketBroker) shutdown(cause error) {
 	b.shutdownOnce.Do(func() {
 		close(b.closed)
+		b.processReadMu.Lock()
+		b.processReadCond.Broadcast()
+		b.processReadMu.Unlock()
 		b.shutdownErr = errors.Join(cause, b.conn.Close())
 		b.mu.Lock()
 		endpoints := make([]*PacketEndpoint, 0, len(b.endpoints))
@@ -349,8 +376,12 @@ func (b *PacketBroker) readLoop() {
 	buffer := make([]byte, 64*1024)
 	retryAttempt := 0
 	for {
+		if !b.beginProcessPacketRead() {
+			return
+		}
 		n, remote, err := b.conn.ReadFrom(buffer)
 		if err != nil {
+			b.endProcessPacketRead()
 			select {
 			case <-b.closed:
 				return
@@ -371,6 +402,14 @@ func (b *PacketBroker) readLoop() {
 		payload := buffer[:n]
 		metadata := PacketMetadata{Network: b.network, LocalAddr: b.LocalAddr(), RemoteAddr: remote}
 		key := classifyPacket(b.classifiers, payload, metadata)
+		if forwarded, forwardErr := b.forwardPacket(key, payload, remote); forwarded {
+			if forwardErr != nil {
+				b.dropped.Add(1)
+				b.releaseForwardAssociation(key)
+			}
+			b.endProcessPacketRead()
+			continue
+		}
 		endpoint, created := b.endpointFor(key)
 		if endpoint == nil || endpoint.conn.Deliver(payload, remote) != nil {
 			b.dropped.Add(1)
@@ -378,7 +417,126 @@ func (b *PacketBroker) readLoop() {
 				b.releaseIfTarget(key, endpoint)
 			}
 		}
+		b.endProcessPacketRead()
 	}
+}
+
+func (b *PacketBroker) beginProcessPacketRead() bool {
+	b.processReadMu.Lock()
+	defer b.processReadMu.Unlock()
+	for b.processReadPaused {
+		select {
+		case <-b.closed:
+			return false
+		default:
+		}
+		b.processReadCond.Wait()
+	}
+	select {
+	case <-b.closed:
+		return false
+	default:
+	}
+	b.processReadInFlight = true
+	return true
+}
+
+func (b *PacketBroker) endProcessPacketRead() {
+	b.processReadMu.Lock()
+	b.processReadInFlight = false
+	b.processReadCond.Broadcast()
+	b.processReadMu.Unlock()
+}
+
+func (b *PacketBroker) pauseProcessReads(gate processPacketGate) error {
+	if b == nil || gate == nil {
+		return net.ErrClosed
+	}
+	b.processReadMu.Lock()
+	b.processReadPaused = true
+	b.processReadMu.Unlock()
+	if err := gate.Pause(); err != nil {
+		b.processReadMu.Lock()
+		b.processReadPaused = false
+		b.processReadCond.Broadcast()
+		b.processReadMu.Unlock()
+		return err
+	}
+	b.processReadMu.Lock()
+	for b.processReadInFlight {
+		b.processReadCond.Wait()
+	}
+	b.processReadMu.Unlock()
+	return nil
+}
+
+func (b *PacketBroker) resumeProcessReads(gate processPacketGate) error {
+	if b == nil || gate == nil {
+		return net.ErrClosed
+	}
+	if err := gate.Resume(); err != nil {
+		return err
+	}
+	b.processReadMu.Lock()
+	b.processReadPaused = false
+	b.processReadCond.Broadcast()
+	b.processReadMu.Unlock()
+	return nil
+}
+
+func (b *PacketBroker) forwardPacket(key AssociationKey, payload []byte, remote net.Addr) (bool, error) {
+	b.mu.Lock()
+	if b.associations[key] != nil {
+		b.mu.Unlock()
+		return false, nil
+	}
+	forwarder := b.processForward
+	if forwarder == nil {
+		delete(b.forwardAssociations, key)
+		b.mu.Unlock()
+		return false, nil
+	}
+	b.forwardAssociations[key] = struct{}{}
+	hook := b.beforeProcessForward
+	b.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return true, forwarder.Send(payload, remote)
+}
+
+func (b *PacketBroker) releaseForwardAssociation(key AssociationKey) {
+	b.mu.Lock()
+	delete(b.forwardAssociations, key)
+	b.mu.Unlock()
+}
+
+func (b *PacketBroker) startProcessForwarding(forwarder packetForwarder) error {
+	if b == nil || forwarder == nil {
+		return errors.New("packet forwarding target is required")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	select {
+	case <-b.closed:
+		return net.ErrClosed
+	default:
+	}
+	if b.processForward != nil && b.processForward != forwarder {
+		return errors.New("packet forwarding is already active")
+	}
+	b.processForward = forwarder
+	return nil
+}
+
+func (b *PacketBroker) stopProcessForwarding() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.processForward = nil
+	clear(b.forwardAssociations)
+	b.mu.Unlock()
 }
 
 func (b *PacketBroker) endpointFor(key AssociationKey) (*PacketEndpoint, bool) {
