@@ -67,13 +67,15 @@ const (
 )
 
 type GenerationRecord struct {
-	GenerationID   string        `json:"generation_id"`
-	Revision       int64         `json:"revision"`
-	SnapshotDigest string        `json:"snapshot_digest"`
-	Phase          string        `json:"phase"`
-	Lease          RevisionLease `json:"lease"`
-	Acknowledged   bool          `json:"acknowledged"`
-	UpdatedAt      time.Time     `json:"updated_at"`
+	GenerationID        string        `json:"generation_id"`
+	RuntimeGenerationID string        `json:"runtime_generation_id,omitempty"`
+	RuntimeSnapshotHash string        `json:"runtime_snapshot_hash,omitempty"`
+	Revision            int64         `json:"revision"`
+	SnapshotDigest      string        `json:"snapshot_digest"`
+	Phase               string        `json:"phase"`
+	Lease               RevisionLease `json:"lease"`
+	Acknowledged        bool          `json:"acknowledged"`
+	UpdatedAt           time.Time     `json:"updated_at"`
 }
 
 type GenerationJournal struct {

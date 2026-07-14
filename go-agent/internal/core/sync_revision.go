@@ -82,10 +82,26 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err := validateImmutableRevisionDigest(journal, snapshot.Revision, digest); err != nil {
 		return c.recordRuntimeError(err)
 	}
+	runtimeIdentity, managedGeneration, err := c.Runtime.CandidateGenerationIdentity(previousApplied, snapshot)
+	if err != nil {
+		return c.recordRuntimeError(err)
+	}
 	activeDigestMatches := journal.Active != nil && journal.Active.Revision == lease.Revision &&
 		strings.EqualFold(journal.Active.SnapshotDigest, digest)
 	if journal.Active != nil && sameGenerationLease(*journal.Active, lease) &&
 		strings.EqualFold(journal.Active.SnapshotDigest, digest) {
+		identityChanged, identityErr := bindRuntimeGenerationIdentity(journal.Active, runtimeIdentity, managedGeneration)
+		if identityErr != nil {
+			return c.recordRuntimeError(identityErr)
+		}
+		if identityErr := c.validateActiveRuntimeGeneration(*journal.Active); identityErr != nil {
+			return c.recordRuntimeError(identityErr)
+		}
+		if identityChanged {
+			if err := store.SaveGenerationJournal(journal); err != nil {
+				return c.recordRuntimeError(err)
+			}
+		}
 		if journal.Active.Acknowledged {
 			return nil
 		}
@@ -102,23 +118,50 @@ func (c *SyncController) performRevisionSyncPlan(
 		GenerationID: generationID, Revision: lease.Revision, SnapshotDigest: digest,
 		Phase: model.GenerationPhasePrepared, Lease: lease, UpdatedAt: time.Now().UTC(),
 	}
+	if _, err := bindRuntimeGenerationIdentity(&candidate, runtimeIdentity, managedGeneration); err != nil {
+		return c.recordRuntimeError(err)
+	}
 	resumePhase := ""
 	if journal.Candidate != nil && sameGenerationLease(*journal.Candidate, lease) &&
 		strings.EqualFold(journal.Candidate.SnapshotDigest, digest) {
 		candidate = *journal.Candidate
 		resumePhase = candidate.Phase
+		identityChanged, identityErr := bindRuntimeGenerationIdentity(&candidate, runtimeIdentity, managedGeneration)
+		if identityErr != nil {
+			return c.recordRuntimeError(identityErr)
+		}
+		if identityChanged {
+			candidate.UpdatedAt = time.Now().UTC()
+			journal.Candidate = &candidate
+			if err := store.SaveGenerationJournal(journal); err != nil {
+				return c.recordRuntimeError(err)
+			}
+		}
 	} else {
 		journal.Candidate = &candidate
 		if err := store.SaveGenerationJournal(journal); err != nil {
 			return c.recordRuntimeError(err)
 		}
 	}
+	if resumePhase == model.GenerationPhaseStarted && c.runtimeGenerationIsActive(candidate) {
+		candidate.Phase = model.GenerationPhaseCutover
+		candidate.UpdatedAt = time.Now().UTC()
+		journal.Candidate = &candidate
+		if err := store.SaveGenerationJournal(journal); err != nil {
+			return c.recordRuntimeError(err)
+		}
+		resumePhase = model.GenerationPhaseCutover
+	}
+	durableCutover := resumePhase == model.GenerationPhaseCutover
 
-	if resumePhase == model.GenerationPhaseCutover {
+	if durableCutover {
 		applied, loadErr := c.Store.LoadAppliedSnapshot()
 		if loadErr == nil {
 			sameSnapshot, digestErr := sameRevisionSnapshot(applied, snapshot)
 			if digestErr == nil && applied.Revision == lease.Revision && sameSnapshot {
+				if identityErr := c.validateActiveRuntimeGeneration(candidate); identityErr != nil {
+					return c.recordRuntimeError(identityErr)
+				}
 				if err := c.persistRuntimeState(true); err != nil {
 					return c.recordRuntimeError(err)
 				}
@@ -164,6 +207,9 @@ func (c *SyncController) performRevisionSyncPlan(
 			return c.recordRuntimeError(digestErr)
 		}
 		if applied.Revision == lease.Revision && sameSnapshot {
+			if identityErr := c.validateActiveRuntimeGeneration(candidate); identityErr != nil {
+				return c.recordRuntimeError(identityErr)
+			}
 			if err := c.persistRuntimeState(true); err != nil {
 				return c.recordRuntimeError(err)
 			}
@@ -172,11 +218,17 @@ func (c *SyncController) performRevisionSyncPlan(
 	}
 
 	if err := c.Store.SaveDesiredSnapshot(snapshot); err != nil {
+		if durableCutover {
+			return c.recordRuntimeError(err)
+		}
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	if err := c.handlePendingUpdate(ctx, snapshot); err != nil {
 		if errors.Is(err, ErrRestartRequested) {
 			return err
+		}
+		if durableCutover {
+			return c.recordRuntimeError(err)
 		}
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
@@ -184,17 +236,26 @@ func (c *SyncController) performRevisionSyncPlan(
 	previousApplied = c.Runtime.ActiveSnapshot()
 	candidateApplied := snapshot
 	if err := c.Runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
+		if durableCutover {
+			return c.recordRuntimeErrorWithRevision(err, candidate.Revision)
+		}
+		if c.Runtime.UsesGenerationManager() {
+			return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
+		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		if rollbackErr != nil {
 			return c.recordRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidate.Revision)
 		}
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
+	if err := c.validateActiveRuntimeGeneration(candidate); err != nil {
+		return c.recordRuntimeErrorWithRevision(err, candidate.Revision)
+	}
 	candidate.Phase = model.GenerationPhaseCutover
 	candidate.UpdatedAt = time.Now().UTC()
 	journal.Candidate = &candidate
 	if err := store.SaveGenerationJournal(journal); err != nil {
-		if isFilesystemCommitUncertain(err) {
+		if c.Runtime.UsesGenerationManager() || isFilesystemCommitUncertain(err) {
 			return c.recordRuntimeError(err)
 		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
@@ -204,7 +265,7 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	if err := c.Store.SaveAppliedSnapshot(candidateApplied); err != nil {
-		if isFilesystemCommitUncertain(err) {
+		if c.Runtime.UsesGenerationManager() || isFilesystemCommitUncertain(err) {
 			return c.recordRuntimeError(err)
 		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
@@ -214,7 +275,7 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	if err := c.persistRuntimeState(true); err != nil {
-		if isFilesystemCommitUncertain(err) {
+		if c.Runtime.UsesGenerationManager() || isFilesystemCommitUncertain(err) {
 			return c.recordRuntimeError(err)
 		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
@@ -225,6 +286,55 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	return c.finishRevisionAcknowledgement(ctx, client, store, journal, candidate, candidateApplied)
+}
+
+func bindRuntimeGenerationIdentity(record *model.GenerationRecord, identity GenerationIdentity, managed bool) (bool, error) {
+	if record == nil {
+		return false, nil
+	}
+	if !managed {
+		if record.RuntimeGenerationID != "" || record.RuntimeSnapshotHash != "" {
+			return false, errors.New("durable runtime generation identity requires a generation manager")
+		}
+		return false, nil
+	}
+	if identity.ID == "" || identity.Revision != record.Revision || identity.SnapshotHash == "" {
+		return false, errors.New("runtime generation identity is incomplete")
+	}
+	if record.RuntimeGenerationID != "" && record.RuntimeGenerationID != identity.ID {
+		return false, fmt.Errorf("revision %d runtime generation changed from %s to %s", record.Revision, record.RuntimeGenerationID, identity.ID)
+	}
+	if record.RuntimeSnapshotHash != "" && !strings.EqualFold(record.RuntimeSnapshotHash, identity.SnapshotHash) {
+		return false, fmt.Errorf("revision %d runtime snapshot hash changed", record.Revision)
+	}
+	changed := record.RuntimeGenerationID == "" || record.RuntimeSnapshotHash == ""
+	record.RuntimeGenerationID = identity.ID
+	record.RuntimeSnapshotHash = identity.SnapshotHash
+	return changed, nil
+}
+
+func (c *SyncController) validateActiveRuntimeGeneration(record model.GenerationRecord) error {
+	if record.RuntimeGenerationID == "" && record.RuntimeSnapshotHash == "" {
+		return nil
+	}
+	identity, managed := c.Runtime.ActiveGenerationIdentity()
+	if !managed || identity.ID == "" {
+		return errors.New("durable generation record has no active runtime generation")
+	}
+	if identity.ID != record.RuntimeGenerationID || identity.Revision != record.Revision ||
+		!strings.EqualFold(identity.SnapshotHash, record.RuntimeSnapshotHash) {
+		return fmt.Errorf("active runtime generation does not match durable revision %d", record.Revision)
+	}
+	return nil
+}
+
+func (c *SyncController) runtimeGenerationIsActive(record model.GenerationRecord) bool {
+	if record.RuntimeGenerationID == "" || record.RuntimeSnapshotHash == "" {
+		return false
+	}
+	identity, managed := c.Runtime.ActiveGenerationIdentity()
+	return managed && identity.ID == record.RuntimeGenerationID && identity.Revision == record.Revision &&
+		strings.EqualFold(identity.SnapshotHash, record.RuntimeSnapshotHash)
 }
 
 func (c *SyncController) finishRevisionAcknowledgement(
@@ -363,6 +473,25 @@ func validateGenerationJournal(journal model.GenerationJournal) error {
 	}
 	if journal.Version != 1 {
 		return fmt.Errorf("unsupported generation journal version %d", journal.Version)
+	}
+	for _, entry := range []struct {
+		name   string
+		record *model.GenerationRecord
+	}{
+		{name: "active", record: journal.Active},
+		{name: "last-known-good", record: journal.LastKnownGood},
+		{name: "candidate", record: journal.Candidate},
+	} {
+		name, record := entry.name, entry.record
+		if record == nil {
+			continue
+		}
+		generationIDSet := strings.TrimSpace(record.RuntimeGenerationID) != ""
+		snapshotHashSet := strings.TrimSpace(record.RuntimeSnapshotHash) != ""
+		if generationIDSet != snapshotHashSet || generationIDSet != (record.RuntimeGenerationID != "") ||
+			snapshotHashSet != (record.RuntimeSnapshotHash != "") {
+			return fmt.Errorf("%s generation has incomplete runtime identity", name)
+		}
 	}
 	if journal.Active != nil && journal.Active.Phase != model.GenerationPhaseActive {
 		return fmt.Errorf("active generation has invalid phase %q", journal.Active.Phase)

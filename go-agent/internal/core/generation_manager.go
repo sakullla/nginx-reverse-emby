@@ -18,6 +18,12 @@ type GenerationCutover struct {
 	DrainErr error
 }
 
+type GenerationIdentity struct {
+	ID           string
+	Revision     int64
+	SnapshotHash string
+}
+
 // GenerationManager serializes prepare/readiness/cutover. The source owns the
 // single atomic GenerationView slot; the manager retains prior views so a
 // drain owner can release their resources after existing sessions finish.
@@ -38,6 +44,29 @@ type generationSessionRegistrar interface {
 
 func NewGenerationManager(source module.GenerationPreparer) *GenerationManager {
 	return &GenerationManager{source: source}
+}
+
+func (m *GenerationManager) CandidateIdentity(previous, next model.Snapshot) (GenerationIdentity, error) {
+	if m == nil || m.source == nil {
+		return GenerationIdentity{}, errors.New("generation source is not configured")
+	}
+	generationContext, err := module.NewGenerationContext(previous, next)
+	if err != nil {
+		return GenerationIdentity{}, err
+	}
+	return GenerationIdentity{
+		ID:           generationContext.ID(),
+		Revision:     generationContext.Revision(),
+		SnapshotHash: generationContext.SnapshotHash(),
+	}, nil
+}
+
+func (m *GenerationManager) ActiveIdentity() GenerationIdentity {
+	active := m.ActiveGeneration()
+	if active == nil {
+		return GenerationIdentity{}
+	}
+	return GenerationIdentity{ID: active.ID(), Revision: active.Revision(), SnapshotHash: active.SnapshotHash()}
 }
 
 func NewManagedGenerationManager(source module.GenerationPreparer, drain *GenerationDrain, timeout time.Duration) *GenerationManager {

@@ -26,7 +26,8 @@ func TestFilesystemStorePersistsGenerationJournalAndLastKnownGood(t *testing.T) 
 		Version: 1,
 		AgentID: "edge-1",
 		Candidate: &model.GenerationRecord{
-			GenerationID: "generation-7", Revision: 7, SnapshotDigest: "digest-7",
+			GenerationID: "generation-7", RuntimeGenerationID: "runtime-generation-7",
+			RuntimeSnapshotHash: "runtime-hash-7", Revision: 7, SnapshotDigest: "digest-7",
 			Phase: model.GenerationPhaseStarted, Lease: lease, UpdatedAt: time.Now().UTC().Truncate(time.Second),
 		},
 	}
@@ -46,7 +47,10 @@ func TestFilesystemStorePersistsGenerationJournalAndLastKnownGood(t *testing.T) 
 	if err != nil {
 		t.Fatalf("LoadGenerationJournal() error = %v", err)
 	}
-	if gotJournal.Candidate == nil || gotJournal.Candidate.Phase != model.GenerationPhaseStarted || gotJournal.Candidate.Lease.LeaseID != lease.LeaseID {
+	if gotJournal.Candidate == nil || gotJournal.Candidate.Phase != model.GenerationPhaseStarted ||
+		gotJournal.Candidate.Lease.LeaseID != lease.LeaseID ||
+		gotJournal.Candidate.RuntimeGenerationID != journal.Candidate.RuntimeGenerationID ||
+		gotJournal.Candidate.RuntimeSnapshotHash != journal.Candidate.RuntimeSnapshotHash {
 		t.Fatalf("generation journal = %+v, want persisted started candidate", gotJournal)
 	}
 	gotLastKnownGood, err := reopened.LoadLastKnownGoodSnapshot()

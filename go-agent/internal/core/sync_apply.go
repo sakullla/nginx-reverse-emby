@@ -53,15 +53,24 @@ func (c *SyncController) performLegacySyncPlan(ctx context.Context, plan SyncPla
 	candidateApplied := MergeSnapshotPayload(snapshot, previousApplied)
 	if err := c.Runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
 		log.Printf("[agent] runtime apply error at revision %d: %v", candidateApplied.Revision, err)
+		if c.Runtime.UsesGenerationManager() {
+			return c.recordRuntimeErrorWithRevision(err, candidateApplied.Revision)
+		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		return c.recordRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidateApplied.Revision)
 	}
 	if err := c.Store.SaveAppliedSnapshot(candidateApplied); err != nil {
 		log.Printf("[agent] save applied snapshot error at revision %d: %v", candidateApplied.Revision, err)
+		if c.Runtime.UsesGenerationManager() {
+			return c.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
+		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		return c.recordPersistedRuntimeErrorWithRevision(errors.Join(err, rollbackErr), candidateApplied.Revision)
 	}
 	if err := c.persistRuntimeState(true); err != nil {
+		if c.Runtime.UsesGenerationManager() {
+			return err
+		}
 		rollbackErr := c.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		restoreErr := c.Store.SaveAppliedSnapshot(previousApplied)
 		return c.recordPersistedRuntimeErrorWithRevision(errors.Join(err, rollbackErr, restoreErr), candidateApplied.Revision)

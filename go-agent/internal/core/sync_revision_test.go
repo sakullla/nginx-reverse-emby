@@ -12,6 +12,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
 func TestRevisionSyncHeartbeatIsTelemetryOnlyWithoutLease(t *testing.T) {
@@ -74,6 +75,256 @@ func TestRevisionSyncPersistsCutoverBeforeAppliedAcknowledgement(t *testing.T) {
 	)
 	if store.journal.Active == nil || !store.journal.Active.Acknowledged || store.journal.Candidate != nil {
 		t.Fatalf("final journal = %+v, want acknowledged active generation", store.journal)
+	}
+}
+
+func TestRevisionSyncBindsJournalToManagedRuntimeGeneration(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	runtime := newManagedRevisionRuntime(t)
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync() error = %v", err)
+	}
+	identity, ok := runtime.ActiveGenerationIdentity()
+	if !ok || identity.ID == "" || identity.SnapshotHash == "" {
+		t.Fatalf("active generation identity = %+v/%v", identity, ok)
+	}
+	active := store.journal.Active
+	if active == nil || active.RuntimeGenerationID != identity.ID || active.RuntimeSnapshotHash != identity.SnapshotHash || active.Revision != identity.Revision {
+		t.Fatalf("journal active = %+v, want runtime identity %+v", active, identity)
+	}
+	if active.SnapshotDigest != "digest-7" {
+		t.Fatalf("journal control-plane digest = %q, want digest-7", active.SnapshotDigest)
+	}
+	if len(client.starts) != 1 || client.starts[0].GenerationID != active.GenerationID || len(client.reports) != 1 || client.reports[0].GenerationID != active.GenerationID {
+		t.Fatalf("start/report generation IDs = %+v/%+v, want journal operation generation %q", client.starts, client.reports, active.GenerationID)
+	}
+	state, err := store.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState() error = %v", err)
+	}
+	if state.Metadata["generation_id"] != identity.ID || state.Metadata["snapshot_hash"] != identity.SnapshotHash {
+		t.Fatalf("runtime metadata = %+v, want active generation identity", state.Metadata)
+	}
+}
+
+func TestRevisionSyncManagedCutoverRecoversEveryPostPublishPersistenceFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		inject func(*revisionTestStore)
+		clear  func(*revisionTestStore)
+	}{
+		{
+			name:   "cutover journal",
+			inject: func(store *revisionTestStore) { store.failGenerationPhase = model.GenerationPhaseCutover },
+			clear:  func(store *revisionTestStore) { store.failGenerationPhase = "" },
+		},
+		{
+			name:   "applied snapshot",
+			inject: func(store *revisionTestStore) { store.failOnAppliedSave = 1 },
+			clear:  func(store *revisionTestStore) { store.failOnAppliedSave = 0 },
+		},
+		{
+			name:   "applied snapshot uncertain commit",
+			inject: func(store *revisionTestStore) { store.uncertainAppliedSave = true },
+			clear:  func(store *revisionTestStore) { store.uncertainAppliedSave = false },
+		},
+		{
+			name:   "runtime state",
+			inject: func(store *revisionTestStore) { store.failRuntimeState = true },
+			clear:  func(store *revisionTestStore) { store.failRuntimeState = false },
+		},
+		{
+			name:   "last known good",
+			inject: func(store *revisionTestStore) { store.failLastKnownGood = true },
+			clear:  func(store *revisionTestStore) { store.failLastKnownGood = false },
+		},
+		{
+			name:   "active journal",
+			inject: func(store *revisionTestStore) { store.failGenerationPhase = model.GenerationPhaseActive },
+			clear:  func(store *revisionTestStore) { store.failGenerationPhase = "" },
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []string{}
+			store := newRevisionTestStore(&events)
+			tc.inject(store)
+			client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+			firstRuntime := newManagedRevisionRuntime(t)
+			controller := &SyncController{Store: store, Runtime: firstRuntime, SyncClient: client}
+
+			if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err == nil {
+				t.Fatal("PerformSync() error = nil, want injected persistence failure")
+			}
+			if got := firstRuntime.ActiveSnapshot().Revision; got != 7 {
+				t.Fatalf("active revision after persistence failure = %d, want irreversible cutover 7", got)
+			}
+			if len(client.reports) != 0 {
+				t.Fatalf("reports before durable recovery = %+v, want none", client.reports)
+			}
+			if len(client.starts) != 1 {
+				t.Fatalf("start calls before recovery = %d, want 1", len(client.starts))
+			}
+
+			tc.clear(store)
+			restartedRuntime := newManagedRevisionRuntime(t)
+			restartedController := &SyncController{Store: store, Runtime: restartedRuntime, SyncClient: client}
+			if err := restartedController.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+				t.Fatalf("PerformSync(restart) error = %v", err)
+			}
+			if got := restartedRuntime.ActiveSnapshot().Revision; got != 7 {
+				t.Fatalf("restart active revision = %d, want 7", got)
+			}
+			if len(client.starts) != 1 || len(client.reports) != 1 || client.reports[0].Status != "applied" {
+				t.Fatalf("restart start/report = %+v/%+v, want one start and one applied report", client.starts, client.reports)
+			}
+			identity, _ := restartedRuntime.ActiveGenerationIdentity()
+			active := store.journal.Active
+			if active == nil || !active.Acknowledged || active.RuntimeGenerationID != identity.ID || active.RuntimeSnapshotHash != identity.SnapshotHash || store.journal.Candidate != nil {
+				t.Fatalf("recovered journal = %+v, runtime identity = %+v", store.journal, identity)
+			}
+			if store.applied.Revision != 7 || store.lkg.Revision != 7 {
+				t.Fatalf("recovered applied/LKG = %d/%d, want 7/7", store.applied.Revision, store.lkg.Revision)
+			}
+		})
+	}
+}
+
+func TestRevisionSyncManagedCutoverRetryNeverReportsFailedOrRepublishes(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	store.failGenerationPhase = model.GenerationPhaseCutover
+	runtime, tracker := newTrackedManagedRevisionRuntime(t)
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err == nil {
+		t.Fatal("PerformSync() error = nil, want cutover journal failure")
+	}
+	if runtime.ActiveSnapshot().Revision != 7 || tracker.prepares != 1 {
+		t.Fatalf("first cutover active/prepares = %d/%d, want 7/1", runtime.ActiveSnapshot().Revision, tracker.prepares)
+	}
+	if store.journal.Candidate == nil || store.journal.Candidate.Phase != model.GenerationPhaseStarted {
+		t.Fatalf("journal after cutover save failure = %+v, want durable started", store.journal)
+	}
+
+	store.failGenerationPhase = ""
+	store.failOnDesiredSave = store.desiredSaveCount + 1
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err == nil {
+		t.Fatal("PerformSync(retry) error = nil, want desired persistence failure")
+	}
+	if store.journal.Candidate == nil || store.journal.Candidate.Phase != model.GenerationPhaseCutover {
+		t.Fatalf("journal after post-publish retry failure = %+v, want recoverable cutover", store.journal)
+	}
+	if len(client.reports) != 0 {
+		t.Fatalf("post-publish retry reports = %+v, want no false failed report", client.reports)
+	}
+	if tracker.prepares != 1 || tracker.destroys != 0 {
+		t.Fatalf("retry lifecycle prepares/destroys = %d/%d, want 1/0", tracker.prepares, tracker.destroys)
+	}
+
+	store.failOnDesiredSave = 0
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync(recovery) error = %v", err)
+	}
+	if len(client.starts) != 1 || len(client.reports) != 1 || client.reports[0].Status != "applied" {
+		t.Fatalf("recovery start/report = %+v/%+v, want one start and one applied report", client.starts, client.reports)
+	}
+	if tracker.prepares != 1 || tracker.destroys != 0 {
+		t.Fatalf("recovery lifecycle prepares/destroys = %d/%d, want 1/0", tracker.prepares, tracker.destroys)
+	}
+}
+
+func TestRevisionSyncRetriesAcknowledgedJournalWithoutRepublishing(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	store.failGenerationPhase = model.GenerationPhaseActive + ":acknowledged"
+	runtime, tracker := newTrackedManagedRevisionRuntime(t)
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err == nil {
+		t.Fatal("PerformSync() error = nil, want acknowledged journal failure")
+	}
+	if store.journal.Active == nil || store.journal.Active.Acknowledged || len(client.reports) != 1 {
+		t.Fatalf("first acknowledgement journal/reports = %+v/%+v, want unacknowledged active and one applied report", store.journal, client.reports)
+	}
+
+	store.failGenerationPhase = ""
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync(retry) error = %v", err)
+	}
+	if store.journal.Active == nil || !store.journal.Active.Acknowledged || len(client.reports) != 2 {
+		t.Fatalf("retried acknowledgement journal/reports = %+v/%+v, want acknowledged active and idempotent report retry", store.journal, client.reports)
+	}
+	for _, report := range client.reports {
+		if report.Status != "applied" || report.GenerationID != store.journal.Active.GenerationID {
+			t.Fatalf("retried report = %+v, want applied for stable operation generation", report)
+		}
+	}
+	if tracker.prepares != 1 || tracker.destroys != 0 {
+		t.Fatalf("ack retry lifecycle prepares/destroys = %d/%d, want 1/0", tracker.prepares, tracker.destroys)
+	}
+}
+
+func TestRevisionSyncRejectsManagedRuntimeIdentityMismatchWithoutAcknowledgement(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	lease := revisionLease(7, "lease-7", "digest-7")
+	store.journal = model.GenerationJournal{
+		Version: 1,
+		AgentID: "edge-1",
+		Candidate: &model.GenerationRecord{
+			GenerationID: "operation-7", RuntimeGenerationID: "wrong-runtime-generation",
+			RuntimeSnapshotHash: "wrong-runtime-hash", Revision: 7, SnapshotDigest: "digest-7",
+			Phase: model.GenerationPhaseStarted, Lease: lease,
+		},
+	}
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	runtime := newManagedRevisionRuntime(t)
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "runtime generation changed") {
+		t.Fatalf("PerformSync() error = %v, want runtime identity mismatch", err)
+	}
+	if len(client.starts) != 0 || len(client.reports) != 0 || runtime.ActiveSnapshot().Revision != 0 {
+		t.Fatalf("mismatch start/report/active = %d/%d/%d, want no publication or acknowledgement", len(client.starts), len(client.reports), runtime.ActiveSnapshot().Revision)
+	}
+}
+
+func TestLegacySyncManagedRuntimeRetriesPersistenceWithoutRollback(t *testing.T) {
+	store := newSyncControllerStore()
+	previous := model.Snapshot{DesiredVersion: "v6", Revision: 6}
+	next := model.Snapshot{DesiredVersion: "v7", Revision: 7}
+	if err := store.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("seed applied snapshot: %v", err)
+	}
+	store.failOnAppliedSave = 2
+	runtime := newManagedRevisionRuntime(t)
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, previous); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: &syncControllerClient{snapshot: next}}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err == nil {
+		t.Fatal("PerformSync() error = nil, want applied persistence failure")
+	}
+	if runtime.ActiveSnapshot().Revision != 7 || store.applied.Revision != 6 {
+		t.Fatalf("active/applied after failure = %d/%d, want irreversible active 7 and durable applied 6", runtime.ActiveSnapshot().Revision, store.applied.Revision)
+	}
+
+	store.failOnAppliedSave = 0
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync(retry) error = %v", err)
+	}
+	if runtime.ActiveSnapshot().Revision != 7 || store.applied.Revision != 7 {
+		t.Fatalf("active/applied after retry = %d/%d, want 7/7", runtime.ActiveSnapshot().Revision, store.applied.Revision)
 	}
 }
 
@@ -179,6 +430,39 @@ func TestRevisionSyncRejectsRevisionOlderThanStartedCandidate(t *testing.T) {
 	}
 	if len(client.starts) != 0 {
 		t.Fatalf("start calls = %d, want no stale start", len(client.starts))
+	}
+}
+
+func TestRevisionSyncRejectsRevisionOlderThanManagedCutover(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	runtime := newManagedRevisionRuntime(t)
+	snapshot := revisionSnapshot(10)
+	identity, managed, err := runtime.CandidateGenerationIdentity(model.Snapshot{}, snapshot)
+	if err != nil || !managed {
+		t.Fatalf("CandidateGenerationIdentity() = %+v/%v/%v", identity, managed, err)
+	}
+	lease := revisionLease(10, "lease-10", "digest-10")
+	store.journal = model.GenerationJournal{
+		Version: 1, AgentID: "edge-1",
+		Candidate: &model.GenerationRecord{
+			GenerationID: revisionGenerationID(lease), RuntimeGenerationID: identity.ID,
+			RuntimeSnapshotHash: identity.SnapshotHash, Revision: 10, SnapshotDigest: "digest-10",
+			Phase: model.GenerationPhaseCutover, Lease: lease,
+		},
+	}
+	client := &revisionClientStub{events: &events, pull: revisionPull(9, "lease-9", "digest-9")}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	err = controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "stale revision") {
+		t.Fatalf("PerformSync() error = %v, want managed cutover revision floor", err)
+	}
+	if len(client.starts) != 0 || len(client.reports) != 0 || runtime.ActiveSnapshot().Revision != 0 {
+		t.Fatalf("stale cutover start/report/active = %d/%d/%d, want no effects", len(client.starts), len(client.reports), runtime.ActiveSnapshot().Revision)
+	}
+	if store.journal.Candidate == nil || store.journal.Candidate.Phase != model.GenerationPhaseCutover {
+		t.Fatalf("stale pull overwrote cutover journal: %+v", store.journal)
 	}
 }
 
@@ -573,6 +857,51 @@ func TestRevisionSyncRejectsUnknownCandidatePhase(t *testing.T) {
 	}
 }
 
+func TestRevisionSyncRejectsPartialRuntimeGenerationIdentity(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	store.journal = model.GenerationJournal{
+		Version: 1, AgentID: "edge-1",
+		Candidate: &model.GenerationRecord{
+			GenerationID: "operation-7", RuntimeGenerationID: "runtime-7", Revision: 7,
+			SnapshotDigest: "digest-7", Phase: model.GenerationPhaseStarted,
+		},
+	}
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: newManagedRevisionRuntime(t), SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "incomplete runtime identity") {
+		t.Fatalf("PerformSync() error = %v, want partial runtime identity rejection", err)
+	}
+	if len(client.starts) != 0 || len(client.reports) != 0 {
+		t.Fatalf("partial identity start/report = %d/%d, want no remote effects", len(client.starts), len(client.reports))
+	}
+}
+
+func TestRevisionSyncRejectsRuntimeGenerationIdentityWithoutManager(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	lease := revisionLease(7, "lease-7", "digest-7")
+	store.journal = model.GenerationJournal{
+		Version: 1, AgentID: "edge-1",
+		Candidate: &model.GenerationRecord{
+			GenerationID: "operation-7", RuntimeGenerationID: "runtime-7", RuntimeSnapshotHash: "hash-7",
+			Revision: 7, SnapshotDigest: "digest-7", Phase: model.GenerationPhaseStarted, Lease: lease,
+		},
+	}
+	client := &revisionClientStub{events: &events, pull: revisionPull(7, "lease-7", "digest-7")}
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client}
+
+	err := controller.PerformSync(t.Context(), control.SyncRequest{})
+	if err == nil || !strings.Contains(err.Error(), "requires a generation manager") {
+		t.Fatalf("PerformSync() error = %v, want incompatible runtime rejection", err)
+	}
+	if len(client.starts) != 0 || len(client.reports) != 0 || controller.Runtime.ActiveSnapshot().Revision != 0 {
+		t.Fatalf("incompatible runtime start/report/active = %d/%d/%d, want no effects", len(client.starts), len(client.reports), controller.Runtime.ActiveSnapshot().Revision)
+	}
+}
+
 func TestRevisionSyncAppliesFullSnapshotWithoutLegacyMerge(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)
@@ -690,6 +1019,7 @@ type revisionTestStore struct {
 	failRuntimeState     bool
 	uncertainAppliedSave bool
 	failGenerationPhase  string
+	failLastKnownGood    bool
 }
 
 func newRevisionTestStore(events *[]string) *revisionTestStore {
@@ -736,19 +1066,109 @@ func (s *revisionTestStore) SaveGenerationJournal(journal model.GenerationJourna
 	if phase == s.failGenerationPhase {
 		return errors.New("failed journal persistence")
 	}
-	s.journal = journal
+	s.journal = cloneGenerationJournal(journal)
 	return nil
 }
 
 func (s *revisionTestStore) LoadGenerationJournal() (model.GenerationJournal, error) {
-	return s.journal, nil
+	return cloneGenerationJournal(s.journal), nil
+}
+
+func cloneGenerationJournal(journal model.GenerationJournal) model.GenerationJournal {
+	cloned := journal
+	if journal.Active != nil {
+		record := *journal.Active
+		cloned.Active = &record
+	}
+	if journal.Candidate != nil {
+		record := *journal.Candidate
+		cloned.Candidate = &record
+	}
+	if journal.LastKnownGood != nil {
+		record := *journal.LastKnownGood
+		cloned.LastKnownGood = &record
+	}
+	return cloned
 }
 
 func (s *revisionTestStore) SaveLastKnownGoodSnapshot(snapshot model.Snapshot) error {
+	if s.failLastKnownGood {
+		return errors.New("last known good persistence fail")
+	}
 	s.lkg = snapshot
 	s.record(fmt.Sprintf("lkg:%d", snapshot.Revision))
 	return nil
 }
+
+func newManagedRevisionRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	runtime, _ := newTrackedManagedRevisionRuntime(t)
+	return runtime
+}
+
+func newTrackedManagedRevisionRuntime(t *testing.T) (*Runtime, *revisionGenerationTracker) {
+	t.Helper()
+	tracker := &revisionGenerationTracker{}
+	registry := module.NewRegistry()
+	if err := registry.Register(revisionGenerationModule{tracker: tracker}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	return NewRuntimeWithGenerationManager(NewGenerationManager(registry)), tracker
+}
+
+type revisionGenerationTracker struct {
+	prepares int
+	commits  int
+	destroys int
+}
+
+type revisionGenerationModule struct {
+	tracker *revisionGenerationTracker
+}
+
+func (revisionGenerationModule) Name() string { return "revision-generation" }
+
+func (revisionGenerationModule) Descriptor() module.ModuleDescriptor {
+	return module.ModuleDescriptor{Name: "revision-generation"}
+}
+
+func (revisionGenerationModule) RegisterProviders(module.ProviderRegistry) error      { return nil }
+func (revisionGenerationModule) Capabilities(module.SnapshotView) []module.Capability { return nil }
+func (revisionGenerationModule) Stop(context.Context) error                           { return nil }
+
+func (m revisionGenerationModule) Apply(ctx context.Context, req module.ApplyRequest) error {
+	tx, err := m.Prepare(ctx, req)
+	if err != nil || tx == nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (m revisionGenerationModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	if m.tracker != nil {
+		m.tracker.prepares++
+	}
+	return revisionGenerationTransaction{tracker: m.tracker}, nil
+}
+
+type revisionGenerationTransaction struct {
+	tracker *revisionGenerationTracker
+}
+
+func (revisionGenerationTransaction) Ready(context.Context) error { return nil }
+func (tx revisionGenerationTransaction) Destroy(context.Context) error {
+	if tx.tracker != nil {
+		tx.tracker.destroys++
+	}
+	return nil
+}
+func (tx revisionGenerationTransaction) Commit() error {
+	if tx.tracker != nil {
+		tx.tracker.commits++
+	}
+	return nil
+}
+func (revisionGenerationTransaction) Rollback() error { return nil }
 
 func (s *revisionTestStore) LoadLastKnownGoodSnapshot() (model.Snapshot, error) {
 	return s.lkg, nil

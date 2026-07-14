@@ -43,6 +43,25 @@ func NewRuntimeWithGenerationManager(manager *GenerationManager) *Runtime {
 	return runtime
 }
 
+func (r *Runtime) UsesGenerationManager() bool {
+	return r != nil && r.generations != nil
+}
+
+func (r *Runtime) CandidateGenerationIdentity(previous, next model.Snapshot) (GenerationIdentity, bool, error) {
+	if !r.UsesGenerationManager() {
+		return GenerationIdentity{}, false, nil
+	}
+	identity, err := r.generations.CandidateIdentity(previous, next)
+	return identity, true, err
+}
+
+func (r *Runtime) ActiveGenerationIdentity() (GenerationIdentity, bool) {
+	if !r.UsesGenerationManager() {
+		return GenerationIdentity{}, false
+	}
+	return r.generations.ActiveIdentity(), true
+}
+
 func newRuntimeWithActivator(act Activator) *Runtime {
 	return NewRuntimeWithActivator(act)
 }
