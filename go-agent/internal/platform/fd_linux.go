@@ -22,7 +22,19 @@ func ProcessAlive(pid int) bool {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	if err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return true
+	}
+	end := strings.LastIndexByte(string(stat), ')')
+	if end < 0 {
+		return true
+	}
+	fields := strings.Fields(string(stat[end+1:]))
+	return len(fields) == 0 || fields[0] != "Z"
 }
 
 func ProcessIdentity(pid int) (string, bool) {

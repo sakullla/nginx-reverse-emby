@@ -585,7 +585,7 @@ func TestAuthorityJournalRejectsTokenlessVersionThreeRecord(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalRecoveryDoesNotFallbackWhenProcessIdentityLookupFails(t *testing.T) {
+func TestAuthorityJournalRecoveryRejectsUnknownProcessIdentity(t *testing.T) {
 	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 	journal.requireProcessToken = true
 	journal.processIdentity = func(pid int) (string, bool) {
@@ -615,14 +615,65 @@ func TestAuthorityJournalRecoveryDoesNotFallbackWhenProcessIdentityLookupFails(t
 		aliveCalled = true
 		return true
 	})
+	if err == nil {
+		t.Fatalf("Recover() succeeded after process identity lookup failed; owner = %q, record = %+v", owner, record)
+	}
+	if owner != AuthorityOwnerNone {
+		t.Fatalf("Recover() owner = %q, want %q after identity lookup failure", owner, AuthorityOwnerNone)
+	}
+	if !aliveCalled {
+		t.Fatal("Recover() did not distinguish a dead process from an unknown live process")
+	}
+}
+
+func TestAuthorityJournalBeginOwnedRejectsUnknownExistingOwners(t *testing.T) {
+	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
+	journal.requireProcessToken = true
+	journal.processIdentity = func(pid int) (string, bool) {
+		switch pid {
+		case 100:
+			return "parent-token", true
+		case 200:
+			return "child-token", true
+		default:
+			return "", false
+		}
+	}
+	identity := testIdentity()
+	if err := journal.BeginOwned(identity, 100, func(int) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.AttachChild(identity, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Advance(identity, 200, AuthorityPhaseReady); err != nil {
+		t.Fatal(err)
+	}
+	before, err := journal.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owner != AuthorityOwnerNone {
-		t.Fatalf("Recover() owner = %q, want %q after identity lookup failure; record = %+v", owner, AuthorityOwnerNone, record)
+
+	journal.processIdentity = func(pid int) (string, bool) {
+		if pid == 300 {
+			return "replacement-token", true
+		}
+		return "", false
 	}
-	if aliveCalled {
-		t.Fatal("Recover() fell back to raw PID liveness after process identity lookup failed")
+	replacement := identity
+	replacement.Revision++
+	replacement.GenerationID = "generation-18"
+	replacement.LeaseID = "lease-18"
+	replacement.LaunchEpoch = "launch-18"
+	if err := journal.BeginOwned(replacement, 300, func(int) bool { return true }); err == nil {
+		t.Fatal("BeginOwned() replaced a journal whose existing owner identities were temporarily unavailable")
+	}
+	after, err := journal.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("failed takeover changed authority journal: before = %+v, after = %+v", before, after)
 	}
 }
 

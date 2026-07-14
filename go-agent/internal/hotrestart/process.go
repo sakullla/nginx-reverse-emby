@@ -131,8 +131,7 @@ func (j *FileAuthorityJournal) BeginOwned(identity Identity, parentPID int, aliv
 			recovered.Phase == AuthorityPhaseParent && recovered.ChildPID == 0 && !recovered.LaunchPending
 		childCanLaunch := owner == AuthorityOwnerChild && recovered.ChildPID == parentPID &&
 			recovered.Phase == AuthorityPhaseChild && !recovered.LaunchPending
-		orphanCanLaunch := owner == AuthorityOwnerNone && !j.processOwnerAlive(recovered.ParentPID, recovered.ParentToken, alive) &&
-			!j.processOwnerAlive(recovered.ChildPID, recovered.ChildToken, alive)
+		orphanCanLaunch := owner == AuthorityOwnerNone
 		if !parentCanLaunch && !childCanLaunch && !orphanCanLaunch {
 			return errors.New("current process does not own a launchable hot restart authority journal")
 		}
@@ -272,8 +271,14 @@ func (j *FileAuthorityJournal) recoverLocked(identity Identity, alive func(int) 
 	if record.Identity != identity || record.Version != AuthorityJournalVersion {
 		return AuthorityOwnerNone, record, errors.New("hot restart authority journal identity or version mismatch")
 	}
-	parentAlive := j.processOwnerAlive(record.ParentPID, record.ParentToken, alive)
-	childAlive := j.processOwnerAlive(record.ChildPID, record.ChildToken, alive)
+	parentAlive, err := j.processOwnerAlive(record.ParentPID, record.ParentToken, alive)
+	if err != nil {
+		return AuthorityOwnerNone, record, fmt.Errorf("resolve hot restart parent process incarnation: %w", err)
+	}
+	childAlive, err := j.processOwnerAlive(record.ChildPID, record.ChildToken, alive)
+	if err != nil {
+		return AuthorityOwnerNone, record, fmt.Errorf("resolve hot restart child process incarnation: %w", err)
+	}
 	switch {
 	case parentAlive && record.Phase == AuthorityPhaseChild && childAlive:
 		return AuthorityOwnerChild, record, nil
@@ -307,18 +312,24 @@ func (j *FileAuthorityJournal) captureProcessIdentity(pid int) (string, bool) {
 	return token, ok && strings.TrimSpace(token) != ""
 }
 
-func (j *FileAuthorityJournal) processOwnerAlive(pid int, token string, alive func(int) bool) bool {
+func (j *FileAuthorityJournal) processOwnerAlive(pid int, token string, alive func(int) bool) (bool, error) {
 	if pid <= 0 {
-		return false
+		return false, nil
 	}
 	if strings.TrimSpace(token) != "" {
 		current, ok := j.captureProcessIdentity(pid)
-		return ok && current == token
+		if ok {
+			return current == token, nil
+		}
+		if j.requireProcessToken && alive(pid) {
+			return false, errors.New("process incarnation is unavailable for a live process")
+		}
+		return false, nil
 	}
 	if j.requireProcessToken {
-		return false
+		return false, errors.New("process incarnation is missing")
 	}
-	return alive(pid)
+	return alive(pid), nil
 }
 
 type authorityLockRecord struct {
