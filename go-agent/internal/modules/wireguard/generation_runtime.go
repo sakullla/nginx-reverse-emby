@@ -97,12 +97,6 @@ func (f *wireGuardGenerationFactory) beginDrain() {
 	}
 }
 
-func (f *wireGuardGenerationFactory) publish() {
-	for _, endpoint := range f.endpointsSnapshot() {
-		endpoint.publish()
-	}
-}
-
 type wireGuardLeasedRuntime struct {
 	RuntimeHandle
 	lease *wireGuardBindLease
@@ -224,7 +218,6 @@ func (t *wireGuardGenerationTransaction) publish() error {
 	t.module.runtime = t.runtime
 	t.module.generationFactory = t.factory
 	t.module.mu.Unlock()
-	t.factory.publish()
 	t.published = true
 	return nil
 }

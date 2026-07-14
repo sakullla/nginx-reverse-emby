@@ -79,6 +79,28 @@ func TestWireGuardGenerationStableBindPublicationAndAssociationPinning(t *testin
 	if retired != firstView {
 		t.Fatal("second publication did not retire the first generation")
 	}
+	thirdSnapshot := wireGuardGenerationSnapshot(3, 41)
+	thirdSnapshot.WireGuardProfiles[0].Peers[0].PersistentKeepaliveSeconds = 30
+	directTx, err := owner.Prepare(context.Background(), module.ApplyRequest{Previous: secondSnapshot, Next: thirdSnapshot})
+	if err != nil {
+		t.Fatalf("Prepare(direct commit candidate) error = %v", err)
+	}
+	thirdTx := directTx.(*wireGuardGenerationTransaction)
+	if err := thirdTx.Commit(); err != nil {
+		t.Fatalf("Commit(direct candidate) error = %v", err)
+	}
+	thirdEndpoint := factory.runtimeAt(t, 2).endpoint
+	directDrops := thirdEndpoint.unpublishedSendCount()
+	directRemote := wireGuardGenerationEndpoint(31007)
+	if err := thirdEndpoint.Send([][]byte{wireGuardGenerationInitiation(79)}, directRemote); err != nil {
+		t.Fatalf("direct candidate Send() error = %v", err)
+	}
+	if thirdEndpoint.unpublishedSendCount() != directDrops+1 || thirdEndpoint.binding.remoteContainsLocked(directRemote.DstToString(), thirdEndpoint) {
+		t.Fatal("direct Commit bypassed active GenerationView admission")
+	}
+	if err := thirdTx.Rollback(); err != nil {
+		t.Fatalf("Rollback(direct candidate) error = %v", err)
+	}
 	remoteThree := wireGuardGenerationEndpoint(31003)
 	firstEndpoint.binding.dispatch(wireGuardGenerationInitiation(14), remoteThree)
 	assertWireGuardGenerationPacket(t, secondEndpoint, wireGuardMessageInitiation)
@@ -93,6 +115,9 @@ func TestWireGuardGenerationStableBindPublicationAndAssociationPinning(t *testin
 	firstEndpoint.binding.dispatch(wireGuardGenerationResponse(91, 77), remoteOne)
 	assertWireGuardGenerationPacket(t, secondEndpoint, wireGuardMessageResponse)
 	assertWireGuardGenerationNoPacket(t, firstEndpoint, "active same-remote response")
+	firstEndpoint.binding.dispatch(wireGuardGenerationTransport(999), remoteOne)
+	assertWireGuardGenerationNoPacket(t, firstEndpoint, "unknown receiver on shared remote")
+	assertWireGuardGenerationNoPacket(t, secondEndpoint, "unknown receiver on shared remote")
 	if err := firstEndpoint.Send([][]byte{wireGuardGenerationInitiation(78)}, remoteOne); err != nil {
 		t.Fatalf("old associated Send(initiation) error = %v", err)
 	}
@@ -130,6 +155,8 @@ func TestWireGuardGenerationStableBindPublicationAndAssociationPinning(t *testin
 	if !firstEndpoint.binding.remoteContainsLocked(remoteOne.DstToString(), secondEndpoint) {
 		t.Fatal("destroying old endpoint removed the active generation remote mapping")
 	}
+	firstEndpoint.binding.dispatch(wireGuardGenerationTransport(78), remoteOne)
+	assertWireGuardGenerationNoPacket(t, secondEndpoint, "destroyed receiver on active remote")
 	firstEndpoint.binding.dispatch(wireGuardGenerationInitiation(16), remoteOne)
 	assertWireGuardGenerationPacket(t, secondEndpoint, wireGuardMessageInitiation)
 
@@ -343,7 +370,7 @@ func TestWireGuardGenerationPeerRemovalAndRotationRevokeOldProfile(t *testing.T)
 func TestWireGuardGenerationLifecycleFailuresAreObservable(t *testing.T) {
 	t.Run("drain activation", func(t *testing.T) {
 		registry := module.NewRegistry()
-		factory := &wireGuardGenerationTestFactory{}
+		factory := &wireGuardGenerationTestFactory{closeErrorProfileID: 92}
 		owner := NewManagedModuleWithConfig(factory.create, ModuleConfig{GenerationSelector: registry})
 		defer owner.Stop(context.Background())
 		first := wireGuardGenerationSnapshot(2, 91)
@@ -369,7 +396,7 @@ func TestWireGuardGenerationLifecycleFailuresAreObservable(t *testing.T) {
 
 	t.Run("deferred session registration", func(t *testing.T) {
 		registry := module.NewRegistry()
-		factory := &wireGuardGenerationTestFactory{}
+		factory := &wireGuardGenerationTestFactory{closeErrorProfileID: 92}
 		controller := generation.NewDrainController(nil)
 		owner := NewManagedModuleWithConfig(factory.create, ModuleConfig{
 			GenerationSelector: registry,
@@ -386,6 +413,9 @@ func TestWireGuardGenerationLifecycleFailuresAreObservable(t *testing.T) {
 		tx.FinalizeCommitSuccess()
 		if err := tx.CommitSuccessError(); err == nil || !strings.Contains(err.Error(), "registrar unavailable") {
 			t.Fatalf("CommitSuccessError() = %v, want registrar failure", err)
+		}
+		if err := tx.CommitSuccessError(); !strings.Contains(err.Error(), "forced runtime close failure") {
+			t.Fatalf("CommitSuccessError() = %v, want combined runtime cleanup failure", err)
 		}
 		if !runtime.closedState() {
 			t.Fatal("registrar failure did not close the affected profile runtime")
@@ -414,6 +444,33 @@ func TestWireGuardGenerationLifecycleFailuresAreObservable(t *testing.T) {
 			t.Fatal("retired runtime destroy failure was not recorded on the module")
 		}
 	})
+}
+
+func TestWireGuardGenerationBrokerCloseCombinesEndpointAndPhysicalErrors(t *testing.T) {
+	runtimeErr := errors.New("endpoint runtime close failed")
+	physicalErr := errors.New("physical bind close failed")
+	broker := &wireGuardBindBroker{
+		physical:  wireGuardGenerationFailingBind{closeErr: physicalErr},
+		endpoints: make(map[*wireGuardBindEndpoint]struct{}),
+		receivers: make(map[uint32]*wireGuardBindEndpoint),
+		remotes:   make(map[string][]*wireGuardBindEndpoint),
+	}
+	endpoint := &wireGuardBindEndpoint{
+		binding:      broker,
+		opened:       true,
+		done:         make(chan struct{}),
+		associations: make(map[string]*wireGuardAssociation),
+	}
+	broker.endpoints[endpoint] = struct{}{}
+	endpoint.setRuntimeCloser(func() error {
+		_ = endpoint.shutdown()
+		endpoint.finishAssociations()
+		return runtimeErr
+	})
+	err := broker.close()
+	if !errors.Is(err, runtimeErr) || !errors.Is(err, physicalErr) {
+		t.Fatalf("broker close error = %v, want endpoint and physical failures", err)
+	}
 }
 
 func TestWireGuardGenerationPrepareFailureReleasesAllBindLeases(t *testing.T) {
@@ -646,3 +703,20 @@ type wireGuardGenerationFailingRegistrar struct{ err error }
 func (r wireGuardGenerationFailingRegistrar) RegisterSession(string, generation.EntityKey, string, generation.Session) (*generation.SessionHandle, error) {
 	return nil, r.err
 }
+
+type wireGuardGenerationFailingBind struct{ closeErr error }
+
+func (wireGuardGenerationFailingBind) Open(uint16) ([]conn.ReceiveFunc, uint16, error) {
+	return nil, 0, nil
+}
+func (b wireGuardGenerationFailingBind) Close() error                     { return b.closeErr }
+func (wireGuardGenerationFailingBind) SetMark(uint32) error               { return nil }
+func (wireGuardGenerationFailingBind) Send([][]byte, conn.Endpoint) error { return nil }
+func (wireGuardGenerationFailingBind) ParseEndpoint(value string) (conn.Endpoint, error) {
+	address, err := netip.ParseAddrPort(value)
+	if err != nil {
+		return nil, err
+	}
+	return &conn.StdNetEndpoint{AddrPort: address}, nil
+}
+func (wireGuardGenerationFailingBind) BatchSize() int { return 1 }

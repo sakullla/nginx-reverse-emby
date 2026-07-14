@@ -95,7 +95,6 @@ type wireGuardBindEndpoint struct {
 	opened            bool
 	closed            bool
 	draining          bool
-	published         bool
 	registrationReady bool
 	nextSessionID     uint64
 	unpublishedSends  uint64
@@ -310,12 +309,13 @@ func (b *wireGuardBindBroker) dispatch(payload []byte, networkEndpoint conn.Endp
 	endpoint := (*wireGuardBindEndpoint)(nil)
 	if hasReceiver {
 		endpoint = b.receivers[receiver]
-	}
-	if endpoint == nil && remote != "" {
-		endpoint = b.remoteEndpointLocked(remote)
-	}
-	if endpoint == nil && messageType == wireGuardMessageInitiation && b.endpointUsableLocked(selected) {
-		endpoint = selected
+	} else if messageType == wireGuardMessageInitiation {
+		if remote != "" {
+			endpoint = b.remoteEndpointLocked(remote)
+		}
+		if endpoint == nil && b.endpointUsableLocked(selected) {
+			endpoint = selected
+		}
 	}
 	if endpoint == nil || !b.endpointUsableLocked(endpoint) {
 		b.mu.Unlock()
@@ -350,10 +350,7 @@ func (b *wireGuardBindBroker) send(endpoint *wireGuardBindEndpoint, bufs [][]byt
 		return net.ErrClosed
 	}
 	knownRemote := remote != "" && b.remoteContainsLocked(remote, endpoint)
-	endpoint.mu.Lock()
-	explicitlyPublished := endpoint.published
-	endpoint.mu.Unlock()
-	if !explicitlyPublished && selected != endpoint && !knownRemote {
+	if selected != endpoint && !knownRemote {
 		endpoint.mu.Lock()
 		endpoint.unpublishedSends++
 		endpoint.mu.Unlock()
@@ -494,10 +491,11 @@ func (b *wireGuardBindBroker) close() error {
 	b.remotes = make(map[string][]*wireGuardBindEndpoint)
 	b.remoteCount = 0
 	b.mu.Unlock()
+	var closeErr error
 	for _, endpoint := range endpoints {
-		_ = endpoint.forceClose()
+		closeErr = errors.Join(closeErr, endpoint.forceClose())
 	}
-	return b.physical.Close()
+	return errors.Join(closeErr, b.physical.Close())
 }
 
 func (e *wireGuardBindEndpoint) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -720,8 +718,7 @@ func (e *wireGuardBindEndpoint) touchAssociation(remote string) error {
 	e.mu.Unlock()
 	if registrationReady {
 		if err := association.register(); err != nil {
-			_ = e.forceClose()
-			return err
+			return errors.Join(err, e.forceClose())
 		}
 	}
 	return nil
@@ -733,18 +730,6 @@ func (e *wireGuardBindEndpoint) beginDrain() {
 	}
 	e.mu.Lock()
 	e.draining = true
-	e.published = false
-	e.mu.Unlock()
-}
-
-func (e *wireGuardBindEndpoint) publish() {
-	if e == nil {
-		return
-	}
-	e.mu.Lock()
-	if !e.closed {
-		e.published = true
-	}
 	e.mu.Unlock()
 }
 
@@ -765,8 +750,7 @@ func (e *wireGuardBindEndpoint) enableRegistration() error {
 	e.mu.Unlock()
 	for _, association := range associations {
 		if err := association.register(); err != nil {
-			_ = e.forceClose()
-			return err
+			return errors.Join(err, e.forceClose())
 		}
 	}
 	return nil
