@@ -507,6 +507,25 @@ func TestAuthorityJournalSerializesCrossProcessOperations(t *testing.T) {
 	}
 }
 
+func TestAuthorityJournalRecoversLockCrashBeforeHolderWrite(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-process lock liveness is supported on linux")
+	}
+	journalPath := filepath.Join(t.TempDir(), "authority.json")
+	journal := NewFileAuthorityJournal(journalPath)
+	if err := journal.Begin(testIdentity(), os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHotRestartHelperProcess$")
+	cmd.Env = setEnv(os.Environ(), "NRE_HOT_RESTART_CRASH_LOCK_JOURNAL", journalPath)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("lock crash helper exited successfully")
+	}
+	if _, err := NewFileAuthorityJournal(journalPath).Load(); err != nil {
+		t.Fatalf("journal remained wedged after partial lock crash: %v", err)
+	}
+}
+
 func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 	identity := testIdentity()
 	for _, tc := range []struct {
@@ -526,6 +545,12 @@ func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 }
 
 func TestHotRestartHelperProcess(t *testing.T) {
+	if journalPath := os.Getenv("NRE_HOT_RESTART_CRASH_LOCK_JOURNAL"); journalPath != "" {
+		journal := NewFileAuthorityJournal(journalPath)
+		journal.lockCreated = func() { os.Exit(51) }
+		_, _ = journal.Load()
+		os.Exit(52)
+	}
 	if journalPath := os.Getenv("NRE_HOT_RESTART_LOCK_JOURNAL"); journalPath != "" {
 		runJournalLockHelper(journalPath)
 		return

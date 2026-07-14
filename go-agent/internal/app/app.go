@@ -40,6 +40,15 @@ type Updater interface {
 	Activate(stagedPath string, desiredVersion string) error
 }
 
+type hotRestartProcess interface {
+	Activate(context.Context) error
+	TransferAuthority(context.Context) error
+	Abort() error
+}
+
+type hotRestartStartFunc func(context.Context, hotrestart.Launch) (hotRestartProcess, error)
+type hotRestartDrainFunc func(context.Context, hotrestart.Identity) error
+
 type App struct {
 	cfg                Config
 	syncClient         SyncClient
@@ -56,6 +65,10 @@ type App struct {
 	relayTimeoutReset  func()
 	closeOnce          sync.Once
 	syncMu             sync.Mutex
+	runCtxMu           sync.RWMutex
+	runCtx             context.Context
+	hotRestartStart    hotRestartStartFunc
+	hotRestartDrain    hotRestartDrainFunc
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -299,15 +312,16 @@ func New(cfg Config) (*App, error) {
 		cfg,
 		st,
 		client,
-		core.NewUpdateManager(
-			cfg.DataDir,
-			executablePath,
-			os.Args,
-			os.Environ(),
-			execReplacement,
-			nil,
-		),
+		nil,
 		taskClient,
+	)
+	app.updater = core.NewUpdateManager(
+		cfg.DataDir,
+		executablePath,
+		os.Args,
+		os.Environ(),
+		app.hotRestartReplacement,
+		nil,
 	)
 	app.setConfiguredModules(modules)
 	app.relayTimeoutReset = resetRelayTimeouts
@@ -380,7 +394,12 @@ func newAppWithAllDeps(
 		syncClient: client,
 		updater:    updater,
 		taskClient: taskClient,
+		runCtx:     context.Background(),
 	}
+	app.hotRestartStart = func(ctx context.Context, launch hotrestart.Launch) (hotRestartProcess, error) {
+		return (hotrestart.Supervisor{}).Start(ctx, launch)
+	}
+	app.hotRestartDrain = app.drainHotRestartParent
 	app.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(nil))
 	return app
 }
@@ -464,6 +483,7 @@ func (a *App) Run(ctx context.Context) error {
 	defer func() {
 		_ = a.Close()
 	}()
+	a.setRunContext(ctx)
 
 	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {
@@ -496,6 +516,7 @@ func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSes
 	defer func() {
 		_ = a.Close()
 	}()
+	a.setRunContext(ctx)
 	desired, err := a.store.LoadDesiredSnapshot()
 	if err != nil {
 		return err

@@ -71,8 +71,9 @@ type AuthorityRecord struct {
 }
 
 type FileAuthorityJournal struct {
-	path string
-	mu   sync.Mutex
+	path        string
+	mu          sync.Mutex
+	lockCreated func()
 }
 
 func NewFileAuthorityJournal(path string) *FileAuthorityJournal {
@@ -273,7 +274,7 @@ type authorityLockRecord struct {
 	Token string `json:"token"`
 }
 
-func (j *FileAuthorityJournal) withLock(action func() error) error {
+func (j *FileAuthorityJournal) withLock(action func() error) (err error) {
 	if j == nil || strings.TrimSpace(j.path) == "" || j.path == "." {
 		return errors.New("hot restart authority journal path is required")
 	}
@@ -283,7 +284,10 @@ func (j *FileAuthorityJournal) withLock(action func() error) error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(action(), release())
+	defer func() {
+		err = errors.Join(err, release())
+	}()
+	return action()
 }
 
 func (j *FileAuthorityJournal) acquireProcessLock() (func() error, error) {
@@ -315,6 +319,9 @@ func (j *FileAuthorityJournal) acquireProcessLock() (func() error, error) {
 	for {
 		file, openErr := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if openErr == nil {
+			if j.lockCreated != nil {
+				j.lockCreated()
+			}
 			writeErr := func() error {
 				if _, err := file.Write(payload); err != nil {
 					return err
@@ -344,8 +351,19 @@ func (j *FileAuthorityJournal) acquireProcessLock() (func() error, error) {
 		}
 		current, readErr := os.ReadFile(lockPath)
 		var existing authorityLockRecord
-		if readErr == nil && json.Unmarshal(current, &existing) == nil && existing.PID > 0 && !platform.ProcessAlive(existing.PID) {
-			_ = os.Remove(lockPath)
+		decodeErr := json.Unmarshal(current, &existing)
+		if readErr != nil || decodeErr != nil || existing.PID <= 0 || strings.TrimSpace(existing.Token) == "" {
+			if removeErr := os.Remove(lockPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				_ = releaseGuard()
+				return nil, errors.Join(readErr, decodeErr, removeErr)
+			}
+			continue
+		}
+		if !platform.ProcessAlive(existing.PID) {
+			if removeErr := os.Remove(lockPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				_ = releaseGuard()
+				return nil, removeErr
+			}
 			continue
 		}
 		if time.Now().After(deadline) {
@@ -562,8 +580,8 @@ func (s Supervisor) Start(ctx context.Context, launch Launch) (*ChildProcess, er
 	cmd.Stderr = launch.Stderr
 	if err := cmd.Start(); err != nil {
 		closePipes()
-		_ = journal.CancelLaunch(launch.Identity, os.Getpid())
-		return nil, err
+		cancelErr := journal.CancelLaunch(launch.Identity, os.Getpid())
+		return nil, errors.Join(err, cancelErr)
 	}
 	_ = eventWriter.Close()
 	_ = commandReader.Close()
@@ -773,6 +791,14 @@ func (p *ChildProcess) waitFor(ctx context.Context, expected messageType) error 
 		}
 		return validateMessage(result.message, expected, p.identity)
 	case <-p.done:
+		select {
+		case result := <-p.events:
+			if result.err == nil {
+				return validateMessage(result.message, expected, p.identity)
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		if err := p.Wait(); err != nil {
 			return fmt.Errorf("hot restart child exited: %w", err)
 		}

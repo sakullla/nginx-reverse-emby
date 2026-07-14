@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
@@ -13,6 +15,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	stdruntime "runtime"
 	"strings"
@@ -305,6 +309,157 @@ func TestHotRestartChildIdentityMustMatchDesiredSnapshotAndJournal(t *testing.T)
 			}
 		})
 	}
+}
+
+func TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority(t *testing.T) {
+	store, err := core.NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := Snapshot{Revision: 18, DesiredVersion: "2.0.0"}
+	if err := store.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatal(err)
+	}
+	journal := model.GenerationJournal{Version: 1, Candidate: &model.GenerationRecord{
+		GenerationID: "attempt-generation-18", RuntimeGenerationID: "runtime-generation-18",
+		Revision: 18, SnapshotDigest: strings.Repeat("b", 64), Phase: model.GenerationPhaseStarted,
+		Lease: model.RevisionLease{Revision: 18, LeaseID: "lease-18"},
+	}}
+	if err := store.SaveGenerationJournal(journal); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	process := &recordingHotRestartProcess{order: &order}
+	app := &App{cfg: Config{DataDir: t.TempDir()}, store: store, runCtx: t.Context()}
+	app.hotRestartStart = func(_ context.Context, launch hotrestart.Launch) (hotRestartProcess, error) {
+		order = append(order, "start")
+		if launch.Binary != "/staged/nre-agent" || launch.Identity.Revision != 18 || launch.Identity.GenerationID != "runtime-generation-18" ||
+			launch.Identity.LeaseID != "lease-18" || launch.Identity.SnapshotDigest != strings.Repeat("b", 64) {
+			t.Fatalf("launch = %+v", launch)
+		}
+		if launch.AuthorityJournal == "" {
+			t.Fatal("authority journal path is empty")
+		}
+		return process, nil
+	}
+	app.hotRestartDrain = func(context.Context, hotrestart.Identity) error {
+		order = append(order, "drain")
+		return nil
+	}
+
+	err = app.hotRestartReplacement("/staged/nre-agent", []string{"/staged/nre-agent", "serve"}, []string{"NRE_AGENT_VERSION=2.0.0"})
+	if !errors.Is(err, core.ErrRestartRequested) {
+		t.Fatalf("hotRestartReplacement() error = %v, want restart requested", err)
+	}
+	if want := []string{"start", "activate", "drain", "authority"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("replacement order = %v, want %v", order, want)
+	}
+}
+
+func TestNewUpdateManagerUsesHotRestartReplacement(t *testing.T) {
+	if stdruntime.GOOS != "linux" || (stdruntime.GOARCH != "amd64" && stdruntime.GOARCH != "arm64") {
+		t.Skip("hot upgrade packages are supported on linux amd64/arm64")
+	}
+	dataDir := t.TempDir()
+	app, err := New(Config{
+		AgentID: "agent", AgentName: "agent", MasterURL: "https://master.example.com",
+		AgentToken: "token", CurrentVersion: "1.0.0", DataDir: dataDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+	store := app.store.(*core.Filesystem)
+	if err := store.SaveDesiredSnapshot(Snapshot{Revision: 18, DesiredVersion: "2.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveGenerationJournal(model.GenerationJournal{Version: 1, Candidate: &model.GenerationRecord{
+		GenerationID: "generation-18", Revision: 18, SnapshotDigest: strings.Repeat("b", 64),
+		Phase: model.GenerationPhaseStarted, Lease: model.RevisionLease{Revision: 18, LeaseID: "lease-18"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	app.hotRestartStart = func(context.Context, hotrestart.Launch) (hotRestartProcess, error) {
+		order = append(order, "start")
+		return &recordingHotRestartProcess{order: &order}, nil
+	}
+	app.hotRestartDrain = func(context.Context, hotrestart.Identity) error {
+		order = append(order, "drain")
+		return nil
+	}
+	payload := []byte("replacement-agent")
+	sourcePath := filepath.Join(t.TempDir(), "nre-agent")
+	if err := os.WriteFile(sourcePath, payload, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	stagedPath, err := app.updater.Stage(t.Context(), model.VersionPackage{
+		URL: "file://" + filepath.ToSlash(sourcePath), SHA256: hex.EncodeToString(digest[:]),
+		Platform: "linux-" + stdruntime.GOARCH, Filename: "nre-agent-linux-" + stdruntime.GOARCH, Size: int64(len(payload)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.updater.Activate(stagedPath, "2.0.0"); !errors.Is(err, core.ErrRestartRequested) {
+		t.Fatalf("production updater Activate() error = %v", err)
+	}
+	if want := []string{"start", "activate", "drain", "authority"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("production updater order = %v, want %v", order, want)
+	}
+}
+
+func TestHotRestartReplacementAbortsAndRetainsParentOnFailure(t *testing.T) {
+	store, err := core.NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDesiredSnapshot(Snapshot{Revision: 18}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveGenerationJournal(model.GenerationJournal{Version: 1, Candidate: &model.GenerationRecord{
+		GenerationID: "generation-18", Revision: 18, SnapshotDigest: strings.Repeat("b", 64),
+		Phase: model.GenerationPhaseStarted, Lease: model.RevisionLease{Revision: 18, LeaseID: "lease-18"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	process := &recordingHotRestartProcess{order: &order, activateErr: errors.New("child activation failed")}
+	app := &App{cfg: Config{DataDir: t.TempDir()}, store: store, runCtx: t.Context()}
+	app.hotRestartStart = func(context.Context, hotrestart.Launch) (hotRestartProcess, error) {
+		order = append(order, "start")
+		return process, nil
+	}
+	err = app.hotRestartReplacement("/staged/nre-agent", nil, nil)
+	if err == nil || errors.Is(err, core.ErrRestartRequested) || !strings.Contains(err.Error(), "child activation failed") {
+		t.Fatalf("hotRestartReplacement() error = %v", err)
+	}
+	if want := []string{"start", "activate", "abort"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("failure order = %v, want %v", order, want)
+	}
+}
+
+type recordingHotRestartProcess struct {
+	order        *[]string
+	activateErr  error
+	authorityErr error
+}
+
+func (p *recordingHotRestartProcess) Activate(context.Context) error {
+	*p.order = append(*p.order, "activate")
+	return p.activateErr
+}
+
+func (p *recordingHotRestartProcess) TransferAuthority(context.Context) error {
+	*p.order = append(*p.order, "authority")
+	return p.authorityErr
+}
+
+func (p *recordingHotRestartProcess) Abort() error {
+	*p.order = append(*p.order, "abort")
+	return nil
 }
 
 func containsString(values []string, expected string) bool {
