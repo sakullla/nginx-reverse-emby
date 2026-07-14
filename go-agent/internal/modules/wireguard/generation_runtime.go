@@ -3,8 +3,10 @@ package wireguard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
@@ -95,6 +97,12 @@ func (f *wireGuardGenerationFactory) beginDrain() {
 	}
 }
 
+func (f *wireGuardGenerationFactory) publish() {
+	for _, endpoint := range f.endpointsSnapshot() {
+		endpoint.publish()
+	}
+}
+
 type wireGuardLeasedRuntime struct {
 	RuntimeHandle
 	lease *wireGuardBindLease
@@ -163,6 +171,7 @@ type wireGuardGenerationTransaction struct {
 	published          bool
 	destroyed          bool
 	finalized          bool
+	finalizeErr        error
 }
 
 func (m *Module) prepareGeneration(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
@@ -215,6 +224,7 @@ func (t *wireGuardGenerationTransaction) publish() error {
 	t.module.runtime = t.runtime
 	t.module.generationFactory = t.factory
 	t.module.mu.Unlock()
+	t.factory.publish()
 	t.published = true
 	return nil
 }
@@ -247,28 +257,69 @@ func (t *wireGuardGenerationTransaction) Destroy(context.Context) error {
 }
 
 func (t *wireGuardGenerationTransaction) FinalizeCommitSuccess() {
-	if t == nil || !t.published || t.finalized {
+	if t == nil || !t.published || t.finalized || t.destroyed {
 		return
 	}
 	installed := true
+	var lifecycleErr error
 	if t.module != nil && t.module.manageDrain && t.module.drain != nil {
-		_ = t.module.drain.Activate(context.Background(), generation.Generation{
+		previousGenerationID := t.module.drain.Snapshot().ActiveGenerationID
+		activateErr := t.module.drain.Activate(context.Background(), generation.Generation{
 			ID: t.generationID, Revision: t.generationRevision, Resource: wireGuardDrainResource{runtime: t.runtime},
 		}, t.entityChanges, t.module.drainTimeout)
+		if activateErr != nil {
+			lifecycleErr = fmt.Errorf("wireguard generation drain activation: %w", activateErr)
+		}
+		if cleanupErr := wireGuardDrainCleanupError(t.module.drain, previousGenerationID); cleanupErr != nil {
+			lifecycleErr = errors.Join(lifecycleErr, cleanupErr)
+		}
 		installed = wireGuardDrainGenerationIsActive(t.module.drain, t.generationID, t.generationRevision)
 		if installed {
 			for _, endpoint := range t.factory.endpointsSnapshot() {
-				endpoint.enableRegistration()
+				if err := endpoint.enableRegistration(); err != nil {
+					lifecycleErr = errors.Join(lifecycleErr, fmt.Errorf("wireguard generation session registration: %w", err))
+				}
 			}
 		}
 	}
 	if !installed {
+		t.finalizeErr = lifecycleErr
+		if t.finalizeErr == nil {
+			t.finalizeErr = errors.New("wireguard generation drain lifecycle was not installed")
+		}
+		t.finalizeErr = errors.Join(t.finalizeErr, t.Rollback())
+		if t.module != nil {
+			t.module.recordGenerationLifecycleError(t.finalizeErr)
+		}
 		return
 	}
 	t.finalized = true
+	t.finalizeErr = lifecycleErr
+	if t.module != nil {
+		t.module.recordGenerationLifecycleError(lifecycleErr)
+	}
 	if t.previousFactory != nil {
 		t.previousFactory.beginDrain()
 	}
+}
+
+func wireGuardDrainCleanupError(controller *generation.DrainController, generationID string) error {
+	if controller == nil || generationID == "" {
+		return nil
+	}
+	for _, status := range controller.Snapshot().Generations {
+		if status.GenerationID == generationID && status.CleanupError != "" {
+			return fmt.Errorf("wireguard retired generation %s cleanup: %s", generationID, status.CleanupError)
+		}
+	}
+	return nil
+}
+
+func (t *wireGuardGenerationTransaction) CommitSuccessError() error {
+	if t == nil {
+		return nil
+	}
+	return t.finalizeErr
 }
 
 func (f *wireGuardGenerationFactory) endpointsSnapshot() []*wireGuardBindEndpoint {
@@ -323,11 +374,26 @@ func wireGuardProfileEntityChanges(previous, next []model.WireGuardProfile) []ge
 			changes = append(changes, generation.EntityChange{Entity: entity, Action: generation.EntityDeleted})
 		case profile.Enabled && !nextProfile.Enabled:
 			changes = append(changes, generation.EntityChange{Entity: entity, Action: generation.EntityDisabled})
+		case wireGuardProfileRequiresImmediateRevoke(profile, nextProfile):
+			changes = append(changes, generation.EntityChange{Entity: entity, Action: generation.EntityDeleted})
 		case !reflect.DeepEqual(profile, nextProfile):
 			changes = append(changes, generation.EntityChange{Entity: entity, Action: generation.EntityModified})
 		}
 	}
 	return changes
+}
+
+func wireGuardProfileRequiresImmediateRevoke(previous, next model.WireGuardProfile) bool {
+	nextPeers := make(map[string]struct{}, len(next.Peers))
+	for _, peer := range next.Peers {
+		nextPeers[strings.TrimSpace(peer.PublicKey)] = struct{}{}
+	}
+	for _, peer := range previous.Peers {
+		if _, ok := nextPeers[strings.TrimSpace(peer.PublicKey)]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 func wireGuardProfileEntityKey(profile model.WireGuardProfile) generation.EntityKey {

@@ -61,15 +61,16 @@ type wireGuardBindBroker struct {
 	key      string
 	physical conn.Bind
 
-	mu         sync.Mutex
-	opened     bool
-	closed     bool
-	port       uint16
-	actualPort uint16
-	refs       int
-	endpoints  map[*wireGuardBindEndpoint]struct{}
-	receivers  map[uint32]*wireGuardBindEndpoint
-	remotes    map[string]*wireGuardBindEndpoint
+	mu          sync.Mutex
+	opened      bool
+	closed      bool
+	port        uint16
+	actualPort  uint16
+	refs        int
+	endpoints   map[*wireGuardBindEndpoint]struct{}
+	receivers   map[uint32]*wireGuardBindEndpoint
+	remotes     map[string][]*wireGuardBindEndpoint
+	remoteCount int
 }
 
 type wireGuardBindLease struct {
@@ -94,8 +95,10 @@ type wireGuardBindEndpoint struct {
 	opened            bool
 	closed            bool
 	draining          bool
+	published         bool
 	registrationReady bool
 	nextSessionID     uint64
+	unpublishedSends  uint64
 	closeRuntime      func() error
 	receive           chan wireGuardInboundPacket
 	done              chan struct{}
@@ -146,7 +149,7 @@ func (m *wireGuardIngressManager) acquire(generationID string, cfg Config, regis
 			physical:  newWireGuardBind(cfg.BindAddresses),
 			endpoints: make(map[*wireGuardBindEndpoint]struct{}),
 			receivers: make(map[uint32]*wireGuardBindEndpoint),
-			remotes:   make(map[string]*wireGuardBindEndpoint),
+			remotes:   make(map[string][]*wireGuardBindEndpoint),
 		}
 		m.bindings[key] = binding
 	}
@@ -157,7 +160,6 @@ func (m *wireGuardIngressManager) acquire(generationID string, cfg Config, regis
 		registrar:         registrar,
 		registrationReady: registrationReady,
 		receive:           make(chan wireGuardInboundPacket, wireGuardBindBacklog),
-		done:              make(chan struct{}),
 		associations:      make(map[string]*wireGuardAssociation),
 	}
 	binding.mu.Lock()
@@ -222,7 +224,7 @@ func (l *wireGuardBindLease) release() error {
 	var releaseErr error
 	l.once.Do(func() {
 		if l.endpoint != nil {
-			releaseErr = l.endpoint.Close()
+			releaseErr = l.endpoint.shutdown()
 		}
 		if l.binding == nil || l.manager == nil {
 			return
@@ -310,7 +312,7 @@ func (b *wireGuardBindBroker) dispatch(payload []byte, networkEndpoint conn.Endp
 		endpoint = b.receivers[receiver]
 	}
 	if endpoint == nil && remote != "" {
-		endpoint = b.remotes[remote]
+		endpoint = b.remoteEndpointLocked(remote)
 	}
 	if endpoint == nil && messageType == wireGuardMessageInitiation && b.endpointUsableLocked(selected) {
 		endpoint = selected
@@ -341,30 +343,32 @@ func (b *wireGuardBindBroker) send(endpoint *wireGuardBindEndpoint, bufs [][]byt
 		return net.ErrClosed
 	}
 	remote := networkEndpoint.DstToString()
+	selected := b.manager.currentEndpoint(b.key)
 	b.mu.Lock()
 	if !b.endpointUsableLocked(endpoint) {
 		b.mu.Unlock()
 		return net.ErrClosed
 	}
-	var mappedRemote bool
-	if remote != "" {
-		existing := b.remotes[remote]
-		if existing != nil && existing != endpoint {
-			b.mu.Unlock()
-			return errors.New("wireguard remote is pinned to another generation")
-		}
-		if existing == nil && len(b.remotes) >= wireGuardAssociationLimit {
-			b.mu.Unlock()
-			return errWireGuardAssociationLimit
-		}
-		b.remotes[remote] = endpoint
-		mappedRemote = existing == nil
+	knownRemote := remote != "" && b.remoteContainsLocked(remote, endpoint)
+	endpoint.mu.Lock()
+	explicitlyPublished := endpoint.published
+	endpoint.mu.Unlock()
+	if !explicitlyPublished && selected != endpoint && !knownRemote {
+		endpoint.mu.Lock()
+		endpoint.unpublishedSends++
+		endpoint.mu.Unlock()
+		b.mu.Unlock()
+		return nil
 	}
 	newReceivers := make([]uint32, 0, len(bufs))
 	seenReceivers := make(map[uint32]struct{}, len(bufs))
 	for _, payload := range bufs {
 		if sender, ok := wireGuardPacketSender(payload); ok {
-			if _, exists := b.receivers[sender]; exists {
+			if owner, exists := b.receivers[sender]; exists {
+				if owner != endpoint {
+					b.mu.Unlock()
+					return errors.New("wireguard receiver index is owned by another generation")
+				}
 				continue
 			}
 			if _, exists := seenReceivers[sender]; exists {
@@ -375,11 +379,18 @@ func (b *wireGuardBindBroker) send(endpoint *wireGuardBindEndpoint, bufs [][]byt
 		}
 	}
 	if len(b.receivers)+len(newReceivers) > wireGuardAssociationLimit {
-		if mappedRemote && b.remotes[remote] == endpoint {
-			delete(b.remotes, remote)
-		}
 		b.mu.Unlock()
 		return errWireGuardAssociationLimit
+	}
+	mappedRemote := false
+	if remote != "" && !knownRemote {
+		if b.remoteCount >= wireGuardAssociationLimit {
+			b.mu.Unlock()
+			return errWireGuardAssociationLimit
+		}
+		b.remotes[remote] = append(b.remotes[remote], endpoint)
+		b.remoteCount++
+		mappedRemote = true
 	}
 	for _, receiver := range newReceivers {
 		b.receivers[receiver] = endpoint
@@ -388,8 +399,8 @@ func (b *wireGuardBindBroker) send(endpoint *wireGuardBindEndpoint, bufs [][]byt
 	if remote != "" {
 		if err := endpoint.touchAssociation(remote); err != nil {
 			b.mu.Lock()
-			if mappedRemote && b.remotes[remote] == endpoint {
-				delete(b.remotes, remote)
+			if mappedRemote {
+				b.removeRemoteEndpointLocked(remote, endpoint)
 			}
 			for _, receiver := range newReceivers {
 				if b.receivers[receiver] == endpoint {
@@ -403,6 +414,50 @@ func (b *wireGuardBindBroker) send(endpoint *wireGuardBindEndpoint, bufs [][]byt
 	return b.physical.Send(bufs, networkEndpoint)
 }
 
+func (e *wireGuardBindEndpoint) unpublishedSendCount() uint64 {
+	if e == nil {
+		return 0
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.unpublishedSends
+}
+
+func (b *wireGuardBindBroker) remoteEndpointLocked(remote string) *wireGuardBindEndpoint {
+	for _, endpoint := range b.remotes[remote] {
+		if b.endpointUsableLocked(endpoint) {
+			return endpoint
+		}
+	}
+	return nil
+}
+
+func (b *wireGuardBindBroker) remoteContainsLocked(remote string, endpoint *wireGuardBindEndpoint) bool {
+	for _, owner := range b.remotes[remote] {
+		if owner == endpoint {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *wireGuardBindBroker) removeRemoteEndpointLocked(remote string, endpoint *wireGuardBindEndpoint) {
+	owners := b.remotes[remote]
+	for index, owner := range owners {
+		if owner != endpoint {
+			continue
+		}
+		owners = append(owners[:index], owners[index+1:]...)
+		b.remoteCount--
+		if len(owners) == 0 {
+			delete(b.remotes, remote)
+		} else {
+			b.remotes[remote] = owners
+		}
+		return
+	}
+}
+
 func (b *wireGuardBindBroker) releaseEndpoint(endpoint *wireGuardBindEndpoint) {
 	if b == nil || endpoint == nil {
 		return
@@ -414,10 +469,8 @@ func (b *wireGuardBindBroker) releaseEndpoint(endpoint *wireGuardBindEndpoint) {
 			delete(b.receivers, receiver)
 		}
 	}
-	for remote, owner := range b.remotes {
-		if owner == endpoint {
-			delete(b.remotes, remote)
-		}
+	for remote := range b.remotes {
+		b.removeRemoteEndpointLocked(remote, endpoint)
 	}
 	b.mu.Unlock()
 }
@@ -438,7 +491,8 @@ func (b *wireGuardBindBroker) close() error {
 	}
 	b.endpoints = make(map[*wireGuardBindEndpoint]struct{})
 	b.receivers = make(map[uint32]*wireGuardBindEndpoint)
-	b.remotes = make(map[string]*wireGuardBindEndpoint)
+	b.remotes = make(map[string][]*wireGuardBindEndpoint)
+	b.remoteCount = 0
 	b.mu.Unlock()
 	for _, endpoint := range endpoints {
 		_ = endpoint.forceClose()
@@ -460,24 +514,36 @@ func (e *wireGuardBindEndpoint) Open(port uint16) ([]conn.ReceiveFunc, uint16, e
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
 	e.opened = true
+	done := make(chan struct{})
+	e.done = done
 	e.mu.Unlock()
 	actual, err := e.binding.open(port)
 	if err != nil {
 		e.mu.Lock()
 		e.opened = false
+		closeDone := false
+		if e.done == done {
+			e.done = nil
+			closeDone = true
+		}
 		e.mu.Unlock()
+		if closeDone {
+			close(done)
+		}
 		return nil, 0, err
 	}
-	return []conn.ReceiveFunc{e.receiveFunc}, actual, nil
+	return []conn.ReceiveFunc{func(packets [][]byte, sizes []int, endpoints []conn.Endpoint) (int, error) {
+		return e.receiveFunc(done, packets, sizes, endpoints)
+	}}, actual, nil
 }
 
-func (e *wireGuardBindEndpoint) receiveFunc(packets [][]byte, sizes []int, endpoints []conn.Endpoint) (int, error) {
+func (e *wireGuardBindEndpoint) receiveFunc(done <-chan struct{}, packets [][]byte, sizes []int, endpoints []conn.Endpoint) (int, error) {
 	if len(packets) == 0 || len(sizes) == 0 || len(endpoints) == 0 {
 		return 0, errors.New("wireguard receive buffers are empty")
 	}
 	var first wireGuardInboundPacket
 	select {
-	case <-e.done:
+	case <-done:
 		return 0, net.ErrClosed
 	case first = <-e.receive:
 	}
@@ -501,13 +567,14 @@ func (e *wireGuardBindEndpoint) copyPacket(index int, packet wireGuardInboundPac
 
 func (e *wireGuardBindEndpoint) deliver(packet wireGuardInboundPacket) {
 	e.mu.Lock()
-	closed := e.closed
+	closed := e.closed || !e.opened
+	done := e.done
 	e.mu.Unlock()
 	if closed {
 		return
 	}
 	select {
-	case <-e.done:
+	case <-done:
 	case e.receive <- packet:
 	default:
 	}
@@ -517,11 +584,35 @@ func (e *wireGuardBindEndpoint) Close() error {
 	if e == nil {
 		return nil
 	}
+	e.mu.Lock()
+	if !e.opened {
+		e.mu.Unlock()
+		return nil
+	}
+	e.opened = false
+	done := e.done
+	e.done = nil
+	e.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
+	return nil
+}
+
+func (e *wireGuardBindEndpoint) shutdown() error {
+	if e == nil {
+		return nil
+	}
 	e.closeOnce.Do(func() {
 		e.mu.Lock()
 		e.closed = true
-		close(e.done)
+		e.opened = false
+		done := e.done
+		e.done = nil
 		e.mu.Unlock()
+		if done != nil {
+			close(done)
+		}
 		if e.binding != nil {
 			e.binding.releaseEndpoint(e)
 		}
@@ -548,7 +639,7 @@ func (e *wireGuardBindEndpoint) forceClose() error {
 	if closeRuntime != nil {
 		return closeRuntime()
 	}
-	err := e.Close()
+	err := e.shutdown()
 	e.finishAssociations()
 	return err
 }
@@ -642,17 +733,29 @@ func (e *wireGuardBindEndpoint) beginDrain() {
 	}
 	e.mu.Lock()
 	e.draining = true
+	e.published = false
 	e.mu.Unlock()
 }
 
-func (e *wireGuardBindEndpoint) enableRegistration() {
+func (e *wireGuardBindEndpoint) publish() {
 	if e == nil {
 		return
 	}
 	e.mu.Lock()
+	if !e.closed {
+		e.published = true
+	}
+	e.mu.Unlock()
+}
+
+func (e *wireGuardBindEndpoint) enableRegistration() error {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
 	if e.registrationReady {
 		e.mu.Unlock()
-		return
+		return nil
 	}
 	e.registrationReady = true
 	associations := make([]*wireGuardAssociation, 0, len(e.associations))
@@ -663,9 +766,10 @@ func (e *wireGuardBindEndpoint) enableRegistration() {
 	for _, association := range associations {
 		if err := association.register(); err != nil {
 			_ = e.forceClose()
-			return
+			return err
 		}
 	}
+	return nil
 }
 
 func (a *wireGuardAssociation) register() error {

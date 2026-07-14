@@ -23,6 +23,7 @@ type Module struct {
 	drain             *generation.DrainController
 	drainTimeout      time.Duration
 	manageDrain       bool
+	lifecycleErr      error
 }
 
 func NewModule(runtime *Runtime) *Module {
@@ -110,6 +111,11 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	if finalizer, ok := transaction.(interface{ FinalizeCommitSuccess() }); ok {
 		finalizer.FinalizeCommitSuccess()
 	}
+	if reporter, ok := transaction.(interface{ CommitSuccessError() error }); ok {
+		if err := reporter.CommitSuccessError(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -163,6 +169,24 @@ func (m *Module) SessionController() *generation.DrainController {
 		return nil
 	}
 	return m.drain
+}
+
+func (m *Module) LastGenerationLifecycleError() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lifecycleErr
+}
+
+func (m *Module) recordGenerationLifecycleError(err error) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.lifecycleErr = err
+	m.mu.Unlock()
 }
 
 func (m *Module) runtimeForAgent(agentID string, profileID int) (RuntimeHandle, error) {
