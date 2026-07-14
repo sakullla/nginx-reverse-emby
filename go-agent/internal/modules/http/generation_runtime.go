@@ -38,11 +38,12 @@ type HTTPGenerationSelector interface {
 }
 
 type httpIngressManager struct {
-	mu           sync.Mutex
-	bindings     map[string]*httpIngressBinding
-	selector     HTTPGenerationSelector
-	legacyActive atomic.Pointer[Runtime]
-	closed       bool
+	mu             sync.Mutex
+	bindings       map[string]*httpIngressBinding
+	selector       HTTPGenerationSelector
+	processStreams *ingress.ProcessStreamRegistry
+	legacyActive   atomic.Pointer[Runtime]
+	closed         bool
 }
 
 type httpIngressBinding struct {
@@ -71,6 +72,15 @@ type httpIngressActivation struct {
 
 func newHTTPIngressManager() *httpIngressManager {
 	return &httpIngressManager{bindings: make(map[string]*httpIngressBinding)}
+}
+
+func (m *Module) SetProcessStreamRegistry(registry *ingress.ProcessStreamRegistry) {
+	if m == nil || m.ingress == nil {
+		return
+	}
+	m.ingress.mu.Lock()
+	m.ingress.processStreams = registry
+	m.ingress.mu.Unlock()
 }
 
 func (m *httpIngressManager) currentRuntime() *Runtime {
@@ -121,19 +131,38 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		m.mu.Unlock()
 		return nil, net.ErrClosed
 	}
+	if m.processStreams != nil && m.processStreams.ImportPending() && (spec.wireGuardProfileID != nil || http3Enabled && spec.scheme == "https") {
+		m.mu.Unlock()
+		return nil, errors.New("HTTP packet or WireGuard ingress cannot join stream-only hot restart")
+	}
 	binding := m.bindings[spec.bindingKey]
 	if binding == nil {
-		listener, err := listenRuntimeSpecTCP(ctx, spec, providers)
+		var stream *ingress.StreamBroker
+		var err error
+		if m.processStreams != nil && spec.wireGuardProfileID == nil {
+			stream, err = m.processStreams.NewBroker(ctx, "http:"+spec.bindingKey, func(ctx context.Context) (net.Listener, error) {
+				return listenRuntimeSpecTCP(ctx, spec, providers)
+			})
+		} else {
+			var listener net.Listener
+			listener, err = listenRuntimeSpecTCP(ctx, spec, providers)
+			if err == nil {
+				stream = ingress.NewStreamBroker(listener)
+				if stream == nil {
+					_ = listener.Close()
+					err = errors.New("create HTTP stream broker")
+				}
+			}
+		}
 		if err != nil {
 			m.mu.Unlock()
 			return nil, err
 		}
 		binding = &httpIngressBinding{
 			key:    spec.bindingKey,
-			stream: ingress.NewStreamBroker(listener),
+			stream: stream,
 		}
 		if binding.stream == nil {
-			_ = listener.Close()
 			m.mu.Unlock()
 			return nil, errors.New("create HTTP stream broker")
 		}

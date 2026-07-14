@@ -607,6 +607,32 @@ func (p *recordingHotRestartProcess) Abort() error {
 	return nil
 }
 
+type recordingProcessStreamAuthority struct{ order *[]string }
+
+func (a recordingProcessStreamAuthority) Pause() error {
+	*a.order = append(*a.order, "pause")
+	return nil
+}
+
+func (a recordingProcessStreamAuthority) Resume() error {
+	*a.order = append(*a.order, "resume")
+	return nil
+}
+
+func TestHotRestartStreamActivationAbortsChildBeforeParentResume(t *testing.T) {
+	var order []string
+	process := &hotRestartStreamProcess{
+		hotRestartProcess: &recordingHotRestartProcess{order: &order, activateErr: errors.New("activation failed")},
+		parent:            recordingProcessStreamAuthority{order: &order},
+	}
+	if err := process.Activate(t.Context()); err == nil {
+		t.Fatal("Activate() succeeded")
+	}
+	if want := []string{"pause", "activate", "abort", "resume"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("activation failure order = %v, want %v", order, want)
+	}
+}
+
 func mustHotRestartSnapshotDigest(t *testing.T, snapshot Snapshot) string {
 	t.Helper()
 	digest, err := hotRestartSnapshotDigest(snapshot)

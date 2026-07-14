@@ -69,6 +69,8 @@ type StreamBroker struct {
 	shutdownErr         error
 	wg                  sync.WaitGroup
 	beforeStreamDeliver func(*StreamEndpoint)
+	processRegistry     *ProcessStreamRegistry
+	processID           string
 }
 
 func ListenStream(ctx context.Context, network, address string, backlog int) (*StreamBroker, error) {
@@ -82,9 +84,14 @@ func ListenStream(ctx context.Context, network, address string, backlog int) (*S
 }
 
 func NewStreamBroker(listener net.Listener) *StreamBroker {
+	return newStreamBroker(listener, true)
+}
+
+func newStreamBroker(listener net.Listener, active bool) *StreamBroker {
 	if listener == nil {
 		return nil
 	}
+	listener = newProcessStreamListener(listener, active)
 	broker := &StreamBroker{
 		listener:       listener,
 		defaultBacklog: 1,
@@ -190,6 +197,9 @@ func (b *StreamBroker) Close() error {
 	}
 	b.shutdown(nil)
 	b.wg.Wait()
+	if b.processRegistry != nil {
+		b.processRegistry.remove(b.processID, b)
+	}
 	return b.shutdownErr
 }
 

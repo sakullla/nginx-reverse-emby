@@ -7,6 +7,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
@@ -72,6 +73,7 @@ type App struct {
 	hotRestartStart        hotRestartStartFunc
 	hotRestartDrain        hotRestartDrainFunc
 	hotRestartDrainTimeout time.Duration
+	processStreams         *ingress.ProcessStreamRegistry
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -160,12 +162,13 @@ func backendCacheConfigFromAppConfig(cfg Config) model.BackendCacheConfig {
 }
 
 type configuredModules struct {
-	registry    *agentmodule.Registry
-	diagnostics *modulediagnostics.Module
-	traffic     core.TrafficReporter
-	hostMetrics core.HostMetricsReporter
-	certReports core.ManagedCertificateReporter
-	generations *core.GenerationManager
+	registry       *agentmodule.Registry
+	diagnostics    *modulediagnostics.Module
+	traffic        core.TrafficReporter
+	hostMetrics    core.HostMetricsReporter
+	certReports    core.ManagedCertificateReporter
+	generations    *core.GenerationManager
+	processStreams *ingress.ProcessStreamRegistry
 }
 
 func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (configuredModules, error) {
@@ -195,14 +198,21 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		AgentID: cfg.AgentID, AgentName: cfg.AgentName,
 		GenerationSelector: generations, SessionRegistrar: generations, ExternalDrainLifecycle: true,
 	}
+	processStreams := ingress.NewProcessStreamRegistry()
+	httpModule := modulehttp.NewModule(httpConfig)
+	httpModule.SetProcessStreamRegistry(processStreams)
+	relayModule := modulerelay.NewModule(relayConfig)
+	relayModule.SetProcessStreamRegistry(processStreams)
+	l4Module := modulel4.NewModule(l4Config)
+	l4Module.SetProcessStreamRegistry(processStreams)
 	modules := []agentmodule.Module{
 		certModule,
 		diagnosticModule,
 		moduleegress.NewModule(nil),
-		modulehttp.NewModule(httpConfig),
+		httpModule,
 		configuredGenerationWireGuardModule(cfg, generations, generations),
-		modulerelay.NewModule(relayConfig),
-		modulel4.NewModule(l4Config),
+		relayModule,
+		l4Module,
 		trafficModule,
 	}
 	for _, mod := range modules {
@@ -217,12 +227,13 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		return configuredModules{}, err
 	}
 	return configuredModules{
-		registry:    registry,
-		diagnostics: diagnosticModule,
-		traffic:     trafficModule,
-		hostMetrics: modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
-		certReports: certModule,
-		generations: generations,
+		registry:       registry,
+		diagnostics:    diagnosticModule,
+		traffic:        trafficModule,
+		hostMetrics:    modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
+		certReports:    certModule,
+		generations:    generations,
+		processStreams: processStreams,
 	}, nil
 }
 
@@ -392,16 +403,15 @@ func newAppWithAllDeps(
 		cfg.HeartbeatInterval = model.Default().HeartbeatInterval
 	}
 	app := &App{
-		cfg:        cfg,
-		store:      st,
-		syncClient: client,
-		updater:    updater,
-		taskClient: taskClient,
-		runCtx:     context.Background(),
+		cfg:            cfg,
+		store:          st,
+		syncClient:     client,
+		updater:        updater,
+		taskClient:     taskClient,
+		runCtx:         context.Background(),
+		processStreams: ingress.NewProcessStreamRegistry(),
 	}
-	app.hotRestartStart = func(ctx context.Context, launch hotrestart.Launch) (hotRestartProcess, error) {
-		return (hotrestart.Supervisor{}).Start(ctx, launch)
-	}
+	app.hotRestartStart = app.startHotRestartWithStreams
 	app.hotRestartDrain = app.drainHotRestartParent
 	app.hotRestartDrainTimeout = hotRestartDrainTimeout
 	app.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(nil))
@@ -418,6 +428,7 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.hostMetricsReports = modules.hostMetrics
 	a.certReports = modules.certReports
 	a.generations = modules.generations
+	a.processStreams = modules.processStreams
 	a.runtime = core.NewRuntimeWithGenerationManager(modules.generations)
 }
 
@@ -528,13 +539,25 @@ func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSes
 	if err := a.validateHotRestartIdentity(child.Identity, desired); err != nil {
 		return err
 	}
+	if a.processStreams == nil {
+		return errors.New("hot restart process stream registry is required")
+	}
+	streamSet, err := a.processStreams.Import(child.StreamDescriptors, child.StreamFiles)
+	child.StreamFiles = nil
+	if err != nil {
+		return fmt.Errorf("import hot restart stream listeners: %w", err)
+	}
+	defer streamSet.Close()
 	if err := a.runtime.Apply(ctx, Snapshot{}, desired); err != nil {
 		return fmt.Errorf("prepare hot restart child generation: %w", err)
+	}
+	if err := a.processStreams.ValidateImported(); err != nil {
+		return fmt.Errorf("validate hot restart stream listeners: %w", err)
 	}
 	if err := child.Ready(); err != nil {
 		return err
 	}
-	if err := child.AwaitActivation(ctx, nil); err != nil {
+	if err := child.AwaitActivation(ctx, a.processStreams.ActivateImported); err != nil {
 		return err
 	}
 	if err := child.AwaitAuthority(ctx, nil); err != nil {
@@ -685,6 +708,10 @@ func (a *App) closeLocalRuntimes() {
 	if a.moduleRegistry != nil {
 		_ = a.moduleRegistry.StopAll(context.Background())
 		a.moduleRegistry = nil
+	}
+	if a.processStreams != nil {
+		_ = a.processStreams.Close()
+		a.processStreams = nil
 	}
 	if a.relayTimeoutReset != nil {
 		a.relayTimeoutReset()

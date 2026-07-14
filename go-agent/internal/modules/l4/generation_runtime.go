@@ -518,10 +518,11 @@ func (s *l4TrackedSession) ForceClose(ctx context.Context, reason string) error 
 }
 
 type l4IngressManager struct {
-	mu       sync.Mutex
-	bindings map[string]*l4IngressBinding
-	selector L4GenerationSelector
-	closed   bool
+	mu             sync.Mutex
+	bindings       map[string]*l4IngressBinding
+	selector       L4GenerationSelector
+	processStreams *ingress.ProcessStreamRegistry
+	closed         bool
 }
 
 type l4IngressBinding struct {
@@ -545,6 +546,15 @@ type l4IngressLease struct {
 
 func newL4IngressManager() *l4IngressManager {
 	return &l4IngressManager{bindings: make(map[string]*l4IngressBinding)}
+}
+
+func (m *Module) SetProcessStreamRegistry(registry *ingress.ProcessStreamRegistry) {
+	if m == nil || m.ingress == nil {
+		return
+	}
+	m.ingress.mu.Lock()
+	m.ingress.processStreams = registry
+	m.ingress.mu.Unlock()
 }
 
 func (m *l4IngressManager) currentServer() *Server {
@@ -592,19 +602,28 @@ func (m *l4IngressManager) acquire(ctx context.Context, generationID string, rul
 	if m.closed {
 		return nil, net.ErrClosed
 	}
+	if m.processStreams != nil && m.processStreams.ImportPending() && (!l4RuleIsTCP(rule) || strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")) {
+		return nil, errors.New("L4 packet or WireGuard ingress cannot join stream-only hot restart")
+	}
 	binding := m.bindings[key]
 	if binding == nil {
 		binding = &l4IngressBinding{key: key}
 		var err error
 		switch {
 		case l4RuleIsTCP(rule):
-			listener, listenErr := server.listenTCP(rule, l4ListenAddress(rule))
-			err = listenErr
-			if err == nil {
-				binding.stream = ingress.NewStreamBroker(listener)
-				if binding.stream == nil {
-					_ = listener.Close()
-					err = errors.New("create L4 stream broker")
+			if m.processStreams != nil && !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+				binding.stream, err = m.processStreams.NewBroker(ctx, "l4:"+key, func(context.Context) (net.Listener, error) {
+					return server.listenTCP(rule, l4ListenAddress(rule))
+				})
+			} else {
+				var listener net.Listener
+				listener, err = server.listenTCP(rule, l4ListenAddress(rule))
+				if err == nil {
+					binding.stream = ingress.NewStreamBroker(listener)
+					if binding.stream == nil {
+						_ = listener.Close()
+						err = errors.New("create L4 stream broker")
+					}
 				}
 			}
 		case isWireGuardTransparentForwardRule(rule):

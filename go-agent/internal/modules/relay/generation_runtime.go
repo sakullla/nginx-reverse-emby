@@ -34,10 +34,11 @@ type GenerationRuntime interface {
 }
 
 type relayIngressManager struct {
-	mu       sync.Mutex
-	bindings map[string]*relayIngressBinding
-	selector RelayGenerationSelector
-	closed   bool
+	mu             sync.Mutex
+	bindings       map[string]*relayIngressBinding
+	selector       RelayGenerationSelector
+	processStreams *ingress.ProcessStreamRegistry
+	closed         bool
 }
 
 type relayIngressBinding struct {
@@ -59,6 +60,15 @@ type relayIngressLease struct {
 
 func newRelayIngressManager(selector RelayGenerationSelector) *relayIngressManager {
 	return &relayIngressManager{bindings: make(map[string]*relayIngressBinding), selector: selector}
+}
+
+func (m *Module) SetProcessStreamRegistry(registry *ingress.ProcessStreamRegistry) {
+	if m == nil || m.ingress == nil {
+		return
+	}
+	m.ingress.mu.Lock()
+	m.ingress.processStreams = registry
+	m.ingress.mu.Unlock()
 }
 
 func (m *relayIngressManager) currentRuntime() *Server {
@@ -97,6 +107,9 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 	if m.closed {
 		return nil, net.ErrClosed
 	}
+	if m.processStreams != nil && m.processStreams.ImportPending() && transport != ListenerTransportModeTLSTCP {
+		return nil, errors.New("relay packet or WireGuard ingress cannot join stream-only hot restart")
+	}
 	binding := m.bindings[key]
 	if binding == nil {
 		binding = &relayIngressBinding{key: key}
@@ -132,12 +145,23 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 			}
 			binding.stream = ingress.NewStreamBroker(physical)
 		default:
-			listenConfig := newRelayTCPListenConfig()
-			physical, err := listenConfig.Listen(ctx, "tcp", address)
-			if err != nil {
-				return nil, err
+			if m.processStreams != nil {
+				var err error
+				binding.stream, err = m.processStreams.NewBroker(ctx, "relay:"+key, func(ctx context.Context) (net.Listener, error) {
+					listenConfig := newRelayTCPListenConfig()
+					return listenConfig.Listen(ctx, "tcp", address)
+				})
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				listenConfig := newRelayTCPListenConfig()
+				physical, err := listenConfig.Listen(ctx, "tcp", address)
+				if err != nil {
+					return nil, err
+				}
+				binding.stream = ingress.NewStreamBroker(physical)
 			}
-			binding.stream = ingress.NewStreamBroker(physical)
 		}
 		if binding.stream != nil && m.selector != nil {
 			bindingKey := key
