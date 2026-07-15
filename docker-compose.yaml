@@ -30,6 +30,11 @@ services:
       NRE_LOCAL_AGENT_NAME: local
       # 控制面板统一时区；用于日/月汇总、周期边界和流量清理口径
       NRE_TIMEZONE: ${NRE_TIMEZONE:-Asia/Shanghai}
+      # Revision timeout 在创建 revision 时固化；后续环境变更不改写运行中 generation
+      NRE_REVISION_APPLY_TIMEOUT: ${NRE_REVISION_APPLY_TIMEOUT:-1m}
+      NRE_REVISION_DRAIN_TIMEOUT: ${NRE_REVISION_DRAIN_TIMEOUT:-10m}
+      # 可选：单行 JSON，按 agent ID 覆盖 apply_timeout / drain_timeout
+      NRE_REVISION_AGENT_TIMEOUT_OVERRIDES: ${NRE_REVISION_AGENT_TIMEOUT_OVERRIDES:-}
       # 可选：关闭 WireGuard 模块
       # NRE_WIREGUARD_ENABLED: "false"
 
