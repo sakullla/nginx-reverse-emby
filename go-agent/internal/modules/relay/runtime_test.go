@@ -3704,21 +3704,12 @@ func pickFreeDualStackPort(t *testing.T) int {
 }
 
 func withRelayTimeouts(dial, handshake, frame, idle time.Duration, fn func()) {
-	prevDial := relayDialTimeout
-	prevHandshake := relayHandshakeTimeout
-	prevFrame := relayFrameTimeout
-	prevIdle := relayIdleTimeout
-
-	relayDialTimeout = dial
-	relayHandshakeTimeout = handshake
-	relayFrameTimeout = frame
-	relayIdleTimeout = idle
-	defer func() {
-		relayDialTimeout = prevDial
-		relayHandshakeTimeout = prevHandshake
-		relayFrameTimeout = prevFrame
-		relayIdleTimeout = prevIdle
-	}()
-
+	reset := ConfigureTimeouts(TimeoutConfig{
+		DialTimeout:      dial,
+		HandshakeTimeout: handshake,
+		FrameTimeout:     frame,
+		IdleTimeout:      idle,
+	})
+	defer reset()
 	fn()
 }

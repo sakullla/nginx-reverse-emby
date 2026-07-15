@@ -418,7 +418,7 @@ func openQUICStreamFromPool(ctx context.Context, pool *sessionPool, sessionKey s
 			return nil, nil, err
 		}
 
-		streamCtx, cancel := context.WithTimeout(ctx, relayHandshakeTimeout)
+		streamCtx, cancel := context.WithTimeout(ctx, getRelayHandshakeTimeout())
 		stream, err := session.OpenStreamSync(streamCtx)
 		cancel()
 		if err == nil {
@@ -464,7 +464,7 @@ func dialQUICRelayHop(ctx context.Context, address string, tlsConfig *tls.Config
 
 func newRelayQUICConfig() *quic.Config {
 	config := &quic.Config{
-		HandshakeIdleTimeout: relayHandshakeTimeout,
+		HandshakeIdleTimeout: getRelayHandshakeTimeout(),
 		MaxIdleTimeout:       relayIdleTimeout,
 	}
 	if relayIdleTimeout > 0 {
