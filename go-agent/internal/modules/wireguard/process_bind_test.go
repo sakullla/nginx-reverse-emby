@@ -66,6 +66,11 @@ func TestProcessWireGuardBindHandoffPinsOldAndForwardsNew(t *testing.T) {
 	if err := childRegistry.ActivateImported(); err != nil {
 		t.Fatalf("ActivateImported() error = %v", err)
 	}
+	parentBind := parent.(*processWireGuardBind)
+	parentBind.classifier.mu.Lock()
+	oldKey := parentBind.classifier.remotes[oldClient.LocalAddr().String()]
+	parentBind.classifier.receivers[77] = oldKey
+	parentBind.classifier.mu.Unlock()
 
 	sendWireGuardInitiation(t, oldClient, 12)
 	readWireGuardProcessPacket(t, parentReceive[0], 12)
@@ -73,6 +78,10 @@ func TestProcessWireGuardBindHandoffPinsOldAndForwardsNew(t *testing.T) {
 	defer newClient.Close()
 	sendWireGuardInitiation(t, newClient, 21)
 	readWireGuardProcessPacket(t, childReceive[0], 21)
+	sendWireGuardTransport(t, newClient, 77)
+	readWireGuardTransport(t, childReceive[0], 77)
+	sendWireGuardTransport(t, oldClient, 77)
+	readWireGuardTransport(t, parentReceive[0], 77)
 
 	if err := child.Close(); err != nil {
 		t.Fatalf("child Close() error = %v", err)
@@ -574,6 +583,39 @@ func sendWireGuardInitiation(t *testing.T, client *net.UDPConn, sender uint32) {
 	binary.LittleEndian.PutUint32(payload[4:8], sender)
 	if _, err := client.Write(payload); err != nil {
 		t.Fatalf("Write() error = %v", err)
+	}
+}
+
+func sendWireGuardTransport(t *testing.T, client *net.UDPConn, receiver uint32) {
+	t.Helper()
+	payload := make([]byte, wireGuardTransportMinSize)
+	binary.LittleEndian.PutUint32(payload[:4], wireGuardMessageTransport)
+	binary.LittleEndian.PutUint32(payload[4:8], receiver)
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+}
+
+func readWireGuardTransport(t *testing.T, receive conn.ReceiveFunc, receiver uint32) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		packets := [][]byte{make([]byte, wireGuardReceiveBufferSize)}
+		sizes := make([]int, 1)
+		endpoints := make([]conn.Endpoint, 1)
+		count, err := receive(packets, sizes, endpoints)
+		if err == nil && (count != 1 || sizes[0] != wireGuardTransportMinSize || binary.LittleEndian.Uint32(packets[0][4:8]) != receiver) {
+			err = fmt.Errorf("received count=%d size=%d receiver=%d", count, sizes[0], binary.LittleEndian.Uint32(packets[0][4:8]))
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("receive() error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for WireGuard transport packet")
 	}
 }
 

@@ -304,11 +304,16 @@ func (c *processWireGuardClassifier) Classify(payload []byte, metadata ingress.P
 	}
 	remote := metadata.RemoteAddr.String()
 	c.mu.Lock()
+	remoteKey := c.remotes[remote]
 	if _, receiver, ok := wireGuardPacketReceiver(payload); ok {
-		if key := c.receivers[receiver]; key != "" {
+		if key := c.receivers[receiver]; key != "" && (remoteKey == "" || remoteKey == key) {
 			c.mu.Unlock()
 			return key, true
 		}
+	}
+	if remoteKey != "" {
+		c.mu.Unlock()
+		return remoteKey, true
 	}
 	key, evicted, _ := c.rememberRemoteLocked(remote)
 	if evicted != "" && c.release != nil {
