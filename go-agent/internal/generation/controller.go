@@ -84,7 +84,7 @@ func (c *DrainController) RegisterSession(g string, e EntityKey, id string, s Se
 	return c.registry.Register(g, e, id, s)
 }
 
-func (c *DrainController) Activate(ctx context.Context, next Generation, changes []EntityChange, timeout time.Duration) error {
+func (c *DrainController) activate(ctx context.Context, next Generation, changes []EntityChange, timeout time.Duration) error {
 	if c == nil || next.ID == "" || next.Resource == nil {
 		return errors.New("invalid generation")
 	}
@@ -203,7 +203,7 @@ func (c *DrainController) enforceLimit(ctx context.Context) error {
 		forceErr = errors.Join(forceErr, c.force(ctx, oldest, model.GenerationForceReasonGenerationLimit))
 	}
 }
-func (c *DrainController) force(ctx context.Context, id, reason string) error {
+func (c *DrainController) forceGeneration(ctx context.Context, id, reason string) error {
 	c.mu.Lock()
 	entry := c.entries[id]
 	c.mu.Unlock()

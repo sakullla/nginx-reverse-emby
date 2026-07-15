@@ -79,7 +79,7 @@ func NewManagedGenerationManager(source module.GenerationPreparer, drain *Genera
 	return &GenerationManager{source: source, drain: drain, timeout: timeout, sessions: drain.Controller()}
 }
 
-func (m *GenerationManager) Apply(ctx context.Context, previous, next model.Snapshot) (GenerationCutover, error) {
+func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snapshot) (GenerationCutover, error) {
 	if m == nil || m.source == nil {
 		return GenerationCutover{}, errors.New("generation source is not configured")
 	}

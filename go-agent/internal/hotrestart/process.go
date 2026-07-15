@@ -564,7 +564,7 @@ type Supervisor struct {
 	CommandTimeout time.Duration
 }
 
-func (s Supervisor) Start(ctx context.Context, launch Launch) (*ChildProcess, error) {
+func (s Supervisor) start(ctx context.Context, launch Launch) (*ChildProcess, error) {
 	if strings.TrimSpace(launch.Binary) == "" {
 		return nil, errors.New("hot restart child binary is required")
 	}
@@ -692,23 +692,24 @@ const (
 )
 
 type ChildProcess struct {
-	cmd          *exec.Cmd
-	identity     Identity
-	events       chan eventResult
-	commands     *os.File
-	eventFile    *os.File
-	journal      *FileAuthorityJournal
-	done         chan struct{}
-	waitMu       sync.Mutex
-	waitErr      error
-	mu           sync.Mutex
-	abortMu      sync.Mutex
-	transitionMu sync.Mutex
-	completed    map[processState]error
-	controlOnce  sync.Once
-	controlErr   error
-	state        processState
-	timeout      time.Duration
+	cmd              *exec.Cmd
+	identity         Identity
+	observabilityCtx context.Context
+	events           chan eventResult
+	commands         *os.File
+	eventFile        *os.File
+	journal          *FileAuthorityJournal
+	done             chan struct{}
+	waitMu           sync.Mutex
+	waitErr          error
+	mu               sync.Mutex
+	abortMu          sync.Mutex
+	transitionMu     sync.Mutex
+	completed        map[processState]error
+	controlOnce      sync.Once
+	controlErr       error
+	state            processState
+	timeout          time.Duration
 }
 
 type eventResult struct {
@@ -747,7 +748,7 @@ func (p *ChildProcess) Activate(ctx context.Context) error {
 	return p.transition(ctx, processReady, processActivated, messageActivate, messageActivated)
 }
 
-func (p *ChildProcess) TransferAuthority(ctx context.Context) error {
+func (p *ChildProcess) transferAuthority(ctx context.Context) error {
 	return p.transition(ctx, processActivated, processAuthority, messageAuthority, messageAuthorityAck)
 }
 
@@ -866,7 +867,7 @@ func (p *ChildProcess) waitFor(ctx context.Context, expected messageType) error 
 	}
 }
 
-func (p *ChildProcess) Abort() error {
+func (p *ChildProcess) abort() error {
 	if p == nil {
 		return nil
 	}

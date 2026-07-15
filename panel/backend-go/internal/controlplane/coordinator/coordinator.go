@@ -105,7 +105,7 @@ type Lease = storage.CoordinatorLease
 
 type ClaimResult = storage.CoordinatorClaimResult
 
-func (c *Coordinator) Claim(ctx context.Context, agentID string) (ClaimResult, error) {
+func (c *Coordinator) claim(ctx context.Context, agentID string) (ClaimResult, error) {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		return ClaimResult{}, fmt.Errorf("agent id is required")
@@ -140,7 +140,7 @@ type StartRequest struct {
 
 type StartResult = storage.CoordinatorStartResult
 
-func (c *Coordinator) Start(ctx context.Context, request StartRequest) (StartResult, error) {
+func (c *Coordinator) start(ctx context.Context, request StartRequest) (StartResult, error) {
 	return c.repository.StartAgentRevisionAttempt(ctx, storage.CoordinatorStartRequest{
 		Lease: request.Lease, GenerationID: request.GenerationID, Now: c.now(),
 		DefaultApplyTimeoutSeconds: durationSeconds(c.applyTimeout),
@@ -156,7 +156,7 @@ type FailureReport struct {
 
 type FailureResult = storage.CoordinatorFailureResult
 
-func (c *Coordinator) Fail(ctx context.Context, report FailureReport) (FailureResult, error) {
+func (c *Coordinator) fail(ctx context.Context, report FailureReport) (FailureResult, error) {
 	return c.repository.FailAgentRevisionAttempt(ctx, storage.CoordinatorFailureRequest{
 		Lease: report.Lease, GenerationID: report.GenerationID, Now: c.now(), Jitter: c.random.Float64(),
 		ErrorCode: report.ErrorCode, ErrorMessage: report.ErrorMessage,
@@ -170,7 +170,7 @@ type AppliedReport struct {
 
 type AppliedResult = storage.CoordinatorApplyResult
 
-func (c *Coordinator) Applied(ctx context.Context, report AppliedReport) (AppliedResult, error) {
+func (c *Coordinator) applied(ctx context.Context, report AppliedReport) (AppliedResult, error) {
 	return c.repository.ApplyAgentRevisionAttempt(ctx, storage.CoordinatorApplyRequest{
 		Lease: report.Lease, GenerationID: report.GenerationID, Now: c.now(),
 	})
@@ -183,7 +183,7 @@ type DrainReport struct {
 	ForceReason  string
 }
 
-func (c *Coordinator) Drained(ctx context.Context, report DrainReport) (storage.AgentRevisionRow, error) {
+func (c *Coordinator) drained(ctx context.Context, report DrainReport) (storage.AgentRevisionRow, error) {
 	lease := storage.CoordinatorLease(report.Lease)
 	return c.repository.CompleteCoordinatorDrain(ctx, storage.CoordinatorDrainRequest{
 		AgentID: lease.AgentID, GenerationID: report.GenerationID, Lease: lease,
