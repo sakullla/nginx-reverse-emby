@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -148,27 +147,14 @@ func assertManagedHTTPSOperation(t *testing.T, harness *cutoverHarness, client *
 		t.Fatalf("managed HTTPS status %s = %d body=%s", accepted.StatusURL, response.StatusCode, response.Body)
 	}
 	status := decodeSoakOperationStatus(t, response.Body)
-	if len(status.Agents) != 1 || status.Agents[0].AttemptCount < 1 {
-		t.Fatalf("managed HTTPS operation status = %+v, want one attempted agent", status)
-	}
-	if status.ApplyStatus == "failed" || status.ApplyStatus == "degraded" {
-		t.Fatalf("managed HTTPS operation failed: %+v", status)
-	}
-	if draining := countDrainingGenerations(status); draining > 2 {
-		t.Fatalf("managed HTTPS draining generations = %d, want <= 2", draining)
-	}
+	assertAppliedSoakOperation(t, status, accepted.OperationID, accepted.DesiredRevision)
 }
 
 func assertDirectOperation(t *testing.T, harness *cutoverHarness, accepted acceptedSoakMutation) {
 	t.Helper()
 	harness.WaitForStableApplyMetadata(int(accepted.DesiredRevision))
 	status := loadSoakOperationStatus(t, harness, accepted.StatusURL)
-	if len(status.Agents) != 1 || status.Agents[0].AttemptCount < 1 {
-		t.Fatalf("direct operation status = %+v, want one attempted agent", status)
-	}
-	if status.ApplyStatus == "failed" || status.ApplyStatus == "degraded" {
-		t.Fatalf("direct operation failed: %+v", status)
-	}
+	assertAppliedSoakOperation(t, status, accepted.OperationID, accepted.DesiredRevision)
 }
 
 func loadSoakOperationStatus(t *testing.T, harness *cutoverHarness, statusURL string) soakOperationStatus {
@@ -210,24 +196,131 @@ func countDrainingGenerations(status soakOperationStatus) int {
 	return draining
 }
 
+func assertAppliedSoakOperation(t *testing.T, status soakOperationStatus, operationID string, desiredRevision int64) int {
+	t.Helper()
+	if status.OperationID != operationID || status.ApplyStatus != "applied" {
+		t.Fatalf("operation status = %+v, want operation_id=%q apply_status=applied", status, operationID)
+	}
+	if len(status.Agents) != 1 {
+		t.Fatalf("operation status = %+v, want exactly one agent", status)
+	}
+	agent := status.Agents[0]
+	if agent.ApplyStatus != "applied" || agent.DesiredRevision != desiredRevision || agent.AppliedRevision != desiredRevision || agent.AttemptCount < 1 {
+		t.Fatalf("operation agent = %+v, want desired/applied=%d apply_status=applied and attempt_count>=1", agent, desiredRevision)
+	}
+	if agent.GenerationID == "" || len(agent.Generations) == 0 {
+		t.Fatalf("operation agent = %+v, want non-empty generation evidence", agent)
+	}
+	activeGenerationFound := false
+	for _, generation := range agent.Generations {
+		if generation.GenerationID == agent.GenerationID && generation.Revision == desiredRevision && generation.State == "active" {
+			activeGenerationFound = true
+			break
+		}
+	}
+	if !activeGenerationFound {
+		t.Fatalf("operation agent = %+v, want active generation %q at revision %d", agent, agent.GenerationID, desiredRevision)
+	}
+	draining := countDrainingGenerations(status)
+	if draining > 2 {
+		t.Fatalf("operation draining generations = %d, want <= 2: %+v", draining, status)
+	}
+	return draining
+}
+
+func waitForAppliedSoakOperation(t *testing.T, harness *cutoverHarness, accepted acceptedSoakMutation) (soakOperationStatus, int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	maxDraining := 0
+	for {
+		status := loadSoakOperationStatus(t, harness, accepted.StatusURL)
+		if status.OperationID != accepted.OperationID || len(status.Agents) != 1 {
+			t.Fatalf("operation status = %+v, want operation_id=%q and exactly one agent", status, accepted.OperationID)
+		}
+		agent := status.Agents[0]
+		if agent.DesiredRevision != accepted.DesiredRevision {
+			t.Fatalf("operation agent = %+v, want desired_revision=%d", agent, accepted.DesiredRevision)
+		}
+		draining := countDrainingGenerations(status)
+		if draining > maxDraining {
+			maxDraining = draining
+		}
+		if draining > 2 {
+			t.Fatalf("operation draining generations = %d, want <= 2: %+v", draining, status)
+		}
+		switch status.ApplyStatus {
+		case "applied":
+			assertAppliedSoakOperation(t, status, accepted.OperationID, accepted.DesiredRevision)
+			return status, maxDraining
+		case "pending", "applying":
+		case "failed", "degraded", "superseded":
+			t.Fatalf("operation reached terminal non-success status: %+v", status)
+		default:
+			t.Fatalf("operation has unexpected apply_status: %+v", status)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation did not reach applied within 10s: %+v", status)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 type soakTrafficStats struct {
-	mu       sync.Mutex
-	samples  int
-	failures int
-	first    []string
-	epochs   map[int64]int
+	mu          sync.Mutex
+	samples     int
+	failures    int
+	first       []string
+	activeEpoch int64
+	started     map[int64]int
+	epochs      map[int64]int
 }
 
 type soakOperationStatus struct {
+	OperationID string `json:"operation_id"`
 	ApplyStatus string `json:"apply_status"`
 	Agents      []struct {
-		ApplyStatus  string `json:"apply_status"`
-		DrainStatus  string `json:"drain_status"`
-		AttemptCount int    `json:"attempt_count"`
-		Generations  []struct {
-			State string `json:"state"`
+		AgentID         string `json:"agent_id"`
+		DesiredRevision int64  `json:"desired_revision"`
+		AppliedRevision int64  `json:"applied_revision"`
+		ApplyStatus     string `json:"apply_status"`
+		DrainStatus     string `json:"drain_status"`
+		AttemptCount    int    `json:"attempt_count"`
+		GenerationID    string `json:"generation_id"`
+		Generations     []struct {
+			GenerationID string `json:"generation_id"`
+			Revision     int64  `json:"revision"`
+			State        string `json:"state"`
 		} `json:"generations"`
 	} `json:"agents"`
+}
+
+func (s *soakTrafficStats) activate(epoch int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeEpoch = epoch
+}
+
+func (s *soakTrafficStats) begin() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	epoch := s.activeEpoch
+	if epoch > 0 {
+		if s.started == nil {
+			s.started = make(map[int64]int)
+		}
+		s.started[epoch]++
+	}
+	return epoch
+}
+
+func (s *soakTrafficStats) freeze(epoch int64) (int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeEpoch != epoch {
+		return s.started[epoch], false
+	}
+	s.activeEpoch = 0
+	return s.started[epoch], true
 }
 
 func (s *soakTrafficStats) record(epoch int64, err error) {
@@ -253,6 +346,12 @@ func (s *soakTrafficStats) samplesFor(epoch int64) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.epochs[epoch]
+}
+
+func (s *soakTrafficStats) startedFor(epoch int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.started[epoch]
 }
 
 func (s *soakTrafficStats) snapshot() (int, int, []string) {
@@ -283,7 +382,6 @@ func TestGenerationCutoverSoak(t *testing.T) {
 	stopTraffic := make(chan struct{})
 	trafficDone := make(chan struct{})
 	stats := &soakTrafficStats{}
-	var activeCutover atomic.Int64
 	trafficStarted := make(chan struct{})
 	go func() {
 		defer close(trafficDone)
@@ -294,7 +392,8 @@ func TestGenerationCutoverSoak(t *testing.T) {
 				return
 			default:
 			}
-			stats.record(activeCutover.Load(), probeSoakHTTPFrontend(trafficClient, harness.fixture.httpFrontendPort, harness.fixture.httpFrontendHost))
+			epoch := stats.begin()
+			stats.record(epoch, probeSoakHTTPFrontend(trafficClient, harness.fixture.httpFrontendPort, harness.fixture.httpFrontendHost))
 			if !started {
 				close(trafficStarted)
 				started = true
@@ -319,6 +418,7 @@ func TestGenerationCutoverSoak(t *testing.T) {
 
 	maxGoroutines := baselineGoroutines
 	maxDraining := 0
+	overlapStarts := 0
 	lastRevision := int64(harness.fixture.expectedRevision)
 	for iteration := 1; iteration <= iterations; iteration++ {
 		backendURL := harness.httpBackend.URL
@@ -328,7 +428,8 @@ func TestGenerationCutoverSoak(t *testing.T) {
 			expectedBody = "backend:alternate"
 		}
 
-		activeCutover.Store(int64(iteration))
+		epoch := int64(iteration)
+		stats.activate(epoch)
 		accepted := updateSoakHTTPRule(t, harness, backendURL, iteration)
 		if accepted.OperationID == "" || accepted.StatusURL == "" {
 			t.Fatalf("iteration %d accepted envelope = %+v, want operation_id and status_url", iteration, accepted)
@@ -340,25 +441,22 @@ func TestGenerationCutoverSoak(t *testing.T) {
 			t.Fatalf("iteration %d apply_status = %q, want pending/applying", iteration, accepted.ApplyStatus)
 		}
 
+		startedAtAcceptance := stats.startedFor(epoch)
+		_, observedDraining := waitForAppliedSoakOperation(t, harness, accepted)
+		startedBeforeStable, frozen := stats.freeze(epoch)
+		if !frozen {
+			t.Fatalf("iteration %d traffic epoch was not active at operation convergence", iteration)
+		}
+		if startedBeforeStable <= startedAtAcceptance {
+			t.Fatalf("iteration %d started no new connection after 202 acceptance and before applied convergence: started_at_acceptance=%d started_at_stable=%d", iteration, startedAtAcceptance, startedBeforeStable)
+		}
+		overlapStarts += startedBeforeStable - startedAtAcceptance
 		stable := harness.WaitForStableApplyMetadata(int(accepted.DesiredRevision))
 		if stable.CurrentRevision != int(accepted.DesiredRevision) || stable.LastApplyStatus != "success" {
 			t.Fatalf("iteration %d stable metadata = %+v", iteration, stable)
 		}
-		deadline := time.Now().Add(time.Second)
-		for stats.samplesFor(int64(iteration)) == 0 && time.Now().Before(deadline) {
-			time.Sleep(time.Millisecond)
-		}
-		if samples := stats.samplesFor(int64(iteration)); samples == 0 {
-			t.Fatalf("iteration %d recorded no new-connection traffic during mutation/apply window", iteration)
-		}
-		activeCutover.Store(0)
-		status := loadSoakOperationStatus(t, harness, accepted.StatusURL)
-		draining := countDrainingGenerations(status)
-		if draining > maxDraining {
-			maxDraining = draining
-		}
-		if draining > 2 {
-			t.Fatalf("iteration %d draining generations = %d, want <= 2: %+v", iteration, draining, status)
+		if observedDraining > maxDraining {
+			maxDraining = observedDraining
 		}
 		lastRevision = accepted.DesiredRevision
 		if body := harness.GetHTTPFrontend(harness.fixture.httpFrontendHost); !strings.Contains(body, expectedBody) {
@@ -382,6 +480,12 @@ func TestGenerationCutoverSoak(t *testing.T) {
 	if failures != 0 {
 		t.Fatalf("reload-attributed new connection failures = %d/%d: %v", failures, samples, firstFailures)
 	}
+	for iteration := 1; iteration <= iterations; iteration++ {
+		epoch := int64(iteration)
+		if completed, started := stats.samplesFor(epoch), stats.startedFor(epoch); completed != started {
+			t.Fatalf("iteration %d traffic completion count = %d, want started count %d", iteration, completed, started)
+		}
+	}
 	if current := runtime.NumGoroutine(); current > baselineGoroutines+12 {
 		t.Fatalf("goroutines after soak = %d, baseline=%d max=%d", current, baselineGoroutines, maxGoroutines)
 	}
@@ -395,7 +499,7 @@ func TestGenerationCutoverSoak(t *testing.T) {
 		t.Fatalf("heap after soak = %d, baseline=%d allowance=%d", finalMemory.HeapAlloc, baselineMemory.HeapAlloc, heapAllowance)
 	}
 
-	t.Logf("generation soak iterations=%d samples=%d failures=%d revisions=%d..%d max_draining=%d goroutines_baseline=%d goroutines_max=%d heap_baseline=%d heap_final=%d", iterations, samples, failures, harness.fixture.expectedRevision, lastRevision, maxDraining, baselineGoroutines, maxGoroutines, baselineMemory.HeapAlloc, finalMemory.HeapAlloc)
+	t.Logf("generation soak iterations=%d samples=%d overlap_starts=%d failures=%d revisions=%d..%d max_draining=%d goroutines_baseline=%d goroutines_max=%d heap_baseline=%d heap_final=%d", iterations, samples, overlapStarts, failures, harness.fixture.expectedRevision, lastRevision, maxDraining, baselineGoroutines, maxGoroutines, baselineMemory.HeapAlloc, finalMemory.HeapAlloc)
 }
 
 func generationSoakIterations(t *testing.T) int {

@@ -33,6 +33,12 @@ type goTestSuite struct {
 	Expected []string
 }
 
+const (
+	nestedMatrixCommandTimeout = 90 * time.Second
+	commandCleanupTimeout      = 10 * time.Second
+	commandOuterReserve        = 20 * time.Second
+)
+
 func TestGenerationMatrixSmoke(t *testing.T) {
 	root := repositoryRoot(t)
 	validateMatrix(t, root, loadMatrix(t))
@@ -40,6 +46,7 @@ func TestGenerationMatrixSmoke(t *testing.T) {
 }
 
 func TestGenerationMatrix(t *testing.T) {
+	requireOuterTestBudget(t, 8*time.Minute)
 	root := repositoryRoot(t)
 	validateMatrix(t, root, loadMatrix(t))
 	t.Run("first-party mutation callers track accepted operations", TestFirstPartyMutationContractCoverage)
@@ -109,6 +116,7 @@ func TestGenerationMatrix(t *testing.T) {
 }
 
 func TestGenerationSoak100(t *testing.T) {
+	requireOuterTestBudget(t, 9*time.Minute)
 	runBackendSoak(t, repositoryRoot(t), 100)
 }
 
@@ -198,13 +206,17 @@ func runGoTestSuite(t *testing.T, root string, suite goTestSuite) {
 	args := []string{"test"}
 	args = append(args, suite.Packages...)
 	args = append(args, "-run", suite.Pattern, "-count=1", "-v")
-	output := runCommand(t, filepath.Join(root, filepath.FromSlash(suite.Module)), nil, "go", args...)
+	output := runCommand(t, nestedMatrixCommandTimeout, filepath.Join(root, filepath.FromSlash(suite.Module)), nil, "go", args...)
 	requireExpectedTests(t, output, suite.Expected)
 }
 
 func runBackendSoak(t *testing.T, root string, iterations int) {
 	t.Helper()
-	output := runCommand(t, filepath.Join(root, "panel", "backend-go"), []string{fmt.Sprintf("NRE_GENERATION_SOAK_ITERATIONS=%d", iterations)}, "go", "test", "./internal/controlplane/cutover", "-run", "^TestGenerationCutoverSoak$", "-count=1", "-v")
+	timeout := nestedMatrixCommandTimeout
+	if iterations == 100 {
+		timeout = 8 * time.Minute
+	}
+	output := runCommand(t, timeout, filepath.Join(root, "panel", "backend-go"), []string{fmt.Sprintf("NRE_GENERATION_SOAK_ITERATIONS=%d", iterations)}, "go", "test", "./internal/controlplane/cutover", "-run", "^TestGenerationCutoverSoak$", "-count=1", "-v")
 	requireExpectedTests(t, output, []string{"TestGenerationCutoverSoak"})
 }
 
@@ -213,14 +225,14 @@ func runLinuxProcessMatrix(t *testing.T, root string) {
 	pattern := "Test(SupervisorReadinessActivationAndAuthorityOrdering|PostReadinessFailuresAbortChildAndRecoverParentAuthority)$"
 	expected := []string{"TestSupervisorReadinessActivationAndAuthorityOrdering", "TestPostReadinessFailuresAbortChildAndRecoverParentAuthority"}
 	if runtime.GOOS == "linux" {
-		output := runCommand(t, filepath.Join(root, "go-agent"), nil, "go", "test", "./internal/hotrestart", "-run", pattern, "-count=1", "-v")
+		output := runCommand(t, nestedMatrixCommandTimeout, filepath.Join(root, "go-agent"), nil, "go", "test", "./internal/hotrestart", "-run", pattern, "-count=1", "-v")
 		requireExpectedTests(t, output, expected)
 		return
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatalf("Linux process hot-restart matrix requires docker on %s: %v", runtime.GOOS, err)
 	}
-	output := runCommand(t, root, nil, "docker", "run", "--rm", "-v", root+":/workspace", "-w", "/workspace/go-agent", "golang:1.26", "go", "test", "./internal/hotrestart", "-run", pattern, "-count=1", "-v")
+	output := runCommand(t, nestedMatrixCommandTimeout, root, nil, "docker", "run", "--rm", "-v", root+":/workspace", "-w", "/workspace/go-agent", "golang:1.26", "go", "test", "./internal/hotrestart", "-run", pattern, "-count=1", "-v")
 	requireExpectedTests(t, output, expected)
 }
 
@@ -229,14 +241,14 @@ func runLinuxPacketMatrix(t *testing.T, root string) {
 	pattern := "TestHotRestartPacket(ProtocolMatrix|FailureAndRepeatMatrix|RepeatedUpgradeCleanup|FailedChildCleansProcessGroup)$"
 	expected := []string{"TestHotRestartPacketProtocolMatrix", "TestHotRestartPacketFailureAndRepeatMatrix", "TestHotRestartPacketRepeatedUpgradeCleanup", "TestHotRestartPacketFailedChildCleansProcessGroup"}
 	if runtime.GOOS == "linux" {
-		output := runCommand(t, filepath.Join(root, "go-agent"), nil, "go", "test", "./internal/app", "-run", pattern, "-count=1", "-v")
+		output := runCommand(t, nestedMatrixCommandTimeout, filepath.Join(root, "go-agent"), nil, "go", "test", "./internal/app", "-run", pattern, "-count=1", "-v")
 		requireExpectedTests(t, output, expected)
 		return
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatalf("Linux packet matrix requires docker on %s: %v", runtime.GOOS, err)
 	}
-	output := runCommand(t, root, nil, "docker", "run", "--rm", "-v", root+":/workspace", "-w", "/workspace/go-agent", "golang:1.26", "go", "test", "./internal/app", "-run", pattern, "-count=1", "-v")
+	output := runCommand(t, nestedMatrixCommandTimeout, root, nil, "docker", "run", "--rm", "-v", root+":/workspace", "-w", "/workspace/go-agent", "golang:1.26", "go", "test", "./internal/app", "-run", pattern, "-count=1", "-v")
 	requireExpectedTests(t, output, expected)
 }
 
@@ -258,8 +270,36 @@ func requireExpectedTests(t *testing.T, output string, expected []string) {
 	}
 }
 
-func runCommand(t *testing.T, dir string, extraEnv []string, name string, args ...string) string {
+func requireOuterTestBudget(t *testing.T, minimum time.Duration) {
 	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		t.Fatalf("test requires an explicit outer timeout of at least %s", minimum)
+	}
+	if remaining := time.Until(deadline); remaining < minimum {
+		t.Fatalf("outer test timeout leaves %s, want at least %s for bounded nested command cleanup", remaining, minimum)
+	}
+}
+
+func nestedCommandTimeout(t *testing.T, requested time.Duration) time.Duration {
+	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		return requested
+	}
+	remaining := time.Until(deadline) - commandOuterReserve
+	if remaining <= commandCleanupTimeout {
+		t.Fatalf("outer test deadline leaves %s, insufficient for nested command cleanup", remaining)
+	}
+	if remaining < requested {
+		return remaining
+	}
+	return requested
+}
+
+func runCommand(t *testing.T, requestedTimeout time.Duration, dir string, extraEnv []string, name string, args ...string) string {
+	t.Helper()
+	timeout := nestedCommandTimeout(t, requestedTimeout)
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), extraEnv...)
@@ -272,16 +312,26 @@ func runCommand(t *testing.T, dir string, extraEnv []string, name string, args .
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	var err error
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
-	case err = <-done:
-	case <-time.After(10 * time.Minute):
-		killProcessTree(cmd)
-		err = <-done
-		t.Fatalf("%s %s timed out after 10m in %s\n%s", name, strings.Join(args, " "), dir, output.String())
-	}
-	if err != nil {
-		t.Fatalf("%s %s failed in %s: %v\n%s", name, strings.Join(args, " "), dir, err, output.String())
+	case err := <-done:
+		if err != nil {
+			cleanupErr := killProcessTree(cmd)
+			treeGoneErr := waitProcessTreeGone(cmd, 5*time.Second)
+			t.Fatalf("%s %s failed in %s: %v (process-tree cleanup: %v; tree disappearance: %v)\n%s", name, strings.Join(args, " "), dir, err, cleanupErr, treeGoneErr, output.String())
+		}
+	case <-timer.C:
+		cleanupErr := killProcessTree(cmd)
+		cleanupTimer := time.NewTimer(commandCleanupTimeout)
+		defer cleanupTimer.Stop()
+		select {
+		case err := <-done:
+			treeGoneErr := waitProcessTreeGone(cmd, 5*time.Second)
+			t.Fatalf("%s %s timed out after %s in %s; wait=%v process-tree cleanup=%v tree disappearance=%v\n%s", name, strings.Join(args, " "), timeout, dir, err, cleanupErr, treeGoneErr, output.String())
+		case <-cleanupTimer.C:
+			t.Fatalf("%s %s timed out after %s in %s; process-tree cleanup=%v and command was not reaped within %s\n%s", name, strings.Join(args, " "), timeout, dir, cleanupErr, commandCleanupTimeout, output.String())
+		}
 	}
 	t.Logf("%s %s\n%s", name, strings.Join(args, " "), output.String())
 	return output.String()
