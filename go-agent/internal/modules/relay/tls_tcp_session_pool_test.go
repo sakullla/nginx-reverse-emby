@@ -851,17 +851,32 @@ func TestDialTLSTCPMuxRetriesStalePooledTunnelWithoutInitialPayload(t *testing.T
 	relayTLSTCPSessionPool.mu.Unlock()
 
 	withRelayTimeouts(time.Second, time.Second, 20*time.Millisecond, time.Second, func() {
+		callbackServerClosed := false
+		defer func() {
+			if !callbackServerClosed {
+				_ = server.Close()
+				serverClosed = true
+			}
+		}()
 		conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
 		if err != nil {
 			t.Fatalf("Dial() error = %v, want retry on fresh tunnel", err)
 		}
+		connClosed := false
+		defer func() {
+			if !connClosed {
+				_ = conn.Close()
+			}
+		}()
 		assertRoundTrip(t, conn, []byte("fresh-after-stale"))
 		if err := conn.Close(); err != nil {
 			t.Fatalf("conn Close() error = %v", err)
 		}
+		connClosed = true
 		if err := server.Close(); err != nil {
 			t.Fatalf("server Close() error = %v", err)
 		}
+		callbackServerClosed = true
 		serverClosed = true
 	})
 
