@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
@@ -48,7 +49,8 @@ func configMutationTargets(cfg config.Config, agentIDs []string, intentEgressPro
 	targets := make([]revision.Target, 0, len(agentIDs))
 	for _, agentID := range agentIDs {
 		local := cfg.EnableLocalAgent && agentID == cfg.LocalAgentID
-		target := revision.Target{AgentID: agentID, Local: local}
+		target := revisionTimeoutTarget(cfg, agentID)
+		target.Local = local
 		if local {
 			target.Capabilities = append([]string(nil), defaultLocalCapabilities...)
 		}
@@ -58,6 +60,40 @@ func configMutationTargets(cfg config.Config, agentIDs []string, intentEgressPro
 		targets = append(targets, target)
 	}
 	return targets
+}
+
+func revisionTimeoutTarget(cfg config.Config, agentID string) revision.Target {
+	agentID = strings.TrimSpace(agentID)
+	applyTimeout := cfg.RevisionCoordinator.ApplyTimeout
+	drainTimeout := cfg.RevisionCoordinator.DrainTimeout
+	if override, ok := cfg.RevisionCoordinator.AgentTimeoutOverrides[agentID]; ok {
+		if override.ApplyTimeout > 0 {
+			applyTimeout = override.ApplyTimeout
+		}
+		if override.DrainTimeout > 0 {
+			drainTimeout = override.DrainTimeout
+		}
+	}
+	return revision.Target{
+		AgentID:             agentID,
+		ApplyTimeoutSeconds: revisionTimeoutSeconds(applyTimeout),
+		DrainTimeoutSeconds: revisionTimeoutSeconds(drainTimeout),
+	}
+}
+
+func revisionTimeoutSeconds(timeout time.Duration) int {
+	if timeout <= 0 {
+		return 0
+	}
+	seconds := timeout / time.Second
+	if timeout%time.Second != 0 {
+		seconds++
+	}
+	maxInt := int(^uint(0) >> 1)
+	if seconds > time.Duration(maxInt) {
+		return maxInt
+	}
+	return int(seconds)
 }
 
 func configMutationRevision(revisions map[string]int64, agentID string, fallback int) int {

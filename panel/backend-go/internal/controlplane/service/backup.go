@@ -1071,7 +1071,7 @@ func backupRevisionTargets(cfg config.Config, modifiedAgents modifiedAgentRevisi
 	agentIDs := sortedModifiedAgentIDs(modifiedAgents)
 	targets := make([]revision.Target, 0, len(agentIDs))
 	for _, agentID := range agentIDs {
-		target := revision.Target{AgentID: agentID}
+		target := revisionTimeoutTarget(cfg, agentID)
 		if cfg.EnableLocalAgent && agentID == cfg.LocalAgentID {
 			target.Local = true
 			target.Capabilities = append([]string(nil), defaultLocalCapabilities...)

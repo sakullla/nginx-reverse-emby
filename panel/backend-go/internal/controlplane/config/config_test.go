@@ -76,6 +76,62 @@ func TestLoadFromEnvRejectsInvalidRevisionCoordinatorSettings(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvParsesRevisionAgentTimeoutOverrides(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_REVISION_AGENT_TIMEOUT_OVERRIDES", `{
+		"edge-a":{"apply_timeout":"90s"},
+		"edge-b":{"drain_timeout":"12m"},
+		"local":{"apply_timeout":"2m","drain_timeout":"15m"}
+	}`)
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	overrides := cfg.RevisionCoordinator.AgentTimeoutOverrides
+	if got := overrides["edge-a"]; got.ApplyTimeout != 90*time.Second || got.DrainTimeout != 0 {
+		t.Fatalf("edge-a override = %+v", got)
+	}
+	if got := overrides["edge-b"]; got.ApplyTimeout != 0 || got.DrainTimeout != 12*time.Minute {
+		t.Fatalf("edge-b override = %+v", got)
+	}
+	if got := overrides["local"]; got.ApplyTimeout != 2*time.Minute || got.DrainTimeout != 15*time.Minute {
+		t.Fatalf("local override = %+v", got)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidRevisionAgentTimeoutOverrides(t *testing.T) {
+	testCases := []struct {
+		name      string
+		value     string
+		wantAgent string
+	}{
+		{name: "malformed JSON", value: `{`},
+		{name: "top level array", value: `[]`},
+		{name: "empty agent id", value: `{" ":{"apply_timeout":"30s"}}`},
+		{name: "unknown field", value: `{"edge-unknown":{"timeout":"30s"}}`, wantAgent: "edge-unknown"},
+		{name: "non-positive apply", value: `{"edge-zero":{"apply_timeout":"0s"}}`, wantAgent: "edge-zero"},
+		{name: "invalid drain", value: `{"edge-invalid":{"drain_timeout":"soon"}}`, wantAgent: "edge-invalid"},
+		{name: "null override", value: `{"edge-null":null}`, wantAgent: "edge-null"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NRE_PANEL_TOKEN", "secret")
+			t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+			t.Setenv("NRE_REVISION_AGENT_TIMEOUT_OVERRIDES", tc.value)
+
+			_, err := LoadFromEnv()
+			if err == nil || !strings.Contains(err.Error(), "NRE_REVISION_AGENT_TIMEOUT_OVERRIDES") {
+				t.Fatalf("LoadFromEnv() error = %v, want env validation", err)
+			}
+			if tc.wantAgent != "" && !strings.Contains(err.Error(), tc.wantAgent) {
+				t.Fatalf("LoadFromEnv() error = %v, want agent %q", err, tc.wantAgent)
+			}
+		})
+	}
+}
+
 func TestLoadFromEnvReadsWireGuardAutoAddressPools(t *testing.T) {
 	t.Setenv("NRE_PANEL_TOKEN", "secret")
 	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")

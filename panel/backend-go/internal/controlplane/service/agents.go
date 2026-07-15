@@ -576,7 +576,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	if configChanged {
 		if s.settingsMutation != nil {
 			var replaySummary AgentSummary
-			target := revision.Target{AgentID: row.ID}
+			target := revisionTimeoutTarget(s.cfg, row.ID)
 			validationTarget := revision.Target{
 				AgentID:      row.ID,
 				Capabilities: canonicalCapabilities(parseStringArray(row.CapabilitiesJSON)),
