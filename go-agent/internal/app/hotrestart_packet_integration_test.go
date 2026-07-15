@@ -54,13 +54,17 @@ func TestHotRestartPacketProtocolMatrix(t *testing.T) {
 
 func runHotRestartPacketTestProcess(t *testing.T, testCase hotRestartPacketTestProcess) {
 	t.Helper()
+	if err := enableHotRestartPacketChildSubreaper(); err != nil {
+		t.Fatalf("%s enable child subreaper: %v", testCase.name, err)
+	}
 	timeout := testCase.timeout
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
-	args := []string{"test", "-race", "-v", "-timeout=90s", "-count=1", testCase.args[0], "-run", testCase.args[1]}
+	innerTimeout := timeout + 30*time.Second
+	args := []string{"test", "-race", "-v", "-timeout=" + innerTimeout.String(), "-count=1", testCase.args[0], "-run", testCase.args[1]}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = hotRestartPacketModuleRoot(t)
 	cmd.Env = os.Environ()
@@ -82,7 +86,7 @@ func runHotRestartPacketTestProcess(t *testing.T, testCase hotRestartPacketTestP
 		select {
 		case err = <-done:
 		case <-time.After(5 * time.Second):
-			t.Fatalf("%s direct child did not exit within 5s after process-group kill (kill error: %v); output:\n%s", testCase.name, killErr, output.String())
+			t.Fatalf("%s direct child did not exit within 5s after process-group kill (%v); output:\n%s", testCase.name, killErr, output.String())
 		}
 		groupErr := waitHotRestartPacketProcessGroupGone(processGroupID, 5*time.Second)
 		if killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
@@ -94,10 +98,15 @@ func runHotRestartPacketTestProcess(t *testing.T, testCase hotRestartPacketTestP
 		t.Fatalf("%s child timed out after %s; process group terminated and direct child reaped: %v; output:\n%s", testCase.name, timeout, err, output.String())
 	}
 	if err != nil {
-		t.Fatalf("%s child failed: %v; output:\n%s", testCase.name, err, output.String())
+		cleanupErr := terminateHotRestartPacketProcessGroup(cmd.Process.Pid)
+		t.Fatalf("%s child failed: %v; process-group cleanup: %v; output:\n%s", testCase.name, err, cleanupErr, output.String())
 	}
 	if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
 		t.Fatalf("%s child was not reaped", testCase.name)
+	}
+	if groupErr := waitHotRestartPacketProcessGroupGone(cmd.Process.Pid, 5*time.Second); groupErr != nil {
+		cleanupErr := terminateHotRestartPacketProcessGroup(cmd.Process.Pid)
+		t.Fatalf("%s descendants remained after successful child exit: %v; process-group cleanup: %v; output:\n%s", testCase.name, groupErr, cleanupErr, output.String())
 	}
 	outputText := output.String()
 	if !strings.Contains(outputText, "ok  ") && !strings.Contains(outputText, "ok\t") {
@@ -110,9 +119,50 @@ func runHotRestartPacketTestProcess(t *testing.T, testCase hotRestartPacketTestP
 	}
 }
 
+func terminateHotRestartPacketProcessGroup(processGroupID int) error {
+	killErr := syscall.Kill(-processGroupID, syscall.SIGKILL)
+	if killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+		return fmt.Errorf("kill process group %d: %w", processGroupID, killErr)
+	}
+	if groupErr := waitHotRestartPacketProcessGroupGone(processGroupID, 5*time.Second); groupErr != nil {
+		return groupErr
+	}
+	return nil
+}
+
+func TestHotRestartPacketFailedChildCleansProcessGroup(t *testing.T) {
+	if err := enableHotRestartPacketChildSubreaper(); err != nil {
+		t.Fatalf("enable child subreaper: %v", err)
+	}
+	cmd := exec.Command("sh", "-c", "trap '' HUP; sleep 30 & exit 7")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start failed child fixture: %v", err)
+	}
+	processGroupID := cmd.Process.Pid
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("failed child fixture unexpectedly succeeded")
+	}
+	if err := terminateHotRestartPacketProcessGroup(processGroupID); err != nil {
+		t.Fatalf("clean failed child process group: %v", err)
+	}
+}
+
+func enableHotRestartPacketChildSubreaper() error {
+	const prSetChildSubreaper = 36
+	_, _, errno := syscall.Syscall6(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0, 0, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 func waitHotRestartPacketProcessGroupGone(processGroupID int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
+		if err := reapHotRestartPacketProcessGroup(processGroupID); err != nil {
+			return err
+		}
 		err := syscall.Kill(-processGroupID, 0)
 		if errors.Is(err, syscall.ESRCH) {
 			return nil
@@ -124,6 +174,20 @@ func waitHotRestartPacketProcessGroupGone(processGroupID int, timeout time.Durat
 			return fmt.Errorf("process group %d still exists after %s", processGroupID, timeout)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func reapHotRestartPacketProcessGroup(processGroupID int) error {
+	for {
+		var status syscall.WaitStatus
+		pid, err := syscall.Wait4(-processGroupID, &status, syscall.WNOHANG, nil)
+		if pid > 0 {
+			continue
+		}
+		if err != nil && !errors.Is(err, syscall.ECHILD) {
+			return fmt.Errorf("reap process group %d: %w", processGroupID, err)
+		}
+		return nil
 	}
 }
 
