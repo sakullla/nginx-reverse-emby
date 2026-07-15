@@ -70,6 +70,7 @@ var runControlPlaneFromEnv = func() error {
 	service.ManagedCertificateDispatcher().SetBaseContext(ctx)
 	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
 	startTrafficCleanupLoop(ctx, cfg, nil)
+	startRevisionRetentionLoop(ctx, cfg, nil)
 
 	application, err := newControlPlaneApp(cfg, nil)
 	if err != nil {
@@ -312,6 +313,7 @@ var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Conf
 var managedCertificateAutoRenewInitialDelay = 10 * time.Second
 var managedCertificateIssuanceShutdownTimeout = 30 * time.Second
 var trafficCleanupInitialDelay = 30 * time.Second
+var revisionRetentionInterval = 24 * time.Hour
 
 func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger) {
 	if !cfg.ManagedDNSCertificatesEnabled || cfg.ManagedCertificateRenewInterval <= 0 {
@@ -428,6 +430,68 @@ func startTrafficCleanupLoop(ctx context.Context, cfg config.Config, logger *log
 			}
 		}
 	}()
+}
+
+type revisionRetentionStore interface {
+	PruneRevisionHistory(context.Context, storage.RevisionRetentionPolicy) (storage.RevisionPruneResult, error)
+	Close() error
+}
+
+var openRevisionRetentionStore = func(cfg config.Config) (revisionRetentionStore, error) {
+	return openConfiguredStore(cfg)
+}
+
+var runRevisionRetentionPass = func(ctx context.Context, cfg config.Config) error {
+	store, err := openRevisionRetentionStore(cfg)
+	if err != nil {
+		return fmt.Errorf("open revision retention store: %w", err)
+	}
+	_, pruneErr := store.PruneRevisionHistory(ctx, storage.RevisionRetentionPolicy{})
+	closeErr := store.Close()
+	if pruneErr != nil {
+		pruneErr = fmt.Errorf("prune revision history: %w", pruneErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close revision retention store: %w", closeErr)
+	}
+	return errors.Join(pruneErr, closeErr)
+}
+
+func startRevisionRetentionLoop(ctx context.Context, cfg config.Config, logger *log.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	if logger == nil {
+		logger = log.Default()
+	}
+	interval := revisionRetentionInterval
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if err := runRevisionRetentionPass(ctx, cfg); err != nil && ctx.Err() == nil {
+			logger.Printf("[revision-retention] startup pass failed: %v", err)
+		}
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := runRevisionRetentionPass(ctx, cfg); err != nil && ctx.Err() == nil {
+					logger.Printf("[revision-retention] periodic pass failed: %v", err)
+				}
+			}
+		}
+	}()
+	return done
 }
 
 func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error) {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -974,6 +975,129 @@ func TestStartTrafficCleanupLoopSkipsWhenDisabled(t *testing.T) {
 	case <-called:
 		t.Fatal("traffic cleanup pass ran while traffic stats disabled")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+type revisionRetentionStoreStub struct {
+	policy     storage.RevisionRetentionPolicy
+	pruneCalls int
+	closeCalls int
+	pruneErr   error
+	closeErr   error
+}
+
+func (s *revisionRetentionStoreStub) PruneRevisionHistory(_ context.Context, policy storage.RevisionRetentionPolicy) (storage.RevisionPruneResult, error) {
+	s.policy = policy
+	s.pruneCalls++
+	return storage.RevisionPruneResult{}, s.pruneErr
+}
+
+func (s *revisionRetentionStoreStub) Close() error {
+	s.closeCalls++
+	return s.closeErr
+}
+
+func TestRunRevisionRetentionPassUsesDefaultPolicyAndAlwaysClosesStore(t *testing.T) {
+	previousOpen := openRevisionRetentionStore
+	t.Cleanup(func() { openRevisionRetentionStore = previousOpen })
+
+	store := &revisionRetentionStoreStub{
+		pruneErr: errors.New("prune failed"),
+		closeErr: errors.New("close failed"),
+	}
+	openRevisionRetentionStore = func(config.Config) (revisionRetentionStore, error) {
+		return store, nil
+	}
+
+	err := runRevisionRetentionPass(context.Background(), config.Default())
+	if err == nil || !strings.Contains(err.Error(), "prune revision history: prune failed") || !strings.Contains(err.Error(), "close revision retention store: close failed") {
+		t.Fatalf("runRevisionRetentionPass() error = %v, want prune and close failures", err)
+	}
+	if store.pruneCalls != 1 || store.closeCalls != 1 {
+		t.Fatalf("calls = prune:%d close:%d, want 1/1", store.pruneCalls, store.closeCalls)
+	}
+	if store.policy != (storage.RevisionRetentionPolicy{}) {
+		t.Fatalf("policy = %+v, want storage defaults", store.policy)
+	}
+
+	openRevisionRetentionStore = func(config.Config) (revisionRetentionStore, error) {
+		return nil, errors.New("open failed")
+	}
+	err = runRevisionRetentionPass(context.Background(), config.Default())
+	if err == nil || !strings.Contains(err.Error(), "open revision retention store: open failed") {
+		t.Fatalf("runRevisionRetentionPass(open) error = %v", err)
+	}
+}
+
+func TestStartRevisionRetentionLoopRunsStartupRetriesAndStopsOnCancel(t *testing.T) {
+	previousRunner := runRevisionRetentionPass
+	previousInterval := revisionRetentionInterval
+	t.Cleanup(func() {
+		runRevisionRetentionPass = previousRunner
+		revisionRetentionInterval = previousInterval
+	})
+
+	var calls atomic.Int32
+	called := make(chan int32, 4)
+	runRevisionRetentionPass = func(context.Context, config.Config) error {
+		call := calls.Add(1)
+		called <- call
+		if call == 1 {
+			return errors.New("startup prune failed")
+		}
+		return nil
+	}
+	revisionRetentionInterval = 10 * time.Millisecond
+	var logs bytes.Buffer
+	logger := log.New(&logs, "", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := startRevisionRetentionLoop(ctx, config.Default(), logger)
+
+	for want := int32(1); want <= 2; want++ {
+		select {
+		case got := <-called:
+			if got != want {
+				t.Fatalf("retention call = %d, want %d", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for retention call %d", want)
+		}
+	}
+	if !strings.Contains(logs.String(), "startup") || !strings.Contains(logs.String(), "startup prune failed") {
+		t.Fatalf("retention logs = %q, want startup failure context", logs.String())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retention loop did not stop after context cancellation")
+	}
+	stoppedAt := calls.Load()
+	time.Sleep(3 * revisionRetentionInterval)
+	if calls.Load() != stoppedAt {
+		t.Fatalf("retention calls advanced after cancellation: %d -> %d", stoppedAt, calls.Load())
+	}
+}
+
+func TestRunControlPlaneFromEnvWiresRevisionRetentionBeforeRuntimeModeBranch(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(source)
+	start := strings.Index(text, "var runControlPlaneFromEnv")
+	end := strings.Index(text, "type migrateStorageCommand")
+	if start < 0 || end <= start {
+		t.Fatalf("runControlPlaneFromEnv block not found")
+	}
+	block := text[start:end]
+	const call = "startRevisionRetentionLoop(ctx, cfg, nil)"
+	if strings.Count(block, call) != 1 {
+		t.Fatalf("runControlPlaneFromEnv retention wiring count = %d, want 1", strings.Count(block, call))
+	}
+	if strings.Index(block, call) > strings.Index(block, "newControlPlaneApp(cfg, nil)") {
+		t.Fatal("revision retention must start before local/remote app construction")
 	}
 }
 
