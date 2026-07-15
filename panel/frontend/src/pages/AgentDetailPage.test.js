@@ -7,6 +7,7 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import AgentDetailPage from './AgentDetailPage.vue'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import StatCard from '../components/base/StatCard.vue'
+import { recordAcceptedOperation, resetOperations } from '../stores/operations'
 
 let routeParams
 let systemInfo
@@ -156,6 +157,7 @@ async function expandSection(wrapper, title) {
 }
 
 beforeEach(() => {
+  resetOperations()
   routeParams = { id: 'edge-1' }
   systemInfo = { traffic_stats_enabled: true, master_register_token: 'test-token' }
   mockHttpRules = []
@@ -226,6 +228,22 @@ beforeEach(() => {
 })
 
 describe('AgentDetailPage', () => {
+  it('restores accepted mutation status after navigation or reload', async () => {
+    recordAcceptedOperation({
+      operation_id: 'operation-page',
+      status_url: '/panel-api/operations/operation-page',
+      agent_id: 'edge-1',
+      desired_revision: 2,
+      apply_status: 'pending'
+    })
+
+    const wrapper = await mountPage()
+
+    expect(wrapper.get('[aria-label="配置生效状态"]').text()).toContain('已保存，等待生效')
+    expect(wrapper.text()).toContain('revision 2')
+    wrapper.unmount()
+  })
+
   it('renders status bar with name, status badge, mode badge and meta chips', async () => {
     agentRecord.status = 'online'
     agentRecord.mode = 'master'

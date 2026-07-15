@@ -24,6 +24,8 @@
       </div>
     </div>
 
+    <OperationStatusList />
+
     <ResourceListFilterBar
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
@@ -160,6 +162,7 @@ import {
 import { fetchAllAgentsCertificates } from '../api'
 import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 
 const route = useRoute()
 const router = useRouter()

@@ -5,6 +5,8 @@
       <RouterLink to="/agents" class="back-link">← {{ detailLabels.backToAgents }}</RouterLink>
     </div>
 
+    <OperationStatusList />
+
     <BaseListCard class="agent-detail__summary-card agent-detail__panel" :title="agent.name" :status="statusTone" :clickable="false">
       <template #header-left>
         <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
@@ -574,6 +576,7 @@ import TrafficPolicyForm from '../components/traffic/TrafficPolicyForm.vue'
 import TrafficHistoryManager from '../components/traffic/TrafficHistoryManager.vue'
 import TrafficCalibrateModal from '../components/traffic/TrafficCalibrateModal.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 
 const route = useRoute()
 const router = useRouter()

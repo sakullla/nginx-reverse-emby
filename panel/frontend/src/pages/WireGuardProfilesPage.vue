@@ -17,6 +17,8 @@
       </div>
     </div>
 
+    <OperationStatusList />
+
     <ResourceListFilterBar
       v-if="!selectedProfileId"
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
@@ -232,6 +234,7 @@ import WireGuardClientList from '../components/wireguard/WireGuardClientList.vue
 import WireGuardClientForm from '../components/wireguard/WireGuardClientForm.vue'
 import WireGuardClientQRModal from '../components/wireguard/WireGuardClientQRModal.vue'
 import WireGuardPeerList from '../components/wireguard/WireGuardPeerList.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 
 const route = useRoute()
 const router = useRouter()

@@ -17,6 +17,8 @@
       </div>
     </div>
 
+    <OperationStatusList />
+
     <ResourceListFilterBar
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
@@ -149,6 +151,7 @@ import ListPagination from '../components/common/ListPagination.vue'
 import RelayTable from '../components/relay/RelayTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 

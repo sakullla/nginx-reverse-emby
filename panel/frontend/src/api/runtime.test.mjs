@@ -49,6 +49,30 @@ describe('runtime egress profile payload normalization', () => {
   })
 })
 
+describe('runtime accepted mutation envelopes', () => {
+  it('keeps normalized resource fields and operation metadata', async () => {
+    requests.post.mockResolvedValueOnce({ data: {
+      rule: { id: 12, frontend_url: 'https://accepted.example.test', backends: [{ url: 'http://origin:8096' }] },
+      operation_id: 'operation-12',
+      status_url: '/panel-api/operations/operation-12',
+      agent_id: 'edge-1',
+      desired_revision: 12,
+      apply_status: 'pending'
+    } })
+
+    const result = await runtime.createRule('edge-1', {
+      frontend_url: 'https://accepted.example.test',
+      backends: [{ url: 'http://origin:8096' }]
+    })
+
+    expect(result).toMatchObject({
+      id: 12,
+      backends: [{ url: 'http://origin:8096' }],
+      operation: { operation_id: 'operation-12', ui_status: 'pending' }
+    })
+  })
+})
+
 describe('buildListQueryParams', () => {
   it('omits agent_id for blank and all-agents filters', () => {
     expect(runtime.buildListQueryParams({})).toEqual({ page: 1, page_size: 20 })

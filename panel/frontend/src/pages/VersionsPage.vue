@@ -8,6 +8,8 @@
       <button class='btn btn-primary' @click='openCreate'>新增策略</button>
     </div>
 
+    <OperationStatusList />
+
     <QuickAgentSelect
       :agentId="selectedAgentId"
       :agents="allAgents"
@@ -123,6 +125,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useAgent } from '../context/AgentContext'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import QuickAgentSelect from '../components/QuickAgentSelect.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 
 const { data: policiesData, isLoading } = useVersionPolicies()
 const createPolicy = useCreateVersionPolicy()

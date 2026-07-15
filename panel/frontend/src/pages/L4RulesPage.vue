@@ -23,6 +23,8 @@
       </div>
     </div>
 
+    <OperationStatusList />
+
     <ResourceListFilterBar
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
@@ -200,6 +202,7 @@ import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import L4RuleTable from '../components/l4/L4RuleTable.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { messageStore } from '../stores/messages'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'

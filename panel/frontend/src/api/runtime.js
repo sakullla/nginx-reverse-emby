@@ -1,7 +1,21 @@
 import { api, longRunningRequest } from './client'
+import { operationFromEnvelope, preserveMutationEnvelope } from './operations'
+import { recordAcceptedOperation } from '../stores/operations'
 export { consumeAgentMonitorStream } from './agentMonitor'
 
 const SUPPORTED_LOAD_BALANCING_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
+
+function mutationResource(data, resourceKey, normalizer) {
+  const result = preserveMutationEnvelope(data, resourceKey, normalizer)
+  recordAcceptedOperation(result?.operation)
+  return result
+}
+
+function mutationEnvelope(data) {
+  const operation = operationFromEnvelope(data)
+  recordAcceptedOperation(operation)
+  return operation ? { ...data, operation } : data
+}
 
 function normalizeHttpBackends(rule = {}) {
   if (Array.isArray(rule.backends) && rule.backends.length > 0) {
@@ -384,17 +398,17 @@ export async function fetchEgressProfiles() {
 
 export async function createEgressProfile(payload) {
   const { data } = await api.post('/egress-profiles', normalizeEgressProfilePayload(payload))
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function updateEgressProfile(id, payload) {
   const { data } = await api.put(`/egress-profiles/${encodeURIComponent(id)}`, normalizeEgressProfilePayload(payload))
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function deleteEgressProfile(id) {
   const { data } = await api.delete(`/egress-profiles/${encodeURIComponent(id)}`)
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function fetchAgentStats(agentId) {
@@ -404,7 +418,7 @@ export async function fetchAgentStats(agentId) {
 
 export async function updateAgent(agentId, payload) {
   const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}`, payload)
-  return data.agent
+  return mutationResource(data, 'agent')
 }
 
 export async function fetchRules(agentId) {
@@ -421,7 +435,7 @@ export async function createRule(agentId, payloadOrFrontend) {
     payload,
     longRunningRequest
   )
-  return normalizeHttpRule(data.rule)
+  return mutationResource(data, 'rule', normalizeHttpRule)
 }
 
 export async function updateRule(agentId, id, payloadOrFrontend) {
@@ -433,7 +447,7 @@ export async function updateRule(agentId, id, payloadOrFrontend) {
     payload,
     longRunningRequest
   )
-  return normalizeHttpRule(data.rule)
+  return mutationResource(data, 'rule', normalizeHttpRule)
 }
 
 export async function deleteRule(agentId, id) {
@@ -441,7 +455,7 @@ export async function deleteRule(agentId, id) {
     `/agents/${encodeURIComponent(agentId)}/rules/${id}`,
     longRunningRequest
   )
-  return data.rule
+  return mutationResource(data, 'rule')
 }
 
 export async function diagnoseRule(agentId, ruleId) {
@@ -450,7 +464,7 @@ export async function diagnoseRule(agentId, ruleId) {
     {},
     longRunningRequest
   )
-  return data
+  return mutationEnvelope(data)
 }
 
 export async function fetchAgentTask(agentId, taskId) {
@@ -464,17 +478,17 @@ export async function applyConfig(agentId) {
     {},
     longRunningRequest
   )
-  return data
+  return mutationEnvelope(data)
 }
 
 export async function deleteAgent(agentId) {
   const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}`)
-  return data.agent
+  return mutationResource(data, 'agent')
 }
 
 export async function renameAgent(agentId, newName) {
   const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}`, { name: newName })
-  return data.agent
+  return mutationResource(data, 'agent')
 }
 
 export async function fetchAllAgentsRules(agentIds) {
@@ -518,23 +532,23 @@ export async function fetchL4Rules(agentId) {
 export async function createL4Rule(agentId, payload) {
   const normalizedPayload = normalizeL4RulePayload(payload, { includeRelayDefaults: true })
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/l4-rules`, normalizedPayload, longRunningRequest)
-  return normalizeL4Rule(data.rule)
+  return mutationResource(data, 'rule', normalizeL4Rule)
 }
 
 export async function updateL4Rule(agentId, id, payload) {
   const normalizedPayload = normalizeL4RulePayload(payload)
   const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, normalizedPayload, longRunningRequest)
-  return normalizeL4Rule(data.rule)
+  return mutationResource(data, 'rule', normalizeL4Rule)
 }
 
 export async function deleteL4Rule(agentId, id) {
   const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, longRunningRequest)
-  return data.rule
+  return mutationResource(data, 'rule')
 }
 
 export async function diagnoseL4Rule(agentId, ruleId) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/l4-rules/${encodeURIComponent(ruleId)}/diagnose`, {}, longRunningRequest)
-  return data
+  return mutationEnvelope(data)
 }
 
 export async function fetchCertificates(agentId) {
@@ -544,22 +558,22 @@ export async function fetchCertificates(agentId) {
 
 export async function createCertificate(agentId, payload) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/certificates`, payload, longRunningRequest)
-  return data.certificate
+  return mutationResource(data, 'certificate')
 }
 
 export async function updateCertificate(agentId, id, payload) {
   const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/certificates/${id}`, payload, longRunningRequest)
-  return data.certificate
+  return mutationResource(data, 'certificate')
 }
 
 export async function deleteCertificate(agentId, id) {
   const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}/certificates/${id}`, longRunningRequest)
-  return data.certificate
+  return mutationResource(data, 'certificate')
 }
 
 export async function issueCertificate(agentId, id) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/certificates/${id}/issue`, {}, longRunningRequest)
-  return data.certificate
+  return mutationResource(data, 'certificate')
 }
 
 export async function fetchAllAgentsCertificates(agentIds) {
@@ -625,7 +639,7 @@ export async function createRelayListener(agentId, payload) {
     normalizedPayload,
     longRunningRequest
   )
-  return data.listener
+  return mutationResource(data, 'listener')
 }
 
 export async function updateRelayListener(agentId, id, payload) {
@@ -635,7 +649,7 @@ export async function updateRelayListener(agentId, id, payload) {
     normalizedPayload,
     longRunningRequest
   )
-  return data.listener
+  return mutationResource(data, 'listener')
 }
 
 export async function deleteRelayListener(agentId, id) {
@@ -643,7 +657,7 @@ export async function deleteRelayListener(agentId, id) {
     `/agents/${encodeURIComponent(agentId)}/relay-listeners/${encodeURIComponent(id)}`,
     longRunningRequest
   )
-  return data.listener
+  return mutationResource(data, 'listener')
 }
 
 export async function fetchWireGuardProfiles(agentId) {
@@ -657,7 +671,7 @@ export async function createWireGuardProfile(agentId, payload) {
     payload,
     longRunningRequest
   )
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function updateWireGuardProfile(agentId, id, payload) {
@@ -666,7 +680,7 @@ export async function updateWireGuardProfile(agentId, id, payload) {
     payload,
     longRunningRequest
   )
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function deleteWireGuardProfile(agentId, id) {
@@ -674,7 +688,7 @@ export async function deleteWireGuardProfile(agentId, id) {
     `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
     longRunningRequest
   )
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function fetchWireGuardClients(agentId, profileId) {
@@ -690,7 +704,7 @@ export async function createWireGuardClient(agentId, profileId, payload) {
     payload,
     longRunningRequest
   )
-  return data.client
+  return mutationResource(data, 'client')
 }
 
 export async function updateWireGuardClient(agentId, profileId, clientId, payload) {
@@ -699,7 +713,7 @@ export async function updateWireGuardClient(agentId, profileId, clientId, payloa
     payload,
     longRunningRequest
   )
-  return data.client
+  return mutationResource(data, 'client')
 }
 
 export async function deleteWireGuardClient(agentId, profileId, clientId) {
@@ -707,7 +721,7 @@ export async function deleteWireGuardClient(agentId, profileId, clientId) {
     `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
     longRunningRequest
   )
-  return data.client
+  return mutationResource(data, 'client')
 }
 
 export async function fetchWireGuardClientConfig(agentId, profileId, clientId) {
@@ -740,7 +754,7 @@ export async function importWireGuardURIProfile(agentId, uri, name = '') {
     payload,
     longRunningRequest
   )
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function fetchVersionPolicies() {
@@ -750,17 +764,17 @@ export async function fetchVersionPolicies() {
 
 export async function createVersionPolicy(payload) {
   const { data } = await api.post('/version-policies', payload, longRunningRequest)
-  return data.policy
+  return mutationResource(data, 'policy')
 }
 
 export async function updateVersionPolicy(id, payload) {
   const { data } = await api.put(`/version-policies/${encodeURIComponent(id)}`, payload, longRunningRequest)
-  return data.policy
+  return mutationResource(data, 'policy')
 }
 
 export async function deleteVersionPolicy(id) {
   const { data } = await api.delete(`/version-policies/${encodeURIComponent(id)}`, longRunningRequest)
-  return data.policy
+  return mutationResource(data, 'policy')
 }
 
 export async function exportBackupSelective(include) {
@@ -797,7 +811,7 @@ export async function fetchTrafficPolicy(agentId) {
 
 export async function updateTrafficPolicy(agentId, patch) {
   const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}/traffic-policy`, patch)
-  return data.policy
+  return mutationResource(data, 'policy')
 }
 
 export async function fetchTrafficSummary(agentId) {
@@ -817,12 +831,12 @@ export async function fetchTrafficTrend(agentId, params = {}) {
 
 export async function calibrateTraffic(agentId, payload) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-calibration`, payload)
-  return data.summary
+  return mutationResource(data, 'summary')
 }
 
 export async function cleanupTraffic(agentId) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-cleanup`)
-  return data.result
+  return mutationResource(data, 'result')
 }
 
 export async function fetchTrafficOverview(agentId, granularity) {

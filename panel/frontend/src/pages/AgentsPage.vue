@@ -27,6 +27,8 @@
       </div>
     </div>
 
+    <OperationStatusList />
+
     <!-- Filter Bar -->
     <AgentFilterBar
       v-model:view="view"
@@ -160,6 +162,7 @@ import AgentFilterBar from '../components/AgentFilterBar.vue'
 import AgentMonitorCard from '../components/AgentMonitorCard.vue'
 import AgentTable from '../components/AgentTable.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
 import { useAgent } from '../context/AgentContext'
 import { messageStore } from '../stores/messages'
