@@ -34,7 +34,6 @@
 
 <script setup>
 import { computed } from 'vue'
-import { useOperationStatus } from '../../hooks/useOperationStatus'
 
 const props = defineProps({
   operation: { type: Object, required: true },
@@ -42,8 +41,6 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['retry', 'rollback'])
-
-useOperationStatus(computed(() => props.operation.operation_id))
 
 const labels = {
   pending: '已保存，等待生效',

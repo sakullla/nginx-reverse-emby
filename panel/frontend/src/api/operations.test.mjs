@@ -48,6 +48,11 @@ describe('operation API contract', () => {
       agents: [{ drain_status: 'drained' }]
     }).ui_status).toBe('drained')
     expect(operations.normalizeOperationStatus({
+      operation_id: 'op-partial-drain',
+      apply_status: 'applied',
+      agents: [{ drain_status: 'drained' }, { drain_status: '' }]
+    })).toMatchObject({ ui_status: 'applied', terminal: false })
+    expect(operations.normalizeOperationStatus({
       operation_id: 'op-failed',
       apply_status: 'failed',
       error_code: 'apply_failed',

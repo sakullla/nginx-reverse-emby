@@ -20,7 +20,12 @@ export function normalizeOperationStatus(payload = {}) {
   const failedAgent = agents.find((agent) => agent.error_code || agent.error_message) || {}
   let uiStatus = applyStatus
   if (applyStatus === 'applied' && drainStatuses.includes('draining')) uiStatus = 'draining'
-  if (applyStatus === 'applied' && drainStatuses.length > 0 && drainStatuses.every((status) => ['drained', 'forced'].includes(status))) uiStatus = 'drained'
+  if (
+    applyStatus === 'applied'
+    && agents.length > 0
+    && drainStatuses.length === agents.length
+    && drainStatuses.every((status) => ['drained', 'forced'].includes(status))
+  ) uiStatus = 'drained'
   if (payload.degraded === true || applyStatus === 'degraded') uiStatus = 'degraded'
   return {
     operation_id: text(payload.operation_id),
