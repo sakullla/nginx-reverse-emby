@@ -76,6 +76,9 @@ func TestHTTP3ProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	writeHTTPHandoffPacket(t, newClient, "new-forwarded")
 	readHTTPHandoffPacket(t, childLease.packet, "new-forwarded")
 
+	if err := child.close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := parentRegistry.Resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +86,55 @@ func TestHTTP3ProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	defer afterAbort.Close()
 	writeHTTPHandoffPacket(t, afterAbort, "after-abort")
 	readHTTPHandoffPacket(t, parentLease.packet, "after-abort")
+
+	secondBundle, err := parentRegistry.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondBundle.Close()
+	successorRegistry := ingress.NewProcessPacketRegistry()
+	successorSet, err := successorRegistry.Import(secondBundle.Descriptors, secondBundle.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successorSet.Close()
+	defer successorRegistry.Close()
+	successor := newHTTPIngressManager()
+	successor.processPackets = successorRegistry
+	successorLease, err := successor.acquire(t.Context(), "successor", spec, Providers{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successorLease.release()
+	defer successor.close()
+	if _, err := successorLease.activate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.ValidateImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.BeginForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.ActivateImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.FlushForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.TakeAuthorityImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.FinalizeForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	afterAuthority := dialHTTPHandoffClient(t, parentLease.binding.packet.LocalAddr())
+	defer afterAuthority.Close()
+	writeHTTPHandoffPacket(t, afterAuthority, "after-authority")
+	readHTTPHandoffPacket(t, successorLease.packet, "after-authority")
 }
 
 func TestHTTPIngressConsumesProcessPacketDescriptor(t *testing.T) {

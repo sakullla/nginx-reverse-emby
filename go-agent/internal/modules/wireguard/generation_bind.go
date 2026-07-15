@@ -467,15 +467,26 @@ func (b *wireGuardBindBroker) releaseEndpoint(endpoint *wireGuardBindEndpoint) {
 	}
 	b.mu.Lock()
 	delete(b.endpoints, endpoint)
+	releasedReceivers := make([]uint32, 0)
 	for receiver, owner := range b.receivers {
 		if owner == endpoint {
+			releasedReceivers = append(releasedReceivers, receiver)
 			delete(b.receivers, receiver)
 		}
 	}
+	releasedRemotes := make([]string, 0)
 	for remote := range b.remotes {
 		b.removeRemoteEndpointLocked(remote, endpoint)
+		if len(b.remotes[remote]) == 0 {
+			releasedRemotes = append(releasedRemotes, remote)
+		}
 	}
 	b.mu.Unlock()
+	if releaser, ok := b.physical.(interface {
+		releaseAssociations([]uint32, []string)
+	}); ok {
+		releaser.releaseAssociations(releasedReceivers, releasedRemotes)
+	}
 }
 
 func (b *wireGuardBindBroker) close() error {

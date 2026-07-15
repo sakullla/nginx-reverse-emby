@@ -10,6 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
@@ -179,6 +180,27 @@ func TestConfiguredRuntimeInjectsProcessPacketRegistry(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "inherited packet descriptor") || !strings.Contains(err.Error(), "l4:") {
 		t.Fatalf("runtime.Apply() error = %v, want missing L4 process packet descriptor", err)
 	}
+}
+
+func TestConfigureProcessPacketRegistryInjectsSameRegistryIntoAllProductionConsumers(t *testing.T) {
+	registry := ingress.NewProcessPacketRegistry()
+	consumers := []*recordingPacketRegistryConsumer{{}, {}, {}, {}}
+	configureProcessPacketRegistry(registry, consumers[0], consumers[1], consumers[2], consumers[3])
+	for index, consumer := range consumers {
+		if consumer.registry != registry || consumer.calls != 1 {
+			t.Fatalf("consumer %d registry=%p calls=%d, want registry=%p calls=1", index, consumer.registry, consumer.calls, registry)
+		}
+	}
+}
+
+type recordingPacketRegistryConsumer struct {
+	registry *ingress.ProcessPacketRegistry
+	calls    int
+}
+
+func (c *recordingPacketRegistryConsumer) SetProcessPacketRegistry(registry *ingress.ProcessPacketRegistry) {
+	c.registry = registry
+	c.calls++
 }
 
 func TestDiagnoseUsesDiagnosticModuleHandler(t *testing.T) {

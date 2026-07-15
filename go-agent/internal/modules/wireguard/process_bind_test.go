@@ -74,6 +74,9 @@ func TestProcessWireGuardBindHandoffPinsOldAndForwardsNew(t *testing.T) {
 	sendWireGuardInitiation(t, newClient, 21)
 	readWireGuardProcessPacket(t, childReceive[0], 21)
 
+	if err := child.Close(); err != nil {
+		t.Fatalf("child Close() error = %v", err)
+	}
 	if err := parentRegistry.Resume(); err != nil {
 		t.Fatalf("Resume() error = %v", err)
 	}
@@ -81,6 +84,53 @@ func TestProcessWireGuardBindHandoffPinsOldAndForwardsNew(t *testing.T) {
 	defer afterAbort.Close()
 	sendWireGuardInitiation(t, afterAbort, 31)
 	readWireGuardProcessPacket(t, parentReceive[0], 31)
+
+	secondBundle, err := parentRegistry.Export()
+	if err != nil {
+		t.Fatalf("second Export() error = %v", err)
+	}
+	defer secondBundle.Close()
+	successorRegistry := ingress.NewProcessPacketRegistry()
+	successorSet, err := successorRegistry.Import(secondBundle.Descriptors, secondBundle.Files)
+	if err != nil {
+		t.Fatalf("successor Import() error = %v", err)
+	}
+	defer successorSet.Close()
+	defer successorRegistry.Close()
+	successor := newProcessWireGuardBind(successorRegistry, identity, []string{"127.0.0.1"})
+	successorReceive, successorPort, err := successor.Open(port)
+	if err != nil {
+		t.Fatalf("successor Open() error = %v", err)
+	}
+	defer successor.Close()
+	if successorPort != port {
+		t.Fatalf("successor port = %d, want %d", successorPort, port)
+	}
+	if err := successorRegistry.ValidateImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.BeginForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.ActivateImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.FlushForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.TakeAuthorityImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.FinalizeForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	afterAuthority := dialWireGuardProcessClient(t, port)
+	defer afterAuthority.Close()
+	sendWireGuardInitiation(t, afterAuthority, 41)
+	readWireGuardProcessPacket(t, successorReceive[0], 41)
 }
 
 func TestProcessWireGuardBindCarriesProductionPackets(t *testing.T) {
@@ -203,6 +253,39 @@ func TestProcessWireGuardClassifierKeepsActiveReceiverAtLimitAcrossRoaming(t *te
 	})
 	if !ok || key != originalKey {
 		t.Fatalf("Classify() = %q, %t, want active receiver pin %q", key, ok, originalKey)
+	}
+
+	receivers := make([]uint32, 0, wireGuardAssociationLimit)
+	for receiver := uint32(1); receiver <= wireGuardAssociationLimit; receiver++ {
+		receivers = append(receivers, receiver)
+	}
+	classifier.releaseAssociations(receivers, []string{originalRemote.String()})
+	if len(classifier.receivers) != 0 || len(classifier.remotes) != 0 {
+		t.Fatalf("releaseAssociations() left %d receivers and %d remotes", len(classifier.receivers), len(classifier.remotes))
+	}
+	if err := classifier.observeSend([][]byte{newInitiation}, originalRemote); err != nil {
+		t.Fatalf("observeSend() after lifecycle release error = %v", err)
+	}
+}
+
+func TestProcessWireGuardClassifierDropsUnknownPeerWhenAllPinsAreActive(t *testing.T) {
+	classifier := newProcessWireGuardClassifier()
+	for index := 0; index < wireGuardAssociationLimit; index++ {
+		remote := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, byte(index >> 8), byte(index), 1}), uint16(10000+index))
+		key := ingress.AssociationKey("wireguard|" + remote.String())
+		classifier.remotes[remote.String()] = key
+		classifier.remoteFIFO = append(classifier.remoteFIFO, remote.String())
+		classifier.receivers[uint32(index+1)] = key
+	}
+	unknown := &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 51820}
+	payload := make([]byte, wireGuardInitiationSize)
+	binary.LittleEndian.PutUint32(payload[:4], wireGuardMessageInitiation)
+	key, ok := classifier.Classify(payload, ingress.PacketMetadata{Network: "udp", RemoteAddr: unknown})
+	if !ok || key != ingress.AssociationKey("wireguard|"+unknown.String()) {
+		t.Fatalf("Classify() = %q, %t, want isolated overflow key", key, ok)
+	}
+	if classifier.admitInbound(payload, unknown) {
+		t.Fatal("unknown peer was admitted while every bounded association pin was active")
 	}
 }
 

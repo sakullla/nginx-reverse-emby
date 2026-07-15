@@ -25,10 +25,10 @@ func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	}
 	defer parentLease.release()
 	defer parent.close()
-	defer parentRegistry.Close()
 	if err := parentLease.activate(); err != nil {
 		t.Fatal(err)
 	}
+	defer parentRegistry.Close()
 	oldClient := dialRelayHandoffClient(t, parentLease.binding.packet.LocalAddr())
 	defer oldClient.Close()
 	writeRelayHandoffPacket(t, oldClient, "old-before")
@@ -76,6 +76,9 @@ func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	writeRelayHandoffPacket(t, newClient, "new-forwarded")
 	readRelayHandoffPacket(t, childLease.packet, "new-forwarded")
 
+	if err := child.close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := parentRegistry.Resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +86,55 @@ func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	defer afterAbort.Close()
 	writeRelayHandoffPacket(t, afterAbort, "after-abort")
 	readRelayHandoffPacket(t, parentLease.packet, "after-abort")
+
+	secondBundle, err := parentRegistry.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondBundle.Close()
+	successorRegistry := ingress.NewProcessPacketRegistry()
+	successorSet, err := successorRegistry.Import(secondBundle.Descriptors, secondBundle.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successorSet.Close()
+	defer successorRegistry.Close()
+	successor := newRelayIngressManager(nil)
+	successor.processPackets = successorRegistry
+	successorLease, err := successor.acquire(t.Context(), "successor", listener, "127.0.0.1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successorLease.release()
+	defer successor.close()
+	if err := successorLease.activate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.ValidateImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.BeginForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.ActivateImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.FlushForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.TakeAuthorityImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.FinalizeForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	afterAuthority := dialRelayHandoffClient(t, parentLease.binding.packet.LocalAddr())
+	defer afterAuthority.Close()
+	writeRelayHandoffPacket(t, afterAuthority, "after-authority")
+	readRelayHandoffPacket(t, successorLease.packet, "after-authority")
 }
 
 func TestRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
@@ -102,6 +154,17 @@ func TestRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
 	}
 	defer parentLease.release()
 	defer parent.close()
+	if err := parentLease.activate(); err != nil {
+		t.Fatal(err)
+	}
+	oldClient, err := net.Dial("tcp", parentLease.binding.stream.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldClient.Close()
+	oldServer := acceptRelayHandoffStream(t, parentLease.stream)
+	defer oldServer.Close()
+	requireRelayUOTFrame(t, oldClient, oldServer, "old-before")
 	bundle, err := parentStreams.Export()
 	if err != nil {
 		t.Fatal(err)
@@ -129,12 +192,45 @@ func TestRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
 	}
 	defer childLease.release()
 	defer child.close()
+	if err := childLease.activate(); err != nil {
+		t.Fatal(err)
+	}
 	if err := childStreams.ValidateImported(); err != nil {
 		t.Fatal(err)
 	}
 	if err := childPackets.ValidateImported(); err != nil {
 		t.Fatalf("UOT unexpectedly required a packet descriptor: %v", err)
 	}
+	if err := parentStreams.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err := childStreams.ActivateImported(); err != nil {
+		t.Fatal(err)
+	}
+	requireRelayUOTFrame(t, oldClient, oldServer, "old-during")
+	newClient, err := net.Dial("tcp", parentLease.binding.stream.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newClient.Close()
+	newServer := acceptRelayHandoffStream(t, childLease.stream)
+	defer newServer.Close()
+	requireRelayUOTFrame(t, newClient, newServer, "new-forwarded")
+
+	if err := child.close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentStreams.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	afterAbortClient, err := net.Dial("tcp", parentLease.binding.stream.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer afterAbortClient.Close()
+	afterAbortServer := acceptRelayHandoffStream(t, parentLease.stream)
+	defer afterAbortServer.Close()
+	requireRelayUOTFrame(t, afterAbortClient, afterAbortServer, "after-abort")
 }
 
 func TestRelayQUICIngressConsumesProcessPacketDescriptor(t *testing.T) {
@@ -189,5 +285,45 @@ func readRelayHandoffPacket(t *testing.T, endpoint *ingress.PacketEndpoint, want
 	wantPacket := relayTestQUICLongPacket([]byte(want))
 	if got := string(buffer[:n]); got != string(wantPacket) {
 		t.Fatalf("packet = %x, want %x", buffer[:n], wantPacket)
+	}
+}
+
+func acceptRelayHandoffStream(t *testing.T, listener net.Listener) net.Conn {
+	t.Helper()
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		conn, err := listener.Accept()
+		done <- result{conn: conn, err: err}
+	}()
+	select {
+	case accepted := <-done:
+		if accepted.err != nil {
+			t.Fatal(accepted.err)
+		}
+		return accepted.conn
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out accepting Relay UOT stream")
+		return nil
+	}
+}
+
+func requireRelayUOTFrame(t *testing.T, client net.Conn, server net.Conn, want string) {
+	t.Helper()
+	if err := server.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteUOTPacket(client, []byte(want)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadUOTPacket(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("UOT frame = %q, want %q", got, want)
 	}
 }

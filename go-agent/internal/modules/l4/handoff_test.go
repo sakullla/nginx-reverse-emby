@@ -79,6 +79,9 @@ func TestL4UDPProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	writeL4HandoffPacket(t, newClient, "new-forwarded")
 	readL4HandoffPacket(t, childLease.packet, "new-forwarded")
 
+	if err := child.close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := parentRegistry.Resume(); err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +89,56 @@ func TestL4UDPProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	defer afterAbort.Close()
 	writeL4HandoffPacket(t, afterAbort, "after-abort")
 	readL4HandoffPacket(t, parentLease.packet, "after-abort")
+
+	secondBundle, err := parentRegistry.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondBundle.Close()
+	successorRegistry := ingress.NewProcessPacketRegistry()
+	successorSet, err := successorRegistry.Import(secondBundle.Descriptors, secondBundle.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successorSet.Close()
+	defer successorRegistry.Close()
+	successor := newL4IngressManager()
+	successor.processPackets = successorRegistry
+	successorLease, err := successor.acquire(t.Context(), "successor", rule, &Server{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successorLease.release()
+	defer successor.close()
+	successorLease.binding.packet.SetSelector(nil)
+	if _, err := successorLease.binding.packet.Activate(successorLease.packet); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.ValidateImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.BeginForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.ActivateImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.FlushForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	if err := successorRegistry.TakeAuthorityImported(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parentRegistry.FinalizeForwarding(); err != nil {
+		t.Fatal(err)
+	}
+	afterAuthority := dialL4HandoffClient(t, parentLease.binding.packet.LocalAddr())
+	defer afterAuthority.Close()
+	writeL4HandoffPacket(t, afterAuthority, "after-authority")
+	readL4HandoffPacket(t, successorLease.packet, "after-authority")
 }
 
 func TestL4UDPIngressConsumesProcessPacketDescriptor(t *testing.T) {

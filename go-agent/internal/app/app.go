@@ -173,6 +173,25 @@ type configuredModules struct {
 	processPackets *ingress.ProcessPacketRegistry
 }
 
+type processPacketRegistryConsumer interface {
+	SetProcessPacketRegistry(*ingress.ProcessPacketRegistry)
+}
+
+var (
+	_ processPacketRegistryConsumer = (*modulehttp.Module)(nil)
+	_ processPacketRegistryConsumer = (*modulel4.Module)(nil)
+	_ processPacketRegistryConsumer = (*modulerelay.Module)(nil)
+	_ processPacketRegistryConsumer = (*modulewireguard.Module)(nil)
+)
+
+func configureProcessPacketRegistry(registry *ingress.ProcessPacketRegistry, consumers ...processPacketRegistryConsumer) {
+	for _, consumer := range consumers {
+		if consumer != nil {
+			consumer.SetProcessPacketRegistry(registry)
+		}
+	}
+}
+
 func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (configuredModules, error) {
 	registry := agentmodule.NewRegistry()
 	drain := core.NewGenerationDrain(nil)
@@ -204,17 +223,16 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 	processPackets := ingress.NewProcessPacketRegistry()
 	httpModule := modulehttp.NewModule(httpConfig)
 	httpModule.SetProcessStreamRegistry(processStreams)
-	httpModule.SetProcessPacketRegistry(processPackets)
 	relayModule := modulerelay.NewModule(relayConfig)
 	relayModule.SetProcessStreamRegistry(processStreams)
-	relayModule.SetProcessPacketRegistry(processPackets)
 	l4Module := modulel4.NewModule(l4Config)
 	l4Module.SetProcessStreamRegistry(processStreams)
-	l4Module.SetProcessPacketRegistry(processPackets)
 	wireGuardModule := configuredGenerationWireGuardModule(cfg, generations, generations)
+	packetConsumers := []processPacketRegistryConsumer{httpModule, l4Module, relayModule}
 	if managedWireGuard, ok := wireGuardModule.(*modulewireguard.Module); ok {
-		managedWireGuard.SetProcessPacketRegistry(processPackets)
+		packetConsumers = append(packetConsumers, managedWireGuard)
 	}
+	configureProcessPacketRegistry(processPackets, packetConsumers...)
 	modules := []agentmodule.Module{
 		certModule,
 		diagnosticModule,

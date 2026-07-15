@@ -29,9 +29,10 @@ type processWireGuardBind struct {
 }
 
 type processWireGuardSocket struct {
-	network  string
-	broker   *ingress.PacketBroker
-	endpoint *ingress.PacketEndpoint
+	network    string
+	broker     *ingress.PacketBroker
+	endpoint   *ingress.PacketEndpoint
+	classifier *processWireGuardClassifier
 }
 
 type processWireGuardSocketSpec struct {
@@ -119,7 +120,7 @@ func (b *processWireGuardBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, er
 		if selected == 0 {
 			selected = actual
 		}
-		socket := &processWireGuardSocket{network: spec.network, broker: broker, endpoint: endpoint}
+		socket := &processWireGuardSocket{network: spec.network, broker: broker, endpoint: endpoint, classifier: b.classifier}
 		opened = append(opened, socket)
 		receivers = append(receivers, processWireGuardReceiveFunc(socket))
 	}
@@ -168,17 +169,23 @@ func processWireGuardReceiveFunc(socket *processWireGuardSocket) conn.ReceiveFun
 		if socket == nil || socket.endpoint == nil || len(packets) == 0 || len(sizes) == 0 || len(endpoints) == 0 {
 			return 0, net.ErrClosed
 		}
-		n, remote, err := socket.endpoint.ReadFrom(packets[0])
-		if err != nil {
-			return 0, err
+		for {
+			n, remote, err := socket.endpoint.ReadFrom(packets[0])
+			if err != nil {
+				return 0, err
+			}
+			if socket.classifier != nil && !socket.classifier.admitInbound(packets[0][:n], remote) {
+				socket.broker.Release(ingress.AssociationKey("wireguard|" + remote.String()))
+				continue
+			}
+			addrPort, err := netip.ParseAddrPort(remote.String())
+			if err != nil {
+				return 0, err
+			}
+			sizes[0] = n
+			endpoints[0] = &conn.StdNetEndpoint{AddrPort: addrPort}
+			return 1, nil
 		}
-		addrPort, err := netip.ParseAddrPort(remote.String())
-		if err != nil {
-			return 0, err
-		}
-		sizes[0] = n
-		endpoints[0] = &conn.StdNetEndpoint{AddrPort: addrPort}
-		return 1, nil
 	}
 }
 
@@ -379,7 +386,7 @@ func (c *processWireGuardClassifier) rememberRemoteLocked(remote string) (ingres
 			}
 		}
 		if evictAt < 0 {
-			return ingress.AssociationKey("wireguard|overflow"), "", false
+			return ingress.AssociationKey("wireguard|" + remote), "", false
 		}
 		c.remoteFIFO = append(c.remoteFIFO[:evictAt], c.remoteFIFO[evictAt+1:]...)
 	}
@@ -387,6 +394,57 @@ func (c *processWireGuardClassifier) rememberRemoteLocked(remote string) (ingres
 	c.remotes[remote] = key
 	c.remoteFIFO = append(c.remoteFIFO, remote)
 	return key, evicted, true
+}
+
+func (c *processWireGuardClassifier) admitInbound(payload []byte, remote net.Addr) bool {
+	if c == nil || remote == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, receiver, ok := wireGuardPacketReceiver(payload); ok && c.receivers[receiver] != "" {
+		return true
+	}
+	return c.remotes[remote.String()] != ""
+}
+
+func (c *processWireGuardClassifier) releaseAssociations(receivers []uint32, remotes []string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	for _, receiver := range receivers {
+		delete(c.receivers, receiver)
+	}
+	released := make([]ingress.AssociationKey, 0, len(remotes))
+	for _, remote := range remotes {
+		remote = strings.TrimSpace(remote)
+		key := c.remotes[remote]
+		if key == "" {
+			continue
+		}
+		delete(c.remotes, remote)
+		for index, candidate := range c.remoteFIFO {
+			if candidate == remote {
+				c.remoteFIFO = append(c.remoteFIFO[:index], c.remoteFIFO[index+1:]...)
+				break
+			}
+		}
+		released = append(released, key)
+	}
+	release := c.release
+	c.mu.Unlock()
+	if release != nil {
+		for _, key := range released {
+			release(key)
+		}
+	}
+}
+
+func (b *processWireGuardBind) releaseAssociations(receivers []uint32, remotes []string) {
+	if b != nil {
+		b.classifier.releaseAssociations(receivers, remotes)
+	}
 }
 
 func (c *processWireGuardClassifier) receiverKeyPinnedLocked(key ingress.AssociationKey) bool {
