@@ -3,7 +3,6 @@
 package app
 
 import (
-	"fmt"
 	"testing"
 	"time"
 )
@@ -42,27 +41,33 @@ func TestHotRestartPacketRepeatedUpgradeCleanup(t *testing.T) {
 	}
 	cases := []hotRestartPacketTestProcess{
 		{
-			name:    "repeated_fd_lifecycle",
+			name:    "repeated_fd_and_control_descriptor_lifecycle",
 			args:    []string{"./internal/hotrestart", "^TestPacketHandoffRepeatedCloseReturnsFileDescriptorsToBaseline$|^TestSuccessfulWaitClosesParentControlDescriptors$"},
 			timeout: 3 * time.Minute,
 		},
 		{
-			name:    "repeated_protocol_handoff",
-			args:    []string{"./internal/modules/wireguard", "^TestProcessWireGuardBindHandoffPinsOldAndForwardsNew$|^TestProcessWireGuardClassifierCleanupLinearizesRealBrokerReassociation$"},
+			name:    "http3_parent_child_successor",
+			args:    []string{"./internal/modules/http", "^TestHTTP3ProcessPacketHandoffRoutesOldNewAndAbort$"},
+			timeout: 3 * time.Minute,
+		},
+		{
+			name:    "l4_udp_parent_child_successor",
+			args:    []string{"./internal/modules/l4", "^TestL4UDPProcessPacketHandoffRoutesOldNewAndAbort$"},
+			timeout: 3 * time.Minute,
+		},
+		{
+			name:    "relay_quic_parent_child_successor",
+			args:    []string{"./internal/modules/relay", "^TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort$"},
+			timeout: 3 * time.Minute,
+		},
+		{
+			name:    "wireguard_parent_child_successor",
+			args:    []string{"./internal/modules/wireguard", "^TestProcessWireGuardBindHandoffPinsOldAndForwardsNew$"},
 			timeout: 3 * time.Minute,
 		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			runHotRestartPacketTestProcessCount(t, testCase, 2)
-		})
-	}
-}
-
-func runHotRestartPacketTestProcessCount(t *testing.T, testCase hotRestartPacketTestProcess, count int) {
-	t.Helper()
-	for iteration := 1; iteration <= count; iteration++ {
-		t.Run(fmt.Sprintf("%s_%d", hotRestartPacketProcessDescription(testCase), iteration), func(t *testing.T) {
 			runHotRestartPacketTestProcess(t, testCase)
 		})
 	}

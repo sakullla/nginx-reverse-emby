@@ -5,6 +5,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -76,9 +77,21 @@ func runHotRestartPacketTestProcess(t *testing.T, testCase hotRestartPacketTestP
 	select {
 	case err = <-done:
 	case <-ctx.Done():
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		err = <-done
-		t.Fatalf("%s child timed out after %s and process group was reaped: %v; output:\n%s", testCase.name, timeout, err, output.String())
+		processGroupID := cmd.Process.Pid
+		killErr := syscall.Kill(-processGroupID, syscall.SIGKILL)
+		select {
+		case err = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s direct child did not exit within 5s after process-group kill (kill error: %v); output:\n%s", testCase.name, killErr, output.String())
+		}
+		groupErr := waitHotRestartPacketProcessGroupGone(processGroupID, 5*time.Second)
+		if killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+			t.Fatalf("%s process-group kill failed: %v; direct wait: %v; group check: %v; output:\n%s", testCase.name, killErr, err, groupErr, output.String())
+		}
+		if groupErr != nil {
+			t.Fatalf("%s descendants remained after process-group kill: %v; direct wait: %v; output:\n%s", testCase.name, groupErr, err, output.String())
+		}
+		t.Fatalf("%s child timed out after %s; process group terminated and direct child reaped: %v; output:\n%s", testCase.name, timeout, err, output.String())
 	}
 	if err != nil {
 		t.Fatalf("%s child failed: %v; output:\n%s", testCase.name, err, output.String())
@@ -94,6 +107,23 @@ func runHotRestartPacketTestProcess(t *testing.T, testCase hotRestartPacketTestP
 		if !strings.Contains(outputText, "=== RUN   "+testName) || !strings.Contains(outputText, "--- PASS: "+testName) {
 			t.Fatalf("%s child did not execute and pass %s; output:\n%s", testCase.name, testName, outputText)
 		}
+	}
+}
+
+func waitHotRestartPacketProcessGroupGone(processGroupID int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		err := syscall.Kill(-processGroupID, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err != nil && !errors.Is(err, syscall.EPERM) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("process group %d still exists after %s", processGroupID, timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -120,8 +150,4 @@ func hotRestartPacketModuleRoot(t *testing.T) string {
 		t.Fatalf("resolve go-agent module root %q: %v", root, err)
 	}
 	return root
-}
-
-func hotRestartPacketProcessDescription(testCase hotRestartPacketTestProcess) string {
-	return fmt.Sprintf("%s:%s", testCase.args[0], testCase.args[1])
 }
