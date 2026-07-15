@@ -225,6 +225,8 @@ func TestProcessWireGuardClassifierPinsReceiverAcrossRoaming(t *testing.T) {
 
 func TestProcessWireGuardClassifierKeepsActiveReceiverAtLimitAcrossRoaming(t *testing.T) {
 	classifier := newProcessWireGuardClassifier()
+	var released []ingress.AssociationKey
+	classifier.setReleaser(func(key ingress.AssociationKey) { released = append(released, key) })
 	originalRemote := netip.MustParseAddrPort("127.0.0.1:51820")
 	originalKey := ingress.AssociationKey("wireguard|" + originalRemote.String())
 	classifier.remotes[originalRemote.String()] = originalKey
@@ -241,6 +243,9 @@ func TestProcessWireGuardClassifierKeepsActiveReceiverAtLimitAcrossRoaming(t *te
 	}
 	if got := classifier.receivers[1]; got != originalKey {
 		t.Fatalf("active receiver key = %q, want %q", got, originalKey)
+	}
+	if len(released) != 0 {
+		t.Fatalf("receiver-limit rejection released live keys: %v", released)
 	}
 
 	transport := make([]byte, wireGuardTransportMinSize)
@@ -266,6 +271,104 @@ func TestProcessWireGuardClassifierKeepsActiveReceiverAtLimitAcrossRoaming(t *te
 	if err := classifier.observeSend([][]byte{newInitiation}, originalRemote); err != nil {
 		t.Fatalf("observeSend() after lifecycle release error = %v", err)
 	}
+}
+
+func TestWireGuardEndpointReleaseLinearizesSuccessorReceiverClaim(t *testing.T) {
+	const remote = "127.0.0.1:51820"
+	key := ingress.AssociationKey("wireguard|" + remote)
+	classifier := newProcessWireGuardClassifier()
+	classifier.remotes[remote] = key
+	classifier.remoteFIFO = append(classifier.remoteFIFO, remote)
+	classifier.receivers[7] = key
+	physical := &blockingProcessWireGuardBind{
+		classifier:     classifier,
+		releaseStarted: make(chan struct{}),
+		allowRelease:   make(chan struct{}),
+		sent:           make(chan struct{}, 1),
+	}
+	manager := &wireGuardIngressManager{}
+	broker := &wireGuardBindBroker{
+		manager: manager, physical: physical,
+		endpoints: make(map[*wireGuardBindEndpoint]struct{}),
+		receivers: make(map[uint32]*wireGuardBindEndpoint),
+		remotes:   make(map[string][]*wireGuardBindEndpoint),
+	}
+	oldEndpoint := &wireGuardBindEndpoint{binding: broker, opened: true, associations: make(map[string]*wireGuardAssociation)}
+	successor := &wireGuardBindEndpoint{binding: broker, opened: true, associations: make(map[string]*wireGuardAssociation)}
+	broker.endpoints[oldEndpoint] = struct{}{}
+	broker.endpoints[successor] = struct{}{}
+	broker.receivers[7] = oldEndpoint
+	broker.remotes[remote] = []*wireGuardBindEndpoint{oldEndpoint, successor}
+	broker.remoteCount = 2
+
+	released := make(chan struct{})
+	go func() {
+		broker.releaseEndpoint(oldEndpoint)
+		close(released)
+	}()
+	<-physical.releaseStarted
+	payload := make([]byte, wireGuardInitiationSize)
+	binary.LittleEndian.PutUint32(payload[:4], wireGuardMessageInitiation)
+	binary.LittleEndian.PutUint32(payload[4:8], 7)
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- broker.send(successor, [][]byte{payload}, &conn.StdNetEndpoint{AddrPort: netip.MustParseAddrPort(remote)})
+	}()
+	select {
+	case <-physical.sent:
+		t.Fatal("successor send crossed retiring endpoint classifier cleanup")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(physical.allowRelease)
+	<-released
+	if err := <-sendDone; err != nil {
+		t.Fatalf("successor send error = %v", err)
+	}
+	select {
+	case <-physical.sent:
+	case <-time.After(time.Second):
+		t.Fatal("successor send did not resume after cleanup")
+	}
+	if got := classifier.receivers[7]; got != key {
+		t.Fatalf("successor receiver key = %q, want %q", got, key)
+	}
+}
+
+type blockingProcessWireGuardBind struct {
+	classifier     *processWireGuardClassifier
+	releaseStarted chan struct{}
+	allowRelease   chan struct{}
+	sent           chan struct{}
+}
+
+func (*blockingProcessWireGuardBind) Open(uint16) ([]conn.ReceiveFunc, uint16, error) {
+	return nil, 0, nil
+}
+func (*blockingProcessWireGuardBind) Close() error         { return nil }
+func (*blockingProcessWireGuardBind) SetMark(uint32) error { return nil }
+func (b *blockingProcessWireGuardBind) Send(payloads [][]byte, endpoint conn.Endpoint) error {
+	destination, err := endpointAddrPort(endpoint)
+	if err != nil {
+		return err
+	}
+	if err := b.classifier.observeSend(payloads, destination); err != nil {
+		return err
+	}
+	b.sent <- struct{}{}
+	return nil
+}
+func (*blockingProcessWireGuardBind) ParseEndpoint(raw string) (conn.Endpoint, error) {
+	addrPort, err := netip.ParseAddrPort(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &conn.StdNetEndpoint{AddrPort: addrPort}, nil
+}
+func (*blockingProcessWireGuardBind) BatchSize() int { return 1 }
+func (b *blockingProcessWireGuardBind) releaseAssociations(receivers []uint32, remotes []string) {
+	close(b.releaseStarted)
+	<-b.allowRelease
+	b.classifier.releaseAssociations(receivers, remotes)
 }
 
 func TestProcessWireGuardClassifierDropsUnknownPeerWhenAllPinsAreActive(t *testing.T) {

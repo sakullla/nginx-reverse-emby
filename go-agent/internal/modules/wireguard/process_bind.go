@@ -326,8 +326,13 @@ func (c *processWireGuardClassifier) observeSend(payloads [][]byte, destination 
 	}
 	remote := destination.String()
 	c.mu.Lock()
-	key, evicted, remembered := c.rememberRemoteLocked(remote)
+	key := c.remotes[remote]
+	existingRemote := key != ""
+	if !existingRemote {
+		key = ingress.AssociationKey("wireguard|" + remote)
+	}
 	newReceivers := make([]uint32, 0, len(payloads))
+	seenReceivers := make(map[uint32]struct{}, len(payloads))
 	for _, payload := range payloads {
 		sender, ok := wireGuardPacketSender(payload)
 		if !ok {
@@ -337,22 +342,47 @@ func (c *processWireGuardClassifier) observeSend(payloads [][]byte, destination 
 			if existing != key {
 				release := c.release
 				c.mu.Unlock()
-				if !remembered && release != nil {
+				if !existingRemote && release != nil {
 					release(key)
 				}
 				return errors.New("wireguard process receiver index is owned by another association")
 			}
 			continue
 		}
+		if _, duplicate := seenReceivers[sender]; duplicate {
+			continue
+		}
+		seenReceivers[sender] = struct{}{}
 		newReceivers = append(newReceivers, sender)
 	}
-	if !remembered || len(c.receivers)+len(newReceivers) > wireGuardAssociationLimit {
+	evictAt := -1
+	var evicted ingress.AssociationKey
+	if !existingRemote && len(c.remotes) >= wireGuardAssociationLimit {
+		for index, candidate := range c.remoteFIFO {
+			candidateKey := c.remotes[candidate]
+			if !c.receiverKeyPinnedLocked(candidateKey) {
+				evictAt = index
+				evicted = candidateKey
+				break
+			}
+		}
+	}
+	if (!existingRemote && len(c.remotes) >= wireGuardAssociationLimit && evictAt < 0) || len(c.receivers)+len(newReceivers) > wireGuardAssociationLimit {
 		release := c.release
 		c.mu.Unlock()
-		if release != nil {
+		if !existingRemote && release != nil {
 			release(key)
 		}
 		return errWireGuardAssociationLimit
+	}
+	if !existingRemote {
+		if evictAt >= 0 {
+			evictedRemote := c.remoteFIFO[evictAt]
+			delete(c.remotes, evictedRemote)
+			c.remoteFIFO = append(c.remoteFIFO[:evictAt], c.remoteFIFO[evictAt+1:]...)
+		}
+		c.remotes[remote] = key
+		c.remoteFIFO = append(c.remoteFIFO, remote)
 	}
 	for _, sender := range newReceivers {
 		c.receivers[sender] = key

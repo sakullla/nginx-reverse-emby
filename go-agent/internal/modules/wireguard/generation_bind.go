@@ -481,12 +481,12 @@ func (b *wireGuardBindBroker) releaseEndpoint(endpoint *wireGuardBindEndpoint) {
 			releasedRemotes = append(releasedRemotes, remote)
 		}
 	}
-	b.mu.Unlock()
 	if releaser, ok := b.physical.(interface {
 		releaseAssociations([]uint32, []string)
 	}); ok {
 		releaser.releaseAssociations(releasedReceivers, releasedRemotes)
 	}
+	b.mu.Unlock()
 }
 
 func (b *wireGuardBindBroker) close() error {
