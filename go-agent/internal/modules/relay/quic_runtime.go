@@ -463,14 +463,15 @@ func dialQUICRelayHop(ctx context.Context, address string, tlsConfig *tls.Config
 }
 
 func newRelayQUICConfig() *quic.Config {
+	idleTimeout := getRelayIdleTimeout()
 	config := &quic.Config{
 		HandshakeIdleTimeout: getRelayHandshakeTimeout(),
-		MaxIdleTimeout:       relayIdleTimeout,
+		MaxIdleTimeout:       idleTimeout,
 	}
-	if relayIdleTimeout > 0 {
-		config.KeepAlivePeriod = relayIdleTimeout / 3
+	if idleTimeout > 0 {
+		config.KeepAlivePeriod = idleTimeout / 3
 		if config.KeepAlivePeriod <= 0 {
-			config.KeepAlivePeriod = relayIdleTimeout
+			config.KeepAlivePeriod = idleTimeout
 		}
 	}
 	return config
