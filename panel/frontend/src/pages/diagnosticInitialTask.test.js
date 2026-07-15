@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 
@@ -126,6 +126,32 @@ function mountWithQuery(component) {
   })
 }
 
+async function triggerDiagnosticFromActionMenu(wrapper) {
+  document.body
+    .querySelectorAll('[data-testid="base-action-menu-panel"]')
+    .forEach((panel) => {
+      panel.style.display = 'none'
+      panel.setAttribute('aria-hidden', 'true')
+    })
+
+  const trigger = wrapper.get('button[aria-label="更多操作"]')
+  expect(trigger.attributes('aria-expanded')).toBe('false')
+  await trigger.trigger('click')
+  await nextTick()
+  await nextTick()
+
+  const panel = document.body.querySelector(
+    '[role="menu"][aria-hidden="false"]',
+  )
+  expect(panel).toBeTruthy()
+  const diagnosticItem = Array.from(panel.querySelectorAll('[role="menuitem"]'))
+    .find((item) => item.textContent.trim() === '诊断')
+  expect(diagnosticItem).toBeTruthy()
+  diagnosticItem.click()
+  await flushPromises()
+  await nextTick()
+}
+
 beforeEach(() => {
   routeQuery = { agentId: 'edge-a' }
   selectedAgentId = 'edge-a'
@@ -149,8 +175,7 @@ describe('diagnostic pages initial task echo', () => {
     const { default: RulesPage } = await import('./RulesPage.vue')
     const wrapper = mountWithQuery(RulesPage)
 
-    await wrapper.get('[title="诊断"]').trigger('click')
-    await nextTick()
+    await triggerDiagnosticFromActionMenu(wrapper)
 
     expect(wrapper.get('[data-testid="diagnostic-modal"]').attributes('data-task-id')).toBe('task-http-1')
     expect(wrapper.get('[data-testid="diagnostic-modal"]').text()).toContain('pending')
@@ -160,8 +185,7 @@ describe('diagnostic pages initial task echo', () => {
     const { default: L4RulesPage } = await import('./L4RulesPage.vue')
     const wrapper = mountWithQuery(L4RulesPage)
 
-    await wrapper.get('[title="诊断"]').trigger('click')
-    await nextTick()
+    await triggerDiagnosticFromActionMenu(wrapper)
 
     expect(wrapper.get('[data-testid="diagnostic-modal"]').attributes('data-task-id')).toBe('task-l4-1')
     expect(wrapper.get('[data-testid="diagnostic-modal"]').text()).toContain('pending')
