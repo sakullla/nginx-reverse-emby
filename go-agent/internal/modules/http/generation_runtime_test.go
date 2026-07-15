@@ -495,6 +495,134 @@ func TestHTTPGenerationViewPublishIsTheOnlySelectorVisibilityPoint(t *testing.T)
 	defer secondView.Destroy(context.Background())
 }
 
+func TestPublishedRuntimeCloseDrainsPendingStreamDispatch(t *testing.T) {
+	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	endpoint := broker.NewEndpoint("old", 4)
+	endpoint.DeferDispatchAcknowledgement()
+	broker.SetSelector(func() *ingress.StreamEndpoint { return endpoint })
+	gated := &generationTestGatedListener{
+		Listener: endpoint,
+		accepted: make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	server := &stdhttp.Server{
+		Handler: stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+			_, _ = io.WriteString(w, "complete")
+		}),
+		ConnState: acknowledgeHTTPStreamDispatch,
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(gated) }()
+
+	client, err := net.Dial("tcp", broker.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := io.WriteString(client, "GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gated.accepted:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP server did not accept pending stream")
+	}
+
+	runtime := &Runtime{
+		servers:       []*stdhttp.Server{server},
+		listeners:     []net.Listener{gated},
+		ingressLeases: []*httpIngressLease{{stream: endpoint}},
+	}
+	runtime.published.Store(true)
+	closed := make(chan error, 1)
+	go func() { closed <- runtime.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Runtime.Close() completed before pending dispatch was served: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(gated.release)
+	request, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://example.test/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := stdhttp.ReadResponse(bufio.NewReader(client), request)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "complete" {
+		t.Fatalf("response body = %q", body)
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("Runtime.Close() error = %v", err)
+	}
+	if err := <-serveDone; !errors.Is(err, stdhttp.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Serve() error = %v", err)
+	}
+}
+
+func TestPublishedRuntimeCloseBoundsPendingStreamDispatch(t *testing.T) {
+	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	endpoint := broker.NewEndpoint("slow", 1)
+	endpoint.DeferDispatchAcknowledgement()
+	broker.SetSelector(func() *ingress.StreamEndpoint { return endpoint })
+	client, err := net.Dial("tcp", broker.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	deadline := time.Now().Add(time.Second)
+	for broker.Stats().Accepted == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if broker.Stats().Accepted == 0 {
+		t.Fatal("broker did not accept slow pending connection")
+	}
+
+	runtime := &Runtime{
+		ingressLeases: []*httpIngressLease{{stream: endpoint}},
+		drainTimeout:  20 * time.Millisecond,
+	}
+	started := time.Now()
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed < 20*time.Millisecond || elapsed > time.Second {
+		t.Fatalf("Runtime.Close() duration = %s, want bounded pending-dispatch drain", elapsed)
+	}
+}
+
+type generationTestGatedListener struct {
+	net.Listener
+	accepted chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (l *generationTestGatedListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	l.once.Do(func() { close(l.accepted) })
+	<-l.release
+	return conn, nil
+}
+
 func TestHTTPGenerationViewKeepsAddedBindingInactiveUntilPublish(t *testing.T) {
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 		_, _ = io.WriteString(w, strings.TrimPrefix(req.URL.Path, "/"))

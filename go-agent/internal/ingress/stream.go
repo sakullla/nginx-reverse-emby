@@ -23,6 +23,17 @@ type StreamEndpoint struct {
 	listener   *moduleutil.VirtualListener
 	closeOnce  sync.Once
 	closeErr   error
+
+	dispatchMu      sync.Mutex
+	dispatchIdle    *sync.Cond
+	pendingDispatch int
+	acknowledgeOnIO atomic.Bool
+}
+
+type pendingStreamConn struct {
+	net.Conn
+	endpoint *StreamEndpoint
+	once     sync.Once
 }
 
 type StreamEndpointSelector func() *StreamEndpoint
@@ -38,8 +49,89 @@ func (e *StreamEndpoint) Generation() string {
 	return e.generation
 }
 
-func (e *StreamEndpoint) Accept() (net.Conn, error) { return e.listener.Accept() }
-func (e *StreamEndpoint) Addr() net.Addr            { return e.listener.Addr() }
+func (e *StreamEndpoint) Accept() (net.Conn, error) {
+	return e.listener.Accept()
+}
+func (e *StreamEndpoint) Addr() net.Addr { return e.listener.Addr() }
+
+// WaitPendingDispatch waits until every physical connection already assigned
+// to this generation has been accepted by its virtual listener.
+func (e *StreamEndpoint) WaitPendingDispatch() bool {
+	if e == nil {
+		return false
+	}
+	e.dispatchMu.Lock()
+	hadPending := e.pendingDispatch > 0
+	for e.pendingDispatch > 0 {
+		e.dispatchIdle.Wait()
+	}
+	e.dispatchMu.Unlock()
+	return hadPending
+}
+
+// DeferDispatchAcknowledgement keeps dispatch ownership pending until the
+// protocol server explicitly acknowledges the accepted connection.
+func (e *StreamEndpoint) DeferDispatchAcknowledgement() {
+	if e != nil {
+		e.acknowledgeOnIO.Store(false)
+	}
+}
+
+func (e *StreamEndpoint) trackDispatch(conn net.Conn) *pendingStreamConn {
+	e.dispatchMu.Lock()
+	e.pendingDispatch++
+	e.dispatchMu.Unlock()
+	return &pendingStreamConn{Conn: conn, endpoint: e}
+}
+
+func (e *StreamEndpoint) finishDispatch() {
+	e.dispatchMu.Lock()
+	if e.pendingDispatch > 0 {
+		e.pendingDispatch--
+		if e.pendingDispatch == 0 {
+			e.dispatchIdle.Broadcast()
+		}
+	}
+	e.dispatchMu.Unlock()
+}
+
+func (c *pendingStreamConn) accepted() {
+	if c == nil {
+		return
+	}
+	c.once.Do(func() {
+		if c.endpoint != nil {
+			c.endpoint.finishDispatch()
+		}
+	})
+}
+
+func (c *pendingStreamConn) AcknowledgeStreamDispatch() { c.accepted() }
+
+func (c *pendingStreamConn) Read(p []byte) (int, error) {
+	if c.endpoint == nil || c.endpoint.acknowledgeOnIO.Load() {
+		c.accepted()
+	}
+	return c.Conn.Read(p)
+}
+
+func (c *pendingStreamConn) Write(p []byte) (int, error) {
+	if c.endpoint == nil || c.endpoint.acknowledgeOnIO.Load() {
+		c.accepted()
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *pendingStreamConn) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.accepted()
+	if c.Conn == nil {
+		return nil
+	}
+	return c.Conn.Close()
+}
 
 func (e *StreamEndpoint) Close() error {
 	if e == nil {
@@ -115,6 +207,8 @@ func (b *StreamBroker) NewEndpoint(generation string, backlog int) *StreamEndpoi
 		broker:     b,
 		listener:   moduleutil.NewVirtualListener(b.Addr(), backlog),
 	}
+	endpoint.dispatchIdle = sync.NewCond(&endpoint.dispatchMu)
+	endpoint.acknowledgeOnIO.Store(true)
 	b.mu.Lock()
 	select {
 	case <-b.closed:
@@ -252,25 +346,40 @@ func (b *StreamBroker) acceptLoop() {
 }
 
 func (b *StreamBroker) deliverStream(conn net.Conn) error {
-	endpoint := b.selectedEndpoint()
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	select {
-	case <-b.closed:
-		return net.ErrClosed
-	default:
+	for {
+		b.mu.Lock()
+		select {
+		case <-b.closed:
+			b.mu.Unlock()
+			return net.ErrClosed
+		default:
+		}
+		endpoint := b.selectedEndpoint()
+		if endpoint == nil || endpoint.broker != b {
+			b.mu.Unlock()
+			return net.ErrClosed
+		}
+		if _, ok := b.endpoints[endpoint]; !ok {
+			b.mu.Unlock()
+			return net.ErrClosed
+		}
+		pending := endpoint.trackDispatch(conn)
+		if b.selectedEndpoint() != endpoint {
+			pending.accepted()
+			b.mu.Unlock()
+			continue
+		}
+		endpoint.listener.Activate()
+		if b.beforeStreamDeliver != nil {
+			b.beforeStreamDeliver(endpoint)
+		}
+		err := endpoint.listener.Deliver(pending)
+		if err != nil {
+			pending.accepted()
+		}
+		b.mu.Unlock()
+		return err
 	}
-	if endpoint == nil || endpoint.broker != b {
-		return net.ErrClosed
-	}
-	if _, ok := b.endpoints[endpoint]; !ok {
-		return net.ErrClosed
-	}
-	endpoint.listener.Activate()
-	if b.beforeStreamDeliver != nil {
-		b.beforeStreamDeliver(endpoint)
-	}
-	return endpoint.listener.Deliver(conn)
 }
 
 func (b *StreamBroker) selectedEndpoint() *StreamEndpoint {

@@ -165,6 +165,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if err != nil {
 		return nil, err
 	}
+	nextRuntime.drainTimeout = m.drainTimeout
 	nextRuntime.SetTrafficBlockState(currentBlockState)
 	return &httpGenerationTransaction{
 		module:             m,

@@ -14,7 +14,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
@@ -36,7 +38,10 @@ type Runtime struct {
 	closeOnce         sync.Once
 	drainOnce         sync.Once
 	closeErr          error
+	drainTimeout      time.Duration
 }
+
+const defaultHTTPGenerationDrainTimeout = 10 * time.Minute
 
 type runtimeListenerSpec struct {
 	address            string
@@ -195,6 +200,16 @@ func (r *Runtime) Close() error {
 		r.ingressLeases = nil
 		r.mu.Unlock()
 
+		drainContext, cancelDrain := context.WithTimeout(context.Background(), r.generationDrainTimeout())
+		hadPendingDispatch := waitHTTPPendingDispatches(drainContext, leases)
+		if hadPendingDispatch {
+			for _, server := range servers {
+				if err := server.Shutdown(drainContext); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.DeadlineExceeded) {
+					r.closeErr = errors.Join(r.closeErr, err)
+				}
+			}
+		}
+		cancelDrain()
 		if tracker != nil {
 			tracker.forceAll()
 		}
@@ -218,6 +233,33 @@ func (r *Runtime) Close() error {
 		}
 	})
 	return r.closeErr
+}
+
+func (r *Runtime) generationDrainTimeout() time.Duration {
+	if r != nil && r.drainTimeout > 0 {
+		return r.drainTimeout
+	}
+	return defaultHTTPGenerationDrainTimeout
+}
+
+func waitHTTPPendingDispatches(ctx context.Context, leases []*httpIngressLease) bool {
+	hadPending := false
+	for _, lease := range leases {
+		if lease == nil || lease.stream == nil {
+			continue
+		}
+		waited := make(chan bool, 1)
+		go func(endpoint *ingress.StreamEndpoint) {
+			waited <- endpoint.WaitPendingDispatch()
+		}(lease.stream)
+		select {
+		case pending := <-waited:
+			hadPending = hadPending || pending
+		case <-ctx.Done():
+			return true
+		}
+	}
+	return hadPending
 }
 
 func (r *Runtime) BindingKeys() []string {

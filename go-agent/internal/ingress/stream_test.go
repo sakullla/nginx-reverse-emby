@@ -50,6 +50,66 @@ func TestStreamBrokerLinearizesSelectedDispatchBeforeActivation(t *testing.T) {
 	}
 }
 
+func TestStreamEndpointWaitPendingDispatchBlocksDrainUntilAccept(t *testing.T) {
+	broker, err := ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	oldEndpoint := broker.NewEndpoint("old", 4)
+	newEndpoint := broker.NewEndpoint("new", 4)
+	var active atomic.Pointer[StreamEndpoint]
+	active.Store(oldEndpoint)
+	broker.SetSelector(active.Load)
+
+	selected, release := make(chan struct{}), make(chan struct{})
+	broker.mu.Lock()
+	broker.beforeStreamDeliver = func(endpoint *StreamEndpoint) {
+		if endpoint == oldEndpoint {
+			close(selected)
+			<-release
+		}
+	}
+	broker.mu.Unlock()
+
+	client := dialTCP(t, broker.Addr().String())
+	defer client.Close()
+	<-selected
+	active.Store(newEndpoint)
+
+	drained := make(chan struct{})
+	go func() {
+		oldEndpoint.WaitPendingDispatch()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		t.Fatal("old endpoint drained before its selected dispatch was accepted")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(release)
+	oldConn := acceptStream(t, oldEndpoint)
+	defer oldConn.Close()
+	select {
+	case <-drained:
+		t.Fatal("old endpoint drained before the server started the selected connection")
+	case <-time.After(20 * time.Millisecond):
+	}
+	if _, err := client.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, len("request"))
+	if _, err := oldConn.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("old endpoint did not drain after its selected dispatch was accepted")
+	}
+}
+
 func TestStreamBrokerSingleBindGateAndAtomicTargetSwap(t *testing.T) {
 	broker, err := ListenStream(context.Background(), "tcp", "127.0.0.1:0", 8)
 	if err != nil {

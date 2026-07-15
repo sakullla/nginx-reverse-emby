@@ -245,6 +245,9 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		m.mu.Unlock()
 		return nil, net.ErrClosed
 	}
+	if spec.scheme == "http" {
+		lease.stream.DeferDispatchAcknowledgement()
+	}
 	if http3Enabled && spec.scheme == "https" {
 		lease.packet = binding.packet.NewEndpoint(generationID, httpIngressBacklog)
 		if lease.packet == nil {
@@ -758,7 +761,8 @@ func prepareGenerationRuntime(
 			}
 		}
 		server := &stdhttp.Server{
-			Handler: handler,
+			Handler:   handler,
+			ConnState: acknowledgeHTTPStreamDispatch,
 			BaseContext: func(_ net.Listener) context.Context {
 				if ctx != nil {
 					return ctx
@@ -785,6 +789,15 @@ func prepareGenerationRuntime(
 		}
 	}
 	return runtime, nil
+}
+
+func acknowledgeHTTPStreamDispatch(conn net.Conn, state stdhttp.ConnState) {
+	if state != stdhttp.StateActive && state != stdhttp.StateHijacked && state != stdhttp.StateClosed {
+		return
+	}
+	if dispatch, ok := conn.(interface{ AcknowledgeStreamDispatch() }); ok {
+		dispatch.AcknowledgeStreamDispatch()
+	}
 }
 
 func generationHTTPRules(rules []model.HTTPRule) []model.HTTPRule {
@@ -903,29 +916,33 @@ func (r *Runtime) BeginDrain() {
 		r.mu.Lock()
 		servers := append([]*stdhttp.Server(nil), r.servers...)
 		http3Servers := append([]*http3ServerHandle(nil), r.http3Servers...)
+		leases := append([]*httpIngressLease(nil), r.ingressLeases...)
 		r.mu.Unlock()
-		var wg sync.WaitGroup
-		for _, server := range servers {
-			if server == nil {
-				continue
-			}
-			wg.Add(1)
-			go func(srv *stdhttp.Server) {
-				defer wg.Done()
-				_ = srv.Shutdown(context.Background())
-			}(server)
-		}
-		for _, server := range http3Servers {
-			if server == nil || server.server == nil {
-				continue
-			}
-			wg.Add(1)
-			go func(handle *http3ServerHandle) {
-				defer wg.Done()
-				_ = handle.server.Shutdown(context.Background())
-			}(server)
-		}
 		go func() {
+			drainContext, cancelDrain := context.WithTimeout(context.Background(), r.generationDrainTimeout())
+			defer cancelDrain()
+			_ = waitHTTPPendingDispatches(drainContext, leases)
+			var wg sync.WaitGroup
+			for _, server := range servers {
+				if server == nil {
+					continue
+				}
+				wg.Add(1)
+				go func(srv *stdhttp.Server) {
+					defer wg.Done()
+					_ = srv.Shutdown(drainContext)
+				}(server)
+			}
+			for _, server := range http3Servers {
+				if server == nil || server.server == nil {
+					continue
+				}
+				wg.Add(1)
+				go func(handle *http3ServerHandle) {
+					defer wg.Done()
+					_ = handle.server.Shutdown(context.Background())
+				}(server)
+			}
 			if r.tracker != nil {
 				r.tracker.wait()
 			}
