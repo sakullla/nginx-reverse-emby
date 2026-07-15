@@ -4,6 +4,7 @@ import { fetchOperationStatus, normalizeOperationStatus, retryRevision, rollback
 const STORAGE_KEY = 'nre.operations.v1'
 const MAX_OPERATIONS = 50
 const state = reactive({ byId: {}, order: [] })
+const refreshSequence = new Map()
 
 function persist() {
   if (typeof localStorage === 'undefined') return
@@ -57,6 +58,7 @@ export function restoreOperations() {
 export function resetOperations() {
   state.byId = {}
   state.order = []
+  refreshSequence.clear()
   if (typeof localStorage !== 'undefined') {
     try { localStorage.removeItem(STORAGE_KEY) } catch { /* storage is best effort */ }
   }
@@ -65,21 +67,28 @@ export function resetOperations() {
 export async function refreshOperation(operationID) {
   const current = state.byId[operationID]
   if (!current?.status_url) return current || null
+  const sequence = (refreshSequence.get(operationID) || 0) + 1
+  refreshSequence.set(operationID, sequence)
   const next = await fetchOperationStatus(current.status_url)
+  if (refreshSequence.get(operationID) !== sequence) return state.byId[operationID] || null
   next.status_url ||= current.status_url
   return recordAcceptedOperation(next)
 }
 
-export async function retryOperation(operationID) {
-  const current = state.byId[operationID]
-  if (!current) return null
-  return recordAcceptedOperation(await retryRevision(current))
+function operationAgent(operation, agentID) {
+  return operation?.agents?.find((agent) => agent.agent_id === agentID)
 }
 
-export async function rollbackOperation(operationID) {
+export async function retryOperation(operationID, agentID = '') {
   const current = state.byId[operationID]
   if (!current) return null
-  return recordAcceptedOperation(await rollbackRevision(current))
+  return recordAcceptedOperation(await retryRevision(current, operationAgent(current, agentID)))
+}
+
+export async function rollbackOperation(operationID, agentID = '') {
+  const current = state.byId[operationID]
+  if (!current) return null
+  return recordAcceptedOperation(await rollbackRevision(current, operationAgent(current, agentID)))
 }
 
 const operationsStore = {

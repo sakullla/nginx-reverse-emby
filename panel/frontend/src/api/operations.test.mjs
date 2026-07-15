@@ -33,6 +33,11 @@ describe('operation API contract', () => {
 
   it('derives draining, drained, degraded and failure details from status facts', () => {
     expect(operations.normalizeOperationStatus({
+      operation_id: 'op-applied',
+      apply_status: 'applied',
+      agents: [{ agent_id: 'edge-1', apply_status: 'applied' }]
+    })).toMatchObject({ ui_status: 'applied', terminal: false })
+    expect(operations.normalizeOperationStatus({
       operation_id: 'op-draining',
       apply_status: 'applied',
       agents: [{ drain_status: 'draining' }]

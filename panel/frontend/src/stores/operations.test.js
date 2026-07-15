@@ -49,7 +49,11 @@ describe('operation store', () => {
 
   it('replaces failed operations with accepted retry and rollback operations', async () => {
     storeModule.recordAcceptedOperation({
-      operation_id: 'op-failed', agent_id: 'edge-1', desired_revision: 3, apply_status: 'failed'
+      operation_id: 'op-failed', agent_id: 'edge-1', desired_revision: 3, apply_status: 'degraded',
+      agents: [
+        { agent_id: 'edge-1', desired_revision: 3, apply_status: 'failed' },
+        { agent_id: 'edge-2', desired_revision: 4, apply_status: 'failed' }
+      ]
     })
     api.retry.mockResolvedValueOnce({
       operation_id: 'op-retry', agent_id: 'edge-1', desired_revision: 3, apply_status: 'pending'
@@ -58,9 +62,35 @@ describe('operation store', () => {
       operation_id: 'op-rollback', agent_id: 'edge-1', desired_revision: 4, apply_status: 'pending'
     })
 
-    expect(await storeModule.retryOperation('op-failed')).toMatchObject({ operation_id: 'op-retry', ui_status: 'pending' })
-    expect(await storeModule.rollbackOperation('op-failed')).toMatchObject({ operation_id: 'op-rollback', ui_status: 'pending' })
-    expect(api.retry).toHaveBeenCalledWith(expect.objectContaining({ operation_id: 'op-failed' }))
-    expect(api.rollback).toHaveBeenCalledWith(expect.objectContaining({ operation_id: 'op-failed' }))
+    expect(await storeModule.retryOperation('op-failed', 'edge-2')).toMatchObject({ operation_id: 'op-retry', ui_status: 'pending' })
+    expect(await storeModule.rollbackOperation('op-failed', 'edge-2')).toMatchObject({ operation_id: 'op-rollback', ui_status: 'pending' })
+    expect(api.retry).toHaveBeenCalledWith(
+      expect.objectContaining({ operation_id: 'op-failed' }),
+      expect.objectContaining({ agent_id: 'edge-2', desired_revision: 4 })
+    )
+    expect(api.rollback).toHaveBeenCalledWith(
+      expect.objectContaining({ operation_id: 'op-failed' }),
+      expect.objectContaining({ agent_id: 'edge-2' })
+    )
+  })
+
+  it('ignores an older concurrent status response that finishes last', async () => {
+    storeModule.recordAcceptedOperation({
+      operation_id: 'op-race', status_url: '/panel-api/operations/op-race', apply_status: 'pending'
+    })
+    let resolveFirst
+    let resolveSecond
+    api.fetch
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve }))
+
+    const first = storeModule.refreshOperation('op-race')
+    const second = storeModule.refreshOperation('op-race')
+    resolveSecond({ operation_id: 'op-race', apply_status: 'drained', updated_at: '2026-07-15T12:00:02Z' })
+    await second
+    resolveFirst({ operation_id: 'op-race', apply_status: 'pending', updated_at: '2026-07-15T12:00:01Z' })
+    await first
+
+    expect(storeModule.useOperationsStore().get('op-race').ui_status).toBe('drained')
   })
 })

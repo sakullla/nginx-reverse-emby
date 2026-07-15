@@ -1,6 +1,6 @@
 import { api, longRunningRequest } from './client'
 
-const TERMINAL_STATUSES = new Set(['applied', 'drained', 'failed', 'degraded', 'superseded'])
+const TERMINAL_STATUSES = new Set(['drained', 'failed', 'degraded', 'superseded'])
 
 function text(value) {
   return String(value || '').trim()
@@ -79,8 +79,8 @@ export async function fetchRevisionEvents(after = 0, options = {}) {
   }
 }
 
-export async function retryRevision(operation) {
-  const failedAgent = operation?.agents?.find((agent) => agent.apply_status === 'failed')
+export async function retryRevision(operation, targetAgent) {
+  const failedAgent = targetAgent || operation?.agents?.find((agent) => agent.apply_status === 'failed')
   const agent = failedAgent || operation?.agents?.find((item) => item.agent_id === operation?.agent_id) || operation?.agents?.[0]
   const agentID = agent?.agent_id || operation?.agent_id
   const revision = agent?.desired_revision || operation?.desired_revision
@@ -93,8 +93,8 @@ export async function retryRevision(operation) {
   return normalizeOperationStatus(data)
 }
 
-export async function rollbackRevision(operation) {
-  const failedAgent = operation?.agents?.find((agent) => agent.apply_status === 'failed')
+export async function rollbackRevision(operation, targetAgent) {
+  const failedAgent = targetAgent || operation?.agents?.find((agent) => agent.apply_status === 'failed')
   const agentID = failedAgent?.agent_id || operation?.agent_id || operation?.agents?.[0]?.agent_id
   if (!agentID) throw new Error('operation is missing rollback agent details')
   const { data } = await api.post(

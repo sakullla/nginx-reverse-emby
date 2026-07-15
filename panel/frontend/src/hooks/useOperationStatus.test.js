@@ -24,11 +24,21 @@ describe('useOperationStatus', () => {
     vi.useRealTimers()
   })
 
-  it('refreshes status after an event notification and stops polling at terminal state', async () => {
+  it('uses production revision events to refresh through drained terminal state', async () => {
     recordAcceptedOperation({ operation_id: 'op-hook', status_url: '/panel-api/operations/op-hook', apply_status: 'pending' })
+    api.events.mockResolvedValueOnce({
+      events: [{ id: 1, operation_id: 'op-hook', event_type: 'generation_drained' }],
+      next_cursor: 1,
+      has_more: false
+    })
     const store = useOperationsStore()
     const refresh = vi.spyOn(store, 'refresh')
-      .mockResolvedValueOnce(recordAcceptedOperation({ operation_id: 'op-hook', apply_status: 'applied', status_url: '/panel-api/operations/op-hook' }))
+      .mockImplementationOnce(async () => recordAcceptedOperation({
+        operation_id: 'op-hook',
+        apply_status: 'applied',
+        status_url: '/panel-api/operations/op-hook',
+        agents: [{ agent_id: 'edge-1', apply_status: 'applied', drain_status: 'drained' }]
+      }))
     let exposed
     const wrapper = mount(defineComponent({
       setup() {
@@ -37,10 +47,11 @@ describe('useOperationStatus', () => {
       }
     }), { global: { plugins: [VueQueryPlugin] } })
 
-    await exposed.notifyEvent({ operation_id: 'op-hook' })
+    await exposed.recover()
     await nextTick()
     expect(refresh).toHaveBeenCalledTimes(1)
-    expect(exposed.operation.value.ui_status).toBe('applied')
+    expect(exposed.operation.value.ui_status).toBe('drained')
+    expect(exposed.eventStatus.value).toBe('connected')
     wrapper.unmount()
   })
 
@@ -64,6 +75,41 @@ describe('useOperationStatus', () => {
     expect(api.events).toHaveBeenCalledWith(0, { operationId: 'op-lost', limit: 100 })
     expect(refresh).toHaveBeenCalledTimes(1)
     expect(exposed.operation.value.ui_status).toBe('applied')
+    expect(exposed.eventStatus.value).toBe('disconnected')
+    wrapper.unmount()
+  })
+
+  it('reconnects the event cursor after using the status fallback', async () => {
+    recordAcceptedOperation({ operation_id: 'op-reconnect', status_url: '/panel-api/operations/op-reconnect', apply_status: 'pending' })
+    api.events
+      .mockRejectedValueOnce(new Error('disconnected'))
+      .mockResolvedValueOnce({
+        events: [{ id: 8, operation_id: 'op-reconnect', event_type: 'revision_applied' }],
+        next_cursor: 8,
+        has_more: false
+      })
+    const store = useOperationsStore()
+    vi.spyOn(store, 'refresh')
+      .mockImplementationOnce(async () => store.get('op-reconnect'))
+      .mockImplementationOnce(async () => recordAcceptedOperation({
+        operation_id: 'op-reconnect',
+        status_url: '/panel-api/operations/op-reconnect',
+        apply_status: 'applied',
+        agents: [{ agent_id: 'edge-1', apply_status: 'applied', drain_status: 'drained' }]
+      }))
+    let exposed
+    const wrapper = mount(defineComponent({
+      setup() {
+        exposed = useOperationStatus(ref('op-reconnect'), { pollInterval: 1000 })
+        return () => null
+      }
+    }))
+
+    await exposed.recover()
+    expect(exposed.eventStatus.value).toBe('disconnected')
+    await exposed.recover()
+    expect(exposed.eventStatus.value).toBe('connected')
+    expect(exposed.operation.value.ui_status).toBe('drained')
     wrapper.unmount()
   })
 })

@@ -22,12 +22,12 @@ const operations = store.operations
 const busyID = ref('')
 const actionError = ref('')
 
-async function retry(id) {
+async function retry(target) {
   if (!window.confirm('确认重试这个 revision？')) return
-  busyID.value = id
+  busyID.value = target.operationID
   actionError.value = ''
   try {
-    await store.retry(id)
+    await store.retry(target.operationID, target.agentID)
   } catch (error) {
     actionError.value = error.message || '重试失败'
   } finally {
@@ -35,12 +35,12 @@ async function retry(id) {
   }
 }
 
-async function rollback(id) {
+async function rollback(target) {
   if (!window.confirm('确认回滚到上次可用版本？')) return
-  busyID.value = id
+  busyID.value = target.operationID
   actionError.value = ''
   try {
-    await store.rollback(id)
+    await store.rollback(target.operationID, target.agentID)
   } catch (error) {
     actionError.value = error.message || '回滚失败'
   } finally {
