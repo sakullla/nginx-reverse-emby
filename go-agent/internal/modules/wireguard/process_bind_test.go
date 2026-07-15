@@ -273,6 +273,172 @@ func TestProcessWireGuardClassifierKeepsActiveReceiverAtLimitAcrossRoaming(t *te
 	}
 }
 
+func TestProcessWireGuardClassifierRejectedSendDoesNotReleaseUncommittedKey(t *testing.T) {
+	classifier := newProcessWireGuardClassifier()
+	released := make(chan ingress.AssociationKey, 1)
+	classifier.setReleaser(func(key ingress.AssociationKey) { released <- key })
+	for receiver := uint32(1); receiver <= wireGuardAssociationLimit; receiver++ {
+		classifier.receivers[receiver] = ingress.AssociationKey("wireguard|active")
+	}
+
+	remote := netip.MustParseAddrPort("127.0.0.1:51820")
+	initiation := make([]byte, wireGuardInitiationSize)
+	binary.LittleEndian.PutUint32(initiation[:4], wireGuardMessageInitiation)
+	binary.LittleEndian.PutUint32(initiation[4:8], uint32(wireGuardAssociationLimit+1))
+	if err := classifier.observeSend([][]byte{initiation}, remote); !errors.Is(err, errWireGuardAssociationLimit) {
+		t.Fatalf("observeSend() error = %v, want association limit", err)
+	}
+	select {
+	case key := <-released:
+		t.Fatalf("rejected send released uncommitted key %q", key)
+	default:
+	}
+
+	payload := make([]byte, wireGuardInitiationSize)
+	binary.LittleEndian.PutUint32(payload[:4], wireGuardMessageInitiation)
+	key, ok := classifier.Classify(payload, ingress.PacketMetadata{
+		Network:    "udp",
+		RemoteAddr: net.UDPAddrFromAddrPort(remote),
+	})
+	if !ok || key != ingress.AssociationKey("wireguard|"+remote.String()) {
+		t.Fatalf("concurrent inbound Classify() = %q, %t", key, ok)
+	}
+	select {
+	case key := <-released:
+		t.Fatalf("inbound association was erased by rejected send release %q", key)
+	default:
+	}
+}
+
+func TestProcessWireGuardClassifierCleanupLinearizesRealBrokerReassociation(t *testing.T) {
+	registry := ingress.NewProcessPacketRegistry()
+	bind := newProcessWireGuardBind(registry, "agent/7/0/127.0.0.1", []string{"127.0.0.1"}).(*processWireGuardBind)
+	receive, port, err := bind.Open(0)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer bind.Close()
+	defer registry.Close()
+
+	client := dialWireGuardProcessClient(t, port)
+	defer client.Close()
+	sendWireGuardInitiation(t, client, 1)
+	readWireGuardProcessPacket(t, receive[0], 1)
+	remote := client.LocalAddr().String()
+	if got := bind.sockets[0].broker.AssociationCount(); got != 1 {
+		t.Fatalf("initial association count = %d, want 1", got)
+	}
+
+	bind.classifier.mu.Lock()
+	originalRelease := bind.classifier.release
+	bind.classifier.mu.Unlock()
+	releaseStarted := make(chan struct{})
+	allowRelease := make(chan struct{})
+	bind.classifier.setReleaser(func(key ingress.AssociationKey) {
+		close(releaseStarted)
+		<-allowRelease
+		originalRelease(key)
+	})
+	releaseDone := make(chan struct{})
+	go func() {
+		bind.classifier.releaseAssociations(nil, []string{remote})
+		close(releaseDone)
+	}()
+	<-releaseStarted
+
+	sendWireGuardInitiation(t, client, 2)
+	receiveDone := make(chan error, 1)
+	go func() {
+		packets := [][]byte{make([]byte, wireGuardReceiveBufferSize)}
+		sizes := make([]int, 1)
+		endpoints := make([]conn.Endpoint, 1)
+		count, receiveErr := receive[0](packets, sizes, endpoints)
+		if receiveErr == nil && (count != 1 || sizes[0] != wireGuardInitiationSize || binary.LittleEndian.Uint32(packets[0][4:8]) != 2) {
+			receiveErr = fmt.Errorf("received count=%d size=%d sender=%d", count, sizes[0], binary.LittleEndian.Uint32(packets[0][4:8]))
+		}
+		receiveDone <- receiveErr
+	}()
+	select {
+	case err := <-receiveDone:
+		t.Fatalf("inbound reassociation crossed retiring release: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(allowRelease)
+	<-releaseDone
+	select {
+	case err := <-receiveDone:
+		if err != nil {
+			t.Fatalf("receive() after cleanup error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for inbound reassociation after cleanup")
+	}
+	if got := bind.sockets[0].broker.AssociationCount(); got != 1 {
+		t.Fatalf("association count after concurrent cleanup = %d, want 1", got)
+	}
+}
+
+func TestProcessWireGuardClassifierEvictionLinearizesConcurrentClassify(t *testing.T) {
+	classifier := newProcessWireGuardClassifier()
+	firstRemote := "10.0.0.1:10000"
+	for index := 0; index < wireGuardAssociationLimit; index++ {
+		remote := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, byte(index >> 8), byte(index), 1}), uint16(10000+index)).String()
+		key := ingress.AssociationKey("wireguard|" + remote)
+		classifier.remotes[remote] = key
+		classifier.remoteFIFO = append(classifier.remoteFIFO, remote)
+		if index == 0 {
+			firstRemote = remote
+		}
+	}
+	releaseStarted := make(chan struct{}, 1)
+	allowRelease := make(chan struct{})
+	classifier.setReleaser(func(ingress.AssociationKey) {
+		select {
+		case releaseStarted <- struct{}{}:
+		default:
+		}
+		<-allowRelease
+	})
+	classify := func(remote string) (ingress.AssociationKey, bool) {
+		return classifier.Classify(make([]byte, wireGuardInitiationSize), ingress.PacketMetadata{
+			Network:    "udp",
+			RemoteAddr: mustUDPAddr(t, remote),
+		})
+	}
+	newRemote := "192.0.2.1:51820"
+	firstDone := make(chan struct{})
+	go func() {
+		classify(newRemote)
+		close(firstDone)
+	}()
+	<-releaseStarted
+	secondDone := make(chan struct{})
+	go func() {
+		classify(firstRemote)
+		close(secondDone)
+	}()
+	select {
+	case <-secondDone:
+		t.Fatal("concurrent Classify crossed eviction release")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(allowRelease)
+	<-firstDone
+	<-secondDone
+	if classifier.remotes[newRemote] == "" || classifier.remotes[firstRemote] == "" {
+		t.Fatalf("concurrent eviction lost associations: new=%q restored=%q", classifier.remotes[newRemote], classifier.remotes[firstRemote])
+	}
+}
+
+func mustUDPAddr(t *testing.T, raw string) *net.UDPAddr {
+	t.Helper()
+	addr, err := net.ResolveUDPAddr("udp", raw)
+	if err != nil {
+		t.Fatalf("ResolveUDPAddr(%q) error = %v", raw, err)
+	}
+	return addr
+}
+
 func TestWireGuardEndpointReleaseLinearizesSuccessorReceiverClaim(t *testing.T) {
 	const remote = "127.0.0.1:51820"
 	key := ingress.AssociationKey("wireguard|" + remote)

@@ -174,8 +174,7 @@ func processWireGuardReceiveFunc(socket *processWireGuardSocket) conn.ReceiveFun
 			if err != nil {
 				return 0, err
 			}
-			if socket.classifier != nil && !socket.classifier.admitInbound(packets[0][:n], remote) {
-				socket.broker.Release(ingress.AssociationKey("wireguard|" + remote.String()))
+			if socket.classifier != nil && !socket.classifier.admitInboundAndRelease(packets[0][:n], remote, socket.broker.Release) {
 				continue
 			}
 			addrPort, err := netip.ParseAddrPort(remote.String())
@@ -312,11 +311,10 @@ func (c *processWireGuardClassifier) Classify(payload []byte, metadata ingress.P
 		}
 	}
 	key, evicted, _ := c.rememberRemoteLocked(remote)
-	release := c.release
-	c.mu.Unlock()
-	if evicted != "" && release != nil {
-		release(evicted)
+	if evicted != "" && c.release != nil {
+		c.release(evicted)
 	}
+	c.mu.Unlock()
 	return key, key != ""
 }
 
@@ -340,11 +338,7 @@ func (c *processWireGuardClassifier) observeSend(payloads [][]byte, destination 
 		}
 		if existing := c.receivers[sender]; existing != "" {
 			if existing != key {
-				release := c.release
 				c.mu.Unlock()
-				if !existingRemote && release != nil {
-					release(key)
-				}
 				return errors.New("wireguard process receiver index is owned by another association")
 			}
 			continue
@@ -368,11 +362,7 @@ func (c *processWireGuardClassifier) observeSend(payloads [][]byte, destination 
 		}
 	}
 	if (!existingRemote && len(c.remotes) >= wireGuardAssociationLimit && evictAt < 0) || len(c.receivers)+len(newReceivers) > wireGuardAssociationLimit {
-		release := c.release
 		c.mu.Unlock()
-		if !existingRemote && release != nil {
-			release(key)
-		}
 		return errWireGuardAssociationLimit
 	}
 	if !existingRemote {
@@ -387,11 +377,10 @@ func (c *processWireGuardClassifier) observeSend(payloads [][]byte, destination 
 	for _, sender := range newReceivers {
 		c.receivers[sender] = key
 	}
-	release := c.release
-	c.mu.Unlock()
-	if evicted != "" && release != nil {
-		release(evicted)
+	if evicted != "" && c.release != nil {
+		c.release(evicted)
 	}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -438,6 +427,24 @@ func (c *processWireGuardClassifier) admitInbound(payload []byte, remote net.Add
 	return c.remotes[remote.String()] != ""
 }
 
+func (c *processWireGuardClassifier) admitInboundAndRelease(payload []byte, remote net.Addr, release func(ingress.AssociationKey) bool) bool {
+	if c == nil || remote == nil {
+		return false
+	}
+	c.mu.Lock()
+	admitted := false
+	if _, receiver, ok := wireGuardPacketReceiver(payload); ok && c.receivers[receiver] != "" {
+		admitted = true
+	} else if c.remotes[remote.String()] != "" {
+		admitted = true
+	}
+	if !admitted && release != nil {
+		release(ingress.AssociationKey("wireguard|" + remote.String()))
+	}
+	c.mu.Unlock()
+	return admitted
+}
+
 func (c *processWireGuardClassifier) releaseAssociations(receivers []uint32, remotes []string) {
 	if c == nil {
 		return
@@ -462,13 +469,12 @@ func (c *processWireGuardClassifier) releaseAssociations(receivers []uint32, rem
 		}
 		released = append(released, key)
 	}
-	release := c.release
-	c.mu.Unlock()
-	if release != nil {
+	if c.release != nil {
 		for _, key := range released {
-			release(key)
+			c.release(key)
 		}
 	}
+	c.mu.Unlock()
 }
 
 func (b *processWireGuardBind) releaseAssociations(receivers []uint32, remotes []string) {
