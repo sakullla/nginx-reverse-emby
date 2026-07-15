@@ -281,6 +281,7 @@ func waitForHTTPFrontendBody(t *testing.T, client *http.Client, port int, host s
 
 	deadline := time.Now().Add(timeout)
 	hostHeader := fmt.Sprintf("%s:%d", host, port)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequest(http.MethodGet, frontendAddress(port), nil)
 		if err != nil {
@@ -289,17 +290,24 @@ func waitForHTTPFrontendBody(t *testing.T, client *http.Client, port int, host s
 		req.Host = hostHeader
 
 		resp, err := client.Do(req)
-		if err == nil {
+		if err != nil {
+			lastErr = err
+		} else {
 			body, readErr := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			if readErr == nil && resp.StatusCode == http.StatusOK {
 				return string(body)
 			}
+			if readErr != nil {
+				lastErr = fmt.Errorf("read response body: %w", readErr)
+			} else {
+				lastErr = fmt.Errorf("response status=%d body=%q", resp.StatusCode, body)
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	t.Fatalf("timed out waiting for frontend response host=%q port=%d", host, port)
+	t.Fatalf("timed out waiting for frontend response host=%q port=%d: last_error=%v", host, port, lastErr)
 	return ""
 }
 
@@ -307,15 +315,18 @@ func waitForTCPRoundTrip(t *testing.T, address string, payload []byte, timeout t
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", address, 350*time.Millisecond)
 		if err != nil {
+			lastErr = err
 			time.Sleep(20 * time.Millisecond)
 			continue
 		}
 
 		_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 		if _, err := conn.Write(payload); err != nil {
+			lastErr = err
 			_ = conn.Close()
 			time.Sleep(20 * time.Millisecond)
 			continue
@@ -323,6 +334,7 @@ func waitForTCPRoundTrip(t *testing.T, address string, payload []byte, timeout t
 
 		reply := make([]byte, len(payload))
 		if _, err := io.ReadFull(conn, reply); err != nil {
+			lastErr = err
 			_ = conn.Close()
 			time.Sleep(20 * time.Millisecond)
 			continue
@@ -331,10 +343,11 @@ func waitForTCPRoundTrip(t *testing.T, address string, payload []byte, timeout t
 		if bytes.Equal(reply, payload) {
 			return string(reply)
 		}
+		lastErr = fmt.Errorf("reply=%q want=%q", reply, payload)
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	t.Fatalf("timed out waiting for tcp round-trip at %s", address)
+	t.Fatalf("timed out waiting for tcp round-trip at %s: last_error=%v", address, lastErr)
 	return ""
 }
 
