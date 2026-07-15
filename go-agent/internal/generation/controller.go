@@ -112,7 +112,11 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 			timeout = time.Minute
 		}
 		id := previous.generation.ID
-		previous.timer = c.clock.AfterFunc(timeout, func() { _ = c.force(context.Background(), id, model.GenerationForceReasonTimeout) })
+		forceCtx := previous.observabilityCtx
+		if forceCtx == nil {
+			forceCtx = context.Background()
+		}
+		previous.timer = c.clock.AfterFunc(timeout, func() { _ = c.force(forceCtx, id, model.GenerationForceReasonTimeout) })
 	}
 	c.mu.Unlock()
 	var drainErr error

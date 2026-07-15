@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
 )
 
@@ -13,7 +12,8 @@ func TestForcedDrainEmitsBoundedOutcome(t *testing.T) {
 	clock := newFakeClock(time.Unix(100, 0))
 	controller := NewDrainController(clock)
 	var events []observability.Event
-	ctx := observability.WithObserver(t.Context(), observability.ObserverFunc(func(_ context.Context, event observability.Event) {
+	ctx := observability.WithCorrelation(t.Context(), observability.Correlation{AgentID: "agent-timeout", Attempt: 5})
+	ctx = observability.WithObserver(ctx, observability.ObserverFunc(func(_ context.Context, event observability.Event) {
 		events = append(events, event)
 	}))
 	if err := controller.Activate(ctx, Generation{ID: "generation-1", Revision: 1, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
@@ -26,12 +26,10 @@ func TestForcedDrainEmitsBoundedOutcome(t *testing.T) {
 	if err := controller.Activate(ctx, Generation{ID: "generation-2", Revision: 2, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
 		t.Fatalf("Activate(second) error = %v", err)
 	}
-	if err := controller.force(ctx, "generation-1", model.GenerationForceReasonTimeout); err != nil {
-		t.Fatalf("force() error = %v", err)
-	}
+	clock.Advance(time.Minute)
 	found := false
 	for _, event := range events {
-		if event.Name == observability.GenerationDrain && event.Outcome == "forced" && event.GenerationID == "generation-1" && event.Revision == 1 {
+		if event.Name == observability.GenerationDrain && event.Outcome == "forced" && event.GenerationID == "generation-1" && event.Revision == 1 && event.AgentID == "agent-timeout" && event.Attempt == 5 {
 			found = true
 		}
 	}
